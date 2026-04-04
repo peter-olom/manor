@@ -7,45 +7,86 @@ services:
     environment:
       MANOR_ROLE: butler
       MANOR_STATE_DIR: /state
-      CODEX_BASE_URL: http://codex-box:8080
+      CODEX_BASE_URL: ws://codex-box:8080
       PLAYWRIGHT_BASE_URL: http://playwright:3000
       EGRESS_BASE_URL: http://egress:8080
     volumes:
       - ./state/butler:/state
       - ./repos:/repos
     depends_on:
-      - codex-box
-      - egress
-      - playwright
+      codex-box:
+        condition: service_healthy
+      egress:
+        condition: service_started
+      playwright:
+        condition: service_started
     networks:
       - control
       - internet
 
   codex-box:
-    image: node:22-bookworm
+    build:
+      context: .
+      dockerfile: docker/codex-box/Dockerfile
+      args:
+        CODEX_VERSION: 0.118.0
+    image: manor-codex-box:local
     container_name: manor-codex-box
-    command: ["bash", "-lc", "echo 'Codex box placeholder is running'; sleep infinity"]
-    working_dir: /workspace
+    command: ["/usr/local/bin/start-codex-app-server"]
+    working_dir: /repos
     environment:
       MANOR_ROLE: codex-box
       MANOR_STATE_DIR: /state
       HOME: /home/codex
+      CODEX_HOME: /home/codex/.codex
+      CODEX_APP_SERVER_LISTEN: ws://0.0.0.0:8080
+      CODEX_AUTH_BOOTSTRAP: ${CODEX_AUTH_BOOTSTRAP:-auto}
+      CODEX_FORCED_LOGIN_METHOD: ${CODEX_FORCED_LOGIN_METHOD:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_KEY_FILE: ${OPENAI_API_KEY_FILE:-}
+      HTTP_PROXY: http://egress:3128
+      HTTPS_PROXY: http://egress:3128
+      ALL_PROXY: http://egress:3128
+      http_proxy: http://egress:3128
+      https_proxy: http://egress:3128
+      all_proxy: http://egress:3128
+      NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,playwright
+      no_proxy: localhost,127.0.0.1,codex-box,butler,egress,playwright
+    depends_on:
+      egress:
+        condition: service_healthy
     volumes:
       - ./state/codex:/state
+      - ./state/codex-home:/home/codex/.codex
       - ./repos:/repos
       - ./artifacts:/artifacts
+    healthcheck:
+      test: ["CMD", "node", "/opt/manor/codex-box/healthcheck.mjs"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
     networks:
       - control
       - work
 
   egress:
-    image: alpine:3.21
+    build:
+      context: .
+      dockerfile: docker/egress/Dockerfile
+    image: manor-egress:local
     container_name: manor-egress
-    command: ["sh", "-lc", "echo 'Egress placeholder is running'; sleep infinity"]
+    command: ["squid", "-N", "-f", "/etc/squid/squid.conf"]
     environment:
       MANOR_ROLE: egress
     volumes:
       - ./state/egress:/state
+    healthcheck:
+      test: ["CMD", "sh", "-lc", "nc -z 127.0.0.1 3128"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
     networks:
       - work
       - internet

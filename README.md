@@ -70,7 +70,8 @@ Manor does not pretend that full-access Codex inside its worker container is int
 Instead, the initial model is:
 
 - Butler and Codex are separated into different services.
-- Codex has no direct internet path by default.
+- Codex has no direct internet path.
+- Codex reaches OpenAI auth and inference through the egress sidecar only.
 - Web and research work go through sidecars.
 - Egress is explicit and inspectable.
 - The system is a trusted personal worker appliance, not a multi-tenant secure sandbox.
@@ -79,7 +80,47 @@ Instead, the initial model is:
 
 - `compose.yml`: initial local harness topology
 - `docs/evolution-and-technology-map.md`: origin, pivot, and technology choices
+- `docker/codex-box/`: Codex box image, startup script, and health check
+- `docker/egress/`: allowlisted proxy config for outbound traffic
 - `state/`: local runtime state mounts for the harness
+
+## Codex Box Startup
+
+The Codex box now boots in app-server mode so Butler can supervise it over the control network.
+
+- `codex-box` installs the official `@openai/codex` CLI in its image build.
+- the container starts `codex app-server` on `ws://0.0.0.0:8080`
+- Butler targets that endpoint through `ws://codex-box:8080`
+- Codex state is mounted at `./state/codex-home` inside the stack
+- Codex outbound traffic is forced through the egress proxy on the work network
+- WebSocket auth flags can be passed through the container environment when Butler is ready to enforce them
+
+## Egress Policy
+
+The current egress path is fail-closed at the container-network level.
+
+- `codex-box` is not attached to the internet network
+- `egress` is the only service with external network reachability for Codex-bound traffic
+- Codex uses proxy environment variables that point at `egress:3128`
+- the proxy only allows `openai.com` and `*.openai.com`
+- all other outbound destinations are denied
+
+### Auth Bootstrap
+
+The Codex CLI needs credentials inside the container home before Butler can drive real work.
+
+- API key auth is the default headless-friendly path for this stack
+- when an API key is present in the container environment, startup bootstraps `codex login --with-api-key` automatically
+- existing cached ChatGPT credentials in the mounted Codex home are preserved instead of being overwritten
+- device-code auth is also available for headless ChatGPT sign-in through the bundled `codex-auth device` helper
+- the official Codex docs describe copying `~/.codex/auth.json` into a Docker container for headless use when you want ChatGPT auth without device code
+
+### Auth Controls
+
+- `CODEX_AUTH_BOOTSTRAP=auto` logs in with an API key only when one is available and Codex is not already logged in
+- `OPENAI_API_KEY` or `OPENAI_API_KEY_FILE` supplies the API key source
+- `CODEX_FORCED_LOGIN_METHOD=api` restricts the worker to API key auth
+- `CODEX_FORCED_LOGIN_METHOD=chatgpt` restricts the worker to ChatGPT auth, including device-code login
 
 ## Next Steps
 
