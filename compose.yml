@@ -1,0 +1,72 @@
+services:
+  butler:
+    image: node:22-bookworm
+    container_name: manor-butler
+    command: ["bash", "-lc", "echo 'Butler placeholder is running'; sleep infinity"]
+    working_dir: /workspace
+    environment:
+      MANOR_ROLE: butler
+      MANOR_STATE_DIR: /state
+      CODEX_BASE_URL: http://codex-box:8080
+      PLAYWRIGHT_BASE_URL: http://playwright:3000
+      EGRESS_BASE_URL: http://egress:8080
+    volumes:
+      - ./state/butler:/state
+      - ./repos:/repos
+    depends_on:
+      - codex-box
+      - egress
+      - playwright
+    networks:
+      - control
+      - internet
+
+  codex-box:
+    image: node:22-bookworm
+    container_name: manor-codex-box
+    command: ["bash", "-lc", "echo 'Codex box placeholder is running'; sleep infinity"]
+    working_dir: /workspace
+    environment:
+      MANOR_ROLE: codex-box
+      MANOR_STATE_DIR: /state
+      HOME: /home/codex
+    volumes:
+      - ./state/codex:/state
+      - ./repos:/repos
+      - ./artifacts:/artifacts
+    networks:
+      - control
+      - work
+
+  egress:
+    image: alpine:3.21
+    container_name: manor-egress
+    command: ["sh", "-lc", "echo 'Egress placeholder is running'; sleep infinity"]
+    environment:
+      MANOR_ROLE: egress
+    volumes:
+      - ./state/egress:/state
+    networks:
+      - work
+      - internet
+
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.55.0-noble
+    container_name: manor-playwright
+    command: ["bash", "-lc", "echo 'Playwright placeholder is running'; sleep infinity"]
+    environment:
+      MANOR_ROLE: playwright
+    shm_size: "2gb"
+    volumes:
+      - ./state/playwright:/state
+      - ./artifacts:/artifacts
+    networks:
+      - work
+      - internet
+
+networks:
+  control:
+    internal: true
+  work:
+    internal: true
+  internet: {}
