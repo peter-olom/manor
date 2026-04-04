@@ -1,0 +1,47 @@
+<svg width="1600" height="500" viewBox="0 0 1600 500" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>Manor typography logo dark mode</title>
+  <desc>Custom geometric wordmark for Manor optimized for dark surfaces.</desc>
+  <g transform="translate(0 6)">
+    <path
+      d="M96 334V98H118L184 240L250 98H272V334H250V143L196 258H172L118 143V334H96Z"
+      fill="#F2F7FF"
+      stroke="#F2F7FF"
+      stroke-width="16"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M360 334L455 98H485L580 334H554L530 268H410L386 334H360ZM417 246H523L470 126L417 246Z"
+      fill="#F2F7FF"
+      stroke="#F2F7FF"
+      stroke-width="16"
+      stroke-linejoin="round"
+    />
+    <rect x="425" y="214" width="90" height="18" rx="9" fill="#6EA8FF" />
+    <path
+      d="M669 334V98H691L835 290V98H857V334H835L691 142V334H669Z"
+      fill="#F2F7FF"
+      stroke="#F2F7FF"
+      stroke-width="16"
+      stroke-linejoin="round"
+    />
+    <path
+      fill-rule="evenodd"
+      clip-rule="evenodd"
+      d="M934 160C934 125.758 961.758 98 996 98H1087C1121.24 98 1149 125.758 1149 160V272C1149 306.242 1121.24 334 1087 334H996C961.758 334 934 306.242 934 272V160ZM996 120C973.909 120 956 137.909 956 160V272C956 294.091 973.909 312 996 312H1087C1109.09 312 1127 294.091 1127 272V160C1127 137.909 1109.09 120 1087 120H996ZM1015 155C1015 148.373 1020.37 143 1027 143H1056C1062.63 143 1068 148.373 1068 155V277C1068 283.627 1062.63 289 1056 289H1027C1020.37 289 1015 283.627 1015 277V155Z"
+      fill="#F2F7FF"
+      stroke="#F2F7FF"
+      stroke-width="16"
+      stroke-linejoin="round"
+    />
+    <rect x="1015" y="143" width="53" height="146" rx="26.5" fill="#6EA8FF" />
+    <path
+      d="M1233 334V98H1327C1369.53 98 1400 125.583 1400 164C1400 196.955 1378.27 222.849 1345.24 228.594L1414 334H1388L1322 232H1255V334H1233ZM1255 210H1323C1353.25 210 1378 189.852 1378 164C1378 138.148 1353.25 120 1323 120H1255V210Z"
+      fill="#F2F7FF"
+      stroke="#F2F7FF"
+      stroke-width="16"
+      stroke-linejoin="round"
+    />
+    <path d="M1311 229H1338L1423 334H1394L1311 229Z" fill="#6EA8FF" />
+    <rect x="425" y="364" width="649" height="6" rx="3" fill="#6EA8FF" fill-opacity="0.92" />
+  </g>
+</svg>

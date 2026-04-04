@@ -4,6 +4,8 @@ set -euo pipefail
 
 mkdir -p "${CODEX_HOME:-$HOME/.codex}" /state /repos /artifacts
 
+/usr/local/bin/codex-bootstrap-tools
+
 listen_url="${CODEX_APP_SERVER_LISTEN:-ws://0.0.0.0:8080}"
 
 args=(

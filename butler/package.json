@@ -1,0 +1,37 @@
+{
+  "name": "manor-butler",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm run build:web && npm run build:server",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:web": "vite build",
+    "dev:start": "tsx watch src/server/index.ts",
+    "start": "node dist/server/index.js"
+  },
+  "dependencies": {
+    "@mariozechner/pi-ai": "0.65.0",
+    "@mariozechner/pi-coding-agent": "0.65.0",
+    "@sinclair/typebox": "^0.34.41",
+    "express": "^5.1.0",
+    "highlight.js": "^11.11.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.6.0",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^4.4.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^6.3.6"
+  }
+}

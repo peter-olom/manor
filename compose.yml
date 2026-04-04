@@ -1,25 +1,73 @@
 services:
   butler:
-    image: node:22-bookworm
+    build:
+      context: .
+      dockerfile: docker/butler/Dockerfile
+      args:
+        CODEX_VERSION: 0.118.0
+        BUTLER_INSTALL_MODE: ${BUTLER_INSTALL_MODE:-development}
+    image: manor-butler:local
     container_name: manor-butler
-    command: ["bash", "-lc", "echo 'Butler placeholder is running'; sleep infinity"]
-    working_dir: /workspace
+    command: ["/usr/local/bin/start-butler"]
+    working_dir: /opt/manor/butler
     environment:
       MANOR_ROLE: butler
       MANOR_STATE_DIR: /state
+      HOME: /home/butler
+      CODEX_HOME: /home/butler/.codex
+      CODEX_SHARED_HOME_DIR: /codex-home
+      PI_AGENT_DIR: /home/butler/.pi/agent
+      BUTLER_PORT: 8080
+      BUTLER_PUBLIC_PORT: ${BUTLER_HOST_PORT:-8180}
+      BUTLER_HOT_RELOAD: ${BUTLER_HOT_RELOAD:-1}
       CODEX_BASE_URL: ws://codex-box:8080
-      PLAYWRIGHT_BASE_URL: http://playwright:3000
-      EGRESS_BASE_URL: http://egress:8080
+      BUTLER_AUTH_BOOTSTRAP: ${BUTLER_AUTH_BOOTSTRAP:-auto}
+      BUTLER_FORCED_LOGIN_METHOD: ${BUTLER_FORCED_LOGIN_METHOD:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_KEY_FILE: ${OPENAI_API_KEY_FILE:-}
+      HTTP_PROXY: http://egress:3128
+      HTTPS_PROXY: http://egress:3128
+      ALL_PROXY: http://egress:3128
+      NODE_OPTIONS: --use-env-proxy
+      http_proxy: http://egress:3128
+      https_proxy: http://egress:3128
+      all_proxy: http://egress:3128
+      NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,playwright
+      no_proxy: localhost,127.0.0.1,codex-box,butler,egress,playwright
     volumes:
       - ./state/butler:/state
+      - ./state/butler-home:/home/butler/.codex
+      - ./state/butler-pi:/home/butler/.pi
+      - ./state/codex-home:/codex-home
+      - ./butler/src:/opt/manor/butler/src
+      - ./butler/index.html:/opt/manor/butler/index.html:ro
+      - ./butler/package.json:/opt/manor/butler/package.json:ro
+      - ./butler/package-lock.json:/opt/manor/butler/package-lock.json:ro
+      - ./butler/tsconfig.json:/opt/manor/butler/tsconfig.json:ro
+      - ./butler/tsconfig.server.json:/opt/manor/butler/tsconfig.server.json:ro
+      - ./butler/vite.config.ts:/opt/manor/butler/vite.config.ts:ro
       - ./repos:/repos
+      - ./artifacts:/artifacts
     depends_on:
       codex-box:
         condition: service_healthy
       egress:
+        condition: service_healthy
+    networks:
+      - control
+      - work
+
+  butler-gateway:
+    image: nginx:1.27-alpine
+    container_name: manor-butler-gateway
+    depends_on:
+      butler:
         condition: service_started
-      playwright:
-        condition: service_started
+    volumes:
+      - ./docker/butler-gateway/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "${BUTLER_HOST_PORT:-8180}:8080"
+      - "127.0.0.1:1455:1455"
     networks:
       - control
       - internet

@@ -79,10 +79,52 @@ Instead, the initial model is:
 ## Repo Layout
 
 - `compose.yml`: initial local harness topology
+- `butler/`: Butler backend and web UI
 - `docs/evolution-and-technology-map.md`: origin, pivot, and technology choices
+- `docker/butler/`: Butler image, startup script, and auth sync helpers
+- `docker/butler-gateway/`: host-facing reverse proxy for the Butler UI
 - `docker/codex-box/`: Codex box image, startup script, and health check
 - `docker/egress/`: allowlisted proxy config for outbound traffic
 - `state/`: local runtime state mounts for the harness
+
+## Butler First Cut
+
+Butler now runs as a real service instead of a placeholder.
+
+- Butler exposes a web UI on `http://127.0.0.1:8180`
+- the UI uses one unified Butler chat plus a jobs sidebar and window strip
+- Butler mirrors Codex threads over app-server notifications and only reads full thread history when a window is opened
+- Codex event notifications are used as the first supervision signal path, so no extra Codex hook was needed for this cut
+- Butler has its own persisted auth and Pi session state
+- Butler can seed its own auth from the existing shared Codex ChatGPT login without modifying the shared Codex auth data
+
+### Butler Tool Contracts
+
+Butler tool behavior is discoverable in code, not in the UI.
+
+- the backend keeps one tool catalog that names every built-in Butler action
+- each action declares its intended UI side effects like opening a window, removing threads, or returning focus to Butler
+- the live Butler snapshot includes that tool metadata for agent-side inspection
+- tool execution results also carry the declared UI effects so follow-on orchestration can react consistently
+
+### Butler Auth
+
+Butler supports the same two operator-facing auth paths as the Codex box:
+
+- ChatGPT auth through cached device-code login state
+- API key auth through `OPENAI_API_KEY` or `OPENAI_API_KEY_FILE`
+
+The Butler image includes the same Codex CLI auth helper pattern:
+
+- `docker compose exec butler butler-auth status`
+- `docker compose exec butler butler-auth device`
+- `docker compose exec butler butler-auth api-key`
+
+### Butler Networking
+
+- Butler reaches Codex over the internal control network
+- Butler UI is published through a tiny `nginx` gateway service so Butler itself does not need host port publishing
+- the gateway is the only Butler-adjacent service directly exposed on the host
 
 ## Codex Box Startup
 
