@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 
@@ -16,6 +17,8 @@ import type { TSchema } from "@sinclair/typebox";
 
 import { readButlerAuthStatus } from "./auth-status.js";
 import { buildOnboardingView } from "./onboarding-status.js";
+import { ensureTaskWorktree } from "./repo-worktree.js";
+import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type {
   AppSnapshot,
   ButlerAuthStatus,
@@ -119,6 +122,7 @@ function buildJobDetail(store: ButlerStateStore, threadId: string): string {
   if (!thread) {
     return `Job ${threadId} was not found.`;
   }
+  const lease = store.getThreadPreviewLease(threadId);
 
   const turns = thread.turns
     .map((turn, turnIndex) => {
@@ -135,6 +139,7 @@ function buildJobDetail(store: ButlerStateStore, threadId: string): string {
     `status=${thread.status}`,
     `source=${thread.source}`,
     `preview=${thread.preview || "(empty)"}`,
+    lease ? `operator_preview=${lease.operatorUrl}` : "operator_preview=(none)",
     `summary=${thread.supervisor.summary}`,
     turns || "No turn details loaded yet."
   ].join("\n");
@@ -208,6 +213,7 @@ function buildSystemPrompt(store: ButlerStateStore): string {
     "Each supervised Codex thread has a Butler steering budget. Default to 20 Butler-driven turns per thread unless that thread is explicitly overridden.",
     "When work touches git in a repo, enforce a dedicated branch whose name starts with butler/.",
     "Do not run two parallel Codex workstreams on the same repo branch.",
+    "When a task needs a live app review, prefer a preview lease on an isolated runtime instead of telling the operator to bind a raw host port.",
     "",
     `Supervisor state: ${supervisor.summary}`,
     projects.length > 0 ? "Project summaries:" : "Project summaries: none yet.",
@@ -229,6 +235,7 @@ function mergeVisibleMessages(sessionMessages: ButlerMessageView[], notices: But
 export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
   private readonly codexClient: CodexAppServerClient;
+  private readonly runtimeBroker: RuntimeBrokerClient;
   private readonly piAuthPath: string;
   private readonly codexAuthPath: string;
   private readonly codexConfigDir: string;
@@ -262,6 +269,7 @@ export class ButlerAgentService extends EventEmitter {
   constructor(options: {
     store: ButlerStateStore;
     codexClient: CodexAppServerClient;
+    runtimeBroker: RuntimeBrokerClient;
     piAuthPath: string;
     codexAuthPath: string;
     codexConfigDir: string;
@@ -270,6 +278,7 @@ export class ButlerAgentService extends EventEmitter {
     super();
     this.store = options.store;
     this.codexClient = options.codexClient;
+    this.runtimeBroker = options.runtimeBroker;
     this.piAuthPath = options.piAuthPath;
     this.codexAuthPath = options.codexAuthPath;
     this.codexConfigDir = options.codexConfigDir;
@@ -349,6 +358,30 @@ export class ButlerAgentService extends EventEmitter {
   // side effects. Keep agent tool definitions aligned with this catalog.
   private buildToolCatalog(): ButlerToolView[] {
     return [
+      {
+        name: "prepare_worktree",
+        label: "Prepare worktree",
+        description: "Create a dedicated butler/ branch and isolated git worktree for one repo task.",
+        uiEffects: [{ kind: "refreshThreads", description: "Keeps thread/project state aligned with worktree-backed tasks." }]
+      },
+      {
+        name: "start_preview",
+        label: "Start preview",
+        description: "Start a disposable preview runtime for one worktree and expose it through a stable Manor route.",
+        uiEffects: [{ kind: "refreshThreads", description: "Keeps preview-backed job state current." }]
+      },
+      {
+        name: "stop_preview",
+        label: "Stop preview",
+        description: "Stop one preview runtime and release its route.",
+        uiEffects: [{ kind: "refreshThreads", description: "Removes stale preview state from the supervised job." }]
+      },
+      {
+        name: "list_previews",
+        label: "List previews",
+        description: "List active preview leases and their operator-facing routes.",
+        uiEffects: [{ kind: "refreshThreads", description: "Keeps preview lease state current." }]
+      },
       {
         name: "list_jobs",
         label: "List jobs",
@@ -467,8 +500,142 @@ export class ButlerAgentService extends EventEmitter {
     return `Butler has reached the supervision limit for job ${threadId}. Used ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns} Butler turns. Raise the limit on that thread before asking Butler to steer it again.`;
   }
 
+  private async prepareDelegationWorkspace(task: string, cwd?: string): Promise<{ cwd: string; branchName: string | null }> {
+    const requestedCwd = cwd ?? "/repos";
+    const worktree = await ensureTaskWorktree({
+      cwd: requestedCwd,
+      task
+    });
+
+    return {
+      cwd: worktree.cwd,
+      branchName: worktree.branchName
+    };
+  }
+
   private buildCustomTools() {
     return [
+      this.defineButlerTool({
+        name: "prepare_worktree",
+        label: "Prepare worktree",
+        description: "Create a dedicated butler/ branch and isolated git worktree before parallel Codex work starts.",
+        promptSnippet: "prepare_worktree: use this before delegating repo work so parallel jobs do not share one checkout.",
+        parameters: Type.Object({
+          cwd: Type.String(),
+          task: Type.String({ minLength: 1 })
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "prepare_worktree")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { cwd: string; task: string };
+          const workspace = await this.prepareDelegationWorkspace(typedParams.task, typedParams.cwd);
+          return {
+            content: [
+              {
+                type: "text",
+                text: workspace.branchName
+                  ? `Prepared worktree ${workspace.cwd} on branch ${workspace.branchName}.`
+                  : `No git worktree was needed. Using ${workspace.cwd}.`
+              }
+            ],
+            details: workspace
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "list_previews",
+        label: "List previews",
+        description: "List the active preview leases and their operator-facing URLs.",
+        promptSnippet: "list_previews: inspect live preview routes before asking where to review a running app.",
+        parameters: Type.Object({}),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "list_previews")?.uiEffects ?? [],
+        execute: async () => {
+          const leases = this.store.listPreviewLeases();
+          const text =
+            leases.length === 0
+              ? "No preview leases are active."
+              : leases
+                  .map(
+                    (lease, index) =>
+                      `${index + 1}. ${lease.title} | thread=${lease.threadId ?? "(none)"} | status=${lease.status} | route=${lease.operatorUrl}`
+                  )
+                  .join("\n");
+          return {
+            content: [{ type: "text", text }],
+            details: { previews: leases }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "start_preview",
+        label: "Start preview",
+        description: "Start a disposable preview runtime on the internal Manor network and expose it through a stable route.",
+        promptSnippet: "start_preview: use this when a job needs a live reviewable app preview instead of a raw host port.",
+        parameters: Type.Object({
+          threadId: Type.Optional(Type.String()),
+          cwd: Type.String(),
+          title: Type.String({ minLength: 1 }),
+          command: Type.String({ minLength: 1 }),
+          port: Type.Number({ minimum: 1, maximum: 65535 }),
+          image: Type.Optional(Type.String()),
+          egressProfile: Type.Optional(Type.Union([Type.Literal("none"), Type.Literal("builder")]))
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "start_preview")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as {
+            threadId?: string;
+            cwd: string;
+            title: string;
+            command: string;
+            port: number;
+            image?: string;
+            egressProfile?: "none" | "builder";
+          };
+
+          const thread = typedParams.threadId ? this.store.getThread(typedParams.threadId) ?? null : null;
+          const projectId = thread?.supervisor.projectId ?? "preview";
+          const projectLabel = thread?.supervisor.projectLabel ?? "preview";
+          const leaseId = crypto.randomUUID();
+
+          const lease = await this.runtimeBroker.createLease({
+            leaseId,
+            threadId: typedParams.threadId ?? null,
+            projectId,
+            projectLabel,
+            title: typedParams.title,
+            worktreePath: typedParams.cwd,
+            branchName: thread?.cwd === typedParams.cwd ? null : null,
+            targetPort: typedParams.port,
+            command: typedParams.command,
+            image: typedParams.image,
+            egressProfile: typedParams.egressProfile ?? "none"
+          });
+          this.store.upsertPreviewLease(lease);
+
+          return {
+            content: [{ type: "text", text: `Started preview ${lease.title} at ${lease.operatorUrl}.` }],
+            details: { lease }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "stop_preview",
+        label: "Stop preview",
+        description: "Stop a preview runtime and release its lease.",
+        promptSnippet: "stop_preview: use this when preview work is done or a stale preview should be cleaned up.",
+        parameters: Type.Object({
+          leaseId: Type.String()
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "stop_preview")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { leaseId: string };
+          await this.runtimeBroker.stopLease(typedParams.leaseId);
+          this.store.removePreviewLease(typedParams.leaseId);
+          return {
+            content: [{ type: "text", text: `Stopped preview ${typedParams.leaseId}.` }],
+            details: { leaseId: typedParams.leaseId }
+          };
+        }
+      }),
       this.defineButlerTool({
         name: "list_jobs",
         label: "List jobs",
@@ -579,18 +746,21 @@ export class ButlerAgentService extends EventEmitter {
         uiEffects: this.toolCatalog.find((tool) => tool.name === "delegate_to_codex")?.uiEffects ?? [],
         execute: async (_toolCallId, params) => {
           const typedParams = params as { task: string; cwd?: string; goal?: string };
+          const workspace = await this.prepareDelegationWorkspace(typedParams.task, typedParams.cwd);
           const developerInstructions = [
             "This thread was started by Butler.",
             "Execute the requested task directly instead of explaining how the operator could do it manually.",
-            "Work inside /repos unless the task explicitly requires a deeper subdirectory.",
-            "When the task touches git in a repository, create or reuse a dedicated branch whose name starts with butler/.",
+            `Work inside ${workspace.cwd} unless the task explicitly requires a deeper subdirectory.`,
+            workspace.branchName
+              ? `Stay on branch ${workspace.branchName}. Do not switch back to main or share this branch with another task.`
+              : "When the task touches git in a repository, create or reuse a dedicated branch whose name starts with butler/.",
             "Keep the thread focused on the delegated task and report concise progress and outcome."
           ].join("\n");
 
           const prompt = typedParams.goal ? `${typedParams.task}\n\nGoal: ${typedParams.goal}` : typedParams.task;
           const result = await this.codexClient.startThread({
             task: prompt,
-            cwd: typedParams.cwd ?? "/repos",
+            cwd: workspace.cwd,
             developerInstructions,
             openWindow: true
           });
@@ -600,12 +770,13 @@ export class ButlerAgentService extends EventEmitter {
             content: [
               {
                 type: "text",
-                text: `Delegated the task to Codex in job ${result.threadId}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}.`
+                text: `Delegated the task to Codex in job ${result.threadId} from ${workspace.cwd}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}.`
               }
             ],
             details: {
               threadId: result.threadId,
               supervision,
+              workspace,
               thread: this.store.getThread(result.threadId) ?? null
             }
           };
@@ -873,6 +1044,7 @@ export class ButlerAgentService extends EventEmitter {
         supervisor: this.store.getSupervisorSummary(),
         notices: this.noticeMessages
       },
+      previews: this.store.listPreviewLeases(),
       lastError: this.lastError,
       compose: {
         provider: this.session?.model?.provider ?? null,

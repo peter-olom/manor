@@ -43,6 +43,31 @@ export interface CodexSupervisionView {
   capReached: boolean;
 }
 
+export type PreviewLeaseStatus = "starting" | "running" | "stopped" | "failed";
+export type PreviewEgressProfile = "none" | "builder";
+
+export interface PreviewLeaseView {
+  id: string;
+  threadId: string | null;
+  projectId: string;
+  projectLabel: string;
+  title: string;
+  worktreePath: string;
+  branchName: string | null;
+  containerName: string;
+  targetHost: string;
+  targetPort: number;
+  routePrefix: string;
+  operatorUrl: string;
+  command: string;
+  image: string;
+  egressProfile: PreviewEgressProfile;
+  status: PreviewLeaseStatus;
+  createdAt: number;
+  updatedAt: number;
+  lastError: string | null;
+}
+
 export type CodexMilestoneType = "started" | "completed" | "blocked";
 
 export interface CodexMilestoneEntry {
@@ -224,6 +249,7 @@ export interface AppSnapshot {
       supervisor: ButlerSupervisorSummaryView;
       notices: ButlerMessageView[];
     };
+    previews: PreviewLeaseView[];
     lastError: string | null;
     compose: {
       provider: string | null;
@@ -238,6 +264,7 @@ export interface AppSnapshot {
 export interface PersistedUiState {
   windows: ButlerWindow[];
   focusedWindowId: string | null;
+  previewLeases?: PreviewLeaseView[];
   supervisionByThreadId?: Record<
     string,
     {

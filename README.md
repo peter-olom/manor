@@ -39,6 +39,13 @@ Supporting services handle the risky edges:
 - optional disposable execution backends,
 - recordings and artifact capture.
 
+Preview runtimes are now part of the core model too:
+
+- Codex owns the repo and task worktree
+- Butler owns the preview lease
+- disposable preview containers run the app on the private Manor network
+- Manor exposes a stable operator-facing route for each preview
+
 ## Design Principles
 
 - Optimize for usefulness first.
@@ -85,6 +92,8 @@ Instead, the initial model is:
 - `docker/butler-gateway/`: host-facing reverse proxy for the Butler UI
 - `docker/codex-box/`: Codex box image, startup script, and health check
 - `docker/egress/`: allowlisted proxy config for outbound traffic
+- `docker/runtime-broker/`: narrow service that can start and stop disposable preview containers
+- `docker/preview-egress/`: broader but still allowlisted egress path for preview runtimes
 - `state/`: local runtime state mounts for the harness
 
 ## Butler First Cut
@@ -144,6 +153,32 @@ The Butler image includes the same Codex CLI auth helper pattern:
 - Butler reaches Codex over the internal control network
 - Butler UI is published through a tiny `nginx` gateway service so Butler itself does not need host port publishing
 - the gateway is the only Butler-adjacent service directly exposed on the host
+- Butler also proxies preview leases through stable Manor routes instead of exposing raw app ports directly
+
+## Parallel Repo Work
+
+Parallel work is allowed, but the unit of isolation is not just the branch.
+
+The intended model is:
+
+- one Butler-managed job gets one Codex thread
+- one repo task gets one dedicated `butler/` branch
+- parallel work in the same repo should use separate git worktrees
+- one running app preview gets one disposable runtime and one preview lease
+
+That means the practical rule is:
+
+- `one job -> one worktree -> one isolated runtime -> one preview lease`
+
+This keeps parallel work practical without turning the host into a port-collision mess.
+
+### Preview and Port Strategy
+
+- preview traffic stays on the private work network by default
+- Butler creates and tracks preview leases
+- Manor exposes previews through stable routes like `/preview/<lease-id>/`
+- direct host port publishing should be the exception, not the default
+- cleanup should stop the disposable runtime and release the lease deterministically
 
 ## Codex Box Startup
 
@@ -169,6 +204,15 @@ The current egress path is fail-closed at the container-network level.
 - the proxy only allows `openai.com`, `*.openai.com`, `chatgpt.com`, `*.chatgpt.com`, `github.com`, `*.github.com`, `api.github.com`, and `*.githubusercontent.com`
 - all other outbound destinations are denied
 
+### Preview Runtime Egress
+
+Preview runtimes use a separate egress profile from the Codex box.
+
+- Codex and Butler keep the tighter default egress policy
+- preview runtimes can use a broader allowlist when the app under review needs real third-party APIs
+- the first built-in preview profile is aimed at app verification work and allows GitHub, OpenAI, OpenRouter, and Cloudflare properties through the dedicated `preview-egress` sidecar
+- preview runtimes still stay on the private work network and reach the internet through an explicit proxy path
+
 ### Auth Bootstrap
 
 The Codex CLI needs credentials inside the container home before Butler can drive real work.
@@ -188,8 +232,7 @@ The Codex CLI needs credentials inside the container home before Butler can driv
 
 ## Next Steps
 
-- replace placeholder service commands with real Butler and Codex startup commands
-- define the Butler to Codex supervision protocol
-- wire repository mounts and per-repo runtime contracts
-- add structured logs, health checks, and recordings
-- define the first egress policy contract
+- deepen Butler job lifecycle management with leases, retries, and completion enforcement
+- add first-class preview controls in the UI
+- wire browser verification against the same leased preview routes
+- add richer per-project orchestration and cleanup policies

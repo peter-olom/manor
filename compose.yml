@@ -36,8 +36,9 @@ services:
       http_proxy: http://egress:3128
       https_proxy: http://egress:3128
       all_proxy: http://egress:3128
-      NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,playwright
-      no_proxy: localhost,127.0.0.1,codex-box,butler,egress,playwright
+      NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright
+      no_proxy: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright
+      RUNTIME_BROKER_URL: http://runtime-broker:8090
     volumes:
       - ./state/butler:/state
       - ./state/butler-home:/home/butler/.codex
@@ -58,6 +59,8 @@ services:
         condition: service_healthy
       egress:
         condition: service_healthy
+      runtime-broker:
+        condition: service_started
     networks:
       - control
       - internet
@@ -105,8 +108,8 @@ services:
       http_proxy: http://egress:3128
       https_proxy: http://egress:3128
       all_proxy: http://egress:3128
-      NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,playwright
-      no_proxy: localhost,127.0.0.1,codex-box,butler,egress,playwright
+      NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright
+      no_proxy: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright
     depends_on:
       egress:
         condition: service_healthy
@@ -146,6 +149,53 @@ services:
     networks:
       - work
       - internet
+
+  preview-egress:
+    build:
+      context: .
+      dockerfile: docker/egress/Dockerfile
+    image: manor-preview-egress:local
+    container_name: manor-preview-egress
+    command: ["squid", "-N", "-f", "/etc/squid/squid.conf"]
+    environment:
+      MANOR_ROLE: preview-egress
+    volumes:
+      - ./docker/preview-egress/squid.conf:/etc/squid/squid.conf:ro
+      - ./state/preview-egress:/state
+    healthcheck:
+      test: ["CMD", "sh", "-lc", "nc -z 127.0.0.1 3128"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    networks:
+      - work
+      - internet
+
+  runtime-broker:
+    build:
+      context: .
+      dockerfile: docker/runtime-broker/Dockerfile
+    image: manor-runtime-broker:local
+    container_name: manor-runtime-broker
+    environment:
+      MANOR_ROLE: runtime-broker
+      RUNTIME_BROKER_PORT: 8090
+      RUNTIME_PREVIEW_NETWORK: manor_work
+      RUNTIME_PREVIEW_PROXY: http://preview-egress:3128
+      RUNTIME_PREVIEW_IMAGE: node:22-bookworm-slim
+      RUNTIME_ROUTE_BASE: /preview
+      RUNTIME_OPERATOR_BASE_URL: http://127.0.0.1:${BUTLER_HOST_PORT:-8180}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      preview-egress:
+        condition: service_healthy
+      codex-box:
+        condition: service_started
+    networks:
+      - control
+      - work
 
   playwright:
     image: mcr.microsoft.com/playwright:v1.55.0-noble

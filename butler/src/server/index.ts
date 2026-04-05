@@ -1,10 +1,14 @@
 import { promises as fs } from "node:fs";
+import crypto from "node:crypto";
+import http from "node:http";
 import path from "node:path";
 
 import express from "express";
+import httpProxy from "http-proxy";
 
 import { ButlerAgentService } from "./butler-agent.js";
 import { CodexAppServerClient } from "./codex-client.js";
+import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { ButlerStateStore } from "./state-store.js";
 
 const port = Number(process.env.BUTLER_PORT ?? "8080");
@@ -13,6 +17,7 @@ const piAgentDir = process.env.PI_AGENT_DIR ?? "/home/butler/.pi/agent";
 const stateDir = process.env.MANOR_STATE_DIR ?? "/state";
 const codexHomeDir = process.env.CODEX_SHARED_HOME_DIR ?? "/codex-home";
 const codexConfigDir = process.env.CODEX_SHARED_CONFIG_DIR ?? "/codex-config";
+const runtimeBrokerUrl = process.env.RUNTIME_BROKER_URL ?? "http://runtime-broker:8090";
 const hotReloadEnabled = process.env.BUTLER_HOT_RELOAD === "1";
 const publicPort = Number(process.env.BUTLER_PUBLIC_PORT ?? port);
 
@@ -25,9 +30,11 @@ const store = new ButlerStateStore(uiStatePath);
 await store.load();
 
 const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir);
+const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl);
 const butlerAgent = new ButlerAgentService({
   store,
   codexClient,
+  runtimeBroker,
   piAuthPath: path.join(piAgentDir, "auth.json"),
   codexAuthPath: path.join(codexHomeDir, "auth.json"),
   codexConfigDir,
@@ -42,6 +49,20 @@ codexClient.start();
 
 const app = express();
 app.use(express.json());
+const server = http.createServer(app);
+const previewProxy = httpProxy.createProxyServer({
+  changeOrigin: false,
+  ws: true
+});
+
+function resolvePreviewProxyTarget(leaseId: string): string | null {
+  const lease = store.getPreviewLease(leaseId);
+  if (!lease || lease.status === "stopped") {
+    return null;
+  }
+
+  return `http://${lease.targetHost}:${lease.targetPort}`;
+}
 
 let viteDevServer: import("vite").ViteDevServer | null = null;
 
@@ -268,6 +289,81 @@ app.post("/api/windows/close", (request, response) => {
   response.json({ ok: true });
 });
 
+app.post("/api/previews/start", async (request, response) => {
+  const title = typeof request.body?.title === "string" ? request.body.title.trim() : "";
+  const cwd = typeof request.body?.cwd === "string" ? request.body.cwd.trim() : "";
+  const command = typeof request.body?.command === "string" ? request.body.command.trim() : "";
+  const portValue = typeof request.body?.port === "number" ? request.body.port : Number(request.body?.port ?? 0);
+  const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : null;
+  const image = typeof request.body?.image === "string" ? request.body.image.trim() : undefined;
+  const egressProfile = request.body?.egressProfile === "builder" ? "builder" : "none";
+
+  if (!title || !cwd || !command || !Number.isFinite(portValue) || portValue <= 0) {
+    response.status(400).json({ error: "title, cwd, command, and port are required" });
+    return;
+  }
+
+  try {
+    const thread = threadId ? store.getThread(threadId) ?? null : null;
+    const lease = await runtimeBroker.createLease({
+      leaseId: crypto.randomUUID(),
+      threadId,
+      projectId: thread?.supervisor.projectId ?? "preview",
+      projectLabel: thread?.supervisor.projectLabel ?? "preview",
+      title,
+      worktreePath: cwd,
+      branchName: null,
+      targetPort: portValue,
+      command,
+      image,
+      egressProfile
+    });
+    store.upsertPreviewLease(lease);
+    response.json({ ok: true, lease });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/previews/stop", async (request, response) => {
+  const leaseId = typeof request.body?.leaseId === "string" ? request.body.leaseId : "";
+  if (!leaseId) {
+    response.status(400).json({ error: "leaseId is required" });
+    return;
+  }
+
+  try {
+    await runtimeBroker.stopLease(leaseId);
+    store.removePreviewLease(leaseId);
+    response.json({ ok: true });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.use(/^\/preview\/([^/]+)(\/.*)?$/, (request, response) => {
+  const originalPath = request.originalUrl.split("?")[0] ?? request.originalUrl;
+  const match = originalPath.match(/^\/preview\/([^/]+)(\/.*)?$/);
+  const leaseId = match?.[1];
+  if (!leaseId) {
+    response.status(404).end();
+    return;
+  }
+
+  const target = resolvePreviewProxyTarget(leaseId);
+  if (!target) {
+    response.status(404).json({ error: "Preview lease not found" });
+    return;
+  }
+
+  const suffix = match?.[2] ?? "/";
+  const search = request.url.includes("?") ? request.url.slice(request.url.indexOf("?")) : "";
+  request.url = `${suffix}${search}`;
+  previewProxy.web(request, response, { target }, (error: Error) => {
+    response.status(502).json({ error: error instanceof Error ? error.message : "Preview proxy failed" });
+  });
+});
+
 if (viteDevServer) {
   app.use(viteDevServer.middlewares);
   app.get(/.*/, async (request, response, next) => {
@@ -287,6 +383,6 @@ if (viteDevServer) {
   });
 }
 
-app.listen(port, "0.0.0.0", () => {
+server.listen(port, "0.0.0.0", () => {
   console.log(`Butler listening on ${port} (${hotReloadEnabled ? "hot reload" : "static"})`);
 });

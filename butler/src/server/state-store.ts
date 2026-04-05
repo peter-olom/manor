@@ -19,6 +19,7 @@ import type {
   CodexThreadSummary,
   CodexThreadSupervisorView,
   CodexTurnRecord,
+  PreviewLeaseView,
   PersistedUiState
 } from "./types.js";
 
@@ -258,6 +259,7 @@ function normalizeTurn(turn: Record<string, unknown>): CodexTurnRecord {
 export class ButlerStateStore extends EventEmitter {
   private readonly uiStatePath: string;
   private readonly threads = new Map<string, CodexThreadRecord>();
+  private readonly previewLeases = new Map<string, PreviewLeaseView>();
   private readonly persistedSupervisionByThreadId = new Map<string, { butlerTurnsUsed: number; maxButlerTurns: number | null }>();
   private windows: ButlerWindow[] = [];
   private focusedWindowId: string | null = null;
@@ -278,6 +280,12 @@ export class ButlerStateStore extends EventEmitter {
       const data = JSON.parse(raw) as PersistedUiState;
       this.windows = Array.isArray(data.windows) ? data.windows : [];
       this.focusedWindowId = typeof data.focusedWindowId === "string" ? data.focusedWindowId : null;
+      this.previewLeases.clear();
+      for (const lease of Array.isArray(data.previewLeases) ? data.previewLeases : []) {
+        if (lease && typeof lease === "object" && typeof lease.id === "string") {
+          this.previewLeases.set(lease.id, lease as PreviewLeaseView);
+        }
+      }
       this.persistedSupervisionByThreadId.clear();
       for (const [threadId, policy] of Object.entries(data.supervisionByThreadId ?? {})) {
         this.persistedSupervisionByThreadId.set(threadId, {
@@ -288,6 +296,7 @@ export class ButlerStateStore extends EventEmitter {
     } catch {
       this.windows = [];
       this.focusedWindowId = null;
+      this.previewLeases.clear();
       this.persistedSupervisionByThreadId.clear();
     }
   }
@@ -302,6 +311,7 @@ export class ButlerStateStore extends EventEmitter {
       const payload: PersistedUiState = {
         windows: this.windows,
         focusedWindowId: this.focusedWindowId,
+        previewLeases: [...this.previewLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
         supervisionByThreadId: Object.fromEntries(
           [...this.persistedSupervisionByThreadId.entries()].map(([threadId, policy]) => [
             threadId,
@@ -702,6 +712,11 @@ export class ButlerStateStore extends EventEmitter {
 
   removeThread(threadId: string): void {
     this.threads.delete(threadId);
+    for (const lease of this.previewLeases.values()) {
+      if (lease.threadId === threadId) {
+        this.previewLeases.delete(lease.id);
+      }
+    }
     this.persistedSupervisionByThreadId.delete(threadId);
     this.latestStartedTurnIds.delete(threadId);
     this.latestCompletedTurnIds.delete(threadId);
@@ -722,6 +737,11 @@ export class ButlerStateStore extends EventEmitter {
 
     for (const threadId of targets) {
       this.threads.delete(threadId);
+      for (const lease of this.previewLeases.values()) {
+        if (lease.threadId === threadId) {
+          this.previewLeases.delete(lease.id);
+        }
+      }
       this.persistedSupervisionByThreadId.delete(threadId);
       this.latestStartedTurnIds.delete(threadId);
       this.latestCompletedTurnIds.delete(threadId);
@@ -806,6 +826,32 @@ export class ButlerStateStore extends EventEmitter {
       .sort((a, b) => b.at - a.at);
   }
 
+  upsertPreviewLease(lease: PreviewLeaseView): void {
+    this.previewLeases.set(lease.id, lease);
+    this.queueSave();
+    this.emitChange();
+  }
+
+  removePreviewLease(leaseId: string): void {
+    if (!this.previewLeases.delete(leaseId)) {
+      return;
+    }
+    this.queueSave();
+    this.emitChange();
+  }
+
+  getPreviewLease(leaseId: string): PreviewLeaseView | undefined {
+    return this.previewLeases.get(leaseId);
+  }
+
+  listPreviewLeases(): PreviewLeaseView[] {
+    return [...this.previewLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt);
+  }
+
+  getThreadPreviewLease(threadId: string): PreviewLeaseView | undefined {
+    return this.listPreviewLeases().find((lease) => lease.threadId === threadId && lease.status !== "stopped");
+  }
+
   getSnapshot(butler: {
     ready: boolean;
     pending: boolean;
@@ -819,6 +865,7 @@ export class ButlerStateStore extends EventEmitter {
     contextUsage: AppSnapshot["butler"]["contextUsage"];
     compaction: AppSnapshot["butler"]["compaction"];
     supervision: AppSnapshot["butler"]["supervision"];
+    previews: AppSnapshot["butler"]["previews"];
     lastError: string | null;
     compose: AppSnapshot["butler"]["compose"];
   }, codexConnection: {
@@ -851,7 +898,8 @@ export class ButlerStateStore extends EventEmitter {
           ...butler.supervision,
           projects: this.listProjectSummaries(),
           supervisor: this.getSupervisorSummary()
-        }
+        },
+        previews: this.listPreviewLeases()
       }
     };
   }

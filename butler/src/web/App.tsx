@@ -161,6 +161,27 @@ type Snapshot = {
       lastAborted: boolean;
       lastError: string | null;
     };
+    previews: Array<{
+      id: string;
+      threadId: string | null;
+      projectId: string;
+      projectLabel: string;
+      title: string;
+      worktreePath: string;
+      branchName: string | null;
+      containerName: string;
+      targetHost: string;
+      targetPort: number;
+      routePrefix: string;
+      operatorUrl: string;
+      command: string;
+      image: string;
+      egressProfile: "none" | "builder";
+      status: "starting" | "running" | "stopped" | "failed";
+      createdAt: number;
+      updatedAt: number;
+      lastError: string | null;
+    }>;
     lastError: string | null;
     compose: {
       provider: string | null;
@@ -913,6 +934,9 @@ export function App() {
         .flatMap((turn) => turn.items.filter(shouldRenderItem).map((item) => ({ ...item, turnId: turn.id, turnStartedAt: turn.startedAt })))
         .sort((a, b) => a.at - b.at)
     : [];
+  const activePreviewLease = activeThread
+    ? snapshot.butler.previews.find((lease) => lease.threadId === activeThread.id && lease.status !== "stopped") ?? null
+    : null;
 
   const runPromptJumpList = activeRunItems.filter((item) => item.type === "userMessage");
   const butlerPromptJumpList = snapshot.butler.messages
@@ -998,6 +1022,17 @@ export function App() {
       await postJson("/api/threads/supervision", { threadId, maxButlerTurns });
     } catch (settingsError) {
       setError(settingsError instanceof Error ? settingsError.message : String(settingsError));
+    }
+  }
+
+  async function stopPreviewLease(leaseId: string) {
+    setError(null);
+
+    try {
+      await postJson("/api/previews/stop", { leaseId });
+      setToast("Preview stopped");
+    } catch (previewError) {
+      setError(previewError instanceof Error ? previewError.message : String(previewError));
     }
   }
 
@@ -1395,6 +1430,16 @@ export function App() {
             <div className="workspace-panel">
               <div className="thread-toolbar">
                 <div className="panel-controls">
+                  {activePreviewLease ? (
+                    <>
+                      <a className="panel-action panel-action-link" href={activePreviewLease.operatorUrl} target="_blank" rel="noreferrer">
+                        Open preview
+                      </a>
+                      <button className="panel-action" onClick={() => void stopPreviewLease(activePreviewLease.id)}>
+                        Stop preview
+                      </button>
+                    </>
+                  ) : null}
                   <button className="panel-action panel-action-danger" onClick={() => void deleteThread(activeThread.id)}>
                     Delete
                   </button>
