@@ -176,6 +176,26 @@ app.post("/api/threads/settings", async (request, response) => {
   }
 });
 
+app.post("/api/threads/supervision", (request, response) => {
+  const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : "";
+  const rawLimit = request.body?.maxButlerTurns;
+
+  if (!threadId) {
+    response.status(400).json({ error: "threadId is required" });
+    return;
+  }
+
+  const maxButlerTurns =
+    rawLimit === null || rawLimit === "null"
+      ? null
+      : typeof rawLimit === "number" && Number.isFinite(rawLimit) && rawLimit > 0
+        ? Math.floor(rawLimit)
+        : null;
+
+  const supervision = store.setThreadSupervisionLimit(threadId, maxButlerTurns);
+  response.json({ ok: true, supervision });
+});
+
 app.post("/api/threads/delete", async (request, response) => {
   const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : "";
   if (!threadId) {

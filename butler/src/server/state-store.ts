@@ -13,6 +13,7 @@ import type {
   CodexItemRecord,
   CodexMilestoneEntry,
   CodexProjectSummaryView,
+  CodexSupervisionView,
   CodexThreadRecord,
   CodexThreadStatus,
   CodexThreadSummary,
@@ -22,6 +23,7 @@ import type {
 } from "./types.js";
 
 const MAX_EVENT_LOG = 80;
+const DEFAULT_BUTLER_THREAD_LIMIT = 20;
 
 function emptyCodexContextUsage(): CodexContextUsageView {
   return {
@@ -37,6 +39,14 @@ function emptyCodexCompaction(): CodexCompactionView {
     count: 0,
     lastStartedAt: null,
     lastCompletedAt: null
+  };
+}
+
+function emptyCodexSupervision(): CodexSupervisionView {
+  return {
+    butlerTurnsUsed: 0,
+    maxButlerTurns: DEFAULT_BUTLER_THREAD_LIMIT,
+    capReached: false
   };
 }
 
@@ -248,6 +258,7 @@ function normalizeTurn(turn: Record<string, unknown>): CodexTurnRecord {
 export class ButlerStateStore extends EventEmitter {
   private readonly uiStatePath: string;
   private readonly threads = new Map<string, CodexThreadRecord>();
+  private readonly persistedSupervisionByThreadId = new Map<string, { butlerTurnsUsed: number; maxButlerTurns: number | null }>();
   private windows: ButlerWindow[] = [];
   private focusedWindowId: string | null = null;
   private saveTimer: NodeJS.Timeout | null = null;
@@ -267,9 +278,17 @@ export class ButlerStateStore extends EventEmitter {
       const data = JSON.parse(raw) as PersistedUiState;
       this.windows = Array.isArray(data.windows) ? data.windows : [];
       this.focusedWindowId = typeof data.focusedWindowId === "string" ? data.focusedWindowId : null;
+      this.persistedSupervisionByThreadId.clear();
+      for (const [threadId, policy] of Object.entries(data.supervisionByThreadId ?? {})) {
+        this.persistedSupervisionByThreadId.set(threadId, {
+          butlerTurnsUsed: typeof policy?.butlerTurnsUsed === "number" ? policy.butlerTurnsUsed : 0,
+          maxButlerTurns: typeof policy?.maxButlerTurns === "number" ? policy.maxButlerTurns : null
+        });
+      }
     } catch {
       this.windows = [];
       this.focusedWindowId = null;
+      this.persistedSupervisionByThreadId.clear();
     }
   }
 
@@ -282,7 +301,16 @@ export class ButlerStateStore extends EventEmitter {
       this.saveTimer = null;
       const payload: PersistedUiState = {
         windows: this.windows,
-        focusedWindowId: this.focusedWindowId
+        focusedWindowId: this.focusedWindowId,
+        supervisionByThreadId: Object.fromEntries(
+          [...this.persistedSupervisionByThreadId.entries()].map(([threadId, policy]) => [
+            threadId,
+            {
+              butlerTurnsUsed: policy.butlerTurnsUsed,
+              maxButlerTurns: policy.maxButlerTurns
+            }
+          ])
+        )
       };
       await fs.mkdir(path.dirname(this.uiStatePath), { recursive: true });
       await fs.writeFile(this.uiStatePath, JSON.stringify(payload, null, 2));
@@ -312,13 +340,28 @@ export class ButlerStateStore extends EventEmitter {
       loaded: false,
       contextUsage: emptyCodexContextUsage(),
       compaction: emptyCodexCompaction(),
+      supervision: emptyCodexSupervision(),
       supervisor: emptyThreadSupervisor(),
       turns: [],
       eventLog: [],
       milestones: []
     };
+    const persisted = this.persistedSupervisionByThreadId.get(id);
+    if (persisted) {
+      created.supervision.butlerTurnsUsed = persisted.butlerTurnsUsed;
+      created.supervision.maxButlerTurns = persisted.maxButlerTurns;
+      created.supervision.capReached =
+        persisted.maxButlerTurns !== null && persisted.butlerTurnsUsed >= persisted.maxButlerTurns;
+    }
     this.threads.set(id, created);
     return created;
+  }
+
+  private persistThreadSupervision(thread: CodexThreadRecord): void {
+    this.persistedSupervisionByThreadId.set(thread.id, {
+      butlerTurnsUsed: thread.supervision.butlerTurnsUsed,
+      maxButlerTurns: thread.supervision.maxButlerTurns
+    });
   }
 
   upsertThreadSummary(thread: Record<string, unknown>): void {
@@ -551,7 +594,10 @@ export class ButlerStateStore extends EventEmitter {
       lastStartedAt,
       lastCompletedAt
     };
+    thread.supervision.capReached =
+      thread.supervision.maxButlerTurns !== null && thread.supervision.butlerTurnsUsed >= thread.supervision.maxButlerTurns;
     thread.supervisor = buildThreadSupervisor(thread);
+    this.persistThreadSupervision(thread);
     this.captureMilestones(thread);
   }
 
@@ -656,6 +702,7 @@ export class ButlerStateStore extends EventEmitter {
 
   removeThread(threadId: string): void {
     this.threads.delete(threadId);
+    this.persistedSupervisionByThreadId.delete(threadId);
     this.latestStartedTurnIds.delete(threadId);
     this.latestCompletedTurnIds.delete(threadId);
     this.latestBlockedTurnIds.delete(threadId);
@@ -675,6 +722,7 @@ export class ButlerStateStore extends EventEmitter {
 
     for (const threadId of targets) {
       this.threads.delete(threadId);
+      this.persistedSupervisionByThreadId.delete(threadId);
       this.latestStartedTurnIds.delete(threadId);
       this.latestCompletedTurnIds.delete(threadId);
       this.latestBlockedTurnIds.delete(threadId);
@@ -703,6 +751,7 @@ export class ButlerStateStore extends EventEmitter {
         loaded: thread.loaded,
         contextUsage: thread.contextUsage,
         compaction: thread.compaction,
+        supervision: thread.supervision,
         supervisor: thread.supervisor
       }))
       .sort((a, b) => b.updatedAt - a.updatedAt);
@@ -714,6 +763,28 @@ export class ButlerStateStore extends EventEmitter {
 
   getOpenWindowIds(): string[] {
     return this.windows.map((window) => window.threadId);
+  }
+
+  getThreadSupervision(threadId: string): { butlerTurnsUsed: number; maxButlerTurns: number | null; capReached: boolean } {
+    return this.getOrCreateThread(threadId).supervision;
+  }
+
+  noteButlerSteer(threadId: string): { butlerTurnsUsed: number; maxButlerTurns: number | null; capReached: boolean } {
+    const thread = this.getOrCreateThread(threadId);
+    thread.supervision.butlerTurnsUsed += 1;
+    this.refreshDerivedThreadState(thread);
+    this.queueSave();
+    this.emitChange();
+    return thread.supervision;
+  }
+
+  setThreadSupervisionLimit(threadId: string, maxButlerTurns: number | null): { butlerTurnsUsed: number; maxButlerTurns: number | null; capReached: boolean } {
+    const thread = this.getOrCreateThread(threadId);
+    thread.supervision.maxButlerTurns = maxButlerTurns;
+    this.refreshDerivedThreadState(thread);
+    this.queueSave();
+    this.emitChange();
+    return thread.supervision;
   }
 
   listProjectSummaries(): CodexProjectSummaryView[] {

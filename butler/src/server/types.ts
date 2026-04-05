@@ -37,6 +37,12 @@ export interface CodexCompactionView {
   lastCompletedAt: number | null;
 }
 
+export interface CodexSupervisionView {
+  butlerTurnsUsed: number;
+  maxButlerTurns: number | null;
+  capReached: boolean;
+}
+
 export type CodexMilestoneType = "started" | "completed" | "blocked";
 
 export interface CodexMilestoneEntry {
@@ -70,6 +76,7 @@ export interface CodexThreadSummary {
   loaded: boolean;
   contextUsage: CodexContextUsageView;
   compaction: CodexCompactionView;
+  supervision: CodexSupervisionView;
   supervisor: CodexThreadSupervisorView;
 }
 
@@ -231,4 +238,11 @@ export interface AppSnapshot {
 export interface PersistedUiState {
   windows: ButlerWindow[];
   focusedWindowId: string | null;
+  supervisionByThreadId?: Record<
+    string,
+    {
+      butlerTurnsUsed?: number;
+      maxButlerTurns?: number | null;
+    }
+  >;
 }

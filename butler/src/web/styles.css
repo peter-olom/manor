@@ -1097,6 +1097,24 @@ select {
   outline: none;
 }
 
+.composer-thread-budget {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-left: 6px;
+}
+
+.composer-thread-budget-value {
+  font-size: 0.74rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.composer-thread-budget.is-capped .composer-thread-budget-value {
+  color: var(--danger);
+}
+
 .composer-send {
   display: inline-flex;
   align-items: center;
@@ -1243,6 +1261,12 @@ select {
   cursor: pointer;
   font-size: 0.82rem;
   line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 .detail-link:hover {
@@ -1676,6 +1700,16 @@ select {
     height: 34px;
     padding: 0 8px;
     font-size: 0.94rem;
+  }
+
+  .composer-thread-budget {
+    flex: 1 1 0;
+    min-width: 0;
+    padding-left: 0;
+  }
+
+  .composer-thread-budget-value {
+    font-size: 0.72rem;
   }
 
   .composer-note {

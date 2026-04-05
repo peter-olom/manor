@@ -45,6 +45,11 @@ type Snapshot = {
         contextWindow: number | null;
         percent: number | null;
       };
+      supervision: {
+        butlerTurnsUsed: number;
+        maxButlerTurns: number | null;
+        capReached: boolean;
+      };
       compaction: {
         active: boolean;
         count: number;
@@ -71,6 +76,11 @@ type Snapshot = {
           tokens: number | null;
           contextWindow: number | null;
           percent: number | null;
+        };
+        supervision: {
+          butlerTurnsUsed: number;
+          maxButlerTurns: number | null;
+          capReached: boolean;
         };
         compaction: {
           active: boolean;
@@ -273,6 +283,10 @@ function formatCompactionState(compaction: Snapshot["butler"]["compaction"]): st
   }
 
   return `${formatTime(compaction.lastCompletedAt)}${compaction.lastReason ? ` · ${compaction.lastReason}` : ""}`;
+}
+
+function formatThreadBudget(supervision: { butlerTurnsUsed: number; maxButlerTurns: number | null }): string {
+  return `${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}`;
 }
 
 function formatCodexCompactionState(compaction: {
@@ -979,6 +993,14 @@ export function App() {
     }
   }
 
+  async function updateThreadSupervision(threadId: string, maxButlerTurns: number | null) {
+    try {
+      await postJson("/api/threads/supervision", { threadId, maxButlerTurns });
+    } catch (settingsError) {
+      setError(settingsError instanceof Error ? settingsError.message : String(settingsError));
+    }
+  }
+
   async function deleteThread(threadId: string) {
     if (!window.confirm("Delete this Codex thread permanently?")) {
       return;
@@ -1468,6 +1490,24 @@ export function App() {
                             ))
                           )}
                         </select>
+                        <div className={`composer-thread-budget${activeThread.supervision.capReached ? " is-capped" : ""}`}>
+                          <span className="composer-thread-budget-value">{formatThreadBudget(activeThread.supervision)}</span>
+                          <select
+                            value={activeThread.supervision.maxButlerTurns === null ? "null" : String(activeThread.supervision.maxButlerTurns)}
+                            onChange={(event) =>
+                              void updateThreadSupervision(
+                                activeThread.id,
+                                event.target.value === "null" ? null : Number(event.target.value)
+                              )
+                            }
+                            aria-label="Butler thread turn limit"
+                          >
+                            <option value="20">20 turns</option>
+                            <option value="40">40 turns</option>
+                            <option value="100">100 turns</option>
+                            <option value="null">No limit</option>
+                          </select>
+                        </div>
                       </div>
                       <div className="composer-note">Cmd/Ctrl + Enter sends</div>
                       <button className="composer-send composer-send-desktop" onClick={() => void sendThreadMessage()} disabled={!threadDraft.trim()} aria-label="Send message">

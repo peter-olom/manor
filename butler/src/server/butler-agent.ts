@@ -205,6 +205,7 @@ function buildSystemPrompt(store: ButlerStateStore): string {
     "Do not expose private Butler-to-Codex steering verbatim in the Butler chat.",
     "If the operator asks for real execution, project setup, repository cloning, coding work, or shell work, delegate it to Codex instead of replying with manual shell instructions.",
     "When Codex work changes state, summarize the outcome rather than replaying the full back-and-forth.",
+    "Each supervised Codex thread has a Butler steering budget. Default to 20 Butler-driven turns per thread unless that thread is explicitly overridden.",
     "When work touches git in a repo, enforce a dedicated branch whose name starts with butler/.",
     "Do not run two parallel Codex workstreams on the same repo branch.",
     "",
@@ -457,6 +458,15 @@ export class ButlerAgentService extends EventEmitter {
     });
   }
 
+  private getThreadBudgetLimitMessage(threadId: string): string | null {
+    const supervision = this.store.getThreadSupervision(threadId);
+    if (supervision.maxButlerTurns === null || supervision.butlerTurnsUsed < supervision.maxButlerTurns) {
+      return null;
+    }
+
+    return `Butler has reached the supervision limit for job ${threadId}. Used ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns} Butler turns. Raise the limit on that thread before asking Butler to steer it again.`;
+  }
+
   private buildCustomTools() {
     return [
       this.defineButlerTool({
@@ -584,11 +594,18 @@ export class ButlerAgentService extends EventEmitter {
             developerInstructions,
             openWindow: true
           });
+          const supervision = this.store.noteButlerSteer(result.threadId);
 
           return {
-            content: [{ type: "text", text: `Delegated the task to Codex in job ${result.threadId}.` }],
+            content: [
+              {
+                type: "text",
+                text: `Delegated the task to Codex in job ${result.threadId}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}.`
+              }
+            ],
             details: {
               threadId: result.threadId,
+              supervision,
               thread: this.store.getThread(result.threadId) ?? null
             }
           };
@@ -650,11 +667,28 @@ export class ButlerAgentService extends EventEmitter {
         uiEffects: this.toolCatalog.find((tool) => tool.name === "message_job")?.uiEffects ?? [],
         execute: async (_toolCallId, params) => {
           const typedParams = params as { threadId: string; text: string };
+          const limitMessage = this.getThreadBudgetLimitMessage(typedParams.threadId);
+          if (limitMessage) {
+            return {
+              content: [{ type: "text", text: limitMessage }],
+              details: {
+                thread: this.store.getThread(typedParams.threadId) ?? null,
+                supervision: this.store.getThreadSupervision(typedParams.threadId)
+              }
+            };
+          }
           await this.codexClient.loadThread(typedParams.threadId);
           await this.codexClient.sendMessage(typedParams.threadId, typedParams.text);
+          const supervision = this.store.noteButlerSteer(typedParams.threadId);
           return {
-            content: [{ type: "text", text: `Sent a private follow-up to job ${typedParams.threadId}.` }],
+            content: [
+              {
+                type: "text",
+                text: `Sent a private follow-up to job ${typedParams.threadId}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}.`
+              }
+            ],
             details: {
+              supervision,
               thread: this.store.getThread(typedParams.threadId) ?? null
             }
           };
