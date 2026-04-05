@@ -206,11 +206,14 @@ The current egress path is fail-closed at the container-network level.
 
 ### Preview Runtime Egress
 
-Preview runtimes use a separate egress profile from the Codex box.
+Preview runtimes use named egress profiles that are separate from the Codex box.
 
 - Codex and Butler keep the tighter default egress policy
-- preview runtimes can use a broader allowlist when the app under review needs real third-party APIs
-- the first built-in preview profile is aimed at app verification work and allows GitHub, OpenAI, OpenRouter, and Cloudflare properties through the dedicated `preview-egress` sidecar
+- preview runtimes use `none` by default, which means no preview-specific outbound proxy is attached
+- non-default preview access is granted through named profiles that map to explicit allowlists in the preview egress config
+- Butler can also supply a one-off domain allowlist at preview start time when one job needs a custom egress shape
+- custom preview allowlists are materialized as temporary lease-scoped proxy listeners and are deleted with the preview lease
+- the policy data lives outside Butler orchestration so operators can add, remove, or tighten profiles without changing the lease model
 - preview runtimes still stay on the private work network and reach the internet through an explicit proxy path
 
 ### Auth Bootstrap

@@ -44,7 +44,7 @@ export interface CodexSupervisionView {
 }
 
 export type PreviewLeaseStatus = "starting" | "running" | "stopped" | "failed";
-export type PreviewEgressProfile = "none" | "builder";
+export type PreviewEgressProfile = string;
 
 export interface PreviewLeaseView {
   id: string;
@@ -62,6 +62,7 @@ export interface PreviewLeaseView {
   command: string;
   image: string;
   egressProfile: PreviewEgressProfile;
+  egressDomains: string[];
   status: PreviewLeaseStatus;
   createdAt: number;
   updatedAt: number;

@@ -176,7 +176,8 @@ type Snapshot = {
       operatorUrl: string;
       command: string;
       image: string;
-      egressProfile: "none" | "builder";
+      egressProfile: string;
+      egressDomains: string[];
       status: "starting" | "running" | "stopped" | "failed";
       createdAt: number;
       updatedAt: number;

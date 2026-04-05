@@ -1,0 +1,24 @@
+{
+  "profiles": [
+    {
+      "name": "web",
+      "port": 3128,
+      "domains": [
+        "openai.com",
+        ".openai.com",
+        "chatgpt.com",
+        ".chatgpt.com",
+        "github.com",
+        ".github.com",
+        "api.github.com",
+        ".githubusercontent.com",
+        "openrouter.ai",
+        ".openrouter.ai",
+        "cloudflare.com",
+        ".cloudflare.com",
+        ".workers.dev",
+        ".pages.dev"
+      ]
+    }
+  ]
+}

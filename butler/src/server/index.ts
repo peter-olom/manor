@@ -296,7 +296,15 @@ app.post("/api/previews/start", async (request, response) => {
   const portValue = typeof request.body?.port === "number" ? request.body.port : Number(request.body?.port ?? 0);
   const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : null;
   const image = typeof request.body?.image === "string" ? request.body.image.trim() : undefined;
-  const egressProfile = request.body?.egressProfile === "builder" ? "builder" : "none";
+  const egressDomains = Array.isArray(request.body?.egressDomains)
+    ? request.body.egressDomains
+        .map((value: unknown) => (typeof value === "string" ? value.trim() : ""))
+        .filter((value: string) => value.length > 0)
+    : [];
+  const egressProfile =
+    typeof request.body?.egressProfile === "string" && request.body.egressProfile.trim()
+      ? request.body.egressProfile.trim()
+      : "none";
 
   if (!title || !cwd || !command || !Number.isFinite(portValue) || portValue <= 0) {
     response.status(400).json({ error: "title, cwd, command, and port are required" });
@@ -316,7 +324,8 @@ app.post("/api/previews/start", async (request, response) => {
       targetPort: portValue,
       command,
       image,
-      egressProfile
+      egressProfile,
+      egressDomains
     });
     store.upsertPreviewLease(lease);
     response.json({ ok: true, lease });

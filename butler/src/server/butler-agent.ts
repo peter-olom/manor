@@ -383,6 +383,30 @@ export class ButlerAgentService extends EventEmitter {
         uiEffects: [{ kind: "refreshThreads", description: "Keeps preview lease state current." }]
       },
       {
+        name: "inspect_preview",
+        label: "Inspect preview",
+        description: "Inspect one preview runtime, including its current runtime state and egress configuration.",
+        uiEffects: [{ kind: "refreshThreads", description: "Refreshes one preview lease before Butler acts on it." }]
+      },
+      {
+        name: "preview_processes",
+        label: "Preview processes",
+        description: "List processes running inside one preview isolate.",
+        uiEffects: [{ kind: "refreshThreads", description: "Lets Butler confirm what is actually running inside an isolate." }]
+      },
+      {
+        name: "preview_logs",
+        label: "Preview logs",
+        description: "Read recent logs from one preview isolate.",
+        uiEffects: [{ kind: "refreshThreads", description: "Lets Butler inspect isolate output without opening a shell." }]
+      },
+      {
+        name: "exec_preview",
+        label: "Exec in preview",
+        description: "Run one shell command inside a preview isolate through the runtime broker.",
+        uiEffects: [{ kind: "refreshThreads", description: "Lets Butler actively diagnose or fix one preview isolate." }]
+      },
+      {
         name: "list_jobs",
         label: "List jobs",
         description: "List Codex jobs, their statuses, and short previews.",
@@ -577,7 +601,20 @@ export class ButlerAgentService extends EventEmitter {
           command: Type.String({ minLength: 1 }),
           port: Type.Number({ minimum: 1, maximum: 65535 }),
           image: Type.Optional(Type.String()),
-          egressProfile: Type.Optional(Type.Union([Type.Literal("none"), Type.Literal("builder")]))
+          egressProfile: Type.Optional(
+            Type.String({
+              minLength: 1,
+              description: "Use 'none' for no outbound access or a named preview egress profile such as 'web'."
+            })
+          ),
+          egressDomains: Type.Optional(
+            Type.Array(
+              Type.String({
+                minLength: 1,
+                description: "Explicit domain allowlist for this preview only, such as api.openrouter.ai or .cloudflare.com."
+              })
+            )
+          )
         }),
         uiEffects: this.toolCatalog.find((tool) => tool.name === "start_preview")?.uiEffects ?? [],
         execute: async (_toolCallId, params) => {
@@ -588,7 +625,8 @@ export class ButlerAgentService extends EventEmitter {
             command: string;
             port: number;
             image?: string;
-            egressProfile?: "none" | "builder";
+            egressProfile?: string;
+            egressDomains?: string[];
           };
 
           const thread = typedParams.threadId ? this.store.getThread(typedParams.threadId) ?? null : null;
@@ -607,7 +645,8 @@ export class ButlerAgentService extends EventEmitter {
             targetPort: typedParams.port,
             command: typedParams.command,
             image: typedParams.image,
-            egressProfile: typedParams.egressProfile ?? "none"
+            egressProfile: typedParams.egressProfile ?? "none",
+            egressDomains: typedParams.egressDomains ?? []
           });
           this.store.upsertPreviewLease(lease);
 
@@ -633,6 +672,98 @@ export class ButlerAgentService extends EventEmitter {
           return {
             content: [{ type: "text", text: `Stopped preview ${typedParams.leaseId}.` }],
             details: { leaseId: typedParams.leaseId }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "inspect_preview",
+        label: "Inspect preview",
+        description: "Inspect one preview isolate and summarize its current runtime state.",
+        promptSnippet: "inspect_preview: use this before diagnosing a preview so you know whether it is running, what route it has, and what egress policy it carries.",
+        parameters: Type.Object({
+          leaseId: Type.String()
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "inspect_preview")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { leaseId: string };
+          const lease = await this.runtimeBroker.inspectLease(typedParams.leaseId);
+          this.store.upsertPreviewLease(lease);
+          const domains = lease.egressDomains.length > 0 ? lease.egressDomains.join(", ") : "(none)";
+          return {
+            content: [
+              {
+                type: "text",
+                text: `${lease.title} is ${lease.runtime.status}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}. Domains=${domains}.`
+              }
+            ],
+            details: { lease }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "preview_processes",
+        label: "Preview processes",
+        description: "List processes running inside one preview isolate.",
+        promptSnippet: "preview_processes: use this when a preview seems stuck and you need to see the running process table.",
+        parameters: Type.Object({
+          leaseId: Type.String()
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "preview_processes")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { leaseId: string };
+          const result = await this.runtimeBroker.listProcesses(typedParams.leaseId);
+          const rows = result.processes.length === 0
+            ? "No processes were reported."
+            : [result.titles.join(" | "), ...result.processes.map((row) => row.join(" | "))].join("\n");
+          return {
+            content: [{ type: "text", text: rows }],
+            details: result
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "preview_logs",
+        label: "Preview logs",
+        description: "Read recent logs from one preview isolate.",
+        promptSnippet: "preview_logs: use this when a preview boot or app route is failing and you need the recent container output.",
+        parameters: Type.Object({
+          leaseId: Type.String(),
+          tail: Type.Optional(Type.Number({ minimum: 1, maximum: 1000 }))
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "preview_logs")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { leaseId: string; tail?: number };
+          const result = await this.runtimeBroker.readLogs(typedParams.leaseId, typedParams.tail ?? 200);
+          return {
+            content: [{ type: "text", text: result.logs || "No logs were returned." }],
+            details: result
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "exec_preview",
+        label: "Exec in preview",
+        description: "Run one shell command inside a preview isolate through the runtime broker.",
+        promptSnippet: "exec_preview: use this when Butler needs to inspect or patch a preview isolate directly without opening the shared terminal.",
+        parameters: Type.Object({
+          leaseId: Type.String(),
+          command: Type.String({ minLength: 1 }),
+          cwd: Type.Optional(Type.String())
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "exec_preview")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { leaseId: string; command: string; cwd?: string };
+          const result = await this.runtimeBroker.execInLease(typedParams);
+          const stdout = result.stdout.trim();
+          const stderr = result.stderr.trim();
+          const body =
+            [`exit=${result.exitCode ?? "unknown"}`]
+              .concat(stdout ? [`stdout:\n${stdout}`] : [])
+              .concat(stderr ? [`stderr:\n${stderr}`] : [])
+              .join("\n\n") || `exit=${result.exitCode ?? "unknown"}`;
+          return {
+            content: [{ type: "text", text: body }],
+            details: result
           };
         }
       }),

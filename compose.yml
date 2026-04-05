@@ -153,14 +153,17 @@ services:
   preview-egress:
     build:
       context: .
-      dockerfile: docker/egress/Dockerfile
+      dockerfile: docker/preview-egress/Dockerfile
     image: manor-preview-egress:local
     container_name: manor-preview-egress
-    command: ["squid", "-N", "-f", "/etc/squid/squid.conf"]
     environment:
       MANOR_ROLE: preview-egress
+      PREVIEW_EGRESS_PROFILES_FILE: /opt/manor/config/preview-egress-profiles.json
+      PREVIEW_EGRESS_ADMIN_PORT: 8091
+      PREVIEW_EGRESS_DYNAMIC_PORT_START: 3200
+      PREVIEW_EGRESS_DYNAMIC_PORT_END: 3299
     volumes:
-      - ./docker/preview-egress/squid.conf:/etc/squid/squid.conf:ro
+      - ./config/preview-egress-profiles.json:/opt/manor/config/preview-egress-profiles.json:ro
       - ./state/preview-egress:/state
     healthcheck:
       test: ["CMD", "sh", "-lc", "nc -z 127.0.0.1 3128"]
@@ -182,12 +185,14 @@ services:
       MANOR_ROLE: runtime-broker
       RUNTIME_BROKER_PORT: 8090
       RUNTIME_PREVIEW_NETWORK: manor_work
-      RUNTIME_PREVIEW_PROXY: http://preview-egress:3128
+      RUNTIME_PREVIEW_EGRESS_CONFIG: /opt/manor/config/preview-egress-profiles.json
+      RUNTIME_PREVIEW_EGRESS_ADMIN_URL: http://preview-egress:8091
       RUNTIME_PREVIEW_IMAGE: node:22-bookworm-slim
       RUNTIME_ROUTE_BASE: /preview
       RUNTIME_OPERATOR_BASE_URL: http://127.0.0.1:${BUTLER_HOST_PORT:-8180}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./config/preview-egress-profiles.json:/opt/manor/config/preview-egress-profiles.json:ro
     depends_on:
       preview-egress:
         condition: service_healthy
