@@ -1192,7 +1192,13 @@ export function App() {
             </button>
             <div className="workspace-tabs-scroll">
               {snapshot.codex.windows.map((window) => (
-                <div key={window.threadId} className={`workspace-tab workspace-tab-window ${activeTabId === window.threadId ? "is-active" : ""}`}>
+                <div
+                  key={window.threadId}
+                  className={`workspace-tab workspace-tab-window ${activeTabId === window.threadId ? "is-active" : ""} ${
+                    snapshot.codex.openThreads[window.threadId]?.status === "active" ? "has-active-work" : ""
+                  }`}
+                >
+                  {snapshot.codex.openThreads[window.threadId]?.status === "active" ? <span className="workspace-tab-activity-dot" aria-hidden="true" /> : null}
                       <button
                         className="workspace-tab-main"
                         onClick={() => {
@@ -1354,55 +1360,11 @@ export function App() {
             </div>
           ) : activeThread ? (
             <div className="workspace-panel">
-              <div className="panel-header">
-                <div>
-                  <span className="eyebrow">Active run</span>
-                  <h2>{activeThread.preview || "Untitled run"}</h2>
-                  <p>
-                    {describeStatus(activeThread.status)} • {activeThread.source} • updated {formatTime(activeThread.updatedAt)}
-                  </p>
-                </div>
+              <div className="thread-toolbar">
                 <div className="panel-controls">
                   <button className="panel-action panel-action-danger" onClick={() => void deleteThread(activeThread.id)}>
                     Delete
                   </button>
-                  <label>
-                    <span>Model</span>
-                    <select
-                      value={snapshot.codex.compose.model ?? ""}
-                      onChange={(event) => {
-                        const nextModel = event.target.value;
-                        const model = snapshot.codex.compose.availableModels.find((entry) => entry.id === nextModel);
-                        void updateCodexCompose(nextModel, model?.defaultReasoningEffort ?? null);
-                      }}
-                    >
-                      {snapshot.codex.compose.availableModels.map((model) => (
-                        <option key={model.id} value={model.id}>
-                          {model.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>Reasoning</span>
-                    <select
-                      value={snapshot.codex.compose.effort ?? ""}
-                      onChange={(event) =>
-                        void updateCodexCompose(snapshot.codex.compose.model ?? "", (event.target.value || null) as ReasoningEffort | null)
-                      }
-                      disabled={!snapshot.codex.compose.model || codexEffortOptions.length === 0}
-                    >
-                      {codexEffortOptions.length === 0 ? (
-                        <option value="">Standard</option>
-                      ) : (
-                        codexEffortOptions.map((effort) => (
-                          <option key={effort} value={effort}>
-                            {effort}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </label>
                 </div>
               </div>
 
@@ -1461,6 +1423,41 @@ export function App() {
                       </button>
                     </div>
                     <div className="composer-footer">
+                      <div className="composer-inline-controls">
+                        <select
+                          value={snapshot.codex.compose.model ?? ""}
+                          onChange={(event) => {
+                            const nextModel = event.target.value;
+                            const model = snapshot.codex.compose.availableModels.find((entry) => entry.id === nextModel);
+                            void updateCodexCompose(nextModel, model?.defaultReasoningEffort ?? null);
+                          }}
+                          aria-label="Codex model"
+                        >
+                          {snapshot.codex.compose.availableModels.map((model) => (
+                            <option key={model.id} value={model.id}>
+                              {model.label}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          value={snapshot.codex.compose.effort ?? ""}
+                          onChange={(event) =>
+                            void updateCodexCompose(snapshot.codex.compose.model ?? "", (event.target.value || null) as ReasoningEffort | null)
+                          }
+                          disabled={!snapshot.codex.compose.model || codexEffortOptions.length === 0}
+                          aria-label="Codex reasoning"
+                        >
+                          {codexEffortOptions.length === 0 ? (
+                            <option value="">Standard</option>
+                          ) : (
+                            codexEffortOptions.map((effort) => (
+                              <option key={effort} value={effort}>
+                                {effort}
+                              </option>
+                            ))
+                          )}
+                        </select>
+                      </div>
                       <div className="composer-note">Cmd/Ctrl + Enter sends</div>
                       <button className="composer-send composer-send-desktop" onClick={() => void sendThreadMessage()} disabled={!threadDraft.trim()} aria-label="Send message">
                         <span className="composer-send-label">Send</span>

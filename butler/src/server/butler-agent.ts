@@ -203,6 +203,7 @@ function buildSystemPrompt(store: ButlerStateStore): string {
     "Keep the main Butler chat operator-facing and concise.",
     "Use Codex project and thread summaries as your background memory.",
     "Do not expose private Butler-to-Codex steering verbatim in the Butler chat.",
+    "If the operator asks for real execution, project setup, repository cloning, coding work, or shell work, delegate it to Codex instead of replying with manual shell instructions.",
     "When Codex work changes state, summarize the outcome rather than replaying the full back-and-forth.",
     "When work touches git in a repo, enforce a dedicated branch whose name starts with butler/.",
     "Do not run two parallel Codex workstreams on the same repo branch.",
@@ -378,6 +379,15 @@ export class ButlerAgentService extends EventEmitter {
         uiEffects: [{ kind: "focusButler", description: "Keeps Butler anchored in the main supervisor thread." }]
       },
       {
+        name: "delegate_to_codex",
+        label: "Delegate to Codex",
+        description: "Start a new Codex workstream for an execution task such as repo cloning, project setup, coding work, or command execution.",
+        uiEffects: [
+          { kind: "openWindow", description: "Opens the delegated Codex workstream as a tab." },
+          { kind: "focusWindow", description: "Moves focus into the new Codex workstream." }
+        ]
+      },
+      {
         name: "open_job_window",
         label: "Open job window",
         description: "Open a focused job window in the Butler UI for a specific Codex job.",
@@ -542,6 +552,44 @@ export class ButlerAgentService extends EventEmitter {
             details: {
               supervisor: this.store.getSupervisorSummary(),
               projects: this.store.listProjectSummaries()
+            }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "delegate_to_codex",
+        label: "Delegate to Codex",
+        description: "Start a new Codex workstream for an execution task such as repo cloning, project setup, coding work, or command execution.",
+        promptSnippet: "delegate_to_codex: use this when the operator wants Butler to actually make Codex do work instead of just answering with instructions.",
+        parameters: Type.Object({
+          task: Type.String({ minLength: 1 }),
+          cwd: Type.Optional(Type.String()),
+          goal: Type.Optional(Type.String())
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "delegate_to_codex")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { task: string; cwd?: string; goal?: string };
+          const developerInstructions = [
+            "This thread was started by Butler.",
+            "Execute the requested task directly instead of explaining how the operator could do it manually.",
+            "Work inside /repos unless the task explicitly requires a deeper subdirectory.",
+            "When the task touches git in a repository, create or reuse a dedicated branch whose name starts with butler/.",
+            "Keep the thread focused on the delegated task and report concise progress and outcome."
+          ].join("\n");
+
+          const prompt = typedParams.goal ? `${typedParams.task}\n\nGoal: ${typedParams.goal}` : typedParams.task;
+          const result = await this.codexClient.startThread({
+            task: prompt,
+            cwd: typedParams.cwd ?? "/repos",
+            developerInstructions,
+            openWindow: true
+          });
+
+          return {
+            content: [{ type: "text", text: `Delegated the task to Codex in job ${result.threadId}.` }],
+            details: {
+              threadId: result.threadId,
+              thread: this.store.getThread(result.threadId) ?? null
             }
           };
         }

@@ -333,6 +333,30 @@ export class CodexAppServerClient extends EventEmitter {
     };
   }
 
+  private buildThreadStartConfig(overrides?: {
+    cwd?: string | null;
+    developerInstructions?: string | null;
+    serviceName?: string | null;
+  }): Record<string, unknown> {
+    const params: Record<string, unknown> = {
+      cwd: overrides?.cwd ?? this.defaultCwd,
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      personality: "pragmatic",
+      serviceName: overrides?.serviceName ?? "Butler"
+    };
+
+    if (this.selectedModel) {
+      params.model = this.selectedModel;
+    }
+
+    if (overrides?.developerInstructions) {
+      params.developerInstructions = overrides.developerInstructions;
+    }
+
+    return params;
+  }
+
   private async ensureInteractiveThread(threadId: string): Promise<string> {
     if (this.directControlThreadIds.has(threadId)) {
       return threadId;
@@ -400,6 +424,69 @@ export class CodexAppServerClient extends EventEmitter {
     this.selectedModel = model.id;
     this.selectedEffort = this.resolveEffort(model, effort);
     this.emit("change");
+  }
+
+  async startThread(options: {
+    task: string;
+    cwd?: string | null;
+    developerInstructions?: string | null;
+    openWindow?: boolean;
+  }): Promise<{ threadId: string }> {
+    const task = options.task.trim();
+    if (!task) {
+      throw new Error("task is required");
+    }
+
+    const started = await this.call("thread/start", this.buildThreadStartConfig({
+      cwd: options.cwd ?? this.defaultCwd,
+      developerInstructions: options.developerInstructions ?? null
+    }));
+
+    const thread = started.thread && typeof started.thread === "object" ? (started.thread as Record<string, unknown>) : null;
+    const threadId = typeof thread?.id === "string" ? thread.id : null;
+    if (!threadId) {
+      throw new Error("Codex did not return a thread id");
+    }
+
+    this.deletedThreadIds.delete(threadId);
+    if (thread) {
+      this.store.upsertThreadSummary(thread);
+    }
+    this.resumedThreadIds.add(threadId);
+    this.directControlThreadIds.add(threadId);
+
+    const params: Record<string, unknown> = {
+      threadId,
+      input: [{ type: "text", text: task }]
+    };
+
+    if (options.cwd) {
+      params.cwd = options.cwd;
+    }
+
+    if (this.selectedModel) {
+      params.model = this.selectedModel;
+    }
+
+    if (this.selectedEffort) {
+      params.effort = this.selectedEffort;
+    }
+
+    const turnResult = await this.call("turn/start", params);
+    if (turnResult.turn && typeof turnResult.turn === "object") {
+      const turn = turnResult.turn as Record<string, unknown>;
+      if (typeof turn.id === "string") {
+        this.activeTurnIds.set(threadId, turn.id);
+      }
+      this.store.updateTurn(threadId, turn);
+    }
+
+    if (options.openWindow !== false) {
+      this.store.openWindow(threadId);
+    }
+
+    this.emit("change");
+    return { threadId };
   }
 
   async sendMessage(threadId: string, text: string): Promise<void> {
