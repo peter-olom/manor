@@ -12,6 +12,7 @@ const codexBaseUrl = process.env.CODEX_BASE_URL ?? "ws://codex-box:8080";
 const piAgentDir = process.env.PI_AGENT_DIR ?? "/home/butler/.pi/agent";
 const stateDir = process.env.MANOR_STATE_DIR ?? "/state";
 const codexHomeDir = process.env.CODEX_SHARED_HOME_DIR ?? "/codex-home";
+const codexConfigDir = process.env.CODEX_SHARED_CONFIG_DIR ?? "/codex-config";
 const hotReloadEnabled = process.env.BUTLER_HOT_RELOAD === "1";
 const publicPort = Number(process.env.BUTLER_PUBLIC_PORT ?? port);
 
@@ -28,6 +29,8 @@ const butlerAgent = new ButlerAgentService({
   store,
   codexClient,
   piAuthPath: path.join(piAgentDir, "auth.json"),
+  codexAuthPath: path.join(codexHomeDir, "auth.json"),
+  codexConfigDir,
   sessionDir
 });
 

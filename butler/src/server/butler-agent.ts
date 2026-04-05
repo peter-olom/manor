@@ -5,6 +5,7 @@ import { getModel } from "@mariozechner/pi-ai";
 import {
   AuthStorage,
   createAgentSession,
+  DefaultResourceLoader,
   defineTool,
   ModelRegistry,
   SessionManager,
@@ -14,12 +15,14 @@ import { Type } from "@sinclair/typebox";
 import type { TSchema } from "@sinclair/typebox";
 
 import { readButlerAuthStatus } from "./auth-status.js";
+import { buildOnboardingView } from "./onboarding-status.js";
 import type {
   AppSnapshot,
   ButlerAuthStatus,
   ButlerCompactionView,
   ButlerContextUsageView,
   ButlerMessageView,
+  ButlerOnboardingView,
   ButlerThinkingLevel,
   ButlerToolUiEffect,
   ButlerToolView,
@@ -106,7 +109,7 @@ function buildJobsSummary(store: ButlerStateStore, limit: number, status?: strin
   return jobs
     .map(
       (thread, index) =>
-        `${index + 1}. ${thread.id} | status=${thread.status} | source=${thread.source} | updated=${new Date(thread.updatedAt).toISOString()} | preview=${thread.preview || "(empty)"}`
+        `${index + 1}. ${thread.id} | project=${thread.supervisor.projectLabel} | status=${thread.status} | source=${thread.source} | updated=${new Date(thread.updatedAt).toISOString()} | preview=${thread.preview || "(empty)"} | summary=${thread.supervisor.summary}`
     )
     .join("\n");
 }
@@ -128,27 +131,122 @@ function buildJobDetail(store: ButlerStateStore, threadId: string): string {
 
   return [
     `Job ${thread.id}`,
+    `project=${thread.supervisor.projectLabel}`,
     `status=${thread.status}`,
     `source=${thread.source}`,
     `preview=${thread.preview || "(empty)"}`,
+    `summary=${thread.supervisor.summary}`,
     turns || "No turn details loaded yet."
   ].join("\n");
+}
+
+function buildProjectsSummary(store: ButlerStateStore, limit: number): string {
+  const projects = store.listProjectSummaries().slice(0, limit);
+  if (projects.length === 0) {
+    return "No projects are active yet.";
+  }
+
+  return projects
+    .map(
+      (project, index) =>
+        `${index + 1}. ${project.label} | threads=${project.threadCount} | active=${project.activeCount} | blocked=${project.blockedCount} | updated=${new Date(project.updatedAt).toISOString()} | summary=${project.summary}`
+    )
+    .join("\n");
+}
+
+function buildProjectDetail(store: ButlerStateStore, projectId: string): string {
+  const project = store.getProjectSummary(projectId);
+  if (!project) {
+    return `Project ${projectId} was not found.`;
+  }
+
+  const threadLines = project.threadIds
+    .map((threadId, index) => {
+      const thread = store.getThread(threadId);
+      if (!thread) {
+        return null;
+      }
+
+      return `${index + 1}. ${thread.id} | status=${thread.status} | summary=${thread.supervisor.summary}`;
+    })
+    .filter(Boolean)
+    .join("\n");
+
+  return [
+    `Project ${project.label}`,
+    `threads=${project.threadCount}`,
+    `active=${project.activeCount}`,
+    `blocked=${project.blockedCount}`,
+    `idle=${project.completedCount}`,
+    `summary=${project.summary}`,
+    threadLines || "No thread details loaded yet."
+  ].join("\n");
+}
+
+function buildSupervisorOverview(store: ButlerStateStore): string {
+  const summary = store.getSupervisorSummary();
+  const leadProjects = store
+    .listProjectSummaries()
+    .slice(0, 5)
+    .map((project, index) => `${index + 1}. ${project.label} | ${project.summary}`)
+    .join("\n");
+
+  return [summary.summary, leadProjects].filter(Boolean).join("\n");
+}
+
+function buildSystemPrompt(store: ButlerStateStore): string {
+  const supervisor = store.getSupervisorSummary();
+  const projects = store.listProjectSummaries().slice(0, 8);
+
+  return [
+    "You are Butler, the supervisor inside Manor.",
+    "Keep the main Butler chat operator-facing and concise.",
+    "Use Codex project and thread summaries as your background memory.",
+    "Do not expose private Butler-to-Codex steering verbatim in the Butler chat.",
+    "When Codex work changes state, summarize the outcome rather than replaying the full back-and-forth.",
+    "When work touches git in a repo, enforce a dedicated branch whose name starts with butler/.",
+    "Do not run two parallel Codex workstreams on the same repo branch.",
+    "",
+    `Supervisor state: ${supervisor.summary}`,
+    projects.length > 0 ? "Project summaries:" : "Project summaries: none yet.",
+    ...projects.map((project) => `- ${project.label}: ${project.summary}`)
+  ].join("\n");
+}
+
+function mergeVisibleMessages(sessionMessages: ButlerMessageView[], notices: ButlerMessageView[]): ButlerMessageView[] {
+  return [...sessionMessages, ...notices].sort((left, right) => {
+    const leftAt = left.at ?? 0;
+    const rightAt = right.at ?? 0;
+    if (leftAt === rightAt) {
+      return left.id.localeCompare(right.id);
+    }
+    return leftAt - rightAt;
+  });
 }
 
 export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
   private readonly codexClient: CodexAppServerClient;
   private readonly piAuthPath: string;
+  private readonly codexAuthPath: string;
+  private readonly codexConfigDir: string;
   private readonly sessionDir: string;
   private modelRegistry: ModelRegistry | null = null;
   private session: AgentSession | null = null;
   private auth: ButlerAuthStatus = { mode: "none", loggedIn: false };
+  private onboarding: ButlerOnboardingView = {
+    complete: false,
+    steps: []
+  };
   private ready = false;
   private pending = false;
   private lastError: string | null = null;
   private promptQueue: Promise<void> = Promise.resolve();
   private readonly toolCatalog: ButlerToolView[];
   private unsubscribeSession: (() => void) | null = null;
+  private statusRefreshTimer: NodeJS.Timeout | null = null;
+  private readonly noticeMessages: ButlerMessageView[] = [];
+  private readonly seenMilestoneIds = new Set<string>();
   private compaction: Omit<ButlerCompactionView, "autoEnabled" | "active" | "count"> = {
     lastReason: null,
     lastStartedAt: null,
@@ -163,14 +261,49 @@ export class ButlerAgentService extends EventEmitter {
     store: ButlerStateStore;
     codexClient: CodexAppServerClient;
     piAuthPath: string;
+    codexAuthPath: string;
+    codexConfigDir: string;
     sessionDir: string;
   }) {
     super();
     this.store = options.store;
     this.codexClient = options.codexClient;
     this.piAuthPath = options.piAuthPath;
+    this.codexAuthPath = options.codexAuthPath;
+    this.codexConfigDir = options.codexConfigDir;
     this.sessionDir = options.sessionDir;
     this.toolCatalog = this.buildToolCatalog();
+  }
+
+  private handleStoreChange(): void {
+    let changed = false;
+
+    for (const milestone of this.store.listMilestones()) {
+      if (milestone.type !== "completed" && milestone.type !== "blocked") {
+        continue;
+      }
+
+      if (this.seenMilestoneIds.has(milestone.id)) {
+        continue;
+      }
+
+      this.seenMilestoneIds.add(milestone.id);
+      this.noticeMessages.push({
+        id: `notice-${milestone.id}`,
+        role: "assistant",
+        text: milestone.type === "blocked" ? `Codex reported a blocked workstream. ${milestone.summary}` : `Codex finished work. ${milestone.summary}`,
+        at: milestone.at
+      });
+      changed = true;
+    }
+
+    if (changed) {
+      this.noticeMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
+      if (this.noticeMessages.length > 40) {
+        this.noticeMessages.splice(0, this.noticeMessages.length - 40);
+      }
+      this.emit("change");
+    }
   }
 
   async start(): Promise<void> {
@@ -178,9 +311,36 @@ export class ButlerAgentService extends EventEmitter {
     this.auth = await readButlerAuthStatus(this.piAuthPath);
     this.modelRegistry = ModelRegistry.inMemory(AuthStorage.create(this.piAuthPath));
     await this.createOrRefreshSession();
+    await this.refreshExternalStatus();
+    this.store.on("change", () => this.handleStoreChange());
+    this.statusRefreshTimer = setInterval(() => {
+      void this.refreshExternalStatus();
+    }, 10000);
 
     this.ready = true;
     this.emit("change");
+  }
+
+  private async refreshExternalStatus(): Promise<void> {
+    const nextAuth = await readButlerAuthStatus(this.piAuthPath);
+    const authChanged = nextAuth.mode !== this.auth.mode || nextAuth.loggedIn !== this.auth.loggedIn;
+
+    if (authChanged) {
+      this.auth = nextAuth;
+      this.modelRegistry = ModelRegistry.inMemory(AuthStorage.create(this.piAuthPath));
+      await this.createOrRefreshSession();
+    }
+
+    const nextOnboarding = await buildOnboardingView({
+      butlerAuth: this.auth,
+      codexAuthPath: this.codexAuthPath,
+      codexConfigDir: this.codexConfigDir
+    });
+
+    if (JSON.stringify(nextOnboarding) !== JSON.stringify(this.onboarding) || authChanged) {
+      this.onboarding = nextOnboarding;
+      this.emit("change");
+    }
   }
 
   // This is the single discoverable registry for Butler actions and their UI
@@ -200,6 +360,24 @@ export class ButlerAgentService extends EventEmitter {
         uiEffects: [{ kind: "refreshThread", description: "Loads the latest run transcript into Butler." }]
       },
       {
+        name: "list_projects",
+        label: "List projects",
+        description: "List repo-level Codex supervision summaries so Butler can stay on top of many threads.",
+        uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while checking project activity." }]
+      },
+      {
+        name: "read_project",
+        label: "Read project",
+        description: "Read the current summary for one project and its tracked Codex threads.",
+        uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while inspecting one project." }]
+      },
+      {
+        name: "supervisor_overview",
+        label: "Supervisor overview",
+        description: "Return the top-level supervisor summary across all tracked Codex projects and threads.",
+        uiEffects: [{ kind: "focusButler", description: "Keeps Butler anchored in the main supervisor thread." }]
+      },
+      {
         name: "open_job_window",
         label: "Open job window",
         description: "Open a focused job window in the Butler UI for a specific Codex job.",
@@ -213,6 +391,12 @@ export class ButlerAgentService extends EventEmitter {
         label: "List open windows",
         description: "List the windows currently open in the Butler UI.",
         uiEffects: [{ kind: "focusButler", description: "Stays in supervisor mode while checking current tabs." }]
+      },
+      {
+        name: "message_job",
+        label: "Message job",
+        description: "Privately send a follow-up instruction into one Codex job thread without surfacing the full steering text in Butler chat.",
+        uiEffects: [{ kind: "refreshThread", description: "Refreshes the target run after Butler steers it." }]
       },
       {
         name: "delete_job",
@@ -307,6 +491,62 @@ export class ButlerAgentService extends EventEmitter {
         }
       }),
       this.defineButlerTool({
+        name: "list_projects",
+        label: "List projects",
+        description: "List repo-level Codex supervision summaries so Butler can stay on top of many threads.",
+        promptSnippet: "list_projects: inspect repo-level summaries before drilling into individual jobs.",
+        parameters: Type.Object({
+          limit: Type.Optional(Type.Number({ minimum: 1, maximum: 50 }))
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "list_projects")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { limit?: number };
+          const limit = typedParams.limit ?? 10;
+          return {
+            content: [{ type: "text", text: buildProjectsSummary(this.store, limit) }],
+            details: {
+              projects: this.store.listProjectSummaries().slice(0, limit)
+            }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "read_project",
+        label: "Read project",
+        description: "Read the current summary for one project and its tracked Codex threads.",
+        promptSnippet: "read_project: inspect one tracked project and its active Codex threads.",
+        parameters: Type.Object({
+          projectId: Type.String()
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "read_project")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { projectId: string };
+          return {
+            content: [{ type: "text", text: buildProjectDetail(this.store, typedParams.projectId) }],
+            details: {
+              project: this.store.getProjectSummary(typedParams.projectId) ?? null
+            }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "supervisor_overview",
+        label: "Supervisor overview",
+        description: "Return the top-level supervisor summary across all tracked Codex projects and threads.",
+        promptSnippet: "supervisor_overview: get the current top-level state before planning or answering status questions.",
+        parameters: Type.Object({}),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "supervisor_overview")?.uiEffects ?? [],
+        execute: async () => {
+          return {
+            content: [{ type: "text", text: buildSupervisorOverview(this.store) }],
+            details: {
+              supervisor: this.store.getSupervisorSummary(),
+              projects: this.store.listProjectSummaries()
+            }
+          };
+        }
+      }),
+      this.defineButlerTool({
         name: "open_job_window",
         label: "Open job window",
         description: "Open a focused job window in the Butler UI for a specific Codex job.",
@@ -346,6 +586,28 @@ export class ButlerAgentService extends EventEmitter {
             content: [{ type: "text", text }],
             details: {
               windows: snapshot.codex.windows
+            }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "message_job",
+        label: "Message job",
+        description: "Privately send a follow-up instruction into one Codex job thread without surfacing the full steering text in Butler chat.",
+        promptSnippet: "message_job: steer a Codex job privately, then summarize the state for the operator.",
+        parameters: Type.Object({
+          threadId: Type.String(),
+          text: Type.String({ minLength: 1 })
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "message_job")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { threadId: string; text: string };
+          await this.codexClient.loadThread(typedParams.threadId);
+          await this.codexClient.sendMessage(typedParams.threadId, typedParams.text);
+          return {
+            content: [{ type: "text", text: `Sent a private follow-up to job ${typedParams.threadId}.` }],
+            details: {
+              thread: this.store.getThread(typedParams.threadId) ?? null
             }
           };
         }
@@ -397,6 +659,10 @@ export class ButlerAgentService extends EventEmitter {
     const authStorage = AuthStorage.create(this.piAuthPath);
     const preferredModel =
       this.auth.mode === "chatgpt" ? getModel("openai-codex", "gpt-5.4") : getModel("openai", "gpt-5.4");
+    const resourceLoader = new DefaultResourceLoader({
+      systemPromptOverride: () => buildSystemPrompt(this.store)
+    });
+    await resourceLoader.reload();
 
     this.session = (
       await createAgentSession({
@@ -406,7 +672,8 @@ export class ButlerAgentService extends EventEmitter {
         model: preferredModel,
         tools: [],
         customTools: this.buildCustomTools(),
-        sessionManager: SessionManager.continueRecent("/repos", this.sessionDir)
+        sessionManager: SessionManager.continueRecent("/repos", this.sessionDir),
+        resourceLoader
       })
     ).session;
 
@@ -505,6 +772,7 @@ export class ButlerAgentService extends EventEmitter {
     const currentThinkingLevel = availableThinkingLevels.includes(this.session?.thinkingLevel as ButlerThinkingLevel)
       ? (this.session?.thinkingLevel as ButlerThinkingLevel)
       : "medium";
+    const sessionMessages = this.session ? serializeMessages(this.session) : [];
 
     return {
       ready: this.ready,
@@ -513,10 +781,16 @@ export class ButlerAgentService extends EventEmitter {
       sessionId: this.session?.sessionId ?? null,
       model: this.session?.model?.id ?? null,
       auth: this.auth,
-      messages: this.session ? serializeMessages(this.session) : [],
+      messages: mergeVisibleMessages(sessionMessages, this.noticeMessages),
       tools: this.toolCatalog,
+      onboarding: this.onboarding,
       contextUsage: this.getContextUsage(),
       compaction: this.getCompactionSnapshot(),
+      supervision: {
+        projects: this.store.listProjectSummaries(),
+        supervisor: this.store.getSupervisorSummary(),
+        notices: this.noticeMessages
+      },
       lastError: this.lastError,
       compose: {
         provider: this.session?.model?.provider ?? null,
@@ -552,7 +826,7 @@ export class ButlerAgentService extends EventEmitter {
       } catch (error) {
         this.lastError = error instanceof Error ? error.message : String(error);
       } finally {
-        this.auth = await readButlerAuthStatus(this.piAuthPath);
+        await this.refreshExternalStatus();
         this.pending = false;
         this.emit("change");
       }

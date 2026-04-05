@@ -80,6 +80,7 @@ export class CodexAppServerClient extends EventEmitter {
         this.emit("change");
         await this.loadModels();
         await this.seedThreads();
+        this.store.enableMilestones();
       } catch (error) {
         this.lastError = error instanceof Error ? error.message : String(error);
         this.emit("change");

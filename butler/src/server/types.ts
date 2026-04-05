@@ -37,6 +37,26 @@ export interface CodexCompactionView {
   lastCompletedAt: number | null;
 }
 
+export type CodexMilestoneType = "started" | "completed" | "blocked";
+
+export interface CodexMilestoneEntry {
+  id: string;
+  at: number;
+  type: CodexMilestoneType;
+  threadId: string;
+  projectId: string;
+  summary: string;
+}
+
+export interface CodexThreadSupervisorView {
+  projectId: string;
+  projectLabel: string;
+  latestUserPrompt: string | null;
+  latestAgentReply: string | null;
+  summary: string;
+  blocked: boolean;
+}
+
 export interface CodexThreadSummary {
   id: string;
   preview: string;
@@ -50,11 +70,13 @@ export interface CodexThreadSummary {
   loaded: boolean;
   contextUsage: CodexContextUsageView;
   compaction: CodexCompactionView;
+  supervisor: CodexThreadSupervisorView;
 }
 
 export interface CodexThreadRecord extends CodexThreadSummary {
   turns: CodexTurnRecord[];
   eventLog: CodexEventEntry[];
+  milestones: CodexMilestoneEntry[];
 }
 
 export interface ButlerWindow {
@@ -80,6 +102,28 @@ export interface ButlerMessageView {
   role: string;
   text: string;
   at: number | null;
+}
+
+export interface CodexProjectSummaryView {
+  id: string;
+  label: string;
+  threadCount: number;
+  activeCount: number;
+  blockedCount: number;
+  completedCount: number;
+  updatedAt: number;
+  summary: string;
+  threadIds: string[];
+}
+
+export interface ButlerSupervisorSummaryView {
+  totalThreads: number;
+  activeThreads: number;
+  blockedThreads: number;
+  completedThreads: number;
+  projectCount: number;
+  updatedAt: number;
+  summary: string;
 }
 
 export interface ButlerToolUiEffect {
@@ -120,6 +164,28 @@ export interface ButlerCompactionView {
   lastError: string | null;
 }
 
+export type OnboardingStepStatus = "complete" | "pending";
+export type OnboardingCommandTarget = "localShell" | "butlerTerminal" | "codexTerminal";
+
+export interface OnboardingCommandSet {
+  target: OnboardingCommandTarget;
+  detail: string;
+  commands: string[];
+}
+
+export interface OnboardingStepView {
+  id: "butlerAuth" | "codexAuth" | "githubAuth";
+  title: string;
+  status: OnboardingStepStatus;
+  detail: string;
+  commandSets: OnboardingCommandSet[];
+}
+
+export interface ButlerOnboardingView {
+  complete: boolean;
+  steps: OnboardingStepView[];
+}
+
 export interface AppSnapshot {
   codex: {
     connected: boolean;
@@ -143,8 +209,14 @@ export interface AppSnapshot {
     auth: ButlerAuthStatus;
     messages: ButlerMessageView[];
     tools: ButlerToolView[];
+    onboarding: ButlerOnboardingView;
     contextUsage: ButlerContextUsageView;
     compaction: ButlerCompactionView;
+    supervision: {
+      projects: CodexProjectSummaryView[];
+      supervisor: ButlerSupervisorSummaryView;
+      notices: ButlerMessageView[];
+    };
     lastError: string | null;
     compose: {
       provider: string | null;

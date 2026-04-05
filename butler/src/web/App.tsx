@@ -9,6 +9,10 @@ type ThreadStatus = "active" | "idle" | "unknown";
 type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 type ButlerThinkingLevel = "off" | ReasoningEffort;
 type ThemePreference = "system" | "light" | "dark";
+type OnboardingCommandTarget = "localShell" | "butlerTerminal" | "codexTerminal";
+type SetupCommandMode = "localShell" | "builtInTerminal";
+type TerminalTarget = "butlerTerminal" | "codexTerminal";
+type WorkspaceSurface = "setup" | "butler" | "terminal" | "thread";
 
 const THEME_STORAGE_KEY = "manor.butler.themePreference";
 const BUTLER_DRAFT_STORAGE_KEY = "manor.butler.draft";
@@ -116,6 +120,20 @@ type Snapshot = {
       text: string;
       at: number | null;
     }>;
+    onboarding: {
+      complete: boolean;
+      steps: Array<{
+        id: "butlerAuth" | "codexAuth" | "githubAuth";
+        title: string;
+        status: "complete" | "pending";
+        detail: string;
+        commandSets: Array<{
+          target: OnboardingCommandTarget;
+          detail: string;
+          commands: string[];
+        }>;
+      }>;
+    };
     contextUsage: {
       tokens: number | null;
       contextWindow: number | null;
@@ -323,6 +341,10 @@ function shouldRenderItem(item: { type: string; text: string }): boolean {
   return item.type === "commandExecution";
 }
 
+function onboardingStatusLabel(status: "complete" | "pending"): string {
+  return status === "complete" ? "Done" : "Pending";
+}
+
 function StatusIcon({ kind }: { kind: "codex" | "auth" | "model" | "context" | "compaction" }) {
   if (kind === "codex") {
     return (
@@ -488,6 +510,17 @@ function SendIcon() {
   );
 }
 
+function CopyIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        fill="currentColor"
+        d="M5 2.5A1.5 1.5 0 0 1 6.5 1h6A1.5 1.5 0 0 1 14 2.5v7A1.5 1.5 0 0 1 12.5 11h-1v1.5A1.5 1.5 0 0 1 10 14h-6A1.5 1.5 0 0 1 2.5 12.5v-7A1.5 1.5 0 0 1 4 4h1V2.5Zm1 1.5h4A1.5 1.5 0 0 1 11.5 5.5V10h1a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.5-.5h-6a.5.5 0 0 0-.5.5V4Zm-2 .999a.5.5 0 0 0-.5.5v7a.5.5 0 0 0 .5.5h6a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.5-.5h-6Z"
+      />
+    </svg>
+  );
+}
+
 async function postJson(url: string, body: unknown): Promise<void> {
   const response = await fetch(url, {
     method: "POST",
@@ -524,7 +557,41 @@ function writeStoredValue(key: string, value: string): void {
   window.localStorage.removeItem(key);
 }
 
+function readWorkspaceQuery(): {
+  surface: WorkspaceSurface | null;
+  threadId: string | null;
+  terminalTarget: TerminalTarget;
+} {
+  if (typeof window === "undefined") {
+    return { surface: null, threadId: null, terminalTarget: "codexTerminal" };
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const view = params.get("view");
+  const terminal = params.get("terminal");
+  const threadId = params.get("thread");
+
+  return {
+    surface: view === "setup" || view === "butler" || view === "terminal" || view === "thread" ? view : null,
+    threadId: threadId ? threadId : null,
+    terminalTarget: terminal === "butler" ? "butlerTerminal" : "codexTerminal"
+  };
+}
+
+function buildWorkspaceQuery(state: { surface: WorkspaceSurface; threadId: string | null; terminalTarget: TerminalTarget }): string {
+  const params = new URLSearchParams();
+  params.set("view", state.surface);
+  params.set("terminal", state.terminalTarget === "butlerTerminal" ? "butler" : "codex");
+
+  if (state.surface === "thread" && state.threadId) {
+    params.set("thread", state.threadId);
+  }
+
+  return `?${params.toString()}`;
+}
+
 export function App() {
+  const initialWorkspaceQuery = readWorkspaceQuery();
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => {
     if (typeof window === "undefined") {
@@ -538,10 +605,16 @@ export function App() {
   const [pendingButlerText, setPendingButlerText] = useState<string | null>(null);
   const [threadDraft, setThreadDraft] = useState("");
   const [threadsDrawerOpen, setThreadsDrawerOpen] = useState(false);
+  const [selectedSurface, setSelectedSurface] = useState<WorkspaceSurface | null>(initialWorkspaceQuery.surface);
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(initialWorkspaceQuery.threadId);
   const [error, setError] = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [copiedCommandKey, setCopiedCommandKey] = useState<string | null>(null);
   const [activeJumpId, setActiveJumpId] = useState<string | null>(null);
   const errorTimerRef = useRef<number | null>(null);
   const jumpFlashTimerRef = useRef<number | null>(null);
+  const copiedCommandTimerRef = useRef<number | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
   const runScrollRef = useRef<HTMLDivElement | null>(null);
   const butlerScrollRef = useRef<HTMLDivElement | null>(null);
   const runPromptRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -550,6 +623,9 @@ export function App() {
   const [followRun, setFollowRun] = useState(true);
   const [followButler, setFollowButler] = useState(true);
   const [showPromptRail, setShowPromptRail] = useState(false);
+  const [setupCommandTarget, setSetupCommandTarget] = useState<SetupCommandMode>("builtInTerminal");
+  const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>(initialWorkspaceQuery.terminalTarget);
+  const showSetupGuide = snapshot ? !snapshot.butler.onboarding.complete : false;
 
   function clearLiveError() {
     if (errorTimerRef.current !== null) {
@@ -622,8 +698,28 @@ export function App() {
         window.clearTimeout(jumpFlashTimerRef.current);
         jumpFlashTimerRef.current = null;
       }
+      if (copiedCommandTimerRef.current !== null) {
+        window.clearTimeout(copiedCommandTimerRef.current);
+        copiedCommandTimerRef.current = null;
+      }
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = null;
+      }
       events.close();
     };
+  }, []);
+
+  useEffect(() => {
+    function handlePopState() {
+      const query = readWorkspaceQuery();
+      setSelectedSurface(query.surface);
+      setSelectedThreadId(query.threadId);
+      setTerminalTarget(query.terminalTarget);
+    }
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
   const activeThread = useMemo(() => {
@@ -669,6 +765,64 @@ export function App() {
   }, [threadsDrawerOpen]);
 
   useEffect(() => {
+    if (!snapshot || snapshot.butler.onboarding.complete || selectedSurface !== null || snapshot.codex.focusedWindowId) {
+      return;
+    }
+
+    setSelectedSurface("setup");
+  }, [selectedSurface, snapshot]);
+
+  useEffect(() => {
+    if (snapshot?.butler.onboarding.complete && selectedSurface === "setup") {
+      setSelectedSurface("butler");
+    }
+  }, [selectedSurface, snapshot?.butler.onboarding.complete]);
+
+  useEffect(() => {
+    if (!snapshot || selectedSurface !== "thread" || !selectedThreadId) {
+      return;
+    }
+
+    if (snapshot.codex.focusedWindowId === selectedThreadId) {
+      return;
+    }
+
+    if (snapshot.codex.windows.some((window) => window.threadId === selectedThreadId)) {
+      postJson("/api/windows/focus", { threadId: selectedThreadId }).catch((focusError) =>
+        setError(focusError instanceof Error ? focusError.message : String(focusError))
+      );
+      return;
+    }
+
+    if (snapshot.codex.threads.some((thread) => thread.id === selectedThreadId) || selectedThreadId in snapshot.codex.openThreads) {
+      postJson("/api/windows/open", { threadId: selectedThreadId }).catch((openError) =>
+        setError(openError instanceof Error ? openError.message : String(openError))
+      );
+      return;
+    }
+
+    setSelectedThreadId(null);
+    setSelectedSurface(showSetupGuide ? "setup" : "butler");
+  }, [selectedSurface, selectedThreadId, showSetupGuide, snapshot]);
+
+  useEffect(() => {
+    if (selectedSurface !== "thread") {
+      return;
+    }
+
+    if (snapshot?.codex.focusedWindowId) {
+      setSelectedThreadId((current) => (current === snapshot.codex.focusedWindowId ? current : snapshot.codex.focusedWindowId));
+      return;
+    }
+
+    if (selectedThreadId) {
+      return;
+    }
+
+    setSelectedSurface(showSetupGuide ? "setup" : "butler");
+  }, [selectedSurface, selectedThreadId, showSetupGuide, snapshot?.codex.focusedWindowId]);
+
+  useEffect(() => {
     if (!activeThread || !followRun || !runScrollRef.current) {
       return;
     }
@@ -701,9 +855,33 @@ export function App() {
     }
   }, [pendingButlerText, snapshot]);
 
+  const querySurface: WorkspaceSurface =
+    selectedSurface ??
+    (snapshot?.codex.focusedWindowId ? "thread" : showSetupGuide ? "setup" : "butler");
+  const queryThreadId = querySurface === "thread" ? selectedThreadId ?? snapshot?.codex.focusedWindowId ?? null : null;
+
+  useEffect(() => {
+    const nextQuery = buildWorkspaceQuery({
+      surface: querySurface,
+      threadId: queryThreadId,
+      terminalTarget
+    });
+
+    if (window.location.search === nextQuery) {
+      return;
+    }
+
+    window.history.replaceState(null, "", `${window.location.pathname}${nextQuery}`);
+  }, [querySurface, queryThreadId, terminalTarget]);
+
   if (!snapshot) {
     return <div className="shell loading">Loading Butler…</div>;
   }
+
+  const terminalUrl = terminalTarget === "butlerTerminal" ? "/butler-terminal/" : "/terminal/";
+  const terminalLabel = terminalTarget === "butlerTerminal" ? "Butler" : "Codex";
+  const nextTerminalTarget =
+    snapshot.butler.onboarding.steps.find((step) => step.status === "pending")?.id === "butlerAuth" ? "butlerTerminal" : "codexTerminal";
 
   const activeRunItems = activeThread
     ? activeThread.turns
@@ -816,6 +994,30 @@ export function App() {
     }
   }
 
+  async function copySetupCommand(command: string, key: string) {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopiedCommandKey(key);
+      setToastMessage("Command copied");
+      if (copiedCommandTimerRef.current !== null) {
+        window.clearTimeout(copiedCommandTimerRef.current);
+      }
+      copiedCommandTimerRef.current = window.setTimeout(() => {
+        setCopiedCommandKey((current) => (current === key ? null : current));
+        copiedCommandTimerRef.current = null;
+      }, 1200);
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+      toastTimerRef.current = window.setTimeout(() => {
+        setToastMessage((current) => (current === "Command copied" ? null : current));
+        toastTimerRef.current = null;
+      }, 1200);
+    } catch (copyError) {
+      setError(copyError instanceof Error ? copyError.message : String(copyError));
+    }
+  }
+
   function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>, submit: () => void) {
     if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) {
       return;
@@ -865,7 +1067,16 @@ export function App() {
     });
   }
 
-  const activeTabId = snapshot.codex.focusedWindowId ?? "butler";
+  const activeTabId =
+    selectedSurface === "setup"
+      ? "setup"
+      : selectedSurface === "terminal"
+        ? "terminal"
+        : selectedSurface === "thread"
+          ? snapshot.codex.focusedWindowId ?? selectedThreadId ?? (showSetupGuide ? "setup" : "butler")
+          : selectedSurface === "butler"
+            ? "butler"
+            : snapshot.codex.focusedWindowId ?? (showSetupGuide ? "setup" : "butler");
   const butlerModelKey = snapshot.butler.compose.model ?? "";
   const codexEffortOptions =
     snapshot.codex.compose.availableModels.find((model) => model.id === snapshot.codex.compose.model)?.supportedReasoningEfforts ?? [];
@@ -945,9 +1156,23 @@ export function App() {
       <main className="workspace-shell">
         <section className="workspace">
           <div className="workspace-tabs-shell">
+            {showSetupGuide ? (
+              <button
+                className={`workspace-tab workspace-tab-fixed ${activeTabId === "setup" ? "is-active" : ""}`}
+                onClick={() => {
+                  setSelectedSurface("setup");
+                  setSelectedThreadId(null);
+                  setShowPromptRail(false);
+                }}
+              >
+                Setup
+              </button>
+            ) : null}
             <button
               className={`workspace-tab workspace-tab-fixed ${activeTabId === "butler" ? "is-active" : ""}`}
               onClick={() => {
+                setSelectedSurface("butler");
+                setSelectedThreadId(null);
                 postJson("/api/workspace/focus", {}).catch((focusError) =>
                   setError(focusError instanceof Error ? focusError.message : String(focusError))
                 );
@@ -955,13 +1180,28 @@ export function App() {
             >
               Butler
             </button>
+            <button
+              className={`workspace-tab workspace-tab-fixed ${activeTabId === "terminal" ? "is-active" : ""}`}
+              onClick={() => {
+                setSelectedSurface("terminal");
+                setSelectedThreadId(null);
+                setShowPromptRail(false);
+              }}
+            >
+              Terminal
+            </button>
             <div className="workspace-tabs-scroll">
               {snapshot.codex.windows.map((window) => (
                 <div key={window.threadId} className={`workspace-tab workspace-tab-window ${activeTabId === window.threadId ? "is-active" : ""}`}>
-                  <button
-                    className="workspace-tab-main"
-                    onClick={() => postJson("/api/windows/focus", { threadId: window.threadId }).catch(() => undefined)}
-                  >
+                      <button
+                        className="workspace-tab-main"
+                        onClick={() => {
+                          setSelectedSurface("thread");
+                          setSelectedThreadId(window.threadId);
+                          setShowPromptRail(false);
+                          postJson("/api/windows/focus", { threadId: window.threadId }).catch(() => undefined);
+                        }}
+                      >
                     <span className="workspace-tab-label">{window.title}</span>
                     <span className="workspace-tab-meta">
                       {snapshot.codex.openThreads[window.threadId]?.compaction.active
@@ -981,14 +1221,16 @@ export function App() {
                 </div>
               ))}
             </div>
-            <button
-              className={`workspace-mobile-timeline ${showPromptRail ? "is-open" : ""}`}
-              onClick={() => setShowPromptRail((current) => !current)}
-              aria-label={showPromptRail ? "Hide timeline" : "Show timeline"}
-              aria-expanded={showPromptRail}
-            >
-              ≣
-            </button>
+            {activeTabId !== "setup" && activeTabId !== "terminal" ? (
+              <button
+                className={`workspace-mobile-timeline ${showPromptRail ? "is-open" : ""}`}
+                onClick={() => setShowPromptRail((current) => !current)}
+                aria-label={showPromptRail ? "Hide timeline" : "Show timeline"}
+                aria-expanded={showPromptRail}
+              >
+                ≣
+              </button>
+            ) : null}
             <button
               className={`workspace-plus ${threadsDrawerOpen ? "is-open" : ""}`}
               onClick={() => setThreadsDrawerOpen((current) => !current)}
@@ -999,7 +1241,118 @@ export function App() {
             </button>
           </div>
 
-          {activeThread ? (
+          {activeTabId === "setup" ? (
+            <div className="workspace-panel workspace-panel-setup">
+              <div className="panel-header">
+                <div>
+                  <span className="eyebrow">First-time setup</span>
+                  <h2>Access and shell</h2>
+                  <p>Run these once. You can use the built-in Terminal or your local shell.</p>
+                </div>
+                <div className="panel-controls">
+                  <label className="setup-target-switch">
+                    <span>Run in</span>
+                    <select value={setupCommandTarget} onChange={(event) => setSetupCommandTarget(event.target.value as SetupCommandMode)}>
+                      <option value="builtInTerminal">Built-in Terminal</option>
+                      <option value="localShell">Local shell</option>
+                    </select>
+                  </label>
+                  <button
+                    className="panel-action"
+                    onClick={() => {
+                      setTerminalTarget(nextTerminalTarget);
+                      setSelectedSurface("terminal");
+                      setSelectedThreadId(null);
+                      setShowPromptRail(false);
+                    }}
+                  >
+                    Open terminal
+                  </button>
+                </div>
+              </div>
+              <section className="setup-guide-shell">
+                <section className="setup-guide" aria-label="First-time setup">
+                  <div className="setup-guide-steps">
+                    {snapshot.butler.onboarding.steps.map((step) => {
+                      const commandSet =
+                        step.commandSets.find((entry) => entry.target === (setupCommandTarget === "localShell" ? "localShell" : step.id === "butlerAuth" ? "butlerTerminal" : "codexTerminal")) ??
+                        step.commandSets.find((entry) => entry.target !== "localShell") ??
+                        step.commandSets[0];
+
+                      return (
+                        <section key={step.id} className={`setup-step is-${step.status}`}>
+                          <div className="setup-step-head">
+                            <span className="setup-step-title">{step.title}</span>
+                            <span className="setup-step-status">{onboardingStatusLabel(step.status)}</span>
+                          </div>
+                          <p className="setup-step-detail">{step.detail}</p>
+                          <p className="setup-step-context">{commandSet.detail}</p>
+                          {commandSet.commands.length > 0 ? (
+                            <div className="setup-step-commands">
+                              {commandSet.commands.map((command) => (
+                                <button
+                                  key={`${step.id}-${setupCommandTarget}-${command}`}
+                                  type="button"
+                                  className={`setup-command ${copiedCommandKey === `${step.id}-${setupCommandTarget}-${command}` ? "is-copied" : ""}`}
+                                  onClick={() => void copySetupCommand(command, `${step.id}-${setupCommandTarget}-${command}`)}
+                                  aria-label={`Copy command for ${step.title}`}
+                                >
+                                  <code>{command}</code>
+                                  <span className="setup-command-copy" aria-hidden="true">
+                                    <CopyIcon />
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                        </section>
+                      );
+                    })}
+                  </div>
+                </section>
+              </section>
+            </div>
+          ) : activeTabId === "terminal" ? (
+            <div className="workspace-panel workspace-panel-terminal">
+              <div className="terminal-toolbar">
+                <div className="terminal-subtabs" role="tablist" aria-label="Terminal containers">
+                  <button
+                    className={`terminal-subtab ${terminalTarget === "codexTerminal" ? "is-active" : ""}`}
+                    onClick={() => setTerminalTarget("codexTerminal")}
+                    role="tab"
+                    aria-selected={terminalTarget === "codexTerminal"}
+                  >
+                    Codex
+                  </button>
+                  <button
+                    className={`terminal-subtab ${terminalTarget === "butlerTerminal" ? "is-active" : ""}`}
+                    onClick={() => setTerminalTarget("butlerTerminal")}
+                    role="tab"
+                    aria-selected={terminalTarget === "butlerTerminal"}
+                  >
+                    Butler
+                  </button>
+                </div>
+                <div className="terminal-toolbar-actions">
+                  <a className="panel-action panel-action-link" href={terminalUrl} target="_blank" rel="noreferrer">
+                    Open in new tab
+                  </a>
+                </div>
+              </div>
+              <div className="terminal-shell">
+                <iframe
+                  className={`terminal-frame ${terminalTarget === "codexTerminal" ? "is-active" : ""}`}
+                  src="/terminal/"
+                  title="Codex terminal"
+                />
+                <iframe
+                  className={`terminal-frame ${terminalTarget === "butlerTerminal" ? "is-active" : ""}`}
+                  src="/butler-terminal/"
+                  title="Butler terminal"
+                />
+              </div>
+            </div>
+          ) : activeThread ? (
             <div className="workspace-panel">
               <div className="panel-header">
                 <div>
@@ -1395,6 +1748,8 @@ export function App() {
                   className="thread-row-main"
                   onClick={() => {
                     setThreadsDrawerOpen(false);
+                    setSelectedSurface("thread");
+                    setSelectedThreadId(thread.id);
                     postJson("/api/windows/open", { threadId: thread.id }).catch((openError) =>
                       setError(openError instanceof Error ? openError.message : String(openError))
                     );
@@ -1418,6 +1773,9 @@ export function App() {
 
       {(error || snapshot.codex.lastError || snapshot.butler.lastError) && (
         <footer className="statusbar is-error">{error || snapshot.codex.lastError || snapshot.butler.lastError}</footer>
+      )}
+      {!error && !snapshot.codex.lastError && !snapshot.butler.lastError && toastMessage && (
+        <footer className="statusbar is-success">{toastMessage}</footer>
       )}
     </div>
   );

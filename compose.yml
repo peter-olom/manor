@@ -8,6 +8,7 @@ services:
         BUTLER_INSTALL_MODE: ${BUTLER_INSTALL_MODE:-development}
     image: manor-butler:local
     container_name: manor-butler
+    hostname: manor-butler
     command: ["/usr/local/bin/start-butler"]
     working_dir: /opt/manor/butler
     environment:
@@ -16,10 +17,13 @@ services:
       HOME: /home/butler
       CODEX_HOME: /home/butler/.codex
       CODEX_SHARED_HOME_DIR: /codex-home
+      CODEX_SHARED_CONFIG_DIR: /codex-config
       PI_AGENT_DIR: /home/butler/.pi/agent
       BUTLER_PORT: 8080
       BUTLER_PUBLIC_PORT: ${BUTLER_HOST_PORT:-8180}
       BUTLER_HOT_RELOAD: ${BUTLER_HOT_RELOAD:-1}
+      BUTLER_TTYD_PORT: 7682
+      BUTLER_TTYD_BASE_PATH: /butler-terminal/
       CODEX_BASE_URL: ws://codex-box:8080
       BUTLER_AUTH_BOOTSTRAP: ${BUTLER_AUTH_BOOTSTRAP:-auto}
       BUTLER_FORCED_LOGIN_METHOD: ${BUTLER_FORCED_LOGIN_METHOD:-}
@@ -39,6 +43,7 @@ services:
       - ./state/butler-home:/home/butler/.codex
       - ./state/butler-pi:/home/butler/.pi
       - ./state/codex-home:/codex-home
+      - ./state/codex-config:/codex-config:ro
       - ./butler/src:/opt/manor/butler/src
       - ./butler/index.html:/opt/manor/butler/index.html:ro
       - ./butler/package.json:/opt/manor/butler/package.json:ro
@@ -55,6 +60,7 @@ services:
         condition: service_healthy
     networks:
       - control
+      - internet
       - work
 
   butler-gateway:
@@ -80,6 +86,7 @@ services:
         CODEX_VERSION: 0.118.0
     image: manor-codex-box:local
     container_name: manor-codex-box
+    hostname: manor-codex
     command: ["/usr/local/bin/start-codex-app-server"]
     working_dir: /repos
     environment:
@@ -106,6 +113,7 @@ services:
     volumes:
       - ./state/codex:/state
       - ./state/codex-home:/home/codex/.codex
+      - ./state/codex-config:/home/codex/.config
       - ./repos:/repos
       - ./artifacts:/artifacts
     healthcheck:

@@ -493,10 +493,15 @@ select {
 }
 
 .panel-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   height: 36px;
   padding: 0 12px;
   border: 1px solid var(--line-strong);
   background: var(--surface);
+  color: var(--ink);
+  text-decoration: none;
   cursor: pointer;
 }
 
@@ -561,6 +566,218 @@ select {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  overflow: auto;
+}
+
+.setup-guide-shell {
+  min-height: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  overflow: auto;
+}
+
+.setup-guide {
+  display: grid;
+  gap: 16px;
+  min-height: 100%;
+  padding: 16px 18px;
+  align-content: start;
+  background: color-mix(in srgb, var(--panel) 86%, transparent);
+}
+
+.workspace-panel-setup .setup-guide {
+  padding-top: 20px;
+}
+
+.setup-guide-header {
+  display: grid;
+  gap: 6px;
+}
+
+.setup-guide-header p,
+.setup-step-detail,
+.setup-guide-note p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.setup-guide-steps {
+  display: grid;
+  gap: 0;
+}
+
+.setup-step {
+  display: grid;
+  gap: 8px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+
+.setup-step:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.setup-step-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.setup-step-title {
+  font-weight: 600;
+}
+
+.setup-step-status {
+  font-size: 0.78rem;
+  color: var(--accent);
+}
+
+.setup-target-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.setup-target-switch span {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.setup-target-switch select {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  outline: none;
+}
+
+.setup-step.is-complete .setup-step-status {
+  color: var(--green);
+}
+
+.setup-step-context {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.setup-step-commands {
+  display: grid;
+  gap: 8px;
+}
+
+.setup-command {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: hidden;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: "SFMono-Regular", "Menlo", "Monaco", monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+
+.setup-command code {
+  min-width: 0;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.setup-command-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+  flex: 0 0 16px;
+}
+
+.setup-command-copy svg {
+  width: 16px;
+  height: 16px;
+}
+
+.setup-command:hover .setup-command-copy,
+.setup-command.is-copied .setup-command-copy {
+  color: var(--accent);
+}
+
+.terminal-shell {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  background: #0c1017;
+}
+
+.terminal-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.terminal-subtabs {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+}
+
+.terminal-subtab {
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.terminal-subtab.is-active {
+  border-color: var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.terminal-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.terminal-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #0c1017;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.terminal-frame.is-active {
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
 }
 
 .entry {
@@ -1190,6 +1407,12 @@ select {
   border: 1px solid var(--danger-line);
   color: var(--danger-ink);
   z-index: 20;
+}
+
+.statusbar.is-success {
+  background: color-mix(in srgb, var(--green) 14%, var(--panel));
+  border-color: color-mix(in srgb, var(--green) 35%, var(--line));
+  color: var(--green);
 }
 
 @media (max-width: 1180px) {
