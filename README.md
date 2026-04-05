@@ -46,6 +46,12 @@ Preview runtimes are now part of the core model too:
 - disposable preview containers run the app on the private Manor network
 - Manor exposes a stable operator-facing route for each preview
 
+Common dev dependencies are part of the model too:
+
+- Butler can provision built-in disposable service templates
+- Postgres, Redis, MySQL, and MSSQL run as disposable private-network containers
+- SQLite is provisioned as an embedded file directly inside the chosen worktree
+
 ## Design Principles
 
 - Optimize for usefulness first.
@@ -94,6 +100,7 @@ Instead, the initial model is:
 - `docker/egress/`: allowlisted proxy config for outbound traffic
 - `docker/runtime-broker/`: narrow service that can start and stop disposable preview containers
 - `docker/preview-egress/`: broader but still allowlisted egress path for preview runtimes
+- `config/service-templates.json`: built-in service template catalog for common local dependencies
 - `state/`: local runtime state mounts for the harness
 
 ## Butler First Cut
@@ -215,6 +222,48 @@ Preview runtimes use named egress profiles that are separate from the Codex box.
 - custom preview allowlists are materialized as temporary lease-scoped proxy listeners and are deleted with the preview lease
 - the policy data lives outside Butler orchestration so operators can add, remove, or tighten profiles without changing the lease model
 - preview runtimes still stay on the private work network and reach the internet through an explicit proxy path
+
+## Built-In Service Templates
+
+Butler can now provision common local dependencies through built-in templates instead of relying on ad hoc setup notes.
+
+The first built-ins are:
+
+- Postgres
+- Redis
+- MySQL
+- MSSQL
+- SQLite
+
+The intended usage is:
+
+- Butler chooses a template
+- Butler starts a disposable service lease for the current job or project
+- the resulting host, port, and connection URI become discoverable to Butler
+- Codex uses that service from the same private work network
+
+SQLite is handled differently from the networked services:
+
+- it is not started as a container
+- Butler creates the database file directly in the target worktree
+- the discovered connection URI points at that file path
+
+### Extending Service Templates
+
+Service templates are defined in `config/service-templates.json`.
+
+To add another template:
+
+- add a new entry to the template catalog
+- choose `container` when the dependency should run as a disposable container
+- choose `embedded` when the dependency is just a file provisioned inside the worktree
+- define the default image, port, env defaults, and connection URI template
+
+The broker stays generic:
+
+- Butler owns the template catalog
+- the runtime broker only starts and stops the resulting runtime
+- this keeps the orchestration logic and the service catalog separate
 
 ### Auth Bootstrap
 

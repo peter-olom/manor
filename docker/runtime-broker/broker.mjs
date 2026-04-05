@@ -20,6 +20,10 @@ function toContainerName(leaseId) {
   return `manor-preview-${leaseId.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 32)}`;
 }
 
+function toServiceContainerName(serviceId) {
+  return `manor-service-${serviceId.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 32)}`;
+}
+
 function loadPreviewEgressProfiles() {
   const raw = fs.readFileSync(previewEgressConfigPath, "utf8");
   const parsed = JSON.parse(raw);
@@ -129,6 +133,16 @@ async function requireContainer(leaseId, response) {
   const container = await inspectContainer(containerName);
   if (!container) {
     response.status(404).json({ error: "Lease not found" });
+    return null;
+  }
+  return { containerName, containerRef: docker.getContainer(containerName), container };
+}
+
+async function requireServiceContainer(serviceId, response) {
+  const containerName = toServiceContainerName(serviceId);
+  const container = await inspectContainer(containerName);
+  if (!container) {
+    response.status(404).json({ error: "Service not found" });
     return null;
   }
   return { containerName, containerRef: docker.getContainer(containerName), container };
@@ -435,6 +449,276 @@ app.delete("/leases/:leaseId", async (request, response) => {
   await dropPreviewEgressLeasePolicy(request.params.leaseId).catch(() => {});
 
   response.json({ ok: true, leaseId: request.params.leaseId });
+});
+
+app.post("/services", async (request, response) => {
+  const payload = request.body ?? {};
+  if (typeof payload.templateId !== "string" || !payload.templateId) {
+    response.status(400).json({ error: "templateId is required" });
+    return;
+  }
+
+  if (typeof payload.title !== "string" || !payload.title) {
+    response.status(400).json({ error: "title is required" });
+    return;
+  }
+
+  const serviceId = payload.serviceId || crypto.randomUUID();
+  const containerName = toServiceContainerName(serviceId);
+  const env = typeof payload.env === "object" && payload.env ? payload.env : {};
+  const envVars = [];
+
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === "string") {
+      envVars.push(`${key}=${value}`);
+    }
+  }
+
+  try {
+    await ensureImage(payload.image);
+
+    const existing = await inspectContainer(containerName);
+    if (existing) {
+      await docker.getContainer(containerName).remove({ force: true });
+    }
+
+    const containerOptions = {
+      Image: payload.image,
+      name: containerName,
+      Env: envVars,
+      Labels: {
+        "manor.managed": "true",
+        "manor.runtime-kind": "service",
+        "manor.service-id": serviceId,
+        "manor.thread-id": payload.threadId ?? "",
+        "manor.project-id": payload.projectId || "service",
+        "manor.template-id": payload.templateId,
+        "manor.template-label": payload.templateLabel || payload.templateId,
+        "manor.title": payload.title,
+        "manor.target-port": String(Number(payload.targetPort || 0))
+      },
+      HostConfig: {
+        AutoRemove: true,
+        NetworkMode: previewNetwork
+      }
+    };
+
+    if (typeof payload.worktreePath === "string" && payload.worktreePath) {
+      containerOptions.WorkingDir = payload.worktreePath;
+    }
+
+    if (typeof payload.command === "string" && payload.command) {
+      containerOptions.Cmd = ["bash", "-lc", payload.command];
+    }
+
+    const serviceContainer = await docker.createContainer(containerOptions);
+    await serviceContainer.start();
+    const container = await inspectContainer(containerName);
+    if (!container) {
+      throw new Error("Service container did not start");
+    }
+
+    response.json({
+      id: serviceId,
+      threadId: payload.threadId ?? null,
+      projectId: payload.projectId || "service",
+      projectLabel: payload.projectLabel || payload.projectId || "service",
+      title: payload.title,
+      templateId: payload.templateId,
+      templateLabel: payload.templateLabel || payload.templateId,
+      runtimeKind: payload.runtimeKind || "container",
+      containerName,
+      targetHost: containerName,
+      targetPort: Number(payload.targetPort || 0),
+      worktreePath: typeof payload.worktreePath === "string" ? payload.worktreePath : null,
+      image: payload.image,
+      status: container?.State?.Running ? "running" : "starting",
+      createdAt: new Date(container.Created).getTime(),
+      updatedAt: Date.now(),
+      lastError: container.State?.Error || null,
+      env
+    });
+  } catch (error) {
+    response.status(500).json({
+      id: serviceId,
+      threadId: payload.threadId ?? null,
+      projectId: payload.projectId || "service",
+      projectLabel: payload.projectLabel || payload.projectId || "service",
+      title: payload.title,
+      templateId: payload.templateId,
+      templateLabel: payload.templateLabel || payload.templateId,
+      runtimeKind: payload.runtimeKind || "container",
+      containerName,
+      targetHost: containerName,
+      targetPort: Number(payload.targetPort || 0),
+      worktreePath: typeof payload.worktreePath === "string" ? payload.worktreePath : null,
+      image: payload.image,
+      status: "failed",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      lastError: error instanceof Error ? error.message : String(error),
+      env,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
+app.get("/services/:serviceId", async (request, response) => {
+  const required = await requireServiceContainer(request.params.serviceId, response);
+  if (!required) {
+    return;
+  }
+  const { containerName, container } = required;
+
+  response.json({
+    id: request.params.serviceId,
+    threadId: container.Config?.Labels?.["manor.thread-id"] || null,
+    projectId: container.Config?.Labels?.["manor.project-id"] || "service",
+    projectLabel: container.Config?.Labels?.["manor.project-id"] || "service",
+    title: container.Config?.Labels?.["manor.title"] || `Service ${request.params.serviceId.slice(0, 8)}`,
+    templateId: container.Config?.Labels?.["manor.template-id"] || "unknown",
+    templateLabel: container.Config?.Labels?.["manor.template-label"] || container.Config?.Labels?.["manor.template-id"] || "unknown",
+    runtimeKind: "container",
+    containerName,
+    targetHost: containerName,
+    targetPort: Number(container.Config?.Labels?.["manor.target-port"] || "0"),
+    worktreePath: container.Config?.WorkingDir || null,
+    image: container.Config?.Image || previewImage,
+    status: container.State?.Running ? "running" : "stopped",
+    createdAt: new Date(container.Created).getTime(),
+    updatedAt: Date.now(),
+    lastError: container.State?.Error || null,
+    env: Object.fromEntries((container.Config?.Env ?? []).map((entry) => {
+      const [key, ...rest] = entry.split("=");
+      return [key, rest.join("=")];
+    })),
+    runtime: {
+      running: Boolean(container.State?.Running),
+      status: container.State?.Status || "unknown",
+      startedAt: container.State?.StartedAt ? new Date(container.State.StartedAt).getTime() : null,
+      finishedAt: container.State?.FinishedAt ? new Date(container.State.FinishedAt).getTime() : null,
+      error: container.State?.Error || null
+    }
+  });
+});
+
+app.get("/services/:serviceId/processes", async (request, response) => {
+  const required = await requireServiceContainer(request.params.serviceId, response);
+  if (!required) {
+    return;
+  }
+
+  try {
+    const top = await required.containerRef.top();
+    response.json({
+      titles: Array.isArray(top.Titles) ? top.Titles : [],
+      processes: Array.isArray(top.Processes) ? top.Processes : []
+    });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get("/services/:serviceId/logs", async (request, response) => {
+  const required = await requireServiceContainer(request.params.serviceId, response);
+  if (!required) {
+    return;
+  }
+
+  const tailRaw = Number(request.query.tail ?? "200");
+  const tail = Number.isFinite(tailRaw) && tailRaw > 0 ? Math.min(Math.trunc(tailRaw), 1000) : 200;
+
+  try {
+    const stream = await required.containerRef.logs({
+      stdout: true,
+      stderr: true,
+      tail,
+      timestamps: false
+    });
+    const logs =
+      Buffer.isBuffer(stream)
+        ? stream.toString("utf8")
+        : await new Promise((resolve, reject) => {
+            const chunks = [];
+            stream.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+            stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+            stream.on("error", reject);
+          });
+
+    response.json({
+      leaseId: request.params.serviceId,
+      logs
+    });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/services/:serviceId/exec", async (request, response) => {
+  const required = await requireServiceContainer(request.params.serviceId, response);
+  if (!required) {
+    return;
+  }
+
+  const command = typeof request.body?.command === "string" ? request.body.command.trim() : "";
+  const cwd = typeof request.body?.cwd === "string" ? request.body.cwd.trim() : "";
+  if (!command) {
+    response.status(400).json({ error: "command is required" });
+    return;
+  }
+
+  try {
+    const exec = await required.containerRef.exec({
+      AttachStdout: true,
+      AttachStderr: true,
+      Cmd: ["bash", "-lc", cwd ? `cd ${JSON.stringify(cwd)} && ${command}` : command],
+      WorkingDir: cwd || undefined,
+      Tty: false
+    });
+    const stream = await exec.start({ hijack: true, stdin: false });
+    const output = await new Promise((resolve, reject) => {
+      const stdout = [];
+      const stderr = [];
+      required.containerRef.modem.demuxStream(stream, {
+        write(chunk) {
+          stdout.push(Buffer.from(chunk));
+        }
+      }, {
+        write(chunk) {
+          stderr.push(Buffer.from(chunk));
+        }
+      });
+      stream.on("end", () =>
+        resolve({
+          stdout: Buffer.concat(stdout).toString("utf8"),
+          stderr: Buffer.concat(stderr).toString("utf8")
+        })
+      );
+      stream.on("error", reject);
+    });
+    const execInspect = await exec.inspect();
+    response.json({
+      leaseId: request.params.serviceId,
+      command,
+      exitCode: typeof execInspect.ExitCode === "number" ? execInspect.ExitCode : null,
+      stdout: output.stdout,
+      stderr: output.stderr
+    });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.delete("/services/:serviceId", async (request, response) => {
+  const containerName = toServiceContainerName(request.params.serviceId);
+
+  try {
+    await docker.getContainer(containerName).remove({ force: true });
+  } catch {
+    // already gone
+  }
+
+  response.json({ ok: true, serviceId: request.params.serviceId });
 });
 
 app.listen(port, "0.0.0.0", () => {

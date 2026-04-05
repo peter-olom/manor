@@ -20,6 +20,7 @@ import type {
   CodexThreadSupervisorView,
   CodexTurnRecord,
   PreviewLeaseView,
+  ServiceLeaseView,
   PersistedUiState
 } from "./types.js";
 
@@ -260,6 +261,7 @@ export class ButlerStateStore extends EventEmitter {
   private readonly uiStatePath: string;
   private readonly threads = new Map<string, CodexThreadRecord>();
   private readonly previewLeases = new Map<string, PreviewLeaseView>();
+  private readonly serviceLeases = new Map<string, ServiceLeaseView>();
   private readonly persistedSupervisionByThreadId = new Map<string, { butlerTurnsUsed: number; maxButlerTurns: number | null }>();
   private windows: ButlerWindow[] = [];
   private focusedWindowId: string | null = null;
@@ -286,6 +288,12 @@ export class ButlerStateStore extends EventEmitter {
           this.previewLeases.set(lease.id, lease as PreviewLeaseView);
         }
       }
+      this.serviceLeases.clear();
+      for (const lease of Array.isArray(data.serviceLeases) ? data.serviceLeases : []) {
+        if (lease && typeof lease === "object" && typeof lease.id === "string") {
+          this.serviceLeases.set(lease.id, lease as ServiceLeaseView);
+        }
+      }
       this.persistedSupervisionByThreadId.clear();
       for (const [threadId, policy] of Object.entries(data.supervisionByThreadId ?? {})) {
         this.persistedSupervisionByThreadId.set(threadId, {
@@ -297,6 +305,7 @@ export class ButlerStateStore extends EventEmitter {
       this.windows = [];
       this.focusedWindowId = null;
       this.previewLeases.clear();
+      this.serviceLeases.clear();
       this.persistedSupervisionByThreadId.clear();
     }
   }
@@ -312,6 +321,7 @@ export class ButlerStateStore extends EventEmitter {
         windows: this.windows,
         focusedWindowId: this.focusedWindowId,
         previewLeases: [...this.previewLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
+        serviceLeases: [...this.serviceLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
         supervisionByThreadId: Object.fromEntries(
           [...this.persistedSupervisionByThreadId.entries()].map(([threadId, policy]) => [
             threadId,
@@ -717,6 +727,11 @@ export class ButlerStateStore extends EventEmitter {
         this.previewLeases.delete(lease.id);
       }
     }
+    for (const lease of this.serviceLeases.values()) {
+      if (lease.threadId === threadId) {
+        this.serviceLeases.delete(lease.id);
+      }
+    }
     this.persistedSupervisionByThreadId.delete(threadId);
     this.latestStartedTurnIds.delete(threadId);
     this.latestCompletedTurnIds.delete(threadId);
@@ -740,6 +755,11 @@ export class ButlerStateStore extends EventEmitter {
       for (const lease of this.previewLeases.values()) {
         if (lease.threadId === threadId) {
           this.previewLeases.delete(lease.id);
+        }
+      }
+      for (const lease of this.serviceLeases.values()) {
+        if (lease.threadId === threadId) {
+          this.serviceLeases.delete(lease.id);
         }
       }
       this.persistedSupervisionByThreadId.delete(threadId);
@@ -852,6 +872,28 @@ export class ButlerStateStore extends EventEmitter {
     return this.listPreviewLeases().find((lease) => lease.threadId === threadId && lease.status !== "stopped");
   }
 
+  upsertServiceLease(lease: ServiceLeaseView): void {
+    this.serviceLeases.set(lease.id, lease);
+    this.queueSave();
+    this.emitChange();
+  }
+
+  removeServiceLease(leaseId: string): void {
+    if (!this.serviceLeases.delete(leaseId)) {
+      return;
+    }
+    this.queueSave();
+    this.emitChange();
+  }
+
+  getServiceLease(leaseId: string): ServiceLeaseView | undefined {
+    return this.serviceLeases.get(leaseId);
+  }
+
+  listServiceLeases(): ServiceLeaseView[] {
+    return [...this.serviceLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt);
+  }
+
   getSnapshot(butler: {
     ready: boolean;
     pending: boolean;
@@ -866,6 +908,8 @@ export class ButlerStateStore extends EventEmitter {
     compaction: AppSnapshot["butler"]["compaction"];
     supervision: AppSnapshot["butler"]["supervision"];
     previews: AppSnapshot["butler"]["previews"];
+    serviceTemplates: AppSnapshot["butler"]["serviceTemplates"];
+    services: AppSnapshot["butler"]["services"];
     lastError: string | null;
     compose: AppSnapshot["butler"]["compose"];
   }, codexConnection: {
@@ -899,7 +943,9 @@ export class ButlerStateStore extends EventEmitter {
           projects: this.listProjectSummaries(),
           supervisor: this.getSupervisorSummary()
         },
-        previews: this.listPreviewLeases()
+        previews: this.listPreviewLeases(),
+        serviceTemplates: butler.serviceTemplates,
+        services: this.listServiceLeases()
       }
     };
   }

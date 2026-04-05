@@ -1,0 +1,92 @@
+{
+  "templates": [
+    {
+      "id": "postgres",
+      "label": "Postgres",
+      "description": "Disposable PostgreSQL database for app previews and local development workflows.",
+      "runtimeKind": "container",
+      "engine": "postgres",
+      "image": "postgres:16-bookworm",
+      "port": 5432,
+      "envDefaults": {
+        "POSTGRES_USER": "manor",
+        "POSTGRES_PASSWORD": "manor",
+        "POSTGRES_DB": "app"
+      },
+      "connection": {
+        "databaseEnv": "POSTGRES_DB",
+        "usernameEnv": "POSTGRES_USER",
+        "passwordEnv": "POSTGRES_PASSWORD",
+        "uriTemplate": "postgresql://{USERNAME}:{PASSWORD}@{HOST}:{PORT}/{DATABASE}"
+      }
+    },
+    {
+      "id": "redis",
+      "label": "Redis",
+      "description": "Disposable Redis cache for queues, sessions, and local app state.",
+      "runtimeKind": "container",
+      "engine": "redis",
+      "image": "redis:7-bookworm",
+      "port": 6379,
+      "connection": {
+        "uriTemplate": "redis://{HOST}:{PORT}/0"
+      }
+    },
+    {
+      "id": "mysql",
+      "label": "MySQL",
+      "description": "Disposable MySQL database for local development and preview environments.",
+      "runtimeKind": "container",
+      "engine": "mysql",
+      "image": "mysql:8.4",
+      "port": 3306,
+      "envDefaults": {
+        "MYSQL_DATABASE": "app",
+        "MYSQL_USER": "manor",
+        "MYSQL_PASSWORD": "manor",
+        "MYSQL_ROOT_PASSWORD": "manor-root"
+      },
+      "connection": {
+        "databaseEnv": "MYSQL_DATABASE",
+        "usernameEnv": "MYSQL_USER",
+        "passwordEnv": "MYSQL_PASSWORD",
+        "uriTemplate": "mysql://{USERNAME}:{PASSWORD}@{HOST}:{PORT}/{DATABASE}"
+      }
+    },
+    {
+      "id": "mssql",
+      "label": "MSSQL",
+      "description": "Disposable SQL Server instance for local preview and integration testing.",
+      "runtimeKind": "container",
+      "engine": "mssql",
+      "image": "mcr.microsoft.com/mssql/server:2022-latest",
+      "port": 1433,
+      "envDefaults": {
+        "ACCEPT_EULA": "Y",
+        "MSSQL_PID": "Developer",
+        "MSSQL_SA_PASSWORD": "ManorDevPassw0rd!"
+      },
+      "connection": {
+        "databaseValue": "master",
+        "usernameValue": "sa",
+        "passwordEnv": "MSSQL_SA_PASSWORD",
+        "uriTemplate": "sqlserver://{USERNAME}:{PASSWORD}@{HOST}:{PORT};database={DATABASE};encrypt=true;trustServerCertificate=true"
+      }
+    },
+    {
+      "id": "sqlite",
+      "label": "SQLite",
+      "description": "Embedded SQLite database file created directly inside the worktree for lightweight local development.",
+      "runtimeKind": "embedded",
+      "engine": "sqlite",
+      "image": "builtin/sqlite",
+      "port": 0,
+      "fileName": ".manor/sqlite/app.db",
+      "connection": {
+        "databaseValue": ".manor/sqlite/app.db",
+        "uriTemplate": "file:{PATH}"
+      },
+      "notes": "SQLite does not run as a container. Butler provisions the database file in the chosen worktree."
+    }
+  ]
+}

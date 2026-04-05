@@ -1,4 +1,4 @@
-import type { PreviewEgressProfile, PreviewLeaseStatus } from "./types.js";
+import type { PreviewEgressProfile, PreviewLeaseStatus, ServiceLeaseStatus } from "./types.js";
 
 type LeasePayload = {
   id: string;
@@ -21,6 +21,37 @@ type LeasePayload = {
   createdAt: number;
   updatedAt: number;
   lastError: string | null;
+};
+
+type ServicePayload = {
+  id: string;
+  threadId: string | null;
+  projectId: string;
+  projectLabel: string;
+  title: string;
+  templateId: string;
+  templateLabel: string;
+  runtimeKind: "container" | "embedded";
+  containerName: string;
+  targetHost: string;
+  targetPort: number;
+  worktreePath: string | null;
+  image: string;
+  status: ServiceLeaseStatus;
+  createdAt: number;
+  updatedAt: number;
+  lastError: string | null;
+  env: Record<string, string>;
+};
+
+type ServiceInspectPayload = ServicePayload & {
+  runtime: {
+    running: boolean;
+    status: string;
+    startedAt: number | null;
+    finishedAt: number | null;
+    error: string | null;
+  };
 };
 
 type LeaseInspectPayload = LeasePayload & {
@@ -116,6 +147,59 @@ export class RuntimeBrokerClient {
     cwd?: string;
   }): Promise<LeaseExecPayload> {
     return this.request<LeaseExecPayload>(`/leases/${input.leaseId}/exec`, {
+      method: "POST",
+      body: JSON.stringify({
+        command: input.command,
+        cwd: input.cwd
+      })
+    });
+  }
+
+  async createService(input: {
+    serviceId: string;
+    threadId: string | null;
+    projectId: string;
+    projectLabel: string;
+    title: string;
+    templateId: string;
+    templateLabel: string;
+    runtimeKind: "container" | "embedded";
+    worktreePath?: string | null;
+    targetPort: number;
+    image: string;
+    command?: string | null;
+    env?: Record<string, string>;
+  }): Promise<ServicePayload> {
+    return this.request<ServicePayload>("/services", {
+      method: "POST",
+      body: JSON.stringify(input)
+    });
+  }
+
+  async stopService(serviceId: string): Promise<{ ok: true; serviceId: string }> {
+    return this.request<{ ok: true; serviceId: string }>(`/services/${serviceId}`, {
+      method: "DELETE"
+    });
+  }
+
+  async inspectService(serviceId: string): Promise<ServiceInspectPayload> {
+    return this.request<ServiceInspectPayload>(`/services/${serviceId}`);
+  }
+
+  async listServiceProcesses(serviceId: string): Promise<LeaseProcessesPayload> {
+    return this.request<LeaseProcessesPayload>(`/services/${serviceId}/processes`);
+  }
+
+  async readServiceLogs(serviceId: string, tail = 200): Promise<LeaseLogsPayload> {
+    return this.request<LeaseLogsPayload>(`/services/${serviceId}/logs?tail=${encodeURIComponent(String(tail))}`);
+  }
+
+  async execInService(input: {
+    serviceId: string;
+    command: string;
+    cwd?: string;
+  }): Promise<LeaseExecPayload> {
+    return this.request<LeaseExecPayload>(`/services/${input.serviceId}/exec`, {
       method: "POST",
       body: JSON.stringify({
         command: input.command,

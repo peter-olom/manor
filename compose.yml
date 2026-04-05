@@ -39,6 +39,7 @@ services:
       NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright
       no_proxy: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright
       RUNTIME_BROKER_URL: http://runtime-broker:8090
+      MANOR_SERVICE_TEMPLATE_CONFIG: /opt/manor/config/service-templates.json
     volumes:
       - ./state/butler:/state
       - ./state/butler-home:/home/butler/.codex
@@ -52,6 +53,7 @@ services:
       - ./butler/tsconfig.json:/opt/manor/butler/tsconfig.json:ro
       - ./butler/tsconfig.server.json:/opt/manor/butler/tsconfig.server.json:ro
       - ./butler/vite.config.ts:/opt/manor/butler/vite.config.ts:ro
+      - ./config/service-templates.json:/opt/manor/config/service-templates.json:ro
       - ./repos:/repos
       - ./artifacts:/artifacts
     depends_on:

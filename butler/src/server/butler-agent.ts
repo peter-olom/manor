@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
+import path from "node:path";
 
 import { getModel } from "@mariozechner/pi-ai";
 import {
@@ -19,6 +20,7 @@ import { readButlerAuthStatus } from "./auth-status.js";
 import { buildOnboardingView } from "./onboarding-status.js";
 import { ensureTaskWorktree } from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
+import { type LoadedServiceTemplate, toServiceLeaseView } from "./service-templates.js";
 import type {
   AppSnapshot,
   ButlerAuthStatus,
@@ -214,6 +216,7 @@ function buildSystemPrompt(store: ButlerStateStore): string {
     "When work touches git in a repo, enforce a dedicated branch whose name starts with butler/.",
     "Do not run two parallel Codex workstreams on the same repo branch.",
     "When a task needs a live app review, prefer a preview lease on an isolated runtime instead of telling the operator to bind a raw host port.",
+    "When a project needs common dev dependencies like Postgres, Redis, MySQL, MSSQL, or SQLite, prefer the built-in service templates instead of ad hoc install steps.",
     "",
     `Supervisor state: ${supervisor.summary}`,
     projects.length > 0 ? "Project summaries:" : "Project summaries: none yet.",
@@ -236,6 +239,7 @@ export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
   private readonly codexClient: CodexAppServerClient;
   private readonly runtimeBroker: RuntimeBrokerClient;
+  private readonly serviceTemplates: LoadedServiceTemplate[];
   private readonly piAuthPath: string;
   private readonly codexAuthPath: string;
   private readonly codexConfigDir: string;
@@ -270,6 +274,7 @@ export class ButlerAgentService extends EventEmitter {
     store: ButlerStateStore;
     codexClient: CodexAppServerClient;
     runtimeBroker: RuntimeBrokerClient;
+    serviceTemplates: LoadedServiceTemplate[];
     piAuthPath: string;
     codexAuthPath: string;
     codexConfigDir: string;
@@ -279,6 +284,7 @@ export class ButlerAgentService extends EventEmitter {
     this.store = options.store;
     this.codexClient = options.codexClient;
     this.runtimeBroker = options.runtimeBroker;
+    this.serviceTemplates = options.serviceTemplates;
     this.piAuthPath = options.piAuthPath;
     this.codexAuthPath = options.codexAuthPath;
     this.codexConfigDir = options.codexConfigDir;
@@ -405,6 +411,48 @@ export class ButlerAgentService extends EventEmitter {
         label: "Exec in preview",
         description: "Run one shell command inside a preview isolate through the runtime broker.",
         uiEffects: [{ kind: "refreshThreads", description: "Lets Butler actively diagnose or fix one preview isolate." }]
+      },
+      {
+        name: "list_service_templates",
+        label: "List service templates",
+        description: "List the built-in Manor service templates Butler can provision for app stacks.",
+        uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while choosing a service template." }]
+      },
+      {
+        name: "start_service",
+        label: "Start service",
+        description: "Provision a disposable built-in service such as Postgres, Redis, MySQL, MSSQL, or SQLite for one job.",
+        uiEffects: [{ kind: "refreshThreads", description: "Keeps service-backed job state current." }]
+      },
+      {
+        name: "list_services",
+        label: "List services",
+        description: "List active disposable services and their connection details.",
+        uiEffects: [{ kind: "refreshThreads", description: "Keeps service lease state current." }]
+      },
+      {
+        name: "inspect_service",
+        label: "Inspect service",
+        description: "Inspect one service runtime and return its current connection details and runtime state.",
+        uiEffects: [{ kind: "refreshThreads", description: "Refreshes one service lease before Butler acts on it." }]
+      },
+      {
+        name: "service_logs",
+        label: "Service logs",
+        description: "Read recent logs from one container-backed service runtime.",
+        uiEffects: [{ kind: "refreshThreads", description: "Lets Butler inspect one service without opening a shell." }]
+      },
+      {
+        name: "exec_service",
+        label: "Exec in service",
+        description: "Run one shell command inside a container-backed service runtime.",
+        uiEffects: [{ kind: "refreshThreads", description: "Lets Butler inspect or patch one service directly." }]
+      },
+      {
+        name: "stop_service",
+        label: "Stop service",
+        description: "Stop one disposable service runtime and release its lease.",
+        uiEffects: [{ kind: "refreshThreads", description: "Removes stale service state from the supervised job." }]
       },
       {
         name: "list_jobs",
@@ -535,6 +583,27 @@ export class ButlerAgentService extends EventEmitter {
       cwd: worktree.cwd,
       branchName: worktree.branchName
     };
+  }
+
+  private getServiceTemplate(templateId: string): LoadedServiceTemplate {
+    const template = this.serviceTemplates.find((entry) => entry.id === templateId);
+    if (!template) {
+      throw new Error(`Unknown service template: ${templateId}`);
+    }
+    return template;
+  }
+
+  private normalizeServiceEnv(value: unknown): Record<string, string> {
+    if (!value || typeof value !== "object") {
+      return {};
+    }
+
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
+        .map(([key, entryValue]) => [key.trim(), entryValue.trim()])
+        .filter(([key, entryValue]) => key.length > 0 && entryValue.length > 0)
+    );
   }
 
   private buildCustomTools() {
@@ -764,6 +833,299 @@ export class ButlerAgentService extends EventEmitter {
           return {
             content: [{ type: "text", text: body }],
             details: result
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "list_service_templates",
+        label: "List service templates",
+        description: "List the built-in Manor service templates Butler can provision.",
+        promptSnippet: "list_service_templates: use this before provisioning local dependencies so you reuse the built-in Postgres, Redis, MySQL, MSSQL, or SQLite templates.",
+        parameters: Type.Object({}),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "list_service_templates")?.uiEffects ?? [],
+        execute: async () => {
+          const text = this.serviceTemplates
+            .map(
+              (template, index) =>
+                `${index + 1}. ${template.id} | ${template.label} | runtime=${template.runtimeKind} | engine=${template.engine} | port=${template.defaultPort} | ${template.description}`
+            )
+            .join("\n");
+          return {
+            content: [{ type: "text", text: text || "No service templates are available." }],
+            details: { serviceTemplates: this.serviceTemplates }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "start_service",
+        label: "Start service",
+        description: "Provision a disposable built-in service for one job.",
+        promptSnippet: "start_service: use this when an app needs a local dependency like Postgres, Redis, MySQL, MSSQL, or SQLite.",
+        parameters: Type.Object({
+          templateId: Type.String({ minLength: 1 }),
+          title: Type.Optional(Type.String()),
+          threadId: Type.Optional(Type.String()),
+          cwd: Type.Optional(Type.String()),
+          env: Type.Optional(Type.Record(Type.String(), Type.String()))
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "start_service")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as {
+            templateId: string;
+            title?: string;
+            threadId?: string;
+            cwd?: string;
+            env?: Record<string, string>;
+          };
+          const template = this.getServiceTemplate(typedParams.templateId);
+          const thread = typedParams.threadId ? this.store.getThread(typedParams.threadId) ?? null : null;
+          const mergedEnv = {
+            ...template.envDefaults,
+            ...this.normalizeServiceEnv(typedParams.env)
+          };
+          const serviceId = crypto.randomUUID();
+          const effectiveTitle = typedParams.title?.trim() || `${template.label} ${serviceId.slice(0, 8)}`;
+
+          if (template.runtimeKind === "embedded") {
+            const worktreePath = typedParams.cwd?.trim() || thread?.cwd || "/repos";
+            const filePath = `${worktreePath}/${template.fileName ?? ".manor/sqlite/app.db"}`.replace(/\/+/g, "/");
+            await fs.mkdir(path.dirname(filePath), { recursive: true });
+            const handle = await fs.open(filePath, "a");
+            await handle.close();
+            const lease = toServiceLeaseView({
+              id: serviceId,
+              threadId: typedParams.threadId ?? null,
+              projectId: thread?.supervisor.projectId ?? "service",
+              projectLabel: thread?.supervisor.projectLabel ?? "service",
+              title: effectiveTitle,
+              template,
+              containerName: `embedded-${serviceId}`,
+              targetHost: "local-file",
+              targetPort: 0,
+              worktreePath: filePath,
+              status: "running",
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              lastError: null,
+              env: mergedEnv
+            });
+            this.store.upsertServiceLease(lease);
+            return {
+              content: [{ type: "text", text: `Provisioned ${template.label}. ${lease.connection.uri ?? filePath}` }],
+              details: { service: lease }
+            };
+          }
+
+          const service = await this.runtimeBroker.createService({
+            serviceId,
+            threadId: typedParams.threadId ?? null,
+            projectId: thread?.supervisor.projectId ?? "service",
+            projectLabel: thread?.supervisor.projectLabel ?? "service",
+            title: effectiveTitle,
+            templateId: template.id,
+            templateLabel: template.label,
+            runtimeKind: template.runtimeKind,
+            worktreePath: typedParams.cwd?.trim() || thread?.cwd || null,
+            targetPort: template.defaultPort,
+            image: template.image,
+            command: template.command,
+            env: mergedEnv
+          });
+          const lease = toServiceLeaseView({
+            id: service.id,
+            threadId: service.threadId,
+            projectId: service.projectId,
+            projectLabel: service.projectLabel,
+            title: service.title,
+            template,
+            containerName: service.containerName,
+            targetHost: service.targetHost,
+            targetPort: service.targetPort,
+            worktreePath: service.worktreePath,
+            status: service.status,
+            createdAt: service.createdAt,
+            updatedAt: service.updatedAt,
+            lastError: service.lastError,
+            env: service.env
+          });
+          this.store.upsertServiceLease(lease);
+          return {
+            content: [{ type: "text", text: `Started ${template.label}. Host=${lease.connection.host} Port=${lease.connection.port}.` }],
+            details: { service: lease }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "list_services",
+        label: "List services",
+        description: "List active disposable services and their connection details.",
+        promptSnippet: "list_services: inspect local dependencies already provisioned for the current work.",
+        parameters: Type.Object({}),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "list_services")?.uiEffects ?? [],
+        execute: async () => {
+          const services = this.store.listServiceLeases();
+          const text =
+            services.length === 0
+              ? "No disposable services are active."
+              : services
+                  .map(
+                    (service, index) =>
+                      `${index + 1}. ${service.title} | template=${service.templateId} | status=${service.status} | host=${service.connection.host} | port=${service.connection.port} | uri=${service.connection.uri ?? "(none)"}`
+                  )
+                  .join("\n");
+          return {
+            content: [{ type: "text", text }],
+            details: { services }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "inspect_service",
+        label: "Inspect service",
+        description: "Inspect one service runtime and return its current state.",
+        promptSnippet: "inspect_service: use this before debugging a dependency so you know whether it is running and how to reach it.",
+        parameters: Type.Object({
+          serviceId: Type.String()
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "inspect_service")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { serviceId: string };
+          const existing = this.store.getServiceLease(typedParams.serviceId);
+          if (!existing) {
+            return {
+              content: [{ type: "text", text: `Service ${typedParams.serviceId} was not found.` }],
+              details: { service: null }
+            };
+          }
+          if (existing.runtimeKind === "embedded") {
+            return {
+              content: [{ type: "text", text: `${existing.title} is embedded at ${existing.connection.uri ?? existing.worktreePath ?? "(unknown path)"}.` }],
+              details: { service: existing }
+            };
+          }
+          const inspected = await this.runtimeBroker.inspectService(typedParams.serviceId);
+          const template = this.getServiceTemplate(inspected.templateId);
+          const lease = toServiceLeaseView({
+            id: inspected.id,
+            threadId: inspected.threadId,
+            projectId: inspected.projectId,
+            projectLabel: inspected.projectLabel,
+            title: inspected.title,
+            template,
+            containerName: inspected.containerName,
+            targetHost: inspected.targetHost,
+            targetPort: inspected.targetPort,
+            worktreePath: inspected.worktreePath,
+            status: inspected.status,
+            createdAt: inspected.createdAt,
+            updatedAt: inspected.updatedAt,
+            lastError: inspected.lastError,
+            env: inspected.env
+          });
+          this.store.upsertServiceLease(lease);
+          return {
+            content: [{ type: "text", text: `${lease.title} is ${inspected.runtime.status}. Host=${lease.connection.host} Port=${lease.connection.port}.` }],
+            details: { service: lease, runtime: inspected.runtime }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "service_logs",
+        label: "Service logs",
+        description: "Read recent logs from one container-backed service runtime.",
+        promptSnippet: "service_logs: use this when a dependency boot or health check is failing and you need recent container output.",
+        parameters: Type.Object({
+          serviceId: Type.String(),
+          tail: Type.Optional(Type.Number({ minimum: 1, maximum: 1000 }))
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "service_logs")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { serviceId: string; tail?: number };
+          const service = this.store.getServiceLease(typedParams.serviceId);
+          if (!service) {
+            return {
+              content: [{ type: "text", text: `Service ${typedParams.serviceId} was not found.` }],
+              details: { service: null }
+            };
+          }
+          if (service.runtimeKind !== "container") {
+            return {
+              content: [{ type: "text", text: `${service.title} is embedded and does not expose container logs.` }],
+              details: { service }
+            };
+          }
+          const result = await this.runtimeBroker.readServiceLogs(typedParams.serviceId, typedParams.tail ?? 200);
+          return {
+            content: [{ type: "text", text: result.logs || "No logs were returned." }],
+            details: result
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "exec_service",
+        label: "Exec in service",
+        description: "Run one shell command inside a container-backed service runtime.",
+        promptSnippet: "exec_service: use this when Butler needs to inspect or patch a service directly.",
+        parameters: Type.Object({
+          serviceId: Type.String(),
+          command: Type.String({ minLength: 1 }),
+          cwd: Type.Optional(Type.String())
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "exec_service")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { serviceId: string; command: string; cwd?: string };
+          const service = this.store.getServiceLease(typedParams.serviceId);
+          if (!service) {
+            return {
+              content: [{ type: "text", text: `Service ${typedParams.serviceId} was not found.` }],
+              details: { service: null }
+            };
+          }
+          if (service.runtimeKind !== "container") {
+            return {
+              content: [{ type: "text", text: `${service.title} is embedded and does not support container exec.` }],
+              details: { service }
+            };
+          }
+          const result = await this.runtimeBroker.execInService(typedParams);
+          const stdout = result.stdout.trim();
+          const stderr = result.stderr.trim();
+          const body =
+            [`exit=${result.exitCode ?? "unknown"}`]
+              .concat(stdout ? [`stdout:\n${stdout}`] : [])
+              .concat(stderr ? [`stderr:\n${stderr}`] : [])
+              .join("\n\n") || `exit=${result.exitCode ?? "unknown"}`;
+          return {
+            content: [{ type: "text", text: body }],
+            details: result
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "stop_service",
+        label: "Stop service",
+        description: "Stop one disposable service runtime and release its lease.",
+        promptSnippet: "stop_service: use this when a disposable service is no longer needed.",
+        parameters: Type.Object({
+          serviceId: Type.String()
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "stop_service")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { serviceId: string };
+          const service = this.store.getServiceLease(typedParams.serviceId);
+          if (!service) {
+            return {
+              content: [{ type: "text", text: `Service ${typedParams.serviceId} was not found.` }],
+              details: { service: null }
+            };
+          }
+          if (service.runtimeKind === "container") {
+            await this.runtimeBroker.stopService(typedParams.serviceId);
+          }
+          this.store.removeServiceLease(typedParams.serviceId);
+          return {
+            content: [{ type: "text", text: `Stopped ${service.title}.` }],
+            details: { serviceId: typedParams.serviceId }
           };
         }
       }),
@@ -1176,6 +1538,8 @@ export class ButlerAgentService extends EventEmitter {
         notices: this.noticeMessages
       },
       previews: this.store.listPreviewLeases(),
+      serviceTemplates: this.serviceTemplates,
+      services: this.store.listServiceLeases(),
       lastError: this.lastError,
       compose: {
         provider: this.session?.model?.provider ?? null,

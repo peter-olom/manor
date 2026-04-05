@@ -45,6 +45,7 @@ export interface CodexSupervisionView {
 
 export type PreviewLeaseStatus = "starting" | "running" | "stopped" | "failed";
 export type PreviewEgressProfile = string;
+export type ServiceLeaseStatus = "starting" | "running" | "stopped" | "failed";
 
 export interface PreviewLeaseView {
   id: string;
@@ -67,6 +68,49 @@ export interface PreviewLeaseView {
   createdAt: number;
   updatedAt: number;
   lastError: string | null;
+}
+
+export interface ServiceTemplateView {
+  id: string;
+  label: string;
+  description: string;
+  runtimeKind: "container" | "embedded";
+  engine: string;
+  image: string;
+  defaultPort: number;
+  notes: string | null;
+}
+
+export interface ServiceConnectionView {
+  engine: string;
+  host: string;
+  port: number;
+  database: string | null;
+  username: string | null;
+  password: string | null;
+  uri: string | null;
+  notes: string | null;
+}
+
+export interface ServiceLeaseView {
+  id: string;
+  threadId: string | null;
+  projectId: string;
+  projectLabel: string;
+  title: string;
+  templateId: string;
+  templateLabel: string;
+  runtimeKind: "container" | "embedded";
+  containerName: string;
+  targetHost: string;
+  targetPort: number;
+  worktreePath: string | null;
+  image: string;
+  status: ServiceLeaseStatus;
+  createdAt: number;
+  updatedAt: number;
+  lastError: string | null;
+  connection: ServiceConnectionView;
 }
 
 export type CodexMilestoneType = "started" | "completed" | "blocked";
@@ -251,6 +295,8 @@ export interface AppSnapshot {
       notices: ButlerMessageView[];
     };
     previews: PreviewLeaseView[];
+    serviceTemplates: ServiceTemplateView[];
+    services: ServiceLeaseView[];
     lastError: string | null;
     compose: {
       provider: string | null;
@@ -266,6 +312,7 @@ export interface PersistedUiState {
   windows: ButlerWindow[];
   focusedWindowId: string | null;
   previewLeases?: PreviewLeaseView[];
+  serviceLeases?: ServiceLeaseView[];
   supervisionByThreadId?: Record<
     string,
     {

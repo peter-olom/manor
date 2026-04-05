@@ -9,6 +9,7 @@ import httpProxy from "http-proxy";
 import { ButlerAgentService } from "./butler-agent.js";
 import { CodexAppServerClient } from "./codex-client.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
+import { loadServiceTemplates, toServiceLeaseView } from "./service-templates.js";
 import { ButlerStateStore } from "./state-store.js";
 
 const port = Number(process.env.BUTLER_PORT ?? "8080");
@@ -18,6 +19,7 @@ const stateDir = process.env.MANOR_STATE_DIR ?? "/state";
 const codexHomeDir = process.env.CODEX_SHARED_HOME_DIR ?? "/codex-home";
 const codexConfigDir = process.env.CODEX_SHARED_CONFIG_DIR ?? "/codex-config";
 const runtimeBrokerUrl = process.env.RUNTIME_BROKER_URL ?? "http://runtime-broker:8090";
+const serviceTemplateConfigPath = process.env.MANOR_SERVICE_TEMPLATE_CONFIG ?? "/opt/manor/config/service-templates.json";
 const hotReloadEnabled = process.env.BUTLER_HOT_RELOAD === "1";
 const publicPort = Number(process.env.BUTLER_PUBLIC_PORT ?? port);
 
@@ -31,10 +33,13 @@ await store.load();
 
 const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir);
 const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl);
+const serviceTemplates = await loadServiceTemplates(serviceTemplateConfigPath);
+const serviceTemplateMap = new Map(serviceTemplates.map((template) => [template.id, template]));
 const butlerAgent = new ButlerAgentService({
   store,
   codexClient,
   runtimeBroker,
+  serviceTemplates,
   piAuthPath: path.join(piAgentDir, "auth.json"),
   codexAuthPath: path.join(codexHomeDir, "auth.json"),
   codexConfigDir,
@@ -344,6 +349,126 @@ app.post("/api/previews/stop", async (request, response) => {
   try {
     await runtimeBroker.stopLease(leaseId);
     store.removePreviewLease(leaseId);
+    response.json({ ok: true });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/services/start", async (request, response) => {
+  const templateId = typeof request.body?.templateId === "string" ? request.body.templateId.trim() : "";
+  const title = typeof request.body?.title === "string" ? request.body.title.trim() : "";
+  const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : null;
+  const cwd = typeof request.body?.cwd === "string" ? request.body.cwd.trim() : "";
+  const env =
+    request.body?.env && typeof request.body.env === "object"
+      ? Object.fromEntries(
+          Object.entries(request.body.env as Record<string, unknown>)
+            .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
+            .map(([key, value]) => [key.trim(), value.trim()])
+            .filter(([key, value]) => key && value)
+        )
+      : {};
+
+  const template = serviceTemplateMap.get(templateId);
+  if (!template) {
+    response.status(400).json({ error: `Unknown service template: ${templateId}` });
+    return;
+  }
+
+  try {
+    const thread = threadId ? store.getThread(threadId) ?? null : null;
+    const serviceId = crypto.randomUUID();
+    const mergedEnv = { ...template.envDefaults, ...env };
+    const effectiveTitle = title || `${template.label} ${serviceId.slice(0, 8)}`;
+
+    if (template.runtimeKind === "embedded") {
+      const worktreePath = cwd || thread?.cwd || "/repos";
+      const relativePath = template.fileName ?? ".manor/sqlite/app.db";
+      const absolutePath = path.join(worktreePath, relativePath);
+      await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+      const handle = await fs.open(absolutePath, "a");
+      await handle.close();
+
+      const now = Date.now();
+      const lease = toServiceLeaseView({
+        id: serviceId,
+        threadId,
+        projectId: thread?.supervisor.projectId ?? "service",
+        projectLabel: thread?.supervisor.projectLabel ?? "service",
+        title: effectiveTitle,
+        template,
+        containerName: `embedded-${serviceId}`,
+        targetHost: "local-file",
+        targetPort: 0,
+        worktreePath: absolutePath,
+        status: "running",
+        createdAt: now,
+        updatedAt: now,
+        lastError: null,
+        env: mergedEnv
+      });
+      store.upsertServiceLease(lease);
+      response.json({ ok: true, service: lease });
+      return;
+    }
+
+    const service = await runtimeBroker.createService({
+      serviceId,
+      threadId,
+      projectId: thread?.supervisor.projectId ?? "service",
+      projectLabel: thread?.supervisor.projectLabel ?? "service",
+      title: effectiveTitle,
+      templateId: template.id,
+      templateLabel: template.label,
+      runtimeKind: template.runtimeKind,
+      targetPort: template.defaultPort,
+      image: template.image,
+      command: template.command,
+      env: mergedEnv
+    });
+    const lease = toServiceLeaseView({
+      id: service.id,
+      threadId: service.threadId,
+      projectId: service.projectId,
+      projectLabel: service.projectLabel,
+      title: service.title,
+      template,
+      containerName: service.containerName,
+      targetHost: service.targetHost,
+      targetPort: service.targetPort,
+      worktreePath: service.worktreePath,
+      status: service.status,
+      createdAt: service.createdAt,
+      updatedAt: service.updatedAt,
+      lastError: service.lastError,
+      env: service.env
+    });
+    store.upsertServiceLease(lease);
+    response.json({ ok: true, service: lease });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/services/stop", async (request, response) => {
+  const serviceId = typeof request.body?.serviceId === "string" ? request.body.serviceId : "";
+  if (!serviceId) {
+    response.status(400).json({ error: "serviceId is required" });
+    return;
+  }
+
+  const lease = store.getServiceLease(serviceId);
+  if (!lease) {
+    response.status(404).json({ error: "Service not found" });
+    return;
+  }
+
+  try {
+    if (lease.runtimeKind === "container") {
+      await runtimeBroker.stopService(serviceId);
+    }
+    store.removeServiceLease(serviceId);
     response.json({ ok: true });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
