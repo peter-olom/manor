@@ -214,8 +214,15 @@ export class CodexAppServerClient extends EventEmitter {
           const tokenUsage = params.tokenUsage as Record<string, unknown>;
           const total =
             tokenUsage.total && typeof tokenUsage.total === "object" ? (tokenUsage.total as Record<string, unknown>) : null;
+          const last =
+            tokenUsage.last && typeof tokenUsage.last === "object" ? (tokenUsage.last as Record<string, unknown>) : null;
           this.store.updateThreadTokenUsage(params.threadId, {
-            totalTokens: typeof total?.totalTokens === "number" ? total.totalTokens : null,
+            totalTokens:
+              typeof last?.totalTokens === "number"
+                ? last.totalTokens
+                : typeof total?.totalTokens === "number"
+                  ? total.totalTokens
+                  : null,
             modelContextWindow: typeof tokenUsage.modelContextWindow === "number" ? tokenUsage.modelContextWindow : null
           });
         }
@@ -257,6 +264,10 @@ export class CodexAppServerClient extends EventEmitter {
 
     for (const threadId of loadedIds) {
       await this.resumeThread(threadId).catch(() => undefined);
+    }
+
+    for (const threadId of this.store.getOpenWindowIds()) {
+      await this.loadThread(threadId).catch(() => undefined);
     }
   }
 
@@ -321,15 +332,21 @@ export class CodexAppServerClient extends EventEmitter {
     return model.defaultReasoningEffort ?? model.supportedReasoningEfforts[0] ?? null;
   }
 
-  private buildExecutionConfig(): Record<string, unknown> {
+  private buildTurnExecutionConfig(): Record<string, unknown> {
     return {
       cwd: this.defaultCwd,
       approvalPolicy: "never",
       sandboxPolicy: {
-        type: "workspaceWrite",
-        writableRoots: ["/repos", "/artifacts", "/state"],
-        networkAccess: true
+        type: "dangerFullAccess"
       }
+    };
+  }
+
+  private buildResumeConfig(): Record<string, unknown> {
+    return {
+      cwd: this.defaultCwd,
+      approvalPolicy: "never",
+      sandbox: "danger-full-access"
     };
   }
 
@@ -396,6 +413,7 @@ export class CodexAppServerClient extends EventEmitter {
       this.store.setThreadDetail(result.thread as Record<string, unknown>);
     }
 
+    await this.restoreThreadUsage(threadId).catch(() => undefined);
     await this.resumeThread(threadId).catch(() => undefined);
   }
 
@@ -407,7 +425,7 @@ export class CodexAppServerClient extends EventEmitter {
 
     const result = await this.call("thread/resume", {
       threadId,
-      ...this.buildExecutionConfig()
+      ...this.buildResumeConfig()
     });
     if (result.thread && typeof result.thread === "object") {
       this.store.upsertThreadSummary(result.thread as Record<string, unknown>);
@@ -510,7 +528,7 @@ export class CodexAppServerClient extends EventEmitter {
     const params: Record<string, unknown> = {
       threadId: targetThreadId,
       input: [{ type: "text", text: message }],
-      ...this.buildExecutionConfig()
+      ...this.buildTurnExecutionConfig()
     };
 
     if (this.selectedModel) {
@@ -541,6 +559,89 @@ export class CodexAppServerClient extends EventEmitter {
     }
 
     return files;
+  }
+
+  private async restoreThreadUsage(threadId: string): Promise<void> {
+    const sessionsDir = path.join(this.codexHomeDir, "sessions");
+    const sessionFiles = (await this.listFilesRecursive(sessionsDir)).filter((filePath) => filePath.includes(threadId));
+
+    if (sessionFiles.length === 0) {
+      return;
+    }
+
+    const datedFiles = await Promise.all(
+      sessionFiles.map(async (filePath) => ({
+        filePath,
+        modifiedAt: (await fs.stat(filePath).catch(() => null))?.mtimeMs ?? 0
+      }))
+    );
+
+    datedFiles.sort((left, right) => right.modifiedAt - left.modifiedAt);
+
+    for (const candidate of datedFiles) {
+      const usage = await this.readUsageFromSession(candidate.filePath);
+      if (!usage) {
+        continue;
+      }
+
+      this.store.updateThreadTokenUsage(threadId, usage);
+      return;
+    }
+  }
+
+  private async readUsageFromSession(
+    filePath: string
+  ): Promise<{ totalTokens: number | null; modelContextWindow: number | null } | null> {
+    const content = await fs.readFile(filePath, "utf8").catch(() => null);
+    if (!content) {
+      return null;
+    }
+
+    const lines = content.trim().split("\n").reverse();
+
+    for (const line of lines) {
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+
+      if (parsed.type !== "event_msg") {
+        continue;
+      }
+
+      const payload = parsed.payload && typeof parsed.payload === "object" ? (parsed.payload as Record<string, unknown>) : null;
+      if (!payload || payload.type !== "token_count") {
+        continue;
+      }
+
+      const info = payload.info && typeof payload.info === "object" ? (payload.info as Record<string, unknown>) : null;
+      if (!info) {
+        continue;
+      }
+
+      const lastUsage =
+        info.last_token_usage && typeof info.last_token_usage === "object"
+          ? (info.last_token_usage as Record<string, unknown>)
+          : null;
+      const totalUsage =
+        info.total_token_usage && typeof info.total_token_usage === "object"
+          ? (info.total_token_usage as Record<string, unknown>)
+          : null;
+
+      return {
+        totalTokens:
+          typeof lastUsage?.total_tokens === "number"
+            ? lastUsage.total_tokens
+            : typeof totalUsage?.total_tokens === "number"
+              ? totalUsage.total_tokens
+              : null,
+        modelContextWindow: typeof info.model_context_window === "number" ? info.model_context_window : null
+      };
+    }
+
+    return null;
   }
 
   private async deleteThreadArtifacts(threadId: string): Promise<number> {

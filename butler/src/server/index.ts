@@ -221,15 +221,20 @@ app.post("/api/workspace/focus", (_request, response) => {
   response.json({ ok: true });
 });
 
-app.post("/api/windows/focus", (request, response) => {
+app.post("/api/windows/focus", async (request, response) => {
   const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : "";
   if (!threadId) {
     response.status(400).json({ error: "threadId is required" });
     return;
   }
 
-  store.focusWindow(threadId);
-  response.json({ ok: true });
+  try {
+    await codexClient.loadThread(threadId);
+    store.focusWindow(threadId);
+    response.json({ ok: true });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 app.post("/api/windows/close", (request, response) => {

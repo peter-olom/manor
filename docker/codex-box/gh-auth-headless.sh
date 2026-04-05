@@ -11,4 +11,7 @@ printf 'Starting GitHub sign-in for %s.\n' "${host}"
 printf 'This terminal will stay headless. Press Enter when GitHub asks to continue.\n'
 printf 'The approval URL and one-time code will be shown here.\n\n'
 
-exec gh auth login --hostname "${host}" --git-protocol "${git_protocol}" --web "$@"
+gh auth login --hostname "${host}" --git-protocol "${git_protocol}" --web "$@"
+gh auth setup-git --hostname "${host}"
+
+printf '\nGitHub sign-in complete. Raw git now uses GitHub CLI credentials for %s.\n' "${host}"

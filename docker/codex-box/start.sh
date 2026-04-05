@@ -6,6 +6,18 @@ mkdir -p "${CODEX_HOME:-$HOME/.codex}" /state /repos /artifacts
 
 /usr/local/bin/codex-bootstrap-tools
 
+github_host="${GITHUB_HOST:-github.com}"
+
+if gh auth status --hostname "${github_host}" >/dev/null 2>&1; then
+  gh auth setup-git --hostname "${github_host}" >/dev/null 2>&1 || true
+fi
+
+# Keep the interactive browser terminal on zsh, but force the Codex worker
+# itself onto a plain shell so app-server command execution does not try to
+# launch zsh.
+export SHELL=/usr/bin/bash
+export TERM="${TERM:-xterm-256color}"
+
 ttyd_port="${CODEX_TTYD_PORT:-7681}"
 ttyd_base_path="${CODEX_TTYD_BASE_PATH:-/terminal/}"
 ttyd_pid=""

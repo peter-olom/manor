@@ -36,7 +36,7 @@ RUN apt-get update \
     && chmod +x /usr/local/bin/ttyd \
     && npm install -g "@jdxcode/mise@${MISE_VERSION}" \
     && npm install -g "@openai/codex@${CODEX_VERSION}" \
-    && useradd --create-home --shell /bin/zsh codex \
+    && useradd --create-home --shell /bin/bash codex \
     && mkdir -p /state /repos /artifacts /home/codex/.codex /opt/manor/codex-box \
     && git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git /home/codex/.oh-my-zsh \
     && mkdir -p /home/codex/.oh-my-zsh/custom \

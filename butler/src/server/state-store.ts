@@ -399,6 +399,9 @@ export class ButlerStateStore extends EventEmitter {
     const wasEnabled = this.milestonesEnabled;
     this.milestonesEnabled = false;
     this.upsertThreadSummary(thread);
+    if (threadId) {
+      this.getOrCreateThread(threadId).loaded = true;
+    }
     this.milestonesEnabled = wasEnabled;
     if (threadId) {
       this.primeThreadMilestones(threadId);
@@ -707,6 +710,10 @@ export class ButlerStateStore extends EventEmitter {
 
   getThread(threadId: string): CodexThreadRecord | undefined {
     return this.threads.get(threadId);
+  }
+
+  getOpenWindowIds(): string[] {
+    return this.windows.map((window) => window.threadId);
   }
 
   listProjectSummaries(): CodexProjectSummaryView[] {

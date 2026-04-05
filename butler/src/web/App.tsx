@@ -723,12 +723,23 @@ export function App() {
   }, []);
 
   const activeThread = useMemo(() => {
-    if (!snapshot?.codex.focusedWindowId) {
+    if (!snapshot) {
       return null;
     }
 
-    return snapshot.codex.openThreads[snapshot.codex.focusedWindowId] ?? null;
-  }, [snapshot]);
+    const threadId =
+      selectedSurface === "thread"
+        ? selectedThreadId ?? snapshot.codex.focusedWindowId
+        : selectedSurface === null && snapshot.codex.focusedWindowId
+          ? snapshot.codex.focusedWindowId
+          : null;
+
+    if (!threadId) {
+      return null;
+    }
+
+    return snapshot.codex.openThreads[threadId] ?? null;
+  }, [selectedSurface, selectedThreadId, snapshot]);
 
   useEffect(() => {
     const threadId = snapshot?.codex.focusedWindowId;
