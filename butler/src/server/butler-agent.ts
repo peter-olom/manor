@@ -84,7 +84,8 @@ function serializeMessages(session: AgentSession): ButlerMessageView[] {
         id: `message-${index}`,
         role,
         text: "content" in message ? contentToText(message.content) : "",
-        at: extractMessageTimestamp(record)
+        at: extractMessageTimestamp(record),
+        kind: "message" as const
       };
     });
 
@@ -94,7 +95,7 @@ function serializeMessages(session: AgentSession): ButlerMessageView[] {
     }
 
     if (message.role === "assistant" && !message.text.trim()) {
-      return session.isStreaming && index === messages.length - 1;
+      return false;
     }
 
     return true;
@@ -201,6 +202,75 @@ function buildSupervisorOverview(store: ButlerStateStore): string {
   return [summary.summary, leadProjects].filter(Boolean).join("\n");
 }
 
+function normalizeNoticeText(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized || null;
+}
+
+function summarizeNoticeResult(value: string | null | undefined): string | null {
+  const normalized = normalizeNoticeText(value);
+  if (!normalized) {
+    return null;
+  }
+
+  const sentences = normalized
+    .split(/(?<=[.!?])\s+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  if (sentences.length === 0) {
+    return normalized;
+  }
+
+  const first = sentences[0];
+  if (first.length >= 24 || sentences.length === 1) {
+    return first;
+  }
+
+  return `${first} ${sentences[1] ?? ""}`.trim();
+}
+
+function extractLatestNoticeTexts(thread: ReturnType<ButlerStateStore["getThread"]>) {
+  if (!thread) {
+    return {
+      latestUserPrompt: null as string | null,
+      latestAgentReply: null as string | null
+    };
+  }
+
+  const flattenedItems = thread.turns.flatMap((turn) => turn.items);
+  const latestUserPrompt =
+    normalizeNoticeText([...flattenedItems].reverse().find((item) => item.type === "userMessage" && item.text.trim())?.text) ?? null;
+  const latestAgentReply =
+    normalizeNoticeText([...flattenedItems].reverse().find((item) => item.type === "agentMessage" && item.text.trim())?.text) ?? null;
+
+  return { latestUserPrompt, latestAgentReply };
+}
+
+function buildMilestoneNoticeText(
+  store: ButlerStateStore,
+  milestone: { type: "completed" | "blocked"; threadId: string; turnId: string; summary: string }
+): string | null {
+  const thread = store.getThread(milestone.threadId);
+  if (!thread) {
+    return null;
+  }
+
+  const workerReport = store.getWorkerReport(milestone.threadId, milestone.turnId);
+  if (workerReport && workerReport.status === milestone.type) {
+    const prefix =
+      milestone.type === "blocked"
+        ? `Codex needs attention on ${thread.supervisor.projectLabel}.`
+        : `Codex finished work on ${thread.supervisor.projectLabel}.`;
+    return [prefix, workerReport.summary, workerReport.details].filter(Boolean).join("\n\n");
+  }
+  return null;
+}
+
 function buildSystemPrompt(store: ButlerStateStore): string {
   const supervisor = store.getSupervisorSummary();
   const projects = store.listProjectSummaries().slice(0, 8);
@@ -245,6 +315,7 @@ export class ButlerAgentService extends EventEmitter {
   private readonly codexAuthPath: string;
   private readonly codexConfigDir: string;
   private readonly sessionDir: string;
+  private readonly noticeStatePath: string;
   private modelRegistry: ModelRegistry | null = null;
   private session: AgentSession | null = null;
   private auth: ButlerAuthStatus = { mode: "none", loggedIn: false };
@@ -290,7 +361,53 @@ export class ButlerAgentService extends EventEmitter {
     this.codexAuthPath = options.codexAuthPath;
     this.codexConfigDir = options.codexConfigDir;
     this.sessionDir = options.sessionDir;
+    this.noticeStatePath = path.join(this.sessionDir, "notices.json");
     this.toolCatalog = this.buildToolCatalog();
+  }
+
+  private async loadNoticeState(): Promise<void> {
+    try {
+      const raw = await fs.readFile(this.noticeStatePath, "utf8");
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        return;
+      }
+
+      this.noticeMessages.splice(0, this.noticeMessages.length);
+      for (const item of parsed) {
+        if (!item || typeof item !== "object") {
+          continue;
+        }
+
+        const id = typeof item.id === "string" ? item.id : null;
+        const role = typeof item.role === "string" ? item.role : null;
+        const text = typeof item.text === "string" ? item.text : null;
+        const at = typeof item.at === "number" && Number.isFinite(item.at) ? item.at : null;
+        const kind = item.kind === "notice" ? "notice" : null;
+
+        if (!id || !role || !text || !kind) {
+          continue;
+        }
+
+        this.noticeMessages.push({ id, role, text, at, kind });
+        if (id.startsWith("notice-")) {
+          this.seenMilestoneIds.add(id.slice("notice-".length));
+        }
+      }
+
+      this.noticeMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
+      if (this.noticeMessages.length > 40) {
+        this.noticeMessages.splice(0, this.noticeMessages.length - 40);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
+  private async saveNoticeState(): Promise<void> {
+    await fs.writeFile(this.noticeStatePath, JSON.stringify(this.noticeMessages, null, 2), "utf8");
   }
 
   private handleStoreChange(): void {
@@ -301,16 +418,46 @@ export class ButlerAgentService extends EventEmitter {
         continue;
       }
 
+      const noticeMilestone = milestone as typeof milestone & { type: "completed" | "blocked" };
+      const noticeId = `notice-${milestone.id}`;
+      const nextText = buildMilestoneNoticeText(this.store, noticeMilestone);
+      const existingNotice = this.noticeMessages.find((entry) => entry.id === noticeId);
+
+      if (!nextText) {
+        if (existingNotice) {
+          const index = this.noticeMessages.findIndex((entry) => entry.id === noticeId);
+          if (index >= 0) {
+            this.noticeMessages.splice(index, 1);
+          }
+          changed = true;
+        }
+        continue;
+      }
+
       if (this.seenMilestoneIds.has(milestone.id)) {
+        if (existingNotice && existingNotice.text !== nextText) {
+          existingNotice.text = nextText;
+          changed = true;
+        } else if (!existingNotice) {
+          this.noticeMessages.push({
+            id: noticeId,
+            role: "assistant",
+            text: nextText,
+            at: milestone.at,
+            kind: "notice" as const
+          });
+          changed = true;
+        }
         continue;
       }
 
       this.seenMilestoneIds.add(milestone.id);
       this.noticeMessages.push({
-        id: `notice-${milestone.id}`,
+        id: noticeId,
         role: "assistant",
-        text: milestone.type === "blocked" ? `Codex reported a blocked workstream. ${milestone.summary}` : `Codex finished work. ${milestone.summary}`,
-        at: milestone.at
+        text: nextText,
+        at: milestone.at,
+        kind: "notice" as const
       });
       changed = true;
     }
@@ -320,17 +467,20 @@ export class ButlerAgentService extends EventEmitter {
       if (this.noticeMessages.length > 40) {
         this.noticeMessages.splice(0, this.noticeMessages.length - 40);
       }
+      void this.saveNoticeState();
       this.emit("change");
     }
   }
 
   async start(): Promise<void> {
     await fs.mkdir(this.sessionDir, { recursive: true });
+    await this.loadNoticeState();
     this.auth = await readButlerAuthStatus(this.piAuthPath);
     this.modelRegistry = ModelRegistry.inMemory(AuthStorage.create(this.piAuthPath));
     await this.createOrRefreshSession();
     await this.refreshExternalStatus();
     this.store.on("change", () => this.handleStoreChange());
+    this.handleStoreChange();
     this.statusRefreshTimer = setInterval(() => {
       void this.refreshExternalStatus();
     }, 10000);
@@ -1310,6 +1460,9 @@ export class ButlerAgentService extends EventEmitter {
             "Start with `manor-harness status` to see what Manor already attached to this job.",
             "For attached previews and services, use `manor-harness` for inspect, logs, processes, and exec directly against the runtime. Butler still owns start, stop, lifecycle, and policy.",
             "Use only the harness actions exposed through `manor-harness`. Do not try to command Butler directly outside those actions.",
+            "When you complete meaningful work, record a supervisor report before your final reply with `manor-harness report --status completed --summary \"<concise outcome>\" --details \"<brief oversight note with the key fact, risk, or next step>\"`.",
+            "If you are blocked or need operator attention, record it before your reply with `manor-harness report --status blocked --summary \"<what is blocked>\" --details \"<what you need, what failed, or the next recommended action>\"`.",
+            "Supervisor reports should help Butler oversee the job. Keep `summary` short and outcome-first, and use `details` for the extra context Butler should surface without dumping the whole conversation.",
             "Keep the thread focused on the delegated task and report concise progress and outcome."
           ].join("\n");
 

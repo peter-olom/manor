@@ -19,6 +19,7 @@ import type {
   CodexThreadSummary,
   CodexThreadSupervisorView,
   CodexTurnRecord,
+  CodexWorkerReportView,
   PreviewLeaseView,
   ServiceLeaseView,
   PersistedUiState
@@ -78,6 +79,18 @@ function clipText(value: string | null | undefined, max = 160): string | null {
   }
 
   return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized;
+}
+
+function formatWindowTitle(threadId: string): string {
+  return `Job ${threadId.slice(0, 8)}`;
+}
+
+function normalizeWindow(window: ButlerWindow): ButlerWindow {
+  return {
+    threadId: window.threadId,
+    title: formatWindowTitle(window.threadId),
+    openedAt: window.openedAt
+  };
 }
 
 function getProjectInfo(cwd: string | null): { id: string; label: string } {
@@ -266,6 +279,7 @@ export class ButlerStateStore extends EventEmitter {
   private readonly previewLeases = new Map<string, PreviewLeaseView>();
   private readonly serviceLeases = new Map<string, ServiceLeaseView>();
   private readonly persistedSupervisionByThreadId = new Map<string, { butlerTurnsUsed: number; maxButlerTurns: number | null }>();
+  private readonly persistedWorkerReportsByThreadId = new Map<string, CodexWorkerReportView[]>();
   private windows: ButlerWindow[] = [];
   private focusedWindowId: string | null = null;
   private saveTimer: NodeJS.Timeout | null = null;
@@ -399,7 +413,17 @@ export class ButlerStateStore extends EventEmitter {
     try {
       const raw = await fs.readFile(this.uiStatePath, "utf8");
       const data = JSON.parse(raw) as PersistedUiState;
-      this.windows = Array.isArray(data.windows) ? data.windows : [];
+      this.windows = Array.isArray(data.windows)
+        ? data.windows
+            .filter((window): window is ButlerWindow => Boolean(window && typeof window.threadId === "string"))
+            .map((window) =>
+              normalizeWindow({
+                threadId: window.threadId,
+                title: typeof window.title === "string" ? window.title : "",
+                openedAt: typeof window.openedAt === "number" ? window.openedAt : Date.now()
+              })
+            )
+        : [];
       this.focusedWindowId = typeof data.focusedWindowId === "string" ? data.focusedWindowId : null;
       this.previewLeases.clear();
       for (const lease of Array.isArray(data.previewLeases) ? data.previewLeases : []) {
@@ -414,11 +438,40 @@ export class ButlerStateStore extends EventEmitter {
         }
       }
       this.persistedSupervisionByThreadId.clear();
+      this.persistedWorkerReportsByThreadId.clear();
       for (const [threadId, policy] of Object.entries(data.supervisionByThreadId ?? {})) {
         this.persistedSupervisionByThreadId.set(threadId, {
           butlerTurnsUsed: typeof policy?.butlerTurnsUsed === "number" ? policy.butlerTurnsUsed : 0,
           maxButlerTurns: typeof policy?.maxButlerTurns === "number" ? policy.maxButlerTurns : null
         });
+      }
+      for (const [threadId, rawReports] of Object.entries(data.workerReportsByThreadId ?? {})) {
+        const entries = Array.isArray(rawReports) ? rawReports : rawReports ? [rawReports] : [];
+        const reports = entries
+          .filter(
+            (report): report is CodexWorkerReportView =>
+              Boolean(report) &&
+              typeof report === "object" &&
+              typeof report.threadId === "string" &&
+              typeof report.turnId === "string" &&
+              (report.status === "completed" || report.status === "blocked") &&
+              typeof report.summary === "string"
+          )
+          .map((report) => ({
+            threadId: report.threadId,
+            turnId: report.turnId,
+            status: report.status,
+            summary: report.summary.trim(),
+            details: typeof report.details === "string" && report.details.trim() ? report.details.trim() : null,
+            createdAt: typeof report.createdAt === "number" ? report.createdAt : Date.now(),
+            updatedAt: typeof report.updatedAt === "number" ? report.updatedAt : Date.now()
+          }))
+          .sort((left, right) => left.createdAt - right.createdAt)
+          .slice(-20);
+
+        if (reports.length > 0) {
+          this.persistedWorkerReportsByThreadId.set(threadId, reports);
+        }
       }
     } catch {
       this.windows = [];
@@ -426,6 +479,7 @@ export class ButlerStateStore extends EventEmitter {
       this.previewLeases.clear();
       this.serviceLeases.clear();
       this.persistedSupervisionByThreadId.clear();
+      this.persistedWorkerReportsByThreadId.clear();
     }
   }
 
@@ -436,11 +490,15 @@ export class ButlerStateStore extends EventEmitter {
 
     this.saveTimer = setTimeout(async () => {
       this.saveTimer = null;
+      this.windows = this.windows.map(normalizeWindow);
       const payload: PersistedUiState = {
         windows: this.windows,
         focusedWindowId: this.focusedWindowId,
         previewLeases: [...this.previewLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
         serviceLeases: [...this.serviceLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
+        workerReportsByThreadId: Object.fromEntries(
+          [...this.persistedWorkerReportsByThreadId.entries()].map(([threadId, reports]) => [threadId, reports])
+        ),
         supervisionByThreadId: Object.fromEntries(
           [...this.persistedSupervisionByThreadId.entries()].map(([threadId, policy]) => [
             threadId,
@@ -483,7 +541,8 @@ export class ButlerStateStore extends EventEmitter {
       supervisor: emptyThreadSupervisor(),
       turns: [],
       eventLog: [],
-      milestones: []
+      milestones: [],
+      workerReport: null
     };
     const persisted = this.persistedSupervisionByThreadId.get(id);
     if (persisted) {
@@ -491,6 +550,11 @@ export class ButlerStateStore extends EventEmitter {
       created.supervision.maxButlerTurns = persisted.maxButlerTurns;
       created.supervision.capReached =
         persisted.maxButlerTurns !== null && persisted.butlerTurnsUsed >= persisted.maxButlerTurns;
+    }
+    const persistedReports = this.persistedWorkerReportsByThreadId.get(id);
+    const persistedReport = persistedReports?.at(-1) ?? null;
+    if (persistedReport) {
+      created.workerReport = { ...persistedReport };
     }
     this.threads.set(id, created);
     return created;
@@ -862,11 +926,17 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   private pushMilestone(thread: CodexThreadRecord, type: CodexMilestoneEntry["type"], summary: string): void {
+    const latestTurn = thread.turns.at(-1);
+    if (!latestTurn) {
+      return;
+    }
+
     const entry: CodexMilestoneEntry = {
-      id: `${thread.id}:${type}:${Date.now()}`,
+      id: `${thread.id}:${type}:${latestTurn.id}:${Date.now()}`,
       at: Date.now(),
       type,
       threadId: thread.id,
+      turnId: latestTurn.id,
       projectId: thread.supervisor.projectId,
       summary
     };
@@ -923,11 +993,11 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   openWindow(threadId: string): void {
-    const thread = this.getOrCreateThread(threadId);
+    this.getOrCreateThread(threadId);
     if (!this.windows.find((window) => window.threadId === threadId)) {
       this.windows.unshift({
         threadId,
-        title: thread.preview || `Job ${threadId.slice(0, 8)}`,
+        title: formatWindowTitle(threadId),
         openedAt: Date.now()
       });
     }
@@ -973,6 +1043,7 @@ export class ButlerStateStore extends EventEmitter {
       }
     }
     this.persistedSupervisionByThreadId.delete(threadId);
+    this.persistedWorkerReportsByThreadId.delete(threadId);
     this.latestStartedTurnIds.delete(threadId);
     this.latestCompletedTurnIds.delete(threadId);
     this.latestBlockedTurnIds.delete(threadId);
@@ -1003,6 +1074,7 @@ export class ButlerStateStore extends EventEmitter {
         }
       }
       this.persistedSupervisionByThreadId.delete(threadId);
+      this.persistedWorkerReportsByThreadId.delete(threadId);
       this.latestStartedTurnIds.delete(threadId);
       this.latestCompletedTurnIds.delete(threadId);
       this.latestBlockedTurnIds.delete(threadId);
@@ -1039,6 +1111,63 @@ export class ButlerStateStore extends EventEmitter {
 
   getThread(threadId: string): CodexThreadRecord | undefined {
     return this.threads.get(threadId);
+  }
+
+  recordWorkerReport(
+    threadId: string,
+    report: {
+      status: "completed" | "blocked";
+      summary: string;
+      details?: string | null;
+      turnId?: string | null;
+    }
+  ): CodexWorkerReportView {
+    const thread = this.getOrCreateThread(threadId);
+    const latestTurn = thread.turns.at(-1);
+    const explicitTurnId = typeof report.turnId === "string" && report.turnId.trim() ? report.turnId.trim() : null;
+    const turnId = explicitTurnId ?? latestTurn?.id ?? null;
+    if (!turnId) {
+      throw new Error("Cannot record a worker report before the thread has an active or completed turn");
+    }
+
+    const now = Date.now();
+    const existing = thread.workerReport;
+    const nextReport: CodexWorkerReportView = {
+      threadId,
+      turnId,
+      status: report.status,
+      summary: report.summary.trim(),
+      details: typeof report.details === "string" && report.details.trim() ? report.details.trim() : null,
+      createdAt: existing?.turnId === turnId && existing?.status === report.status ? existing.createdAt : now,
+      updatedAt: now
+    };
+
+    thread.workerReport = nextReport;
+    thread.updatedAt = now;
+    const history = this.persistedWorkerReportsByThreadId.get(threadId) ?? [];
+    const nextHistory = [...history.filter((entry) => entry.turnId !== turnId), nextReport]
+      .sort((left, right) => left.createdAt - right.createdAt)
+      .slice(-20);
+    this.persistedWorkerReportsByThreadId.set(threadId, nextHistory);
+    this.queueSave();
+    this.emitChange();
+    return nextReport;
+  }
+
+  getWorkerReport(threadId: string, turnId?: string | null): CodexWorkerReportView | null {
+    const liveReport = this.threads.get(threadId)?.workerReport ?? null;
+    if (liveReport && (!turnId || liveReport.turnId === turnId)) {
+      return liveReport;
+    }
+
+    const reports = this.persistedWorkerReportsByThreadId.get(threadId) ?? [];
+    if (reports.length === 0) {
+      return null;
+    }
+    if (turnId) {
+      return reports.find((entry) => entry.turnId === turnId) ?? null;
+    }
+    return reports.at(-1) ?? null;
   }
 
   getOpenWindowIds(): string[] {
@@ -1208,6 +1337,7 @@ export class ButlerStateStore extends EventEmitter {
     lastError: string | null;
     compose: AppSnapshot["codex"]["compose"];
   }): AppSnapshot {
+    this.windows = this.windows.map(normalizeWindow);
     const openThreads = Object.fromEntries(
       this.windows
         .map((window) => {

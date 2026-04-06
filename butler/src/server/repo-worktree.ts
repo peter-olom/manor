@@ -21,6 +21,34 @@ async function git(args: string[], cwd: string): Promise<string> {
   return stdout.trim();
 }
 
+export async function cleanupManagedWorktree(cwd: string): Promise<number> {
+  if (!isManagedWorktree(cwd)) {
+    return 0;
+  }
+
+  const worktreePath = cwd.trim();
+  if (!worktreePath) {
+    return 0;
+  }
+
+  const branchName = await git(["branch", "--show-current"], worktreePath).catch(() => "");
+  const commonGitDir = await git(["rev-parse", "--git-common-dir"], worktreePath).catch(() => "");
+  const repoRoot = commonGitDir ? path.dirname(commonGitDir) : "";
+
+  let removed = 0;
+
+  await git(["worktree", "remove", "--force", worktreePath], repoRoot || worktreePath).catch(() => undefined);
+  await fs.rm(worktreePath, { recursive: true, force: true }).catch(() => undefined);
+  removed += 1;
+
+  if (repoRoot && branchName) {
+    await git(["branch", "-D", branchName], repoRoot).catch(() => undefined);
+    removed += 1;
+  }
+
+  return removed;
+}
+
 async function branchExists(repoRoot: string, branchName: string): Promise<boolean> {
   try {
     await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branchName}`], repoRoot);

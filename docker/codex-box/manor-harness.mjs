@@ -12,6 +12,7 @@ const runtimeBrokerBaseUrl = process.env.MANOR_RUNTIME_BROKER_URL || "http://run
 function printHelp() {
   console.log(`Usage:
   manor-harness status
+  manor-harness report --status completed|blocked --summary "<text>" [--details "<text>"] [--turn-id <id>]
   manor-harness preview list
   manor-harness preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>]
 
@@ -168,6 +169,14 @@ async function main() {
 
   if (args[0] === "status") {
     action = "context";
+  } else if (args[0] === "report") {
+    action = "report";
+    params = {
+      status: readFlag(args, "--status"),
+      summary: readFlag(args, "--summary"),
+      details: readFlag(args, "--details"),
+      turnId: readFlag(args, "--turn-id")
+    };
   } else if (args[0] === "preview") {
     const subcommand = args[1];
     if (subcommand === "list") {

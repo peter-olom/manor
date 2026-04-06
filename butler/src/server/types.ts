@@ -43,6 +43,18 @@ export interface CodexSupervisionView {
   capReached: boolean;
 }
 
+export type CodexWorkerReportStatus = "completed" | "blocked";
+
+export interface CodexWorkerReportView {
+  threadId: string;
+  turnId: string;
+  status: CodexWorkerReportStatus;
+  summary: string;
+  details: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export type PreviewLeaseStatus = "starting" | "running" | "stopping" | "stopped" | "failed";
 export type PreviewEgressProfile = string;
 export type ServiceLeaseStatus = "starting" | "running" | "stopping" | "stopped" | "failed";
@@ -151,6 +163,7 @@ export interface CodexMilestoneEntry {
   at: number;
   type: CodexMilestoneType;
   threadId: string;
+  turnId: string;
   projectId: string;
   summary: string;
 }
@@ -185,6 +198,7 @@ export interface CodexThreadRecord extends CodexThreadSummary {
   turns: CodexTurnRecord[];
   eventLog: CodexEventEntry[];
   milestones: CodexMilestoneEntry[];
+  workerReport: CodexWorkerReportView | null;
 }
 
 export interface ButlerWindow {
@@ -210,6 +224,7 @@ export interface ButlerMessageView {
   role: string;
   text: string;
   at: number | null;
+  kind: "message" | "notice";
 }
 
 export interface CodexProjectSummaryView {
@@ -344,6 +359,7 @@ export interface PersistedUiState {
   focusedWindowId: string | null;
   previewLeases?: PreviewLeaseView[];
   serviceLeases?: ServiceLeaseView[];
+  workerReportsByThreadId?: Record<string, CodexWorkerReportView[]>;
   supervisionByThreadId?: Record<
     string,
     {

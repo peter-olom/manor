@@ -4,6 +4,7 @@ import path from "node:path";
 
 import WebSocket, { type RawData } from "ws";
 
+import { cleanupManagedWorktree } from "./repo-worktree.js";
 import { ButlerStateStore } from "./state-store.js";
 import type { ModelOption, ReasoningEffort } from "./types.js";
 
@@ -702,6 +703,7 @@ export class CodexAppServerClient extends EventEmitter {
 
   private async deleteThreadArtifacts(threadId: string): Promise<number> {
     const removed = new Set<string>();
+    const thread = this.store.getThread(threadId);
     const sessionsDir = path.join(this.codexHomeDir, "sessions");
     const snapshotsDir = path.join(this.codexHomeDir, "shell_snapshots");
 
@@ -726,6 +728,13 @@ export class CodexAppServerClient extends EventEmitter {
       removed.add(filePath);
     }
 
+    if (thread?.cwd) {
+      const cleanupCount = await cleanupManagedWorktree(thread.cwd).catch(() => 0);
+      for (let index = 0; index < cleanupCount; index += 1) {
+        removed.add(`worktree-cleanup:${thread.id}:${index}`);
+      }
+    }
+
     return removed.size;
   }
 
@@ -748,6 +757,7 @@ export class CodexAppServerClient extends EventEmitter {
 
   async deleteAllThreads(): Promise<{ deletedThreadIds: string[]; deletedArtifacts: number }> {
     const threadIds = this.store.listThreads().map((thread) => thread.id);
+    const threads = threadIds.map((threadId) => this.store.getThread(threadId)).filter(Boolean);
     for (const threadId of threadIds) {
       this.deletedThreadIds.add(threadId);
     }
@@ -768,6 +778,13 @@ export class CodexAppServerClient extends EventEmitter {
     for (const filePath of await this.listFilesRecursive(snapshotsDir)) {
       await fs.rm(filePath, { force: true });
       deletedArtifacts += 1;
+    }
+
+    for (const thread of threads) {
+      if (!thread?.cwd) {
+        continue;
+      }
+      deletedArtifacts += await cleanupManagedWorktree(thread.cwd).catch(() => 0);
     }
 
     this.store.removeThreads(threadIds);

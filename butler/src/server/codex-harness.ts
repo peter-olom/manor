@@ -371,6 +371,29 @@ export class CodexHarnessService {
       };
     }
 
+    if (action === "report") {
+      const status = normalizeString(params.status);
+      const summary = normalizeString(params.summary);
+      const details = normalizeString(params.details) || null;
+      const turnId = normalizeString(params.turnId) || null;
+
+      if ((status !== "completed" && status !== "blocked") || !summary) {
+        throw new Error("report requires status=completed|blocked and a non-empty summary");
+      }
+
+      const report = this.store.recordWorkerReport(capability.threadId, {
+        status,
+        summary,
+        details,
+        turnId
+      });
+      this.store.addEvent(capability.threadId, `harness/report/${status}`, summary);
+      return {
+        text: `Recorded ${status} supervisor report for job ${capability.threadId}.`,
+        data: { report }
+      };
+    }
+
     if (action === "preview.list") {
       const previews = await this.reconcileThreadPreviews(capability.threadId);
       return {

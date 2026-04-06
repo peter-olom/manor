@@ -496,10 +496,16 @@ select {
 .workspace-plus {
   width: var(--rail-width);
   border-left: 1px solid var(--line);
-  font-size: 1.3rem;
-  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--muted);
   cursor: pointer;
+}
+
+.workspace-plus svg {
+  width: 1.05rem;
+  height: 1.05rem;
 }
 
 .workspace-mobile-timeline {
@@ -732,6 +738,37 @@ select {
 
 .conversation-pane-full {
   min-height: 0;
+}
+
+.conversation-pane.has-toolbar {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.conversation-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 10px 18px 0;
+  background: var(--bg);
+}
+
+.conversation-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.conversation-toggle.is-active,
+.conversation-toggle:hover {
+  color: var(--ink);
+}
+
+.conversation-toggle-count {
+  color: var(--accent);
 }
 
 .conversation-scroll {
@@ -1003,6 +1040,22 @@ select {
   max-width: 100%;
   background: var(--panel);
   --entry-bg: var(--panel);
+}
+
+.entry.is-notice {
+  max-width: 100%;
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+  --entry-bg: color-mix(in srgb, var(--panel) 70%, transparent);
+  --entry-muted: var(--muted);
+  --entry-table-line: var(--line);
+  --entry-blockquote-line: var(--line-strong);
+  --entry-code-bg: var(--code-bg);
+  --entry-code-bar-bg: var(--code-bar-bg);
+  --entry-code-bar-ink: var(--code-bar-ink);
+  --entry-code-border: var(--code-border);
+  --entry-code-ink: var(--code-ink);
+  --entry-code-inline-bg: var(--code-inline-bg);
+  --entry-code-inline-ink: var(--code-inline-ink);
 }
 
 .entry.is-jump-target {
@@ -1971,6 +2024,10 @@ select {
     padding: 16px;
   }
 
+  .conversation-toolbar {
+    padding: 10px 16px 0;
+  }
+
   .conversation-pane {
     border-right: 0;
     border-bottom: 0;
@@ -2155,6 +2212,10 @@ select {
   .conversation-scroll {
     gap: 14px;
     padding: 14px;
+  }
+
+  .conversation-toolbar {
+    padding: 10px 14px 0;
   }
 
   .entry {

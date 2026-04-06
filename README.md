@@ -111,7 +111,7 @@ Butler now runs as a real service instead of a placeholder.
 - the UI includes a dedicated Codex terminal surface for direct shell access when needed
 - the UI uses one unified Butler chat plus a jobs sidebar and window strip
 - Butler mirrors Codex threads over app-server notifications and only reads full thread history when a window is opened
-- Codex event notifications are used as the first supervision signal path, so no extra Codex hook was needed for this cut
+- Codex event notifications remain the primary supervision signal path, and Codex can also submit worker-authored supervisor reports through `manor-harness report`
 - Butler has its own persisted auth and Pi session state
 - Butler can seed its own auth from the existing shared Codex ChatGPT login without modifying the shared Codex auth data
 

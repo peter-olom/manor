@@ -18,6 +18,7 @@ type ToastTone = "success" | "error" | "info";
 const THEME_STORAGE_KEY = "manor.butler.themePreference";
 const BUTLER_DRAFT_STORAGE_KEY = "manor.butler.draft";
 const THREAD_DRAFT_STORAGE_KEY_PREFIX = "manor.butler.threadDraft.";
+const BUTLER_NOTICE_VISIBILITY_STORAGE_KEY = "manor.butler.showNotices";
 const DRAFT_PERSIST_DELAY_MS = 180;
 
 type AppToast = {
@@ -151,6 +152,7 @@ type Snapshot = {
       role: string;
       text: string;
       at: number | null;
+      kind: "message" | "notice";
     }>;
     onboarding: {
       complete: boolean;
@@ -561,9 +563,45 @@ function StatusIcon({ kind }: { kind: "codex" | "auth" | "model" | "context" | "
     );
   }
 
+  if (kind === "context") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path
+          d="M8 3.2a4.8 4.8 0 1 0 4.8 4.8"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.2"
+          strokeLinecap="square"
+        />
+        <path
+          d="M8 5.3v2.8l2.2 1.4M8 2.4v2.2M13.6 8h-2.2"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.2"
+          strokeLinecap="square"
+          strokeLinejoin="miter"
+        />
+      </svg>
+    );
+  }
+
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true">
       <path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="square" />
+    </svg>
+  );
+}
+
+function ThreadsIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d="M4 4.5h8M4 8h8M4 11.5h8M2.5 4.5h.01M2.5 8h.01M2.5 11.5h.01"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="square"
+      />
     </svg>
   );
 }
@@ -818,6 +856,13 @@ export function App() {
   const [pendingButlerText, setPendingButlerText] = useState<string | null>(null);
   const [pendingThreadRequest, setPendingThreadRequest] = useState<PendingThreadRequest | null>(null);
   const [threadDraft, setThreadDraft] = useState("");
+  const [showButlerNotices, setShowButlerNotices] = useState(() => {
+    if (typeof window === "undefined") {
+      return true;
+    }
+
+    return window.localStorage.getItem(BUTLER_NOTICE_VISIBILITY_STORAGE_KEY) !== "false";
+  });
   const [threadsDrawerOpen, setThreadsDrawerOpen] = useState(false);
   const [selectedSurface, setSelectedSurface] = useState<WorkspaceSurface | null>(initialWorkspaceQuery.surface);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(initialWorkspaceQuery.threadId);
@@ -1064,6 +1109,14 @@ export function App() {
   }, [threadDraft]);
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(BUTLER_NOTICE_VISIBILITY_STORAGE_KEY, showButlerNotices ? "true" : "false");
+  }, [showButlerNotices]);
+
+  useEffect(() => {
     if (!threadsDrawerOpen) {
       return;
     }
@@ -1280,27 +1333,33 @@ export function App() {
   );
   const showThreadWorkingIndicator =
     Boolean(pendingThreadRequest && activeThread && pendingThreadRequest.threadId === activeThread.id) || activeThread?.status === "active";
-  const showPendingButlerEntry = Boolean(
-    pendingButlerText &&
-      snapshot &&
-      !snapshot.butler.messages.some((message) => message.role.startsWith("user") && message.text === pendingButlerText)
+  const butlerVisibleMessages = useMemo(
+    () =>
+      snapshot
+        ? snapshot.butler.messages.filter((message) => showButlerNotices || message.kind !== "notice")
+        : [],
+    [showButlerNotices, snapshot]
+  );
+  const butlerNoticeCount = useMemo(
+    () => (snapshot ? snapshot.butler.messages.filter((message) => message.kind === "notice").length : 0),
+    [snapshot]
   );
   const butlerMessagesWithTimes = useMemo(
     () =>
       snapshot
-        ? snapshot.butler.messages.map((message, index) => {
+        ? butlerVisibleMessages.map((message, index) => {
             const knownAt = message.at ?? butlerMessageTimesRef.current[message.id];
             if (typeof knownAt === "number" && Number.isFinite(knownAt)) {
               butlerMessageTimesRef.current[message.id] = knownAt;
               return { ...message, at: knownAt };
             }
 
-            const fallbackAt = Date.now() - (snapshot.butler.messages.length - index) * 1000;
+            const fallbackAt = Date.now() - (butlerVisibleMessages.length - index) * 1000;
             butlerMessageTimesRef.current[message.id] = fallbackAt;
             return { ...message, at: fallbackAt };
           })
         : [],
-    [snapshot]
+    [butlerVisibleMessages, snapshot]
   );
   const butlerPromptJumpList = useMemo(
     () => butlerMessagesWithTimes.filter((message) => message.role.startsWith("user")),
@@ -1347,7 +1406,6 @@ export function App() {
     followButler,
     latestButlerMessageKey,
     pendingButlerText,
-    showPendingButlerEntry,
     snapshot?.butler.pending,
     snapshot?.butler.isStreaming
   ]);
@@ -1559,6 +1617,30 @@ export function App() {
     }
   }
 
+  async function closeThreadWindow(threadId: string) {
+    const remainingWindows = snapshot.codex.windows.filter((window) => window.threadId !== threadId);
+    const isActiveWindow =
+      activeTabId === threadId || (selectedSurface === "thread" && selectedThreadId === threadId);
+
+    if (isActiveWindow) {
+      const nextThreadId = remainingWindows[0]?.threadId ?? null;
+      setShowPromptRail(false);
+      if (nextThreadId) {
+        setSelectedSurface("thread");
+        setSelectedThreadId(nextThreadId);
+      } else {
+        setSelectedThreadId(null);
+        setSelectedSurface(showSetupGuide ? "setup" : "butler");
+      }
+    }
+
+    try {
+      await postJson("/api/windows/close", { threadId });
+    } catch (closeError) {
+      showErrorToast(closeError);
+    }
+  }
+
   function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>, submit: () => void) {
     if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) {
       return;
@@ -1766,7 +1848,9 @@ export function App() {
                   </button>
                   <button
                     className="workspace-tab-close"
-                    onClick={() => postJson("/api/windows/close", { threadId: window.threadId }).catch(() => undefined)}
+                    onClick={() => {
+                      void closeThreadWindow(window.threadId);
+                    }}
                   >
                     ×
                   </button>
@@ -1789,7 +1873,7 @@ export function App() {
               aria-label="Browse Codex threads"
               aria-expanded={threadsDrawerOpen}
             >
-              +
+              <ThreadsIcon />
             </button>
           </div>
 
@@ -2297,7 +2381,17 @@ export function App() {
                 </div>
               ) : null}
               <div className={`workspace-body ${showPromptRail ? "is-detail-open" : "is-detail-closed"}`}>
-              <section className="conversation-pane conversation-pane-full">
+              <section className="conversation-pane conversation-pane-full has-toolbar">
+                <div className="conversation-toolbar">
+                  <button
+                    className={`conversation-toggle${showButlerNotices ? " is-active" : ""}`}
+                    onClick={() => setShowButlerNotices((current) => !current)}
+                    type="button"
+                  >
+                    {showButlerNotices ? "Hide notices" : "Show notices"}
+                    {butlerNoticeCount > 0 ? <span className="conversation-toggle-count">{butlerNoticeCount}</span> : null}
+                  </button>
+                </div>
                 <div
                   ref={butlerScrollRef}
                   className="conversation-scroll"
@@ -2318,10 +2412,10 @@ export function App() {
                             butlerPromptRefs.current[message.id] = node;
                           }
                         }}
-                        className={`entry is-${message.role.startsWith("assistant") ? "assistant" : "user"}${activeJumpId === message.id ? " is-jump-target" : ""}`}
+                        className={`entry ${message.kind === "notice" ? "is-notice" : `is-${message.role.startsWith("assistant") ? "assistant" : "user"}`}${activeJumpId === message.id ? " is-jump-target" : ""}`}
                       >
                         <div className="entry-head">
-                          <span>{message.role.startsWith("assistant") ? "Butler" : "You"}</span>
+                          <span>{message.kind === "notice" ? "Supervisor notice" : message.role.startsWith("assistant") ? "Butler" : "You"}</span>
                           <span className="entry-head-meta">
                             <span>{formatJumpLabel(message.at)}</span>
                             <button
@@ -2340,27 +2434,6 @@ export function App() {
                         </article>
                       ))
                   )}
-                  {showPendingButlerEntry ? (
-                    <article className="entry is-user is-pending">
-                      <div className="entry-head">
-                        <span>You</span>
-                        <span className="entry-head-meta">
-                          <span>sending</span>
-                          <button
-                            className="entry-copy"
-                            onClick={() => void copyText(pendingButlerText, "Message copied")}
-                            aria-label="Copy message"
-                            title="Copy message"
-                          >
-                            <CopyIcon />
-                          </button>
-                        </span>
-                      </div>
-                      <div className="entry-text">
-                        <MarkdownMessage text={pendingButlerText} />
-                      </div>
-                    </article>
-                  ) : null}
                   {snapshot.butler.pending || snapshot.butler.isStreaming ? (
                     <div
                       className={`working-indicator ${snapshot.butler.isStreaming ? "is-streaming" : "is-pending"}`}
