@@ -13,10 +13,31 @@ type OnboardingCommandTarget = "localShell" | "butlerTerminal" | "codexTerminal"
 type SetupCommandMode = "localShell" | "builtInTerminal";
 type TerminalTarget = "butlerTerminal" | "codexTerminal";
 type WorkspaceSurface = "setup" | "butler" | "terminal" | "thread";
+type ToastTone = "success" | "error" | "info";
 
 const THEME_STORAGE_KEY = "manor.butler.themePreference";
 const BUTLER_DRAFT_STORAGE_KEY = "manor.butler.draft";
 const THREAD_DRAFT_STORAGE_KEY_PREFIX = "manor.butler.threadDraft.";
+
+type AppToast = {
+  key: string;
+  message: string;
+  tone: ToastTone;
+};
+
+type ConfirmDialogState = {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  tone: "danger";
+  onConfirm: () => Promise<void>;
+};
+
+type PendingThreadRequest = {
+  threadId: string;
+  text: string;
+  sentAt: number;
+};
 
 type ModelOption = {
   id: string;
@@ -626,6 +647,29 @@ function CopyIcon() {
   );
 }
 
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d="M3.5 4.5h9M6.2 2.5h3.6M5 4.5v7M8 4.5v7M11 4.5v7M4.5 4.5l.5 8h6l.5-8"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="square"
+        strokeLinejoin="miter"
+      />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M4 4l8 8M12 4 4 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="square" />
+    </svg>
+  );
+}
+
 async function postJson<T = void>(url: string, body: unknown): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
@@ -714,12 +758,14 @@ export function App() {
   });
   const [butlerDraft, setButlerDraft] = useState(() => readStoredValue(BUTLER_DRAFT_STORAGE_KEY));
   const [pendingButlerText, setPendingButlerText] = useState<string | null>(null);
+  const [pendingThreadRequest, setPendingThreadRequest] = useState<PendingThreadRequest | null>(null);
   const [threadDraft, setThreadDraft] = useState("");
   const [threadsDrawerOpen, setThreadsDrawerOpen] = useState(false);
   const [selectedSurface, setSelectedSurface] = useState<WorkspaceSurface | null>(initialWorkspaceQuery.surface);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(initialWorkspaceQuery.threadId);
-  const [error, setError] = useState<string | null>(null);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toast, setToast] = useState<AppToast | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
   const [copiedCommandKey, setCopiedCommandKey] = useState<string | null>(null);
   const [activeJumpId, setActiveJumpId] = useState<string | null>(null);
   const [busyPreviewLeaseId, setBusyPreviewLeaseId] = useState<string | null>(null);
@@ -728,8 +774,11 @@ export function App() {
   const jumpFlashTimerRef = useRef<number | null>(null);
   const copiedCommandTimerRef = useRef<number | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const lastRemoteErrorRef = useRef<string | null>(null);
   const runScrollRef = useRef<HTMLDivElement | null>(null);
   const butlerScrollRef = useRef<HTMLDivElement | null>(null);
+  const runTimelineScrollRef = useRef<HTMLDivElement | null>(null);
+  const butlerTimelineScrollRef = useRef<HTMLDivElement | null>(null);
   const runPromptRefs = useRef<Record<string, HTMLElement | null>>({});
   const butlerPromptRefs = useRef<Record<string, HTMLElement | null>>({});
   const butlerMessageTimesRef = useRef<Record<string, number>>({});
@@ -745,18 +794,42 @@ export function App() {
       window.clearTimeout(errorTimerRef.current);
       errorTimerRef.current = null;
     }
-    setError((current) => (current === "Live updates disconnected. Refresh the page if this persists." ? null : current));
+    setToast((current) => (current?.key === "live-disconnect" ? null : current));
   }
 
-  function showToast(message: string, duration = 1800) {
-    setToastMessage(message);
+  function showToast(message: string, tone: ToastTone = "success", duration = 2200, key?: string) {
+    const nextKey = key ?? `${tone}:${message}`;
+    setToast({ key: nextKey, message, tone });
     if (toastTimerRef.current !== null) {
       window.clearTimeout(toastTimerRef.current);
     }
-    toastTimerRef.current = window.setTimeout(() => {
-      setToastMessage((current) => (current === message ? null : current));
-      toastTimerRef.current = null;
-    }, duration);
+    if (duration > 0) {
+      toastTimerRef.current = window.setTimeout(() => {
+        setToast((current) => (current?.key === nextKey ? null : current));
+        toastTimerRef.current = null;
+      }, duration);
+    }
+  }
+
+  function showErrorToast(error: unknown, key?: string, duration = 3600) {
+    const message = error instanceof Error ? error.message : String(error);
+    showToast(message, "error", duration, key);
+  }
+
+  async function handleConfirmAction() {
+    if (!confirmDialog || confirmBusy) {
+      return;
+    }
+
+    setConfirmBusy(true);
+    try {
+      await confirmDialog.onConfirm();
+      setConfirmDialog(null);
+    } catch (confirmError) {
+      showErrorToast(confirmError);
+    } finally {
+      setConfirmBusy(false);
+    }
   }
 
   useEffect(() => {
@@ -784,7 +857,7 @@ export function App() {
       })
       .catch((fetchError: Error) => {
         if (!closed) {
-          setError(fetchError.message);
+          showErrorToast(fetchError, "bootstrap-error", 5000);
         }
       });
 
@@ -807,7 +880,7 @@ export function App() {
       errorTimerRef.current = window.setTimeout(() => {
         errorTimerRef.current = null;
         if (!closed) {
-          setError("Live updates disconnected. Refresh the page if this persists.");
+          showToast("Live updates disconnected. Refresh the page if this persists.", "error", 0, "live-disconnect");
         }
       }, 2500);
     };
@@ -900,6 +973,21 @@ export function App() {
   }, [threadsDrawerOpen]);
 
   useEffect(() => {
+    if (!confirmDialog) {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && !confirmBusy) {
+        setConfirmDialog(null);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [confirmBusy, confirmDialog]);
+
+  useEffect(() => {
     if (!snapshot || snapshot.butler.onboarding.complete || selectedSurface !== null || snapshot.codex.focusedWindowId) {
       return;
     }
@@ -924,14 +1012,14 @@ export function App() {
 
     if (snapshot.codex.windows.some((window) => window.threadId === selectedThreadId)) {
       postJson("/api/windows/focus", { threadId: selectedThreadId }).catch((focusError) =>
-        setError(focusError instanceof Error ? focusError.message : String(focusError))
+        showErrorToast(focusError)
       );
       return;
     }
 
     if (snapshot.codex.threads.some((thread) => thread.id === selectedThreadId) || selectedThreadId in snapshot.codex.openThreads) {
       postJson("/api/windows/open", { threadId: selectedThreadId }).catch((openError) =>
-        setError(openError instanceof Error ? openError.message : String(openError))
+        showErrorToast(openError)
       );
       return;
     }
@@ -1001,6 +1089,45 @@ export function App() {
     }
   }, [pendingButlerText, snapshot]);
 
+  useEffect(() => {
+    if (!pendingThreadRequest || !snapshot) {
+      return;
+    }
+
+    const thread = snapshot.codex.openThreads[pendingThreadRequest.threadId];
+    if (!thread) {
+      return;
+    }
+
+    const threadItems = thread.turns
+      .flatMap((turn) => turn.items.filter(shouldRenderItem))
+      .sort((left, right) => left.at - right.at);
+    const hasResponseAfterSend = threadItems.some(
+      (item) => item.type !== "userMessage" && item.at >= pendingThreadRequest.sentAt
+    );
+
+    if (hasResponseAfterSend && thread.status !== "active") {
+      setPendingThreadRequest((current) =>
+        current?.threadId === pendingThreadRequest.threadId && current.sentAt === pendingThreadRequest.sentAt ? null : current
+      );
+    }
+  }, [pendingThreadRequest, snapshot]);
+
+  useEffect(() => {
+    const remoteError = snapshot?.codex.lastError ?? snapshot?.butler.lastError ?? null;
+    if (!remoteError) {
+      lastRemoteErrorRef.current = null;
+      return;
+    }
+
+    if (lastRemoteErrorRef.current === remoteError) {
+      return;
+    }
+
+    lastRemoteErrorRef.current = remoteError;
+    showToast(remoteError, "error", 5000, "remote-error");
+  }, [snapshot?.butler.lastError, snapshot?.codex.lastError]);
+
   const querySurface: WorkspaceSurface =
     selectedSurface ??
     (snapshot?.codex.focusedWindowId ? "thread" : showSetupGuide ? "setup" : "butler");
@@ -1019,6 +1146,27 @@ export function App() {
 
     window.history.replaceState(null, "", `${window.location.pathname}${nextQuery}`);
   }, [querySurface, queryThreadId, terminalTarget]);
+
+  useEffect(() => {
+    if (!showPromptRail) {
+      return;
+    }
+
+    const target =
+      querySurface === "thread"
+        ? runTimelineScrollRef.current
+        : querySurface === "butler"
+          ? butlerTimelineScrollRef.current
+          : null;
+
+    if (!target) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      target.scrollTop = target.scrollHeight;
+    });
+  }, [querySurface, queryThreadId, snapshot?.butler.messages, snapshot?.codex.openThreads, showPromptRail]);
 
   if (!snapshot) {
     return <div className="shell loading">Loading Butler…</div>;
@@ -1044,6 +1192,15 @@ export function App() {
   const activeServiceLeases = snapshot.butler.services.filter((service) => service.status !== "stopped");
 
   const runPromptJumpList = activeRunItems.filter((item) => item.type === "userMessage");
+  const showPendingThreadEntry =
+    pendingThreadRequest &&
+    activeThread &&
+    pendingThreadRequest.threadId === activeThread.id &&
+    !activeRunItems.some(
+      (item) => item.type === "userMessage" && item.text === pendingThreadRequest.text && item.at >= pendingThreadRequest.sentAt - 1000
+    );
+  const showThreadWorkingIndicator =
+    Boolean(pendingThreadRequest && activeThread && pendingThreadRequest.threadId === activeThread.id) || activeThread?.status === "active";
   const butlerPromptJumpList = snapshot.butler.messages
     .map((message, index) => {
       const knownAt = message.at ?? butlerMessageTimesRef.current[message.id];
@@ -1066,7 +1223,6 @@ export function App() {
       return;
     }
 
-    setError(null);
     setButlerDraft("");
     writeStoredValue(BUTLER_DRAFT_STORAGE_KEY, "");
     setFollowButler(true);
@@ -1076,7 +1232,7 @@ export function App() {
       await postJson("/api/chat/messages", { text });
     } catch (sendError) {
       setPendingButlerText(null);
-      setError(sendError instanceof Error ? sendError.message : String(sendError));
+      showErrorToast(sendError);
     }
   }
 
@@ -1090,15 +1246,20 @@ export function App() {
       return;
     }
 
-    setError(null);
     setThreadDraft("");
     writeStoredValue(`${THREAD_DRAFT_STORAGE_KEY_PREFIX}${activeThread.id}`, "");
     setFollowRun(true);
+    setPendingThreadRequest({
+      threadId: activeThread.id,
+      text,
+      sentAt: Date.now()
+    });
 
     try {
       await postJson("/api/threads/messages", { threadId: activeThread.id, text });
     } catch (sendError) {
-      setError(sendError instanceof Error ? sendError.message : String(sendError));
+      setPendingThreadRequest((current) => (current?.threadId === activeThread.id && current.text === text ? null : current));
+      showErrorToast(sendError);
     }
   }
 
@@ -1110,7 +1271,7 @@ export function App() {
     try {
       await postJson("/api/chat/settings", { model: modelKey, thinkingLevel });
     } catch (settingsError) {
-      setError(settingsError instanceof Error ? settingsError.message : String(settingsError));
+      showErrorToast(settingsError);
     }
   }
 
@@ -1118,7 +1279,7 @@ export function App() {
     try {
       await postJson("/api/threads/settings", { model, effort });
     } catch (settingsError) {
-      setError(settingsError instanceof Error ? settingsError.message : String(settingsError));
+      showErrorToast(settingsError);
     }
   }
 
@@ -1126,26 +1287,24 @@ export function App() {
     try {
       await postJson("/api/threads/supervision", { threadId, maxButlerTurns });
     } catch (settingsError) {
-      setError(settingsError instanceof Error ? settingsError.message : String(settingsError));
+      showErrorToast(settingsError);
     }
   }
 
   async function stopPreviewLease(leaseId: string) {
-    setError(null);
     setBusyPreviewLeaseId(leaseId);
 
     try {
       await postJson("/api/previews/stop", { leaseId });
       showToast("Preview stopped");
     } catch (previewError) {
-      setError(previewError instanceof Error ? previewError.message : String(previewError));
+      showErrorToast(previewError);
     } finally {
       setBusyPreviewLeaseId((current) => (current === leaseId ? null : current));
     }
   }
 
   async function verifyPreviewLease(leaseId: string) {
-    setError(null);
     setBusyPreviewLeaseId(leaseId);
 
     try {
@@ -1165,21 +1324,20 @@ export function App() {
           : `Preview check failed${result.verification.status ? ` (${result.verification.status})` : ""}`
       );
     } catch (previewError) {
-      setError(previewError instanceof Error ? previewError.message : String(previewError));
+      showErrorToast(previewError);
     } finally {
       setBusyPreviewLeaseId((current) => (current === leaseId ? null : current));
     }
   }
 
   async function stopServiceLease(serviceId: string) {
-    setError(null);
     setBusyServiceId(serviceId);
 
     try {
       await postJson("/api/services/stop", { serviceId });
       showToast("Service stopped");
     } catch (serviceError) {
-      setError(serviceError instanceof Error ? serviceError.message : String(serviceError));
+      showErrorToast(serviceError);
     } finally {
       setBusyServiceId((current) => (current === serviceId ? null : current));
     }
@@ -1190,7 +1348,7 @@ export function App() {
       await postJson("/api/previews/pin", { leaseId, pinned });
       showToast(pinned ? "Preview pinned" : "Preview unpinned");
     } catch (pinError) {
-      setError(pinError instanceof Error ? pinError.message : String(pinError));
+      showErrorToast(pinError);
     }
   }
 
@@ -1199,41 +1357,43 @@ export function App() {
       await postJson("/api/services/pin", { serviceId, pinned });
       showToast(pinned ? "Service pinned" : "Service unpinned");
     } catch (pinError) {
-      setError(pinError instanceof Error ? pinError.message : String(pinError));
+      showErrorToast(pinError);
     }
   }
 
-  async function deleteThread(threadId: string) {
-    if (!window.confirm("Delete this Codex thread permanently?")) {
-      return;
-    }
-
-    try {
-      await postJson("/api/threads/delete", { threadId });
-      setThreadsDrawerOpen(false);
-    } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : String(deleteError));
-    }
+  function confirmDeleteThread(threadId: string) {
+    setConfirmDialog({
+      title: "Delete thread?",
+      message: "This Codex thread will be removed permanently.",
+      confirmLabel: "Delete thread",
+      tone: "danger",
+      onConfirm: async () => {
+        await postJson("/api/threads/delete", { threadId });
+        setThreadsDrawerOpen(false);
+        showToast("Thread deleted");
+      }
+    });
   }
 
-  async function deleteAllThreads() {
-    if (!window.confirm("Delete all Codex threads permanently?")) {
-      return;
-    }
-
-    try {
-      await postJson("/api/threads/delete-all", {});
-      setThreadsDrawerOpen(false);
-    } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : String(deleteError));
-    }
+  function confirmDeleteAllThreads() {
+    setConfirmDialog({
+      title: "Delete all threads?",
+      message: "All Codex threads will be removed permanently.",
+      confirmLabel: "Delete all",
+      tone: "danger",
+      onConfirm: async () => {
+        await postJson("/api/threads/delete-all", {});
+        setThreadsDrawerOpen(false);
+        showToast("All threads deleted");
+      }
+    });
   }
 
   async function copySetupCommand(command: string, key: string) {
     try {
       await navigator.clipboard.writeText(command);
       setCopiedCommandKey(key);
-      setToastMessage("Command copied");
+      showToast("Command copied", "success", 1200, "command-copied");
       if (copiedCommandTimerRef.current !== null) {
         window.clearTimeout(copiedCommandTimerRef.current);
       }
@@ -1241,15 +1401,8 @@ export function App() {
         setCopiedCommandKey((current) => (current === key ? null : current));
         copiedCommandTimerRef.current = null;
       }, 1200);
-      if (toastTimerRef.current !== null) {
-        window.clearTimeout(toastTimerRef.current);
-      }
-      toastTimerRef.current = window.setTimeout(() => {
-        setToastMessage((current) => (current === "Command copied" ? null : current));
-        toastTimerRef.current = null;
-      }, 1200);
     } catch (copyError) {
-      setError(copyError instanceof Error ? copyError.message : String(copyError));
+      showErrorToast(copyError);
     }
   }
 
@@ -1321,15 +1474,15 @@ export function App() {
     }
 
     if (snapshot.butler.compaction.active) {
-      return { tone: "working", text: "Compacting context" } as const;
+      return { tone: "working", text: "Working" } as const;
     }
 
     if (snapshot.butler.isStreaming) {
-      return { tone: "working", text: "Working on request" } as const;
+      return { tone: "working", text: "Working" } as const;
     }
 
     if (snapshot.butler.pending) {
-      return { tone: "pending", text: "Starting request" } as const;
+      return { tone: "pending", text: "Running" } as const;
     }
 
     return { tone: "ready", text: "Ready" } as const;
@@ -1409,7 +1562,7 @@ export function App() {
                 setSelectedSurface("butler");
                 setSelectedThreadId(null);
                 postJson("/api/workspace/focus", {}).catch((focusError) =>
-                  setError(focusError instanceof Error ? focusError.message : String(focusError))
+                  showErrorToast(focusError)
                 );
               }}
             >
@@ -1638,8 +1791,13 @@ export function App() {
                       </button>
                     </div>
                   ))}
-                  <button className="panel-action panel-action-danger" onClick={() => void deleteThread(activeThread.id)}>
-                    Delete
+                  <button
+                    className="panel-action panel-action-icon panel-action-icon-danger"
+                    onClick={() => confirmDeleteThread(activeThread.id)}
+                    aria-label="Delete thread"
+                    title="Delete thread"
+                  >
+                    <TrashIcon />
                   </button>
                 </div>
               </div>
@@ -1676,6 +1834,25 @@ export function App() {
                         </article>
                       ))
                     )}
+                    {showPendingThreadEntry ? (
+                      <article className="entry is-user is-pending">
+                        <div className="entry-head">
+                          <span>You</span>
+                          <span>sending</span>
+                        </div>
+                        <div className="entry-text">
+                          <MarkdownMessage text={pendingThreadRequest.text} />
+                        </div>
+                      </article>
+                    ) : null}
+                    {showThreadWorkingIndicator ? (
+                      <div className={`working-indicator ${activeThread?.status === "active" ? "is-streaming" : "is-pending"}`} aria-live="polite">
+                        <span className="working-indicator-label">Codex</span>
+                        <span className="working-indicator-text">
+                          {activeThread?.status === "active" ? "Working" : "Running"}
+                        </span>
+                      </div>
+                    ) : null}
                   </div>
                   <div className="composer">
                     <div className="composer-main">
@@ -1795,7 +1972,7 @@ export function App() {
                           </button>
                         </div>
                       </div>
-                      <div className="detail-list-scroll">
+                      <div ref={runTimelineScrollRef} className="detail-list-scroll">
                         {runTimelineGroups.length === 0 ? (
                           <div className="empty">No prompts yet.</div>
                         ) : (
@@ -1849,7 +2026,7 @@ export function App() {
                                 setSelectedThreadId(lease.threadId);
                                 setShowPromptRail(false);
                                 postJson("/api/windows/open", { threadId: lease.threadId }).catch((openError) =>
-                                  setError(openError instanceof Error ? openError.message : String(openError))
+                                  showErrorToast(openError)
                                 );
                               }}
                             >
@@ -1905,7 +2082,7 @@ export function App() {
                                 setSelectedThreadId(service.threadId);
                                 setShowPromptRail(false);
                                 postJson("/api/windows/open", { threadId: service.threadId }).catch((openError) =>
-                                  setError(openError instanceof Error ? openError.message : String(openError))
+                                  showErrorToast(openError)
                                 );
                               }}
                             >
@@ -2077,7 +2254,7 @@ export function App() {
                           </button>
                         </div>
                       </div>
-                      <div className="detail-list-scroll">
+                      <div ref={butlerTimelineScrollRef} className="detail-list-scroll">
                         {butlerTimelineGroups.length === 0 ? (
                           <div className="empty">No prompts yet.</div>
                         ) : (
@@ -2120,15 +2297,25 @@ export function App() {
       <aside className={`threads-drawer ${threadsDrawerOpen ? "is-open" : ""}`}>
         <div className="threads-drawer-head">
           <div>
-            <span className="eyebrow">Threads</span>
             <h2>Codex threads</h2>
           </div>
           <div className="threads-drawer-actions">
-            <button className="threads-drawer-delete" onClick={() => void deleteAllThreads()} disabled={snapshot.codex.threads.length === 0}>
-              Delete all
+            <button
+              className="threads-drawer-delete"
+              onClick={() => confirmDeleteAllThreads()}
+              disabled={snapshot.codex.threads.length === 0}
+              aria-label="Delete all threads"
+              title="Delete all threads"
+            >
+              <TrashIcon />
             </button>
-            <button className="threads-drawer-close" onClick={() => setThreadsDrawerOpen(false)}>
-              Close
+            <button
+              className="threads-drawer-close"
+              onClick={() => setThreadsDrawerOpen(false)}
+              aria-label="Close threads drawer"
+              title="Close"
+            >
+              <CloseIcon />
             </button>
           </div>
         </div>
@@ -2148,7 +2335,7 @@ export function App() {
                     setSelectedSurface("thread");
                     setSelectedThreadId(thread.id);
                     postJson("/api/windows/open", { threadId: thread.id }).catch((openError) =>
-                      setError(openError instanceof Error ? openError.message : String(openError))
+                      showErrorToast(openError)
                     );
                   }}
                 >
@@ -2157,10 +2344,15 @@ export function App() {
                     <span className="job-time">{formatTime(thread.updatedAt)}</span>
                   </div>
                   <strong>{thread.preview || "Untitled run"}</strong>
-                  <span>{thread.source}</span>
+                  <span className="thread-row-id">{thread.id}</span>
                 </button>
-                <button className="thread-row-delete" onClick={() => void deleteThread(thread.id)}>
-                  Delete
+                <button
+                  className="thread-row-delete"
+                  onClick={() => confirmDeleteThread(thread.id)}
+                  aria-label="Delete thread"
+                  title="Delete thread"
+                >
+                  <TrashIcon />
                 </button>
               </div>
             ))
@@ -2168,12 +2360,47 @@ export function App() {
         </div>
       </aside>
 
-      {(error || snapshot.codex.lastError || snapshot.butler.lastError) && (
-        <footer className="statusbar is-error">{error || snapshot.codex.lastError || snapshot.butler.lastError}</footer>
-      )}
-      {!error && !snapshot.codex.lastError && !snapshot.butler.lastError && toastMessage && (
-        <footer className="statusbar is-success">{toastMessage}</footer>
-      )}
+      {confirmDialog ? (
+        <div className="modal-backdrop" onClick={() => (!confirmBusy ? setConfirmDialog(null) : undefined)}>
+          <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h2 id="confirm-dialog-title">{confirmDialog.title}</h2>
+              <button
+                className="modal-close"
+                onClick={() => setConfirmDialog(null)}
+                disabled={confirmBusy}
+                aria-label="Close confirmation"
+              >
+                <CloseIcon />
+              </button>
+            </div>
+            <p className="modal-copy">{confirmDialog.message}</p>
+            <div className="modal-actions">
+              <button className="panel-action" onClick={() => setConfirmDialog(null)} disabled={confirmBusy}>
+                Cancel
+              </button>
+              <button
+                className="panel-action panel-action-danger"
+                onClick={() => void handleConfirmAction()}
+                disabled={confirmBusy}
+              >
+                {confirmBusy ? "Deleting…" : confirmDialog.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {toast ? (
+        <div className="toast-region" aria-live="polite" aria-atomic="true">
+          <div className={`toast-card is-${toast.tone}`}>
+            <div className="toast-copy">{toast.message}</div>
+            <button className="toast-dismiss" onClick={() => setToast(null)} aria-label="Dismiss notification">
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
