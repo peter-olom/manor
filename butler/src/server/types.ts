@@ -43,10 +43,10 @@ export interface CodexSupervisionView {
   capReached: boolean;
 }
 
-export type PreviewLeaseStatus = "starting" | "running" | "stopped" | "failed";
+export type PreviewLeaseStatus = "starting" | "running" | "stopping" | "stopped" | "failed";
 export type PreviewEgressProfile = string;
-export type ServiceLeaseStatus = "starting" | "running" | "stopped" | "failed";
-export type LeaseLifecycleState = "active" | "idle" | "expired";
+export type ServiceLeaseStatus = "starting" | "running" | "stopping" | "stopped" | "failed";
+export type LeaseLifecycleState = "starting" | "active" | "idle" | "stopping" | "expired";
 
 export interface LeaseLifecycleView {
   pinned?: boolean;

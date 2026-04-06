@@ -82,6 +82,9 @@ type LeaseExecPayload = {
   stderr: string;
 };
 
+type ServiceListPayload = ServicePayload[];
+type LeaseListPayload = LeasePayload[];
+
 export class RuntimeBrokerClient {
   constructor(
     private readonly baseUrl: string,
@@ -135,6 +138,11 @@ export class RuntimeBrokerClient {
 
   async inspectLease(leaseId: string): Promise<LeaseInspectPayload> {
     return this.request<LeaseInspectPayload>(`/leases/${leaseId}`);
+  }
+
+  async listLeases(threadId?: string | null): Promise<LeaseListPayload> {
+    const query = threadId ? `?threadId=${encodeURIComponent(threadId)}` : "";
+    return this.request<LeaseListPayload>(`/leases${query}`);
   }
 
   async listProcesses(leaseId: string): Promise<LeaseProcessesPayload> {
@@ -204,6 +212,11 @@ export class RuntimeBrokerClient {
 
   async inspectService(serviceId: string): Promise<ServiceInspectPayload> {
     return this.request<ServiceInspectPayload>(`/services/${serviceId}`);
+  }
+
+  async listServices(threadId?: string | null): Promise<ServiceListPayload> {
+    const query = threadId ? `?threadId=${encodeURIComponent(threadId)}` : "";
+    return this.request<ServiceListPayload>(`/services${query}`);
   }
 
   async listServiceProcesses(serviceId: string): Promise<LeaseProcessesPayload> {

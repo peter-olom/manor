@@ -102,6 +102,8 @@ services:
     environment:
       MANOR_ROLE: codex-box
       MANOR_STATE_DIR: /state
+      MANOR_BUTLER_BASE_URL: http://butler:8080
+      MANOR_RUNTIME_BROKER_URL: http://runtime-broker:8090
       HOME: /home/codex
       CODEX_HOME: /home/codex/.codex
       CODEX_APP_SERVER_LISTEN: ws://0.0.0.0:8080
@@ -191,6 +193,7 @@ services:
     environment:
       MANOR_ROLE: runtime-broker
       RUNTIME_BROKER_PORT: 8090
+      RUNTIME_CODEX_ACCESS_FILE: /state/codex-broker-access.json
       RUNTIME_PREVIEW_NETWORK: manor_preview
       RUNTIME_PREVIEW_EGRESS_CONFIG: /opt/manor/config/preview-egress-profiles.json
       RUNTIME_PREVIEW_EGRESS_ADMIN_URL: http://preview-egress:8091
@@ -204,6 +207,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config/preview-egress-profiles.json:/opt/manor/config/preview-egress-profiles.json:ro
+      - ./state/butler:/state:ro
     depends_on:
       preview-egress:
         condition: service_healthy

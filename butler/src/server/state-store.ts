@@ -317,7 +317,16 @@ export class ButlerStateStore extends EventEmitter {
         : null;
     const reapAfterAt = expired && expiredAt !== null ? expiredAt + this.leaseReapGraceMs : null;
     const idleThreshold = Math.max(60_000, Math.floor(leaseTtlMs / 2));
-    const lifecycleState = expired ? "expired" : now - lastActivityAt >= idleThreshold ? "idle" : "active";
+    const lifecycleState =
+      lease.status === "starting"
+        ? "starting"
+        : lease.status === "stopping"
+          ? "stopping"
+          : expired
+            ? "expired"
+            : now - lastActivityAt >= idleThreshold
+              ? "idle"
+              : "active";
 
     return {
       ...lease,
@@ -1045,6 +1054,27 @@ export class ButlerStateStore extends EventEmitter {
     this.previewLeases.set(lease.id, nextLease);
     this.queueSave();
     this.emitChange();
+  }
+
+  markPreviewLeaseStopping(leaseId: string): PreviewLeaseView | null {
+    const lease = this.previewLeases.get(leaseId);
+    if (!lease) {
+      return null;
+    }
+
+    const now = Date.now();
+    const nextLease = this.normalizePreviewLease(
+      {
+        ...lease,
+        status: "stopping",
+        updatedAt: Math.max(lease.updatedAt, now)
+      },
+      now
+    );
+    this.previewLeases.set(leaseId, nextLease);
+    this.queueSave();
+    this.emitChange();
+    return nextLease;
   }
 
   removePreviewLease(leaseId: string): void {

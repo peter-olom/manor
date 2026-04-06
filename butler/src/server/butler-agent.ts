@@ -217,6 +217,7 @@ function buildSystemPrompt(store: ButlerStateStore): string {
     "Do not run two parallel Codex workstreams on the same repo branch.",
     "When a task needs a live app review, prefer a preview lease on an isolated runtime instead of telling the operator to bind a raw host port.",
     "When a project needs common dev dependencies like Postgres, Redis, MySQL, MSSQL, or SQLite, prefer the built-in service templates instead of ad hoc install steps.",
+    "Codex may operate inside attached isolates through manor-harness for inspect, logs, processes, and shell exec, but Butler still owns isolate lifecycle and policy.",
     "",
     `Supervisor state: ${supervisor.summary}`,
     projects.length > 0 ? "Project summaries:" : "Project summaries: none yet.",
@@ -736,6 +737,7 @@ export class ButlerAgentService extends EventEmitter {
         uiEffects: this.toolCatalog.find((tool) => tool.name === "stop_preview")?.uiEffects ?? [],
         execute: async (_toolCallId, params) => {
           const typedParams = params as { leaseId: string };
+          this.store.markPreviewLeaseStopping(typedParams.leaseId);
           await this.runtimeBroker.stopLease(typedParams.leaseId);
           this.store.removePreviewLease(typedParams.leaseId);
           return {
@@ -1253,11 +1255,16 @@ export class ButlerAgentService extends EventEmitter {
           const workspace = await this.prepareDelegationWorkspace(typedParams.task, typedParams.cwd);
           const developerInstructions = [
             "This thread was started by Butler.",
+            "You are the worker inside Manor. Butler is the supervisor and policy owner.",
             "Execute the requested task directly instead of explaining how the operator could do it manually.",
             `Work inside ${workspace.cwd} unless the task explicitly requires a deeper subdirectory.`,
             workspace.branchName
               ? `Stay on branch ${workspace.branchName}. Do not switch back to main or share this branch with another task.`
               : "When the task touches git in a repository, create or reuse a dedicated branch whose name starts with butler/.",
+            "If this job needs a preview isolate, a disposable service, or runtime inspection, use the local `manor-harness` command from this workspace.",
+            "Start with `manor-harness status` to see what Manor already attached to this job.",
+            "For attached previews and services, use `manor-harness` for inspect, logs, processes, and exec directly against the runtime. Butler still owns start, stop, lifecycle, and policy.",
+            "Use only the harness actions exposed through `manor-harness`. Do not try to command Butler directly outside those actions.",
             "Keep the thread focused on the delegated task and report concise progress and outcome."
           ].join("\n");
 

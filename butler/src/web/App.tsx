@@ -185,7 +185,7 @@ type Snapshot = {
       pinned?: boolean;
       lastActivityAt?: number;
       expiresAt?: number | null;
-      lifecycleState?: "active" | "idle" | "expired";
+      lifecycleState?: "starting" | "active" | "idle" | "stopping" | "expired";
     }>;
     services: Array<{
       id: string;
@@ -208,7 +208,7 @@ type Snapshot = {
       pinned?: boolean;
       lastActivityAt?: number;
       expiresAt?: number | null;
-      lifecycleState?: "active" | "idle" | "expired";
+      lifecycleState?: "starting" | "active" | "idle" | "stopping" | "expired";
       connection: {
         engine: string;
         host: string;
@@ -255,12 +255,20 @@ function formatJumpLabel(value: number | null | undefined): string {
 }
 
 function formatLeaseState(
-  state: "active" | "idle" | "expired" | undefined,
+  state: "starting" | "active" | "idle" | "stopping" | "expired" | undefined,
   expiresAt: number | null | undefined,
   pinned?: boolean
 ): string {
   if (pinned) {
     return "pinned";
+  }
+
+  if (state === "starting") {
+    return "starting";
+  }
+
+  if (state === "stopping") {
+    return "stopping";
   }
 
   if (state === "expired") {
@@ -937,8 +945,19 @@ export function App() {
       return;
     }
 
+    if (selectedThreadId) {
+      const threadStillExists =
+        snapshot?.codex.windows.some((window) => window.threadId === selectedThreadId) ||
+        snapshot?.codex.threads.some((thread) => thread.id === selectedThreadId) ||
+        Boolean(snapshot?.codex.openThreads[selectedThreadId]);
+
+      if (threadStillExists) {
+        return;
+      }
+    }
+
     if (snapshot?.codex.focusedWindowId) {
-      setSelectedThreadId((current) => (current === snapshot.codex.focusedWindowId ? current : snapshot.codex.focusedWindowId));
+      setSelectedThreadId(snapshot.codex.focusedWindowId);
       return;
     }
 
@@ -947,7 +966,7 @@ export function App() {
     }
 
     setSelectedSurface(showSetupGuide ? "setup" : "butler");
-  }, [selectedSurface, selectedThreadId, showSetupGuide, snapshot?.codex.focusedWindowId]);
+  }, [selectedSurface, selectedThreadId, showSetupGuide, snapshot]);
 
   useEffect(() => {
     if (!activeThread || !followRun || !runScrollRef.current) {
@@ -1289,7 +1308,7 @@ export function App() {
       : selectedSurface === "terminal"
         ? "terminal"
         : selectedSurface === "thread"
-          ? snapshot.codex.focusedWindowId ?? selectedThreadId ?? (showSetupGuide ? "setup" : "butler")
+          ? selectedThreadId ?? snapshot.codex.focusedWindowId ?? (showSetupGuide ? "setup" : "butler")
           : selectedSurface === "butler"
             ? "butler"
             : snapshot.codex.focusedWindowId ?? (showSetupGuide ? "setup" : "butler");

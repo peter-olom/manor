@@ -8,6 +8,7 @@ import httpProxy from "http-proxy";
 
 import { ButlerAgentService } from "./butler-agent.js";
 import { CodexAppServerClient } from "./codex-client.js";
+import { CodexHarnessService } from "./codex-harness.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { loadServiceTemplates, toServiceLeaseView } from "./service-templates.js";
 import { ButlerStateStore } from "./state-store.js";
@@ -39,11 +40,25 @@ const store = new ButlerStateStore(uiStatePath, {
   leaseReapGraceMs
 });
 await store.load();
-
-const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir);
 const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerToken);
 const serviceTemplates = await loadServiceTemplates(serviceTemplateConfigPath);
 const serviceTemplateMap = new Map(serviceTemplates.map((template) => [template.id, template]));
+const codexHarness = new CodexHarnessService({
+  codexHomeDir,
+  stateDir,
+  store,
+  runtimeBroker,
+  serviceTemplates
+});
+await codexHarness.load();
+const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, {
+  onThreadCapabilityReady: async (threadId, cwd) => {
+    await codexHarness.ensureThreadCapability(threadId, cwd);
+  },
+  onThreadCapabilityRemoved: async (threadId) => {
+    await codexHarness.revokeThreadCapability(threadId);
+  }
+});
 const butlerAgent = new ButlerAgentService({
   store,
   codexClient,
@@ -71,7 +86,7 @@ const previewProxy = httpProxy.createProxyServer({
 
 function resolvePreviewProxyTarget(leaseId: string): string | null {
   const lease = store.getPreviewLease(leaseId);
-  if (!lease || lease.status === "stopped") {
+  if (!lease || lease.status === "stopped" || lease.status === "stopping") {
     return null;
   }
 
@@ -127,6 +142,24 @@ app.get("/api/health", (_request, response) => {
 
 app.get("/api/bootstrap", (_request, response) => {
   response.json(currentSnapshot());
+});
+
+app.post("/api/codex-harness/action", async (request, response) => {
+  const token = typeof request.body?.token === "string" ? request.body.token : "";
+  const action = typeof request.body?.action === "string" ? request.body.action : "";
+  const params = request.body?.params && typeof request.body.params === "object" ? (request.body.params as Record<string, unknown>) : {};
+
+  if (!token || !action) {
+    response.status(400).json({ error: "token and action are required" });
+    return;
+  }
+
+  try {
+    const result = await codexHarness.handleAction({ token, action, params });
+    response.json({ ok: true, ...result });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 app.get("/api/events", (request, response) => {
@@ -356,6 +389,7 @@ app.post("/api/previews/stop", async (request, response) => {
   }
 
   try {
+    store.markPreviewLeaseStopping(leaseId);
     await runtimeBroker.stopLease(leaseId);
     store.removePreviewLease(leaseId);
     response.json({ ok: true });

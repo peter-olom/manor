@@ -14,12 +14,60 @@ const previewEgressConfigPath =
 const previewEgressAdminUrl =
   process.env.RUNTIME_PREVIEW_EGRESS_ADMIN_URL ?? "http://preview-egress:8091";
 const brokerToken = process.env.RUNTIME_BROKER_TOKEN ?? null;
+const codexAccessRegistryPath = process.env.RUNTIME_CODEX_ACCESS_FILE ?? "/state/codex-broker-access.json";
 const internalOperatorBaseUrl = process.env.RUNTIME_OPERATOR_BASE_URL_INTERNAL ?? "http://butler:8080";
 const playwrightContainerName = process.env.RUNTIME_PLAYWRIGHT_CONTAINER ?? "manor-playwright";
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
+const leaseTransitions = new Map();
 
 const app = express();
 app.use(express.json());
+
+function hasBrokerAccess(request) {
+  return !brokerToken || request.header("x-manor-broker-token") === brokerToken;
+}
+
+function loadCodexAccessRegistry() {
+  try {
+    const raw = fs.readFileSync(codexAccessRegistryPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed?.grants) ? parsed.grants : [];
+  } catch {
+    return [];
+  }
+}
+
+function getCodexGrant(request) {
+  const token = request.header("x-manor-codex-token");
+  if (!token) {
+    return null;
+  }
+
+  const grants = loadCodexAccessRegistry();
+  const grant = grants.find(
+    (entry) => entry && typeof entry.token === "string" && typeof entry.threadId === "string" && entry.token === token
+  );
+  return grant ?? null;
+}
+
+function authorizeScopedThread(request, response, threadId) {
+  if (hasBrokerAccess(request)) {
+    return true;
+  }
+
+  const grant = getCodexGrant(request);
+  if (!grant) {
+    response.status(403).json({ error: "Forbidden" });
+    return false;
+  }
+
+  if (!threadId || grant.threadId !== threadId) {
+    response.status(403).json({ error: "Lease is not attached to this Codex job" });
+    return false;
+  }
+
+  return true;
+}
 
 app.use((request, response, next) => {
   if (request.path === "/health" || request.path.startsWith("/routes/preview/")) {
@@ -27,17 +75,11 @@ app.use((request, response, next) => {
     return;
   }
 
-  if (!brokerToken) {
+  if (hasBrokerAccess(request) || request.header("x-manor-codex-token")) {
     next();
     return;
   }
-
-  if (request.header("x-manor-broker-token") !== brokerToken) {
-    response.status(403).json({ error: "Forbidden" });
-    return;
-  }
-
-  next();
+  response.status(403).json({ error: "Forbidden" });
 });
 
 function toContainerName(leaseId) {
@@ -162,6 +204,64 @@ async function requireContainer(leaseId, response) {
   return { containerName, containerRef: docker.getContainer(containerName), container };
 }
 
+function getLeaseTransition(leaseId) {
+  return leaseTransitions.get(leaseId) ?? null;
+}
+
+function setLeaseTransition(leaseId, state) {
+  leaseTransitions.set(leaseId, { state, at: Date.now() });
+}
+
+function clearLeaseTransition(leaseId) {
+  leaseTransitions.delete(leaseId);
+}
+
+function resolveLeaseStatus(containerState, leaseId) {
+  const transition = getLeaseTransition(leaseId);
+  if (transition?.state === "stopping") {
+    return "stopping";
+  }
+  if (transition?.state === "starting") {
+    return "starting";
+  }
+  return containerState === "running" ? "running" : "stopped";
+}
+
+function rejectIfLeaseStopping(leaseId, response) {
+  if (getLeaseTransition(leaseId)?.state !== "stopping") {
+    return false;
+  }
+
+  response.status(409).json({
+    error: `Preview ${leaseId} is stopping. Retry in a moment.`,
+    retryable: true,
+    state: "stopping"
+  });
+  return true;
+}
+
+function rejectIfLeaseUnavailable(required, leaseId, response) {
+  if (getLeaseTransition(leaseId)?.state === "stopping") {
+    response.status(409).json({
+      error: `Preview ${leaseId} is stopping. Retry in a moment.`,
+      retryable: true,
+      state: "stopping"
+    });
+    return true;
+  }
+
+  if (!required.container.State?.Running) {
+    response.status(409).json({
+      error: `Preview ${leaseId} is still starting. Retry in a moment.`,
+      retryable: true,
+      state: "starting"
+    });
+    return true;
+  }
+
+  return false;
+}
+
 async function requireServiceContainer(serviceId, response) {
   const containerName = toServiceContainerName(serviceId);
   const container = await inspectContainer(containerName);
@@ -170,6 +270,20 @@ async function requireServiceContainer(serviceId, response) {
     return null;
   }
   return { containerName, containerRef: docker.getContainer(containerName), container };
+}
+
+async function listManagedContainers(filter) {
+  const containers = await docker.listContainers({
+    all: true,
+    filters: {
+      label: ["manor.managed=true"]
+    }
+  });
+
+  return containers.filter((container) => {
+    const labels = container.Labels || {};
+    return filter(labels, container);
+  });
 }
 
 async function ensureImage(imageName) {
@@ -291,6 +405,10 @@ app.use("/routes/preview/:leaseId", async (request, response) => {
 });
 
 app.post("/leases", async (request, response) => {
+  if (!hasBrokerAccess(request)) {
+    response.status(403).json({ error: "Forbidden" });
+    return;
+  }
   const payload = request.body ?? {};
   if (typeof payload.worktreePath !== "string" || !payload.worktreePath) {
     response.status(400).json({ error: "worktreePath is required" });
@@ -303,6 +421,7 @@ app.post("/leases", async (request, response) => {
   }
 
   const lease = buildLease(payload);
+  setLeaseTransition(lease.id, "starting");
   const env = typeof payload.env === "object" && payload.env ? payload.env : {};
   const envVars = [`PORT=${lease.targetPort}`, "HOST=0.0.0.0"];
   let proxyPort = null;
@@ -366,6 +485,10 @@ app.post("/leases", async (request, response) => {
         "manor.lease-id": lease.id,
         "manor.thread-id": lease.threadId ?? "",
         "manor.project-id": lease.projectId,
+        "manor.title": lease.title,
+        "manor.worktree-path": lease.worktreePath,
+        "manor.target-port": String(lease.targetPort),
+        "manor.egress-profile": lease.egressProfile,
         "manor.egress-policy-name": dynamicPolicyName ?? "",
         "manor.egress-domains": lease.egressDomains.join(",")
       },
@@ -384,7 +507,7 @@ app.post("/leases", async (request, response) => {
 
     response.json({
       ...lease,
-      status: container?.State?.Running ? "running" : "starting",
+      status: resolveLeaseStatus(container?.State?.Running ? "running" : "starting", lease.id),
       updatedAt: Date.now()
     });
   } catch (error) {
@@ -398,6 +521,56 @@ app.post("/leases", async (request, response) => {
       lastError: error instanceof Error ? error.message : String(error),
       error: error instanceof Error ? error.message : String(error)
     });
+  } finally {
+    clearLeaseTransition(lease.id);
+  }
+});
+
+app.get("/leases", async (request, response) => {
+  const requestedThreadId = typeof request.query.threadId === "string" ? request.query.threadId : null;
+  if (!authorizeScopedThread(request, response, requestedThreadId)) {
+    return;
+  }
+
+  try {
+    const containers = await listManagedContainers(
+      (labels) => labels["manor.runtime-kind"] !== "service" && (!requestedThreadId || (labels["manor.thread-id"] || "") === requestedThreadId)
+    );
+
+    response.json(
+      containers.map((container) => ({
+        id: container.Labels?.["manor.lease-id"] || "",
+        threadId: container.Labels?.["manor.thread-id"] || null,
+        projectId: container.Labels?.["manor.project-id"] || "unknown",
+        projectLabel: container.Labels?.["manor.project-id"] || "Unknown",
+        title: container.Labels?.["manor.title"] || `Preview ${(container.Labels?.["manor.lease-id"] || "").slice(0, 8)}`,
+        worktreePath: container.Labels?.["manor.worktree-path"] || container.Names?.[0]?.replace(/^\//, "") || "/repos",
+        branchName: null,
+        containerName: container.Names?.[0]?.replace(/^\//, "") || "",
+        targetHost: container.Names?.[0]?.replace(/^\//, "") || "",
+        targetPort: Number(
+          container.Labels?.["manor.target-port"] ||
+            container.Labels?.["manor.port"] ||
+            "3000"
+        ),
+        routePrefix: `${routeBase}/${container.Labels?.["manor.lease-id"] || ""}/`,
+        operatorUrl: `${routeBase}/${container.Labels?.["manor.lease-id"] || ""}/`,
+        command: Array.isArray(container.Command) ? container.Command.join(" ") : container.Command || "",
+        image: container.Image || previewImage,
+        egressProfile: container.Labels?.["manor.egress-profile"] || "none",
+        egressDomains:
+          container.Labels?.["manor.egress-domains"]
+            ?.split(",")
+            .map((value) => value.trim())
+            .filter(Boolean) || [],
+        status: resolveLeaseStatus(container.State, container.Labels?.["manor.lease-id"] || ""),
+        createdAt: typeof container.Created === "number" ? container.Created * 1000 : Date.now(),
+        updatedAt: Date.now(),
+        lastError: null
+      }))
+    );
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
 });
 
@@ -406,7 +579,13 @@ app.get("/leases/:leaseId", async (request, response) => {
   if (!required) {
     return;
   }
+  if (rejectIfLeaseStopping(request.params.leaseId, response)) {
+    return;
+  }
   const { containerName, container } = required;
+  if (!authorizeScopedThread(request, response, container.Config?.Labels?.["manor.thread-id"] || null)) {
+    return;
+  }
 
   response.json({
     id: request.params.leaseId,
@@ -431,7 +610,7 @@ app.get("/leases/:leaseId", async (request, response) => {
         ?.split(",")
         .map((value) => value.trim())
         .filter(Boolean) || [],
-    status: container.State?.Running ? "running" : "stopped",
+    status: resolveLeaseStatus(container.State?.Running ? "running" : "stopped", request.params.leaseId),
     createdAt: new Date(container.Created).getTime(),
     updatedAt: Date.now(),
     lastError: container.State?.Error || null,
@@ -450,6 +629,12 @@ app.get("/leases/:leaseId/processes", async (request, response) => {
   if (!required) {
     return;
   }
+  if (rejectIfLeaseUnavailable(required, request.params.leaseId, response)) {
+    return;
+  }
+  if (!authorizeScopedThread(request, response, required.container.Config?.Labels?.["manor.thread-id"] || null)) {
+    return;
+  }
 
   try {
     const top = await required.containerRef.top();
@@ -465,6 +650,12 @@ app.get("/leases/:leaseId/processes", async (request, response) => {
 app.get("/leases/:leaseId/logs", async (request, response) => {
   const required = await requireContainer(request.params.leaseId, response);
   if (!required) {
+    return;
+  }
+  if (rejectIfLeaseUnavailable(required, request.params.leaseId, response)) {
+    return;
+  }
+  if (!authorizeScopedThread(request, response, required.container.Config?.Labels?.["manor.thread-id"] || null)) {
     return;
   }
 
@@ -502,6 +693,12 @@ app.post("/leases/:leaseId/exec", async (request, response) => {
   if (!required) {
     return;
   }
+  if (rejectIfLeaseUnavailable(required, request.params.leaseId, response)) {
+    return;
+  }
+  if (!authorizeScopedThread(request, response, required.container.Config?.Labels?.["manor.thread-id"] || null)) {
+    return;
+  }
 
   const command = typeof request.body?.command === "string" ? request.body.command.trim() : "";
   const cwd = typeof request.body?.cwd === "string" ? request.body.cwd.trim() : "";
@@ -532,8 +729,15 @@ app.post("/leases/:leaseId/exec", async (request, response) => {
 });
 
 app.post("/leases/:leaseId/verify", async (request, response) => {
+  if (!hasBrokerAccess(request)) {
+    response.status(403).json({ error: "Forbidden" });
+    return;
+  }
   const required = await requireContainer(request.params.leaseId, response);
   if (!required) {
+    return;
+  }
+  if (rejectIfLeaseUnavailable(required, request.params.leaseId, response)) {
     return;
   }
 
@@ -587,7 +791,12 @@ app.post("/leases/:leaseId/verify", async (request, response) => {
 });
 
 app.delete("/leases/:leaseId", async (request, response) => {
+  if (!hasBrokerAccess(request)) {
+    response.status(403).json({ error: "Forbidden" });
+    return;
+  }
   const containerName = toContainerName(request.params.leaseId);
+  setLeaseTransition(request.params.leaseId, "stopping");
 
   try {
     await docker.getContainer(containerName).remove({ force: true });
@@ -596,11 +805,15 @@ app.delete("/leases/:leaseId", async (request, response) => {
   }
 
   await dropPreviewEgressLeasePolicy(request.params.leaseId).catch(() => {});
-
+  clearLeaseTransition(request.params.leaseId);
   response.json({ ok: true, leaseId: request.params.leaseId });
 });
 
 app.post("/services", async (request, response) => {
+  if (!hasBrokerAccess(request)) {
+    response.status(403).json({ error: "Forbidden" });
+    return;
+  }
   const payload = request.body ?? {};
   if (typeof payload.templateId !== "string" || !payload.templateId) {
     response.status(400).json({ error: "templateId is required" });
@@ -644,7 +857,8 @@ app.post("/services", async (request, response) => {
         "manor.template-id": payload.templateId,
         "manor.template-label": payload.templateLabel || payload.templateId,
         "manor.title": payload.title,
-        "manor.target-port": String(Number(payload.targetPort || 0))
+        "manor.target-port": String(Number(payload.targetPort || 0)),
+        "manor.worktree-path": typeof payload.worktreePath === "string" ? payload.worktreePath : ""
       },
       HostConfig: {
         AutoRemove: true,
@@ -717,12 +931,53 @@ app.post("/services", async (request, response) => {
   }
 });
 
+app.get("/services", async (request, response) => {
+  const requestedThreadId = typeof request.query.threadId === "string" ? request.query.threadId : null;
+  if (!authorizeScopedThread(request, response, requestedThreadId)) {
+    return;
+  }
+
+  try {
+    const containers = await listManagedContainers(
+      (labels) => labels["manor.runtime-kind"] === "service" && (!requestedThreadId || (labels["manor.thread-id"] || "") === requestedThreadId)
+    );
+
+    response.json(
+      containers.map((container) => ({
+        id: container.Labels?.["manor.service-id"] || "",
+        threadId: container.Labels?.["manor.thread-id"] || null,
+        projectId: container.Labels?.["manor.project-id"] || "service",
+        projectLabel: container.Labels?.["manor.project-id"] || "service",
+        title: container.Labels?.["manor.title"] || `Service ${(container.Labels?.["manor.service-id"] || "").slice(0, 8)}`,
+        templateId: container.Labels?.["manor.template-id"] || "unknown",
+        templateLabel: container.Labels?.["manor.template-label"] || container.Labels?.["manor.template-id"] || "unknown",
+        runtimeKind: "container",
+        containerName: container.Names?.[0]?.replace(/^\//, "") || "",
+        targetHost: container.Names?.[0]?.replace(/^\//, "") || "",
+        targetPort: Number(container.Labels?.["manor.target-port"] || "0"),
+        worktreePath: null,
+        image: container.Image || previewImage,
+        status: container.State === "running" ? "running" : "stopped",
+        createdAt: typeof container.Created === "number" ? container.Created * 1000 : Date.now(),
+        updatedAt: Date.now(),
+        lastError: null,
+        env: {}
+      }))
+    );
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 app.get("/services/:serviceId", async (request, response) => {
   const required = await requireServiceContainer(request.params.serviceId, response);
   if (!required) {
     return;
   }
   const { containerName, container } = required;
+  if (!authorizeScopedThread(request, response, container.Config?.Labels?.["manor.thread-id"] || null)) {
+    return;
+  }
 
   response.json({
     id: request.params.serviceId,
@@ -761,6 +1016,9 @@ app.get("/services/:serviceId/processes", async (request, response) => {
   if (!required) {
     return;
   }
+  if (!authorizeScopedThread(request, response, required.container.Config?.Labels?.["manor.thread-id"] || null)) {
+    return;
+  }
 
   try {
     const top = await required.containerRef.top();
@@ -776,6 +1034,9 @@ app.get("/services/:serviceId/processes", async (request, response) => {
 app.get("/services/:serviceId/logs", async (request, response) => {
   const required = await requireServiceContainer(request.params.serviceId, response);
   if (!required) {
+    return;
+  }
+  if (!authorizeScopedThread(request, response, required.container.Config?.Labels?.["manor.thread-id"] || null)) {
     return;
   }
 
@@ -813,6 +1074,9 @@ app.post("/services/:serviceId/exec", async (request, response) => {
   if (!required) {
     return;
   }
+  if (!authorizeScopedThread(request, response, required.container.Config?.Labels?.["manor.thread-id"] || null)) {
+    return;
+  }
 
   const command = typeof request.body?.command === "string" ? request.body.command.trim() : "";
   const cwd = typeof request.body?.cwd === "string" ? request.body.cwd.trim() : "";
@@ -843,6 +1107,10 @@ app.post("/services/:serviceId/exec", async (request, response) => {
 });
 
 app.delete("/services/:serviceId", async (request, response) => {
+  if (!hasBrokerAccess(request)) {
+    response.status(403).json({ error: "Forbidden" });
+    return;
+  }
   const containerName = toServiceContainerName(request.params.serviceId);
 
   try {

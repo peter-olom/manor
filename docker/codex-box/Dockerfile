@@ -47,13 +47,14 @@ COPY docker/codex-box/auth.sh /usr/local/bin/codex-auth
 COPY docker/codex-box/gh-auth-headless.sh /usr/local/bin/gh-auth-headless
 COPY docker/codex-box/gh-headless-browser.sh /usr/local/bin/gh-headless-browser
 COPY docker/codex-box/bootstrap-tools.sh /usr/local/bin/codex-bootstrap-tools
+COPY docker/codex-box/manor-harness.mjs /usr/local/bin/manor-harness
 COPY docker/codex-box/healthcheck.mjs /opt/manor/codex-box/healthcheck.mjs
 COPY docker/codex-box/zshrc /home/codex/.zshrc
 COPY docker/codex-box/zprofile /home/codex/.zprofile
 
 ENV PATH="/home/codex/.local/bin:/home/codex/.local/share/mise/shims:/home/codex/.local/share/mise/bin:${PATH}"
 
-RUN chmod +x /usr/local/bin/start-codex-app-server /usr/local/bin/codex-auth /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/codex-bootstrap-tools \
+RUN chmod +x /usr/local/bin/start-codex-app-server /usr/local/bin/codex-auth /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/codex-bootstrap-tools /usr/local/bin/manor-harness \
     && chown codex:codex /home/codex/.zshrc /home/codex/.zprofile
 
 USER codex

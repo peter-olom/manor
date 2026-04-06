@@ -36,12 +36,24 @@ export class CodexAppServerClient extends EventEmitter {
   private selectedEffort: ReasoningEffort | null = null;
   private readonly defaultCwd = "/repos";
   private readonly codexHomeDir: string;
+  private readonly onThreadCapabilityReady: ((threadId: string, cwd: string | null | undefined) => Promise<void>) | null;
+  private readonly onThreadCapabilityRemoved: ((threadId: string) => Promise<void>) | null;
 
-  constructor(baseUrl: string, store: ButlerStateStore, codexHomeDir: string) {
+  constructor(
+    baseUrl: string,
+    store: ButlerStateStore,
+    codexHomeDir: string,
+    options?: {
+      onThreadCapabilityReady?: (threadId: string, cwd: string | null | undefined) => Promise<void>;
+      onThreadCapabilityRemoved?: (threadId: string) => Promise<void>;
+    }
+  ) {
     super();
     this.baseUrl = baseUrl;
     this.store = store;
     this.codexHomeDir = codexHomeDir;
+    this.onThreadCapabilityReady = options?.onThreadCapabilityReady ?? null;
+    this.onThreadCapabilityRemoved = options?.onThreadCapabilityRemoved ?? null;
   }
 
   start(): void {
@@ -411,6 +423,11 @@ export class CodexAppServerClient extends EventEmitter {
 
     if (result.thread && typeof result.thread === "object") {
       this.store.setThreadDetail(result.thread as Record<string, unknown>);
+      const detail = result.thread as Record<string, unknown>;
+      await this.onThreadCapabilityReady?.(
+        threadId,
+        typeof detail.cwd === "string" ? detail.cwd : this.store.getThread(threadId)?.cwd
+      );
     }
 
     await this.restoreThreadUsage(threadId).catch(() => undefined);
@@ -470,6 +487,7 @@ export class CodexAppServerClient extends EventEmitter {
     if (thread) {
       this.store.upsertThreadSummary(thread);
     }
+    await this.onThreadCapabilityReady?.(threadId, options.cwd ?? (thread && typeof thread.cwd === "string" ? thread.cwd : null));
     this.resumedThreadIds.add(threadId);
     this.directControlThreadIds.add(threadId);
 
@@ -513,6 +531,7 @@ export class CodexAppServerClient extends EventEmitter {
       throw new Error("text is required");
     }
 
+    await this.onThreadCapabilityReady?.(threadId, this.store.getThread(threadId)?.cwd);
     const targetThreadId = await this.ensureInteractiveThread(threadId);
 
     const activeTurnId = this.activeTurnIds.get(targetThreadId);
@@ -685,6 +704,7 @@ export class CodexAppServerClient extends EventEmitter {
     await this.unsubscribeThread(threadId);
     const deletedArtifacts = await this.deleteThreadArtifacts(threadId);
     this.store.removeThread(threadId);
+    await this.onThreadCapabilityRemoved?.(threadId);
     this.emit("change");
     return { deletedArtifacts };
   }
@@ -696,6 +716,7 @@ export class CodexAppServerClient extends EventEmitter {
     }
     for (const threadId of threadIds) {
       await this.unsubscribeThread(threadId);
+      await this.onThreadCapabilityRemoved?.(threadId);
     }
 
     const sessionsDir = path.join(this.codexHomeDir, "sessions");
