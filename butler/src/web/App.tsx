@@ -200,7 +200,7 @@ type Snapshot = {
       image: string;
       egressProfile: string;
       egressDomains: string[];
-      status: "starting" | "running" | "stopped" | "failed";
+      status: "starting" | "running" | "stopping" | "stopped" | "failed";
       createdAt: number;
       updatedAt: number;
       lastError: string | null;
@@ -208,6 +208,18 @@ type Snapshot = {
       lastActivityAt?: number;
       expiresAt?: number | null;
       lifecycleState?: "starting" | "active" | "idle" | "stopping" | "expired";
+      bootstrap: {
+        waitSeconds: number;
+        hint: string | null;
+        heartbeatKind: "none" | "http" | "tcp" | "command";
+        heartbeatTarget: string | null;
+        heartbeatIntervalSeconds: number;
+        phase: "pulling_image" | "starting_container" | "bootstrapping" | "waiting_for_heartbeat" | "ready" | "failed";
+        startedAt: number | null;
+        readyAt: number | null;
+        lastHeartbeatAt: number | null;
+        lastHeartbeatError: string | null;
+      };
     }>;
     services: Array<{
       id: string;
@@ -306,6 +318,30 @@ function formatLeaseState(
   }
 
   return "active";
+}
+
+function formatPreviewBootstrap(lease: Snapshot["butler"]["previews"][number]): string {
+  const phase = lease.bootstrap.phase;
+  const hint = lease.bootstrap.hint;
+  if (phase === "ready") {
+    return "ready";
+  }
+  if (phase === "pulling_image") {
+    return "pulling image";
+  }
+  if (phase === "starting_container") {
+    return "starting container";
+  }
+  if (phase === "waiting_for_heartbeat") {
+    return "waiting for heartbeat";
+  }
+  if (phase === "bootstrapping") {
+    return hint ? hint : "bootstrapping";
+  }
+  if (phase === "failed") {
+    return lease.bootstrap.lastHeartbeatError ? `failed • ${lease.bootstrap.lastHeartbeatError}` : "failed";
+  }
+  return phase;
 }
 
 function formatTimelineDayLabel(value: number | null | undefined): string {
@@ -1843,6 +1879,9 @@ export function App() {
                 <div className="panel-controls">
                   {activePreviewLease ? (
                     <>
+                      <span className="thread-preview-status">
+                        {formatPreviewBootstrap(activePreviewLease)}
+                      </span>
                       <button
                         className="panel-action"
                         onClick={() => void pinPreviewLease(activePreviewLease.id, !activePreviewLease.pinned)}
@@ -2144,7 +2183,7 @@ export function App() {
                               <span className="runtime-item-title">{lease.title}</span>
                               <span className="runtime-item-meta">
                                 {lease.projectLabel} • {lease.branchName ?? "preview"} • {lease.status} •{" "}
-                                {formatLeaseState(lease.lifecycleState, lease.expiresAt, lease.pinned)}
+                                {formatLeaseState(lease.lifecycleState, lease.expiresAt, lease.pinned)} • {formatPreviewBootstrap(lease)}
                               </span>
                             </button>
                             <div className="runtime-item-actions">

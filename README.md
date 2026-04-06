@@ -221,6 +221,8 @@ Preview runtimes use named egress profiles that are separate from the Codex box.
 - Butler can also supply a one-off domain allowlist at preview start time when one job needs a custom egress shape
 - custom preview allowlists are materialized as temporary lease-scoped proxy listeners and are deleted with the preview lease
 - the policy data lives outside Butler orchestration so operators can add, remove, or tighten profiles without changing the lease model
+- preview readiness is heartbeat-gated by default, using `http` on `/`
+- `heartbeat=none` is still available as an explicit override for special cases, but it is less trustworthy and should not be the normal preview path
 - preview runtimes still stay on the private work network and reach the internet through an explicit proxy path
 
 ## Built-In Service Templates

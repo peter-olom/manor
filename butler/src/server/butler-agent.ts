@@ -650,7 +650,7 @@ export class ButlerAgentService extends EventEmitter {
               : leases
                   .map(
                     (lease, index) =>
-                      `${index + 1}. ${lease.title} | thread=${lease.threadId ?? "(none)"} | status=${lease.status} | route=${lease.operatorUrl}`
+                      `${index + 1}. ${lease.title} | thread=${lease.threadId ?? "(none)"} | status=${lease.status}/${lease.bootstrap.phase} | route=${lease.operatorUrl}`
                   )
                   .join("\n");
           return {
@@ -684,6 +684,36 @@ export class ButlerAgentService extends EventEmitter {
                 description: "Explicit domain allowlist for this preview only, such as api.openrouter.ai or .cloudflare.com."
               })
             )
+          ),
+          bootstrapWaitSeconds: Type.Optional(
+            Type.Number({
+              minimum: 1,
+              description: "How long the preview may spend bootstrapping before the heartbeat is treated as failed."
+            })
+          ),
+          bootstrapHint: Type.Optional(
+            Type.String({
+              minLength: 1,
+              description: "Short hint like 'installing deps' or 'running migrations'."
+            })
+          ),
+          heartbeatKind: Type.Optional(
+            Type.String({
+              minLength: 1,
+              description: "Heartbeat type: none, http, tcp, or command. Defaults to http for previews."
+            })
+          ),
+          heartbeatTarget: Type.Optional(
+            Type.String({
+              minLength: 1,
+              description: "Heartbeat target such as /health, 127.0.0.1:3000, or a shell command. Defaults to / when the heartbeat kind is omitted."
+            })
+          ),
+          heartbeatIntervalSeconds: Type.Optional(
+            Type.Number({
+              minimum: 1,
+              description: "How often Manor should retry the heartbeat during bootstrap."
+            })
           )
         }),
         uiEffects: this.toolCatalog.find((tool) => tool.name === "start_preview")?.uiEffects ?? [],
@@ -697,6 +727,11 @@ export class ButlerAgentService extends EventEmitter {
             image?: string;
             egressProfile?: string;
             egressDomains?: string[];
+            bootstrapWaitSeconds?: number;
+            bootstrapHint?: string;
+            heartbeatKind?: string;
+            heartbeatTarget?: string;
+            heartbeatIntervalSeconds?: number;
           };
 
           const thread = typedParams.threadId ? this.store.getThread(typedParams.threadId) ?? null : null;
@@ -716,12 +751,22 @@ export class ButlerAgentService extends EventEmitter {
             command: typedParams.command,
             image: typedParams.image,
             egressProfile: typedParams.egressProfile ?? "none",
-            egressDomains: typedParams.egressDomains ?? []
+            egressDomains: typedParams.egressDomains ?? [],
+            bootstrapWaitSeconds: typedParams.bootstrapWaitSeconds,
+            bootstrapHint: typedParams.bootstrapHint,
+            heartbeatKind: typedParams.heartbeatKind as "none" | "http" | "tcp" | "command" | undefined,
+            heartbeatTarget: typedParams.heartbeatTarget,
+            heartbeatIntervalSeconds: typedParams.heartbeatIntervalSeconds
           });
           this.store.upsertPreviewLease(lease);
 
           return {
-            content: [{ type: "text", text: `Started preview ${lease.title} at ${lease.operatorUrl}.` }],
+            content: [
+              {
+                type: "text",
+                text: `Started preview ${lease.title} at ${lease.operatorUrl}. Bootstrap=${lease.bootstrap.phase}${lease.bootstrap.hint ? ` (${lease.bootstrap.hint})` : ""}.`
+              }
+            ],
             details: { lease }
           };
         }
@@ -765,7 +810,7 @@ export class ButlerAgentService extends EventEmitter {
             content: [
               {
                 type: "text",
-                text: `${lease.title} is ${lease.runtime.status}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}. Domains=${domains}.`
+                text: `${lease.title} is ${lease.runtime.status}. Bootstrap=${lease.bootstrap.phase}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}. Domains=${domains}.`
               }
             ],
             details: { lease }

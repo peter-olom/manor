@@ -352,6 +352,20 @@ app.post("/api/previews/start", async (request, response) => {
     typeof request.body?.egressProfile === "string" && request.body.egressProfile.trim()
       ? request.body.egressProfile.trim()
       : "none";
+  const bootstrapWaitSeconds =
+    typeof request.body?.bootstrapWaitSeconds === "number"
+      ? request.body.bootstrapWaitSeconds
+      : Number(request.body?.bootstrapWaitSeconds ?? 0);
+  const bootstrapHint = typeof request.body?.bootstrapHint === "string" ? request.body.bootstrapHint.trim() : "";
+  const heartbeatKind =
+    typeof request.body?.heartbeatKind === "string" && request.body.heartbeatKind.trim()
+      ? request.body.heartbeatKind.trim()
+      : "";
+  const heartbeatTarget = typeof request.body?.heartbeatTarget === "string" ? request.body.heartbeatTarget.trim() : "";
+  const heartbeatIntervalSeconds =
+    typeof request.body?.heartbeatIntervalSeconds === "number"
+      ? request.body.heartbeatIntervalSeconds
+      : Number(request.body?.heartbeatIntervalSeconds ?? 0);
 
   if (!title || !cwd || !command || !Number.isFinite(portValue) || portValue <= 0) {
     response.status(400).json({ error: "title, cwd, command, and port are required" });
@@ -372,7 +386,13 @@ app.post("/api/previews/start", async (request, response) => {
       command,
       image,
       egressProfile,
-      egressDomains
+      egressDomains,
+      bootstrapWaitSeconds: Number.isFinite(bootstrapWaitSeconds) && bootstrapWaitSeconds > 0 ? bootstrapWaitSeconds : undefined,
+      bootstrapHint: bootstrapHint || undefined,
+      heartbeatKind: heartbeatKind || undefined,
+      heartbeatTarget: heartbeatTarget || undefined,
+      heartbeatIntervalSeconds:
+        Number.isFinite(heartbeatIntervalSeconds) && heartbeatIntervalSeconds > 0 ? heartbeatIntervalSeconds : undefined
     });
     store.upsertPreviewLease(lease);
     response.json({ ok: true, lease });
@@ -593,6 +613,7 @@ app.use(/^\/preview\/([^/]+)(\/.*)?$/, (request, response) => {
 });
 
 let leaseSweepInFlight = false;
+let previewReconcileInFlight = false;
 
 async function sweepExpiredLeases(): Promise<void> {
   if (leaseSweepInFlight) {
@@ -643,6 +664,39 @@ void sweepExpiredLeases().catch((error) => {
   console.error("Initial lease sweep failed", error);
 });
 
+async function reconcilePreviewLeases(): Promise<void> {
+  if (previewReconcileInFlight) {
+    return;
+  }
+
+  previewReconcileInFlight = true;
+  try {
+    const brokerLeases = await runtimeBroker.listLeases();
+    const brokerLeaseIds = new Set(brokerLeases.map((lease) => lease.id));
+    const storedLeases = store.listPreviewLeases().filter((lease) => lease.status !== "stopped");
+
+    for (const lease of storedLeases) {
+      if (!brokerLeaseIds.has(lease.id)) {
+        store.removePreviewLease(lease.id);
+      }
+    }
+
+    for (const lease of brokerLeases) {
+      store.upsertPreviewLease(lease);
+    }
+  } catch (error) {
+    console.error("Preview reconcile failed", error);
+  } finally {
+    previewReconcileInFlight = false;
+  }
+}
+
+const previewReconciler = setInterval(() => {
+  void reconcilePreviewLeases();
+}, 5_000);
+
+void reconcilePreviewLeases();
+
 if (viteDevServer) {
   app.use(viteDevServer.middlewares);
   app.get(/.*/, async (request, response, next) => {
@@ -668,4 +722,5 @@ server.listen(port, "0.0.0.0", () => {
 
 server.on("close", () => {
   clearInterval(leaseReaper);
+  clearInterval(previewReconciler);
 });

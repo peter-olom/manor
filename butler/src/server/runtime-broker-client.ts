@@ -21,6 +21,18 @@ type LeasePayload = {
   createdAt: number;
   updatedAt: number;
   lastError: string | null;
+  bootstrap: {
+    waitSeconds: number;
+    hint: string | null;
+    heartbeatKind: "none" | "http" | "tcp" | "command";
+    heartbeatTarget: string | null;
+    heartbeatIntervalSeconds: number;
+    phase: "pulling_image" | "starting_container" | "bootstrapping" | "waiting_for_heartbeat" | "ready" | "failed";
+    startedAt: number | null;
+    readyAt: number | null;
+    lastHeartbeatAt: number | null;
+    lastHeartbeatError: string | null;
+  };
 };
 
 type ServicePayload = {
@@ -122,6 +134,11 @@ export class RuntimeBrokerClient {
     image?: string;
     egressProfile?: PreviewEgressProfile;
     egressDomains?: string[];
+    bootstrapWaitSeconds?: number;
+    bootstrapHint?: string;
+    heartbeatKind?: "none" | "http" | "tcp" | "command";
+    heartbeatTarget?: string;
+    heartbeatIntervalSeconds?: number;
     env?: Record<string, string>;
   }): Promise<LeasePayload> {
     return this.request<LeasePayload>("/leases", {

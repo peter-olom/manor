@@ -53,6 +53,22 @@ function normalizeEnv(value: unknown): Record<string, string> {
   );
 }
 
+function normalizePositiveInteger(value: unknown): number | null {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+  return Math.max(1, Math.trunc(numeric));
+}
+
+function normalizeHeartbeatKind(value: unknown): "none" | "http" | "tcp" | "command" | null {
+  const normalized = normalizeString(value);
+  if (normalized === "none" || normalized === "http" || normalized === "tcp" || normalized === "command") {
+    return normalized;
+  }
+  return null;
+}
+
 export class CodexHarnessService {
   private readonly registryPath: string;
   private readonly brokerAccessPath: string;
@@ -362,7 +378,10 @@ export class CodexHarnessService {
           previews.length === 0
             ? "No previews are attached to this job."
             : previews
-                .map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | ${lease.operatorUrl}`)
+                .map(
+                  (lease, index) =>
+                    `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status}/${lease.bootstrap.phase} | ${lease.operatorUrl}`
+                )
                 .join("\n"),
         data: { previews }
       };
@@ -376,6 +395,11 @@ export class CodexHarnessService {
       const image = normalizeString(params.image) || undefined;
       const egressProfile = normalizeString(params.egressProfile) || "none";
       const egressDomains = normalizeStringArray(params.egressDomains);
+      const bootstrapWaitSeconds = normalizePositiveInteger(params.bootstrapWaitSeconds) ?? undefined;
+      const bootstrapHint = normalizeString(params.bootstrapHint) || undefined;
+      const heartbeatKind = normalizeHeartbeatKind(params.heartbeatKind) ?? undefined;
+      const heartbeatTarget = normalizeString(params.heartbeatTarget) || undefined;
+      const heartbeatIntervalSeconds = normalizePositiveInteger(params.heartbeatIntervalSeconds) ?? undefined;
 
       if (!command || !Number.isFinite(port) || port <= 0) {
         throw new Error("preview.start requires command and port");
@@ -393,7 +417,12 @@ export class CodexHarnessService {
         command,
         image,
         egressProfile,
-        egressDomains
+        egressDomains,
+        bootstrapWaitSeconds,
+        bootstrapHint,
+        heartbeatKind,
+        heartbeatTarget,
+        heartbeatIntervalSeconds
       });
       this.store.upsertPreviewLease(lease);
       this.store.addEvent(capability.threadId, "harness/preview/start", `Started preview ${lease.id}`);
@@ -410,7 +439,7 @@ export class CodexHarnessService {
       this.store.upsertPreviewLease(lease);
       this.store.notePreviewLeaseActivity(leaseId);
       return {
-        text: `${lease.title} is ${lease.runtime.status}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}.`,
+        text: `${lease.title} is ${lease.runtime.status}. Bootstrap=${lease.bootstrap.phase}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}.`,
         data: { lease }
       };
     }

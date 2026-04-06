@@ -642,6 +642,12 @@ select {
   gap: 14px;
 }
 
+.thread-preview-status {
+  font-size: 0.8rem;
+  color: var(--muted);
+  text-transform: lowercase;
+}
+
 .panel-action {
   display: inline-flex;
   align-items: center;

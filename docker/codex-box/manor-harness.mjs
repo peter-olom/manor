@@ -13,7 +13,11 @@ function printHelp() {
   console.log(`Usage:
   manor-harness status
   manor-harness preview list
-  manor-harness preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...]
+  manor-harness preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>]
+
+Preview defaults:
+  heartbeat-kind=http
+  heartbeat-target=/
   manor-harness preview inspect <leaseId>
   manor-harness preview processes <leaseId>
   manor-harness preview logs <leaseId> [--tail <n>]
@@ -177,7 +181,12 @@ async function main() {
         port: Number(readFlag(args, "--port", "0")),
         image: readFlag(args, "--image"),
         egressProfile: readFlag(args, "--egress-profile"),
-        egressDomains: readRepeatedFlag(args, "--egress-domain")
+        egressDomains: readRepeatedFlag(args, "--egress-domain"),
+        bootstrapWaitSeconds: Number(readFlag(args, "--bootstrap-wait-seconds", "0")),
+        bootstrapHint: readFlag(args, "--bootstrap-hint"),
+        heartbeatKind: readFlag(args, "--heartbeat-kind"),
+        heartbeatTarget: readFlag(args, "--heartbeat-target"),
+        heartbeatIntervalSeconds: Number(readFlag(args, "--heartbeat-interval-seconds", "0"))
       };
     } else if (subcommand === "inspect" && args[2]) {
       directBrokerRequest = { path: `/leases/${encodeURIComponent(args[2])}` };

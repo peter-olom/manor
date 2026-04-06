@@ -47,6 +47,14 @@ export type PreviewLeaseStatus = "starting" | "running" | "stopping" | "stopped"
 export type PreviewEgressProfile = string;
 export type ServiceLeaseStatus = "starting" | "running" | "stopping" | "stopped" | "failed";
 export type LeaseLifecycleState = "starting" | "active" | "idle" | "stopping" | "expired";
+export type PreviewBootstrapHeartbeatKind = "none" | "http" | "tcp" | "command";
+export type PreviewBootstrapPhase =
+  | "pulling_image"
+  | "starting_container"
+  | "bootstrapping"
+  | "waiting_for_heartbeat"
+  | "ready"
+  | "failed";
 
 export interface LeaseLifecycleView {
   pinned?: boolean;
@@ -79,6 +87,18 @@ export interface PreviewLeaseView extends LeaseLifecycleView {
   createdAt: number;
   updatedAt: number;
   lastError: string | null;
+  bootstrap: {
+    waitSeconds: number;
+    hint: string | null;
+    heartbeatKind: PreviewBootstrapHeartbeatKind;
+    heartbeatTarget: string | null;
+    heartbeatIntervalSeconds: number;
+    phase: PreviewBootstrapPhase;
+    startedAt: number | null;
+    readyAt: number | null;
+    lastHeartbeatAt: number | null;
+    lastHeartbeatError: string | null;
+  };
 }
 
 export interface ServiceTemplateView {

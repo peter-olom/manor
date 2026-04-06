@@ -1,6 +1,7 @@
 import express from "express";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import net from "node:net";
 import { Readable } from "node:stream";
 import Docker from "dockerode";
 
@@ -19,6 +20,10 @@ const internalOperatorBaseUrl = process.env.RUNTIME_OPERATOR_BASE_URL_INTERNAL ?
 const playwrightContainerName = process.env.RUNTIME_PLAYWRIGHT_CONTAINER ?? "manor-playwright";
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 const leaseTransitions = new Map();
+const leaseBootstrapStates = new Map();
+const pendingPreviewLeases = new Map();
+const retainedPreviewLeases = new Map();
+const noHeartbeatReadyDelayMs = Number(process.env.RUNTIME_NO_HEARTBEAT_READY_DELAY_MS ?? "2000");
 
 const app = express();
 app.use(express.json());
@@ -159,6 +164,8 @@ function buildLease(payload) {
   const id = payload.leaseId || crypto.randomUUID();
   const containerName = toContainerName(id);
   const now = Date.now();
+  const targetPort = Number(payload.targetPort || 3000);
+  const bootstrap = buildBootstrapConfig(payload, targetPort);
 
   return {
     id,
@@ -170,7 +177,7 @@ function buildLease(payload) {
     branchName: payload.branchName ?? null,
     containerName,
     targetHost: containerName,
-    targetPort: Number(payload.targetPort || 3000),
+    targetPort,
     routePrefix: `${routeBase}/${id}/`,
     operatorUrl: `${routeBase}/${id}/`,
     command: payload.command,
@@ -182,8 +189,173 @@ function buildLease(payload) {
     status: "starting",
     createdAt: now,
     updatedAt: now,
-    lastError: null
+    lastError: null,
+    bootstrap
   };
+}
+
+function normalizeBootstrapHeartbeatKind(value) {
+  return value === "http" || value === "tcp" || value === "command" || value === "none" ? value : null;
+}
+
+function normalizePositiveInteger(value, fallback) {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return fallback;
+  }
+  return Math.max(1, Math.trunc(numeric));
+}
+
+function normalizeBootstrapTarget(value) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized || null;
+}
+
+function buildBootstrapConfig(payload, targetPort) {
+  const explicitKind = normalizeBootstrapHeartbeatKind(payload.heartbeatKind);
+  const defaultKind = explicitKind ?? "http";
+  const defaultTarget =
+    defaultKind === "http"
+      ? "/"
+      : defaultKind === "tcp"
+        ? `127.0.0.1:${targetPort}`
+        : null;
+
+  return {
+    waitSeconds: normalizePositiveInteger(payload.bootstrapWaitSeconds, 120),
+    hint: normalizeBootstrapTarget(payload.bootstrapHint),
+    heartbeatKind: defaultKind,
+    heartbeatTarget: normalizeBootstrapTarget(payload.heartbeatTarget) ?? defaultTarget,
+    heartbeatIntervalSeconds: normalizePositiveInteger(payload.heartbeatIntervalSeconds, 5),
+    phase: "pulling_image",
+    startedAt: Date.now(),
+    readyAt: null,
+    lastHeartbeatAt: null,
+    lastHeartbeatError: null,
+    targetPort
+  };
+}
+
+function bootstrapConfigFromLabels(labels, targetPort) {
+  const explicitKind = normalizeBootstrapHeartbeatKind(labels?.["manor.bootstrap-heartbeat-kind"]);
+  const defaultKind = explicitKind ?? "http";
+  const defaultTarget =
+    defaultKind === "http"
+      ? "/"
+      : defaultKind === "tcp"
+        ? `127.0.0.1:${targetPort}`
+        : null;
+
+  return {
+    waitSeconds: normalizePositiveInteger(labels?.["manor.bootstrap-wait-seconds"], 120),
+    hint: normalizeBootstrapTarget(labels?.["manor.bootstrap-hint"]),
+    heartbeatKind: defaultKind,
+    heartbeatTarget: normalizeBootstrapTarget(labels?.["manor.bootstrap-heartbeat-target"]) ?? defaultTarget,
+    heartbeatIntervalSeconds: normalizePositiveInteger(labels?.["manor.bootstrap-heartbeat-interval"], 5),
+    targetPort
+  };
+}
+
+function buildBootstrapFallback(labels, targetPort, status, containerRunning) {
+  const config = bootstrapConfigFromLabels(labels, targetPort);
+  let phase = "starting_container";
+  if (status === "failed") {
+    phase = "failed";
+  } else if (containerRunning) {
+    phase = config.heartbeatKind === "none" ? "ready" : "waiting_for_heartbeat";
+  }
+
+  return {
+    ...config,
+    phase,
+    startedAt: null,
+    readyAt: phase === "ready" ? Date.now() : null,
+    lastHeartbeatAt: null,
+    lastHeartbeatError: null
+  };
+}
+
+function getLeaseBootstrapState(leaseId, labels, targetPort, status, containerRunning) {
+  return leaseBootstrapStates.get(leaseId) ?? buildBootstrapFallback(labels, targetPort, status, containerRunning);
+}
+
+function serializeBootstrapState(bootstrap) {
+  return {
+    waitSeconds: bootstrap.waitSeconds,
+    hint: bootstrap.hint,
+    heartbeatKind: bootstrap.heartbeatKind,
+    heartbeatTarget: bootstrap.heartbeatTarget,
+    heartbeatIntervalSeconds: bootstrap.heartbeatIntervalSeconds,
+    phase: bootstrap.phase,
+    startedAt: bootstrap.startedAt,
+    readyAt: bootstrap.readyAt,
+    lastHeartbeatAt: bootstrap.lastHeartbeatAt,
+    lastHeartbeatError: bootstrap.lastHeartbeatError
+  };
+}
+
+function setLeaseBootstrapState(leaseId, state) {
+  leaseBootstrapStates.set(leaseId, state);
+  return state;
+}
+
+function mergeLeaseBootstrapState(leaseId, patch) {
+  const current = leaseBootstrapStates.get(leaseId);
+  if (!current) {
+    return null;
+  }
+
+  const next = {
+    ...current,
+    ...patch
+  };
+  leaseBootstrapStates.set(leaseId, next);
+  return next;
+}
+
+function clearLeaseBootstrapState(leaseId) {
+  leaseBootstrapStates.delete(leaseId);
+}
+
+function retainPreviewLease(lease, runtime = {}) {
+  retainedPreviewLeases.set(lease.id, {
+    lease: {
+      ...lease,
+      updatedAt: Date.now()
+    },
+    runtime: {
+      running: false,
+      status: runtime.status || lease.status || "failed",
+      startedAt: runtime.startedAt ?? null,
+      finishedAt: runtime.finishedAt ?? Date.now(),
+      error: runtime.error ?? lease.lastError ?? null
+    }
+  });
+}
+
+function getRetainedPreviewLease(leaseId) {
+  return retainedPreviewLeases.get(leaseId) ?? null;
+}
+
+function clearRetainedPreviewLease(leaseId) {
+  retainedPreviewLeases.delete(leaseId);
+}
+
+function retainFailedLease(lease, message, runtime = {}) {
+  const error = message || lease.lastError || "Preview failed during bootstrap.";
+  retainPreviewLease(
+    {
+      ...lease,
+      status: "failed",
+      updatedAt: Date.now(),
+      lastError: error
+    },
+    {
+      status: "failed",
+      error,
+      ...runtime
+    }
+  );
 }
 
 async function inspectContainer(containerName) {
@@ -217,6 +389,10 @@ function clearLeaseTransition(leaseId) {
 }
 
 function resolveLeaseStatus(containerState, leaseId) {
+  const bootstrap = leaseBootstrapStates.get(leaseId);
+  if (bootstrap?.phase === "failed") {
+    return "failed";
+  }
   const transition = getLeaseTransition(leaseId);
   if (transition?.state === "stopping") {
     return "stopping";
@@ -262,6 +438,27 @@ function rejectIfLeaseUnavailable(required, leaseId, response) {
   return false;
 }
 
+function rejectIfLeaseRetainedFailed(leaseId, response) {
+  const retained = getRetainedPreviewLease(leaseId);
+  if (!retained || retained.lease.status !== "failed") {
+    return false;
+  }
+
+  response.status(409).json({
+    error: retained.lease.lastError || `Preview ${leaseId} failed during bootstrap.`,
+    retryable: false,
+    state: "failed",
+    lease: {
+      ...serializeLease(retained.lease, {
+        containerState: "failed",
+        containerRunning: false
+      }),
+      runtime: retained.runtime
+    }
+  });
+  return true;
+}
+
 async function requireServiceContainer(serviceId, response) {
   const containerName = toServiceContainerName(serviceId);
   const container = await inspectContainer(containerName);
@@ -302,6 +499,217 @@ async function ensureImage(imageName) {
       });
     });
   }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runHeartbeatCheck(lease) {
+  const bootstrap = leaseBootstrapStates.get(lease.id) ?? lease.bootstrap;
+  if (!bootstrap || bootstrap.heartbeatKind === "none") {
+    return;
+  }
+
+  if (bootstrap.heartbeatKind === "http") {
+    const target = bootstrap.heartbeatTarget || "/";
+    const url = new URL(target, `http://${lease.containerName}:${lease.targetPort}/`);
+    const response = await fetch(url, {
+      method: "GET",
+      redirect: "manual",
+      signal: AbortSignal.timeout(5_000)
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP heartbeat returned ${response.status}`);
+    }
+    return;
+  }
+
+  if (bootstrap.heartbeatKind === "tcp") {
+    const rawTarget = bootstrap.heartbeatTarget || `${lease.containerName}:${lease.targetPort}`;
+    const marker = rawTarget.lastIndexOf(":");
+    const host = marker === -1 ? lease.containerName : rawTarget.slice(0, marker) || lease.containerName;
+    const port = marker === -1 ? lease.targetPort : Number(rawTarget.slice(marker + 1));
+    await new Promise((resolve, reject) => {
+      const socket = net.createConnection({ host, port });
+      const timer = setTimeout(() => {
+        socket.destroy();
+        reject(new Error("TCP heartbeat timed out"));
+      }, 5_000);
+      socket.once("connect", () => {
+        clearTimeout(timer);
+        socket.end();
+        resolve();
+      });
+      socket.once("error", (error) => {
+        clearTimeout(timer);
+        socket.destroy();
+        reject(error);
+      });
+    });
+    return;
+  }
+
+  if (bootstrap.heartbeatKind === "command") {
+    const command = bootstrap.heartbeatTarget;
+    if (!command) {
+      throw new Error("Command heartbeat target is required");
+    }
+    const containerRef = docker.getContainer(lease.containerName);
+    const exec = await containerRef.exec({
+      AttachStdout: true,
+      AttachStderr: true,
+      Cmd: ["bash", "-lc", command],
+      Tty: false
+    });
+    const output = await collectExecOutput(containerRef, exec);
+    if (output.exitCode !== 0) {
+      throw new Error(output.stderr.trim() || output.stdout.trim() || `Command heartbeat exited ${output.exitCode}`);
+    }
+  }
+}
+
+async function monitorLeaseBootstrap(lease) {
+  const bootstrap = leaseBootstrapStates.get(lease.id) ?? lease.bootstrap;
+  if (!bootstrap) {
+    return;
+  }
+
+  if (bootstrap.heartbeatKind === "none") {
+    mergeLeaseBootstrapState(lease.id, {
+      phase: bootstrap.hint ? "bootstrapping" : "starting_container",
+      lastHeartbeatError: null
+    });
+
+    const delayMs = Math.min(Math.max(noHeartbeatReadyDelayMs, 250), bootstrap.waitSeconds * 1000);
+    const deadline = Date.now() + bootstrap.waitSeconds * 1000;
+    const stableAt = Date.now() + delayMs;
+
+    while (Date.now() <= deadline) {
+      if (getLeaseTransition(lease.id)?.state === "stopping") {
+        return;
+      }
+
+      const container = await inspectContainer(lease.containerName);
+      if (!container) {
+        const state = mergeLeaseBootstrapState(lease.id, {
+          phase: "failed",
+          lastHeartbeatError: "Preview container disappeared during bootstrap."
+        });
+        retainFailedLease(lease, state?.lastHeartbeatError);
+        return;
+      }
+
+      if (!container.State?.Running) {
+        const state = mergeLeaseBootstrapState(lease.id, {
+          phase: "failed",
+          lastHeartbeatError: container.State?.Error || `Preview stopped before becoming ready (${container.State?.Status || "unknown"}).`
+        });
+        retainFailedLease(lease, state?.lastHeartbeatError, {
+          startedAt: container.State?.StartedAt ? new Date(container.State.StartedAt).getTime() : null,
+          finishedAt: container.State?.FinishedAt ? new Date(container.State.FinishedAt).getTime() : Date.now()
+        });
+        return;
+      }
+
+      if (Date.now() >= stableAt) {
+        mergeLeaseBootstrapState(lease.id, {
+          phase: "ready",
+          readyAt: Date.now(),
+          lastHeartbeatAt: Date.now(),
+          lastHeartbeatError: null
+        });
+        return;
+      }
+
+      await sleep(500);
+    }
+
+    mergeLeaseBootstrapState(lease.id, {
+      phase: "failed",
+      lastHeartbeatError: `Bootstrap timed out after ${bootstrap.waitSeconds}s.`
+    });
+    retainFailedLease(lease, `Bootstrap timed out after ${bootstrap.waitSeconds}s.`);
+    return;
+  }
+
+  mergeLeaseBootstrapState(lease.id, {
+    phase: bootstrap.hint ? "bootstrapping" : "waiting_for_heartbeat",
+    lastHeartbeatError: null
+  });
+
+  const deadline = Date.now() + bootstrap.waitSeconds * 1000;
+  while (Date.now() <= deadline) {
+    if (getLeaseTransition(lease.id)?.state === "stopping") {
+      return;
+    }
+
+    const container = await inspectContainer(lease.containerName);
+    if (!container) {
+      const state = mergeLeaseBootstrapState(lease.id, {
+        phase: "failed",
+        lastHeartbeatError: "Preview container disappeared during bootstrap."
+      });
+      retainFailedLease(lease, state?.lastHeartbeatError);
+      return;
+    }
+
+    if (!container.State?.Running) {
+      const state = mergeLeaseBootstrapState(lease.id, {
+        phase: "failed",
+        lastHeartbeatError: container.State?.Error || `Preview stopped before becoming ready (${container.State?.Status || "unknown"}).`
+      });
+      retainFailedLease(lease, state?.lastHeartbeatError, {
+        startedAt: container.State?.StartedAt ? new Date(container.State.StartedAt).getTime() : null,
+        finishedAt: container.State?.FinishedAt ? new Date(container.State.FinishedAt).getTime() : Date.now()
+      });
+      return;
+    }
+
+    try {
+      await runHeartbeatCheck(lease);
+      mergeLeaseBootstrapState(lease.id, {
+        phase: "ready",
+        readyAt: Date.now(),
+        lastHeartbeatAt: Date.now(),
+        lastHeartbeatError: null
+      });
+      return;
+    } catch (error) {
+      mergeLeaseBootstrapState(lease.id, {
+        phase: bootstrap.hint ? "bootstrapping" : "waiting_for_heartbeat",
+        lastHeartbeatAt: Date.now(),
+        lastHeartbeatError: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    await sleep(bootstrap.heartbeatIntervalSeconds * 1000);
+  }
+
+  const state = mergeLeaseBootstrapState(lease.id, {
+    phase: "failed",
+    lastHeartbeatError: `Bootstrap heartbeat timed out after ${bootstrap.waitSeconds}s.`
+  });
+  retainFailedLease(lease, state?.lastHeartbeatError);
+}
+
+function serializeLease(lease, options = {}) {
+  const targetPort = Number(options.targetPort ?? lease.targetPort ?? 3000);
+  const status = resolveLeaseStatus(options.containerState ?? lease.status ?? "stopped", lease.id);
+  const bootstrap = getLeaseBootstrapState(
+    lease.id,
+    options.labels ?? null,
+    targetPort,
+    status,
+    Boolean(options.containerRunning)
+  );
+
+  return {
+    ...lease,
+    targetPort,
+    status,
+    bootstrap: serializeBootstrapState(bootstrap)
+  };
 }
 
 async function collectExecOutput(containerRef, exec) {
@@ -422,6 +830,9 @@ app.post("/leases", async (request, response) => {
 
   const lease = buildLease(payload);
   setLeaseTransition(lease.id, "starting");
+  setLeaseBootstrapState(lease.id, lease.bootstrap);
+  pendingPreviewLeases.set(lease.id, lease);
+  clearRetainedPreviewLease(lease.id);
   const env = typeof payload.env === "object" && payload.env ? payload.env : {};
   const envVars = [`PORT=${lease.targetPort}`, "HOST=0.0.0.0"];
   let proxyPort = null;
@@ -467,7 +878,14 @@ app.post("/leases", async (request, response) => {
   }
 
   try {
+    mergeLeaseBootstrapState(lease.id, { phase: "pulling_image" });
     await ensureImage(lease.image);
+
+    if (getLeaseTransition(lease.id)?.state === "stopping") {
+      throw new Error("Preview creation was cancelled before the container started.");
+    }
+
+    mergeLeaseBootstrapState(lease.id, { phase: "starting_container" });
 
     const existing = await inspectContainer(lease.containerName);
     if (existing) {
@@ -490,7 +908,12 @@ app.post("/leases", async (request, response) => {
         "manor.target-port": String(lease.targetPort),
         "manor.egress-profile": lease.egressProfile,
         "manor.egress-policy-name": dynamicPolicyName ?? "",
-        "manor.egress-domains": lease.egressDomains.join(",")
+        "manor.egress-domains": lease.egressDomains.join(","),
+        "manor.bootstrap-wait-seconds": String(lease.bootstrap.waitSeconds),
+        "manor.bootstrap-hint": lease.bootstrap.hint ?? "",
+        "manor.bootstrap-heartbeat-kind": lease.bootstrap.heartbeatKind,
+        "manor.bootstrap-heartbeat-target": lease.bootstrap.heartbeatTarget ?? "",
+        "manor.bootstrap-heartbeat-interval": String(lease.bootstrap.heartbeatIntervalSeconds)
       },
       HostConfig: {
         AutoRemove: true,
@@ -505,15 +928,62 @@ app.post("/leases", async (request, response) => {
       throw new Error("Preview container did not start");
     }
 
+    pendingPreviewLeases.delete(lease.id);
+    void monitorLeaseBootstrap(lease).catch((error) => {
+      const bootstrapState = mergeLeaseBootstrapState(lease.id, {
+        phase: "failed",
+        lastHeartbeatError: error instanceof Error ? error.message : String(error)
+      });
+      retainPreviewLease(
+        {
+          ...lease,
+          status: "failed",
+          updatedAt: Date.now(),
+          lastError: bootstrapState?.lastHeartbeatError || (error instanceof Error ? error.message : String(error))
+        },
+        {
+          status: "failed",
+          error: bootstrapState?.lastHeartbeatError || (error instanceof Error ? error.message : String(error))
+        }
+      );
+    });
+
     response.json({
-      ...lease,
-      status: resolveLeaseStatus(container?.State?.Running ? "running" : "starting", lease.id),
+      ...serializeLease(
+        {
+          ...lease,
+          updatedAt: Date.now()
+        },
+        {
+          labels: container.Config?.Labels ?? null,
+          targetPort: lease.targetPort,
+          containerState: container?.State?.Running ? "running" : "starting",
+          containerRunning: Boolean(container?.State?.Running)
+        }
+      ),
       updatedAt: Date.now()
     });
   } catch (error) {
+    pendingPreviewLeases.delete(lease.id);
+    const bootstrapState = mergeLeaseBootstrapState(lease.id, {
+      phase: "failed",
+      lastHeartbeatError: error instanceof Error ? error.message : String(error)
+    });
     if (dynamicPolicyName) {
       await dropPreviewEgressLeasePolicy(lease.id).catch(() => {});
     }
+    retainPreviewLease(
+      {
+        ...lease,
+        status: "failed",
+        updatedAt: Date.now(),
+        lastError: bootstrapState?.lastHeartbeatError || (error instanceof Error ? error.message : String(error))
+      },
+      {
+        status: "failed",
+        error: bootstrapState?.lastHeartbeatError || (error instanceof Error ? error.message : String(error))
+      }
+    );
     response.status(500).json({
       ...lease,
       status: "failed",
@@ -536,45 +1006,118 @@ app.get("/leases", async (request, response) => {
     const containers = await listManagedContainers(
       (labels) => labels["manor.runtime-kind"] !== "service" && (!requestedThreadId || (labels["manor.thread-id"] || "") === requestedThreadId)
     );
-
-    response.json(
-      containers.map((container) => ({
-        id: container.Labels?.["manor.lease-id"] || "",
-        threadId: container.Labels?.["manor.thread-id"] || null,
-        projectId: container.Labels?.["manor.project-id"] || "unknown",
-        projectLabel: container.Labels?.["manor.project-id"] || "Unknown",
-        title: container.Labels?.["manor.title"] || `Preview ${(container.Labels?.["manor.lease-id"] || "").slice(0, 8)}`,
-        worktreePath: container.Labels?.["manor.worktree-path"] || container.Names?.[0]?.replace(/^\//, "") || "/repos",
-        branchName: null,
-        containerName: container.Names?.[0]?.replace(/^\//, "") || "",
-        targetHost: container.Names?.[0]?.replace(/^\//, "") || "",
-        targetPort: Number(
-          container.Labels?.["manor.target-port"] ||
-            container.Labels?.["manor.port"] ||
-            "3000"
-        ),
-        routePrefix: `${routeBase}/${container.Labels?.["manor.lease-id"] || ""}/`,
-        operatorUrl: `${routeBase}/${container.Labels?.["manor.lease-id"] || ""}/`,
-        command: Array.isArray(container.Command) ? container.Command.join(" ") : container.Command || "",
-        image: container.Image || previewImage,
-        egressProfile: container.Labels?.["manor.egress-profile"] || "none",
-        egressDomains:
-          container.Labels?.["manor.egress-domains"]
-            ?.split(",")
-            .map((value) => value.trim())
-            .filter(Boolean) || [],
-        status: resolveLeaseStatus(container.State, container.Labels?.["manor.lease-id"] || ""),
-        createdAt: typeof container.Created === "number" ? container.Created * 1000 : Date.now(),
-        updatedAt: Date.now(),
-        lastError: null
-      }))
+    const liveLeases = containers.map((container) =>
+      serializeLease(
+        {
+          id: container.Labels?.["manor.lease-id"] || "",
+          threadId: container.Labels?.["manor.thread-id"] || null,
+          projectId: container.Labels?.["manor.project-id"] || "unknown",
+          projectLabel: container.Labels?.["manor.project-id"] || "Unknown",
+          title: container.Labels?.["manor.title"] || `Preview ${(container.Labels?.["manor.lease-id"] || "").slice(0, 8)}`,
+          worktreePath: container.Labels?.["manor.worktree-path"] || container.Names?.[0]?.replace(/^\//, "") || "/repos",
+          branchName: null,
+          containerName: container.Names?.[0]?.replace(/^\//, "") || "",
+          targetHost: container.Names?.[0]?.replace(/^\//, "") || "",
+          targetPort: Number(container.Labels?.["manor.target-port"] || container.Labels?.["manor.port"] || "3000"),
+          routePrefix: `${routeBase}/${container.Labels?.["manor.lease-id"] || ""}/`,
+          operatorUrl: `${routeBase}/${container.Labels?.["manor.lease-id"] || ""}/`,
+          command: Array.isArray(container.Command) ? container.Command.join(" ") : container.Command || "",
+          image: container.Image || previewImage,
+          egressProfile: container.Labels?.["manor.egress-profile"] || "none",
+          egressDomains:
+            container.Labels?.["manor.egress-domains"]
+              ?.split(",")
+              .map((value) => value.trim())
+              .filter(Boolean) || [],
+          status: container.State,
+          createdAt: typeof container.Created === "number" ? container.Created * 1000 : Date.now(),
+          updatedAt: Date.now(),
+          lastError: null
+        },
+        {
+          labels: container.Labels ?? null,
+          containerState: container.State,
+          containerRunning: container.State === "running"
+        }
+      )
     );
+    const liveLeaseIds = new Set(liveLeases.map((lease) => lease.id));
+    const pendingLeases = [...pendingPreviewLeases.values()]
+      .filter((lease) => (!requestedThreadId || lease.threadId === requestedThreadId) && !liveLeaseIds.has(lease.id))
+      .map((lease) =>
+        serializeLease(
+          {
+            ...lease,
+            updatedAt: Date.now()
+          },
+          {
+            containerState: "starting",
+            containerRunning: false
+          }
+        )
+      );
+
+    const retainedLeases = [...retainedPreviewLeases.values()]
+      .filter(({ lease }) => (!requestedThreadId || lease.threadId === requestedThreadId) && !liveLeaseIds.has(lease.id))
+      .map(({ lease, runtime }) => ({
+        ...serializeLease(lease, {
+          containerState: runtime.status === "failed" ? "failed" : lease.status,
+          containerRunning: false
+        }),
+        runtime
+      }));
+
+    response.json([...pendingLeases, ...retainedLeases, ...liveLeases].sort((left, right) => right.updatedAt - left.updatedAt));
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
 });
 
 app.get("/leases/:leaseId", async (request, response) => {
+  const pendingLease = pendingPreviewLeases.get(request.params.leaseId);
+  if (pendingLease) {
+    if (!authorizeScopedThread(request, response, pendingLease.threadId)) {
+      return;
+    }
+
+    response.json({
+      ...serializeLease(
+        {
+          ...pendingLease,
+          updatedAt: Date.now()
+        },
+        {
+          containerState: "starting",
+          containerRunning: false
+        }
+      ),
+      runtime: {
+        running: false,
+        status: "starting",
+        startedAt: null,
+        finishedAt: null,
+        error: null
+      }
+    });
+    return;
+  }
+
+  const retainedLease = getRetainedPreviewLease(request.params.leaseId);
+  if (retainedLease) {
+    if (!authorizeScopedThread(request, response, retainedLease.lease.threadId)) {
+      return;
+    }
+
+    response.json({
+      ...serializeLease(retainedLease.lease, {
+        containerState: retainedLease.runtime.status === "failed" ? "failed" : retainedLease.lease.status,
+        containerRunning: false
+      }),
+      runtime: retainedLease.runtime
+    });
+    return;
+  }
+
   const required = await requireContainer(request.params.leaseId, response);
   if (!required) {
     return;
@@ -588,32 +1131,41 @@ app.get("/leases/:leaseId", async (request, response) => {
   }
 
   response.json({
-    id: request.params.leaseId,
-    threadId: container.Config?.Labels?.["manor.thread-id"] || null,
-    projectId: container.Config?.Labels?.["manor.project-id"] || "unknown",
-    projectLabel: container.Config?.Labels?.["manor.project-id"] || "Unknown",
-    title: `Preview ${request.params.leaseId.slice(0, 8)}`,
-    worktreePath: container.Config?.WorkingDir || "/repos",
-    branchName: null,
-    containerName,
-    targetHost: containerName,
-    targetPort: Number(container.Config?.Env?.find((entry) => entry.startsWith("PORT="))?.slice(5) || "3000"),
-    routePrefix: `${routeBase}/${request.params.leaseId}/`,
-    operatorUrl: `${routeBase}/${request.params.leaseId}/`,
-    command: Array.isArray(container.Config?.Cmd) ? container.Config.Cmd.join(" ") : "",
-    image: container.Config?.Image || previewImage,
-    egressProfile:
-      container.Config?.Env?.find((entry) => entry.startsWith("MANOR_EGRESS_PROFILE="))?.slice("MANOR_EGRESS_PROFILE=".length) ||
-      "none",
-    egressDomains:
-      container.Config?.Labels?.["manor.egress-domains"]
-        ?.split(",")
-        .map((value) => value.trim())
-        .filter(Boolean) || [],
-    status: resolveLeaseStatus(container.State?.Running ? "running" : "stopped", request.params.leaseId),
-    createdAt: new Date(container.Created).getTime(),
-    updatedAt: Date.now(),
-    lastError: container.State?.Error || null,
+    ...serializeLease(
+      {
+        id: request.params.leaseId,
+        threadId: container.Config?.Labels?.["manor.thread-id"] || null,
+        projectId: container.Config?.Labels?.["manor.project-id"] || "unknown",
+        projectLabel: container.Config?.Labels?.["manor.project-id"] || "Unknown",
+        title: container.Config?.Labels?.["manor.title"] || `Preview ${request.params.leaseId.slice(0, 8)}`,
+        worktreePath: container.Config?.WorkingDir || "/repos",
+        branchName: null,
+        containerName,
+        targetHost: containerName,
+        targetPort: Number(container.Config?.Env?.find((entry) => entry.startsWith("PORT="))?.slice(5) || "3000"),
+        routePrefix: `${routeBase}/${request.params.leaseId}/`,
+        operatorUrl: `${routeBase}/${request.params.leaseId}/`,
+        command: Array.isArray(container.Config?.Cmd) ? container.Config.Cmd.join(" ") : "",
+        image: container.Config?.Image || previewImage,
+        egressProfile:
+          container.Config?.Env?.find((entry) => entry.startsWith("MANOR_EGRESS_PROFILE="))?.slice("MANOR_EGRESS_PROFILE=".length) ||
+          "none",
+        egressDomains:
+          container.Config?.Labels?.["manor.egress-domains"]
+            ?.split(",")
+            .map((value) => value.trim())
+            .filter(Boolean) || [],
+        status: container.State?.Running ? "running" : "stopped",
+        createdAt: new Date(container.Created).getTime(),
+        updatedAt: Date.now(),
+        lastError: container.State?.Error || null
+      },
+      {
+        labels: container.Config?.Labels ?? null,
+        containerState: container.State?.Running ? "running" : "stopped",
+        containerRunning: Boolean(container.State?.Running)
+      }
+    ),
     runtime: {
       running: Boolean(container.State?.Running),
       status: container.State?.Status || "unknown",
@@ -625,6 +1177,9 @@ app.get("/leases/:leaseId", async (request, response) => {
 });
 
 app.get("/leases/:leaseId/processes", async (request, response) => {
+  if (rejectIfLeaseRetainedFailed(request.params.leaseId, response)) {
+    return;
+  }
   const required = await requireContainer(request.params.leaseId, response);
   if (!required) {
     return;
@@ -648,6 +1203,9 @@ app.get("/leases/:leaseId/processes", async (request, response) => {
 });
 
 app.get("/leases/:leaseId/logs", async (request, response) => {
+  if (rejectIfLeaseRetainedFailed(request.params.leaseId, response)) {
+    return;
+  }
   const required = await requireContainer(request.params.leaseId, response);
   if (!required) {
     return;
@@ -689,6 +1247,9 @@ app.get("/leases/:leaseId/logs", async (request, response) => {
 });
 
 app.post("/leases/:leaseId/exec", async (request, response) => {
+  if (rejectIfLeaseRetainedFailed(request.params.leaseId, response)) {
+    return;
+  }
   const required = await requireContainer(request.params.leaseId, response);
   if (!required) {
     return;
@@ -731,6 +1292,9 @@ app.post("/leases/:leaseId/exec", async (request, response) => {
 app.post("/leases/:leaseId/verify", async (request, response) => {
   if (!hasBrokerAccess(request)) {
     response.status(403).json({ error: "Forbidden" });
+    return;
+  }
+  if (rejectIfLeaseRetainedFailed(request.params.leaseId, response)) {
     return;
   }
   const required = await requireContainer(request.params.leaseId, response);
@@ -797,6 +1361,9 @@ app.delete("/leases/:leaseId", async (request, response) => {
   }
   const containerName = toContainerName(request.params.leaseId);
   setLeaseTransition(request.params.leaseId, "stopping");
+  if (pendingPreviewLeases.has(request.params.leaseId)) {
+    pendingPreviewLeases.delete(request.params.leaseId);
+  }
 
   try {
     await docker.getContainer(containerName).remove({ force: true });
@@ -806,6 +1373,8 @@ app.delete("/leases/:leaseId", async (request, response) => {
 
   await dropPreviewEgressLeasePolicy(request.params.leaseId).catch(() => {});
   clearLeaseTransition(request.params.leaseId);
+  clearLeaseBootstrapState(request.params.leaseId);
+  clearRetainedPreviewLease(request.params.leaseId);
   response.json({ ok: true, leaseId: request.params.leaseId });
 });
 

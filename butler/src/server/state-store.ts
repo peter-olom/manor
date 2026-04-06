@@ -340,7 +340,55 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   private normalizePreviewLease(lease: PreviewLeaseView, now = Date.now()): PreviewLeaseView {
-    return this.applyLeaseLifecycle(lease, { leaseTtlMs: this.previewLeaseTtlMs, now });
+    const normalizedLease = {
+      ...lease,
+      bootstrap: {
+        waitSeconds:
+          typeof lease.bootstrap?.waitSeconds === "number" && Number.isFinite(lease.bootstrap.waitSeconds) && lease.bootstrap.waitSeconds > 0
+            ? Math.trunc(lease.bootstrap.waitSeconds)
+            : 120,
+        hint: typeof lease.bootstrap?.hint === "string" && lease.bootstrap.hint.trim() ? lease.bootstrap.hint.trim() : null,
+        heartbeatKind:
+          lease.bootstrap?.heartbeatKind === "http" ||
+          lease.bootstrap?.heartbeatKind === "tcp" ||
+          lease.bootstrap?.heartbeatKind === "command"
+            ? lease.bootstrap.heartbeatKind
+            : "none",
+        heartbeatTarget:
+          typeof lease.bootstrap?.heartbeatTarget === "string" && lease.bootstrap.heartbeatTarget.trim()
+            ? lease.bootstrap.heartbeatTarget.trim()
+            : null,
+        heartbeatIntervalSeconds:
+          typeof lease.bootstrap?.heartbeatIntervalSeconds === "number" &&
+          Number.isFinite(lease.bootstrap.heartbeatIntervalSeconds) &&
+          lease.bootstrap.heartbeatIntervalSeconds > 0
+            ? Math.trunc(lease.bootstrap.heartbeatIntervalSeconds)
+            : 5,
+        phase:
+          lease.bootstrap?.phase === "pulling_image" ||
+          lease.bootstrap?.phase === "starting_container" ||
+          lease.bootstrap?.phase === "bootstrapping" ||
+          lease.bootstrap?.phase === "waiting_for_heartbeat" ||
+          lease.bootstrap?.phase === "ready" ||
+          lease.bootstrap?.phase === "failed"
+            ? lease.bootstrap.phase
+            : lease.status === "running"
+              ? "ready"
+              : "starting_container",
+        startedAt: typeof lease.bootstrap?.startedAt === "number" && Number.isFinite(lease.bootstrap.startedAt) ? lease.bootstrap.startedAt : null,
+        readyAt: typeof lease.bootstrap?.readyAt === "number" && Number.isFinite(lease.bootstrap.readyAt) ? lease.bootstrap.readyAt : null,
+        lastHeartbeatAt:
+          typeof lease.bootstrap?.lastHeartbeatAt === "number" && Number.isFinite(lease.bootstrap.lastHeartbeatAt)
+            ? lease.bootstrap.lastHeartbeatAt
+            : null,
+        lastHeartbeatError:
+          typeof lease.bootstrap?.lastHeartbeatError === "string" && lease.bootstrap.lastHeartbeatError.trim()
+            ? lease.bootstrap.lastHeartbeatError.trim()
+            : null
+      }
+    } as PreviewLeaseView;
+
+    return this.applyLeaseLifecycle(normalizedLease, { leaseTtlMs: this.previewLeaseTtlMs, now });
   }
 
   private normalizeServiceLease(lease: ServiceLeaseView, now = Date.now()): ServiceLeaseView {
