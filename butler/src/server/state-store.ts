@@ -116,8 +116,7 @@ function buildThreadSupervisor(thread: CodexThreadRecord): CodexThreadSupervisor
   const blocked =
     Boolean(latestTurn?.error) ||
     latestTurn?.status === "failed" ||
-    latestTurn?.status === "interrupted" ||
-    thread.eventLog.some((entry) => /error|failed|interrupted/i.test(entry.method) || /error|failed|interrupted/i.test(entry.summary));
+    latestTurn?.status === "interrupted";
 
   let summary = "No supervisor summary yet.";
   if (blocked) {

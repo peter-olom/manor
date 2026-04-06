@@ -1,4 +1,4 @@
-import { isValidElement, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { isValidElement, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
@@ -18,6 +18,7 @@ type ToastTone = "success" | "error" | "info";
 const THEME_STORAGE_KEY = "manor.butler.themePreference";
 const BUTLER_DRAFT_STORAGE_KEY = "manor.butler.draft";
 const THREAD_DRAFT_STORAGE_KEY_PREFIX = "manor.butler.threadDraft.";
+const DRAFT_PERSIST_DELAY_MS = 180;
 
 type AppToast = {
   key: string;
@@ -566,7 +567,7 @@ function extractCodeLanguage(children: ReactNode): string {
   return match?.[1] ?? "";
 }
 
-function MarkdownMessage({ text }: { text: string }) {
+const MarkdownMessage = memo(function MarkdownMessage({ text }: { text: string }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -604,7 +605,7 @@ function MarkdownMessage({ text }: { text: string }) {
       {text}
     </ReactMarkdown>
   );
-}
+});
 
 function ThemeIcon() {
   return (
@@ -774,6 +775,8 @@ export function App() {
   const jumpFlashTimerRef = useRef<number | null>(null);
   const copiedCommandTimerRef = useRef<number | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const butlerDraftPersistTimerRef = useRef<number | null>(null);
+  const threadDraftPersistTimerRef = useRef<number | null>(null);
   const lastRemoteErrorRef = useRef<string | null>(null);
   const runScrollRef = useRef<HTMLDivElement | null>(null);
   const butlerScrollRef = useRef<HTMLDivElement | null>(null);
@@ -903,6 +906,14 @@ export function App() {
         window.clearTimeout(toastTimerRef.current);
         toastTimerRef.current = null;
       }
+      if (butlerDraftPersistTimerRef.current !== null) {
+        window.clearTimeout(butlerDraftPersistTimerRef.current);
+        butlerDraftPersistTimerRef.current = null;
+      }
+      if (threadDraftPersistTimerRef.current !== null) {
+        window.clearTimeout(threadDraftPersistTimerRef.current);
+        threadDraftPersistTimerRef.current = null;
+      }
       events.close();
     };
   }, []);
@@ -945,7 +956,21 @@ export function App() {
   }, [snapshot?.codex.focusedWindowId]);
 
   useEffect(() => {
-    writeStoredValue(BUTLER_DRAFT_STORAGE_KEY, butlerDraft);
+    if (butlerDraftPersistTimerRef.current !== null) {
+      window.clearTimeout(butlerDraftPersistTimerRef.current);
+    }
+
+    butlerDraftPersistTimerRef.current = window.setTimeout(() => {
+      writeStoredValue(BUTLER_DRAFT_STORAGE_KEY, butlerDraft);
+      butlerDraftPersistTimerRef.current = null;
+    }, DRAFT_PERSIST_DELAY_MS);
+
+    return () => {
+      if (butlerDraftPersistTimerRef.current !== null) {
+        window.clearTimeout(butlerDraftPersistTimerRef.current);
+        butlerDraftPersistTimerRef.current = null;
+      }
+    };
   }, [butlerDraft]);
 
   useEffect(() => {
@@ -954,7 +979,21 @@ export function App() {
       return;
     }
 
-    writeStoredValue(`${THREAD_DRAFT_STORAGE_KEY_PREFIX}${threadId}`, threadDraft);
+    if (threadDraftPersistTimerRef.current !== null) {
+      window.clearTimeout(threadDraftPersistTimerRef.current);
+    }
+
+    threadDraftPersistTimerRef.current = window.setTimeout(() => {
+      writeStoredValue(`${THREAD_DRAFT_STORAGE_KEY_PREFIX}${threadId}`, threadDraft);
+      threadDraftPersistTimerRef.current = null;
+    }, DRAFT_PERSIST_DELAY_MS);
+
+    return () => {
+      if (threadDraftPersistTimerRef.current !== null) {
+        window.clearTimeout(threadDraftPersistTimerRef.current);
+        threadDraftPersistTimerRef.current = null;
+      }
+    };
   }, [snapshot?.codex.focusedWindowId, threadDraft]);
 
   useEffect(() => {
@@ -1057,28 +1096,6 @@ export function App() {
   }, [selectedSurface, selectedThreadId, showSetupGuide, snapshot]);
 
   useEffect(() => {
-    if (!activeThread || !followRun || !runScrollRef.current) {
-      return;
-    }
-
-    const element = runScrollRef.current;
-    requestAnimationFrame(() => {
-      element.scrollTop = element.scrollHeight;
-    });
-  }, [activeThread, followRun]);
-
-  useEffect(() => {
-    if (!followButler || !butlerScrollRef.current) {
-      return;
-    }
-
-    const element = butlerScrollRef.current;
-    requestAnimationFrame(() => {
-      element.scrollTop = element.scrollHeight;
-    });
-  }, [snapshot?.butler.messages, followButler]);
-
-  useEffect(() => {
     if (!pendingButlerText || !snapshot) {
       return;
     }
@@ -1167,6 +1184,106 @@ export function App() {
       target.scrollTop = target.scrollHeight;
     });
   }, [querySurface, queryThreadId, snapshot?.butler.messages, snapshot?.codex.openThreads, showPromptRail]);
+  const activeRunItems = useMemo(
+    () =>
+      activeThread
+        ? activeThread.turns
+            .flatMap((turn) => turn.items.filter(shouldRenderItem).map((item) => ({ ...item, turnId: turn.id, turnStartedAt: turn.startedAt })))
+            .sort((a, b) => a.at - b.at)
+        : [],
+    [activeThread]
+  );
+  const activePreviewLease =
+    activeThread && snapshot
+      ? snapshot.butler.previews.find((lease) => lease.threadId === activeThread.id && lease.status !== "stopped") ?? null
+      : null;
+  const activeThreadServices =
+    activeThread && snapshot ? snapshot.butler.services.filter((service) => service.threadId === activeThread.id && service.status !== "stopped") : [];
+  const activePreviewLeases = snapshot ? snapshot.butler.previews.filter((lease) => lease.status !== "stopped") : [];
+  const activeServiceLeases = snapshot ? snapshot.butler.services.filter((service) => service.status !== "stopped") : [];
+
+  const runPromptJumpList = useMemo(() => activeRunItems.filter((item) => item.type === "userMessage"), [activeRunItems]);
+  const showPendingThreadEntry = Boolean(
+    pendingThreadRequest &&
+      activeThread &&
+      pendingThreadRequest.threadId === activeThread.id &&
+      !activeRunItems.some(
+        (item) => item.type === "userMessage" && item.text === pendingThreadRequest.text && item.at >= pendingThreadRequest.sentAt - 1000
+      )
+  );
+  const showThreadWorkingIndicator =
+    Boolean(pendingThreadRequest && activeThread && pendingThreadRequest.threadId === activeThread.id) || activeThread?.status === "active";
+  const showPendingButlerEntry = Boolean(
+    pendingButlerText &&
+      snapshot &&
+      !snapshot.butler.messages.some((message) => message.role.startsWith("user") && message.text === pendingButlerText)
+  );
+  const butlerMessagesWithTimes = useMemo(
+    () =>
+      snapshot
+        ? snapshot.butler.messages.map((message, index) => {
+            const knownAt = message.at ?? butlerMessageTimesRef.current[message.id];
+            if (typeof knownAt === "number" && Number.isFinite(knownAt)) {
+              butlerMessageTimesRef.current[message.id] = knownAt;
+              return { ...message, at: knownAt };
+            }
+
+            const fallbackAt = Date.now() - (snapshot.butler.messages.length - index) * 1000;
+            butlerMessageTimesRef.current[message.id] = fallbackAt;
+            return { ...message, at: fallbackAt };
+          })
+        : [],
+    [snapshot]
+  );
+  const butlerPromptJumpList = useMemo(
+    () => butlerMessagesWithTimes.filter((message) => message.role.startsWith("user")),
+    [butlerMessagesWithTimes]
+  );
+  const runTimelineGroups = useMemo(() => groupTimelineItems(runPromptJumpList), [runPromptJumpList]);
+  const butlerTimelineGroups = useMemo(() => groupTimelineItems(butlerPromptJumpList), [butlerPromptJumpList]);
+  const latestRunActivityKey = activeRunItems.length > 0 ? `${activeRunItems[activeRunItems.length - 1].id}:${activeRunItems[activeRunItems.length - 1].at}` : "empty";
+  const latestButlerMessageKey =
+    butlerMessagesWithTimes.length > 0
+      ? `${butlerMessagesWithTimes[butlerMessagesWithTimes.length - 1].id}:${butlerMessagesWithTimes[butlerMessagesWithTimes.length - 1].at ?? "na"}`
+      : "empty";
+
+  useEffect(() => {
+    if (!activeThread || !followRun || !runScrollRef.current) {
+      return;
+    }
+
+    const element = runScrollRef.current;
+    requestAnimationFrame(() => {
+      element.scrollTop = element.scrollHeight;
+    });
+  }, [
+    activeThread?.id,
+    activeThread?.status,
+    followRun,
+    latestRunActivityKey,
+    pendingThreadRequest?.sentAt,
+    pendingThreadRequest?.threadId,
+    showPendingThreadEntry,
+    showThreadWorkingIndicator
+  ]);
+
+  useEffect(() => {
+    if (!followButler || !butlerScrollRef.current) {
+      return;
+    }
+
+    const element = butlerScrollRef.current;
+    requestAnimationFrame(() => {
+      element.scrollTop = element.scrollHeight;
+    });
+  }, [
+    followButler,
+    latestButlerMessageKey,
+    pendingButlerText,
+    showPendingButlerEntry,
+    snapshot?.butler.pending,
+    snapshot?.butler.isStreaming
+  ]);
 
   if (!snapshot) {
     return <div className="shell loading">Loading Butler…</div>;
@@ -1176,46 +1293,6 @@ export function App() {
   const terminalLabel = terminalTarget === "butlerTerminal" ? "Butler" : "Codex";
   const nextTerminalTarget =
     snapshot.butler.onboarding.steps.find((step) => step.status === "pending")?.id === "butlerAuth" ? "butlerTerminal" : "codexTerminal";
-
-  const activeRunItems = activeThread
-    ? activeThread.turns
-        .flatMap((turn) => turn.items.filter(shouldRenderItem).map((item) => ({ ...item, turnId: turn.id, turnStartedAt: turn.startedAt })))
-        .sort((a, b) => a.at - b.at)
-    : [];
-  const activePreviewLease = activeThread
-    ? snapshot.butler.previews.find((lease) => lease.threadId === activeThread.id && lease.status !== "stopped") ?? null
-    : null;
-  const activeThreadServices = activeThread
-    ? snapshot.butler.services.filter((service) => service.threadId === activeThread.id && service.status !== "stopped")
-    : [];
-  const activePreviewLeases = snapshot.butler.previews.filter((lease) => lease.status !== "stopped");
-  const activeServiceLeases = snapshot.butler.services.filter((service) => service.status !== "stopped");
-
-  const runPromptJumpList = activeRunItems.filter((item) => item.type === "userMessage");
-  const showPendingThreadEntry =
-    pendingThreadRequest &&
-    activeThread &&
-    pendingThreadRequest.threadId === activeThread.id &&
-    !activeRunItems.some(
-      (item) => item.type === "userMessage" && item.text === pendingThreadRequest.text && item.at >= pendingThreadRequest.sentAt - 1000
-    );
-  const showThreadWorkingIndicator =
-    Boolean(pendingThreadRequest && activeThread && pendingThreadRequest.threadId === activeThread.id) || activeThread?.status === "active";
-  const butlerPromptJumpList = snapshot.butler.messages
-    .map((message, index) => {
-      const knownAt = message.at ?? butlerMessageTimesRef.current[message.id];
-      if (typeof knownAt === "number" && Number.isFinite(knownAt)) {
-        butlerMessageTimesRef.current[message.id] = knownAt;
-        return { ...message, at: knownAt };
-      }
-
-      const fallbackAt = Date.now() - (snapshot.butler.messages.length - index) * 1000;
-      butlerMessageTimesRef.current[message.id] = fallbackAt;
-      return { ...message, at: fallbackAt };
-    })
-    .filter((message) => message.role.startsWith("user"));
-  const runTimelineGroups = groupTimelineItems(runPromptJumpList);
-  const butlerTimelineGroups = groupTimelineItems(butlerPromptJumpList);
 
   async function sendButlerMessage() {
     const text = butlerDraft.trim();
@@ -1406,6 +1483,15 @@ export function App() {
     }
   }
 
+  async function copyText(value: string, successMessage: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      showToast(successMessage, "success", 1200);
+    } catch (copyError) {
+      showErrorToast(copyError);
+    }
+  }
+
   function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>, submit: () => void) {
     if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) {
       return;
@@ -1487,9 +1573,6 @@ export function App() {
 
     return { tone: "ready", text: "Ready" } as const;
   })();
-  const showPendingButlerEntry =
-    pendingButlerText &&
-    !snapshot.butler.messages.some((message) => message.role.startsWith("user") && message.text === pendingButlerText);
   const topbarContextValue = activeThread ? formatContextUsage(activeThread.contextUsage) : formatContextUsage(snapshot.butler.contextUsage);
   const topbarCompactionValue = activeThread ? formatCodexCompactionState(activeThread.compaction) : formatCompactionState(snapshot.butler.compaction);
   const topbarCompactionTone = activeThread
@@ -1579,7 +1662,7 @@ export function App() {
               Terminal
             </button>
             <div className="workspace-tabs-scroll">
-              {snapshot.codex.windows.map((window) => (
+                  {snapshot.codex.windows.map((window) => (
                 <div
                   key={window.threadId}
                   className={`workspace-tab workspace-tab-window ${activeTabId === window.threadId ? "is-active" : ""} ${
@@ -1587,7 +1670,7 @@ export function App() {
                   }`}
                 >
                   {snapshot.codex.openThreads[window.threadId]?.status === "active" ? <span className="workspace-tab-activity-dot" aria-hidden="true" /> : null}
-                      <button
+                  <button
                         className="workspace-tab-main"
                         onClick={() => {
                           setSelectedSurface("thread");
@@ -1605,6 +1688,14 @@ export function App() {
                           ? `${Math.round(snapshot.codex.openThreads[window.threadId]!.contextUsage.percent!)}%`
                           : ""}
                     </span>
+                  </button>
+                  <button
+                    className="workspace-tab-copy"
+                    onClick={() => void copyText(window.threadId, "Job ID copied")}
+                    aria-label="Copy job ID"
+                    title="Copy job ID"
+                  >
+                    <CopyIcon />
                   </button>
                   <button
                     className="workspace-tab-close"
@@ -1826,7 +1917,17 @@ export function App() {
                         >
                           <div className="entry-head">
                             <span>{itemLabel(item.type)}</span>
-                            <span>{formatJumpLabel(item.at)}</span>
+                            <span className="entry-head-meta">
+                              <span>{formatJumpLabel(item.at)}</span>
+                              <button
+                                className="entry-copy"
+                                onClick={() => void copyText(item.text || "", "Message copied")}
+                                aria-label="Copy message"
+                                title="Copy message"
+                              >
+                                <CopyIcon />
+                              </button>
+                            </span>
                           </div>
                           <div className="entry-text">
                             <MarkdownMessage text={item.text || "Running shell command"} />
@@ -1838,7 +1939,17 @@ export function App() {
                       <article className="entry is-user is-pending">
                         <div className="entry-head">
                           <span>You</span>
-                          <span>sending</span>
+                          <span className="entry-head-meta">
+                            <span>sending</span>
+                            <button
+                              className="entry-copy"
+                              onClick={() => void copyText(pendingThreadRequest.text, "Message copied")}
+                              aria-label="Copy message"
+                              title="Copy message"
+                            >
+                              <CopyIcon />
+                            </button>
+                          </span>
                         </div>
                         <div className="entry-text">
                           <MarkdownMessage text={pendingThreadRequest.text} />
@@ -2122,10 +2233,10 @@ export function App() {
                     setFollowButler(isNearBottom);
                   }}
                 >
-                  {snapshot.butler.messages.length === 0 ? (
+                  {butlerMessagesWithTimes.length === 0 ? (
                     <div className="empty">Ask Butler about run status, next steps, or which run you should open.</div>
                   ) : (
-                    snapshot.butler.messages.map((message) => (
+                    butlerMessagesWithTimes.map((message) => (
                       <article
                         key={message.id}
                         ref={(node) => {
@@ -2137,6 +2248,17 @@ export function App() {
                       >
                         <div className="entry-head">
                           <span>{message.role.startsWith("assistant") ? "Butler" : "You"}</span>
+                          <span className="entry-head-meta">
+                            <span>{formatJumpLabel(message.at)}</span>
+                            <button
+                              className="entry-copy"
+                              onClick={() => void copyText(message.text || "", "Message copied")}
+                              aria-label="Copy message"
+                              title="Copy message"
+                            >
+                              <CopyIcon />
+                            </button>
+                          </span>
                         </div>
                         <div className="entry-text">
                           <MarkdownMessage text={message.text || "…"} />
@@ -2148,7 +2270,17 @@ export function App() {
                     <article className="entry is-user is-pending">
                       <div className="entry-head">
                         <span>You</span>
-                        <span>sending</span>
+                        <span className="entry-head-meta">
+                          <span>sending</span>
+                          <button
+                            className="entry-copy"
+                            onClick={() => void copyText(pendingButlerText, "Message copied")}
+                            aria-label="Copy message"
+                            title="Copy message"
+                          >
+                            <CopyIcon />
+                          </button>
+                        </span>
                       </div>
                       <div className="entry-text">
                         <MarkdownMessage text={pendingButlerText} />

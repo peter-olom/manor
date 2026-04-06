@@ -18,6 +18,43 @@ type JsonRpcMessage = {
   };
 };
 
+function normalizeModelLabel(rawLabel: string, id: string): string {
+  const source = rawLabel.trim() || id.trim();
+  if (!source) {
+    return id;
+  }
+
+  const normalized = source.replace(/\s+/g, "-");
+  const parts = normalized.split("-").filter(Boolean);
+  if (parts.length < 2) {
+    return source;
+  }
+
+  const head = parts[0]?.toLowerCase() === "gpt" ? "GPT" : parts[0];
+  const version = parts[1] ?? "";
+  const suffix = parts
+    .slice(2)
+    .map((part) => {
+      const lower = part.toLowerCase();
+      if (lower === "codex") {
+        return "Codex";
+      }
+      if (lower === "mini") {
+        return "Mini";
+      }
+      if (lower === "max") {
+        return "Max";
+      }
+      if (lower === "spark") {
+        return "Spark";
+      }
+      return part.length > 1 ? `${part[0]!.toUpperCase()}${part.slice(1).toLowerCase()}` : part.toUpperCase();
+    })
+    .join(" ");
+
+  return `${head}-${version}${suffix ? ` ${suffix}` : ""}`;
+}
+
 export class CodexAppServerClient extends EventEmitter {
   private readonly baseUrl: string;
   private readonly store: ButlerStateStore;
@@ -313,7 +350,7 @@ export class CodexAppServerClient extends EventEmitter {
 
         models.push({
           id,
-          label: typeof entry.displayName === "string" ? entry.displayName : id,
+          label: normalizeModelLabel(typeof entry.displayName === "string" ? entry.displayName : id, id),
           provider: null,
           supportsReasoning: supportedReasoningEfforts.length > 0,
           supportedReasoningEfforts,
