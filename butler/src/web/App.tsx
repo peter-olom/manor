@@ -782,6 +782,27 @@ function buildWorkspaceQuery(state: { surface: WorkspaceSurface; threadId: strin
   return `?${params.toString()}`;
 }
 
+function resizeComposerTextarea(textarea: HTMLTextAreaElement | null) {
+  if (!textarea || typeof window === "undefined") {
+    return;
+  }
+
+  const computedStyle = window.getComputedStyle(textarea);
+  const minHeight = Number.parseFloat(computedStyle.minHeight) || 0;
+  const lineHeight = Number.parseFloat(computedStyle.lineHeight) || 24;
+  const paddingBlock =
+    (Number.parseFloat(computedStyle.paddingTop) || 0) +
+    (Number.parseFloat(computedStyle.paddingBottom) || 0) +
+    (Number.parseFloat(computedStyle.borderTopWidth) || 0) +
+    (Number.parseFloat(computedStyle.borderBottomWidth) || 0);
+  const maxHeight = lineHeight * 8 + paddingBlock;
+
+  textarea.style.height = "0px";
+  const nextHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
+  textarea.style.height = `${nextHeight}px`;
+  textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+}
+
 export function App() {
   const initialWorkspaceQuery = readWorkspaceQuery();
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -813,6 +834,8 @@ export function App() {
   const toastTimerRef = useRef<number | null>(null);
   const butlerDraftPersistTimerRef = useRef<number | null>(null);
   const threadDraftPersistTimerRef = useRef<number | null>(null);
+  const butlerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const threadTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const lastRemoteErrorRef = useRef<string | null>(null);
   const runScrollRef = useRef<HTMLDivElement | null>(null);
   const butlerScrollRef = useRef<HTMLDivElement | null>(null);
@@ -1031,6 +1054,14 @@ export function App() {
       }
     };
   }, [snapshot?.codex.focusedWindowId, threadDraft]);
+
+  useEffect(() => {
+    resizeComposerTextarea(butlerTextareaRef.current);
+  }, [butlerDraft]);
+
+  useEffect(() => {
+    resizeComposerTextarea(threadTextareaRef.current);
+  }, [threadDraft]);
 
   useEffect(() => {
     if (!threadsDrawerOpen) {
@@ -2007,9 +2038,13 @@ export function App() {
                   <div className="composer">
                     <div className="composer-main">
                       <textarea
+                        ref={threadTextareaRef}
                         name="codex-thread-message"
                         value={threadDraft}
-                        onChange={(event) => setThreadDraft(event.target.value)}
+                        onChange={(event) => {
+                          setThreadDraft(event.target.value);
+                          resizeComposerTextarea(event.currentTarget);
+                        }}
                         onKeyDown={(event) => handleComposerKeyDown(event, () => void sendThreadMessage())}
                         placeholder="Send a message directly into this run"
                         autoComplete="off"
@@ -2339,9 +2374,13 @@ export function App() {
                 <div className="composer">
                   <div className="composer-main">
                     <textarea
+                      ref={butlerTextareaRef}
                       name="butler-chat-message"
                       value={butlerDraft}
-                      onChange={(event) => setButlerDraft(event.target.value)}
+                      onChange={(event) => {
+                        setButlerDraft(event.target.value);
+                        resizeComposerTextarea(event.currentTarget);
+                      }}
                       onKeyDown={(event) => handleComposerKeyDown(event, () => void sendButlerMessage())}
                       placeholder="Ask Butler about any run"
                       autoComplete="off"
