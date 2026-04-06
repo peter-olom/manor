@@ -144,6 +144,25 @@ app.get("/api/bootstrap", (_request, response) => {
   response.json(currentSnapshot());
 });
 
+app.get("/api/chat/history", (request, response) => {
+  const beforeRaw = Array.isArray(request.query.before) ? request.query.before[0] : request.query.before;
+  const limitRaw = Array.isArray(request.query.limit) ? request.query.limit[0] : request.query.limit;
+  const before = typeof beforeRaw === "string" && beforeRaw.length > 0 ? Number(beforeRaw) : null;
+  const limit = typeof limitRaw === "string" && limitRaw.length > 0 ? Number(limitRaw) : 250;
+
+  if (before !== null && !Number.isFinite(before)) {
+    response.status(400).json({ error: "before must be a number" });
+    return;
+  }
+
+  if (!Number.isFinite(limit)) {
+    response.status(400).json({ error: "limit must be a number" });
+    return;
+  }
+
+  response.json(butlerAgent.getMessagePage(before, limit));
+});
+
 app.post("/api/codex-harness/action", async (request, response) => {
   const token = typeof request.body?.token === "string" ? request.body.token : "";
   const action = typeof request.body?.action === "string" ? request.body.action : "";

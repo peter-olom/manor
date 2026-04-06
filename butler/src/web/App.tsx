@@ -1,4 +1,15 @@
-import { isValidElement, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import {
+  isValidElement,
+  memo,
+  startTransition,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentPropsWithoutRef,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode
+} from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
@@ -20,6 +31,30 @@ const BUTLER_DRAFT_STORAGE_KEY = "manor.butler.draft";
 const THREAD_DRAFT_STORAGE_KEY_PREFIX = "manor.butler.threadDraft.";
 const BUTLER_NOTICE_VISIBILITY_STORAGE_KEY = "manor.butler.showNotices";
 const DRAFT_PERSIST_DELAY_MS = 180;
+const BUTLER_HISTORY_PAGE_SIZE = 250;
+const BUTLER_HISTORY_AUTOLOAD_THRESHOLD_PX = 240;
+
+type ButlerMessageRecord = {
+  id: string;
+  role: string;
+  text: string;
+  at: number | null;
+  kind: "message" | "notice";
+};
+
+type ButlerHistoryPageResponse = {
+  messages: ButlerMessageRecord[];
+  startIndex: number;
+  endIndex: number;
+  totalCount: number;
+  hasMore: boolean;
+};
+
+type ButlerHistoryState = {
+  messages: ButlerMessageRecord[];
+  loadedStart: number;
+  totalCount: number;
+};
 
 type AppToast = {
   key: string;
@@ -147,13 +182,8 @@ type Snapshot = {
       mode: "chatgpt" | "api" | "none" | "unknown";
       loggedIn: boolean;
     };
-    messages: Array<{
-      id: string;
-      role: string;
-      text: string;
-      at: number | null;
-      kind: "message" | "notice";
-    }>;
+    messages: ButlerMessageRecord[];
+    messageCount: number;
     onboarding: {
       complete: boolean;
       steps: Array<{
@@ -388,6 +418,20 @@ function groupTimelineItems<T extends { id: string; text: string; at: number | n
   }
 
   return groups;
+}
+
+function dedupeMessages(messages: ButlerMessageRecord[]): ButlerMessageRecord[] {
+  const deduped: ButlerMessageRecord[] = [];
+  const seen = new Set<string>();
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (seen.has(message.id)) {
+      continue;
+    }
+    seen.add(message.id);
+    deduped.unshift(message);
+  }
+  return deduped;
 }
 
 function formatCompactCount(value: number | null): string {
@@ -790,6 +834,16 @@ async function postJson<T = void>(url: string, body: unknown): Promise<T> {
   return (await response.json().catch(() => undefined)) as T;
 }
 
+async function getJson<T>(url: string): Promise<T> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ error: "Request failed" }));
+    throw new Error(typeof payload.error === "string" ? payload.error : "Request failed");
+  }
+
+  return (await response.json().catch(() => undefined)) as T;
+}
+
 function readStoredValue(key: string): string {
   if (typeof window === "undefined") {
     return "";
@@ -865,6 +919,26 @@ function resizeComposerTextarea(textarea: HTMLTextAreaElement | null) {
   textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
 }
 
+function scrollElementToLatest(element: HTMLDivElement | null) {
+  if (!element) {
+    return;
+  }
+
+  element.scrollTop = element.scrollHeight;
+}
+
+function scrollElementToCenteredTarget(container: HTMLDivElement | null, target: HTMLElement | null) {
+  if (!container || !target) {
+    return;
+  }
+
+  const containerRect = container.getBoundingClientRect();
+  const targetRect = target.getBoundingClientRect();
+  const offsetWithinContainer = targetRect.top - containerRect.top;
+  const centeredTop = container.scrollTop + offsetWithinContainer - (container.clientHeight - targetRect.height) / 2;
+  container.scrollTop = Math.max(0, centeredTop);
+}
+
 export function App() {
   const initialWorkspaceQuery = readWorkspaceQuery();
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -919,15 +993,17 @@ export function App() {
   const butlerScrollRef = useRef<HTMLDivElement | null>(null);
   const runTimelineScrollRef = useRef<HTMLDivElement | null>(null);
   const butlerTimelineScrollRef = useRef<HTMLDivElement | null>(null);
-  const runPromptRefs = useRef<Record<string, HTMLElement | null>>({});
-  const butlerPromptRefs = useRef<Record<string, HTMLElement | null>>({});
   const butlerMessageTimesRef = useRef<Record<string, number>>({});
+  const runScrollTopRef = useRef(0);
   const butlerScrollTopRef = useRef(0);
+  const butlerPrependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
   const [followRun, setFollowRun] = useState(true);
   const [followButler, setFollowButler] = useState(true);
   const [showPromptRail, setShowPromptRail] = useState(false);
   const [setupCommandTarget, setSetupCommandTarget] = useState<SetupCommandMode>("builtInTerminal");
   const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>(initialWorkspaceQuery.terminalTarget);
+  const [butlerHistory, setButlerHistory] = useState<ButlerHistoryState>({ messages: [], loadedStart: 0, totalCount: 0 });
+  const [loadingOlderButlerMessages, setLoadingOlderButlerMessages] = useState(false);
   const showSetupGuide = snapshot ? !snapshot.butler.onboarding.complete : false;
 
   function clearLiveError() {
@@ -955,35 +1031,6 @@ export function App() {
   function showErrorToast(error: unknown, key?: string, duration = 3600) {
     const message = error instanceof Error ? error.message : String(error);
     showToast(message, "error", duration, key);
-  }
-
-  function scrollElementToLatest(element: HTMLDivElement | null) {
-    if (!element) {
-      return;
-    }
-
-    requestAnimationFrame(() => {
-      element.scrollTop = element.scrollHeight;
-      butlerScrollTopRef.current = element.scrollTop;
-    });
-  }
-
-  function restoreButlerScrollPosition() {
-    const element = butlerScrollRef.current;
-    if (!element) {
-      return;
-    }
-
-    requestAnimationFrame(() => {
-      if (followButler) {
-        element.scrollTop = element.scrollHeight;
-        butlerScrollTopRef.current = element.scrollTop;
-        return;
-      }
-
-      const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
-      element.scrollTop = Math.min(butlerScrollTopRef.current, maxScrollTop);
-    });
   }
 
   function syncTerminalFrameTheme(frame: HTMLIFrameElement | null, lightTheme: boolean) {
@@ -1073,7 +1120,9 @@ export function App() {
       .then((response) => response.json())
       .then((data) => {
         if (!closed) {
-          setSnapshot(data);
+          startTransition(() => {
+            setSnapshot(data);
+          });
         }
       })
       .catch((fetchError: Error) => {
@@ -1088,7 +1137,9 @@ export function App() {
     };
     events.onmessage = (event) => {
       clearLiveError();
-      setSnapshot(JSON.parse(event.data));
+      startTransition(() => {
+        setSnapshot(JSON.parse(event.data));
+      });
     };
     events.addEventListener("heartbeat", () => {
       clearLiveError();
@@ -1334,11 +1385,11 @@ export function App() {
       return;
     }
 
-    const hasCommittedPrompt = snapshot.butler.messages.some((message) => message.role.startsWith("user") && message.text === pendingButlerText);
+    const hasCommittedPrompt = butlerHistory.messages.some((message) => message.role.startsWith("user") && message.text === pendingButlerText);
     if (hasCommittedPrompt || (!snapshot.butler.pending && !snapshot.butler.isStreaming)) {
       setPendingButlerText(null);
     }
-  }, [pendingButlerText, snapshot]);
+  }, [butlerHistory.messages, pendingButlerText, snapshot]);
 
   useEffect(() => {
     if (!pendingThreadRequest || !snapshot) {
@@ -1351,8 +1402,7 @@ export function App() {
     }
 
     const threadItems = thread.turns
-      .flatMap((turn) => turn.items.filter(shouldRenderItem))
-      .sort((left, right) => left.at - right.at);
+      .flatMap((turn) => turn.items.filter(shouldRenderItem));
     const hasResponseAfterSend = threadItems.some(
       (item) => item.type !== "userMessage" && item.at >= pendingThreadRequest.sentAt
     );
@@ -1363,6 +1413,57 @@ export function App() {
       );
     }
   }, [pendingThreadRequest, snapshot]);
+
+  useEffect(() => {
+    if (!snapshot) {
+      return;
+    }
+
+    const tailMessages = snapshot.butler.messages;
+    const tailStart = Math.max(0, snapshot.butler.messageCount - tailMessages.length);
+
+    startTransition(() => {
+      setButlerHistory((current) => {
+        if (snapshot.butler.messageCount === 0) {
+          return { messages: [], loadedStart: 0, totalCount: 0 };
+        }
+
+        if (current.messages.length === 0 || current.loadedStart > tailStart || current.totalCount > snapshot.butler.messageCount) {
+          return {
+            messages: tailMessages,
+            loadedStart: tailStart,
+            totalCount: snapshot.butler.messageCount
+          };
+        }
+
+        const prefixCount = Math.max(0, Math.min(current.messages.length, tailStart - current.loadedStart));
+        const prefix = current.messages.slice(0, prefixCount);
+        return {
+          messages: dedupeMessages([...prefix, ...tailMessages]),
+          loadedStart: prefix.length > 0 ? current.loadedStart : tailStart,
+          totalCount: snapshot.butler.messageCount
+        };
+      });
+    });
+  }, [snapshot]);
+
+  useEffect(() => {
+    const anchor = butlerPrependAnchorRef.current;
+    if (!anchor) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      const scroller = butlerScrollRef.current;
+      if (!scroller) {
+        return;
+      }
+
+      const delta = scroller.scrollHeight - anchor.scrollHeight;
+      scroller.scrollTop = anchor.scrollTop + delta;
+      butlerPrependAnchorRef.current = null;
+    });
+  }, [butlerHistory.messages]);
 
   useEffect(() => {
     const remoteError = snapshot?.codex.lastError ?? snapshot?.butler.lastError ?? null;
@@ -1418,13 +1519,12 @@ export function App() {
     requestAnimationFrame(() => {
       target.scrollTop = target.scrollHeight;
     });
-  }, [querySurface, queryThreadId, snapshot?.butler.messages, snapshot?.codex.openThreads, showPromptRail]);
+  }, [butlerHistory.messages, querySurface, queryThreadId, snapshot?.codex.openThreads, showPromptRail]);
   const activeRunItems = useMemo(
     () =>
       activeThread
         ? activeThread.turns
             .flatMap((turn) => turn.items.filter(shouldRenderItem).map((item) => ({ ...item, turnId: turn.id, turnStartedAt: turn.startedAt })))
-            .sort((a, b) => a.at - b.at)
         : [],
     [activeThread]
   );
@@ -1449,32 +1549,27 @@ export function App() {
   const showThreadWorkingIndicator =
     Boolean(pendingThreadRequest && activeThread && pendingThreadRequest.threadId === activeThread.id) || activeThread?.status === "active";
   const butlerVisibleMessages = useMemo(
-    () =>
-      snapshot
-        ? snapshot.butler.messages.filter((message) => showButlerNotices || message.kind !== "notice")
-        : [],
-    [showButlerNotices, snapshot]
+    () => butlerHistory.messages.filter((message) => showButlerNotices || message.kind !== "notice"),
+    [butlerHistory.messages, showButlerNotices]
   );
   const butlerNoticeCount = useMemo(
-    () => (snapshot ? snapshot.butler.messages.filter((message) => message.kind === "notice").length : 0),
+    () => (snapshot ? snapshot.butler.supervision.notices.length : 0),
     [snapshot]
   );
   const butlerMessagesWithTimes = useMemo(
     () =>
-      snapshot
-        ? butlerVisibleMessages.map((message, index) => {
-            const knownAt = message.at ?? butlerMessageTimesRef.current[message.id];
-            if (typeof knownAt === "number" && Number.isFinite(knownAt)) {
-              butlerMessageTimesRef.current[message.id] = knownAt;
-              return { ...message, at: knownAt };
-            }
+      butlerVisibleMessages.map((message, index) => {
+        const knownAt = message.at ?? butlerMessageTimesRef.current[message.id];
+        if (typeof knownAt === "number" && Number.isFinite(knownAt)) {
+          butlerMessageTimesRef.current[message.id] = knownAt;
+          return { ...message, at: knownAt };
+        }
 
-            const fallbackAt = Date.now() - (butlerVisibleMessages.length - index) * 1000;
-            butlerMessageTimesRef.current[message.id] = fallbackAt;
-            return { ...message, at: fallbackAt };
-          })
-        : [],
-    [butlerVisibleMessages, snapshot]
+        const fallbackAt = Date.now() - (butlerVisibleMessages.length - index) * 1000;
+        butlerMessageTimesRef.current[message.id] = fallbackAt;
+        return { ...message, at: fallbackAt };
+      }),
+    [butlerVisibleMessages]
   );
   const butlerPromptJumpList = useMemo(
     () => butlerMessagesWithTimes.filter((message) => message.role.startsWith("user")),
@@ -1483,19 +1578,29 @@ export function App() {
   const runTimelineGroups = useMemo(() => groupTimelineItems(runPromptJumpList), [runPromptJumpList]);
   const butlerTimelineGroups = useMemo(() => groupTimelineItems(butlerPromptJumpList), [butlerPromptJumpList]);
   const latestRunActivityKey = activeRunItems.length > 0 ? `${activeRunItems[activeRunItems.length - 1].id}:${activeRunItems[activeRunItems.length - 1].at}` : "empty";
-  const latestButlerMessageKey =
-    butlerMessagesWithTimes.length > 0
-      ? `${butlerMessagesWithTimes[butlerMessagesWithTimes.length - 1].id}:${butlerMessagesWithTimes[butlerMessagesWithTimes.length - 1].at ?? "na"}`
-      : "empty";
+  const runConversationRows = useMemo(
+    () => [
+      ...activeRunItems.map((item) => ({ id: item.id, kind: "item" as const, item })),
+      ...(showPendingThreadEntry && pendingThreadRequest ? [{ id: `pending-${pendingThreadRequest.sentAt}`, kind: "pending" as const, text: pendingThreadRequest.text }] : []),
+      ...(showThreadWorkingIndicator ? [{ id: `working-${activeThread?.id ?? "thread"}`, kind: "working" as const }] : [])
+    ],
+    [activeRunItems, activeThread?.id, pendingThreadRequest, showPendingThreadEntry, showThreadWorkingIndicator]
+  );
+  const butlerConversationRows = useMemo(
+    () => [
+      ...butlerMessagesWithTimes.map((message) => ({ id: message.id, kind: "message" as const, message })),
+      ...(snapshot?.butler.pending || snapshot?.butler.isStreaming ? [{ id: "butler-working", kind: "working" as const }] : [])
+    ],
+    [butlerMessagesWithTimes, snapshot?.butler.isStreaming, snapshot?.butler.pending]
+  );
 
   useEffect(() => {
     if (!activeThread || !followRun || !runScrollRef.current) {
       return;
     }
 
-    const element = runScrollRef.current;
     requestAnimationFrame(() => {
-      element.scrollTop = element.scrollHeight;
+      scrollElementToLatest(runScrollRef.current);
     });
   }, [
     activeThread?.id,
@@ -1509,26 +1614,57 @@ export function App() {
   ]);
 
   useEffect(() => {
-    if (!followButler || !butlerScrollRef.current) {
+    if (querySurface !== "thread") {
       return;
     }
 
-    scrollElementToLatest(butlerScrollRef.current);
-  }, [
-    followButler,
-    latestButlerMessageKey,
-    pendingButlerText,
-    snapshot?.butler.pending,
-    snapshot?.butler.isStreaming
-  ]);
+    requestAnimationFrame(() => {
+      if (followRun) {
+        scrollElementToLatest(runScrollRef.current);
+        return;
+      }
+
+      if (!runScrollRef.current) {
+        return;
+      }
+
+      runScrollRef.current.scrollTop = runScrollTopRef.current;
+    });
+  }, [activeThread?.id, followRun, querySurface]);
 
   useEffect(() => {
     if (querySurface !== "butler") {
       return;
     }
 
-    restoreButlerScrollPosition();
-  }, [followButler, querySurface]);
+    requestAnimationFrame(() => {
+      if (followButler) {
+        scrollElementToLatest(butlerScrollRef.current);
+        return;
+      }
+
+      if (!butlerScrollRef.current) {
+        return;
+      }
+
+      butlerScrollRef.current.scrollTop = butlerScrollTopRef.current;
+    });
+  }, [querySurface]);
+
+  const latestButlerActivityKey =
+    butlerConversationRows.length > 0
+      ? `${butlerConversationRows[butlerConversationRows.length - 1].id}:${butlerConversationRows.length}`
+      : "empty";
+
+  useEffect(() => {
+    if (querySurface !== "butler" || !followButler || butlerPrependAnchorRef.current) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      scrollElementToLatest(butlerScrollRef.current);
+    });
+  }, [followButler, latestButlerActivityKey, querySurface]);
 
   useEffect(() => {
     syncTerminalFrameTheme(codexTerminalFrameRef.current, isLightTheme);
@@ -1775,44 +1911,93 @@ export function App() {
     submit();
   }
 
-  function jumpToPrompt(
-    container: HTMLDivElement | null,
-    refs: Record<string, HTMLElement | null>,
+  function triggerJumpFlash(itemId: string) {
+    setActiveJumpId(null);
+    requestAnimationFrame(() => {
+      setActiveJumpId(itemId);
+      if (jumpFlashTimerRef.current !== null) {
+        window.clearTimeout(jumpFlashTimerRef.current);
+      }
+      jumpFlashTimerRef.current = window.setTimeout(() => {
+        setActiveJumpId((current) => (current === itemId ? null : current));
+        jumpFlashTimerRef.current = null;
+      }, 1400);
+    });
+  }
+
+  function jumpToConversationItem(
+    scroller: HTMLDivElement | null,
+    targetId: string,
     itemId: string,
     setFollow: (value: boolean) => void
   ) {
-    const target = refs[itemId];
-    if (!container || !target) {
+    if (!scroller) {
+      return;
+    }
+
+    const target = document.getElementById(targetId);
+    if (!target) {
       return;
     }
 
     setFollow(false);
-
-    let offsetTop = 0;
-    let current: HTMLElement | null = target;
-
-    while (current && current !== container) {
-      offsetTop += current.offsetTop;
-      current = current.offsetParent as HTMLElement | null;
-    }
-
-    const centeredTop = Math.max(0, offsetTop - container.clientHeight / 2 + target.offsetHeight / 2);
     requestAnimationFrame(() => {
-      container.scrollTop = centeredTop;
+      scrollElementToCenteredTarget(scroller, target);
       requestAnimationFrame(() => {
-        setActiveJumpId(null);
-        requestAnimationFrame(() => {
-          setActiveJumpId(itemId);
-          if (jumpFlashTimerRef.current !== null) {
-            window.clearTimeout(jumpFlashTimerRef.current);
-          }
-          jumpFlashTimerRef.current = window.setTimeout(() => {
-            setActiveJumpId((current) => (current === itemId ? null : current));
-            jumpFlashTimerRef.current = null;
-          }, 1400);
-        });
+        triggerJumpFlash(itemId);
       });
     });
+  }
+
+  function jumpToRunPrompt(itemId: string) {
+    jumpToConversationItem(runScrollRef.current, `run-message-${itemId}`, itemId, setFollowRun);
+  }
+
+  function jumpToButlerPrompt(itemId: string) {
+    jumpToConversationItem(butlerScrollRef.current, `butler-message-${itemId}`, itemId, setFollowButler);
+  }
+
+  async function loadOlderButlerMessages(): Promise<void> {
+    if (loadingOlderButlerMessages || butlerHistory.loadedStart <= 0) {
+      return;
+    }
+
+    const scroller = butlerScrollRef.current;
+    if (scroller) {
+      butlerPrependAnchorRef.current = {
+        scrollHeight: scroller.scrollHeight,
+        scrollTop: scroller.scrollTop
+      };
+    }
+
+    setLoadingOlderButlerMessages(true);
+    try {
+      const page = await getJson<ButlerHistoryPageResponse>(
+        `/api/chat/history?before=${butlerHistory.loadedStart}&limit=${BUTLER_HISTORY_PAGE_SIZE}`
+      );
+
+      startTransition(() => {
+        setButlerHistory((current) => {
+          if (page.startIndex >= current.loadedStart) {
+            return {
+              messages: dedupeMessages([...page.messages, ...current.messages]),
+              loadedStart: current.loadedStart,
+              totalCount: Math.max(current.totalCount, page.totalCount)
+            };
+          }
+
+          return {
+            messages: dedupeMessages([...page.messages, ...current.messages]),
+            loadedStart: page.startIndex,
+            totalCount: Math.max(current.totalCount, page.totalCount)
+          };
+        });
+      });
+    } catch (historyError) {
+      showErrorToast(historyError);
+    } finally {
+      setLoadingOlderButlerMessages(false);
+    }
   }
 
   const activeTabId =
@@ -2186,71 +2371,107 @@ export function App() {
                     className="conversation-scroll"
                     onScroll={(event) => {
                       const element = event.currentTarget;
-                      const isNearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 32;
-                      setFollowRun(isNearBottom);
+                      const remaining = element.scrollHeight - element.scrollTop - element.clientHeight;
+                      const isNearBottom = remaining < 32;
+                      runScrollTopRef.current = element.scrollTop;
+                      setFollowRun((current) => (current === isNearBottom ? current : isNearBottom));
                     }}
                   >
-                    {activeRunItems.length === 0 ? (
+                    {runConversationRows.length === 0 ? (
                       <div className="empty">This run is open, but its turn history has not loaded yet.</div>
                     ) : (
-                      activeRunItems.map((item) => (
-                        <article
-                          key={item.id}
-                          ref={(node) => {
-                            runPromptRefs.current[item.id] = node;
-                          }}
-                          className={`entry is-${itemTone(item.type)}${activeJumpId === item.id ? " is-jump-target" : ""}`}
-                        >
-                          <div className="entry-head">
-                            <span>{itemLabel(item.type)}</span>
-                            <span className="entry-head-meta">
-                              <span>{formatJumpLabel(item.at)}</span>
-                              <button
-                                className="entry-copy"
-                                onClick={() => void copyText(item.text || "", "Message copied")}
-                                aria-label="Copy message"
-                                title="Copy message"
+                      <div className="conversation-list">
+                        {runConversationRows.map((row) => {
+                          if (row.kind === "pending") {
+                            return (
+                              <div key={row.id} className="conversation-row is-user">
+                                <article className="entry is-user is-pending">
+                                  <div className="entry-head">
+                                    <span>You</span>
+                                    <span className="entry-head-meta">
+                                      <span>sending</span>
+                                      <button
+                                        className="entry-copy"
+                                        onClick={() => void copyText(row.text, "Message copied")}
+                                        aria-label="Copy message"
+                                        title="Copy message"
+                                      >
+                                        <CopyIcon />
+                                      </button>
+                                    </span>
+                                  </div>
+                                  <div className="entry-text">
+                                    <MarkdownMessage text={row.text} />
+                                  </div>
+                                </article>
+                              </div>
+                            );
+                          }
+
+                          if (row.kind === "working") {
+                            return (
+                              <div key={row.id} className="conversation-row is-assistant">
+                                <div className={`working-indicator ${activeThread?.status === "active" ? "is-streaming" : "is-pending"}`} aria-live="polite">
+                                  <span className="working-indicator-label">Codex</span>
+                                  <span className="working-indicator-text">
+                                    {activeThread?.status === "active" ? "Working" : "Running"}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          }
+
+                          const tone = itemTone(row.item.type);
+                          const rowToneClass = tone === "user" ? "is-user" : "is-assistant";
+
+                          return (
+                            <div key={row.id} className={`conversation-row ${rowToneClass}`}>
+                              <article
+                                id={`run-message-${row.item.id}`}
+                                className={`entry is-${tone}${activeJumpId === row.item.id ? " is-jump-target" : ""}`}
                               >
-                                <CopyIcon />
-                              </button>
-                            </span>
-                          </div>
-                          <div className="entry-text">
-                            <MarkdownMessage text={item.text || "Running shell command"} />
-                          </div>
-                        </article>
-                      ))
-                    )}
-                    {showPendingThreadEntry ? (
-                      <article className="entry is-user is-pending">
-                        <div className="entry-head">
-                          <span>You</span>
-                          <span className="entry-head-meta">
-                            <span>sending</span>
-                            <button
-                              className="entry-copy"
-                              onClick={() => void copyText(pendingThreadRequest.text, "Message copied")}
-                              aria-label="Copy message"
-                              title="Copy message"
-                            >
-                              <CopyIcon />
-                            </button>
-                          </span>
-                        </div>
-                        <div className="entry-text">
-                          <MarkdownMessage text={pendingThreadRequest.text} />
-                        </div>
-                      </article>
-                    ) : null}
-                    {showThreadWorkingIndicator ? (
-                      <div className={`working-indicator ${activeThread?.status === "active" ? "is-streaming" : "is-pending"}`} aria-live="polite">
-                        <span className="working-indicator-label">Codex</span>
-                        <span className="working-indicator-text">
-                          {activeThread?.status === "active" ? "Working" : "Running"}
-                        </span>
+                                <div className="entry-head">
+                                  <span>{itemLabel(row.item.type)}</span>
+                                  <span className="entry-head-meta">
+                                    <span>{formatJumpLabel(row.item.at)}</span>
+                                    <button
+                                      className="entry-copy"
+                                      onClick={() => void copyText(row.item.text || "", "Message copied")}
+                                      aria-label="Copy message"
+                                      title="Copy message"
+                                    >
+                                      <CopyIcon />
+                                    </button>
+                                  </span>
+                                </div>
+                                <div className="entry-text">
+                                  <MarkdownMessage text={row.item.text || "Running shell command"} />
+                                </div>
+                              </article>
+                            </div>
+                          );
+                        })}
                       </div>
-                    ) : null}
+                    )}
                   </div>
+                  {!followRun ? (
+                    <button
+                      className="conversation-jump-latest"
+                      onClick={() => {
+                        setFollowRun(true);
+                        requestAnimationFrame(() => {
+                          scrollElementToLatest(runScrollRef.current);
+                        });
+                      }}
+                      type="button"
+                      aria-label="Jump to latest Codex message"
+                    >
+                      <span className="conversation-jump-latest-icon" aria-hidden="true">
+                        <ArrowDownIcon />
+                      </span>
+                      <span>Latest</span>
+                    </button>
+                  ) : null}
                   <div className="composer">
                     <div className="composer-main">
                       <textarea
@@ -2356,7 +2577,7 @@ export function App() {
                                 if (!itemId) {
                                   return;
                                 }
-                                jumpToPrompt(runScrollRef.current, runPromptRefs.current, itemId, setFollowRun);
+                                jumpToRunPrompt(itemId);
                                 event.target.value = "";
                               }}
                             >
@@ -2385,7 +2606,7 @@ export function App() {
                                   <button
                                     key={item.id}
                                     className="detail-link"
-                                    onClick={() => jumpToPrompt(runScrollRef.current, runPromptRefs.current, item.id, setFollowRun)}
+                                    onClick={() => jumpToRunPrompt(item.id)}
                                   >
                                     {index + 1}. {formatJumpLabel(item.at)} • {item.text}
                                   </button>
@@ -2532,60 +2753,83 @@ export function App() {
                   className="conversation-scroll"
                   onScroll={(event) => {
                     const element = event.currentTarget;
-                    const isNearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 32;
+                    const remaining = element.scrollHeight - element.scrollTop - element.clientHeight;
+                    const isNearBottom = remaining < 32;
                     butlerScrollTopRef.current = element.scrollTop;
-                    setFollowButler(isNearBottom);
+                    setFollowButler((current) => (current === isNearBottom ? current : isNearBottom));
+
+                    if (
+                      !isNearBottom &&
+                      element.scrollTop < BUTLER_HISTORY_AUTOLOAD_THRESHOLD_PX &&
+                      butlerHistory.loadedStart > 0 &&
+                      !loadingOlderButlerMessages &&
+                      butlerPrependAnchorRef.current === null
+                    ) {
+                      void loadOlderButlerMessages();
+                    }
                   }}
                 >
-                  {butlerMessagesWithTimes.length === 0 ? (
+                  {butlerConversationRows.length === 0 ? (
                     <div className="empty">Ask Butler about run status, next steps, or which run you should open.</div>
                   ) : (
-                    butlerMessagesWithTimes.map((message) => (
-                      <article
-                        key={message.id}
-                        ref={(node) => {
-                          if (message.role.startsWith("user")) {
-                            butlerPromptRefs.current[message.id] = node;
-                          }
-                        }}
-                        className={`entry ${message.kind === "notice" ? "is-notice" : `is-${message.role.startsWith("assistant") ? "assistant" : "user"}`}${activeJumpId === message.id ? " is-jump-target" : ""}`}
-                      >
-                        <div className="entry-head">
-                          <span>{message.kind === "notice" ? "Supervisor notice" : message.role.startsWith("assistant") ? "Butler" : "You"}</span>
-                          <span className="entry-head-meta">
-                            <span>{formatJumpLabel(message.at)}</span>
-                            <button
-                              className="entry-copy"
-                              onClick={() => void copyText(message.text || "", "Message copied")}
-                              aria-label="Copy message"
-                              title="Copy message"
+                    <div className="conversation-list">
+                      {butlerConversationRows.map((row) => {
+                        if (row.kind === "working") {
+                          return (
+                            <div key={row.id} className="conversation-row is-assistant">
+                              <div
+                                className={`working-indicator ${snapshot.butler.isStreaming ? "is-streaming" : "is-pending"}`}
+                                aria-live="polite"
+                              >
+                                <span className="working-indicator-label">Butler</span>
+                                <span className="working-indicator-text">{butlerStatus.text}</span>
+                              </div>
+                            </div>
+                          );
+                        }
+
+                        const message = row.message;
+                        const toneClass = message.kind === "notice" ? "is-notice" : `is-${message.role.startsWith("assistant") ? "assistant" : "user"}`;
+                        const rowToneClass = message.kind === "notice" ? "is-notice" : message.role.startsWith("assistant") ? "is-assistant" : "is-user";
+
+                        return (
+                          <div key={row.id} className={`conversation-row ${rowToneClass}`}>
+                            <article
+                              id={`butler-message-${message.id}`}
+                              className={`entry ${toneClass}${activeJumpId === message.id ? " is-jump-target" : ""}`}
                             >
-                              <CopyIcon />
-                            </button>
-                          </span>
-                        </div>
-                        <div className="entry-text">
-                          <MarkdownMessage text={message.text || "…"} />
-                        </div>
-                        </article>
-                      ))
-                  )}
-                  {snapshot.butler.pending || snapshot.butler.isStreaming ? (
-                    <div
-                      className={`working-indicator ${snapshot.butler.isStreaming ? "is-streaming" : "is-pending"}`}
-                      aria-live="polite"
-                    >
-                      <span className="working-indicator-label">Butler</span>
-                      <span className="working-indicator-text">{butlerStatus.text}</span>
+                              <div className="entry-head">
+                                <span>{message.kind === "notice" ? "Supervisor notice" : message.role.startsWith("assistant") ? "Butler" : "You"}</span>
+                                <span className="entry-head-meta">
+                                  <span>{formatJumpLabel(message.at)}</span>
+                                  <button
+                                    className="entry-copy"
+                                    onClick={() => void copyText(message.text || "", "Message copied")}
+                                    aria-label="Copy message"
+                                    title="Copy message"
+                                  >
+                                    <CopyIcon />
+                                  </button>
+                                </span>
+                              </div>
+                              <div className="entry-text">
+                                <MarkdownMessage text={message.text || "…"} />
+                              </div>
+                            </article>
+                          </div>
+                        );
+                      })}
                     </div>
-                  ) : null}
+                  )}
                 </div>
                 {!followButler ? (
                   <button
                     className="conversation-jump-latest"
                     onClick={() => {
                       setFollowButler(true);
-                      scrollElementToLatest(butlerScrollRef.current);
+                      requestAnimationFrame(() => {
+                        scrollElementToLatest(butlerScrollRef.current);
+                      });
                     }}
                     type="button"
                     aria-label="Jump to latest Butler message"
@@ -2672,7 +2916,7 @@ export function App() {
                                 if (!itemId) {
                                   return;
                                 }
-                                jumpToPrompt(butlerScrollRef.current, butlerPromptRefs.current, itemId, setFollowButler);
+                                jumpToButlerPrompt(itemId);
                                 event.target.value = "";
                               }}
                             >
@@ -2701,7 +2945,7 @@ export function App() {
                                   <button
                                     key={message.id}
                                     className="detail-link"
-                                    onClick={() => jumpToPrompt(butlerScrollRef.current, butlerPromptRefs.current, message.id, setFollowButler)}
+                                    onClick={() => jumpToButlerPrompt(message.id)}
                                   >
                                     {index + 1}. {formatJumpLabel(message.at)} • {message.text}
                                   </button>

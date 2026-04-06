@@ -27,6 +27,7 @@ import type {
   ButlerCompactionView,
   ButlerContextUsageView,
   ButlerMessageView,
+  ButlerMessagePageView,
   ButlerOnboardingView,
   ButlerThinkingLevel,
   ButlerToolUiEffect,
@@ -305,6 +306,9 @@ function mergeVisibleMessages(sessionMessages: ButlerMessageView[], notices: But
     return leftAt - rightAt;
   });
 }
+
+const SNAPSHOT_MESSAGE_TAIL_LIMIT = 200;
+const MAX_HISTORY_PAGE_SIZE = 1000;
 
 export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
@@ -1727,6 +1731,30 @@ export class ButlerAgentService extends EventEmitter {
     await this.session.prompt(text, this.session.isStreaming ? { streamingBehavior: "followUp" } : undefined);
   }
 
+  private getVisibleMessages(): ButlerMessageView[] {
+    const sessionMessages = this.session ? serializeMessages(this.session) : [];
+    return mergeVisibleMessages(sessionMessages, this.noticeMessages);
+  }
+
+  getMessagePage(before: number | null, limit: number): ButlerMessagePageView {
+    const visibleMessages = this.getVisibleMessages();
+    const totalCount = visibleMessages.length;
+    const cappedLimit = Math.max(1, Math.min(Number.isFinite(limit) ? Math.trunc(limit) : SNAPSHOT_MESSAGE_TAIL_LIMIT, MAX_HISTORY_PAGE_SIZE));
+    const safeBefore =
+      typeof before === "number" && Number.isFinite(before)
+        ? Math.max(0, Math.min(Math.trunc(before), totalCount))
+        : totalCount;
+    const startIndex = Math.max(0, safeBefore - cappedLimit);
+
+    return {
+      messages: visibleMessages.slice(startIndex, safeBefore),
+      startIndex,
+      endIndex: safeBefore,
+      totalCount,
+      hasMore: startIndex > 0
+    };
+  }
+
   getSnapshot(): AppSnapshot["butler"] {
     const codexCompose = this.codexClient.getConnectionState().compose;
     const availableModels = codexCompose.availableModels;
@@ -1734,7 +1762,9 @@ export class ButlerAgentService extends EventEmitter {
     const currentThinkingLevel = availableThinkingLevels.includes(this.session?.thinkingLevel as ButlerThinkingLevel)
       ? (this.session?.thinkingLevel as ButlerThinkingLevel)
       : "medium";
-    const sessionMessages = this.session ? serializeMessages(this.session) : [];
+    const visibleMessages = this.getVisibleMessages();
+    const messageCount = visibleMessages.length;
+    const messages = visibleMessages.slice(Math.max(0, messageCount - SNAPSHOT_MESSAGE_TAIL_LIMIT));
 
     return {
       ready: this.ready,
@@ -1743,7 +1773,8 @@ export class ButlerAgentService extends EventEmitter {
       sessionId: this.session?.sessionId ?? null,
       model: this.session?.model?.id ?? null,
       auth: this.auth,
-      messages: mergeVisibleMessages(sessionMessages, this.noticeMessages),
+      messages,
+      messageCount,
       tools: this.toolCatalog,
       onboarding: this.onboarding,
       contextUsage: this.getContextUsage(),

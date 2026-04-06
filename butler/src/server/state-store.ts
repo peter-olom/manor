@@ -1322,6 +1322,7 @@ export class ButlerStateStore extends EventEmitter {
     model: string | null;
     auth: AppSnapshot["butler"]["auth"];
     messages: ButlerMessageView[];
+    messageCount: number;
     tools: AppSnapshot["butler"]["tools"];
     onboarding: AppSnapshot["butler"]["onboarding"];
     contextUsage: AppSnapshot["butler"]["contextUsage"];

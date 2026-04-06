@@ -227,6 +227,14 @@ export interface ButlerMessageView {
   kind: "message" | "notice";
 }
 
+export interface ButlerMessagePageView {
+  messages: ButlerMessageView[];
+  startIndex: number;
+  endIndex: number;
+  totalCount: number;
+  hasMore: boolean;
+}
+
 export interface CodexProjectSummaryView {
   id: string;
   label: string;
@@ -331,6 +339,7 @@ export interface AppSnapshot {
     model: string | null;
     auth: ButlerAuthStatus;
     messages: ButlerMessageView[];
+    messageCount: number;
     tools: ButlerToolView[];
     onboarding: ButlerOnboardingView;
     contextUsage: ButlerContextUsageView;
