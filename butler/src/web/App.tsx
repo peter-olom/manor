@@ -74,6 +74,22 @@ type PendingThreadRequest = {
   threadId: string;
   text: string;
   sentAt: number;
+  attachmentCount: number;
+};
+
+type ImageReference = {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  createdAt: number;
+  url: string;
+};
+
+type PreviewableImage = {
+  id: string;
+  name: string;
+  url: string;
 };
 
 type ModelOption = {
@@ -755,6 +771,21 @@ function SendIcon() {
   );
 }
 
+function AttachmentIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d="M6 8.5 10.8 3.7a2.25 2.25 0 1 1 3.2 3.2l-6 6a3.25 3.25 0 1 1-4.6-4.6l5.5-5.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="square"
+        strokeLinejoin="miter"
+      />
+    </svg>
+  );
+}
+
 function CopyIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
@@ -842,6 +873,115 @@ async function getJson<T>(url: string): Promise<T> {
   }
 
   return (await response.json().catch(() => undefined)) as T;
+}
+
+async function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error(`Failed to read ${file.name}`));
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const [, base64 = ""] = result.split(",", 2);
+      resolve(base64);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function formatAttachmentSummary(count: number): string {
+  return count === 1 ? "Attached 1 reference image." : `Attached ${count} reference images.`;
+}
+
+function extractReferencedImages(text: string, knownImages: ImageReference[]): PreviewableImage[] {
+  const lines = text.split("\n");
+  const images: PreviewableImage[] = [];
+  let collecting = false;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+
+    if (line === "Stored reference images:" || line === "Attached reference images:") {
+      collecting = true;
+      continue;
+    }
+
+    if (!collecting) {
+      continue;
+    }
+
+    if (!line) {
+      continue;
+    }
+
+    if (!line.startsWith("- ")) {
+      break;
+    }
+
+    const body = line.slice(2).trim();
+    const separator = body.indexOf("|");
+    if (separator !== -1) {
+      const id = body.slice(0, separator).trim();
+      const name = body.slice(separator + 1).trim();
+      if (!id || !name) {
+        continue;
+      }
+
+      images.push({
+        id,
+        name,
+        url: `/api/images/${encodeURIComponent(id)}`
+      });
+      continue;
+    }
+
+    const match = [...knownImages].reverse().find((image) => image.name === body);
+    if (!match) {
+      continue;
+    }
+
+    images.push({
+      id: match.id,
+      name: match.name,
+      url: match.url
+    });
+  }
+
+  return images;
+}
+
+function stripReferencedImagesSection(text: string): string {
+  const lines = text.split("\n");
+  const kept: string[] = [];
+  let skipping = false;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+
+    if (line === "Stored reference images:" || line === "Attached reference images:") {
+      skipping = true;
+      continue;
+    }
+
+    if (skipping) {
+      if (!line) {
+        continue;
+      }
+
+      if (line.startsWith("- ")) {
+        continue;
+      }
+
+      skipping = false;
+    }
+
+    kept.push(rawLine);
+  }
+
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function isImageDrag(event: DragEvent | React.DragEvent<HTMLElement>): boolean {
+  return [...event.dataTransfer.items].some((item) => item.kind === "file" && item.type.startsWith("image/"));
 }
 
 function readStoredValue(key: string): string {
@@ -958,6 +1098,14 @@ export function App() {
     return window.matchMedia("(prefers-color-scheme: dark)").matches;
   });
   const [butlerDraft, setButlerDraft] = useState(() => readStoredValue(BUTLER_DRAFT_STORAGE_KEY));
+  const [butlerImages, setButlerImages] = useState<ImageReference[]>([]);
+  const [threadImages, setThreadImages] = useState<ImageReference[]>([]);
+  const [knownImages, setKnownImages] = useState<ImageReference[]>([]);
+  const [butlerUploadingImages, setButlerUploadingImages] = useState(0);
+  const [threadUploadingImages, setThreadUploadingImages] = useState(0);
+  const [butlerDragActive, setButlerDragActive] = useState(false);
+  const [threadDragActive, setThreadDragActive] = useState(false);
+  const [previewImage, setPreviewImage] = useState<PreviewableImage | null>(null);
   const [pendingButlerText, setPendingButlerText] = useState<string | null>(null);
   const [pendingThreadRequest, setPendingThreadRequest] = useState<PendingThreadRequest | null>(null);
   const [threadDraft, setThreadDraft] = useState("");
@@ -986,6 +1134,8 @@ export function App() {
   const threadDraftPersistTimerRef = useRef<number | null>(null);
   const butlerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const threadTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const butlerFileInputRef = useRef<HTMLInputElement | null>(null);
+  const threadFileInputRef = useRef<HTMLInputElement | null>(null);
   const codexTerminalFrameRef = useRef<HTMLIFrameElement | null>(null);
   const butlerTerminalFrameRef = useRef<HTMLIFrameElement | null>(null);
   const lastRemoteErrorRef = useRef<string | null>(null);
@@ -1131,6 +1281,20 @@ export function App() {
         }
       });
 
+    getJson<{ images: ImageReference[] }>("/api/images?limit=200")
+      .then((data) => {
+        if (!closed) {
+          startTransition(() => {
+            setKnownImages(data.images);
+          });
+        }
+      })
+      .catch((fetchError: Error) => {
+        if (!closed) {
+          showErrorToast(fetchError, "image-bootstrap-error", 5000);
+        }
+      });
+
     const events = new EventSource("/api/events");
     events.onopen = () => {
       clearLiveError();
@@ -1221,6 +1385,7 @@ export function App() {
   useEffect(() => {
     const threadId = snapshot?.codex.focusedWindowId;
     setThreadDraft(threadId ? readStoredValue(`${THREAD_DRAFT_STORAGE_KEY_PREFIX}${threadId}`) : "");
+    setThreadImages([]);
     setFollowRun(true);
   }, [snapshot?.codex.focusedWindowId]);
 
@@ -1542,9 +1707,7 @@ export function App() {
     pendingThreadRequest &&
       activeThread &&
       pendingThreadRequest.threadId === activeThread.id &&
-      !activeRunItems.some(
-        (item) => item.type === "userMessage" && item.text === pendingThreadRequest.text && item.at >= pendingThreadRequest.sentAt - 1000
-      )
+      !activeRunItems.some((item) => item.type === "userMessage" && item.at >= pendingThreadRequest.sentAt - 1000)
   );
   const showThreadWorkingIndicator =
     Boolean(pendingThreadRequest && activeThread && pendingThreadRequest.threadId === activeThread.id) || activeThread?.status === "active";
@@ -1680,19 +1843,159 @@ export function App() {
   const nextTerminalTarget =
     snapshot.butler.onboarding.steps.find((step) => step.status === "pending")?.id === "butlerAuth" ? "butlerTerminal" : "codexTerminal";
 
-  async function sendButlerMessage() {
-    const text = butlerDraft.trim();
-    if (!text) {
+  async function uploadImages(target: "butler" | "thread", files: FileList | File[]) {
+    const imageFiles = [...files].filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length === 0) {
+      showToast("Only image files are supported", "error");
       return;
     }
 
-    setButlerDraft("");
-    writeStoredValue(BUTLER_DRAFT_STORAGE_KEY, "");
-    setFollowButler(true);
-    setPendingButlerText(text);
+    const setUploading = target === "butler" ? setButlerUploadingImages : setThreadUploadingImages;
+    const setImages = target === "butler" ? setButlerImages : setThreadImages;
+
+    setUploading((current) => current + imageFiles.length);
 
     try {
-      await postJson("/api/chat/messages", { text });
+      const uploaded = await Promise.all(
+        imageFiles.map(async (file) => {
+          const data = await readFileAsBase64(file);
+          const result = await postJson<{ ok: true; image: ImageReference }>("/api/images/upload", {
+            name: file.name,
+            mimeType: file.type,
+            sizeBytes: file.size,
+            data
+          });
+          return result.image;
+        })
+      );
+
+      setImages((current) => [...current, ...uploaded]);
+      setKnownImages((current) => {
+        const next = new Map(current.map((image) => [image.id, image]));
+        for (const image of uploaded) {
+          next.set(image.id, image);
+        }
+        return [...next.values()];
+      });
+      showToast(imageFiles.length === 1 ? "Image attached" : `${imageFiles.length} images attached`);
+    } catch (uploadError) {
+      showErrorToast(uploadError);
+    } finally {
+      setUploading((current) => Math.max(0, current - imageFiles.length));
+    }
+  }
+
+  function removeComposerImage(target: "butler" | "thread", imageId: string) {
+    if (target === "butler") {
+      setButlerImages((current) => current.filter((image) => image.id !== imageId));
+      return;
+    }
+
+    setThreadImages((current) => current.filter((image) => image.id !== imageId));
+  }
+
+  function handleComposerFileSelection(target: "butler" | "thread", event: React.ChangeEvent<HTMLInputElement>) {
+    const files = event.target.files;
+    if (files && files.length > 0) {
+      void uploadImages(target, files);
+    }
+    event.target.value = "";
+  }
+
+  function handleComposerDrop(target: "butler" | "thread", event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (target === "butler") {
+      setButlerDragActive(false);
+    } else {
+      setThreadDragActive(false);
+    }
+
+    if (!isImageDrag(event)) {
+      return;
+    }
+
+    void uploadImages(target, event.dataTransfer.files);
+  }
+
+  function renderImagePreviewGrid(
+    images: PreviewableImage[],
+    options?: { removable?: boolean; onRemove?: (imageId: string) => void }
+  ) {
+    return (
+      <div className="composer-attachments composer-attachments-static">
+        {images.map((image) => (
+          <div key={image.id} className="composer-attachment">
+            <button
+              className="composer-attachment-preview"
+              type="button"
+              onClick={() => setPreviewImage(image)}
+              aria-label={`Preview ${image.name}`}
+              title={image.name}
+            >
+              <img src={image.url} alt={image.name} className="composer-attachment-thumb" />
+            </button>
+            <div className="composer-attachment-copy">
+              <button
+                className="composer-attachment-name composer-attachment-name-button"
+                type="button"
+                onClick={() => setPreviewImage(image)}
+                title={image.name}
+              >
+                {image.name}
+              </button>
+            </div>
+            {options?.removable && options.onRemove ? (
+              <button
+                className="composer-attachment-remove"
+                type="button"
+                onClick={() => options.onRemove?.(image.id)}
+                aria-label={`Remove ${image.name}`}
+              >
+                <CloseIcon />
+              </button>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  function renderMessageImageStrip(images: PreviewableImage[]) {
+    return (
+      <div className="message-image-strip">
+        {images.map((image) => (
+          <button
+            key={image.id}
+            className="message-image-button"
+            type="button"
+            onClick={() => setPreviewImage(image)}
+            aria-label={`Preview ${image.name}`}
+            title={image.name}
+          >
+            <img src={image.url} alt={image.name} className="message-image-thumb" />
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  async function sendButlerMessage() {
+    const text = butlerDraft.trim();
+    if (!text && butlerImages.length === 0) {
+      return;
+    }
+
+    const attachmentCount = butlerImages.length;
+    const messageSummary = text || formatAttachmentSummary(attachmentCount);
+    setButlerDraft("");
+    setButlerImages([]);
+    writeStoredValue(BUTLER_DRAFT_STORAGE_KEY, "");
+    setFollowButler(true);
+    setPendingButlerText(messageSummary);
+
+    try {
+      await postJson("/api/chat/messages", { text, imageReferenceIds: butlerImages.map((image) => image.id) });
     } catch (sendError) {
       setPendingButlerText(null);
       showErrorToast(sendError);
@@ -1705,23 +2008,31 @@ export function App() {
     }
 
     const text = threadDraft.trim();
-    if (!text) {
+    if (!text && threadImages.length === 0) {
       return;
     }
 
+    const attachmentCount = threadImages.length;
+    const messageSummary = text || formatAttachmentSummary(attachmentCount);
     setThreadDraft("");
+    setThreadImages([]);
     writeStoredValue(`${THREAD_DRAFT_STORAGE_KEY_PREFIX}${activeThread.id}`, "");
     setFollowRun(true);
     setPendingThreadRequest({
       threadId: activeThread.id,
-      text,
-      sentAt: Date.now()
+      text: messageSummary,
+      sentAt: Date.now(),
+      attachmentCount
     });
 
     try {
-      await postJson("/api/threads/messages", { threadId: activeThread.id, text });
+      await postJson("/api/threads/messages", {
+        threadId: activeThread.id,
+        text,
+        imageReferenceIds: threadImages.map((image) => image.id)
+      });
     } catch (sendError) {
-      setPendingThreadRequest((current) => (current?.threadId === activeThread.id && current.text === text ? null : current));
+      setPendingThreadRequest((current) => (current?.threadId === activeThread.id && current.text === messageSummary ? null : current));
       showErrorToast(sendError);
     }
   }
@@ -2423,6 +2734,10 @@ export function App() {
 
                           const tone = itemTone(row.item.type);
                           const rowToneClass = tone === "user" ? "is-user" : "is-assistant";
+                          const referencedImages =
+                            row.item.type === "userMessage" ? extractReferencedImages(row.item.text || "", knownImages) : [];
+                          const displayText =
+                            referencedImages.length > 0 ? stripReferencedImagesSection(row.item.text || "") : row.item.text || "Running shell command";
 
                           return (
                             <div key={row.id} className={`conversation-row ${rowToneClass}`}>
@@ -2445,7 +2760,8 @@ export function App() {
                                   </span>
                                 </div>
                                 <div className="entry-text">
-                                  <MarkdownMessage text={row.item.text || "Running shell command"} />
+                                  <MarkdownMessage text={displayText || "Running shell command"} />
+                                  {referencedImages.length > 0 ? renderMessageImageStrip(referencedImages) : null}
                                 </div>
                               </article>
                             </div>
@@ -2472,7 +2788,46 @@ export function App() {
                       <span>Latest</span>
                     </button>
                   ) : null}
-                  <div className="composer">
+                  <div
+                    className={`composer${threadDragActive ? " is-drop-target" : ""}`}
+                    onDragEnter={(event) => {
+                      if (isImageDrag(event)) {
+                        event.preventDefault();
+                        setThreadDragActive(true);
+                      }
+                    }}
+                    onDragOver={(event) => {
+                      if (isImageDrag(event)) {
+                        event.preventDefault();
+                      }
+                    }}
+                    onDragLeave={(event) => {
+                      if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                        return;
+                      }
+                      setThreadDragActive(false);
+                    }}
+                    onDrop={(event) => handleComposerDrop("thread", event)}
+                  >
+                    <input
+                      ref={threadFileInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      hidden
+                      onChange={(event) => handleComposerFileSelection("thread", event)}
+                    />
+                    {threadImages.length > 0 || threadUploadingImages > 0 ? (
+                      <div>
+                        {threadImages.length > 0
+                          ? renderImagePreviewGrid(threadImages, {
+                              removable: true,
+                              onRemove: (imageId) => removeComposerImage("thread", imageId)
+                            })
+                          : null}
+                        {threadUploadingImages > 0 ? <div className="composer-uploading">Uploading {threadUploadingImages}…</div> : null}
+                      </div>
+                    ) : null}
                     <div className="composer-main">
                       <textarea
                         ref={threadTextareaRef}
@@ -2490,12 +2845,28 @@ export function App() {
                         spellCheck={true}
                         rows={3}
                       />
-                      <button className="composer-send composer-send-mobile" onClick={() => void sendThreadMessage()} disabled={!threadDraft.trim()} aria-label="Send message">
-                        <span className="composer-send-label">Send</span>
-                        <span className="composer-send-icon">
-                          <SendIcon />
-                        </span>
-                      </button>
+                      <div className="composer-mobile-actions">
+                        <button
+                          className="composer-add-image composer-add-image-mobile"
+                          type="button"
+                          onClick={() => threadFileInputRef.current?.click()}
+                          aria-label="Add image"
+                          title="Add image"
+                        >
+                          <AttachmentIcon />
+                        </button>
+                        <button
+                          className="composer-send composer-send-mobile"
+                          onClick={() => void sendThreadMessage()}
+                          disabled={(!threadDraft.trim() && threadImages.length === 0) || threadUploadingImages > 0}
+                          aria-label="Send message"
+                        >
+                          <span className="composer-send-label">Send</span>
+                          <span className="composer-send-icon">
+                            <SendIcon />
+                          </span>
+                        </button>
+                      </div>
                     </div>
                     <div className="composer-footer">
                       <div className="composer-inline-controls">
@@ -2552,13 +2923,30 @@ export function App() {
                         </div>
                       </div>
                       <div className="composer-note">Cmd/Ctrl + Enter sends</div>
-                      <button className="composer-send composer-send-desktop" onClick={() => void sendThreadMessage()} disabled={!threadDraft.trim()} aria-label="Send message">
-                        <span className="composer-send-label">Send</span>
-                        <span className="composer-send-icon">
-                          <SendIcon />
-                        </span>
-                      </button>
+                      <div className="composer-actions composer-actions-desktop">
+                        <button
+                          className="composer-add-image"
+                          type="button"
+                          onClick={() => threadFileInputRef.current?.click()}
+                          aria-label="Add image"
+                          title="Add image"
+                        >
+                          <AttachmentIcon />
+                        </button>
+                        <button
+                          className="composer-send composer-send-desktop"
+                          onClick={() => void sendThreadMessage()}
+                          disabled={(!threadDraft.trim() && threadImages.length === 0) || threadUploadingImages > 0}
+                          aria-label="Send message"
+                        >
+                          <span className="composer-send-label">Send</span>
+                          <span className="composer-send-icon">
+                            <SendIcon />
+                          </span>
+                        </button>
+                      </div>
                     </div>
+                    {threadDragActive ? <div className="composer-drop-note">Drop image files to attach them</div> : null}
                   </div>
                 </section>
                 <aside className={`detail-pane ${showPromptRail ? "is-open" : "is-closed"}`}>
@@ -2791,6 +3179,9 @@ export function App() {
                         const message = row.message;
                         const toneClass = message.kind === "notice" ? "is-notice" : `is-${message.role.startsWith("assistant") ? "assistant" : "user"}`;
                         const rowToneClass = message.kind === "notice" ? "is-notice" : message.role.startsWith("assistant") ? "is-assistant" : "is-user";
+                        const referencedImages =
+                          message.kind === "notice" || message.role.startsWith("assistant") ? [] : extractReferencedImages(message.text || "", knownImages);
+                        const displayText = referencedImages.length > 0 ? stripReferencedImagesSection(message.text || "") : message.text || "…";
 
                         return (
                           <div key={row.id} className={`conversation-row ${rowToneClass}`}>
@@ -2813,7 +3204,8 @@ export function App() {
                                 </span>
                               </div>
                               <div className="entry-text">
-                                <MarkdownMessage text={message.text || "…"} />
+                                <MarkdownMessage text={displayText || "…"} />
+                                {referencedImages.length > 0 ? renderMessageImageStrip(referencedImages) : null}
                               </div>
                             </article>
                           </div>
@@ -2840,7 +3232,46 @@ export function App() {
                     <span>Latest</span>
                   </button>
                 ) : null}
-                <div className="composer">
+                <div
+                  className={`composer${butlerDragActive ? " is-drop-target" : ""}`}
+                  onDragEnter={(event) => {
+                    if (isImageDrag(event)) {
+                      event.preventDefault();
+                      setButlerDragActive(true);
+                    }
+                  }}
+                  onDragOver={(event) => {
+                    if (isImageDrag(event)) {
+                      event.preventDefault();
+                    }
+                  }}
+                  onDragLeave={(event) => {
+                    if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                      return;
+                    }
+                    setButlerDragActive(false);
+                  }}
+                  onDrop={(event) => handleComposerDrop("butler", event)}
+                >
+                  <input
+                    ref={butlerFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    hidden
+                    onChange={(event) => handleComposerFileSelection("butler", event)}
+                  />
+                  {butlerImages.length > 0 || butlerUploadingImages > 0 ? (
+                    <div>
+                      {butlerImages.length > 0
+                        ? renderImagePreviewGrid(butlerImages, {
+                            removable: true,
+                            onRemove: (imageId) => removeComposerImage("butler", imageId)
+                          })
+                        : null}
+                      {butlerUploadingImages > 0 ? <div className="composer-uploading">Uploading {butlerUploadingImages}…</div> : null}
+                    </div>
+                  ) : null}
                   <div className="composer-main">
                     <textarea
                       ref={butlerTextareaRef}
@@ -2858,12 +3289,28 @@ export function App() {
                       spellCheck={true}
                       rows={3}
                     />
-                    <button className="composer-send composer-send-mobile" onClick={() => void sendButlerMessage()} disabled={!butlerDraft.trim()} aria-label="Send message">
-                      <span className="composer-send-label">Send</span>
-                      <span className="composer-send-icon">
-                        <SendIcon />
-                      </span>
-                    </button>
+                    <div className="composer-mobile-actions">
+                      <button
+                        className="composer-add-image composer-add-image-mobile"
+                        type="button"
+                        onClick={() => butlerFileInputRef.current?.click()}
+                        aria-label="Add image"
+                        title="Add image"
+                      >
+                        <AttachmentIcon />
+                      </button>
+                      <button
+                        className="composer-send composer-send-mobile"
+                        onClick={() => void sendButlerMessage()}
+                        disabled={(!butlerDraft.trim() && butlerImages.length === 0) || butlerUploadingImages > 0}
+                        aria-label="Send message"
+                      >
+                        <span className="composer-send-label">Send</span>
+                        <span className="composer-send-icon">
+                          <SendIcon />
+                        </span>
+                      </button>
+                    </div>
                   </div>
                   <div className="composer-footer">
                     <div className="composer-inline-controls">
@@ -2887,17 +3334,34 @@ export function App() {
                           <option key={level} value={level}>
                             {level}
                           </option>
-                      ))}
-                    </select>
-                  </div>
+                        ))}
+                      </select>
+                    </div>
                     <div className="composer-note">Cmd/Ctrl + Enter sends</div>
-                    <button className="composer-send composer-send-desktop" onClick={() => void sendButlerMessage()} disabled={!butlerDraft.trim()} aria-label="Send message">
-                      <span className="composer-send-label">Send</span>
-                      <span className="composer-send-icon">
-                        <SendIcon />
-                      </span>
-                    </button>
+                    <div className="composer-actions composer-actions-desktop">
+                      <button
+                        className="composer-add-image"
+                        type="button"
+                        onClick={() => butlerFileInputRef.current?.click()}
+                        aria-label="Add image"
+                        title="Add image"
+                      >
+                        <AttachmentIcon />
+                      </button>
+                      <button
+                        className="composer-send composer-send-desktop"
+                        onClick={() => void sendButlerMessage()}
+                        disabled={(!butlerDraft.trim() && butlerImages.length === 0) || butlerUploadingImages > 0}
+                        aria-label="Send message"
+                      >
+                        <span className="composer-send-label">Send</span>
+                        <span className="composer-send-icon">
+                          <SendIcon />
+                        </span>
+                      </button>
+                    </div>
                   </div>
+                  {butlerDragActive ? <div className="composer-drop-note">Drop image files to attach them</div> : null}
                 </div>
               </section>
                 <aside className={`detail-pane ${showPromptRail ? "is-open" : "is-closed"}`}>
@@ -3065,6 +3529,22 @@ export function App() {
               >
                 {confirmBusy ? "Deleting…" : confirmDialog.confirmLabel}
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {previewImage ? (
+        <div className="modal-backdrop" onClick={() => setPreviewImage(null)}>
+          <div className="modal-card modal-card-image" role="dialog" aria-modal="true" aria-labelledby="image-preview-title" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h2 id="image-preview-title">{previewImage.name}</h2>
+              <button className="modal-close" onClick={() => setPreviewImage(null)} aria-label="Close image preview">
+                <CloseIcon />
+              </button>
+            </div>
+            <div className="modal-image-shell">
+              <img src={previewImage.url} alt={previewImage.name} className="modal-image" />
             </div>
           </div>
         </div>

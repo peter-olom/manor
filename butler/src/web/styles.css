@@ -1394,6 +1394,119 @@ select {
   background: var(--surface);
 }
 
+.composer.is-drop-target {
+  background: color-mix(in srgb, var(--surface) 80%, var(--accent) 20%);
+}
+
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 14px 18px 0;
+}
+
+.composer-attachments-static {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.composer-attachment {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  max-width: 320px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.composer-attachment-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.composer-attachment-thumb {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  background: var(--code-bg);
+}
+
+.composer-attachment-copy {
+  min-width: 0;
+}
+
+.composer-attachment-name {
+  display: block;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.88rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-attachment-name-button {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.composer-attachment-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--muted);
+}
+
+.composer-attachment-remove svg {
+  width: 14px;
+  height: 14px;
+}
+
+.composer-uploading,
+.composer-drop-note {
+  padding: 0 18px 10px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.message-image-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.message-image-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.message-image-thumb {
+  display: block;
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  background: var(--code-bg);
+}
+
 .composer-main {
   display: flex;
   align-items: flex-end;
@@ -1418,6 +1531,26 @@ select {
   padding: 0;
   font-size: 0.74rem;
   color: var(--muted);
+}
+
+.composer-add-image {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.composer-add-image svg {
+  width: 16px;
+  height: 16px;
 }
 
 .composer-footer {
@@ -1464,6 +1597,13 @@ select {
   color: var(--danger);
 }
 
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
 .composer-send {
   display: inline-flex;
   align-items: center;
@@ -1479,6 +1619,11 @@ select {
 }
 
 .composer-send-mobile {
+  display: none;
+}
+
+.composer-mobile-actions,
+.composer-add-image-mobile {
   display: none;
 }
 
@@ -1866,6 +2011,10 @@ select {
   box-shadow: 0 18px 60px color-mix(in srgb, var(--bg) 76%, transparent);
 }
 
+.modal-card-image {
+  width: min(960px, 100%);
+}
+
 .modal-head {
   display: flex;
   align-items: center;
@@ -1904,6 +2053,23 @@ select {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.modal-image-shell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 240px;
+  max-height: min(72vh, 900px);
+  overflow: auto;
+  background: color-mix(in srgb, var(--surface) 65%, var(--bg));
+}
+
+.modal-image {
+  display: block;
+  max-width: 100%;
+  max-height: min(70vh, 860px);
+  object-fit: contain;
 }
 
 .toast-region {
@@ -2196,7 +2362,7 @@ select {
 
   .composer textarea {
     min-height: 84px;
-    padding: 14px 92px 10px 14px;
+    padding: 14px 142px 10px 14px;
   }
 
   .composer-footer {
@@ -2236,20 +2402,34 @@ select {
     display: none;
   }
 
+  .composer-mobile-actions {
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .composer-add-image-mobile {
+    display: inline-flex;
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+  }
+
   .composer-send-mobile {
     display: inline-flex;
-    position: absolute;
+    position: static;
     min-width: 74px;
     width: auto;
     min-height: 40px;
     height: 40px;
     padding: 0 10px;
     flex: 0 0 auto;
-    right: 10px;
-    bottom: 10px;
   }
 
-  .composer-send-desktop {
+  .composer-actions-desktop {
     display: none;
   }
 
@@ -2350,7 +2530,7 @@ select {
 
   .composer textarea {
     min-height: 76px;
-    padding-right: 88px;
+    padding-right: 136px;
   }
 
   .composer-footer {

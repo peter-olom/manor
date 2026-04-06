@@ -9,6 +9,7 @@ import httpProxy from "http-proxy";
 import { ButlerAgentService } from "./butler-agent.js";
 import { CodexAppServerClient } from "./codex-client.js";
 import { CodexHarnessService } from "./codex-harness.js";
+import { ImageReferenceStore } from "./image-store.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { loadServiceTemplates, toServiceLeaseView } from "./service-templates.js";
 import { ButlerStateStore } from "./state-store.js";
@@ -28,6 +29,7 @@ const previewLeaseTtlMs = Number(process.env.MANOR_PREVIEW_LEASE_TTL_MS ?? `${30
 const serviceLeaseTtlMs = Number(process.env.MANOR_SERVICE_LEASE_TTL_MS ?? `${120 * 60 * 1000}`);
 const leaseReapGraceMs = Number(process.env.MANOR_LEASE_REAP_GRACE_MS ?? `${10 * 60 * 1000}`);
 const leaseSweepIntervalMs = Number(process.env.MANOR_LEASE_SWEEP_INTERVAL_MS ?? "60000");
+const imageReferenceDir = process.env.MANOR_IMAGE_REFERENCE_DIR ?? path.resolve(process.cwd(), "../artifacts/manor-images");
 
 const uiStatePath = path.join(stateDir, "butler-ui.json");
 const sessionDir = path.join(stateDir, "pi-sessions");
@@ -40,6 +42,8 @@ const store = new ButlerStateStore(uiStatePath, {
   leaseReapGraceMs
 });
 await store.load();
+const imageStore = new ImageReferenceStore(imageReferenceDir);
+await imageStore.load();
 const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerToken);
 const serviceTemplates = await loadServiceTemplates(serviceTemplateConfigPath);
 const serviceTemplateMap = new Map(serviceTemplates.map((template) => [template.id, template]));
@@ -67,7 +71,8 @@ const butlerAgent = new ButlerAgentService({
   piAuthPath: path.join(piAgentDir, "auth.json"),
   codexAuthPath: path.join(codexHomeDir, "auth.json"),
   codexConfigDir,
-  sessionDir
+  sessionDir,
+  imageStore
 });
 
 await fs.mkdir(stateDir, { recursive: true });
@@ -77,7 +82,7 @@ await butlerAgent.start();
 codexClient.start();
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "20mb" }));
 const server = http.createServer(app);
 const previewProxy = httpProxy.createProxyServer({
   changeOrigin: false,
@@ -121,6 +126,19 @@ function currentSnapshot() {
   return store.getSnapshot(butlerAgent.getSnapshot(), codexClient.getConnectionState());
 }
 
+function readImageReferenceIds(body: unknown): string[] {
+  if (!body || typeof body !== "object" || !("imageReferenceIds" in body)) {
+    return [];
+  }
+
+  const value = (body as { imageReferenceIds?: unknown }).imageReferenceIds;
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+}
+
 function broadcastSnapshot(): void {
   const payload = `data: ${JSON.stringify(currentSnapshot())}\n\n`;
   for (const client of sseClients) {
@@ -142,6 +160,52 @@ app.get("/api/health", (_request, response) => {
 
 app.get("/api/bootstrap", (_request, response) => {
   response.json(currentSnapshot());
+});
+
+app.post("/api/images/upload", async (request, response) => {
+  const name = typeof request.body?.name === "string" ? request.body.name : "";
+  const mimeType = typeof request.body?.mimeType === "string" ? request.body.mimeType : "";
+  const data = typeof request.body?.data === "string" ? request.body.data : "";
+  const sizeBytes = typeof request.body?.sizeBytes === "number" ? request.body.sizeBytes : undefined;
+
+  if (!name || !mimeType || !data) {
+    response.status(400).json({ error: "name, mimeType, and data are required" });
+    return;
+  }
+
+  try {
+    const image = await imageStore.create({ name, mimeType, data, sizeBytes });
+    response.status(201).json({ ok: true, image });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get("/api/images", (request, response) => {
+  const limitRaw = Array.isArray(request.query.limit) ? request.query.limit[0] : request.query.limit;
+  const limit = typeof limitRaw === "string" && limitRaw.length > 0 ? Number(limitRaw) : 200;
+
+  if (!Number.isFinite(limit) || limit <= 0) {
+    response.status(400).json({ error: "limit must be a positive number" });
+    return;
+  }
+
+  response.json({ images: imageStore.list(limit) });
+});
+
+app.get("/api/images/:imageId", (request, response) => {
+  const imageId = typeof request.params.imageId === "string" ? request.params.imageId : "";
+  const filePath = imageStore.getFilePath(imageId);
+  const image = imageStore.get(imageId);
+
+  if (!filePath || !image) {
+    response.status(404).json({ error: "Image reference was not found" });
+    return;
+  }
+
+  response.setHeader("Cache-Control", "private, max-age=31536000, immutable");
+  response.type(image.mimeType);
+  response.sendFile(filePath);
 });
 
 app.get("/api/chat/history", (request, response) => {
@@ -200,14 +264,16 @@ app.get("/api/events", (request, response) => {
 });
 
 app.post("/api/chat/messages", async (request, response) => {
-  const text = typeof request.body?.text === "string" ? request.body.text.trim() : "";
-  if (!text) {
-    response.status(400).json({ error: "text is required" });
+  const text = typeof request.body?.text === "string" ? request.body.text : "";
+  const imageReferenceIds = readImageReferenceIds(request.body);
+  if (!text.trim() && imageReferenceIds.length === 0) {
+    response.status(400).json({ error: "text or imageReferenceIds is required" });
     return;
   }
 
   try {
-    butlerAgent.prompt(text);
+    const promptText = imageStore.buildPromptText(text, imageReferenceIds, { includeIds: true });
+    butlerAgent.prompt(promptText, imageReferenceIds);
     response.status(202).json({ ok: true });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -233,14 +299,15 @@ app.post("/api/chat/settings", async (request, response) => {
 
 app.post("/api/threads/messages", async (request, response) => {
   const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : "";
-  const text = typeof request.body?.text === "string" ? request.body.text.trim() : "";
-  if (!threadId || !text) {
-    response.status(400).json({ error: "threadId and text are required" });
+  const text = typeof request.body?.text === "string" ? request.body.text : "";
+  const imageReferenceIds = readImageReferenceIds(request.body);
+  if (!threadId || (!text.trim() && imageReferenceIds.length === 0)) {
+    response.status(400).json({ error: "threadId plus text or imageReferenceIds is required" });
     return;
   }
 
   try {
-    await codexClient.sendMessage(threadId, text);
+    await codexClient.sendMessage(threadId, imageStore.buildCodexInput(text, imageReferenceIds));
     response.status(202).json({ ok: true });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });

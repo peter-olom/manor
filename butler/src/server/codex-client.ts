@@ -4,6 +4,7 @@ import path from "node:path";
 
 import WebSocket, { type RawData } from "ws";
 
+import type { CodexInputItem } from "./image-store.js";
 import { cleanupManagedWorktree } from "./repo-worktree.js";
 import { ButlerStateStore } from "./state-store.js";
 import type { ModelOption, ReasoningEffort } from "./types.js";
@@ -54,6 +55,31 @@ function normalizeModelLabel(rawLabel: string, id: string): string {
     .join(" ");
 
   return `${head}-${version}${suffix ? ` ${suffix}` : ""}`;
+}
+
+function normalizeInputItems(input: string | CodexInputItem[]): CodexInputItem[] {
+  if (typeof input === "string") {
+    const message = input.trim();
+    if (!message) {
+      throw new Error("text is required");
+    }
+
+    return [{ type: "text", text: message }];
+  }
+
+  const normalized = input.filter((item) => {
+    if (item.type === "text") {
+      return item.text.trim().length > 0;
+    }
+
+    return item.path.trim().length > 0;
+  });
+
+  if (normalized.length === 0) {
+    throw new Error("input is required");
+  }
+
+  return normalized;
 }
 
 export class CodexAppServerClient extends EventEmitter {
@@ -501,6 +527,7 @@ export class CodexAppServerClient extends EventEmitter {
 
   async startThread(options: {
     task: string;
+    input?: CodexInputItem[];
     cwd?: string | null;
     developerInstructions?: string | null;
     openWindow?: boolean;
@@ -531,7 +558,7 @@ export class CodexAppServerClient extends EventEmitter {
 
     const params: Record<string, unknown> = {
       threadId,
-      input: [{ type: "text", text: task }]
+      input: normalizeInputItems(options.input ?? task)
     };
 
     if (options.cwd) {
@@ -563,12 +590,8 @@ export class CodexAppServerClient extends EventEmitter {
     return { threadId };
   }
 
-  async sendMessage(threadId: string, text: string): Promise<void> {
-    const message = text.trim();
-    if (!message) {
-      throw new Error("text is required");
-    }
-
+  async sendMessage(threadId: string, input: string | CodexInputItem[]): Promise<void> {
+    const inputItems = normalizeInputItems(input);
     await this.onThreadCapabilityReady?.(threadId, this.store.getThread(threadId)?.cwd);
     const targetThreadId = await this.ensureInteractiveThread(threadId);
 
@@ -577,14 +600,14 @@ export class CodexAppServerClient extends EventEmitter {
       await this.call("turn/steer", {
         threadId: targetThreadId,
         expectedTurnId: activeTurnId,
-        input: [{ type: "text", text: message }]
+        input: inputItems
       });
       return;
     }
 
     const params: Record<string, unknown> = {
       threadId: targetThreadId,
-      input: [{ type: "text", text: message }],
+      input: inputItems,
       ...this.buildTurnExecutionConfig()
     };
 

@@ -19,6 +19,7 @@ services:
       CODEX_SHARED_HOME_DIR: /codex-home
       CODEX_SHARED_CONFIG_DIR: /codex-config
       PI_AGENT_DIR: /home/butler/.pi/agent
+      MANOR_IMAGE_REFERENCE_DIR: /artifacts/manor-images
       BUTLER_PORT: 8080
       BUTLER_PUBLIC_PORT: ${BUTLER_HOST_PORT:-8180}
       BUTLER_HOT_RELOAD: ${BUTLER_HOT_RELOAD:-1}

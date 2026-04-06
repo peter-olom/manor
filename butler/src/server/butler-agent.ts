@@ -18,6 +18,7 @@ import type { TSchema } from "@sinclair/typebox";
 
 import { readButlerAuthStatus } from "./auth-status.js";
 import { buildOnboardingView } from "./onboarding-status.js";
+import { type ImageReferenceStore } from "./image-store.js";
 import { ensureTaskWorktree } from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, toServiceLeaseView } from "./service-templates.js";
@@ -81,10 +82,16 @@ function serializeMessages(session: AgentSession): ButlerMessageView[] {
     .map((message, index) => {
       const role = "role" in message && typeof message.role === "string" ? message.role : "unknown";
       const record = message as unknown as Record<string, unknown>;
+      const text =
+        "content" in message && contentToText(message.content).trim()
+          ? contentToText(message.content)
+          : typeof record.errorMessage === "string"
+            ? record.errorMessage
+            : "";
       return {
         id: `message-${index}`,
         role,
-        text: "content" in message ? contentToText(message.content) : "",
+        text,
         at: extractMessageTimestamp(record),
         kind: "message" as const
       };
@@ -101,6 +108,23 @@ function serializeMessages(session: AgentSession): ButlerMessageView[] {
 
     return true;
   });
+}
+
+function isAssistantFailureMessage(message: unknown): message is Record<string, unknown> & {
+  role: "assistant";
+  stopReason: "error" | "aborted";
+  errorMessage?: string;
+} {
+  if (!message || typeof message !== "object") {
+    return false;
+  }
+
+  const record = message as Record<string, unknown>;
+  return (
+    record.role === "assistant" &&
+    (record.stopReason === "error" || record.stopReason === "aborted") &&
+    (typeof record.errorMessage === "string" || !("errorMessage" in record))
+  );
 }
 
 function buildJobsSummary(store: ButlerStateStore, limit: number, status?: string): string {
@@ -289,6 +313,8 @@ function buildSystemPrompt(store: ButlerStateStore): string {
     "When a task needs a live app review, prefer a preview lease on an isolated runtime instead of telling the operator to bind a raw host port.",
     "When a project needs common dev dependencies like Postgres, Redis, MySQL, MSSQL, or SQLite, prefer the built-in service templates instead of ad hoc install steps.",
     "Codex may operate inside attached isolates through manor-harness for inspect, logs, processes, and shell exec, but Butler still owns isolate lifecycle and policy.",
+    "When the operator provides reference images, keep track of the stored image references so you can pass them to Codex later and reuse them during verification.",
+    "Use the image reference tools whenever visual requirements depend on an uploaded image.",
     "",
     `Supervisor state: ${supervisor.summary}`,
     projects.length > 0 ? "Project summaries:" : "Project summaries: none yet.",
@@ -315,6 +341,7 @@ export class ButlerAgentService extends EventEmitter {
   private readonly codexClient: CodexAppServerClient;
   private readonly runtimeBroker: RuntimeBrokerClient;
   private readonly serviceTemplates: LoadedServiceTemplate[];
+  private readonly imageStore: ImageReferenceStore;
   private readonly piAuthPath: string;
   private readonly codexAuthPath: string;
   private readonly codexConfigDir: string;
@@ -351,6 +378,7 @@ export class ButlerAgentService extends EventEmitter {
     codexClient: CodexAppServerClient;
     runtimeBroker: RuntimeBrokerClient;
     serviceTemplates: LoadedServiceTemplate[];
+    imageStore: ImageReferenceStore;
     piAuthPath: string;
     codexAuthPath: string;
     codexConfigDir: string;
@@ -361,6 +389,7 @@ export class ButlerAgentService extends EventEmitter {
     this.codexClient = options.codexClient;
     this.runtimeBroker = options.runtimeBroker;
     this.serviceTemplates = options.serviceTemplates;
+    this.imageStore = options.imageStore;
     this.piAuthPath = options.piAuthPath;
     this.codexAuthPath = options.codexAuthPath;
     this.codexConfigDir = options.codexConfigDir;
@@ -614,6 +643,12 @@ export class ButlerAgentService extends EventEmitter {
         label: "List jobs",
         description: "List Codex jobs, their statuses, and short previews.",
         uiEffects: [{ kind: "refreshThreads", description: "Keeps the run list current." }]
+      },
+      {
+        name: "list_image_references",
+        label: "List image references",
+        description: "List stored image references Butler can reuse for delegation and verification.",
+        uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while choosing stored reference images." }]
       },
       {
         name: "read_job",
@@ -1439,6 +1474,36 @@ export class ButlerAgentService extends EventEmitter {
         }
       }),
       this.defineButlerTool({
+        name: "list_image_references",
+        label: "List image references",
+        description: "List the stored operator-provided image references Butler can reuse for delegation or verification.",
+        promptSnippet: "list_image_references: inspect stored reference images before delegating visual work or checking a finished UI.",
+        parameters: Type.Object({
+          limit: Type.Optional(Type.Number({ minimum: 1, maximum: 20 }))
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "list_image_references")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { limit?: number };
+          const references = this.imageStore.list(typedParams.limit ?? 10);
+          const text =
+            references.length === 0
+              ? "No stored image references are available yet."
+              : references
+                  .map(
+                    (reference, index) =>
+                      `${index + 1}. ${reference.id} | ${reference.name} | ${new Date(reference.createdAt).toISOString()}`
+                  )
+                  .join("\n");
+
+          return {
+            content: [{ type: "text", text }],
+            details: {
+              imageReferences: references
+            }
+          };
+        }
+      }),
+      this.defineButlerTool({
         name: "delegate_to_codex",
         label: "Delegate to Codex",
         description: "Start a new Codex workstream for an execution task such as repo cloning, project setup, coding work, or command execution.",
@@ -1446,11 +1511,12 @@ export class ButlerAgentService extends EventEmitter {
         parameters: Type.Object({
           task: Type.String({ minLength: 1 }),
           cwd: Type.Optional(Type.String()),
-          goal: Type.Optional(Type.String())
+          goal: Type.Optional(Type.String()),
+          imageReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 })))
         }),
         uiEffects: this.toolCatalog.find((tool) => tool.name === "delegate_to_codex")?.uiEffects ?? [],
         execute: async (_toolCallId, params) => {
-          const typedParams = params as { task: string; cwd?: string; goal?: string };
+          const typedParams = params as { task: string; cwd?: string; goal?: string; imageReferenceIds?: string[] };
           const workspace = await this.prepareDelegationWorkspace(typedParams.task, typedParams.cwd);
           const developerInstructions = [
             "This thread was started by Butler.",
@@ -1473,6 +1539,7 @@ export class ButlerAgentService extends EventEmitter {
           const prompt = typedParams.goal ? `${typedParams.task}\n\nGoal: ${typedParams.goal}` : typedParams.task;
           const result = await this.codexClient.startThread({
             task: prompt,
+            input: this.imageStore.buildCodexInput(prompt, typedParams.imageReferenceIds ?? []),
             cwd: workspace.cwd,
             developerInstructions,
             openWindow: true
@@ -1546,11 +1613,12 @@ export class ButlerAgentService extends EventEmitter {
         promptSnippet: "message_job: steer a Codex job privately, then summarize the state for the operator.",
         parameters: Type.Object({
           threadId: Type.String(),
-          text: Type.String({ minLength: 1 })
+          text: Type.String({ minLength: 1 }),
+          imageReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 })))
         }),
         uiEffects: this.toolCatalog.find((tool) => tool.name === "message_job")?.uiEffects ?? [],
         execute: async (_toolCallId, params) => {
-          const typedParams = params as { threadId: string; text: string };
+          const typedParams = params as { threadId: string; text: string; imageReferenceIds?: string[] };
           const limitMessage = this.getThreadBudgetLimitMessage(typedParams.threadId);
           if (limitMessage) {
             return {
@@ -1562,7 +1630,10 @@ export class ButlerAgentService extends EventEmitter {
             };
           }
           await this.codexClient.loadThread(typedParams.threadId);
-          await this.codexClient.sendMessage(typedParams.threadId, typedParams.text);
+          await this.codexClient.sendMessage(
+            typedParams.threadId,
+            this.imageStore.buildCodexInput(typedParams.text, typedParams.imageReferenceIds ?? [])
+          );
           const supervision = this.store.noteButlerSteer(typedParams.threadId);
           return {
             content: [
@@ -1642,6 +1713,8 @@ export class ButlerAgentService extends EventEmitter {
         resourceLoader
       })
     ).session;
+
+    this.dropTrailingFailedTurns();
 
     this.compaction = {
       lastReason: null,
@@ -1724,11 +1797,78 @@ export class ButlerAgentService extends EventEmitter {
     };
   }
 
-  private async runPrompt(text: string): Promise<void> {
+  private async runPrompt(text: string, imageReferenceIds: string[] = []): Promise<void> {
     if (!this.session) {
       throw new Error("Butler agent is not ready");
     }
-    await this.session.prompt(text, this.session.isStreaming ? { streamingBehavior: "followUp" } : undefined);
+
+    await this.session.prompt(text, {
+      ...(this.session.isStreaming ? { streamingBehavior: "followUp" as const } : {}),
+      images: await this.imageStore.loadPiImages(imageReferenceIds)
+    });
+
+    const latestFailure = this.extractLatestAssistantFailure();
+    if (latestFailure) {
+      this.dropTrailingFailedTurns();
+      throw new Error(latestFailure);
+    }
+  }
+
+  private extractLatestAssistantFailure(): string | null {
+    if (!this.session) {
+      return null;
+    }
+
+    for (let index = this.session.messages.length - 1; index >= 0; index -= 1) {
+      const message = this.session.messages[index];
+      if (!message || typeof message !== "object") {
+        continue;
+      }
+
+      if ((message as { role?: string }).role !== "assistant") {
+        continue;
+      }
+
+      if (!isAssistantFailureMessage(message)) {
+        return null;
+      }
+
+      return typeof message.errorMessage === "string" && message.errorMessage.trim()
+        ? message.errorMessage.trim()
+        : "Butler request failed.";
+    }
+
+    return null;
+  }
+
+  private dropTrailingFailedTurns(): void {
+    if (!this.session) {
+      return;
+    }
+
+    const trimmedMessages = [...this.session.messages];
+    let changed = false;
+
+    while (trimmedMessages.length > 0) {
+      const lastMessage = trimmedMessages.at(-1);
+      if (!isAssistantFailureMessage(lastMessage)) {
+        break;
+      }
+
+      trimmedMessages.pop();
+      changed = true;
+
+      const previousMessage = trimmedMessages.at(-1);
+      if (previousMessage && typeof previousMessage === "object" && (previousMessage as { role?: string }).role === "user") {
+        trimmedMessages.pop();
+      }
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    this.session.agent.state.messages = trimmedMessages;
   }
 
   private getVisibleMessages(): ButlerMessageView[] {
@@ -1798,7 +1938,7 @@ export class ButlerAgentService extends EventEmitter {
     };
   }
 
-  prompt(text: string): void {
+  prompt(text: string, imageReferenceIds: string[] = []): void {
     if (!this.session) {
       throw new Error("Butler agent is not ready");
     }
@@ -1817,7 +1957,7 @@ export class ButlerAgentService extends EventEmitter {
         } else {
           this.auth = nextAuth;
         }
-        await this.runPrompt(text);
+        await this.runPrompt(text, imageReferenceIds);
         this.lastError = null;
       } catch (error) {
         this.lastError = error instanceof Error ? error.message : String(error);
