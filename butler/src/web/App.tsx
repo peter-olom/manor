@@ -722,6 +722,30 @@ function CopyIcon() {
   );
 }
 
+function ArrowDownIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M8 3.5v8M4.5 8.5 8 12l3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="square" />
+    </svg>
+  );
+}
+
+function ChevronUpIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M4.5 9.5 8 6l3.5 3.5" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="square" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M4.5 6.5 8 10l3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="square" />
+    </svg>
+  );
+}
+
 function TrashIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
@@ -852,6 +876,13 @@ export function App() {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
     return stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
   });
+  const [systemPrefersDark, setSystemPrefersDark] = useState(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  });
   const [butlerDraft, setButlerDraft] = useState(() => readStoredValue(BUTLER_DRAFT_STORAGE_KEY));
   const [pendingButlerText, setPendingButlerText] = useState<string | null>(null);
   const [pendingThreadRequest, setPendingThreadRequest] = useState<PendingThreadRequest | null>(null);
@@ -881,6 +912,8 @@ export function App() {
   const threadDraftPersistTimerRef = useRef<number | null>(null);
   const butlerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const threadTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const codexTerminalFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const butlerTerminalFrameRef = useRef<HTMLIFrameElement | null>(null);
   const lastRemoteErrorRef = useRef<string | null>(null);
   const runScrollRef = useRef<HTMLDivElement | null>(null);
   const butlerScrollRef = useRef<HTMLDivElement | null>(null);
@@ -889,6 +922,7 @@ export function App() {
   const runPromptRefs = useRef<Record<string, HTMLElement | null>>({});
   const butlerPromptRefs = useRef<Record<string, HTMLElement | null>>({});
   const butlerMessageTimesRef = useRef<Record<string, number>>({});
+  const butlerScrollTopRef = useRef(0);
   const [followRun, setFollowRun] = useState(true);
   const [followButler, setFollowButler] = useState(true);
   const [showPromptRail, setShowPromptRail] = useState(false);
@@ -923,6 +957,75 @@ export function App() {
     showToast(message, "error", duration, key);
   }
 
+  function scrollElementToLatest(element: HTMLDivElement | null) {
+    if (!element) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      element.scrollTop = element.scrollHeight;
+      butlerScrollTopRef.current = element.scrollTop;
+    });
+  }
+
+  function restoreButlerScrollPosition() {
+    const element = butlerScrollRef.current;
+    if (!element) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      if (followButler) {
+        element.scrollTop = element.scrollHeight;
+        butlerScrollTopRef.current = element.scrollTop;
+        return;
+      }
+
+      const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+      element.scrollTop = Math.min(butlerScrollTopRef.current, maxScrollTop);
+    });
+  }
+
+  function syncTerminalFrameTheme(frame: HTMLIFrameElement | null, lightTheme: boolean) {
+    const doc = frame?.contentDocument;
+    if (!doc) {
+      return;
+    }
+
+    const styleId = "manor-terminal-theme";
+    const existing = doc.getElementById(styleId);
+    if (!lightTheme) {
+      doc.documentElement.style.background = "";
+      doc.body.style.background = "";
+      existing?.remove();
+      return;
+    }
+
+    doc.documentElement.style.background = "#ffffff";
+    doc.body.style.background = "#ffffff";
+
+    const style = existing ?? doc.createElement("style");
+    style.id = styleId;
+    style.textContent = `
+      html, body, #terminal-container, #terminal-container .terminal, .xterm, .xterm .xterm-viewport, .xterm .xterm-screen {
+        background: #ffffff !important;
+      }
+
+      .xterm .xterm-screen canvas {
+        filter: invert(1) hue-rotate(180deg) brightness(1.22) contrast(1.08) !important;
+      }
+
+      .xterm .composition-view {
+        background: #ffffff !important;
+        color: #10233f !important;
+      }
+    `;
+
+    if (!existing) {
+      doc.head.appendChild(style);
+    }
+  }
+
   async function handleConfirmAction() {
     if (!confirmDialog || confirmBusy) {
       return;
@@ -951,6 +1054,17 @@ export function App() {
     root.setAttribute("data-theme", themePreference);
     window.localStorage.setItem(THEME_STORAGE_KEY, themePreference);
   }, [themePreference]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const handleChange = (event: MediaQueryListEvent) => {
+      setSystemPrefersDark(event.matches);
+    };
+
+    setSystemPrefersDark(media.matches);
+    media.addEventListener("change", handleChange);
+    return () => media.removeEventListener("change", handleChange);
+  }, []);
 
   useEffect(() => {
     let closed = false;
@@ -1269,6 +1383,7 @@ export function App() {
     selectedSurface ??
     (snapshot?.codex.focusedWindowId ? "thread" : showSetupGuide ? "setup" : "butler");
   const queryThreadId = querySurface === "thread" ? selectedThreadId ?? snapshot?.codex.focusedWindowId ?? null : null;
+  const isLightTheme = themePreference === "light" || (themePreference === "system" && !systemPrefersDark);
 
   useEffect(() => {
     const nextQuery = buildWorkspaceQuery({
@@ -1398,10 +1513,7 @@ export function App() {
       return;
     }
 
-    const element = butlerScrollRef.current;
-    requestAnimationFrame(() => {
-      element.scrollTop = element.scrollHeight;
-    });
+    scrollElementToLatest(butlerScrollRef.current);
   }, [
     followButler,
     latestButlerMessageKey,
@@ -1409,6 +1521,19 @@ export function App() {
     snapshot?.butler.pending,
     snapshot?.butler.isStreaming
   ]);
+
+  useEffect(() => {
+    if (querySurface !== "butler") {
+      return;
+    }
+
+    restoreButlerScrollPosition();
+  }, [followButler, querySurface]);
+
+  useEffect(() => {
+    syncTerminalFrameTheme(codexTerminalFrameRef.current, isLightTheme);
+    syncTerminalFrameTheme(butlerTerminalFrameRef.current, isLightTheme);
+  }, [isLightTheme]);
 
   if (!snapshot) {
     return <div className="shell loading">Loading Butler…</div>;
@@ -1877,6 +2002,53 @@ export function App() {
             </button>
           </div>
 
+          <div
+            className={`workspace-panel workspace-panel-terminal ${activeTabId === "terminal" ? "" : "is-hidden"}`}
+            aria-hidden={activeTabId === "terminal" ? undefined : true}
+          >
+            <div className="terminal-toolbar">
+              <div className="terminal-subtabs" role="tablist" aria-label="Terminal containers">
+                <button
+                  className={`terminal-subtab ${terminalTarget === "codexTerminal" ? "is-active" : ""}`}
+                  onClick={() => setTerminalTarget("codexTerminal")}
+                  role="tab"
+                  aria-selected={terminalTarget === "codexTerminal"}
+                >
+                  Codex
+                </button>
+                <button
+                  className={`terminal-subtab ${terminalTarget === "butlerTerminal" ? "is-active" : ""}`}
+                  onClick={() => setTerminalTarget("butlerTerminal")}
+                  role="tab"
+                  aria-selected={terminalTarget === "butlerTerminal"}
+                >
+                  Butler
+                </button>
+              </div>
+              <div className="terminal-toolbar-actions">
+                <a className="panel-action panel-action-link" href={terminalUrl} target="_blank" rel="noreferrer">
+                  Open in new tab
+                </a>
+              </div>
+            </div>
+            <div className={`terminal-shell ${isLightTheme ? "is-light-theme" : ""}`}>
+              <iframe
+                ref={codexTerminalFrameRef}
+                className={`terminal-frame ${terminalTarget === "codexTerminal" ? "is-active" : ""} ${isLightTheme ? "is-light-theme" : ""}`}
+                src="/terminal/"
+                title="Codex terminal"
+                onLoad={() => syncTerminalFrameTheme(codexTerminalFrameRef.current, isLightTheme)}
+              />
+              <iframe
+                ref={butlerTerminalFrameRef}
+                className={`terminal-frame ${terminalTarget === "butlerTerminal" ? "is-active" : ""} ${isLightTheme ? "is-light-theme" : ""}`}
+                src="/butler-terminal/"
+                title="Butler terminal"
+                onLoad={() => syncTerminalFrameTheme(butlerTerminalFrameRef.current, isLightTheme)}
+              />
+            </div>
+          </div>
+
           {activeTabId === "setup" ? (
             <div className="workspace-panel workspace-panel-setup">
               <div className="panel-header">
@@ -1948,47 +2120,7 @@ export function App() {
                 </section>
               </section>
             </div>
-          ) : activeTabId === "terminal" ? (
-            <div className="workspace-panel workspace-panel-terminal">
-              <div className="terminal-toolbar">
-                <div className="terminal-subtabs" role="tablist" aria-label="Terminal containers">
-                  <button
-                    className={`terminal-subtab ${terminalTarget === "codexTerminal" ? "is-active" : ""}`}
-                    onClick={() => setTerminalTarget("codexTerminal")}
-                    role="tab"
-                    aria-selected={terminalTarget === "codexTerminal"}
-                  >
-                    Codex
-                  </button>
-                  <button
-                    className={`terminal-subtab ${terminalTarget === "butlerTerminal" ? "is-active" : ""}`}
-                    onClick={() => setTerminalTarget("butlerTerminal")}
-                    role="tab"
-                    aria-selected={terminalTarget === "butlerTerminal"}
-                  >
-                    Butler
-                  </button>
-                </div>
-                <div className="terminal-toolbar-actions">
-                  <a className="panel-action panel-action-link" href={terminalUrl} target="_blank" rel="noreferrer">
-                    Open in new tab
-                  </a>
-                </div>
-              </div>
-              <div className="terminal-shell">
-                <iframe
-                  className={`terminal-frame ${terminalTarget === "codexTerminal" ? "is-active" : ""}`}
-                  src="/terminal/"
-                  title="Codex terminal"
-                />
-                <iframe
-                  className={`terminal-frame ${terminalTarget === "butlerTerminal" ? "is-active" : ""}`}
-                  src="/butler-terminal/"
-                  title="Butler terminal"
-                />
-              </div>
-            </div>
-          ) : activeThread ? (
+          ) : activeTabId === "terminal" ? null : activeThread ? (
             <div className="workspace-panel">
               <div className="thread-toolbar">
                 <div className="panel-controls">
@@ -2388,7 +2520,10 @@ export function App() {
                     onClick={() => setShowButlerNotices((current) => !current)}
                     type="button"
                   >
-                    {showButlerNotices ? "Hide notices" : "Show notices"}
+                    <span className="conversation-toggle-icon" aria-hidden="true">
+                      {showButlerNotices ? <ChevronUpIcon /> : <ChevronDownIcon />}
+                    </span>
+                    <span className="conversation-toggle-label">{showButlerNotices ? "Hide notices" : "Show notices"}</span>
                     {butlerNoticeCount > 0 ? <span className="conversation-toggle-count">{butlerNoticeCount}</span> : null}
                   </button>
                 </div>
@@ -2398,6 +2533,7 @@ export function App() {
                   onScroll={(event) => {
                     const element = event.currentTarget;
                     const isNearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 32;
+                    butlerScrollTopRef.current = element.scrollTop;
                     setFollowButler(isNearBottom);
                   }}
                 >
@@ -2444,6 +2580,22 @@ export function App() {
                     </div>
                   ) : null}
                 </div>
+                {!followButler ? (
+                  <button
+                    className="conversation-jump-latest"
+                    onClick={() => {
+                      setFollowButler(true);
+                      scrollElementToLatest(butlerScrollRef.current);
+                    }}
+                    type="button"
+                    aria-label="Jump to latest Butler message"
+                  >
+                    <span className="conversation-jump-latest-icon" aria-hidden="true">
+                      <ArrowDownIcon />
+                    </span>
+                    <span>Latest</span>
+                  </button>
+                ) : null}
                 <div className="composer">
                   <div className="composer-main">
                     <textarea

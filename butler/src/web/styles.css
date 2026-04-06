@@ -534,6 +534,10 @@ select {
   overflow: hidden;
 }
 
+.workspace-panel.is-hidden {
+  display: none;
+}
+
 .runtime-strip {
   display: grid;
   gap: 0;
@@ -727,6 +731,7 @@ select {
 }
 
 .conversation-pane {
+  position: relative;
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   min-width: 0;
@@ -755,9 +760,14 @@ select {
 .conversation-toggle {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   min-height: 28px;
   padding: 0;
+  font-size: 0.68rem;
+  line-height: 1;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
   color: var(--muted);
   cursor: pointer;
 }
@@ -767,7 +777,31 @@ select {
   color: var(--ink);
 }
 
+.conversation-toggle-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+}
+
+.conversation-toggle-icon svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
+.conversation-toggle-label {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+}
+
 .conversation-toggle-count {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.82em;
+  line-height: 1;
   color: var(--accent);
 }
 
@@ -777,6 +811,39 @@ select {
   flex-direction: column;
   gap: 18px;
   overflow: auto;
+}
+
+.conversation-jump-latest {
+  position: absolute;
+  right: 22px;
+  bottom: 88px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  color: var(--ink);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.16);
+  cursor: pointer;
+  z-index: 2;
+  backdrop-filter: blur(8px);
+}
+
+.conversation-jump-latest:hover {
+  background: var(--surface);
+}
+
+.conversation-jump-latest-icon {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+}
+
+.conversation-jump-latest-icon svg {
+  width: 14px;
+  height: 14px;
 }
 
 .setup-guide-shell {
@@ -934,6 +1001,10 @@ select {
   background: #0c1017;
 }
 
+.terminal-shell.is-light-theme {
+  background: #ffffff;
+}
+
 .terminal-toolbar {
   display: flex;
   align-items: center;
@@ -982,6 +1053,10 @@ select {
   opacity: 0;
   pointer-events: none;
   visibility: hidden;
+}
+
+.terminal-frame.is-light-theme {
+  background: #ffffff;
 }
 
 .terminal-frame.is-active {
@@ -2028,6 +2103,11 @@ select {
     padding: 10px 16px 0;
   }
 
+  .conversation-jump-latest {
+    right: 16px;
+    bottom: 112px;
+  }
+
   .conversation-pane {
     border-right: 0;
     border-bottom: 0;
@@ -2216,6 +2296,11 @@ select {
 
   .conversation-toolbar {
     padding: 10px 14px 0;
+  }
+
+  .conversation-jump-latest {
+    right: 14px;
+    bottom: 108px;
   }
 
   .entry {
