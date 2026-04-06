@@ -46,8 +46,19 @@ export interface CodexSupervisionView {
 export type PreviewLeaseStatus = "starting" | "running" | "stopped" | "failed";
 export type PreviewEgressProfile = string;
 export type ServiceLeaseStatus = "starting" | "running" | "stopped" | "failed";
+export type LeaseLifecycleState = "active" | "idle" | "expired";
 
-export interface PreviewLeaseView {
+export interface LeaseLifecycleView {
+  pinned?: boolean;
+  lastActivityAt?: number;
+  leaseTtlMs?: number | null;
+  expiresAt?: number | null;
+  expiredAt?: number | null;
+  reapAfterAt?: number | null;
+  lifecycleState?: LeaseLifecycleState;
+}
+
+export interface PreviewLeaseView extends LeaseLifecycleView {
   id: string;
   threadId: string | null;
   projectId: string;
@@ -92,7 +103,7 @@ export interface ServiceConnectionView {
   notes: string | null;
 }
 
-export interface ServiceLeaseView {
+export interface ServiceLeaseView extends LeaseLifecycleView {
   id: string;
   threadId: string | null;
   projectId: string;

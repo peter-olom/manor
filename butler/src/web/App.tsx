@@ -182,6 +182,43 @@ type Snapshot = {
       createdAt: number;
       updatedAt: number;
       lastError: string | null;
+      pinned?: boolean;
+      lastActivityAt?: number;
+      expiresAt?: number | null;
+      lifecycleState?: "active" | "idle" | "expired";
+    }>;
+    services: Array<{
+      id: string;
+      threadId: string | null;
+      projectId: string;
+      projectLabel: string;
+      title: string;
+      templateId: string;
+      templateLabel: string;
+      runtimeKind: "container" | "embedded";
+      containerName: string;
+      targetHost: string;
+      targetPort: number;
+      worktreePath: string | null;
+      image: string;
+      status: "starting" | "running" | "stopped" | "failed";
+      createdAt: number;
+      updatedAt: number;
+      lastError: string | null;
+      pinned?: boolean;
+      lastActivityAt?: number;
+      expiresAt?: number | null;
+      lifecycleState?: "active" | "idle" | "expired";
+      connection: {
+        engine: string;
+        host: string;
+        port: number;
+        database: string | null;
+        username: string | null;
+        password: string | null;
+        uri: string | null;
+        notes: string | null;
+      };
     }>;
     lastError: string | null;
     compose: {
@@ -215,6 +252,30 @@ function formatJumpLabel(value: number | null | undefined): string {
     minute: "2-digit",
     second: "2-digit"
   });
+}
+
+function formatLeaseState(
+  state: "active" | "idle" | "expired" | undefined,
+  expiresAt: number | null | undefined,
+  pinned?: boolean
+): string {
+  if (pinned) {
+    return "pinned";
+  }
+
+  if (state === "expired") {
+    return "expired";
+  }
+
+  if (state === "idle") {
+    if (typeof expiresAt === "number" && Number.isFinite(expiresAt)) {
+      const minutes = Math.max(0, Math.round((expiresAt - Date.now()) / 60000));
+      return `idle • ${minutes}m left`;
+    }
+    return "idle";
+  }
+
+  return "active";
 }
 
 function formatTimelineDayLabel(value: number | null | undefined): string {
@@ -557,7 +618,7 @@ function CopyIcon() {
   );
 }
 
-async function postJson(url: string, body: unknown): Promise<void> {
+async function postJson<T = void>(url: string, body: unknown): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -570,6 +631,12 @@ async function postJson(url: string, body: unknown): Promise<void> {
     const payload = await response.json().catch(() => ({ error: "Request failed" }));
     throw new Error(typeof payload.error === "string" ? payload.error : "Request failed");
   }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  return (await response.json().catch(() => undefined)) as T;
 }
 
 function readStoredValue(key: string): string {
@@ -647,6 +714,8 @@ export function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [copiedCommandKey, setCopiedCommandKey] = useState<string | null>(null);
   const [activeJumpId, setActiveJumpId] = useState<string | null>(null);
+  const [busyPreviewLeaseId, setBusyPreviewLeaseId] = useState<string | null>(null);
+  const [busyServiceId, setBusyServiceId] = useState<string | null>(null);
   const errorTimerRef = useRef<number | null>(null);
   const jumpFlashTimerRef = useRef<number | null>(null);
   const copiedCommandTimerRef = useRef<number | null>(null);
@@ -669,6 +738,17 @@ export function App() {
       errorTimerRef.current = null;
     }
     setError((current) => (current === "Live updates disconnected. Refresh the page if this persists." ? null : current));
+  }
+
+  function showToast(message: string, duration = 1800) {
+    setToastMessage(message);
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => {
+      setToastMessage((current) => (current === message ? null : current));
+      toastTimerRef.current = null;
+    }, duration);
   }
 
   useEffect(() => {
@@ -938,6 +1018,11 @@ export function App() {
   const activePreviewLease = activeThread
     ? snapshot.butler.previews.find((lease) => lease.threadId === activeThread.id && lease.status !== "stopped") ?? null
     : null;
+  const activeThreadServices = activeThread
+    ? snapshot.butler.services.filter((service) => service.threadId === activeThread.id && service.status !== "stopped")
+    : [];
+  const activePreviewLeases = snapshot.butler.previews.filter((lease) => lease.status !== "stopped");
+  const activeServiceLeases = snapshot.butler.services.filter((service) => service.status !== "stopped");
 
   const runPromptJumpList = activeRunItems.filter((item) => item.type === "userMessage");
   const butlerPromptJumpList = snapshot.butler.messages
@@ -1028,12 +1113,74 @@ export function App() {
 
   async function stopPreviewLease(leaseId: string) {
     setError(null);
+    setBusyPreviewLeaseId(leaseId);
 
     try {
       await postJson("/api/previews/stop", { leaseId });
-      setToast("Preview stopped");
+      showToast("Preview stopped");
     } catch (previewError) {
       setError(previewError instanceof Error ? previewError.message : String(previewError));
+    } finally {
+      setBusyPreviewLeaseId((current) => (current === leaseId ? null : current));
+    }
+  }
+
+  async function verifyPreviewLease(leaseId: string) {
+    setError(null);
+    setBusyPreviewLeaseId(leaseId);
+
+    try {
+      const result = await postJson<{
+        ok: true;
+        verification: {
+          ok: boolean;
+          status: number | null;
+          title: string;
+          url: string;
+          screenshotPath: string | null;
+        };
+      }>("/api/previews/verify", { leaseId });
+      showToast(
+        result.verification.ok
+          ? `Preview verified${result.verification.title ? `: ${result.verification.title}` : ""}`
+          : `Preview check failed${result.verification.status ? ` (${result.verification.status})` : ""}`
+      );
+    } catch (previewError) {
+      setError(previewError instanceof Error ? previewError.message : String(previewError));
+    } finally {
+      setBusyPreviewLeaseId((current) => (current === leaseId ? null : current));
+    }
+  }
+
+  async function stopServiceLease(serviceId: string) {
+    setError(null);
+    setBusyServiceId(serviceId);
+
+    try {
+      await postJson("/api/services/stop", { serviceId });
+      showToast("Service stopped");
+    } catch (serviceError) {
+      setError(serviceError instanceof Error ? serviceError.message : String(serviceError));
+    } finally {
+      setBusyServiceId((current) => (current === serviceId ? null : current));
+    }
+  }
+
+  async function pinPreviewLease(leaseId: string, pinned: boolean) {
+    try {
+      await postJson("/api/previews/pin", { leaseId, pinned });
+      showToast(pinned ? "Preview pinned" : "Preview unpinned");
+    } catch (pinError) {
+      setError(pinError instanceof Error ? pinError.message : String(pinError));
+    }
+  }
+
+  async function pinServiceLease(serviceId: string, pinned: boolean) {
+    try {
+      await postJson("/api/services/pin", { serviceId, pinned });
+      showToast(pinned ? "Service pinned" : "Service unpinned");
+    } catch (pinError) {
+      setError(pinError instanceof Error ? pinError.message : String(pinError));
     }
   }
 
@@ -1433,14 +1580,45 @@ export function App() {
                 <div className="panel-controls">
                   {activePreviewLease ? (
                     <>
+                      <button
+                        className="panel-action"
+                        onClick={() => void pinPreviewLease(activePreviewLease.id, !activePreviewLease.pinned)}
+                      >
+                        {activePreviewLease.pinned ? "Unpin preview" : "Pin preview"}
+                      </button>
                       <a className="panel-action panel-action-link" href={activePreviewLease.operatorUrl} target="_blank" rel="noreferrer">
                         Open preview
                       </a>
-                      <button className="panel-action" onClick={() => void stopPreviewLease(activePreviewLease.id)}>
+                      <button
+                        className="panel-action"
+                        onClick={() => void verifyPreviewLease(activePreviewLease.id)}
+                        disabled={busyPreviewLeaseId === activePreviewLease.id}
+                      >
+                        {busyPreviewLeaseId === activePreviewLease.id ? "Checking…" : "Verify preview"}
+                      </button>
+                      <button
+                        className="panel-action"
+                        onClick={() => void stopPreviewLease(activePreviewLease.id)}
+                        disabled={busyPreviewLeaseId === activePreviewLease.id}
+                      >
                         Stop preview
                       </button>
                     </>
                   ) : null}
+                  {activeThreadServices.map((service) => (
+                    <div key={service.id} className="thread-toolbar-service-actions">
+                      <button className="panel-action" onClick={() => void pinServiceLease(service.id, !service.pinned)}>
+                        {service.pinned ? `Unpin ${service.templateLabel}` : `Pin ${service.templateLabel}`}
+                      </button>
+                      <button
+                        className="panel-action"
+                        onClick={() => void stopServiceLease(service.id)}
+                        disabled={busyServiceId === service.id}
+                      >
+                        {busyServiceId === service.id ? "Stopping…" : `Stop ${service.templateLabel}`}
+                      </button>
+                    </div>
+                  ))}
                   <button className="panel-action panel-action-danger" onClick={() => void deleteThread(activeThread.id)}>
                     Delete
                   </button>
@@ -1631,6 +1809,112 @@ export function App() {
             </div>
           ) : (
             <div className="workspace-panel">
+              {activePreviewLeases.length > 0 || activeServiceLeases.length > 0 ? (
+                <div className="runtime-strip">
+                  {activePreviewLeases.length > 0 ? (
+                    <section className="runtime-group">
+                      <div className="runtime-group-head">
+                        <span className="eyebrow">Previews</span>
+                        <span className="runtime-group-count">{activePreviewLeases.length}</span>
+                      </div>
+                      <div className="runtime-list">
+                        {activePreviewLeases.map((lease) => (
+                          <article key={lease.id} className="runtime-item">
+                            <button
+                              className="runtime-item-main"
+                              onClick={() => {
+                                if (!lease.threadId) {
+                                  return;
+                                }
+                                setSelectedSurface("thread");
+                                setSelectedThreadId(lease.threadId);
+                                setShowPromptRail(false);
+                                postJson("/api/windows/open", { threadId: lease.threadId }).catch((openError) =>
+                                  setError(openError instanceof Error ? openError.message : String(openError))
+                                );
+                              }}
+                            >
+                              <span className="runtime-item-title">{lease.title}</span>
+                              <span className="runtime-item-meta">
+                                {lease.projectLabel} • {lease.branchName ?? "preview"} • {lease.status} •{" "}
+                                {formatLeaseState(lease.lifecycleState, lease.expiresAt, lease.pinned)}
+                              </span>
+                            </button>
+                            <div className="runtime-item-actions">
+                              <button className="panel-action" onClick={() => void pinPreviewLease(lease.id, !lease.pinned)}>
+                                {lease.pinned ? "Unpin" : "Pin"}
+                              </button>
+                              <a className="panel-action panel-action-link" href={lease.operatorUrl} target="_blank" rel="noreferrer">
+                                Open
+                              </a>
+                              <button
+                                className="panel-action"
+                                onClick={() => void verifyPreviewLease(lease.id)}
+                                disabled={busyPreviewLeaseId === lease.id}
+                              >
+                                {busyPreviewLeaseId === lease.id ? "Checking…" : "Verify"}
+                              </button>
+                              <button
+                                className="panel-action"
+                                onClick={() => void stopPreviewLease(lease.id)}
+                                disabled={busyPreviewLeaseId === lease.id}
+                              >
+                                Stop
+                              </button>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+                  {activeServiceLeases.length > 0 ? (
+                    <section className="runtime-group">
+                      <div className="runtime-group-head">
+                        <span className="eyebrow">Services</span>
+                        <span className="runtime-group-count">{activeServiceLeases.length}</span>
+                      </div>
+                      <div className="runtime-list">
+                        {activeServiceLeases.map((service) => (
+                          <article key={service.id} className="runtime-item">
+                            <button
+                              className="runtime-item-main"
+                              onClick={() => {
+                                if (!service.threadId) {
+                                  return;
+                                }
+                                setSelectedSurface("thread");
+                                setSelectedThreadId(service.threadId);
+                                setShowPromptRail(false);
+                                postJson("/api/windows/open", { threadId: service.threadId }).catch((openError) =>
+                                  setError(openError instanceof Error ? openError.message : String(openError))
+                                );
+                              }}
+                            >
+                              <span className="runtime-item-title">{service.title}</span>
+                              <span className="runtime-item-meta">
+                                {service.connection.engine} • {service.connection.host}:{service.connection.port} • {service.status} •{" "}
+                                {formatLeaseState(service.lifecycleState, service.expiresAt, service.pinned)}
+                              </span>
+                            </button>
+                            <div className="runtime-item-actions">
+                              <button className="panel-action" onClick={() => void pinServiceLease(service.id, !service.pinned)}>
+                                {service.pinned ? "Unpin" : "Pin"}
+                              </button>
+                              <button
+                                className="panel-action"
+                                onClick={() => void stopServiceLease(service.id)}
+                                disabled={busyServiceId === service.id}
+                              >
+                                {busyServiceId === service.id ? "Stopping…" : "Stop"}
+                              </button>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+                </div>
+              ) : null}
               <div className={`workspace-body ${showPromptRail ? "is-detail-open" : "is-detail-closed"}`}>
               <section className="conversation-pane conversation-pane-full">
                 <div

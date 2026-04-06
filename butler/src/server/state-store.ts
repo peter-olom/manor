@@ -26,6 +26,10 @@ import type {
 
 const MAX_EVENT_LOG = 80;
 const DEFAULT_BUTLER_THREAD_LIMIT = 20;
+const DEFAULT_PREVIEW_LEASE_TTL_MS = 30 * 60 * 1000;
+const DEFAULT_SERVICE_LEASE_TTL_MS = 120 * 60 * 1000;
+const DEFAULT_LEASE_REAP_GRACE_MS = 10 * 60 * 1000;
+const LEASE_ACTIVITY_WRITE_THROTTLE_MS = 15_000;
 
 function emptyCodexContextUsage(): CodexContextUsageView {
   return {
@@ -270,10 +274,69 @@ export class ButlerStateStore extends EventEmitter {
   private readonly latestCompletedTurnIds = new Map<string, string>();
   private readonly latestBlockedTurnIds = new Map<string, string>();
   private milestonesEnabled = false;
+  private readonly previewLeaseTtlMs: number;
+  private readonly serviceLeaseTtlMs: number;
+  private readonly leaseReapGraceMs: number;
 
-  constructor(uiStatePath: string) {
+  constructor(
+    uiStatePath: string,
+    options?: {
+      previewLeaseTtlMs?: number;
+      serviceLeaseTtlMs?: number;
+      leaseReapGraceMs?: number;
+    }
+  ) {
     super();
     this.uiStatePath = uiStatePath;
+    this.previewLeaseTtlMs = options?.previewLeaseTtlMs ?? DEFAULT_PREVIEW_LEASE_TTL_MS;
+    this.serviceLeaseTtlMs = options?.serviceLeaseTtlMs ?? DEFAULT_SERVICE_LEASE_TTL_MS;
+    this.leaseReapGraceMs = options?.leaseReapGraceMs ?? DEFAULT_LEASE_REAP_GRACE_MS;
+  }
+
+  private applyLeaseLifecycle<T extends PreviewLeaseView | ServiceLeaseView>(
+    lease: T,
+    defaults: { leaseTtlMs: number; now?: number }
+  ): T {
+    const now = defaults.now ?? Date.now();
+    const pinned = Boolean(lease.pinned);
+    const leaseTtlMs =
+      typeof lease.leaseTtlMs === "number" && Number.isFinite(lease.leaseTtlMs) && lease.leaseTtlMs > 0
+        ? lease.leaseTtlMs
+        : defaults.leaseTtlMs;
+    const lastActivityAt =
+      typeof lease.lastActivityAt === "number" && Number.isFinite(lease.lastActivityAt)
+        ? lease.lastActivityAt
+        : lease.updatedAt ?? lease.createdAt ?? now;
+    const expiresAt = pinned ? null : lastActivityAt + leaseTtlMs;
+    const expired = !pinned && expiresAt !== null && now >= expiresAt;
+    const expiredAt =
+      expired
+        ? typeof lease.expiredAt === "number" && Number.isFinite(lease.expiredAt)
+          ? lease.expiredAt
+          : now
+        : null;
+    const reapAfterAt = expired && expiredAt !== null ? expiredAt + this.leaseReapGraceMs : null;
+    const idleThreshold = Math.max(60_000, Math.floor(leaseTtlMs / 2));
+    const lifecycleState = expired ? "expired" : now - lastActivityAt >= idleThreshold ? "idle" : "active";
+
+    return {
+      ...lease,
+      pinned,
+      leaseTtlMs,
+      lastActivityAt,
+      expiresAt,
+      expiredAt,
+      reapAfterAt,
+      lifecycleState
+    };
+  }
+
+  private normalizePreviewLease(lease: PreviewLeaseView, now = Date.now()): PreviewLeaseView {
+    return this.applyLeaseLifecycle(lease, { leaseTtlMs: this.previewLeaseTtlMs, now });
+  }
+
+  private normalizeServiceLease(lease: ServiceLeaseView, now = Date.now()): ServiceLeaseView {
+    return this.applyLeaseLifecycle(lease, { leaseTtlMs: this.serviceLeaseTtlMs, now });
   }
 
   async load(): Promise<void> {
@@ -285,13 +348,13 @@ export class ButlerStateStore extends EventEmitter {
       this.previewLeases.clear();
       for (const lease of Array.isArray(data.previewLeases) ? data.previewLeases : []) {
         if (lease && typeof lease === "object" && typeof lease.id === "string") {
-          this.previewLeases.set(lease.id, lease as PreviewLeaseView);
+          this.previewLeases.set(lease.id, this.normalizePreviewLease(lease as PreviewLeaseView));
         }
       }
       this.serviceLeases.clear();
       for (const lease of Array.isArray(data.serviceLeases) ? data.serviceLeases : []) {
         if (lease && typeof lease === "object" && typeof lease.id === "string") {
-          this.serviceLeases.set(lease.id, lease as ServiceLeaseView);
+          this.serviceLeases.set(lease.id, this.normalizeServiceLease(lease as ServiceLeaseView));
         }
       }
       this.persistedSupervisionByThreadId.clear();
@@ -619,6 +682,127 @@ export class ButlerStateStore extends EventEmitter {
     thread.supervisor = buildThreadSupervisor(thread);
     this.persistThreadSupervision(thread);
     this.captureMilestones(thread);
+    this.noteThreadLeaseActivity(thread.id, thread.updatedAt);
+  }
+
+  noteThreadLeaseActivity(threadId: string, at = Date.now()): void {
+    let changed = false;
+
+    for (const lease of this.previewLeases.values()) {
+      if (lease.threadId !== threadId || lease.status === "stopped") {
+        continue;
+      }
+      if (typeof lease.lastActivityAt === "number" && at - lease.lastActivityAt < LEASE_ACTIVITY_WRITE_THROTTLE_MS) {
+        continue;
+      }
+      this.previewLeases.set(lease.id, this.normalizePreviewLease({ ...lease, lastActivityAt: at, updatedAt: Math.max(lease.updatedAt, at) }, at));
+      changed = true;
+    }
+
+    for (const lease of this.serviceLeases.values()) {
+      if (lease.threadId !== threadId || lease.status === "stopped") {
+        continue;
+      }
+      if (typeof lease.lastActivityAt === "number" && at - lease.lastActivityAt < LEASE_ACTIVITY_WRITE_THROTTLE_MS) {
+        continue;
+      }
+      this.serviceLeases.set(lease.id, this.normalizeServiceLease({ ...lease, lastActivityAt: at, updatedAt: Math.max(lease.updatedAt, at) }, at));
+      changed = true;
+    }
+
+    if (changed) {
+      this.queueSave();
+    }
+  }
+
+  notePreviewLeaseActivity(leaseId: string, at = Date.now()): PreviewLeaseView | null {
+    const lease = this.previewLeases.get(leaseId);
+    if (!lease) {
+      return null;
+    }
+    if (typeof lease.lastActivityAt === "number" && at - lease.lastActivityAt < LEASE_ACTIVITY_WRITE_THROTTLE_MS) {
+      return this.normalizePreviewLease(lease, at);
+    }
+
+    const nextLease = this.normalizePreviewLease(
+      {
+        ...lease,
+        lastActivityAt: at,
+        updatedAt: Math.max(lease.updatedAt, at)
+      },
+      at
+    );
+    this.previewLeases.set(leaseId, nextLease);
+    if (nextLease.threadId) {
+      this.noteThreadLeaseActivity(nextLease.threadId, at);
+    } else {
+      this.queueSave();
+    }
+    this.emitChange();
+    return nextLease;
+  }
+
+  noteServiceLeaseActivity(leaseId: string, at = Date.now()): ServiceLeaseView | null {
+    const lease = this.serviceLeases.get(leaseId);
+    if (!lease) {
+      return null;
+    }
+    if (typeof lease.lastActivityAt === "number" && at - lease.lastActivityAt < LEASE_ACTIVITY_WRITE_THROTTLE_MS) {
+      return this.normalizeServiceLease(lease, at);
+    }
+
+    const nextLease = this.normalizeServiceLease(
+      {
+        ...lease,
+        lastActivityAt: at,
+        updatedAt: Math.max(lease.updatedAt, at)
+      },
+      at
+    );
+    this.serviceLeases.set(leaseId, nextLease);
+    this.queueSave();
+    this.emitChange();
+    return nextLease;
+  }
+
+  setPreviewLeasePinned(leaseId: string, pinned: boolean): PreviewLeaseView | null {
+    const lease = this.previewLeases.get(leaseId);
+    if (!lease) {
+      return null;
+    }
+
+    const nextLease = this.normalizePreviewLease({ ...lease, pinned }, Date.now());
+    this.previewLeases.set(leaseId, nextLease);
+    this.queueSave();
+    this.emitChange();
+    return nextLease;
+  }
+
+  setServiceLeasePinned(leaseId: string, pinned: boolean): ServiceLeaseView | null {
+    const lease = this.serviceLeases.get(leaseId);
+    if (!lease) {
+      return null;
+    }
+
+    const nextLease = this.normalizeServiceLease({ ...lease, pinned }, Date.now());
+    this.serviceLeases.set(leaseId, nextLease);
+    this.queueSave();
+    this.emitChange();
+    return nextLease;
+  }
+
+  listExpiredLeaseIds(now = Date.now()): {
+    previews: string[];
+    services: string[];
+  } {
+    const previews = this.listPreviewLeases()
+      .filter((lease) => typeof lease.reapAfterAt === "number" && lease.reapAfterAt <= now)
+      .map((lease) => lease.id);
+    const services = this.listServiceLeases()
+      .filter((lease) => typeof lease.reapAfterAt === "number" && lease.reapAfterAt <= now)
+      .map((lease) => lease.id);
+
+    return { previews, services };
   }
 
   private pushMilestone(thread: CodexThreadRecord, type: CodexMilestoneEntry["type"], summary: string): void {
@@ -847,7 +1031,18 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   upsertPreviewLease(lease: PreviewLeaseView): void {
-    this.previewLeases.set(lease.id, lease);
+    const existing = this.previewLeases.get(lease.id);
+    const nextLease = this.normalizePreviewLease(
+      {
+        ...existing,
+        ...lease,
+        pinned: lease.pinned ?? existing?.pinned ?? false,
+        lastActivityAt: lease.lastActivityAt ?? existing?.lastActivityAt ?? lease.updatedAt ?? lease.createdAt,
+        leaseTtlMs: lease.leaseTtlMs ?? existing?.leaseTtlMs ?? this.previewLeaseTtlMs
+      },
+      Date.now()
+    );
+    this.previewLeases.set(lease.id, nextLease);
     this.queueSave();
     this.emitChange();
   }
@@ -861,11 +1056,15 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   getPreviewLease(leaseId: string): PreviewLeaseView | undefined {
-    return this.previewLeases.get(leaseId);
+    const lease = this.previewLeases.get(leaseId);
+    return lease ? this.normalizePreviewLease(lease) : undefined;
   }
 
   listPreviewLeases(): PreviewLeaseView[] {
-    return [...this.previewLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt);
+    const now = Date.now();
+    return [...this.previewLeases.values()]
+      .map((lease) => this.normalizePreviewLease(lease, now))
+      .sort((left, right) => right.updatedAt - left.updatedAt);
   }
 
   getThreadPreviewLease(threadId: string): PreviewLeaseView | undefined {
@@ -873,7 +1072,18 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   upsertServiceLease(lease: ServiceLeaseView): void {
-    this.serviceLeases.set(lease.id, lease);
+    const existing = this.serviceLeases.get(lease.id);
+    const nextLease = this.normalizeServiceLease(
+      {
+        ...existing,
+        ...lease,
+        pinned: lease.pinned ?? existing?.pinned ?? false,
+        lastActivityAt: lease.lastActivityAt ?? existing?.lastActivityAt ?? lease.updatedAt ?? lease.createdAt,
+        leaseTtlMs: lease.leaseTtlMs ?? existing?.leaseTtlMs ?? this.serviceLeaseTtlMs
+      },
+      Date.now()
+    );
+    this.serviceLeases.set(lease.id, nextLease);
     this.queueSave();
     this.emitChange();
   }
@@ -887,11 +1097,15 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   getServiceLease(leaseId: string): ServiceLeaseView | undefined {
-    return this.serviceLeases.get(leaseId);
+    const lease = this.serviceLeases.get(leaseId);
+    return lease ? this.normalizeServiceLease(lease) : undefined;
   }
 
   listServiceLeases(): ServiceLeaseView[] {
-    return [...this.serviceLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt);
+    const now = Date.now();
+    return [...this.serviceLeases.values()]
+      .map((lease) => this.normalizeServiceLease(lease, now))
+      .sort((left, right) => right.updatedAt - left.updatedAt);
   }
 
   getSnapshot(butler: {

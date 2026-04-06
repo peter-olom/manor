@@ -24,6 +24,10 @@ services:
       BUTLER_HOT_RELOAD: ${BUTLER_HOT_RELOAD:-1}
       BUTLER_TTYD_PORT: 7682
       BUTLER_TTYD_BASE_PATH: /butler-terminal/
+      MANOR_PREVIEW_LEASE_TTL_MS: ${MANOR_PREVIEW_LEASE_TTL_MS:-1800000}
+      MANOR_SERVICE_LEASE_TTL_MS: ${MANOR_SERVICE_LEASE_TTL_MS:-7200000}
+      MANOR_LEASE_REAP_GRACE_MS: ${MANOR_LEASE_REAP_GRACE_MS:-600000}
+      MANOR_LEASE_SWEEP_INTERVAL_MS: ${MANOR_LEASE_SWEEP_INTERVAL_MS:-30000}
       CODEX_BASE_URL: ws://codex-box:8080
       BUTLER_AUTH_BOOTSTRAP: ${BUTLER_AUTH_BOOTSTRAP:-auto}
       BUTLER_FORCED_LOGIN_METHOD: ${BUTLER_FORCED_LOGIN_METHOD:-}
@@ -39,6 +43,7 @@ services:
       NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright
       no_proxy: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright
       RUNTIME_BROKER_URL: http://runtime-broker:8090
+      RUNTIME_BROKER_TOKEN: ${RUNTIME_BROKER_TOKEN:-manor-local-runtime-broker-token}
       MANOR_SERVICE_TEMPLATE_CONFIG: /opt/manor/config/service-templates.json
     volumes:
       - ./state/butler:/state
@@ -174,7 +179,7 @@ services:
       retries: 6
       start_period: 5s
     networks:
-      - work
+      - preview
       - internet
 
   runtime-broker:
@@ -186,12 +191,16 @@ services:
     environment:
       MANOR_ROLE: runtime-broker
       RUNTIME_BROKER_PORT: 8090
-      RUNTIME_PREVIEW_NETWORK: manor_work
+      RUNTIME_PREVIEW_NETWORK: manor_preview
       RUNTIME_PREVIEW_EGRESS_CONFIG: /opt/manor/config/preview-egress-profiles.json
       RUNTIME_PREVIEW_EGRESS_ADMIN_URL: http://preview-egress:8091
       RUNTIME_PREVIEW_IMAGE: node:22-bookworm-slim
+      RUNTIME_SERVICE_SHARED_NETWORK: manor_work
       RUNTIME_ROUTE_BASE: /preview
       RUNTIME_OPERATOR_BASE_URL: http://127.0.0.1:${BUTLER_HOST_PORT:-8180}
+      RUNTIME_OPERATOR_BASE_URL_INTERNAL: http://butler:8080
+      RUNTIME_PLAYWRIGHT_CONTAINER: manor-playwright
+      RUNTIME_BROKER_TOKEN: ${RUNTIME_BROKER_TOKEN:-manor-local-runtime-broker-token}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config/preview-egress-profiles.json:/opt/manor/config/preview-egress-profiles.json:ro
@@ -202,12 +211,14 @@ services:
         condition: service_started
     networks:
       - control
-      - work
+      - preview
 
   playwright:
-    image: mcr.microsoft.com/playwright:v1.55.0-noble
+    build:
+      context: .
+      dockerfile: docker/playwright/Dockerfile
+    image: manor-playwright:local
     container_name: manor-playwright
-    command: ["bash", "-lc", "echo 'Playwright placeholder is running'; sleep infinity"]
     environment:
       MANOR_ROLE: playwright
     shm_size: "2gb"
@@ -215,6 +226,7 @@ services:
       - ./state/playwright:/state
       - ./artifacts:/artifacts
     networks:
+      - control
       - work
       - internet
 
@@ -222,5 +234,7 @@ networks:
   control:
     internal: true
   work:
+    internal: true
+  preview:
     internal: true
   internet: {}

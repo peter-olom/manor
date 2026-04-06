@@ -199,6 +199,13 @@ export function toServiceLeaseView(input: {
     createdAt: input.createdAt,
     updatedAt: input.updatedAt,
     lastError: input.lastError,
+    pinned: false,
+    lastActivityAt: input.updatedAt,
+    leaseTtlMs: null,
+    expiresAt: null,
+    expiredAt: null,
+    reapAfterAt: null,
+    lifecycleState: "active",
     connection: buildServiceConnection(input.template, input.targetHost, input.targetPort, input.env, input.worktreePath)
   };
 }

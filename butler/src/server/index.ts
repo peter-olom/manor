@@ -19,20 +19,29 @@ const stateDir = process.env.MANOR_STATE_DIR ?? "/state";
 const codexHomeDir = process.env.CODEX_SHARED_HOME_DIR ?? "/codex-home";
 const codexConfigDir = process.env.CODEX_SHARED_CONFIG_DIR ?? "/codex-config";
 const runtimeBrokerUrl = process.env.RUNTIME_BROKER_URL ?? "http://runtime-broker:8090";
+const runtimeBrokerToken = process.env.RUNTIME_BROKER_TOKEN ?? null;
 const serviceTemplateConfigPath = process.env.MANOR_SERVICE_TEMPLATE_CONFIG ?? "/opt/manor/config/service-templates.json";
 const hotReloadEnabled = process.env.BUTLER_HOT_RELOAD === "1";
 const publicPort = Number(process.env.BUTLER_PUBLIC_PORT ?? port);
+const previewLeaseTtlMs = Number(process.env.MANOR_PREVIEW_LEASE_TTL_MS ?? `${30 * 60 * 1000}`);
+const serviceLeaseTtlMs = Number(process.env.MANOR_SERVICE_LEASE_TTL_MS ?? `${120 * 60 * 1000}`);
+const leaseReapGraceMs = Number(process.env.MANOR_LEASE_REAP_GRACE_MS ?? `${10 * 60 * 1000}`);
+const leaseSweepIntervalMs = Number(process.env.MANOR_LEASE_SWEEP_INTERVAL_MS ?? "60000");
 
 const uiStatePath = path.join(stateDir, "butler-ui.json");
 const sessionDir = path.join(stateDir, "pi-sessions");
 const staticDir = path.resolve(process.cwd(), "dist/web");
 const indexTemplatePath = path.resolve(process.cwd(), "index.html");
 
-const store = new ButlerStateStore(uiStatePath);
+const store = new ButlerStateStore(uiStatePath, {
+  previewLeaseTtlMs,
+  serviceLeaseTtlMs,
+  leaseReapGraceMs
+});
 await store.load();
 
 const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir);
-const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl);
+const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerToken);
 const serviceTemplates = await loadServiceTemplates(serviceTemplateConfigPath);
 const serviceTemplateMap = new Map(serviceTemplates.map((template) => [template.id, template]));
 const butlerAgent = new ButlerAgentService({
@@ -66,7 +75,7 @@ function resolvePreviewProxyTarget(leaseId: string): string | null {
     return null;
   }
 
-  return `http://${lease.targetHost}:${lease.targetPort}`;
+  return runtimeBrokerUrl;
 }
 
 let viteDevServer: import("vite").ViteDevServer | null = null;
@@ -355,6 +364,39 @@ app.post("/api/previews/stop", async (request, response) => {
   }
 });
 
+app.post("/api/previews/verify", async (request, response) => {
+  const leaseId = typeof request.body?.leaseId === "string" ? request.body.leaseId : "";
+  if (!leaseId) {
+    response.status(400).json({ error: "leaseId is required" });
+    return;
+  }
+
+  try {
+    store.notePreviewLeaseActivity(leaseId);
+    const result = await runtimeBroker.verifyLease({ leaseId });
+    response.json({ ok: true, verification: result });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/previews/pin", (request, response) => {
+  const leaseId = typeof request.body?.leaseId === "string" ? request.body.leaseId : "";
+  const pinned = Boolean(request.body?.pinned);
+  if (!leaseId) {
+    response.status(400).json({ error: "leaseId is required" });
+    return;
+  }
+
+  const lease = store.setPreviewLeasePinned(leaseId, pinned);
+  if (!lease) {
+    response.status(404).json({ error: "Preview lease not found" });
+    return;
+  }
+
+  response.json({ ok: true, lease });
+});
+
 app.post("/api/services/start", async (request, response) => {
   const templateId = typeof request.body?.templateId === "string" ? request.body.templateId.trim() : "";
   const title = typeof request.body?.title === "string" ? request.body.title.trim() : "";
@@ -475,6 +517,23 @@ app.post("/api/services/stop", async (request, response) => {
   }
 });
 
+app.post("/api/services/pin", (request, response) => {
+  const serviceId = typeof request.body?.serviceId === "string" ? request.body.serviceId : "";
+  const pinned = Boolean(request.body?.pinned);
+  if (!serviceId) {
+    response.status(400).json({ error: "serviceId is required" });
+    return;
+  }
+
+  const lease = store.setServiceLeasePinned(serviceId, pinned);
+  if (!lease) {
+    response.status(404).json({ error: "Service not found" });
+    return;
+  }
+
+  response.json({ ok: true, service: lease });
+});
+
 app.use(/^\/preview\/([^/]+)(\/.*)?$/, (request, response) => {
   const originalPath = request.originalUrl.split("?")[0] ?? request.originalUrl;
   const match = originalPath.match(/^\/preview\/([^/]+)(\/.*)?$/);
@@ -490,12 +549,64 @@ app.use(/^\/preview\/([^/]+)(\/.*)?$/, (request, response) => {
     return;
   }
 
+  store.notePreviewLeaseActivity(leaseId);
   const suffix = match?.[2] ?? "/";
   const search = request.url.includes("?") ? request.url.slice(request.url.indexOf("?")) : "";
-  request.url = `${suffix}${search}`;
+  request.url = `/routes/preview/${leaseId}${suffix}${search}`;
   previewProxy.web(request, response, { target }, (error: Error) => {
     response.status(502).json({ error: error instanceof Error ? error.message : "Preview proxy failed" });
   });
+});
+
+let leaseSweepInFlight = false;
+
+async function sweepExpiredLeases(): Promise<void> {
+  if (leaseSweepInFlight) {
+    return;
+  }
+
+  leaseSweepInFlight = true;
+  const expired = store.listExpiredLeaseIds();
+
+  try {
+    for (const leaseId of expired.previews) {
+      try {
+        await runtimeBroker.stopLease(leaseId);
+      } catch {
+        // ignore broker cleanup failures and still evict the local lease
+      }
+      store.removePreviewLease(leaseId);
+    }
+
+    for (const serviceId of expired.services) {
+      const lease = store.getServiceLease(serviceId);
+      if (!lease) {
+        continue;
+      }
+
+      if (lease.runtimeKind === "container") {
+        try {
+          await runtimeBroker.stopService(serviceId);
+        } catch {
+          // ignore broker cleanup failures and still evict the local lease
+        }
+      }
+
+      store.removeServiceLease(serviceId);
+    }
+  } finally {
+    leaseSweepInFlight = false;
+  }
+}
+
+const leaseReaper = setInterval(() => {
+  void sweepExpiredLeases().catch((error) => {
+    console.error("Lease sweep failed", error);
+  });
+}, leaseSweepIntervalMs);
+
+void sweepExpiredLeases().catch((error) => {
+  console.error("Initial lease sweep failed", error);
 });
 
 if (viteDevServer) {
@@ -519,4 +630,8 @@ if (viteDevServer) {
 
 server.listen(port, "0.0.0.0", () => {
   console.log(`Butler listening on ${port} (${hotReloadEnabled ? "hot reload" : "static"})`);
+});
+
+server.on("close", () => {
+  clearInterval(leaseReaper);
 });

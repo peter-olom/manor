@@ -1,20 +1,44 @@
 import express from "express";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { Readable } from "node:stream";
 import Docker from "dockerode";
 
 const port = Number(process.env.RUNTIME_BROKER_PORT ?? "8090");
 const previewNetwork = process.env.RUNTIME_PREVIEW_NETWORK ?? "manor_work";
+const sharedWorkNetwork = process.env.RUNTIME_SERVICE_SHARED_NETWORK ?? "manor_work";
 const previewImage = process.env.RUNTIME_PREVIEW_IMAGE ?? "node:22-bookworm-slim";
 const routeBase = process.env.RUNTIME_ROUTE_BASE ?? "/preview";
 const previewEgressConfigPath =
   process.env.RUNTIME_PREVIEW_EGRESS_CONFIG ?? "/opt/manor/config/preview-egress-profiles.json";
 const previewEgressAdminUrl =
   process.env.RUNTIME_PREVIEW_EGRESS_ADMIN_URL ?? "http://preview-egress:8091";
+const brokerToken = process.env.RUNTIME_BROKER_TOKEN ?? null;
+const internalOperatorBaseUrl = process.env.RUNTIME_OPERATOR_BASE_URL_INTERNAL ?? "http://butler:8080";
+const playwrightContainerName = process.env.RUNTIME_PLAYWRIGHT_CONTAINER ?? "manor-playwright";
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 
 const app = express();
 app.use(express.json());
+
+app.use((request, response, next) => {
+  if (request.path === "/health" || request.path.startsWith("/routes/preview/")) {
+    next();
+    return;
+  }
+
+  if (!brokerToken) {
+    next();
+    return;
+  }
+
+  if (request.header("x-manor-broker-token") !== brokerToken) {
+    response.status(403).json({ error: "Forbidden" });
+    return;
+  }
+
+  next();
+});
 
 function toContainerName(leaseId) {
   return `manor-preview-${leaseId.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 32)}`;
@@ -166,12 +190,103 @@ async function ensureImage(imageName) {
   }
 }
 
+async function collectExecOutput(containerRef, exec) {
+  const stream = await exec.start({ hijack: true, stdin: false });
+  const output = await new Promise((resolve, reject) => {
+    const stdout = [];
+    const stderr = [];
+    containerRef.modem.demuxStream(
+      stream,
+      {
+        write(chunk) {
+          stdout.push(Buffer.from(chunk));
+        }
+      },
+      {
+        write(chunk) {
+          stderr.push(Buffer.from(chunk));
+        }
+      }
+    );
+    stream.on("end", () =>
+      resolve({
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8")
+      })
+    );
+    stream.on("error", reject);
+  });
+  const execInspect = await exec.inspect();
+  return {
+    exitCode: typeof execInspect.ExitCode === "number" ? execInspect.ExitCode : null,
+    stdout: output.stdout,
+    stderr: output.stderr
+  };
+}
+
 app.get("/health", async (_request, response) => {
   try {
     await docker.ping();
     response.json({ ok: true });
   } catch (error) {
     response.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.use("/routes/preview/:leaseId", async (request, response) => {
+  const required = await requireContainer(request.params.leaseId, response);
+  if (!required) {
+    return;
+  }
+
+  const targetPort =
+    Number(required.container.Config?.Env?.find((entry) => entry.startsWith("PORT="))?.slice(5) || "3000");
+  const prefix = `/routes/preview/${request.params.leaseId}`;
+  const suffix = request.originalUrl.startsWith(prefix) ? request.originalUrl.slice(prefix.length) || "/" : "/";
+  const upstreamUrl = new URL(`http://${required.containerName}:${targetPort}${suffix}`);
+  const headers = new Headers();
+
+  for (const [key, value] of Object.entries(request.headers)) {
+    if (!value) {
+      continue;
+    }
+    if (["host", "connection", "content-length"].includes(key.toLowerCase())) {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        headers.append(key, entry);
+      }
+    } else {
+      headers.set(key, value);
+    }
+  }
+
+  try {
+    const upstream = await fetch(upstreamUrl, {
+      method: request.method,
+      headers,
+      body: request.method === "GET" || request.method === "HEAD" ? undefined : request,
+      duplex: request.method === "GET" || request.method === "HEAD" ? undefined : "half",
+      redirect: "manual"
+    });
+
+    response.status(upstream.status);
+    upstream.headers.forEach((value, key) => {
+      if (["connection", "content-length", "transfer-encoding"].includes(key.toLowerCase())) {
+        return;
+      }
+      response.setHeader(key, value);
+    });
+
+    if (!upstream.body) {
+      response.end();
+      return;
+    }
+
+    Readable.fromWeb(upstream.body).pipe(response);
+  } catch (error) {
+    response.status(502).json({ error: error instanceof Error ? error.message : "Preview proxy failed" });
   }
 });
 
@@ -403,34 +518,68 @@ app.post("/leases/:leaseId/exec", async (request, response) => {
       WorkingDir: cwd || undefined,
       Tty: false
     });
-    const stream = await exec.start({ hijack: true, stdin: false });
-    const output = await new Promise((resolve, reject) => {
-      const stdout = [];
-      const stderr = [];
-      required.containerRef.modem.demuxStream(stream, {
-        write(chunk) {
-          stdout.push(Buffer.from(chunk));
-        }
-      }, {
-        write(chunk) {
-          stderr.push(Buffer.from(chunk));
-        }
-      });
-      stream.on("end", () =>
-        resolve({
-          stdout: Buffer.concat(stdout).toString("utf8"),
-          stderr: Buffer.concat(stderr).toString("utf8")
-        })
-      );
-      stream.on("error", reject);
-    });
-    const execInspect = await exec.inspect();
+    const output = await collectExecOutput(required.containerRef, exec);
     response.json({
       leaseId: request.params.leaseId,
       command,
-      exitCode: typeof execInspect.ExitCode === "number" ? execInspect.ExitCode : null,
+      exitCode: output.exitCode,
       stdout: output.stdout,
       stderr: output.stderr
+    });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/leases/:leaseId/verify", async (request, response) => {
+  const required = await requireContainer(request.params.leaseId, response);
+  if (!required) {
+    return;
+  }
+
+  try {
+    const playwrightContainer = docker.getContainer(playwrightContainerName);
+    await playwrightContainer.inspect();
+    const screenshotPath = `/artifacts/preview-${request.params.leaseId}-${Date.now()}.png`;
+    const targetUrl = `${internalOperatorBaseUrl}${routeBase}/${request.params.leaseId}/`;
+    const script = `
+      const { chromium } = require("playwright");
+      (async () => {
+        const browser = await chromium.launch({ headless: true });
+        const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+        let status = null;
+        const response = await page.goto(process.argv[1], { waitUntil: "networkidle", timeout: 45000 });
+        if (response) status = response.status();
+        await page.screenshot({ path: process.argv[2], fullPage: true });
+        const payload = {
+          ok: true,
+          status,
+          title: await page.title(),
+          url: page.url(),
+          screenshotPath: process.argv[2]
+        };
+        console.log(JSON.stringify(payload));
+        await browser.close();
+      })().catch(async (error) => {
+        console.error(error instanceof Error ? error.stack || error.message : String(error));
+        process.exit(1);
+      });
+    `;
+    const exec = await playwrightContainer.exec({
+      AttachStdout: true,
+      AttachStderr: true,
+      Cmd: ["node", "-e", script, targetUrl, screenshotPath],
+      WorkingDir: "/opt/manor/playwright",
+      Tty: false
+    });
+    const output = await collectExecOutput(playwrightContainer, exec);
+    if (output.exitCode !== 0) {
+      throw new Error(output.stderr.trim() || output.stdout.trim() || "Preview verification failed");
+    }
+    const parsed = JSON.parse(output.stdout.trim());
+    response.json({
+      leaseId: request.params.leaseId,
+      ...parsed
     });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -513,6 +662,11 @@ app.post("/services", async (request, response) => {
 
     const serviceContainer = await docker.createContainer(containerOptions);
     await serviceContainer.start();
+    try {
+      await docker.getNetwork(sharedWorkNetwork).connect({ Container: serviceContainer.id });
+    } catch {
+      // already connected or shared network unavailable
+    }
     const container = await inspectContainer(containerName);
     if (!container) {
       throw new Error("Service container did not start");
@@ -675,32 +829,11 @@ app.post("/services/:serviceId/exec", async (request, response) => {
       WorkingDir: cwd || undefined,
       Tty: false
     });
-    const stream = await exec.start({ hijack: true, stdin: false });
-    const output = await new Promise((resolve, reject) => {
-      const stdout = [];
-      const stderr = [];
-      required.containerRef.modem.demuxStream(stream, {
-        write(chunk) {
-          stdout.push(Buffer.from(chunk));
-        }
-      }, {
-        write(chunk) {
-          stderr.push(Buffer.from(chunk));
-        }
-      });
-      stream.on("end", () =>
-        resolve({
-          stdout: Buffer.concat(stdout).toString("utf8"),
-          stderr: Buffer.concat(stderr).toString("utf8")
-        })
-      );
-      stream.on("error", reject);
-    });
-    const execInspect = await exec.inspect();
+    const output = await collectExecOutput(required.containerRef, exec);
     response.json({
       leaseId: request.params.serviceId,
       command,
-      exitCode: typeof execInspect.ExitCode === "number" ? execInspect.ExitCode : null,
+      exitCode: output.exitCode,
       stdout: output.stdout,
       stderr: output.stderr
     });

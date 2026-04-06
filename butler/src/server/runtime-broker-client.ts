@@ -83,13 +83,17 @@ type LeaseExecPayload = {
 };
 
 export class RuntimeBrokerClient {
-  constructor(private readonly baseUrl: string) {}
+  constructor(
+    private readonly baseUrl: string,
+    private readonly token: string | null = null
+  ) {}
 
   private async request<T>(pathname: string, init?: RequestInit): Promise<T> {
     const response = await fetch(new URL(pathname, this.baseUrl), {
       ...init,
       headers: {
         "content-type": "application/json",
+        ...(this.token ? { "x-manor-broker-token": this.token } : {}),
         ...(init?.headers ?? {})
       }
     });
@@ -152,6 +156,22 @@ export class RuntimeBrokerClient {
         command: input.command,
         cwd: input.cwd
       })
+    });
+  }
+
+  async verifyLease(input: {
+    leaseId: string;
+  }): Promise<{
+    leaseId: string;
+    ok: boolean;
+    status: number | null;
+    title: string;
+    url: string;
+    screenshotPath: string | null;
+  }> {
+    return this.request(`/leases/${input.leaseId}/verify`, {
+      method: "POST",
+      body: JSON.stringify({})
     });
   }
 

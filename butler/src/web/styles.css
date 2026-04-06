@@ -491,6 +491,83 @@ select {
   overflow: hidden;
 }
 
+.runtime-strip {
+  display: grid;
+  gap: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.runtime-group {
+  display: grid;
+  gap: 10px;
+  padding: 12px 18px;
+}
+
+.runtime-group + .runtime-group {
+  border-top: 1px solid var(--line);
+}
+
+.runtime-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.runtime-group-count {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.runtime-list {
+  display: grid;
+  gap: 10px;
+}
+
+.runtime-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+  padding: 12px 14px;
+  background: var(--surface);
+}
+
+.runtime-item-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.runtime-item-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.runtime-item-meta {
+  font-size: 0.8rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.runtime-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .thread-toolbar {
   display: flex;
   justify-content: flex-end;
@@ -499,6 +576,12 @@ select {
   padding: 12px 18px;
   border-bottom: 1px solid var(--line);
   background: var(--panel);
+}
+
+.thread-toolbar-service-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .panel-header {
@@ -1575,6 +1658,10 @@ select {
     padding: 10px 16px;
   }
 
+  .runtime-group {
+    padding: 10px 16px;
+  }
+
   .panel-controls {
     width: 100%;
     display: grid;
@@ -1589,6 +1676,22 @@ select {
 
   .panel-action {
     grid-column: 1 / -1;
+  }
+
+  .runtime-item {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .runtime-item-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .runtime-item-actions .panel-action,
+  .runtime-item-actions .panel-action-link {
+    grid-column: auto;
+    width: 100%;
   }
 
   .workspace-body {
@@ -1781,6 +1884,10 @@ select {
   }
 
   .panel-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-item-actions {
     grid-template-columns: 1fr;
   }
 

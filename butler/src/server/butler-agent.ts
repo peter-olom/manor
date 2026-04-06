@@ -757,6 +757,7 @@ export class ButlerAgentService extends EventEmitter {
           const typedParams = params as { leaseId: string };
           const lease = await this.runtimeBroker.inspectLease(typedParams.leaseId);
           this.store.upsertPreviewLease(lease);
+          this.store.notePreviewLeaseActivity(typedParams.leaseId);
           const domains = lease.egressDomains.length > 0 ? lease.egressDomains.join(", ") : "(none)";
           return {
             content: [
@@ -781,6 +782,7 @@ export class ButlerAgentService extends EventEmitter {
         execute: async (_toolCallId, params) => {
           const typedParams = params as { leaseId: string };
           const result = await this.runtimeBroker.listProcesses(typedParams.leaseId);
+          this.store.notePreviewLeaseActivity(typedParams.leaseId);
           const rows = result.processes.length === 0
             ? "No processes were reported."
             : [result.titles.join(" | "), ...result.processes.map((row) => row.join(" | "))].join("\n");
@@ -803,6 +805,7 @@ export class ButlerAgentService extends EventEmitter {
         execute: async (_toolCallId, params) => {
           const typedParams = params as { leaseId: string; tail?: number };
           const result = await this.runtimeBroker.readLogs(typedParams.leaseId, typedParams.tail ?? 200);
+          this.store.notePreviewLeaseActivity(typedParams.leaseId);
           return {
             content: [{ type: "text", text: result.logs || "No logs were returned." }],
             details: result
@@ -823,6 +826,7 @@ export class ButlerAgentService extends EventEmitter {
         execute: async (_toolCallId, params) => {
           const typedParams = params as { leaseId: string; command: string; cwd?: string };
           const result = await this.runtimeBroker.execInLease(typedParams);
+          this.store.notePreviewLeaseActivity(typedParams.leaseId);
           const stdout = result.stdout.trim();
           const stderr = result.stderr.trim();
           const body =
@@ -949,6 +953,7 @@ export class ButlerAgentService extends EventEmitter {
             env: service.env
           });
           this.store.upsertServiceLease(lease);
+          this.store.noteServiceLeaseActivity(lease.id);
           return {
             content: [{ type: "text", text: `Started ${template.label}. Host=${lease.connection.host} Port=${lease.connection.port}.` }],
             details: { service: lease }
@@ -998,6 +1003,7 @@ export class ButlerAgentService extends EventEmitter {
             };
           }
           if (existing.runtimeKind === "embedded") {
+            this.store.noteServiceLeaseActivity(typedParams.serviceId);
             return {
               content: [{ type: "text", text: `${existing.title} is embedded at ${existing.connection.uri ?? existing.worktreePath ?? "(unknown path)"}.` }],
               details: { service: existing }
@@ -1023,6 +1029,7 @@ export class ButlerAgentService extends EventEmitter {
             env: inspected.env
           });
           this.store.upsertServiceLease(lease);
+          this.store.noteServiceLeaseActivity(typedParams.serviceId);
           return {
             content: [{ type: "text", text: `${lease.title} is ${inspected.runtime.status}. Host=${lease.connection.host} Port=${lease.connection.port}.` }],
             details: { service: lease, runtime: inspected.runtime }
@@ -1049,12 +1056,14 @@ export class ButlerAgentService extends EventEmitter {
             };
           }
           if (service.runtimeKind !== "container") {
+            this.store.noteServiceLeaseActivity(typedParams.serviceId);
             return {
               content: [{ type: "text", text: `${service.title} is embedded and does not expose container logs.` }],
               details: { service }
             };
           }
           const result = await this.runtimeBroker.readServiceLogs(typedParams.serviceId, typedParams.tail ?? 200);
+          this.store.noteServiceLeaseActivity(typedParams.serviceId);
           return {
             content: [{ type: "text", text: result.logs || "No logs were returned." }],
             details: result
@@ -1082,12 +1091,14 @@ export class ButlerAgentService extends EventEmitter {
             };
           }
           if (service.runtimeKind !== "container") {
+            this.store.noteServiceLeaseActivity(typedParams.serviceId);
             return {
               content: [{ type: "text", text: `${service.title} is embedded and does not support container exec.` }],
               details: { service }
             };
           }
           const result = await this.runtimeBroker.execInService(typedParams);
+          this.store.noteServiceLeaseActivity(typedParams.serviceId);
           const stdout = result.stdout.trim();
           const stderr = result.stderr.trim();
           const body =
