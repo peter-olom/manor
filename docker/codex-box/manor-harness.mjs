@@ -15,29 +15,30 @@ function printHelp() {
   manor-harness report --status completed|blocked --summary "<text>" [--details "<text>"] [--turn-id <id>]
   manor-harness stack list
   manor-harness stack start [--title <title>] [--cwd <path>] [--stateful] [--storage-mode ephemeral|job|base|custom] [--retain-volumes] [--storage-key <key>] [--clone-from <key>]
-  manor-harness stack inspect <stackId>
-  manor-harness stack promote <stackId> [--to <storageKey>]
-  manor-harness stack stop <stackId> [--drop-volumes]
+  manor-harness stack inspect <stackSelector>
+  manor-harness stack promote <stackSelector> [--to <storageKey>]
+  manor-harness stack stop <stackSelector> [--drop-volumes]
   manor-harness preview list
-  manor-harness preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--stack <stackId>] [--alias <name> ...] [--env KEY=VALUE ...] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>]
+  manor-harness preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--stack <stackSelector>] [--alias <name> ...] [--env KEY=VALUE ...] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>]
 
 Preview defaults:
   heartbeat-kind=http
   heartbeat-target=/
-  manor-harness preview inspect <leaseId>
-  manor-harness preview processes <leaseId>
-  manor-harness preview logs <leaseId> [--tail <n>]
-  manor-harness preview exec <leaseId> -- <command>
-  manor-harness preview verify <leaseId> [--mode headless|headful]
-  manor-harness preview stop <leaseId>
+  manor-harness preview inspect <previewSelector>
+  manor-harness preview proof <previewSelector> [--run-id <id>]
+  manor-harness preview processes <previewSelector>
+  manor-harness preview logs <previewSelector> [--tail <n>]
+  manor-harness preview exec <previewSelector> -- <command>
+  manor-harness preview verify <previewSelector> [--mode headless|headful]
+  manor-harness preview stop <previewSelector>
   manor-harness service templates
   manor-harness service list
-  manor-harness service start --template <id> [--title <title>] [--cwd <path>] [--stack <stackId>] [--alias <name> ...] [--env KEY=VALUE ...]
-  manor-harness service inspect <serviceId>
-  manor-harness service processes <serviceId>
-  manor-harness service logs <serviceId> [--tail <n>]
-  manor-harness service exec <serviceId> -- <command>
-  manor-harness service stop <serviceId>
+  manor-harness service start --template <id> [--title <title>] [--cwd <path>] [--stack <stackSelector>] [--alias <name> ...] [--env KEY=VALUE ...]
+  manor-harness service inspect <serviceSelector>
+  manor-harness service processes <serviceSelector>
+  manor-harness service logs <serviceSelector> [--tail <n>]
+  manor-harness service exec <serviceSelector> -- <command>
+  manor-harness service stop <serviceSelector>
 
 Add --json to print the Butler response payload as JSON.`);
 }
@@ -149,6 +150,22 @@ function readCommandAfterDoubleDash(args) {
   return args.slice(marker + 1).join(" ").trim();
 }
 
+async function readStdinIfPresent() {
+  if (process.stdin.isTTY) {
+    return { stdin: undefined, stdinProvided: false };
+  }
+
+  const chunks = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+
+  return {
+    stdin: Buffer.concat(chunks).toString("utf8"),
+    stdinProvided: true
+  };
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const jsonModeIndex = args.indexOf("--json");
@@ -215,19 +232,29 @@ async function main() {
         heartbeatIntervalSeconds: Number(readFlag(args, "--heartbeat-interval-seconds", "0"))
       };
     } else if (subcommand === "inspect" && args[2]) {
-      directBrokerRequest = { path: `/leases/${encodeURIComponent(args[2])}` };
+      action = "preview.inspect";
+      params = { leaseId: args[2] };
+    } else if (subcommand === "proof" && args[2]) {
+      action = "preview.proof";
+      params = {
+        leaseId: args[2],
+        runId: readFlag(args, "--run-id")
+      };
     } else if (subcommand === "processes" && args[2]) {
-      directBrokerRequest = { path: `/leases/${encodeURIComponent(args[2])}/processes` };
+      action = "preview.processes";
+      params = { leaseId: args[2] };
     } else if (subcommand === "logs" && args[2]) {
-      directBrokerRequest = { path: `/leases/${encodeURIComponent(args[2])}/logs?tail=${encodeURIComponent(String(readTailArg(args)))}` };
+      action = "preview.logs";
+      params = { leaseId: args[2], tail: readTailArg(args) };
     } else if (subcommand === "exec" && args[2]) {
-      directBrokerRequest = {
-        path: `/leases/${encodeURIComponent(args[2])}/exec`,
-        method: "POST",
-        body: {
-          command: readCommandAfterDoubleDash(args),
-          cwd: readFlag(args, "--cwd")
-        }
+      const pipedInput = await readStdinIfPresent();
+      action = "preview.exec";
+      params = {
+        leaseId: args[2],
+        command: readCommandAfterDoubleDash(args),
+        cwd: readFlag(args, "--cwd"),
+        stdin: pipedInput.stdin,
+        stdinProvided: pipedInput.stdinProvided
       };
     } else if (subcommand === "verify" && args[2]) {
       action = "preview.verify";
@@ -265,19 +292,23 @@ async function main() {
         env
       };
     } else if (subcommand === "inspect" && args[2]) {
-      directBrokerRequest = { path: `/services/${encodeURIComponent(args[2])}` };
+      action = "service.inspect";
+      params = { serviceId: args[2] };
     } else if (subcommand === "processes" && args[2]) {
-      directBrokerRequest = { path: `/services/${encodeURIComponent(args[2])}/processes` };
+      action = "service.processes";
+      params = { serviceId: args[2] };
     } else if (subcommand === "logs" && args[2]) {
-      directBrokerRequest = { path: `/services/${encodeURIComponent(args[2])}/logs?tail=${encodeURIComponent(String(readTailArg(args)))}` };
+      action = "service.logs";
+      params = { serviceId: args[2], tail: readTailArg(args) };
     } else if (subcommand === "exec" && args[2]) {
-      directBrokerRequest = {
-        path: `/services/${encodeURIComponent(args[2])}/exec`,
-        method: "POST",
-        body: {
-          command: readCommandAfterDoubleDash(args),
-          cwd: readFlag(args, "--cwd")
-        }
+      const pipedInput = await readStdinIfPresent();
+      action = "service.exec";
+      params = {
+        serviceId: args[2],
+        command: readCommandAfterDoubleDash(args),
+        cwd: readFlag(args, "--cwd"),
+        stdin: pipedInput.stdin,
+        stdinProvided: pipedInput.stdinProvided
       };
     } else if (subcommand === "stop" && args[2]) {
       action = "service.stop";

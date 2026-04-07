@@ -745,6 +745,13 @@ select {
   font-size: 0.78rem;
 }
 
+.preview-verification-link-disabled {
+  font-size: 0.78rem;
+  color: var(--muted);
+  opacity: 0.82;
+  cursor: default;
+}
+
 .panel-action {
   display: inline-flex;
   align-items: center;
@@ -844,6 +851,44 @@ select {
   align-items: center;
   padding: 10px 18px 0;
   background: var(--bg);
+  position: relative;
+  z-index: 2;
+}
+
+.conversation-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.conversation-disclosure {
+  position: relative;
+}
+
+.conversation-disclosure-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: min(720px, calc(100vw - 36px));
+  max-height: min(55vh, 520px);
+  overflow: auto;
+  border: 2px solid color-mix(in srgb, var(--accent) 42%, var(--line-strong));
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  backdrop-filter: blur(18px) saturate(135%);
+  -webkit-backdrop-filter: blur(18px) saturate(135%);
+  isolation: isolate;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--bg) 72%, transparent),
+    0 18px 44px rgba(6, 16, 31, 0.32);
+}
+
+.runtime-disclosure-panel {
+  display: grid;
+  gap: 0;
+}
+
+.runtime-disclosure-panel .runtime-group {
+  padding: 12px;
 }
 
 .conversation-toggle {
@@ -1380,12 +1425,33 @@ select {
   color: var(--entry-muted);
 }
 
+.entry-text a {
+  color: var(--accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.16em;
+}
+
+.entry-text a:hover {
+  color: var(--ink);
+}
+
 .inline-code {
   padding: 1px 6px;
   background: var(--entry-code-inline-bg);
   color: var(--entry-code-inline-ink);
   font-family: "SFMono-Regular", "Menlo", "Monaco", monospace;
   font-size: 0.92em;
+}
+
+.inline-code-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.inline-code-link:hover {
+  text-decoration: underline;
 }
 
 .code-block-shell {
@@ -2102,11 +2168,21 @@ select {
   width: min(960px, 100%);
 }
 
+.modal-card-video {
+  width: min(1040px, 100%);
+}
+
 .modal-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+}
+
+.modal-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .modal-head h2 {
@@ -2157,6 +2233,13 @@ select {
   max-width: 100%;
   max-height: min(70vh, 860px);
   object-fit: contain;
+}
+
+.modal-video {
+  display: block;
+  width: min(100%, 960px);
+  max-height: min(70vh, 860px);
+  background: #000;
 }
 
 .toast-region {
@@ -2358,13 +2441,24 @@ select {
 
   .runtime-item-actions {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .runtime-item-actions .panel-action,
   .runtime-item-actions .panel-action-link {
     grid-column: auto;
     width: 100%;
+  }
+
+  .runtime-item-title,
+  .runtime-item-meta {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+
+  .runtime-item-meta {
+    line-height: 1.45;
   }
 
   .workspace-body {
@@ -2389,6 +2483,28 @@ select {
 
   .conversation-toolbar {
     padding: 10px 16px 0;
+  }
+
+  .conversation-toolbar-group {
+    width: 100%;
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .conversation-disclosure {
+    position: static;
+  }
+
+  .conversation-disclosure-panel {
+    left: 0;
+    right: 0;
+    width: auto;
+    max-height: min(46dvh, 420px);
+    background: color-mix(in srgb, var(--panel) 70%, transparent);
+    backdrop-filter: blur(22px) saturate(145%);
+    -webkit-backdrop-filter: blur(22px) saturate(145%);
+    border-color: color-mix(in srgb, var(--accent) 54%, var(--line-strong));
   }
 
   .conversation-jump-latest {
@@ -2540,18 +2656,27 @@ select {
 }
 
 @media (max-width: 640px) {
+  .topbar {
+    padding: 8px 10px;
+  }
+
   .brand-logo {
     height: 24px;
   }
 
   .statusline {
-    gap: 10px;
+    gap: 6px;
     font-size: 0.8rem;
   }
 
   .status-item {
     min-height: 26px;
     padding-right: 8px;
+  }
+
+  .theme-control,
+  .status-item {
+    flex: 1 1 calc(50% - 6px);
   }
 
   .status-item-copy {
@@ -2580,7 +2705,7 @@ select {
   }
 
   .runtime-item-actions {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .workspace-body.is-detail-open {
@@ -2597,7 +2722,33 @@ select {
   }
 
   .conversation-toolbar {
-    padding: 10px 14px 0;
+    padding: 10px 12px 0;
+  }
+
+  .conversation-toolbar-group {
+    width: 100%;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .conversation-toggle {
+    min-height: 32px;
+  }
+
+  .conversation-disclosure-panel {
+    left: -2px;
+    right: -2px;
+    width: auto;
+    max-height: min(44dvh, 360px);
+    background: color-mix(in srgb, var(--panel) 58%, transparent);
+    backdrop-filter: blur(26px) saturate(155%);
+    -webkit-backdrop-filter: blur(26px) saturate(155%);
+    border-width: 3px;
+    border-color: color-mix(in srgb, var(--accent) 68%, var(--line-strong));
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--bg) 78%, transparent),
+      0 18px 44px rgba(6, 16, 31, 0.42);
   }
 
   .conversation-jump-latest {
@@ -2629,12 +2780,21 @@ select {
   }
 
   .composer-footer {
+    flex-direction: column;
+    align-items: stretch;
     gap: 8px;
     padding: 8px 10px 10px;
   }
 
   .composer-inline-controls {
+    width: 100%;
     gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .composer-thread-budget {
+    min-width: max-content;
   }
 
   .modal-backdrop {
@@ -2664,5 +2824,37 @@ select {
 
   .thread-row {
     padding: 12px 14px;
+  }
+}
+
+@media (max-width: 480px) {
+  .statusline {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .theme-control,
+  .status-item {
+    width: 100%;
+  }
+
+  .conversation-toolbar-group {
+    justify-content: stretch;
+  }
+
+  .conversation-toggle {
+    justify-content: flex-end;
+  }
+
+  .conversation-disclosure-panel {
+    max-height: min(40dvh, 320px);
+  }
+
+  .runtime-group-head {
+    align-items: flex-start;
+  }
+
+  .composer textarea {
+    padding-right: 126px;
   }
 }

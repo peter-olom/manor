@@ -69,6 +69,13 @@ services:
         condition: service_healthy
       runtime-broker:
         condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--silent", "--fail", "http://127.0.0.1:8080/livez"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     networks:
       - control
       - internet
@@ -195,6 +202,7 @@ services:
       MANOR_ROLE: runtime-broker
       RUNTIME_BROKER_PORT: 8090
       RUNTIME_CODEX_ACCESS_FILE: /state/codex-broker-access.json
+      RUNTIME_STACK_BINDINGS_FILE: /runtime-state/stack-thread-bindings.json
       RUNTIME_PREVIEW_NETWORK: manor_preview
       RUNTIME_PREVIEW_EGRESS_CONFIG: /opt/manor/config/preview-egress-profiles.json
       RUNTIME_PREVIEW_EGRESS_ADMIN_URL: http://preview-egress:8091
@@ -205,10 +213,13 @@ services:
       RUNTIME_OPERATOR_BASE_URL_INTERNAL: http://butler:8080
       RUNTIME_PLAYWRIGHT_CONTAINER: manor-playwright
       RUNTIME_BROKER_TOKEN: ${RUNTIME_BROKER_TOKEN:-manor-local-runtime-broker-token}
+      RUNTIME_ARTIFACTS_DIR: /artifacts
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config/preview-egress-profiles.json:/opt/manor/config/preview-egress-profiles.json:ro
       - ./state/butler:/state:ro
+      - ./state/runtime-broker:/runtime-state
+      - ./artifacts:/artifacts
     depends_on:
       preview-egress:
         condition: service_healthy

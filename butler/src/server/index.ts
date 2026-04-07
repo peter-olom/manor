@@ -11,6 +11,7 @@ import { CodexAppServerClient } from "./codex-client.js";
 import { CodexHarnessService } from "./codex-harness.js";
 import { ImageReferenceStore } from "./image-store.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
+import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { loadServiceTemplates, toServiceLeaseView } from "./service-templates.js";
 import { ButlerStateStore } from "./state-store.js";
@@ -31,6 +32,8 @@ const stackLeaseTtlMs = Number(process.env.MANOR_STACK_LEASE_TTL_MS ?? `${120 * 
 const serviceLeaseTtlMs = Number(process.env.MANOR_SERVICE_LEASE_TTL_MS ?? `${120 * 60 * 1000}`);
 const leaseReapGraceMs = Number(process.env.MANOR_LEASE_REAP_GRACE_MS ?? `${10 * 60 * 1000}`);
 const leaseSweepIntervalMs = Number(process.env.MANOR_LEASE_SWEEP_INTERVAL_MS ?? "60000");
+const artifactRetentionMs = Number(process.env.MANOR_ARTIFACT_RETENTION_MS ?? `${14 * 24 * 60 * 60 * 1000}`);
+const artifactSweepIntervalMs = Number(process.env.MANOR_ARTIFACT_SWEEP_INTERVAL_MS ?? `${60 * 60 * 1000}`);
 const imageReferenceDir = process.env.MANOR_IMAGE_REFERENCE_DIR ?? path.resolve(process.cwd(), "../artifacts/manor-images");
 const artifactsDir = path.resolve(process.env.MANOR_ARTIFACTS_DIR ?? "/artifacts");
 
@@ -43,7 +46,8 @@ const store = new ButlerStateStore(uiStatePath, {
   previewLeaseTtlMs,
   stackLeaseTtlMs,
   serviceLeaseTtlMs,
-  leaseReapGraceMs
+  leaseReapGraceMs,
+  artifactRetentionMs
 });
 await store.load();
 const imageStore = new ImageReferenceStore(imageReferenceDir);
@@ -130,27 +134,73 @@ function currentSnapshot() {
   return store.getSnapshot(butlerAgent.getSnapshot(), codexClient.getConnectionState());
 }
 
-async function resolveRequestedStack(stackId: string | null): Promise<{
-  id: string;
-  threadId: string | null;
-  worktreePath: string | null;
-} | null> {
-  if (!stackId) {
+function matchStackSelector<T extends { id: string; title: string }>(stacks: T[], selector: string): T | null {
+  const normalizedSelector = selector.trim();
+  if (!normalizedSelector) {
     return null;
   }
 
-  const existing = store.getStackLease(stackId);
-  if (existing) {
-    return existing;
+  const directIdMatch = stacks.find((stack) => stack.id === normalizedSelector);
+  if (directIdMatch) {
+    return directIdMatch;
   }
 
-  const stack = await runtimeBroker.inspectStack(stackId);
+  const exactTitleMatches = stacks.filter((stack) => stack.title === normalizedSelector);
+  if (exactTitleMatches.length === 1) {
+    return exactTitleMatches[0];
+  }
+
+  const foldedSelector = normalizedSelector.toLowerCase();
+  const foldedTitleMatches = stacks.filter((stack) => stack.title.trim().toLowerCase() === foldedSelector);
+  if (foldedTitleMatches.length === 1) {
+    return foldedTitleMatches[0];
+  }
+
+  return null;
+}
+
+function resolveProjectMetadata(cwd: string | null | undefined, fallbackId: string, fallbackLabel: string) {
+  const project = resolveWorkspaceProjectInfo(cwd);
+  if (project.id === "unknown") {
+    return {
+      id: fallbackId,
+      label: fallbackLabel
+    };
+  }
+  return project;
+}
+
+async function resolveRequestedStack(stackSelector: string | null, threadId: string | null): Promise<{
+  id: string;
+  threadId: string | null;
+  worktreePath: string | null;
+  title: string;
+} | null> {
+  if (!stackSelector) {
+    return null;
+  }
+
+  const visibleStacks = store
+    .listStackLeases()
+    .filter((stack) => !threadId || stack.threadId === threadId || !stack.threadId);
+  const storedMatch = matchStackSelector(visibleStacks, stackSelector);
+  if (storedMatch) {
+    return storedMatch;
+  }
+
+  const brokerMatch = matchStackSelector(await runtimeBroker.listStacks(threadId), stackSelector);
+  if (brokerMatch) {
+    store.upsertStackLease(brokerMatch);
+    return brokerMatch;
+  }
+
+  const stack = await runtimeBroker.inspectStack(stackSelector);
   store.upsertStackLease(stack);
   return stack;
 }
 
 async function validateRequestedStack(stackId: string | null, threadId: string | null) {
-  const stack = await resolveRequestedStack(stackId);
+  const stack = await resolveRequestedStack(stackId, threadId);
   if (!stack) {
     return null;
   }
@@ -191,6 +241,62 @@ function readImageReferenceIds(body: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
 }
 
+function decodeArtifactRelativePath(relativePath: string): string {
+  return relativePath
+    .split("/")
+    .map((segment: string) => {
+      try {
+        return decodeURIComponent(segment);
+      } catch {
+        return segment;
+      }
+    })
+    .join(path.sep);
+}
+
+async function pruneEmptyArtifactParents(startPath: string): Promise<void> {
+  let currentPath = path.dirname(startPath);
+  while (currentPath.startsWith(`${artifactsDir}${path.sep}`)) {
+    try {
+      const entries = await fs.readdir(currentPath);
+      if (entries.length > 0) {
+        return;
+      }
+      await fs.rmdir(currentPath);
+      currentPath = path.dirname(currentPath);
+    } catch {
+      return;
+    }
+  }
+}
+
+function sendUnavailableArtifactResponse(
+  response: express.Response,
+  availability: "expired" | "missing",
+  artifact: {
+    label: string;
+    fileName: string;
+    retainedUntilAt: number | null;
+    expiredAt: number | null;
+  }
+): void {
+  const expired = availability === "expired";
+  const message = expired
+    ? "Artifact expired after the 14 day retention window."
+    : "Artifact metadata is still available, but the file itself is no longer present.";
+  response.setHeader("Cache-Control", "private, no-store");
+  response.setHeader("X-Artifact-Availability", availability);
+  response.setHeader("X-Artifact-Error", message);
+  response.status(410).json({
+    error: message,
+    availability,
+    label: artifact.label,
+    fileName: artifact.fileName,
+    retainedUntilAt: artifact.retainedUntilAt,
+    expiredAt: artifact.expiredAt
+  });
+}
+
 function broadcastSnapshot(): void {
   const payload = `data: ${JSON.stringify(currentSnapshot())}\n\n`;
   for (const client of sseClients) {
@@ -208,6 +314,10 @@ app.get("/api/health", (_request, response) => {
     codex: codexClient.getConnectionState(),
     butler: butlerAgent.getSnapshot()
   });
+});
+
+app.get("/livez", (_request, response) => {
+  response.json({ ok: true });
 });
 
 app.get("/api/bootstrap", (_request, response) => {
@@ -261,41 +371,91 @@ app.get("/api/images/:imageId", (request, response) => {
 });
 
 app.get(/^\/api\/artifacts\/(.+)$/, (request, response) => {
-  const relativePath = Array.isArray(request.params) ? request.params[0] : "";
+  const relativePath =
+    typeof request.params?.["0"] === "string"
+      ? request.params["0"]
+      : Array.isArray(request.params)
+        ? request.params[0]
+        : "";
   if (!relativePath) {
     response.status(404).json({ error: "Artifact was not found" });
     return;
   }
 
-  const decodedPath = relativePath
-    .split("/")
-    .map((segment: string) => {
-      try {
-        return decodeURIComponent(segment);
-      } catch {
-        return segment;
-      }
-    })
-    .join(path.sep);
+  const decodedPath = decodeArtifactRelativePath(relativePath);
   const filePath = path.resolve(artifactsDir, decodedPath);
   if (filePath !== artifactsDir && !filePath.startsWith(`${artifactsDir}${path.sep}`)) {
     response.status(400).json({ error: "Artifact path is invalid" });
     return;
   }
 
-  response.setHeader("Cache-Control", "private, max-age=3600");
-  response.sendFile(filePath, (error) => {
+  const downloadRequested = Array.isArray(request.query.download)
+    ? request.query.download[0] === "1"
+    : request.query.download === "1";
+  const knownArtifact = store.findPreviewProofArtifactByFilePath(filePath);
+  const retainedUntilAt =
+    typeof knownArtifact?.artifact.retainedUntilAt === "number" && Number.isFinite(knownArtifact.artifact.retainedUntilAt)
+      ? knownArtifact.artifact.retainedUntilAt
+      : null;
+
+  const sendUnavailable = () => {
+    if (!knownArtifact) {
+      response.status(404).json({ error: "Artifact was not found" });
+      return;
+    }
+
+    const refreshedArtifact = store.findPreviewProofArtifactByFilePath(filePath)?.artifact ?? knownArtifact.artifact;
+    const availability = refreshedArtifact.availability === "expired" ? "expired" : "missing";
+    sendUnavailableArtifactResponse(response, availability, refreshedArtifact);
+  };
+
+  const handleSendError = (error?: NodeJS.ErrnoException | null) => {
     if (!error) {
       return;
     }
 
     if ("statusCode" in error && error.statusCode === 404) {
+      if (knownArtifact) {
+        store.markPreviewProofArtifactMissing(filePath);
+        sendUnavailable();
+        return;
+      }
+
       response.status(404).json({ error: "Artifact was not found" });
       return;
     }
 
     response.status(500).json({ error: "Artifact could not be read" });
-  });
+  };
+
+  if (retainedUntilAt !== null && retainedUntilAt <= Date.now()) {
+    void fs.rm(filePath, { force: true }).catch(() => {});
+    store.markPreviewProofArtifactExpired(filePath, Date.now());
+    void pruneEmptyArtifactParents(filePath).catch(() => {});
+    sendUnavailable();
+    return;
+  }
+
+  void fs
+    .access(filePath)
+    .then(() => {
+      response.setHeader("Cache-Control", "private, max-age=3600");
+      response.setHeader("X-Artifact-Availability", "available");
+      if (downloadRequested) {
+        response.download(filePath, path.basename(filePath), handleSendError);
+        return;
+      }
+
+      response.sendFile(filePath, handleSendError);
+    })
+    .catch(() => {
+      if (knownArtifact) {
+        store.markPreviewProofArtifactMissing(filePath);
+        sendUnavailable();
+        return;
+      }
+      response.status(404).json({ error: "Artifact was not found" });
+    });
 });
 
 app.get("/api/chat/history", (request, response) => {
@@ -528,13 +688,15 @@ app.post("/api/stacks/start", async (request, response) => {
 
   try {
     const thread = threadId ? store.getThread(threadId) ?? null : null;
+    const worktreePath = cwd || thread?.cwd || null;
+    const project = resolveProjectMetadata(worktreePath, thread?.supervisor.projectId ?? "stack", thread?.supervisor.projectLabel ?? "stack");
     const stack = await runtimeBroker.createStack({
       stackId: crypto.randomUUID(),
       threadId,
-      projectId: thread?.supervisor.projectId ?? "stack",
-      projectLabel: thread?.supervisor.projectLabel ?? "stack",
+      projectId: project.id,
+      projectLabel: project.label,
       title,
-      worktreePath: cwd || thread?.cwd || null,
+      worktreePath,
       storageMode: storageMode || null,
       retainsVolumes,
       storageKey: storageKey || null,
@@ -653,6 +815,7 @@ app.post("/api/previews/start", async (request, response) => {
     const thread = threadId ? store.getThread(threadId) ?? null : null;
     const requestedStack = await validateRequestedStack(stackId || null, threadId);
     const worktreePath = cwd || requestedStack?.worktreePath || thread?.cwd || "";
+    const project = resolveProjectMetadata(worktreePath, thread?.supervisor.projectId ?? "preview", thread?.supervisor.projectLabel ?? "preview");
 
     if (!title || !worktreePath || !command || !Number.isFinite(portValue) || portValue <= 0) {
       response.status(400).json({ error: "title, cwd, command, and port are required" });
@@ -662,10 +825,10 @@ app.post("/api/previews/start", async (request, response) => {
     const lease = await runtimeBroker.createLease({
       leaseId: crypto.randomUUID(),
       threadId,
-      projectId: thread?.supervisor.projectId ?? "preview",
-      projectLabel: thread?.supervisor.projectLabel ?? "preview",
+      projectId: project.id,
+      projectLabel: project.label,
       title,
-      stackId: stackId || null,
+      stackId: requestedStack?.id ?? null,
       aliases,
       worktreePath,
       branchName: null,
@@ -775,6 +938,7 @@ app.post("/api/services/start", async (request, response) => {
     const mergedEnv = { ...template.envDefaults, ...env };
     const effectiveTitle = title || `${template.label} ${serviceId.slice(0, 8)}`;
     const worktreePath = cwd || requestedStack?.worktreePath || thread?.cwd || "/repos";
+    const project = resolveProjectMetadata(worktreePath, thread?.supervisor.projectId ?? "service", thread?.supervisor.projectLabel ?? "service");
 
     if (template.runtimeKind === "embedded") {
       const relativePath = template.fileName ?? ".manor/sqlite/app.db";
@@ -787,10 +951,10 @@ app.post("/api/services/start", async (request, response) => {
       const lease = toServiceLeaseView({
         id: serviceId,
         threadId,
-        projectId: thread?.supervisor.projectId ?? "service",
-        projectLabel: thread?.supervisor.projectLabel ?? "service",
+        projectId: project.id,
+        projectLabel: project.label,
         title: effectiveTitle,
-        stackId: stackId || null,
+        stackId: requestedStack?.id ?? null,
         aliases,
         template,
         containerName: `embedded-${serviceId}`,
@@ -811,10 +975,10 @@ app.post("/api/services/start", async (request, response) => {
     const service = await runtimeBroker.createService({
       serviceId,
       threadId,
-      projectId: thread?.supervisor.projectId ?? "service",
-      projectLabel: thread?.supervisor.projectLabel ?? "service",
+      projectId: project.id,
+      projectLabel: project.label,
       title: effectiveTitle,
-      stackId: stackId || null,
+      stackId: requestedStack?.id ?? null,
       aliases,
       templateId: template.id,
       templateLabel: template.label,
@@ -922,6 +1086,7 @@ app.use(/^\/preview\/([^/]+)(\/.*)?$/, (request, response) => {
 });
 
 let leaseSweepInFlight = false;
+let artifactSweepInFlight = false;
 let previewReconcileInFlight = false;
 let serviceReconcileInFlight = false;
 let stackReconcileInFlight = false;
@@ -983,6 +1148,56 @@ const leaseReaper = setInterval(() => {
 
 void sweepExpiredLeases().catch((error) => {
   console.error("Initial lease sweep failed", error);
+});
+
+async function sweepExpiredArtifacts(): Promise<void> {
+  if (artifactSweepInFlight) {
+    return;
+  }
+
+  artifactSweepInFlight = true;
+  try {
+    const now = Date.now();
+    for (const proof of store.listPreviewProofs()) {
+      for (const artifact of proof.verification.artifacts) {
+        if (!artifact.filePath || artifact.availability !== "available") {
+          continue;
+        }
+
+        const retainedUntilAt =
+          typeof artifact.retainedUntilAt === "number" && Number.isFinite(artifact.retainedUntilAt)
+            ? artifact.retainedUntilAt
+            : proof.verification.checkedAt + artifactRetentionMs;
+
+        if (retainedUntilAt <= now) {
+          await fs.rm(artifact.filePath, { force: true }).catch(() => {});
+          store.markPreviewProofArtifactExpired(artifact.filePath, now);
+          await pruneEmptyArtifactParents(artifact.filePath);
+          continue;
+        }
+
+        const exists = await fs
+          .access(artifact.filePath)
+          .then(() => true)
+          .catch(() => false);
+        if (!exists) {
+          store.markPreviewProofArtifactMissing(artifact.filePath, now);
+        }
+      }
+    }
+  } finally {
+    artifactSweepInFlight = false;
+  }
+}
+
+const artifactReaper = setInterval(() => {
+  void sweepExpiredArtifacts().catch((error) => {
+    console.error("Artifact sweep failed", error);
+  });
+}, artifactSweepIntervalMs);
+
+void sweepExpiredArtifacts().catch((error) => {
+  console.error("Initial artifact sweep failed", error);
 });
 
 async function reconcileStackLeases(): Promise<void> {
@@ -1129,5 +1344,6 @@ server.listen(port, "0.0.0.0", () => {
 
 server.on("close", () => {
   clearInterval(leaseReaper);
+  clearInterval(artifactReaper);
   clearInterval(runtimeReconciler);
 });

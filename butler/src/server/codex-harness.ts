@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { decoratePreviewVerification } from "./preview-verification.js";
+import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import { ButlerStateStore } from "./state-store.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, toServiceLeaseView } from "./service-templates.js";
@@ -168,6 +169,7 @@ export class CodexHarnessService {
 
     this.capabilities.set(threadId, nextCapability);
     await this.save();
+    await this.maybeAdoptWorkspaceStack(nextCapability).catch(() => null);
     return nextCapability;
   }
 
@@ -244,12 +246,197 @@ export class CodexHarnessService {
     return lease;
   }
 
-  private requireThreadStack(capability: HarnessCapability, stackId: string) {
-    const lease = this.store.getStackLease(stackId);
-    if (!lease || lease.threadId !== capability.threadId) {
-      throw new Error(`Stack ${stackId} is not attached to this job`);
+  private matchThreadPreview(threadId: string, selector: string) {
+    const normalizedSelector = normalizeString(selector);
+    if (!normalizedSelector) {
+      return null;
     }
-    return lease;
+
+    const threadPreviews = this.store
+      .listPreviewLeases()
+      .filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
+    const directIdMatch = threadPreviews.find((lease) => lease.id === normalizedSelector);
+    if (directIdMatch) {
+      return directIdMatch;
+    }
+
+    const exactTitleMatches = threadPreviews.filter((lease) => lease.title === normalizedSelector);
+    if (exactTitleMatches.length === 1) {
+      return exactTitleMatches[0];
+    }
+
+    const exactAliasMatches = threadPreviews.filter((lease) => lease.aliases.includes(normalizedSelector));
+    if (exactAliasMatches.length === 1) {
+      return exactAliasMatches[0];
+    }
+
+    const foldedSelector = normalizedSelector.toLowerCase();
+    const foldedTitleMatches = threadPreviews.filter((lease) => lease.title.trim().toLowerCase() === foldedSelector);
+    if (foldedTitleMatches.length === 1) {
+      return foldedTitleMatches[0];
+    }
+
+    const foldedAliasMatches = threadPreviews.filter((lease) =>
+      lease.aliases.some((alias) => alias.trim().toLowerCase() === foldedSelector)
+    );
+    if (foldedAliasMatches.length === 1) {
+      return foldedAliasMatches[0];
+    }
+
+    return null;
+  }
+
+  private matchThreadService(threadId: string, selector: string) {
+    const normalizedSelector = normalizeString(selector);
+    if (!normalizedSelector) {
+      return null;
+    }
+
+    const threadServices = this.store
+      .listServiceLeases()
+      .filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
+    const directIdMatch = threadServices.find((lease) => lease.id === normalizedSelector);
+    if (directIdMatch) {
+      return directIdMatch;
+    }
+
+    const exactTitleMatches = threadServices.filter((lease) => lease.title === normalizedSelector);
+    if (exactTitleMatches.length === 1) {
+      return exactTitleMatches[0];
+    }
+
+    const exactAliasMatches = threadServices.filter((lease) => lease.aliases.includes(normalizedSelector));
+    if (exactAliasMatches.length === 1) {
+      return exactAliasMatches[0];
+    }
+
+    const foldedSelector = normalizedSelector.toLowerCase();
+    const foldedTitleMatches = threadServices.filter((lease) => lease.title.trim().toLowerCase() === foldedSelector);
+    if (foldedTitleMatches.length === 1) {
+      return foldedTitleMatches[0];
+    }
+
+    const foldedAliasMatches = threadServices.filter((lease) =>
+      lease.aliases.some((alias) => alias.trim().toLowerCase() === foldedSelector)
+    );
+    if (foldedAliasMatches.length === 1) {
+      return foldedAliasMatches[0];
+    }
+
+    return null;
+  }
+
+  private matchThreadStack(threadId: string, selector: string) {
+    const normalizedSelector = normalizeString(selector);
+    if (!normalizedSelector) {
+      return null;
+    }
+
+    const threadStacks = this.store
+      .listStackLeases()
+      .filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
+    const directIdMatch = threadStacks.find((lease) => lease.id === normalizedSelector);
+    if (directIdMatch) {
+      return directIdMatch;
+    }
+
+    const exactTitleMatches = threadStacks.filter((lease) => lease.title === normalizedSelector);
+    if (exactTitleMatches.length === 1) {
+      return exactTitleMatches[0];
+    }
+
+    const foldedSelector = normalizedSelector.toLowerCase();
+    const foldedTitleMatches = threadStacks.filter((lease) => lease.title.trim().toLowerCase() === foldedSelector);
+    if (foldedTitleMatches.length === 1) {
+      return foldedTitleMatches[0];
+    }
+
+    return null;
+  }
+
+  private resolveWorkspaceProject(
+    cwd: string | null | undefined,
+    thread: ReturnType<CodexHarnessService["getThreadContext"]>
+  ) {
+    const project = resolveWorkspaceProjectInfo(cwd || thread.cwd);
+    if (project.id === "unknown") {
+      return {
+        id: thread.supervisor.projectId,
+        label: thread.supervisor.projectLabel
+      };
+    }
+
+    return project;
+  }
+
+  private async resolveThreadStack(capability: HarnessCapability, stackSelector: string) {
+    const storedMatch = this.matchThreadStack(capability.threadId, stackSelector);
+    if (storedMatch) {
+      return storedMatch;
+    }
+
+    await this.reconcileThreadStacks(capability.threadId);
+    const refreshedMatch = this.matchThreadStack(capability.threadId, stackSelector);
+    if (refreshedMatch) {
+      return refreshedMatch;
+    }
+
+    throw new Error(`Stack ${stackSelector} is not attached to this job`);
+  }
+
+  private async resolveThreadPreview(capability: HarnessCapability, previewSelector: string) {
+    const storedMatch = this.matchThreadPreview(capability.threadId, previewSelector);
+    if (storedMatch) {
+      return storedMatch;
+    }
+
+    await this.reconcileThreadPreviews(capability.threadId);
+    const refreshedMatch = this.matchThreadPreview(capability.threadId, previewSelector);
+    if (refreshedMatch) {
+      return refreshedMatch;
+    }
+
+    throw new Error(`Preview ${previewSelector} is not attached to this job`);
+  }
+
+  private async resolveThreadService(capability: HarnessCapability, serviceSelector: string) {
+    const storedMatch = this.matchThreadService(capability.threadId, serviceSelector);
+    if (storedMatch) {
+      return storedMatch;
+    }
+
+    await this.reconcileThreadServices(capability.threadId);
+    const refreshedMatch = this.matchThreadService(capability.threadId, serviceSelector);
+    if (refreshedMatch) {
+      return refreshedMatch;
+    }
+
+    throw new Error(`Service ${serviceSelector} is not attached to this job`);
+  }
+
+  private async maybeAdoptWorkspaceStack(capability: HarnessCapability) {
+    const attachedStacks = await this.runtimeBroker.listStacks(capability.threadId);
+    for (const stack of attachedStacks) {
+      this.store.upsertStackLease(stack);
+    }
+    if (attachedStacks.length > 0) {
+      return null;
+    }
+
+    const candidates = (await this.runtimeBroker.listStacks()).filter(
+      (stack) => !stack.threadId && normalizeString(stack.worktreePath) === capability.cwd
+    );
+    if (candidates.length !== 1) {
+      return null;
+    }
+
+    const adopted = await this.runtimeBroker.adoptStack({
+      stackId: candidates[0].id,
+      threadId: capability.threadId
+    });
+    this.store.upsertStackLease(adopted);
+    this.store.addEvent(capability.threadId, "harness/stack/adopt", `Adopted stack ${adopted.id}`);
+    return adopted;
   }
 
   private getServiceTemplate(templateId: string): LoadedServiceTemplate {
@@ -371,6 +558,7 @@ export class CodexHarnessService {
 
   private describeCapability(capability: HarnessCapability): string {
     const thread = this.getThreadContext(capability);
+    const project = this.resolveWorkspaceProject(capability.cwd, thread);
     const stacks = this.store.listStackLeases().filter((lease) => lease.threadId === capability.threadId && lease.status !== "stopped");
     const previews = this.store.listPreviewLeases().filter((lease) => lease.threadId === capability.threadId && lease.status !== "stopped");
     const services = this.store.listServiceLeases().filter((lease) => lease.threadId === capability.threadId && lease.status !== "stopped");
@@ -391,7 +579,7 @@ export class CodexHarnessService {
     return [
       `Job ${thread.id}`,
       `Workspace: ${capability.cwd}`,
-      `Project: ${thread.supervisor.projectLabel}`,
+      `Project: ${project.label}`,
       `Summary: ${thread.supervisor.summary}`,
       stackLines,
       previewLines,
@@ -410,7 +598,12 @@ export class CodexHarnessService {
     const params = input.params ?? {};
     const thread = this.getThreadContext(capability);
 
+    if (action === "context" || action.startsWith("stack.") || action.startsWith("preview.") || action.startsWith("service.")) {
+      await this.maybeAdoptWorkspaceStack(capability);
+    }
+
     if (action === "context") {
+      const project = this.resolveWorkspaceProject(capability.cwd, thread);
       const stacks = await this.reconcileThreadStacks(capability.threadId);
       const previews = await this.reconcileThreadPreviews(capability.threadId);
       const services = await this.reconcileThreadServices(capability.threadId);
@@ -418,7 +611,7 @@ export class CodexHarnessService {
         text: [
           `Job ${thread.id}`,
           `Workspace: ${capability.cwd}`,
-          `Project: ${thread.supervisor.projectLabel}`,
+          `Project: ${project.label}`,
           `Summary: ${thread.supervisor.summary}`,
           stacks.length === 0
             ? "Stacks: none"
@@ -500,6 +693,7 @@ export class CodexHarnessService {
     if (action === "stack.start" || action === "stack.start_stateful") {
       const title = normalizeString(params.title) || `${thread.supervisor.projectLabel} stack`;
       const cwd = normalizeString(params.cwd) || capability.cwd;
+      const project = this.resolveWorkspaceProject(cwd, thread);
       const requestedStorageMode =
         action === "stack.start_stateful"
           ? normalizeStackStorageMode(params.storageMode) || "job"
@@ -510,8 +704,8 @@ export class CodexHarnessService {
       const stack = await this.runtimeBroker.createStack({
         stackId: crypto.randomUUID(),
         threadId: capability.threadId,
-        projectId: thread.supervisor.projectId,
-        projectLabel: thread.supervisor.projectLabel,
+        projectId: project.id,
+        projectLabel: project.label,
         title,
         worktreePath: cwd,
         storageMode: requestedStorageMode,
@@ -528,58 +722,56 @@ export class CodexHarnessService {
     }
 
     if (action === "stack.inspect") {
-      const stackId = normalizeString(params.stackId);
-      this.requireThreadStack(capability, stackId);
-      const stack = await this.runtimeBroker.inspectStack(stackId);
-      this.store.upsertStackLease(stack);
-      this.store.noteStackLeaseActivity(stackId);
+      const stack = await this.resolveThreadStack(capability, normalizeString(params.stackId));
+      const inspected = await this.runtimeBroker.inspectStack(stack.id);
+      this.store.upsertStackLease(inspected);
+      this.store.noteStackLeaseActivity(inspected.id);
       return {
-        text: `${stack.title} is ${stack.status}. Network=${stack.networkName}. ${this.describeStackStorage(stack)}. Previews=${stack.previewIds.length}. Services=${stack.serviceIds.length}.`,
-        data: { stack }
+        text: `${inspected.title} is ${inspected.status}. Network=${inspected.networkName}. ${this.describeStackStorage(inspected)}. Previews=${inspected.previewIds.length}. Services=${inspected.serviceIds.length}.`,
+        data: { stack: inspected }
       };
     }
 
     if (action === "stack.promote") {
-      const stackId = normalizeString(params.stackId);
+      const stack = await this.resolveThreadStack(capability, normalizeString(params.stackId));
       const targetStorageKey = normalizeString(params.targetStorageKey) || null;
-      this.requireThreadStack(capability, stackId);
       const promotion = await this.runtimeBroker.promoteStack({
-        stackId,
+        stackId: stack.id,
         targetStorageKey
       });
-      const stack = await this.runtimeBroker.inspectStack(stackId);
-      this.store.upsertStackLease(stack);
-      this.store.noteStackLeaseActivity(stackId);
+      const inspected = await this.runtimeBroker.inspectStack(stack.id);
+      this.store.upsertStackLease(inspected);
+      this.store.noteStackLeaseActivity(inspected.id);
       this.store.addEvent(
         capability.threadId,
         "harness/stack/promote",
-        `Promoted stack ${stackId} to ${promotion.targetStorageKey}`
+        `Promoted stack ${inspected.id} to ${promotion.targetStorageKey}`
       );
       return {
         text: `Promoted ${promotion.promotedVolumes.length} volumes from ${promotion.sourceStorageKey} to ${promotion.targetStorageKey}.`,
-        data: { promotion, stack }
+        data: { promotion, stack: inspected }
       };
     }
 
     if (action === "stack.stop") {
-      const stackId = normalizeString(params.stackId);
+      const stack = await this.resolveThreadStack(capability, normalizeString(params.stackId));
       const dropVolumes = params.dropVolumes === true;
-      this.requireThreadStack(capability, stackId);
-      await this.runtimeBroker.stopStack(stackId, { dropVolumes });
-      this.removeStackArtifacts(stackId);
-      this.store.addEvent(capability.threadId, "harness/stack/stop", `Stopped stack ${stackId}`);
+      await this.runtimeBroker.stopStack(stack.id, { dropVolumes });
+      this.removeStackArtifacts(stack.id);
+      this.store.addEvent(capability.threadId, "harness/stack/stop", `Stopped stack ${stack.id}`);
       return {
-        text: `Stopped stack ${stackId}.${dropVolumes ? " Dropped retained volumes." : ""}`,
-        data: { stackId, dropVolumes }
+        text: `Stopped stack ${stack.id}.${dropVolumes ? " Dropped retained volumes." : ""}`,
+        data: { stackId: stack.id, dropVolumes }
       };
     }
 
     if (action === "preview.start") {
       const title = normalizeString(params.title) || `${thread.supervisor.projectLabel} preview`;
       const command = normalizeString(params.command);
-      const stackId = normalizeString(params.stackId) || null;
-      const stack = stackId ? this.requireThreadStack(capability, stackId) : null;
+      const stackSelector = normalizeString(params.stackId) || null;
+      const stack = stackSelector ? await this.resolveThreadStack(capability, stackSelector) : null;
       const cwd = normalizeString(params.cwd) || stack?.worktreePath || capability.cwd;
+      const project = this.resolveWorkspaceProject(cwd, thread);
       const aliases = normalizeStringArray(params.aliases);
       const env = normalizeEnv(params.env);
       const port = typeof params.port === "number" ? params.port : Number(params.port ?? 0);
@@ -599,10 +791,10 @@ export class CodexHarnessService {
       const lease = await this.runtimeBroker.createLease({
         leaseId: crypto.randomUUID(),
         threadId: capability.threadId,
-        projectId: thread.supervisor.projectId,
-        projectLabel: thread.supervisor.projectLabel,
+        projectId: project.id,
+        projectLabel: project.label,
         title,
-        stackId,
+        stackId: stack?.id ?? null,
         aliases,
         worktreePath: cwd,
         branchName: null,
@@ -627,11 +819,10 @@ export class CodexHarnessService {
     }
 
     if (action === "preview.inspect") {
-      const leaseId = normalizeString(params.leaseId);
-      this.requireThreadPreview(capability, leaseId);
-      const lease = await this.runtimeBroker.inspectLease(leaseId);
+      const preview = await this.resolveThreadPreview(capability, normalizeString(params.leaseId));
+      const lease = await this.runtimeBroker.inspectLease(preview.id);
       this.store.upsertPreviewLease(lease);
-      this.store.notePreviewLeaseActivity(leaseId);
+      this.store.notePreviewLeaseActivity(lease.id);
       return {
         text: `${lease.title} is ${lease.runtime.status}. Bootstrap=${lease.bootstrap.phase}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}.`,
         data: { lease }
@@ -639,10 +830,10 @@ export class CodexHarnessService {
     }
 
     if (action === "preview.processes") {
-      const leaseId = normalizeString(params.leaseId);
-      this.requireThreadPreviewReady(capability, leaseId);
-      const result = await this.runtimeBroker.listProcesses(leaseId);
-      this.store.notePreviewLeaseActivity(leaseId);
+      const preview = await this.resolveThreadPreview(capability, normalizeString(params.leaseId));
+      this.requireThreadPreviewReady(capability, preview.id);
+      const result = await this.runtimeBroker.listProcesses(preview.id);
+      this.store.notePreviewLeaseActivity(preview.id);
       const rows =
         result.processes.length === 0
           ? "No processes were reported."
@@ -654,11 +845,11 @@ export class CodexHarnessService {
     }
 
     if (action === "preview.logs") {
-      const leaseId = normalizeString(params.leaseId);
+      const preview = await this.resolveThreadPreview(capability, normalizeString(params.leaseId));
       const tail = typeof params.tail === "number" ? params.tail : Number(params.tail ?? 200);
-      this.requireThreadPreviewReady(capability, leaseId);
-      const result = await this.runtimeBroker.readLogs(leaseId, Number.isFinite(tail) ? tail : 200);
-      this.store.notePreviewLeaseActivity(leaseId);
+      this.requireThreadPreviewReady(capability, preview.id);
+      const result = await this.runtimeBroker.readLogs(preview.id, Number.isFinite(tail) ? tail : 200);
+      this.store.notePreviewLeaseActivity(preview.id);
       return {
         text: result.logs || "No logs were returned.",
         data: { logs: result }
@@ -666,16 +857,24 @@ export class CodexHarnessService {
     }
 
     if (action === "preview.exec") {
-      const leaseId = normalizeString(params.leaseId);
+      const preview = await this.resolveThreadPreview(capability, normalizeString(params.leaseId));
       const command = normalizeString(params.command);
       const cwd = normalizeString(params.cwd) || undefined;
-      this.requireThreadPreviewReady(capability, leaseId);
+      const stdin = typeof params.stdin === "string" ? params.stdin : undefined;
+      const stdinProvided = params.stdinProvided === true;
+      this.requireThreadPreviewReady(capability, preview.id);
       if (!command) {
         throw new Error("preview.exec requires command");
       }
 
-      const result = await this.runtimeBroker.execInLease({ leaseId, command, cwd });
-      this.store.notePreviewLeaseActivity(leaseId);
+      const result = await this.runtimeBroker.execInLease({
+        leaseId: preview.id,
+        command,
+        cwd,
+        stdin,
+        stdinProvided
+      });
+      this.store.notePreviewLeaseActivity(preview.id);
       const body = [
         `exitCode=${result.exitCode ?? "unknown"}`,
         result.stdout.trim() ? `stdout:\n${result.stdout.trim()}` : "",
@@ -690,12 +889,12 @@ export class CodexHarnessService {
     }
 
     if (action === "preview.verify") {
-      const leaseId = normalizeString(params.leaseId);
+      const preview = await this.resolveThreadPreview(capability, normalizeString(params.leaseId));
       const mode = normalizeString(params.mode) === "headful" ? "headful" : "headless";
-      this.requireThreadPreviewReady(capability, leaseId);
-      this.store.notePreviewLeaseActivity(leaseId);
-      const result = decoratePreviewVerification(await this.runtimeBroker.verifyLease({ leaseId, mode }));
-      this.store.recordPreviewLeaseVerification(leaseId, result);
+      this.requireThreadPreviewReady(capability, preview.id);
+      this.store.notePreviewLeaseActivity(preview.id);
+      const result = decoratePreviewVerification(await this.runtimeBroker.verifyLease({ leaseId: preview.id, mode }));
+      this.store.recordPreviewLeaseVerification(preview.id, result);
       return {
         text:
           result.ok
@@ -705,16 +904,55 @@ export class CodexHarnessService {
       };
     }
 
-    if (action === "preview.stop") {
-      const leaseId = normalizeString(params.leaseId);
-      this.requireThreadPreview(capability, leaseId);
-      this.store.markPreviewLeaseStopping(leaseId);
-      await this.runtimeBroker.stopLease(leaseId);
-      this.store.removePreviewLease(leaseId);
-      this.store.addEvent(capability.threadId, "harness/preview/stop", `Stopped preview ${leaseId}`);
+    if (action === "preview.proof") {
+      const preview = await this.resolveThreadPreview(capability, normalizeString(params.leaseId));
+      const runId = normalizeString(params.runId) || null;
+      const verification = preview.lastVerification ? decoratePreviewVerification(preview.lastVerification) : null;
+      if (!verification) {
+        throw new Error(`Preview ${preview.id} has no verification proof yet.`);
+      }
+      if (runId && verification.runId !== runId) {
+        throw new Error(`Preview ${preview.id} does not have verification run ${runId}.`);
+      }
+
+      const artifactLines = await Promise.all(
+        verification.artifacts.map(async (artifact) => {
+          const exists =
+            artifact.availability === "available" && artifact.filePath
+              ? await fs
+                  .stat(artifact.filePath)
+                  .then(() => true)
+                  .catch(() => false)
+              : false;
+          const availability = artifact.availability === "available" && exists ? "ready" : artifact.availability;
+          return `${artifact.kind} | file=${artifact.filePath || "(none)"} | url=${artifact.url ?? "(none)"} | download=${artifact.downloadUrl ?? "(none)"} | ${availability}`;
+        })
+      );
+
+      this.store.notePreviewLeaseActivity(preview.id);
       return {
-        text: `Stopped preview ${leaseId}.`,
-        data: { leaseId }
+        text: [
+          `Preview ${preview.id}`,
+          `Verification run=${verification.runId} mode=${verification.mode} ok=${verification.ok} status=${verification.status ?? "none"}`,
+          artifactLines.length > 0 ? `Artifacts:\n${artifactLines.join("\n")}` : "Artifacts: none"
+        ].join("\n"),
+        data: {
+          preview,
+          verification
+        }
+      };
+    }
+
+    if (action === "preview.stop") {
+      const preview = await this.resolveThreadPreview(capability, normalizeString(params.leaseId));
+      this.requireThreadPreview(capability, preview.id);
+      this.store.markPreviewLeaseStopping(preview.id);
+      await this.runtimeBroker.stopLease(preview.id);
+      this.store.removePreviewLease(preview.id);
+      this.store.addEvent(capability.threadId, "harness/preview/stop", `Stopped preview ${preview.id}`);
+      return {
+        text: `Stopped preview ${preview.id}.`,
+        data: { leaseId: preview.id }
       };
     }
 
@@ -741,12 +979,34 @@ export class CodexHarnessService {
       };
     }
 
+    if (action === "service.processes") {
+      const service = await this.resolveThreadService(capability, normalizeString(params.serviceId));
+      if (service.runtimeKind !== "container") {
+        this.store.noteServiceLeaseActivity(service.id);
+        return {
+          text: `${service.title} is embedded and does not expose container processes.`,
+          data: { service }
+        };
+      }
+      const result = await this.runtimeBroker.listServiceProcesses(service.id);
+      this.store.noteServiceLeaseActivity(service.id);
+      const rows =
+        result.processes.length === 0
+          ? "No processes were reported."
+          : [result.titles.join(" | "), ...result.processes.map((row) => row.join(" | "))].join("\n");
+      return {
+        text: rows,
+        data: { processes: result }
+      };
+    }
+
     if (action === "service.start") {
       const templateId = normalizeString(params.templateId);
       const title = normalizeString(params.title);
-      const stackId = normalizeString(params.stackId) || null;
-      const stack = stackId ? this.requireThreadStack(capability, stackId) : null;
+      const stackSelector = normalizeString(params.stackId) || null;
+      const stack = stackSelector ? await this.resolveThreadStack(capability, stackSelector) : null;
       const cwd = normalizeString(params.cwd) || stack?.worktreePath || capability.cwd;
+      const project = this.resolveWorkspaceProject(cwd, thread);
       const aliases = normalizeStringArray(params.aliases);
       const env = normalizeEnv(params.env);
       const template = this.serviceTemplateMap.get(templateId);
@@ -763,10 +1023,10 @@ export class CodexHarnessService {
         const lease = toServiceLeaseView({
           id: crypto.randomUUID(),
           threadId: capability.threadId,
-          projectId: thread.supervisor.projectId,
-          projectLabel: thread.supervisor.projectLabel,
+          projectId: project.id,
+          projectLabel: project.label,
           title: effectiveTitle,
-          stackId,
+          stackId: stack?.id ?? null,
           aliases,
           template,
           containerName: `embedded-${crypto.randomUUID().slice(0, 8)}`,
@@ -791,10 +1051,10 @@ export class CodexHarnessService {
       const service = await this.runtimeBroker.createService({
         serviceId: crypto.randomUUID(),
         threadId: capability.threadId,
-        projectId: thread.supervisor.projectId,
-        projectLabel: thread.supervisor.projectLabel,
+        projectId: project.id,
+        projectLabel: project.label,
         title: effectiveTitle,
-        stackId,
+        stackId: stack?.id ?? null,
         aliases,
         templateId: template.id,
         templateLabel: template.label,
@@ -839,16 +1099,15 @@ export class CodexHarnessService {
     }
 
     if (action === "service.inspect") {
-      const serviceId = normalizeString(params.serviceId);
-      const existing = this.requireThreadService(capability, serviceId);
+      const existing = await this.resolveThreadService(capability, normalizeString(params.serviceId));
       if (existing.runtimeKind === "embedded") {
-        this.store.noteServiceLeaseActivity(serviceId);
+        this.store.noteServiceLeaseActivity(existing.id);
         return {
           text: `${existing.title} is embedded at ${existing.connection.uri ?? existing.worktreePath ?? "(unknown path)"}.`,
           data: { service: existing }
         };
       }
-      const inspected = await this.runtimeBroker.inspectService(serviceId);
+      const inspected = await this.runtimeBroker.inspectService(existing.id);
       const template = this.getServiceTemplate(inspected.templateId);
       const lease = toServiceLeaseView({
         id: inspected.id,
@@ -874,7 +1133,7 @@ export class CodexHarnessService {
         env: inspected.env
       });
       this.store.upsertServiceLease(lease);
-      this.store.noteServiceLeaseActivity(serviceId);
+      this.store.noteServiceLeaseActivity(lease.id);
       return {
         text: `${lease.title} is ${inspected.runtime.status}. Host=${lease.connection.host} Port=${lease.connection.port}. Storage=${lease.storageKind}${lease.volumeName ? `(${lease.volumeName})` : ""}.`,
         data: { service: lease, runtime: inspected.runtime }
@@ -882,18 +1141,17 @@ export class CodexHarnessService {
     }
 
     if (action === "service.logs") {
-      const serviceId = normalizeString(params.serviceId);
+      const service = await this.resolveThreadService(capability, normalizeString(params.serviceId));
       const tail = typeof params.tail === "number" ? params.tail : Number(params.tail ?? 200);
-      const service = this.requireThreadService(capability, serviceId);
       if (service.runtimeKind !== "container") {
-        this.store.noteServiceLeaseActivity(serviceId);
+        this.store.noteServiceLeaseActivity(service.id);
         return {
           text: `${service.title} is embedded and does not expose container logs.`,
           data: { service }
         };
       }
-      const result = await this.runtimeBroker.readServiceLogs(serviceId, Number.isFinite(tail) ? tail : 200);
-      this.store.noteServiceLeaseActivity(serviceId);
+      const result = await this.runtimeBroker.readServiceLogs(service.id, Number.isFinite(tail) ? tail : 200);
+      this.store.noteServiceLeaseActivity(service.id);
       return {
         text: result.logs || "No logs were returned.",
         data: { logs: result }
@@ -901,18 +1159,25 @@ export class CodexHarnessService {
     }
 
     if (action === "service.exec") {
-      const serviceId = normalizeString(params.serviceId);
+      const service = await this.resolveThreadService(capability, normalizeString(params.serviceId));
       const command = normalizeString(params.command);
       const cwd = normalizeString(params.cwd) || undefined;
-      const service = this.requireThreadService(capability, serviceId);
+      const stdin = typeof params.stdin === "string" ? params.stdin : undefined;
+      const stdinProvided = params.stdinProvided === true;
       if (service.runtimeKind !== "container") {
         throw new Error(`${service.title} is embedded and does not support container exec`);
       }
       if (!command) {
         throw new Error("service.exec requires command");
       }
-      const result = await this.runtimeBroker.execInService({ serviceId, command, cwd });
-      this.store.noteServiceLeaseActivity(serviceId);
+      const result = await this.runtimeBroker.execInService({
+        serviceId: service.id,
+        command,
+        cwd,
+        stdin,
+        stdinProvided
+      });
+      this.store.noteServiceLeaseActivity(service.id);
       const body = [
         `exitCode=${result.exitCode ?? "unknown"}`,
         result.stdout.trim() ? `stdout:\n${result.stdout.trim()}` : "",
@@ -927,16 +1192,15 @@ export class CodexHarnessService {
     }
 
     if (action === "service.stop") {
-      const serviceId = normalizeString(params.serviceId);
-      const service = this.requireThreadService(capability, serviceId);
+      const service = await this.resolveThreadService(capability, normalizeString(params.serviceId));
       if (service.runtimeKind === "container") {
-        await this.runtimeBroker.stopService(serviceId);
+        await this.runtimeBroker.stopService(service.id);
       }
-      this.store.removeServiceLease(serviceId);
-      this.store.addEvent(capability.threadId, "harness/service/stop", `Stopped service ${serviceId}`);
+      this.store.removeServiceLease(service.id);
+      this.store.addEvent(capability.threadId, "harness/service/stop", `Stopped service ${service.id}`);
       return {
         text: `Stopped ${service.title}.`,
-        data: { serviceId }
+        data: { serviceId: service.id }
       };
     }
 

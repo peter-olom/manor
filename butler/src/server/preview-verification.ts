@@ -5,7 +5,7 @@ import type { PreviewVerificationArtifactView, PreviewVerificationView } from ".
 const artifactsRootDir = path.resolve(process.env.MANOR_ARTIFACTS_DIR ?? "/artifacts");
 const artifactsPublicBasePath = process.env.MANOR_ARTIFACTS_PUBLIC_BASE_PATH ?? "/api/artifacts";
 
-function toArtifactPublicUrl(filePath: string): string | null {
+export function toArtifactPublicUrl(filePath: string): string | null {
   if (!filePath) {
     return null;
   }
@@ -19,10 +19,20 @@ function toArtifactPublicUrl(filePath: string): string | null {
   return `${artifactsPublicBasePath}/${relativePath}`;
 }
 
+export function toArtifactDownloadUrl(filePath: string): string | null {
+  const publicUrl = toArtifactPublicUrl(filePath);
+  if (!publicUrl) {
+    return null;
+  }
+
+  return `${publicUrl}?download=1`;
+}
+
 function decorateArtifact(artifact: PreviewVerificationArtifactView): PreviewVerificationArtifactView {
   return {
     ...artifact,
-    url: artifact.url ?? toArtifactPublicUrl(artifact.filePath)
+    url: artifact.url ?? toArtifactPublicUrl(artifact.filePath),
+    downloadUrl: artifact.downloadUrl ?? toArtifactDownloadUrl(artifact.filePath)
   };
 }
 
@@ -32,4 +42,3 @@ export function decoratePreviewVerification(verification: PreviewVerificationVie
     artifacts: Array.isArray(verification.artifacts) ? verification.artifacts.map((artifact) => decorateArtifact(artifact)) : []
   };
 }
-

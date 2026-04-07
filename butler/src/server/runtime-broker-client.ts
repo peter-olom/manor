@@ -216,12 +216,16 @@ export class RuntimeBrokerClient {
     leaseId: string;
     command: string;
     cwd?: string;
+    stdin?: string;
+    stdinProvided?: boolean;
   }): Promise<LeaseExecPayload> {
     return this.request<LeaseExecPayload>(`/leases/${input.leaseId}/exec`, {
       method: "POST",
       body: JSON.stringify({
         command: input.command,
-        cwd: input.cwd
+        cwd: input.cwd,
+        stdin: input.stdin,
+        stdinProvided: input.stdinProvided === true
       })
     });
   }
@@ -291,6 +295,18 @@ export class RuntimeBrokerClient {
     return this.request<StackPayload>(`/stacks/${stackId}`);
   }
 
+  async adoptStack(input: {
+    stackId: string;
+    threadId: string;
+  }): Promise<StackPayload> {
+    return this.request<StackPayload>(`/stacks/${input.stackId}/adopt`, {
+      method: "POST",
+      body: JSON.stringify({
+        threadId: input.threadId
+      })
+    });
+  }
+
   async promoteStack(input: {
     stackId: string;
     targetStorageKey?: string | null;
@@ -347,12 +363,16 @@ export class RuntimeBrokerClient {
     serviceId: string;
     command: string;
     cwd?: string;
+    stdin?: string;
+    stdinProvided?: boolean;
   }): Promise<LeaseExecPayload> {
     return this.request<LeaseExecPayload>(`/services/${input.serviceId}/exec`, {
       method: "POST",
       body: JSON.stringify({
         command: input.command,
-        cwd: input.cwd
+        cwd: input.cwd,
+        stdin: input.stdin,
+        stdinProvided: input.stdinProvided === true
       })
     });
   }

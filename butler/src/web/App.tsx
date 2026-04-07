@@ -31,6 +31,7 @@ const THEME_STORAGE_KEY = "manor.butler.themePreference";
 const BUTLER_DRAFT_STORAGE_KEY = "manor.butler.draft";
 const THREAD_DRAFT_STORAGE_KEY_PREFIX = "manor.butler.threadDraft.";
 const BUTLER_NOTICE_VISIBILITY_STORAGE_KEY = "manor.butler.showNotices";
+const BUTLER_RUNTIME_VISIBILITY_STORAGE_KEY = "manor.butler.showRuntime";
 const DRAFT_PERSIST_DELAY_MS = 180;
 const BUTLER_HISTORY_PAGE_SIZE = 250;
 const BUTLER_HISTORY_AUTOLOAD_THRESHOLD_PX = 240;
@@ -93,14 +94,25 @@ type PreviewableImage = {
   url: string;
 };
 
+type PreviewMedia = {
+  name: string;
+  url: string;
+  kind: "image" | "video";
+  downloadUrl: string | null;
+};
+
 type PreviewVerificationArtifact = {
-  kind: "manifest" | "screenshot" | "trace" | "html" | "other";
+  kind: "manifest" | "screenshot" | "video" | "trace" | "html" | "other";
   label: string;
   fileName: string;
   filePath: string;
   contentType: string;
   sizeBytes: number | null;
   url: string | null;
+  downloadUrl: string | null;
+  availability: "available" | "expired" | "missing";
+  retainedUntilAt: number | null;
+  expiredAt: number | null;
 };
 
 type PreviewBrowserMode = "headless" | "headful";
@@ -132,6 +144,19 @@ type PreviewVerification = {
     method: string;
     errorText: string | null;
   }>;
+};
+
+type PreviewProofRecord = {
+  id: string;
+  previewId: string;
+  threadId: string | null;
+  projectId: string;
+  projectLabel: string;
+  previewTitle: string;
+  stackId: string | null;
+  verification: PreviewVerification;
+  createdAt: number;
+  updatedAt: number;
 };
 
 type ModelOption = {
@@ -273,6 +298,7 @@ type Snapshot = {
       lastAborted: boolean;
       lastError: string | null;
     };
+    latestPreviewProofsByThreadId: Record<string, PreviewProofRecord>;
     stacks: Array<{
       id: string;
       threadId: string | null;
@@ -503,7 +529,9 @@ function formatVerificationSummary(verification: PreviewVerification): string {
   const issues = [
     verification.summary.consoleMessageCount > 0 ? `${verification.summary.consoleMessageCount} console` : null,
     verification.summary.pageErrorCount > 0 ? `${verification.summary.pageErrorCount} page errors` : null,
-    verification.summary.failedRequestCount > 0 ? `${verification.summary.failedRequestCount} failed requests` : null
+    verification.summary.failedRequestCount > 0 ? `${verification.summary.failedRequestCount} failed requests` : null,
+    verification.artifacts.some((artifact) => artifact.availability === "expired") ? "artifacts expired" : null,
+    verification.artifacts.some((artifact) => artifact.availability === "missing") ? "artifacts missing" : null
   ].filter(Boolean);
 
   const lead = `${verification.mode === "headful" ? "headed" : "headless"} ${verification.ok ? "passed" : "failed"}`;
@@ -542,6 +570,48 @@ function findVerificationArtifact(
   }
   return verification.artifacts.find((artifact) => artifact.kind === kind) ?? null;
 }
+
+function describeArtifactAvailability(artifact: PreviewVerificationArtifact): {
+  available: boolean;
+  label: string;
+  detail: string | null;
+} {
+  const kindLabel =
+    artifact.kind === "screenshot"
+      ? "Screenshot"
+      : artifact.kind === "video"
+        ? "Video"
+        : artifact.kind === "manifest"
+          ? "Manifest"
+          : artifact.kind === "trace"
+            ? "Trace"
+            : artifact.kind === "html"
+              ? "HTML"
+              : artifact.label;
+
+  if (artifact.availability === "expired") {
+    return {
+      available: false,
+      label: `${kindLabel} expired`,
+      detail: artifact.retainedUntilAt ? `Expired after ${new Date(artifact.retainedUntilAt).toLocaleDateString()}` : "Expired after retention"
+    };
+  }
+
+  if (artifact.availability === "missing") {
+    return {
+      available: false,
+      label: `${kindLabel} unavailable`,
+      detail: "The metadata remains, but the file is no longer present."
+    };
+  }
+
+  return {
+    available: true,
+    label: kindLabel,
+    detail: null
+  };
+}
+
 function formatTimelineDayLabel(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return "Unknown";
@@ -851,12 +921,249 @@ function extractCodeLanguage(children: ReactNode): string {
   return match?.[1] ?? "";
 }
 
-const MarkdownMessage = memo(function MarkdownMessage({ text }: { text: string }) {
+function flattenNodeText(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node);
+  }
+
+  if (Array.isArray(node)) {
+    return node.map((child) => flattenNodeText(child)).join("");
+  }
+
+  if (isValidElement<{ children?: ReactNode }>(node)) {
+    return flattenNodeText(node.props.children);
+  }
+
+  return "";
+}
+
+function normalizeMessageResourceUrl(rawUrl: string | null | undefined): string | null {
+  const trimmed = typeof rawUrl === "string" ? rawUrl.trim().replace(/^`+|`+$/g, "") : "";
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const baseOrigin = typeof window !== "undefined" ? window.location.origin : "http://localhost";
+    const parsed = trimmed.startsWith("/") ? new URL(trimmed, baseOrigin) : new URL(trimmed);
+
+    if (parsed.hostname === "butler" && parsed.port === "8080") {
+      return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    }
+
+    if (typeof window !== "undefined" && parsed.origin === window.location.origin) {
+      return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    }
+
+    return parsed.toString();
+  } catch {
+    return trimmed.startsWith("/") ? trimmed : null;
+  }
+}
+
+function describeMessageResource(rawUrl: string | null | undefined): {
+  href: string;
+  displayText: string;
+  download: boolean;
+  previewKind: "image" | "video" | null;
+  name: string;
+} | null {
+  const normalizedUrl = normalizeMessageResourceUrl(rawUrl);
+  if (!normalizedUrl) {
+    return null;
+  }
+
+  try {
+    const baseOrigin = typeof window !== "undefined" ? window.location.origin : "http://localhost";
+    const parsed = normalizedUrl.startsWith("/") ? new URL(normalizedUrl, baseOrigin) : new URL(normalizedUrl);
+    const pathname = parsed.pathname.toLowerCase();
+    const isArtifact = pathname.startsWith("/api/artifacts/");
+    const isPreview = pathname.startsWith("/preview/");
+
+    if (!isArtifact && !isPreview) {
+      return null;
+    }
+
+    let displayText = "Open file";
+    let download = false;
+    let previewKind: "image" | "video" | null = null;
+
+    if (isPreview) {
+      displayText = "Open preview";
+    } else if (/\.(png|jpe?g|webp|gif)$/i.test(pathname)) {
+      displayText = "Open screenshot";
+      previewKind = "image";
+    } else if (/\.(webm|mp4|mov)$/i.test(pathname)) {
+      displayText = "Open video";
+      previewKind = "video";
+    } else if (pathname.endsWith(".zip")) {
+      displayText = "Download trace";
+      download = true;
+    } else if (pathname.endsWith(".json")) {
+      displayText = "Download manifest";
+      download = true;
+    } else if (pathname.endsWith(".html")) {
+      displayText = "Download HTML";
+      download = true;
+    } else if (isArtifact) {
+      displayText = "Download file";
+      download = true;
+    }
+
+    if (download && isArtifact && !parsed.searchParams.has("download")) {
+      parsed.searchParams.set("download", "1");
+    }
+
+    const href =
+      normalizedUrl.startsWith("/") || parsed.hostname === "butler"
+        ? `${parsed.pathname}${parsed.search}${parsed.hash}`
+        : parsed.toString();
+
+    const fileName = parsed.pathname.split("/").filter(Boolean).at(-1) || displayText;
+    return { href, displayText, download, previewKind, name: fileName };
+  } catch {
+    return null;
+  }
+}
+
+function inferDownloadFileName(href: string, contentDisposition: string | null): string {
+  if (contentDisposition) {
+    const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match?.[1]) {
+      return decodeURIComponent(utf8Match[1]);
+    }
+
+    const plainMatch = contentDisposition.match(/filename="?([^"]+)"?/i);
+    if (plainMatch?.[1]) {
+      return plainMatch[1];
+    }
+  }
+
+  try {
+    const baseOrigin = typeof window !== "undefined" ? window.location.origin : "http://localhost";
+    const parsed = href.startsWith("/") ? new URL(href, baseOrigin) : new URL(href);
+    const fileName = parsed.pathname.split("/").filter(Boolean).at(-1);
+    return fileName || "download";
+  } catch {
+    return "download";
+  }
+}
+
+async function readResourceError(response: Response): Promise<string> {
+  const headerMessage = response.headers.get("x-artifact-error");
+  if (headerMessage) {
+    return headerMessage;
+  }
+
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    try {
+      const payload = (await response.json()) as { error?: string };
+      if (typeof payload.error === "string" && payload.error.trim()) {
+        return payload.error.trim();
+      }
+    } catch {
+      // ignore parse failures
+    }
+  }
+
+  return `Request failed with ${response.status}`;
+}
+
+async function probeResourceAvailability(href: string): Promise<{ ok: boolean; message: string | null }> {
+  try {
+    const response = await fetch(href, { method: "HEAD" });
+    if (response.ok) {
+      return { ok: true, message: null };
+    }
+    return { ok: false, message: await readResourceError(response) };
+  } catch {
+    return { ok: false, message: "The proof file could not be opened." };
+  }
+}
+
+async function triggerResourceDownload(href: string): Promise<void> {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return;
+  }
+
+  const response = await fetch(href);
+  if (!response.ok) {
+    throw new Error(await readResourceError(response));
+  }
+
+  const blob = await response.blob();
+  const objectUrl = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = inferDownloadFileName(href, response.headers.get("content-disposition"));
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 1000);
+}
+
+const MarkdownMessage = memo(function MarkdownMessage({
+  text,
+  onPreviewMedia,
+  onResourceUnavailable
+}: {
+  text: string;
+  onPreviewMedia?: (media: PreviewMedia) => void;
+  onResourceUnavailable?: (message: string) => void;
+}) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       rehypePlugins={[rehypeHighlight]}
       components={{
+        a({ href, children, ...props }: ComponentPropsWithoutRef<"a">) {
+          const resource = describeMessageResource(typeof href === "string" ? href : null);
+          return (
+            <a
+              href={resource?.href ?? href}
+              target={resource?.download ? undefined : "_blank"}
+              rel={resource?.download ? undefined : "noreferrer"}
+              download={resource?.download ? "" : undefined}
+              onClick={
+                resource
+                  ? (event) => {
+                      event.preventDefault();
+                      void (async () => {
+                        if (resource.previewKind && onPreviewMedia) {
+                          const availability = await probeResourceAvailability(resource.href);
+                          if (!availability.ok) {
+                            onResourceUnavailable?.(availability.message || "The proof file could not be opened.");
+                            return;
+                          }
+
+                          onPreviewMedia({
+                            name: resource.name,
+                            url: resource.href,
+                            kind: resource.previewKind,
+                            downloadUrl: resource.href
+                          });
+                          return;
+                        }
+
+                        if (resource.download) {
+                          try {
+                            await triggerResourceDownload(resource.href);
+                          } catch (error) {
+                            onResourceUnavailable?.(error instanceof Error ? error.message : "The file could not be downloaded.");
+                          }
+                        }
+                      })();
+                    }
+                  : undefined
+              }
+              {...props}
+            >
+              {children}
+            </a>
+          );
+        },
         pre({ children }) {
           const language = extractCodeLanguage(children);
           return (
@@ -875,6 +1182,54 @@ const MarkdownMessage = memo(function MarkdownMessage({ text }: { text: string }
               <code className={className} {...props}>
                 {children}
               </code>
+            );
+          }
+
+          const inlineText = flattenNodeText(children).trim();
+          const resource = describeMessageResource(inlineText);
+          if (resource) {
+            return (
+              <a
+                className="inline-code inline-code-link"
+                href={resource.href}
+                target={resource.download || resource.previewKind ? undefined : "_blank"}
+                rel={resource.download || resource.previewKind ? undefined : "noreferrer"}
+                download={resource.download ? "" : undefined}
+                onClick={
+                  resource.download || resource.previewKind
+                    ? (event) => {
+                        event.preventDefault();
+                        void (async () => {
+                          if (resource.previewKind && onPreviewMedia) {
+                            const availability = await probeResourceAvailability(resource.href);
+                            if (!availability.ok) {
+                              onResourceUnavailable?.(availability.message || "The proof file could not be opened.");
+                              return;
+                            }
+
+                            onPreviewMedia({
+                              name: resource.name,
+                              url: resource.href,
+                              kind: resource.previewKind,
+                              downloadUrl: resource.href
+                            });
+                            return;
+                          }
+
+                          if (resource.download) {
+                            try {
+                              await triggerResourceDownload(resource.href);
+                            } catch (error) {
+                              onResourceUnavailable?.(error instanceof Error ? error.message : "The file could not be downloaded.");
+                            }
+                          }
+                        })();
+                      }
+                    : undefined
+                }
+              >
+                {resource.displayText}
+              </a>
             );
           }
 
@@ -1229,12 +1584,25 @@ function scrollElementToCenteredTarget(container: HTMLDivElement | null, target:
   container.scrollTop = Math.max(0, centeredTop);
 }
 
-function PreviewVerificationSummary({ verification }: { verification: PreviewVerification }) {
-  const primaryArtifacts = ["screenshot", "manifest", "trace"]
+function PreviewVerificationSummary({
+  verification,
+  onPreviewArtifact,
+  onResourceUnavailable
+}: {
+  verification: PreviewVerification;
+  onPreviewArtifact?: (media: PreviewMedia) => void;
+  onResourceUnavailable?: (message: string) => void;
+}) {
+  const primaryArtifacts = ["screenshot", "video", "manifest", "trace"]
     .map((kind) => findVerificationArtifact(verification, kind as PreviewVerificationArtifact["kind"]))
-    .filter((artifact): artifact is PreviewVerificationArtifact => Boolean(artifact && artifact.url));
+    .filter((artifact): artifact is PreviewVerificationArtifact => Boolean(artifact));
   const issueLines = [
     verification.error,
+    ...verification.artifacts
+      .filter((artifact) => artifact.availability !== "available")
+      .slice(0, 2)
+      .map((artifact) => describeArtifactAvailability(artifact).detail)
+      .filter((detail): detail is string => Boolean(detail)),
     ...verification.pageErrors,
     ...verification.failedRequests.slice(0, 2).map((request) => `${request.method} ${request.url}${request.errorText ? ` • ${request.errorText}` : ""}`)
   ].slice(0, 3);
@@ -1256,11 +1624,77 @@ function PreviewVerificationSummary({ verification }: { verification: PreviewVer
       ) : null}
       {primaryArtifacts.length > 0 ? (
         <div className="preview-verification-links">
-          {primaryArtifacts.map((artifact) => (
-            <a key={`${verification.runId}-${artifact.kind}`} href={artifact.url ?? undefined} target="_blank" rel="noreferrer">
-              {artifact.label}
-            </a>
-          ))}
+          {primaryArtifacts.map((artifact) => {
+            const downloadKind =
+              artifact.kind === "manifest" || artifact.kind === "trace" || artifact.kind === "html";
+            const href = downloadKind ? artifact.downloadUrl ?? artifact.url ?? undefined : artifact.url ?? undefined;
+            const previewKind = artifact.kind === "screenshot" ? "image" : artifact.kind === "video" ? "video" : null;
+            const availability = describeArtifactAvailability(artifact);
+            if (!availability.available) {
+              return (
+                <span
+                  key={`${verification.runId}-${artifact.kind}`}
+                  className="preview-verification-link-disabled"
+                  title={availability.detail ?? undefined}
+                >
+                  {availability.label}
+                </span>
+              );
+            }
+
+            return (
+              <a
+                key={`${verification.runId}-${artifact.kind}`}
+                href={href}
+                target={downloadKind || previewKind ? undefined : "_blank"}
+                rel={downloadKind || previewKind ? undefined : "noreferrer"}
+                download={downloadKind ? "" : undefined}
+                onClick={
+                  downloadKind || previewKind
+                    ? (event) => {
+                        event.preventDefault();
+                        void (async () => {
+                          if (previewKind && onPreviewArtifact && (artifact.url || artifact.downloadUrl)) {
+                            const resourceHref = artifact.url ?? artifact.downloadUrl ?? "";
+                            const availabilityCheck = await probeResourceAvailability(resourceHref);
+                            if (!availabilityCheck.ok) {
+                              onResourceUnavailable?.(availabilityCheck.message || "The proof file could not be opened.");
+                              return;
+                            }
+
+                            onPreviewArtifact({
+                              name: artifact.fileName || artifact.label,
+                              url: resourceHref,
+                              kind: previewKind,
+                              downloadUrl: artifact.downloadUrl ?? artifact.url
+                            });
+                            return;
+                          }
+
+                          if (downloadKind && href) {
+                            try {
+                              await triggerResourceDownload(href);
+                            } catch (error) {
+                              onResourceUnavailable?.(
+                                error instanceof Error ? error.message : "The file could not be downloaded."
+                              );
+                            }
+                          }
+                        })();
+                      }
+                    : undefined
+                }
+              >
+                {downloadKind
+                  ? `Download ${artifact.label.toLowerCase()}`
+                  : artifact.kind === "screenshot"
+                    ? "Open screenshot"
+                    : artifact.kind === "video"
+                      ? "Open video"
+                      : artifact.label}
+              </a>
+            );
+          })}
         </div>
       ) : null}
     </div>
@@ -1293,7 +1727,7 @@ export function App() {
   const [threadUploadingImages, setThreadUploadingImages] = useState(0);
   const [butlerDragActive, setButlerDragActive] = useState(false);
   const [threadDragActive, setThreadDragActive] = useState(false);
-  const [previewImage, setPreviewImage] = useState<PreviewableImage | null>(null);
+  const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
   const [pendingButlerText, setPendingButlerText] = useState<string | null>(null);
   const [pendingThreadRequest, setPendingThreadRequest] = useState<PendingThreadRequest | null>(null);
   const [threadDraft, setThreadDraft] = useState("");
@@ -1303,6 +1737,13 @@ export function App() {
     }
 
     return window.localStorage.getItem(BUTLER_NOTICE_VISIBILITY_STORAGE_KEY) !== "false";
+  });
+  const [showButlerRuntime, setShowButlerRuntime] = useState(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+
+    return window.localStorage.getItem(BUTLER_RUNTIME_VISIBILITY_STORAGE_KEY) === "true";
   });
   const [threadsDrawerOpen, setThreadsDrawerOpen] = useState(false);
   const [selectedSurface, setSelectedSurface] = useState<WorkspaceSurface | null>(initialWorkspaceQuery.surface);
@@ -1329,6 +1770,9 @@ export function App() {
   const codexTerminalFrameRef = useRef<HTMLIFrameElement | null>(null);
   const butlerTerminalFrameRef = useRef<HTMLIFrameElement | null>(null);
   const lastRemoteErrorRef = useRef<string | null>(null);
+  const remoteErrorHydratedRef = useRef(false);
+  const lastFocusedWindowIdRef = useRef<string | null>(null);
+  const hasSeenFocusedWindowRef = useRef(false);
   const runScrollRef = useRef<HTMLDivElement | null>(null);
   const butlerScrollRef = useRef<HTMLDivElement | null>(null);
   const runTimelineScrollRef = useRef<HTMLDivElement | null>(null);
@@ -1558,12 +2002,7 @@ export function App() {
       return null;
     }
 
-    const threadId =
-      selectedSurface === "thread"
-        ? selectedThreadId ?? snapshot.codex.focusedWindowId
-        : selectedSurface === null && snapshot.codex.focusedWindowId
-          ? snapshot.codex.focusedWindowId
-          : null;
+    const threadId = selectedSurface === "thread" ? selectedThreadId ?? snapshot.codex.focusedWindowId : null;
 
     if (!threadId) {
       return null;
@@ -1573,11 +2012,11 @@ export function App() {
   }, [selectedSurface, selectedThreadId, snapshot]);
 
   useEffect(() => {
-    const threadId = snapshot?.codex.focusedWindowId;
+    const threadId = activeThread?.id ?? null;
     setThreadDraft(threadId ? readStoredValue(`${THREAD_DRAFT_STORAGE_KEY_PREFIX}${threadId}`) : "");
     setThreadImages([]);
     setFollowRun(true);
-  }, [snapshot?.codex.focusedWindowId]);
+  }, [activeThread?.id]);
 
   useEffect(() => {
     if (butlerDraftPersistTimerRef.current !== null) {
@@ -1598,7 +2037,7 @@ export function App() {
   }, [butlerDraft]);
 
   useEffect(() => {
-    const threadId = snapshot?.codex.focusedWindowId;
+    const threadId = activeThread?.id ?? null;
     if (!threadId) {
       return;
     }
@@ -1618,7 +2057,7 @@ export function App() {
         threadDraftPersistTimerRef.current = null;
       }
     };
-  }, [snapshot?.codex.focusedWindowId, threadDraft]);
+  }, [activeThread?.id, threadDraft]);
 
   useEffect(() => {
     resizeComposerTextarea(butlerTextareaRef.current);
@@ -1635,6 +2074,14 @@ export function App() {
 
     window.localStorage.setItem(BUTLER_NOTICE_VISIBILITY_STORAGE_KEY, showButlerNotices ? "true" : "false");
   }, [showButlerNotices]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(BUTLER_RUNTIME_VISIBILITY_STORAGE_KEY, showButlerRuntime ? "true" : "false");
+  }, [showButlerRuntime]);
 
   useEffect(() => {
     if (!threadsDrawerOpen) {
@@ -1667,11 +2114,11 @@ export function App() {
   }, [confirmBusy, confirmDialog]);
 
   useEffect(() => {
-    if (!snapshot || snapshot.butler.onboarding.complete || selectedSurface !== null || snapshot.codex.focusedWindowId) {
+    if (!snapshot || selectedSurface !== null) {
       return;
     }
 
-    setSelectedSurface("setup");
+    setSelectedSurface(snapshot.butler.onboarding.complete ? "butler" : "setup");
   }, [selectedSurface, snapshot]);
 
   useEffect(() => {
@@ -1734,6 +2181,37 @@ export function App() {
 
     setSelectedSurface(showSetupGuide ? "setup" : "butler");
   }, [selectedSurface, selectedThreadId, showSetupGuide, snapshot]);
+
+  useEffect(() => {
+    if (!snapshot) {
+      return;
+    }
+
+    const focusedWindowId = snapshot?.codex.focusedWindowId ?? null;
+    const previousFocusedWindowId = lastFocusedWindowIdRef.current;
+    lastFocusedWindowIdRef.current = focusedWindowId;
+
+    if (!hasSeenFocusedWindowRef.current) {
+      hasSeenFocusedWindowRef.current = true;
+      return;
+    }
+
+    if (selectedSurface !== "butler") {
+      return;
+    }
+
+    if (previousFocusedWindowId !== null || !focusedWindowId) {
+      return;
+    }
+
+    if (!snapshot?.codex.openThreads[focusedWindowId]) {
+      return;
+    }
+
+    setSelectedSurface("thread");
+    setSelectedThreadId(focusedWindowId);
+    setShowPromptRail(false);
+  }, [selectedSurface, snapshot]);
 
   useEffect(() => {
     if (!pendingButlerText || !snapshot) {
@@ -1824,6 +2302,9 @@ export function App() {
     const remoteError = snapshot?.codex.lastError ?? snapshot?.butler.lastError ?? null;
     if (!remoteError) {
       lastRemoteErrorRef.current = null;
+      if (snapshot) {
+        remoteErrorHydratedRef.current = true;
+      }
       return;
     }
 
@@ -1832,12 +2313,18 @@ export function App() {
     }
 
     lastRemoteErrorRef.current = remoteError;
+
+    if (!remoteErrorHydratedRef.current) {
+      remoteErrorHydratedRef.current = true;
+      return;
+    }
+
     showToast(remoteError, "error", 5000, "remote-error");
   }, [snapshot?.butler.lastError, snapshot?.codex.lastError]);
 
   const querySurface: WorkspaceSurface =
     selectedSurface ??
-    (snapshot?.codex.focusedWindowId ? "thread" : showSetupGuide ? "setup" : "butler");
+    (showSetupGuide ? "setup" : "butler");
   const queryThreadId = querySurface === "thread" ? selectedThreadId ?? snapshot?.codex.focusedWindowId ?? null : null;
   const isLightTheme = themePreference === "light" || (themePreference === "system" && !systemPrefersDark);
 
@@ -1891,9 +2378,13 @@ export function App() {
       : [];
   const activeThreadServices =
     activeThread && snapshot ? snapshot.butler.services.filter((service) => service.threadId === activeThread.id && service.status !== "stopped") : [];
+  const activeThreadPreviewVerification =
+    activeThreadPreviews.find((lease) => Boolean(lease.lastVerification))?.lastVerification ??
+    (activeThread ? snapshot?.butler.latestPreviewProofsByThreadId[activeThread.id]?.verification ?? null : null);
   const activeStackLeases = snapshot ? snapshot.butler.stacks.filter((stack) => stack.status !== "stopped") : [];
   const activePreviewLeases = snapshot ? snapshot.butler.previews.filter((lease) => lease.status !== "stopped") : [];
   const activeServiceLeases = snapshot ? snapshot.butler.services.filter((service) => service.status !== "stopped") : [];
+  const activeRuntimeLeaseCount = activeStackLeases.length + activePreviewLeases.length + activeServiceLeases.length;
 
   const runPromptJumpList = useMemo(() => activeRunItems.filter((item) => item.type === "userMessage"), [activeRunItems]);
   const showPendingThreadEntry = Boolean(
@@ -2111,6 +2602,15 @@ export function App() {
     void uploadImages(target, event.dataTransfer.files);
   }
 
+  function openPreviewableImage(image: PreviewableImage) {
+    setPreviewMedia({
+      name: image.name,
+      url: image.url,
+      kind: "image",
+      downloadUrl: image.url
+    });
+  }
+
   function renderImagePreviewGrid(
     images: PreviewableImage[],
     options?: { removable?: boolean; onRemove?: (imageId: string) => void }
@@ -2122,7 +2622,7 @@ export function App() {
             <button
               className="composer-attachment-preview"
               type="button"
-              onClick={() => setPreviewImage(image)}
+              onClick={() => openPreviewableImage(image)}
               aria-label={`Preview ${image.name}`}
               title={image.name}
             >
@@ -2132,7 +2632,7 @@ export function App() {
               <button
                 className="composer-attachment-name composer-attachment-name-button"
                 type="button"
-                onClick={() => setPreviewImage(image)}
+                onClick={() => openPreviewableImage(image)}
                 title={image.name}
               >
                 {image.name}
@@ -2162,7 +2662,7 @@ export function App() {
             key={image.id}
             className="message-image-button"
             type="button"
-            onClick={() => setPreviewImage(image)}
+            onClick={() => openPreviewableImage(image)}
             aria-label={`Preview ${image.name}`}
             title={image.name}
           >
@@ -2175,11 +2675,12 @@ export function App() {
 
   async function sendButlerMessage() {
     const text = butlerDraft.trim();
-    if (!text && butlerImages.length === 0) {
+    const composerImages = [...butlerImages];
+    if (!text && composerImages.length === 0) {
       return;
     }
 
-    const attachmentCount = butlerImages.length;
+    const attachmentCount = composerImages.length;
     const messageSummary = text || formatAttachmentSummary(attachmentCount);
     setButlerDraft("");
     setButlerImages([]);
@@ -2188,9 +2689,11 @@ export function App() {
     setPendingButlerText(messageSummary);
 
     try {
-      await postJson("/api/chat/messages", { text, imageReferenceIds: butlerImages.map((image) => image.id) });
+      await postJson("/api/chat/messages", { text, imageReferenceIds: composerImages.map((image) => image.id) });
     } catch (sendError) {
       setPendingButlerText(null);
+      setButlerDraft((current) => (current.trim().length === 0 ? text : current));
+      setButlerImages((current) => (current.length === 0 ? composerImages : current));
       showErrorToast(sendError);
     }
   }
@@ -2201,11 +2704,12 @@ export function App() {
     }
 
     const text = threadDraft.trim();
-    if (!text && threadImages.length === 0) {
+    const composerImages = [...threadImages];
+    if (!text && composerImages.length === 0) {
       return;
     }
 
-    const attachmentCount = threadImages.length;
+    const attachmentCount = composerImages.length;
     const messageSummary = text || formatAttachmentSummary(attachmentCount);
     setThreadDraft("");
     setThreadImages([]);
@@ -2222,10 +2726,12 @@ export function App() {
       await postJson("/api/threads/messages", {
         threadId: activeThread.id,
         text,
-        imageReferenceIds: threadImages.map((image) => image.id)
+        imageReferenceIds: composerImages.map((image) => image.id)
       });
     } catch (sendError) {
       setPendingThreadRequest((current) => (current?.threadId === activeThread.id && current.text === messageSummary ? null : current));
+      setThreadDraft((current) => (current.trim().length === 0 ? text : current));
+      setThreadImages((current) => (current.length === 0 ? composerImages : current));
       showErrorToast(sendError);
     }
   }
@@ -2519,6 +3025,18 @@ export function App() {
     } finally {
       setLoadingOlderButlerMessages(false);
     }
+  }
+
+  function focusRuntimeThread(threadId: string | null) {
+    if (!threadId) {
+      return;
+    }
+
+    setSelectedSurface("thread");
+    setSelectedThreadId(threadId);
+    setShowPromptRail(false);
+    setShowButlerRuntime(false);
+    postJson("/api/windows/open", { threadId }).catch((openError) => showErrorToast(openError));
   }
 
   const activeTabId =
@@ -2903,9 +3421,13 @@ export function App() {
                   </button>
                 </div>
               </div>
-              {activePreviewLease?.lastVerification ? (
+              {activeThreadPreviewVerification ? (
                 <div className="thread-preview-verification">
-                  <PreviewVerificationSummary verification={activePreviewLease.lastVerification} />
+                  <PreviewVerificationSummary
+                    verification={activeThreadPreviewVerification}
+                    onPreviewArtifact={setPreviewMedia}
+                    onResourceUnavailable={(message) => showToast(message, "error", 5000)}
+                  />
                 </div>
               ) : null}
 
@@ -2946,7 +3468,11 @@ export function App() {
                                     </span>
                                   </div>
                                   <div className="entry-text">
-                                    <MarkdownMessage text={row.text} />
+                                    <MarkdownMessage
+                                      text={row.text}
+                                      onPreviewMedia={setPreviewMedia}
+                                      onResourceUnavailable={(message) => showToast(message, "error", 5000)}
+                                    />
                                   </div>
                                 </article>
                               </div>
@@ -2994,7 +3520,11 @@ export function App() {
                                   </span>
                                 </div>
                                 <div className="entry-text">
-                                  <MarkdownMessage text={displayText || "Running shell command"} />
+                                  <MarkdownMessage
+                                    text={displayText || "Running shell command"}
+                                    onPreviewMedia={setPreviewMedia}
+                                    onResourceUnavailable={(message) => showToast(message, "error", 5000)}
+                                  />
                                   {referencedImages.length > 0 ? renderMessageImageStrip(referencedImages) : null}
                                 </div>
                               </article>
@@ -3249,184 +3779,166 @@ export function App() {
             </div>
           ) : (
             <div className="workspace-panel">
-              {activeStackLeases.length > 0 || activePreviewLeases.length > 0 || activeServiceLeases.length > 0 ? (
-                <div className="runtime-strip">
-                  {activeStackLeases.length > 0 ? (
-                    <section className="runtime-group">
-                      <div className="runtime-group-head">
-                        <span className="eyebrow">Stacks</span>
-                        <span className="runtime-group-count">{activeStackLeases.length}</span>
-                      </div>
-                      <div className="runtime-list">
-                        {activeStackLeases.map((stack) => (
-                          <article key={stack.id} className="runtime-item">
-                            <button
-                              className="runtime-item-main"
-                              onClick={() => {
-                                if (!stack.threadId) {
-                                  return;
-                                }
-                                setSelectedSurface("thread");
-                                setSelectedThreadId(stack.threadId);
-                                setShowPromptRail(false);
-                                postJson("/api/windows/open", { threadId: stack.threadId }).catch((openError) =>
-                                  showErrorToast(openError)
-                                );
-                              }}
-                            >
-                              <span className="runtime-item-title">{stack.title}</span>
-                              <span className="runtime-item-meta">
-                                {stack.projectLabel} • {stack.networkName} • {stack.status} • {formatLeaseState(stack.lifecycleState, stack.expiresAt, stack.pinned)} • {formatStackStorage(stack)} • previews={stack.previewIds.length} • services={stack.serviceIds.length}
-                              </span>
-                            </button>
-                            <div className="runtime-item-actions">
-                              <button className="panel-action" onClick={() => void pinStackLease(stack.id, !stack.pinned)}>
-                                {stack.pinned ? "Unpin" : "Pin"}
-                              </button>
-                              <button
-                                className="panel-action"
-                                onClick={() => void stopStackLease(stack.id)}
-                                disabled={busyStackId === stack.id}
-                              >
-                                {busyStackId === stack.id ? "Stopping…" : "Stop"}
-                              </button>
-                            </div>
-                          </article>
-                        ))}
-                      </div>
-                    </section>
-                  ) : null}
-                  {activePreviewLeases.length > 0 ? (
-                    <section className="runtime-group">
-                      <div className="runtime-group-head">
-                        <span className="eyebrow">Previews</span>
-                        <span className="runtime-group-count">{activePreviewLeases.length}</span>
-                      </div>
-                      <div className="runtime-list">
-                        {activePreviewLeases.map((lease) => (
-                          <article key={lease.id} className="runtime-item">
-                            <button
-                              className="runtime-item-main"
-                              onClick={() => {
-                                if (!lease.threadId) {
-                                  return;
-                                }
-                                setSelectedSurface("thread");
-                                setSelectedThreadId(lease.threadId);
-                                setShowPromptRail(false);
-                                postJson("/api/windows/open", { threadId: lease.threadId }).catch((openError) =>
-                                  showErrorToast(openError)
-                                );
-                              }}
-                            >
-                              <span className="runtime-item-title">{lease.title}</span>
-                              <span className="runtime-item-meta">
-                                {lease.projectLabel} • {lease.branchName ?? "preview"} • {lease.status} •{" "}
-                                {formatLeaseState(lease.lifecycleState, lease.expiresAt, lease.pinned)} • {formatPreviewBootstrap(lease)}
-                              </span>
-                            </button>
-                            {lease.lastVerification ? (
-                              <div className="runtime-item-verification">
-                                <PreviewVerificationSummary verification={lease.lastVerification} />
-                              </div>
-                            ) : null}
-                            <div className="runtime-item-actions">
-                              <button className="panel-action" onClick={() => void pinPreviewLease(lease.id, !lease.pinned)}>
-                                {lease.pinned ? "Unpin" : "Pin"}
-                              </button>
-                              <a className="panel-action panel-action-link" href={lease.operatorUrl} target="_blank" rel="noreferrer">
-                                Open
-                              </a>
-                              <button
-                                className="panel-action"
-                                onClick={() => void verifyPreviewLease(lease.id, "headless")}
-                                disabled={busyPreviewVerification?.leaseId === lease.id}
-                              >
-                                {previewVerificationActionLabel("headless", busyPreviewVerification, lease.id, true)}
-                              </button>
-                              <button
-                                className="panel-action"
-                                onClick={() => void verifyPreviewLease(lease.id, "headful")}
-                                disabled={busyPreviewVerification?.leaseId === lease.id}
-                              >
-                                {previewVerificationActionLabel("headful", busyPreviewVerification, lease.id, true)}
-                              </button>
-                              <button
-                                className="panel-action"
-                                onClick={() => void stopPreviewLease(lease.id)}
-                                disabled={busyPreviewVerification?.leaseId === lease.id}
-                              >
-                                Stop
-                              </button>
-                            </div>
-                          </article>
-                        ))}
-                      </div>
-                    </section>
-                  ) : null}
-                  {activeServiceLeases.length > 0 ? (
-                    <section className="runtime-group">
-                      <div className="runtime-group-head">
-                        <span className="eyebrow">Services</span>
-                        <span className="runtime-group-count">{activeServiceLeases.length}</span>
-                      </div>
-                      <div className="runtime-list">
-                        {activeServiceLeases.map((service) => (
-                          <article key={service.id} className="runtime-item">
-                            <button
-                              className="runtime-item-main"
-                              onClick={() => {
-                                if (!service.threadId) {
-                                  return;
-                                }
-                                setSelectedSurface("thread");
-                                setSelectedThreadId(service.threadId);
-                                setShowPromptRail(false);
-                                postJson("/api/windows/open", { threadId: service.threadId }).catch((openError) =>
-                                  showErrorToast(openError)
-                                );
-                              }}
-                            >
-                              <span className="runtime-item-title">{service.title}</span>
-                              <span className="runtime-item-meta">
-                                {service.connection.engine} • {service.connection.host}:{service.connection.port} • {service.storageKind}
-                                {service.volumeName ? `(${service.volumeName})` : ""} • {service.status} •{" "}
-                                {formatLeaseState(service.lifecycleState, service.expiresAt, service.pinned)}
-                              </span>
-                            </button>
-                            <div className="runtime-item-actions">
-                              <button className="panel-action" onClick={() => void pinServiceLease(service.id, !service.pinned)}>
-                                {service.pinned ? "Unpin" : "Pin"}
-                              </button>
-                              <button
-                                className="panel-action"
-                                onClick={() => void stopServiceLease(service.id)}
-                                disabled={busyServiceId === service.id}
-                              >
-                                {busyServiceId === service.id ? "Stopping…" : "Stop"}
-                              </button>
-                            </div>
-                          </article>
-                        ))}
-                      </div>
-                    </section>
-                  ) : null}
-                </div>
-              ) : null}
               <div className={`workspace-body ${showPromptRail ? "is-detail-open" : "is-detail-closed"}`}>
               <section className="conversation-pane conversation-pane-full has-toolbar">
                 <div className="conversation-toolbar">
-                  <button
-                    className={`conversation-toggle${showButlerNotices ? " is-active" : ""}`}
-                    onClick={() => setShowButlerNotices((current) => !current)}
-                    type="button"
-                  >
-                    <span className="conversation-toggle-icon" aria-hidden="true">
-                      {showButlerNotices ? <ChevronUpIcon /> : <ChevronDownIcon />}
-                    </span>
-                    <span className="conversation-toggle-label">{showButlerNotices ? "Hide notices" : "Show notices"}</span>
-                    {butlerNoticeCount > 0 ? <span className="conversation-toggle-count">{butlerNoticeCount}</span> : null}
-                  </button>
+                  <div className="conversation-toolbar-group">
+                    {activeRuntimeLeaseCount > 0 ? (
+                      <div className="conversation-disclosure">
+                        <button
+                          className={`conversation-toggle${showButlerRuntime ? " is-active" : ""}`}
+                          onClick={() => setShowButlerRuntime((current) => !current)}
+                          type="button"
+                        >
+                          <span className="conversation-toggle-icon" aria-hidden="true">
+                            {showButlerRuntime ? <ChevronUpIcon /> : <ChevronDownIcon />}
+                          </span>
+                          <span className="conversation-toggle-label">{showButlerRuntime ? "Hide runtime" : "Show runtime"}</span>
+                          <span className="conversation-toggle-count">{activeRuntimeLeaseCount}</span>
+                        </button>
+                        {showButlerRuntime ? (
+                          <div className="conversation-disclosure-panel runtime-disclosure-panel">
+                            {activeStackLeases.length > 0 ? (
+                              <section className="runtime-group">
+                                <div className="runtime-group-head">
+                                  <span className="eyebrow">Stacks</span>
+                                  <span className="runtime-group-count">{activeStackLeases.length}</span>
+                                </div>
+                                <div className="runtime-list">
+                                  {activeStackLeases.map((stack) => (
+                                    <article key={stack.id} className="runtime-item">
+                                      <button className="runtime-item-main" onClick={() => focusRuntimeThread(stack.threadId)}>
+                                        <span className="runtime-item-title">{stack.title}</span>
+                                        <span className="runtime-item-meta">
+                                          {stack.projectLabel} • {stack.networkName} • {stack.status} • {formatLeaseState(stack.lifecycleState, stack.expiresAt, stack.pinned)} • {formatStackStorage(stack)} • previews={stack.previewIds.length} • services={stack.serviceIds.length}
+                                        </span>
+                                      </button>
+                                      <div className="runtime-item-actions">
+                                        <button className="panel-action" onClick={() => void pinStackLease(stack.id, !stack.pinned)}>
+                                          {stack.pinned ? "Unpin" : "Pin"}
+                                        </button>
+                                        <button
+                                          className="panel-action"
+                                          onClick={() => void stopStackLease(stack.id)}
+                                          disabled={busyStackId === stack.id}
+                                        >
+                                          {busyStackId === stack.id ? "Stopping…" : "Stop"}
+                                        </button>
+                                      </div>
+                                    </article>
+                                  ))}
+                                </div>
+                              </section>
+                            ) : null}
+                            {activePreviewLeases.length > 0 ? (
+                              <section className="runtime-group">
+                                <div className="runtime-group-head">
+                                  <span className="eyebrow">Previews</span>
+                                  <span className="runtime-group-count">{activePreviewLeases.length}</span>
+                                </div>
+                                <div className="runtime-list">
+                                  {activePreviewLeases.map((lease) => (
+                                    <article key={lease.id} className="runtime-item">
+                                      <button className="runtime-item-main" onClick={() => focusRuntimeThread(lease.threadId)}>
+                                        <span className="runtime-item-title">{lease.title}</span>
+                                        <span className="runtime-item-meta">
+                                          {lease.projectLabel} • {lease.branchName ?? "preview"} • {lease.status} •{" "}
+                                          {formatLeaseState(lease.lifecycleState, lease.expiresAt, lease.pinned)} • {formatPreviewBootstrap(lease)}
+                                        </span>
+                                      </button>
+                                      {lease.lastVerification ? (
+                                        <div className="runtime-item-verification">
+                                          <PreviewVerificationSummary
+                                            verification={lease.lastVerification}
+                                            onPreviewArtifact={setPreviewMedia}
+                                            onResourceUnavailable={(message) => showToast(message, "error", 5000)}
+                                          />
+                                        </div>
+                                      ) : null}
+                                      <div className="runtime-item-actions">
+                                        <button className="panel-action" onClick={() => void pinPreviewLease(lease.id, !lease.pinned)}>
+                                          {lease.pinned ? "Unpin" : "Pin"}
+                                        </button>
+                                        <a className="panel-action panel-action-link" href={lease.operatorUrl} target="_blank" rel="noreferrer">
+                                          Open
+                                        </a>
+                                        <button
+                                          className="panel-action"
+                                          onClick={() => void verifyPreviewLease(lease.id, "headless")}
+                                          disabled={busyPreviewVerification?.leaseId === lease.id}
+                                        >
+                                          {previewVerificationActionLabel("headless", busyPreviewVerification, lease.id, true)}
+                                        </button>
+                                        <button
+                                          className="panel-action"
+                                          onClick={() => void verifyPreviewLease(lease.id, "headful")}
+                                          disabled={busyPreviewVerification?.leaseId === lease.id}
+                                        >
+                                          {previewVerificationActionLabel("headful", busyPreviewVerification, lease.id, true)}
+                                        </button>
+                                        <button
+                                          className="panel-action"
+                                          onClick={() => void stopPreviewLease(lease.id)}
+                                          disabled={busyPreviewVerification?.leaseId === lease.id}
+                                        >
+                                          Stop
+                                        </button>
+                                      </div>
+                                    </article>
+                                  ))}
+                                </div>
+                              </section>
+                            ) : null}
+                            {activeServiceLeases.length > 0 ? (
+                              <section className="runtime-group">
+                                <div className="runtime-group-head">
+                                  <span className="eyebrow">Services</span>
+                                  <span className="runtime-group-count">{activeServiceLeases.length}</span>
+                                </div>
+                                <div className="runtime-list">
+                                  {activeServiceLeases.map((service) => (
+                                    <article key={service.id} className="runtime-item">
+                                      <button className="runtime-item-main" onClick={() => focusRuntimeThread(service.threadId)}>
+                                        <span className="runtime-item-title">{service.title}</span>
+                                        <span className="runtime-item-meta">
+                                          {service.connection.engine} • {service.connection.host}:{service.connection.port} • {service.storageKind}
+                                          {service.volumeName ? `(${service.volumeName})` : ""} • {service.status} •{" "}
+                                          {formatLeaseState(service.lifecycleState, service.expiresAt, service.pinned)}
+                                        </span>
+                                      </button>
+                                      <div className="runtime-item-actions">
+                                        <button className="panel-action" onClick={() => void pinServiceLease(service.id, !service.pinned)}>
+                                          {service.pinned ? "Unpin" : "Pin"}
+                                        </button>
+                                        <button
+                                          className="panel-action"
+                                          onClick={() => void stopServiceLease(service.id)}
+                                          disabled={busyServiceId === service.id}
+                                        >
+                                          {busyServiceId === service.id ? "Stopping…" : "Stop"}
+                                        </button>
+                                      </div>
+                                    </article>
+                                  ))}
+                                </div>
+                              </section>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    <button
+                      className={`conversation-toggle${showButlerNotices ? " is-active" : ""}`}
+                      onClick={() => setShowButlerNotices((current) => !current)}
+                      type="button"
+                    >
+                      <span className="conversation-toggle-icon" aria-hidden="true">
+                        {showButlerNotices ? <ChevronUpIcon /> : <ChevronDownIcon />}
+                      </span>
+                      <span className="conversation-toggle-label">{showButlerNotices ? "Hide notices" : "Show notices"}</span>
+                      {butlerNoticeCount > 0 ? <span className="conversation-toggle-count">{butlerNoticeCount}</span> : null}
+                    </button>
+                  </div>
                 </div>
                 <div
                   ref={butlerScrollRef}
@@ -3496,7 +4008,11 @@ export function App() {
                                 </span>
                               </div>
                               <div className="entry-text">
-                                <MarkdownMessage text={displayText || "…"} />
+                                <MarkdownMessage
+                                  text={displayText || "…"}
+                                  onPreviewMedia={setPreviewMedia}
+                                  onResourceUnavailable={(message) => showToast(message, "error", 5000)}
+                                />
                                 {referencedImages.length > 0 ? renderMessageImageStrip(referencedImages) : null}
                               </div>
                             </article>
@@ -3826,17 +4342,42 @@ export function App() {
         </div>
       ) : null}
 
-      {previewImage ? (
-        <div className="modal-backdrop" onClick={() => setPreviewImage(null)}>
-          <div className="modal-card modal-card-image" role="dialog" aria-modal="true" aria-labelledby="image-preview-title" onClick={(event) => event.stopPropagation()}>
+      {previewMedia ? (
+        <div className="modal-backdrop" onClick={() => setPreviewMedia(null)}>
+          <div
+            className={`modal-card modal-card-image${previewMedia.kind === "video" ? " modal-card-video" : ""}`}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="image-preview-title"
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="modal-head">
-              <h2 id="image-preview-title">{previewImage.name}</h2>
-              <button className="modal-close" onClick={() => setPreviewImage(null)} aria-label="Close image preview">
-                <CloseIcon />
-              </button>
+              <h2 id="image-preview-title">{previewMedia.name}</h2>
+              <div className="modal-head-actions">
+                {previewMedia.downloadUrl ? (
+                  <button
+                    className="panel-action"
+                    type="button"
+                    onClick={() => {
+                      void triggerResourceDownload(previewMedia.downloadUrl!).catch((error) => {
+                        showToast(error instanceof Error ? error.message : "The file could not be downloaded.", "error", 5000);
+                      });
+                    }}
+                  >
+                    Download
+                  </button>
+                ) : null}
+                <button className="modal-close" onClick={() => setPreviewMedia(null)} aria-label="Close image preview">
+                  <CloseIcon />
+                </button>
+              </div>
             </div>
             <div className="modal-image-shell">
-              <img src={previewImage.url} alt={previewImage.name} className="modal-image" />
+              {previewMedia.kind === "video" ? (
+                <video src={previewMedia.url} className="modal-video" controls playsInline preload="metadata" />
+              ) : (
+                <img src={previewMedia.url} alt={previewMedia.name} className="modal-image" />
+              )}
             </div>
           </div>
         </div>

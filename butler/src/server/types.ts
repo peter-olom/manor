@@ -70,7 +70,8 @@ export type PreviewBootstrapPhase =
   | "ready"
   | "failed";
 
-export type PreviewVerificationArtifactKind = "manifest" | "screenshot" | "trace" | "html" | "other";
+export type PreviewVerificationArtifactKind = "manifest" | "screenshot" | "video" | "trace" | "html" | "other";
+export type PreviewVerificationArtifactAvailability = "available" | "expired" | "missing";
 export type PreviewBrowserMode = "headless" | "headful";
 
 export interface PreviewVerificationArtifactView {
@@ -81,6 +82,10 @@ export interface PreviewVerificationArtifactView {
   contentType: string;
   sizeBytes: number | null;
   url: string | null;
+  downloadUrl: string | null;
+  availability: PreviewVerificationArtifactAvailability;
+  retainedUntilAt: number | null;
+  expiredAt: number | null;
 }
 
 export interface PreviewVerificationConsoleMessageView {
@@ -116,6 +121,19 @@ export interface PreviewVerificationView {
   consoleMessages: PreviewVerificationConsoleMessageView[];
   pageErrors: string[];
   failedRequests: PreviewVerificationFailedRequestView[];
+}
+
+export interface PreviewProofRecordView {
+  id: string;
+  previewId: string;
+  threadId: string | null;
+  projectId: string;
+  projectLabel: string;
+  previewTitle: string;
+  stackId: string | null;
+  verification: PreviewVerificationView;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface LeaseLifecycleView {
@@ -432,6 +450,7 @@ export interface AppSnapshot {
       supervisor: ButlerSupervisorSummaryView;
       notices: ButlerMessageView[];
     };
+    latestPreviewProofsByThreadId: Record<string, PreviewProofRecordView>;
     stacks: StackLeaseView[];
     previews: PreviewLeaseView[];
     serviceTemplates: ServiceTemplateView[];
@@ -453,6 +472,7 @@ export interface PersistedUiState {
   stackLeases?: StackLeaseView[];
   previewLeases?: PreviewLeaseView[];
   serviceLeases?: ServiceLeaseView[];
+  previewProofs?: PreviewProofRecordView[];
   workerReportsByThreadId?: Record<string, CodexWorkerReportView[]>;
   supervisionByThreadId?: Record<
     string,

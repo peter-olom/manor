@@ -2,6 +2,7 @@ import express from "express";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
+import path from "node:path";
 import { Readable } from "node:stream";
 import Docker from "dockerode";
 
@@ -16,10 +17,14 @@ const previewEgressAdminUrl =
   process.env.RUNTIME_PREVIEW_EGRESS_ADMIN_URL ?? "http://preview-egress:8091";
 const brokerToken = process.env.RUNTIME_BROKER_TOKEN ?? null;
 const codexAccessRegistryPath = process.env.RUNTIME_CODEX_ACCESS_FILE ?? "/state/codex-broker-access.json";
+const stackBindingRegistryPath =
+  process.env.RUNTIME_STACK_BINDINGS_FILE ?? "/opt/manor/runtime-broker/state/stack-thread-bindings.json";
 const internalOperatorBaseUrl = process.env.RUNTIME_OPERATOR_BASE_URL_INTERNAL ?? "http://butler:8080";
 const playwrightContainerName = process.env.RUNTIME_PLAYWRIGHT_CONTAINER ?? "manor-playwright";
 const runtimeBrokerContainerName = process.env.RUNTIME_BROKER_CONTAINER ?? "manor-runtime-broker";
 const previewEgressContainerName = process.env.RUNTIME_PREVIEW_EGRESS_CONTAINER ?? "manor-preview-egress";
+const artifactsRootDir = path.resolve(process.env.RUNTIME_ARTIFACTS_DIR ?? "/artifacts");
+const playwrightArtifactsScratchDir = process.env.RUNTIME_PLAYWRIGHT_ARTIFACT_ROOT ?? "/tmp/manor-playwright-artifacts";
 const stackNetworkPrefix = process.env.RUNTIME_STACK_NETWORK_PREFIX ?? "manor-stack";
 const stackVolumePrefix = process.env.RUNTIME_STACK_VOLUME_PREFIX ?? "manor-stack-vol";
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
@@ -28,6 +33,64 @@ const leaseBootstrapStates = new Map();
 const pendingPreviewLeases = new Map();
 const retainedPreviewLeases = new Map();
 const noHeartbeatReadyDelayMs = Number(process.env.RUNTIME_NO_HEARTBEAT_READY_DELAY_MS ?? "2000");
+
+function loadStackBindingRegistry() {
+  try {
+    const raw = fs.readFileSync(stackBindingRegistryPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed.stackThreadBindings === "object" && parsed.stackThreadBindings
+      ? parsed.stackThreadBindings
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveStackBindingRegistry(bindings) {
+  fs.mkdirSync(path.dirname(stackBindingRegistryPath), { recursive: true });
+  fs.writeFileSync(
+    stackBindingRegistryPath,
+    `${JSON.stringify({ stackThreadBindings: bindings }, null, 2)}\n`,
+    "utf8"
+  );
+}
+
+function getStackThreadBinding(stackId) {
+  const normalizedStackId = normalizeString(stackId);
+  if (!normalizedStackId) {
+    return null;
+  }
+
+  const bindings = loadStackBindingRegistry();
+  const threadId = normalizeString(bindings[normalizedStackId]);
+  return threadId || null;
+}
+
+function setStackThreadBinding(stackId, threadId) {
+  const normalizedStackId = normalizeString(stackId);
+  const normalizedThreadId = normalizeString(threadId);
+  if (!normalizedStackId || !normalizedThreadId) {
+    return;
+  }
+
+  const bindings = loadStackBindingRegistry();
+  bindings[normalizedStackId] = normalizedThreadId;
+  saveStackBindingRegistry(bindings);
+}
+
+function clearStackThreadBinding(stackId) {
+  const normalizedStackId = normalizeString(stackId);
+  if (!normalizedStackId) {
+    return;
+  }
+
+  const bindings = loadStackBindingRegistry();
+  if (!(normalizedStackId in bindings)) {
+    return;
+  }
+  delete bindings[normalizedStackId];
+  saveStackBindingRegistry(bindings);
+}
 
 const app = express();
 app.use(express.json());
@@ -145,6 +208,32 @@ function deriveWorktreeToken(worktreePath) {
   return segments.at(-1) || "";
 }
 
+function resolveWorktreeProjectInfo(worktreePath, fallbackId = "unknown", fallbackLabel = "Unknown") {
+  const normalized = normalizeString(worktreePath).replace(/\\/g, "/").replace(/\/+$/, "");
+  if (normalized.startsWith("/repos/.manor-worktrees/")) {
+    const relative = normalized.slice("/repos/.manor-worktrees/".length);
+    const [repoName] = relative.split("/").filter(Boolean);
+    if (repoName) {
+      return { id: repoName, label: repoName };
+    }
+  }
+
+  if (normalized.startsWith("/repos/")) {
+    const relative = normalized.slice("/repos/".length);
+    const [repoName] = relative.split("/").filter(Boolean);
+    if (repoName) {
+      return { id: repoName, label: repoName };
+    }
+  }
+
+  const normalizedFallbackId = normalizeString(fallbackId) || "unknown";
+  const normalizedFallbackLabel = normalizeString(fallbackLabel) || normalizedFallbackId || "Unknown";
+  return {
+    id: normalizedFallbackId,
+    label: normalizedFallbackLabel
+  };
+}
+
 function deriveProjectStorageKey(payload) {
   const projectToken = sanitizeStorageToken(
     payload.projectId || payload.projectLabel || deriveWorktreeToken(payload.worktreePath) || "stack",
@@ -248,6 +337,35 @@ async function findStackNetwork(stackId) {
     (labels) => labels["manor.runtime-kind"] === "stack" && labels["manor.stack-id"] === normalizedStackId
   );
   return matches[0] ?? null;
+}
+
+async function resolveStackThreadId(stackId, fallbackThreadId = null) {
+  const normalizedFallback = normalizeString(fallbackThreadId) || null;
+  const normalizedStackId = normalizeString(stackId);
+  if (!normalizedStackId) {
+    return normalizedFallback;
+  }
+
+  const binding = getStackThreadBinding(normalizedStackId);
+  if (binding) {
+    return binding;
+  }
+
+  const stack = await findStackNetwork(normalizedStackId);
+  if (!stack) {
+    return normalizedFallback;
+  }
+
+  return normalizeString(stack.Labels?.["manor.thread-id"]) || normalizedFallback;
+}
+
+async function resolveAttachedThreadId(rawThreadId, stackId) {
+  const explicitThreadId = normalizeString(rawThreadId);
+  if (explicitThreadId) {
+    return explicitThreadId;
+  }
+
+  return resolveStackThreadId(stackId, null);
 }
 
 function getStackScopeKeyFromLabels(labels) {
@@ -983,6 +1101,209 @@ function serializeLease(lease, options = {}) {
   };
 }
 
+async function serializeLiveLeaseFromSummary(containerSummary) {
+  const labels = containerSummary.Labels || {};
+  const stackId = labels["manor.stack-id"] || null;
+  const effectiveThreadId = await resolveAttachedThreadId(labels["manor.thread-id"] || null, stackId);
+  const worktreePath = labels["manor.worktree-path"] || containerSummary.Names?.[0]?.replace(/^\//, "") || "/repos";
+  const project = resolveWorktreeProjectInfo(
+    worktreePath,
+    labels["manor.project-id"] || "unknown",
+    labels["manor.project-label"] || labels["manor.project-id"] || "Unknown"
+  );
+  const aliases = parseAliases(labels["manor.aliases"]);
+  const containerName = containerSummary.Names?.[0]?.replace(/^\//, "") || "";
+  return serializeLease(
+    {
+      id: labels["manor.lease-id"] || "",
+      threadId: effectiveThreadId,
+      projectId: project.id,
+      projectLabel: project.label,
+      title: labels["manor.title"] || `Preview ${(labels["manor.lease-id"] || "").slice(0, 8)}`,
+      stackId,
+      aliases,
+      worktreePath,
+      branchName: null,
+      containerName,
+      targetHost: resolveTargetHost(containerName, aliases),
+      targetPort: Number(labels["manor.target-port"] || labels["manor.port"] || "3000"),
+      routePrefix: `${routeBase}/${labels["manor.lease-id"] || ""}/`,
+      operatorUrl: `${routeBase}/${labels["manor.lease-id"] || ""}/`,
+      command: Array.isArray(containerSummary.Command) ? containerSummary.Command.join(" ") : containerSummary.Command || "",
+      image: containerSummary.Image || previewImage,
+      egressProfile: labels["manor.egress-profile"] || "none",
+      egressDomains:
+        labels["manor.egress-domains"]
+          ?.split(",")
+          .map((value) => value.trim())
+          .filter(Boolean) || [],
+      status: containerSummary.State,
+      createdAt: typeof containerSummary.Created === "number" ? containerSummary.Created * 1000 : Date.now(),
+      updatedAt: Date.now(),
+      lastError: null
+    },
+    {
+      labels,
+      containerState: containerSummary.State,
+      containerRunning: containerSummary.State === "running"
+    }
+  );
+}
+
+async function serializeInspectedLease(containerName, container) {
+  const labels = container.Config?.Labels || {};
+  const stackId = labels["manor.stack-id"] || null;
+  const effectiveThreadId = await resolveAttachedThreadId(labels["manor.thread-id"] || null, stackId);
+  const worktreePath = container.Config?.WorkingDir || "/repos";
+  const project = resolveWorktreeProjectInfo(
+    worktreePath,
+    labels["manor.project-id"] || "unknown",
+    labels["manor.project-label"] || labels["manor.project-id"] || "Unknown"
+  );
+  const aliases = parseAliases(labels["manor.aliases"]);
+  return {
+    ...serializeLease(
+      {
+        id: labels["manor.lease-id"] || "",
+        threadId: effectiveThreadId,
+        projectId: project.id,
+        projectLabel: project.label,
+        title: labels["manor.title"] || `Preview ${(labels["manor.lease-id"] || "").slice(0, 8)}`,
+        stackId,
+        aliases,
+        worktreePath,
+        branchName: null,
+        containerName,
+        targetHost: resolveTargetHost(containerName, aliases),
+        targetPort: Number(container.Config?.Env?.find((entry) => entry.startsWith("PORT="))?.slice(5) || "3000"),
+        routePrefix: `${routeBase}/${labels["manor.lease-id"] || ""}/`,
+        operatorUrl: `${routeBase}/${labels["manor.lease-id"] || ""}/`,
+        command: Array.isArray(container.Config?.Cmd) ? container.Config.Cmd.join(" ") : "",
+        image: container.Config?.Image || previewImage,
+        egressProfile:
+          container.Config?.Env?.find((entry) => entry.startsWith("MANOR_EGRESS_PROFILE="))?.slice("MANOR_EGRESS_PROFILE=".length) ||
+          "none",
+        egressDomains:
+          labels["manor.egress-domains"]
+            ?.split(",")
+            .map((value) => value.trim())
+            .filter(Boolean) || [],
+        status: container.State?.Running ? "running" : "stopped",
+        createdAt: new Date(container.Created).getTime(),
+        updatedAt: Date.now(),
+        lastError: container.State?.Error || null
+      },
+      {
+        labels,
+        containerState: container.State?.Running ? "running" : "stopped",
+        containerRunning: Boolean(container.State?.Running)
+      }
+    ),
+    runtime: {
+      running: Boolean(container.State?.Running),
+      status: container.State?.Status || "unknown",
+      startedAt: container.State?.StartedAt ? new Date(container.State.StartedAt).getTime() : null,
+      finishedAt: container.State?.FinishedAt ? new Date(container.State.FinishedAt).getTime() : null,
+      error: container.State?.Error || null
+    }
+  };
+}
+
+async function serializeLiveServiceFromSummary(containerSummary) {
+  const labels = containerSummary.Labels || {};
+  const stackId = labels["manor.stack-id"] || null;
+  const effectiveThreadId = await resolveAttachedThreadId(labels["manor.thread-id"] || null, stackId);
+  const worktreePath = labels["manor.worktree-path"] || null;
+  const project = resolveWorktreeProjectInfo(
+    worktreePath,
+    labels["manor.project-id"] || "service",
+    labels["manor.project-label"] || labels["manor.project-id"] || "service"
+  );
+  const aliases = parseAliases(labels["manor.aliases"]);
+  const containerName = containerSummary.Names?.[0]?.replace(/^\//, "") || "";
+  return {
+    id: labels["manor.service-id"] || "",
+    threadId: effectiveThreadId,
+    projectId: project.id,
+    projectLabel: project.label,
+    title: labels["manor.title"] || `Service ${(labels["manor.service-id"] || "").slice(0, 8)}`,
+    stackId,
+    aliases,
+    templateId: labels["manor.template-id"] || "unknown",
+    templateLabel: labels["manor.template-label"] || labels["manor.template-id"] || "unknown",
+    runtimeKind: "container",
+    containerName,
+    targetHost: resolveTargetHost(containerName, aliases),
+    targetPort: Number(labels["manor.target-port"] || "0"),
+    worktreePath,
+    image: containerSummary.Image || previewImage,
+    status: containerSummary.State === "running" ? "running" : "stopped",
+    storageKind:
+      labels["manor.storage-kind"] === "volume" || labels["manor.storage-kind"] === "worktree"
+        ? labels["manor.storage-kind"]
+        : "ephemeral",
+    sticky: labels["manor.storage-kind"] === "volume",
+    volumeName: labels["manor.volume-name"] || null,
+    volumeMountPath: labels["manor.volume-mount-path"] || null,
+    createdAt: typeof containerSummary.Created === "number" ? containerSummary.Created * 1000 : Date.now(),
+    updatedAt: Date.now(),
+    lastError: null,
+    env: {}
+  };
+}
+
+async function serializeInspectedService(containerName, container) {
+  const labels = container.Config?.Labels || {};
+  const stackId = labels["manor.stack-id"] || null;
+  const effectiveThreadId = await resolveAttachedThreadId(labels["manor.thread-id"] || null, stackId);
+  const worktreePath = container.Config?.WorkingDir || null;
+  const project = resolveWorktreeProjectInfo(
+    worktreePath,
+    labels["manor.project-id"] || "service",
+    labels["manor.project-label"] || labels["manor.project-id"] || "service"
+  );
+  const aliases = parseAliases(labels["manor.aliases"]);
+  return {
+    id: labels["manor.service-id"] || "",
+    threadId: effectiveThreadId,
+    projectId: project.id,
+    projectLabel: project.label,
+    title: labels["manor.title"] || `Service ${(labels["manor.service-id"] || "").slice(0, 8)}`,
+    stackId,
+    aliases,
+    templateId: labels["manor.template-id"] || "unknown",
+    templateLabel: labels["manor.template-label"] || labels["manor.template-id"] || "unknown",
+    runtimeKind: "container",
+    containerName,
+    targetHost: resolveTargetHost(containerName, aliases),
+    targetPort: Number(labels["manor.target-port"] || "0"),
+    worktreePath,
+    image: container.Config?.Image || previewImage,
+    status: container.State?.Running ? "running" : "stopped",
+    storageKind:
+      labels["manor.storage-kind"] === "volume" || labels["manor.storage-kind"] === "worktree"
+        ? labels["manor.storage-kind"]
+        : "ephemeral",
+    sticky: labels["manor.storage-kind"] === "volume",
+    volumeName: labels["manor.volume-name"] || null,
+    volumeMountPath: labels["manor.volume-mount-path"] || null,
+    createdAt: new Date(container.Created).getTime(),
+    updatedAt: Date.now(),
+    lastError: container.State?.Error || null,
+    env: Object.fromEntries((container.Config?.Env ?? []).map((entry) => {
+      const [key, ...rest] = entry.split("=");
+      return [key, rest.join("=")];
+    })),
+    runtime: {
+      running: Boolean(container.State?.Running),
+      status: container.State?.Status || "unknown",
+      startedAt: container.State?.StartedAt ? new Date(container.State.StartedAt).getTime() : null,
+      finishedAt: container.State?.FinishedAt ? new Date(container.State.FinishedAt).getTime() : null,
+      error: container.State?.Error || null
+    }
+  };
+}
+
 async function listStackMemberContainers(stackId) {
   return listManagedContainers((labels) => labels["manor.stack-id"] === stackId);
 }
@@ -1235,6 +1556,13 @@ function summarizeStackStatus(containers) {
 async function serializeStackFromNetwork(networkSummary) {
   const labels = networkSummary.Labels || {};
   const stackId = labels["manor.stack-id"] || "";
+  const effectiveThreadId = (await resolveStackThreadId(stackId, labels["manor.thread-id"] || null)) || null;
+  const worktreePath = labels["manor.worktree-path"] || null;
+  const project = resolveWorktreeProjectInfo(
+    worktreePath,
+    labels["manor.project-id"] || "unknown",
+    labels["manor.project-label"] || labels["manor.project-id"] || "Unknown"
+  );
   const storageMode = getStackStorageModeFromLabels(labels);
   const retainsVolumes = labels["manor.retains-volumes"] === "true";
   const stackScopeKey = getStackScopeKeyFromLabels(labels);
@@ -1264,11 +1592,11 @@ async function serializeStackFromNetwork(networkSummary) {
 
   return {
     id: stackId,
-    threadId: labels["manor.thread-id"] || null,
-    projectId: labels["manor.project-id"] || "unknown",
-    projectLabel: labels["manor.project-label"] || labels["manor.project-id"] || "Unknown",
+    threadId: effectiveThreadId,
+    projectId: project.id,
+    projectLabel: project.label,
     title: labels["manor.title"] || `Stack ${stackId.slice(0, 8)}`,
-    worktreePath: labels["manor.worktree-path"] || null,
+    worktreePath,
     networkName: networkSummary.Name,
     status: summarizeStackStatus(containers),
     storageMode,
@@ -1286,8 +1614,14 @@ async function serializeStackFromNetwork(networkSummary) {
   };
 }
 
-async function collectExecOutput(containerRef, exec) {
-  const stream = await exec.start({ hijack: true, stdin: false });
+async function collectExecOutput(containerRef, exec, options = {}) {
+  const stdinText = typeof options.stdin === "string" ? options.stdin : "";
+  const stdinProvided = options.stdinProvided === true;
+  const stream = await exec.start({ hijack: true, stdin: stdinProvided });
+  if (stdinProvided) {
+    stream.write(stdinText);
+    stream.end();
+  }
   const output = await new Promise((resolve, reject) => {
     const stdout = [];
     const stderr = [];
@@ -1318,6 +1652,84 @@ async function collectExecOutput(containerRef, exec) {
     stdout: output.stdout,
     stderr: output.stderr
   };
+}
+
+async function readContainerFile(containerRef, filePath) {
+  const exec = await containerRef.exec({
+    AttachStdout: true,
+    AttachStderr: true,
+    Cmd: [
+      "bash",
+      "-lc",
+      `test -f ${JSON.stringify(filePath)} && base64 -w0 ${JSON.stringify(filePath)}`
+    ],
+    Tty: false
+  });
+  const output = await collectExecOutput(containerRef, exec);
+  if (output.exitCode !== 0) {
+    throw new Error(output.stderr.trim() || output.stdout.trim() || `Could not read container file ${filePath}`);
+  }
+  return Buffer.from(output.stdout.trim(), "base64");
+}
+
+async function removeContainerPath(containerRef, targetPath) {
+  const exec = await containerRef.exec({
+    AttachStdout: true,
+    AttachStderr: true,
+    Cmd: ["bash", "-lc", `rm -rf ${JSON.stringify(targetPath)}`],
+    Tty: false
+  });
+  await collectExecOutput(containerRef, exec).catch(() => null);
+}
+
+async function persistVerificationArtifacts(containerRef, verification, remoteOutputDir, localOutputDir) {
+  fs.mkdirSync(localOutputDir, { recursive: true });
+
+  const persistedArtifacts = [];
+  for (const artifact of Array.isArray(verification.artifacts) ? verification.artifacts : []) {
+    if (!artifact || typeof artifact !== "object") {
+      continue;
+    }
+    if (artifact.kind === "manifest") {
+      continue;
+    }
+    const remotePath = normalizeString(artifact.filePath);
+    if (!remotePath) {
+      continue;
+    }
+    const localPath = path.join(localOutputDir, path.basename(remotePath));
+    const contents = await readContainerFile(containerRef, remotePath);
+    fs.writeFileSync(localPath, contents);
+    const stats = fs.statSync(localPath);
+    persistedArtifacts.push({
+      ...artifact,
+      fileName: path.basename(localPath),
+      filePath: localPath,
+      sizeBytes: stats.size,
+      url: null
+    });
+  }
+
+  const manifestPath = path.join(localOutputDir, "manifest.json");
+  const manifestArtifact = {
+    kind: "manifest",
+    label: "Manifest",
+    fileName: path.basename(manifestPath),
+    filePath: manifestPath,
+    contentType: "application/json",
+    sizeBytes: 0,
+    url: null
+  };
+  const persistedVerification = {
+    ...verification,
+    artifacts: [manifestArtifact, ...persistedArtifacts]
+  };
+  fs.writeFileSync(manifestPath, `${JSON.stringify(persistedVerification, null, 2)}\n`, "utf8");
+  manifestArtifact.sizeBytes = fs.statSync(manifestPath).size;
+  fs.writeFileSync(manifestPath, `${JSON.stringify(persistedVerification, null, 2)}\n`, "utf8");
+
+  await removeContainerPath(containerRef, remoteOutputDir);
+  return persistedVerification;
 }
 
 app.get("/health", async (_request, response) => {
@@ -1395,13 +1807,13 @@ app.get("/stacks", async (request, response) => {
   }
 
   try {
-    const networks = await listManagedNetworks(
-      (labels) =>
-        labels["manor.runtime-kind"] === "stack" &&
-        (!requestedThreadId || (labels["manor.thread-id"] || "") === requestedThreadId)
-    );
+    const networks = await listManagedNetworks((labels) => labels["manor.runtime-kind"] === "stack");
     const stacks = await Promise.all(networks.map((network) => serializeStackFromNetwork(network)));
-    response.json(stacks.sort((left, right) => right.updatedAt - left.updatedAt));
+    response.json(
+      stacks
+        .filter((stack) => !requestedThreadId || stack.threadId === requestedThreadId)
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+    );
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
@@ -1412,11 +1824,55 @@ app.get("/stacks/:stackId", async (request, response) => {
   if (!stack) {
     return;
   }
-  if (!authorizeScopedThread(request, response, stack.Labels?.["manor.thread-id"] || null)) {
+  const effectiveThreadId = await resolveStackThreadId(request.params.stackId, stack.Labels?.["manor.thread-id"] || null);
+  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
     return;
   }
 
   try {
+    response.json(await serializeStackFromNetwork(stack));
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/stacks/:stackId/adopt", async (request, response) => {
+  if (!hasBrokerAccess(request)) {
+    response.status(403).json({ error: "Forbidden" });
+    return;
+  }
+
+  const stack = await requireStackNetwork(request.params.stackId, response);
+  if (!stack) {
+    return;
+  }
+
+  const threadId = normalizeString(request.body?.threadId);
+  if (!threadId) {
+    response.status(400).json({ error: "threadId is required" });
+    return;
+  }
+
+  try {
+    const currentThreadId = await resolveStackThreadId(request.params.stackId, stack.Labels?.["manor.thread-id"] || null);
+    if (currentThreadId && currentThreadId !== threadId) {
+      response.status(409).json({ error: `Stack ${request.params.stackId} is already attached to a different job` });
+      return;
+    }
+
+    const members = await listStackMemberContainers(request.params.stackId);
+    const conflictingMember = members.find((container) => {
+      const memberThreadId = normalizeString(container.Labels?.["manor.thread-id"]);
+      return memberThreadId && memberThreadId !== threadId;
+    });
+    if (conflictingMember) {
+      response.status(409).json({
+        error: `Stack ${request.params.stackId} has member runtime already attached to a different job`
+      });
+      return;
+    }
+
+    setStackThreadBinding(request.params.stackId, threadId);
     response.json(await serializeStackFromNetwork(stack));
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -1534,6 +1990,8 @@ app.delete("/stacks/:stackId", async (request, response) => {
         await docker.getVolume(volume.Name).remove().catch(() => {});
       }
     }
+
+    clearStackThreadBinding(request.params.stackId);
 
     response.json({ ok: true, stackId: request.params.stackId });
   } catch (error) {
@@ -1807,74 +2265,74 @@ app.get("/leases", async (request, response) => {
   }
 
   try {
-    const containers = await listManagedContainers(
-      (labels) => labels["manor.runtime-kind"] !== "service" && (!requestedThreadId || (labels["manor.thread-id"] || "") === requestedThreadId)
-    );
-    const liveLeases = containers.map((container) =>
-      serializeLease(
-        {
-          id: container.Labels?.["manor.lease-id"] || "",
-          threadId: container.Labels?.["manor.thread-id"] || null,
-          projectId: container.Labels?.["manor.project-id"] || "unknown",
-          projectLabel: container.Labels?.["manor.project-label"] || container.Labels?.["manor.project-id"] || "Unknown",
-          title: container.Labels?.["manor.title"] || `Preview ${(container.Labels?.["manor.lease-id"] || "").slice(0, 8)}`,
-          stackId: container.Labels?.["manor.stack-id"] || null,
-          aliases: parseAliases(container.Labels?.["manor.aliases"]),
-          worktreePath: container.Labels?.["manor.worktree-path"] || container.Names?.[0]?.replace(/^\//, "") || "/repos",
-          branchName: null,
-          containerName: container.Names?.[0]?.replace(/^\//, "") || "",
-          targetHost: resolveTargetHost(
-            container.Names?.[0]?.replace(/^\//, "") || "",
-            parseAliases(container.Labels?.["manor.aliases"])
-          ),
-          targetPort: Number(container.Labels?.["manor.target-port"] || container.Labels?.["manor.port"] || "3000"),
-          routePrefix: `${routeBase}/${container.Labels?.["manor.lease-id"] || ""}/`,
-          operatorUrl: `${routeBase}/${container.Labels?.["manor.lease-id"] || ""}/`,
-          command: Array.isArray(container.Command) ? container.Command.join(" ") : container.Command || "",
-          image: container.Image || previewImage,
-          egressProfile: container.Labels?.["manor.egress-profile"] || "none",
-          egressDomains:
-            container.Labels?.["manor.egress-domains"]
-              ?.split(",")
-              .map((value) => value.trim())
-              .filter(Boolean) || [],
-          status: container.State,
-          createdAt: typeof container.Created === "number" ? container.Created * 1000 : Date.now(),
-          updatedAt: Date.now(),
-          lastError: null
-        },
-        {
-          labels: container.Labels ?? null,
-          containerState: container.State,
-          containerRunning: container.State === "running"
-        }
-      )
+    const containers = await listManagedContainers((labels) => labels["manor.runtime-kind"] !== "service");
+    const liveLeases = (await Promise.all(containers.map((container) => serializeLiveLeaseFromSummary(container)))).filter(
+      (lease) => !requestedThreadId || lease.threadId === requestedThreadId
     );
     const liveLeaseIds = new Set(liveLeases.map((lease) => lease.id));
-    const pendingLeases = [...pendingPreviewLeases.values()]
-      .filter((lease) => (!requestedThreadId || lease.threadId === requestedThreadId) && !liveLeaseIds.has(lease.id))
-      .map((lease) =>
-        serializeLease(
-          {
-            ...lease,
-            updatedAt: Date.now()
-          },
-          {
-            containerState: "starting",
-            containerRunning: false
-          }
-        )
-      );
+    const pendingLeases = (
+      await Promise.all(
+        [...pendingPreviewLeases.values()].map(async (lease) => {
+          const effectiveThreadId = await resolveAttachedThreadId(lease.threadId, lease.stackId);
+          const project = resolveWorktreeProjectInfo(
+            lease.worktreePath,
+            lease.projectId,
+            lease.projectLabel
+          );
+          return {
+            threadId: effectiveThreadId,
+            lease: serializeLease(
+              {
+                ...lease,
+                threadId: effectiveThreadId,
+                projectId: project.id,
+                projectLabel: project.label,
+                updatedAt: Date.now()
+              },
+              {
+                containerState: "starting",
+                containerRunning: false
+              }
+            )
+          };
+        })
+      )
+    )
+      .filter(({ threadId, lease }) => (!requestedThreadId || threadId === requestedThreadId) && !liveLeaseIds.has(lease.id))
+      .map(({ lease }) => lease);
 
-    const retainedLeases = [...retainedPreviewLeases.values()]
-      .filter(({ lease }) => (!requestedThreadId || lease.threadId === requestedThreadId) && !liveLeaseIds.has(lease.id))
-      .map(({ lease, runtime }) => ({
-        ...serializeLease(lease, {
-          containerState: runtime.status === "failed" ? "failed" : lease.status,
-          containerRunning: false
-        }),
-        runtime
-      }));
+    const retainedLeases = (
+      await Promise.all(
+        [...retainedPreviewLeases.values()].map(async ({ lease, runtime }) => {
+          const effectiveThreadId = await resolveAttachedThreadId(lease.threadId, lease.stackId);
+          const project = resolveWorktreeProjectInfo(
+            lease.worktreePath,
+            lease.projectId,
+            lease.projectLabel
+          );
+          return {
+            threadId: effectiveThreadId,
+            lease: {
+              ...serializeLease(
+                {
+                  ...lease,
+                  threadId: effectiveThreadId,
+                  projectId: project.id,
+                  projectLabel: project.label
+                },
+                {
+                  containerState: runtime.status === "failed" ? "failed" : lease.status,
+                  containerRunning: false
+                }
+              ),
+              runtime
+            }
+          };
+        })
+      )
+    )
+      .filter(({ threadId, lease }) => (!requestedThreadId || threadId === requestedThreadId) && !liveLeaseIds.has(lease.id))
+      .map(({ lease }) => lease);
 
     response.json([...pendingLeases, ...retainedLeases, ...liveLeases].sort((left, right) => right.updatedAt - left.updatedAt));
   } catch (error) {
@@ -1885,14 +2343,23 @@ app.get("/leases", async (request, response) => {
 app.get("/leases/:leaseId", async (request, response) => {
   const pendingLease = pendingPreviewLeases.get(request.params.leaseId);
   if (pendingLease) {
-    if (!authorizeScopedThread(request, response, pendingLease.threadId)) {
+    const effectiveThreadId = await resolveAttachedThreadId(pendingLease.threadId, pendingLease.stackId);
+    if (!authorizeScopedThread(request, response, effectiveThreadId)) {
       return;
     }
+    const project = resolveWorktreeProjectInfo(
+      pendingLease.worktreePath,
+      pendingLease.projectId,
+      pendingLease.projectLabel
+    );
 
     response.json({
       ...serializeLease(
         {
           ...pendingLease,
+          threadId: effectiveThreadId,
+          projectId: project.id,
+          projectLabel: project.label,
           updatedAt: Date.now()
         },
         {
@@ -1913,15 +2380,29 @@ app.get("/leases/:leaseId", async (request, response) => {
 
   const retainedLease = getRetainedPreviewLease(request.params.leaseId);
   if (retainedLease) {
-    if (!authorizeScopedThread(request, response, retainedLease.lease.threadId)) {
+    const effectiveThreadId = await resolveAttachedThreadId(retainedLease.lease.threadId, retainedLease.lease.stackId);
+    if (!authorizeScopedThread(request, response, effectiveThreadId)) {
       return;
     }
+    const project = resolveWorktreeProjectInfo(
+      retainedLease.lease.worktreePath,
+      retainedLease.lease.projectId,
+      retainedLease.lease.projectLabel
+    );
 
     response.json({
-      ...serializeLease(retainedLease.lease, {
-        containerState: retainedLease.runtime.status === "failed" ? "failed" : retainedLease.lease.status,
-        containerRunning: false
-      }),
+      ...serializeLease(
+        {
+          ...retainedLease.lease,
+          threadId: effectiveThreadId,
+          projectId: project.id,
+          projectLabel: project.label
+        },
+        {
+          containerState: retainedLease.runtime.status === "failed" ? "failed" : retainedLease.lease.status,
+          containerRunning: false
+        }
+      ),
       runtime: retainedLease.runtime
     });
     return;
@@ -1935,57 +2416,14 @@ app.get("/leases/:leaseId", async (request, response) => {
     return;
   }
   const { containerName, container } = required;
-  if (!authorizeScopedThread(request, response, container.Config?.Labels?.["manor.thread-id"] || null)) {
+  const effectiveThreadId = await resolveAttachedThreadId(
+    container.Config?.Labels?.["manor.thread-id"] || null,
+    container.Config?.Labels?.["manor.stack-id"] || null
+  );
+  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
     return;
   }
-  const aliases = parseAliases(container.Config?.Labels?.["manor.aliases"]);
-
-  response.json({
-    ...serializeLease(
-      {
-        id: request.params.leaseId,
-        threadId: container.Config?.Labels?.["manor.thread-id"] || null,
-        projectId: container.Config?.Labels?.["manor.project-id"] || "unknown",
-        projectLabel: container.Config?.Labels?.["manor.project-label"] || container.Config?.Labels?.["manor.project-id"] || "Unknown",
-        title: container.Config?.Labels?.["manor.title"] || `Preview ${request.params.leaseId.slice(0, 8)}`,
-        stackId: container.Config?.Labels?.["manor.stack-id"] || null,
-        aliases,
-        worktreePath: container.Config?.WorkingDir || "/repos",
-        branchName: null,
-        containerName,
-        targetHost: resolveTargetHost(containerName, aliases),
-        targetPort: Number(container.Config?.Env?.find((entry) => entry.startsWith("PORT="))?.slice(5) || "3000"),
-        routePrefix: `${routeBase}/${request.params.leaseId}/`,
-        operatorUrl: `${routeBase}/${request.params.leaseId}/`,
-        command: Array.isArray(container.Config?.Cmd) ? container.Config.Cmd.join(" ") : "",
-        image: container.Config?.Image || previewImage,
-        egressProfile:
-          container.Config?.Env?.find((entry) => entry.startsWith("MANOR_EGRESS_PROFILE="))?.slice("MANOR_EGRESS_PROFILE=".length) ||
-          "none",
-        egressDomains:
-          container.Config?.Labels?.["manor.egress-domains"]
-            ?.split(",")
-            .map((value) => value.trim())
-            .filter(Boolean) || [],
-        status: container.State?.Running ? "running" : "stopped",
-        createdAt: new Date(container.Created).getTime(),
-        updatedAt: Date.now(),
-        lastError: container.State?.Error || null
-      },
-      {
-        labels: container.Config?.Labels ?? null,
-        containerState: container.State?.Running ? "running" : "stopped",
-        containerRunning: Boolean(container.State?.Running)
-      }
-    ),
-    runtime: {
-      running: Boolean(container.State?.Running),
-      status: container.State?.Status || "unknown",
-      startedAt: container.State?.StartedAt ? new Date(container.State.StartedAt).getTime() : null,
-      finishedAt: container.State?.FinishedAt ? new Date(container.State.FinishedAt).getTime() : null,
-      error: container.State?.Error || null
-    }
-  });
+  response.json(await serializeInspectedLease(containerName, container));
 });
 
 app.get("/leases/:leaseId/processes", async (request, response) => {
@@ -1999,7 +2437,11 @@ app.get("/leases/:leaseId/processes", async (request, response) => {
   if (rejectIfLeaseUnavailable(required, request.params.leaseId, response)) {
     return;
   }
-  if (!authorizeScopedThread(request, response, required.container.Config?.Labels?.["manor.thread-id"] || null)) {
+  const effectiveThreadId = await resolveAttachedThreadId(
+    required.container.Config?.Labels?.["manor.thread-id"] || null,
+    required.container.Config?.Labels?.["manor.stack-id"] || null
+  );
+  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
     return;
   }
 
@@ -2025,7 +2467,11 @@ app.get("/leases/:leaseId/logs", async (request, response) => {
   if (rejectIfLeaseUnavailable(required, request.params.leaseId, response)) {
     return;
   }
-  if (!authorizeScopedThread(request, response, required.container.Config?.Labels?.["manor.thread-id"] || null)) {
+  const effectiveThreadId = await resolveAttachedThreadId(
+    required.container.Config?.Labels?.["manor.thread-id"] || null,
+    required.container.Config?.Labels?.["manor.stack-id"] || null
+  );
+  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
     return;
   }
 
@@ -2069,12 +2515,18 @@ app.post("/leases/:leaseId/exec", async (request, response) => {
   if (rejectIfLeaseUnavailable(required, request.params.leaseId, response)) {
     return;
   }
-  if (!authorizeScopedThread(request, response, required.container.Config?.Labels?.["manor.thread-id"] || null)) {
+  const effectiveThreadId = await resolveAttachedThreadId(
+    required.container.Config?.Labels?.["manor.thread-id"] || null,
+    required.container.Config?.Labels?.["manor.stack-id"] || null
+  );
+  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
     return;
   }
 
   const command = typeof request.body?.command === "string" ? request.body.command.trim() : "";
   const cwd = typeof request.body?.cwd === "string" ? request.body.cwd.trim() : "";
+  const stdin = typeof request.body?.stdin === "string" ? request.body.stdin : "";
+  const stdinProvided = request.body?.stdinProvided === true;
   if (!command) {
     response.status(400).json({ error: "command is required" });
     return;
@@ -2082,13 +2534,14 @@ app.post("/leases/:leaseId/exec", async (request, response) => {
 
   try {
     const exec = await required.containerRef.exec({
+      AttachStdin: stdinProvided,
       AttachStdout: true,
       AttachStderr: true,
       Cmd: ["bash", "-lc", cwd ? `cd ${JSON.stringify(cwd)} && ${command}` : command],
       WorkingDir: cwd || undefined,
       Tty: false
     });
-    const output = await collectExecOutput(required.containerRef, exec);
+    const output = await collectExecOutput(required.containerRef, exec, { stdin, stdinProvided });
     response.json({
       leaseId: request.params.leaseId,
       command,
@@ -2122,13 +2575,14 @@ app.post("/leases/:leaseId/verify", async (request, response) => {
     await playwrightContainer.inspect();
     const targetUrl = `${internalOperatorBaseUrl}${routeBase}/${request.params.leaseId}/`;
     const runId = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
-    const outputDir = `/artifacts/previews/${request.params.leaseId}/${runId}`;
+    const remoteOutputDir = path.posix.join(playwrightArtifactsScratchDir, request.params.leaseId, runId);
+    const localOutputDir = path.join(artifactsRootDir, "previews", request.params.leaseId, runId);
     const mode = request.body?.mode === "headful" ? "headful" : "headless";
     const options = JSON.stringify({
       runId,
       mode,
       targetUrl,
-      outputDir
+      outputDir: remoteOutputDir
     });
     const execCommand =
       mode === "headful"
@@ -2146,7 +2600,8 @@ app.post("/leases/:leaseId/verify", async (request, response) => {
       throw new Error(output.stderr.trim() || output.stdout.trim() || "Preview verification failed");
     }
     const parsed = JSON.parse(output.stdout.trim());
-    response.json(parsed);
+    const persisted = await persistVerificationArtifacts(playwrightContainer, parsed, remoteOutputDir, localOutputDir);
+    response.json(persisted);
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
@@ -2266,10 +2721,6 @@ app.post("/services", async (request, response) => {
         }
       }
     };
-
-    if (typeof payload.worktreePath === "string" && payload.worktreePath) {
-      containerOptions.WorkingDir = payload.worktreePath;
-    }
 
     if (typeof payload.command === "string" && payload.command) {
       containerOptions.Entrypoint = ["sh", "-lc"];
@@ -2404,44 +2855,12 @@ app.get("/services", async (request, response) => {
   }
 
   try {
-    const containers = await listManagedContainers(
-      (labels) => labels["manor.runtime-kind"] === "service" && (!requestedThreadId || (labels["manor.thread-id"] || "") === requestedThreadId)
+    const containers = await listManagedContainers((labels) => labels["manor.runtime-kind"] === "service");
+    const services = (await Promise.all(containers.map((container) => serializeLiveServiceFromSummary(container)))).filter(
+      (service) => !requestedThreadId || service.threadId === requestedThreadId
     );
 
-    response.json(
-      containers.map((container) => {
-        const aliases = parseAliases(container.Labels?.["manor.aliases"]);
-        return {
-          id: container.Labels?.["manor.service-id"] || "",
-          threadId: container.Labels?.["manor.thread-id"] || null,
-          projectId: container.Labels?.["manor.project-id"] || "service",
-          projectLabel: container.Labels?.["manor.project-label"] || container.Labels?.["manor.project-id"] || "service",
-          title: container.Labels?.["manor.title"] || `Service ${(container.Labels?.["manor.service-id"] || "").slice(0, 8)}`,
-          stackId: container.Labels?.["manor.stack-id"] || null,
-          aliases,
-          templateId: container.Labels?.["manor.template-id"] || "unknown",
-          templateLabel: container.Labels?.["manor.template-label"] || container.Labels?.["manor.template-id"] || "unknown",
-          runtimeKind: "container",
-          containerName: container.Names?.[0]?.replace(/^\//, "") || "",
-          targetHost: resolveTargetHost(container.Names?.[0]?.replace(/^\//, "") || "", aliases),
-          targetPort: Number(container.Labels?.["manor.target-port"] || "0"),
-          worktreePath: container.Labels?.["manor.worktree-path"] || null,
-          image: container.Image || previewImage,
-          status: container.State === "running" ? "running" : "stopped",
-          storageKind:
-            container.Labels?.["manor.storage-kind"] === "volume" || container.Labels?.["manor.storage-kind"] === "worktree"
-              ? container.Labels["manor.storage-kind"]
-              : "ephemeral",
-          sticky: container.Labels?.["manor.storage-kind"] === "volume",
-          volumeName: container.Labels?.["manor.volume-name"] || null,
-          volumeMountPath: container.Labels?.["manor.volume-mount-path"] || null,
-          createdAt: typeof container.Created === "number" ? container.Created * 1000 : Date.now(),
-          updatedAt: Date.now(),
-          lastError: null,
-          env: {}
-        };
-      })
-    );
+    response.json(services);
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
@@ -2453,51 +2872,15 @@ app.get("/services/:serviceId", async (request, response) => {
     return;
   }
   const { containerName, container } = required;
-  if (!authorizeScopedThread(request, response, container.Config?.Labels?.["manor.thread-id"] || null)) {
+  const effectiveThreadId = await resolveAttachedThreadId(
+    container.Config?.Labels?.["manor.thread-id"] || null,
+    container.Config?.Labels?.["manor.stack-id"] || null
+  );
+  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
     return;
   }
-  const aliases = parseAliases(container.Config?.Labels?.["manor.aliases"]);
 
-  response.json({
-    id: request.params.serviceId,
-    threadId: container.Config?.Labels?.["manor.thread-id"] || null,
-    projectId: container.Config?.Labels?.["manor.project-id"] || "service",
-    projectLabel: container.Config?.Labels?.["manor.project-label"] || container.Config?.Labels?.["manor.project-id"] || "service",
-    title: container.Config?.Labels?.["manor.title"] || `Service ${request.params.serviceId.slice(0, 8)}`,
-    stackId: container.Config?.Labels?.["manor.stack-id"] || null,
-    aliases,
-    templateId: container.Config?.Labels?.["manor.template-id"] || "unknown",
-    templateLabel: container.Config?.Labels?.["manor.template-label"] || container.Config?.Labels?.["manor.template-id"] || "unknown",
-    runtimeKind: "container",
-    containerName,
-    targetHost: resolveTargetHost(containerName, aliases),
-    targetPort: Number(container.Config?.Labels?.["manor.target-port"] || "0"),
-    worktreePath: container.Config?.WorkingDir || null,
-    image: container.Config?.Image || previewImage,
-    status: container.State?.Running ? "running" : "stopped",
-    storageKind:
-      container.Config?.Labels?.["manor.storage-kind"] === "volume" ||
-      container.Config?.Labels?.["manor.storage-kind"] === "worktree"
-        ? container.Config.Labels["manor.storage-kind"]
-        : "ephemeral",
-    sticky: container.Config?.Labels?.["manor.storage-kind"] === "volume",
-    volumeName: container.Config?.Labels?.["manor.volume-name"] || null,
-    volumeMountPath: container.Config?.Labels?.["manor.volume-mount-path"] || null,
-    createdAt: new Date(container.Created).getTime(),
-    updatedAt: Date.now(),
-    lastError: container.State?.Error || null,
-    env: Object.fromEntries((container.Config?.Env ?? []).map((entry) => {
-      const [key, ...rest] = entry.split("=");
-      return [key, rest.join("=")];
-    })),
-    runtime: {
-      running: Boolean(container.State?.Running),
-      status: container.State?.Status || "unknown",
-      startedAt: container.State?.StartedAt ? new Date(container.State.StartedAt).getTime() : null,
-      finishedAt: container.State?.FinishedAt ? new Date(container.State.FinishedAt).getTime() : null,
-      error: container.State?.Error || null
-    }
-  });
+  response.json(await serializeInspectedService(containerName, container));
 });
 
 app.get("/services/:serviceId/processes", async (request, response) => {
@@ -2505,7 +2888,11 @@ app.get("/services/:serviceId/processes", async (request, response) => {
   if (!required) {
     return;
   }
-  if (!authorizeScopedThread(request, response, required.container.Config?.Labels?.["manor.thread-id"] || null)) {
+  const effectiveThreadId = await resolveAttachedThreadId(
+    required.container.Config?.Labels?.["manor.thread-id"] || null,
+    required.container.Config?.Labels?.["manor.stack-id"] || null
+  );
+  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
     return;
   }
 
@@ -2525,7 +2912,11 @@ app.get("/services/:serviceId/logs", async (request, response) => {
   if (!required) {
     return;
   }
-  if (!authorizeScopedThread(request, response, required.container.Config?.Labels?.["manor.thread-id"] || null)) {
+  const effectiveThreadId = await resolveAttachedThreadId(
+    required.container.Config?.Labels?.["manor.thread-id"] || null,
+    required.container.Config?.Labels?.["manor.stack-id"] || null
+  );
+  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
     return;
   }
 
@@ -2563,12 +2954,18 @@ app.post("/services/:serviceId/exec", async (request, response) => {
   if (!required) {
     return;
   }
-  if (!authorizeScopedThread(request, response, required.container.Config?.Labels?.["manor.thread-id"] || null)) {
+  const effectiveThreadId = await resolveAttachedThreadId(
+    required.container.Config?.Labels?.["manor.thread-id"] || null,
+    required.container.Config?.Labels?.["manor.stack-id"] || null
+  );
+  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
     return;
   }
 
   const command = typeof request.body?.command === "string" ? request.body.command.trim() : "";
   const cwd = typeof request.body?.cwd === "string" ? request.body.cwd.trim() : "";
+  const stdin = typeof request.body?.stdin === "string" ? request.body.stdin : "";
+  const stdinProvided = request.body?.stdinProvided === true;
   if (!command) {
     response.status(400).json({ error: "command is required" });
     return;
@@ -2576,13 +2973,14 @@ app.post("/services/:serviceId/exec", async (request, response) => {
 
   try {
     const exec = await required.containerRef.exec({
+      AttachStdin: stdinProvided,
       AttachStdout: true,
       AttachStderr: true,
       Cmd: ["sh", "-lc", cwd ? `cd ${JSON.stringify(cwd)} && ${command}` : command],
       WorkingDir: cwd || undefined,
       Tty: false
     });
-    const output = await collectExecOutput(required.containerRef, exec);
+    const output = await collectExecOutput(required.containerRef, exec, { stdin, stdinProvided });
     response.json({
       leaseId: request.params.serviceId,
       command,

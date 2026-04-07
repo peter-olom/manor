@@ -6,6 +6,31 @@ import { promises as fs } from "node:fs";
 const execFileAsync = promisify(execFile);
 const MANAGED_WORKTREE_ROOT = "/repos/.manor-worktrees";
 
+export function resolveWorkspaceProjectInfo(cwd: string | null | undefined): { id: string; label: string } {
+  const normalized = typeof cwd === "string" ? cwd.replace(/\\/g, "/").replace(/\/+$/, "") : "";
+  if (!normalized) {
+    return { id: "unknown", label: "Unknown" };
+  }
+
+  if (normalized.startsWith(`${MANAGED_WORKTREE_ROOT}/`)) {
+    const relative = normalized.slice(MANAGED_WORKTREE_ROOT.length + 1);
+    const [repoName] = relative.split("/").filter(Boolean);
+    if (repoName) {
+      return { id: repoName, label: repoName };
+    }
+  }
+
+  if (normalized.startsWith("/repos/")) {
+    const relative = normalized.replace(/^\/repos\/?/, "");
+    const [repoName] = relative.split("/").filter(Boolean);
+    if (repoName) {
+      return { id: repoName, label: repoName };
+    }
+  }
+
+  return { id: normalized, label: normalized };
+}
+
 function slugifyTask(value: string): string {
   const slug = value
     .toLowerCase()

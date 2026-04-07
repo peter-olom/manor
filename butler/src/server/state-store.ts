@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import type {
   AppSnapshot,
   ButlerSupervisorSummaryView,
@@ -20,6 +21,7 @@ import type {
   CodexThreadSupervisorView,
   CodexTurnRecord,
   CodexWorkerReportView,
+  PreviewProofRecordView,
   PreviewVerificationArtifactView,
   PreviewVerificationConsoleMessageView,
   PreviewVerificationFailedRequestView,
@@ -36,6 +38,7 @@ const DEFAULT_PREVIEW_LEASE_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_STACK_LEASE_TTL_MS = 120 * 60 * 1000;
 const DEFAULT_SERVICE_LEASE_TTL_MS = 120 * 60 * 1000;
 const DEFAULT_LEASE_REAP_GRACE_MS = 10 * 60 * 1000;
+const DEFAULT_ARTIFACT_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const LEASE_ACTIVITY_WRITE_THROTTLE_MS = 15_000;
 
 function emptyCodexContextUsage(): CodexContextUsageView {
@@ -99,27 +102,8 @@ function normalizeWindow(window: ButlerWindow): ButlerWindow {
   };
 }
 
-function getProjectInfo(cwd: string | null): { id: string; label: string } {
-  if (!cwd) {
-    return { id: "unknown", label: "Unknown" };
-  }
-
-  const normalized = cwd.replace(/\\/g, "/");
-  if (!normalized.startsWith("/repos")) {
-    return { id: normalized, label: normalized };
-  }
-
-  const relative = normalized.replace(/^\/repos\/?/, "");
-  const [firstSegment] = relative.split("/").filter(Boolean);
-  if (!firstSegment) {
-    return { id: "repos", label: "repos" };
-  }
-
-  return { id: firstSegment, label: firstSegment };
-}
-
 function buildThreadSupervisor(thread: CodexThreadRecord): CodexThreadSupervisorView {
-  const project = getProjectInfo(thread.cwd);
+  const project = resolveWorkspaceProjectInfo(thread.cwd);
   const flattenedItems = thread.turns.flatMap((turn) => turn.items.map((item) => ({ turn, item })));
   const latestUserPrompt = clipText(
     [...flattenedItems]
@@ -235,11 +219,33 @@ function normalizeStatus(status: unknown): CodexThreadStatus {
   return "unknown";
 }
 
-function normalizePreviewVerificationArtifact(artifact: PreviewVerificationArtifactView): PreviewVerificationArtifactView {
+function normalizePreviewVerificationArtifact(
+  artifact: PreviewVerificationArtifactView,
+  defaults: {
+    checkedAt: number;
+    artifactRetentionMs: number;
+  }
+): PreviewVerificationArtifactView {
+  const retainedUntilAt =
+    typeof artifact.retainedUntilAt === "number" && Number.isFinite(artifact.retainedUntilAt)
+      ? artifact.retainedUntilAt
+      : defaults.checkedAt + defaults.artifactRetentionMs;
+  const expiredAt =
+    typeof artifact.expiredAt === "number" && Number.isFinite(artifact.expiredAt) ? artifact.expiredAt : null;
+  const availability =
+    artifact.availability === "expired" || artifact.availability === "missing" || artifact.availability === "available"
+      ? artifact.availability
+      : expiredAt !== null
+        ? "expired"
+        : typeof artifact.filePath === "string" && artifact.filePath.trim()
+          ? "available"
+          : "missing";
+
   return {
     kind:
       artifact.kind === "manifest" ||
       artifact.kind === "screenshot" ||
+      artifact.kind === "video" ||
       artifact.kind === "trace" ||
       artifact.kind === "html"
         ? artifact.kind
@@ -249,7 +255,11 @@ function normalizePreviewVerificationArtifact(artifact: PreviewVerificationArtif
     filePath: typeof artifact.filePath === "string" ? artifact.filePath : "",
     contentType: typeof artifact.contentType === "string" && artifact.contentType.trim() ? artifact.contentType.trim() : "application/octet-stream",
     sizeBytes: typeof artifact.sizeBytes === "number" && Number.isFinite(artifact.sizeBytes) ? artifact.sizeBytes : null,
-    url: typeof artifact.url === "string" && artifact.url.trim() ? artifact.url : null
+    url: typeof artifact.url === "string" && artifact.url.trim() ? artifact.url : null,
+    downloadUrl: typeof artifact.downloadUrl === "string" && artifact.downloadUrl.trim() ? artifact.downloadUrl : null,
+    availability,
+    retainedUntilAt,
+    expiredAt
   };
 }
 
@@ -273,12 +283,17 @@ function normalizePreviewVerificationFailedRequest(
   };
 }
 
-function normalizePreviewVerification(verification: PreviewVerificationView): PreviewVerificationView {
+function normalizePreviewVerification(
+  verification: PreviewVerificationView,
+  artifactRetentionMs: number
+): PreviewVerificationView {
+  const checkedAt =
+    typeof verification.checkedAt === "number" && Number.isFinite(verification.checkedAt) ? verification.checkedAt : Date.now();
+
   return {
     runId: typeof verification.runId === "string" && verification.runId.trim() ? verification.runId.trim() : crypto.randomUUID(),
     mode: verification.mode === "headful" ? "headful" : "headless",
-    checkedAt:
-      typeof verification.checkedAt === "number" && Number.isFinite(verification.checkedAt) ? verification.checkedAt : Date.now(),
+    checkedAt,
     durationMs:
       typeof verification.durationMs === "number" && Number.isFinite(verification.durationMs) && verification.durationMs >= 0
         ? verification.durationMs
@@ -305,7 +320,7 @@ function normalizePreviewVerification(verification: PreviewVerificationView): Pr
     artifacts: Array.isArray(verification.artifacts)
       ? verification.artifacts
           .filter((artifact): artifact is PreviewVerificationArtifactView => Boolean(artifact && typeof artifact === "object"))
-          .map((artifact) => normalizePreviewVerificationArtifact(artifact))
+          .map((artifact) => normalizePreviewVerificationArtifact(artifact, { checkedAt, artifactRetentionMs }))
       : [],
     consoleMessages: Array.isArray(verification.consoleMessages)
       ? verification.consoleMessages
@@ -321,6 +336,10 @@ function normalizePreviewVerification(verification: PreviewVerificationView): Pr
           .map((request) => normalizePreviewVerificationFailedRequest(request))
       : []
   };
+}
+
+function buildPreviewProofRecordId(previewId: string, verificationRunId: string): string {
+  return `${previewId}:${verificationRunId}`;
 }
 
 function summarizeItem(item: Record<string, unknown>): string {
@@ -373,6 +392,7 @@ export class ButlerStateStore extends EventEmitter {
   private readonly stackLeases = new Map<string, StackLeaseView>();
   private readonly previewLeases = new Map<string, PreviewLeaseView>();
   private readonly serviceLeases = new Map<string, ServiceLeaseView>();
+  private readonly previewProofs = new Map<string, PreviewProofRecordView>();
   private readonly persistedSupervisionByThreadId = new Map<string, { butlerTurnsUsed: number; maxButlerTurns: number | null }>();
   private readonly persistedWorkerReportsByThreadId = new Map<string, CodexWorkerReportView[]>();
   private windows: ButlerWindow[] = [];
@@ -386,6 +406,7 @@ export class ButlerStateStore extends EventEmitter {
   private readonly stackLeaseTtlMs: number;
   private readonly serviceLeaseTtlMs: number;
   private readonly leaseReapGraceMs: number;
+  private readonly artifactRetentionMs: number;
 
   private refreshStackMembership(stackId: string, now = Date.now()): void {
     const lease = this.stackLeases.get(stackId);
@@ -436,6 +457,7 @@ export class ButlerStateStore extends EventEmitter {
       stackLeaseTtlMs?: number;
       serviceLeaseTtlMs?: number;
       leaseReapGraceMs?: number;
+      artifactRetentionMs?: number;
     }
   ) {
     super();
@@ -444,6 +466,7 @@ export class ButlerStateStore extends EventEmitter {
     this.stackLeaseTtlMs = options?.stackLeaseTtlMs ?? DEFAULT_STACK_LEASE_TTL_MS;
     this.serviceLeaseTtlMs = options?.serviceLeaseTtlMs ?? DEFAULT_SERVICE_LEASE_TTL_MS;
     this.leaseReapGraceMs = options?.leaseReapGraceMs ?? DEFAULT_LEASE_REAP_GRACE_MS;
+    this.artifactRetentionMs = options?.artifactRetentionMs ?? DEFAULT_ARTIFACT_RETENTION_MS;
   }
 
   private applyLeaseLifecycle<T extends PreviewLeaseView | StackLeaseView | ServiceLeaseView>(
@@ -502,7 +525,7 @@ export class ButlerStateStore extends EventEmitter {
         : [],
       lastVerification:
         lease.lastVerification && typeof lease.lastVerification === "object"
-          ? normalizePreviewVerification(lease.lastVerification)
+          ? normalizePreviewVerification(lease.lastVerification, this.artifactRetentionMs)
           : null,
       bootstrap: {
         waitSeconds:
@@ -607,6 +630,139 @@ export class ButlerStateStore extends EventEmitter {
     return this.applyLeaseLifecycle(normalizedLease, { leaseTtlMs: this.serviceLeaseTtlMs, now });
   }
 
+  private normalizePreviewProofRecord(record: PreviewProofRecordView): PreviewProofRecordView {
+    const verification = normalizePreviewVerification(record.verification, this.artifactRetentionMs);
+    const createdAt =
+      typeof record.createdAt === "number" && Number.isFinite(record.createdAt) ? record.createdAt : verification.checkedAt;
+    const updatedAt =
+      typeof record.updatedAt === "number" && Number.isFinite(record.updatedAt) ? record.updatedAt : verification.checkedAt;
+
+    return {
+      id:
+        typeof record.id === "string" && record.id.trim()
+          ? record.id.trim()
+          : buildPreviewProofRecordId(record.previewId, verification.runId),
+      previewId: typeof record.previewId === "string" && record.previewId.trim() ? record.previewId.trim() : "unknown",
+      threadId: typeof record.threadId === "string" && record.threadId.trim() ? record.threadId.trim() : null,
+      projectId: typeof record.projectId === "string" && record.projectId.trim() ? record.projectId.trim() : "unknown",
+      projectLabel: typeof record.projectLabel === "string" && record.projectLabel.trim() ? record.projectLabel.trim() : "Unknown",
+      previewTitle: typeof record.previewTitle === "string" && record.previewTitle.trim() ? record.previewTitle.trim() : "Preview",
+      stackId: typeof record.stackId === "string" && record.stackId.trim() ? record.stackId.trim() : null,
+      verification,
+      createdAt,
+      updatedAt: Math.max(updatedAt, createdAt)
+    };
+  }
+
+  private upsertPreviewProofRecord(record: PreviewProofRecordView, options?: { emitChange?: boolean }): PreviewProofRecordView {
+    const normalized = this.normalizePreviewProofRecord(record);
+    this.previewProofs.set(normalized.id, normalized);
+    this.queueSave();
+    if (options?.emitChange !== false) {
+      this.emitChange();
+    }
+    return normalized;
+  }
+
+  private recordPreviewProofFromLease(
+    lease: Pick<PreviewLeaseView, "id" | "threadId" | "projectId" | "projectLabel" | "title" | "stackId" | "lastVerification">,
+    options?: { emitChange?: boolean }
+  ): PreviewProofRecordView | null {
+    if (!lease.lastVerification) {
+      return null;
+    }
+
+    const verification = normalizePreviewVerification(lease.lastVerification, this.artifactRetentionMs);
+    return this.upsertPreviewProofRecord(
+      {
+        id: buildPreviewProofRecordId(lease.id, verification.runId),
+        previewId: lease.id,
+        threadId: lease.threadId,
+        projectId: lease.projectId,
+        projectLabel: lease.projectLabel,
+        previewTitle: lease.title,
+        stackId: lease.stackId,
+        verification,
+        createdAt: verification.checkedAt,
+        updatedAt: verification.checkedAt
+      },
+      options
+    );
+  }
+
+  private updateArtifactAvailability(
+    filePath: string,
+    mutate: (artifact: PreviewVerificationArtifactView) => PreviewVerificationArtifactView
+  ): boolean {
+    const targetPath = path.resolve(filePath);
+    const now = Date.now();
+    let changed = false;
+
+    for (const [proofId, proof] of this.previewProofs.entries()) {
+      let proofChanged = false;
+      const nextArtifacts = proof.verification.artifacts.map((artifact) => {
+        if (!artifact.filePath || path.resolve(artifact.filePath) !== targetPath) {
+          return artifact;
+        }
+        proofChanged = true;
+        return mutate(artifact);
+      });
+      if (proofChanged) {
+        changed = true;
+        this.previewProofs.set(
+          proofId,
+          this.normalizePreviewProofRecord({
+            ...proof,
+            verification: {
+              ...proof.verification,
+              artifacts: nextArtifacts
+            },
+            updatedAt: now
+          })
+        );
+      }
+    }
+
+    for (const [leaseId, lease] of this.previewLeases.entries()) {
+      if (!lease.lastVerification) {
+        continue;
+      }
+      let previewChanged = false;
+      const nextArtifacts = lease.lastVerification.artifacts.map((artifact) => {
+        if (!artifact.filePath || path.resolve(artifact.filePath) !== targetPath) {
+          return artifact;
+        }
+        previewChanged = true;
+        return mutate(artifact);
+      });
+      if (!previewChanged) {
+        continue;
+      }
+      this.previewLeases.set(
+        leaseId,
+        this.normalizePreviewLease(
+          {
+            ...lease,
+            lastVerification: {
+              ...lease.lastVerification,
+              artifacts: nextArtifacts
+            },
+            updatedAt: Math.max(lease.updatedAt, now)
+          },
+          now
+        )
+      );
+      changed = true;
+    }
+
+    if (changed) {
+      this.queueSave();
+      this.emitChange();
+    }
+
+    return changed;
+  }
+
   async load(): Promise<void> {
     try {
       const raw = await fs.readFile(this.uiStatePath, "utf8");
@@ -633,6 +789,13 @@ export class ButlerStateStore extends EventEmitter {
       for (const lease of Array.isArray(data.previewLeases) ? data.previewLeases : []) {
         if (lease && typeof lease === "object" && typeof lease.id === "string") {
           this.previewLeases.set(lease.id, this.normalizePreviewLease(lease as PreviewLeaseView));
+        }
+      }
+      this.previewProofs.clear();
+      for (const proof of Array.isArray(data.previewProofs) ? data.previewProofs : []) {
+        if (proof && typeof proof === "object" && typeof proof.previewId === "string") {
+          const normalized = this.normalizePreviewProofRecord(proof as PreviewProofRecordView);
+          this.previewProofs.set(normalized.id, normalized);
         }
       }
       this.serviceLeases.clear();
@@ -677,11 +840,17 @@ export class ButlerStateStore extends EventEmitter {
           this.persistedWorkerReportsByThreadId.set(threadId, reports);
         }
       }
+      for (const lease of this.previewLeases.values()) {
+        if (lease.lastVerification) {
+          this.recordPreviewProofFromLease(lease, { emitChange: false });
+        }
+      }
     } catch {
       this.windows = [];
       this.focusedWindowId = null;
       this.stackLeases.clear();
       this.previewLeases.clear();
+      this.previewProofs.clear();
       this.serviceLeases.clear();
       this.persistedSupervisionByThreadId.clear();
       this.persistedWorkerReportsByThreadId.clear();
@@ -701,6 +870,9 @@ export class ButlerStateStore extends EventEmitter {
         focusedWindowId: this.focusedWindowId,
         stackLeases: [...this.stackLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
         previewLeases: [...this.previewLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
+        previewProofs: [...this.previewProofs.values()].sort(
+          (left, right) => right.verification.checkedAt - left.verification.checkedAt
+        ),
         serviceLeases: [...this.serviceLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
         workerReportsByThreadId: Object.fromEntries(
           [...this.persistedWorkerReportsByThreadId.entries()].map(([threadId, reports]) => [threadId, reports])
@@ -771,6 +943,14 @@ export class ButlerStateStore extends EventEmitter {
       butlerTurnsUsed: thread.supervision.butlerTurnsUsed,
       maxButlerTurns: thread.supervision.maxButlerTurns
     });
+  }
+
+  private removePreviewProofsForThread(threadId: string): void {
+    for (const [proofId, proof] of this.previewProofs.entries()) {
+      if (proof.threadId === threadId) {
+        this.previewProofs.delete(proofId);
+      }
+    }
   }
 
   upsertThreadSummary(thread: Record<string, unknown>): void {
@@ -1314,6 +1494,7 @@ export class ButlerStateStore extends EventEmitter {
         this.serviceLeases.delete(lease.id);
       }
     }
+    this.removePreviewProofsForThread(threadId);
     this.persistedSupervisionByThreadId.delete(threadId);
     this.persistedWorkerReportsByThreadId.delete(threadId);
     this.latestStartedTurnIds.delete(threadId);
@@ -1350,6 +1531,7 @@ export class ButlerStateStore extends EventEmitter {
           this.serviceLeases.delete(lease.id);
         }
       }
+      this.removePreviewProofsForThread(threadId);
       this.persistedSupervisionByThreadId.delete(threadId);
       this.persistedWorkerReportsByThreadId.delete(threadId);
       this.latestStartedTurnIds.delete(threadId);
@@ -1536,12 +1718,14 @@ export class ButlerStateStore extends EventEmitter {
         ...existing,
         ...lease,
         pinned: lease.pinned ?? existing?.pinned ?? false,
+        lastVerification: lease.lastVerification ?? existing?.lastVerification ?? null,
         lastActivityAt: lease.lastActivityAt ?? existing?.lastActivityAt ?? lease.updatedAt ?? lease.createdAt,
         leaseTtlMs: lease.leaseTtlMs ?? existing?.leaseTtlMs ?? this.previewLeaseTtlMs
       },
       Date.now()
     );
     this.previewLeases.set(lease.id, nextLease);
+    this.recordPreviewProofFromLease(nextLease, { emitChange: false });
     if (existing?.stackId && existing.stackId !== nextLease.stackId) {
       this.refreshStackMembership(existing.stackId);
     }
@@ -1563,13 +1747,14 @@ export class ButlerStateStore extends EventEmitter {
     const nextLease = this.normalizePreviewLease(
       {
         ...lease,
-        lastVerification: normalizePreviewVerification(verification),
+        lastVerification: normalizePreviewVerification(verification, this.artifactRetentionMs),
         lastActivityAt: Math.max(lease.lastActivityAt ?? lease.updatedAt ?? lease.createdAt, checkedAt),
         updatedAt: Math.max(lease.updatedAt, checkedAt)
       },
       checkedAt
     );
     this.previewLeases.set(leaseId, nextLease);
+    this.recordPreviewProofFromLease(nextLease, { emitChange: false });
     this.queueSave();
     this.emitChange();
     return nextLease;
@@ -1601,6 +1786,7 @@ export class ButlerStateStore extends EventEmitter {
     if (!existing || !this.previewLeases.delete(leaseId)) {
       return;
     }
+    this.recordPreviewProofFromLease(existing, { emitChange: false });
     if (existing.stackId) {
       this.refreshStackMembership(existing.stackId);
     }
@@ -1618,6 +1804,68 @@ export class ButlerStateStore extends EventEmitter {
     return [...this.previewLeases.values()]
       .map((lease) => this.normalizePreviewLease(lease, now))
       .sort((left, right) => right.updatedAt - left.updatedAt);
+  }
+
+  listPreviewProofs(): PreviewProofRecordView[] {
+    return [...this.previewProofs.values()]
+      .map((proof) => this.normalizePreviewProofRecord(proof))
+      .sort((left, right) => right.verification.checkedAt - left.verification.checkedAt);
+  }
+
+  getPreviewProofById(proofId: string): PreviewProofRecordView | null {
+    const proof = this.previewProofs.get(proofId);
+    return proof ? this.normalizePreviewProofRecord(proof) : null;
+  }
+
+  getLatestPreviewProofForThread(threadId: string): PreviewProofRecordView | null {
+    return (
+      this.listPreviewProofs().find((proof) => proof.threadId === threadId) ?? null
+    );
+  }
+
+  getLatestPreviewProofForPreview(previewId: string): PreviewProofRecordView | null {
+    return (
+      this.listPreviewProofs().find((proof) => proof.previewId === previewId) ?? null
+    );
+  }
+
+  findPreviewProofArtifactByFilePath(filePath: string): { proof: PreviewProofRecordView; artifact: PreviewVerificationArtifactView } | null {
+    const targetPath = path.resolve(filePath);
+    for (const proof of this.listPreviewProofs()) {
+      const artifact = proof.verification.artifacts.find(
+        (entry) => entry.filePath && path.resolve(entry.filePath) === targetPath
+      );
+      if (artifact) {
+        return { proof, artifact };
+      }
+    }
+    return null;
+  }
+
+  markPreviewProofArtifactExpired(filePath: string, expiredAt = Date.now()): boolean {
+    return this.updateArtifactAvailability(filePath, (artifact) => ({
+      ...artifact,
+      availability: "expired",
+      expiredAt
+    }));
+  }
+
+  markPreviewProofArtifactMissing(filePath: string, missingAt = Date.now()): boolean {
+    const existing = this.findPreviewProofArtifactByFilePath(filePath);
+    if (!existing) {
+      return false;
+    }
+
+    const shouldExpire =
+      typeof existing.artifact.retainedUntilAt === "number" &&
+      Number.isFinite(existing.artifact.retainedUntilAt) &&
+      missingAt >= existing.artifact.retainedUntilAt;
+
+    return this.updateArtifactAvailability(filePath, (artifact) => ({
+      ...artifact,
+      availability: shouldExpire ? "expired" : "missing",
+      expiredAt: shouldExpire ? missingAt : artifact.expiredAt
+    }));
   }
 
   getThreadPreviewLease(threadId: string): PreviewLeaseView | undefined {
@@ -1705,6 +1953,18 @@ export class ButlerStateStore extends EventEmitter {
         })
         .filter((entry): entry is [string, CodexThreadRecord] => Boolean(entry))
     );
+    const latestPreviewProofsByThreadId = Object.fromEntries(
+      this.listPreviewProofs()
+        .filter((proof) => Boolean(proof.threadId))
+        .reduce((accumulator, proof) => {
+          if (!proof.threadId || accumulator.has(proof.threadId)) {
+            return accumulator;
+          }
+          accumulator.set(proof.threadId, proof);
+          return accumulator;
+        }, new Map<string, PreviewProofRecordView>())
+        .entries()
+    );
 
     return {
       codex: {
@@ -1723,6 +1983,7 @@ export class ButlerStateStore extends EventEmitter {
           projects: this.listProjectSummaries(),
           supervisor: this.getSupervisorSummary()
         },
+        latestPreviewProofsByThreadId,
         stacks: this.listStackLeases(),
         previews: this.listPreviewLeases(),
         serviceTemplates: butler.serviceTemplates,

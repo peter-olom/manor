@@ -92,6 +92,7 @@ async function run() {
   const screenshotPath = path.join(outputDir, "screenshot.png");
   const htmlPath = path.join(outputDir, "page.html");
   const tracePath = path.join(outputDir, "trace.zip");
+  let videoPath = null;
 
   const consoleMessages = [];
   const pageErrors = [];
@@ -108,14 +109,20 @@ async function run() {
   let browser = null;
   let context = null;
   let page = null;
+  let recordedVideo = null;
 
   try {
     browser = await chromium.launch({ headless: mode === "headless" });
     context = await browser.newContext({
-      viewport: { width: 1440, height: 900 }
+      viewport: { width: 1440, height: 900 },
+      recordVideo: {
+        dir: outputDir,
+        size: { width: 1440, height: 900 }
+      }
     });
     await context.tracing.start({ screenshots: true, snapshots: true });
     page = await context.newPage();
+    recordedVideo = page.video();
 
     page.on("console", (message) => {
       consoleMessageCount += 1;
@@ -183,6 +190,29 @@ async function run() {
 
     if (context) {
       await context.tracing.stop({ path: tracePath }).catch(() => undefined);
+    }
+
+    if (page) {
+      await page.close().catch(() => undefined);
+    }
+
+    if (recordedVideo) {
+      const recordedPath = await Promise.race([
+        recordedVideo.path().catch(() => null),
+        new Promise((resolve) => setTimeout(() => resolve(null), 15000))
+      ]);
+      if (recordedPath) {
+        const targetPath = path.join(outputDir, "video.webm");
+        if (recordedPath !== targetPath) {
+          await fs.rename(recordedPath, targetPath).catch(async () => {
+            await fs.copyFile(recordedPath, targetPath).catch(() => undefined);
+          });
+        }
+        videoPath = targetPath;
+      }
+    }
+
+    if (context) {
       await context.close().catch(() => undefined);
     }
 
@@ -239,6 +269,12 @@ async function run() {
       label: "Playwright trace",
       filePath: tracePath,
       contentType: "application/zip"
+    },
+    {
+      kind: "video",
+      label: "Video",
+      filePath: videoPath,
+      contentType: "video/webm"
     }
   ]);
 

@@ -3,7 +3,8 @@ import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { getModel } from "@mariozechner/pi-ai";
+import { complete, getModel, type Model } from "@mariozechner/pi-ai";
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import {
   AuthStorage,
   createAgentSession,
@@ -19,7 +20,8 @@ import type { TSchema } from "@sinclair/typebox";
 import { readButlerAuthStatus } from "./auth-status.js";
 import { buildOnboardingView } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
-import { ensureTaskWorktree } from "./repo-worktree.js";
+import { decoratePreviewVerification } from "./preview-verification.js";
+import { ensureTaskWorktree, resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, toServiceLeaseView } from "./service-templates.js";
 import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
@@ -38,6 +40,27 @@ import type {
 } from "./types.js";
 import { ButlerStateStore } from "./state-store.js";
 import { CodexAppServerClient } from "./codex-client.js";
+import type { PreviewLeaseView, PreviewProofRecordView, PreviewVerificationArtifactView, PreviewVerificationView } from "./types.js";
+
+type ProofScreenshotReview = {
+  verdict: string;
+  visibleState: string;
+  evidence: string;
+  concern: string;
+  rawText: string;
+  reviewedAt: number;
+  modelId: string;
+  modelProvider: string;
+};
+
+type ResolvedPreviewProof = {
+  preview: Pick<PreviewLeaseView, "id" | "threadId" | "projectId" | "projectLabel" | "title" | "stackId">;
+  verification: PreviewVerificationView;
+  screenshot: PreviewVerificationArtifactView;
+  video: PreviewVerificationArtifactView | null;
+  manifest: PreviewVerificationArtifactView | null;
+  trace: PreviewVerificationArtifactView | null;
+};
 
 function contentToText(content: unknown): string {
   if (typeof content === "string") {
@@ -126,6 +149,71 @@ function isAssistantFailureMessage(message: unknown): message is Record<string, 
     (record.stopReason === "error" || record.stopReason === "aborted") &&
     (typeof record.errorMessage === "string" || !("errorMessage" in record))
   );
+}
+
+function sanitizeHistoryMessage(message: unknown): { message: unknown; changed: boolean } {
+  if (!message || typeof message !== "object") {
+    return { message, changed: false };
+  }
+
+  const record = message as Record<string, unknown>;
+  const role = typeof record.role === "string" ? record.role : null;
+  if (role !== "user" && role !== "user-with-attachments") {
+    return { message, changed: false };
+  }
+
+  const content = record.content;
+  if (!Array.isArray(content)) {
+    return { message, changed: false };
+  }
+
+  let removedImage = false;
+  const nextContent: Record<string, unknown>[] = [];
+  for (const entry of content) {
+    if (!entry || typeof entry !== "object") {
+      nextContent.push({ type: "text", text: String(entry ?? "") });
+      continue;
+    }
+
+    const part = entry as Record<string, unknown>;
+    if (part.type === "image") {
+      removedImage = true;
+      continue;
+    }
+
+    nextContent.push({ ...part });
+  }
+
+  if (!removedImage) {
+    return { message, changed: false };
+  }
+
+  nextContent.push({
+    type: "text",
+    text: "[Attached image omitted from persisted Butler history.]"
+  });
+
+  return {
+    changed: true,
+    message: {
+      ...record,
+      role: "user",
+      content: nextContent
+    }
+  };
+}
+
+function sanitizeHistoryMessages(messages: AgentMessage[]): { messages: AgentMessage[]; changed: boolean } {
+  let changed = false;
+  const nextMessages = messages.map((message) => {
+    const sanitized = sanitizeHistoryMessage(message);
+    if (sanitized.changed) {
+      changed = true;
+    }
+    return sanitized.message as AgentMessage;
+  });
+
+  return { messages: changed ? nextMessages : messages, changed };
 }
 
 function buildJobsSummary(store: ButlerStateStore, limit: number, status?: string): string {
@@ -319,11 +407,74 @@ function buildSystemPrompt(store: ButlerStateStore): string {
     "Codex may operate inside attached isolates through manor-harness for inspect, logs, processes, and shell exec, but Butler still owns isolate lifecycle and policy.",
     "When the operator provides reference images, keep track of the stored image references so you can pass them to Codex later and reuse them during verification.",
     "Use the image reference tools whenever visual requirements depend on an uploaded image.",
+    "When proof of frontend execution is requested, do not accept artifact existence alone as proof. Run headed verification when needed, inspect the screenshot with the proof review tool, and surface the video download for human review.",
     "",
     `Supervisor state: ${supervisor.summary}`,
     projects.length > 0 ? "Project summaries:" : "Project summaries: none yet.",
     ...projects.map((project) => `- ${project.label}: ${project.summary}`)
   ].join("\n");
+}
+
+function findVerificationArtifact(
+  verification: PreviewVerificationView | null | undefined,
+  kind: PreviewVerificationArtifactView["kind"]
+): PreviewVerificationArtifactView | null {
+  if (!verification) {
+    return null;
+  }
+
+  return verification.artifacts.find((artifact) => artifact.kind === kind) ?? null;
+}
+
+function stripMarkdownCodeFence(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("```")) {
+    return trimmed;
+  }
+
+  return trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+}
+
+function parseProofScreenshotReview(rawText: string): ProofScreenshotReview | null {
+  const payload = stripMarkdownCodeFence(rawText);
+  if (!payload) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(payload) as Partial<ProofScreenshotReview>;
+    const parsedEvidence = (parsed as { evidence?: unknown }).evidence;
+    const evidence =
+      typeof parsedEvidence === "string"
+        ? parsedEvidence
+        : Array.isArray(parsedEvidence)
+          ? parsedEvidence
+              .map((entry: unknown) => (typeof entry === "string" ? entry.trim() : ""))
+              .filter(Boolean)
+              .join(" ")
+          : null;
+    if (
+      typeof parsed.verdict !== "string" ||
+      typeof parsed.visibleState !== "string" ||
+      typeof evidence !== "string" ||
+      typeof parsed.concern !== "string"
+    ) {
+      return null;
+    }
+
+    return {
+      verdict: parsed.verdict.trim(),
+      visibleState: parsed.visibleState.trim(),
+      evidence: evidence.trim(),
+      concern: parsed.concern.trim(),
+      rawText: payload,
+      reviewedAt: Date.now(),
+      modelId: "",
+      modelProvider: ""
+    };
+  } catch {
+    return null;
+  }
 }
 
 function mergeVisibleMessages(sessionMessages: ButlerMessageView[], notices: ButlerMessageView[]): ButlerMessageView[] {
@@ -613,6 +764,18 @@ export class ButlerAgentService extends EventEmitter {
         uiEffects: [{ kind: "refreshThreads", description: "Refreshes one preview lease before Butler acts on it." }]
       },
       {
+        name: "verify_preview",
+        label: "Verify preview",
+        description: "Run Playwright verification for one preview and persist screenshot, video, trace, and manifest artifacts.",
+        uiEffects: [{ kind: "refreshThreads", description: "Refreshes preview proof state after a verification run." }]
+      },
+      {
+        name: "review_preview_proof",
+        label: "Review preview proof",
+        description: "Inspect the latest screenshot proof for one preview or job and surface the video download for human review.",
+        uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while reviewing proof artifacts." }]
+      },
+      {
         name: "preview_processes",
         label: "Preview processes",
         description: "List processes running inside one preview isolate.",
@@ -822,7 +985,19 @@ export class ButlerAgentService extends EventEmitter {
       return null;
     }
 
-    const stack = this.store.getStackLease(stackId);
+    const threadStacks = this.store
+      .listStackLeases()
+      .filter((stack) => stack.status !== "stopped" && (!threadId || stack.threadId === threadId || !stack.threadId));
+    const stack =
+      threadStacks.find((entry) => entry.id === stackId) ??
+      (threadStacks.filter((entry) => entry.title === stackId).length === 1
+        ? threadStacks.filter((entry) => entry.title === stackId)[0]
+        : null) ??
+      (() => {
+        const folded = stackId.trim().toLowerCase();
+        const matches = threadStacks.filter((entry) => entry.title.trim().toLowerCase() === folded);
+        return matches.length === 1 ? matches[0] : null;
+      })();
     if (!stack) {
       throw new Error(`Unknown stack: ${stackId}`);
     }
@@ -832,6 +1007,205 @@ export class ButlerAgentService extends EventEmitter {
     }
 
     return stack;
+  }
+
+  private getValidatedPreview(previewSelector: string | null, threadId: string | null) {
+    if (!previewSelector) {
+      return null;
+    }
+
+    const threadPreviews = this.store
+      .listPreviewLeases()
+      .filter((preview) => preview.status !== "stopped" && (!threadId || preview.threadId === threadId || !preview.threadId));
+    const directIdMatch = threadPreviews.find((entry) => entry.id === previewSelector);
+    if (directIdMatch) {
+      return directIdMatch;
+    }
+
+    const exactTitleMatches = threadPreviews.filter((entry) => entry.title === previewSelector);
+    if (exactTitleMatches.length === 1) {
+      return exactTitleMatches[0];
+    }
+
+    const exactAliasMatches = threadPreviews.filter((entry) => entry.aliases.includes(previewSelector));
+    if (exactAliasMatches.length === 1) {
+      return exactAliasMatches[0];
+    }
+
+    const folded = previewSelector.trim().toLowerCase();
+    const foldedTitleMatches = threadPreviews.filter((entry) => entry.title.trim().toLowerCase() === folded);
+    if (foldedTitleMatches.length === 1) {
+      return foldedTitleMatches[0];
+    }
+
+    const foldedAliasMatches = threadPreviews.filter((entry) =>
+      entry.aliases.some((alias) => alias.trim().toLowerCase() === folded)
+    );
+    if (foldedAliasMatches.length === 1) {
+      return foldedAliasMatches[0];
+    }
+
+    throw new Error(`Unknown preview: ${previewSelector}`);
+  }
+
+  private requireValidatedPreview(previewSelector: string, threadId: string | null) {
+    const preview = this.getValidatedPreview(previewSelector, threadId);
+    if (!preview) {
+      throw new Error("Preview selector is required");
+    }
+    return preview;
+  }
+
+  private getValidatedService(serviceSelector: string | null, threadId: string | null) {
+    if (!serviceSelector) {
+      return null;
+    }
+
+    const threadServices = this.store
+      .listServiceLeases()
+      .filter((service) => service.status !== "stopped" && (!threadId || service.threadId === threadId || !service.threadId));
+    const directIdMatch = threadServices.find((entry) => entry.id === serviceSelector);
+    if (directIdMatch) {
+      return directIdMatch;
+    }
+
+    const exactTitleMatches = threadServices.filter((entry) => entry.title === serviceSelector);
+    if (exactTitleMatches.length === 1) {
+      return exactTitleMatches[0];
+    }
+
+    const exactAliasMatches = threadServices.filter((entry) => entry.aliases.includes(serviceSelector));
+    if (exactAliasMatches.length === 1) {
+      return exactAliasMatches[0];
+    }
+
+    const folded = serviceSelector.trim().toLowerCase();
+    const foldedTitleMatches = threadServices.filter((entry) => entry.title.trim().toLowerCase() === folded);
+    if (foldedTitleMatches.length === 1) {
+      return foldedTitleMatches[0];
+    }
+
+    const foldedAliasMatches = threadServices.filter((entry) =>
+      entry.aliases.some((alias) => alias.trim().toLowerCase() === folded)
+    );
+    if (foldedAliasMatches.length === 1) {
+      return foldedAliasMatches[0];
+    }
+
+    throw new Error(`Unknown service: ${serviceSelector}`);
+  }
+
+  private requireValidatedService(serviceSelector: string, threadId: string | null) {
+    const service = this.getValidatedService(serviceSelector, threadId);
+    if (!service) {
+      throw new Error("Service selector is required");
+    }
+    return service;
+  }
+
+  private getLatestThreadVerificationPreview(threadId: string): PreviewLeaseView {
+    const previews = this.store
+      .listPreviewLeases()
+      .filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
+    if (previews.length === 0) {
+      throw new Error(`Job ${threadId} has no active preview.`);
+    }
+
+    return [...previews].sort((left, right) => {
+      const leftCheckedAt = left.lastVerification?.checkedAt ?? 0;
+      const rightCheckedAt = right.lastVerification?.checkedAt ?? 0;
+      if (leftCheckedAt !== rightCheckedAt) {
+        return rightCheckedAt - leftCheckedAt;
+      }
+      return right.updatedAt - left.updatedAt;
+    })[0]!;
+  }
+
+  private toResolvedProof(
+    subject: Pick<PreviewLeaseView, "id" | "threadId" | "projectId" | "projectLabel" | "title" | "stackId">,
+    verification: PreviewVerificationView,
+    runId?: string
+  ): ResolvedPreviewProof {
+    const decoratedVerification = decoratePreviewVerification(verification);
+    if (runId && decoratedVerification.runId !== runId.trim()) {
+      throw new Error(`Preview ${subject.id} does not have verification run ${runId.trim()}.`);
+    }
+
+    const screenshot = findVerificationArtifact(decoratedVerification, "screenshot");
+    if (!screenshot?.filePath) {
+      throw new Error(`Preview ${subject.id} has no screenshot artifact to review.`);
+    }
+    if (screenshot.availability !== "available") {
+      throw new Error(
+        screenshot.availability === "expired"
+          ? `Preview ${subject.id} screenshot proof expired after retention.`
+          : `Preview ${subject.id} screenshot proof is no longer available.`
+      );
+    }
+
+    return {
+      preview: subject,
+      verification: decoratedVerification,
+      screenshot,
+      video: findVerificationArtifact(decoratedVerification, "video"),
+      manifest: findVerificationArtifact(decoratedVerification, "manifest"),
+      trace: findVerificationArtifact(decoratedVerification, "trace")
+    };
+  }
+
+  private resolvePreviewProof(params: { threadId?: string; leaseId?: string; runId?: string }): ResolvedPreviewProof {
+    const preview = params.leaseId ? this.requireValidatedPreview(params.leaseId, params.threadId?.trim() || null) : null;
+
+    if (preview?.lastVerification) {
+      return this.toResolvedProof(preview, preview.lastVerification, params.runId);
+    }
+
+    const previewProof =
+      preview
+        ? this.store.getLatestPreviewProofForPreview(preview.id)
+        : params.threadId
+          ? this.store.getLatestPreviewProofForThread(params.threadId.trim())
+          : null;
+
+    if (previewProof) {
+      return this.toResolvedProof(
+        {
+          id: previewProof.previewId,
+          threadId: previewProof.threadId,
+          projectId: previewProof.projectId,
+          projectLabel: previewProof.projectLabel,
+          title: previewProof.previewTitle,
+          stackId: previewProof.stackId
+        },
+        previewProof.verification,
+        params.runId
+      );
+    }
+
+    if (!preview && params.threadId) {
+      const latestPreview = this.getLatestThreadVerificationPreview(params.threadId.trim());
+      if (latestPreview.lastVerification) {
+        return this.toResolvedProof(latestPreview, latestPreview.lastVerification, params.runId);
+      }
+    }
+
+    if (!preview) {
+      throw new Error("review_preview_proof requires a preview or job selector.");
+    }
+
+    throw new Error(`Preview ${preview.id} does not have a recorded verification yet.`);
+  }
+
+  private resolveWorkspaceProject(cwd: string | null | undefined, fallbackId: string, fallbackLabel: string) {
+    const project = resolveWorkspaceProjectInfo(cwd);
+    if (project.id === "unknown") {
+      return {
+        id: fallbackId,
+        label: fallbackLabel
+      };
+    }
+
+    return project;
   }
 
   private removeStackArtifacts(stackId: string): void {
@@ -881,6 +1255,115 @@ export class ButlerAgentService extends EventEmitter {
     volumeNames: string[];
   }): string {
     return formatStackStorageSummary(stack);
+  }
+
+  private async resolveProofReviewModel(): Promise<Model<any>> {
+    if (!this.modelRegistry) {
+      throw new Error("Butler model registry is not ready");
+    }
+
+    const currentModel = this.session?.model;
+    if (currentModel?.input.includes("image")) {
+      return currentModel;
+    }
+
+    const availableModels = this.modelRegistry.getAvailable().filter((model) => model.input.includes("image"));
+    const currentProvider = currentModel?.provider ?? null;
+    const preferredModel =
+      (currentProvider ? availableModels.find((model) => model.provider === currentProvider) : null) ??
+      availableModels.find((model) => model.provider === "openai-codex" || model.provider === "openai") ??
+      availableModels[0];
+
+    if (!preferredModel) {
+      throw new Error("No vision-capable Butler model is available.");
+    }
+
+    return preferredModel;
+  }
+
+  private async reviewProofScreenshot(
+    proof: ResolvedPreviewProof,
+    options?: {
+      expectedOutcome?: string;
+    }
+  ): Promise<ProofScreenshotReview> {
+    if (!this.modelRegistry) {
+      throw new Error("Butler model registry is not ready");
+    }
+
+    const model = await this.resolveProofReviewModel();
+    const auth = await this.modelRegistry.getApiKeyAndHeaders(model);
+    if (!auth.ok) {
+      throw new Error(auth.error);
+    }
+
+    const screenshotBuffer = await fs.readFile(proof.screenshot.filePath);
+    const reviewPrompt = [
+      "Review this Playwright screenshot as proof of frontend execution.",
+      "Be strict and describe only what is visibly present in the screenshot.",
+      "Return JSON only with keys verdict, visibleState, evidence, concern.",
+      "Set verdict to one of: credible, unclear, failed.",
+      options?.expectedOutcome?.trim() ? `Expected outcome: ${options.expectedOutcome.trim()}` : "",
+      `Preview title: ${proof.preview.title}`,
+      `Verification mode: ${proof.verification.mode}`,
+      `Verification status: ${proof.verification.status ?? "none"}`
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    const response = await complete(
+      model,
+      {
+        systemPrompt:
+          "You are a strict UI proof reviewer. Judge only what is clearly visible. Do not assume success when the page looks blank, loading, or error-like.",
+        messages: [
+          {
+            role: "user",
+            timestamp: Date.now(),
+            content: [
+              { type: "text", text: reviewPrompt },
+              {
+                type: "image",
+                data: screenshotBuffer.toString("base64"),
+                mimeType: proof.screenshot.contentType || "image/png"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        apiKey: auth.apiKey,
+        headers: auth.headers
+      }
+    );
+
+    if (response.stopReason === "error" || response.stopReason === "aborted") {
+      throw new Error(response.errorMessage || "Butler screenshot review failed.");
+    }
+
+    const rawText = contentToText(response.content).trim();
+    if (!rawText) {
+      throw new Error("Butler screenshot review returned no text.");
+    }
+
+    const parsed = parseProofScreenshotReview(rawText) ?? {
+      verdict: "unclear",
+      visibleState: "The screenshot review model returned unstructured output.",
+      evidence: rawText,
+      concern: "Review output needs manual interpretation.",
+      rawText,
+      reviewedAt: Date.now(),
+      modelId: "",
+      modelProvider: ""
+    };
+
+    return {
+      ...parsed,
+      rawText,
+      reviewedAt: Date.now(),
+      modelId: model.id,
+      modelProvider: model.provider
+    };
   }
 
   private buildCustomTools() {
@@ -964,13 +1447,19 @@ export class ButlerAgentService extends EventEmitter {
             cloneFromStorageKey?: string;
           };
           const thread = typedParams.threadId ? this.store.getThread(typedParams.threadId) ?? null : null;
+          const worktreePath = typedParams.cwd?.trim() || thread?.cwd || null;
+          const project = this.resolveWorkspaceProject(
+            worktreePath,
+            thread?.supervisor.projectId ?? "stack",
+            thread?.supervisor.projectLabel ?? "stack"
+          );
           const stack = await this.runtimeBroker.createStack({
             stackId: crypto.randomUUID(),
             threadId: typedParams.threadId ?? null,
-            projectId: thread?.supervisor.projectId ?? "stack",
-            projectLabel: thread?.supervisor.projectLabel ?? "stack",
+            projectId: project.id,
+            projectLabel: project.label,
             title: typedParams.title.trim(),
-            worktreePath: typedParams.cwd?.trim() || thread?.cwd || null,
+            worktreePath,
             storageMode: normalizeStackStorageMode(typedParams.storageMode) ?? null,
             retainsVolumes: Boolean(typedParams.retainsVolumes),
             storageKey: typedParams.storageKey?.trim() || null,
@@ -1175,10 +1664,13 @@ export class ButlerAgentService extends EventEmitter {
 
           const thread = typedParams.threadId ? this.store.getThread(typedParams.threadId) ?? null : null;
           const stack = this.getValidatedStack(typedParams.stackId?.trim() || null, typedParams.threadId ?? null);
-          const projectId = thread?.supervisor.projectId ?? "preview";
-          const projectLabel = thread?.supervisor.projectLabel ?? "preview";
           const leaseId = crypto.randomUUID();
           const worktreePath = typedParams.cwd?.trim() || stack?.worktreePath || thread?.cwd || "";
+          const project = this.resolveWorkspaceProject(
+            worktreePath,
+            thread?.supervisor.projectId ?? "preview",
+            thread?.supervisor.projectLabel ?? "preview"
+          );
 
           if (!worktreePath) {
             throw new Error("start_preview requires a cwd or a stack with a worktree path");
@@ -1187,8 +1679,8 @@ export class ButlerAgentService extends EventEmitter {
           const lease = await this.runtimeBroker.createLease({
             leaseId,
             threadId: typedParams.threadId ?? null,
-            projectId,
-            projectLabel,
+            projectId: project.id,
+            projectLabel: project.label,
             title: typedParams.title,
             stackId: stack?.id ?? null,
             aliases: this.normalizeStringArray(typedParams.aliases),
@@ -1262,6 +1754,118 @@ export class ButlerAgentService extends EventEmitter {
               }
             ],
             details: { lease }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "verify_preview",
+        label: "Verify preview",
+        description: "Run Playwright verification for one preview and persist screenshot, video, trace, and manifest artifacts.",
+        promptSnippet:
+          "verify_preview: use this to produce proof artifacts for a preview. Use headful mode when the operator wants frontend proof with video.",
+        parameters: Type.Object({
+          leaseId: Type.String(),
+          mode: Type.Optional(Type.Union([Type.Literal("headless"), Type.Literal("headful")]))
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "verify_preview")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { leaseId: string; mode?: "headless" | "headful" };
+          const preview = this.requireValidatedPreview(typedParams.leaseId, null);
+          const verification = decoratePreviewVerification(
+            await this.runtimeBroker.verifyLease({
+              leaseId: preview.id,
+              mode: typedParams.mode === "headful" ? "headful" : "headless"
+            })
+          );
+          this.store.recordPreviewLeaseVerification(preview.id, verification);
+          this.store.notePreviewLeaseActivity(preview.id);
+
+          const screenshot = findVerificationArtifact(verification, "screenshot");
+          const video = findVerificationArtifact(verification, "video");
+          const proofNotes = [
+            screenshot?.url ? "screenshot ready" : "screenshot missing",
+            video?.downloadUrl ? "video ready" : "video missing"
+          ].join(", ");
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: verification.ok
+                  ? `Verified ${preview.title} in ${verification.mode} mode. ${proofNotes}.`
+                  : `Verification failed for ${preview.title} in ${verification.mode} mode.${verification.status ? ` Status=${verification.status}.` : ""}`
+              }
+            ],
+            details: {
+              preview,
+              verification,
+              screenshot,
+              video
+            }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "review_preview_proof",
+        label: "Review preview proof",
+        description: "Inspect the latest screenshot proof for one preview or job and surface the video download for human review.",
+        promptSnippet:
+          "review_preview_proof: use this when frontend execution proof is demanded. Do not sign off until the screenshot has been reviewed and the video bundle is surfaced for human review.",
+        parameters: Type.Object({
+          leaseId: Type.Optional(Type.String()),
+          threadId: Type.Optional(Type.String()),
+          runId: Type.Optional(Type.String()),
+          expectedOutcome: Type.Optional(Type.String())
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "review_preview_proof")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as {
+            leaseId?: string;
+            threadId?: string;
+            runId?: string;
+            expectedOutcome?: string;
+          };
+
+          const proof = this.resolvePreviewProof({
+            leaseId: typedParams.leaseId?.trim(),
+            threadId: typedParams.threadId?.trim(),
+            runId: typedParams.runId?.trim()
+          });
+          const review = await this.reviewProofScreenshot(proof, {
+            expectedOutcome: typedParams.expectedOutcome
+          });
+
+          const videoRequirementMet = Boolean(proof.video?.downloadUrl);
+          const proofVerdict = videoRequirementMet ? review.verdict : "incomplete";
+          const proofSummary = [
+            `Verdict=${proofVerdict}`,
+            `Visible=${review.visibleState}`,
+            `Evidence=${review.evidence}`,
+            `Concern=${videoRequirementMet ? review.concern : "Video proof is missing for human review."}`
+          ].join("\n");
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: [
+                  `Reviewed proof for ${proof.preview.title}.`,
+                  proofSummary,
+                  proof.video?.downloadUrl ? `Video download: ${proof.video.downloadUrl}` : "Video download: unavailable",
+                  proof.screenshot.url ? `Screenshot: ${proof.screenshot.url}` : "Screenshot: unavailable"
+                ].join("\n")
+              }
+            ],
+            details: {
+              preview: proof.preview,
+              verification: proof.verification,
+              screenshot: proof.screenshot,
+              video: proof.video,
+              manifest: proof.manifest,
+              trace: proof.trace,
+              review,
+              proofComplete: videoRequirementMet
+            }
           };
         }
       }),
@@ -1390,6 +1994,11 @@ export class ButlerAgentService extends EventEmitter {
           const serviceId = crypto.randomUUID();
           const effectiveTitle = typedParams.title?.trim() || `${template.label} ${serviceId.slice(0, 8)}`;
           const worktreePath = typedParams.cwd?.trim() || stack?.worktreePath || thread?.cwd || "/repos";
+          const project = this.resolveWorkspaceProject(
+            worktreePath,
+            thread?.supervisor.projectId ?? "service",
+            thread?.supervisor.projectLabel ?? "service"
+          );
 
           if (template.runtimeKind === "embedded") {
             const filePath = `${worktreePath}/${template.fileName ?? ".manor/sqlite/app.db"}`.replace(/\/+/g, "/");
@@ -1399,8 +2008,8 @@ export class ButlerAgentService extends EventEmitter {
             const lease = toServiceLeaseView({
               id: serviceId,
               threadId: typedParams.threadId ?? null,
-              projectId: thread?.supervisor.projectId ?? "service",
-              projectLabel: thread?.supervisor.projectLabel ?? "service",
+              projectId: project.id,
+              projectLabel: project.label,
               title: effectiveTitle,
               stackId: stack?.id ?? null,
               aliases: this.normalizeStringArray(typedParams.aliases),
@@ -1425,8 +2034,8 @@ export class ButlerAgentService extends EventEmitter {
           const service = await this.runtimeBroker.createService({
             serviceId,
             threadId: typedParams.threadId ?? null,
-            projectId: thread?.supervisor.projectId ?? "service",
-            projectLabel: thread?.supervisor.projectLabel ?? "service",
+            projectId: project.id,
+            projectLabel: project.label,
             title: effectiveTitle,
             stackId: stack?.id ?? null,
             aliases: this.normalizeStringArray(typedParams.aliases),
@@ -1511,21 +2120,15 @@ export class ButlerAgentService extends EventEmitter {
         uiEffects: this.toolCatalog.find((tool) => tool.name === "inspect_service")?.uiEffects ?? [],
         execute: async (_toolCallId, params) => {
           const typedParams = params as { serviceId: string };
-          const existing = this.store.getServiceLease(typedParams.serviceId);
-          if (!existing) {
-            return {
-              content: [{ type: "text", text: `Service ${typedParams.serviceId} was not found.` }],
-              details: { service: null }
-            };
-          }
+          const existing = this.requireValidatedService(typedParams.serviceId, null);
           if (existing.runtimeKind === "embedded") {
-            this.store.noteServiceLeaseActivity(typedParams.serviceId);
+            this.store.noteServiceLeaseActivity(existing.id);
             return {
               content: [{ type: "text", text: `${existing.title} is embedded at ${existing.connection.uri ?? existing.worktreePath ?? "(unknown path)"}.` }],
               details: { service: existing }
             };
           }
-          const inspected = await this.runtimeBroker.inspectService(typedParams.serviceId);
+          const inspected = await this.runtimeBroker.inspectService(existing.id);
           const template = this.getServiceTemplate(inspected.templateId);
           const lease = toServiceLeaseView({
             id: inspected.id,
@@ -1551,7 +2154,7 @@ export class ButlerAgentService extends EventEmitter {
             env: inspected.env
           });
           this.store.upsertServiceLease(lease);
-          this.store.noteServiceLeaseActivity(typedParams.serviceId);
+          this.store.noteServiceLeaseActivity(lease.id);
           return {
             content: [
               {
@@ -1575,22 +2178,16 @@ export class ButlerAgentService extends EventEmitter {
         uiEffects: this.toolCatalog.find((tool) => tool.name === "service_logs")?.uiEffects ?? [],
         execute: async (_toolCallId, params) => {
           const typedParams = params as { serviceId: string; tail?: number };
-          const service = this.store.getServiceLease(typedParams.serviceId);
-          if (!service) {
-            return {
-              content: [{ type: "text", text: `Service ${typedParams.serviceId} was not found.` }],
-              details: { service: null }
-            };
-          }
+          const service = this.requireValidatedService(typedParams.serviceId, null);
           if (service.runtimeKind !== "container") {
-            this.store.noteServiceLeaseActivity(typedParams.serviceId);
+            this.store.noteServiceLeaseActivity(service.id);
             return {
               content: [{ type: "text", text: `${service.title} is embedded and does not expose container logs.` }],
               details: { service }
             };
           }
-          const result = await this.runtimeBroker.readServiceLogs(typedParams.serviceId, typedParams.tail ?? 200);
-          this.store.noteServiceLeaseActivity(typedParams.serviceId);
+          const result = await this.runtimeBroker.readServiceLogs(service.id, typedParams.tail ?? 200);
+          this.store.noteServiceLeaseActivity(service.id);
           return {
             content: [{ type: "text", text: result.logs || "No logs were returned." }],
             details: result
@@ -1610,22 +2207,20 @@ export class ButlerAgentService extends EventEmitter {
         uiEffects: this.toolCatalog.find((tool) => tool.name === "exec_service")?.uiEffects ?? [],
         execute: async (_toolCallId, params) => {
           const typedParams = params as { serviceId: string; command: string; cwd?: string };
-          const service = this.store.getServiceLease(typedParams.serviceId);
-          if (!service) {
-            return {
-              content: [{ type: "text", text: `Service ${typedParams.serviceId} was not found.` }],
-              details: { service: null }
-            };
-          }
+          const service = this.requireValidatedService(typedParams.serviceId, null);
           if (service.runtimeKind !== "container") {
-            this.store.noteServiceLeaseActivity(typedParams.serviceId);
+            this.store.noteServiceLeaseActivity(service.id);
             return {
               content: [{ type: "text", text: `${service.title} is embedded and does not support container exec.` }],
               details: { service }
             };
           }
-          const result = await this.runtimeBroker.execInService(typedParams);
-          this.store.noteServiceLeaseActivity(typedParams.serviceId);
+          const result = await this.runtimeBroker.execInService({
+            serviceId: service.id,
+            command: typedParams.command,
+            cwd: typedParams.cwd
+          });
+          this.store.noteServiceLeaseActivity(service.id);
           const stdout = result.stdout.trim();
           const stderr = result.stderr.trim();
           const body =
@@ -1650,20 +2245,14 @@ export class ButlerAgentService extends EventEmitter {
         uiEffects: this.toolCatalog.find((tool) => tool.name === "stop_service")?.uiEffects ?? [],
         execute: async (_toolCallId, params) => {
           const typedParams = params as { serviceId: string };
-          const service = this.store.getServiceLease(typedParams.serviceId);
-          if (!service) {
-            return {
-              content: [{ type: "text", text: `Service ${typedParams.serviceId} was not found.` }],
-              details: { service: null }
-            };
-          }
+          const service = this.requireValidatedService(typedParams.serviceId, null);
           if (service.runtimeKind === "container") {
-            await this.runtimeBroker.stopService(typedParams.serviceId);
+            await this.runtimeBroker.stopService(service.id);
           }
-          this.store.removeServiceLease(typedParams.serviceId);
+          this.store.removeServiceLease(service.id);
           return {
             content: [{ type: "text", text: `Stopped ${service.title}.` }],
-            details: { serviceId: typedParams.serviceId }
+            details: { serviceId: service.id }
           };
         }
       }),
@@ -1824,6 +2413,9 @@ export class ButlerAgentService extends EventEmitter {
             "Use `--storage-mode base` only when you are intentionally creating or refreshing the shared base state for that project. Do not share one writable database volume across concurrent jobs.",
             "After validating a job-scoped stateful stack, use `manor-harness stack promote <stackId>` to publish its retained data back to the project base. Only override the target manually when the task explicitly needs a different namespace.",
             "For attached previews and services, use `manor-harness` for inspect, logs, processes, and exec directly against the runtime. Butler still owns start, stop, lifecycle, and policy.",
+            "When frontend proof is required, run `manor-harness preview verify <preview> --mode headful --json` so the screenshot, video, trace, and manifest bundle is persisted.",
+            "After verification, inspect the proof bundle with `manor-harness preview proof <preview> --json` and include the screenshot, video, and manifest links in your report.",
+            "Do not treat artifact existence alone as accepted proof. Butler must review the screenshot, and the video is for human review.",
             "Use only the harness actions exposed through `manor-harness`. Do not try to command Butler directly outside those actions.",
             "When you complete meaningful work, record a supervisor report before your final reply with `manor-harness report --status completed --summary \"<concise outcome>\" --details \"<brief oversight note with the key fact, risk, or next step>\"`.",
             "If you are blocked or need operator attention, record it before your reply with `manor-harness report --status blocked --summary \"<what is blocked>\" --details \"<what you need, what failed, or the next recommended action>\"`.",
@@ -1988,6 +2580,8 @@ export class ButlerAgentService extends EventEmitter {
     this.unsubscribeSession?.();
     this.unsubscribeSession = null;
 
+    await this.sanitizePersistedSessions();
+
     const authStorage = AuthStorage.create(this.piAuthPath);
     const preferredModel =
       this.auth.mode === "chatgpt" ? getModel("openai-codex", "gpt-5.4") : getModel("openai", "gpt-5.4");
@@ -2009,6 +2603,7 @@ export class ButlerAgentService extends EventEmitter {
       })
     ).session;
 
+    this.sanitizeSessionMessages();
     this.dropTrailingFailedTurns();
 
     this.compaction = {
@@ -2042,6 +2637,49 @@ export class ButlerAgentService extends EventEmitter {
       this.ready = true;
       this.emit("change");
     });
+  }
+
+  private async sanitizePersistedSessions(): Promise<void> {
+    const entries = await fs.readdir(this.sessionDir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) {
+        continue;
+      }
+
+      const filePath = path.join(this.sessionDir, entry.name);
+      const raw = await fs.readFile(filePath, "utf8");
+      const lines = raw.split("\n");
+      let changed = false;
+      const nextLines = lines.map((line) => {
+        if (!line.trim()) {
+          return line;
+        }
+
+        try {
+          const parsed = JSON.parse(line) as Record<string, unknown>;
+          if (parsed.type !== "message" || !parsed.message || typeof parsed.message !== "object") {
+            return line;
+          }
+
+          const sanitized = sanitizeHistoryMessage(parsed.message);
+          if (!sanitized.changed) {
+            return line;
+          }
+
+          changed = true;
+          return JSON.stringify({
+            ...parsed,
+            message: sanitized.message
+          });
+        } catch {
+          return line;
+        }
+      });
+
+      if (changed) {
+        await fs.writeFile(filePath, nextLines.join("\n"), "utf8");
+      }
+    }
   }
 
   private restoreCompactionState(): void {
@@ -2097,10 +2735,14 @@ export class ButlerAgentService extends EventEmitter {
       throw new Error("Butler agent is not ready");
     }
 
-    await this.session.prompt(text, {
-      ...(this.session.isStreaming ? { streamingBehavior: "followUp" as const } : {}),
-      images: await this.imageStore.loadPiImages(imageReferenceIds)
-    });
+    try {
+      await this.session.prompt(text, {
+        ...(this.session.isStreaming ? { streamingBehavior: "followUp" as const } : {}),
+        images: await this.imageStore.loadPiImages(imageReferenceIds)
+      });
+    } finally {
+      this.sanitizeSessionMessages();
+    }
 
     const latestFailure = this.extractLatestAssistantFailure();
     if (latestFailure) {
@@ -2153,8 +2795,16 @@ export class ButlerAgentService extends EventEmitter {
       trimmedMessages.pop();
       changed = true;
 
-      const previousMessage = trimmedMessages.at(-1);
-      if (previousMessage && typeof previousMessage === "object" && (previousMessage as { role?: string }).role === "user") {
+      while (trimmedMessages.length > 0) {
+        const previousMessage = trimmedMessages.at(-1);
+        if (
+          previousMessage &&
+          typeof previousMessage === "object" &&
+          (previousMessage as { role?: string }).role === "assistant"
+        ) {
+          break;
+        }
+
         trimmedMessages.pop();
       }
     }
@@ -2164,6 +2814,19 @@ export class ButlerAgentService extends EventEmitter {
     }
 
     this.session.agent.state.messages = trimmedMessages;
+  }
+
+  private sanitizeSessionMessages(): void {
+    if (!this.session) {
+      return;
+    }
+
+    const sanitized = sanitizeHistoryMessages(this.session.messages);
+    if (!sanitized.changed) {
+      return;
+    }
+
+    this.session.agent.state.messages = sanitized.messages;
   }
 
   private getVisibleMessages(): ButlerMessageView[] {
@@ -2219,6 +2882,19 @@ export class ButlerAgentService extends EventEmitter {
         supervisor: this.store.getSupervisorSummary(),
         notices: this.noticeMessages
       },
+      latestPreviewProofsByThreadId: Object.fromEntries(
+        this.store
+          .listPreviewProofs()
+          .filter((proof) => Boolean(proof.threadId))
+          .reduce((accumulator, proof) => {
+            if (!proof.threadId || accumulator.has(proof.threadId)) {
+              return accumulator;
+            }
+            accumulator.set(proof.threadId, proof);
+            return accumulator;
+          }, new Map<string, PreviewProofRecordView>())
+          .entries()
+      ),
       stacks: this.store.listStackLeases(),
       previews: this.store.listPreviewLeases(),
       serviceTemplates: this.serviceTemplates,
