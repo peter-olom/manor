@@ -20,6 +20,10 @@ import type {
   CodexThreadSupervisorView,
   CodexTurnRecord,
   CodexWorkerReportView,
+  PreviewVerificationArtifactView,
+  PreviewVerificationConsoleMessageView,
+  PreviewVerificationFailedRequestView,
+  PreviewVerificationView,
   PreviewLeaseView,
   StackLeaseView,
   ServiceLeaseView,
@@ -231,6 +235,94 @@ function normalizeStatus(status: unknown): CodexThreadStatus {
   return "unknown";
 }
 
+function normalizePreviewVerificationArtifact(artifact: PreviewVerificationArtifactView): PreviewVerificationArtifactView {
+  return {
+    kind:
+      artifact.kind === "manifest" ||
+      artifact.kind === "screenshot" ||
+      artifact.kind === "trace" ||
+      artifact.kind === "html"
+        ? artifact.kind
+        : "other",
+    label: typeof artifact.label === "string" && artifact.label.trim() ? artifact.label.trim() : "Artifact",
+    fileName: typeof artifact.fileName === "string" && artifact.fileName.trim() ? artifact.fileName.trim() : "artifact",
+    filePath: typeof artifact.filePath === "string" ? artifact.filePath : "",
+    contentType: typeof artifact.contentType === "string" && artifact.contentType.trim() ? artifact.contentType.trim() : "application/octet-stream",
+    sizeBytes: typeof artifact.sizeBytes === "number" && Number.isFinite(artifact.sizeBytes) ? artifact.sizeBytes : null,
+    url: typeof artifact.url === "string" && artifact.url.trim() ? artifact.url : null
+  };
+}
+
+function normalizePreviewVerificationConsoleMessage(
+  message: PreviewVerificationConsoleMessageView
+): PreviewVerificationConsoleMessageView {
+  return {
+    type: typeof message.type === "string" && message.type.trim() ? message.type.trim() : "log",
+    text: typeof message.text === "string" ? message.text : "",
+    location: typeof message.location === "string" && message.location.trim() ? message.location.trim() : null
+  };
+}
+
+function normalizePreviewVerificationFailedRequest(
+  request: PreviewVerificationFailedRequestView
+): PreviewVerificationFailedRequestView {
+  return {
+    url: typeof request.url === "string" ? request.url : "",
+    method: typeof request.method === "string" && request.method.trim() ? request.method.trim() : "GET",
+    errorText: typeof request.errorText === "string" && request.errorText.trim() ? request.errorText.trim() : null
+  };
+}
+
+function normalizePreviewVerification(verification: PreviewVerificationView): PreviewVerificationView {
+  return {
+    runId: typeof verification.runId === "string" && verification.runId.trim() ? verification.runId.trim() : crypto.randomUUID(),
+    mode: verification.mode === "headful" ? "headful" : "headless",
+    checkedAt:
+      typeof verification.checkedAt === "number" && Number.isFinite(verification.checkedAt) ? verification.checkedAt : Date.now(),
+    durationMs:
+      typeof verification.durationMs === "number" && Number.isFinite(verification.durationMs) && verification.durationMs >= 0
+        ? verification.durationMs
+        : 0,
+    ok: Boolean(verification.ok),
+    status: typeof verification.status === "number" && Number.isFinite(verification.status) ? verification.status : null,
+    title: typeof verification.title === "string" ? verification.title : "",
+    url: typeof verification.url === "string" ? verification.url : "",
+    error: typeof verification.error === "string" && verification.error.trim() ? verification.error.trim() : null,
+    summary: {
+      consoleMessageCount:
+        typeof verification.summary?.consoleMessageCount === "number" && Number.isFinite(verification.summary.consoleMessageCount)
+          ? Math.max(0, Math.trunc(verification.summary.consoleMessageCount))
+          : 0,
+      pageErrorCount:
+        typeof verification.summary?.pageErrorCount === "number" && Number.isFinite(verification.summary.pageErrorCount)
+          ? Math.max(0, Math.trunc(verification.summary.pageErrorCount))
+          : 0,
+      failedRequestCount:
+        typeof verification.summary?.failedRequestCount === "number" && Number.isFinite(verification.summary.failedRequestCount)
+          ? Math.max(0, Math.trunc(verification.summary.failedRequestCount))
+          : 0
+    },
+    artifacts: Array.isArray(verification.artifacts)
+      ? verification.artifacts
+          .filter((artifact): artifact is PreviewVerificationArtifactView => Boolean(artifact && typeof artifact === "object"))
+          .map((artifact) => normalizePreviewVerificationArtifact(artifact))
+      : [],
+    consoleMessages: Array.isArray(verification.consoleMessages)
+      ? verification.consoleMessages
+          .filter((message): message is PreviewVerificationConsoleMessageView => Boolean(message && typeof message === "object"))
+          .map((message) => normalizePreviewVerificationConsoleMessage(message))
+      : [],
+    pageErrors: Array.isArray(verification.pageErrors)
+      ? verification.pageErrors.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      : [],
+    failedRequests: Array.isArray(verification.failedRequests)
+      ? verification.failedRequests
+          .filter((request): request is PreviewVerificationFailedRequestView => Boolean(request && typeof request === "object"))
+          .map((request) => normalizePreviewVerificationFailedRequest(request))
+      : []
+  };
+}
+
 function summarizeItem(item: Record<string, unknown>): string {
   if (item.type === "agentMessage" && typeof item.text === "string") {
     return item.text;
@@ -408,6 +500,10 @@ export class ButlerStateStore extends EventEmitter {
       aliases: Array.isArray(lease.aliases)
         ? [...new Set(lease.aliases.map((alias) => (typeof alias === "string" ? alias.trim() : "")).filter(Boolean))]
         : [],
+      lastVerification:
+        lease.lastVerification && typeof lease.lastVerification === "object"
+          ? normalizePreviewVerification(lease.lastVerification)
+          : null,
       bootstrap: {
         waitSeconds:
           typeof lease.bootstrap?.waitSeconds === "number" && Number.isFinite(lease.bootstrap.waitSeconds) && lease.bootstrap.waitSeconds > 0
@@ -1454,6 +1550,29 @@ export class ButlerStateStore extends EventEmitter {
     }
     this.queueSave();
     this.emitChange();
+  }
+
+  recordPreviewLeaseVerification(leaseId: string, verification: PreviewVerificationView): PreviewLeaseView | null {
+    const lease = this.previewLeases.get(leaseId);
+    if (!lease) {
+      return null;
+    }
+
+    const checkedAt =
+      typeof verification.checkedAt === "number" && Number.isFinite(verification.checkedAt) ? verification.checkedAt : Date.now();
+    const nextLease = this.normalizePreviewLease(
+      {
+        ...lease,
+        lastVerification: normalizePreviewVerification(verification),
+        lastActivityAt: Math.max(lease.lastActivityAt ?? lease.updatedAt ?? lease.createdAt, checkedAt),
+        updatedAt: Math.max(lease.updatedAt, checkedAt)
+      },
+      checkedAt
+    );
+    this.previewLeases.set(leaseId, nextLease);
+    this.queueSave();
+    this.emitChange();
+    return nextLease;
   }
 
   markPreviewLeaseStopping(leaseId: string): PreviewLeaseView | null {

@@ -1,4 +1,12 @@
-import type { PreviewEgressProfile, PreviewLeaseStatus, ServiceLeaseStatus, StackLeaseStatus, StackStorageMode } from "./types.js";
+import type {
+  PreviewBrowserMode,
+  PreviewEgressProfile,
+  PreviewLeaseStatus,
+  PreviewVerificationView,
+  ServiceLeaseStatus,
+  StackLeaseStatus,
+  StackStorageMode
+} from "./types.js";
 
 type LeasePayload = {
   id: string;
@@ -220,17 +228,13 @@ export class RuntimeBrokerClient {
 
   async verifyLease(input: {
     leaseId: string;
-  }): Promise<{
-    leaseId: string;
-    ok: boolean;
-    status: number | null;
-    title: string;
-    url: string;
-    screenshotPath: string | null;
-  }> {
+    mode?: PreviewBrowserMode;
+  }): Promise<PreviewVerificationView> {
     return this.request(`/leases/${input.leaseId}/verify`, {
       method: "POST",
-      body: JSON.stringify({})
+      body: JSON.stringify({
+        mode: input.mode === "headful" ? "headful" : "headless"
+      })
     });
   }
 

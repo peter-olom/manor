@@ -10,6 +10,7 @@ import { ButlerAgentService } from "./butler-agent.js";
 import { CodexAppServerClient } from "./codex-client.js";
 import { CodexHarnessService } from "./codex-harness.js";
 import { ImageReferenceStore } from "./image-store.js";
+import { decoratePreviewVerification } from "./preview-verification.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { loadServiceTemplates, toServiceLeaseView } from "./service-templates.js";
 import { ButlerStateStore } from "./state-store.js";
@@ -31,6 +32,7 @@ const serviceLeaseTtlMs = Number(process.env.MANOR_SERVICE_LEASE_TTL_MS ?? `${12
 const leaseReapGraceMs = Number(process.env.MANOR_LEASE_REAP_GRACE_MS ?? `${10 * 60 * 1000}`);
 const leaseSweepIntervalMs = Number(process.env.MANOR_LEASE_SWEEP_INTERVAL_MS ?? "60000");
 const imageReferenceDir = process.env.MANOR_IMAGE_REFERENCE_DIR ?? path.resolve(process.cwd(), "../artifacts/manor-images");
+const artifactsDir = path.resolve(process.env.MANOR_ARTIFACTS_DIR ?? "/artifacts");
 
 const uiStatePath = path.join(stateDir, "butler-ui.json");
 const sessionDir = path.join(stateDir, "pi-sessions");
@@ -256,6 +258,44 @@ app.get("/api/images/:imageId", (request, response) => {
   response.setHeader("Cache-Control", "private, max-age=31536000, immutable");
   response.type(image.mimeType);
   response.sendFile(filePath);
+});
+
+app.get(/^\/api\/artifacts\/(.+)$/, (request, response) => {
+  const relativePath = Array.isArray(request.params) ? request.params[0] : "";
+  if (!relativePath) {
+    response.status(404).json({ error: "Artifact was not found" });
+    return;
+  }
+
+  const decodedPath = relativePath
+    .split("/")
+    .map((segment: string) => {
+      try {
+        return decodeURIComponent(segment);
+      } catch {
+        return segment;
+      }
+    })
+    .join(path.sep);
+  const filePath = path.resolve(artifactsDir, decodedPath);
+  if (filePath !== artifactsDir && !filePath.startsWith(`${artifactsDir}${path.sep}`)) {
+    response.status(400).json({ error: "Artifact path is invalid" });
+    return;
+  }
+
+  response.setHeader("Cache-Control", "private, max-age=3600");
+  response.sendFile(filePath, (error) => {
+    if (!error) {
+      return;
+    }
+
+    if ("statusCode" in error && error.statusCode === 404) {
+      response.status(404).json({ error: "Artifact was not found" });
+      return;
+    }
+
+    response.status(500).json({ error: "Artifact could not be read" });
+  });
 });
 
 app.get("/api/chat/history", (request, response) => {
@@ -668,6 +708,7 @@ app.post("/api/previews/stop", async (request, response) => {
 
 app.post("/api/previews/verify", async (request, response) => {
   const leaseId = typeof request.body?.leaseId === "string" ? request.body.leaseId : "";
+  const mode = request.body?.mode === "headful" ? "headful" : "headless";
   if (!leaseId) {
     response.status(400).json({ error: "leaseId is required" });
     return;
@@ -675,8 +716,9 @@ app.post("/api/previews/verify", async (request, response) => {
 
   try {
     store.notePreviewLeaseActivity(leaseId);
-    const result = await runtimeBroker.verifyLease({ leaseId });
-    response.json({ ok: true, verification: result });
+    const result = decoratePreviewVerification(await runtimeBroker.verifyLease({ leaseId, mode }));
+    const lease = store.recordPreviewLeaseVerification(leaseId, result);
+    response.json({ ok: true, verification: result, lease });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }

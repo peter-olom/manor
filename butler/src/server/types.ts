@@ -70,6 +70,54 @@ export type PreviewBootstrapPhase =
   | "ready"
   | "failed";
 
+export type PreviewVerificationArtifactKind = "manifest" | "screenshot" | "trace" | "html" | "other";
+export type PreviewBrowserMode = "headless" | "headful";
+
+export interface PreviewVerificationArtifactView {
+  kind: PreviewVerificationArtifactKind;
+  label: string;
+  fileName: string;
+  filePath: string;
+  contentType: string;
+  sizeBytes: number | null;
+  url: string | null;
+}
+
+export interface PreviewVerificationConsoleMessageView {
+  type: string;
+  text: string;
+  location: string | null;
+}
+
+export interface PreviewVerificationFailedRequestView {
+  url: string;
+  method: string;
+  errorText: string | null;
+}
+
+export interface PreviewVerificationSummaryView {
+  consoleMessageCount: number;
+  pageErrorCount: number;
+  failedRequestCount: number;
+}
+
+export interface PreviewVerificationView {
+  runId: string;
+  mode: PreviewBrowserMode;
+  checkedAt: number;
+  durationMs: number;
+  ok: boolean;
+  status: number | null;
+  title: string;
+  url: string;
+  error: string | null;
+  summary: PreviewVerificationSummaryView;
+  artifacts: PreviewVerificationArtifactView[];
+  consoleMessages: PreviewVerificationConsoleMessageView[];
+  pageErrors: string[];
+  failedRequests: PreviewVerificationFailedRequestView[];
+}
+
 export interface LeaseLifecycleView {
   pinned?: boolean;
   lastActivityAt?: number;
@@ -103,6 +151,7 @@ export interface PreviewLeaseView extends LeaseLifecycleView {
   createdAt: number;
   updatedAt: number;
   lastError: string | null;
+  lastVerification?: PreviewVerificationView | null;
   bootstrap: {
     waitSeconds: number;
     hint: string | null;
