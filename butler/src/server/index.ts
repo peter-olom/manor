@@ -26,6 +26,7 @@ const serviceTemplateConfigPath = process.env.MANOR_SERVICE_TEMPLATE_CONFIG ?? "
 const hotReloadEnabled = process.env.BUTLER_HOT_RELOAD === "1";
 const publicPort = Number(process.env.BUTLER_PUBLIC_PORT ?? port);
 const previewLeaseTtlMs = Number(process.env.MANOR_PREVIEW_LEASE_TTL_MS ?? `${30 * 60 * 1000}`);
+const stackLeaseTtlMs = Number(process.env.MANOR_STACK_LEASE_TTL_MS ?? `${120 * 60 * 1000}`);
 const serviceLeaseTtlMs = Number(process.env.MANOR_SERVICE_LEASE_TTL_MS ?? `${120 * 60 * 1000}`);
 const leaseReapGraceMs = Number(process.env.MANOR_LEASE_REAP_GRACE_MS ?? `${10 * 60 * 1000}`);
 const leaseSweepIntervalMs = Number(process.env.MANOR_LEASE_SWEEP_INTERVAL_MS ?? "60000");
@@ -38,6 +39,7 @@ const indexTemplatePath = path.resolve(process.cwd(), "index.html");
 
 const store = new ButlerStateStore(uiStatePath, {
   previewLeaseTtlMs,
+  stackLeaseTtlMs,
   serviceLeaseTtlMs,
   leaseReapGraceMs
 });
@@ -124,6 +126,54 @@ const sseHeartbeatMs = 15000;
 
 function currentSnapshot() {
   return store.getSnapshot(butlerAgent.getSnapshot(), codexClient.getConnectionState());
+}
+
+async function resolveRequestedStack(stackId: string | null): Promise<{
+  id: string;
+  threadId: string | null;
+  worktreePath: string | null;
+} | null> {
+  if (!stackId) {
+    return null;
+  }
+
+  const existing = store.getStackLease(stackId);
+  if (existing) {
+    return existing;
+  }
+
+  const stack = await runtimeBroker.inspectStack(stackId);
+  store.upsertStackLease(stack);
+  return stack;
+}
+
+async function validateRequestedStack(stackId: string | null, threadId: string | null) {
+  const stack = await resolveRequestedStack(stackId);
+  if (!stack) {
+    return null;
+  }
+
+  if (threadId && stack.threadId && stack.threadId !== threadId) {
+    throw new Error(`Stack ${stack.id} belongs to a different job`);
+  }
+
+  return stack;
+}
+
+function removeStackArtifactsFromStore(stackId: string): void {
+  for (const lease of store.listPreviewLeases()) {
+    if (lease.stackId === stackId) {
+      store.removePreviewLease(lease.id);
+    }
+  }
+
+  for (const lease of store.listServiceLeases()) {
+    if (lease.stackId === stackId) {
+      store.removeServiceLease(lease.id);
+    }
+  }
+
+  store.removeStackLease(stackId);
 }
 
 function readImageReferenceIds(body: unknown): string[] {
@@ -422,12 +472,116 @@ app.post("/api/windows/close", (request, response) => {
   response.json({ ok: true });
 });
 
+app.post("/api/stacks/start", async (request, response) => {
+  const title = typeof request.body?.title === "string" ? request.body.title.trim() : "";
+  const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : null;
+  const cwd = typeof request.body?.cwd === "string" ? request.body.cwd.trim() : "";
+  const retainsVolumes = Boolean(request.body?.retainsVolumes);
+  const storageKey = typeof request.body?.storageKey === "string" ? request.body.storageKey.trim() : "";
+  const cloneFromStorageKey =
+    typeof request.body?.cloneFromStorageKey === "string" ? request.body.cloneFromStorageKey.trim() : "";
+  if (!title) {
+    response.status(400).json({ error: "title is required" });
+    return;
+  }
+
+  try {
+    const thread = threadId ? store.getThread(threadId) ?? null : null;
+    const stack = await runtimeBroker.createStack({
+      stackId: crypto.randomUUID(),
+      threadId,
+      projectId: thread?.supervisor.projectId ?? "stack",
+      projectLabel: thread?.supervisor.projectLabel ?? "stack",
+      title,
+      worktreePath: cwd || thread?.cwd || null,
+      retainsVolumes,
+      storageKey: storageKey || null,
+      cloneFromStorageKey: cloneFromStorageKey || null
+    });
+    store.upsertStackLease(stack);
+    response.json({ ok: true, stack });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/stacks/stop", async (request, response) => {
+  const stackId = typeof request.body?.stackId === "string" ? request.body.stackId : "";
+  const dropVolumes = Boolean(request.body?.dropVolumes);
+  if (!stackId) {
+    response.status(400).json({ error: "stackId is required" });
+    return;
+  }
+
+  try {
+    await runtimeBroker.stopStack(stackId, { dropVolumes });
+    removeStackArtifactsFromStore(stackId);
+    response.json({ ok: true });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/stacks/promote", async (request, response) => {
+  const stackId = typeof request.body?.stackId === "string" ? request.body.stackId.trim() : "";
+  const targetStorageKey =
+    typeof request.body?.targetStorageKey === "string" ? request.body.targetStorageKey.trim() : "";
+  if (!stackId) {
+    response.status(400).json({ error: "stackId is required" });
+    return;
+  }
+
+  try {
+    const result = await runtimeBroker.promoteStack({
+      stackId,
+      targetStorageKey: targetStorageKey || null
+    });
+    const stack = await runtimeBroker.inspectStack(stackId);
+    store.upsertStackLease(stack);
+    response.json({ ok: true, promotion: result, stack });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/stacks/pin", (request, response) => {
+  const stackId = typeof request.body?.stackId === "string" ? request.body.stackId : "";
+  const pinned = Boolean(request.body?.pinned);
+  if (!stackId) {
+    response.status(400).json({ error: "stackId is required" });
+    return;
+  }
+
+  const stack = store.setStackLeasePinned(stackId, pinned);
+  if (!stack) {
+    response.status(404).json({ error: "Stack lease not found" });
+    return;
+  }
+
+  response.json({ ok: true, stack });
+});
+
 app.post("/api/previews/start", async (request, response) => {
   const title = typeof request.body?.title === "string" ? request.body.title.trim() : "";
   const cwd = typeof request.body?.cwd === "string" ? request.body.cwd.trim() : "";
   const command = typeof request.body?.command === "string" ? request.body.command.trim() : "";
   const portValue = typeof request.body?.port === "number" ? request.body.port : Number(request.body?.port ?? 0);
   const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : null;
+  const stackId = typeof request.body?.stackId === "string" ? request.body.stackId.trim() : "";
+  const aliases = Array.isArray(request.body?.aliases)
+    ? request.body.aliases
+        .map((value: unknown) => (typeof value === "string" ? value.trim() : ""))
+        .filter((value: string) => value.length > 0)
+    : [];
+  const env =
+    request.body?.env && typeof request.body.env === "object"
+      ? Object.fromEntries(
+          Object.entries(request.body.env as Record<string, unknown>)
+            .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
+            .map(([key, value]) => [key.trim(), value.trim()])
+            .filter(([key, value]) => key && value)
+        )
+      : {};
   const image = typeof request.body?.image === "string" ? request.body.image.trim() : undefined;
   const egressDomains = Array.isArray(request.body?.egressDomains)
     ? request.body.egressDomains
@@ -453,20 +607,25 @@ app.post("/api/previews/start", async (request, response) => {
       ? request.body.heartbeatIntervalSeconds
       : Number(request.body?.heartbeatIntervalSeconds ?? 0);
 
-  if (!title || !cwd || !command || !Number.isFinite(portValue) || portValue <= 0) {
-    response.status(400).json({ error: "title, cwd, command, and port are required" });
-    return;
-  }
-
   try {
     const thread = threadId ? store.getThread(threadId) ?? null : null;
+    const requestedStack = await validateRequestedStack(stackId || null, threadId);
+    const worktreePath = cwd || requestedStack?.worktreePath || thread?.cwd || "";
+
+    if (!title || !worktreePath || !command || !Number.isFinite(portValue) || portValue <= 0) {
+      response.status(400).json({ error: "title, cwd, command, and port are required" });
+      return;
+    }
+
     const lease = await runtimeBroker.createLease({
       leaseId: crypto.randomUUID(),
       threadId,
       projectId: thread?.supervisor.projectId ?? "preview",
       projectLabel: thread?.supervisor.projectLabel ?? "preview",
       title,
-      worktreePath: cwd,
+      stackId: stackId || null,
+      aliases,
+      worktreePath,
       branchName: null,
       targetPort: portValue,
       command,
@@ -478,7 +637,8 @@ app.post("/api/previews/start", async (request, response) => {
       heartbeatKind: heartbeatKind || undefined,
       heartbeatTarget: heartbeatTarget || undefined,
       heartbeatIntervalSeconds:
-        Number.isFinite(heartbeatIntervalSeconds) && heartbeatIntervalSeconds > 0 ? heartbeatIntervalSeconds : undefined
+        Number.isFinite(heartbeatIntervalSeconds) && heartbeatIntervalSeconds > 0 ? heartbeatIntervalSeconds : undefined,
+      env
     });
     store.upsertPreviewLease(lease);
     response.json({ ok: true, lease });
@@ -542,6 +702,12 @@ app.post("/api/services/start", async (request, response) => {
   const title = typeof request.body?.title === "string" ? request.body.title.trim() : "";
   const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : null;
   const cwd = typeof request.body?.cwd === "string" ? request.body.cwd.trim() : "";
+  const stackId = typeof request.body?.stackId === "string" ? request.body.stackId.trim() : "";
+  const aliases = Array.isArray(request.body?.aliases)
+    ? request.body.aliases
+        .map((value: unknown) => (typeof value === "string" ? value.trim() : ""))
+        .filter((value: string) => value.length > 0)
+    : [];
   const env =
     request.body?.env && typeof request.body.env === "object"
       ? Object.fromEntries(
@@ -560,12 +726,13 @@ app.post("/api/services/start", async (request, response) => {
 
   try {
     const thread = threadId ? store.getThread(threadId) ?? null : null;
+    const requestedStack = await validateRequestedStack(stackId || null, threadId);
     const serviceId = crypto.randomUUID();
     const mergedEnv = { ...template.envDefaults, ...env };
     const effectiveTitle = title || `${template.label} ${serviceId.slice(0, 8)}`;
+    const worktreePath = cwd || requestedStack?.worktreePath || thread?.cwd || "/repos";
 
     if (template.runtimeKind === "embedded") {
-      const worktreePath = cwd || thread?.cwd || "/repos";
       const relativePath = template.fileName ?? ".manor/sqlite/app.db";
       const absolutePath = path.join(worktreePath, relativePath);
       await fs.mkdir(path.dirname(absolutePath), { recursive: true });
@@ -579,6 +746,8 @@ app.post("/api/services/start", async (request, response) => {
         projectId: thread?.supervisor.projectId ?? "service",
         projectLabel: thread?.supervisor.projectLabel ?? "service",
         title: effectiveTitle,
+        stackId: stackId || null,
+        aliases,
         template,
         containerName: `embedded-${serviceId}`,
         targetHost: "local-file",
@@ -601,12 +770,16 @@ app.post("/api/services/start", async (request, response) => {
       projectId: thread?.supervisor.projectId ?? "service",
       projectLabel: thread?.supervisor.projectLabel ?? "service",
       title: effectiveTitle,
+      stackId: stackId || null,
+      aliases,
       templateId: template.id,
       templateLabel: template.label,
       runtimeKind: template.runtimeKind,
+      worktreePath,
       targetPort: template.defaultPort,
       image: template.image,
       command: template.command,
+      stackVolumePath: template.stackVolumePath,
       env: mergedEnv
     });
     const lease = toServiceLeaseView({
@@ -615,12 +788,18 @@ app.post("/api/services/start", async (request, response) => {
       projectId: service.projectId,
       projectLabel: service.projectLabel,
       title: service.title,
+      stackId: service.stackId,
+      aliases: service.aliases,
       template,
       containerName: service.containerName,
       targetHost: service.targetHost,
       targetPort: service.targetPort,
       worktreePath: service.worktreePath,
       status: service.status,
+      storageKind: service.storageKind,
+      sticky: service.sticky,
+      volumeName: service.volumeName,
+      volumeMountPath: service.volumeMountPath,
       createdAt: service.createdAt,
       updatedAt: service.updatedAt,
       lastError: service.lastError,
@@ -700,6 +879,8 @@ app.use(/^\/preview\/([^/]+)(\/.*)?$/, (request, response) => {
 
 let leaseSweepInFlight = false;
 let previewReconcileInFlight = false;
+let serviceReconcileInFlight = false;
+let stackReconcileInFlight = false;
 
 async function sweepExpiredLeases(): Promise<void> {
   if (leaseSweepInFlight) {
@@ -710,6 +891,16 @@ async function sweepExpiredLeases(): Promise<void> {
   const expired = store.listExpiredLeaseIds();
 
   try {
+    for (const stackId of expired.stacks) {
+      try {
+        const stack = store.getStackLease(stackId);
+        await runtimeBroker.stopStack(stackId, { dropVolumes: Boolean(stack?.retainsVolumes) });
+      } catch {
+        // ignore broker cleanup failures and still evict the local lease
+      }
+      removeStackArtifactsFromStore(stackId);
+    }
+
     for (const leaseId of expired.previews) {
       try {
         await runtimeBroker.stopLease(leaseId);
@@ -750,6 +941,33 @@ void sweepExpiredLeases().catch((error) => {
   console.error("Initial lease sweep failed", error);
 });
 
+async function reconcileStackLeases(): Promise<void> {
+  if (stackReconcileInFlight) {
+    return;
+  }
+
+  stackReconcileInFlight = true;
+  try {
+    const brokerStacks = await runtimeBroker.listStacks();
+    const brokerStackIds = new Set(brokerStacks.map((stack) => stack.id));
+    const storedStacks = store.listStackLeases().filter((lease) => lease.status !== "stopped");
+
+    for (const lease of storedStacks) {
+      if (!brokerStackIds.has(lease.id)) {
+        removeStackArtifactsFromStore(lease.id);
+      }
+    }
+
+    for (const stack of brokerStacks) {
+      store.upsertStackLease(stack);
+    }
+  } catch (error) {
+    console.error("Stack reconcile failed", error);
+  } finally {
+    stackReconcileInFlight = false;
+  }
+}
+
 async function reconcilePreviewLeases(): Promise<void> {
   if (previewReconcileInFlight) {
     return;
@@ -777,11 +995,70 @@ async function reconcilePreviewLeases(): Promise<void> {
   }
 }
 
-const previewReconciler = setInterval(() => {
+async function reconcileServiceLeases(): Promise<void> {
+  if (serviceReconcileInFlight) {
+    return;
+  }
+
+  serviceReconcileInFlight = true;
+  try {
+    const brokerServices = await runtimeBroker.listServices();
+    const brokerServiceIds = new Set(brokerServices.map((service) => service.id));
+    const storedServices = store.listServiceLeases().filter((lease) => lease.status !== "stopped" && lease.runtimeKind === "container");
+
+    for (const lease of storedServices) {
+      if (!brokerServiceIds.has(lease.id)) {
+        store.removeServiceLease(lease.id);
+      }
+    }
+
+    for (const service of brokerServices) {
+      const template = serviceTemplateMap.get(service.templateId);
+      if (!template) {
+        continue;
+      }
+      store.upsertServiceLease(
+        toServiceLeaseView({
+          id: service.id,
+          threadId: service.threadId,
+          projectId: service.projectId,
+          projectLabel: service.projectLabel,
+          title: service.title,
+          stackId: service.stackId,
+          aliases: service.aliases,
+          template,
+          containerName: service.containerName,
+          targetHost: service.targetHost,
+          targetPort: service.targetPort,
+          worktreePath: service.worktreePath,
+          status: service.status,
+          storageKind: service.storageKind,
+          sticky: service.sticky,
+          volumeName: service.volumeName,
+          volumeMountPath: service.volumeMountPath,
+          createdAt: service.createdAt,
+          updatedAt: service.updatedAt,
+          lastError: service.lastError,
+          env: service.env
+        })
+      );
+    }
+  } catch (error) {
+    console.error("Service reconcile failed", error);
+  } finally {
+    serviceReconcileInFlight = false;
+  }
+}
+
+const runtimeReconciler = setInterval(() => {
+  void reconcileStackLeases();
   void reconcilePreviewLeases();
+  void reconcileServiceLeases();
 }, 5_000);
 
+void reconcileStackLeases();
 void reconcilePreviewLeases();
+void reconcileServiceLeases();
 
 if (viteDevServer) {
   app.use(viteDevServer.middlewares);
@@ -808,5 +1085,5 @@ server.listen(port, "0.0.0.0", () => {
 
 server.on("close", () => {
   clearInterval(leaseReaper);
-  clearInterval(previewReconciler);
+  clearInterval(runtimeReconciler);
 });

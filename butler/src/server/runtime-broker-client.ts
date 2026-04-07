@@ -1,4 +1,4 @@
-import type { PreviewEgressProfile, PreviewLeaseStatus, ServiceLeaseStatus } from "./types.js";
+import type { PreviewEgressProfile, PreviewLeaseStatus, ServiceLeaseStatus, StackLeaseStatus } from "./types.js";
 
 type LeasePayload = {
   id: string;
@@ -6,6 +6,8 @@ type LeasePayload = {
   projectId: string;
   projectLabel: string;
   title: string;
+  stackId: string | null;
+  aliases: string[];
   worktreePath: string;
   branchName: string | null;
   containerName: string;
@@ -41,6 +43,8 @@ type ServicePayload = {
   projectId: string;
   projectLabel: string;
   title: string;
+  stackId: string | null;
+  aliases: string[];
   templateId: string;
   templateLabel: string;
   runtimeKind: "container" | "embedded";
@@ -50,10 +54,34 @@ type ServicePayload = {
   worktreePath: string | null;
   image: string;
   status: ServiceLeaseStatus;
+  storageKind: "ephemeral" | "volume" | "worktree";
+  sticky: boolean;
+  volumeName: string | null;
+  volumeMountPath: string | null;
   createdAt: number;
   updatedAt: number;
   lastError: string | null;
   env: Record<string, string>;
+};
+
+type StackPayload = {
+  id: string;
+  threadId: string | null;
+  projectId: string;
+  projectLabel: string;
+  title: string;
+  worktreePath: string | null;
+  networkName: string;
+  status: StackLeaseStatus;
+  retainsVolumes: boolean;
+  storageKey: string | null;
+  cloneFromStorageKey: string | null;
+  volumeNames: string[];
+  createdAt: number;
+  updatedAt: number;
+  lastError: string | null;
+  previewIds: string[];
+  serviceIds: string[];
 };
 
 type ServiceInspectPayload = ServicePayload & {
@@ -96,6 +124,7 @@ type LeaseExecPayload = {
 
 type ServiceListPayload = ServicePayload[];
 type LeaseListPayload = LeasePayload[];
+type StackListPayload = StackPayload[];
 
 export class RuntimeBrokerClient {
   constructor(
@@ -127,6 +156,8 @@ export class RuntimeBrokerClient {
     projectId: string;
     projectLabel: string;
     title: string;
+    stackId?: string | null;
+    aliases?: string[];
     worktreePath: string;
     branchName: string | null;
     targetPort: number;
@@ -206,6 +237,8 @@ export class RuntimeBrokerClient {
     projectId: string;
     projectLabel: string;
     title: string;
+    stackId?: string | null;
+    aliases?: string[];
     templateId: string;
     templateLabel: string;
     runtimeKind: "container" | "embedded";
@@ -213,12 +246,70 @@ export class RuntimeBrokerClient {
     targetPort: number;
     image: string;
     command?: string | null;
+    stackVolumePath?: string | null;
     env?: Record<string, string>;
   }): Promise<ServicePayload> {
     return this.request<ServicePayload>("/services", {
       method: "POST",
       body: JSON.stringify(input)
     });
+  }
+
+  async createStack(input: {
+    stackId: string;
+    threadId: string | null;
+    projectId: string;
+    projectLabel: string;
+    title: string;
+    worktreePath?: string | null;
+    retainsVolumes?: boolean;
+    storageKey?: string | null;
+    cloneFromStorageKey?: string | null;
+  }): Promise<StackPayload> {
+    return this.request<StackPayload>("/stacks", {
+      method: "POST",
+      body: JSON.stringify(input)
+    });
+  }
+
+  async stopStack(stackId: string, options?: { dropVolumes?: boolean }): Promise<{ ok: true; stackId: string }> {
+    const query = options?.dropVolumes ? "?dropVolumes=1" : "";
+    return this.request<{ ok: true; stackId: string }>(`/stacks/${stackId}${query}`, {
+      method: "DELETE"
+    });
+  }
+
+  async inspectStack(stackId: string): Promise<StackPayload> {
+    return this.request<StackPayload>(`/stacks/${stackId}`);
+  }
+
+  async promoteStack(input: {
+    stackId: string;
+    targetStorageKey?: string | null;
+  }): Promise<{
+    ok: true;
+    stackId: string;
+    sourceStorageKey: string;
+    targetStorageKey: string;
+    promotedVolumes: string[];
+  }> {
+    return this.request<{
+      ok: true;
+      stackId: string;
+      sourceStorageKey: string;
+      targetStorageKey: string;
+      promotedVolumes: string[];
+    }>(`/stacks/${input.stackId}/promote`, {
+      method: "POST",
+      body: JSON.stringify({
+        targetStorageKey: input.targetStorageKey ?? null
+      })
+    });
+  }
+
+  async listStacks(threadId?: string | null): Promise<StackListPayload> {
+    const query = threadId ? `?threadId=${encodeURIComponent(threadId)}` : "";
+    return this.request<StackListPayload>(`/stacks${query}`);
   }
 
   async stopService(serviceId: string): Promise<{ ok: true; serviceId: string }> {

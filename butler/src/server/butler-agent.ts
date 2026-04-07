@@ -310,8 +310,9 @@ function buildSystemPrompt(store: ButlerStateStore): string {
     "Each supervised Codex thread has a Butler steering budget. Default to 20 Butler-driven turns per thread unless that thread is explicitly overridden.",
     "When work touches git in a repo, enforce a dedicated branch whose name starts with butler/.",
     "Do not run two parallel Codex workstreams on the same repo branch.",
+    "When a task needs multiple cooperating previews or disposable services, create a stack lease first so Butler can keep the whole environment under one isolated network and lifecycle.",
     "When a task needs a live app review, prefer a preview lease on an isolated runtime instead of telling the operator to bind a raw host port.",
-    "When a project needs common dev dependencies like Postgres, Redis, MySQL, MSSQL, or SQLite, prefer the built-in service templates instead of ad hoc install steps.",
+    "When a project needs common dev dependencies like Postgres, Redis, MySQL, MSSQL, RabbitMQ, MinIO, Mailpit, or SQLite, prefer the built-in service templates instead of ad hoc install steps.",
     "Codex may operate inside attached isolates through manor-harness for inspect, logs, processes, and shell exec, but Butler still owns isolate lifecycle and policy.",
     "When the operator provides reference images, keep track of the stored image references so you can pass them to Codex later and reuse them during verification.",
     "Use the image reference tools whenever visual requirements depend on an uploaded image.",
@@ -555,6 +556,36 @@ export class ButlerAgentService extends EventEmitter {
         uiEffects: [{ kind: "refreshThreads", description: "Keeps thread/project state aligned with worktree-backed tasks." }]
       },
       {
+        name: "start_stack",
+        label: "Start stack",
+        description: "Create one isolated stack lease and network for a multi-container job.",
+        uiEffects: [{ kind: "refreshThreads", description: "Keeps stack-backed job state current." }]
+      },
+      {
+        name: "list_stacks",
+        label: "List stacks",
+        description: "List active stack leases and their isolated networks.",
+        uiEffects: [{ kind: "refreshThreads", description: "Keeps stack lease state current." }]
+      },
+      {
+        name: "inspect_stack",
+        label: "Inspect stack",
+        description: "Inspect one stack lease, including its current member counts and network.",
+        uiEffects: [{ kind: "refreshThreads", description: "Refreshes one stack lease before Butler acts on it." }]
+      },
+      {
+        name: "promote_stack",
+        label: "Promote stack",
+        description: "Copy a stack's retained volumes into another storage namespace.",
+        uiEffects: [{ kind: "refreshThreads", description: "Refreshes stack storage state after promotion." }]
+      },
+      {
+        name: "stop_stack",
+        label: "Stop stack",
+        description: "Stop one stack lease, remove its members, and release its isolated network.",
+        uiEffects: [{ kind: "refreshThreads", description: "Removes stale stack state from the supervised job." }]
+      },
+      {
         name: "start_preview",
         label: "Start preview",
         description: "Start a disposable preview runtime for one worktree and expose it through a stable Manor route.",
@@ -605,7 +636,7 @@ export class ButlerAgentService extends EventEmitter {
       {
         name: "start_service",
         label: "Start service",
-        description: "Provision a disposable built-in service such as Postgres, Redis, MySQL, MSSQL, or SQLite for one job.",
+        description: "Provision a disposable built-in service such as Postgres, Redis, MySQL, MSSQL, RabbitMQ, MinIO, Mailpit, or SQLite for one job.",
         uiEffects: [{ kind: "refreshThreads", description: "Keeps service-backed job state current." }]
       },
       {
@@ -783,6 +814,39 @@ export class ButlerAgentService extends EventEmitter {
     return template;
   }
 
+  private getValidatedStack(stackId: string | null, threadId: string | null) {
+    if (!stackId) {
+      return null;
+    }
+
+    const stack = this.store.getStackLease(stackId);
+    if (!stack) {
+      throw new Error(`Unknown stack: ${stackId}`);
+    }
+
+    if (threadId && stack.threadId && stack.threadId !== threadId) {
+      throw new Error(`Stack ${stackId} belongs to a different job`);
+    }
+
+    return stack;
+  }
+
+  private removeStackArtifacts(stackId: string): void {
+    for (const lease of this.store.listPreviewLeases()) {
+      if (lease.stackId === stackId) {
+        this.store.removePreviewLease(lease.id);
+      }
+    }
+
+    for (const lease of this.store.listServiceLeases()) {
+      if (lease.stackId === stackId) {
+        this.store.removeServiceLease(lease.id);
+      }
+    }
+
+    this.store.removeStackLease(stackId);
+  }
+
   private normalizeServiceEnv(value: unknown): Record<string, string> {
     if (!value || typeof value !== "object") {
       return {};
@@ -794,6 +858,14 @@ export class ButlerAgentService extends EventEmitter {
         .map(([key, entryValue]) => [key.trim(), entryValue.trim()])
         .filter(([key, entryValue]) => key.length > 0 && entryValue.length > 0)
     );
+  }
+
+  private normalizeStringArray(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return [...new Set(value.map((entry) => (typeof entry === "string" ? entry.trim() : "")).filter(Boolean))];
   }
 
   private buildCustomTools() {
@@ -821,6 +893,157 @@ export class ButlerAgentService extends EventEmitter {
               }
             ],
             details: workspace
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "list_stacks",
+        label: "List stacks",
+        description: "List the active stack leases and their isolated networks.",
+        promptSnippet: "list_stacks: inspect stack-backed environments before creating another multi-container runtime.",
+        parameters: Type.Object({}),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "list_stacks")?.uiEffects ?? [],
+        execute: async () => {
+          const stacks = this.store.listStackLeases();
+          const text =
+            stacks.length === 0
+              ? "No stack leases are active."
+              : stacks
+                .map(
+                  (stack, index) =>
+                      `${index + 1}. ${stack.title} | thread=${stack.threadId ?? "(none)"} | status=${stack.status} | network=${stack.networkName} | storage=${stack.storageKey ?? "none"}${stack.cloneFromStorageKey ? `<=${stack.cloneFromStorageKey}` : ""} | sticky=${stack.retainsVolumes ? stack.volumeNames.length : 0} | previews=${stack.previewIds.length} | services=${stack.serviceIds.length}`
+                  )
+                  .join("\n");
+          return {
+            content: [{ type: "text", text }],
+            details: { stacks }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "start_stack",
+        label: "Start stack",
+        description: "Create one isolated stack lease and network for a multi-container job.",
+        promptSnippet: "start_stack: use this before launching multiple cooperating previews or services for one job.",
+        parameters: Type.Object({
+          threadId: Type.Optional(Type.String()),
+          title: Type.String({ minLength: 1 }),
+          cwd: Type.Optional(Type.String()),
+          retainsVolumes: Type.Optional(Type.Boolean()),
+          storageKey: Type.Optional(Type.String()),
+          cloneFromStorageKey: Type.Optional(Type.String())
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "start_stack")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as {
+            threadId?: string;
+            title: string;
+            cwd?: string;
+            retainsVolumes?: boolean;
+            storageKey?: string;
+            cloneFromStorageKey?: string;
+          };
+          const thread = typedParams.threadId ? this.store.getThread(typedParams.threadId) ?? null : null;
+          const stack = await this.runtimeBroker.createStack({
+            stackId: crypto.randomUUID(),
+            threadId: typedParams.threadId ?? null,
+            projectId: thread?.supervisor.projectId ?? "stack",
+            projectLabel: thread?.supervisor.projectLabel ?? "stack",
+            title: typedParams.title.trim(),
+            worktreePath: typedParams.cwd?.trim() || thread?.cwd || null,
+            retainsVolumes: Boolean(typedParams.retainsVolumes),
+            storageKey: typedParams.storageKey?.trim() || null,
+            cloneFromStorageKey: typedParams.cloneFromStorageKey?.trim() || null
+          });
+          this.store.upsertStackLease(stack);
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Started stack ${stack.title}. Network=${stack.networkName}.${stack.storageKey ? ` Storage=${stack.storageKey}.` : ""}${stack.cloneFromStorageKey ? ` Forked from ${stack.cloneFromStorageKey}.` : ""}${stack.retainsVolumes ? ` Sticky volumes=${stack.volumeNames.length}.` : ""}`
+              }
+            ],
+            details: { stack }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "inspect_stack",
+        label: "Inspect stack",
+        description: "Inspect one stack lease and return its current state.",
+        promptSnippet: "inspect_stack: use this to confirm what a multi-container environment already contains before changing it.",
+        parameters: Type.Object({
+          stackId: Type.String()
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "inspect_stack")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { stackId: string };
+          const stack = await this.runtimeBroker.inspectStack(typedParams.stackId);
+          this.store.upsertStackLease(stack);
+          this.store.noteStackLeaseActivity(typedParams.stackId);
+          return {
+            content: [
+              {
+                type: "text",
+                text: `${stack.title} is ${stack.status}. Network=${stack.networkName}. Storage=${stack.storageKey ?? "none"}${stack.cloneFromStorageKey ? ` forked-from=${stack.cloneFromStorageKey}` : ""}. Sticky volumes=${stack.retainsVolumes ? stack.volumeNames.length : 0}. Previews=${stack.previewIds.length}. Services=${stack.serviceIds.length}.`
+              }
+            ],
+            details: { stack }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "promote_stack",
+        label: "Promote stack",
+        description: "Copy a stack's retained volumes into another storage namespace.",
+        promptSnippet: "promote_stack: use this when one job's retained database or object-store state should become the new shared base.",
+        parameters: Type.Object({
+          stackId: Type.String(),
+          targetStorageKey: Type.Optional(Type.String())
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "promote_stack")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { stackId: string; targetStorageKey?: string };
+          const promotion = await this.runtimeBroker.promoteStack({
+            stackId: typedParams.stackId,
+            targetStorageKey: typedParams.targetStorageKey?.trim() || null
+          });
+          const stack = await this.runtimeBroker.inspectStack(typedParams.stackId);
+          this.store.upsertStackLease(stack);
+          this.store.noteStackLeaseActivity(typedParams.stackId);
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Promoted ${promotion.promotedVolumes.length} volumes from ${promotion.sourceStorageKey} to ${promotion.targetStorageKey}.`
+              }
+            ],
+            details: { promotion, stack }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "stop_stack",
+        label: "Stop stack",
+        description: "Stop one stack lease, remove its members, and release its network.",
+        promptSnippet: "stop_stack: use this to tear down a whole multi-container environment once the job is done.",
+        parameters: Type.Object({
+          stackId: Type.String(),
+          dropVolumes: Type.Optional(Type.Boolean())
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "stop_stack")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { stackId: string; dropVolumes?: boolean };
+          await this.runtimeBroker.stopStack(typedParams.stackId, { dropVolumes: Boolean(typedParams.dropVolumes) });
+          this.removeStackArtifacts(typedParams.stackId);
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Stopped stack ${typedParams.stackId}.${typedParams.dropVolumes ? " Dropped retained volumes." : ""}`
+              }
+            ],
+            details: { stackId: typedParams.stackId, dropVolumes: Boolean(typedParams.dropVolumes) }
           };
         }
       }),
@@ -855,10 +1078,13 @@ export class ButlerAgentService extends EventEmitter {
         promptSnippet: "start_preview: use this when a job needs a live reviewable app preview instead of a raw host port.",
         parameters: Type.Object({
           threadId: Type.Optional(Type.String()),
-          cwd: Type.String(),
+          cwd: Type.Optional(Type.String()),
           title: Type.String({ minLength: 1 }),
           command: Type.String({ minLength: 1 }),
           port: Type.Number({ minimum: 1, maximum: 65535 }),
+          stackId: Type.Optional(Type.String()),
+          aliases: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+          env: Type.Optional(Type.Record(Type.String(), Type.String())),
           image: Type.Optional(Type.String()),
           egressProfile: Type.Optional(
             Type.String({
@@ -913,6 +1139,9 @@ export class ButlerAgentService extends EventEmitter {
             title: string;
             command: string;
             port: number;
+            stackId?: string;
+            aliases?: string[];
+            env?: Record<string, string>;
             image?: string;
             egressProfile?: string;
             egressDomains?: string[];
@@ -924,9 +1153,15 @@ export class ButlerAgentService extends EventEmitter {
           };
 
           const thread = typedParams.threadId ? this.store.getThread(typedParams.threadId) ?? null : null;
+          const stack = this.getValidatedStack(typedParams.stackId?.trim() || null, typedParams.threadId ?? null);
           const projectId = thread?.supervisor.projectId ?? "preview";
           const projectLabel = thread?.supervisor.projectLabel ?? "preview";
           const leaseId = crypto.randomUUID();
+          const worktreePath = typedParams.cwd?.trim() || stack?.worktreePath || thread?.cwd || "";
+
+          if (!worktreePath) {
+            throw new Error("start_preview requires a cwd or a stack with a worktree path");
+          }
 
           const lease = await this.runtimeBroker.createLease({
             leaseId,
@@ -934,7 +1169,9 @@ export class ButlerAgentService extends EventEmitter {
             projectId,
             projectLabel,
             title: typedParams.title,
-            worktreePath: typedParams.cwd,
+            stackId: stack?.id ?? null,
+            aliases: this.normalizeStringArray(typedParams.aliases),
+            worktreePath,
             branchName: thread?.cwd === typedParams.cwd ? null : null,
             targetPort: typedParams.port,
             command: typedParams.command,
@@ -945,7 +1182,8 @@ export class ButlerAgentService extends EventEmitter {
             bootstrapHint: typedParams.bootstrapHint,
             heartbeatKind: typedParams.heartbeatKind as "none" | "http" | "tcp" | "command" | undefined,
             heartbeatTarget: typedParams.heartbeatTarget,
-            heartbeatIntervalSeconds: typedParams.heartbeatIntervalSeconds
+            heartbeatIntervalSeconds: typedParams.heartbeatIntervalSeconds,
+            env: this.normalizeServiceEnv(typedParams.env)
           });
           this.store.upsertPreviewLease(lease);
 
@@ -1080,7 +1318,7 @@ export class ButlerAgentService extends EventEmitter {
         name: "list_service_templates",
         label: "List service templates",
         description: "List the built-in Manor service templates Butler can provision.",
-        promptSnippet: "list_service_templates: use this before provisioning local dependencies so you reuse the built-in Postgres, Redis, MySQL, MSSQL, or SQLite templates.",
+        promptSnippet: "list_service_templates: use this before provisioning local dependencies so you reuse the built-in Postgres, Redis, MySQL, MSSQL, RabbitMQ, MinIO, Mailpit, or SQLite templates.",
         parameters: Type.Object({}),
         uiEffects: this.toolCatalog.find((tool) => tool.name === "list_service_templates")?.uiEffects ?? [],
         execute: async () => {
@@ -1099,13 +1337,15 @@ export class ButlerAgentService extends EventEmitter {
       this.defineButlerTool({
         name: "start_service",
         label: "Start service",
-        description: "Provision a disposable built-in service for one job.",
-        promptSnippet: "start_service: use this when an app needs a local dependency like Postgres, Redis, MySQL, MSSQL, or SQLite.",
+        description: "Provision a built-in service for one job, with stack-backed persistence when the stack retains volumes.",
+        promptSnippet: "start_service: use this when an app needs a local dependency like Postgres, Redis, MySQL, MSSQL, RabbitMQ, MinIO, Mailpit, or SQLite.",
         parameters: Type.Object({
           templateId: Type.String({ minLength: 1 }),
           title: Type.Optional(Type.String()),
           threadId: Type.Optional(Type.String()),
           cwd: Type.Optional(Type.String()),
+          stackId: Type.Optional(Type.String()),
+          aliases: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
           env: Type.Optional(Type.Record(Type.String(), Type.String()))
         }),
         uiEffects: this.toolCatalog.find((tool) => tool.name === "start_service")?.uiEffects ?? [],
@@ -1115,19 +1355,22 @@ export class ButlerAgentService extends EventEmitter {
             title?: string;
             threadId?: string;
             cwd?: string;
+            stackId?: string;
+            aliases?: string[];
             env?: Record<string, string>;
           };
           const template = this.getServiceTemplate(typedParams.templateId);
           const thread = typedParams.threadId ? this.store.getThread(typedParams.threadId) ?? null : null;
+          const stack = this.getValidatedStack(typedParams.stackId?.trim() || null, typedParams.threadId ?? null);
           const mergedEnv = {
             ...template.envDefaults,
             ...this.normalizeServiceEnv(typedParams.env)
           };
           const serviceId = crypto.randomUUID();
           const effectiveTitle = typedParams.title?.trim() || `${template.label} ${serviceId.slice(0, 8)}`;
+          const worktreePath = typedParams.cwd?.trim() || stack?.worktreePath || thread?.cwd || "/repos";
 
           if (template.runtimeKind === "embedded") {
-            const worktreePath = typedParams.cwd?.trim() || thread?.cwd || "/repos";
             const filePath = `${worktreePath}/${template.fileName ?? ".manor/sqlite/app.db"}`.replace(/\/+/g, "/");
             await fs.mkdir(path.dirname(filePath), { recursive: true });
             const handle = await fs.open(filePath, "a");
@@ -1138,6 +1381,8 @@ export class ButlerAgentService extends EventEmitter {
               projectId: thread?.supervisor.projectId ?? "service",
               projectLabel: thread?.supervisor.projectLabel ?? "service",
               title: effectiveTitle,
+              stackId: stack?.id ?? null,
+              aliases: this.normalizeStringArray(typedParams.aliases),
               template,
               containerName: `embedded-${serviceId}`,
               targetHost: "local-file",
@@ -1162,13 +1407,16 @@ export class ButlerAgentService extends EventEmitter {
             projectId: thread?.supervisor.projectId ?? "service",
             projectLabel: thread?.supervisor.projectLabel ?? "service",
             title: effectiveTitle,
+            stackId: stack?.id ?? null,
+            aliases: this.normalizeStringArray(typedParams.aliases),
             templateId: template.id,
             templateLabel: template.label,
             runtimeKind: template.runtimeKind,
-            worktreePath: typedParams.cwd?.trim() || thread?.cwd || null,
+            worktreePath,
             targetPort: template.defaultPort,
             image: template.image,
             command: template.command,
+            stackVolumePath: template.stackVolumePath,
             env: mergedEnv
           });
           const lease = toServiceLeaseView({
@@ -1177,12 +1425,18 @@ export class ButlerAgentService extends EventEmitter {
             projectId: service.projectId,
             projectLabel: service.projectLabel,
             title: service.title,
+            stackId: service.stackId,
+            aliases: service.aliases,
             template,
             containerName: service.containerName,
             targetHost: service.targetHost,
             targetPort: service.targetPort,
             worktreePath: service.worktreePath,
             status: service.status,
+            storageKind: service.storageKind,
+            sticky: service.sticky,
+            volumeName: service.volumeName,
+            volumeMountPath: service.volumeMountPath,
             createdAt: service.createdAt,
             updatedAt: service.updatedAt,
             lastError: service.lastError,
@@ -1191,7 +1445,12 @@ export class ButlerAgentService extends EventEmitter {
           this.store.upsertServiceLease(lease);
           this.store.noteServiceLeaseActivity(lease.id);
           return {
-            content: [{ type: "text", text: `Started ${template.label}. Host=${lease.connection.host} Port=${lease.connection.port}.` }],
+            content: [
+              {
+                type: "text",
+                text: `Started ${template.label}. Host=${lease.connection.host} Port=${lease.connection.port}.${lease.sticky ? ` Sticky volume=${lease.volumeName}.` : ""}`
+              }
+            ],
             details: { service: lease }
           };
         }
@@ -1211,7 +1470,7 @@ export class ButlerAgentService extends EventEmitter {
               : services
                   .map(
                     (service, index) =>
-                      `${index + 1}. ${service.title} | template=${service.templateId} | status=${service.status} | host=${service.connection.host} | port=${service.connection.port} | uri=${service.connection.uri ?? "(none)"}`
+                      `${index + 1}. ${service.title} | template=${service.templateId} | status=${service.status} | storage=${service.storageKind}${service.volumeName ? `(${service.volumeName})` : ""} | host=${service.connection.host} | port=${service.connection.port} | uri=${service.connection.uri ?? "(none)"}`
                   )
                   .join("\n");
           return {
@@ -1253,12 +1512,18 @@ export class ButlerAgentService extends EventEmitter {
             projectId: inspected.projectId,
             projectLabel: inspected.projectLabel,
             title: inspected.title,
+            stackId: inspected.stackId,
+            aliases: inspected.aliases,
             template,
             containerName: inspected.containerName,
             targetHost: inspected.targetHost,
             targetPort: inspected.targetPort,
             worktreePath: inspected.worktreePath,
             status: inspected.status,
+            storageKind: inspected.storageKind,
+            sticky: inspected.sticky,
+            volumeName: inspected.volumeName,
+            volumeMountPath: inspected.volumeMountPath,
             createdAt: inspected.createdAt,
             updatedAt: inspected.updatedAt,
             lastError: inspected.lastError,
@@ -1267,7 +1532,12 @@ export class ButlerAgentService extends EventEmitter {
           this.store.upsertServiceLease(lease);
           this.store.noteServiceLeaseActivity(typedParams.serviceId);
           return {
-            content: [{ type: "text", text: `${lease.title} is ${inspected.runtime.status}. Host=${lease.connection.host} Port=${lease.connection.port}.` }],
+            content: [
+              {
+                type: "text",
+                text: `${lease.title} is ${inspected.runtime.status}. Host=${lease.connection.host} Port=${lease.connection.port}. Storage=${lease.storageKind}${lease.volumeName ? `(${lease.volumeName})` : ""}.`
+              }
+            ],
             details: { service: lease, runtime: inspected.runtime }
           };
         }
@@ -1528,6 +1798,9 @@ export class ButlerAgentService extends EventEmitter {
               : "When the task touches git in a repository, create or reuse a dedicated branch whose name starts with butler/.",
             "If this job needs a preview isolate, a disposable service, or runtime inspection, use the local `manor-harness` command from this workspace.",
             "Start with `manor-harness status` to see what Manor already attached to this job.",
+            "If the work needs multiple cooperating services, create a stack first with `manor-harness stack start`, then attach previews and services to it with `--stack <stackId>` and stable `--alias` names that mirror the app's expected internal hostnames.",
+            "When a stack needs recurring databases or object storage, start it with retained volumes so built-in service templates can reuse named Docker volumes across service restarts.",
+            "When a new job needs its own mutable copy of shared state, fork from a base storage key instead of reusing the same one, and only promote back explicitly after the work is validated.",
             "For attached previews and services, use `manor-harness` for inspect, logs, processes, and exec directly against the runtime. Butler still owns start, stop, lifecycle, and policy.",
             "Use only the harness actions exposed through `manor-harness`. Do not try to command Butler directly outside those actions.",
             "When you complete meaningful work, record a supervisor report before your final reply with `manor-harness report --status completed --summary \"<concise outcome>\" --details \"<brief oversight note with the key fact, risk, or next step>\"`.",
@@ -1924,6 +2197,7 @@ export class ButlerAgentService extends EventEmitter {
         supervisor: this.store.getSupervisorSummary(),
         notices: this.noticeMessages
       },
+      stacks: this.store.listStackLeases(),
       previews: this.store.listPreviewLeases(),
       serviceTemplates: this.serviceTemplates,
       services: this.store.listServiceLeases(),

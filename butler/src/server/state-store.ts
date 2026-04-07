@@ -21,6 +21,7 @@ import type {
   CodexTurnRecord,
   CodexWorkerReportView,
   PreviewLeaseView,
+  StackLeaseView,
   ServiceLeaseView,
   PersistedUiState
 } from "./types.js";
@@ -28,6 +29,7 @@ import type {
 const MAX_EVENT_LOG = 80;
 const DEFAULT_BUTLER_THREAD_LIMIT = 20;
 const DEFAULT_PREVIEW_LEASE_TTL_MS = 30 * 60 * 1000;
+const DEFAULT_STACK_LEASE_TTL_MS = 120 * 60 * 1000;
 const DEFAULT_SERVICE_LEASE_TTL_MS = 120 * 60 * 1000;
 const DEFAULT_LEASE_REAP_GRACE_MS = 10 * 60 * 1000;
 const LEASE_ACTIVITY_WRITE_THROTTLE_MS = 15_000;
@@ -276,6 +278,7 @@ function normalizeTurn(turn: Record<string, unknown>): CodexTurnRecord {
 export class ButlerStateStore extends EventEmitter {
   private readonly uiStatePath: string;
   private readonly threads = new Map<string, CodexThreadRecord>();
+  private readonly stackLeases = new Map<string, StackLeaseView>();
   private readonly previewLeases = new Map<string, PreviewLeaseView>();
   private readonly serviceLeases = new Map<string, ServiceLeaseView>();
   private readonly persistedSupervisionByThreadId = new Map<string, { butlerTurnsUsed: number; maxButlerTurns: number | null }>();
@@ -288,13 +291,57 @@ export class ButlerStateStore extends EventEmitter {
   private readonly latestBlockedTurnIds = new Map<string, string>();
   private milestonesEnabled = false;
   private readonly previewLeaseTtlMs: number;
+  private readonly stackLeaseTtlMs: number;
   private readonly serviceLeaseTtlMs: number;
   private readonly leaseReapGraceMs: number;
+
+  private refreshStackMembership(stackId: string, now = Date.now()): void {
+    const lease = this.stackLeases.get(stackId);
+    if (!lease) {
+      return;
+    }
+
+    const previewIds = [...this.previewLeases.values()]
+      .filter((entry) => entry.stackId === stackId && entry.status !== "stopped")
+      .map((entry) => entry.id)
+      .sort();
+    const serviceIds = [...this.serviceLeases.values()]
+      .filter((entry) => entry.stackId === stackId && entry.status !== "stopped")
+      .map((entry) => entry.id)
+      .sort();
+    const previousPreviewIds = [...lease.previewIds].sort();
+    const previousServiceIds = [...lease.serviceIds].sort();
+    const membershipChanged =
+      previousPreviewIds.length !== previewIds.length ||
+      previousServiceIds.length !== serviceIds.length ||
+      previousPreviewIds.some((entry, index) => entry !== previewIds[index]) ||
+      previousServiceIds.some((entry, index) => entry !== serviceIds[index]);
+
+    if (!membershipChanged) {
+      return;
+    }
+
+    this.stackLeases.set(
+      stackId,
+      this.normalizeStackLease(
+        {
+          ...lease,
+          previewIds,
+          serviceIds,
+          updatedAt: Math.max(lease.updatedAt, now)
+        },
+        now
+      )
+    );
+    this.queueSave();
+    this.emitChange();
+  }
 
   constructor(
     uiStatePath: string,
     options?: {
       previewLeaseTtlMs?: number;
+      stackLeaseTtlMs?: number;
       serviceLeaseTtlMs?: number;
       leaseReapGraceMs?: number;
     }
@@ -302,11 +349,12 @@ export class ButlerStateStore extends EventEmitter {
     super();
     this.uiStatePath = uiStatePath;
     this.previewLeaseTtlMs = options?.previewLeaseTtlMs ?? DEFAULT_PREVIEW_LEASE_TTL_MS;
+    this.stackLeaseTtlMs = options?.stackLeaseTtlMs ?? DEFAULT_STACK_LEASE_TTL_MS;
     this.serviceLeaseTtlMs = options?.serviceLeaseTtlMs ?? DEFAULT_SERVICE_LEASE_TTL_MS;
     this.leaseReapGraceMs = options?.leaseReapGraceMs ?? DEFAULT_LEASE_REAP_GRACE_MS;
   }
 
-  private applyLeaseLifecycle<T extends PreviewLeaseView | ServiceLeaseView>(
+  private applyLeaseLifecycle<T extends PreviewLeaseView | StackLeaseView | ServiceLeaseView>(
     lease: T,
     defaults: { leaseTtlMs: number; now?: number }
   ): T {
@@ -356,6 +404,10 @@ export class ButlerStateStore extends EventEmitter {
   private normalizePreviewLease(lease: PreviewLeaseView, now = Date.now()): PreviewLeaseView {
     const normalizedLease = {
       ...lease,
+      stackId: typeof lease.stackId === "string" && lease.stackId.trim() ? lease.stackId.trim() : null,
+      aliases: Array.isArray(lease.aliases)
+        ? [...new Set(lease.aliases.map((alias) => (typeof alias === "string" ? alias.trim() : "")).filter(Boolean))]
+        : [],
       bootstrap: {
         waitSeconds:
           typeof lease.bootstrap?.waitSeconds === "number" && Number.isFinite(lease.bootstrap.waitSeconds) && lease.bootstrap.waitSeconds > 0
@@ -405,8 +457,49 @@ export class ButlerStateStore extends EventEmitter {
     return this.applyLeaseLifecycle(normalizedLease, { leaseTtlMs: this.previewLeaseTtlMs, now });
   }
 
+  private normalizeStackLease(lease: StackLeaseView, now = Date.now()): StackLeaseView {
+    const normalizedLease = {
+      ...lease,
+      worktreePath: typeof lease.worktreePath === "string" && lease.worktreePath.trim() ? lease.worktreePath.trim() : null,
+      networkName: typeof lease.networkName === "string" ? lease.networkName.trim() : "",
+      retainsVolumes: Boolean(lease.retainsVolumes),
+      storageKey: typeof lease.storageKey === "string" && lease.storageKey.trim() ? lease.storageKey.trim() : null,
+      cloneFromStorageKey:
+        typeof lease.cloneFromStorageKey === "string" && lease.cloneFromStorageKey.trim()
+          ? lease.cloneFromStorageKey.trim()
+          : null,
+      volumeNames: Array.isArray(lease.volumeNames)
+        ? [...new Set(lease.volumeNames.map((name) => (typeof name === "string" ? name.trim() : "")).filter(Boolean))]
+        : [],
+      previewIds: Array.isArray(lease.previewIds)
+        ? [...new Set(lease.previewIds.map((id) => (typeof id === "string" ? id.trim() : "")).filter(Boolean))]
+        : [],
+      serviceIds: Array.isArray(lease.serviceIds)
+        ? [...new Set(lease.serviceIds.map((id) => (typeof id === "string" ? id.trim() : "")).filter(Boolean))]
+        : []
+    } as StackLeaseView;
+
+    return this.applyLeaseLifecycle(normalizedLease, { leaseTtlMs: this.stackLeaseTtlMs, now });
+  }
+
   private normalizeServiceLease(lease: ServiceLeaseView, now = Date.now()): ServiceLeaseView {
-    return this.applyLeaseLifecycle(lease, { leaseTtlMs: this.serviceLeaseTtlMs, now });
+    const normalizedLease = {
+      ...lease,
+      stackId: typeof lease.stackId === "string" && lease.stackId.trim() ? lease.stackId.trim() : null,
+      storageKind:
+        lease.storageKind === "volume" || lease.storageKind === "worktree" || lease.storageKind === "ephemeral"
+          ? lease.storageKind
+          : "ephemeral",
+      sticky: Boolean(lease.sticky),
+      volumeName: typeof lease.volumeName === "string" && lease.volumeName.trim() ? lease.volumeName.trim() : null,
+      volumeMountPath:
+        typeof lease.volumeMountPath === "string" && lease.volumeMountPath.trim() ? lease.volumeMountPath.trim() : null,
+      aliases: Array.isArray(lease.aliases)
+        ? [...new Set(lease.aliases.map((alias) => (typeof alias === "string" ? alias.trim() : "")).filter(Boolean))]
+        : []
+    } as ServiceLeaseView;
+
+    return this.applyLeaseLifecycle(normalizedLease, { leaseTtlMs: this.serviceLeaseTtlMs, now });
   }
 
   async load(): Promise<void> {
@@ -425,6 +518,12 @@ export class ButlerStateStore extends EventEmitter {
             )
         : [];
       this.focusedWindowId = typeof data.focusedWindowId === "string" ? data.focusedWindowId : null;
+      this.stackLeases.clear();
+      for (const lease of Array.isArray(data.stackLeases) ? data.stackLeases : []) {
+        if (lease && typeof lease === "object" && typeof lease.id === "string") {
+          this.stackLeases.set(lease.id, this.normalizeStackLease(lease as StackLeaseView));
+        }
+      }
       this.previewLeases.clear();
       for (const lease of Array.isArray(data.previewLeases) ? data.previewLeases : []) {
         if (lease && typeof lease === "object" && typeof lease.id === "string") {
@@ -476,6 +575,7 @@ export class ButlerStateStore extends EventEmitter {
     } catch {
       this.windows = [];
       this.focusedWindowId = null;
+      this.stackLeases.clear();
       this.previewLeases.clear();
       this.serviceLeases.clear();
       this.persistedSupervisionByThreadId.clear();
@@ -494,6 +594,7 @@ export class ButlerStateStore extends EventEmitter {
       const payload: PersistedUiState = {
         windows: this.windows,
         focusedWindowId: this.focusedWindowId,
+        stackLeases: [...this.stackLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
         previewLeases: [...this.previewLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
         serviceLeases: [...this.serviceLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
         workerReportsByThreadId: Object.fromEntries(
@@ -808,6 +909,17 @@ export class ButlerStateStore extends EventEmitter {
   noteThreadLeaseActivity(threadId: string, at = Date.now()): void {
     let changed = false;
 
+    for (const lease of this.stackLeases.values()) {
+      if (lease.threadId !== threadId || lease.status === "stopped") {
+        continue;
+      }
+      if (typeof lease.lastActivityAt === "number" && at - lease.lastActivityAt < LEASE_ACTIVITY_WRITE_THROTTLE_MS) {
+        continue;
+      }
+      this.stackLeases.set(lease.id, this.normalizeStackLease({ ...lease, lastActivityAt: at, updatedAt: Math.max(lease.updatedAt, at) }, at));
+      changed = true;
+    }
+
     for (const lease of this.previewLeases.values()) {
       if (lease.threadId !== threadId || lease.status === "stopped") {
         continue;
@@ -835,6 +947,33 @@ export class ButlerStateStore extends EventEmitter {
     }
   }
 
+  noteStackLeaseActivity(leaseId: string, at = Date.now()): StackLeaseView | null {
+    const lease = this.stackLeases.get(leaseId);
+    if (!lease) {
+      return null;
+    }
+    if (typeof lease.lastActivityAt === "number" && at - lease.lastActivityAt < LEASE_ACTIVITY_WRITE_THROTTLE_MS) {
+      return this.normalizeStackLease(lease, at);
+    }
+
+    const nextLease = this.normalizeStackLease(
+      {
+        ...lease,
+        lastActivityAt: at,
+        updatedAt: Math.max(lease.updatedAt, at)
+      },
+      at
+    );
+    this.stackLeases.set(leaseId, nextLease);
+    if (nextLease.threadId) {
+      this.noteThreadLeaseActivity(nextLease.threadId, at);
+    } else {
+      this.queueSave();
+    }
+    this.emitChange();
+    return nextLease;
+  }
+
   notePreviewLeaseActivity(leaseId: string, at = Date.now()): PreviewLeaseView | null {
     const lease = this.previewLeases.get(leaseId);
     if (!lease) {
@@ -853,7 +992,9 @@ export class ButlerStateStore extends EventEmitter {
       at
     );
     this.previewLeases.set(leaseId, nextLease);
-    if (nextLease.threadId) {
+    if (nextLease.stackId) {
+      this.noteStackLeaseActivity(nextLease.stackId, at);
+    } else if (nextLease.threadId) {
       this.noteThreadLeaseActivity(nextLease.threadId, at);
     } else {
       this.queueSave();
@@ -880,6 +1021,23 @@ export class ButlerStateStore extends EventEmitter {
       at
     );
     this.serviceLeases.set(leaseId, nextLease);
+    if (nextLease.stackId) {
+      this.noteStackLeaseActivity(nextLease.stackId, at);
+    } else {
+      this.queueSave();
+    }
+    this.emitChange();
+    return nextLease;
+  }
+
+  setStackLeasePinned(leaseId: string, pinned: boolean): StackLeaseView | null {
+    const lease = this.stackLeases.get(leaseId);
+    if (!lease) {
+      return null;
+    }
+
+    const nextLease = this.normalizeStackLease({ ...lease, pinned }, Date.now());
+    this.stackLeases.set(leaseId, nextLease);
     this.queueSave();
     this.emitChange();
     return nextLease;
@@ -912,9 +1070,13 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   listExpiredLeaseIds(now = Date.now()): {
+    stacks: string[];
     previews: string[];
     services: string[];
   } {
+    const stacks = this.listStackLeases()
+      .filter((lease) => typeof lease.reapAfterAt === "number" && lease.reapAfterAt <= now)
+      .map((lease) => lease.id);
     const previews = this.listPreviewLeases()
       .filter((lease) => typeof lease.reapAfterAt === "number" && lease.reapAfterAt <= now)
       .map((lease) => lease.id);
@@ -922,7 +1084,7 @@ export class ButlerStateStore extends EventEmitter {
       .filter((lease) => typeof lease.reapAfterAt === "number" && lease.reapAfterAt <= now)
       .map((lease) => lease.id);
 
-    return { previews, services };
+    return { stacks, previews, services };
   }
 
   private pushMilestone(thread: CodexThreadRecord, type: CodexMilestoneEntry["type"], summary: string): void {
@@ -1032,6 +1194,11 @@ export class ButlerStateStore extends EventEmitter {
 
   removeThread(threadId: string): void {
     this.threads.delete(threadId);
+    for (const lease of this.stackLeases.values()) {
+      if (lease.threadId === threadId) {
+        this.stackLeases.delete(lease.id);
+      }
+    }
     for (const lease of this.previewLeases.values()) {
       if (lease.threadId === threadId) {
         this.previewLeases.delete(lease.id);
@@ -1063,6 +1230,11 @@ export class ButlerStateStore extends EventEmitter {
 
     for (const threadId of targets) {
       this.threads.delete(threadId);
+      for (const lease of this.stackLeases.values()) {
+        if (lease.threadId === threadId) {
+          this.stackLeases.delete(lease.id);
+        }
+      }
       for (const lease of this.previewLeases.values()) {
         if (lease.threadId === threadId) {
           this.previewLeases.delete(lease.id);
@@ -1215,6 +1387,43 @@ export class ButlerStateStore extends EventEmitter {
       .sort((a, b) => b.at - a.at);
   }
 
+  upsertStackLease(lease: StackLeaseView): void {
+    const existing = this.stackLeases.get(lease.id);
+    const nextLease = this.normalizeStackLease(
+      {
+        ...existing,
+        ...lease,
+        pinned: lease.pinned ?? existing?.pinned ?? false,
+        lastActivityAt: lease.lastActivityAt ?? existing?.lastActivityAt ?? lease.updatedAt ?? lease.createdAt,
+        leaseTtlMs: lease.leaseTtlMs ?? existing?.leaseTtlMs ?? this.stackLeaseTtlMs
+      },
+      Date.now()
+    );
+    this.stackLeases.set(lease.id, nextLease);
+    this.queueSave();
+    this.emitChange();
+  }
+
+  removeStackLease(leaseId: string): void {
+    if (!this.stackLeases.delete(leaseId)) {
+      return;
+    }
+    this.queueSave();
+    this.emitChange();
+  }
+
+  getStackLease(leaseId: string): StackLeaseView | undefined {
+    const lease = this.stackLeases.get(leaseId);
+    return lease ? this.normalizeStackLease(lease) : undefined;
+  }
+
+  listStackLeases(): StackLeaseView[] {
+    const now = Date.now();
+    return [...this.stackLeases.values()]
+      .map((lease) => this.normalizeStackLease(lease, now))
+      .sort((left, right) => right.updatedAt - left.updatedAt);
+  }
+
   upsertPreviewLease(lease: PreviewLeaseView): void {
     const existing = this.previewLeases.get(lease.id);
     const nextLease = this.normalizePreviewLease(
@@ -1228,6 +1437,12 @@ export class ButlerStateStore extends EventEmitter {
       Date.now()
     );
     this.previewLeases.set(lease.id, nextLease);
+    if (existing?.stackId && existing.stackId !== nextLease.stackId) {
+      this.refreshStackMembership(existing.stackId);
+    }
+    if (nextLease.stackId) {
+      this.refreshStackMembership(nextLease.stackId);
+    }
     this.queueSave();
     this.emitChange();
   }
@@ -1254,8 +1469,12 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   removePreviewLease(leaseId: string): void {
-    if (!this.previewLeases.delete(leaseId)) {
+    const existing = this.previewLeases.get(leaseId);
+    if (!existing || !this.previewLeases.delete(leaseId)) {
       return;
+    }
+    if (existing.stackId) {
+      this.refreshStackMembership(existing.stackId);
     }
     this.queueSave();
     this.emitChange();
@@ -1290,13 +1509,23 @@ export class ButlerStateStore extends EventEmitter {
       Date.now()
     );
     this.serviceLeases.set(lease.id, nextLease);
+    if (existing?.stackId && existing.stackId !== nextLease.stackId) {
+      this.refreshStackMembership(existing.stackId);
+    }
+    if (nextLease.stackId) {
+      this.refreshStackMembership(nextLease.stackId);
+    }
     this.queueSave();
     this.emitChange();
   }
 
   removeServiceLease(leaseId: string): void {
-    if (!this.serviceLeases.delete(leaseId)) {
+    const existing = this.serviceLeases.get(leaseId);
+    if (!existing || !this.serviceLeases.delete(leaseId)) {
       return;
+    }
+    if (existing.stackId) {
+      this.refreshStackMembership(existing.stackId);
     }
     this.queueSave();
     this.emitChange();
@@ -1328,6 +1557,7 @@ export class ButlerStateStore extends EventEmitter {
     contextUsage: AppSnapshot["butler"]["contextUsage"];
     compaction: AppSnapshot["butler"]["compaction"];
     supervision: AppSnapshot["butler"]["supervision"];
+    stacks: AppSnapshot["butler"]["stacks"];
     previews: AppSnapshot["butler"]["previews"];
     serviceTemplates: AppSnapshot["butler"]["serviceTemplates"];
     services: AppSnapshot["butler"]["services"];
@@ -1365,6 +1595,7 @@ export class ButlerStateStore extends EventEmitter {
           projects: this.listProjectSummaries(),
           supervisor: this.getSupervisorSummary()
         },
+        stacks: this.listStackLeases(),
         previews: this.listPreviewLeases(),
         serviceTemplates: butler.serviceTemplates,
         services: this.listServiceLeases()

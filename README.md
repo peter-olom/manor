@@ -49,8 +49,17 @@ Preview runtimes are now part of the core model too:
 Common dev dependencies are part of the model too:
 
 - Butler can provision built-in disposable service templates
-- Postgres, Redis, MySQL, and MSSQL run as disposable private-network containers
+- Postgres, Redis, MySQL, MSSQL, RabbitMQ, MinIO, and Mailpit run as disposable private-network containers
 - SQLite is provisioned as an embedded file directly inside the chosen worktree
+
+Stack-backed environments are part of the model too:
+
+- one job can own one isolated stack lease
+- each stack lease gets one private Docker network
+- stacks can opt into retained named volumes for recurring stateful work
+- retained stacks can fork their volumes from another storage key so jobs get isolated writable copies
+- previews and disposable services can join that network with stable internal aliases
+- cleanup can tear the whole stack down in one action
 
 ## Design Principles
 
@@ -171,11 +180,11 @@ The intended model is:
 - one Butler-managed job gets one Codex thread
 - one repo task gets one dedicated `butler/` branch
 - parallel work in the same repo should use separate git worktrees
-- one running app preview gets one disposable runtime and one preview lease
+- one job may own one stack lease with zero or more preview and service members
 
 That means the practical rule is:
 
-- `one job -> one worktree -> one isolated runtime -> one preview lease`
+- `one job -> one worktree -> one isolated stack -> zero or more previews/services`
 
 This keeps parallel work practical without turning the host into a port-collision mess.
 
@@ -235,12 +244,17 @@ The first built-ins are:
 - Redis
 - MySQL
 - MSSQL
+- RabbitMQ
+- MinIO
+- Mailpit
 - SQLite
 
 The intended usage is:
 
 - Butler chooses a template
 - Butler starts a disposable service lease for the current job or project
+- when the stack retains volumes and the template declares a data path, Butler reuses one named Docker volume for that service identity
+- when the stack also declares a source storage key, Butler seeds the first target volume from the matching source volume
 - the resulting host, port, and connection URI become discoverable to Butler
 - Codex uses that service from the same private work network
 
@@ -260,12 +274,29 @@ To add another template:
 - choose `container` when the dependency should run as a disposable container
 - choose `embedded` when the dependency is just a file provisioned inside the worktree
 - define the default image, port, env defaults, and connection URI template
+- add `stackVolumePath` when the container should keep its data on retained stacks
 
 The broker stays generic:
 
 - Butler owns the template catalog
 - the runtime broker only starts and stops the resulting runtime
 - this keeps the orchestration logic and the service catalog separate
+
+### Retained Volume Forks
+
+Retained stack storage is namespace-based.
+
+- `storageKey` identifies the writable volume namespace for one stack
+- `cloneFromStorageKey` lets a new stack fork its first retained volumes from a base namespace
+- the fork happens lazily per service identity, so only the services a job actually starts are copied
+- promotion back to a base namespace is explicit, never automatic
+
+The intended workflow for mutable databases is:
+
+- keep one stable base storage key for the shared seed state
+- fork each job into its own writable storage key
+- keep the job's storage after stop when you want incremental state to remain
+- promote back only after the job has been validated and its database services are idle
 
 ### Auth Bootstrap
 

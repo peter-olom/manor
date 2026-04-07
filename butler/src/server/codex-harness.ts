@@ -242,12 +242,34 @@ export class CodexHarnessService {
     return lease;
   }
 
+  private requireThreadStack(capability: HarnessCapability, stackId: string) {
+    const lease = this.store.getStackLease(stackId);
+    if (!lease || lease.threadId !== capability.threadId) {
+      throw new Error(`Stack ${stackId} is not attached to this job`);
+    }
+    return lease;
+  }
+
   private getServiceTemplate(templateId: string): LoadedServiceTemplate {
     const template = this.serviceTemplateMap.get(templateId);
     if (!template) {
       throw new Error(`Unknown service template: ${templateId}`);
     }
     return template;
+  }
+
+  private removeStackArtifacts(stackId: string) {
+    for (const lease of this.store.listPreviewLeases()) {
+      if (lease.stackId === stackId) {
+        this.store.removePreviewLease(lease.id);
+      }
+    }
+    for (const lease of this.store.listServiceLeases()) {
+      if (lease.stackId === stackId) {
+        this.store.removeServiceLease(lease.id);
+      }
+    }
+    this.store.removeStackLease(stackId);
   }
 
   private async reconcileThreadPreviews(threadId: string) {
@@ -266,6 +288,24 @@ export class CodexHarnessService {
     }
 
     return brokerLeases.sort((left, right) => right.updatedAt - left.updatedAt);
+  }
+
+  private async reconcileThreadStacks(threadId: string) {
+    const brokerStacks = await this.runtimeBroker.listStacks(threadId);
+    const brokerStackIds = new Set(brokerStacks.map((stack) => stack.id));
+    const storedStacks = this.store.listStackLeases().filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
+
+    for (const lease of storedStacks) {
+      if (!brokerStackIds.has(lease.id)) {
+        this.store.removeStackLease(lease.id);
+      }
+    }
+
+    for (const stack of brokerStacks) {
+      this.store.upsertStackLease(stack);
+    }
+
+    return this.store.listStackLeases().filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
   }
 
   private async reconcileThreadServices(threadId: string) {
@@ -292,12 +332,18 @@ export class CodexHarnessService {
           projectId: service.projectId,
           projectLabel: service.projectLabel,
           title: service.title,
+          stackId: service.stackId,
+          aliases: service.aliases,
           template,
           containerName: service.containerName,
           targetHost: service.targetHost,
           targetPort: service.targetPort,
           worktreePath: service.worktreePath,
           status: service.status,
+          storageKind: service.storageKind,
+          sticky: service.sticky,
+          volumeName: service.volumeName,
+          volumeMountPath: service.volumeMountPath,
           createdAt: service.createdAt,
           updatedAt: service.updatedAt,
           lastError: service.lastError,
@@ -311,9 +357,14 @@ export class CodexHarnessService {
 
   private describeCapability(capability: HarnessCapability): string {
     const thread = this.getThreadContext(capability);
+    const stacks = this.store.listStackLeases().filter((lease) => lease.threadId === capability.threadId && lease.status !== "stopped");
     const previews = this.store.listPreviewLeases().filter((lease) => lease.threadId === capability.threadId && lease.status !== "stopped");
     const services = this.store.listServiceLeases().filter((lease) => lease.threadId === capability.threadId && lease.status !== "stopped");
 
+    const stackLines =
+      stacks.length === 0
+        ? "Stacks: none"
+        : `Stacks:\n${stacks.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | network=${lease.networkName} | previews=${lease.previewIds.length} | services=${lease.serviceIds.length}`).join("\n")}`;
     const previewLines =
       previews.length === 0
         ? "Previews: none"
@@ -328,6 +379,7 @@ export class CodexHarnessService {
       `Workspace: ${capability.cwd}`,
       `Project: ${thread.supervisor.projectLabel}`,
       `Summary: ${thread.supervisor.summary}`,
+      stackLines,
       previewLines,
       serviceLines,
       `Service templates: ${this.serviceTemplates.map((template) => template.id).join(", ")}`
@@ -345,6 +397,7 @@ export class CodexHarnessService {
     const thread = this.getThreadContext(capability);
 
     if (action === "context") {
+      const stacks = await this.reconcileThreadStacks(capability.threadId);
       const previews = await this.reconcileThreadPreviews(capability.threadId);
       const services = await this.reconcileThreadServices(capability.threadId);
       return {
@@ -353,6 +406,9 @@ export class CodexHarnessService {
           `Workspace: ${capability.cwd}`,
           `Project: ${thread.supervisor.projectLabel}`,
           `Summary: ${thread.supervisor.summary}`,
+          stacks.length === 0
+            ? "Stacks: none"
+            : `Stacks:\n${stacks.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | network=${lease.networkName} | previews=${lease.previewIds.length} | services=${lease.serviceIds.length}`).join("\n")}`,
           previews.length === 0
             ? "Previews: none"
             : `Previews:\n${previews.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | ${lease.operatorUrl}`).join("\n")}`,
@@ -364,6 +420,7 @@ export class CodexHarnessService {
         data: {
           threadId: thread.id,
           cwd: capability.cwd,
+          stacks,
           previews,
           services,
           serviceTemplates: this.serviceTemplates
@@ -410,10 +467,102 @@ export class CodexHarnessService {
       };
     }
 
+    if (action === "stack.list") {
+      const stacks = await this.reconcileThreadStacks(capability.threadId);
+      return {
+        text:
+          stacks.length === 0
+            ? "No stacks are attached to this job."
+            : stacks
+                .map(
+                  (stack, index) =>
+                    `${index + 1}. ${stack.id} | ${stack.title} | ${stack.status} | network=${stack.networkName} | storage=${stack.storageKey ?? "none"}${stack.cloneFromStorageKey ? `<=${stack.cloneFromStorageKey}` : ""} | sticky=${stack.retainsVolumes ? stack.volumeNames.length : 0} | previews=${stack.previewIds.length} | services=${stack.serviceIds.length}`
+                )
+                .join("\n"),
+        data: { stacks }
+      };
+    }
+
+    if (action === "stack.start") {
+      const title = normalizeString(params.title) || `${thread.supervisor.projectLabel} stack`;
+      const cwd = normalizeString(params.cwd) || capability.cwd;
+      const retainsVolumes = params.retainsVolumes === true;
+      const storageKey = normalizeString(params.storageKey) || null;
+      const cloneFromStorageKey = normalizeString(params.cloneFromStorageKey) || null;
+      const stack = await this.runtimeBroker.createStack({
+        stackId: crypto.randomUUID(),
+        threadId: capability.threadId,
+        projectId: thread.supervisor.projectId,
+        projectLabel: thread.supervisor.projectLabel,
+        title,
+        worktreePath: cwd,
+        retainsVolumes,
+        storageKey,
+        cloneFromStorageKey
+      });
+      this.store.upsertStackLease(stack);
+      this.store.addEvent(capability.threadId, "harness/stack/start", `Started stack ${stack.id}`);
+      return {
+        text: `Started stack ${stack.title}. Network=${stack.networkName}.${stack.storageKey ? ` Storage=${stack.storageKey}.` : ""}${stack.cloneFromStorageKey ? ` Forked from ${stack.cloneFromStorageKey}.` : ""}${stack.retainsVolumes ? ` Sticky volumes=${stack.volumeNames.length}.` : ""}`,
+        data: { stack }
+      };
+    }
+
+    if (action === "stack.inspect") {
+      const stackId = normalizeString(params.stackId);
+      this.requireThreadStack(capability, stackId);
+      const stack = await this.runtimeBroker.inspectStack(stackId);
+      this.store.upsertStackLease(stack);
+      this.store.noteStackLeaseActivity(stackId);
+      return {
+        text: `${stack.title} is ${stack.status}. Network=${stack.networkName}. Storage=${stack.storageKey ?? "none"}${stack.cloneFromStorageKey ? ` forked-from=${stack.cloneFromStorageKey}` : ""}. Sticky volumes=${stack.retainsVolumes ? stack.volumeNames.length : 0}. Previews=${stack.previewIds.length}. Services=${stack.serviceIds.length}.`,
+        data: { stack }
+      };
+    }
+
+    if (action === "stack.promote") {
+      const stackId = normalizeString(params.stackId);
+      const targetStorageKey = normalizeString(params.targetStorageKey) || null;
+      this.requireThreadStack(capability, stackId);
+      const promotion = await this.runtimeBroker.promoteStack({
+        stackId,
+        targetStorageKey
+      });
+      const stack = await this.runtimeBroker.inspectStack(stackId);
+      this.store.upsertStackLease(stack);
+      this.store.noteStackLeaseActivity(stackId);
+      this.store.addEvent(
+        capability.threadId,
+        "harness/stack/promote",
+        `Promoted stack ${stackId} to ${promotion.targetStorageKey}`
+      );
+      return {
+        text: `Promoted ${promotion.promotedVolumes.length} volumes from ${promotion.sourceStorageKey} to ${promotion.targetStorageKey}.`,
+        data: { promotion, stack }
+      };
+    }
+
+    if (action === "stack.stop") {
+      const stackId = normalizeString(params.stackId);
+      const dropVolumes = params.dropVolumes === true;
+      this.requireThreadStack(capability, stackId);
+      await this.runtimeBroker.stopStack(stackId, { dropVolumes });
+      this.removeStackArtifacts(stackId);
+      this.store.addEvent(capability.threadId, "harness/stack/stop", `Stopped stack ${stackId}`);
+      return {
+        text: `Stopped stack ${stackId}.${dropVolumes ? " Dropped retained volumes." : ""}`,
+        data: { stackId, dropVolumes }
+      };
+    }
+
     if (action === "preview.start") {
       const title = normalizeString(params.title) || `${thread.supervisor.projectLabel} preview`;
-      const cwd = normalizeString(params.cwd) || capability.cwd;
       const command = normalizeString(params.command);
+      const stackId = normalizeString(params.stackId) || null;
+      const stack = stackId ? this.requireThreadStack(capability, stackId) : null;
+      const cwd = normalizeString(params.cwd) || stack?.worktreePath || capability.cwd;
+      const aliases = normalizeStringArray(params.aliases);
+      const env = normalizeEnv(params.env);
       const port = typeof params.port === "number" ? params.port : Number(params.port ?? 0);
       const image = normalizeString(params.image) || undefined;
       const egressProfile = normalizeString(params.egressProfile) || "none";
@@ -434,6 +583,8 @@ export class CodexHarnessService {
         projectId: thread.supervisor.projectId,
         projectLabel: thread.supervisor.projectLabel,
         title,
+        stackId,
+        aliases,
         worktreePath: cwd,
         branchName: null,
         targetPort: port,
@@ -445,7 +596,8 @@ export class CodexHarnessService {
         bootstrapHint,
         heartbeatKind,
         heartbeatTarget,
-        heartbeatIntervalSeconds
+        heartbeatIntervalSeconds,
+        env
       });
       this.store.upsertPreviewLease(lease);
       this.store.addEvent(capability.threadId, "harness/preview/start", `Started preview ${lease.id}`);
@@ -558,7 +710,7 @@ export class CodexHarnessService {
             : services
                 .map(
                   (service, index) =>
-                    `${index + 1}. ${service.id} | ${service.title} | ${service.status} | ${service.connection.uri ?? `${service.connection.host}:${service.connection.port}`}`
+                    `${index + 1}. ${service.id} | ${service.title} | ${service.status} | storage=${service.storageKind}${service.volumeName ? `(${service.volumeName})` : ""} | ${service.connection.uri ?? `${service.connection.host}:${service.connection.port}`}`
                 )
                 .join("\n"),
         data: { services }
@@ -568,7 +720,10 @@ export class CodexHarnessService {
     if (action === "service.start") {
       const templateId = normalizeString(params.templateId);
       const title = normalizeString(params.title);
-      const cwd = normalizeString(params.cwd) || capability.cwd;
+      const stackId = normalizeString(params.stackId) || null;
+      const stack = stackId ? this.requireThreadStack(capability, stackId) : null;
+      const cwd = normalizeString(params.cwd) || stack?.worktreePath || capability.cwd;
+      const aliases = normalizeStringArray(params.aliases);
       const env = normalizeEnv(params.env);
       const template = this.serviceTemplateMap.get(templateId);
 
@@ -587,6 +742,8 @@ export class CodexHarnessService {
           projectId: thread.supervisor.projectId,
           projectLabel: thread.supervisor.projectLabel,
           title: effectiveTitle,
+          stackId,
+          aliases,
           template,
           containerName: `embedded-${crypto.randomUUID().slice(0, 8)}`,
           targetHost: "localhost",
@@ -613,6 +770,8 @@ export class CodexHarnessService {
         projectId: thread.supervisor.projectId,
         projectLabel: thread.supervisor.projectLabel,
         title: effectiveTitle,
+        stackId,
+        aliases,
         templateId: template.id,
         templateLabel: template.label,
         runtimeKind: template.runtimeKind,
@@ -620,6 +779,7 @@ export class CodexHarnessService {
         targetPort: template.defaultPort,
         image: template.image,
         command: template.command,
+        stackVolumePath: template.stackVolumePath,
         env: { ...template.envDefaults, ...env }
       });
       const lease = toServiceLeaseView({
@@ -628,12 +788,18 @@ export class CodexHarnessService {
         projectId: service.projectId,
         projectLabel: service.projectLabel,
         title: service.title,
+        stackId: service.stackId,
+        aliases: service.aliases,
         template,
         containerName: service.containerName,
         targetHost: service.targetHost,
         targetPort: service.targetPort,
         worktreePath: service.worktreePath,
         status: service.status,
+        storageKind: service.storageKind,
+        sticky: service.sticky,
+        volumeName: service.volumeName,
+        volumeMountPath: service.volumeMountPath,
         createdAt: service.createdAt,
         updatedAt: service.updatedAt,
         lastError: service.lastError,
@@ -643,7 +809,7 @@ export class CodexHarnessService {
       this.store.noteServiceLeaseActivity(lease.id);
       this.store.addEvent(capability.threadId, "harness/service/start", `Started service ${lease.id}`);
       return {
-        text: `Started ${template.label}. Host=${lease.connection.host} Port=${lease.connection.port}.`,
+        text: `Started ${template.label}. Host=${lease.connection.host} Port=${lease.connection.port}.${lease.sticky ? ` Sticky volume=${lease.volumeName}.` : ""}`,
         data: { service: lease }
       };
     }
@@ -666,12 +832,18 @@ export class CodexHarnessService {
         projectId: inspected.projectId,
         projectLabel: inspected.projectLabel,
         title: inspected.title,
+        stackId: inspected.stackId,
+        aliases: inspected.aliases,
         template,
         containerName: inspected.containerName,
         targetHost: inspected.targetHost,
         targetPort: inspected.targetPort,
         worktreePath: inspected.worktreePath,
         status: inspected.status,
+        storageKind: inspected.storageKind,
+        sticky: inspected.sticky,
+        volumeName: inspected.volumeName,
+        volumeMountPath: inspected.volumeMountPath,
         createdAt: inspected.createdAt,
         updatedAt: inspected.updatedAt,
         lastError: inspected.lastError,
@@ -680,7 +852,7 @@ export class CodexHarnessService {
       this.store.upsertServiceLease(lease);
       this.store.noteServiceLeaseActivity(serviceId);
       return {
-        text: `${lease.title} is ${inspected.runtime.status}. Host=${lease.connection.host} Port=${lease.connection.port}.`,
+        text: `${lease.title} is ${inspected.runtime.status}. Host=${lease.connection.host} Port=${lease.connection.port}. Storage=${lease.storageKind}${lease.volumeName ? `(${lease.volumeName})` : ""}.`,
         data: { service: lease, runtime: inspected.runtime }
       };
     }

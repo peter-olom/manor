@@ -13,8 +13,13 @@ function printHelp() {
   console.log(`Usage:
   manor-harness status
   manor-harness report --status completed|blocked --summary "<text>" [--details "<text>"] [--turn-id <id>]
+  manor-harness stack list
+  manor-harness stack start [--title <title>] [--cwd <path>] [--retain-volumes] [--storage-key <key>] [--clone-from <key>]
+  manor-harness stack inspect <stackId>
+  manor-harness stack promote <stackId> [--to <storageKey>]
+  manor-harness stack stop <stackId> [--drop-volumes]
   manor-harness preview list
-  manor-harness preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>]
+  manor-harness preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--stack <stackId>] [--alias <name> ...] [--env KEY=VALUE ...] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>]
 
 Preview defaults:
   heartbeat-kind=http
@@ -27,7 +32,7 @@ Preview defaults:
   manor-harness preview stop <leaseId>
   manor-harness service templates
   manor-harness service list
-  manor-harness service start --template <id> [--title <title>] [--cwd <path>] [--env KEY=VALUE ...]
+  manor-harness service start --template <id> [--title <title>] [--cwd <path>] [--stack <stackId>] [--alias <name> ...] [--env KEY=VALUE ...]
   manor-harness service inspect <serviceId>
   manor-harness service processes <serviceId>
   manor-harness service logs <serviceId> [--tail <n>]
@@ -183,9 +188,21 @@ async function main() {
       action = "preview.list";
     } else if (subcommand === "start") {
       action = "preview.start";
+      const rawEnv = readRepeatedFlag(args, "--env");
+      const env = Object.fromEntries(
+        rawEnv
+          .map((entry) => {
+            const marker = entry.indexOf("=");
+            return marker === -1 ? null : [entry.slice(0, marker), entry.slice(marker + 1)];
+          })
+          .filter(Boolean)
+      );
       params = {
         title: readFlag(args, "--title"),
         cwd: readFlag(args, "--cwd"),
+        stackId: readFlag(args, "--stack"),
+        aliases: readRepeatedFlag(args, "--alias"),
+        env,
         command: readFlag(args, "--command"),
         port: Number(readFlag(args, "--port", "0")),
         image: readFlag(args, "--image"),
@@ -240,6 +257,8 @@ async function main() {
         templateId: readFlag(args, "--template"),
         title: readFlag(args, "--title"),
         cwd: readFlag(args, "--cwd"),
+        stackId: readFlag(args, "--stack"),
+        aliases: readRepeatedFlag(args, "--alias"),
         env
       };
     } else if (subcommand === "inspect" && args[2]) {
@@ -260,6 +279,29 @@ async function main() {
     } else if (subcommand === "stop" && args[2]) {
       action = "service.stop";
       params = { serviceId: args[2] };
+    }
+  } else if (args[0] === "stack") {
+    const subcommand = args[1];
+    if (subcommand === "list") {
+      action = "stack.list";
+    } else if (subcommand === "start") {
+      action = "stack.start";
+      params = {
+        title: readFlag(args, "--title"),
+        cwd: readFlag(args, "--cwd"),
+        retainsVolumes: args.includes("--retain-volumes"),
+        storageKey: readFlag(args, "--storage-key"),
+        cloneFromStorageKey: readFlag(args, "--clone-from")
+      };
+    } else if (subcommand === "inspect" && args[2]) {
+      action = "stack.inspect";
+      params = { stackId: args[2] };
+    } else if (subcommand === "promote" && args[2]) {
+      action = "stack.promote";
+      params = { stackId: args[2], targetStorageKey: readFlag(args, "--to") };
+    } else if (subcommand === "stop" && args[2]) {
+      action = "stack.stop";
+      params = { stackId: args[2], dropVolumes: args.includes("--drop-volumes") };
     }
   }
 

@@ -58,6 +58,7 @@ export interface CodexWorkerReportView {
 export type PreviewLeaseStatus = "starting" | "running" | "stopping" | "stopped" | "failed";
 export type PreviewEgressProfile = string;
 export type ServiceLeaseStatus = "starting" | "running" | "stopping" | "stopped" | "failed";
+export type StackLeaseStatus = "running" | "stopping" | "stopped" | "degraded";
 export type LeaseLifecycleState = "starting" | "active" | "idle" | "stopping" | "expired";
 export type PreviewBootstrapHeartbeatKind = "none" | "http" | "tcp" | "command";
 export type PreviewBootstrapPhase =
@@ -84,6 +85,8 @@ export interface PreviewLeaseView extends LeaseLifecycleView {
   projectId: string;
   projectLabel: string;
   title: string;
+  stackId: string | null;
+  aliases: string[];
   worktreePath: string;
   branchName: string | null;
   containerName: string;
@@ -121,6 +124,7 @@ export interface ServiceTemplateView {
   engine: string;
   image: string;
   defaultPort: number;
+  stackVolumePath: string | null;
   notes: string | null;
 }
 
@@ -141,6 +145,8 @@ export interface ServiceLeaseView extends LeaseLifecycleView {
   projectId: string;
   projectLabel: string;
   title: string;
+  stackId: string | null;
+  aliases: string[];
   templateId: string;
   templateLabel: string;
   runtimeKind: "container" | "embedded";
@@ -150,10 +156,34 @@ export interface ServiceLeaseView extends LeaseLifecycleView {
   worktreePath: string | null;
   image: string;
   status: ServiceLeaseStatus;
+  storageKind: "ephemeral" | "volume" | "worktree";
+  sticky: boolean;
+  volumeName: string | null;
+  volumeMountPath: string | null;
   createdAt: number;
   updatedAt: number;
   lastError: string | null;
   connection: ServiceConnectionView;
+}
+
+export interface StackLeaseView extends LeaseLifecycleView {
+  id: string;
+  threadId: string | null;
+  projectId: string;
+  projectLabel: string;
+  title: string;
+  worktreePath: string | null;
+  networkName: string;
+  status: StackLeaseStatus;
+  retainsVolumes: boolean;
+  storageKey: string | null;
+  cloneFromStorageKey: string | null;
+  volumeNames: string[];
+  createdAt: number;
+  updatedAt: number;
+  lastError: string | null;
+  previewIds: string[];
+  serviceIds: string[];
 }
 
 export type CodexMilestoneType = "started" | "completed" | "blocked";
@@ -349,6 +379,7 @@ export interface AppSnapshot {
       supervisor: ButlerSupervisorSummaryView;
       notices: ButlerMessageView[];
     };
+    stacks: StackLeaseView[];
     previews: PreviewLeaseView[];
     serviceTemplates: ServiceTemplateView[];
     services: ServiceLeaseView[];
@@ -366,6 +397,7 @@ export interface AppSnapshot {
 export interface PersistedUiState {
   windows: ButlerWindow[];
   focusedWindowId: string | null;
+  stackLeases?: StackLeaseView[];
   previewLeases?: PreviewLeaseView[];
   serviceLeases?: ServiceLeaseView[];
   workerReportsByThreadId?: Record<string, CodexWorkerReportView[]>;

@@ -18,6 +18,10 @@ const brokerToken = process.env.RUNTIME_BROKER_TOKEN ?? null;
 const codexAccessRegistryPath = process.env.RUNTIME_CODEX_ACCESS_FILE ?? "/state/codex-broker-access.json";
 const internalOperatorBaseUrl = process.env.RUNTIME_OPERATOR_BASE_URL_INTERNAL ?? "http://butler:8080";
 const playwrightContainerName = process.env.RUNTIME_PLAYWRIGHT_CONTAINER ?? "manor-playwright";
+const runtimeBrokerContainerName = process.env.RUNTIME_BROKER_CONTAINER ?? "manor-runtime-broker";
+const previewEgressContainerName = process.env.RUNTIME_PREVIEW_EGRESS_CONTAINER ?? "manor-preview-egress";
+const stackNetworkPrefix = process.env.RUNTIME_STACK_NETWORK_PREFIX ?? "manor-stack";
+const stackVolumePrefix = process.env.RUNTIME_STACK_VOLUME_PREFIX ?? "manor-stack-vol";
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 const leaseTransitions = new Map();
 const leaseBootstrapStates = new Map();
@@ -95,6 +99,152 @@ function toServiceContainerName(serviceId) {
   return `manor-service-${serviceId.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 32)}`;
 }
 
+function toStackNetworkName(stackId) {
+  return `${stackNetworkPrefix}-${stackId.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 32)}`;
+}
+
+function toManagedVolumeName(scopeKey, templateId, volumeKey) {
+  const digest = crypto
+    .createHash("sha256")
+    .update(`${scopeKey}|${templateId}|${volumeKey}`)
+    .digest("hex")
+    .slice(0, 12);
+  const safeScope = scopeKey.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 20) || "stack";
+  const safeTemplate = templateId.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 20) || "service";
+  const safeVolumeKey = volumeKey.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 20) || "data";
+  return `${stackVolumePrefix}-${safeScope}-${safeTemplate}-${safeVolumeKey}-${digest}`;
+}
+
+function normalizeString(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeStringArray(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return [...new Set(value.map((entry) => normalizeString(entry)).filter(Boolean))];
+}
+
+function normalizeBoolean(value) {
+  return value === true || value === "true" || value === "1" || value === 1;
+}
+
+function parseAliases(rawValue) {
+  return [...new Set(String(rawValue ?? "").split(",").map((value) => value.trim()).filter(Boolean))];
+}
+
+function resolveTargetHost(containerName, aliases = []) {
+  return aliases[0] || containerName;
+}
+
+async function inspectNetwork(networkName) {
+  try {
+    return await docker.getNetwork(networkName).inspect();
+  } catch {
+    return null;
+  }
+}
+
+async function listManagedNetworks(filter) {
+  const networks = await docker.listNetworks();
+  return networks.filter((network) => filter(network.Labels || {}, network));
+}
+
+async function inspectVolume(volumeName) {
+  try {
+    return await docker.getVolume(volumeName).inspect();
+  } catch {
+    return null;
+  }
+}
+
+async function listManagedVolumes(filter) {
+  const volumes = await docker.listVolumes();
+  const entries = Array.isArray(volumes?.Volumes) ? volumes.Volumes : [];
+  return entries.filter((volume) => filter(volume.Labels || {}, volume));
+}
+
+async function ensureNetworkConnection(networkName, containerName, aliases = []) {
+  const networkRef = docker.getNetwork(networkName);
+  try {
+    await networkRef.connect({
+      Container: containerName,
+      EndpointConfig: aliases.length > 0 ? { Aliases: aliases } : undefined
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes("already exists") && !message.includes("already connected")) {
+      throw error;
+    }
+  }
+}
+
+async function disconnectNetworkConnection(networkName, containerName) {
+  try {
+    await docker.getNetwork(networkName).disconnect({
+      Container: containerName,
+      Force: true
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes("is not connected") && !message.includes("No such container")) {
+      throw error;
+    }
+  }
+}
+
+async function findStackNetwork(stackId) {
+  const normalizedStackId = normalizeString(stackId);
+  if (!normalizedStackId) {
+    return null;
+  }
+
+  const matches = await listManagedNetworks(
+    (labels) => labels["manor.runtime-kind"] === "stack" && labels["manor.stack-id"] === normalizedStackId
+  );
+  return matches[0] ?? null;
+}
+
+function getStackScopeKeyFromLabels(labels) {
+  return normalizeString(labels?.["manor.stack-scope-key"]);
+}
+
+function getStackCloneSourceKeyFromLabels(labels) {
+  return normalizeString(labels?.["manor.clone-from-storage-key"]);
+}
+
+async function listStackVolumesByScopeKey(scopeKey) {
+  const normalizedScopeKey = normalizeString(scopeKey);
+  if (!normalizedScopeKey) {
+    return [];
+  }
+  return listManagedVolumes(
+    (labels) => labels["manor.runtime-kind"] === "stack-volume" && labels["manor.stack-scope-key"] === normalizedScopeKey
+  );
+}
+
+async function ensureVolumeIsIdle(volumeName, purpose) {
+  const activeUsers = await listManagedServiceContainersByVolume(volumeName);
+  if (activeUsers.length === 0) {
+    return;
+  }
+
+  const existingTitle = activeUsers[0].Labels?.["manor.title"] || activeUsers[0].Labels?.["manor.service-id"] || "service";
+  throw new Error(`${purpose} requires ${volumeName} to be idle. Stop ${existingTitle} first.`);
+}
+
+async function requireStackNetwork(stackId, response) {
+  const stack = await findStackNetwork(stackId);
+  if (!stack) {
+    response.status(404).json({ error: "Stack not found" });
+    return null;
+  }
+
+  return stack;
+}
+
 function loadPreviewEgressProfiles() {
   const raw = fs.readFileSync(previewEgressConfigPath, "utf8");
   const parsed = JSON.parse(raw);
@@ -166,6 +316,7 @@ function buildLease(payload) {
   const now = Date.now();
   const targetPort = Number(payload.targetPort || 3000);
   const bootstrap = buildBootstrapConfig(payload, targetPort);
+  const stackId = normalizeString(payload.stackId) || null;
 
   return {
     id,
@@ -173,10 +324,12 @@ function buildLease(payload) {
     projectId: payload.projectId || "unknown",
     projectLabel: payload.projectLabel || payload.projectId || "Unknown",
     title: payload.title || `Preview ${id.slice(0, 8)}`,
+    stackId,
+    aliases: normalizeStringArray(payload.aliases),
     worktreePath: payload.worktreePath,
     branchName: payload.branchName ?? null,
     containerName,
-    targetHost: containerName,
+    targetHost: resolveTargetHost(containerName, normalizeStringArray(payload.aliases)),
     targetPort,
     routePrefix: `${routeBase}/${id}/`,
     operatorUrl: `${routeBase}/${id}/`,
@@ -191,6 +344,40 @@ function buildLease(payload) {
     updatedAt: now,
     lastError: null,
     bootstrap
+  };
+}
+
+function buildStack(payload) {
+  const id = payload.stackId || crypto.randomUUID();
+  const now = Date.now();
+  const retainsVolumes = normalizeBoolean(payload.retainsVolumes);
+  const storageKey = retainsVolumes ? normalizeString(payload.storageKey) || normalizeString(payload.threadId) || id : "";
+  const cloneFromStorageKey =
+    retainsVolumes && storageKey
+      ? (() => {
+          const sourceKey = normalizeString(payload.cloneFromStorageKey);
+          return sourceKey && sourceKey !== storageKey ? sourceKey : "";
+        })()
+      : "";
+
+  return {
+    id,
+    threadId: payload.threadId ?? null,
+    projectId: payload.projectId || "unknown",
+    projectLabel: payload.projectLabel || payload.projectId || "Unknown",
+    title: payload.title || `Stack ${id.slice(0, 8)}`,
+    worktreePath: normalizeString(payload.worktreePath) || null,
+    networkName: toStackNetworkName(id),
+    status: "running",
+    retainsVolumes,
+    storageKey,
+    cloneFromStorageKey,
+    volumeNames: [],
+    createdAt: now,
+    updatedAt: now,
+    lastError: null,
+    previewIds: [],
+    serviceIds: []
   };
 }
 
@@ -712,6 +899,299 @@ function serializeLease(lease, options = {}) {
   };
 }
 
+async function listStackMemberContainers(stackId) {
+  return listManagedContainers((labels) => labels["manor.stack-id"] === stackId);
+}
+
+async function listManagedServiceContainersByVolume(volumeName, exceptServiceId = "") {
+  return listManagedContainers(
+    (labels) =>
+      labels["manor.runtime-kind"] === "service" &&
+      labels["manor.volume-name"] === volumeName &&
+      labels["manor.service-id"] !== exceptServiceId
+  );
+}
+
+async function ensureManagedStackVolume({
+  scopeKey,
+  templateId,
+  templateLabel,
+  volumeKey,
+  mountPath,
+  threadId,
+  projectId,
+  projectLabel
+}) {
+  const volumeName = toManagedVolumeName(scopeKey, templateId, volumeKey);
+  const existing = await inspectVolume(volumeName);
+  if (existing) {
+    return { volumeName, volume: existing, created: false };
+  }
+
+  await docker.createVolume({
+    Name: volumeName,
+    Labels: {
+      "manor.managed": "true",
+      "manor.runtime-kind": "stack-volume",
+      "manor.stack-scope-key": scopeKey,
+      "manor.thread-id": threadId ?? "",
+      "manor.project-id": projectId || "service",
+      "manor.project-label": projectLabel || projectId || "service",
+      "manor.template-id": templateId,
+      "manor.template-label": templateLabel || templateId,
+      "manor.volume-key": volumeKey,
+      "manor.mount-path": mountPath,
+      "manor.created-at": String(Date.now())
+    }
+  });
+
+  const created = await inspectVolume(volumeName);
+  if (!created) {
+    throw new Error(`Volume ${volumeName} was created but could not be inspected`);
+  }
+  return { volumeName, volume: created, created: true };
+}
+
+async function runVolumeCopyJob({
+  sourceVolumeName,
+  targetVolumeName,
+  clearTarget = false
+}) {
+  await ensureImage(previewImage);
+  const helperName = `manor-volume-copy-${crypto.randomUUID().replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 20)}`;
+  const copyContainer = await docker.createContainer({
+    Image: previewImage,
+    name: helperName,
+    Cmd: [
+      "sh",
+      "-lc",
+      [
+        "set -eu",
+        "mkdir -p /from /to",
+        clearTarget ? "find /to -mindepth 1 -maxdepth 1 -exec rm -rf {} +" : "true",
+        "if [ -z \"$(find /from -mindepth 1 -maxdepth 1 -print -quit)\" ]; then exit 0; fi",
+        "cd /from",
+        "tar cf - . | (cd /to && tar xpf -)"
+      ].join("; ")
+    ],
+    Labels: {
+      "manor.runtime-kind": "volume-copy"
+    },
+    HostConfig: {
+      AutoRemove: true,
+      NetworkMode: "none",
+      Mounts: [
+        {
+          Type: "volume",
+          Source: sourceVolumeName,
+          Target: "/from",
+          ReadOnly: true
+        },
+        {
+          Type: "volume",
+          Source: targetVolumeName,
+          Target: "/to"
+        }
+      ]
+    }
+  });
+
+  try {
+    await copyContainer.start();
+    const result = await copyContainer.wait();
+    const statusCode = Number(result?.StatusCode ?? 1);
+    if (statusCode !== 0) {
+      throw new Error(`Volume copy failed with status ${statusCode}`);
+    }
+  } finally {
+    await copyContainer.remove({ force: true }).catch(() => {});
+  }
+}
+
+async function cloneManagedStackVolume({
+  sourceScopeKey,
+  targetScopeKey,
+  templateId,
+  templateLabel,
+  volumeKey,
+  mountPath,
+  threadId,
+  projectId,
+  projectLabel
+}) {
+  const sourceVolumeName = toManagedVolumeName(sourceScopeKey, templateId, volumeKey);
+  const sourceVolume = await inspectVolume(sourceVolumeName);
+  const target = await ensureManagedStackVolume({
+    scopeKey: targetScopeKey,
+    templateId,
+    templateLabel,
+    volumeKey,
+    mountPath,
+    threadId,
+    projectId,
+    projectLabel
+  });
+
+  if (!sourceVolume || !target.created) {
+    return {
+      sourceVolumeName,
+      sourceExists: Boolean(sourceVolume),
+      volumeName: target.volumeName,
+      cloned: false
+    };
+  }
+
+  try {
+    await ensureVolumeIsIdle(sourceVolumeName, "Volume fork");
+    await runVolumeCopyJob({
+      sourceVolumeName,
+      targetVolumeName: target.volumeName,
+      clearTarget: true
+    });
+    return {
+      sourceVolumeName,
+      sourceExists: true,
+      volumeName: target.volumeName,
+      cloned: true
+    };
+  } catch (error) {
+    await docker.getVolume(target.volumeName).remove().catch(() => {});
+    throw error;
+  }
+}
+
+function toManagedVolumeBackupName(volumeName) {
+  const suffix = crypto.randomUUID().replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 8);
+  return `${volumeName}-backup-${suffix}`.slice(0, 120);
+}
+
+async function overwriteManagedStackVolume({
+  sourceVolumeName,
+  targetScopeKey,
+  templateId,
+  templateLabel,
+  volumeKey,
+  mountPath,
+  threadId,
+  projectId,
+  projectLabel
+}) {
+  await ensureVolumeIsIdle(sourceVolumeName, "Volume promotion");
+
+  const targetVolumeName = toManagedVolumeName(targetScopeKey, templateId, volumeKey);
+  const targetVolume = await inspectVolume(targetVolumeName);
+  let createdTarget = false;
+  if (targetVolume) {
+    await ensureVolumeIsIdle(targetVolumeName, "Volume promotion");
+  }
+
+  let backupVolumeName = null;
+  if (targetVolume) {
+    backupVolumeName = toManagedVolumeBackupName(targetVolumeName);
+    await docker.createVolume({
+      Name: backupVolumeName,
+      Labels: {
+        "manor.managed": "true",
+        "manor.runtime-kind": "stack-volume-backup",
+        "manor.source-volume-name": targetVolumeName
+      }
+    });
+    await runVolumeCopyJob({
+      sourceVolumeName: targetVolumeName,
+      targetVolumeName: backupVolumeName,
+      clearTarget: true
+    });
+  } else {
+    const ensuredTarget = await ensureManagedStackVolume({
+      scopeKey: targetScopeKey,
+      templateId,
+      templateLabel,
+      volumeKey,
+      mountPath,
+      threadId,
+      projectId,
+      projectLabel
+    });
+    createdTarget = ensuredTarget.created;
+  }
+
+  try {
+    await runVolumeCopyJob({
+      sourceVolumeName,
+      targetVolumeName,
+      clearTarget: true
+    });
+    if (backupVolumeName) {
+      await docker.getVolume(backupVolumeName).remove().catch(() => {});
+    }
+    return targetVolumeName;
+  } catch (error) {
+    if (backupVolumeName) {
+      await runVolumeCopyJob({
+        sourceVolumeName: backupVolumeName,
+        targetVolumeName,
+        clearTarget: true
+      }).catch(() => {});
+      await docker.getVolume(backupVolumeName).remove().catch(() => {});
+    } else if (createdTarget) {
+      await docker.getVolume(targetVolumeName).remove().catch(() => {});
+    }
+    throw error;
+  }
+}
+
+function summarizeStackStatus(containers) {
+  if (containers.some((container) => container.State && container.State !== "running")) {
+    return "degraded";
+  }
+
+  return "running";
+}
+
+async function serializeStackFromNetwork(networkSummary) {
+  const labels = networkSummary.Labels || {};
+  const stackId = labels["manor.stack-id"] || "";
+  const retainsVolumes = labels["manor.retains-volumes"] === "true";
+  const stackScopeKey = getStackScopeKeyFromLabels(labels);
+  const cloneFromStorageKey = getStackCloneSourceKeyFromLabels(labels);
+  const containers = await listStackMemberContainers(stackId);
+  const volumes = retainsVolumes ? await listStackVolumesByScopeKey(stackScopeKey) : [];
+  const previewIds = containers
+    .filter((container) => container.Labels?.["manor.runtime-kind"] !== "service")
+    .map((container) => container.Labels?.["manor.lease-id"] || "")
+    .filter(Boolean);
+  const serviceIds = containers
+    .filter((container) => container.Labels?.["manor.runtime-kind"] === "service")
+    .map((container) => container.Labels?.["manor.service-id"] || "")
+    .filter(Boolean);
+  const createdAtRaw = typeof labels["manor.created-at"] === "string" ? Number(labels["manor.created-at"]) : Date.now();
+  const createdAt = Number.isFinite(createdAtRaw) && createdAtRaw > 0 ? createdAtRaw : Date.now();
+  const memberUpdatedAt = containers.reduce((max, container) => {
+    const created = typeof container.Created === "number" ? container.Created * 1000 : createdAt;
+    return Math.max(max, created);
+  }, createdAt);
+
+  return {
+    id: stackId,
+    threadId: labels["manor.thread-id"] || null,
+    projectId: labels["manor.project-id"] || "unknown",
+    projectLabel: labels["manor.project-label"] || labels["manor.project-id"] || "Unknown",
+    title: labels["manor.title"] || `Stack ${stackId.slice(0, 8)}`,
+    worktreePath: labels["manor.worktree-path"] || null,
+    networkName: networkSummary.Name,
+    status: summarizeStackStatus(containers),
+    retainsVolumes,
+    storageKey: stackScopeKey || null,
+    cloneFromStorageKey: cloneFromStorageKey || null,
+    volumeNames: volumes.map((volume) => volume.Name).filter(Boolean).sort(),
+    createdAt,
+    updatedAt: memberUpdatedAt,
+    lastError: null,
+    previewIds,
+    serviceIds
+  };
+}
+
 async function collectExecOutput(containerRef, exec) {
   const stream = await exec.start({ hijack: true, stdin: false });
   const output = await new Promise((resolve, reject) => {
@@ -752,6 +1232,215 @@ app.get("/health", async (_request, response) => {
     response.json({ ok: true });
   } catch (error) {
     response.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/stacks", async (request, response) => {
+  if (!hasBrokerAccess(request)) {
+    response.status(403).json({ error: "Forbidden" });
+    return;
+  }
+
+  const payload = request.body ?? {};
+  const title = normalizeString(payload.title);
+  if (!title) {
+    response.status(400).json({ error: "title is required" });
+    return;
+  }
+
+  const stack = buildStack(payload);
+
+  try {
+    const existing = await inspectNetwork(stack.networkName);
+    if (existing) {
+      response.status(409).json({ error: `Stack ${stack.id} already exists` });
+      return;
+    }
+
+    await docker.createNetwork({
+      Name: stack.networkName,
+      CheckDuplicate: true,
+      Internal: true,
+      Labels: {
+        "manor.managed": "true",
+        "manor.runtime-kind": "stack",
+        "manor.stack-id": stack.id,
+        "manor.thread-id": stack.threadId ?? "",
+        "manor.project-id": stack.projectId,
+        "manor.project-label": stack.projectLabel,
+        "manor.title": stack.title,
+        "manor.worktree-path": stack.worktreePath ?? "",
+        "manor.retains-volumes": stack.retainsVolumes ? "true" : "false",
+        "manor.stack-scope-key": stack.storageKey,
+        "manor.clone-from-storage-key": stack.cloneFromStorageKey,
+        "manor.created-at": String(stack.createdAt)
+      }
+    });
+
+    await ensureNetworkConnection(stack.networkName, runtimeBrokerContainerName, ["runtime-broker"]).catch(() => {});
+    await ensureNetworkConnection(stack.networkName, previewEgressContainerName, ["preview-egress"]).catch(() => {});
+    await ensureNetworkConnection(stack.networkName, playwrightContainerName, ["playwright"]).catch(() => {});
+
+    const created = await inspectNetwork(stack.networkName);
+    if (!created) {
+      throw new Error("Stack network was created but could not be inspected");
+    }
+    response.json(await serializeStackFromNetwork(created));
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get("/stacks", async (request, response) => {
+  const requestedThreadId = typeof request.query.threadId === "string" ? request.query.threadId : null;
+  if (!authorizeScopedThread(request, response, requestedThreadId)) {
+    return;
+  }
+
+  try {
+    const networks = await listManagedNetworks(
+      (labels) =>
+        labels["manor.runtime-kind"] === "stack" &&
+        (!requestedThreadId || (labels["manor.thread-id"] || "") === requestedThreadId)
+    );
+    const stacks = await Promise.all(networks.map((network) => serializeStackFromNetwork(network)));
+    response.json(stacks.sort((left, right) => right.updatedAt - left.updatedAt));
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get("/stacks/:stackId", async (request, response) => {
+  const stack = await requireStackNetwork(request.params.stackId, response);
+  if (!stack) {
+    return;
+  }
+  if (!authorizeScopedThread(request, response, stack.Labels?.["manor.thread-id"] || null)) {
+    return;
+  }
+
+  try {
+    response.json(await serializeStackFromNetwork(stack));
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/stacks/:stackId/promote", async (request, response) => {
+  if (!hasBrokerAccess(request)) {
+    response.status(403).json({ error: "Forbidden" });
+    return;
+  }
+
+  const stack = await requireStackNetwork(request.params.stackId, response);
+  if (!stack) {
+    return;
+  }
+
+  const retainsVolumes = stack.Labels?.["manor.retains-volumes"] === "true";
+  const sourceStorageKey = getStackScopeKeyFromLabels(stack.Labels);
+  const defaultTargetStorageKey = getStackCloneSourceKeyFromLabels(stack.Labels);
+  const targetStorageKey = normalizeString(request.body?.targetStorageKey) || defaultTargetStorageKey;
+  if (!retainsVolumes || !sourceStorageKey) {
+    response.status(400).json({ error: "Stack does not retain volumes" });
+    return;
+  }
+  if (!targetStorageKey) {
+    response.status(400).json({ error: "targetStorageKey is required" });
+    return;
+  }
+  if (targetStorageKey === sourceStorageKey) {
+    response.status(400).json({ error: "targetStorageKey must differ from the stack storage key" });
+    return;
+  }
+
+  try {
+    const sourceVolumes = await listStackVolumesByScopeKey(sourceStorageKey);
+    const promotedVolumes = [];
+
+    for (const volume of sourceVolumes) {
+      const templateId = normalizeString(volume.Labels?.["manor.template-id"]);
+      const templateLabel = normalizeString(volume.Labels?.["manor.template-label"]) || templateId;
+      const volumeKey = normalizeString(volume.Labels?.["manor.volume-key"]);
+      const mountPath = normalizeString(volume.Labels?.["manor.mount-path"]);
+      if (!templateId || !volumeKey || !mountPath || !volume.Name) {
+        continue;
+      }
+
+      const targetVolumeName = await overwriteManagedStackVolume({
+        sourceVolumeName: volume.Name,
+        targetScopeKey: targetStorageKey,
+        templateId,
+        templateLabel,
+        volumeKey,
+        mountPath,
+        threadId: stack.Labels?.["manor.thread-id"] || null,
+        projectId: stack.Labels?.["manor.project-id"] || "service",
+        projectLabel: stack.Labels?.["manor.project-label"] || stack.Labels?.["manor.project-id"] || "service"
+      });
+      promotedVolumes.push(targetVolumeName);
+    }
+
+    response.json({
+      ok: true,
+      stackId: request.params.stackId,
+      sourceStorageKey,
+      targetStorageKey,
+      promotedVolumes: promotedVolumes.sort()
+    });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.delete("/stacks/:stackId", async (request, response) => {
+  if (!hasBrokerAccess(request)) {
+    response.status(403).json({ error: "Forbidden" });
+    return;
+  }
+
+  const stack = await requireStackNetwork(request.params.stackId, response);
+  if (!stack) {
+    return;
+  }
+  const dropVolumes = normalizeBoolean(request.query.dropVolumes);
+  const retainsVolumes = stack.Labels?.["manor.retains-volumes"] === "true";
+  const stackScopeKey = getStackScopeKeyFromLabels(stack.Labels);
+
+  try {
+    const members = await listStackMemberContainers(request.params.stackId);
+    for (const container of members) {
+      const isService = container.Labels?.["manor.runtime-kind"] === "service";
+      const containerName = container.Names?.[0]?.replace(/^\//, "") || "";
+      if (!containerName) {
+        continue;
+      }
+      if (!isService) {
+        const leaseId = container.Labels?.["manor.lease-id"] || "";
+        if (leaseId) {
+          clearLeaseBootstrapState(leaseId);
+          clearRetainedPreviewLease(leaseId);
+          await dropPreviewEgressLeasePolicy(leaseId).catch(() => {});
+        }
+      }
+      await docker.getContainer(containerName).remove({ force: true }).catch(() => {});
+    }
+
+    await disconnectNetworkConnection(stack.Name, playwrightContainerName).catch(() => {});
+    await disconnectNetworkConnection(stack.Name, previewEgressContainerName).catch(() => {});
+    await disconnectNetworkConnection(stack.Name, runtimeBrokerContainerName).catch(() => {});
+    await docker.getNetwork(stack.Name).remove().catch(() => {});
+
+    if (retainsVolumes && dropVolumes) {
+      const volumes = await listStackVolumesByScopeKey(stackScopeKey);
+      for (const volume of volumes) {
+        await docker.getVolume(volume.Name).remove().catch(() => {});
+      }
+    }
+
+    response.json({ ok: true, stackId: request.params.stackId });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
 });
 
@@ -829,6 +1518,11 @@ app.post("/leases", async (request, response) => {
   }
 
   const lease = buildLease(payload);
+  const stack = lease.stackId ? await findStackNetwork(lease.stackId) : null;
+  if (lease.stackId && !stack) {
+    response.status(400).json({ error: `Unknown stack: ${lease.stackId}` });
+    return;
+  }
   setLeaseTransition(lease.id, "starting");
   setLeaseBootstrapState(lease.id, lease.bootstrap);
   pendingPreviewLeases.set(lease.id, lease);
@@ -892,6 +1586,9 @@ app.post("/leases", async (request, response) => {
       await docker.getContainer(lease.containerName).remove({ force: true });
     }
 
+    const aliases = [...new Set([lease.containerName, ...lease.aliases])];
+    const networkName = stack?.Name || previewNetwork;
+
     const runtimeContainer = await docker.createContainer({
       Image: lease.image,
       name: lease.containerName,
@@ -903,7 +1600,10 @@ app.post("/leases", async (request, response) => {
         "manor.lease-id": lease.id,
         "manor.thread-id": lease.threadId ?? "",
         "manor.project-id": lease.projectId,
+        "manor.project-label": lease.projectLabel,
         "manor.title": lease.title,
+        "manor.stack-id": lease.stackId ?? "",
+        "manor.aliases": lease.aliases.join(","),
         "manor.worktree-path": lease.worktreePath,
         "manor.target-port": String(lease.targetPort),
         "manor.egress-profile": lease.egressProfile,
@@ -918,7 +1618,14 @@ app.post("/leases", async (request, response) => {
       HostConfig: {
         AutoRemove: true,
         VolumesFrom: ["manor-codex-box"],
-        NetworkMode: previewNetwork
+        NetworkMode: networkName
+      },
+      NetworkingConfig: {
+        EndpointsConfig: {
+          [networkName]: {
+            Aliases: aliases
+          }
+        }
       }
     });
 
@@ -1012,12 +1719,17 @@ app.get("/leases", async (request, response) => {
           id: container.Labels?.["manor.lease-id"] || "",
           threadId: container.Labels?.["manor.thread-id"] || null,
           projectId: container.Labels?.["manor.project-id"] || "unknown",
-          projectLabel: container.Labels?.["manor.project-id"] || "Unknown",
+          projectLabel: container.Labels?.["manor.project-label"] || container.Labels?.["manor.project-id"] || "Unknown",
           title: container.Labels?.["manor.title"] || `Preview ${(container.Labels?.["manor.lease-id"] || "").slice(0, 8)}`,
+          stackId: container.Labels?.["manor.stack-id"] || null,
+          aliases: parseAliases(container.Labels?.["manor.aliases"]),
           worktreePath: container.Labels?.["manor.worktree-path"] || container.Names?.[0]?.replace(/^\//, "") || "/repos",
           branchName: null,
           containerName: container.Names?.[0]?.replace(/^\//, "") || "",
-          targetHost: container.Names?.[0]?.replace(/^\//, "") || "",
+          targetHost: resolveTargetHost(
+            container.Names?.[0]?.replace(/^\//, "") || "",
+            parseAliases(container.Labels?.["manor.aliases"])
+          ),
           targetPort: Number(container.Labels?.["manor.target-port"] || container.Labels?.["manor.port"] || "3000"),
           routePrefix: `${routeBase}/${container.Labels?.["manor.lease-id"] || ""}/`,
           operatorUrl: `${routeBase}/${container.Labels?.["manor.lease-id"] || ""}/`,
@@ -1129,6 +1841,7 @@ app.get("/leases/:leaseId", async (request, response) => {
   if (!authorizeScopedThread(request, response, container.Config?.Labels?.["manor.thread-id"] || null)) {
     return;
   }
+  const aliases = parseAliases(container.Config?.Labels?.["manor.aliases"]);
 
   response.json({
     ...serializeLease(
@@ -1136,12 +1849,14 @@ app.get("/leases/:leaseId", async (request, response) => {
         id: request.params.leaseId,
         threadId: container.Config?.Labels?.["manor.thread-id"] || null,
         projectId: container.Config?.Labels?.["manor.project-id"] || "unknown",
-        projectLabel: container.Config?.Labels?.["manor.project-id"] || "Unknown",
+        projectLabel: container.Config?.Labels?.["manor.project-label"] || container.Config?.Labels?.["manor.project-id"] || "Unknown",
         title: container.Config?.Labels?.["manor.title"] || `Preview ${request.params.leaseId.slice(0, 8)}`,
+        stackId: container.Config?.Labels?.["manor.stack-id"] || null,
+        aliases,
         worktreePath: container.Config?.WorkingDir || "/repos",
         branchName: null,
         containerName,
-        targetHost: containerName,
+        targetHost: resolveTargetHost(containerName, aliases),
         targetPort: Number(container.Config?.Env?.find((entry) => entry.startsWith("PORT="))?.slice(5) || "3000"),
         routePrefix: `${routeBase}/${request.params.leaseId}/`,
         operatorUrl: `${routeBase}/${request.params.leaseId}/`,
@@ -1396,8 +2111,25 @@ app.post("/services", async (request, response) => {
 
   const serviceId = payload.serviceId || crypto.randomUUID();
   const containerName = toServiceContainerName(serviceId);
+  const stackId = normalizeString(payload.stackId) || null;
+  const stack = stackId ? await findStackNetwork(stackId) : null;
+  if (stackId && !stack) {
+    response.status(400).json({ error: `Unknown stack: ${stackId}` });
+    return;
+  }
+  const retainsVolumes = stack?.Labels?.["manor.retains-volumes"] === "true";
+  const stackScopeKey = getStackScopeKeyFromLabels(stack?.Labels);
+  const stackCloneSourceKey = getStackCloneSourceKeyFromLabels(stack?.Labels);
+  const aliases = normalizeStringArray(payload.aliases);
+  const stackVolumePath = normalizeString(payload.stackVolumePath) || null;
   const env = typeof payload.env === "object" && payload.env ? payload.env : {};
   const envVars = [];
+  const storage = {
+    kind: "ephemeral",
+    sticky: false,
+    volumeName: null,
+    volumeMountPath: null
+  };
 
   for (const [key, value] of Object.entries(env)) {
     if (typeof value === "string") {
@@ -1413,6 +2145,10 @@ app.post("/services", async (request, response) => {
       await docker.getContainer(containerName).remove({ force: true });
     }
 
+    const networkName = stack?.Name || previewNetwork;
+    const serviceAliases = [...new Set([containerName, ...aliases])];
+    const targetHost = resolveTargetHost(containerName, aliases);
+
     const containerOptions = {
       Image: payload.image,
       name: containerName,
@@ -1423,15 +2159,28 @@ app.post("/services", async (request, response) => {
         "manor.service-id": serviceId,
         "manor.thread-id": payload.threadId ?? "",
         "manor.project-id": payload.projectId || "service",
+        "manor.project-label": payload.projectLabel || payload.projectId || "service",
+        "manor.stack-id": stackId ?? "",
+        "manor.aliases": aliases.join(","),
         "manor.template-id": payload.templateId,
         "manor.template-label": payload.templateLabel || payload.templateId,
         "manor.title": payload.title,
         "manor.target-port": String(Number(payload.targetPort || 0)),
-        "manor.worktree-path": typeof payload.worktreePath === "string" ? payload.worktreePath : ""
+        "manor.worktree-path": typeof payload.worktreePath === "string" ? payload.worktreePath : "",
+        "manor.storage-kind": "ephemeral",
+        "manor.volume-name": "",
+        "manor.volume-mount-path": ""
       },
       HostConfig: {
         AutoRemove: true,
-        NetworkMode: previewNetwork
+        NetworkMode: networkName
+      },
+      NetworkingConfig: {
+        EndpointsConfig: {
+          [networkName]: {
+            Aliases: serviceAliases
+          }
+        }
       }
     };
 
@@ -1440,15 +2189,68 @@ app.post("/services", async (request, response) => {
     }
 
     if (typeof payload.command === "string" && payload.command) {
-      containerOptions.Cmd = ["bash", "-lc", payload.command];
+      containerOptions.Entrypoint = ["sh", "-lc"];
+      containerOptions.Cmd = [payload.command];
+    }
+
+    if (retainsVolumes && stackScopeKey && stackVolumePath) {
+      const volumeKey = aliases[0] || payload.templateId;
+      const volumeTemplateLabel = payload.templateLabel || payload.templateId;
+      const { volumeName } =
+        stackCloneSourceKey && stackCloneSourceKey !== stackScopeKey
+          ? await cloneManagedStackVolume({
+              sourceScopeKey: stackCloneSourceKey,
+              targetScopeKey: stackScopeKey,
+              templateId: payload.templateId,
+              templateLabel: volumeTemplateLabel,
+              volumeKey,
+              mountPath: stackVolumePath,
+              threadId: payload.threadId ?? null,
+              projectId: payload.projectId || "service",
+              projectLabel: payload.projectLabel || payload.projectId || "service"
+            })
+          : await ensureManagedStackVolume({
+              scopeKey: stackScopeKey,
+              templateId: payload.templateId,
+              templateLabel: volumeTemplateLabel,
+              volumeKey,
+              mountPath: stackVolumePath,
+              threadId: payload.threadId ?? null,
+              projectId: payload.projectId || "service",
+              projectLabel: payload.projectLabel || payload.projectId || "service"
+            });
+      const activeUsers = await listManagedServiceContainersByVolume(volumeName, serviceId);
+      if (activeUsers.length > 0) {
+        const existingTitle = activeUsers[0].Labels?.["manor.title"] || activeUsers[0].Labels?.["manor.service-id"] || "service";
+        throw new Error(
+          `Persistent volume ${volumeName} is already attached to ${existingTitle}. Use a distinct alias or stop the existing service first.`
+        );
+      }
+
+      containerOptions.HostConfig.Mounts = [
+        {
+          Type: "volume",
+          Source: volumeName,
+          Target: stackVolumePath
+        }
+      ];
+      containerOptions.Labels["manor.storage-kind"] = "volume";
+      containerOptions.Labels["manor.volume-name"] = volumeName;
+      containerOptions.Labels["manor.volume-mount-path"] = stackVolumePath;
+      storage.kind = "volume";
+      storage.sticky = true;
+      storage.volumeName = volumeName;
+      storage.volumeMountPath = stackVolumePath;
     }
 
     const serviceContainer = await docker.createContainer(containerOptions);
     await serviceContainer.start();
-    try {
-      await docker.getNetwork(sharedWorkNetwork).connect({ Container: serviceContainer.id });
-    } catch {
-      // already connected or shared network unavailable
+    if (!stackId) {
+      try {
+        await docker.getNetwork(sharedWorkNetwork).connect({ Container: serviceContainer.id });
+      } catch {
+        // already connected or shared network unavailable
+      }
     }
     const container = await inspectContainer(containerName);
     if (!container) {
@@ -1461,15 +2263,21 @@ app.post("/services", async (request, response) => {
       projectId: payload.projectId || "service",
       projectLabel: payload.projectLabel || payload.projectId || "service",
       title: payload.title,
+      stackId,
+      aliases,
       templateId: payload.templateId,
       templateLabel: payload.templateLabel || payload.templateId,
       runtimeKind: payload.runtimeKind || "container",
       containerName,
-      targetHost: containerName,
+      targetHost,
       targetPort: Number(payload.targetPort || 0),
       worktreePath: typeof payload.worktreePath === "string" ? payload.worktreePath : null,
       image: payload.image,
       status: container?.State?.Running ? "running" : "starting",
+      storageKind: storage.kind,
+      sticky: storage.sticky,
+      volumeName: storage.volumeName,
+      volumeMountPath: storage.volumeMountPath,
       createdAt: new Date(container.Created).getTime(),
       updatedAt: Date.now(),
       lastError: container.State?.Error || null,
@@ -1482,15 +2290,21 @@ app.post("/services", async (request, response) => {
       projectId: payload.projectId || "service",
       projectLabel: payload.projectLabel || payload.projectId || "service",
       title: payload.title,
+      stackId,
+      aliases,
       templateId: payload.templateId,
       templateLabel: payload.templateLabel || payload.templateId,
       runtimeKind: payload.runtimeKind || "container",
       containerName,
-      targetHost: containerName,
+      targetHost,
       targetPort: Number(payload.targetPort || 0),
       worktreePath: typeof payload.worktreePath === "string" ? payload.worktreePath : null,
       image: payload.image,
       status: "failed",
+      storageKind: storage.kind,
+      sticky: storage.sticky,
+      volumeName: storage.volumeName,
+      volumeMountPath: storage.volumeMountPath,
       createdAt: Date.now(),
       updatedAt: Date.now(),
       lastError: error instanceof Error ? error.message : String(error),
@@ -1512,26 +2326,38 @@ app.get("/services", async (request, response) => {
     );
 
     response.json(
-      containers.map((container) => ({
-        id: container.Labels?.["manor.service-id"] || "",
-        threadId: container.Labels?.["manor.thread-id"] || null,
-        projectId: container.Labels?.["manor.project-id"] || "service",
-        projectLabel: container.Labels?.["manor.project-id"] || "service",
-        title: container.Labels?.["manor.title"] || `Service ${(container.Labels?.["manor.service-id"] || "").slice(0, 8)}`,
-        templateId: container.Labels?.["manor.template-id"] || "unknown",
-        templateLabel: container.Labels?.["manor.template-label"] || container.Labels?.["manor.template-id"] || "unknown",
-        runtimeKind: "container",
-        containerName: container.Names?.[0]?.replace(/^\//, "") || "",
-        targetHost: container.Names?.[0]?.replace(/^\//, "") || "",
-        targetPort: Number(container.Labels?.["manor.target-port"] || "0"),
-        worktreePath: null,
-        image: container.Image || previewImage,
-        status: container.State === "running" ? "running" : "stopped",
-        createdAt: typeof container.Created === "number" ? container.Created * 1000 : Date.now(),
-        updatedAt: Date.now(),
-        lastError: null,
-        env: {}
-      }))
+      containers.map((container) => {
+        const aliases = parseAliases(container.Labels?.["manor.aliases"]);
+        return {
+          id: container.Labels?.["manor.service-id"] || "",
+          threadId: container.Labels?.["manor.thread-id"] || null,
+          projectId: container.Labels?.["manor.project-id"] || "service",
+          projectLabel: container.Labels?.["manor.project-label"] || container.Labels?.["manor.project-id"] || "service",
+          title: container.Labels?.["manor.title"] || `Service ${(container.Labels?.["manor.service-id"] || "").slice(0, 8)}`,
+          stackId: container.Labels?.["manor.stack-id"] || null,
+          aliases,
+          templateId: container.Labels?.["manor.template-id"] || "unknown",
+          templateLabel: container.Labels?.["manor.template-label"] || container.Labels?.["manor.template-id"] || "unknown",
+          runtimeKind: "container",
+          containerName: container.Names?.[0]?.replace(/^\//, "") || "",
+          targetHost: resolveTargetHost(container.Names?.[0]?.replace(/^\//, "") || "", aliases),
+          targetPort: Number(container.Labels?.["manor.target-port"] || "0"),
+          worktreePath: container.Labels?.["manor.worktree-path"] || null,
+          image: container.Image || previewImage,
+          status: container.State === "running" ? "running" : "stopped",
+          storageKind:
+            container.Labels?.["manor.storage-kind"] === "volume" || container.Labels?.["manor.storage-kind"] === "worktree"
+              ? container.Labels["manor.storage-kind"]
+              : "ephemeral",
+          sticky: container.Labels?.["manor.storage-kind"] === "volume",
+          volumeName: container.Labels?.["manor.volume-name"] || null,
+          volumeMountPath: container.Labels?.["manor.volume-mount-path"] || null,
+          createdAt: typeof container.Created === "number" ? container.Created * 1000 : Date.now(),
+          updatedAt: Date.now(),
+          lastError: null,
+          env: {}
+        };
+      })
     );
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -1547,22 +2373,33 @@ app.get("/services/:serviceId", async (request, response) => {
   if (!authorizeScopedThread(request, response, container.Config?.Labels?.["manor.thread-id"] || null)) {
     return;
   }
+  const aliases = parseAliases(container.Config?.Labels?.["manor.aliases"]);
 
   response.json({
     id: request.params.serviceId,
     threadId: container.Config?.Labels?.["manor.thread-id"] || null,
     projectId: container.Config?.Labels?.["manor.project-id"] || "service",
-    projectLabel: container.Config?.Labels?.["manor.project-id"] || "service",
+    projectLabel: container.Config?.Labels?.["manor.project-label"] || container.Config?.Labels?.["manor.project-id"] || "service",
     title: container.Config?.Labels?.["manor.title"] || `Service ${request.params.serviceId.slice(0, 8)}`,
+    stackId: container.Config?.Labels?.["manor.stack-id"] || null,
+    aliases,
     templateId: container.Config?.Labels?.["manor.template-id"] || "unknown",
     templateLabel: container.Config?.Labels?.["manor.template-label"] || container.Config?.Labels?.["manor.template-id"] || "unknown",
     runtimeKind: "container",
     containerName,
-    targetHost: containerName,
+    targetHost: resolveTargetHost(containerName, aliases),
     targetPort: Number(container.Config?.Labels?.["manor.target-port"] || "0"),
     worktreePath: container.Config?.WorkingDir || null,
     image: container.Config?.Image || previewImage,
     status: container.State?.Running ? "running" : "stopped",
+    storageKind:
+      container.Config?.Labels?.["manor.storage-kind"] === "volume" ||
+      container.Config?.Labels?.["manor.storage-kind"] === "worktree"
+        ? container.Config.Labels["manor.storage-kind"]
+        : "ephemeral",
+    sticky: container.Config?.Labels?.["manor.storage-kind"] === "volume",
+    volumeName: container.Config?.Labels?.["manor.volume-name"] || null,
+    volumeMountPath: container.Config?.Labels?.["manor.volume-mount-path"] || null,
     createdAt: new Date(container.Created).getTime(),
     updatedAt: Date.now(),
     lastError: container.State?.Error || null,
@@ -1658,7 +2495,7 @@ app.post("/services/:serviceId/exec", async (request, response) => {
     const exec = await required.containerRef.exec({
       AttachStdout: true,
       AttachStderr: true,
-      Cmd: ["bash", "-lc", cwd ? `cd ${JSON.stringify(cwd)} && ${command}` : command],
+      Cmd: ["sh", "-lc", cwd ? `cd ${JSON.stringify(cwd)} && ${command}` : command],
       WorkingDir: cwd || undefined,
       Tty: false
     });

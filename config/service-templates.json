@@ -8,6 +8,7 @@
       "engine": "postgres",
       "image": "postgres:16-bookworm",
       "port": 5432,
+      "stackVolumePath": "/var/lib/postgresql/data",
       "envDefaults": {
         "POSTGRES_USER": "manor",
         "POSTGRES_PASSWORD": "manor",
@@ -28,6 +29,7 @@
       "engine": "redis",
       "image": "redis:7-bookworm",
       "port": 6379,
+      "stackVolumePath": "/data",
       "connection": {
         "uriTemplate": "redis://{HOST}:{PORT}/0"
       }
@@ -40,6 +42,7 @@
       "engine": "mysql",
       "image": "mysql:8.4",
       "port": 3306,
+      "stackVolumePath": "/var/lib/mysql",
       "envDefaults": {
         "MYSQL_DATABASE": "app",
         "MYSQL_USER": "manor",
@@ -54,6 +57,28 @@
       }
     },
     {
+      "id": "rabbitmq",
+      "label": "RabbitMQ",
+      "description": "Disposable RabbitMQ broker for queues, async workers, and event-driven app flows.",
+      "runtimeKind": "container",
+      "engine": "rabbitmq",
+      "image": "rabbitmq:4-management",
+      "port": 5672,
+      "stackVolumePath": "/var/lib/rabbitmq",
+      "envDefaults": {
+        "RABBITMQ_DEFAULT_USER": "manor",
+        "RABBITMQ_DEFAULT_PASS": "manor",
+        "RABBITMQ_DEFAULT_VHOST": "app"
+      },
+      "connection": {
+        "databaseEnv": "RABBITMQ_DEFAULT_VHOST",
+        "usernameEnv": "RABBITMQ_DEFAULT_USER",
+        "passwordEnv": "RABBITMQ_DEFAULT_PASS",
+        "uriTemplate": "amqp://{USERNAME}:{PASSWORD}@{HOST}:{PORT}/{DATABASE}",
+        "notes": "RabbitMQ management stays inside the container on port 15672."
+      }
+    },
+    {
       "id": "mssql",
       "label": "MSSQL",
       "description": "Disposable SQL Server instance for local preview and integration testing.",
@@ -61,6 +86,7 @@
       "engine": "mssql",
       "image": "mcr.microsoft.com/mssql/server:2022-latest",
       "port": 1433,
+      "stackVolumePath": "/var/opt/mssql",
       "envDefaults": {
         "ACCEPT_EULA": "Y",
         "MSSQL_PID": "Developer",
@@ -71,6 +97,40 @@
         "usernameValue": "sa",
         "passwordEnv": "MSSQL_SA_PASSWORD",
         "uriTemplate": "sqlserver://{USERNAME}:{PASSWORD}@{HOST}:{PORT};database={DATABASE};encrypt=true;trustServerCertificate=true"
+      }
+    },
+    {
+      "id": "minio",
+      "label": "MinIO",
+      "description": "Disposable S3-compatible object store for uploads, fixtures, and local blob workflows.",
+      "runtimeKind": "container",
+      "engine": "s3",
+      "image": "minio/minio:latest",
+      "port": 9000,
+      "stackVolumePath": "/data",
+      "command": "minio server /data --console-address :9001",
+      "envDefaults": {
+        "MINIO_ROOT_USER": "manor",
+        "MINIO_ROOT_PASSWORD": "manor-dev-secret"
+      },
+      "connection": {
+        "usernameEnv": "MINIO_ROOT_USER",
+        "passwordEnv": "MINIO_ROOT_PASSWORD",
+        "uriTemplate": "http://{HOST}:{PORT}",
+        "notes": "MinIO console stays inside the container on port 9001."
+      }
+    },
+    {
+      "id": "mailpit",
+      "label": "Mailpit",
+      "description": "Disposable SMTP sink for local email testing and preview verification.",
+      "runtimeKind": "container",
+      "engine": "smtp",
+      "image": "axllent/mailpit:latest",
+      "port": 1025,
+      "connection": {
+        "uriTemplate": "smtp://{HOST}:{PORT}",
+        "notes": "Mailpit web UI stays inside the container on port 8025."
       }
     },
     {

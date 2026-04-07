@@ -18,6 +18,7 @@ type ServiceTemplateConfigEntry = {
   command?: string;
   envDefaults?: Record<string, string>;
   fileName?: string;
+  stackVolumePath?: string;
   connection?: {
     databaseEnv?: string;
     databaseValue?: string;
@@ -86,6 +87,8 @@ export async function loadServiceTemplates(configPath: string): Promise<LoadedSe
         engine: entry.engine.trim(),
         image: entry.image.trim(),
         defaultPort: entry.port,
+        stackVolumePath:
+          typeof entry.stackVolumePath === "string" && entry.stackVolumePath.trim() ? entry.stackVolumePath.trim() : null,
         notes: typeof entry.notes === "string" ? entry.notes.trim() : null,
         command: typeof entry.command === "string" && entry.command.trim() ? entry.command.trim() : null,
         envDefaults: normalizeRecord(entry.envDefaults),
@@ -170,12 +173,18 @@ export function toServiceLeaseView(input: {
   projectId: string;
   projectLabel: string;
   title: string;
+  stackId?: string | null;
+  aliases?: string[];
   template: LoadedServiceTemplate;
   containerName: string;
   targetHost: string;
   targetPort: number;
   worktreePath?: string | null;
   status: ServiceLeaseView["status"];
+  storageKind?: ServiceLeaseView["storageKind"];
+  sticky?: boolean;
+  volumeName?: string | null;
+  volumeMountPath?: string | null;
   createdAt: number;
   updatedAt: number;
   lastError: string | null;
@@ -187,6 +196,8 @@ export function toServiceLeaseView(input: {
     projectId: input.projectId,
     projectLabel: input.projectLabel,
     title: input.title,
+    stackId: input.stackId ?? null,
+    aliases: input.aliases ?? [],
     templateId: input.template.id,
     templateLabel: input.template.label,
     runtimeKind: input.template.runtimeKind,
@@ -196,6 +207,10 @@ export function toServiceLeaseView(input: {
     worktreePath: input.worktreePath ?? null,
     image: input.template.image,
     status: input.status,
+    storageKind: input.storageKind ?? (input.template.runtimeKind === "embedded" ? "worktree" : "ephemeral"),
+    sticky: input.sticky ?? input.template.runtimeKind === "embedded",
+    volumeName: input.volumeName ?? null,
+    volumeMountPath: input.volumeMountPath ?? null,
     createdAt: input.createdAt,
     updatedAt: input.updatedAt,
     lastError: input.lastError,

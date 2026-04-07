@@ -1,4 +1,5 @@
 import {
+  Fragment,
   isValidElement,
   memo,
   startTransition,
@@ -231,12 +232,37 @@ type Snapshot = {
       lastAborted: boolean;
       lastError: string | null;
     };
+    stacks: Array<{
+      id: string;
+      threadId: string | null;
+      projectId: string;
+      projectLabel: string;
+      title: string;
+      worktreePath: string | null;
+      networkName: string;
+      status: "running" | "stopping" | "stopped" | "degraded";
+      retainsVolumes: boolean;
+      storageKey: string | null;
+      cloneFromStorageKey: string | null;
+      volumeNames: string[];
+      createdAt: number;
+      updatedAt: number;
+      lastError: string | null;
+      pinned?: boolean;
+      lastActivityAt?: number;
+      expiresAt?: number | null;
+      lifecycleState?: "starting" | "active" | "idle" | "stopping" | "expired";
+      previewIds: string[];
+      serviceIds: string[];
+    }>;
     previews: Array<{
       id: string;
       threadId: string | null;
       projectId: string;
       projectLabel: string;
       title: string;
+      stackId: string | null;
+      aliases: string[];
       worktreePath: string;
       branchName: string | null;
       containerName: string;
@@ -275,6 +301,8 @@ type Snapshot = {
       projectId: string;
       projectLabel: string;
       title: string;
+      stackId: string | null;
+      aliases: string[];
       templateId: string;
       templateLabel: string;
       runtimeKind: "container" | "embedded";
@@ -284,6 +312,10 @@ type Snapshot = {
       worktreePath: string | null;
       image: string;
       status: "starting" | "running" | "stopped" | "failed";
+      storageKind: "ephemeral" | "volume" | "worktree";
+      sticky: boolean;
+      volumeName: string | null;
+      volumeMountPath: string | null;
       createdAt: number;
       updatedAt: number;
       lastError: string | null;
@@ -1124,6 +1156,7 @@ export function App() {
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [copiedCommandKey, setCopiedCommandKey] = useState<string | null>(null);
   const [activeJumpId, setActiveJumpId] = useState<string | null>(null);
+  const [busyStackId, setBusyStackId] = useState<string | null>(null);
   const [busyPreviewLeaseId, setBusyPreviewLeaseId] = useState<string | null>(null);
   const [busyServiceId, setBusyServiceId] = useState<string | null>(null);
   const errorTimerRef = useRef<number | null>(null);
@@ -1693,12 +1726,15 @@ export function App() {
         : [],
     [activeThread]
   );
-  const activePreviewLease =
+  const activeThreadStacks =
+    activeThread && snapshot ? snapshot.butler.stacks.filter((stack) => stack.threadId === activeThread.id && stack.status !== "stopped") : [];
+  const activeThreadPreviews =
     activeThread && snapshot
-      ? snapshot.butler.previews.find((lease) => lease.threadId === activeThread.id && lease.status !== "stopped") ?? null
-      : null;
+      ? snapshot.butler.previews.filter((lease) => lease.threadId === activeThread.id && lease.status !== "stopped")
+      : [];
   const activeThreadServices =
     activeThread && snapshot ? snapshot.butler.services.filter((service) => service.threadId === activeThread.id && service.status !== "stopped") : [];
+  const activeStackLeases = snapshot ? snapshot.butler.stacks.filter((stack) => stack.status !== "stopped") : [];
   const activePreviewLeases = snapshot ? snapshot.butler.previews.filter((lease) => lease.status !== "stopped") : [];
   const activeServiceLeases = snapshot ? snapshot.butler.services.filter((service) => service.status !== "stopped") : [];
 
@@ -2062,6 +2098,28 @@ export function App() {
       await postJson("/api/threads/supervision", { threadId, maxButlerTurns });
     } catch (settingsError) {
       showErrorToast(settingsError);
+    }
+  }
+
+  async function stopStackLease(stackId: string) {
+    setBusyStackId(stackId);
+
+    try {
+      await postJson("/api/stacks/stop", { stackId });
+      showToast("Stack stopped");
+    } catch (stackError) {
+      showErrorToast(stackError);
+    } finally {
+      setBusyStackId((current) => (current === stackId ? null : current));
+    }
+  }
+
+  async function pinStackLease(stackId: string, pinned: boolean) {
+    try {
+      await postJson("/api/stacks/pin", { stackId, pinned });
+      showToast(pinned ? "Stack pinned" : "Stack unpinned");
+    } catch (pinError) {
+      showErrorToast(pinError);
     }
   }
 
@@ -2620,36 +2678,48 @@ export function App() {
             <div className="workspace-panel">
               <div className="thread-toolbar">
                 <div className="panel-controls">
-                  {activePreviewLease ? (
-                    <>
-                      <span className="thread-preview-status">
-                        {formatPreviewBootstrap(activePreviewLease)}
-                      </span>
+                  {activeThreadStacks.map((stack) => (
+                    <div key={stack.id} className="thread-toolbar-service-actions">
                       <button
                         className="panel-action"
-                        onClick={() => void pinPreviewLease(activePreviewLease.id, !activePreviewLease.pinned)}
+                        onClick={() => void pinStackLease(stack.id, !stack.pinned)}
                       >
-                        {activePreviewLease.pinned ? "Unpin preview" : "Pin preview"}
+                        {stack.pinned ? "Unpin stack" : "Pin stack"}
                       </button>
-                      <a className="panel-action panel-action-link" href={activePreviewLease.operatorUrl} target="_blank" rel="noreferrer">
+                      <button
+                        className="panel-action"
+                        onClick={() => void stopStackLease(stack.id)}
+                        disabled={busyStackId === stack.id}
+                      >
+                        {busyStackId === stack.id ? "Stopping…" : "Stop stack"}
+                      </button>
+                    </div>
+                  ))}
+                  {activeThreadPreviews.map((lease) => (
+                    <Fragment key={lease.id}>
+                      <span className="thread-preview-status">{formatPreviewBootstrap(lease)}</span>
+                      <button className="panel-action" onClick={() => void pinPreviewLease(lease.id, !lease.pinned)}>
+                        {lease.pinned ? "Unpin preview" : "Pin preview"}
+                      </button>
+                      <a className="panel-action panel-action-link" href={lease.operatorUrl} target="_blank" rel="noreferrer">
                         Open preview
                       </a>
                       <button
                         className="panel-action"
-                        onClick={() => void verifyPreviewLease(activePreviewLease.id)}
-                        disabled={busyPreviewLeaseId === activePreviewLease.id}
+                        onClick={() => void verifyPreviewLease(lease.id)}
+                        disabled={busyPreviewLeaseId === lease.id}
                       >
-                        {busyPreviewLeaseId === activePreviewLease.id ? "Checking…" : "Verify preview"}
+                        {busyPreviewLeaseId === lease.id ? "Checking…" : "Verify preview"}
                       </button>
                       <button
                         className="panel-action"
-                        onClick={() => void stopPreviewLease(activePreviewLease.id)}
-                        disabled={busyPreviewLeaseId === activePreviewLease.id}
+                        onClick={() => void stopPreviewLease(lease.id)}
+                        disabled={busyPreviewLeaseId === lease.id}
                       >
                         Stop preview
                       </button>
-                    </>
-                  ) : null}
+                    </Fragment>
+                  ))}
                   {activeThreadServices.map((service) => (
                     <div key={service.id} className="thread-toolbar-service-actions">
                       <button className="panel-action" onClick={() => void pinServiceLease(service.id, !service.pinned)}>
@@ -3015,8 +3085,53 @@ export function App() {
             </div>
           ) : (
             <div className="workspace-panel">
-              {activePreviewLeases.length > 0 || activeServiceLeases.length > 0 ? (
+              {activeStackLeases.length > 0 || activePreviewLeases.length > 0 || activeServiceLeases.length > 0 ? (
                 <div className="runtime-strip">
+                  {activeStackLeases.length > 0 ? (
+                    <section className="runtime-group">
+                      <div className="runtime-group-head">
+                        <span className="eyebrow">Stacks</span>
+                        <span className="runtime-group-count">{activeStackLeases.length}</span>
+                      </div>
+                      <div className="runtime-list">
+                        {activeStackLeases.map((stack) => (
+                          <article key={stack.id} className="runtime-item">
+                            <button
+                              className="runtime-item-main"
+                              onClick={() => {
+                                if (!stack.threadId) {
+                                  return;
+                                }
+                                setSelectedSurface("thread");
+                                setSelectedThreadId(stack.threadId);
+                                setShowPromptRail(false);
+                                postJson("/api/windows/open", { threadId: stack.threadId }).catch((openError) =>
+                                  showErrorToast(openError)
+                                );
+                              }}
+                            >
+                              <span className="runtime-item-title">{stack.title}</span>
+                              <span className="runtime-item-meta">
+                                {stack.projectLabel} • {stack.networkName} • {stack.status} • {formatLeaseState(stack.lifecycleState, stack.expiresAt, stack.pinned)} • storage={stack.storageKey ?? "none"}{stack.cloneFromStorageKey ? `<=${stack.cloneFromStorageKey}` : ""} • sticky={stack.retainsVolumes ? stack.volumeNames.length : 0} • previews={stack.previewIds.length} • services={stack.serviceIds.length}
+                              </span>
+                            </button>
+                            <div className="runtime-item-actions">
+                              <button className="panel-action" onClick={() => void pinStackLease(stack.id, !stack.pinned)}>
+                                {stack.pinned ? "Unpin" : "Pin"}
+                              </button>
+                              <button
+                                className="panel-action"
+                                onClick={() => void stopStackLease(stack.id)}
+                                disabled={busyStackId === stack.id}
+                              >
+                                {busyStackId === stack.id ? "Stopping…" : "Stop"}
+                              </button>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
                   {activePreviewLeases.length > 0 ? (
                     <section className="runtime-group">
                       <div className="runtime-group-head">
@@ -3098,7 +3213,8 @@ export function App() {
                             >
                               <span className="runtime-item-title">{service.title}</span>
                               <span className="runtime-item-meta">
-                                {service.connection.engine} • {service.connection.host}:{service.connection.port} • {service.status} •{" "}
+                                {service.connection.engine} • {service.connection.host}:{service.connection.port} • {service.storageKind}
+                                {service.volumeName ? `(${service.volumeName})` : ""} • {service.status} •{" "}
                                 {formatLeaseState(service.lifecycleState, service.expiresAt, service.pinned)}
                               </span>
                             </button>
