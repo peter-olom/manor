@@ -22,6 +22,7 @@ import { type ImageReferenceStore } from "./image-store.js";
 import { ensureTaskWorktree } from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, toServiceLeaseView } from "./service-templates.js";
+import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
 import type {
   AppSnapshot,
   ButlerAuthStatus,
@@ -311,6 +312,8 @@ function buildSystemPrompt(store: ButlerStateStore): string {
     "When work touches git in a repo, enforce a dedicated branch whose name starts with butler/.",
     "Do not run two parallel Codex workstreams on the same repo branch.",
     "When a task needs multiple cooperating previews or disposable services, create a stack lease first so Butler can keep the whole environment under one isolated network and lifecycle.",
+    "For recurring mutable databases or object stores, prefer job-scoped stateful stacks so each job gets its own retained writable copy forked from the project base by default.",
+    "Reserve base-mode stacks for intentional seed or snapshot refresh work. Do not let multiple jobs share one writable database volume.",
     "When a task needs a live app review, prefer a preview lease on an isolated runtime instead of telling the operator to bind a raw host port.",
     "When a project needs common dev dependencies like Postgres, Redis, MySQL, MSSQL, RabbitMQ, MinIO, Mailpit, or SQLite, prefer the built-in service templates instead of ad hoc install steps.",
     "Codex may operate inside attached isolates through manor-harness for inspect, logs, processes, and shell exec, but Butler still owns isolate lifecycle and policy.",
@@ -868,6 +871,18 @@ export class ButlerAgentService extends EventEmitter {
     return [...new Set(value.map((entry) => (typeof entry === "string" ? entry.trim() : "")).filter(Boolean))];
   }
 
+  private describeStackStorage(stack: {
+    storageMode: "ephemeral" | "job" | "base" | "custom";
+    baseStorageKey: string | null;
+    storageKey: string | null;
+    cloneFromStorageKey: string | null;
+    defaultPromoteTargetStorageKey: string | null;
+    retainsVolumes: boolean;
+    volumeNames: string[];
+  }): string {
+    return formatStackStorageSummary(stack);
+  }
+
   private buildCustomTools() {
     return [
       this.defineButlerTool({
@@ -911,7 +926,7 @@ export class ButlerAgentService extends EventEmitter {
               : stacks
                 .map(
                   (stack, index) =>
-                      `${index + 1}. ${stack.title} | thread=${stack.threadId ?? "(none)"} | status=${stack.status} | network=${stack.networkName} | storage=${stack.storageKey ?? "none"}${stack.cloneFromStorageKey ? `<=${stack.cloneFromStorageKey}` : ""} | sticky=${stack.retainsVolumes ? stack.volumeNames.length : 0} | previews=${stack.previewIds.length} | services=${stack.serviceIds.length}`
+                      `${index + 1}. ${stack.title} | thread=${stack.threadId ?? "(none)"} | status=${stack.status} | network=${stack.networkName} | ${this.describeStackStorage(stack)} | previews=${stack.previewIds.length} | services=${stack.serviceIds.length}`
                   )
                   .join("\n");
           return {
@@ -924,11 +939,15 @@ export class ButlerAgentService extends EventEmitter {
         name: "start_stack",
         label: "Start stack",
         description: "Create one isolated stack lease and network for a multi-container job.",
-        promptSnippet: "start_stack: use this before launching multiple cooperating previews or services for one job.",
+        promptSnippet:
+          "start_stack: use this before launching multiple cooperating previews or services for one job. Prefer storageMode=job for recurring mutable databases so each job gets its own writable fork from the project base. Use storageMode=base only when intentionally seeding or refreshing the shared base state.",
         parameters: Type.Object({
           threadId: Type.Optional(Type.String()),
           title: Type.String({ minLength: 1 }),
           cwd: Type.Optional(Type.String()),
+          storageMode: Type.Optional(
+            Type.Union([Type.Literal("ephemeral"), Type.Literal("job"), Type.Literal("base"), Type.Literal("custom")])
+          ),
           retainsVolumes: Type.Optional(Type.Boolean()),
           storageKey: Type.Optional(Type.String()),
           cloneFromStorageKey: Type.Optional(Type.String())
@@ -939,6 +958,7 @@ export class ButlerAgentService extends EventEmitter {
             threadId?: string;
             title: string;
             cwd?: string;
+            storageMode?: "ephemeral" | "job" | "base" | "custom";
             retainsVolumes?: boolean;
             storageKey?: string;
             cloneFromStorageKey?: string;
@@ -951,6 +971,7 @@ export class ButlerAgentService extends EventEmitter {
             projectLabel: thread?.supervisor.projectLabel ?? "stack",
             title: typedParams.title.trim(),
             worktreePath: typedParams.cwd?.trim() || thread?.cwd || null,
+            storageMode: normalizeStackStorageMode(typedParams.storageMode) ?? null,
             retainsVolumes: Boolean(typedParams.retainsVolumes),
             storageKey: typedParams.storageKey?.trim() || null,
             cloneFromStorageKey: typedParams.cloneFromStorageKey?.trim() || null
@@ -960,7 +981,7 @@ export class ButlerAgentService extends EventEmitter {
             content: [
               {
                 type: "text",
-                text: `Started stack ${stack.title}. Network=${stack.networkName}.${stack.storageKey ? ` Storage=${stack.storageKey}.` : ""}${stack.cloneFromStorageKey ? ` Forked from ${stack.cloneFromStorageKey}.` : ""}${stack.retainsVolumes ? ` Sticky volumes=${stack.volumeNames.length}.` : ""}`
+                text: `Started stack ${stack.title}. Network=${stack.networkName}. ${this.describeStackStorage(stack)}.`
               }
             ],
             details: { stack }
@@ -985,7 +1006,7 @@ export class ButlerAgentService extends EventEmitter {
             content: [
               {
                 type: "text",
-                text: `${stack.title} is ${stack.status}. Network=${stack.networkName}. Storage=${stack.storageKey ?? "none"}${stack.cloneFromStorageKey ? ` forked-from=${stack.cloneFromStorageKey}` : ""}. Sticky volumes=${stack.retainsVolumes ? stack.volumeNames.length : 0}. Previews=${stack.previewIds.length}. Services=${stack.serviceIds.length}.`
+                text: `${stack.title} is ${stack.status}. Network=${stack.networkName}. ${this.describeStackStorage(stack)}. Previews=${stack.previewIds.length}. Services=${stack.serviceIds.length}.`
               }
             ],
             details: { stack }
@@ -1799,8 +1820,9 @@ export class ButlerAgentService extends EventEmitter {
             "If this job needs a preview isolate, a disposable service, or runtime inspection, use the local `manor-harness` command from this workspace.",
             "Start with `manor-harness status` to see what Manor already attached to this job.",
             "If the work needs multiple cooperating services, create a stack first with `manor-harness stack start`, then attach previews and services to it with `--stack <stackId>` and stable `--alias` names that mirror the app's expected internal hostnames.",
-            "When a stack needs recurring databases or object storage, start it with retained volumes so built-in service templates can reuse named Docker volumes across service restarts.",
-            "When a new job needs its own mutable copy of shared state, fork from a base storage key instead of reusing the same one, and only promote back explicitly after the work is validated.",
+            "When a stack needs recurring databases or object storage, start it with `manor-harness stack start --stateful` so Manor derives a per-job retained storage key, forks from the project base, and sets the default promotion target automatically.",
+            "Use `--storage-mode base` only when you are intentionally creating or refreshing the shared base state for that project. Do not share one writable database volume across concurrent jobs.",
+            "After validating a job-scoped stateful stack, use `manor-harness stack promote <stackId>` to publish its retained data back to the project base. Only override the target manually when the task explicitly needs a different namespace.",
             "For attached previews and services, use `manor-harness` for inspect, logs, processes, and exec directly against the runtime. Butler still owns start, stop, lifecycle, and policy.",
             "Use only the harness actions exposed through `manor-harness`. Do not try to command Butler directly outside those actions.",
             "When you complete meaningful work, record a supervisor report before your final reply with `manor-harness report --status completed --summary \"<concise outcome>\" --details \"<brief oversight note with the key fact, risk, or next step>\"`.",

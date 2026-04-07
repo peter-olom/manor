@@ -241,9 +241,12 @@ type Snapshot = {
       worktreePath: string | null;
       networkName: string;
       status: "running" | "stopping" | "stopped" | "degraded";
+      storageMode: "ephemeral" | "job" | "base" | "custom";
       retainsVolumes: boolean;
+      baseStorageKey: string | null;
       storageKey: string | null;
       cloneFromStorageKey: string | null;
+      defaultPromoteTargetStorageKey: string | null;
       volumeNames: string[];
       createdAt: number;
       updatedAt: number;
@@ -422,6 +425,24 @@ function formatPreviewBootstrap(lease: Snapshot["butler"]["previews"][number]): 
     return lease.bootstrap.lastHeartbeatError ? `failed • ${lease.bootstrap.lastHeartbeatError}` : "failed";
   }
   return phase;
+}
+
+function formatStackStorage(stack: Snapshot["butler"]["stacks"][number]): string {
+  const parts = [`mode=${stack.storageMode}`];
+  if (stack.storageKey) {
+    parts.push(`key=${stack.storageKey}`);
+  }
+  if (stack.baseStorageKey) {
+    parts.push(`base=${stack.baseStorageKey}`);
+  }
+  if (stack.cloneFromStorageKey) {
+    parts.push(`fork=${stack.cloneFromStorageKey}`);
+  }
+  if (stack.defaultPromoteTargetStorageKey) {
+    parts.push(`promote=${stack.defaultPromoteTargetStorageKey}`);
+  }
+  parts.push(`sticky=${stack.retainsVolumes ? stack.volumeNames.length : 0}`);
+  return parts.join(" • ");
 }
 
 function formatTimelineDayLabel(value: number | null | undefined): string {
@@ -3112,7 +3133,7 @@ export function App() {
                             >
                               <span className="runtime-item-title">{stack.title}</span>
                               <span className="runtime-item-meta">
-                                {stack.projectLabel} • {stack.networkName} • {stack.status} • {formatLeaseState(stack.lifecycleState, stack.expiresAt, stack.pinned)} • storage={stack.storageKey ?? "none"}{stack.cloneFromStorageKey ? `<=${stack.cloneFromStorageKey}` : ""} • sticky={stack.retainsVolumes ? stack.volumeNames.length : 0} • previews={stack.previewIds.length} • services={stack.serviceIds.length}
+                                {stack.projectLabel} • {stack.networkName} • {stack.status} • {formatLeaseState(stack.lifecycleState, stack.expiresAt, stack.pinned)} • {formatStackStorage(stack)} • previews={stack.previewIds.length} • services={stack.serviceIds.length}
                               </span>
                             </button>
                             <div className="runtime-item-actions">

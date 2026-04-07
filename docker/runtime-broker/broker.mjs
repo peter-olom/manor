@@ -119,6 +119,49 @@ function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function normalizeStackStorageMode(value) {
+  const normalized = normalizeString(value).toLowerCase();
+  if (normalized === "ephemeral" || normalized === "job" || normalized === "base" || normalized === "custom") {
+    return normalized;
+  }
+  return "";
+}
+
+function sanitizeStorageToken(value, fallback) {
+  const normalized = normalizeString(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return (normalized || fallback).slice(0, 32);
+}
+
+function deriveWorktreeToken(worktreePath) {
+  const normalized = normalizeString(worktreePath).replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!normalized) {
+    return "";
+  }
+
+  const segments = normalized.split("/").filter(Boolean);
+  return segments.at(-1) || "";
+}
+
+function deriveProjectStorageKey(payload) {
+  const projectToken = sanitizeStorageToken(
+    payload.projectId || payload.projectLabel || deriveWorktreeToken(payload.worktreePath) || "stack",
+    "stack"
+  );
+  return `project-${projectToken}-base`;
+}
+
+function deriveJobStorageKey(payload, stackId) {
+  const projectToken = sanitizeStorageToken(
+    payload.projectId || payload.projectLabel || deriveWorktreeToken(payload.worktreePath) || "stack",
+    "stack"
+  );
+  const jobToken = sanitizeStorageToken(payload.threadId || payload.title || stackId || "job", "job");
+  return `project-${projectToken}-job-${jobToken}`;
+}
+
 function normalizeStringArray(value) {
   if (!Array.isArray(value)) {
     return [];
@@ -213,6 +256,18 @@ function getStackScopeKeyFromLabels(labels) {
 
 function getStackCloneSourceKeyFromLabels(labels) {
   return normalizeString(labels?.["manor.clone-from-storage-key"]);
+}
+
+function getStackStorageModeFromLabels(labels) {
+  return normalizeStackStorageMode(labels?.["manor.storage-mode"]) || "ephemeral";
+}
+
+function getStackBaseStorageKeyFromLabels(labels) {
+  return normalizeString(labels?.["manor.base-storage-key"]);
+}
+
+function getStackPromoteTargetKeyFromLabels(labels) {
+  return normalizeString(labels?.["manor.promote-target-storage-key"]);
 }
 
 async function listStackVolumesByScopeKey(scopeKey) {
@@ -350,15 +405,41 @@ function buildLease(payload) {
 function buildStack(payload) {
   const id = payload.stackId || crypto.randomUUID();
   const now = Date.now();
-  const retainsVolumes = normalizeBoolean(payload.retainsVolumes);
-  const storageKey = retainsVolumes ? normalizeString(payload.storageKey) || normalizeString(payload.threadId) || id : "";
-  const cloneFromStorageKey =
-    retainsVolumes && storageKey
-      ? (() => {
-          const sourceKey = normalizeString(payload.cloneFromStorageKey);
-          return sourceKey && sourceKey !== storageKey ? sourceKey : "";
-        })()
-      : "";
+  const explicitStorageKey = normalizeString(payload.storageKey);
+  const explicitCloneFromStorageKey = normalizeString(payload.cloneFromStorageKey);
+  const requestedStorageMode = normalizeStackStorageMode(payload.storageMode);
+  const storageMode =
+    requestedStorageMode ||
+    (normalizeBoolean(payload.retainsVolumes) || explicitStorageKey || explicitCloneFromStorageKey ? "custom" : "ephemeral");
+  const derivedBaseStorageKey = deriveProjectStorageKey(payload);
+  let retainsVolumes = false;
+  let baseStorageKey = derivedBaseStorageKey;
+  let storageKey = "";
+  let cloneFromStorageKey = "";
+  let defaultPromoteTargetStorageKey = "";
+
+  if (storageMode === "job") {
+    retainsVolumes = true;
+    baseStorageKey = explicitCloneFromStorageKey || derivedBaseStorageKey;
+    storageKey = explicitStorageKey || deriveJobStorageKey(payload, id);
+    cloneFromStorageKey = baseStorageKey && baseStorageKey !== storageKey ? baseStorageKey : "";
+    defaultPromoteTargetStorageKey = cloneFromStorageKey;
+  } else if (storageMode === "base") {
+    retainsVolumes = true;
+    baseStorageKey = explicitStorageKey || derivedBaseStorageKey;
+    storageKey = baseStorageKey;
+    cloneFromStorageKey =
+      explicitCloneFromStorageKey && explicitCloneFromStorageKey !== storageKey ? explicitCloneFromStorageKey : "";
+  } else if (storageMode === "custom") {
+    retainsVolumes = normalizeBoolean(payload.retainsVolumes) || Boolean(explicitStorageKey || explicitCloneFromStorageKey);
+    storageKey = retainsVolumes ? explicitStorageKey || normalizeString(payload.threadId) || id : "";
+    cloneFromStorageKey =
+      retainsVolumes && explicitCloneFromStorageKey && explicitCloneFromStorageKey !== storageKey ? explicitCloneFromStorageKey : "";
+    baseStorageKey = cloneFromStorageKey || (storageKey ? storageKey : derivedBaseStorageKey);
+    defaultPromoteTargetStorageKey = cloneFromStorageKey;
+  } else {
+    baseStorageKey = derivedBaseStorageKey;
+  }
 
   return {
     id,
@@ -369,9 +450,12 @@ function buildStack(payload) {
     worktreePath: normalizeString(payload.worktreePath) || null,
     networkName: toStackNetworkName(id),
     status: "running",
+    storageMode,
     retainsVolumes,
+    baseStorageKey,
     storageKey,
     cloneFromStorageKey,
+    defaultPromoteTargetStorageKey,
     volumeNames: [],
     createdAt: now,
     updatedAt: now,
@@ -1151,9 +1235,16 @@ function summarizeStackStatus(containers) {
 async function serializeStackFromNetwork(networkSummary) {
   const labels = networkSummary.Labels || {};
   const stackId = labels["manor.stack-id"] || "";
+  const storageMode = getStackStorageModeFromLabels(labels);
   const retainsVolumes = labels["manor.retains-volumes"] === "true";
   const stackScopeKey = getStackScopeKeyFromLabels(labels);
   const cloneFromStorageKey = getStackCloneSourceKeyFromLabels(labels);
+  const baseStorageKey =
+    getStackBaseStorageKeyFromLabels(labels) ||
+    (storageMode === "base"
+      ? stackScopeKey
+      : getStackPromoteTargetKeyFromLabels(labels) || cloneFromStorageKey || stackScopeKey);
+  const defaultPromoteTargetStorageKey = getStackPromoteTargetKeyFromLabels(labels) || cloneFromStorageKey;
   const containers = await listStackMemberContainers(stackId);
   const volumes = retainsVolumes ? await listStackVolumesByScopeKey(stackScopeKey) : [];
   const previewIds = containers
@@ -1180,9 +1271,12 @@ async function serializeStackFromNetwork(networkSummary) {
     worktreePath: labels["manor.worktree-path"] || null,
     networkName: networkSummary.Name,
     status: summarizeStackStatus(containers),
+    storageMode,
     retainsVolumes,
+    baseStorageKey: baseStorageKey || null,
     storageKey: stackScopeKey || null,
     cloneFromStorageKey: cloneFromStorageKey || null,
+    defaultPromoteTargetStorageKey: defaultPromoteTargetStorageKey || null,
     volumeNames: volumes.map((volume) => volume.Name).filter(Boolean).sort(),
     createdAt,
     updatedAt: memberUpdatedAt,
@@ -1270,9 +1364,12 @@ app.post("/stacks", async (request, response) => {
         "manor.project-label": stack.projectLabel,
         "manor.title": stack.title,
         "manor.worktree-path": stack.worktreePath ?? "",
+        "manor.storage-mode": stack.storageMode,
         "manor.retains-volumes": stack.retainsVolumes ? "true" : "false",
-        "manor.stack-scope-key": stack.storageKey,
-        "manor.clone-from-storage-key": stack.cloneFromStorageKey,
+        "manor.base-storage-key": stack.baseStorageKey || "",
+        "manor.stack-scope-key": stack.storageKey || "",
+        "manor.clone-from-storage-key": stack.cloneFromStorageKey || "",
+        "manor.promote-target-storage-key": stack.defaultPromoteTargetStorageKey || "",
         "manor.created-at": String(stack.createdAt)
       }
     });
@@ -1339,7 +1436,7 @@ app.post("/stacks/:stackId/promote", async (request, response) => {
 
   const retainsVolumes = stack.Labels?.["manor.retains-volumes"] === "true";
   const sourceStorageKey = getStackScopeKeyFromLabels(stack.Labels);
-  const defaultTargetStorageKey = getStackCloneSourceKeyFromLabels(stack.Labels);
+  const defaultTargetStorageKey = getStackPromoteTargetKeyFromLabels(stack.Labels) || getStackCloneSourceKeyFromLabels(stack.Labels);
   const targetStorageKey = normalizeString(request.body?.targetStorageKey) || defaultTargetStorageKey;
   if (!retainsVolumes || !sourceStorageKey) {
     response.status(400).json({ error: "Stack does not retain volumes" });

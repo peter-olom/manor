@@ -462,11 +462,20 @@ export class ButlerStateStore extends EventEmitter {
       ...lease,
       worktreePath: typeof lease.worktreePath === "string" && lease.worktreePath.trim() ? lease.worktreePath.trim() : null,
       networkName: typeof lease.networkName === "string" ? lease.networkName.trim() : "",
+      storageMode:
+        lease.storageMode === "job" || lease.storageMode === "base" || lease.storageMode === "custom" || lease.storageMode === "ephemeral"
+          ? lease.storageMode
+          : "ephemeral",
       retainsVolumes: Boolean(lease.retainsVolumes),
+      baseStorageKey: typeof lease.baseStorageKey === "string" && lease.baseStorageKey.trim() ? lease.baseStorageKey.trim() : null,
       storageKey: typeof lease.storageKey === "string" && lease.storageKey.trim() ? lease.storageKey.trim() : null,
       cloneFromStorageKey:
         typeof lease.cloneFromStorageKey === "string" && lease.cloneFromStorageKey.trim()
           ? lease.cloneFromStorageKey.trim()
+          : null,
+      defaultPromoteTargetStorageKey:
+        typeof lease.defaultPromoteTargetStorageKey === "string" && lease.defaultPromoteTargetStorageKey.trim()
+          ? lease.defaultPromoteTargetStorageKey.trim()
           : null,
       volumeNames: Array.isArray(lease.volumeNames)
         ? [...new Set(lease.volumeNames.map((name) => (typeof name === "string" ? name.trim() : "")).filter(Boolean))]

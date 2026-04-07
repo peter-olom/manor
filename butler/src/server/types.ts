@@ -59,6 +59,7 @@ export type PreviewLeaseStatus = "starting" | "running" | "stopping" | "stopped"
 export type PreviewEgressProfile = string;
 export type ServiceLeaseStatus = "starting" | "running" | "stopping" | "stopped" | "failed";
 export type StackLeaseStatus = "running" | "stopping" | "stopped" | "degraded";
+export type StackStorageMode = "ephemeral" | "job" | "base" | "custom";
 export type LeaseLifecycleState = "starting" | "active" | "idle" | "stopping" | "expired";
 export type PreviewBootstrapHeartbeatKind = "none" | "http" | "tcp" | "command";
 export type PreviewBootstrapPhase =
@@ -175,9 +176,12 @@ export interface StackLeaseView extends LeaseLifecycleView {
   worktreePath: string | null;
   networkName: string;
   status: StackLeaseStatus;
+  storageMode: StackStorageMode;
   retainsVolumes: boolean;
+  baseStorageKey: string | null;
   storageKey: string | null;
   cloneFromStorageKey: string | null;
+  defaultPromoteTargetStorageKey: string | null;
   volumeNames: string[];
   createdAt: number;
   updatedAt: number;

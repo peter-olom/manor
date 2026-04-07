@@ -476,6 +476,7 @@ app.post("/api/stacks/start", async (request, response) => {
   const title = typeof request.body?.title === "string" ? request.body.title.trim() : "";
   const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : null;
   const cwd = typeof request.body?.cwd === "string" ? request.body.cwd.trim() : "";
+  const storageMode = typeof request.body?.storageMode === "string" ? request.body.storageMode.trim() : "";
   const retainsVolumes = Boolean(request.body?.retainsVolumes);
   const storageKey = typeof request.body?.storageKey === "string" ? request.body.storageKey.trim() : "";
   const cloneFromStorageKey =
@@ -494,6 +495,7 @@ app.post("/api/stacks/start", async (request, response) => {
       projectLabel: thread?.supervisor.projectLabel ?? "stack",
       title,
       worktreePath: cwd || thread?.cwd || null,
+      storageMode: storageMode || null,
       retainsVolumes,
       storageKey: storageKey || null,
       cloneFromStorageKey: cloneFromStorageKey || null

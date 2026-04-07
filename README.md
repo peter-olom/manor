@@ -1,244 +1,122 @@
 # Manor
 
-Manor is a personal agent harness built around one idea:
+Manor is a Docker-first personal agent harness.
 
-- Codex does the work.
-- Butler supervises the work.
-- High-trust work stays on a warm agent box.
-- Lower-trust web and internet work is pushed into sidecars or disposable runtimes.
+It keeps Codex on a warm worker, puts Butler in charge of supervision, and gives each job private previews, disposable services, and stack-scoped runtime state without exposing raw app ports on the host.
 
-## Ambition
+## What Ships Today
 
-Build a dead-simple personal agent system that can:
+Manor currently runs as one Docker Compose project with these services:
 
-- stay on all the time,
-- manage many repositories,
-- expose live Codex threads through a custom client,
-- delegate long-running feature and project work,
-- let the operator check in occasionally instead of micromanaging every step.
-
-The deployment target is intentionally simple:
-
-- one Docker Compose project on a host,
-- operator chooses how beefy the box should be,
-- access comes in through Twingate,
-- previews, logs, recordings, and agent output stay reachable on the private network.
+- `butler`: the always-on supervisor and web app
+- `butler-gateway`: the host-facing reverse proxy for the Butler UI
+- `codex-box`: the trusted worker container that owns repos, tools, and long-running work
+- `runtime-broker`: the Docker control plane for previews, stack leases, and disposable services
+- `egress`: the restricted outbound proxy for Butler and Codex
+- `preview-egress`: the separate outbound path for preview runtimes
+- `playwright`: the browser automation sidecar
 
 ## Core Model
 
-`Manor` is the whole harness.
+The working model is:
 
-`Butler` is the always-on supervisor built on the Pi agent framework.
+- one operator
+- one Butler supervisor
+- one warm Codex worker
+- one Docker host
+- many jobs
 
-`Codex Box` is the main trusted worker environment that owns repositories, tools, and long-running coding work.
+The isolation model is:
 
-Supporting services handle the risky edges:
+- one job maps to one Codex thread
+- one repo task should use one dedicated worktree
+- one job may own one isolated stack lease
+- previews and disposable services attach to that stack when needed
 
-- browser automation,
-- internet and package egress,
-- optional disposable execution backends,
-- recordings and artifact capture.
-
-Preview runtimes are now part of the core model too:
-
-- Codex owns the repo and task worktree
-- Butler owns the preview lease
-- disposable preview containers run the app on the private Manor network
-- Manor exposes a stable operator-facing route for each preview
-
-Common dev dependencies are part of the model too:
-
-- Butler can provision built-in disposable service templates
-- Postgres, Redis, MySQL, MSSQL, RabbitMQ, MinIO, and Mailpit run as disposable private-network containers
-- SQLite is provisioned as an embedded file directly inside the chosen worktree
-
-Stack-backed environments are part of the model too:
-
-- one job can own one isolated stack lease
-- each stack lease gets one private Docker network
-- stacks can opt into retained named volumes for recurring stateful work
-- retained stacks can fork their volumes from another storage key so jobs get isolated writable copies
-- previews and disposable services can join that network with stable internal aliases
-- cleanup can tear the whole stack down in one action
-
-## Design Principles
-
-- Optimize for usefulness first.
-- Be honest about trust boundaries.
-- Keep the default deployment simple.
-- Separate supervision from execution.
-- Keep direct internet off the main Codex box when possible.
-- Treat remote content as untrusted even when the worker is trusted.
-
-## Initial Architecture
-
-The first cut of Manor uses these lanes:
-
-- `Butler`: a Pi-based supervisor responsible for heartbeat, scheduling, run supervision, completion checks, and re-prompting when work is incomplete.
-- `Codex Box`: trusted coding worker with repo access and local tools.
-- `Egress`: dedicated service for dependency installs, research fetches, and controlled outbound traffic.
-- `Playwright`: browser automation sidecar for screenshots, previews, flows, and recordings.
-
-Optional external backends can be layered in later:
-
-- `E2B` for a fully open execution sandbox path.
-- `Daytona` for a more convenient managed execution path.
-- `Kernel` for managed browser sessions when cost is less important than convenience.
-
-## Security Position
-
-Manor does not pretend that full-access Codex inside its worker container is internally sandboxed.
-
-Instead, the initial model is:
-
-- Butler and Codex are separated into different services.
-- Codex has no direct internet path.
-- Codex reaches OpenAI auth and inference through the egress sidecar only.
-- Web and research work go through sidecars.
-- Egress is explicit and inspectable.
-- The system is a trusted personal worker appliance, not a multi-tenant secure sandbox.
-
-## Repo Layout
-
-- `compose.yml`: initial local harness topology
-- `butler/`: Butler backend and web UI
-- `docs/evolution-and-technology-map.md`: origin, pivot, and technology choices
-- `docker/butler/`: Butler image, startup script, and auth sync helpers
-- `docker/butler-gateway/`: host-facing reverse proxy for the Butler UI
-- `docker/codex-box/`: Codex box image, startup script, and health check
-- `docker/egress/`: allowlisted proxy config for outbound traffic
-- `docker/runtime-broker/`: narrow service that can start and stop disposable preview containers
-- `docker/preview-egress/`: broader but still allowlisted egress path for preview runtimes
-- `config/service-templates.json`: built-in service template catalog for common local dependencies
-- `state/`: local runtime state mounts for the harness
-
-## Butler First Cut
-
-Butler now runs as a real service instead of a placeholder.
-
-- Butler exposes a web UI on `http://127.0.0.1:8180`
-- the UI includes a dedicated Codex terminal surface for direct shell access when needed
-- the UI uses one unified Butler chat plus a jobs sidebar and window strip
-- Butler mirrors Codex threads over app-server notifications and only reads full thread history when a window is opened
-- Codex event notifications remain the primary supervision signal path, and Codex can also submit worker-authored supervisor reports through `manor-harness report`
-- Butler has its own persisted auth and Pi session state
-- Butler can seed its own auth from the existing shared Codex ChatGPT login without modifying the shared Codex auth data
-
-### Butler Tool Contracts
-
-Butler tool behavior is discoverable in code, not in the UI.
-
-- the backend keeps one tool catalog that names every built-in Butler action
-- each action declares its intended UI side effects like opening a window, removing threads, or returning focus to Butler
-- the live Butler snapshot includes that tool metadata for agent-side inspection
-- tool execution results also carry the declared UI effects so follow-on orchestration can react consistently
-
-### First-Time Setup
-
-Butler now exposes a first-time setup checklist in the Butler tab until the basics are ready:
-
-- Butler auth is checked live and accepts either ChatGPT auth or API-key auth
-- Codex auth is checked live and accepts either ChatGPT auth or API-key auth
-- GitHub auth is checked from the Codex box because Codex owns repo cloning and fresh project creation
-- the checklist lives outside the Butler chat and the terminal is available as a separate Codex shell surface
-
-The exact operator commands used by that checklist are:
-
-- `docker exec -it manor-butler butler-auth device`
-- `docker exec manor-butler butler-auth api-key`
-- `docker exec -it manor-codex-box codex-auth device`
-- `docker exec manor-codex-box codex-auth api-key`
-- `docker exec -it manor-codex-box gh-auth-headless`
-- `docker exec manor-codex-box gh auth status`
-
-### Butler Auth
-
-Butler supports the same two operator-facing auth paths as the Codex box:
-
-- ChatGPT auth through cached device-code login state
-- API key auth through `OPENAI_API_KEY` or `OPENAI_API_KEY_FILE`
-
-The Butler image includes the same Codex CLI auth helper pattern:
-
-- `docker compose exec butler butler-auth status`
-- `docker compose exec butler butler-auth device`
-- `docker compose exec butler butler-auth api-key`
-
-### Butler Networking
-
-- Butler reaches Codex over the internal control network
-- Butler UI is published through a tiny `nginx` gateway service so Butler itself does not need host port publishing
-- the gateway is the only Butler-adjacent service directly exposed on the host
-- Butler also proxies preview leases through stable Manor routes instead of exposing raw app ports directly
-
-## Parallel Repo Work
-
-Parallel work is allowed, but the unit of isolation is not just the branch.
-
-The intended model is:
-
-- one Butler-managed job gets one Codex thread
-- one repo task gets one dedicated `butler/` branch
-- parallel work in the same repo should use separate git worktrees
-- one job may own one stack lease with zero or more preview and service members
-
-That means the practical rule is:
+That gives Manor a practical default:
 
 - `one job -> one worktree -> one isolated stack -> zero or more previews/services`
 
-This keeps parallel work practical without turning the host into a port-collision mess.
+## Butler
 
-### Preview and Port Strategy
+Butler is the operator-facing control plane.
 
-- preview traffic stays on the private work network by default
-- Butler creates and tracks preview leases
-- Manor exposes previews through stable routes like `/preview/<lease-id>/`
-- direct host port publishing should be the exception, not the default
-- cleanup should stop the disposable runtime and release the lease deterministically
+Today it provides:
 
-## Codex Box Startup
+- a web UI on `http://127.0.0.1:8180`
+- a unified Butler chat
+- a jobs sidebar and per-job windows
+- a dedicated Codex terminal surface
+- runtime visibility for stacks, previews, and services
+- image-reference tracking for visual tasks
+- tool-driven delegation into Codex workstreams
 
-The Codex box now boots in app-server mode so Butler can supervise it over the control network.
+Butler is built on the Pi agent framework and supervises Codex through the Codex app server.
 
-- `codex-box` installs the official `@openai/codex` CLI in its image build.
-- `codex-box` also installs `ttyd` and serves a direct shell from the same container
-- the Codex shell is bootstrapped with `zsh`, Oh My Zsh, autosuggestions, syntax highlighting, and a fixed `manor-codex` host identity
-- the container starts `codex app-server` on `ws://0.0.0.0:8080`
-- the container starts `ttyd` on port `7681` and Butler proxies it at `/terminal/`
-- Butler targets that endpoint through `ws://codex-box:8080`
-- Codex state is mounted at `./state/codex-home` inside the stack
-- Codex outbound traffic is forced through the egress proxy on the work network
-- WebSocket auth flags can be passed through the container environment when Butler is ready to enforce them
+## Codex Box
 
-## Egress Policy
+The Codex box is the trusted worker.
 
-The current egress path is fail-closed at the container-network level.
+Today it provides:
 
-- `codex-box` is not attached to the internet network
-- `egress` is the only service with external network reachability for Codex-bound traffic
-- Codex uses proxy environment variables that point at `egress:3128`
-- the proxy only allows `openai.com`, `*.openai.com`, `chatgpt.com`, `*.chatgpt.com`, `github.com`, `*.github.com`, `api.github.com`, and `*.githubusercontent.com`
-- all other outbound destinations are denied
+- the official Codex CLI
+- Codex app-server mode
+- a direct shell via `ttyd`
+- repo and worktree access under `./repos`
+- shared runtime state under `./state`
+- local helper access through `manor-harness`
 
-### Preview Runtime Egress
+Codex does the work. Butler owns lifecycle and policy.
 
-Preview runtimes use named egress profiles that are separate from the Codex box.
+## Previews
 
-- Codex and Butler keep the tighter default egress policy
-- preview runtimes use `none` by default, which means no preview-specific outbound proxy is attached
-- non-default preview access is granted through named profiles that map to explicit allowlists in the preview egress config
-- Butler can also supply a one-off domain allowlist at preview start time when one job needs a custom egress shape
-- custom preview allowlists are materialized as temporary lease-scoped proxy listeners and are deleted with the preview lease
-- the policy data lives outside Butler orchestration so operators can add, remove, or tighten profiles without changing the lease model
-- preview readiness is heartbeat-gated by default, using `http` on `/`
-- `heartbeat=none` is still available as an explicit override for special cases, but it is less trustworthy and should not be the normal preview path
-- preview runtimes still stay on the private work network and reach the internet through an explicit proxy path
+Preview runtimes are disposable containers started by the runtime broker.
 
-## Built-In Service Templates
+Current preview behavior:
 
-Butler can now provision common local dependencies through built-in templates instead of relying on ad hoc setup notes.
+- every preview gets a lease
+- Butler exposes a stable private route for each lease
+- raw host port publishing is not the default path
+- previews are heartbeat-gated during startup
+- preview egress defaults to `none`
+- broader outbound access is granted only through named or custom preview egress policies
 
-The first built-ins are:
+## Stacks
+
+Stacks are the unit of multi-container runtime isolation.
+
+Each stack gives a job:
+
+- one private Docker network
+- grouped lifecycle for previews and disposable services
+- stack-level cleanup
+- optional retained volumes for stateful work
+
+This is the path Manor uses for Docker-heavy projects that need multiple cooperating app and infra containers.
+
+## Stateful Stacks
+
+Stateful stacks are now the default answer for mutable service state.
+
+`manor-harness stack start --stateful` creates a job-scoped retained storage namespace and applies an opinionated policy:
+
+- a project base storage key is derived automatically
+- a writable per-job storage key is derived automatically
+- the job stack forks from the project base by default
+- built-in stateful services copy data lazily on first use
+- `manor-harness stack promote <stackId>` publishes back to the project base by default
+
+`--storage-mode base` is reserved for intentional seed or snapshot refresh work.
+
+The intended rule is simple:
+
+- never let concurrent jobs share one writable database volume
+- fork for job work
+- promote only after validation
+
+## Built-In Services
+
+Manor ships built-in service templates for:
 
 - Postgres
 - Redis
@@ -249,75 +127,118 @@ The first built-ins are:
 - Mailpit
 - SQLite
 
-The intended usage is:
+Container-backed templates run as disposable private-network services.
 
-- Butler chooses a template
-- Butler starts a disposable service lease for the current job or project
-- when the stack retains volumes and the template declares a data path, Butler reuses one named Docker volume for that service identity
-- when the stack also declares a source storage key, Butler seeds the first target volume from the matching source volume
-- the resulting host, port, and connection URI become discoverable to Butler
-- Codex uses that service from the same private work network
+SQLite is provisioned directly in the selected worktree as an embedded file.
 
-SQLite is handled differently from the networked services:
+When a stack retains volumes and a template declares a data path, Manor binds that service identity to one managed Docker volume.
 
-- it is not started as a container
-- Butler creates the database file directly in the target worktree
-- the discovered connection URI points at that file path
+## Worker Harness
 
-### Extending Service Templates
+Workers interact with attached runtimes through `manor-harness`.
 
-Service templates are defined in `config/service-templates.json`.
+That surface currently supports:
 
-To add another template:
+- job context and runtime inventory
+- stack start, inspect, promote, and stop
+- preview start, inspect, logs, processes, exec, verify, and stop
+- service template listing
+- service start, inspect, logs, processes, exec, and stop
+- supervisor reporting back to Butler
 
-- add a new entry to the template catalog
-- choose `container` when the dependency should run as a disposable container
-- choose `embedded` when the dependency is just a file provisioned inside the worktree
-- define the default image, port, env defaults, and connection URI template
-- add `stackVolumePath` when the container should keep its data on retained stacks
+The important constraint is unchanged:
 
-The broker stays generic:
+- workers use `manor-harness`
+- Butler and the broker own runtime policy
 
-- Butler owns the template catalog
-- the runtime broker only starts and stops the resulting runtime
-- this keeps the orchestration logic and the service catalog separate
+## Trust and Security Model
 
-### Retained Volume Forks
+Manor is a trusted personal worker appliance, not a multi-tenant sandbox.
 
-Retained stack storage is namespace-based.
+Current trust boundaries:
 
-- `storageKey` identifies the writable volume namespace for one stack
-- `cloneFromStorageKey` lets a new stack fork its first retained volumes from a base namespace
-- the fork happens lazily per service identity, so only the services a job actually starts are copied
-- promotion back to a base namespace is explicit, never automatic
+- Butler and Codex are separated into different services
+- Codex does not get direct internet access
+- Butler and Codex go out through the restricted `egress` proxy
+- preview runtimes use a separate egress path
+- the runtime broker is the only service that talks to the Docker socket
+- preview and service traffic stays on private Docker networks
+- Butler routes previews instead of publishing arbitrary app ports on the host
 
-The intended workflow for mutable databases is:
+This is an architecture-first containment model, not a claim of full internal sandboxing.
 
-- keep one stable base storage key for the shared seed state
-- fork each job into its own writable storage key
-- keep the job's storage after stop when you want incremental state to remain
-- promote back only after the job has been validated and its database services are idle
+## Auth
 
-### Auth Bootstrap
+Both Butler and Codex support:
 
-The Codex CLI needs credentials inside the container home before Butler can drive real work.
+- ChatGPT device-code login
+- API key login
 
-- API key auth is the default headless-friendly path for this stack
-- when an API key is present in the container environment, startup bootstraps `codex login --with-api-key` automatically
-- existing cached ChatGPT credentials in the mounted Codex home are preserved instead of being overwritten
-- device-code auth is also available for headless ChatGPT sign-in through the bundled `codex-auth device` helper
-- the official Codex docs describe copying `~/.codex/auth.json` into a Docker container for headless use when you want ChatGPT auth without device code
+Useful commands:
 
-### Auth Controls
+```bash
+docker compose exec butler butler-auth status
+docker compose exec butler butler-auth device
+docker compose exec butler butler-auth api-key
 
-- `CODEX_AUTH_BOOTSTRAP=auto` logs in with an API key only when one is available and Codex is not already logged in
-- `OPENAI_API_KEY` or `OPENAI_API_KEY_FILE` supplies the API key source
-- `CODEX_FORCED_LOGIN_METHOD=api` restricts the worker to API key auth
-- `CODEX_FORCED_LOGIN_METHOD=chatgpt` restricts the worker to ChatGPT auth, including device-code login
+docker compose exec codex-box codex-auth status
+docker compose exec codex-box codex-auth device
+docker compose exec codex-box codex-auth api-key
 
-## Next Steps
+docker compose exec codex-box gh auth status
+docker compose exec -it codex-box gh-auth-headless
+```
 
-- deepen Butler job lifecycle management with leases, retries, and completion enforcement
-- add first-class preview controls in the UI
-- wire browser verification against the same leased preview routes
-- add richer per-project orchestration and cleanup policies
+## Running Manor
+
+Prerequisites:
+
+- Docker with Compose support
+- either OpenAI API-key auth or ChatGPT login
+- GitHub auth in the Codex box if repo cloning or fresh project setup is needed
+
+Start the stack:
+
+```bash
+docker compose up -d --build
+```
+
+Then open:
+
+- `http://127.0.0.1:8180`
+
+## Development Notes
+
+Current local development assumptions:
+
+- Butler source is bind-mounted into the Butler container
+- Butler hot reload is enabled by default in Compose
+- Codex state, Butler state, artifacts, and repos are persisted under `./state`, `./artifacts`, and `./repos`
+- runtime broker operations affect live Docker resources on the host
+
+## Repo Layout
+
+- `compose.yml`: local Manor stack
+- `butler/`: Butler backend and web app
+- `config/`: service templates and preview egress profiles
+- `docker/butler/`: Butler image and auth helpers
+- `docker/butler-gateway/`: Butler reverse proxy
+- `docker/codex-box/`: Codex worker image and harness CLI
+- `docker/egress/`: restricted outbound proxy
+- `docker/preview-egress/`: preview egress control plane
+- `docker/runtime-broker/`: preview, service, and stack runtime broker
+- `docker/playwright/`: browser automation image
+- `repos/`: checked-out repos and worktrees
+- `artifacts/`: screenshots, recordings, and other job artifacts
+- `state/`: persisted runtime state
+
+## Verification
+
+The current stack has been verified recently for:
+
+- Butler production build success
+- live stack lease lifecycle
+- live disposable service provisioning
+- retained volume restart persistence
+- retained volume fork and promote flow for Postgres
+- cleanup back to zero active stacks and services after smoke runs

@@ -1,4 +1,4 @@
-import type { PreviewEgressProfile, PreviewLeaseStatus, ServiceLeaseStatus, StackLeaseStatus } from "./types.js";
+import type { PreviewEgressProfile, PreviewLeaseStatus, ServiceLeaseStatus, StackLeaseStatus, StackStorageMode } from "./types.js";
 
 type LeasePayload = {
   id: string;
@@ -73,9 +73,12 @@ type StackPayload = {
   worktreePath: string | null;
   networkName: string;
   status: StackLeaseStatus;
+  storageMode: StackStorageMode;
   retainsVolumes: boolean;
+  baseStorageKey: string | null;
   storageKey: string | null;
   cloneFromStorageKey: string | null;
+  defaultPromoteTargetStorageKey: string | null;
   volumeNames: string[];
   createdAt: number;
   updatedAt: number;
@@ -262,6 +265,7 @@ export class RuntimeBrokerClient {
     projectLabel: string;
     title: string;
     worktreePath?: string | null;
+    storageMode?: StackStorageMode | null;
     retainsVolumes?: boolean;
     storageKey?: string | null;
     cloneFromStorageKey?: string | null;

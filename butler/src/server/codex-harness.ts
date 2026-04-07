@@ -5,6 +5,7 @@ import path from "node:path";
 import { ButlerStateStore } from "./state-store.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, toServiceLeaseView } from "./service-templates.js";
+import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
 
 type HarnessCapability = {
   id: string;
@@ -355,6 +356,18 @@ export class CodexHarnessService {
     return this.store.listServiceLeases().filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
   }
 
+  private describeStackStorage(stack: {
+    storageMode: "ephemeral" | "job" | "base" | "custom";
+    baseStorageKey: string | null;
+    storageKey: string | null;
+    cloneFromStorageKey: string | null;
+    defaultPromoteTargetStorageKey: string | null;
+    retainsVolumes: boolean;
+    volumeNames: string[];
+  }) {
+    return formatStackStorageSummary(stack);
+  }
+
   private describeCapability(capability: HarnessCapability): string {
     const thread = this.getThreadContext(capability);
     const stacks = this.store.listStackLeases().filter((lease) => lease.threadId === capability.threadId && lease.status !== "stopped");
@@ -364,7 +377,7 @@ export class CodexHarnessService {
     const stackLines =
       stacks.length === 0
         ? "Stacks: none"
-        : `Stacks:\n${stacks.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | network=${lease.networkName} | previews=${lease.previewIds.length} | services=${lease.serviceIds.length}`).join("\n")}`;
+        : `Stacks:\n${stacks.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | network=${lease.networkName} | ${this.describeStackStorage(lease)} | previews=${lease.previewIds.length} | services=${lease.serviceIds.length}`).join("\n")}`;
     const previewLines =
       previews.length === 0
         ? "Previews: none"
@@ -408,7 +421,7 @@ export class CodexHarnessService {
           `Summary: ${thread.supervisor.summary}`,
           stacks.length === 0
             ? "Stacks: none"
-            : `Stacks:\n${stacks.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | network=${lease.networkName} | previews=${lease.previewIds.length} | services=${lease.serviceIds.length}`).join("\n")}`,
+            : `Stacks:\n${stacks.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | network=${lease.networkName} | ${this.describeStackStorage(lease)} | previews=${lease.previewIds.length} | services=${lease.serviceIds.length}`).join("\n")}`,
           previews.length === 0
             ? "Previews: none"
             : `Previews:\n${previews.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | ${lease.operatorUrl}`).join("\n")}`,
@@ -476,16 +489,20 @@ export class CodexHarnessService {
             : stacks
                 .map(
                   (stack, index) =>
-                    `${index + 1}. ${stack.id} | ${stack.title} | ${stack.status} | network=${stack.networkName} | storage=${stack.storageKey ?? "none"}${stack.cloneFromStorageKey ? `<=${stack.cloneFromStorageKey}` : ""} | sticky=${stack.retainsVolumes ? stack.volumeNames.length : 0} | previews=${stack.previewIds.length} | services=${stack.serviceIds.length}`
+                    `${index + 1}. ${stack.id} | ${stack.title} | ${stack.status} | network=${stack.networkName} | ${this.describeStackStorage(stack)} | previews=${stack.previewIds.length} | services=${stack.serviceIds.length}`
                 )
                 .join("\n"),
         data: { stacks }
       };
     }
 
-    if (action === "stack.start") {
+    if (action === "stack.start" || action === "stack.start_stateful") {
       const title = normalizeString(params.title) || `${thread.supervisor.projectLabel} stack`;
       const cwd = normalizeString(params.cwd) || capability.cwd;
+      const requestedStorageMode =
+        action === "stack.start_stateful"
+          ? normalizeStackStorageMode(params.storageMode) || "job"
+          : normalizeStackStorageMode(params.storageMode);
       const retainsVolumes = params.retainsVolumes === true;
       const storageKey = normalizeString(params.storageKey) || null;
       const cloneFromStorageKey = normalizeString(params.cloneFromStorageKey) || null;
@@ -496,6 +513,7 @@ export class CodexHarnessService {
         projectLabel: thread.supervisor.projectLabel,
         title,
         worktreePath: cwd,
+        storageMode: requestedStorageMode,
         retainsVolumes,
         storageKey,
         cloneFromStorageKey
@@ -503,7 +521,7 @@ export class CodexHarnessService {
       this.store.upsertStackLease(stack);
       this.store.addEvent(capability.threadId, "harness/stack/start", `Started stack ${stack.id}`);
       return {
-        text: `Started stack ${stack.title}. Network=${stack.networkName}.${stack.storageKey ? ` Storage=${stack.storageKey}.` : ""}${stack.cloneFromStorageKey ? ` Forked from ${stack.cloneFromStorageKey}.` : ""}${stack.retainsVolumes ? ` Sticky volumes=${stack.volumeNames.length}.` : ""}`,
+        text: `Started stack ${stack.title}. Network=${stack.networkName}. ${this.describeStackStorage(stack)}.`,
         data: { stack }
       };
     }
@@ -515,7 +533,7 @@ export class CodexHarnessService {
       this.store.upsertStackLease(stack);
       this.store.noteStackLeaseActivity(stackId);
       return {
-        text: `${stack.title} is ${stack.status}. Network=${stack.networkName}. Storage=${stack.storageKey ?? "none"}${stack.cloneFromStorageKey ? ` forked-from=${stack.cloneFromStorageKey}` : ""}. Sticky volumes=${stack.retainsVolumes ? stack.volumeNames.length : 0}. Previews=${stack.previewIds.length}. Services=${stack.serviceIds.length}.`,
+        text: `${stack.title} is ${stack.status}. Network=${stack.networkName}. ${this.describeStackStorage(stack)}. Previews=${stack.previewIds.length}. Services=${stack.serviceIds.length}.`,
         data: { stack }
       };
     }

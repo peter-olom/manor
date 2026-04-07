@@ -14,7 +14,7 @@ function printHelp() {
   manor-harness status
   manor-harness report --status completed|blocked --summary "<text>" [--details "<text>"] [--turn-id <id>]
   manor-harness stack list
-  manor-harness stack start [--title <title>] [--cwd <path>] [--retain-volumes] [--storage-key <key>] [--clone-from <key>]
+  manor-harness stack start [--title <title>] [--cwd <path>] [--stateful] [--storage-mode ephemeral|job|base|custom] [--retain-volumes] [--storage-key <key>] [--clone-from <key>]
   manor-harness stack inspect <stackId>
   manor-harness stack promote <stackId> [--to <storageKey>]
   manor-harness stack stop <stackId> [--drop-volumes]
@@ -285,10 +285,11 @@ async function main() {
     if (subcommand === "list") {
       action = "stack.list";
     } else if (subcommand === "start") {
-      action = "stack.start";
+      action = args.includes("--stateful") ? "stack.start_stateful" : "stack.start";
       params = {
         title: readFlag(args, "--title"),
         cwd: readFlag(args, "--cwd"),
+        storageMode: readFlag(args, "--storage-mode"),
         retainsVolumes: args.includes("--retain-volumes"),
         storageKey: readFlag(args, "--storage-key"),
         cloneFromStorageKey: readFlag(args, "--clone-from")
