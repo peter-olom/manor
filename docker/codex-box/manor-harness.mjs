@@ -23,7 +23,7 @@ Preview defaults:
   manor-harness preview processes <leaseId>
   manor-harness preview logs <leaseId> [--tail <n>]
   manor-harness preview exec <leaseId> -- <command>
-  manor-harness preview verify <leaseId>
+  manor-harness preview verify <leaseId> [--mode headless|headful]
   manor-harness preview stop <leaseId>
   manor-harness service templates
   manor-harness service list
@@ -214,7 +214,10 @@ async function main() {
       };
     } else if (subcommand === "verify" && args[2]) {
       action = "preview.verify";
-      params = { leaseId: args[2] };
+      params = {
+        leaseId: args[2],
+        mode: readFlag(args, "--mode")
+      };
     } else if (subcommand === "stop" && args[2]) {
       action = "preview.stop";
       params = { leaseId: args[2] };

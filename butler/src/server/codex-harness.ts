@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { decoratePreviewVerification } from "./preview-verification.js";
 import { ButlerStateStore } from "./state-store.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, toServiceLeaseView } from "./service-templates.js";
@@ -520,11 +521,16 @@ export class CodexHarnessService {
 
     if (action === "preview.verify") {
       const leaseId = normalizeString(params.leaseId);
+      const mode = normalizeString(params.mode) === "headful" ? "headful" : "headless";
       this.requireThreadPreviewReady(capability, leaseId);
       this.store.notePreviewLeaseActivity(leaseId);
-      const result = await this.runtimeBroker.verifyLease({ leaseId });
+      const result = decoratePreviewVerification(await this.runtimeBroker.verifyLease({ leaseId, mode }));
+      this.store.recordPreviewLeaseVerification(leaseId, result);
       return {
-        text: result.ok ? `Preview verified: ${result.title || result.url}` : `Preview verification failed${result.status ? ` (${result.status})` : ""}.`,
+        text:
+          result.ok
+            ? `Preview verified (${result.mode}): ${result.title || result.url}`
+            : `Preview verification failed (${result.mode})${result.status ? ` (${result.status})` : ""}.`,
         data: { verification: result }
       };
     }

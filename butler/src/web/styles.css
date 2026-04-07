@@ -575,8 +575,11 @@ select {
 .runtime-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "main actions"
+    "verification actions";
   gap: 12px;
-  align-items: center;
+  align-items: start;
   min-width: 0;
   padding: 12px 14px;
   background: var(--surface);
@@ -584,6 +587,7 @@ select {
 
 .runtime-item-main {
   display: grid;
+  grid-area: main;
   gap: 4px;
   min-width: 0;
   padding: 0;
@@ -610,9 +614,15 @@ select {
 
 .runtime-item-actions {
   display: flex;
+  grid-area: actions;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.runtime-item-verification {
+  grid-area: verification;
 }
 
 .thread-toolbar {
@@ -656,6 +666,83 @@ select {
   font-size: 0.8rem;
   color: var(--muted);
   text-transform: lowercase;
+}
+
+.thread-preview-verification {
+  padding: 12px 18px 0;
+  background: var(--panel);
+}
+
+.preview-verification-summary {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+}
+
+.preview-verification-summary.is-passed {
+  border-color: color-mix(in srgb, var(--success) 28%, var(--line));
+}
+
+.preview-verification-summary.is-failed {
+  border-color: color-mix(in srgb, var(--danger) 28%, var(--line));
+}
+
+.preview-verification-summary-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.preview-verification-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+}
+
+.preview-verification-summary.is-passed .preview-verification-status {
+  color: var(--success);
+}
+
+.preview-verification-summary.is-failed .preview-verification-status {
+  color: var(--danger);
+}
+
+.preview-verification-meta {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.preview-verification-issues {
+  display: grid;
+  gap: 6px;
+}
+
+.preview-verification-issue {
+  font-size: 0.78rem;
+  color: var(--muted);
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.preview-verification-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.preview-verification-links a {
+  font-size: 0.78rem;
 }
 
 .panel-action {
@@ -2236,6 +2323,10 @@ select {
     padding: 10px 16px;
   }
 
+  .thread-preview-verification {
+    padding: 10px 16px 0;
+  }
+
   .runtime-group {
     padding: 10px 16px;
   }
@@ -2258,6 +2349,10 @@ select {
 
   .runtime-item {
     grid-template-columns: 1fr;
+    grid-template-areas:
+      "main"
+      "verification"
+      "actions";
     align-items: stretch;
   }
 

@@ -92,6 +92,47 @@ type PreviewableImage = {
   url: string;
 };
 
+type PreviewVerificationArtifact = {
+  kind: "manifest" | "screenshot" | "trace" | "html" | "other";
+  label: string;
+  fileName: string;
+  filePath: string;
+  contentType: string;
+  sizeBytes: number | null;
+  url: string | null;
+};
+
+type PreviewBrowserMode = "headless" | "headful";
+
+type PreviewVerification = {
+  runId: string;
+  mode: PreviewBrowserMode;
+  checkedAt: number;
+  durationMs: number;
+  ok: boolean;
+  status: number | null;
+  title: string;
+  url: string;
+  error: string | null;
+  summary: {
+    consoleMessageCount: number;
+    pageErrorCount: number;
+    failedRequestCount: number;
+  };
+  artifacts: PreviewVerificationArtifact[];
+  consoleMessages: Array<{
+    type: string;
+    text: string;
+    location: string | null;
+  }>;
+  pageErrors: string[];
+  failedRequests: Array<{
+    url: string;
+    method: string;
+    errorText: string | null;
+  }>;
+};
+
 type ModelOption = {
   id: string;
   label: string;
@@ -252,6 +293,7 @@ type Snapshot = {
       createdAt: number;
       updatedAt: number;
       lastError: string | null;
+      lastVerification?: PreviewVerification | null;
       pinned?: boolean;
       lastActivityAt?: number;
       expiresAt?: number | null;
@@ -390,6 +432,62 @@ function formatPreviewBootstrap(lease: Snapshot["butler"]["previews"][number]): 
     return lease.bootstrap.lastHeartbeatError ? `failed • ${lease.bootstrap.lastHeartbeatError}` : "failed";
   }
   return phase;
+}
+
+function formatVerificationDuration(durationMs: number | null | undefined): string {
+  if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs < 1000) {
+    return "<1s";
+  }
+
+  if (durationMs < 60_000) {
+    return `${Math.round(durationMs / 1000)}s`;
+  }
+
+  return `${Math.round(durationMs / 60000)}m`;
+}
+
+function formatVerificationSummary(verification: PreviewVerification): string {
+  const issues = [
+    verification.summary.consoleMessageCount > 0 ? `${verification.summary.consoleMessageCount} console` : null,
+    verification.summary.pageErrorCount > 0 ? `${verification.summary.pageErrorCount} page errors` : null,
+    verification.summary.failedRequestCount > 0 ? `${verification.summary.failedRequestCount} failed requests` : null
+  ].filter(Boolean);
+
+  const lead = `${verification.mode === "headful" ? "headed" : "headless"} ${verification.ok ? "passed" : "failed"}`;
+  const parts = [`${lead} at ${formatTime(verification.checkedAt)}`, formatVerificationDuration(verification.durationMs)];
+  if (issues.length > 0) {
+    parts.push(issues.join(", "));
+  }
+  if (verification.status) {
+    parts.push(`status ${verification.status}`);
+  }
+  return parts.join(" • ");
+}
+
+function previewVerificationActionLabel(
+  mode: PreviewBrowserMode,
+  busy: { leaseId: string; mode: PreviewBrowserMode } | null,
+  leaseId: string,
+  compact = false
+): string {
+  const isCurrent = busy?.leaseId === leaseId && busy.mode === mode;
+  if (isCurrent) {
+    return mode === "headful" ? "Checking headed…" : "Checking…";
+  }
+  if (compact) {
+    return mode === "headful" ? "Headed" : "Verify";
+  }
+  return mode === "headful" ? "Verify headed" : "Verify preview";
+}
+
+function findVerificationArtifact(
+  verification: PreviewVerification | null | undefined,
+  kind: PreviewVerificationArtifact["kind"]
+): PreviewVerificationArtifact | null {
+  if (!verification) {
+    return null;
+  }
+  return verification.artifacts.find((artifact) => artifact.kind === kind) ?? null;
 }
 
 function formatTimelineDayLabel(value: number | null | undefined): string {
@@ -1079,6 +1177,44 @@ function scrollElementToCenteredTarget(container: HTMLDivElement | null, target:
   container.scrollTop = Math.max(0, centeredTop);
 }
 
+function PreviewVerificationSummary({ verification }: { verification: PreviewVerification }) {
+  const primaryArtifacts = ["screenshot", "manifest", "trace"]
+    .map((kind) => findVerificationArtifact(verification, kind as PreviewVerificationArtifact["kind"]))
+    .filter((artifact): artifact is PreviewVerificationArtifact => Boolean(artifact && artifact.url));
+  const issueLines = [
+    verification.error,
+    ...verification.pageErrors,
+    ...verification.failedRequests.slice(0, 2).map((request) => `${request.method} ${request.url}${request.errorText ? ` • ${request.errorText}` : ""}`)
+  ].slice(0, 3);
+
+  return (
+    <div className={`preview-verification-summary${verification.ok ? " is-passed" : " is-failed"}`}>
+      <div className="preview-verification-summary-head">
+        <span className="preview-verification-status">{verification.ok ? "Passed" : "Failed"}</span>
+        <span className="preview-verification-meta">{formatVerificationSummary(verification)}</span>
+      </div>
+      {issueLines.length > 0 ? (
+        <div className="preview-verification-issues">
+          {issueLines.map((line, index) => (
+            <div key={`${verification.runId}-issue-${index}`} className="preview-verification-issue">
+              {line}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {primaryArtifacts.length > 0 ? (
+        <div className="preview-verification-links">
+          {primaryArtifacts.map((artifact) => (
+            <a key={`${verification.runId}-${artifact.kind}`} href={artifact.url ?? undefined} target="_blank" rel="noreferrer">
+              {artifact.label}
+            </a>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function App() {
   const initialWorkspaceQuery = readWorkspaceQuery();
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -1124,7 +1260,7 @@ export function App() {
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [copiedCommandKey, setCopiedCommandKey] = useState<string | null>(null);
   const [activeJumpId, setActiveJumpId] = useState<string | null>(null);
-  const [busyPreviewLeaseId, setBusyPreviewLeaseId] = useState<string | null>(null);
+  const [busyPreviewVerification, setBusyPreviewVerification] = useState<{ leaseId: string; mode: PreviewBrowserMode } | null>(null);
   const [busyServiceId, setBusyServiceId] = useState<string | null>(null);
   const errorTimerRef = useRef<number | null>(null);
   const jumpFlashTimerRef = useRef<number | null>(null);
@@ -2078,20 +2214,15 @@ export function App() {
     }
   }
 
-  async function verifyPreviewLease(leaseId: string) {
-    setBusyPreviewLeaseId(leaseId);
+  async function verifyPreviewLease(leaseId: string, mode: PreviewBrowserMode = "headless") {
+    setBusyPreviewVerification({ leaseId, mode });
 
     try {
       const result = await postJson<{
         ok: true;
-        verification: {
-          ok: boolean;
-          status: number | null;
-          title: string;
-          url: string;
-          screenshotPath: string | null;
-        };
-      }>("/api/previews/verify", { leaseId });
+        verification: PreviewVerification;
+        lease: Snapshot["butler"]["previews"][number] | null;
+      }>("/api/previews/verify", { leaseId, mode });
       showToast(
         result.verification.ok
           ? `Preview verified${result.verification.title ? `: ${result.verification.title}` : ""}`
@@ -2100,7 +2231,7 @@ export function App() {
     } catch (previewError) {
       showErrorToast(previewError);
     } finally {
-      setBusyPreviewLeaseId((current) => (current === leaseId ? null : current));
+      setBusyPreviewVerification((current) => (current?.leaseId === leaseId && current.mode === mode ? null : current));
     }
   }
 
@@ -2636,15 +2767,22 @@ export function App() {
                       </a>
                       <button
                         className="panel-action"
-                        onClick={() => void verifyPreviewLease(activePreviewLease.id)}
-                        disabled={busyPreviewLeaseId === activePreviewLease.id}
+                        onClick={() => void verifyPreviewLease(activePreviewLease.id, "headless")}
+                        disabled={busyPreviewVerification?.leaseId === activePreviewLease.id}
                       >
-                        {busyPreviewLeaseId === activePreviewLease.id ? "Checking…" : "Verify preview"}
+                        {previewVerificationActionLabel("headless", busyPreviewVerification, activePreviewLease.id)}
+                      </button>
+                      <button
+                        className="panel-action"
+                        onClick={() => void verifyPreviewLease(activePreviewLease.id, "headful")}
+                        disabled={busyPreviewVerification?.leaseId === activePreviewLease.id}
+                      >
+                        {previewVerificationActionLabel("headful", busyPreviewVerification, activePreviewLease.id)}
                       </button>
                       <button
                         className="panel-action"
                         onClick={() => void stopPreviewLease(activePreviewLease.id)}
-                        disabled={busyPreviewLeaseId === activePreviewLease.id}
+                        disabled={busyPreviewVerification?.leaseId === activePreviewLease.id}
                       >
                         Stop preview
                       </button>
@@ -2674,6 +2812,11 @@ export function App() {
                   </button>
                 </div>
               </div>
+              {activePreviewLease?.lastVerification ? (
+                <div className="thread-preview-verification">
+                  <PreviewVerificationSummary verification={activePreviewLease.lastVerification} />
+                </div>
+              ) : null}
 
               <div className={`workspace-body ${showPromptRail ? "is-detail-open" : "is-detail-closed"}`}>
                 <section className="conversation-pane conversation-pane-full">
@@ -3046,6 +3189,11 @@ export function App() {
                                 {formatLeaseState(lease.lifecycleState, lease.expiresAt, lease.pinned)} • {formatPreviewBootstrap(lease)}
                               </span>
                             </button>
+                            {lease.lastVerification ? (
+                              <div className="runtime-item-verification">
+                                <PreviewVerificationSummary verification={lease.lastVerification} />
+                              </div>
+                            ) : null}
                             <div className="runtime-item-actions">
                               <button className="panel-action" onClick={() => void pinPreviewLease(lease.id, !lease.pinned)}>
                                 {lease.pinned ? "Unpin" : "Pin"}
@@ -3055,15 +3203,22 @@ export function App() {
                               </a>
                               <button
                                 className="panel-action"
-                                onClick={() => void verifyPreviewLease(lease.id)}
-                                disabled={busyPreviewLeaseId === lease.id}
+                                onClick={() => void verifyPreviewLease(lease.id, "headless")}
+                                disabled={busyPreviewVerification?.leaseId === lease.id}
                               >
-                                {busyPreviewLeaseId === lease.id ? "Checking…" : "Verify"}
+                                {previewVerificationActionLabel("headless", busyPreviewVerification, lease.id, true)}
+                              </button>
+                              <button
+                                className="panel-action"
+                                onClick={() => void verifyPreviewLease(lease.id, "headful")}
+                                disabled={busyPreviewVerification?.leaseId === lease.id}
+                              >
+                                {previewVerificationActionLabel("headful", busyPreviewVerification, lease.id, true)}
                               </button>
                               <button
                                 className="panel-action"
                                 onClick={() => void stopPreviewLease(lease.id)}
-                                disabled={busyPreviewLeaseId === lease.id}
+                                disabled={busyPreviewVerification?.leaseId === lease.id}
                               >
                                 Stop
                               </button>

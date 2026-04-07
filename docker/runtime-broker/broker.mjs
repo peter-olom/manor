@@ -1308,35 +1308,24 @@ app.post("/leases/:leaseId/verify", async (request, response) => {
   try {
     const playwrightContainer = docker.getContainer(playwrightContainerName);
     await playwrightContainer.inspect();
-    const screenshotPath = `/artifacts/preview-${request.params.leaseId}-${Date.now()}.png`;
     const targetUrl = `${internalOperatorBaseUrl}${routeBase}/${request.params.leaseId}/`;
-    const script = `
-      const { chromium } = require("playwright");
-      (async () => {
-        const browser = await chromium.launch({ headless: true });
-        const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-        let status = null;
-        const response = await page.goto(process.argv[1], { waitUntil: "networkidle", timeout: 45000 });
-        if (response) status = response.status();
-        await page.screenshot({ path: process.argv[2], fullPage: true });
-        const payload = {
-          ok: true,
-          status,
-          title: await page.title(),
-          url: page.url(),
-          screenshotPath: process.argv[2]
-        };
-        console.log(JSON.stringify(payload));
-        await browser.close();
-      })().catch(async (error) => {
-        console.error(error instanceof Error ? error.stack || error.message : String(error));
-        process.exit(1);
-      });
-    `;
+    const runId = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+    const outputDir = `/artifacts/previews/${request.params.leaseId}/${runId}`;
+    const mode = request.body?.mode === "headful" ? "headful" : "headless";
+    const options = JSON.stringify({
+      runId,
+      mode,
+      targetUrl,
+      outputDir
+    });
+    const execCommand =
+      mode === "headful"
+        ? ["xvfb-run", "-a", "node", "/opt/manor/playwright/verify-preview.mjs", options]
+        : ["node", "/opt/manor/playwright/verify-preview.mjs", options];
     const exec = await playwrightContainer.exec({
       AttachStdout: true,
       AttachStderr: true,
-      Cmd: ["node", "-e", script, targetUrl, screenshotPath],
+      Cmd: execCommand,
       WorkingDir: "/opt/manor/playwright",
       Tty: false
     });
@@ -1345,10 +1334,7 @@ app.post("/leases/:leaseId/verify", async (request, response) => {
       throw new Error(output.stderr.trim() || output.stdout.trim() || "Preview verification failed");
     }
     const parsed = JSON.parse(output.stdout.trim());
-    response.json({
-      leaseId: request.params.leaseId,
-      ...parsed
-    });
+    response.json(parsed);
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
