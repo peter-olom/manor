@@ -15,6 +15,7 @@ import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { loadServiceTemplates, toServiceLeaseView } from "./service-templates.js";
 import { ButlerStateStore } from "./state-store.js";
+import { applyWorkspacePreviewDefaults, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 
 const port = Number(process.env.BUTLER_PORT ?? "8080");
 const codexBaseUrl = process.env.CODEX_BASE_URL ?? "ws://codex-box:8080";
@@ -63,6 +64,7 @@ const codexHarness = new CodexHarnessService({
   serviceTemplates
 });
 await codexHarness.load();
+await codexHarness.reconcileThreadCapabilities();
 const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, {
   onThreadCapabilityReady: async (threadId, cwd) => {
     await codexHarness.ensureThreadCapability(threadId, cwd);
@@ -129,9 +131,105 @@ if (hotReloadEnabled) {
 
 const sseClients = new Set<express.Response>();
 const sseHeartbeatMs = 15000;
+const sseBroadcastDebounceMs = 24;
+const broadcastCache = {
+  shell: "",
+  butlerLive: "",
+  runtime: "",
+  threads: ""
+};
+let broadcastTimer: NodeJS.Timeout | null = null;
 
-function currentSnapshot() {
-  return store.getSnapshot(butlerAgent.getSnapshot(), codexClient.getConnectionState());
+function currentShellSnapshot() {
+  return store.getShellSnapshot(butlerAgent.getShellSnapshot(), codexClient.getConnectionState());
+}
+
+function currentButlerLiveSnapshot() {
+  return butlerAgent.getLiveSnapshot();
+}
+
+function currentRuntimeSnapshot() {
+  return store.getRuntimeSnapshot(serviceTemplates);
+}
+
+function currentOpenThreadsSnapshot() {
+  return store.listOpenThreadDetails();
+}
+
+function currentBootstrapSnapshot() {
+  return {
+    shell: currentShellSnapshot(),
+    butlerLive: currentButlerLiveSnapshot(),
+    runtime: currentRuntimeSnapshot(),
+    openThreads: currentOpenThreadsSnapshot()
+  };
+}
+
+function shouldAllowLocalThreadWindow(threadId: string, error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  const retryable = message.includes("failed to locate rollout") || message.includes("thread not found") || message.includes("thread not loaded");
+  return retryable && Boolean(store.getThread(threadId));
+}
+
+function writeSseEvent(response: express.Response, eventName: string, payload: unknown): void {
+  response.write(`event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`);
+}
+
+function sendInitialEvents(response: express.Response): void {
+  writeSseEvent(response, "shell", currentShellSnapshot());
+  writeSseEvent(response, "butlerLive", currentButlerLiveSnapshot());
+  writeSseEvent(response, "runtime", currentRuntimeSnapshot());
+  writeSseEvent(response, "threads", currentOpenThreadsSnapshot());
+}
+
+function flushBroadcasts(force = false): void {
+  if (broadcastTimer) {
+    clearTimeout(broadcastTimer);
+    broadcastTimer = null;
+  }
+
+  const shell = currentShellSnapshot();
+  const butlerLive = currentButlerLiveSnapshot();
+  const runtime = currentRuntimeSnapshot();
+  const threads = currentOpenThreadsSnapshot();
+
+  const nextPayloads = {
+    shell: JSON.stringify(shell),
+    butlerLive: JSON.stringify(butlerLive),
+    runtime: JSON.stringify(runtime),
+    threads: JSON.stringify(threads)
+  };
+
+  for (const client of sseClients) {
+    if (force || nextPayloads.shell !== broadcastCache.shell) {
+      writeSseEvent(client, "shell", shell);
+    }
+    if (force || nextPayloads.butlerLive !== broadcastCache.butlerLive) {
+      writeSseEvent(client, "butlerLive", butlerLive);
+    }
+    if (force || nextPayloads.runtime !== broadcastCache.runtime) {
+      writeSseEvent(client, "runtime", runtime);
+    }
+    if (force || nextPayloads.threads !== broadcastCache.threads) {
+      writeSseEvent(client, "threads", threads);
+    }
+  }
+
+  broadcastCache.shell = nextPayloads.shell;
+  broadcastCache.butlerLive = nextPayloads.butlerLive;
+  broadcastCache.runtime = nextPayloads.runtime;
+  broadcastCache.threads = nextPayloads.threads;
+}
+
+function scheduleBroadcast(): void {
+  if (broadcastTimer !== null) {
+    return;
+  }
+
+  broadcastTimer = setTimeout(() => {
+    broadcastTimer = null;
+    flushBroadcasts();
+  }, sseBroadcastDebounceMs);
 }
 
 function matchStackSelector<T extends { id: string; title: string }>(stacks: T[], selector: string): T | null {
@@ -297,16 +395,9 @@ function sendUnavailableArtifactResponse(
   });
 }
 
-function broadcastSnapshot(): void {
-  const payload = `data: ${JSON.stringify(currentSnapshot())}\n\n`;
-  for (const client of sseClients) {
-    client.write(payload);
-  }
-}
-
-store.on("change", broadcastSnapshot);
-codexClient.on("change", broadcastSnapshot);
-butlerAgent.on("change", broadcastSnapshot);
+store.on("change", scheduleBroadcast);
+codexClient.on("change", scheduleBroadcast);
+butlerAgent.on("change", scheduleBroadcast);
 
 app.get("/api/health", (_request, response) => {
   response.json({
@@ -321,7 +412,31 @@ app.get("/livez", (_request, response) => {
 });
 
 app.get("/api/bootstrap", (_request, response) => {
-  response.json(currentSnapshot());
+  response.json(currentBootstrapSnapshot());
+});
+
+app.get("/api/shell", (_request, response) => {
+  response.json(currentShellSnapshot());
+});
+
+app.get("/api/runtime", (_request, response) => {
+  response.json(currentRuntimeSnapshot());
+});
+
+app.get("/api/threads/:threadId", (request, response) => {
+  const threadId = typeof request.params.threadId === "string" ? request.params.threadId : "";
+  if (!threadId) {
+    response.status(400).json({ error: "threadId is required" });
+    return;
+  }
+
+  const thread = store.getThreadDetail(threadId);
+  if (!thread) {
+    response.status(404).json({ error: "Thread not found" });
+    return;
+  }
+
+  response.json({ thread });
 });
 
 app.post("/api/images/upload", async (request, response) => {
@@ -501,8 +616,8 @@ app.get("/api/events", (request, response) => {
   response.setHeader("Connection", "keep-alive");
   response.setHeader("X-Accel-Buffering", "no");
   response.flushHeaders();
-  response.write(`data: ${JSON.stringify(currentSnapshot())}\n\n`);
   sseClients.add(response);
+  sendInitialEvents(response);
   const heartbeat = setInterval(() => {
     response.write(`event: heartbeat\ndata: ${Date.now()}\n\n`);
   }, sseHeartbeatMs);
@@ -636,6 +751,11 @@ app.post("/api/windows/open", async (request, response) => {
     store.openWindow(threadId);
     response.json({ ok: true });
   } catch (error) {
+    if (shouldAllowLocalThreadWindow(threadId, error)) {
+      store.openWindow(threadId);
+      response.json({ ok: true, localFallback: true });
+      return;
+    }
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
 });
@@ -657,6 +777,16 @@ app.post("/api/windows/focus", async (request, response) => {
     store.focusWindow(threadId);
     response.json({ ok: true });
   } catch (error) {
+    if (shouldAllowLocalThreadWindow(threadId, error)) {
+      store.focusWindow(threadId);
+      if (store.getShellSnapshot(butlerAgent.getShellSnapshot(), codexClient.getConnectionState()).codex.windows.some((window) => window.threadId === threadId)) {
+        response.json({ ok: true, localFallback: true });
+        return;
+      }
+      store.openWindow(threadId);
+      response.json({ ok: true, localFallback: true });
+      return;
+    }
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
 });
@@ -795,7 +925,7 @@ app.post("/api/previews/start", async (request, response) => {
   const egressProfile =
     typeof request.body?.egressProfile === "string" && request.body.egressProfile.trim()
       ? request.body.egressProfile.trim()
-      : "none";
+      : "internet";
   const bootstrapWaitSeconds =
     typeof request.body?.bootstrapWaitSeconds === "number"
       ? request.body.bootstrapWaitSeconds
@@ -816,11 +946,22 @@ app.post("/api/previews/start", async (request, response) => {
     const requestedStack = await validateRequestedStack(stackId || null, threadId);
     const worktreePath = cwd || requestedStack?.worktreePath || thread?.cwd || "";
     const project = resolveProjectMetadata(worktreePath, thread?.supervisor.projectId ?? "preview", thread?.supervisor.projectLabel ?? "preview");
+    const workspaceBootstrap = await inspectWorkspaceBootstrap(worktreePath);
 
     if (!title || !worktreePath || !command || !Number.isFinite(portValue) || portValue <= 0) {
       response.status(400).json({ error: "title, cwd, command, and port are required" });
       return;
     }
+
+    const previewDefaults = applyWorkspacePreviewDefaults(
+      {
+        image,
+        egressProfile,
+        egressDomains,
+        bootstrapHint: bootstrapHint || undefined
+      },
+      workspaceBootstrap
+    );
 
     const lease = await runtimeBroker.createLease({
       leaseId: crypto.randomUUID(),
@@ -834,11 +975,11 @@ app.post("/api/previews/start", async (request, response) => {
       branchName: null,
       targetPort: portValue,
       command,
-      image,
-      egressProfile,
-      egressDomains,
+      image: previewDefaults.image,
+      egressProfile: previewDefaults.egressProfile ?? "internet",
+      egressDomains: previewDefaults.egressDomains ?? [],
       bootstrapWaitSeconds: Number.isFinite(bootstrapWaitSeconds) && bootstrapWaitSeconds > 0 ? bootstrapWaitSeconds : undefined,
-      bootstrapHint: bootstrapHint || undefined,
+      bootstrapHint: previewDefaults.bootstrapHint,
       heartbeatKind: heartbeatKind || undefined,
       heartbeatTarget: heartbeatTarget || undefined,
       heartbeatIntervalSeconds:
@@ -846,7 +987,7 @@ app.post("/api/previews/start", async (request, response) => {
       env
     });
     store.upsertPreviewLease(lease);
-    response.json({ ok: true, lease });
+    response.json({ ok: true, lease, workspaceBootstrap, previewDefaults });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
@@ -872,6 +1013,22 @@ app.post("/api/previews/stop", async (request, response) => {
 app.post("/api/previews/verify", async (request, response) => {
   const leaseId = typeof request.body?.leaseId === "string" ? request.body.leaseId : "";
   const mode = request.body?.mode === "headful" ? "headful" : "headless";
+  const targetPath = typeof request.body?.path === "string" ? request.body.path : "";
+  const script = typeof request.body?.script === "string" ? request.body.script : "";
+  const waitForSelector = typeof request.body?.waitForSelector === "string" ? request.body.waitForSelector : "";
+  const postLoadWaitMs =
+    typeof request.body?.postLoadWaitMs === "number" && Number.isFinite(request.body.postLoadWaitMs)
+      ? Math.max(0, Math.trunc(request.body.postLoadWaitMs))
+      : 0;
+  const headers =
+    request.body?.headers && typeof request.body.headers === "object"
+      ? Object.fromEntries(
+          Object.entries(request.body.headers as Record<string, unknown>)
+            .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
+            .map(([key, value]) => [key.trim(), value])
+            .filter(([key, value]) => key.length > 0 && value.length > 0)
+        )
+      : {};
   if (!leaseId) {
     response.status(400).json({ error: "leaseId is required" });
     return;
@@ -879,7 +1036,17 @@ app.post("/api/previews/verify", async (request, response) => {
 
   try {
     store.notePreviewLeaseActivity(leaseId);
-    const result = decoratePreviewVerification(await runtimeBroker.verifyLease({ leaseId, mode }));
+    const result = decoratePreviewVerification(
+      await runtimeBroker.verifyLease({
+        leaseId,
+        mode,
+        path: targetPath || undefined,
+        headers: Object.keys(headers).length > 0 ? headers : undefined,
+        waitForSelector: waitForSelector || undefined,
+        postLoadWaitMs: postLoadWaitMs > 0 ? postLoadWaitMs : undefined,
+        script: script.trim() || undefined
+      })
+    );
     const lease = store.recordPreviewLeaseVerification(leaseId, result);
     response.json({ ok: true, verification: result, lease });
   } catch (error) {

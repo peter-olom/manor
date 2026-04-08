@@ -5,7 +5,7 @@ import path from "node:path";
 import WebSocket, { type RawData } from "ws";
 
 import type { CodexInputItem } from "./image-store.js";
-import { cleanupManagedWorktree } from "./repo-worktree.js";
+import { cleanupManagedWorktree, resolveExistingWorkspaceCwd } from "./repo-worktree.js";
 import { ButlerStateStore } from "./state-store.js";
 import type { ModelOption, ReasoningEffort } from "./types.js";
 
@@ -122,6 +122,21 @@ export class CodexAppServerClient extends EventEmitter {
 
   start(): void {
     this.connect();
+  }
+
+  private async requireExistingWorkspace(cwd: string | null | undefined): Promise<string | null> {
+    const normalized = typeof cwd === "string" ? cwd.trim() : "";
+    if (!normalized) {
+      return null;
+    }
+
+    const resolved = await resolveExistingWorkspaceCwd(normalized);
+    try {
+      await fs.access(resolved);
+      return resolved;
+    } catch {
+      throw new Error(`Requested workspace does not exist: ${normalized}`);
+    }
   }
 
   getConnectionState(): { connected: boolean; lastError: string | null; compose: { model: string | null; effort: ReasoningEffort | null; availableModels: ModelOption[] } } {
@@ -337,6 +352,7 @@ export class CodexAppServerClient extends EventEmitter {
     const loaded = await this.call("thread/loaded/list", {});
     const loadedIds = Array.isArray(loaded.data) ? loaded.data.filter((value): value is string => typeof value === "string") : [];
     this.store.markLoadedThreads(loadedIds);
+    this.store.markThreadInventoryReady();
 
     for (const threadId of loadedIds) {
       await this.resumeThread(threadId).catch(() => undefined);
@@ -527,7 +543,7 @@ export class CodexAppServerClient extends EventEmitter {
 
   async startThread(options: {
     task: string;
-    input?: CodexInputItem[];
+    input?: CodexInputItem[] | ((threadId: string) => CodexInputItem[] | Promise<CodexInputItem[]>);
     cwd?: string | null;
     developerInstructions?: string | null;
     openWindow?: boolean;
@@ -537,8 +553,10 @@ export class CodexAppServerClient extends EventEmitter {
       throw new Error("task is required");
     }
 
+    const threadCwd = await this.requireExistingWorkspace(options.cwd);
+
     const started = await this.call("thread/start", this.buildThreadStartConfig({
-      cwd: options.cwd ?? this.defaultCwd,
+      cwd: threadCwd ?? this.defaultCwd,
       developerInstructions: options.developerInstructions ?? null
     }));
 
@@ -552,17 +570,19 @@ export class CodexAppServerClient extends EventEmitter {
     if (thread) {
       this.store.upsertThreadSummary(thread);
     }
-    await this.onThreadCapabilityReady?.(threadId, options.cwd ?? (thread && typeof thread.cwd === "string" ? thread.cwd : null));
+    await this.onThreadCapabilityReady?.(threadId, threadCwd ?? (thread && typeof thread.cwd === "string" ? thread.cwd : null));
     this.resumedThreadIds.add(threadId);
     this.directControlThreadIds.add(threadId);
 
+    const resolvedInput =
+      typeof options.input === "function" ? await options.input(threadId) : (options.input ?? task);
     const params: Record<string, unknown> = {
       threadId,
-      input: normalizeInputItems(options.input ?? task)
+      input: normalizeInputItems(resolvedInput)
     };
 
-    if (options.cwd) {
-      params.cwd = options.cwd;
+    if (threadCwd) {
+      params.cwd = threadCwd;
     }
 
     if (this.selectedModel) {
@@ -592,11 +612,18 @@ export class CodexAppServerClient extends EventEmitter {
 
   async sendMessage(threadId: string, input: string | CodexInputItem[]): Promise<void> {
     const inputItems = normalizeInputItems(input);
-    await this.onThreadCapabilityReady?.(threadId, this.store.getThread(threadId)?.cwd);
+    const threadWorkspace = await this.requireExistingWorkspace(this.store.getThread(threadId)?.cwd);
+    if (threadWorkspace) {
+      this.store.upsertThreadSummary({ id: threadId, cwd: threadWorkspace });
+    }
+    await this.onThreadCapabilityReady?.(threadId, threadWorkspace);
     const targetThreadId = await this.ensureInteractiveThread(threadId);
 
     const activeTurnId = this.activeTurnIds.get(targetThreadId);
     if (activeTurnId) {
+      if (threadWorkspace) {
+        this.store.upsertThreadSummary({ id: targetThreadId, cwd: threadWorkspace });
+      }
       await this.call("turn/steer", {
         threadId: targetThreadId,
         expectedTurnId: activeTurnId,
@@ -611,6 +638,10 @@ export class CodexAppServerClient extends EventEmitter {
       ...this.buildTurnExecutionConfig()
     };
 
+    if (threadWorkspace) {
+      params.cwd = threadWorkspace;
+    }
+
     if (this.selectedModel) {
       params.model = this.selectedModel;
     }
@@ -620,6 +651,9 @@ export class CodexAppServerClient extends EventEmitter {
     }
 
     const result = await this.call("turn/start", params);
+    if (threadWorkspace) {
+      this.store.upsertThreadSummary({ id: targetThreadId, cwd: threadWorkspace });
+    }
     if (result.turn && typeof result.turn === "object") {
       this.store.updateTurn(targetThreadId, result.turn as Record<string, unknown>);
     }

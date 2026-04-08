@@ -215,6 +215,7 @@ export class RuntimeBrokerClient {
   async execInLease(input: {
     leaseId: string;
     command: string;
+    commandArgs?: string[];
     cwd?: string;
     stdin?: string;
     stdinProvided?: boolean;
@@ -223,6 +224,7 @@ export class RuntimeBrokerClient {
       method: "POST",
       body: JSON.stringify({
         command: input.command,
+        commandArgs: input.commandArgs,
         cwd: input.cwd,
         stdin: input.stdin,
         stdinProvided: input.stdinProvided === true
@@ -233,11 +235,23 @@ export class RuntimeBrokerClient {
   async verifyLease(input: {
     leaseId: string;
     mode?: PreviewBrowserMode;
+    path?: string;
+    headers?: Record<string, string>;
+    cookies?: Array<{ name: string; value: string }>;
+    waitForSelector?: string;
+    postLoadWaitMs?: number;
+    script?: string;
   }): Promise<PreviewVerificationView> {
     return this.request(`/leases/${input.leaseId}/verify`, {
       method: "POST",
       body: JSON.stringify({
-        mode: input.mode === "headful" ? "headful" : "headless"
+        mode: input.mode === "headful" ? "headful" : "headless",
+        path: input.path,
+        headers: input.headers,
+        cookies: input.cookies,
+        waitForSelector: input.waitForSelector,
+        postLoadWaitMs: input.postLoadWaitMs,
+        script: input.script
       })
     });
   }
@@ -362,6 +376,7 @@ export class RuntimeBrokerClient {
   async execInService(input: {
     serviceId: string;
     command: string;
+    commandArgs?: string[];
     cwd?: string;
     stdin?: string;
     stdinProvided?: boolean;
@@ -370,6 +385,7 @@ export class RuntimeBrokerClient {
       method: "POST",
       body: JSON.stringify({
         command: input.command,
+        commandArgs: input.commandArgs,
         cwd: input.cwd,
         stdin: input.stdin,
         stdinProvided: input.stdinProvided === true

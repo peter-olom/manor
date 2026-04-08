@@ -78,8 +78,8 @@ Current preview behavior:
 - Butler exposes a stable private route for each lease
 - raw host port publishing is not the default path
 - previews are heartbeat-gated during startup
-- preview egress defaults to `none`
-- broader outbound access is granted only through named or custom preview egress policies
+- preview egress defaults to normal outbound internet access
+- `none`, named profiles, and custom domain policies remain available when a preview needs stricter outbound control
 
 ## Stacks
 
@@ -160,7 +160,8 @@ Current trust boundaries:
 - Butler and Codex are separated into different services
 - Codex does not get direct internet access
 - Butler and Codex go out through the restricted `egress` proxy
-- preview runtimes use a separate egress path
+- preview runtimes keep private runtime networking and get direct outbound internet by default
+- optional preview egress profiles remain available for stricter outbound control
 - the runtime broker is the only service that talks to the Docker socket
 - preview and service traffic stays on private Docker networks
 - Butler routes previews instead of publishing arbitrary app ports on the host
@@ -220,12 +221,12 @@ Current local development assumptions:
 
 - `compose.yml`: local Manor stack
 - `butler/`: Butler backend and web app
-- `config/`: service templates and preview egress profiles
+- `config/`: service templates and optional preview egress profiles
 - `docker/butler/`: Butler image and auth helpers
 - `docker/butler-gateway/`: Butler reverse proxy
 - `docker/codex-box/`: Codex worker image and harness CLI
 - `docker/egress/`: restricted outbound proxy
-- `docker/preview-egress/`: preview egress control plane
+- `docker/preview-egress/`: optional restrictive preview egress control plane
 - `docker/runtime-broker/`: preview, service, and stack runtime broker
 - `docker/playwright/`: browser automation image
 - `repos/`: checked-out repos and worktrees

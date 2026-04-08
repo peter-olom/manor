@@ -46,6 +46,48 @@ async function git(args: string[], cwd: string): Promise<string> {
   return stdout.trim();
 }
 
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveManagedWorktreeFallback(cwd: string): string | null {
+  const normalized = cwd.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!normalized.startsWith(`${MANAGED_WORKTREE_ROOT}/`)) {
+    return null;
+  }
+
+  const relative = normalized.slice(MANAGED_WORKTREE_ROOT.length + 1);
+  const [repoName] = relative.split("/").filter(Boolean);
+  if (!repoName) {
+    return null;
+  }
+
+  return path.join("/repos", repoName);
+}
+
+export async function resolveExistingWorkspaceCwd(cwd: string): Promise<string> {
+  const normalized = cwd.trim();
+  if (!normalized) {
+    return normalized;
+  }
+
+  if (await pathExists(normalized)) {
+    return normalized;
+  }
+
+  const managedFallback = resolveManagedWorktreeFallback(normalized);
+  if (managedFallback && await pathExists(managedFallback)) {
+    return managedFallback;
+  }
+
+  return normalized;
+}
+
 export async function cleanupManagedWorktree(cwd: string): Promise<number> {
   if (!isManagedWorktree(cwd)) {
     return 0;
@@ -112,20 +154,21 @@ export async function ensureTaskWorktree(options: {
   cwd: string;
   task: string;
 }): Promise<{ cwd: string; branchName: string | null; repoRoot: string | null; created: boolean }> {
-  const repoRoot = await resolveGitRoot(options.cwd);
+  const requestedCwd = await resolveExistingWorkspaceCwd(options.cwd);
+  const repoRoot = await resolveGitRoot(requestedCwd);
   if (!repoRoot) {
     return {
-      cwd: options.cwd,
+      cwd: requestedCwd,
       branchName: null,
       repoRoot: null,
       created: false
     };
   }
 
-  if (isManagedWorktree(options.cwd)) {
-    const branchName = await git(["branch", "--show-current"], options.cwd).catch(() => "");
+  if (isManagedWorktree(requestedCwd)) {
+    const branchName = await git(["branch", "--show-current"], requestedCwd).catch(() => "");
     return {
-      cwd: options.cwd,
+      cwd: requestedCwd,
       branchName: branchName || null,
       repoRoot,
       created: false

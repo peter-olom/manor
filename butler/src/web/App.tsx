@@ -1,1809 +1,126 @@
-import {
-  Fragment,
-  isValidElement,
-  memo,
-  startTransition,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ComponentPropsWithoutRef,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode
-} from "react";
-import ReactMarkdown from "react-markdown";
-import rehypeHighlight from "rehype-highlight";
-import remarkGfm from "remark-gfm";
+import { useEffect, useMemo, useRef, useState } from "react";
+
 import manorLogoUrl from "./assets/manor-logo.svg";
 import manorLogoDarkUrl from "./assets/manor-logo-dark.svg";
-
-type ThreadStatus = "active" | "idle" | "unknown";
-type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
-type ButlerThinkingLevel = "off" | ReasoningEffort;
-type ThemePreference = "system" | "light" | "dark";
-type OnboardingCommandTarget = "localShell" | "butlerTerminal" | "codexTerminal";
-type SetupCommandMode = "localShell" | "builtInTerminal";
-type TerminalTarget = "butlerTerminal" | "codexTerminal";
-type WorkspaceSurface = "setup" | "butler" | "terminal" | "thread";
-type ToastTone = "success" | "error" | "info";
-
-const THEME_STORAGE_KEY = "manor.butler.themePreference";
-const BUTLER_DRAFT_STORAGE_KEY = "manor.butler.draft";
-const THREAD_DRAFT_STORAGE_KEY_PREFIX = "manor.butler.threadDraft.";
-const BUTLER_NOTICE_VISIBILITY_STORAGE_KEY = "manor.butler.showNotices";
-const BUTLER_RUNTIME_VISIBILITY_STORAGE_KEY = "manor.butler.showRuntime";
-const DRAFT_PERSIST_DELAY_MS = 180;
-const BUTLER_HISTORY_PAGE_SIZE = 250;
-const BUTLER_HISTORY_AUTOLOAD_THRESHOLD_PX = 240;
-
-type ButlerMessageRecord = {
-  id: string;
-  role: string;
-  text: string;
-  at: number | null;
-  kind: "message" | "notice";
-};
-
-type ButlerHistoryPageResponse = {
-  messages: ButlerMessageRecord[];
-  startIndex: number;
-  endIndex: number;
-  totalCount: number;
-  hasMore: boolean;
-};
-
-type ButlerHistoryState = {
-  messages: ButlerMessageRecord[];
-  loadedStart: number;
-  totalCount: number;
-};
-
-type AppToast = {
-  key: string;
-  message: string;
-  tone: ToastTone;
-};
-
-type ConfirmDialogState = {
-  title: string;
-  message: string;
-  confirmLabel: string;
-  tone: "danger";
-  onConfirm: () => Promise<void>;
-};
-
-type PendingThreadRequest = {
-  threadId: string;
-  text: string;
-  sentAt: number;
-  attachmentCount: number;
-};
-
-type ImageReference = {
-  id: string;
-  name: string;
-  mimeType: string;
-  sizeBytes: number;
-  createdAt: number;
-  url: string;
-};
-
-type PreviewableImage = {
-  id: string;
-  name: string;
-  url: string;
-};
-
-type PreviewMedia = {
-  name: string;
-  url: string;
-  kind: "image" | "video";
-  downloadUrl: string | null;
-};
-
-type PreviewVerificationArtifact = {
-  kind: "manifest" | "screenshot" | "video" | "trace" | "html" | "other";
-  label: string;
-  fileName: string;
-  filePath: string;
-  contentType: string;
-  sizeBytes: number | null;
-  url: string | null;
-  downloadUrl: string | null;
-  availability: "available" | "expired" | "missing";
-  retainedUntilAt: number | null;
-  expiredAt: number | null;
-};
-
-type PreviewBrowserMode = "headless" | "headful";
-
-type PreviewVerification = {
-  runId: string;
-  mode: PreviewBrowserMode;
-  checkedAt: number;
-  durationMs: number;
-  ok: boolean;
-  status: number | null;
-  title: string;
-  url: string;
-  error: string | null;
-  summary: {
-    consoleMessageCount: number;
-    pageErrorCount: number;
-    failedRequestCount: number;
-  };
-  artifacts: PreviewVerificationArtifact[];
-  consoleMessages: Array<{
-    type: string;
-    text: string;
-    location: string | null;
-  }>;
-  pageErrors: string[];
-  failedRequests: Array<{
-    url: string;
-    method: string;
-    errorText: string | null;
-  }>;
-};
-
-type PreviewProofRecord = {
-  id: string;
-  previewId: string;
-  threadId: string | null;
-  projectId: string;
-  projectLabel: string;
-  previewTitle: string;
-  stackId: string | null;
-  verification: PreviewVerification;
-  createdAt: number;
-  updatedAt: number;
-};
-
-type ModelOption = {
-  id: string;
-  label: string;
-  provider: string | null;
-  supportsReasoning: boolean;
-  supportedReasoningEfforts: ReasoningEffort[];
-  defaultReasoningEffort: ReasoningEffort | null;
-};
-
-type Snapshot = {
-  codex: {
-    connected: boolean;
-    lastError: string | null;
-    threads: Array<{
-      id: string;
-      preview: string;
-      source: string;
-      createdAt: number;
-      updatedAt: number;
-      status: ThreadStatus;
-      turnCount: number;
-      loaded: boolean;
-      contextUsage: {
-        tokens: number | null;
-        contextWindow: number | null;
-        percent: number | null;
-      };
-      supervision: {
-        butlerTurnsUsed: number;
-        maxButlerTurns: number | null;
-        capReached: boolean;
-      };
-      compaction: {
-        active: boolean;
-        count: number;
-        lastStartedAt: number | null;
-        lastCompletedAt: number | null;
-      };
-    }>;
-    windows: Array<{
-      threadId: string;
-      title: string;
-      openedAt: number;
-    }>;
-    focusedWindowId: string | null;
-    openThreads: Record<
-      string,
-      {
-        id: string;
-        preview: string;
-        source: string;
-        status: ThreadStatus;
-        updatedAt: number;
-        turnCount: number;
-        contextUsage: {
-          tokens: number | null;
-          contextWindow: number | null;
-          percent: number | null;
-        };
-        supervision: {
-          butlerTurnsUsed: number;
-          maxButlerTurns: number | null;
-          capReached: boolean;
-        };
-        compaction: {
-          active: boolean;
-          count: number;
-          lastStartedAt: number | null;
-          lastCompletedAt: number | null;
-        };
-        turns: Array<{
-          id: string;
-          status: string;
-          startedAt: number;
-          completedAt: number | null;
-          items: Array<{
-            id: string;
-            type: string;
-            status: string;
-            text: string;
-            at: number;
-          }>;
-        }>;
-        eventLog: Array<{
-          at: number;
-          method: string;
-          summary: string;
-        }>;
-      }
-    >;
-    compose: {
-      model: string | null;
-      effort: ReasoningEffort | null;
-      availableModels: ModelOption[];
-    };
-  };
-  butler: {
-    ready: boolean;
-    pending: boolean;
-    isStreaming: boolean;
-    sessionId: string | null;
-    model: string | null;
-    auth: {
-      mode: "chatgpt" | "api" | "none" | "unknown";
-      loggedIn: boolean;
-    };
-    messages: ButlerMessageRecord[];
-    messageCount: number;
-    onboarding: {
-      complete: boolean;
-      steps: Array<{
-        id: "butlerAuth" | "codexAuth" | "githubAuth";
-        title: string;
-        status: "complete" | "pending";
-        detail: string;
-        commandSets: Array<{
-          target: OnboardingCommandTarget;
-          detail: string;
-          commands: string[];
-        }>;
-      }>;
-    };
-    contextUsage: {
-      tokens: number | null;
-      contextWindow: number | null;
-      percent: number | null;
-    };
-    compaction: {
-      autoEnabled: boolean;
-      active: boolean;
-      count: number;
-      lastReason: "manual" | "threshold" | "overflow" | null;
-      lastStartedAt: number | null;
-      lastCompletedAt: number | null;
-      lastTokensBefore: number | null;
-      lastWillRetry: boolean;
-      lastAborted: boolean;
-      lastError: string | null;
-    };
-    latestPreviewProofsByThreadId: Record<string, PreviewProofRecord>;
-    stacks: Array<{
-      id: string;
-      threadId: string | null;
-      projectId: string;
-      projectLabel: string;
-      title: string;
-      worktreePath: string | null;
-      networkName: string;
-      status: "running" | "stopping" | "stopped" | "degraded";
-      storageMode: "ephemeral" | "job" | "base" | "custom";
-      retainsVolumes: boolean;
-      baseStorageKey: string | null;
-      storageKey: string | null;
-      cloneFromStorageKey: string | null;
-      defaultPromoteTargetStorageKey: string | null;
-      volumeNames: string[];
-      createdAt: number;
-      updatedAt: number;
-      lastError: string | null;
-      pinned?: boolean;
-      lastActivityAt?: number;
-      expiresAt?: number | null;
-      lifecycleState?: "starting" | "active" | "idle" | "stopping" | "expired";
-      previewIds: string[];
-      serviceIds: string[];
-    }>;
-    previews: Array<{
-      id: string;
-      threadId: string | null;
-      projectId: string;
-      projectLabel: string;
-      title: string;
-      stackId: string | null;
-      aliases: string[];
-      worktreePath: string;
-      branchName: string | null;
-      containerName: string;
-      targetHost: string;
-      targetPort: number;
-      routePrefix: string;
-      operatorUrl: string;
-      command: string;
-      image: string;
-      egressProfile: string;
-      egressDomains: string[];
-      status: "starting" | "running" | "stopping" | "stopped" | "failed";
-      createdAt: number;
-      updatedAt: number;
-      lastError: string | null;
-      lastVerification?: PreviewVerification | null;
-      pinned?: boolean;
-      lastActivityAt?: number;
-      expiresAt?: number | null;
-      lifecycleState?: "starting" | "active" | "idle" | "stopping" | "expired";
-      bootstrap: {
-        waitSeconds: number;
-        hint: string | null;
-        heartbeatKind: "none" | "http" | "tcp" | "command";
-        heartbeatTarget: string | null;
-        heartbeatIntervalSeconds: number;
-        phase: "pulling_image" | "starting_container" | "bootstrapping" | "waiting_for_heartbeat" | "ready" | "failed";
-        startedAt: number | null;
-        readyAt: number | null;
-        lastHeartbeatAt: number | null;
-        lastHeartbeatError: string | null;
-      };
-    }>;
-    services: Array<{
-      id: string;
-      threadId: string | null;
-      projectId: string;
-      projectLabel: string;
-      title: string;
-      stackId: string | null;
-      aliases: string[];
-      templateId: string;
-      templateLabel: string;
-      runtimeKind: "container" | "embedded";
-      containerName: string;
-      targetHost: string;
-      targetPort: number;
-      worktreePath: string | null;
-      image: string;
-      status: "starting" | "running" | "stopped" | "failed";
-      storageKind: "ephemeral" | "volume" | "worktree";
-      sticky: boolean;
-      volumeName: string | null;
-      volumeMountPath: string | null;
-      createdAt: number;
-      updatedAt: number;
-      lastError: string | null;
-      pinned?: boolean;
-      lastActivityAt?: number;
-      expiresAt?: number | null;
-      lifecycleState?: "starting" | "active" | "idle" | "stopping" | "expired";
-      connection: {
-        engine: string;
-        host: string;
-        port: number;
-        database: string | null;
-        username: string | null;
-        password: string | null;
-        uri: string | null;
-        notes: string | null;
-      };
-    }>;
-    lastError: string | null;
-    compose: {
-      provider: string | null;
-      model: string | null;
-      thinkingLevel: ButlerThinkingLevel;
-      availableThinkingLevels: ButlerThinkingLevel[];
-      availableModels: ModelOption[];
-    };
-  };
-};
-
-function formatTime(value: number | null | undefined): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return "Unknown";
-  }
-
-  return new Date(value).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit"
-  });
-}
-
-function formatJumpLabel(value: number | null | undefined): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return "Unknown time";
-  }
-
-  return new Date(value).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit"
-  });
-}
-
-function formatLeaseState(
-  state: "starting" | "active" | "idle" | "stopping" | "expired" | undefined,
-  expiresAt: number | null | undefined,
-  pinned?: boolean
-): string {
-  if (pinned) {
-    return "pinned";
-  }
-
-  if (state === "starting") {
-    return "starting";
-  }
-
-  if (state === "stopping") {
-    return "stopping";
-  }
-
-  if (state === "expired") {
-    return "expired";
-  }
-
-  if (state === "idle") {
-    if (typeof expiresAt === "number" && Number.isFinite(expiresAt)) {
-      const minutes = Math.max(0, Math.round((expiresAt - Date.now()) / 60000));
-      return `idle • ${minutes}m left`;
-    }
-    return "idle";
-  }
-
-  return "active";
-}
-
-function formatPreviewBootstrap(lease: Snapshot["butler"]["previews"][number]): string {
-  const phase = lease.bootstrap.phase;
-  const hint = lease.bootstrap.hint;
-  if (phase === "ready") {
-    return "ready";
-  }
-  if (phase === "pulling_image") {
-    return "pulling image";
-  }
-  if (phase === "starting_container") {
-    return "starting container";
-  }
-  if (phase === "waiting_for_heartbeat") {
-    return "waiting for heartbeat";
-  }
-  if (phase === "bootstrapping") {
-    return hint ? hint : "bootstrapping";
-  }
-  if (phase === "failed") {
-    return lease.bootstrap.lastHeartbeatError ? `failed • ${lease.bootstrap.lastHeartbeatError}` : "failed";
-  }
-  return phase;
-}
-
-function formatStackStorage(stack: Snapshot["butler"]["stacks"][number]): string {
-  const parts = [`mode=${stack.storageMode}`];
-  if (stack.storageKey) {
-    parts.push(`key=${stack.storageKey}`);
-  }
-  if (stack.baseStorageKey) {
-    parts.push(`base=${stack.baseStorageKey}`);
-  }
-  if (stack.cloneFromStorageKey) {
-    parts.push(`fork=${stack.cloneFromStorageKey}`);
-  }
-  if (stack.defaultPromoteTargetStorageKey) {
-    parts.push(`promote=${stack.defaultPromoteTargetStorageKey}`);
-  }
-  parts.push(`sticky=${stack.retainsVolumes ? stack.volumeNames.length : 0}`);
-  return parts.join(" • ");
-}
-
-function formatVerificationDuration(durationMs: number | null | undefined): string {
-  if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs < 1000) {
-    return "<1s";
-  }
-
-  if (durationMs < 60_000) {
-    return `${Math.round(durationMs / 1000)}s`;
-  }
-
-  return `${Math.round(durationMs / 60000)}m`;
-}
-
-function formatVerificationSummary(verification: PreviewVerification): string {
-  const issues = [
-    verification.summary.consoleMessageCount > 0 ? `${verification.summary.consoleMessageCount} console` : null,
-    verification.summary.pageErrorCount > 0 ? `${verification.summary.pageErrorCount} page errors` : null,
-    verification.summary.failedRequestCount > 0 ? `${verification.summary.failedRequestCount} failed requests` : null,
-    verification.artifacts.some((artifact) => artifact.availability === "expired") ? "artifacts expired" : null,
-    verification.artifacts.some((artifact) => artifact.availability === "missing") ? "artifacts missing" : null
-  ].filter(Boolean);
-
-  const lead = `${verification.mode === "headful" ? "headed" : "headless"} ${verification.ok ? "passed" : "failed"}`;
-  const parts = [`${lead} at ${formatTime(verification.checkedAt)}`, formatVerificationDuration(verification.durationMs)];
-  if (issues.length > 0) {
-    parts.push(issues.join(", "));
-  }
-  if (verification.status) {
-    parts.push(`status ${verification.status}`);
-  }
-  return parts.join(" • ");
-}
-
-function previewVerificationActionLabel(
-  mode: PreviewBrowserMode,
-  busy: { leaseId: string; mode: PreviewBrowserMode } | null,
-  leaseId: string,
-  compact = false
-): string {
-  const isCurrent = busy?.leaseId === leaseId && busy.mode === mode;
-  if (isCurrent) {
-    return mode === "headful" ? "Checking headed…" : "Checking…";
-  }
-  if (compact) {
-    return mode === "headful" ? "Headed" : "Verify";
-  }
-  return mode === "headful" ? "Verify headed" : "Verify preview";
-}
-
-function findVerificationArtifact(
-  verification: PreviewVerification | null | undefined,
-  kind: PreviewVerificationArtifact["kind"]
-): PreviewVerificationArtifact | null {
-  if (!verification) {
-    return null;
-  }
-  return verification.artifacts.find((artifact) => artifact.kind === kind) ?? null;
-}
-
-function describeArtifactAvailability(artifact: PreviewVerificationArtifact): {
-  available: boolean;
-  label: string;
-  detail: string | null;
-} {
-  const kindLabel =
-    artifact.kind === "screenshot"
-      ? "Screenshot"
-      : artifact.kind === "video"
-        ? "Video"
-        : artifact.kind === "manifest"
-          ? "Manifest"
-          : artifact.kind === "trace"
-            ? "Trace"
-            : artifact.kind === "html"
-              ? "HTML"
-              : artifact.label;
-
-  if (artifact.availability === "expired") {
-    return {
-      available: false,
-      label: `${kindLabel} expired`,
-      detail: artifact.retainedUntilAt ? `Expired after ${new Date(artifact.retainedUntilAt).toLocaleDateString()}` : "Expired after retention"
-    };
-  }
-
-  if (artifact.availability === "missing") {
-    return {
-      available: false,
-      label: `${kindLabel} unavailable`,
-      detail: "The metadata remains, but the file is no longer present."
-    };
-  }
-
-  return {
-    available: true,
-    label: kindLabel,
-    detail: null
-  };
-}
-
-function formatTimelineDayLabel(value: number | null | undefined): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return "Unknown";
-  }
-
-  return new Date(value).toLocaleDateString([], {
-    weekday: "short",
-    month: "short",
-    day: "numeric"
-  });
-}
-
-function getTimelineDayKey(value: number | null | undefined): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return "unknown";
-  }
-
-  const date = new Date(value);
-  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
-}
-
-function groupTimelineItems<T extends { id: string; text: string; at: number | null }>(items: T[]) {
-  const groups: Array<{ key: string; label: string; firstId: string; items: T[] }> = [];
-
-  for (const item of items) {
-    const key = getTimelineDayKey(item.at);
-    const current = groups.at(-1);
-
-    if (!current || current.key !== key) {
-      groups.push({
-        key,
-        label: formatTimelineDayLabel(item.at),
-        firstId: item.id,
-        items: [item]
-      });
-      continue;
-    }
-
-    current.items.push(item);
-  }
-
-  return groups;
-}
-
-function dedupeMessages(messages: ButlerMessageRecord[]): ButlerMessageRecord[] {
-  const deduped: ButlerMessageRecord[] = [];
-  const seen = new Set<string>();
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (seen.has(message.id)) {
-      continue;
-    }
-    seen.add(message.id);
-    deduped.unshift(message);
-  }
-  return deduped;
-}
-
-function formatCompactCount(value: number | null): string {
-  if (value === null || !Number.isFinite(value)) {
-    return "?";
-  }
-
-  if (value >= 1000) {
-    return `${(value / 1000).toFixed(value >= 100000 ? 0 : 1)}k`;
-  }
-
-  return `${value}`;
-}
-
-function formatContextUsage(contextUsage: Snapshot["butler"]["contextUsage"]): string {
-  const { tokens, contextWindow, percent } = contextUsage;
-
-  if (!contextWindow) {
-    return "Unavailable";
-  }
-
-  if (tokens === null || percent === null) {
-    return `? / ${formatCompactCount(contextWindow)}`;
-  }
-
-  return `${Math.round(percent)}% · ${formatCompactCount(tokens)} / ${formatCompactCount(contextWindow)}`;
-}
-
-function formatCompactionState(compaction: Snapshot["butler"]["compaction"]): string {
-  if (!compaction.autoEnabled) {
-    return "Off";
-  }
-
-  if (compaction.active) {
-    return "Running";
-  }
-
-  if (compaction.lastError) {
-    return "Failed";
-  }
-
-  if (!compaction.lastCompletedAt) {
-    return "Auto";
-  }
-
-  return `${formatTime(compaction.lastCompletedAt)}${compaction.lastReason ? ` · ${compaction.lastReason}` : ""}`;
-}
-
-function formatThreadBudget(supervision: { butlerTurnsUsed: number; maxButlerTurns: number | null }): string {
-  return `${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}`;
-}
-
-function formatCodexCompactionState(compaction: {
-  active: boolean;
-  count: number;
-  lastCompletedAt: number | null;
-}): string {
-  if (compaction.active) {
-    return "Running";
-  }
-
-  if (!compaction.lastCompletedAt) {
-    return compaction.count > 0 ? `${compaction.count}x` : "Auto";
-  }
-
-  return `${formatTime(compaction.lastCompletedAt)} · ${compaction.count}x`;
-}
-
-function describeStatus(status: ThreadStatus): string {
-  if (status === "active") {
-    return "Running";
-  }
-
-  if (status === "idle") {
-    return "Idle";
-  }
-
-  return "Unknown";
-}
-
-function itemTone(type: string): "user" | "assistant" | "system" {
-  if (type === "userMessage") {
-    return "user";
-  }
-
-  if (type === "agentMessage") {
-    return "assistant";
-  }
-
-  return "system";
-}
-
-function itemLabel(type: string): string {
-  switch (type) {
-    case "userMessage":
-      return "You";
-    case "agentMessage":
-      return "Codex";
-    case "commandExecution":
-      return "Shell";
-    case "mcpToolCall":
-      return "Tool";
-    case "reasoning":
-      return "Reasoning";
-    default:
-      return type;
-  }
-}
-
-function shouldRenderItem(item: { type: string; text: string }): boolean {
-  const text = item.text.trim();
-  if (text) {
-    return true;
-  }
-
-  return item.type === "commandExecution";
-}
-
-function onboardingStatusLabel(status: "complete" | "pending"): string {
-  return status === "complete" ? "Done" : "Pending";
-}
-
-function StatusIcon({ kind }: { kind: "codex" | "auth" | "model" | "context" | "compaction" }) {
-  if (kind === "codex") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path
-          d="M3 4.5h10M3 8h10M3 11.5h10M5 3v10M11 3v10"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.2"
-          strokeLinecap="square"
-        />
-      </svg>
-    );
-  }
-
-  if (kind === "auth") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path
-          d="M8 2.5l4 1.6v3.7c0 2.3-1.5 4.4-4 5.7-2.5-1.3-4-3.4-4-5.7V4.1L8 2.5z"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.2"
-          strokeLinejoin="miter"
-        />
-      </svg>
-    );
-  }
-
-  if (kind === "model") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <rect x="3" y="3" width="10" height="10" fill="none" stroke="currentColor" strokeWidth="1.2" />
-        <path d="M6 6h4M6 8h4M6 10h4" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="square" />
-      </svg>
-    );
-  }
-
-  if (kind === "compaction") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path
-          d="M4 6.5A4 4 0 0 1 11 4l1 1M12 9.5A4 4 0 0 1 5 12l-1-1M10 5h2v2M4 9V7h2"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.2"
-          strokeLinecap="square"
-          strokeLinejoin="miter"
-        />
-      </svg>
-    );
-  }
-
-  if (kind === "context") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path
-          d="M8 3.2a4.8 4.8 0 1 0 4.8 4.8"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.2"
-          strokeLinecap="square"
-        />
-        <path
-          d="M8 5.3v2.8l2.2 1.4M8 2.4v2.2M13.6 8h-2.2"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.2"
-          strokeLinecap="square"
-          strokeLinejoin="miter"
-        />
-      </svg>
-    );
-  }
-
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true">
-      <path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="square" />
-    </svg>
-  );
-}
-
-function ThreadsIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true">
-      <path
-        d="M4 4.5h8M4 8h8M4 11.5h8M2.5 4.5h.01M2.5 8h.01M2.5 11.5h.01"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinecap="square"
-      />
-    </svg>
-  );
-}
-
-function StatusItem({
-  kind,
-  tone,
-  label,
-  value
-}: {
-  kind: "codex" | "auth" | "model" | "context" | "compaction";
-  tone: "accent" | "success" | "neutral";
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className={`status-item is-${tone}`}>
-      <span className="status-item-icon">
-        <StatusIcon kind={kind} />
-      </span>
-      <span className="status-item-copy">
-        <span className="status-item-label">{label}</span>
-        <span className="status-item-value">{value}</span>
-      </span>
-    </div>
-  );
-}
-
-function extractCodeLanguage(children: ReactNode): string {
-  const firstChild = Array.isArray(children) ? children[0] : children;
-  if (!isValidElement<{ className?: string }>(firstChild)) {
-    return "";
-  }
-
-  const className = typeof firstChild.props.className === "string" ? firstChild.props.className : "";
-  const match = className.match(/language-([a-z0-9#+-]+)/i);
-  return match?.[1] ?? "";
-}
-
-function flattenNodeText(node: ReactNode): string {
-  if (typeof node === "string" || typeof node === "number") {
-    return String(node);
-  }
-
-  if (Array.isArray(node)) {
-    return node.map((child) => flattenNodeText(child)).join("");
-  }
-
-  if (isValidElement<{ children?: ReactNode }>(node)) {
-    return flattenNodeText(node.props.children);
-  }
-
-  return "";
-}
-
-function normalizeMessageResourceUrl(rawUrl: string | null | undefined): string | null {
-  const trimmed = typeof rawUrl === "string" ? rawUrl.trim().replace(/^`+|`+$/g, "") : "";
-  if (!trimmed) {
-    return null;
-  }
-
-  try {
-    const baseOrigin = typeof window !== "undefined" ? window.location.origin : "http://localhost";
-    const parsed = trimmed.startsWith("/") ? new URL(trimmed, baseOrigin) : new URL(trimmed);
-
-    if (parsed.hostname === "butler" && parsed.port === "8080") {
-      return `${parsed.pathname}${parsed.search}${parsed.hash}`;
-    }
-
-    if (typeof window !== "undefined" && parsed.origin === window.location.origin) {
-      return `${parsed.pathname}${parsed.search}${parsed.hash}`;
-    }
-
-    return parsed.toString();
-  } catch {
-    return trimmed.startsWith("/") ? trimmed : null;
-  }
-}
-
-function describeMessageResource(rawUrl: string | null | undefined): {
-  href: string;
-  displayText: string;
-  download: boolean;
-  previewKind: "image" | "video" | null;
-  name: string;
-} | null {
-  const normalizedUrl = normalizeMessageResourceUrl(rawUrl);
-  if (!normalizedUrl) {
-    return null;
-  }
-
-  try {
-    const baseOrigin = typeof window !== "undefined" ? window.location.origin : "http://localhost";
-    const parsed = normalizedUrl.startsWith("/") ? new URL(normalizedUrl, baseOrigin) : new URL(normalizedUrl);
-    const pathname = parsed.pathname.toLowerCase();
-    const isArtifact = pathname.startsWith("/api/artifacts/");
-    const isPreview = pathname.startsWith("/preview/");
-
-    if (!isArtifact && !isPreview) {
-      return null;
-    }
-
-    let displayText = "Open file";
-    let download = false;
-    let previewKind: "image" | "video" | null = null;
-
-    if (isPreview) {
-      displayText = "Open preview";
-    } else if (/\.(png|jpe?g|webp|gif)$/i.test(pathname)) {
-      displayText = "Open screenshot";
-      previewKind = "image";
-    } else if (/\.(webm|mp4|mov)$/i.test(pathname)) {
-      displayText = "Open video";
-      previewKind = "video";
-    } else if (pathname.endsWith(".zip")) {
-      displayText = "Download trace";
-      download = true;
-    } else if (pathname.endsWith(".json")) {
-      displayText = "Download manifest";
-      download = true;
-    } else if (pathname.endsWith(".html")) {
-      displayText = "Download HTML";
-      download = true;
-    } else if (isArtifact) {
-      displayText = "Download file";
-      download = true;
-    }
-
-    if (download && isArtifact && !parsed.searchParams.has("download")) {
-      parsed.searchParams.set("download", "1");
-    }
-
-    const href =
-      normalizedUrl.startsWith("/") || parsed.hostname === "butler"
-        ? `${parsed.pathname}${parsed.search}${parsed.hash}`
-        : parsed.toString();
-
-    const fileName = parsed.pathname.split("/").filter(Boolean).at(-1) || displayText;
-    return { href, displayText, download, previewKind, name: fileName };
-  } catch {
-    return null;
-  }
-}
-
-function inferDownloadFileName(href: string, contentDisposition: string | null): string {
-  if (contentDisposition) {
-    const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
-    if (utf8Match?.[1]) {
-      return decodeURIComponent(utf8Match[1]);
-    }
-
-    const plainMatch = contentDisposition.match(/filename="?([^"]+)"?/i);
-    if (plainMatch?.[1]) {
-      return plainMatch[1];
-    }
-  }
-
-  try {
-    const baseOrigin = typeof window !== "undefined" ? window.location.origin : "http://localhost";
-    const parsed = href.startsWith("/") ? new URL(href, baseOrigin) : new URL(href);
-    const fileName = parsed.pathname.split("/").filter(Boolean).at(-1);
-    return fileName || "download";
-  } catch {
-    return "download";
-  }
-}
-
-async function readResourceError(response: Response): Promise<string> {
-  const headerMessage = response.headers.get("x-artifact-error");
-  if (headerMessage) {
-    return headerMessage;
-  }
-
-  const contentType = response.headers.get("content-type") ?? "";
-  if (contentType.includes("application/json")) {
-    try {
-      const payload = (await response.json()) as { error?: string };
-      if (typeof payload.error === "string" && payload.error.trim()) {
-        return payload.error.trim();
-      }
-    } catch {
-      // ignore parse failures
-    }
-  }
-
-  return `Request failed with ${response.status}`;
-}
-
-async function probeResourceAvailability(href: string): Promise<{ ok: boolean; message: string | null }> {
-  try {
-    const response = await fetch(href, { method: "HEAD" });
-    if (response.ok) {
-      return { ok: true, message: null };
-    }
-    return { ok: false, message: await readResourceError(response) };
-  } catch {
-    return { ok: false, message: "The proof file could not be opened." };
-  }
-}
-
-async function triggerResourceDownload(href: string): Promise<void> {
-  if (typeof window === "undefined" || typeof document === "undefined") {
+import { postJson } from "./api";
+import { ButlerSurface } from "./ButlerSurface";
+import { CloseIcon, CopyIcon, ThemeIcon, ThreadsIcon, TrashIcon } from "./icons";
+import {
+  useShellSnapshot,
+  useTransportState
+} from "./live-state";
+import { StatusItem } from "./StatusItem";
+import { ThreadSurface } from "./ThreadSurface";
+import type {
+  AppToast,
+  ConfirmDialogState,
+  PreviewMedia,
+  SetupCommandMode,
+  TerminalTarget,
+  ThemePreference,
+  WorkspaceSurface
+} from "./types";
+import {
+  THEME_STORAGE_KEY,
+  buildWorkspaceQuery,
+  formatCodexCompactionState,
+  formatContextUsage,
+  formatCompactionState,
+  onboardingStatusLabel,
+  readStoredValue,
+  readWorkspaceQuery,
+  resolveThemePreference
+} from "./utils";
+
+
+function syncTerminalFrameTheme(frame: HTMLIFrameElement | null, lightTheme: boolean) {
+  const doc = frame?.contentDocument;
+  if (!doc) {
     return;
   }
 
-  const response = await fetch(href);
-  if (!response.ok) {
-    throw new Error(await readResourceError(response));
-  }
-
-  const blob = await response.blob();
-  const objectUrl = window.URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = objectUrl;
-  anchor.download = inferDownloadFileName(href, response.headers.get("content-disposition"));
-  anchor.style.display = "none";
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 1000);
-}
-
-const MarkdownMessage = memo(function MarkdownMessage({
-  text,
-  onPreviewMedia,
-  onResourceUnavailable
-}: {
-  text: string;
-  onPreviewMedia?: (media: PreviewMedia) => void;
-  onResourceUnavailable?: (message: string) => void;
-}) {
-  return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeHighlight]}
-      components={{
-        a({ href, children, ...props }: ComponentPropsWithoutRef<"a">) {
-          const resource = describeMessageResource(typeof href === "string" ? href : null);
-          return (
-            <a
-              href={resource?.href ?? href}
-              target={resource?.download ? undefined : "_blank"}
-              rel={resource?.download ? undefined : "noreferrer"}
-              download={resource?.download ? "" : undefined}
-              onClick={
-                resource
-                  ? (event) => {
-                      event.preventDefault();
-                      void (async () => {
-                        if (resource.previewKind && onPreviewMedia) {
-                          const availability = await probeResourceAvailability(resource.href);
-                          if (!availability.ok) {
-                            onResourceUnavailable?.(availability.message || "The proof file could not be opened.");
-                            return;
-                          }
-
-                          onPreviewMedia({
-                            name: resource.name,
-                            url: resource.href,
-                            kind: resource.previewKind,
-                            downloadUrl: resource.href
-                          });
-                          return;
-                        }
-
-                        if (resource.download) {
-                          try {
-                            await triggerResourceDownload(resource.href);
-                          } catch (error) {
-                            onResourceUnavailable?.(error instanceof Error ? error.message : "The file could not be downloaded.");
-                          }
-                        }
-                      })();
-                    }
-                  : undefined
-              }
-              {...props}
-            >
-              {children}
-            </a>
-          );
-        },
-        pre({ children }) {
-          const language = extractCodeLanguage(children);
-          return (
-            <div className="code-block-shell">
-              <div className="code-block-bar">
-                <span>{language || "text"}</span>
-              </div>
-              <pre className="code-block-pre">{children}</pre>
-            </div>
-          );
-        },
-        code({ children, className, ...props }: ComponentPropsWithoutRef<"code">) {
-          const isBlock = typeof className === "string" && className.includes("language-");
-          if (isBlock) {
-            return (
-              <code className={className} {...props}>
-                {children}
-              </code>
-            );
-          }
-
-          const inlineText = flattenNodeText(children).trim();
-          const resource = describeMessageResource(inlineText);
-          if (resource) {
-            return (
-              <a
-                className="inline-code inline-code-link"
-                href={resource.href}
-                target={resource.download || resource.previewKind ? undefined : "_blank"}
-                rel={resource.download || resource.previewKind ? undefined : "noreferrer"}
-                download={resource.download ? "" : undefined}
-                onClick={
-                  resource.download || resource.previewKind
-                    ? (event) => {
-                        event.preventDefault();
-                        void (async () => {
-                          if (resource.previewKind && onPreviewMedia) {
-                            const availability = await probeResourceAvailability(resource.href);
-                            if (!availability.ok) {
-                              onResourceUnavailable?.(availability.message || "The proof file could not be opened.");
-                              return;
-                            }
-
-                            onPreviewMedia({
-                              name: resource.name,
-                              url: resource.href,
-                              kind: resource.previewKind,
-                              downloadUrl: resource.href
-                            });
-                            return;
-                          }
-
-                          if (resource.download) {
-                            try {
-                              await triggerResourceDownload(resource.href);
-                            } catch (error) {
-                              onResourceUnavailable?.(error instanceof Error ? error.message : "The file could not be downloaded.");
-                            }
-                          }
-                        })();
-                      }
-                    : undefined
-                }
-              >
-                {resource.displayText}
-              </a>
-            );
-          }
-
-          return (
-            <code className="inline-code" {...props}>
-              {children}
-            </code>
-          );
-        }
-      }}
-    >
-      {text}
-    </ReactMarkdown>
-  );
-});
-
-function ThemeIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true">
-      <path
-        d="M8 2.5v2.1M8 11.4v2.1M3.8 4.1l1.5 1.5M10.7 10.4l1.5 1.5M2.5 8h2.1M11.4 8h2.1M3.8 11.9l1.5-1.5M10.7 5.6l1.5-1.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinecap="square"
-      />
-      <circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" strokeWidth="1.2" />
-    </svg>
-  );
-}
-
-function SendIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true">
-      <path
-        d="M2.5 7.3 13.2 2.8l-3.9 10.4-2.1-3.1-3.2-1.2 9.2-4.5-9.7 2.9z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinejoin="miter"
-        strokeLinecap="square"
-      />
-    </svg>
-  );
-}
-
-function AttachmentIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-      <path
-        d="M6 8.5 10.8 3.7a2.25 2.25 0 1 1 3.2 3.2l-6 6a3.25 3.25 0 1 1-4.6-4.6l5.5-5.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinecap="square"
-        strokeLinejoin="miter"
-      />
-    </svg>
-  );
-}
-
-function CopyIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-      <path
-        fill="currentColor"
-        d="M5 2.5A1.5 1.5 0 0 1 6.5 1h6A1.5 1.5 0 0 1 14 2.5v7A1.5 1.5 0 0 1 12.5 11h-1v1.5A1.5 1.5 0 0 1 10 14h-6A1.5 1.5 0 0 1 2.5 12.5v-7A1.5 1.5 0 0 1 4 4h1V2.5Zm1 1.5h4A1.5 1.5 0 0 1 11.5 5.5V10h1a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.5-.5h-6a.5.5 0 0 0-.5.5V4Zm-2 .999a.5.5 0 0 0-.5.5v7a.5.5 0 0 0 .5.5h6a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.5-.5h-6Z"
-      />
-    </svg>
-  );
-}
-
-function ArrowDownIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-      <path d="M8 3.5v8M4.5 8.5 8 12l3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="square" />
-    </svg>
-  );
-}
-
-function ChevronUpIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-      <path d="M4.5 9.5 8 6l3.5 3.5" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="square" />
-    </svg>
-  );
-}
-
-function ChevronDownIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-      <path d="M4.5 6.5 8 10l3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="square" />
-    </svg>
-  );
-}
-
-function TrashIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-      <path
-        d="M3.5 4.5h9M6.2 2.5h3.6M5 4.5v7M8 4.5v7M11 4.5v7M4.5 4.5l.5 8h6l.5-8"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinecap="square"
-        strokeLinejoin="miter"
-      />
-    </svg>
-  );
-}
-
-function CloseIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-      <path d="M4 4l8 8M12 4 4 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="square" />
-    </svg>
-  );
-}
-
-async function postJson<T = void>(url: string, body: unknown): Promise<T> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: "Request failed" }));
-    throw new Error(typeof payload.error === "string" ? payload.error : "Request failed");
-  }
-
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  return (await response.json().catch(() => undefined)) as T;
-}
-
-async function getJson<T>(url: string): Promise<T> {
-  const response = await fetch(url);
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: "Request failed" }));
-    throw new Error(typeof payload.error === "string" ? payload.error : "Request failed");
-  }
-
-  return (await response.json().catch(() => undefined)) as T;
-}
-
-async function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(reader.error ?? new Error(`Failed to read ${file.name}`));
-    reader.onload = () => {
-      const result = typeof reader.result === "string" ? reader.result : "";
-      const [, base64 = ""] = result.split(",", 2);
-      resolve(base64);
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
-function formatAttachmentSummary(count: number): string {
-  return count === 1 ? "Attached 1 reference image." : `Attached ${count} reference images.`;
-}
-
-function extractReferencedImages(text: string, knownImages: ImageReference[]): PreviewableImage[] {
-  const lines = text.split("\n");
-  const images: PreviewableImage[] = [];
-  let collecting = false;
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-
-    if (line === "Stored reference images:" || line === "Attached reference images:") {
-      collecting = true;
-      continue;
-    }
-
-    if (!collecting) {
-      continue;
-    }
-
-    if (!line) {
-      continue;
-    }
-
-    if (!line.startsWith("- ")) {
-      break;
-    }
-
-    const body = line.slice(2).trim();
-    const separator = body.indexOf("|");
-    if (separator !== -1) {
-      const id = body.slice(0, separator).trim();
-      const name = body.slice(separator + 1).trim();
-      if (!id || !name) {
-        continue;
-      }
-
-      images.push({
-        id,
-        name,
-        url: `/api/images/${encodeURIComponent(id)}`
-      });
-      continue;
-    }
-
-    const match = [...knownImages].reverse().find((image) => image.name === body);
-    if (!match) {
-      continue;
-    }
-
-    images.push({
-      id: match.id,
-      name: match.name,
-      url: match.url
-    });
-  }
-
-  return images;
-}
-
-function stripReferencedImagesSection(text: string): string {
-  const lines = text.split("\n");
-  const kept: string[] = [];
-  let skipping = false;
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-
-    if (line === "Stored reference images:" || line === "Attached reference images:") {
-      skipping = true;
-      continue;
-    }
-
-    if (skipping) {
-      if (!line) {
-        continue;
-      }
-
-      if (line.startsWith("- ")) {
-        continue;
-      }
-
-      skipping = false;
-    }
-
-    kept.push(rawLine);
-  }
-
-  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-}
-
-function isImageDrag(event: DragEvent | React.DragEvent<HTMLElement>): boolean {
-  return [...event.dataTransfer.items].some((item) => item.kind === "file" && item.type.startsWith("image/"));
-}
-
-function readStoredValue(key: string): string {
-  if (typeof window === "undefined") {
-    return "";
-  }
-
-  return window.localStorage.getItem(key) ?? "";
-}
-
-function writeStoredValue(key: string, value: string): void {
-  if (typeof window === "undefined") {
+  const styleId = "manor-terminal-theme";
+  const existing = doc.getElementById(styleId);
+  if (!lightTheme) {
+    doc.documentElement.style.background = "";
+    doc.body.style.background = "";
+    existing?.remove();
     return;
   }
 
-  if (value) {
-    window.localStorage.setItem(key, value);
-    return;
+  doc.documentElement.style.background = "#ffffff";
+  doc.body.style.background = "#ffffff";
+
+  const style = existing ?? doc.createElement("style");
+  style.id = styleId;
+  style.textContent = `
+    html, body, #terminal-container, #terminal-container .terminal, .xterm, .xterm .xterm-viewport, .xterm .xterm-screen {
+      background: #ffffff !important;
+    }
+
+    .xterm .xterm-screen canvas {
+      filter: invert(1) hue-rotate(180deg) brightness(1.22) contrast(1.08) !important;
+    }
+
+    .xterm .composition-view {
+      background: #ffffff !important;
+      color: #10233f !important;
+    }
+  `;
+
+  if (!existing) {
+    doc.head.appendChild(style);
   }
-
-  window.localStorage.removeItem(key);
-}
-
-function readWorkspaceQuery(): {
-  surface: WorkspaceSurface | null;
-  threadId: string | null;
-  terminalTarget: TerminalTarget;
-} {
-  if (typeof window === "undefined") {
-    return { surface: null, threadId: null, terminalTarget: "codexTerminal" };
-  }
-
-  const params = new URLSearchParams(window.location.search);
-  const view = params.get("view");
-  const terminal = params.get("terminal");
-  const threadId = params.get("thread");
-
-  return {
-    surface: view === "setup" || view === "butler" || view === "terminal" || view === "thread" ? view : null,
-    threadId: threadId ? threadId : null,
-    terminalTarget: terminal === "butler" ? "butlerTerminal" : "codexTerminal"
-  };
-}
-
-function buildWorkspaceQuery(state: { surface: WorkspaceSurface; threadId: string | null; terminalTarget: TerminalTarget }): string {
-  const params = new URLSearchParams();
-  params.set("view", state.surface);
-  params.set("terminal", state.terminalTarget === "butlerTerminal" ? "butler" : "codex");
-
-  if (state.surface === "thread" && state.threadId) {
-    params.set("thread", state.threadId);
-  }
-
-  return `?${params.toString()}`;
-}
-
-function resizeComposerTextarea(textarea: HTMLTextAreaElement | null) {
-  if (!textarea || typeof window === "undefined") {
-    return;
-  }
-
-  const computedStyle = window.getComputedStyle(textarea);
-  const minHeight = Number.parseFloat(computedStyle.minHeight) || 0;
-  const lineHeight = Number.parseFloat(computedStyle.lineHeight) || 24;
-  const paddingBlock =
-    (Number.parseFloat(computedStyle.paddingTop) || 0) +
-    (Number.parseFloat(computedStyle.paddingBottom) || 0) +
-    (Number.parseFloat(computedStyle.borderTopWidth) || 0) +
-    (Number.parseFloat(computedStyle.borderBottomWidth) || 0);
-  const maxHeight = lineHeight * 8 + paddingBlock;
-
-  textarea.style.height = "0px";
-  const nextHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
-  textarea.style.height = `${nextHeight}px`;
-  textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
-}
-
-function scrollElementToLatest(element: HTMLDivElement | null) {
-  if (!element) {
-    return;
-  }
-
-  element.scrollTop = element.scrollHeight;
-}
-
-function scrollElementToCenteredTarget(container: HTMLDivElement | null, target: HTMLElement | null) {
-  if (!container || !target) {
-    return;
-  }
-
-  const containerRect = container.getBoundingClientRect();
-  const targetRect = target.getBoundingClientRect();
-  const offsetWithinContainer = targetRect.top - containerRect.top;
-  const centeredTop = container.scrollTop + offsetWithinContainer - (container.clientHeight - targetRect.height) / 2;
-  container.scrollTop = Math.max(0, centeredTop);
-}
-
-function PreviewVerificationSummary({
-  verification,
-  onPreviewArtifact,
-  onResourceUnavailable
-}: {
-  verification: PreviewVerification;
-  onPreviewArtifact?: (media: PreviewMedia) => void;
-  onResourceUnavailable?: (message: string) => void;
-}) {
-  const primaryArtifacts = ["screenshot", "video", "manifest", "trace"]
-    .map((kind) => findVerificationArtifact(verification, kind as PreviewVerificationArtifact["kind"]))
-    .filter((artifact): artifact is PreviewVerificationArtifact => Boolean(artifact));
-  const issueLines = [
-    verification.error,
-    ...verification.artifacts
-      .filter((artifact) => artifact.availability !== "available")
-      .slice(0, 2)
-      .map((artifact) => describeArtifactAvailability(artifact).detail)
-      .filter((detail): detail is string => Boolean(detail)),
-    ...verification.pageErrors,
-    ...verification.failedRequests.slice(0, 2).map((request) => `${request.method} ${request.url}${request.errorText ? ` • ${request.errorText}` : ""}`)
-  ].slice(0, 3);
-
-  return (
-    <div className={`preview-verification-summary${verification.ok ? " is-passed" : " is-failed"}`}>
-      <div className="preview-verification-summary-head">
-        <span className="preview-verification-status">{verification.ok ? "Passed" : "Failed"}</span>
-        <span className="preview-verification-meta">{formatVerificationSummary(verification)}</span>
-      </div>
-      {issueLines.length > 0 ? (
-        <div className="preview-verification-issues">
-          {issueLines.map((line, index) => (
-            <div key={`${verification.runId}-issue-${index}`} className="preview-verification-issue">
-              {line}
-            </div>
-          ))}
-        </div>
-      ) : null}
-      {primaryArtifacts.length > 0 ? (
-        <div className="preview-verification-links">
-          {primaryArtifacts.map((artifact) => {
-            const downloadKind =
-              artifact.kind === "manifest" || artifact.kind === "trace" || artifact.kind === "html";
-            const href = downloadKind ? artifact.downloadUrl ?? artifact.url ?? undefined : artifact.url ?? undefined;
-            const previewKind = artifact.kind === "screenshot" ? "image" : artifact.kind === "video" ? "video" : null;
-            const availability = describeArtifactAvailability(artifact);
-            if (!availability.available) {
-              return (
-                <span
-                  key={`${verification.runId}-${artifact.kind}`}
-                  className="preview-verification-link-disabled"
-                  title={availability.detail ?? undefined}
-                >
-                  {availability.label}
-                </span>
-              );
-            }
-
-            return (
-              <a
-                key={`${verification.runId}-${artifact.kind}`}
-                href={href}
-                target={downloadKind || previewKind ? undefined : "_blank"}
-                rel={downloadKind || previewKind ? undefined : "noreferrer"}
-                download={downloadKind ? "" : undefined}
-                onClick={
-                  downloadKind || previewKind
-                    ? (event) => {
-                        event.preventDefault();
-                        void (async () => {
-                          if (previewKind && onPreviewArtifact && (artifact.url || artifact.downloadUrl)) {
-                            const resourceHref = artifact.url ?? artifact.downloadUrl ?? "";
-                            const availabilityCheck = await probeResourceAvailability(resourceHref);
-                            if (!availabilityCheck.ok) {
-                              onResourceUnavailable?.(availabilityCheck.message || "The proof file could not be opened.");
-                              return;
-                            }
-
-                            onPreviewArtifact({
-                              name: artifact.fileName || artifact.label,
-                              url: resourceHref,
-                              kind: previewKind,
-                              downloadUrl: artifact.downloadUrl ?? artifact.url
-                            });
-                            return;
-                          }
-
-                          if (downloadKind && href) {
-                            try {
-                              await triggerResourceDownload(href);
-                            } catch (error) {
-                              onResourceUnavailable?.(
-                                error instanceof Error ? error.message : "The file could not be downloaded."
-                              );
-                            }
-                          }
-                        })();
-                      }
-                    : undefined
-                }
-              >
-                {downloadKind
-                  ? `Download ${artifact.label.toLowerCase()}`
-                  : artifact.kind === "screenshot"
-                    ? "Open screenshot"
-                    : artifact.kind === "video"
-                      ? "Open video"
-                      : artifact.label}
-              </a>
-            );
-          })}
-        </div>
-      ) : null}
-    </div>
-  );
 }
 
 export function App() {
   const initialWorkspaceQuery = readWorkspaceQuery();
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const shell = useShellSnapshot();
+  const transport = useTransportState();
+  const [selectedSurface, setSelectedSurface] = useState<WorkspaceSurface | null>(initialWorkspaceQuery.surface);
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(initialWorkspaceQuery.threadId);
+  const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>(initialWorkspaceQuery.terminalTarget);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => {
     if (typeof window === "undefined") {
       return "system";
     }
-
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-    return stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
+    return stored === "light" || stored === "dark" ? stored : "system";
   });
-  const [systemPrefersDark, setSystemPrefersDark] = useState(() => {
-    if (typeof window === "undefined") {
-      return false;
-    }
-
-    return window.matchMedia("(prefers-color-scheme: dark)").matches;
-  });
-  const [butlerDraft, setButlerDraft] = useState(() => readStoredValue(BUTLER_DRAFT_STORAGE_KEY));
-  const [butlerImages, setButlerImages] = useState<ImageReference[]>([]);
-  const [threadImages, setThreadImages] = useState<ImageReference[]>([]);
-  const [knownImages, setKnownImages] = useState<ImageReference[]>([]);
-  const [butlerUploadingImages, setButlerUploadingImages] = useState(0);
-  const [threadUploadingImages, setThreadUploadingImages] = useState(0);
-  const [butlerDragActive, setButlerDragActive] = useState(false);
-  const [threadDragActive, setThreadDragActive] = useState(false);
-  const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
-  const [pendingButlerText, setPendingButlerText] = useState<string | null>(null);
-  const [pendingThreadRequest, setPendingThreadRequest] = useState<PendingThreadRequest | null>(null);
-  const [threadDraft, setThreadDraft] = useState("");
-  const [showButlerNotices, setShowButlerNotices] = useState(() => {
-    if (typeof window === "undefined") {
-      return true;
-    }
-
-    return window.localStorage.getItem(BUTLER_NOTICE_VISIBILITY_STORAGE_KEY) !== "false";
-  });
-  const [showButlerRuntime, setShowButlerRuntime] = useState(() => {
-    if (typeof window === "undefined") {
-      return false;
-    }
-
-    return window.localStorage.getItem(BUTLER_RUNTIME_VISIBILITY_STORAGE_KEY) === "true";
-  });
+  const [systemPrefersDark, setSystemPrefersDark] = useState(false);
+  const [setupCommandTarget, setSetupCommandTarget] = useState<SetupCommandMode>("builtInTerminal");
   const [threadsDrawerOpen, setThreadsDrawerOpen] = useState(false);
-  const [selectedSurface, setSelectedSurface] = useState<WorkspaceSurface | null>(initialWorkspaceQuery.surface);
-  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(initialWorkspaceQuery.threadId);
+  const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
   const [toast, setToast] = useState<AppToast | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [copiedCommandKey, setCopiedCommandKey] = useState<string | null>(null);
-  const [activeJumpId, setActiveJumpId] = useState<string | null>(null);
-  const [busyStackId, setBusyStackId] = useState<string | null>(null);
-  const [busyPreviewLeaseId, setBusyPreviewLeaseId] = useState<string | null>(null);
-  const [busyPreviewVerification, setBusyPreviewVerification] = useState<{ leaseId: string; mode: PreviewBrowserMode } | null>(null);
-  const [busyServiceId, setBusyServiceId] = useState<string | null>(null);
-  const errorTimerRef = useRef<number | null>(null);
-  const jumpFlashTimerRef = useRef<number | null>(null);
-  const copiedCommandTimerRef = useRef<number | null>(null);
   const toastTimerRef = useRef<number | null>(null);
-  const butlerDraftPersistTimerRef = useRef<number | null>(null);
-  const threadDraftPersistTimerRef = useRef<number | null>(null);
-  const butlerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const threadTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const butlerFileInputRef = useRef<HTMLInputElement | null>(null);
-  const threadFileInputRef = useRef<HTMLInputElement | null>(null);
-  const codexTerminalFrameRef = useRef<HTMLIFrameElement | null>(null);
-  const butlerTerminalFrameRef = useRef<HTMLIFrameElement | null>(null);
-  const lastRemoteErrorRef = useRef<string | null>(null);
-  const remoteErrorHydratedRef = useRef(false);
+  const copiedCommandTimerRef = useRef<number | null>(null);
   const lastFocusedWindowIdRef = useRef<string | null>(null);
   const hasSeenFocusedWindowRef = useRef(false);
-  const runScrollRef = useRef<HTMLDivElement | null>(null);
-  const butlerScrollRef = useRef<HTMLDivElement | null>(null);
-  const runTimelineScrollRef = useRef<HTMLDivElement | null>(null);
-  const butlerTimelineScrollRef = useRef<HTMLDivElement | null>(null);
-  const butlerMessageTimesRef = useRef<Record<string, number>>({});
-  const runScrollTopRef = useRef(0);
-  const butlerScrollTopRef = useRef(0);
-  const butlerPrependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
-  const [followRun, setFollowRun] = useState(true);
-  const [followButler, setFollowButler] = useState(true);
-  const [showPromptRail, setShowPromptRail] = useState(false);
-  const [setupCommandTarget, setSetupCommandTarget] = useState<SetupCommandMode>("builtInTerminal");
-  const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>(initialWorkspaceQuery.terminalTarget);
-  const [butlerHistory, setButlerHistory] = useState<ButlerHistoryState>({ messages: [], loadedStart: 0, totalCount: 0 });
-  const [loadingOlderButlerMessages, setLoadingOlderButlerMessages] = useState(false);
-  const showSetupGuide = snapshot ? !snapshot.butler.onboarding.complete : false;
+  const hasShownDisconnectToastRef = useRef(false);
+  const pendingWindowSyncRef = useRef<string | null>(null);
+  const closingWindowThreadIdRef = useRef<string | null>(null);
+  const codexTerminalFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const butlerTerminalFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const activeThreadId =
+    selectedSurface === "thread"
+      ? selectedThreadId ?? shell?.codex.focusedWindowId ?? null
+      : null;
+  const threadSummaryById = useMemo(
+    () => new Map((shell?.codex.threads ?? []).map((thread) => [thread.id, thread])),
+    [shell?.codex.threads]
+  );
+  const activeThreadSummary = activeThreadId ? threadSummaryById.get(activeThreadId) ?? null : null;
 
-  function clearLiveError() {
-    if (errorTimerRef.current !== null) {
-      window.clearTimeout(errorTimerRef.current);
-      errorTimerRef.current = null;
-    }
-    setToast((current) => (current?.key === "live-disconnect" ? null : current));
-  }
-
-  function showToast(message: string, tone: ToastTone = "success", duration = 2200, key?: string) {
+  function showToast(message: string, tone: "success" | "error" | "info" = "success", duration = 2600, key?: string) {
     const nextKey = key ?? `${tone}:${message}`;
-    setToast({ key: nextKey, message, tone });
     if (toastTimerRef.current !== null) {
       window.clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
     }
+    setToast({ key: nextKey, message, tone });
     if (duration > 0) {
       toastTimerRef.current = window.setTimeout(() => {
         setToast((current) => (current?.key === nextKey ? null : current));
@@ -1817,59 +134,12 @@ export function App() {
     showToast(message, "error", duration, key);
   }
 
-  function syncTerminalFrameTheme(frame: HTMLIFrameElement | null, lightTheme: boolean) {
-    const doc = frame?.contentDocument;
-    if (!doc) {
-      return;
-    }
-
-    const styleId = "manor-terminal-theme";
-    const existing = doc.getElementById(styleId);
-    if (!lightTheme) {
-      doc.documentElement.style.background = "";
-      doc.body.style.background = "";
-      existing?.remove();
-      return;
-    }
-
-    doc.documentElement.style.background = "#ffffff";
-    doc.body.style.background = "#ffffff";
-
-    const style = existing ?? doc.createElement("style");
-    style.id = styleId;
-    style.textContent = `
-      html, body, #terminal-container, #terminal-container .terminal, .xterm, .xterm .xterm-viewport, .xterm .xterm-screen {
-        background: #ffffff !important;
-      }
-
-      .xterm .xterm-screen canvas {
-        filter: invert(1) hue-rotate(180deg) brightness(1.22) contrast(1.08) !important;
-      }
-
-      .xterm .composition-view {
-        background: #ffffff !important;
-        color: #10233f !important;
-      }
-    `;
-
-    if (!existing) {
-      doc.head.appendChild(style);
-    }
-  }
-
-  async function handleConfirmAction() {
-    if (!confirmDialog || confirmBusy) {
-      return;
-    }
-
-    setConfirmBusy(true);
+  async function copyText(value: string, successMessage: string) {
     try {
-      await confirmDialog.onConfirm();
-      setConfirmDialog(null);
-    } catch (confirmError) {
-      showErrorToast(confirmError);
-    } finally {
-      setConfirmBusy(false);
+      await navigator.clipboard.writeText(value);
+      showToast(successMessage, "success", 1200);
+    } catch (error) {
+      showErrorToast(error);
     }
   }
 
@@ -1898,94 +168,6 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    let closed = false;
-
-    fetch("/api/bootstrap")
-      .then((response) => response.json())
-      .then((data) => {
-        if (!closed) {
-          startTransition(() => {
-            setSnapshot(data);
-          });
-        }
-      })
-      .catch((fetchError: Error) => {
-        if (!closed) {
-          showErrorToast(fetchError, "bootstrap-error", 5000);
-        }
-      });
-
-    getJson<{ images: ImageReference[] }>("/api/images?limit=200")
-      .then((data) => {
-        if (!closed) {
-          startTransition(() => {
-            setKnownImages(data.images);
-          });
-        }
-      })
-      .catch((fetchError: Error) => {
-        if (!closed) {
-          showErrorToast(fetchError, "image-bootstrap-error", 5000);
-        }
-      });
-
-    const events = new EventSource("/api/events");
-    events.onopen = () => {
-      clearLiveError();
-    };
-    events.onmessage = (event) => {
-      clearLiveError();
-      startTransition(() => {
-        setSnapshot(JSON.parse(event.data));
-      });
-    };
-    events.addEventListener("heartbeat", () => {
-      clearLiveError();
-    });
-    events.onerror = () => {
-      if (closed || errorTimerRef.current !== null) {
-        return;
-      }
-
-      errorTimerRef.current = window.setTimeout(() => {
-        errorTimerRef.current = null;
-        if (!closed) {
-          showToast("Live updates disconnected. Refresh the page if this persists.", "error", 0, "live-disconnect");
-        }
-      }, 2500);
-    };
-
-    return () => {
-      closed = true;
-      if (errorTimerRef.current !== null) {
-        window.clearTimeout(errorTimerRef.current);
-        errorTimerRef.current = null;
-      }
-      if (jumpFlashTimerRef.current !== null) {
-        window.clearTimeout(jumpFlashTimerRef.current);
-        jumpFlashTimerRef.current = null;
-      }
-      if (copiedCommandTimerRef.current !== null) {
-        window.clearTimeout(copiedCommandTimerRef.current);
-        copiedCommandTimerRef.current = null;
-      }
-      if (toastTimerRef.current !== null) {
-        window.clearTimeout(toastTimerRef.current);
-        toastTimerRef.current = null;
-      }
-      if (butlerDraftPersistTimerRef.current !== null) {
-        window.clearTimeout(butlerDraftPersistTimerRef.current);
-        butlerDraftPersistTimerRef.current = null;
-      }
-      if (threadDraftPersistTimerRef.current !== null) {
-        window.clearTimeout(threadDraftPersistTimerRef.current);
-        threadDraftPersistTimerRef.current = null;
-      }
-      events.close();
-    };
-  }, []);
-
-  useEffect(() => {
     function handlePopState() {
       const query = readWorkspaceQuery();
       setSelectedSurface(query.surface);
@@ -1997,91 +179,159 @@ export function App() {
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
-  const activeThread = useMemo(() => {
-    if (!snapshot) {
-      return null;
+  useEffect(() => {
+    if (!shell || selectedSurface !== null) {
+      return;
     }
 
-    const threadId = selectedSurface === "thread" ? selectedThreadId ?? snapshot.codex.focusedWindowId : null;
-
-    if (!threadId) {
-      return null;
-    }
-
-    return snapshot.codex.openThreads[threadId] ?? null;
-  }, [selectedSurface, selectedThreadId, snapshot]);
+    setSelectedSurface(shell.butler.onboarding.complete ? "butler" : "setup");
+  }, [selectedSurface, shell]);
 
   useEffect(() => {
-    const threadId = activeThread?.id ?? null;
-    setThreadDraft(threadId ? readStoredValue(`${THREAD_DRAFT_STORAGE_KEY_PREFIX}${threadId}`) : "");
-    setThreadImages([]);
-    setFollowRun(true);
-  }, [activeThread?.id]);
+    if (shell?.butler.onboarding.complete && selectedSurface === "setup") {
+      setSelectedSurface("butler");
+    }
+  }, [selectedSurface, shell?.butler.onboarding.complete]);
 
   useEffect(() => {
-    if (butlerDraftPersistTimerRef.current !== null) {
-      window.clearTimeout(butlerDraftPersistTimerRef.current);
+    const closingThreadId = closingWindowThreadIdRef.current;
+    if (!closingThreadId || !shell) {
+      return;
     }
 
-    butlerDraftPersistTimerRef.current = window.setTimeout(() => {
-      writeStoredValue(BUTLER_DRAFT_STORAGE_KEY, butlerDraft);
-      butlerDraftPersistTimerRef.current = null;
-    }, DRAFT_PERSIST_DELAY_MS);
+    const stillOpen = shell.codex.windows.some((window) => window.threadId === closingThreadId);
+    if (!stillOpen) {
+      closingWindowThreadIdRef.current = null;
+    }
+  }, [shell]);
 
-    return () => {
-      if (butlerDraftPersistTimerRef.current !== null) {
-        window.clearTimeout(butlerDraftPersistTimerRef.current);
-        butlerDraftPersistTimerRef.current = null;
+  useEffect(() => {
+    if (!shell || selectedSurface !== "thread" || !selectedThreadId) {
+      pendingWindowSyncRef.current = null;
+      return;
+    }
+
+    if (shell.codex.windows.some((window) => window.threadId === selectedThreadId)) {
+      pendingWindowSyncRef.current = null;
+      return;
+    }
+
+    if (closingWindowThreadIdRef.current === selectedThreadId) {
+      pendingWindowSyncRef.current = null;
+      return;
+    }
+
+    if (shell.codex.threads.some((thread) => thread.id === selectedThreadId)) {
+      const requestKey = `open:${selectedThreadId}`;
+      if (pendingWindowSyncRef.current === requestKey) {
+        return;
       }
-    };
-  }, [butlerDraft]);
-
-  useEffect(() => {
-    const threadId = activeThread?.id ?? null;
-    if (!threadId) {
+      pendingWindowSyncRef.current = requestKey;
+      postJson("/api/windows/open", { threadId: selectedThreadId }).catch((error) => {
+        if (pendingWindowSyncRef.current === requestKey) {
+          pendingWindowSyncRef.current = null;
+        }
+        showErrorToast(error);
+      });
       return;
     }
 
-    if (threadDraftPersistTimerRef.current !== null) {
-      window.clearTimeout(threadDraftPersistTimerRef.current);
+    pendingWindowSyncRef.current = null;
+    setSelectedThreadId(null);
+    setSelectedSurface(shell.butler.onboarding.complete ? "butler" : "setup");
+  }, [selectedSurface, selectedThreadId, shell]);
+
+  useEffect(() => {
+    if (selectedSurface !== "thread" || !shell) {
+      return;
     }
 
-    threadDraftPersistTimerRef.current = window.setTimeout(() => {
-      writeStoredValue(`${THREAD_DRAFT_STORAGE_KEY_PREFIX}${threadId}`, threadDraft);
-      threadDraftPersistTimerRef.current = null;
-    }, DRAFT_PERSIST_DELAY_MS);
+    if (selectedThreadId) {
+      const threadStillExists =
+        shell.codex.windows.some((window) => window.threadId === selectedThreadId) ||
+        shell.codex.threads.some((thread) => thread.id === selectedThreadId);
 
-    return () => {
-      if (threadDraftPersistTimerRef.current !== null) {
-        window.clearTimeout(threadDraftPersistTimerRef.current);
-        threadDraftPersistTimerRef.current = null;
+      if (threadStillExists) {
+        return;
       }
-    };
-  }, [activeThread?.id, threadDraft]);
+    }
 
-  useEffect(() => {
-    resizeComposerTextarea(butlerTextareaRef.current);
-  }, [butlerDraft]);
-
-  useEffect(() => {
-    resizeComposerTextarea(threadTextareaRef.current);
-  }, [threadDraft]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
+    if (shell.codex.focusedWindowId) {
+      setSelectedThreadId(shell.codex.focusedWindowId);
       return;
     }
 
-    window.localStorage.setItem(BUTLER_NOTICE_VISIBILITY_STORAGE_KEY, showButlerNotices ? "true" : "false");
-  }, [showButlerNotices]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
+    if (selectedThreadId) {
       return;
     }
 
-    window.localStorage.setItem(BUTLER_RUNTIME_VISIBILITY_STORAGE_KEY, showButlerRuntime ? "true" : "false");
-  }, [showButlerRuntime]);
+    setSelectedSurface(shell.butler.onboarding.complete ? "butler" : "setup");
+  }, [selectedSurface, selectedThreadId, shell]);
+
+  useEffect(() => {
+    if (!shell) {
+      return;
+    }
+
+    const focusedWindowId = shell.codex.focusedWindowId ?? null;
+    const previousFocusedWindowId = lastFocusedWindowIdRef.current;
+    lastFocusedWindowIdRef.current = focusedWindowId;
+
+    if (!hasSeenFocusedWindowRef.current) {
+      hasSeenFocusedWindowRef.current = true;
+      return;
+    }
+
+    if (selectedSurface !== "butler") {
+      return;
+    }
+
+    if (previousFocusedWindowId !== null || !focusedWindowId) {
+      return;
+    }
+
+    if (!threadSummaryById.has(focusedWindowId)) {
+      return;
+    }
+
+    setSelectedSurface("thread");
+    setSelectedThreadId(focusedWindowId);
+  }, [selectedSurface, shell, threadSummaryById]);
+
+  useEffect(() => {
+    if (!shell || typeof window === "undefined") {
+      return;
+    }
+
+    const surface = selectedSurface ?? (shell.butler.onboarding.complete ? "butler" : "setup");
+    const nextQuery = buildWorkspaceQuery({
+      surface,
+      threadId: surface === "thread" ? selectedThreadId ?? shell.codex.focusedWindowId ?? null : null,
+      terminalTarget
+    });
+
+    if (window.location.search !== nextQuery) {
+      window.history.replaceState(null, "", `${window.location.pathname}${nextQuery}`);
+    }
+  }, [selectedSurface, selectedThreadId, shell, terminalTarget]);
+
+  useEffect(() => {
+    if (transport.disconnected) {
+      if (!hasShownDisconnectToastRef.current) {
+        hasShownDisconnectToastRef.current = true;
+        showToast("Live updates disconnected. Refresh the page if this persists.", "error", 0, "live-disconnect");
+      }
+      return;
+    }
+
+    hasShownDisconnectToastRef.current = false;
+  }, [transport.disconnected]);
+
+  useEffect(() => {
+    const isLightTheme = resolveThemePreference(themePreference, systemPrefersDark);
+    syncTerminalFrameTheme(codexTerminalFrameRef.current, isLightTheme);
+    syncTerminalFrameTheme(butlerTerminalFrameRef.current, isLightTheme);
+  }, [systemPrefersDark, themePreference]);
 
   useEffect(() => {
     if (!threadsDrawerOpen) {
@@ -2113,741 +363,47 @@ export function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [confirmBusy, confirmDialog]);
 
-  useEffect(() => {
-    if (!snapshot || selectedSurface !== null) {
-      return;
+  function openThread(threadId: string) {
+    if (closingWindowThreadIdRef.current === threadId) {
+      closingWindowThreadIdRef.current = null;
     }
-
-    setSelectedSurface(snapshot.butler.onboarding.complete ? "butler" : "setup");
-  }, [selectedSurface, snapshot]);
-
-  useEffect(() => {
-    if (snapshot?.butler.onboarding.complete && selectedSurface === "setup") {
-      setSelectedSurface("butler");
-    }
-  }, [selectedSurface, snapshot?.butler.onboarding.complete]);
-
-  useEffect(() => {
-    if (!snapshot || selectedSurface !== "thread" || !selectedThreadId) {
-      return;
-    }
-
-    if (snapshot.codex.focusedWindowId === selectedThreadId) {
-      return;
-    }
-
-    if (snapshot.codex.windows.some((window) => window.threadId === selectedThreadId)) {
-      postJson("/api/windows/focus", { threadId: selectedThreadId }).catch((focusError) =>
-        showErrorToast(focusError)
-      );
-      return;
-    }
-
-    if (snapshot.codex.threads.some((thread) => thread.id === selectedThreadId) || selectedThreadId in snapshot.codex.openThreads) {
-      postJson("/api/windows/open", { threadId: selectedThreadId }).catch((openError) =>
-        showErrorToast(openError)
-      );
-      return;
-    }
-
-    setSelectedThreadId(null);
-    setSelectedSurface(showSetupGuide ? "setup" : "butler");
-  }, [selectedSurface, selectedThreadId, showSetupGuide, snapshot]);
-
-  useEffect(() => {
-    if (selectedSurface !== "thread") {
-      return;
-    }
-
-    if (selectedThreadId) {
-      const threadStillExists =
-        snapshot?.codex.windows.some((window) => window.threadId === selectedThreadId) ||
-        snapshot?.codex.threads.some((thread) => thread.id === selectedThreadId) ||
-        Boolean(snapshot?.codex.openThreads[selectedThreadId]);
-
-      if (threadStillExists) {
-        return;
-      }
-    }
-
-    if (snapshot?.codex.focusedWindowId) {
-      setSelectedThreadId(snapshot.codex.focusedWindowId);
-      return;
-    }
-
-    if (selectedThreadId) {
-      return;
-    }
-
-    setSelectedSurface(showSetupGuide ? "setup" : "butler");
-  }, [selectedSurface, selectedThreadId, showSetupGuide, snapshot]);
-
-  useEffect(() => {
-    if (!snapshot) {
-      return;
-    }
-
-    const focusedWindowId = snapshot?.codex.focusedWindowId ?? null;
-    const previousFocusedWindowId = lastFocusedWindowIdRef.current;
-    lastFocusedWindowIdRef.current = focusedWindowId;
-
-    if (!hasSeenFocusedWindowRef.current) {
-      hasSeenFocusedWindowRef.current = true;
-      return;
-    }
-
-    if (selectedSurface !== "butler") {
-      return;
-    }
-
-    if (previousFocusedWindowId !== null || !focusedWindowId) {
-      return;
-    }
-
-    if (!snapshot?.codex.openThreads[focusedWindowId]) {
-      return;
-    }
-
     setSelectedSurface("thread");
-    setSelectedThreadId(focusedWindowId);
-    setShowPromptRail(false);
-  }, [selectedSurface, snapshot]);
-
-  useEffect(() => {
-    if (!pendingButlerText || !snapshot) {
-      return;
-    }
-
-    const hasCommittedPrompt = butlerHistory.messages.some((message) => message.role.startsWith("user") && message.text === pendingButlerText);
-    if (hasCommittedPrompt || (!snapshot.butler.pending && !snapshot.butler.isStreaming)) {
-      setPendingButlerText(null);
-    }
-  }, [butlerHistory.messages, pendingButlerText, snapshot]);
-
-  useEffect(() => {
-    if (!pendingThreadRequest || !snapshot) {
-      return;
-    }
-
-    const thread = snapshot.codex.openThreads[pendingThreadRequest.threadId];
-    if (!thread) {
-      return;
-    }
-
-    const threadItems = thread.turns
-      .flatMap((turn) => turn.items.filter(shouldRenderItem));
-    const hasResponseAfterSend = threadItems.some(
-      (item) => item.type !== "userMessage" && item.at >= pendingThreadRequest.sentAt
-    );
-
-    if (hasResponseAfterSend && thread.status !== "active") {
-      setPendingThreadRequest((current) =>
-        current?.threadId === pendingThreadRequest.threadId && current.sentAt === pendingThreadRequest.sentAt ? null : current
-      );
-    }
-  }, [pendingThreadRequest, snapshot]);
-
-  useEffect(() => {
-    if (!snapshot) {
-      return;
-    }
-
-    const tailMessages = snapshot.butler.messages;
-    const tailStart = Math.max(0, snapshot.butler.messageCount - tailMessages.length);
-
-    startTransition(() => {
-      setButlerHistory((current) => {
-        if (snapshot.butler.messageCount === 0) {
-          return { messages: [], loadedStart: 0, totalCount: 0 };
-        }
-
-        if (current.messages.length === 0 || current.loadedStart > tailStart || current.totalCount > snapshot.butler.messageCount) {
-          return {
-            messages: tailMessages,
-            loadedStart: tailStart,
-            totalCount: snapshot.butler.messageCount
-          };
-        }
-
-        const prefixCount = Math.max(0, Math.min(current.messages.length, tailStart - current.loadedStart));
-        const prefix = current.messages.slice(0, prefixCount);
-        return {
-          messages: dedupeMessages([...prefix, ...tailMessages]),
-          loadedStart: prefix.length > 0 ? current.loadedStart : tailStart,
-          totalCount: snapshot.butler.messageCount
-        };
-      });
-    });
-  }, [snapshot]);
-
-  useEffect(() => {
-    const anchor = butlerPrependAnchorRef.current;
-    if (!anchor) {
-      return;
-    }
-
-    requestAnimationFrame(() => {
-      const scroller = butlerScrollRef.current;
-      if (!scroller) {
-        return;
+    setSelectedThreadId(threadId);
+    const isOpen = shell?.codex.windows.some((window) => window.threadId === threadId);
+    const requestKey = `${isOpen ? "focus" : "open"}:${threadId}`;
+    pendingWindowSyncRef.current = requestKey;
+    postJson(isOpen ? "/api/windows/focus" : "/api/windows/open", { threadId }).catch((error) => {
+      if (pendingWindowSyncRef.current === requestKey) {
+        pendingWindowSyncRef.current = null;
       }
-
-      const delta = scroller.scrollHeight - anchor.scrollHeight;
-      scroller.scrollTop = anchor.scrollTop + delta;
-      butlerPrependAnchorRef.current = null;
+      showErrorToast(error);
     });
-  }, [butlerHistory.messages]);
+  }
 
-  useEffect(() => {
-    const remoteError = snapshot?.codex.lastError ?? snapshot?.butler.lastError ?? null;
-    if (!remoteError) {
-      lastRemoteErrorRef.current = null;
-      if (snapshot) {
-        remoteErrorHydratedRef.current = true;
+  async function closeThreadWindow(threadId: string) {
+    closingWindowThreadIdRef.current = threadId;
+    const remainingWindows = shell?.codex.windows.filter((window) => window.threadId !== threadId) ?? [];
+    const isActiveWindow =
+      (selectedSurface === "thread" && selectedThreadId === threadId);
+
+    if (isActiveWindow) {
+      const nextThreadId = remainingWindows[0]?.threadId ?? null;
+      if (nextThreadId) {
+        setSelectedSurface("thread");
+        setSelectedThreadId(nextThreadId);
+      } else {
+        setSelectedThreadId(null);
+        setSelectedSurface(shell?.butler.onboarding.complete ? "butler" : "setup");
       }
-      return;
     }
 
-    if (lastRemoteErrorRef.current === remoteError) {
-      return;
-    }
-
-    lastRemoteErrorRef.current = remoteError;
-
-    if (!remoteErrorHydratedRef.current) {
-      remoteErrorHydratedRef.current = true;
-      return;
-    }
-
-    showToast(remoteError, "error", 5000, "remote-error");
-  }, [snapshot?.butler.lastError, snapshot?.codex.lastError]);
-
-  const querySurface: WorkspaceSurface =
-    selectedSurface ??
-    (showSetupGuide ? "setup" : "butler");
-  const queryThreadId = querySurface === "thread" ? selectedThreadId ?? snapshot?.codex.focusedWindowId ?? null : null;
-  const isLightTheme = themePreference === "light" || (themePreference === "system" && !systemPrefersDark);
-
-  useEffect(() => {
-    const nextQuery = buildWorkspaceQuery({
-      surface: querySurface,
-      threadId: queryThreadId,
-      terminalTarget
-    });
-
-    if (window.location.search === nextQuery) {
-      return;
-    }
-
-    window.history.replaceState(null, "", `${window.location.pathname}${nextQuery}`);
-  }, [querySurface, queryThreadId, terminalTarget]);
-
-  useEffect(() => {
-    if (!showPromptRail) {
-      return;
-    }
-
-    const target =
-      querySurface === "thread"
-        ? runTimelineScrollRef.current
-        : querySurface === "butler"
-          ? butlerTimelineScrollRef.current
-          : null;
-
-    if (!target) {
-      return;
-    }
-
-    requestAnimationFrame(() => {
-      target.scrollTop = target.scrollHeight;
-    });
-  }, [butlerHistory.messages, querySurface, queryThreadId, snapshot?.codex.openThreads, showPromptRail]);
-  const activeRunItems = useMemo(
-    () =>
-      activeThread
-        ? activeThread.turns
-            .flatMap((turn) => turn.items.filter(shouldRenderItem).map((item) => ({ ...item, turnId: turn.id, turnStartedAt: turn.startedAt })))
-        : [],
-    [activeThread]
-  );
-  const activeThreadStacks =
-    activeThread && snapshot ? snapshot.butler.stacks.filter((stack) => stack.threadId === activeThread.id && stack.status !== "stopped") : [];
-  const activeThreadPreviews =
-    activeThread && snapshot
-      ? snapshot.butler.previews.filter((lease) => lease.threadId === activeThread.id && lease.status !== "stopped")
-      : [];
-  const activeThreadServices =
-    activeThread && snapshot ? snapshot.butler.services.filter((service) => service.threadId === activeThread.id && service.status !== "stopped") : [];
-  const activeThreadPreviewVerification =
-    activeThreadPreviews.find((lease) => Boolean(lease.lastVerification))?.lastVerification ??
-    (activeThread ? snapshot?.butler.latestPreviewProofsByThreadId[activeThread.id]?.verification ?? null : null);
-  const activeStackLeases = snapshot ? snapshot.butler.stacks.filter((stack) => stack.status !== "stopped") : [];
-  const activePreviewLeases = snapshot ? snapshot.butler.previews.filter((lease) => lease.status !== "stopped") : [];
-  const activeServiceLeases = snapshot ? snapshot.butler.services.filter((service) => service.status !== "stopped") : [];
-  const activeRuntimeLeaseCount = activeStackLeases.length + activePreviewLeases.length + activeServiceLeases.length;
-
-  const runPromptJumpList = useMemo(() => activeRunItems.filter((item) => item.type === "userMessage"), [activeRunItems]);
-  const showPendingThreadEntry = Boolean(
-    pendingThreadRequest &&
-      activeThread &&
-      pendingThreadRequest.threadId === activeThread.id &&
-      !activeRunItems.some((item) => item.type === "userMessage" && item.at >= pendingThreadRequest.sentAt - 1000)
-  );
-  const showThreadWorkingIndicator =
-    Boolean(pendingThreadRequest && activeThread && pendingThreadRequest.threadId === activeThread.id) || activeThread?.status === "active";
-  const butlerVisibleMessages = useMemo(
-    () => butlerHistory.messages.filter((message) => showButlerNotices || message.kind !== "notice"),
-    [butlerHistory.messages, showButlerNotices]
-  );
-  const butlerNoticeCount = useMemo(
-    () => (snapshot ? snapshot.butler.supervision.notices.length : 0),
-    [snapshot]
-  );
-  const butlerMessagesWithTimes = useMemo(
-    () =>
-      butlerVisibleMessages.map((message, index) => {
-        const knownAt = message.at ?? butlerMessageTimesRef.current[message.id];
-        if (typeof knownAt === "number" && Number.isFinite(knownAt)) {
-          butlerMessageTimesRef.current[message.id] = knownAt;
-          return { ...message, at: knownAt };
-        }
-
-        const fallbackAt = Date.now() - (butlerVisibleMessages.length - index) * 1000;
-        butlerMessageTimesRef.current[message.id] = fallbackAt;
-        return { ...message, at: fallbackAt };
-      }),
-    [butlerVisibleMessages]
-  );
-  const butlerPromptJumpList = useMemo(
-    () => butlerMessagesWithTimes.filter((message) => message.role.startsWith("user")),
-    [butlerMessagesWithTimes]
-  );
-  const runTimelineGroups = useMemo(() => groupTimelineItems(runPromptJumpList), [runPromptJumpList]);
-  const butlerTimelineGroups = useMemo(() => groupTimelineItems(butlerPromptJumpList), [butlerPromptJumpList]);
-  const latestRunActivityKey = activeRunItems.length > 0 ? `${activeRunItems[activeRunItems.length - 1].id}:${activeRunItems[activeRunItems.length - 1].at}` : "empty";
-  const runConversationRows = useMemo(
-    () => [
-      ...activeRunItems.map((item) => ({ id: item.id, kind: "item" as const, item })),
-      ...(showPendingThreadEntry && pendingThreadRequest ? [{ id: `pending-${pendingThreadRequest.sentAt}`, kind: "pending" as const, text: pendingThreadRequest.text }] : []),
-      ...(showThreadWorkingIndicator ? [{ id: `working-${activeThread?.id ?? "thread"}`, kind: "working" as const }] : [])
-    ],
-    [activeRunItems, activeThread?.id, pendingThreadRequest, showPendingThreadEntry, showThreadWorkingIndicator]
-  );
-  const butlerConversationRows = useMemo(
-    () => [
-      ...butlerMessagesWithTimes.map((message) => ({ id: message.id, kind: "message" as const, message })),
-      ...(snapshot?.butler.pending || snapshot?.butler.isStreaming ? [{ id: "butler-working", kind: "working" as const }] : [])
-    ],
-    [butlerMessagesWithTimes, snapshot?.butler.isStreaming, snapshot?.butler.pending]
-  );
-
-  useEffect(() => {
-    if (!activeThread || !followRun || !runScrollRef.current) {
-      return;
-    }
-
-    requestAnimationFrame(() => {
-      scrollElementToLatest(runScrollRef.current);
-    });
-  }, [
-    activeThread?.id,
-    activeThread?.status,
-    followRun,
-    latestRunActivityKey,
-    pendingThreadRequest?.sentAt,
-    pendingThreadRequest?.threadId,
-    showPendingThreadEntry,
-    showThreadWorkingIndicator
-  ]);
-
-  useEffect(() => {
-    if (querySurface !== "thread") {
-      return;
-    }
-
-    requestAnimationFrame(() => {
-      if (followRun) {
-        scrollElementToLatest(runScrollRef.current);
-        return;
+    try {
+      await postJson("/api/windows/close", { threadId });
+    } catch (error) {
+      if (closingWindowThreadIdRef.current === threadId) {
+        closingWindowThreadIdRef.current = null;
       }
-
-      if (!runScrollRef.current) {
-        return;
-      }
-
-      runScrollRef.current.scrollTop = runScrollTopRef.current;
-    });
-  }, [activeThread?.id, followRun, querySurface]);
-
-  useEffect(() => {
-    if (querySurface !== "butler") {
-      return;
-    }
-
-    requestAnimationFrame(() => {
-      if (followButler) {
-        scrollElementToLatest(butlerScrollRef.current);
-        return;
-      }
-
-      if (!butlerScrollRef.current) {
-        return;
-      }
-
-      butlerScrollRef.current.scrollTop = butlerScrollTopRef.current;
-    });
-  }, [querySurface]);
-
-  const latestButlerActivityKey =
-    butlerConversationRows.length > 0
-      ? `${butlerConversationRows[butlerConversationRows.length - 1].id}:${butlerConversationRows.length}`
-      : "empty";
-
-  useEffect(() => {
-    if (querySurface !== "butler" || !followButler || butlerPrependAnchorRef.current) {
-      return;
-    }
-
-    requestAnimationFrame(() => {
-      scrollElementToLatest(butlerScrollRef.current);
-    });
-  }, [followButler, latestButlerActivityKey, querySurface]);
-
-  useEffect(() => {
-    syncTerminalFrameTheme(codexTerminalFrameRef.current, isLightTheme);
-    syncTerminalFrameTheme(butlerTerminalFrameRef.current, isLightTheme);
-  }, [isLightTheme]);
-
-  if (!snapshot) {
-    return <div className="shell loading">Loading Butler…</div>;
-  }
-
-  const terminalUrl = terminalTarget === "butlerTerminal" ? "/butler-terminal/" : "/terminal/";
-  const terminalLabel = terminalTarget === "butlerTerminal" ? "Butler" : "Codex";
-  const nextTerminalTarget =
-    snapshot.butler.onboarding.steps.find((step) => step.status === "pending")?.id === "butlerAuth" ? "butlerTerminal" : "codexTerminal";
-
-  async function uploadImages(target: "butler" | "thread", files: FileList | File[]) {
-    const imageFiles = [...files].filter((file) => file.type.startsWith("image/"));
-    if (imageFiles.length === 0) {
-      showToast("Only image files are supported", "error");
-      return;
-    }
-
-    const setUploading = target === "butler" ? setButlerUploadingImages : setThreadUploadingImages;
-    const setImages = target === "butler" ? setButlerImages : setThreadImages;
-
-    setUploading((current) => current + imageFiles.length);
-
-    try {
-      const uploaded = await Promise.all(
-        imageFiles.map(async (file) => {
-          const data = await readFileAsBase64(file);
-          const result = await postJson<{ ok: true; image: ImageReference }>("/api/images/upload", {
-            name: file.name,
-            mimeType: file.type,
-            sizeBytes: file.size,
-            data
-          });
-          return result.image;
-        })
-      );
-
-      setImages((current) => [...current, ...uploaded]);
-      setKnownImages((current) => {
-        const next = new Map(current.map((image) => [image.id, image]));
-        for (const image of uploaded) {
-          next.set(image.id, image);
-        }
-        return [...next.values()];
-      });
-      showToast(imageFiles.length === 1 ? "Image attached" : `${imageFiles.length} images attached`);
-    } catch (uploadError) {
-      showErrorToast(uploadError);
-    } finally {
-      setUploading((current) => Math.max(0, current - imageFiles.length));
-    }
-  }
-
-  function removeComposerImage(target: "butler" | "thread", imageId: string) {
-    if (target === "butler") {
-      setButlerImages((current) => current.filter((image) => image.id !== imageId));
-      return;
-    }
-
-    setThreadImages((current) => current.filter((image) => image.id !== imageId));
-  }
-
-  function handleComposerFileSelection(target: "butler" | "thread", event: React.ChangeEvent<HTMLInputElement>) {
-    const files = event.target.files;
-    if (files && files.length > 0) {
-      void uploadImages(target, files);
-    }
-    event.target.value = "";
-  }
-
-  function handleComposerDrop(target: "butler" | "thread", event: React.DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-    event.stopPropagation();
-    if (target === "butler") {
-      setButlerDragActive(false);
-    } else {
-      setThreadDragActive(false);
-    }
-
-    if (!isImageDrag(event)) {
-      return;
-    }
-
-    void uploadImages(target, event.dataTransfer.files);
-  }
-
-  function openPreviewableImage(image: PreviewableImage) {
-    setPreviewMedia({
-      name: image.name,
-      url: image.url,
-      kind: "image",
-      downloadUrl: image.url
-    });
-  }
-
-  function renderImagePreviewGrid(
-    images: PreviewableImage[],
-    options?: { removable?: boolean; onRemove?: (imageId: string) => void }
-  ) {
-    return (
-      <div className="composer-attachments composer-attachments-static">
-        {images.map((image) => (
-          <div key={image.id} className="composer-attachment">
-            <button
-              className="composer-attachment-preview"
-              type="button"
-              onClick={() => openPreviewableImage(image)}
-              aria-label={`Preview ${image.name}`}
-              title={image.name}
-            >
-              <img src={image.url} alt={image.name} className="composer-attachment-thumb" />
-            </button>
-            <div className="composer-attachment-copy">
-              <button
-                className="composer-attachment-name composer-attachment-name-button"
-                type="button"
-                onClick={() => openPreviewableImage(image)}
-                title={image.name}
-              >
-                {image.name}
-              </button>
-            </div>
-            {options?.removable && options.onRemove ? (
-              <button
-                className="composer-attachment-remove"
-                type="button"
-                onClick={() => options.onRemove?.(image.id)}
-                aria-label={`Remove ${image.name}`}
-              >
-                <CloseIcon />
-              </button>
-            ) : null}
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  function renderMessageImageStrip(images: PreviewableImage[]) {
-    return (
-      <div className="message-image-strip">
-        {images.map((image) => (
-          <button
-            key={image.id}
-            className="message-image-button"
-            type="button"
-            onClick={() => openPreviewableImage(image)}
-            aria-label={`Preview ${image.name}`}
-            title={image.name}
-          >
-            <img src={image.url} alt={image.name} className="message-image-thumb" />
-          </button>
-        ))}
-      </div>
-    );
-  }
-
-  async function sendButlerMessage() {
-    const text = butlerDraft.trim();
-    const composerImages = [...butlerImages];
-    if (!text && composerImages.length === 0) {
-      return;
-    }
-
-    const attachmentCount = composerImages.length;
-    const messageSummary = text || formatAttachmentSummary(attachmentCount);
-    setButlerDraft("");
-    setButlerImages([]);
-    writeStoredValue(BUTLER_DRAFT_STORAGE_KEY, "");
-    setFollowButler(true);
-    setPendingButlerText(messageSummary);
-
-    try {
-      await postJson("/api/chat/messages", { text, imageReferenceIds: composerImages.map((image) => image.id) });
-    } catch (sendError) {
-      setPendingButlerText(null);
-      setButlerDraft((current) => (current.trim().length === 0 ? text : current));
-      setButlerImages((current) => (current.length === 0 ? composerImages : current));
-      showErrorToast(sendError);
-    }
-  }
-
-  async function sendThreadMessage() {
-    if (!activeThread) {
-      return;
-    }
-
-    const text = threadDraft.trim();
-    const composerImages = [...threadImages];
-    if (!text && composerImages.length === 0) {
-      return;
-    }
-
-    const attachmentCount = composerImages.length;
-    const messageSummary = text || formatAttachmentSummary(attachmentCount);
-    setThreadDraft("");
-    setThreadImages([]);
-    writeStoredValue(`${THREAD_DRAFT_STORAGE_KEY_PREFIX}${activeThread.id}`, "");
-    setFollowRun(true);
-    setPendingThreadRequest({
-      threadId: activeThread.id,
-      text: messageSummary,
-      sentAt: Date.now(),
-      attachmentCount
-    });
-
-    try {
-      await postJson("/api/threads/messages", {
-        threadId: activeThread.id,
-        text,
-        imageReferenceIds: composerImages.map((image) => image.id)
-      });
-    } catch (sendError) {
-      setPendingThreadRequest((current) => (current?.threadId === activeThread.id && current.text === messageSummary ? null : current));
-      setThreadDraft((current) => (current.trim().length === 0 ? text : current));
-      setThreadImages((current) => (current.length === 0 ? composerImages : current));
-      showErrorToast(sendError);
-    }
-  }
-
-  async function updateButlerCompose(modelKey: string, thinkingLevel: ButlerThinkingLevel = snapshot.butler.compose.thinkingLevel) {
-    if (!modelKey) {
-      return;
-    }
-
-    try {
-      await postJson("/api/chat/settings", { model: modelKey, thinkingLevel });
-    } catch (settingsError) {
-      showErrorToast(settingsError);
-    }
-  }
-
-  async function updateCodexCompose(model: string, effort: ReasoningEffort | null) {
-    try {
-      await postJson("/api/threads/settings", { model, effort });
-    } catch (settingsError) {
-      showErrorToast(settingsError);
-    }
-  }
-
-  async function updateThreadSupervision(threadId: string, maxButlerTurns: number | null) {
-    try {
-      await postJson("/api/threads/supervision", { threadId, maxButlerTurns });
-    } catch (settingsError) {
-      showErrorToast(settingsError);
-    }
-  }
-
-  async function stopStackLease(stackId: string) {
-    setBusyStackId(stackId);
-
-    try {
-      await postJson("/api/stacks/stop", { stackId });
-      showToast("Stack stopped");
-    } catch (stackError) {
-      showErrorToast(stackError);
-    } finally {
-      setBusyStackId((current) => (current === stackId ? null : current));
-    }
-  }
-
-  async function pinStackLease(stackId: string, pinned: boolean) {
-    try {
-      await postJson("/api/stacks/pin", { stackId, pinned });
-      showToast(pinned ? "Stack pinned" : "Stack unpinned");
-    } catch (pinError) {
-      showErrorToast(pinError);
-    }
-  }
-
-  async function stopPreviewLease(leaseId: string) {
-    setBusyPreviewLeaseId(leaseId);
-
-    try {
-      await postJson("/api/previews/stop", { leaseId });
-      showToast("Preview stopped");
-    } catch (previewError) {
-      showErrorToast(previewError);
-    } finally {
-      setBusyPreviewLeaseId((current) => (current === leaseId ? null : current));
-    }
-  }
-
-  async function verifyPreviewLease(leaseId: string, mode: PreviewBrowserMode = "headless") {
-    setBusyPreviewVerification({ leaseId, mode });
-
-    try {
-      const result = await postJson<{
-        ok: true;
-        verification: PreviewVerification;
-        lease: Snapshot["butler"]["previews"][number] | null;
-      }>("/api/previews/verify", { leaseId, mode });
-      showToast(
-        result.verification.ok
-          ? `Preview verified${result.verification.title ? `: ${result.verification.title}` : ""}`
-          : `Preview check failed${result.verification.status ? ` (${result.verification.status})` : ""}`
-      );
-    } catch (previewError) {
-      showErrorToast(previewError);
-    } finally {
-      setBusyPreviewVerification((current) => (current?.leaseId === leaseId && current.mode === mode ? null : current));
-    }
-  }
-
-  async function stopServiceLease(serviceId: string) {
-    setBusyServiceId(serviceId);
-
-    try {
-      await postJson("/api/services/stop", { serviceId });
-      showToast("Service stopped");
-    } catch (serviceError) {
-      showErrorToast(serviceError);
-    } finally {
-      setBusyServiceId((current) => (current === serviceId ? null : current));
-    }
-  }
-
-  async function pinPreviewLease(leaseId: string, pinned: boolean) {
-    try {
-      await postJson("/api/previews/pin", { leaseId, pinned });
-      showToast(pinned ? "Preview pinned" : "Preview unpinned");
-    } catch (pinError) {
-      showErrorToast(pinError);
-    }
-  }
-
-  async function pinServiceLease(serviceId: string, pinned: boolean) {
-    try {
-      await postJson("/api/services/pin", { serviceId, pinned });
-      showToast(pinned ? "Service pinned" : "Service unpinned");
-    } catch (pinError) {
-      showErrorToast(pinError);
+      showErrorToast(error);
     }
   }
 
@@ -2879,6 +435,22 @@ export function App() {
     });
   }
 
+  async function handleConfirmAction() {
+    if (!confirmDialog || confirmBusy) {
+      return;
+    }
+
+    setConfirmBusy(true);
+    try {
+      await confirmDialog.onConfirm();
+      setConfirmDialog(null);
+    } catch (error) {
+      showErrorToast(error);
+    } finally {
+      setConfirmBusy(false);
+    }
+  }
+
   async function copySetupCommand(command: string, key: string) {
     try {
       await navigator.clipboard.writeText(command);
@@ -2891,191 +463,39 @@ export function App() {
         setCopiedCommandKey((current) => (current === key ? null : current));
         copiedCommandTimerRef.current = null;
       }, 1200);
-    } catch (copyError) {
-      showErrorToast(copyError);
+    } catch (error) {
+      showErrorToast(error);
     }
   }
 
-  async function copyText(value: string, successMessage: string) {
-    try {
-      await navigator.clipboard.writeText(value);
-      showToast(successMessage, "success", 1200);
-    } catch (copyError) {
-      showErrorToast(copyError);
-    }
-  }
-
-  async function closeThreadWindow(threadId: string) {
-    const remainingWindows = snapshot.codex.windows.filter((window) => window.threadId !== threadId);
-    const isActiveWindow =
-      activeTabId === threadId || (selectedSurface === "thread" && selectedThreadId === threadId);
-
-    if (isActiveWindow) {
-      const nextThreadId = remainingWindows[0]?.threadId ?? null;
-      setShowPromptRail(false);
-      if (nextThreadId) {
-        setSelectedSurface("thread");
-        setSelectedThreadId(nextThreadId);
-      } else {
-        setSelectedThreadId(null);
-        setSelectedSurface(showSetupGuide ? "setup" : "butler");
-      }
-    }
-
-    try {
-      await postJson("/api/windows/close", { threadId });
-    } catch (closeError) {
-      showErrorToast(closeError);
-    }
-  }
-
-  function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>, submit: () => void) {
-    if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) {
-      return;
-    }
-
-    event.preventDefault();
-    submit();
-  }
-
-  function triggerJumpFlash(itemId: string) {
-    setActiveJumpId(null);
-    requestAnimationFrame(() => {
-      setActiveJumpId(itemId);
-      if (jumpFlashTimerRef.current !== null) {
-        window.clearTimeout(jumpFlashTimerRef.current);
-      }
-      jumpFlashTimerRef.current = window.setTimeout(() => {
-        setActiveJumpId((current) => (current === itemId ? null : current));
-        jumpFlashTimerRef.current = null;
-      }, 1400);
-    });
-  }
-
-  function jumpToConversationItem(
-    scroller: HTMLDivElement | null,
-    targetId: string,
-    itemId: string,
-    setFollow: (value: boolean) => void
-  ) {
-    if (!scroller) {
-      return;
-    }
-
-    const target = document.getElementById(targetId);
-    if (!target) {
-      return;
-    }
-
-    setFollow(false);
-    requestAnimationFrame(() => {
-      scrollElementToCenteredTarget(scroller, target);
-      requestAnimationFrame(() => {
-        triggerJumpFlash(itemId);
-      });
-    });
-  }
-
-  function jumpToRunPrompt(itemId: string) {
-    jumpToConversationItem(runScrollRef.current, `run-message-${itemId}`, itemId, setFollowRun);
-  }
-
-  function jumpToButlerPrompt(itemId: string) {
-    jumpToConversationItem(butlerScrollRef.current, `butler-message-${itemId}`, itemId, setFollowButler);
-  }
-
-  async function loadOlderButlerMessages(): Promise<void> {
-    if (loadingOlderButlerMessages || butlerHistory.loadedStart <= 0) {
-      return;
-    }
-
-    const scroller = butlerScrollRef.current;
-    if (scroller) {
-      butlerPrependAnchorRef.current = {
-        scrollHeight: scroller.scrollHeight,
-        scrollTop: scroller.scrollTop
-      };
-    }
-
-    setLoadingOlderButlerMessages(true);
-    try {
-      const page = await getJson<ButlerHistoryPageResponse>(
-        `/api/chat/history?before=${butlerHistory.loadedStart}&limit=${BUTLER_HISTORY_PAGE_SIZE}`
-      );
-
-      startTransition(() => {
-        setButlerHistory((current) => {
-          if (page.startIndex >= current.loadedStart) {
-            return {
-              messages: dedupeMessages([...page.messages, ...current.messages]),
-              loadedStart: current.loadedStart,
-              totalCount: Math.max(current.totalCount, page.totalCount)
-            };
-          }
-
-          return {
-            messages: dedupeMessages([...page.messages, ...current.messages]),
-            loadedStart: page.startIndex,
-            totalCount: Math.max(current.totalCount, page.totalCount)
-          };
-        });
-      });
-    } catch (historyError) {
-      showErrorToast(historyError);
-    } finally {
-      setLoadingOlderButlerMessages(false);
-    }
-  }
-
-  function focusRuntimeThread(threadId: string | null) {
-    if (!threadId) {
-      return;
-    }
-
-    setSelectedSurface("thread");
-    setSelectedThreadId(threadId);
-    setShowPromptRail(false);
-    setShowButlerRuntime(false);
-    postJson("/api/windows/open", { threadId }).catch((openError) => showErrorToast(openError));
-  }
-
+  const showSetupGuide = !shell?.butler.onboarding.complete;
   const activeTabId =
     selectedSurface === "setup"
       ? "setup"
       : selectedSurface === "terminal"
         ? "terminal"
         : selectedSurface === "thread"
-          ? selectedThreadId ?? snapshot.codex.focusedWindowId ?? (showSetupGuide ? "setup" : "butler")
+          ? selectedThreadId ?? shell?.codex.focusedWindowId ?? (showSetupGuide ? "setup" : "butler")
           : selectedSurface === "butler"
             ? "butler"
-            : snapshot.codex.focusedWindowId ?? (showSetupGuide ? "setup" : "butler");
-  const butlerModelKey = snapshot.butler.compose.model ?? "";
-  const codexEffortOptions =
-    snapshot.codex.compose.availableModels.find((model) => model.id === snapshot.codex.compose.model)?.supportedReasoningEfforts ?? [];
-  const butlerStatus = (() => {
-    if (snapshot.butler.lastError) {
-      return { tone: "error", text: snapshot.butler.lastError } as const;
-    }
+            : shell?.codex.focusedWindowId ?? (showSetupGuide ? "setup" : "butler");
+  const nextTerminalTarget =
+    shell?.butler.onboarding.steps.find((step) => step.status === "pending")?.id === "butlerAuth" ? "butlerTerminal" : "codexTerminal";
+  const terminalUrl = terminalTarget === "butlerTerminal" ? "/butler-terminal/" : "/terminal/";
+  const isLightTheme = resolveThemePreference(themePreference, systemPrefersDark);
+  const topbarContextValue = activeThreadSummary ? formatContextUsage(activeThreadSummary.contextUsage) : formatContextUsage(shell?.butler.contextUsage ?? { tokens: null, contextWindow: null, percent: null });
+  const topbarCompactionValue = activeThreadSummary ? formatCodexCompactionState(activeThreadSummary.compaction) : formatCompactionState(shell?.butler.compaction ?? {
+    active: false,
+    count: 0,
+    lastReason: null
+  });
+  const topbarCompactionTone = activeThreadSummary
+    ? activeThreadSummary.compaction.active ? "accent" : "neutral"
+    : shell?.butler.compaction.active ? "accent" : "neutral";
 
-    if (snapshot.butler.compaction.active) {
-      return { tone: "working", text: "Working" } as const;
-    }
-
-    if (snapshot.butler.isStreaming) {
-      return { tone: "working", text: "Working" } as const;
-    }
-
-    if (snapshot.butler.pending) {
-      return { tone: "pending", text: "Running" } as const;
-    }
-
-    return { tone: "ready", text: "Ready" } as const;
-  })();
-  const topbarContextValue = activeThread ? formatContextUsage(activeThread.contextUsage) : formatContextUsage(snapshot.butler.contextUsage);
-  const topbarCompactionValue = activeThread ? formatCodexCompactionState(activeThread.compaction) : formatCompactionState(snapshot.butler.compaction);
-  const topbarCompactionTone = activeThread
-    ? activeThread.compaction.active ? "accent" : "neutral"
-    : snapshot.butler.compaction.active ? "accent" : "neutral";
+  if (!shell) {
+    return <div className="shell loading">Loading Butler…</div>;
+  }
 
   return (
     <div className="app-shell">
@@ -3095,30 +515,10 @@ export function App() {
               <option value="dark">Dark</option>
             </select>
           </label>
-          <StatusItem
-            kind="codex"
-            tone={snapshot.codex.connected ? "accent" : "neutral"}
-            label="Codex"
-            value={snapshot.codex.connected ? "Connected" : "Offline"}
-          />
-          <StatusItem
-            kind="auth"
-            tone={snapshot.butler.auth.loggedIn ? "success" : "neutral"}
-            label="Auth"
-            value={snapshot.butler.auth.mode}
-          />
-          <StatusItem
-            kind="context"
-            tone="neutral"
-            label="Context"
-            value={topbarContextValue}
-          />
-          <StatusItem
-            kind="compaction"
-            tone={topbarCompactionTone}
-            label="Compact"
-            value={topbarCompactionValue}
-          />
+          <StatusItem kind="codex" tone={shell.codex.connected ? "accent" : "neutral"} label="Codex" value={shell.codex.connected ? "Connected" : "Offline"} />
+          <StatusItem kind="auth" tone={shell.butler.auth.loggedIn ? "success" : "neutral"} label="Auth" value={shell.butler.auth.mode} />
+          <StatusItem kind="context" tone="neutral" label="Context" value={topbarContextValue} />
+          <StatusItem kind="compaction" tone={topbarCompactionTone} label="Compact" value={topbarCompactionValue} />
         </div>
       </header>
 
@@ -3126,126 +526,64 @@ export function App() {
         <section className="workspace">
           <div className="workspace-tabs-shell">
             {showSetupGuide ? (
-              <button
-                className={`workspace-tab workspace-tab-fixed ${activeTabId === "setup" ? "is-active" : ""}`}
-                onClick={() => {
-                  setSelectedSurface("setup");
-                  setSelectedThreadId(null);
-                  setShowPromptRail(false);
-                }}
-              >
+              <button className={`workspace-tab workspace-tab-fixed ${activeTabId === "setup" ? "is-active" : ""}`} onClick={() => {
+                setSelectedSurface("setup");
+                setSelectedThreadId(null);
+              }}>
                 Setup
               </button>
             ) : null}
-            <button
-              className={`workspace-tab workspace-tab-fixed ${activeTabId === "butler" ? "is-active" : ""}`}
-              onClick={() => {
-                setSelectedSurface("butler");
-                setSelectedThreadId(null);
-                postJson("/api/workspace/focus", {}).catch((focusError) =>
-                  showErrorToast(focusError)
-                );
-              }}
-            >
+            <button className={`workspace-tab workspace-tab-fixed ${activeTabId === "butler" ? "is-active" : ""}`} onClick={() => {
+              setSelectedSurface("butler");
+              setSelectedThreadId(null);
+              postJson("/api/workspace/focus", {}).catch((error) => showErrorToast(error));
+            }}>
               Butler
             </button>
-            <button
-              className={`workspace-tab workspace-tab-fixed ${activeTabId === "terminal" ? "is-active" : ""}`}
-              onClick={() => {
-                setSelectedSurface("terminal");
-                setSelectedThreadId(null);
-                setShowPromptRail(false);
-              }}
-            >
+            <button className={`workspace-tab workspace-tab-fixed ${activeTabId === "terminal" ? "is-active" : ""}`} onClick={() => {
+              setSelectedSurface("terminal");
+              setSelectedThreadId(null);
+            }}>
               Terminal
             </button>
             <div className="workspace-tabs-scroll">
-                  {snapshot.codex.windows.map((window) => (
-                <div
-                  key={window.threadId}
-                  className={`workspace-tab workspace-tab-window ${activeTabId === window.threadId ? "is-active" : ""} ${
-                    snapshot.codex.openThreads[window.threadId]?.status === "active" ? "has-active-work" : ""
-                  }`}
-                >
-                  {snapshot.codex.openThreads[window.threadId]?.status === "active" ? <span className="workspace-tab-activity-dot" aria-hidden="true" /> : null}
-                  <button
-                        className="workspace-tab-main"
-                        onClick={() => {
-                          setSelectedSurface("thread");
-                          setSelectedThreadId(window.threadId);
-                          setShowPromptRail(false);
-                          postJson("/api/windows/focus", { threadId: window.threadId }).catch(() => undefined);
-                        }}
-                      >
-                    <span className="workspace-tab-label">{window.title}</span>
-                    <span className="workspace-tab-meta">
-                      {snapshot.codex.openThreads[window.threadId]?.compaction.active
-                        ? "Compacting"
-                        : snapshot.codex.openThreads[window.threadId]?.contextUsage.percent !== null &&
-                            snapshot.codex.openThreads[window.threadId]?.contextUsage.percent !== undefined
-                          ? `${Math.round(snapshot.codex.openThreads[window.threadId]!.contextUsage.percent!)}%`
-                          : ""}
-                    </span>
-                  </button>
-                  <button
-                    className="workspace-tab-copy"
-                    onClick={() => void copyText(window.threadId, "Job ID copied")}
-                    aria-label="Copy job ID"
-                    title="Copy job ID"
-                  >
-                    <CopyIcon />
-                  </button>
-                  <button
-                    className="workspace-tab-close"
-                    onClick={() => {
-                      void closeThreadWindow(window.threadId);
-                    }}
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
+              {shell.codex.windows.map((window) => {
+                const threadSummary = threadSummaryById.get(window.threadId);
+                return (
+                  <div key={window.threadId} className={`workspace-tab workspace-tab-window ${activeTabId === window.threadId ? "is-active" : ""} ${threadSummary?.status === "active" ? "has-active-work" : ""}`}>
+                    {threadSummary?.status === "active" ? <span className="workspace-tab-activity-dot" aria-hidden="true" /> : null}
+                    <button className="workspace-tab-main" onClick={() => openThread(window.threadId)}>
+                      <span className="workspace-tab-label">{window.title}</span>
+                      <span className="workspace-tab-meta">
+                        {threadSummary?.compaction.active
+                          ? "Compacting"
+                          : threadSummary?.contextUsage.percent !== null && threadSummary?.contextUsage.percent !== undefined
+                            ? `${Math.round(threadSummary.contextUsage.percent)}%`
+                            : ""}
+                      </span>
+                    </button>
+                    <button className="workspace-tab-copy" onClick={() => void copyText(window.threadId, "Job ID copied")} aria-label="Copy job ID" title="Copy job ID">
+                      <CopyIcon />
+                    </button>
+                    <button className="workspace-tab-close" onClick={() => void closeThreadWindow(window.threadId)}>
+                      ×
+                    </button>
+                  </div>
+                );
+              })}
             </div>
-            {activeTabId !== "setup" && activeTabId !== "terminal" ? (
-              <button
-                className={`workspace-mobile-timeline ${showPromptRail ? "is-open" : ""}`}
-                onClick={() => setShowPromptRail((current) => !current)}
-                aria-label={showPromptRail ? "Hide timeline" : "Show timeline"}
-                aria-expanded={showPromptRail}
-              >
-                ≣
-              </button>
-            ) : null}
-            <button
-              className={`workspace-plus ${threadsDrawerOpen ? "is-open" : ""}`}
-              onClick={() => setThreadsDrawerOpen((current) => !current)}
-              aria-label="Browse Codex threads"
-              aria-expanded={threadsDrawerOpen}
-            >
+            <button className={`workspace-plus ${threadsDrawerOpen ? "is-open" : ""}`} onClick={() => setThreadsDrawerOpen((current) => !current)} aria-label="Browse Codex threads" aria-expanded={threadsDrawerOpen}>
               <ThreadsIcon />
             </button>
           </div>
 
-          <div
-            className={`workspace-panel workspace-panel-terminal ${activeTabId === "terminal" ? "" : "is-hidden"}`}
-            aria-hidden={activeTabId === "terminal" ? undefined : true}
-          >
+          <div className={`workspace-panel workspace-panel-terminal ${activeTabId === "terminal" ? "" : "is-hidden"}`} aria-hidden={activeTabId === "terminal" ? undefined : true}>
             <div className="terminal-toolbar">
               <div className="terminal-subtabs" role="tablist" aria-label="Terminal containers">
-                <button
-                  className={`terminal-subtab ${terminalTarget === "codexTerminal" ? "is-active" : ""}`}
-                  onClick={() => setTerminalTarget("codexTerminal")}
-                  role="tab"
-                  aria-selected={terminalTarget === "codexTerminal"}
-                >
+                <button className={`terminal-subtab ${terminalTarget === "codexTerminal" ? "is-active" : ""}`} onClick={() => setTerminalTarget("codexTerminal")} role="tab" aria-selected={terminalTarget === "codexTerminal"}>
                   Codex
                 </button>
-                <button
-                  className={`terminal-subtab ${terminalTarget === "butlerTerminal" ? "is-active" : ""}`}
-                  onClick={() => setTerminalTarget("butlerTerminal")}
-                  role="tab"
-                  aria-selected={terminalTarget === "butlerTerminal"}
-                >
+                <button className={`terminal-subtab ${terminalTarget === "butlerTerminal" ? "is-active" : ""}`} onClick={() => setTerminalTarget("butlerTerminal")} role="tab" aria-selected={terminalTarget === "butlerTerminal"}>
                   Butler
                 </button>
               </div>
@@ -3295,7 +633,6 @@ export function App() {
                       setTerminalTarget(nextTerminalTarget);
                       setSelectedSurface("terminal");
                       setSelectedThreadId(null);
-                      setShowPromptRail(false);
                     }}
                   >
                     Open terminal
@@ -3305,7 +642,7 @@ export function App() {
               <section className="setup-guide-shell">
                 <section className="setup-guide" aria-label="First-time setup">
                   <div className="setup-guide-steps">
-                    {snapshot.butler.onboarding.steps.map((step) => {
+                    {shell.butler.onboarding.steps.map((step) => {
                       const commandSet =
                         step.commandSets.find((entry) => entry.target === (setupCommandTarget === "localShell" ? "localShell" : step.id === "butlerAuth" ? "butlerTerminal" : "codexTerminal")) ??
                         step.commandSets.find((entry) => entry.target !== "localShell") ??
@@ -3321,20 +658,17 @@ export function App() {
                           <p className="setup-step-context">{commandSet.detail}</p>
                           {commandSet.commands.length > 0 ? (
                             <div className="setup-step-commands">
-                              {commandSet.commands.map((command) => (
-                                <button
-                                  key={`${step.id}-${setupCommandTarget}-${command}`}
-                                  type="button"
-                                  className={`setup-command ${copiedCommandKey === `${step.id}-${setupCommandTarget}-${command}` ? "is-copied" : ""}`}
-                                  onClick={() => void copySetupCommand(command, `${step.id}-${setupCommandTarget}-${command}`)}
-                                  aria-label={`Copy command for ${step.title}`}
-                                >
-                                  <code>{command}</code>
-                                  <span className="setup-command-copy" aria-hidden="true">
-                                    <CopyIcon />
-                                  </span>
-                                </button>
-                              ))}
+                              {commandSet.commands.map((command) => {
+                                const key = `${step.id}-${setupCommandTarget}-${command}`;
+                                return (
+                                  <button key={key} type="button" className={`setup-command ${copiedCommandKey === key ? "is-copied" : ""}`} onClick={() => void copySetupCommand(command, key)} aria-label={`Copy command for ${step.title}`}>
+                                    <code>{command}</code>
+                                    <span className="setup-command-copy" aria-hidden="true">
+                                      <CopyIcon />
+                                    </span>
+                                  </button>
+                                );
+                              })}
                             </div>
                           ) : null}
                         </section>
@@ -3344,965 +678,58 @@ export function App() {
                 </section>
               </section>
             </div>
-          ) : activeTabId === "terminal" ? null : activeThread ? (
-            <div className="workspace-panel">
-              <div className="thread-toolbar">
-                <div className="panel-controls">
-                  {activeThreadStacks.map((stack) => (
-                    <div key={stack.id} className="thread-toolbar-service-actions">
-                      <button
-                        className="panel-action"
-                        onClick={() => void pinStackLease(stack.id, !stack.pinned)}
-                      >
-                        {stack.pinned ? "Unpin stack" : "Pin stack"}
-                      </button>
-                      <button
-                        className="panel-action"
-                        onClick={() => void stopStackLease(stack.id)}
-                        disabled={busyStackId === stack.id}
-                      >
-                        {busyStackId === stack.id ? "Stopping…" : "Stop stack"}
-                      </button>
-                    </div>
-                  ))}
-                  {activeThreadPreviews.map((lease) => (
-                    <Fragment key={lease.id}>
-                      <span className="thread-preview-status">{formatPreviewBootstrap(lease)}</span>
-                      <button className="panel-action" onClick={() => void pinPreviewLease(lease.id, !lease.pinned)}>
-                        {lease.pinned ? "Unpin preview" : "Pin preview"}
-                      </button>
-                      <a className="panel-action panel-action-link" href={lease.operatorUrl} target="_blank" rel="noreferrer">
-                        Open preview
-                      </a>
-                      <button
-                        className="panel-action"
-                        onClick={() => void verifyPreviewLease(lease.id, "headless")}
-                        disabled={busyPreviewLeaseId === lease.id || busyPreviewVerification?.leaseId === lease.id}
-                      >
-                        {previewVerificationActionLabel("headless", busyPreviewVerification, lease.id)}
-                      </button>
-                      <button
-                        className="panel-action"
-                        onClick={() => void verifyPreviewLease(lease.id, "headful")}
-                        disabled={busyPreviewLeaseId === lease.id || busyPreviewVerification?.leaseId === lease.id}
-                      >
-                        {previewVerificationActionLabel("headful", busyPreviewVerification, lease.id)}
-                      </button>
-                      <button
-                        className="panel-action"
-                        onClick={() => void stopPreviewLease(lease.id)}
-                        disabled={busyPreviewLeaseId === lease.id || busyPreviewVerification?.leaseId === lease.id}
-                      >
-                        {busyPreviewLeaseId === lease.id ? "Stopping…" : "Stop preview"}
-                      </button>
-                    </Fragment>
-                  ))}
-                  {activeThreadServices.map((service) => (
-                    <div key={service.id} className="thread-toolbar-service-actions">
-                      <button className="panel-action" onClick={() => void pinServiceLease(service.id, !service.pinned)}>
-                        {service.pinned ? `Unpin ${service.templateLabel}` : `Pin ${service.templateLabel}`}
-                      </button>
-                      <button
-                        className="panel-action"
-                        onClick={() => void stopServiceLease(service.id)}
-                        disabled={busyServiceId === service.id}
-                      >
-                        {busyServiceId === service.id ? "Stopping…" : `Stop ${service.templateLabel}`}
-                      </button>
-                    </div>
-                  ))}
-                  <button
-                    className="panel-action panel-action-icon panel-action-icon-danger"
-                    onClick={() => confirmDeleteThread(activeThread.id)}
-                    aria-label="Delete thread"
-                    title="Delete thread"
-                  >
-                    <TrashIcon />
-                  </button>
-                </div>
-              </div>
-              {activeThreadPreviewVerification ? (
-                <div className="thread-preview-verification">
-                  <PreviewVerificationSummary
-                    verification={activeThreadPreviewVerification}
-                    onPreviewArtifact={setPreviewMedia}
-                    onResourceUnavailable={(message) => showToast(message, "error", 5000)}
-                  />
-                </div>
-              ) : null}
-
-              <div className={`workspace-body ${showPromptRail ? "is-detail-open" : "is-detail-closed"}`}>
-                <section className="conversation-pane conversation-pane-full">
-                  <div
-                    ref={runScrollRef}
-                    className="conversation-scroll"
-                    onScroll={(event) => {
-                      const element = event.currentTarget;
-                      const remaining = element.scrollHeight - element.scrollTop - element.clientHeight;
-                      const isNearBottom = remaining < 32;
-                      runScrollTopRef.current = element.scrollTop;
-                      setFollowRun((current) => (current === isNearBottom ? current : isNearBottom));
-                    }}
-                  >
-                    {runConversationRows.length === 0 ? (
-                      <div className="empty">This run is open, but its turn history has not loaded yet.</div>
-                    ) : (
-                      <div className="conversation-list">
-                        {runConversationRows.map((row) => {
-                          if (row.kind === "pending") {
-                            return (
-                              <div key={row.id} className="conversation-row is-user">
-                                <article className="entry is-user is-pending">
-                                  <div className="entry-head">
-                                    <span>You</span>
-                                    <span className="entry-head-meta">
-                                      <span>sending</span>
-                                      <button
-                                        className="entry-copy"
-                                        onClick={() => void copyText(row.text, "Message copied")}
-                                        aria-label="Copy message"
-                                        title="Copy message"
-                                      >
-                                        <CopyIcon />
-                                      </button>
-                                    </span>
-                                  </div>
-                                  <div className="entry-text">
-                                    <MarkdownMessage
-                                      text={row.text}
-                                      onPreviewMedia={setPreviewMedia}
-                                      onResourceUnavailable={(message) => showToast(message, "error", 5000)}
-                                    />
-                                  </div>
-                                </article>
-                              </div>
-                            );
-                          }
-
-                          if (row.kind === "working") {
-                            return (
-                              <div key={row.id} className="conversation-row is-assistant">
-                                <div className={`working-indicator ${activeThread?.status === "active" ? "is-streaming" : "is-pending"}`} aria-live="polite">
-                                  <span className="working-indicator-label">Codex</span>
-                                  <span className="working-indicator-text">
-                                    {activeThread?.status === "active" ? "Working" : "Running"}
-                                  </span>
-                                </div>
-                              </div>
-                            );
-                          }
-
-                          const tone = itemTone(row.item.type);
-                          const rowToneClass = tone === "user" ? "is-user" : "is-assistant";
-                          const referencedImages =
-                            row.item.type === "userMessage" ? extractReferencedImages(row.item.text || "", knownImages) : [];
-                          const displayText =
-                            referencedImages.length > 0 ? stripReferencedImagesSection(row.item.text || "") : row.item.text || "Running shell command";
-
-                          return (
-                            <div key={row.id} className={`conversation-row ${rowToneClass}`}>
-                              <article
-                                id={`run-message-${row.item.id}`}
-                                className={`entry is-${tone}${activeJumpId === row.item.id ? " is-jump-target" : ""}`}
-                              >
-                                <div className="entry-head">
-                                  <span>{itemLabel(row.item.type)}</span>
-                                  <span className="entry-head-meta">
-                                    <span>{formatJumpLabel(row.item.at)}</span>
-                                    <button
-                                      className="entry-copy"
-                                      onClick={() => void copyText(row.item.text || "", "Message copied")}
-                                      aria-label="Copy message"
-                                      title="Copy message"
-                                    >
-                                      <CopyIcon />
-                                    </button>
-                                  </span>
-                                </div>
-                                <div className="entry-text">
-                                  <MarkdownMessage
-                                    text={displayText || "Running shell command"}
-                                    onPreviewMedia={setPreviewMedia}
-                                    onResourceUnavailable={(message) => showToast(message, "error", 5000)}
-                                  />
-                                  {referencedImages.length > 0 ? renderMessageImageStrip(referencedImages) : null}
-                                </div>
-                              </article>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                  {!followRun ? (
-                    <button
-                      className="conversation-jump-latest"
-                      onClick={() => {
-                        setFollowRun(true);
-                        requestAnimationFrame(() => {
-                          scrollElementToLatest(runScrollRef.current);
-                        });
-                      }}
-                      type="button"
-                      aria-label="Jump to latest Codex message"
-                    >
-                      <span className="conversation-jump-latest-icon" aria-hidden="true">
-                        <ArrowDownIcon />
-                      </span>
-                      <span>Latest</span>
-                    </button>
-                  ) : null}
-                  <div
-                    className={`composer${threadDragActive ? " is-drop-target" : ""}`}
-                    onDragEnter={(event) => {
-                      if (isImageDrag(event)) {
-                        event.preventDefault();
-                        setThreadDragActive(true);
-                      }
-                    }}
-                    onDragOver={(event) => {
-                      if (isImageDrag(event)) {
-                        event.preventDefault();
-                      }
-                    }}
-                    onDragLeave={(event) => {
-                      if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                        return;
-                      }
-                      setThreadDragActive(false);
-                    }}
-                    onDrop={(event) => handleComposerDrop("thread", event)}
-                  >
-                    <input
-                      ref={threadFileInputRef}
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      hidden
-                      onChange={(event) => handleComposerFileSelection("thread", event)}
-                    />
-                    {threadImages.length > 0 || threadUploadingImages > 0 ? (
-                      <div>
-                        {threadImages.length > 0
-                          ? renderImagePreviewGrid(threadImages, {
-                              removable: true,
-                              onRemove: (imageId) => removeComposerImage("thread", imageId)
-                            })
-                          : null}
-                        {threadUploadingImages > 0 ? <div className="composer-uploading">Uploading {threadUploadingImages}…</div> : null}
-                      </div>
-                    ) : null}
-                    <div className="composer-main">
-                      <textarea
-                        ref={threadTextareaRef}
-                        name="codex-thread-message"
-                        value={threadDraft}
-                        onChange={(event) => {
-                          setThreadDraft(event.target.value);
-                          resizeComposerTextarea(event.currentTarget);
-                        }}
-                        onKeyDown={(event) => handleComposerKeyDown(event, () => void sendThreadMessage())}
-                        placeholder="Send a message directly into this run"
-                        autoComplete="off"
-                        autoCorrect="off"
-                        autoCapitalize="off"
-                        spellCheck={true}
-                        rows={3}
-                      />
-                      <div className="composer-mobile-actions">
-                        <button
-                          className="composer-add-image composer-add-image-mobile"
-                          type="button"
-                          onClick={() => threadFileInputRef.current?.click()}
-                          aria-label="Add image"
-                          title="Add image"
-                        >
-                          <AttachmentIcon />
-                        </button>
-                        <button
-                          className="composer-send composer-send-mobile"
-                          onClick={() => void sendThreadMessage()}
-                          disabled={(!threadDraft.trim() && threadImages.length === 0) || threadUploadingImages > 0}
-                          aria-label="Send message"
-                        >
-                          <span className="composer-send-label">Send</span>
-                          <span className="composer-send-icon">
-                            <SendIcon />
-                          </span>
-                        </button>
-                      </div>
-                    </div>
-                    <div className="composer-footer">
-                      <div className="composer-inline-controls">
-                        <select
-                          value={snapshot.codex.compose.model ?? ""}
-                          onChange={(event) => {
-                            const nextModel = event.target.value;
-                            const model = snapshot.codex.compose.availableModels.find((entry) => entry.id === nextModel);
-                            void updateCodexCompose(nextModel, model?.defaultReasoningEffort ?? null);
-                          }}
-                          aria-label="Codex model"
-                        >
-                          {snapshot.codex.compose.availableModels.map((model) => (
-                            <option key={model.id} value={model.id}>
-                              {model.label}
-                            </option>
-                          ))}
-                        </select>
-                        <select
-                          value={snapshot.codex.compose.effort ?? ""}
-                          onChange={(event) =>
-                            void updateCodexCompose(snapshot.codex.compose.model ?? "", (event.target.value || null) as ReasoningEffort | null)
-                          }
-                          disabled={!snapshot.codex.compose.model || codexEffortOptions.length === 0}
-                          aria-label="Codex reasoning"
-                        >
-                          {codexEffortOptions.length === 0 ? (
-                            <option value="">Standard</option>
-                          ) : (
-                            codexEffortOptions.map((effort) => (
-                              <option key={effort} value={effort}>
-                                {effort}
-                              </option>
-                            ))
-                          )}
-                        </select>
-                        <div className={`composer-thread-budget${activeThread.supervision.capReached ? " is-capped" : ""}`}>
-                          <span className="composer-thread-budget-value">{formatThreadBudget(activeThread.supervision)}</span>
-                          <select
-                            value={activeThread.supervision.maxButlerTurns === null ? "null" : String(activeThread.supervision.maxButlerTurns)}
-                            onChange={(event) =>
-                              void updateThreadSupervision(
-                                activeThread.id,
-                                event.target.value === "null" ? null : Number(event.target.value)
-                              )
-                            }
-                            aria-label="Butler thread turn limit"
-                          >
-                            <option value="20">20 turns</option>
-                            <option value="40">40 turns</option>
-                            <option value="100">100 turns</option>
-                            <option value="null">No limit</option>
-                          </select>
-                        </div>
-                      </div>
-                      <div className="composer-note">Cmd/Ctrl + Enter sends</div>
-                      <div className="composer-actions composer-actions-desktop">
-                        <button
-                          className="composer-add-image"
-                          type="button"
-                          onClick={() => threadFileInputRef.current?.click()}
-                          aria-label="Add image"
-                          title="Add image"
-                        >
-                          <AttachmentIcon />
-                        </button>
-                        <button
-                          className="composer-send composer-send-desktop"
-                          onClick={() => void sendThreadMessage()}
-                          disabled={(!threadDraft.trim() && threadImages.length === 0) || threadUploadingImages > 0}
-                          aria-label="Send message"
-                        >
-                          <span className="composer-send-label">Send</span>
-                          <span className="composer-send-icon">
-                            <SendIcon />
-                          </span>
-                        </button>
-                      </div>
-                    </div>
-                    {threadDragActive ? <div className="composer-drop-note">Drop image files to attach them</div> : null}
-                  </div>
-                </section>
-                <aside className={`detail-pane ${showPromptRail ? "is-open" : "is-closed"}`}>
-                  {showPromptRail ? (
-                    <section className="detail-block">
-                      <div className="detail-header">
-                        <span className="eyebrow">Timeline</span>
-                        <div className="detail-actions">
-                          {runTimelineGroups.length > 1 ? (
-                            <select
-                              className="detail-select"
-                              aria-label="Jump to date"
-                              defaultValue=""
-                              onChange={(event) => {
-                                const itemId = event.target.value;
-                                if (!itemId) {
-                                  return;
-                                }
-                                jumpToRunPrompt(itemId);
-                                event.target.value = "";
-                              }}
-                            >
-                              <option value="">Jump to date</option>
-                              {runTimelineGroups.map((group) => (
-                                <option key={group.key} value={group.firstId}>
-                                  {group.label}
-                                </option>
-                              ))}
-                            </select>
-                          ) : null}
-                          <button className="detail-dismiss" onClick={() => setShowPromptRail(false)} aria-label="Hide timeline">
-                            ×
-                          </button>
-                        </div>
-                      </div>
-                      <div ref={runTimelineScrollRef} className="detail-list-scroll">
-                        {runTimelineGroups.length === 0 ? (
-                          <div className="empty">No prompts yet.</div>
-                        ) : (
-                          runTimelineGroups.map((group) => (
-                            <section key={group.key} className="detail-group">
-                              <div className="detail-group-label">{group.label}</div>
-                              <div className="detail-group-items">
-                                {group.items.map((item, index) => (
-                                  <button
-                                    key={item.id}
-                                    className="detail-link"
-                                    onClick={() => jumpToRunPrompt(item.id)}
-                                  >
-                                    {index + 1}. {formatJumpLabel(item.at)} • {item.text}
-                                  </button>
-                                ))}
-                              </div>
-                            </section>
-                          ))
-                        )}
-                      </div>
-                    </section>
-                  ) : (
-                    <button className="detail-open" onClick={() => setShowPromptRail(true)} aria-label="Show timeline">
-                      Timeline
-                    </button>
-                  )}
-                </aside>
-              </div>
-            </div>
+          ) : activeTabId === "terminal" ? null : activeTabId === "butler" ? (
+            <ButlerSurface onOpenThread={openThread} onPreviewMedia={setPreviewMedia} showToast={showToast} showErrorToast={showErrorToast} copyText={copyText} />
           ) : (
-            <div className="workspace-panel">
-              <div className={`workspace-body ${showPromptRail ? "is-detail-open" : "is-detail-closed"}`}>
-              <section className="conversation-pane conversation-pane-full has-toolbar">
-                <div className="conversation-toolbar">
-                  <div className="conversation-toolbar-group">
-                    {activeRuntimeLeaseCount > 0 ? (
-                      <div className="conversation-disclosure">
-                        <button
-                          className={`conversation-toggle${showButlerRuntime ? " is-active" : ""}`}
-                          onClick={() => setShowButlerRuntime((current) => !current)}
-                          type="button"
-                        >
-                          <span className="conversation-toggle-icon" aria-hidden="true">
-                            {showButlerRuntime ? <ChevronUpIcon /> : <ChevronDownIcon />}
-                          </span>
-                          <span className="conversation-toggle-label">{showButlerRuntime ? "Hide runtime" : "Show runtime"}</span>
-                          <span className="conversation-toggle-count">{activeRuntimeLeaseCount}</span>
-                        </button>
-                        {showButlerRuntime ? (
-                          <div className="conversation-disclosure-panel runtime-disclosure-panel">
-                            {activeStackLeases.length > 0 ? (
-                              <section className="runtime-group">
-                                <div className="runtime-group-head">
-                                  <span className="eyebrow">Stacks</span>
-                                  <span className="runtime-group-count">{activeStackLeases.length}</span>
-                                </div>
-                                <div className="runtime-list">
-                                  {activeStackLeases.map((stack) => (
-                                    <article key={stack.id} className="runtime-item">
-                                      <button className="runtime-item-main" onClick={() => focusRuntimeThread(stack.threadId)}>
-                                        <span className="runtime-item-title">{stack.title}</span>
-                                        <span className="runtime-item-meta">
-                                          {stack.projectLabel} • {stack.networkName} • {stack.status} • {formatLeaseState(stack.lifecycleState, stack.expiresAt, stack.pinned)} • {formatStackStorage(stack)} • previews={stack.previewIds.length} • services={stack.serviceIds.length}
-                                        </span>
-                                      </button>
-                                      <div className="runtime-item-actions">
-                                        <button className="panel-action" onClick={() => void pinStackLease(stack.id, !stack.pinned)}>
-                                          {stack.pinned ? "Unpin" : "Pin"}
-                                        </button>
-                                        <button
-                                          className="panel-action"
-                                          onClick={() => void stopStackLease(stack.id)}
-                                          disabled={busyStackId === stack.id}
-                                        >
-                                          {busyStackId === stack.id ? "Stopping…" : "Stop"}
-                                        </button>
-                                      </div>
-                                    </article>
-                                  ))}
-                                </div>
-                              </section>
-                            ) : null}
-                            {activePreviewLeases.length > 0 ? (
-                              <section className="runtime-group">
-                                <div className="runtime-group-head">
-                                  <span className="eyebrow">Previews</span>
-                                  <span className="runtime-group-count">{activePreviewLeases.length}</span>
-                                </div>
-                                <div className="runtime-list">
-                                  {activePreviewLeases.map((lease) => (
-                                    <article key={lease.id} className="runtime-item">
-                                      <button className="runtime-item-main" onClick={() => focusRuntimeThread(lease.threadId)}>
-                                        <span className="runtime-item-title">{lease.title}</span>
-                                        <span className="runtime-item-meta">
-                                          {lease.projectLabel} • {lease.branchName ?? "preview"} • {lease.status} •{" "}
-                                          {formatLeaseState(lease.lifecycleState, lease.expiresAt, lease.pinned)} • {formatPreviewBootstrap(lease)}
-                                        </span>
-                                      </button>
-                                      {lease.lastVerification ? (
-                                        <div className="runtime-item-verification">
-                                          <PreviewVerificationSummary
-                                            verification={lease.lastVerification}
-                                            onPreviewArtifact={setPreviewMedia}
-                                            onResourceUnavailable={(message) => showToast(message, "error", 5000)}
-                                          />
-                                        </div>
-                                      ) : null}
-                                      <div className="runtime-item-actions">
-                                        <button className="panel-action" onClick={() => void pinPreviewLease(lease.id, !lease.pinned)}>
-                                          {lease.pinned ? "Unpin" : "Pin"}
-                                        </button>
-                                        <a className="panel-action panel-action-link" href={lease.operatorUrl} target="_blank" rel="noreferrer">
-                                          Open
-                                        </a>
-                                        <button
-                                          className="panel-action"
-                                          onClick={() => void verifyPreviewLease(lease.id, "headless")}
-                                          disabled={busyPreviewVerification?.leaseId === lease.id}
-                                        >
-                                          {previewVerificationActionLabel("headless", busyPreviewVerification, lease.id, true)}
-                                        </button>
-                                        <button
-                                          className="panel-action"
-                                          onClick={() => void verifyPreviewLease(lease.id, "headful")}
-                                          disabled={busyPreviewVerification?.leaseId === lease.id}
-                                        >
-                                          {previewVerificationActionLabel("headful", busyPreviewVerification, lease.id, true)}
-                                        </button>
-                                        <button
-                                          className="panel-action"
-                                          onClick={() => void stopPreviewLease(lease.id)}
-                                          disabled={busyPreviewVerification?.leaseId === lease.id}
-                                        >
-                                          Stop
-                                        </button>
-                                      </div>
-                                    </article>
-                                  ))}
-                                </div>
-                              </section>
-                            ) : null}
-                            {activeServiceLeases.length > 0 ? (
-                              <section className="runtime-group">
-                                <div className="runtime-group-head">
-                                  <span className="eyebrow">Services</span>
-                                  <span className="runtime-group-count">{activeServiceLeases.length}</span>
-                                </div>
-                                <div className="runtime-list">
-                                  {activeServiceLeases.map((service) => (
-                                    <article key={service.id} className="runtime-item">
-                                      <button className="runtime-item-main" onClick={() => focusRuntimeThread(service.threadId)}>
-                                        <span className="runtime-item-title">{service.title}</span>
-                                        <span className="runtime-item-meta">
-                                          {service.connection.engine} • {service.connection.host}:{service.connection.port} • {service.storageKind}
-                                          {service.volumeName ? `(${service.volumeName})` : ""} • {service.status} •{" "}
-                                          {formatLeaseState(service.lifecycleState, service.expiresAt, service.pinned)}
-                                        </span>
-                                      </button>
-                                      <div className="runtime-item-actions">
-                                        <button className="panel-action" onClick={() => void pinServiceLease(service.id, !service.pinned)}>
-                                          {service.pinned ? "Unpin" : "Pin"}
-                                        </button>
-                                        <button
-                                          className="panel-action"
-                                          onClick={() => void stopServiceLease(service.id)}
-                                          disabled={busyServiceId === service.id}
-                                        >
-                                          {busyServiceId === service.id ? "Stopping…" : "Stop"}
-                                        </button>
-                                      </div>
-                                    </article>
-                                  ))}
-                                </div>
-                              </section>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    <button
-                      className={`conversation-toggle${showButlerNotices ? " is-active" : ""}`}
-                      onClick={() => setShowButlerNotices((current) => !current)}
-                      type="button"
-                    >
-                      <span className="conversation-toggle-icon" aria-hidden="true">
-                        {showButlerNotices ? <ChevronUpIcon /> : <ChevronDownIcon />}
-                      </span>
-                      <span className="conversation-toggle-label">{showButlerNotices ? "Hide notices" : "Show notices"}</span>
-                      {butlerNoticeCount > 0 ? <span className="conversation-toggle-count">{butlerNoticeCount}</span> : null}
-                    </button>
-                  </div>
-                </div>
-                <div
-                  ref={butlerScrollRef}
-                  className="conversation-scroll"
-                  onScroll={(event) => {
-                    const element = event.currentTarget;
-                    const remaining = element.scrollHeight - element.scrollTop - element.clientHeight;
-                    const isNearBottom = remaining < 32;
-                    butlerScrollTopRef.current = element.scrollTop;
-                    setFollowButler((current) => (current === isNearBottom ? current : isNearBottom));
-
-                    if (
-                      !isNearBottom &&
-                      element.scrollTop < BUTLER_HISTORY_AUTOLOAD_THRESHOLD_PX &&
-                      butlerHistory.loadedStart > 0 &&
-                      !loadingOlderButlerMessages &&
-                      butlerPrependAnchorRef.current === null
-                    ) {
-                      void loadOlderButlerMessages();
-                    }
-                  }}
-                >
-                  {butlerConversationRows.length === 0 ? (
-                    <div className="empty">Ask Butler about run status, next steps, or which run you should open.</div>
-                  ) : (
-                    <div className="conversation-list">
-                      {butlerConversationRows.map((row) => {
-                        if (row.kind === "working") {
-                          return (
-                            <div key={row.id} className="conversation-row is-assistant">
-                              <div
-                                className={`working-indicator ${snapshot.butler.isStreaming ? "is-streaming" : "is-pending"}`}
-                                aria-live="polite"
-                              >
-                                <span className="working-indicator-label">Butler</span>
-                                <span className="working-indicator-text">{butlerStatus.text}</span>
-                              </div>
-                            </div>
-                          );
-                        }
-
-                        const message = row.message;
-                        const toneClass = message.kind === "notice" ? "is-notice" : `is-${message.role.startsWith("assistant") ? "assistant" : "user"}`;
-                        const rowToneClass = message.kind === "notice" ? "is-notice" : message.role.startsWith("assistant") ? "is-assistant" : "is-user";
-                        const referencedImages =
-                          message.kind === "notice" || message.role.startsWith("assistant") ? [] : extractReferencedImages(message.text || "", knownImages);
-                        const displayText = referencedImages.length > 0 ? stripReferencedImagesSection(message.text || "") : message.text || "…";
-
-                        return (
-                          <div key={row.id} className={`conversation-row ${rowToneClass}`}>
-                            <article
-                              id={`butler-message-${message.id}`}
-                              className={`entry ${toneClass}${activeJumpId === message.id ? " is-jump-target" : ""}`}
-                            >
-                              <div className="entry-head">
-                                <span>{message.kind === "notice" ? "Supervisor notice" : message.role.startsWith("assistant") ? "Butler" : "You"}</span>
-                                <span className="entry-head-meta">
-                                  <span>{formatJumpLabel(message.at)}</span>
-                                  <button
-                                    className="entry-copy"
-                                    onClick={() => void copyText(message.text || "", "Message copied")}
-                                    aria-label="Copy message"
-                                    title="Copy message"
-                                  >
-                                    <CopyIcon />
-                                  </button>
-                                </span>
-                              </div>
-                              <div className="entry-text">
-                                <MarkdownMessage
-                                  text={displayText || "…"}
-                                  onPreviewMedia={setPreviewMedia}
-                                  onResourceUnavailable={(message) => showToast(message, "error", 5000)}
-                                />
-                                {referencedImages.length > 0 ? renderMessageImageStrip(referencedImages) : null}
-                              </div>
-                            </article>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-                {!followButler ? (
-                  <button
-                    className="conversation-jump-latest"
-                    onClick={() => {
-                      setFollowButler(true);
-                      requestAnimationFrame(() => {
-                        scrollElementToLatest(butlerScrollRef.current);
-                      });
-                    }}
-                    type="button"
-                    aria-label="Jump to latest Butler message"
-                  >
-                    <span className="conversation-jump-latest-icon" aria-hidden="true">
-                      <ArrowDownIcon />
-                    </span>
-                    <span>Latest</span>
-                  </button>
-                ) : null}
-                <div
-                  className={`composer${butlerDragActive ? " is-drop-target" : ""}`}
-                  onDragEnter={(event) => {
-                    if (isImageDrag(event)) {
-                      event.preventDefault();
-                      setButlerDragActive(true);
-                    }
-                  }}
-                  onDragOver={(event) => {
-                    if (isImageDrag(event)) {
-                      event.preventDefault();
-                    }
-                  }}
-                  onDragLeave={(event) => {
-                    if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                      return;
-                    }
-                    setButlerDragActive(false);
-                  }}
-                  onDrop={(event) => handleComposerDrop("butler", event)}
-                >
-                  <input
-                    ref={butlerFileInputRef}
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    hidden
-                    onChange={(event) => handleComposerFileSelection("butler", event)}
-                  />
-                  {butlerImages.length > 0 || butlerUploadingImages > 0 ? (
-                    <div>
-                      {butlerImages.length > 0
-                        ? renderImagePreviewGrid(butlerImages, {
-                            removable: true,
-                            onRemove: (imageId) => removeComposerImage("butler", imageId)
-                          })
-                        : null}
-                      {butlerUploadingImages > 0 ? <div className="composer-uploading">Uploading {butlerUploadingImages}…</div> : null}
-                    </div>
-                  ) : null}
-                  <div className="composer-main">
-                    <textarea
-                      ref={butlerTextareaRef}
-                      name="butler-chat-message"
-                      value={butlerDraft}
-                      onChange={(event) => {
-                        setButlerDraft(event.target.value);
-                        resizeComposerTextarea(event.currentTarget);
-                      }}
-                      onKeyDown={(event) => handleComposerKeyDown(event, () => void sendButlerMessage())}
-                      placeholder="Ask Butler about any run"
-                      autoComplete="off"
-                      autoCorrect="off"
-                      autoCapitalize="off"
-                      spellCheck={true}
-                      rows={3}
-                    />
-                    <div className="composer-mobile-actions">
-                      <button
-                        className="composer-add-image composer-add-image-mobile"
-                        type="button"
-                        onClick={() => butlerFileInputRef.current?.click()}
-                        aria-label="Add image"
-                        title="Add image"
-                      >
-                        <AttachmentIcon />
-                      </button>
-                      <button
-                        className="composer-send composer-send-mobile"
-                        onClick={() => void sendButlerMessage()}
-                        disabled={(!butlerDraft.trim() && butlerImages.length === 0) || butlerUploadingImages > 0}
-                        aria-label="Send message"
-                      >
-                        <span className="composer-send-label">Send</span>
-                        <span className="composer-send-icon">
-                          <SendIcon />
-                        </span>
-                      </button>
-                    </div>
-                  </div>
-                  <div className="composer-footer">
-                    <div className="composer-inline-controls">
-                      <select
-                        value={butlerModelKey}
-                        onChange={(event) => void updateButlerCompose(event.target.value)}
-                        aria-label="Butler model"
-                      >
-                        {snapshot.butler.compose.availableModels.map((model) => (
-                          <option key={model.id} value={model.id}>
-                            {model.label}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        value={snapshot.butler.compose.thinkingLevel}
-                        onChange={(event) => void updateButlerCompose(butlerModelKey, event.target.value as ButlerThinkingLevel)}
-                        aria-label="Butler reasoning"
-                      >
-                        {snapshot.butler.compose.availableThinkingLevels.map((level) => (
-                          <option key={level} value={level}>
-                            {level}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="composer-note">Cmd/Ctrl + Enter sends</div>
-                    <div className="composer-actions composer-actions-desktop">
-                      <button
-                        className="composer-add-image"
-                        type="button"
-                        onClick={() => butlerFileInputRef.current?.click()}
-                        aria-label="Add image"
-                        title="Add image"
-                      >
-                        <AttachmentIcon />
-                      </button>
-                      <button
-                        className="composer-send composer-send-desktop"
-                        onClick={() => void sendButlerMessage()}
-                        disabled={(!butlerDraft.trim() && butlerImages.length === 0) || butlerUploadingImages > 0}
-                        aria-label="Send message"
-                      >
-                        <span className="composer-send-label">Send</span>
-                        <span className="composer-send-icon">
-                          <SendIcon />
-                        </span>
-                      </button>
-                    </div>
-                  </div>
-                  {butlerDragActive ? <div className="composer-drop-note">Drop image files to attach them</div> : null}
-                </div>
-              </section>
-                <aside className={`detail-pane ${showPromptRail ? "is-open" : "is-closed"}`}>
-                  {showPromptRail ? (
-                    <section className="detail-block">
-                      <div className="detail-header">
-                        <span className="eyebrow">Timeline</span>
-                        <div className="detail-actions">
-                          {butlerTimelineGroups.length > 1 ? (
-                            <select
-                              className="detail-select"
-                              aria-label="Jump to date"
-                              defaultValue=""
-                              onChange={(event) => {
-                                const itemId = event.target.value;
-                                if (!itemId) {
-                                  return;
-                                }
-                                jumpToButlerPrompt(itemId);
-                                event.target.value = "";
-                              }}
-                            >
-                              <option value="">Jump to date</option>
-                              {butlerTimelineGroups.map((group) => (
-                                <option key={group.key} value={group.firstId}>
-                                  {group.label}
-                                </option>
-                              ))}
-                            </select>
-                          ) : null}
-                          <button className="detail-dismiss" onClick={() => setShowPromptRail(false)} aria-label="Hide timeline">
-                            ×
-                          </button>
-                        </div>
-                      </div>
-                      <div ref={butlerTimelineScrollRef} className="detail-list-scroll">
-                        {butlerTimelineGroups.length === 0 ? (
-                          <div className="empty">No prompts yet.</div>
-                        ) : (
-                          butlerTimelineGroups.map((group) => (
-                            <section key={group.key} className="detail-group">
-                              <div className="detail-group-label">{group.label}</div>
-                              <div className="detail-group-items">
-                                {group.items.map((message, index) => (
-                                  <button
-                                    key={message.id}
-                                    className="detail-link"
-                                    onClick={() => jumpToButlerPrompt(message.id)}
-                                  >
-                                    {index + 1}. {formatJumpLabel(message.at)} • {message.text}
-                                  </button>
-                                ))}
-                              </div>
-                            </section>
-                          ))
-                        )}
-                      </div>
-                    </section>
-                  ) : (
-                    <button className="detail-open" onClick={() => setShowPromptRail(true)} aria-label="Show timeline">
-                      Timeline
-                    </button>
-                  )}
-                </aside>
-              </div>
-            </div>
+            <ThreadSurface
+              threadId={activeThreadId}
+              onPreviewMedia={setPreviewMedia}
+              onOpenThread={openThread}
+              onDeleteThread={confirmDeleteThread}
+              showToast={showToast}
+              showErrorToast={showErrorToast}
+              copyText={copyText}
+            />
           )}
         </section>
       </main>
 
-      <div
-        className={`threads-backdrop ${threadsDrawerOpen ? "is-open" : ""}`}
-        onClick={() => setThreadsDrawerOpen(false)}
-        aria-hidden={threadsDrawerOpen ? "false" : "true"}
-      />
+      <div className={`threads-backdrop ${threadsDrawerOpen ? "is-open" : ""}`} onClick={() => setThreadsDrawerOpen(false)} aria-hidden={threadsDrawerOpen ? "false" : "true"} />
       <aside className={`threads-drawer ${threadsDrawerOpen ? "is-open" : ""}`}>
         <div className="threads-drawer-head">
           <div>
             <h2>Codex threads</h2>
           </div>
           <div className="threads-drawer-actions">
-            <button
-              className="threads-drawer-delete"
-              onClick={() => confirmDeleteAllThreads()}
-              disabled={snapshot.codex.threads.length === 0}
-              aria-label="Delete all threads"
-              title="Delete all threads"
-            >
+            <button className="threads-drawer-delete" onClick={() => confirmDeleteAllThreads()} disabled={shell.codex.threads.length === 0} aria-label="Delete all threads" title="Delete all threads">
               <TrashIcon />
             </button>
-            <button
-              className="threads-drawer-close"
-              onClick={() => setThreadsDrawerOpen(false)}
-              aria-label="Close threads drawer"
-              title="Close"
-            >
+            <button className="threads-drawer-close" onClick={() => setThreadsDrawerOpen(false)} aria-label="Close threads drawer" title="Close">
               <CloseIcon />
             </button>
           </div>
         </div>
         <div className="threads-drawer-body">
-          {snapshot.codex.threads.length === 0 ? (
+          {shell.codex.threads.length === 0 ? (
             <div className="empty">No Codex threads are available yet.</div>
           ) : (
-            snapshot.codex.threads.map((thread) => (
-              <div
-                key={thread.id}
-                className={`thread-row ${snapshot.codex.focusedWindowId === thread.id ? "is-active" : ""}`}
-              >
+            shell.codex.threads.map((thread) => (
+              <div key={thread.id} className={`thread-row ${shell.codex.focusedWindowId === thread.id ? "is-active" : ""}`}>
                 <button
                   className="thread-row-main"
                   onClick={() => {
                     setThreadsDrawerOpen(false);
-                    setSelectedSurface("thread");
-                    setSelectedThreadId(thread.id);
-                    postJson("/api/windows/open", { threadId: thread.id }).catch((openError) =>
-                      showErrorToast(openError)
-                    );
+                    openThread(thread.id);
                   }}
                 >
                   <div className="thread-row-top">
-                    <span className={`job-status is-${thread.status}`}>{describeStatus(thread.status)}</span>
-                    <span className="job-time">{formatTime(thread.updatedAt)}</span>
+                    <span className={`job-status is-${thread.status}`}>{thread.status === "active" ? "Working" : thread.status === "idle" ? "Idle" : "Unknown"}</span>
+                    <span className="job-time">{new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(thread.updatedAt)}</span>
                   </div>
                   <strong>{thread.preview || "Untitled run"}</strong>
                   <span className="thread-row-id">{thread.id}</span>
                 </button>
-                <button
-                  className="thread-row-delete"
-                  onClick={() => confirmDeleteThread(thread.id)}
-                  aria-label="Delete thread"
-                  title="Delete thread"
-                >
+                <button className="thread-row-delete" onClick={() => confirmDeleteThread(thread.id)} aria-label="Delete thread" title="Delete thread">
                   <TrashIcon />
                 </button>
               </div>
@@ -4316,12 +743,7 @@ export function App() {
           <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-head">
               <h2 id="confirm-dialog-title">{confirmDialog.title}</h2>
-              <button
-                className="modal-close"
-                onClick={() => setConfirmDialog(null)}
-                disabled={confirmBusy}
-                aria-label="Close confirmation"
-              >
+              <button className="modal-close" onClick={() => setConfirmDialog(null)} disabled={confirmBusy} aria-label="Close confirmation">
                 <CloseIcon />
               </button>
             </div>
@@ -4330,11 +752,7 @@ export function App() {
               <button className="panel-action" onClick={() => setConfirmDialog(null)} disabled={confirmBusy}>
                 Cancel
               </button>
-              <button
-                className="panel-action panel-action-danger"
-                onClick={() => void handleConfirmAction()}
-                disabled={confirmBusy}
-              >
+              <button className="panel-action panel-action-danger" onClick={() => void handleConfirmAction()} disabled={confirmBusy}>
                 {confirmBusy ? "Deleting…" : confirmDialog.confirmLabel}
               </button>
             </div>
@@ -4344,28 +762,14 @@ export function App() {
 
       {previewMedia ? (
         <div className="modal-backdrop" onClick={() => setPreviewMedia(null)}>
-          <div
-            className={`modal-card modal-card-image${previewMedia.kind === "video" ? " modal-card-video" : ""}`}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="image-preview-title"
-            onClick={(event) => event.stopPropagation()}
-          >
+          <div className={`modal-card modal-card-image${previewMedia.kind === "video" ? " modal-card-video" : ""}`} role="dialog" aria-modal="true" aria-labelledby="image-preview-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-head">
               <h2 id="image-preview-title">{previewMedia.name}</h2>
               <div className="modal-head-actions">
                 {previewMedia.downloadUrl ? (
-                  <button
-                    className="panel-action"
-                    type="button"
-                    onClick={() => {
-                      void triggerResourceDownload(previewMedia.downloadUrl!).catch((error) => {
-                        showToast(error instanceof Error ? error.message : "The file could not be downloaded.", "error", 5000);
-                      });
-                    }}
-                  >
+                  <a className="panel-action panel-action-link" href={previewMedia.downloadUrl} download>
                     Download
-                  </button>
+                  </a>
                 ) : null}
                 <button className="modal-close" onClick={() => setPreviewMedia(null)} aria-label="Close image preview">
                   <CloseIcon />

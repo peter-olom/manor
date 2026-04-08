@@ -8,8 +8,9 @@ import Docker from "dockerode";
 
 const port = Number(process.env.RUNTIME_BROKER_PORT ?? "8090");
 const previewNetwork = process.env.RUNTIME_PREVIEW_NETWORK ?? "manor_work";
+const previewOutboundNetwork = process.env.RUNTIME_PREVIEW_OUTBOUND_NETWORK ?? "manor_preview_outbound";
 const sharedWorkNetwork = process.env.RUNTIME_SERVICE_SHARED_NETWORK ?? "manor_work";
-const previewImage = process.env.RUNTIME_PREVIEW_IMAGE ?? "node:22-bookworm-slim";
+const previewImage = process.env.RUNTIME_PREVIEW_IMAGE ?? "node:22-bookworm";
 const routeBase = process.env.RUNTIME_ROUTE_BASE ?? "/preview";
 const previewEgressConfigPath =
   process.env.RUNTIME_PREVIEW_EGRESS_CONFIG ?? "/opt/manor/config/preview-egress-profiles.json";
@@ -27,9 +28,11 @@ const artifactsRootDir = path.resolve(process.env.RUNTIME_ARTIFACTS_DIR ?? "/art
 const playwrightArtifactsScratchDir = process.env.RUNTIME_PLAYWRIGHT_ARTIFACT_ROOT ?? "/tmp/manor-playwright-artifacts";
 const stackNetworkPrefix = process.env.RUNTIME_STACK_NETWORK_PREFIX ?? "manor-stack";
 const stackVolumePrefix = process.env.RUNTIME_STACK_VOLUME_PREFIX ?? "manor-stack-vol";
+const stackInfraReconnectIntervalMs = Number(process.env.RUNTIME_STACK_INFRA_RECONNECT_INTERVAL_MS ?? "30000");
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 const leaseTransitions = new Map();
 const leaseBootstrapStates = new Map();
+const activeLeaseBootstrapMonitors = new Set();
 const pendingPreviewLeases = new Map();
 const retainedPreviewLeases = new Map();
 const noHeartbeatReadyDelayMs = Number(process.env.RUNTIME_NO_HEARTBEAT_READY_DELAY_MS ?? "2000");
@@ -182,6 +185,47 @@ function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function normalizeHeaderMap(value) {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter((entry) => typeof entry[0] === "string" && typeof entry[1] === "string")
+      .map(([key, headerValue]) => [key.trim(), headerValue.trim()])
+      .filter(([key, headerValue]) => key.length > 0 && headerValue.length > 0)
+  );
+}
+
+function normalizeCookieEntries(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry) => ({
+      name: normalizeString(entry.name),
+      value: typeof entry.value === "string" ? entry.value : ""
+    }))
+    .filter((entry) => entry.name.length > 0);
+}
+
+function appendPreviewRoutePath(baseUrl, routePath) {
+  const normalizedBase = normalizeString(baseUrl);
+  const normalizedRoute = normalizeString(routePath).replace(/^\/+/, "");
+  if (!normalizedRoute) {
+    return normalizedBase;
+  }
+
+  if (!normalizedBase.endsWith("/")) {
+    return `${normalizedBase}/${normalizedRoute}`;
+  }
+
+  return `${normalizedBase}${normalizedRoute}`;
+}
+
 function normalizeStackStorageMode(value) {
   const normalized = normalizeString(value).toLowerCase();
   if (normalized === "ephemeral" || normalized === "job" || normalized === "base" || normalized === "custom") {
@@ -267,8 +311,36 @@ function parseAliases(rawValue) {
   return [...new Set(String(rawValue ?? "").split(",").map((value) => value.trim()).filter(Boolean))];
 }
 
+function normalizeExecArgs(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+    .filter(Boolean);
+}
+
 function resolveTargetHost(containerName, aliases = []) {
   return aliases[0] || containerName;
+}
+
+function shellQuote(value) {
+  return JSON.stringify(String(value));
+}
+
+function buildShellSnippet(command, cwd = "") {
+  const normalizedCommand = normalizeString(command);
+  const normalizedCwd = normalizeString(cwd);
+  if (!normalizedCommand) {
+    return "";
+  }
+  return normalizedCwd ? `cd ${shellQuote(normalizedCwd)} && ${normalizedCommand}` : normalizedCommand;
+}
+
+function buildShellCommand(command, cwd = "") {
+  const snippet = buildShellSnippet(command, cwd);
+  return ["sh", "-lc", snippet];
 }
 
 async function inspectNetwork(networkName) {
@@ -277,6 +349,29 @@ async function inspectNetwork(networkName) {
   } catch {
     return null;
   }
+}
+
+async function ensureBrokerManagedNetwork(networkName, labels = {}, options = {}) {
+  const existing = await inspectNetwork(networkName);
+  if (existing) {
+    return existing;
+  }
+
+  await docker.createNetwork({
+    Name: networkName,
+    CheckDuplicate: true,
+    Internal: options.internal === true,
+    Labels: {
+      "manor.managed": "true",
+      ...labels
+    }
+  });
+
+  const created = await inspectNetwork(networkName);
+  if (!created) {
+    throw new Error(`Network ${networkName} was created but could not be inspected`);
+  }
+  return created;
 }
 
 async function listManagedNetworks(filter) {
@@ -296,6 +391,33 @@ async function listManagedVolumes(filter) {
   const volumes = await docker.listVolumes();
   const entries = Array.isArray(volumes?.Volumes) ? volumes.Volumes : [];
   return entries.filter((volume) => filter(volume.Labels || {}, volume));
+}
+
+async function listStackInternalHosts(stackId) {
+  const normalizedStackId = normalizeString(stackId);
+  if (!normalizedStackId) {
+    return [];
+  }
+
+  const members = await listStackMemberContainers(normalizedStackId);
+  const hosts = new Set(["localhost", "127.0.0.1", "::1"]);
+  for (const member of members) {
+    const labels = member.Labels || {};
+    const aliases = parseAliases(labels["manor.aliases"]);
+    const containerName = member.Names?.[0]?.replace(/^\//, "") || "";
+    const targetHost = normalizeString(labels["manor.target-host"]);
+    if (containerName) {
+      hosts.add(containerName);
+    }
+    if (targetHost) {
+      hosts.add(targetHost);
+    }
+    for (const alias of aliases) {
+      hosts.add(alias);
+    }
+  }
+
+  return [...hosts];
 }
 
 async function ensureNetworkConnection(networkName, containerName, aliases = []) {
@@ -325,6 +447,82 @@ async function disconnectNetworkConnection(networkName, containerName) {
       throw error;
     }
   }
+}
+
+async function ensureStackInfrastructure(networkName, options = {}) {
+  const includePreviewEgress = options.includePreviewEgress !== false;
+  const includePlaywright = options.includePlaywright !== false;
+
+  await ensureNetworkConnection(networkName, runtimeBrokerContainerName, ["runtime-broker"]);
+  if (includePreviewEgress) {
+    await ensureNetworkConnection(networkName, previewEgressContainerName, ["preview-egress"]);
+  }
+  if (includePlaywright) {
+    await ensureNetworkConnection(networkName, playwrightContainerName, ["playwright"]);
+  }
+}
+
+function isDirectPreviewInternet(egressProfile, egressDomains = []) {
+  return (!egressProfile || egressProfile === "internet") && egressDomains.length === 0;
+}
+
+function isPreviewProxyEgress(egressProfile, egressDomains = []) {
+  return egressDomains.length > 0 || (egressProfile && egressProfile !== "none" && egressProfile !== "internet");
+}
+
+async function ensurePreviewOutboundNetwork() {
+  return ensureBrokerManagedNetwork(
+    previewOutboundNetwork,
+    {
+      "manor.runtime-kind": "preview-outbound",
+      "manor.title": "Preview outbound"
+    },
+    { internal: false }
+  );
+}
+
+async function reconcileManagedStackInfrastructure() {
+  const stackNetworks = await listManagedNetworks((labels) => labels?.["manor.runtime-kind"] === "stack");
+  for (const network of stackNetworks) {
+    if (!network?.Name) {
+      continue;
+    }
+    try {
+      await ensureStackInfrastructure(network.Name);
+    } catch (error) {
+      console.warn(
+        `Failed to reconcile stack infrastructure for ${network.Name}:`,
+        error instanceof Error ? error.message : String(error)
+      );
+    }
+  }
+}
+
+async function reconcileManagedPreviewBootstraps() {
+  const containers = await listManagedContainers((labels) => labels["manor.runtime-kind"] !== "service");
+  for (const containerSummary of containers) {
+    if (containerSummary.State !== "running") {
+      continue;
+    }
+
+    const lease = await serializeLiveLeaseFromSummary(containerSummary);
+    if (!lease?.id) {
+      continue;
+    }
+
+    const bootstrap = lease.bootstrap;
+    if (!bootstrap || bootstrap.phase === "ready" || bootstrap.phase === "failed") {
+      continue;
+    }
+
+    setLeaseBootstrapState(lease.id, bootstrap);
+    scheduleLeaseBootstrapMonitor(lease);
+  }
+}
+
+async function reconcileManagedRuntimeState() {
+  await reconcileManagedStackInfrastructure();
+  await reconcileManagedPreviewBootstraps();
 }
 
 async function findStackNetwork(stackId) {
@@ -435,13 +633,19 @@ function loadPreviewEgressProfiles() {
 const previewEgressProfiles = loadPreviewEgressProfiles();
 
 async function requestPreviewEgress(pathname, init) {
-  const response = await fetch(new URL(pathname, previewEgressAdminUrl), {
-    ...init,
-    headers: {
-      "content-type": "application/json",
-      ...(init?.headers ?? {})
-    }
-  });
+  let response;
+  try {
+    response = await fetch(new URL(pathname, previewEgressAdminUrl), {
+      ...init,
+      headers: {
+        "content-type": "application/json",
+        ...(init?.headers ?? {})
+      }
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Preview egress admin is unavailable: ${reason}`);
+  }
   const payload = await response.json();
   if (!response.ok) {
     throw new Error(payload.error || `Preview egress request failed with ${response.status}`);
@@ -508,7 +712,7 @@ function buildLease(payload) {
     operatorUrl: `${routeBase}/${id}/`,
     command: payload.command,
     image: payload.image || previewImage,
-    egressProfile: payload.egressProfile || "none",
+    egressProfile: payload.egressProfile || "internet",
     egressDomains: Array.isArray(payload.egressDomains)
       ? [...new Set(payload.egressDomains.map((value) => String(value).trim().toLowerCase()).filter(Boolean))]
       : [],
@@ -948,7 +1152,7 @@ async function runHeartbeatCheck(lease) {
     const exec = await containerRef.exec({
       AttachStdout: true,
       AttachStderr: true,
-      Cmd: ["bash", "-lc", command],
+      Cmd: buildShellCommand(command),
       Tty: false
     });
     const output = await collectExecOutput(containerRef, exec);
@@ -1082,6 +1286,36 @@ async function monitorLeaseBootstrap(lease) {
   retainFailedLease(lease, state?.lastHeartbeatError);
 }
 
+function scheduleLeaseBootstrapMonitor(lease) {
+  if (!lease?.id || activeLeaseBootstrapMonitors.has(lease.id)) {
+    return;
+  }
+
+  activeLeaseBootstrapMonitors.add(lease.id);
+  void monitorLeaseBootstrap(lease)
+    .catch((error) => {
+      const bootstrapState = mergeLeaseBootstrapState(lease.id, {
+        phase: "failed",
+        lastHeartbeatError: error instanceof Error ? error.message : String(error)
+      });
+      retainPreviewLease(
+        {
+          ...lease,
+          status: "failed",
+          updatedAt: Date.now(),
+          lastError: bootstrapState?.lastHeartbeatError || (error instanceof Error ? error.message : String(error))
+        },
+        {
+          status: "failed",
+          error: bootstrapState?.lastHeartbeatError || (error instanceof Error ? error.message : String(error))
+        }
+      );
+    })
+    .finally(() => {
+      activeLeaseBootstrapMonitors.delete(lease.id);
+    });
+}
+
 function serializeLease(lease, options = {}) {
   const targetPort = Number(options.targetPort ?? lease.targetPort ?? 3000);
   const status = resolveLeaseStatus(options.containerState ?? lease.status ?? "stopped", lease.id);
@@ -1131,7 +1365,7 @@ async function serializeLiveLeaseFromSummary(containerSummary) {
       operatorUrl: `${routeBase}/${labels["manor.lease-id"] || ""}/`,
       command: Array.isArray(containerSummary.Command) ? containerSummary.Command.join(" ") : containerSummary.Command || "",
       image: containerSummary.Image || previewImage,
-      egressProfile: labels["manor.egress-profile"] || "none",
+      egressProfile: labels["manor.egress-profile"] || "internet",
       egressDomains:
         labels["manor.egress-domains"]
           ?.split(",")
@@ -1182,7 +1416,7 @@ async function serializeInspectedLease(containerName, container) {
         image: container.Config?.Image || previewImage,
         egressProfile:
           container.Config?.Env?.find((entry) => entry.startsWith("MANOR_EGRESS_PROFILE="))?.slice("MANOR_EGRESS_PROFILE=".length) ||
-          "none",
+          "internet",
         egressDomains:
           labels["manor.egress-domains"]
             ?.split(",")
@@ -1684,6 +1918,7 @@ async function removeContainerPath(containerRef, targetPath) {
 
 async function persistVerificationArtifacts(containerRef, verification, remoteOutputDir, localOutputDir) {
   fs.mkdirSync(localOutputDir, { recursive: true });
+  const archiveStartedAt = Date.now();
 
   const persistedArtifacts = [];
   for (const artifact of Array.isArray(verification.artifacts) ? verification.artifacts : []) {
@@ -1722,7 +1957,25 @@ async function persistVerificationArtifacts(containerRef, verification, remoteOu
   };
   const persistedVerification = {
     ...verification,
+    phases: [
+      ...(Array.isArray(verification.phases) ? verification.phases : []),
+      {
+        name: "archive_artifacts",
+        label: "Archive artifacts",
+        status: "completed",
+        startedAt: archiveStartedAt,
+        completedAt: Date.now(),
+        durationMs: Math.max(0, Date.now() - archiveStartedAt),
+        message: "Copied proof artifacts into Manor storage."
+      }
+    ],
     artifacts: [manifestArtifact, ...persistedArtifacts]
+  };
+  persistedVerification.summary = {
+    ...(persistedVerification.summary && typeof persistedVerification.summary === "object"
+      ? persistedVerification.summary
+      : {}),
+    phaseCount: Array.isArray(persistedVerification.phases) ? persistedVerification.phases.length : 0
   };
   fs.writeFileSync(manifestPath, `${JSON.stringify(persistedVerification, null, 2)}\n`, "utf8");
   manifestArtifact.sizeBytes = fs.statSync(manifestPath).size;
@@ -1786,9 +2039,7 @@ app.post("/stacks", async (request, response) => {
       }
     });
 
-    await ensureNetworkConnection(stack.networkName, runtimeBrokerContainerName, ["runtime-broker"]).catch(() => {});
-    await ensureNetworkConnection(stack.networkName, previewEgressContainerName, ["preview-egress"]).catch(() => {});
-    await ensureNetworkConnection(stack.networkName, playwrightContainerName, ["playwright"]).catch(() => {});
+    await ensureStackInfrastructure(stack.networkName);
 
     const created = await inspectNetwork(stack.networkName);
     if (!created) {
@@ -2016,7 +2267,7 @@ app.use("/routes/preview/:leaseId", async (request, response) => {
     if (!value) {
       continue;
     }
-    if (["host", "connection", "content-length"].includes(key.toLowerCase())) {
+    if (["host", "connection", "content-length", "accept-encoding"].includes(key.toLowerCase())) {
       continue;
     }
     if (Array.isArray(value)) {
@@ -2027,6 +2278,8 @@ app.use("/routes/preview/:leaseId", async (request, response) => {
       headers.set(key, value);
     }
   }
+
+  headers.set("accept-encoding", "identity");
 
   try {
     const upstream = await fetch(upstreamUrl, {
@@ -2039,7 +2292,7 @@ app.use("/routes/preview/:leaseId", async (request, response) => {
 
     response.status(upstream.status);
     upstream.headers.forEach((value, key) => {
-      if (["connection", "content-length", "transfer-encoding"].includes(key.toLowerCase())) {
+      if (["connection", "content-length", "transfer-encoding", "content-encoding"].includes(key.toLowerCase())) {
         return;
       }
       response.setHeader(key, value);
@@ -2083,50 +2336,66 @@ app.post("/leases", async (request, response) => {
   pendingPreviewLeases.set(lease.id, lease);
   clearRetainedPreviewLease(lease.id);
   const env = typeof payload.env === "object" && payload.env ? payload.env : {};
-  const envVars = [`PORT=${lease.targetPort}`, "HOST=0.0.0.0"];
+  const envVars = [`PORT=${lease.targetPort}`, "HOST=0.0.0.0", "NODE_OPTIONS=--use-openssl-ca"];
+  const aliases = [...new Set([lease.containerName, ...lease.aliases])];
   let proxyPort = null;
   let dynamicPolicyName = null;
 
-  if (lease.egressDomains.length > 0) {
-    const dynamicPolicy = await ensurePreviewEgressLeasePolicy(lease.id, lease.egressDomains);
-    if (!dynamicPolicy) {
-      response.status(400).json({ error: "Failed to create preview egress policy" });
-      return;
-    }
-    proxyPort = dynamicPolicy.port;
-    dynamicPolicyName = dynamicPolicy.name;
-    lease.egressProfile = "custom";
-  } else if (lease.egressProfile !== "none") {
-    const profile = previewEgressProfiles.get(lease.egressProfile);
-    if (!profile || !Number.isFinite(profile.port) || profile.port <= 0) {
-      response.status(400).json({ error: `Unknown preview egress profile: ${lease.egressProfile}` });
-      return;
-    }
-    proxyPort = profile.port;
-  }
-
-  if (proxyPort !== null) {
-    const previewProxy = `http://preview-egress:${proxyPort}`;
-    envVars.push(
-      `HTTP_PROXY=${previewProxy}`,
-      `HTTPS_PROXY=${previewProxy}`,
-      `ALL_PROXY=${previewProxy}`,
-      `http_proxy=${previewProxy}`,
-      `https_proxy=${previewProxy}`,
-      `all_proxy=${previewProxy}`,
-      "NODE_OPTIONS=--use-env-proxy"
-    );
-  }
-
-  envVars.push(`MANOR_EGRESS_PROFILE=${lease.egressProfile}`);
-
-  for (const [key, value] of Object.entries(env)) {
-    if (typeof value === "string") {
-      envVars.push(`${key}=${value}`);
-    }
-  }
-
   try {
+    if (stack?.Name) {
+      await ensureStackInfrastructure(stack.Name, {
+        includePreviewEgress: isPreviewProxyEgress(lease.egressProfile, lease.egressDomains)
+      });
+    }
+
+    if (lease.egressDomains.length > 0) {
+      const dynamicPolicy = await ensurePreviewEgressLeasePolicy(lease.id, lease.egressDomains);
+      if (!dynamicPolicy) {
+        response.status(400).json({ error: "Failed to create preview egress policy" });
+        return;
+      }
+      proxyPort = dynamicPolicy.port;
+      dynamicPolicyName = dynamicPolicy.name;
+      lease.egressProfile = "custom";
+    } else if (isPreviewProxyEgress(lease.egressProfile, lease.egressDomains)) {
+      const profile = previewEgressProfiles.get(lease.egressProfile);
+      if (!profile || !Number.isFinite(profile.port) || profile.port <= 0) {
+        response.status(400).json({ error: `Unknown preview egress profile: ${lease.egressProfile}` });
+        return;
+      }
+      proxyPort = profile.port;
+    }
+
+    if (proxyPort !== null) {
+      const previewProxy = `http://preview-egress:${proxyPort}`;
+      const noProxyEntries = new Set(["localhost", "127.0.0.1", "::1", lease.containerName, ...aliases]);
+      if (lease.stackId) {
+        for (const host of await listStackInternalHosts(lease.stackId)) {
+          noProxyEntries.add(host);
+        }
+      }
+      const noProxyValue = [...noProxyEntries].filter(Boolean).join(",");
+      envVars.push(
+        `HTTP_PROXY=${previewProxy}`,
+        `HTTPS_PROXY=${previewProxy}`,
+        `ALL_PROXY=${previewProxy}`,
+        `http_proxy=${previewProxy}`,
+        `https_proxy=${previewProxy}`,
+        `all_proxy=${previewProxy}`,
+        `NO_PROXY=${noProxyValue}`,
+        `no_proxy=${noProxyValue}`,
+        "NODE_OPTIONS=--use-env-proxy --use-openssl-ca"
+      );
+    }
+
+    envVars.push(`MANOR_EGRESS_PROFILE=${lease.egressProfile}`);
+
+    for (const [key, value] of Object.entries(env)) {
+      if (typeof value === "string") {
+        envVars.push(`${key}=${value}`);
+      }
+    }
+
     mergeLeaseBootstrapState(lease.id, { phase: "pulling_image" });
     await ensureImage(lease.image);
 
@@ -2141,13 +2410,12 @@ app.post("/leases", async (request, response) => {
       await docker.getContainer(lease.containerName).remove({ force: true });
     }
 
-    const aliases = [...new Set([lease.containerName, ...lease.aliases])];
     const networkName = stack?.Name || previewNetwork;
 
     const runtimeContainer = await docker.createContainer({
       Image: lease.image,
       name: lease.containerName,
-      Cmd: ["bash", "-lc", lease.command],
+      Cmd: buildShellCommand(lease.command),
       WorkingDir: lease.worktreePath,
       Env: envVars,
       Labels: {
@@ -2184,6 +2452,11 @@ app.post("/leases", async (request, response) => {
       }
     });
 
+    if (isDirectPreviewInternet(lease.egressProfile, lease.egressDomains)) {
+      await ensurePreviewOutboundNetwork();
+      await ensureNetworkConnection(previewOutboundNetwork, lease.containerName);
+    }
+
     await runtimeContainer.start();
     const container = await inspectContainer(lease.containerName);
     if (!container) {
@@ -2191,24 +2464,7 @@ app.post("/leases", async (request, response) => {
     }
 
     pendingPreviewLeases.delete(lease.id);
-    void monitorLeaseBootstrap(lease).catch((error) => {
-      const bootstrapState = mergeLeaseBootstrapState(lease.id, {
-        phase: "failed",
-        lastHeartbeatError: error instanceof Error ? error.message : String(error)
-      });
-      retainPreviewLease(
-        {
-          ...lease,
-          status: "failed",
-          updatedAt: Date.now(),
-          lastError: bootstrapState?.lastHeartbeatError || (error instanceof Error ? error.message : String(error))
-        },
-        {
-          status: "failed",
-          error: bootstrapState?.lastHeartbeatError || (error instanceof Error ? error.message : String(error))
-        }
-      );
-    });
+    scheduleLeaseBootstrapMonitor(lease);
 
     response.json({
       ...serializeLease(
@@ -2246,7 +2502,16 @@ app.post("/leases", async (request, response) => {
         error: bootstrapState?.lastHeartbeatError || (error instanceof Error ? error.message : String(error))
       }
     );
-    response.status(500).json({
+    const statusCode =
+      typeof error === "object" &&
+      error !== null &&
+      "message" in error &&
+      typeof error.message === "string" &&
+      error.message.toLowerCase().includes("preview egress admin is unavailable")
+        ? 502
+        : 500;
+
+    response.status(statusCode).json({
       ...lease,
       status: "failed",
       updatedAt: Date.now(),
@@ -2524,20 +2789,22 @@ app.post("/leases/:leaseId/exec", async (request, response) => {
   }
 
   const command = typeof request.body?.command === "string" ? request.body.command.trim() : "";
+  const commandArgs = normalizeExecArgs(request.body?.commandArgs);
   const cwd = typeof request.body?.cwd === "string" ? request.body.cwd.trim() : "";
   const stdin = typeof request.body?.stdin === "string" ? request.body.stdin : "";
   const stdinProvided = request.body?.stdinProvided === true;
-  if (!command) {
+  if (!command && commandArgs.length === 0) {
     response.status(400).json({ error: "command is required" });
     return;
   }
 
   try {
+    const execCommand = commandArgs.length > 0 ? commandArgs : buildShellCommand(command, cwd);
     const exec = await required.containerRef.exec({
       AttachStdin: stdinProvided,
       AttachStdout: true,
       AttachStderr: true,
-      Cmd: ["bash", "-lc", cwd ? `cd ${JSON.stringify(cwd)} && ${command}` : command],
+      Cmd: execCommand,
       WorkingDir: cwd || undefined,
       Tty: false
     });
@@ -2571,18 +2838,45 @@ app.post("/leases/:leaseId/verify", async (request, response) => {
   }
 
   try {
+    const stackId = required.container.Config?.Labels?.["manor.stack-id"] || null;
+    const stack = stackId ? await findStackNetwork(stackId) : null;
+    if (stack?.Name) {
+      await ensureStackInfrastructure(stack.Name, { includePreviewEgress: false, includePlaywright: true });
+    }
+
     const playwrightContainer = docker.getContainer(playwrightContainerName);
     await playwrightContainer.inspect();
-    const targetUrl = `${internalOperatorBaseUrl}${routeBase}/${request.params.leaseId}/`;
+    const labels = required.container.Config?.Labels || {};
+    const aliases = parseAliases(labels["manor.aliases"]);
+    const targetPort =
+      Number(required.container.Config?.Env?.find((entry) => entry.startsWith("PORT="))?.slice(5) || "3000");
+    const internalTargetHost = stack?.Name ? resolveTargetHost(required.containerName, aliases) : null;
+    const baseTargetUrl = internalTargetHost
+      ? `http://${internalTargetHost}:${targetPort}/`
+      : `${internalOperatorBaseUrl}${routeBase}/${request.params.leaseId}/`;
+    const targetUrl = appendPreviewRoutePath(baseTargetUrl, request.body?.path);
     const runId = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
     const remoteOutputDir = path.posix.join(playwrightArtifactsScratchDir, request.params.leaseId, runId);
     const localOutputDir = path.join(artifactsRootDir, "previews", request.params.leaseId, runId);
     const mode = request.body?.mode === "headful" ? "headful" : "headless";
+    const script = normalizeString(request.body?.script) || undefined;
+    const waitForSelector = normalizeString(request.body?.waitForSelector) || undefined;
+    const postLoadWaitMs =
+      typeof request.body?.postLoadWaitMs === "number" && Number.isFinite(request.body.postLoadWaitMs)
+        ? Math.max(0, Math.trunc(request.body.postLoadWaitMs))
+        : undefined;
+    const headers = normalizeHeaderMap(request.body?.headers);
+    const cookies = normalizeCookieEntries(request.body?.cookies);
     const options = JSON.stringify({
       runId,
       mode,
       targetUrl,
-      outputDir: remoteOutputDir
+      outputDir: remoteOutputDir,
+      waitForSelector,
+      postLoadWaitMs,
+      headers,
+      cookies,
+      script
     });
     const execCommand =
       mode === "headful"
@@ -2963,20 +3257,22 @@ app.post("/services/:serviceId/exec", async (request, response) => {
   }
 
   const command = typeof request.body?.command === "string" ? request.body.command.trim() : "";
+  const commandArgs = normalizeExecArgs(request.body?.commandArgs);
   const cwd = typeof request.body?.cwd === "string" ? request.body.cwd.trim() : "";
   const stdin = typeof request.body?.stdin === "string" ? request.body.stdin : "";
   const stdinProvided = request.body?.stdinProvided === true;
-  if (!command) {
+  if (!command && commandArgs.length === 0) {
     response.status(400).json({ error: "command is required" });
     return;
   }
 
   try {
+    const execCommand = commandArgs.length > 0 ? commandArgs : buildShellCommand(command, cwd);
     const exec = await required.containerRef.exec({
       AttachStdin: stdinProvided,
       AttachStdout: true,
       AttachStderr: true,
-      Cmd: ["sh", "-lc", cwd ? `cd ${JSON.stringify(cwd)} && ${command}` : command],
+      Cmd: execCommand,
       WorkingDir: cwd || undefined,
       Tty: false
     });
@@ -3011,4 +3307,10 @@ app.delete("/services/:serviceId", async (request, response) => {
 
 app.listen(port, "0.0.0.0", () => {
   console.log(`Runtime broker listening on ${port}`);
+  void reconcileManagedRuntimeState();
+  if (stackInfraReconnectIntervalMs > 0) {
+    setInterval(() => {
+      void reconcileManagedRuntimeState();
+    }, stackInfraReconnectIntervalMs);
+  }
 });

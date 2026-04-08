@@ -583,6 +583,8 @@ select {
   min-width: 0;
   padding: 12px 14px;
   background: var(--surface);
+  content-visibility: auto;
+  contain-intrinsic-size: 156px;
 }
 
 .runtime-item-main {
@@ -626,6 +628,8 @@ select {
 }
 
 .thread-toolbar {
+  position: relative;
+  z-index: 8;
   display: flex;
   justify-content: flex-end;
   align-items: center;
@@ -633,6 +637,45 @@ select {
   padding: 12px 18px;
   border-bottom: 1px solid var(--line);
   background: var(--panel);
+  overflow: visible;
+}
+
+.thread-toolbar-group {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  width: 100%;
+  overflow: visible;
+}
+
+.thread-toolbar-disclosure {
+  margin-left: auto;
+  position: relative;
+  z-index: 12;
+}
+
+.thread-toolbar .conversation-toggle {
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+}
+
+.thread-toolbar .conversation-toggle.is-active,
+.thread-toolbar .conversation-toggle:hover {
+  background: transparent;
+  color: var(--ink);
+}
+
+.thread-runtime-panel {
+  z-index: 24;
+  width: min(760px, calc(100vw - 40px));
 }
 
 .thread-toolbar-service-actions {
@@ -947,16 +990,28 @@ select {
 }
 
 .conversation-list {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
   gap: 18px;
-  align-content: start;
+  min-height: 100%;
+  width: 100%;
   min-width: 0;
+  box-sizing: border-box;
+  contain: layout style paint;
+}
+
+.conversation-list-loading {
+  justify-content: flex-end;
 }
 
 .conversation-row {
   display: flex;
   width: 100%;
   min-width: 0;
+  flex: 0 0 auto;
+  content-visibility: auto;
+  contain-intrinsic-size: 180px;
 }
 
 .conversation-row.is-user {
@@ -1884,6 +1939,8 @@ select {
 .detail-group {
   display: grid;
   gap: 8px;
+  content-visibility: auto;
+  contain-intrinsic-size: 132px;
 }
 
 .detail-group-label {
@@ -2406,6 +2463,26 @@ select {
     padding: 10px 16px;
   }
 
+  .thread-toolbar-group {
+    justify-content: space-between;
+  }
+
+  .thread-toolbar-disclosure {
+    margin-left: 0;
+    flex: 1 1 auto;
+  }
+
+  .thread-toolbar .conversation-toggle {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .thread-runtime-panel {
+    left: 0;
+    right: 0;
+    width: auto;
+  }
+
   .thread-preview-verification {
     padding: 10px 16px 0;
   }
@@ -2734,6 +2811,10 @@ select {
 
   .conversation-toggle {
     min-height: 32px;
+  }
+
+  .thread-toolbar-group {
+    gap: 8px;
   }
 
   .conversation-disclosure-panel {

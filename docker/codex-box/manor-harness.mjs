@@ -11,25 +11,28 @@ const runtimeBrokerBaseUrl = process.env.MANOR_RUNTIME_BROKER_URL || "http://run
 
 function printHelp() {
   console.log(`Usage:
-  manor-harness status
-  manor-harness report --status completed|blocked --summary "<text>" [--details "<text>"] [--turn-id <id>]
-  manor-harness stack list
-  manor-harness stack start [--title <title>] [--cwd <path>] [--stateful] [--storage-mode ephemeral|job|base|custom] [--retain-volumes] [--storage-key <key>] [--clone-from <key>]
-  manor-harness stack inspect <stackSelector>
-  manor-harness stack promote <stackSelector> [--to <storageKey>]
-  manor-harness stack stop <stackSelector> [--drop-volumes]
-  manor-harness preview list
-  manor-harness preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--stack <stackSelector>] [--alias <name> ...] [--env KEY=VALUE ...] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>]
+  manor-harness [--thread <jobId>] status
+  manor-harness [--thread <jobId>] report --status completed|blocked --summary "<text>" [--details "<text>"] [--turn-id <id>]
+  manor-harness [--thread <jobId>] assist --summary "<text>" [--details "<text>"] [--question "<text>"]
+  manor-harness [--thread <jobId>] stack list
+  manor-harness [--thread <jobId>] stack start [--title <title>] [--cwd <path>] [--stateful] [--storage-mode ephemeral|job|base|custom] [--retain-volumes] [--storage-key <key>] [--clone-from <key>]
+  manor-harness [--thread <jobId>] stack inspect <stackSelector>
+  manor-harness [--thread <jobId>] stack promote <stackSelector> [--to <storageKey>]
+  manor-harness [--thread <jobId>] stack stop <stackSelector> [--drop-volumes]
+  manor-harness [--thread <jobId>] preview list
+  manor-harness [--thread <jobId>] preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--stack <stackSelector>] [--alias <name> ...] [--env KEY=VALUE ...] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>]
 
 Preview defaults:
+  egress-profile=internet
   heartbeat-kind=http
   heartbeat-target=/
+  preview commands start in the job worktree; prefer relative paths there or the contract cwd under /repos
   manor-harness preview inspect <previewSelector>
   manor-harness preview proof <previewSelector> [--run-id <id>]
   manor-harness preview processes <previewSelector>
   manor-harness preview logs <previewSelector> [--tail <n>]
   manor-harness preview exec <previewSelector> -- <command>
-  manor-harness preview verify <previewSelector> [--mode headless|headful]
+  manor-harness preview verify <previewSelector> [--mode headless|headful] [--path <route>] [--header KEY=VALUE ...] [--cookie NAME=VALUE ...] [--session-cookie <token>] [--wait-for <selector>] [--wait-ms <n>] [--script "<js>"] [--script-file <path>]
   manor-harness preview stop <previewSelector>
   manor-harness service templates
   manor-harness service list
@@ -40,7 +43,15 @@ Preview defaults:
   manor-harness service exec <serviceSelector> -- <command>
   manor-harness service stop <serviceSelector>
 
-Add --json to print the Butler response payload as JSON.`);
+Proof tips:
+  Use --cookie NAME=VALUE to add cookies without hand-building a Cookie header.
+  Use --session-cookie <token> as shorthand for better-auth.session_token=<token>.
+  Cookies are injected into the browser context directly; headers remain separate.
+  Example:
+    manor-harness preview verify <preview> --mode headful --path buyer/messages --session-cookie buyer-token --script-file .local/proof.js --json
+
+Add --json to print the Butler response payload as JSON.
+Set MANOR_THREAD_ID or pass --thread <jobId> to bind the harness explicitly when you are outside the job workspace.`);
 }
 
 async function loadCapabilities() {
@@ -53,7 +64,25 @@ async function loadCapabilities() {
   return Array.isArray(parsed?.capabilities) ? parsed.capabilities : [];
 }
 
-function matchCapability(capabilities, cwd) {
+function getCapabilityByThreadId(capabilities, threadId) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId) {
+    return null;
+  }
+
+  return (
+    capabilities.find((entry) => {
+      return entry && typeof entry.threadId === "string" && entry.threadId === normalizedThreadId;
+    }) ?? null
+  );
+}
+
+function matchCapability(capabilities, cwd, explicitThreadId) {
+  const directThreadMatch = getCapabilityByThreadId(capabilities, explicitThreadId);
+  if (directThreadMatch) {
+    return directThreadMatch;
+  }
+
   const normalizedCwd = path.resolve(cwd);
   const matches = capabilities.filter((entry) => {
     if (!entry || typeof entry.cwd !== "string" || typeof entry.token !== "string") {
@@ -63,7 +92,64 @@ function matchCapability(capabilities, cwd) {
     return normalizedCwd === capabilityCwd || normalizedCwd.startsWith(`${capabilityCwd}${path.sep}`);
   });
 
-  return matches.sort((left, right) => String(right.cwd).length - String(left.cwd).length)[0] ?? null;
+  if (matches.length > 0) {
+    return matches.sort((left, right) => String(right.cwd).length - String(left.cwd).length)[0] ?? null;
+  }
+
+  const currentProjectId = resolveWorkspaceProjectId(normalizedCwd);
+  if (!currentProjectId) {
+    return null;
+  }
+
+  const projectMatches = capabilities.filter((entry) => {
+    if (!entry || typeof entry.cwd !== "string" || typeof entry.token !== "string") {
+      return false;
+    }
+    return resolveWorkspaceProjectId(entry.cwd) === currentProjectId;
+  });
+
+  return projectMatches.length === 1 ? projectMatches[0] : null;
+}
+
+function formatCapabilityReference(capability) {
+  return `${capability.threadId} (${capability.cwd})`;
+}
+
+function buildCapabilityLookupError(capabilities, cwd, explicitThreadId) {
+  const normalizedThreadId = typeof explicitThreadId === "string" ? explicitThreadId.trim() : "";
+  if (normalizedThreadId) {
+    return `No Manor harness capability was found for job ${normalizedThreadId}. Start the job through Butler first or refresh the binding.`;
+  }
+
+  if (capabilities.length === 1) {
+    return `No Manor harness capability matches ${cwd}, even though one active job exists: ${formatCapabilityReference(capabilities[0])}. Retry from that workspace or bind the command with --thread ${capabilities[0].threadId}.`;
+  }
+
+  if (capabilities.length > 1) {
+    const activeJobs = capabilities.map((capability) => formatCapabilityReference(capability)).join(", ");
+    return `No Manor harness capability matches ${cwd}. Retry from the job workspace or pass --thread <jobId>. Active jobs: ${activeJobs}.`;
+  }
+
+  return "No Manor harness capability is available for this workspace. Open this job through Butler first.";
+}
+
+function resolveWorkspaceProjectId(cwd) {
+  const normalized = path.resolve(cwd).replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!normalized) {
+    return "";
+  }
+
+  if (normalized.startsWith("/repos/.manor-worktrees/")) {
+    const relative = normalized.slice("/repos/.manor-worktrees/".length);
+    return relative.split("/").filter(Boolean)[0] || "";
+  }
+
+  if (normalized.startsWith("/repos/")) {
+    const relative = normalized.slice("/repos/".length);
+    return relative.split("/").filter(Boolean)[0] || "";
+  }
+
+  return "";
 }
 
 async function callHarness(token, action, params = {}) {
@@ -136,10 +222,47 @@ function readRepeatedFlag(args, name) {
   return values;
 }
 
+function parseRepeatedKeyValueFlags(args, name) {
+  return readRepeatedFlag(args, name)
+    .map((entry) => {
+      const marker = entry.indexOf("=");
+      return marker === -1 ? null : [entry.slice(0, marker), entry.slice(marker + 1)];
+    })
+    .filter(Boolean);
+}
+
+function mergeCookieHeader(headers, cookieEntries) {
+  if (cookieEntries.length === 0) {
+    return headers;
+  }
+
+  const mergedHeaders = { ...headers };
+  const existingCookieHeader = Object.entries(mergedHeaders).find(([key]) => key.toLowerCase() === "cookie");
+  const cookieValue = cookieEntries.map(([key, value]) => `${key}=${value}`).join("; ");
+
+  if (existingCookieHeader) {
+    const [headerName, existingValue] = existingCookieHeader;
+    mergedHeaders[headerName] = existingValue ? `${existingValue}; ${cookieValue}` : cookieValue;
+  } else {
+    mergedHeaders.cookie = cookieValue;
+  }
+
+  return mergedHeaders;
+}
+
 function readTailArg(args) {
   const raw = readFlag(args, "--tail", "200");
   const value = Number(raw);
   return Number.isFinite(value) && value > 0 ? value : 200;
+}
+
+function readPositiveIntFlag(args, name) {
+  const raw = readFlag(args, name, "");
+  if (!raw) {
+    return undefined;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.trunc(value) : undefined;
 }
 
 function readCommandAfterDoubleDash(args) {
@@ -148,6 +271,14 @@ function readCommandAfterDoubleDash(args) {
     return "";
   }
   return args.slice(marker + 1).join(" ").trim();
+}
+
+function readCommandArgsAfterDoubleDash(args) {
+  const marker = args.indexOf("--");
+  if (marker === -1) {
+    return [];
+  }
+  return args.slice(marker + 1).filter(Boolean);
 }
 
 async function readStdinIfPresent() {
@@ -166,8 +297,31 @@ async function readStdinIfPresent() {
   };
 }
 
+async function readScriptValue(args) {
+  const inlineScript = readFlag(args, "--script", "");
+  if (inlineScript) {
+    return inlineScript;
+  }
+
+  const scriptFile = readFlag(args, "--script-file", "");
+  if (!scriptFile) {
+    return undefined;
+  }
+
+  const resolvedPath = path.resolve(process.cwd(), scriptFile);
+  const raw = await fs.readFile(resolvedPath, "utf8");
+  const script = raw.trim();
+  return script || undefined;
+}
+
 async function main() {
   const args = process.argv.slice(2);
+  const threadFlagIndex = args.indexOf("--thread");
+  let explicitThreadId = process.env.MANOR_THREAD_ID || "";
+  if (threadFlagIndex !== -1) {
+    explicitThreadId = args[threadFlagIndex + 1] ?? "";
+    args.splice(threadFlagIndex, 2);
+  }
   const jsonModeIndex = args.indexOf("--json");
   const jsonMode = jsonModeIndex !== -1;
   if (jsonMode) {
@@ -180,9 +334,11 @@ async function main() {
   }
 
   const capabilities = await loadCapabilities();
-  const capability = matchCapability(capabilities, process.cwd());
+  const capability =
+    matchCapability(capabilities, process.cwd(), explicitThreadId) ??
+    (capabilities.length === 1 && !explicitThreadId ? capabilities[0] : null);
   if (!capability) {
-    throw new Error("No Manor harness capability is available for this workspace. Open this job through Butler first.");
+    throw new Error(buildCapabilityLookupError(capabilities, process.cwd(), explicitThreadId));
   }
 
   let action = "";
@@ -198,6 +354,13 @@ async function main() {
       summary: readFlag(args, "--summary"),
       details: readFlag(args, "--details"),
       turnId: readFlag(args, "--turn-id")
+    };
+  } else if (args[0] === "assist") {
+    action = "assist.request";
+    params = {
+      summary: readFlag(args, "--summary"),
+      details: readFlag(args, "--details"),
+      question: readFlag(args, "--question")
     };
   } else if (args[0] === "preview") {
     const subcommand = args[1];
@@ -248,19 +411,32 @@ async function main() {
       params = { leaseId: args[2], tail: readTailArg(args) };
     } else if (subcommand === "exec" && args[2]) {
       const pipedInput = await readStdinIfPresent();
+      const commandArgs = readCommandArgsAfterDoubleDash(args);
       action = "preview.exec";
       params = {
         leaseId: args[2],
-        command: readCommandAfterDoubleDash(args),
+        command: commandArgs.join(" ").trim(),
+        commandArgs,
         cwd: readFlag(args, "--cwd"),
         stdin: pipedInput.stdin,
         stdinProvided: pipedInput.stdinProvided
       };
     } else if (subcommand === "verify" && args[2]) {
+      const headers = Object.fromEntries(parseRepeatedKeyValueFlags(args, "--header"));
+      const cookies = parseRepeatedKeyValueFlags(args, "--cookie");
+      const sessionCookie = readFlag(args, "--session-cookie", "");
+      const script = await readScriptValue(args);
       action = "preview.verify";
       params = {
         leaseId: args[2],
-        mode: readFlag(args, "--mode")
+        mode: readFlag(args, "--mode"),
+        path: readFlag(args, "--path"),
+        waitForSelector: readFlag(args, "--wait-for"),
+        postLoadWaitMs: readPositiveIntFlag(args, "--wait-ms"),
+        headers,
+        cookies: Object.fromEntries(cookies),
+        sessionCookie,
+        script
       };
     } else if (subcommand === "stop" && args[2]) {
       action = "preview.stop";
@@ -302,10 +478,12 @@ async function main() {
       params = { serviceId: args[2], tail: readTailArg(args) };
     } else if (subcommand === "exec" && args[2]) {
       const pipedInput = await readStdinIfPresent();
+      const commandArgs = readCommandArgsAfterDoubleDash(args);
       action = "service.exec";
       params = {
         serviceId: args[2],
-        command: readCommandAfterDoubleDash(args),
+        command: commandArgs.join(" ").trim(),
+        commandArgs,
         cwd: readFlag(args, "--cwd"),
         stdin: pipedInput.stdin,
         stdinProvided: pipedInput.stdinProvided

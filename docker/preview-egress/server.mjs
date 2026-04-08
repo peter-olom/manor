@@ -8,6 +8,19 @@ const configPath = process.env.PREVIEW_EGRESS_PROFILES_FILE ?? "/opt/manor/confi
 const adminPort = Number(process.env.PREVIEW_EGRESS_ADMIN_PORT ?? "8091");
 const dynamicPortStart = Number(process.env.PREVIEW_EGRESS_DYNAMIC_PORT_START ?? "3200");
 const dynamicPortEnd = Number(process.env.PREVIEW_EGRESS_DYNAMIC_PORT_END ?? "3299");
+const deniedInternalHosts = new Set([
+  "runtime-broker",
+  "manor-runtime-broker",
+  "preview-egress",
+  "manor-preview-egress",
+  "playwright",
+  "manor-playwright",
+  "butler",
+  "manor-butler",
+  "codex-box",
+  "manor-codex",
+  "manor-codex-box"
+]);
 
 function loadStaticProfiles() {
   const raw = fs.readFileSync(configPath, "utf8");
@@ -46,10 +59,21 @@ function hostnameMatches(hostname, domain) {
 }
 
 function isAllowedHost(hostname, domains) {
+  if (isStackLocalHostname(hostname)) {
+    return !deniedInternalHosts.has(hostname);
+  }
   return domains.some((domain) => hostnameMatches(hostname, domain));
 }
 
-function isSafePort(port) {
+function isStackLocalHostname(hostname) {
+  const normalizedHost = hostname.toLowerCase();
+  return normalizedHost.length > 0 && !normalizedHost.includes(".") && net.isIP(normalizedHost) === 0;
+}
+
+function isSafePort(hostname, port) {
+  if (isStackLocalHostname(hostname) && !deniedInternalHosts.has(hostname)) {
+    return Number.isInteger(port) && port > 0 && port <= 65535;
+  }
   return port === 80 || port === 443;
 }
 
@@ -70,6 +94,12 @@ function stripHopByHopHeaders(headers) {
   delete nextHeaders.te;
   delete nextHeaders.trailer;
   return nextHeaders;
+}
+
+function destroySocket(socket) {
+  if (socket && !socket.destroyed) {
+    socket.destroy();
+  }
 }
 
 function createProxyServer(profile) {
@@ -96,7 +126,7 @@ function createProxyServer(profile) {
     const port =
       targetUrl.port.length > 0 ? Number(targetUrl.port) : targetUrl.protocol === "https:" ? 443 : 80;
 
-    if (!isSafePort(port)) {
+    if (!isSafePort(hostname, port)) {
       writeJson(response, 403, { error: `Port ${port} is not allowed for preview egress` });
       return;
     }
@@ -129,10 +159,15 @@ function createProxyServer(profile) {
     request.pipe(upstream);
   });
 
+  server.on("clientError", (_error, socket) => {
+    destroySocket(socket);
+  });
+
   server.on("connect", (request, clientSocket, head) => {
     const [hostnameRaw, portRaw] = String(request.url ?? "").split(":");
     const hostname = hostnameRaw?.toLowerCase() ?? "";
     const port = Number(portRaw ?? "443");
+    let tunnelEstablished = false;
 
     if (!hostname || !Number.isFinite(port)) {
       clientSocket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
@@ -140,7 +175,7 @@ function createProxyServer(profile) {
       return;
     }
 
-    if (!isSafePort(port)) {
+    if (!isSafePort(hostname, port)) {
       clientSocket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
       clientSocket.destroy();
       return;
@@ -153,6 +188,7 @@ function createProxyServer(profile) {
     }
 
     const upstreamSocket = net.connect(port, hostname, () => {
+      tunnelEstablished = true;
       clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
       if (head.length > 0) {
         upstreamSocket.write(head);
@@ -161,9 +197,24 @@ function createProxyServer(profile) {
       clientSocket.pipe(upstreamSocket);
     });
 
+    clientSocket.on("error", () => {
+      destroySocket(upstreamSocket);
+    });
+
+    clientSocket.on("close", () => {
+      destroySocket(upstreamSocket);
+    });
+
     upstreamSocket.on("error", () => {
-      clientSocket.write("HTTP/1.1 502 Bad Gateway\r\n\r\n");
-      clientSocket.destroy();
+      if (!tunnelEstablished && !clientSocket.destroyed) {
+        clientSocket.write("HTTP/1.1 502 Bad Gateway\r\n\r\n");
+      }
+      destroySocket(clientSocket);
+      destroySocket(upstreamSocket);
+    });
+
+    upstreamSocket.on("close", () => {
+      destroySocket(clientSocket);
     });
   });
 

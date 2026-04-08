@@ -21,12 +21,20 @@ import { readButlerAuthStatus } from "./auth-status.js";
 import { buildOnboardingView } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
-import { ensureTaskWorktree, resolveWorkspaceProjectInfo } from "./repo-worktree.js";
+import { ensureTaskWorktree, resolveExistingWorkspaceCwd, resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, toServiceLeaseView } from "./service-templates.js";
 import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
+import { buildThreadExecutionContract, describeExecutionMode, detectExecutionMode } from "./thread-contract.js";
+import {
+  applyWorkspacePreviewDefaults,
+  formatWorkspaceBootstrapLines,
+  inspectWorkspaceBootstrap
+} from "./workspace-bootstrap.js";
 import type {
   AppSnapshot,
+  AppShellSnapshot,
+  ButlerLiveSnapshot,
   ButlerAuthStatus,
   ButlerCompactionView,
   ButlerContextUsageView,
@@ -36,6 +44,7 @@ import type {
   ButlerThinkingLevel,
   ButlerToolUiEffect,
   ButlerToolView,
+  CodexThreadExecutionContractView,
   ModelOption
 } from "./types.js";
 import { ButlerStateStore } from "./state-store.js";
@@ -99,6 +108,11 @@ function extractMessageTimestamp(message: Record<string, unknown>): number | nul
   }
 
   return null;
+}
+
+function extractWorkspaceMentions(text: string): string[] {
+  const matches = text.match(/\/repos(?:\/\.manor-worktrees)?\/[^\s`"'()<>{}\]]+/g) ?? [];
+  return [...new Set(matches.map((entry) => entry.replace(/[.,;:!?]+$/g, "")))];
 }
 
 function serializeMessages(session: AgentSession): ButlerMessageView[] {
@@ -403,11 +417,18 @@ function buildSystemPrompt(store: ButlerStateStore): string {
     "For recurring mutable databases or object stores, prefer job-scoped stateful stacks so each job gets its own retained writable copy forked from the project base by default.",
     "Reserve base-mode stacks for intentional seed or snapshot refresh work. Do not let multiple jobs share one writable database volume.",
     "When a task needs a live app review, prefer a preview lease on an isolated runtime instead of telling the operator to bind a raw host port.",
+    "When preview bootstrap is unclear, inspect the workspace bootstrap hints before deciding on image, egress, or install steps.",
     "When a project needs common dev dependencies like Postgres, Redis, MySQL, MSSQL, RabbitMQ, MinIO, Mailpit, or SQLite, prefer the built-in service templates instead of ad hoc install steps.",
+    "Choose an execution mode explicitly before delegating or steering Codex: local Manor branch runtime or live deployed runtime.",
+    "When the operator asks to check out a branch, worktree, or repo and produce proof, default to local Manor branch runtime unless the operator explicitly asks for live, staging, or production verification.",
+    "Do not silently substitute live deployed verification for local branch verification.",
+    "If the needed execution mode changes, start a fresh Codex workstream instead of reusing an older thread with a different strategy.",
+    "For local Manor runtime tasks that involve signup or email flows, prefer built-in local services like Mailpit when the app under test is running inside Manor.",
     "Codex may operate inside attached isolates through manor-harness for inspect, logs, processes, and shell exec, but Butler still owns isolate lifecycle and policy.",
     "When the operator provides reference images, keep track of the stored image references so you can pass them to Codex later and reuse them during verification.",
     "Use the image reference tools whenever visual requirements depend on an uploaded image.",
     "When proof of frontend execution is requested, do not accept artifact existence alone as proof. Run headed verification when needed, inspect the screenshot with the proof review tool, and surface the video download for human review.",
+    "Never reuse or mention a deleted, unknown, or cwd-less Codex thread as if it were a valid workstream.",
     "",
     `Supervisor state: ${supervisor.summary}`,
     projects.length > 0 ? "Project summaries:" : "Project summaries: none yet.",
@@ -961,6 +982,16 @@ export class ButlerAgentService extends EventEmitter {
 
   private async prepareDelegationWorkspace(task: string, cwd?: string): Promise<{ cwd: string; branchName: string | null }> {
     const requestedCwd = cwd ?? "/repos";
+    if (cwd) {
+      const resolvedCwd = await resolveExistingWorkspaceCwd(cwd);
+      if (resolvedCwd && resolvedCwd !== cwd) {
+        return {
+          cwd: resolvedCwd,
+          branchName: null
+        };
+      }
+    }
+
     const worktree = await ensureTaskWorktree({
       cwd: requestedCwd,
       task
@@ -969,6 +1000,60 @@ export class ButlerAgentService extends EventEmitter {
     return {
       cwd: worktree.cwd,
       branchName: worktree.branchName
+    };
+  }
+
+  private async buildDelegationContract(options: {
+    threadId: string;
+    task: string;
+    goal?: string;
+    workspace: { cwd: string; branchName: string | null };
+  }): Promise<{ text: string; contract: CodexThreadExecutionContractView }> {
+    const requestedTask = options.goal ? `${options.task}\n\nGoal: ${options.goal}` : options.task;
+    const project = resolveWorkspaceProjectInfo(options.workspace.cwd);
+    const notes = ["Treat this contract as authoritative over any older worktree or cwd hints in the task text."];
+    const workspaceMentions = extractWorkspaceMentions(requestedTask).filter((entry) => entry !== options.workspace.cwd);
+
+    for (const mention of workspaceMentions) {
+      const resolvedMention = await resolveExistingWorkspaceCwd(mention);
+      const mentionExists = await fs.access(resolvedMention).then(() => true).catch(() => false);
+      if (!mentionExists) {
+        notes.push(`Ignore stale workspace hint ${mention}. Use ${options.workspace.cwd} instead.`);
+        continue;
+      }
+      if (resolvedMention !== mention && resolvedMention === options.workspace.cwd) {
+        notes.push(`The task referenced ${mention}, but the live workspace resolves to ${options.workspace.cwd}.`);
+      }
+    }
+
+    const contract = buildThreadExecutionContract({
+      threadId: options.threadId,
+      workspaceCwd: options.workspace.cwd,
+      projectId: project.id,
+      projectLabel: project.label,
+      branch: options.workspace.branchName,
+      taskText: requestedTask,
+      notes
+    });
+    const lines = [
+      "AUTHORITATIVE JOB CONTRACT",
+      `thread_id: ${options.threadId}`,
+      `workspace_cwd: ${options.workspace.cwd}`,
+      `project_id: ${project.id}`,
+      `project_label: ${project.label}`,
+      `branch: ${options.workspace.branchName ?? "(existing workspace)"}`,
+      `execution_mode: ${contract.executionModeLabel}`,
+      `harness_binding: manor-harness --thread ${options.threadId}`,
+      `preview_lane: ${contract.previewLane === "expected" ? "expected when runtime validation is needed" : "available on demand"}`
+    ];
+
+    for (const note of notes) {
+      lines.push(`note: ${note}`);
+    }
+
+    return {
+      text: `${lines.join("\n")}\n\nREQUESTED TASK\n${requestedTask}`,
+      contract
     };
   }
 
@@ -1306,7 +1391,10 @@ export class ButlerAgentService extends EventEmitter {
       options?.expectedOutcome?.trim() ? `Expected outcome: ${options.expectedOutcome.trim()}` : "",
       `Preview title: ${proof.preview.title}`,
       `Verification mode: ${proof.verification.mode}`,
-      `Verification status: ${proof.verification.status ?? "none"}`
+      `Verification status: ${proof.verification.status ?? "none"}`,
+      `Verification failure kind: ${proof.verification.failureKind}`,
+      `Readiness route ok: ${proof.verification.readiness.routeOk}`,
+      `Readiness login redirect detected: ${proof.verification.readiness.loginRedirectDetected}`
     ]
       .filter(Boolean)
       .join("\n");
@@ -1599,7 +1687,7 @@ export class ButlerAgentService extends EventEmitter {
           egressProfile: Type.Optional(
             Type.String({
               minLength: 1,
-              description: "Use 'none' for no outbound access or a named preview egress profile such as 'web'."
+              description: "Defaults to direct internet access. Use 'none' to block outbound traffic or a named preview egress profile such as 'web' to restrict it."
             })
           ),
           egressDomains: Type.Optional(
@@ -1676,6 +1764,17 @@ export class ButlerAgentService extends EventEmitter {
             throw new Error("start_preview requires a cwd or a stack with a worktree path");
           }
 
+          const workspaceBootstrap = await inspectWorkspaceBootstrap(worktreePath);
+          const previewDefaults = applyWorkspacePreviewDefaults(
+            {
+              image: typedParams.image,
+              egressProfile: typedParams.egressProfile ?? "internet",
+              egressDomains: typedParams.egressDomains,
+              bootstrapHint: typedParams.bootstrapHint
+            },
+            workspaceBootstrap
+          );
+
           const lease = await this.runtimeBroker.createLease({
             leaseId,
             threadId: typedParams.threadId ?? null,
@@ -1688,11 +1787,11 @@ export class ButlerAgentService extends EventEmitter {
             branchName: thread?.cwd === typedParams.cwd ? null : null,
             targetPort: typedParams.port,
             command: typedParams.command,
-            image: typedParams.image,
-            egressProfile: typedParams.egressProfile ?? "none",
-            egressDomains: typedParams.egressDomains ?? [],
+            image: previewDefaults.image,
+            egressProfile: previewDefaults.egressProfile ?? "internet",
+            egressDomains: previewDefaults.egressDomains ?? [],
             bootstrapWaitSeconds: typedParams.bootstrapWaitSeconds,
-            bootstrapHint: typedParams.bootstrapHint,
+            bootstrapHint: previewDefaults.bootstrapHint,
             heartbeatKind: typedParams.heartbeatKind as "none" | "http" | "tcp" | "command" | undefined,
             heartbeatTarget: typedParams.heartbeatTarget,
             heartbeatIntervalSeconds: typedParams.heartbeatIntervalSeconds,
@@ -1704,10 +1803,10 @@ export class ButlerAgentService extends EventEmitter {
             content: [
               {
                 type: "text",
-                text: `Started preview ${lease.title} at ${lease.operatorUrl}. Bootstrap=${lease.bootstrap.phase}${lease.bootstrap.hint ? ` (${lease.bootstrap.hint})` : ""}.`
+                text: `Started preview ${lease.title} at ${lease.operatorUrl}. Bootstrap=${lease.bootstrap.phase}${lease.bootstrap.hint ? ` (${lease.bootstrap.hint})` : ""}.${previewDefaults.autofilled.length > 0 ? ` Auto-filled ${previewDefaults.autofilled.join(", ")} from workspace bootstrap.` : ""}`
               }
             ],
-            details: { lease }
+            details: { lease, workspaceBootstrap, previewDefaults }
           };
         }
       }),
@@ -1765,16 +1864,51 @@ export class ButlerAgentService extends EventEmitter {
           "verify_preview: use this to produce proof artifacts for a preview. Use headful mode when the operator wants frontend proof with video.",
         parameters: Type.Object({
           leaseId: Type.String(),
-          mode: Type.Optional(Type.Union([Type.Literal("headless"), Type.Literal("headful")]))
+          mode: Type.Optional(Type.Union([Type.Literal("headless"), Type.Literal("headful")])),
+          path: Type.Optional(Type.String()),
+          script: Type.Optional(Type.String()),
+          waitForSelector: Type.Optional(Type.String()),
+          postLoadWaitMs: Type.Optional(Type.Number({ minimum: 0 })),
+          headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+          cookies: Type.Optional(Type.Record(Type.String(), Type.String())),
+          sessionCookie: Type.Optional(Type.String())
         }),
         uiEffects: this.toolCatalog.find((tool) => tool.name === "verify_preview")?.uiEffects ?? [],
         execute: async (_toolCallId, params) => {
-          const typedParams = params as { leaseId: string; mode?: "headless" | "headful" };
+          const typedParams = params as {
+            leaseId: string;
+            mode?: "headless" | "headful";
+            path?: string;
+            script?: string;
+            waitForSelector?: string;
+            postLoadWaitMs?: number;
+            headers?: Record<string, string>;
+            cookies?: Record<string, string>;
+            sessionCookie?: string;
+          };
           const preview = this.requireValidatedPreview(typedParams.leaseId, null);
+          const cookieEntries = Object.entries(typedParams.cookies ?? {})
+            .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
+            .map(([name, value]) => [name.trim(), value.trim()] as const)
+            .filter(([name, value]) => name.length > 0 && value.length > 0);
+          const sessionCookie = typeof typedParams.sessionCookie === "string" ? typedParams.sessionCookie.trim() : "";
+          if (sessionCookie) {
+            cookieEntries.push(["better-auth.session_token", sessionCookie]);
+          }
           const verification = decoratePreviewVerification(
             await this.runtimeBroker.verifyLease({
               leaseId: preview.id,
-              mode: typedParams.mode === "headful" ? "headful" : "headless"
+              mode: typedParams.mode === "headful" ? "headful" : "headless",
+              path: typedParams.path?.trim() || undefined,
+              script: typedParams.script?.trim() || undefined,
+              waitForSelector: typedParams.waitForSelector?.trim() || undefined,
+              postLoadWaitMs:
+                typeof typedParams.postLoadWaitMs === "number" && Number.isFinite(typedParams.postLoadWaitMs)
+                  ? Math.max(0, Math.trunc(typedParams.postLoadWaitMs))
+                  : undefined,
+              headers:
+                typedParams.headers && Object.keys(typedParams.headers).length > 0 ? typedParams.headers : undefined,
+              cookies: cookieEntries.length > 0 ? cookieEntries.map(([name, value]) => ({ name, value })) : undefined
             })
           );
           this.store.recordPreviewLeaseVerification(preview.id, verification);
@@ -1793,7 +1927,7 @@ export class ButlerAgentService extends EventEmitter {
                 type: "text",
                 text: verification.ok
                   ? `Verified ${preview.title} in ${verification.mode} mode. ${proofNotes}.`
-                  : `Verification failed for ${preview.title} in ${verification.mode} mode.${verification.status ? ` Status=${verification.status}.` : ""}`
+                  : `Verification failed for ${preview.title} in ${verification.mode} mode. Failure=${verification.failureKind}.${verification.status ? ` Status=${verification.status}.` : ""}`
               }
             ],
             details: {
@@ -1839,6 +1973,7 @@ export class ButlerAgentService extends EventEmitter {
           const proofVerdict = videoRequirementMet ? review.verdict : "incomplete";
           const proofSummary = [
             `Verdict=${proofVerdict}`,
+            `FailureKind=${proof.verification.failureKind}`,
             `Visible=${review.visibleState}`,
             `Evidence=${review.evidence}`,
             `Concern=${videoRequirementMet ? review.concern : "Video proof is missing for human review."}`
@@ -2289,10 +2424,46 @@ export class ButlerAgentService extends EventEmitter {
         execute: async (_toolCallId, params) => {
           const typedParams = params as { threadId: string };
           await this.codexClient.loadThread(typedParams.threadId);
+          const thread = this.store.getThread(typedParams.threadId) ?? null;
+          const workspaceBootstrap = await inspectWorkspaceBootstrap(thread?.cwd);
           return {
-            content: [{ type: "text", text: buildJobDetail(this.store, typedParams.threadId) }],
+            content: [
+              {
+                type: "text",
+                text: [buildJobDetail(this.store, typedParams.threadId), ...formatWorkspaceBootstrapLines(workspaceBootstrap)].join("\n")
+              }
+            ],
             details: {
-              thread: this.store.getThread(typedParams.threadId) ?? null
+              thread,
+              workspaceBootstrap
+            }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "inspect_workspace_bootstrap",
+        label: "Inspect workspace bootstrap",
+        description: "Inspect the current workspace for runtime bootstrap hints such as package manager, install state, and preview egress defaults.",
+        promptSnippet: "inspect_workspace_bootstrap: use this before creating a preview when project setup or dependency bootstrap is unclear.",
+        parameters: Type.Object({
+          cwd: Type.Optional(Type.String()),
+          threadId: Type.Optional(Type.String())
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "inspect_workspace_bootstrap")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as { cwd?: string; threadId?: string };
+          const thread = typedParams.threadId ? this.store.getThread(typedParams.threadId) ?? null : null;
+          const cwd = typedParams.cwd?.trim() || thread?.cwd || "";
+          if (!cwd) {
+            throw new Error("inspect_workspace_bootstrap requires a cwd or threadId");
+          }
+          const workspaceBootstrap = await inspectWorkspaceBootstrap(cwd);
+          return {
+            content: [{ type: "text", text: formatWorkspaceBootstrapLines(workspaceBootstrap).join("\n") }],
+            details: {
+              cwd,
+              thread,
+              workspaceBootstrap
             }
           };
         }
@@ -2402,35 +2573,63 @@ export class ButlerAgentService extends EventEmitter {
             "This thread was started by Butler.",
             "You are the worker inside Manor. Butler is the supervisor and policy owner.",
             "Execute the requested task directly instead of explaining how the operator could do it manually.",
+            "The task prompt includes an AUTHORITATIVE JOB CONTRACT with the assigned thread id, workspace, and harness binding. Follow that contract over any stale worktree or cwd hints elsewhere in the task.",
+            "Treat the contract execution_mode as binding. Do not switch from local Manor branch runtime to a live deployed site unless the operator explicitly asked for live verification.",
             `Work inside ${workspace.cwd} unless the task explicitly requires a deeper subdirectory.`,
             workspace.branchName
               ? `Stay on branch ${workspace.branchName}. Do not switch back to main or share this branch with another task.`
               : "When the task touches git in a repository, create or reuse a dedicated branch whose name starts with butler/.",
-            "If this job needs a preview isolate, a disposable service, or runtime inspection, use the local `manor-harness` command from this workspace.",
-            "Start with `manor-harness status` to see what Manor already attached to this job.",
+            "If this job needs a preview isolate, a disposable service, or runtime inspection, use `manor-harness` with the thread binding from the contract.",
+            "Start with `manor-harness --thread <jobId> status` to see what Manor already attached to this job and to inspect workspace bootstrap hints.",
             "If the work needs multiple cooperating services, create a stack first with `manor-harness stack start`, then attach previews and services to it with `--stack <stackId>` and stable `--alias` names that mirror the app's expected internal hostnames.",
             "When a stack needs recurring databases or object storage, start it with `manor-harness stack start --stateful` so Manor derives a per-job retained storage key, forks from the project base, and sets the default promotion target automatically.",
             "Use `--storage-mode base` only when you are intentionally creating or refreshing the shared base state for that project. Do not share one writable database volume across concurrent jobs.",
             "After validating a job-scoped stateful stack, use `manor-harness stack promote <stackId>` to publish its retained data back to the project base. Only override the target manually when the task explicitly needs a different namespace.",
             "For attached previews and services, use `manor-harness` for inspect, logs, processes, and exec directly against the runtime. Butler still owns start, stop, lifecycle, and policy.",
+            "The shared Codex shell egress is intentionally narrow and will block package-manager bootstrap for many repos. Treat those failures as shared-shell friction, not as proof that Manor preview execution is blocked.",
+            "If package-manager bootstrap, dependency install, or dev startup is needed, prefer a preview and let Manor auto-fill scoped preview defaults from the workspace before declaring the job blocked.",
+            "Once a preview is up, treat it as your primary dev box for that job. Install dependencies there, run long-lived app processes there, inspect logs/processes there, and use it to verify fixes.",
+            "Preview commands start with the job worktree as the working directory. Prefer relative paths there, or use the contract cwd under /repos. Do not assume a /workspace mount exists inside previews.",
+            "If local shell bootstrap fails or you need supervisory guidance, use `manor-harness assist --summary \"<what is stuck>\" --details \"<error and context>\"` before your final blocked report.",
             "When frontend proof is required, run `manor-harness preview verify <preview> --mode headful --json` so the screenshot, video, trace, and manifest bundle is persisted.",
+            "When proof requires actual UI interaction, pass a browser script with `manor-harness preview verify <preview> --script-file <path> --mode headful --json` instead of stopping at a static page.",
+            "When the proof route needs an authenticated session, prefer `manor-harness preview verify <preview> --session-cookie <token> ...` or `--cookie NAME=VALUE ...` instead of building wrapper scripts that call `page.goto()` again.",
+            "If the contract is for local Manor branch runtime and the app has email flows, prefer Mailpit or another built-in local dependency when the app under test is running inside Manor.",
             "After verification, inspect the proof bundle with `manor-harness preview proof <preview> --json` and include the screenshot, video, and manifest links in your report.",
             "Do not treat artifact existence alone as accepted proof. Butler must review the screenshot, and the video is for human review.",
             "Use only the harness actions exposed through `manor-harness`. Do not try to command Butler directly outside those actions.",
             "When you complete meaningful work, record a supervisor report before your final reply with `manor-harness report --status completed --summary \"<concise outcome>\" --details \"<brief oversight note with the key fact, risk, or next step>\"`.",
             "If you are blocked or need operator attention, record it before your reply with `manor-harness report --status blocked --summary \"<what is blocked>\" --details \"<what you need, what failed, or the next recommended action>\"`.",
+            "Do not report runtime verification blocked while a preview path remains untried unless you explain why preview execution itself is blocked.",
             "Supervisor reports should help Butler oversee the job. Keep `summary` short and outcome-first, and use `details` for the extra context Butler should surface without dumping the whole conversation.",
             "Keep the thread focused on the delegated task and report concise progress and outcome."
           ].join("\n");
 
-          const prompt = typedParams.goal ? `${typedParams.task}\n\nGoal: ${typedParams.goal}` : typedParams.task;
           const result = await this.codexClient.startThread({
-            task: prompt,
-            input: this.imageStore.buildCodexInput(prompt, typedParams.imageReferenceIds ?? []),
+            task: typedParams.goal ? `${typedParams.task}\n\nGoal: ${typedParams.goal}` : typedParams.task,
+            input: async (threadId: string) =>
+              this.imageStore.buildCodexInput(
+                (
+                  await this.buildDelegationContract({
+                    threadId,
+                    task: typedParams.task,
+                    goal: typedParams.goal,
+                    workspace
+                  })
+                ).text,
+                typedParams.imageReferenceIds ?? []
+              ),
             cwd: workspace.cwd,
             developerInstructions,
             openWindow: true
           });
+          const delegationContract = await this.buildDelegationContract({
+            threadId: result.threadId,
+            task: typedParams.task,
+            goal: typedParams.goal,
+            workspace
+          });
+          this.store.setThreadExecutionContract(result.threadId, delegationContract.contract);
           const supervision = this.store.noteButlerSteer(result.threadId);
 
           return {
@@ -2496,8 +2695,8 @@ export class ButlerAgentService extends EventEmitter {
       this.defineButlerTool({
         name: "message_job",
         label: "Message job",
-        description: "Privately send a follow-up instruction into one Codex job thread without surfacing the full steering text in Butler chat.",
-        promptSnippet: "message_job: steer a Codex job privately, then summarize the state for the operator.",
+        description: "Privately send a follow-up into one Codex job thread when the execution mode and strategy are still the same.",
+        promptSnippet: "message_job: steer a Codex job privately only when the task stays on the same execution mode and runtime strategy.",
         parameters: Type.Object({
           threadId: Type.String(),
           text: Type.String({ minLength: 1 }),
@@ -2506,12 +2705,32 @@ export class ButlerAgentService extends EventEmitter {
         uiEffects: this.toolCatalog.find((tool) => tool.name === "message_job")?.uiEffects ?? [],
         execute: async (_toolCallId, params) => {
           const typedParams = params as { threadId: string; text: string; imageReferenceIds?: string[] };
+          const thread = this.store.getThread(typedParams.threadId);
+          if (!thread || !thread.cwd || thread.source === "unknown" || thread.turnCount === 0) {
+            throw new Error(
+              `Job ${typedParams.threadId} is not a valid reusable Codex workstream. Start a fresh Codex job with delegate_to_codex instead.`
+            );
+          }
+          const requestedMode = detectExecutionMode(typedParams.text);
+          const currentMode =
+            thread.executionContract?.executionMode ??
+            detectExecutionMode([thread?.supervisor.latestUserPrompt, thread?.supervisor.latestAgentReply].filter(Boolean).join("\n"));
+          if (
+            thread &&
+            requestedMode !== "unspecified" &&
+            currentMode !== "unspecified" &&
+            requestedMode !== currentMode
+          ) {
+            throw new Error(
+              `This follow-up changes execution mode from ${describeExecutionMode(currentMode)} to ${describeExecutionMode(requestedMode)}. Start a fresh Codex job with delegate_to_codex instead of reusing this thread.`
+            );
+          }
           const limitMessage = this.getThreadBudgetLimitMessage(typedParams.threadId);
           if (limitMessage) {
             return {
               content: [{ type: "text", text: limitMessage }],
               details: {
-                thread: this.store.getThread(typedParams.threadId) ?? null,
+                thread: thread ?? null,
                 supervision: this.store.getThreadSupervision(typedParams.threadId)
               }
             };
@@ -2853,16 +3072,23 @@ export class ButlerAgentService extends EventEmitter {
     };
   }
 
-  getSnapshot(): AppSnapshot["butler"] {
+  getLiveSnapshot(): ButlerLiveSnapshot {
+    const visibleMessages = this.getVisibleMessages();
+    const messageCount = visibleMessages.length;
+
+    return {
+      messages: visibleMessages.slice(Math.max(0, messageCount - SNAPSHOT_MESSAGE_TAIL_LIMIT)),
+      messageCount
+    };
+  }
+
+  getShellSnapshot(): AppShellSnapshot["butler"] {
     const codexCompose = this.codexClient.getConnectionState().compose;
     const availableModels = codexCompose.availableModels;
     const availableThinkingLevels = ["low", "medium", "high", "xhigh"] as ButlerThinkingLevel[];
     const currentThinkingLevel = availableThinkingLevels.includes(this.session?.thinkingLevel as ButlerThinkingLevel)
       ? (this.session?.thinkingLevel as ButlerThinkingLevel)
       : "medium";
-    const visibleMessages = this.getVisibleMessages();
-    const messageCount = visibleMessages.length;
-    const messages = visibleMessages.slice(Math.max(0, messageCount - SNAPSHOT_MESSAGE_TAIL_LIMIT));
 
     return {
       ready: this.ready,
@@ -2871,8 +3097,6 @@ export class ButlerAgentService extends EventEmitter {
       sessionId: this.session?.sessionId ?? null,
       model: this.session?.model?.id ?? null,
       auth: this.auth,
-      messages,
-      messageCount,
       tools: this.toolCatalog,
       onboarding: this.onboarding,
       contextUsage: this.getContextUsage(),
@@ -2882,6 +3106,24 @@ export class ButlerAgentService extends EventEmitter {
         supervisor: this.store.getSupervisorSummary(),
         notices: this.noticeMessages
       },
+      lastError: this.lastError,
+      compose: {
+        provider: this.session?.model?.provider ?? null,
+        model: this.session?.model?.id ?? null,
+        thinkingLevel: currentThinkingLevel,
+        availableThinkingLevels,
+        availableModels
+      }
+    };
+  }
+
+  getSnapshot(): AppSnapshot["butler"] {
+    const liveSnapshot = this.getLiveSnapshot();
+    const shellSnapshot = this.getShellSnapshot();
+
+    return {
+      ...shellSnapshot,
+      ...liveSnapshot,
       latestPreviewProofsByThreadId: Object.fromEntries(
         this.store
           .listPreviewProofs()
@@ -2899,14 +3141,6 @@ export class ButlerAgentService extends EventEmitter {
       previews: this.store.listPreviewLeases(),
       serviceTemplates: this.serviceTemplates,
       services: this.store.listServiceLeases(),
-      lastError: this.lastError,
-      compose: {
-        provider: this.session?.model?.provider ?? null,
-        model: this.session?.model?.id ?? null,
-        thinkingLevel: currentThinkingLevel,
-        availableThinkingLevels,
-        availableModels
-      }
     };
   }
 

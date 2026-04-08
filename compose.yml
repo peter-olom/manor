@@ -206,7 +206,7 @@ services:
       RUNTIME_PREVIEW_NETWORK: manor_preview
       RUNTIME_PREVIEW_EGRESS_CONFIG: /opt/manor/config/preview-egress-profiles.json
       RUNTIME_PREVIEW_EGRESS_ADMIN_URL: http://preview-egress:8091
-      RUNTIME_PREVIEW_IMAGE: node:22-bookworm-slim
+      RUNTIME_PREVIEW_IMAGE: node:22-bookworm
       RUNTIME_SERVICE_SHARED_NETWORK: manor_work
       RUNTIME_ROUTE_BASE: /preview
       RUNTIME_OPERATOR_BASE_URL: http://127.0.0.1:${BUTLER_HOST_PORT:-8180}

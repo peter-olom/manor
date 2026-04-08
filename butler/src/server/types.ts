@@ -1,4 +1,19 @@
 export type CodexThreadStatus = "active" | "idle" | "unknown";
+export type CodexExecutionMode = "local-manor-runtime" | "live-remote-runtime" | "unspecified";
+export type CodexPreviewLane = "expected" | "available";
+
+export interface CodexThreadExecutionContractView {
+  threadId: string;
+  workspaceCwd: string | null;
+  projectId: string;
+  projectLabel: string;
+  branch: string | null;
+  executionMode: CodexExecutionMode;
+  executionModeLabel: string;
+  previewLane: CodexPreviewLane;
+  proofRequired: boolean;
+  notes: string[];
+}
 
 export interface CodexEventEntry {
   at: number;
@@ -73,6 +88,16 @@ export type PreviewBootstrapPhase =
 export type PreviewVerificationArtifactKind = "manifest" | "screenshot" | "video" | "trace" | "html" | "other";
 export type PreviewVerificationArtifactAvailability = "available" | "expired" | "missing";
 export type PreviewBrowserMode = "headless" | "headful";
+export type PreviewVerificationFailureKind =
+  | "none"
+  | "preview"
+  | "http"
+  | "auth"
+  | "readiness"
+  | "script"
+  | "artifact"
+  | "unknown";
+export type PreviewVerificationPhaseStatus = "completed" | "failed" | "skipped";
 
 export interface PreviewVerificationArtifactView {
   kind: PreviewVerificationArtifactKind;
@@ -104,6 +129,41 @@ export interface PreviewVerificationSummaryView {
   consoleMessageCount: number;
   pageErrorCount: number;
   failedRequestCount: number;
+  responseErrorCount: number;
+  assetFailureCount: number;
+  phaseCount: number;
+}
+
+export interface PreviewVerificationPhaseView {
+  name: string;
+  label: string;
+  status: PreviewVerificationPhaseStatus;
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  message: string | null;
+}
+
+export interface PreviewVerificationReadinessView {
+  initialUrl: string;
+  finalUrl: string;
+  expectedPath: string | null;
+  selector: string | null;
+  selectorSatisfied: boolean | null;
+  routeStatus: number | null;
+  routeOk: boolean;
+  loginRedirectDetected: boolean;
+  htmlErrorSignals: string[];
+  sameOriginAssetFailureCount: number;
+  websocketFailureCount: number;
+  notes: string[];
+}
+
+export interface PreviewVerificationAuthView {
+  headerCount: number;
+  cookieCount: number;
+  cookieNames: string[];
+  usedSessionCookie: boolean;
 }
 
 export interface PreviewVerificationView {
@@ -116,7 +176,11 @@ export interface PreviewVerificationView {
   title: string;
   url: string;
   error: string | null;
+  failureKind: PreviewVerificationFailureKind;
   summary: PreviewVerificationSummaryView;
+  phases: PreviewVerificationPhaseView[];
+  readiness: PreviewVerificationReadinessView;
+  auth: PreviewVerificationAuthView;
   artifacts: PreviewVerificationArtifactView[];
   consoleMessages: PreviewVerificationConsoleMessageView[];
   pageErrors: string[];
@@ -293,12 +357,36 @@ export interface CodexThreadSummary {
   compaction: CodexCompactionView;
   supervision: CodexSupervisionView;
   supervisor: CodexThreadSupervisorView;
+  executionContract: CodexThreadExecutionContractView | null;
 }
 
 export interface CodexThreadRecord extends CodexThreadSummary {
   turns: CodexTurnRecord[];
   eventLog: CodexEventEntry[];
   milestones: CodexMilestoneEntry[];
+  workerReport: CodexWorkerReportView | null;
+}
+
+export interface CodexItemView {
+  id: string;
+  type: string;
+  status: "started" | "completed";
+  text: string;
+  at: number;
+}
+
+export interface CodexTurnView {
+  id: string;
+  status: string;
+  error: string | null;
+  startedAt: number;
+  completedAt: number | null;
+  items: CodexItemView[];
+}
+
+export interface CodexThreadDetailView extends CodexThreadSummary {
+  turns: CodexTurnView[];
+  eventLog: CodexEventEntry[];
   workerReport: CodexWorkerReportView | null;
 }
 
@@ -466,6 +554,47 @@ export interface AppSnapshot {
   };
 }
 
+export interface AppShellSnapshot {
+  codex: AppSnapshot["codex"] extends infer TCodex
+    ? TCodex extends { openThreads: unknown }
+      ? Omit<TCodex, "openThreads">
+      : never
+    : never;
+  butler: AppSnapshot["butler"] extends infer TButler
+    ? TButler extends {
+        messages: unknown;
+        messageCount: unknown;
+        latestPreviewProofsByThreadId: unknown;
+        stacks: unknown;
+        previews: unknown;
+        serviceTemplates: unknown;
+        services: unknown;
+      }
+      ? Omit<TButler, "messages" | "messageCount" | "latestPreviewProofsByThreadId" | "stacks" | "previews" | "serviceTemplates" | "services">
+      : never
+    : never;
+}
+
+export interface ButlerLiveSnapshot {
+  messages: ButlerMessageView[];
+  messageCount: number;
+}
+
+export interface RuntimeSnapshot {
+  latestPreviewProofsByThreadId: Record<string, PreviewProofRecordView>;
+  stacks: StackLeaseView[];
+  previews: PreviewLeaseView[];
+  serviceTemplates: ServiceTemplateView[];
+  services: ServiceLeaseView[];
+}
+
+export interface AppBootstrapSnapshot {
+  shell: AppShellSnapshot;
+  butlerLive: ButlerLiveSnapshot;
+  runtime: RuntimeSnapshot;
+  openThreads: Record<string, CodexThreadDetailView>;
+}
+
 export interface PersistedUiState {
   windows: ButlerWindow[];
   focusedWindowId: string | null;
@@ -481,4 +610,5 @@ export interface PersistedUiState {
       maxButlerTurns?: number | null;
     }
   >;
+  executionContractsByThreadId?: Record<string, CodexThreadExecutionContractView>;
 }
