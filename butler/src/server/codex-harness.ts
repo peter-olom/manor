@@ -314,6 +314,14 @@ export class CodexHarnessService {
     ];
   }
 
+  private formatRuntimeModel(): string[] {
+    return [
+      "Runtime model: Manor owns preview lifecycle and isolation; you own what runs inside the preview.",
+      "Preview workflow: start a preview, then use exec, logs, processes, inspect, and verify to adapt the app like a normal dev box.",
+      "Keep startup explicit. Do not assume Manor will infer the right install command, shell shape, or health endpoint for the project."
+    ];
+  }
+
   private listThreadProofs(threadId: string) {
     return this.store.listPreviewProofs().filter((proof) => proof.threadId === threadId);
   }
@@ -746,6 +754,7 @@ export class CodexHarnessService {
       `Project: ${project.label}`,
       `Summary: ${thread.supervisor.summary}`,
       ...this.formatExecutionContract(thread),
+      ...this.formatRuntimeModel(),
       stackLines,
       previewLines,
       serviceLines,
@@ -789,6 +798,7 @@ export class CodexHarnessService {
           `Project: ${project.label}`,
           `Summary: ${thread.supervisor.summary}`,
           ...this.formatExecutionContract(thread),
+          ...this.formatRuntimeModel(),
           stacks.length === 0
             ? "Stacks: none"
             : `Stacks:\n${stacks.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | network=${lease.networkName} | ${this.describeStackStorage(lease)} | previews=${lease.previewIds.length} | services=${lease.serviceIds.length}`).join("\n")}`,
@@ -871,6 +881,7 @@ export class CodexHarnessService {
       const responseLines = ["Butler guidance for this job:"];
       responseLines.push(`Thread-bound harness command: manor-harness --thread ${capability.threadId} ...`);
       responseLines.push(...this.formatExecutionContract(thread));
+      responseLines.push(...this.formatRuntimeModel());
       responseLines.push(...formatWorkspaceBootstrapLines(workspaceBootstrap));
       if (workspaceBootstrap?.ecosystem === "node") {
         responseLines.push(
@@ -882,13 +893,14 @@ export class CodexHarnessService {
         responseLines.push(`Use the existing stack ${activeStack.id} for the preview unless you have a reason to split the runtime.`);
       }
       responseLines.push("Previews now default to normal outbound internet access. Use an explicit egress mode only when you need to block or restrict outbound traffic.");
-      responseLines.push("Once a preview is up, treat it like a real dev box: install dependencies, run app processes, inspect logs, and test fixes there.");
+      responseLines.push("Once a preview is up, keep the flow simple: install what the app needs, start the app, inspect logs and processes, then verify.");
       if (previewDefaults.bootstrapHint) {
         responseLines.push(`Preview bootstrap hint: ${previewDefaults.bootstrapHint}.`);
       }
       if (workspaceBootstrap?.suggestedPreview?.suggestedInstallCommand) {
         responseLines.push(`Suggested install step inside the preview: ${workspaceBootstrap.suggestedPreview.suggestedInstallCommand}.`);
       }
+      responseLines.push("Do not hunt for Manor-specific bootstrap magic. If the project needs a command, run that command explicitly inside the preview.");
       responseLines.push("For authenticated headed proof, prefer `manor-harness preview verify <preview> --session-cookie <token>` or `--cookie NAME=VALUE` instead of wrapping a second `page.goto()` inside the browser script.");
       responseLines.push("Do not use `corepack enable` inside the shared shell for this case. Prefer `corepack <manager>` directly inside a preview.");
       responseLines.push("Only report the job blocked after preview-based execution is attempted or after you can explain why preview execution itself is blocked.");

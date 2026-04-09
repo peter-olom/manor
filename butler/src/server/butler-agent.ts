@@ -523,6 +523,7 @@ export class ButlerAgentService extends EventEmitter {
   private readonly codexConfigDir: string;
   private readonly sessionDir: string;
   private readonly noticeStatePath: string;
+  private readonly refreshRuntimeInventory: (() => Promise<void>) | null;
   private modelRegistry: ModelRegistry | null = null;
   private session: AgentSession | null = null;
   private auth: ButlerAuthStatus = { mode: "none", loggedIn: false };
@@ -559,6 +560,7 @@ export class ButlerAgentService extends EventEmitter {
     codexAuthPath: string;
     codexConfigDir: string;
     sessionDir: string;
+    refreshRuntimeInventory?: () => Promise<void>;
   }) {
     super();
     this.store = options.store;
@@ -570,8 +572,22 @@ export class ButlerAgentService extends EventEmitter {
     this.codexAuthPath = options.codexAuthPath;
     this.codexConfigDir = options.codexConfigDir;
     this.sessionDir = options.sessionDir;
+    this.refreshRuntimeInventory = options.refreshRuntimeInventory ?? null;
     this.noticeStatePath = path.join(this.sessionDir, "notices.json");
     this.toolCatalog = this.buildToolCatalog();
+  }
+
+  private async refreshRuntimeInventoryIfAvailable(): Promise<string | null> {
+    if (!this.refreshRuntimeInventory) {
+      return null;
+    }
+
+    try {
+      await this.refreshRuntimeInventory();
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
   }
 
   private async loadNoticeState(): Promise<void> {
@@ -1653,8 +1669,9 @@ export class ButlerAgentService extends EventEmitter {
         parameters: Type.Object({}),
         uiEffects: this.toolCatalog.find((tool) => tool.name === "list_previews")?.uiEffects ?? [],
         execute: async () => {
+          const syncError = await this.refreshRuntimeInventoryIfAvailable();
           const leases = this.store.listPreviewLeases();
-          const text =
+          const summary =
             leases.length === 0
               ? "No preview leases are active."
               : leases
@@ -1663,9 +1680,10 @@ export class ButlerAgentService extends EventEmitter {
                       `${index + 1}. ${lease.title} | thread=${lease.threadId ?? "(none)"} | status=${lease.status}/${lease.bootstrap.phase} | route=${lease.operatorUrl}`
                   )
                   .join("\n");
+          const text = syncError ? `Live runtime sync failed; showing cached state. ${syncError}\n${summary}` : summary;
           return {
             content: [{ type: "text", text }],
-            details: { previews: leases }
+            details: { previews: leases, syncError }
           };
         }
       }),
@@ -2228,8 +2246,9 @@ export class ButlerAgentService extends EventEmitter {
         parameters: Type.Object({}),
         uiEffects: this.toolCatalog.find((tool) => tool.name === "list_services")?.uiEffects ?? [],
         execute: async () => {
+          const syncError = await this.refreshRuntimeInventoryIfAvailable();
           const services = this.store.listServiceLeases();
-          const text =
+          const summary =
             services.length === 0
               ? "No disposable services are active."
               : services
@@ -2238,9 +2257,10 @@ export class ButlerAgentService extends EventEmitter {
                       `${index + 1}. ${service.title} | template=${service.templateId} | status=${service.status} | storage=${service.storageKind}${service.volumeName ? `(${service.volumeName})` : ""} | host=${service.connection.host} | port=${service.connection.port} | uri=${service.connection.uri ?? "(none)"}`
                   )
                   .join("\n");
+          const text = syncError ? `Live runtime sync failed; showing cached state. ${syncError}\n${summary}` : summary;
           return {
             content: [{ type: "text", text }],
-            details: { services }
+            details: { services, syncError }
           };
         }
       }),
@@ -2581,6 +2601,9 @@ export class ButlerAgentService extends EventEmitter {
               : "When the task touches git in a repository, create or reuse a dedicated branch whose name starts with butler/.",
             "If this job needs a preview isolate, a disposable service, or runtime inspection, use `manor-harness` with the thread binding from the contract.",
             "Start with `manor-harness --thread <jobId> status` to see what Manor already attached to this job and to inspect workspace bootstrap hints.",
+            "Use the universal Manor runtime model: Butler owns policy, the broker owns lifecycle, and a preview is your plain dev box.",
+            "Keep the flow simple: start a preview, then use `manor-harness preview exec`, `logs`, `processes`, `inspect`, and `verify` to adapt the project.",
+            "Do not wait for Manor to infer project-specific bootstrap details. If the app needs an install command, env setup, or a custom start command, run those explicitly inside the preview.",
             "If the work needs multiple cooperating services, create a stack first with `manor-harness stack start`, then attach previews and services to it with `--stack <stackId>` and stable `--alias` names that mirror the app's expected internal hostnames.",
             "When a stack needs recurring databases or object storage, start it with `manor-harness stack start --stateful` so Manor derives a per-job retained storage key, forks from the project base, and sets the default promotion target automatically.",
             "Use `--storage-mode base` only when you are intentionally creating or refreshing the shared base state for that project. Do not share one writable database volume across concurrent jobs.",
@@ -2589,6 +2612,7 @@ export class ButlerAgentService extends EventEmitter {
             "The shared Codex shell egress is intentionally narrow and will block package-manager bootstrap for many repos. Treat those failures as shared-shell friction, not as proof that Manor preview execution is blocked.",
             "If package-manager bootstrap, dependency install, or dev startup is needed, prefer a preview and let Manor auto-fill scoped preview defaults from the workspace before declaring the job blocked.",
             "Once a preview is up, treat it as your primary dev box for that job. Install dependencies there, run long-lived app processes there, inspect logs/processes there, and use it to verify fixes.",
+            "Prefer explicit, boring commands over wrappers or project-specific Manor tricks. The goal is stable runtime control, not clever bootstrap.",
             "Preview commands start with the job worktree as the working directory. Prefer relative paths there, or use the contract cwd under /repos. Do not assume a /workspace mount exists inside previews.",
             "If local shell bootstrap fails or you need supervisory guidance, use `manor-harness assist --summary \"<what is stuck>\" --details \"<error and context>\"` before your final blocked report.",
             "When frontend proof is required, run `manor-harness preview verify <preview> --mode headful --json` so the screenshot, video, trace, and manifest bundle is persisted.",

@@ -82,7 +82,8 @@ const butlerAgent = new ButlerAgentService({
   codexAuthPath: path.join(codexHomeDir, "auth.json"),
   codexConfigDir,
   sessionDir,
-  imageStore
+  imageStore,
+  refreshRuntimeInventory: syncRuntimeInventory
 });
 
 await fs.mkdir(stateDir, { recursive: true });
@@ -419,7 +420,13 @@ app.get("/api/shell", (_request, response) => {
   response.json(currentShellSnapshot());
 });
 
-app.get("/api/runtime", (_request, response) => {
+app.get("/api/runtime", async (_request, response) => {
+  try {
+    await syncRuntimeInventory();
+  } catch (error) {
+    console.error("Runtime inventory sync failed", error);
+  }
+
   response.json(currentRuntimeSnapshot());
 });
 
@@ -1257,6 +1264,26 @@ let artifactSweepInFlight = false;
 let previewReconcileInFlight = false;
 let serviceReconcileInFlight = false;
 let stackReconcileInFlight = false;
+let runtimeInventorySyncInFlight: Promise<void> | null = null;
+
+async function syncRuntimeInventory(): Promise<void> {
+  if (runtimeInventorySyncInFlight) {
+    await runtimeInventorySyncInFlight;
+    return;
+  }
+
+  runtimeInventorySyncInFlight = (async () => {
+    await reconcileStackLeases();
+    await reconcilePreviewLeases();
+    await reconcileServiceLeases();
+  })();
+
+  try {
+    await runtimeInventorySyncInFlight;
+  } finally {
+    runtimeInventorySyncInFlight = null;
+  }
+}
 
 async function sweepExpiredLeases(): Promise<void> {
   if (leaseSweepInFlight) {
@@ -1264,9 +1291,11 @@ async function sweepExpiredLeases(): Promise<void> {
   }
 
   leaseSweepInFlight = true;
-  const expired = store.listExpiredLeaseIds();
 
   try {
+    await syncRuntimeInventory();
+    const expired = store.listExpiredLeaseIds();
+
     for (const stackId of expired.stacks) {
       try {
         const stack = store.getStackLease(stackId);
@@ -1477,14 +1506,14 @@ async function reconcileServiceLeases(): Promise<void> {
 }
 
 const runtimeReconciler = setInterval(() => {
-  void reconcileStackLeases();
-  void reconcilePreviewLeases();
-  void reconcileServiceLeases();
+  void syncRuntimeInventory().catch((error) => {
+    console.error("Runtime reconcile failed", error);
+  });
 }, 5_000);
 
-void reconcileStackLeases();
-void reconcilePreviewLeases();
-void reconcileServiceLeases();
+void syncRuntimeInventory().catch((error) => {
+  console.error("Initial runtime reconcile failed", error);
+});
 
 if (viteDevServer) {
   app.use(viteDevServer.middlewares);

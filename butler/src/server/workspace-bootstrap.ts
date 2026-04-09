@@ -325,7 +325,7 @@ export async function inspectWorkspaceBootstrap(cwd: string | null | undefined):
     notes.push(`${managerDescription} will need to be bootstrapped before the app command can run.`);
   }
   if (installState === "missing" || needsPackageManagerDownload) {
-    notes.push("Treat a preview as the main dev box for dependency bootstrap, app startup, and runtime checks.");
+    notes.push("Use a preview as the main dev box for install, startup, logs, and verification.");
   }
 
   const bootstrapHint =
@@ -374,6 +374,9 @@ export function formatWorkspaceBootstrapLines(bootstrap: WorkspaceBootstrapView 
       "outbound=direct internet"
     ].filter(Boolean);
     lines.push(`Preview hints: ${previewBits.join(" | ")}`);
+    if (suggestedPreview.suggestedInstallCommand) {
+      lines.push(`Suggested install step: ${suggestedPreview.suggestedInstallCommand}`);
+    }
   }
 
   for (const note of bootstrap.notes) {

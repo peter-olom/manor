@@ -27,6 +27,7 @@ Preview defaults:
   heartbeat-kind=http
   heartbeat-target=/
   preview commands start in the job worktree; prefer relative paths there or the contract cwd under /repos
+  preview lifecycle is broker-managed; install, start, and debug the app explicitly with preview exec/logs/processes
   manor-harness preview inspect <previewSelector>
   manor-harness preview proof <previewSelector> [--run-id <id>]
   manor-harness preview processes <previewSelector>
