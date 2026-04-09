@@ -77,6 +77,14 @@ type SupervisionSmokePlan = {
   followUpsSent: number;
 };
 
+type PendingChatCallback = {
+  threadId: string;
+  requestedAt: number;
+  lastCheckedAt?: number;
+  lastObservedThreadStatus?: string | null;
+  callbackState?: "waiting" | "missing_worker_callback";
+};
+
 function contentToText(content: unknown): string {
   if (typeof content === "string") {
     return content;
@@ -385,12 +393,24 @@ function extractLatestNoticeTexts(thread: ReturnType<ButlerStateStore["getThread
   return { latestUserPrompt, latestAgentReply };
 }
 
+function requiresOperatorAcknowledgement(contract: CodexThreadExecutionContractView | null | undefined): boolean {
+  return Boolean(contract?.operatorAcknowledgementRequired);
+}
+
+function requiresOperatorCallback(contract: CodexThreadExecutionContractView | null | undefined): boolean {
+  return Boolean(contract?.operatorCallbackRequired);
+}
+
 function buildMilestoneNoticeText(
   store: ButlerStateStore,
   milestone: { type: "completed" | "blocked"; threadId: string; turnId: string; summary: string }
 ): string | null {
   const thread = store.getThread(milestone.threadId);
   if (!thread) {
+    return null;
+  }
+
+  if (requiresOperatorCallback(thread.executionContract)) {
     return null;
   }
 
@@ -405,7 +425,7 @@ function buildMilestoneNoticeText(
   return null;
 }
 
-function buildSystemPrompt(store: ButlerStateStore): string {
+function buildSystemPrompt(store: ButlerStateStore, callbackSummary: string): string {
   const supervisor = store.getSupervisorSummary();
   const projects = store.listProjectSummaries().slice(0, 8);
 
@@ -416,6 +436,7 @@ function buildSystemPrompt(store: ButlerStateStore): string {
     "Do not expose private Butler-to-Codex steering verbatim in the Butler chat.",
     "If the operator asks for real execution, project setup, repository cloning, coding work, or shell work, delegate it to Codex instead of replying with manual shell instructions.",
     "When Codex work changes state, summarize the outcome rather than replaying the full back-and-forth.",
+    "If a delegated thread contract requires operator acknowledgement or operator callback, treat those as binding obligations in the main Butler chat.",
     "Each supervised Codex thread has a Butler steering budget. Default to 20 Butler-driven turns per thread unless that thread is explicitly overridden.",
     "When work touches git in a repo, enforce a dedicated branch whose name starts with butler/.",
     "Do not run two parallel Codex workstreams on the same repo branch.",
@@ -439,6 +460,7 @@ function buildSystemPrompt(store: ButlerStateStore): string {
     "Never reuse or mention a deleted, unknown, or cwd-less Codex thread as if it were a valid workstream.",
     "",
     `Supervisor state: ${supervisor.summary}`,
+    callbackSummary,
     projects.length > 0 ? "Project summaries:" : "Project summaries: none yet.",
     ...projects.map((project) => `- ${project.label}: ${project.summary}`)
   ].join("\n");
@@ -517,6 +539,41 @@ function mergeVisibleMessages(sessionMessages: ButlerMessageView[], notices: But
   });
 }
 
+function collapseCallbackDuplicateMessages(messages: ButlerMessageView[]): ButlerMessageView[] {
+  const collapsed: ButlerMessageView[] = [];
+  let delegationAcknowledged = false;
+  let callbackDelivered = false;
+
+  for (const message of messages) {
+    if (message.role === "user" || message.role === "user-with-attachments") {
+      delegationAcknowledged = false;
+      callbackDelivered = false;
+      collapsed.push(message);
+      continue;
+    }
+
+    if (message.id.startsWith("delegation-ack-")) {
+      delegationAcknowledged = true;
+      collapsed.push(message);
+      continue;
+    }
+
+    if (message.id.startsWith("callback-") || message.id.startsWith("callback-fallback-")) {
+      callbackDelivered = true;
+      collapsed.push(message);
+      continue;
+    }
+
+    if ((delegationAcknowledged || callbackDelivered) && message.kind === "message" && message.role === "assistant") {
+      continue;
+    }
+
+    collapsed.push(message);
+  }
+
+  return collapsed;
+}
+
 const SNAPSHOT_MESSAGE_TAIL_LIMIT = 200;
 const MAX_HISTORY_PAGE_SIZE = 1000;
 
@@ -531,6 +588,7 @@ export class ButlerAgentService extends EventEmitter {
   private readonly codexConfigDir: string;
   private readonly sessionDir: string;
   private readonly noticeStatePath: string;
+  private readonly callbackStatePath: string;
   private readonly refreshRuntimeInventory: (() => Promise<void>) | null;
   private modelRegistry: ModelRegistry | null = null;
   private session: AgentSession | null = null;
@@ -546,8 +604,11 @@ export class ButlerAgentService extends EventEmitter {
   private readonly toolCatalog: ButlerToolView[];
   private unsubscribeSession: (() => void) | null = null;
   private statusRefreshTimer: NodeJS.Timeout | null = null;
+  private readonly operatorMessages: ButlerMessageView[] = [];
   private readonly noticeMessages: ButlerMessageView[] = [];
   private readonly seenMilestoneIds = new Set<string>();
+  private readonly pendingChatCallbacks = new Map<string, PendingChatCallback>();
+  private readonly deliveredCallbackMilestoneIds = new Set<string>();
   private readonly supervisionSmokePlans = new Map<string, SupervisionSmokePlan>();
   private readonly actedSmokeMilestoneIds = new Set<string>();
   private smokeReactionInFlight = false;
@@ -586,6 +647,7 @@ export class ButlerAgentService extends EventEmitter {
     this.sessionDir = options.sessionDir;
     this.refreshRuntimeInventory = options.refreshRuntimeInventory ?? null;
     this.noticeStatePath = path.join(this.sessionDir, "notices.json");
+    this.callbackStatePath = path.join(this.sessionDir, "chat-callbacks.json");
     this.toolCatalog = this.buildToolCatalog();
   }
 
@@ -610,6 +672,7 @@ export class ButlerAgentService extends EventEmitter {
         return;
       }
 
+      this.operatorMessages.splice(0, this.operatorMessages.length);
       this.noticeMessages.splice(0, this.noticeMessages.length);
       for (const item of parsed) {
         if (!item || typeof item !== "object") {
@@ -620,18 +683,26 @@ export class ButlerAgentService extends EventEmitter {
         const role = typeof item.role === "string" ? item.role : null;
         const text = typeof item.text === "string" ? item.text : null;
         const at = typeof item.at === "number" && Number.isFinite(item.at) ? item.at : null;
-        const kind = item.kind === "notice" ? "notice" : null;
+        const kind = item.kind === "notice" || item.kind === "message" ? item.kind : null;
 
         if (!id || !role || !text || !kind) {
           continue;
         }
 
-        this.noticeMessages.push({ id, role, text, at, kind });
+        if (kind === "message") {
+          this.operatorMessages.push({ id, role, text, at, kind });
+        } else {
+          this.noticeMessages.push({ id, role, text, at, kind });
+        }
         if (id.startsWith("notice-")) {
           this.seenMilestoneIds.add(id.slice("notice-".length));
         }
       }
 
+      this.operatorMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
+      if (this.operatorMessages.length > 40) {
+        this.operatorMessages.splice(0, this.operatorMessages.length - 40);
+      }
       this.noticeMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
       if (this.noticeMessages.length > 40) {
         this.noticeMessages.splice(0, this.noticeMessages.length - 40);
@@ -643,77 +714,342 @@ export class ButlerAgentService extends EventEmitter {
     }
   }
 
-  private async saveNoticeState(): Promise<void> {
-    await fs.writeFile(this.noticeStatePath, JSON.stringify(this.noticeMessages, null, 2), "utf8");
+  private async loadCallbackState(): Promise<void> {
+    try {
+      const raw = await fs.readFile(this.callbackStatePath, "utf8");
+      const parsed = JSON.parse(raw) as {
+        pendingCallbacks?: PendingChatCallback[];
+        deliveredMilestoneIds?: string[];
+      };
+
+      this.pendingChatCallbacks.clear();
+      for (const entry of parsed.pendingCallbacks ?? []) {
+        if (!entry || typeof entry !== "object" || typeof entry.threadId !== "string") {
+          continue;
+        }
+        this.pendingChatCallbacks.set(entry.threadId, {
+          threadId: entry.threadId,
+          requestedAt: typeof entry.requestedAt === "number" && Number.isFinite(entry.requestedAt) ? entry.requestedAt : Date.now(),
+          lastCheckedAt: typeof entry.lastCheckedAt === "number" && Number.isFinite(entry.lastCheckedAt) ? entry.lastCheckedAt : undefined,
+          lastObservedThreadStatus: typeof entry.lastObservedThreadStatus === "string" ? entry.lastObservedThreadStatus : null,
+          callbackState:
+            entry.callbackState === "missing_worker_callback" || entry.callbackState === "waiting" ? entry.callbackState : "waiting"
+        });
+      }
+
+      this.deliveredCallbackMilestoneIds.clear();
+      for (const milestoneId of parsed.deliveredMilestoneIds ?? []) {
+        if (typeof milestoneId === "string" && milestoneId.trim()) {
+          this.deliveredCallbackMilestoneIds.add(milestoneId);
+        }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
   }
 
-  private handleStoreChange(): void {
-    let changed = false;
+  private async saveNoticeState(): Promise<void> {
+    await fs.writeFile(this.noticeStatePath, JSON.stringify([...this.operatorMessages, ...this.noticeMessages], null, 2), "utf8");
+  }
 
-    for (const milestone of this.store.listMilestones()) {
-      if (milestone.type !== "completed" && milestone.type !== "blocked") {
-        continue;
-      }
+  private async saveCallbackState(): Promise<void> {
+    await fs.writeFile(
+      this.callbackStatePath,
+      JSON.stringify(
+        {
+          pendingCallbacks: [...this.pendingChatCallbacks.values()],
+          deliveredMilestoneIds: [...this.deliveredCallbackMilestoneIds]
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+  }
 
-      const noticeMilestone = milestone as typeof milestone & { type: "completed" | "blocked" };
-      const noticeId = `notice-${milestone.id}`;
-      const nextText = buildMilestoneNoticeText(this.store, noticeMilestone);
-      const existingNotice = this.noticeMessages.find((entry) => entry.id === noticeId);
+  private registerPendingChatCallback(threadId: string): void {
+    this.pendingChatCallbacks.set(threadId, {
+      threadId,
+      requestedAt: Date.now(),
+      callbackState: "waiting"
+    });
+    void this.saveCallbackState();
+  }
 
-      if (!nextText) {
-        if (existingNotice) {
-          const index = this.noticeMessages.findIndex((entry) => entry.id === noticeId);
-          if (index >= 0) {
-            this.noticeMessages.splice(index, 1);
-          }
-          changed = true;
-        }
-        continue;
-      }
-
-      if (this.seenMilestoneIds.has(milestone.id)) {
-        if (existingNotice && existingNotice.text !== nextText) {
-          existingNotice.text = nextText;
-          changed = true;
-        } else if (!existingNotice) {
-          this.noticeMessages.push({
-            id: noticeId,
-            role: "assistant",
-            text: nextText,
-            at: milestone.at,
-            kind: "notice" as const
-          });
-          changed = true;
-        }
-        continue;
-      }
-
-      this.seenMilestoneIds.add(milestone.id);
-      this.noticeMessages.push({
+  private queueDelegationAcknowledgement(threadId: string, text: string): void {
+    const at = Date.now();
+    const noticeId = `delegation-ack-${threadId}`;
+    const existingNotice = this.operatorMessages.find((entry) => entry.id === noticeId);
+    if (existingNotice) {
+      existingNotice.text = text;
+      existingNotice.at = at;
+    } else {
+      this.operatorMessages.push({
         id: noticeId,
         role: "assistant",
-        text: nextText,
-        at: milestone.at,
-        kind: "notice" as const
+        text,
+        at,
+        kind: "message"
       });
+    }
+    this.operatorMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
+    if (this.operatorMessages.length > 40) {
+      this.operatorMessages.splice(0, this.operatorMessages.length - 40);
+    }
+    void this.saveNoticeState();
+    this.emit("change");
+  }
+
+  private buildChatCallbackText(
+    milestone: { type: "completed" | "blocked"; threadId: string; turnId: string; summary: string },
+    thread: ReturnType<ButlerStateStore["getThread"]>,
+    workerReport: ReturnType<ButlerStateStore["getWorkerReport"]>
+  ): string | null {
+    if (!thread || !workerReport) {
+      return null;
+    }
+
+    const lead =
+      milestone.type === "completed"
+        ? `Update on ${thread.supervisor.projectLabel}.`
+        : `${thread.supervisor.projectLabel} needs attention.`;
+    return [lead, workerReport.summary, workerReport.details].filter(Boolean).join("\n\n");
+  }
+
+  private buildFallbackChatCallbackText(thread: ReturnType<ButlerStateStore["getThread"]>): string | null {
+    if (!thread || thread.status !== "idle") {
+      return null;
+    }
+
+    const latestReply = thread.supervisor.latestAgentReply?.trim();
+    if (!latestReply) {
+      return null;
+    }
+
+    return [
+      `Update on ${thread.supervisor.projectLabel}.`,
+      "I never got feedback from the worker, so I checked the thread directly.",
+      latestReply
+    ].join("\n\n");
+  }
+
+  private describePendingCallbacks(): string {
+    if (this.pendingChatCallbacks.size === 0) {
+      return "Delegated callback state: none pending.";
+    }
+
+    const lines = [...this.pendingChatCallbacks.values()]
+      .map((callback) => {
+        const thread = this.store.getThread(callback.threadId);
+        const projectLabel = thread?.supervisor.projectLabel ?? "unknown";
+        const status = callback.lastObservedThreadStatus ?? thread?.status ?? "unknown";
+        if (callback.callbackState === "missing_worker_callback") {
+          return `- job ${callback.threadId} on ${projectLabel}: no worker callback received; latest known thread status is ${status}. If asked, say you never got feedback from the worker and that you are checking the thread directly.`;
+        }
+        return `- job ${callback.threadId} on ${projectLabel}: waiting on worker callback; latest known thread status is ${status}.`;
+      })
+      .join("\n");
+
+    return ["Delegated callback state:", lines].join("\n");
+  }
+
+  private async reconcilePendingChatCallbacks(): Promise<void> {
+    if (this.pendingChatCallbacks.size === 0) {
+      return;
+    }
+
+    let changed = false;
+    for (const callback of this.pendingChatCallbacks.values()) {
+      callback.lastCheckedAt = Date.now();
+      try {
+        await this.codexClient.loadThread(callback.threadId);
+      } catch {
+        callback.lastObservedThreadStatus = "unknown";
+        changed = true;
+        continue;
+      }
+
+      const thread = this.store.getThread(callback.threadId);
+      const workerReport = this.store.getWorkerReport(callback.threadId);
+      const nextStatus = thread?.status ?? "unknown";
+      const nextCallbackState =
+        workerReport || nextStatus !== "idle" || !(thread?.supervisor.latestAgentReply?.trim()) ? "waiting" : "missing_worker_callback";
+
+      if (callback.lastObservedThreadStatus !== nextStatus || callback.callbackState !== nextCallbackState) {
+        callback.lastObservedThreadStatus = nextStatus;
+        callback.callbackState = nextCallbackState;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      await this.saveCallbackState();
+    }
+
+    await this.processPendingChatCallbacks();
+  }
+
+  private async processPendingChatCallbacks(): Promise<boolean> {
+    if (this.pendingChatCallbacks.size === 0) {
+      return false;
+    }
+
+    let changed = false;
+    const milestones = [...this.store.listMilestones()]
+      .filter((milestone) => (milestone.type === "completed" || milestone.type === "blocked") && this.pendingChatCallbacks.has(milestone.threadId))
+      .sort((left, right) => left.at - right.at);
+
+    for (const milestone of milestones) {
+      if (this.deliveredCallbackMilestoneIds.has(milestone.id)) {
+        continue;
+      }
+
+      const callbackMilestone = milestone as typeof milestone & { type: "completed" | "blocked" };
+      const thread = this.store.getThread(milestone.threadId);
+      const workerReport = this.store.getWorkerReport(milestone.threadId, milestone.turnId);
+      if (!thread || !workerReport || workerReport.status !== callbackMilestone.type) {
+        continue;
+      }
+
+      const text = this.buildChatCallbackText(callbackMilestone, thread, workerReport);
+      if (!text) {
+        continue;
+      }
+
+      this.operatorMessages.push({
+        id: `callback-${milestone.id}`,
+        role: "assistant",
+        text,
+        at: milestone.at,
+        kind: "message"
+      });
+      this.pendingChatCallbacks.delete(milestone.threadId);
+      this.deliveredCallbackMilestoneIds.add(milestone.id);
+      this.seenMilestoneIds.add(milestone.id);
+      changed = true;
+    }
+
+    for (const callback of [...this.pendingChatCallbacks.values()]) {
+      const thread = this.store.getThread(callback.threadId);
+      if (!thread) {
+        continue;
+      }
+
+      const workerReport = this.store.getWorkerReport(callback.threadId);
+      if (workerReport) {
+        continue;
+      }
+
+      const text = this.buildFallbackChatCallbackText(thread);
+      if (!text) {
+        continue;
+      }
+
+      this.operatorMessages.push({
+        id: `callback-fallback-${callback.threadId}`,
+        role: "assistant",
+        text,
+        at: thread.updatedAt,
+        kind: "message"
+      });
+      this.pendingChatCallbacks.delete(callback.threadId);
       changed = true;
     }
 
     if (changed) {
-      this.noticeMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
-      if (this.noticeMessages.length > 40) {
-        this.noticeMessages.splice(0, this.noticeMessages.length - 40);
+      this.operatorMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
+      if (this.operatorMessages.length > 40) {
+        this.operatorMessages.splice(0, this.operatorMessages.length - 40);
       }
-      void this.saveNoticeState();
+      await this.saveNoticeState();
+      await this.saveCallbackState();
       this.emit("change");
     }
 
-    this.scheduleSmokeTestReactions();
+    return changed;
+  }
+
+  private handleStoreChange(): void {
+    void (async () => {
+      let changed = false;
+
+      await this.processPendingChatCallbacks();
+
+      for (const milestone of this.store.listMilestones()) {
+        if (milestone.type !== "completed" && milestone.type !== "blocked") {
+          continue;
+        }
+
+        if (this.deliveredCallbackMilestoneIds.has(milestone.id)) {
+          continue;
+        }
+
+        const noticeMilestone = milestone as typeof milestone & { type: "completed" | "blocked" };
+        const noticeId = `notice-${milestone.id}`;
+        const nextText = buildMilestoneNoticeText(this.store, noticeMilestone);
+        const existingNotice = this.noticeMessages.find((entry) => entry.id === noticeId);
+
+        if (!nextText) {
+          if (existingNotice) {
+            const index = this.noticeMessages.findIndex((entry) => entry.id === noticeId);
+            if (index >= 0) {
+              this.noticeMessages.splice(index, 1);
+            }
+            changed = true;
+          }
+          continue;
+        }
+
+        if (this.seenMilestoneIds.has(milestone.id)) {
+          if (existingNotice && existingNotice.text !== nextText) {
+            existingNotice.text = nextText;
+            changed = true;
+          } else if (!existingNotice) {
+            this.noticeMessages.push({
+              id: noticeId,
+              role: "assistant",
+              text: nextText,
+              at: milestone.at,
+              kind: "notice" as const
+            });
+            changed = true;
+          }
+          continue;
+        }
+
+        this.seenMilestoneIds.add(milestone.id);
+        this.noticeMessages.push({
+          id: noticeId,
+          role: "assistant",
+          text: nextText,
+          at: milestone.at,
+          kind: "notice" as const
+        });
+        changed = true;
+      }
+
+      if (changed) {
+        this.noticeMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
+        if (this.noticeMessages.length > 40) {
+          this.noticeMessages.splice(0, this.noticeMessages.length - 40);
+        }
+        await this.saveNoticeState();
+        this.emit("change");
+      }
+
+      this.scheduleSmokeTestReactions();
+    })().catch((error) => {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.emit("change");
+    });
   }
 
   async start(): Promise<void> {
     await fs.mkdir(this.sessionDir, { recursive: true });
     await this.loadNoticeState();
+    await this.loadCallbackState();
     this.auth = await readButlerAuthStatus(this.piAuthPath);
     this.modelRegistry = ModelRegistry.inMemory(AuthStorage.create(this.piAuthPath));
     await this.createOrRefreshSession();
@@ -748,6 +1084,8 @@ export class ButlerAgentService extends EventEmitter {
       this.onboarding = nextOnboarding;
       this.emit("change");
     }
+
+    await this.reconcilePendingChatCallbacks();
   }
 
   // This is the single discoverable registry for Butler actions and their UI
@@ -1211,6 +1549,8 @@ export class ButlerAgentService extends EventEmitter {
     workspace: { cwd: string; branchName: string | null };
     previewLane?: "expected" | "available";
     proofRequired?: boolean;
+    operatorAcknowledgementRequired?: boolean;
+    operatorCallbackRequired?: boolean;
     extraNotes?: string[];
   }): Promise<{ text: string; contract: CodexThreadExecutionContractView }> {
     const requestedTask = options.goal ? `${options.task}\n\nGoal: ${options.goal}` : options.task;
@@ -1247,6 +1587,8 @@ export class ButlerAgentService extends EventEmitter {
       ...baseContract,
       previewLane: options.previewLane ?? baseContract.previewLane,
       proofRequired: options.proofRequired ?? baseContract.proofRequired,
+      operatorAcknowledgementRequired: options.operatorAcknowledgementRequired ?? baseContract.operatorAcknowledgementRequired,
+      operatorCallbackRequired: options.operatorCallbackRequired ?? baseContract.operatorCallbackRequired,
       notes: [...new Set(notes.map((note) => note.trim()).filter(Boolean))]
     };
     const lines = [
@@ -1259,7 +1601,9 @@ export class ButlerAgentService extends EventEmitter {
       `execution_mode: ${contract.executionModeLabel}`,
       `harness_binding: manor-harness --thread ${options.threadId}`,
       `preview_lane: ${contract.previewLane === "expected" ? "expected when runtime validation is needed" : "available on demand"}`,
-      `proof_required: ${contract.proofRequired ? "yes" : "no"}`
+      `proof_required: ${contract.proofRequired ? "yes" : "no"}`,
+      `operator_acknowledgement: ${contract.operatorAcknowledgementRequired ? "required" : "optional"}`,
+      `operator_callback: ${contract.operatorCallbackRequired ? "required" : "optional"}`
     ];
 
     for (const note of notes) {
@@ -1851,16 +2195,17 @@ export class ButlerAgentService extends EventEmitter {
         uiEffects: this.toolCatalog.find((tool) => tool.name === "stop_stack")?.uiEffects ?? [],
         execute: async (_toolCallId, params) => {
           const typedParams = params as { stackId: string; dropVolumes?: boolean };
-          await this.runtimeBroker.stopStack(typedParams.stackId, { dropVolumes: Boolean(typedParams.dropVolumes) });
+          const dropVolumes = typedParams.dropVolumes !== false;
+          await this.runtimeBroker.stopStack(typedParams.stackId, { dropVolumes });
           this.removeStackArtifacts(typedParams.stackId);
           return {
             content: [
               {
                 type: "text",
-                text: `Stopped stack ${typedParams.stackId}.${typedParams.dropVolumes ? " Dropped retained volumes." : ""}`
+                text: `Stopped stack ${typedParams.stackId}.${dropVolumes ? " Dropped retained volumes." : ""}`
               }
             ],
-            details: { stackId: typedParams.stackId, dropVolumes: Boolean(typedParams.dropVolumes) }
+            details: { stackId: typedParams.stackId, dropVolumes }
           };
         }
       }),
@@ -2889,9 +3234,14 @@ export class ButlerAgentService extends EventEmitter {
             ? {
                 previewLane: "available" as const,
                 proofRequired: false,
+                operatorAcknowledgementRequired: true,
+                operatorCallbackRequired: false,
                 extraNotes: ["Synthetic Butler supervision smoke test. Do not require browser proof to complete or report it."]
               }
-            : undefined;
+            : {
+                operatorAcknowledgementRequired: true,
+                operatorCallbackRequired: true
+              };
 
           const result = await this.codexClient.startThread({
             task: delegatedGoal ? `${delegatedTask}\n\nGoal: ${delegatedGoal}` : delegatedTask,
@@ -2905,6 +3255,8 @@ export class ButlerAgentService extends EventEmitter {
                     workspace,
                     previewLane: contractOptions?.previewLane,
                     proofRequired: contractOptions?.proofRequired,
+                    operatorAcknowledgementRequired: contractOptions?.operatorAcknowledgementRequired,
+                    operatorCallbackRequired: contractOptions?.operatorCallbackRequired,
                     extraNotes: contractOptions?.extraNotes
                   })
                 ).text,
@@ -2921,9 +3273,19 @@ export class ButlerAgentService extends EventEmitter {
             workspace,
             previewLane: contractOptions?.previewLane,
             proofRequired: contractOptions?.proofRequired,
+            operatorAcknowledgementRequired: contractOptions?.operatorAcknowledgementRequired,
+            operatorCallbackRequired: contractOptions?.operatorCallbackRequired,
             extraNotes: contractOptions?.extraNotes
           });
           this.store.setThreadExecutionContract(result.threadId, delegationContract.contract);
+          if (requiresOperatorAcknowledgement(delegationContract.contract)) {
+            this.queueDelegationAcknowledgement(
+              result.threadId,
+              smokeRequest
+                ? `Started supervision smoke test in job ${result.threadId}. Butler will privately steer ${smokeRequest.totalFollowUps} follow-up turns.`
+                : `Accepted. I delegated this to Codex in job ${result.threadId} and will return here with the result.`
+            );
+          }
           if (smokeRequest) {
             this.store.setThreadSupervisionLimit(result.threadId, smokeRequest.totalFollowUps + 2);
             this.supervisionSmokePlans.set(result.threadId, {
@@ -2931,6 +3293,8 @@ export class ButlerAgentService extends EventEmitter {
               totalFollowUps: smokeRequest.totalFollowUps,
               followUpsSent: 0
             });
+          } else if (requiresOperatorCallback(delegationContract.contract)) {
+            this.registerPendingChatCallback(result.threadId);
           }
           const supervision = this.store.noteButlerSteer(result.threadId);
 
@@ -3110,7 +3474,7 @@ export class ButlerAgentService extends EventEmitter {
     const preferredModel =
       this.auth.mode === "chatgpt" ? getModel("openai-codex", "gpt-5.4") : getModel("openai", "gpt-5.4");
     const resourceLoader = new DefaultResourceLoader({
-      systemPromptOverride: () => buildSystemPrompt(this.store)
+      systemPromptOverride: () => buildSystemPrompt(this.store, this.describePendingCallbacks())
     });
     await resourceLoader.reload();
 
@@ -3259,13 +3623,21 @@ export class ButlerAgentService extends EventEmitter {
       throw new Error("Butler agent is not ready");
     }
 
+    let promptError: unknown = null;
+
     try {
       await this.session.prompt(text, {
         ...(this.session.isStreaming ? { streamingBehavior: "followUp" as const } : {}),
         images: await this.imageStore.loadPiImages(imageReferenceIds)
       });
+    } catch (error) {
+      promptError = error;
     } finally {
       this.sanitizeSessionMessages();
+    }
+
+    if (promptError) {
+      throw promptError;
     }
 
     const latestFailure = this.extractLatestAssistantFailure();
@@ -3355,7 +3727,7 @@ export class ButlerAgentService extends EventEmitter {
 
   private getVisibleMessages(): ButlerMessageView[] {
     const sessionMessages = this.session ? serializeMessages(this.session) : [];
-    return mergeVisibleMessages(sessionMessages, this.noticeMessages);
+    return collapseCallbackDuplicateMessages(mergeVisibleMessages(sessionMessages, this.operatorMessages));
   }
 
   getMessagePage(before: number | null, limit: number): ButlerMessagePageView {
@@ -3468,6 +3840,7 @@ export class ButlerAgentService extends EventEmitter {
         } else {
           this.auth = nextAuth;
         }
+        await this.reconcilePendingChatCallbacks();
         await this.runPrompt(text, imageReferenceIds);
         this.lastError = null;
       } catch (error) {

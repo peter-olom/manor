@@ -946,7 +946,7 @@ app.post("/api/stacks/start", async (request, response) => {
 
 app.post("/api/stacks/stop", async (request, response) => {
   const stackId = typeof request.body?.stackId === "string" ? request.body.stackId : "";
-  const dropVolumes = Boolean(request.body?.dropVolumes);
+  const dropVolumes = typeof request.body?.dropVolumes === "boolean" ? request.body.dropVolumes : true;
   if (!stackId) {
     response.status(400).json({ error: "stackId is required" });
     return;

@@ -12,9 +12,12 @@
   --danger-ink: #8f3146;
   --danger-bg: #fdeef2;
   --danger-line: #efcad5;
-  --bubble-user-bg: #2e5896;
-  --bubble-user-ink: #f7fbff;
-  --bubble-user-muted: rgba(247, 251, 255, 0.72);
+  --bubble-user-bg: #d6e2ff;
+  --bubble-user-ink: #10233f;
+  --bubble-user-muted: #506684;
+  --bubble-user-card-bg: #dee8ff;
+  --bubble-user-goal-bg: #e7efff;
+  --bubble-user-tile-bg: #ecf2ff;
   --code-bg: #f3f6fb;
   --code-bar-bg: #e9eef6;
   --code-bar-ink: #51647f;
@@ -54,9 +57,12 @@
   --danger-ink: #ffb5bf;
   --danger-bg: #42212a;
   --danger-line: #75404c;
-  --bubble-user-bg: #2f5f9e;
-  --bubble-user-ink: #f5f9ff;
-  --bubble-user-muted: rgba(245, 249, 255, 0.72);
+  --bubble-user-bg: #1c2d47;
+  --bubble-user-ink: #f3f7ff;
+  --bubble-user-muted: rgba(243, 247, 255, 0.72);
+  --bubble-user-card-bg: #243754;
+  --bubble-user-goal-bg: #2a3f5f;
+  --bubble-user-tile-bg: #314969;
   --code-bg: #101827;
   --code-bar-bg: #162133;
   --code-bar-ink: #9fb3cf;
@@ -91,9 +97,12 @@
     --danger-ink: #ffb5bf;
     --danger-bg: #42212a;
     --danger-line: #75404c;
-    --bubble-user-bg: #2f5f9e;
-    --bubble-user-ink: #f5f9ff;
-    --bubble-user-muted: rgba(245, 249, 255, 0.72);
+    --bubble-user-bg: #1c2d47;
+    --bubble-user-ink: #f3f7ff;
+    --bubble-user-muted: rgba(243, 247, 255, 0.72);
+    --bubble-user-card-bg: #243754;
+    --bubble-user-goal-bg: #2a3f5f;
+    --bubble-user-tile-bg: #314969;
     --code-bg: #101827;
     --code-bar-bg: #162133;
     --code-bar-ink: #9fb3cf;
@@ -1306,15 +1315,15 @@ select {
   --entry-bg: var(--bubble-user-bg);
   color: var(--bubble-user-ink);
   --entry-muted: var(--bubble-user-muted);
-  --entry-table-line: rgba(255, 255, 255, 0.18);
-  --entry-blockquote-line: rgba(255, 255, 255, 0.22);
-  --entry-code-bg: rgba(7, 17, 31, 0.3);
-  --entry-code-bar-bg: rgba(255, 255, 255, 0.08);
-  --entry-code-bar-ink: rgba(245, 249, 255, 0.84);
-  --entry-code-border: rgba(255, 255, 255, 0.16);
-  --entry-code-ink: #f5f9ff;
-  --entry-code-inline-bg: rgba(255, 255, 255, 0.12);
-  --entry-code-inline-ink: #ffffff;
+  --entry-table-line: color-mix(in srgb, var(--accent) 14%, var(--line-strong));
+  --entry-blockquote-line: color-mix(in srgb, var(--accent) 22%, var(--line-strong));
+  --entry-code-bg: color-mix(in srgb, var(--surface) 78%, var(--bubble-user-bg));
+  --entry-code-bar-bg: color-mix(in srgb, var(--surface) 58%, var(--bubble-user-bg));
+  --entry-code-bar-ink: color-mix(in srgb, var(--ink) 72%, var(--bubble-user-ink));
+  --entry-code-border: color-mix(in srgb, var(--accent) 16%, var(--line-strong));
+  --entry-code-ink: var(--bubble-user-ink);
+  --entry-code-inline-bg: color-mix(in srgb, var(--surface) 82%, var(--bubble-user-bg));
+  --entry-code-inline-ink: color-mix(in srgb, var(--accent) 84%, var(--bubble-user-ink));
 }
 
 .entry.is-user.is-pending {
@@ -1424,6 +1433,14 @@ select {
   color: var(--bubble-user-ink);
 }
 
+.entry.is-user .entry-text a {
+  color: color-mix(in srgb, var(--accent) 86%, var(--bubble-user-ink));
+}
+
+.entry.is-user .entry-text a:hover {
+  color: var(--bubble-user-ink);
+}
+
 .entry-text {
   line-height: 1.5;
   min-width: 0;
@@ -1488,6 +1505,132 @@ select {
 
 .entry-text a:hover {
   color: var(--ink);
+}
+
+.contract-card {
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--entry-bg));
+}
+
+.entry.is-user .contract-card {
+  background: var(--bubble-user-card-bg);
+}
+
+.contract-card-head {
+  display: grid;
+  gap: 2px;
+}
+
+.contract-card-eyebrow {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--entry-muted);
+}
+
+.contract-card-title {
+  margin: 0;
+  font-size: 0.96rem;
+  line-height: 1.25;
+  color: inherit;
+}
+
+.contract-card-task {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.contract-card-goal {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--entry-table-line));
+  background: color-mix(in srgb, white 4%, var(--entry-bg));
+}
+
+.entry.is-user .contract-card-goal {
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--entry-table-line));
+  background: var(--bubble-user-goal-bg);
+}
+
+.contract-card-goal-label {
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--entry-muted);
+}
+
+.contract-card-grid,
+.contract-card-extra {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.contract-card-grid {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.contract-card-row {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--entry-table-line) 92%, transparent);
+  background: color-mix(in srgb, white 3%, var(--entry-bg));
+}
+
+.entry.is-user .contract-card-row {
+  border-color: color-mix(in srgb, var(--accent) 12%, var(--entry-table-line));
+  background: var(--bubble-user-tile-bg);
+}
+
+.contract-card-row dt {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--entry-muted);
+}
+
+.contract-card-row dd {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.contract-card-details {
+  display: grid;
+  gap: 8px;
+}
+
+.contract-card-details summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.84rem;
+}
+
+.contract-card-details[open] summary {
+  margin-bottom: 2px;
+}
+
+.contract-card-raw {
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  border: 1px solid var(--entry-code-border);
+  background: var(--entry-code-bg);
+  color: var(--entry-code-ink);
+  font-family: "SFMono-Regular", "Menlo", "Monaco", monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .inline-code {

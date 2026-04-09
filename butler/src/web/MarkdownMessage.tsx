@@ -16,6 +16,103 @@ type MarkdownMessageProps = {
   onResourceUnavailable?: (message: string) => void;
 };
 
+type ParsedContractMessage = {
+  fields: Array<{ key: string; value: string }>;
+  requestedTask: string | null;
+  goal: string | null;
+  rawContract: string;
+};
+
+const CONTRACT_FIELD_LABELS: Record<string, string> = {
+  project_label: "Project",
+  branch: "Branch",
+  workspace_cwd: "Workspace",
+  execution_mode: "Mode",
+  proof_required: "Proof",
+  operator_callback: "Callback",
+  operator_acknowledgement: "Acknowledgement",
+  preview_lane: "Preview lane",
+  thread_id: "Job",
+  harness_binding: "Harness",
+  note: "Note"
+};
+
+const CONTRACT_SUMMARY_FIELD_ORDER = [
+  "project_label",
+  "branch",
+  "workspace_cwd",
+  "execution_mode",
+  "proof_required",
+  "operator_callback",
+  "operator_acknowledgement",
+  "preview_lane"
+];
+
+function titleCaseContractKey(value: string): string {
+  return value
+    .split("_")
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(" ");
+}
+
+function parseAuthoritativeContractMessage(text: string): ParsedContractMessage | null {
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!normalized.startsWith("AUTHORITATIVE JOB CONTRACT")) {
+    return null;
+  }
+
+  const requestedTaskMarker = "\nREQUESTED TASK";
+  const requestedTaskStart = normalized.indexOf(requestedTaskMarker);
+  if (requestedTaskStart < 0) {
+    return null;
+  }
+
+  const contractBlock = normalized.slice(0, requestedTaskStart).trim();
+  const requestBlock = normalized.slice(requestedTaskStart + requestedTaskMarker.length).trim();
+  const contractLines = contractBlock.split("\n").slice(1);
+  const fields: Array<{ key: string; value: string }> = [];
+
+  for (const line of contractLines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const separatorIndex = trimmed.indexOf(":");
+    if (separatorIndex <= 0) {
+      continue;
+    }
+
+    const key = trimmed.slice(0, separatorIndex).trim();
+    const value = trimmed.slice(separatorIndex + 1).trim();
+    if (!key || !value) {
+      continue;
+    }
+    fields.push({ key, value });
+  }
+
+  const requestLines = requestBlock.split("\n");
+  const goalLineIndex = requestLines.findIndex((line) => line.trim().startsWith("Goal:"));
+  const requestedTaskLines = goalLineIndex >= 0 ? requestLines.slice(0, goalLineIndex) : requestLines;
+  const requestedTask = requestedTaskLines.join("\n").trim() || null;
+  const goal =
+    goalLineIndex >= 0
+      ? requestLines
+          .slice(goalLineIndex)
+          .join("\n")
+          .trim()
+          .replace(/^Goal:\s*/i, "") || null
+      : null;
+
+  return {
+    fields,
+    requestedTask,
+    goal,
+    rawContract: normalized
+  };
+}
+
 function normalizeMessageResourceUrl(rawUrl: string | null | undefined): string | null {
   const trimmed = typeof rawUrl === "string" ? rawUrl.trim().replace(/^`+|`+$/g, "") : "";
   if (!trimmed) {
@@ -117,6 +214,58 @@ function MarkdownMessageInner({
     previewMediaRef.current = onPreviewMedia;
     resourceUnavailableRef.current = onResourceUnavailable;
   }, [onPreviewMedia, onResourceUnavailable]);
+
+  const contract = parseAuthoritativeContractMessage(text);
+  if (contract) {
+    const fieldMap = new Map(contract.fields.map((field) => [field.key, field.value]));
+    const summaryFields = CONTRACT_SUMMARY_FIELD_ORDER.flatMap((key) => {
+      const value = fieldMap.get(key);
+      return value ? [{ key, value }] : [];
+    });
+    const detailFields = contract.fields.filter((field) => !CONTRACT_SUMMARY_FIELD_ORDER.includes(field.key));
+
+    return (
+      <div className="contract-card">
+        <div className="contract-card-head">
+          <span className="contract-card-eyebrow">Delegation contract</span>
+          <h4 className="contract-card-title">
+            {fieldMap.get("project_label") || "Codex job"}
+          </h4>
+        </div>
+        {contract.requestedTask ? <p className="contract-card-task">{contract.requestedTask}</p> : null}
+        {contract.goal ? (
+          <div className="contract-card-goal">
+            <span className="contract-card-goal-label">Goal</span>
+            <span>{contract.goal}</span>
+          </div>
+        ) : null}
+        {summaryFields.length > 0 ? (
+          <dl className="contract-card-grid">
+            {summaryFields.map((field) => (
+              <div className="contract-card-row" key={field.key}>
+                <dt>{CONTRACT_FIELD_LABELS[field.key] || titleCaseContractKey(field.key)}</dt>
+                <dd>{field.value}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
+        <details className="contract-card-details">
+          <summary>Show raw contract</summary>
+          {detailFields.length > 0 ? (
+            <dl className="contract-card-extra">
+              {detailFields.map((field) => (
+                <div className="contract-card-row" key={field.key}>
+                  <dt>{CONTRACT_FIELD_LABELS[field.key] || titleCaseContractKey(field.key)}</dt>
+                  <dd>{field.value}</dd>
+                </div>
+              ))}
+            </dl>
+          ) : null}
+          <pre className="contract-card-raw">{contract.rawContract}</pre>
+        </details>
+      </div>
+    );
+  }
 
   return (
     <ReactMarkdown

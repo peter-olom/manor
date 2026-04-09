@@ -1026,7 +1026,7 @@ export class CodexHarnessService {
 
     if (action === "stack.stop") {
       const stack = await this.resolveThreadStack(capability, normalizeString(params.stackId));
-      const dropVolumes = params.dropVolumes === true;
+      const dropVolumes = params.dropVolumes !== false;
       await this.runtimeBroker.stopStack(stack.id, { dropVolumes });
       this.removeStackArtifacts(stack.id);
       this.store.addEvent(capability.threadId, "harness/stack/stop", `Stopped stack ${stack.id}`);

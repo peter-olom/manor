@@ -12,6 +12,8 @@ export interface CodexThreadExecutionContractView {
   executionModeLabel: string;
   previewLane: CodexPreviewLane;
   proofRequired: boolean;
+  operatorAcknowledgementRequired: boolean;
+  operatorCallbackRequired: boolean;
   notes: string[];
 }
 

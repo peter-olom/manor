@@ -51,6 +51,8 @@ export function buildThreadExecutionContract(input: {
     executionModeLabel: describeExecutionMode(executionMode),
     previewLane,
     proofRequired,
+    operatorAcknowledgementRequired: false,
+    operatorCallbackRequired: false,
     notes: [...new Set(input.notes.map((note) => note.trim()).filter(Boolean))]
   };
 }
@@ -121,6 +123,10 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
   const previewLane: CodexPreviewLane = /expected/i.test(previewLaneRaw) ? "expected" : "available";
   const proofRequiredRaw = values.get("proof_required");
   const proofRequired = proofRequiredRaw ? /^yes$/i.test(proofRequiredRaw) : previewLane === "expected";
+  const operatorAcknowledgementRaw = values.get("operator_acknowledgement");
+  const operatorAcknowledgementRequired = operatorAcknowledgementRaw ? /^required$/i.test(operatorAcknowledgementRaw) : false;
+  const operatorCallbackRaw = values.get("operator_callback");
+  const operatorCallbackRequired = operatorCallbackRaw ? /^required$/i.test(operatorCallbackRaw) : false;
 
   return {
     threadId,
@@ -132,6 +138,8 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
     executionModeLabel,
     previewLane,
     proofRequired,
+    operatorAcknowledgementRequired,
+    operatorCallbackRequired,
     notes
   };
 }
