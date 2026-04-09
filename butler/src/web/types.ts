@@ -36,6 +36,13 @@ export type AppToast = {
   tone: ToastTone;
 };
 
+export type ServerToastEvent = {
+  id: string;
+  message: string;
+  tone: ToastTone;
+  duration: number;
+};
+
 export type ConfirmDialogState = {
   title: string;
   message: string;

@@ -23,7 +23,7 @@ import { type ImageReferenceStore } from "./image-store.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
 import { ensureTaskWorktree, resolveExistingWorkspaceCwd, resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
-import { type LoadedServiceTemplate, toServiceLeaseView } from "./service-templates.js";
+import { type LoadedServiceTemplate, ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
 import { buildThreadExecutionContract, describeExecutionMode, detectExecutionMode } from "./thread-contract.js";
 import {
@@ -69,6 +69,12 @@ type ResolvedPreviewProof = {
   video: PreviewVerificationArtifactView | null;
   manifest: PreviewVerificationArtifactView | null;
   trace: PreviewVerificationArtifactView | null;
+};
+
+type SupervisionSmokePlan = {
+  threadId: string;
+  totalFollowUps: number;
+  followUpsSent: number;
 };
 
 function contentToText(content: unknown): string {
@@ -414,16 +420,18 @@ function buildSystemPrompt(store: ButlerStateStore): string {
     "When work touches git in a repo, enforce a dedicated branch whose name starts with butler/.",
     "Do not run two parallel Codex workstreams on the same repo branch.",
     "When a task needs multiple cooperating previews or disposable services, create a stack lease first so Butler can keep the whole environment under one isolated network and lifecycle.",
+    "When the operator asks for a supervision or oversight smoke test, treat it as a native Butler behavior: delegate the run to Codex, let the operator prompt define the contract, and privately steer the worker for 2 to 5 follow-up turns.",
     "For recurring mutable databases or object stores, prefer job-scoped stateful stacks so each job gets its own retained writable copy forked from the project base by default.",
     "Reserve base-mode stacks for intentional seed or snapshot refresh work. Do not let multiple jobs share one writable database volume.",
     "When a task needs a live app review, prefer a preview lease on an isolated runtime instead of telling the operator to bind a raw host port.",
     "When preview bootstrap is unclear, inspect the workspace bootstrap hints before deciding on image, egress, or install steps.",
-    "When a project needs common dev dependencies like Postgres, Redis, MySQL, MSSQL, RabbitMQ, MinIO, Mailpit, or SQLite, prefer the built-in service templates instead of ad hoc install steps.",
+    "When a project needs backing dependencies like Postgres, Redis, MySQL, MSSQL, RabbitMQ, MinIO, Mailpit, or SQLite, prefer registered service templates instead of ad hoc install steps. If the dependency is missing, register it once and reuse it later.",
+    "A preview runs the app or job code. A service provides supporting infrastructure only. Do not run the main app inside a service.",
     "Choose an execution mode explicitly before delegating or steering Codex: local Manor branch runtime or live deployed runtime.",
     "When the operator asks to check out a branch, worktree, or repo and produce proof, default to local Manor branch runtime unless the operator explicitly asks for live, staging, or production verification.",
     "Do not silently substitute live deployed verification for local branch verification.",
     "If the needed execution mode changes, start a fresh Codex workstream instead of reusing an older thread with a different strategy.",
-    "For local Manor runtime tasks that involve signup or email flows, prefer built-in local services like Mailpit when the app under test is running inside Manor.",
+    "For local Manor runtime tasks that involve signup or email flows, prefer local dependency services like Mailpit when the app under test is running inside Manor.",
     "Codex may operate inside attached isolates through manor-harness for inspect, logs, processes, and shell exec, but Butler still owns isolate lifecycle and policy.",
     "When the operator provides reference images, keep track of the stored image references so you can pass them to Codex later and reuse them during verification.",
     "Use the image reference tools whenever visual requirements depend on an uploaded image.",
@@ -516,7 +524,7 @@ export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
   private readonly codexClient: CodexAppServerClient;
   private readonly runtimeBroker: RuntimeBrokerClient;
-  private readonly serviceTemplates: LoadedServiceTemplate[];
+  private readonly serviceTemplateRegistry: ServiceTemplateRegistry;
   private readonly imageStore: ImageReferenceStore;
   private readonly piAuthPath: string;
   private readonly codexAuthPath: string;
@@ -540,6 +548,10 @@ export class ButlerAgentService extends EventEmitter {
   private statusRefreshTimer: NodeJS.Timeout | null = null;
   private readonly noticeMessages: ButlerMessageView[] = [];
   private readonly seenMilestoneIds = new Set<string>();
+  private readonly supervisionSmokePlans = new Map<string, SupervisionSmokePlan>();
+  private readonly actedSmokeMilestoneIds = new Set<string>();
+  private smokeReactionInFlight = false;
+  private smokeReactionQueued = false;
   private compaction: Omit<ButlerCompactionView, "autoEnabled" | "active" | "count"> = {
     lastReason: null,
     lastStartedAt: null,
@@ -554,7 +566,7 @@ export class ButlerAgentService extends EventEmitter {
     store: ButlerStateStore;
     codexClient: CodexAppServerClient;
     runtimeBroker: RuntimeBrokerClient;
-    serviceTemplates: LoadedServiceTemplate[];
+    serviceTemplateRegistry: ServiceTemplateRegistry;
     imageStore: ImageReferenceStore;
     piAuthPath: string;
     codexAuthPath: string;
@@ -566,7 +578,7 @@ export class ButlerAgentService extends EventEmitter {
     this.store = options.store;
     this.codexClient = options.codexClient;
     this.runtimeBroker = options.runtimeBroker;
-    this.serviceTemplates = options.serviceTemplates;
+    this.serviceTemplateRegistry = options.serviceTemplateRegistry;
     this.imageStore = options.imageStore;
     this.piAuthPath = options.piAuthPath;
     this.codexAuthPath = options.codexAuthPath;
@@ -695,6 +707,8 @@ export class ButlerAgentService extends EventEmitter {
       void this.saveNoticeState();
       this.emit("change");
     }
+
+    this.scheduleSmokeTestReactions();
   }
 
   async start(): Promise<void> {
@@ -833,13 +847,19 @@ export class ButlerAgentService extends EventEmitter {
       {
         name: "list_service_templates",
         label: "List service templates",
-        description: "List the built-in Manor service templates Butler can provision for app stacks.",
+        description: "List the registered Manor service templates Butler can provision for app stacks.",
         uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while choosing a service template." }]
+      },
+      {
+        name: "register_service_template",
+        label: "Register service template",
+        description: "Persist one dependency service template so future jobs can reuse it without redefining the runtime details.",
+        uiEffects: [{ kind: "refreshThreads", description: "Makes newly registered dependency templates available immediately." }]
       },
       {
         name: "start_service",
         label: "Start service",
-        description: "Provision a disposable built-in service such as Postgres, Redis, MySQL, MSSQL, RabbitMQ, MinIO, Mailpit, or SQLite for one job.",
+        description: "Provision a disposable dependency service such as Postgres, Redis, MySQL, MSSQL, RabbitMQ, MinIO, Mailpit, SQLite, or another registered template for one job.",
         uiEffects: [{ kind: "refreshThreads", description: "Keeps service-backed job state current." }]
       },
       {
@@ -851,25 +871,25 @@ export class ButlerAgentService extends EventEmitter {
       {
         name: "inspect_service",
         label: "Inspect service",
-        description: "Inspect one service runtime and return its current connection details and runtime state.",
+        description: "Inspect one dependency service and return its current connection details and runtime state.",
         uiEffects: [{ kind: "refreshThreads", description: "Refreshes one service lease before Butler acts on it." }]
       },
       {
         name: "service_logs",
         label: "Service logs",
-        description: "Read recent logs from one container-backed service runtime.",
+        description: "Read recent logs from one container-backed dependency service.",
         uiEffects: [{ kind: "refreshThreads", description: "Lets Butler inspect one service without opening a shell." }]
       },
       {
         name: "exec_service",
         label: "Exec in service",
-        description: "Run one shell command inside a container-backed service runtime.",
+        description: "Run one shell command inside a container-backed dependency service.",
         uiEffects: [{ kind: "refreshThreads", description: "Lets Butler inspect or patch one service directly." }]
       },
       {
         name: "stop_service",
         label: "Stop service",
-        description: "Stop one disposable service runtime and release its lease.",
+        description: "Stop one disposable dependency service and release its lease.",
         uiEffects: [{ kind: "refreshThreads", description: "Removes stale service state from the supervised job." }]
       },
       {
@@ -996,6 +1016,171 @@ export class ButlerAgentService extends EventEmitter {
     return `Butler has reached the supervision limit for job ${threadId}. Used ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns} Butler turns. Raise the limit on that thread before asking Butler to steer it again.`;
   }
 
+  private buildDelegationDeveloperInstructions(workspace: { cwd: string; branchName: string | null }): string {
+    return [
+      "This thread was started by Butler.",
+      "You are the worker inside Manor. Butler is the supervisor and policy owner.",
+      "Execute the requested task directly instead of explaining how the operator could do it manually.",
+      "The task prompt includes an AUTHORITATIVE JOB CONTRACT with the assigned thread id, workspace, and harness binding. Follow that contract over any stale worktree or cwd hints elsewhere in the task.",
+      "Treat the contract execution_mode as binding. Do not switch from local Manor branch runtime to a live deployed site unless the operator explicitly asked for live verification.",
+      `Work inside ${workspace.cwd} unless the task explicitly requires a deeper subdirectory.`,
+      workspace.branchName
+        ? `Stay on branch ${workspace.branchName}. Do not switch back to main or share this branch with another task.`
+        : "When the task touches git in a repository, create or reuse a dedicated branch whose name starts with butler/.",
+      "If this job needs a preview isolate, a disposable service, or runtime inspection, use `manor-harness` with the thread binding from the contract.",
+      "Start with `manor-harness --thread <jobId> status` to see what Manor already attached to this job and to inspect workspace bootstrap hints.",
+      "Use the universal Manor runtime model: Butler owns policy, the broker owns lifecycle, and a preview is your plain dev box.",
+      "Keep the flow simple: start a preview, then use `manor-harness preview exec`, `logs`, `processes`, `inspect`, and `verify` to adapt the project.",
+      "Do not wait for Manor to infer project-specific bootstrap details. If the app needs an install command, env setup, or a custom start command, run those explicitly inside the preview.",
+      "If the work needs multiple cooperating services, create a stack first with `manor-harness stack start`, then attach previews and services to it with `--stack <stackId>` and stable `--alias` names that mirror the app's expected internal hostnames.",
+      "When a stack needs recurring databases or object storage, start it with `manor-harness stack start --stateful` so Manor derives a per-job retained storage key, forks from the project base, and sets the default promotion target automatically.",
+      "Use `--storage-mode base` only when you are intentionally creating or refreshing the shared base state for that project. Do not share one writable database volume across concurrent jobs.",
+      "After validating a job-scoped stateful stack, use `manor-harness stack promote <stackId>` to publish its retained data back to the project base. Only override the target manually when the task explicitly needs a different namespace.",
+      "For attached previews and services, use `manor-harness` for inspect, logs, processes, and exec directly against the runtime. Butler still owns start, stop, lifecycle, and policy.",
+      "The shared Codex shell is for code work only. Do not treat it as a runtime box, and do not install dependencies, bootstrap package managers, or start app processes there.",
+      "If dependency install, bootstrap, dev startup, or runtime verification is needed, do it inside a preview. Do not declare the job blocked from Codex-shell execution failures alone.",
+      "Once a preview is up, treat it as your primary dev box for that job. Install dependencies there, run long-lived app processes there, inspect logs/processes there, and use it to verify fixes.",
+      "Prefer explicit, boring commands over wrappers or project-specific Manor tricks. The goal is stable runtime control, not clever bootstrap.",
+      "Preview commands start with the job worktree as the working directory. Prefer relative paths there, or use the contract cwd under /repos. Do not assume a /workspace mount exists inside previews.",
+      "If local shell bootstrap fails or you need supervisory guidance, use `manor-harness assist --summary \"<what is stuck>\" --details \"<error and context>\"` before your final blocked report.",
+      "When frontend proof is required, run `manor-harness preview verify <preview> --mode headful --json` so the screenshot, video, trace, and manifest bundle is persisted.",
+      "When proof requires actual UI interaction, pass a browser script with `manor-harness preview verify <preview> --script-file <path> --mode headful --json` instead of stopping at a static page.",
+      "When the proof route needs an authenticated session, prefer `manor-harness preview verify <preview> --session-cookie <token> ...` or `--cookie NAME=VALUE ...` instead of building wrapper scripts that call `page.goto()` again.",
+      "If the contract is for local Manor branch runtime and the app has email flows, prefer Mailpit or another built-in local dependency when the app under test is running inside Manor.",
+      "After verification, inspect the proof bundle with `manor-harness preview proof <preview> --json` and include the screenshot, video, and manifest links in your report.",
+      "Do not treat artifact existence alone as accepted proof. Butler must review the screenshot, and the video is for human review.",
+      "Use only the harness actions exposed through `manor-harness`. Do not try to command Butler directly outside those actions.",
+      "When you complete meaningful work, record a supervisor report before your final reply with `manor-harness report --status completed --summary \"<concise outcome>\" --details \"<brief oversight note with the key fact, risk, or next step>\"`.",
+      "If you are blocked or need operator attention, record it before your reply with `manor-harness report --status blocked --summary \"<what is blocked>\" --details \"<what you need, what failed, or the next recommended action>\"`.",
+      "Do not report runtime verification blocked while a preview path remains untried unless you explain why preview execution itself is blocked.",
+      "Supervisor reports should help Butler oversee the job. Keep `summary` short and outcome-first, and use `details` for the extra context Butler should surface without dumping the whole conversation.",
+      "Keep the thread focused on the delegated task and report concise progress and outcome."
+    ].join("\n");
+  }
+
+  private buildSupervisionSmokeTask(totalFollowUps: number): string {
+    return [
+      "This is a Butler supervision smoke test. Do not edit files, inspect repositories, or use git.",
+      `The goal is to prove that Butler can steer this thread privately for ${totalFollowUps} follow-up turns without operator nudging.`,
+      "Immediately emit one blocked supervisor report using the thread id from the authoritative contract:",
+      "- summary: `Smoke step 1 waiting for Butler`",
+      "- details: `Initial smoke report emitted. Waiting for Butler follow-up step 2.`",
+      "After that report, reply briefly that step 1 was reported and that you are waiting for Butler.",
+      "On each later Butler private follow-up:",
+      "- obey the numbered step exactly",
+      "- emit the requested supervisor report",
+      "- reply briefly that the step was reported and that you are waiting again",
+      "- do not continue to any later step until Butler sends the next follow-up",
+      "Only finish when Butler explicitly tells you to finalize the smoke test."
+    ].join("\n");
+  }
+
+  private detectSupervisionSmokeRequest(task: string, goal?: string): { totalFollowUps: number } | null {
+    const combined = [task, goal].filter(Boolean).join("\n");
+    if (!/\bsmoke\b/i.test(combined)) {
+      return null;
+    }
+    if (!/\b(supervision|oversight)\b/i.test(combined)) {
+      return null;
+    }
+
+    const turnsMatch = combined.match(/\b([2-5])\s+turns?\b/i) ?? combined.match(/\bturns?\s*[:=]?\s*([2-5])\b/i);
+    const totalFollowUps = turnsMatch ? Number.parseInt(turnsMatch[1] ?? "3", 10) : 3;
+    return { totalFollowUps: Math.max(2, Math.min(5, totalFollowUps)) };
+  }
+
+  private buildSmokeFollowUpText(plan: SupervisionSmokePlan): string {
+    const nextStepNumber = plan.followUpsSent + 2;
+    const isFinalFollowUp = plan.followUpsSent + 1 >= plan.totalFollowUps;
+    if (isFinalFollowUp) {
+      return [
+        `Smoke final step ${nextStepNumber}: finalize the supervision smoke test.`,
+        `Record a completed supervisor report with summary "Smoke test complete" and details "Butler autonomously steered ${plan.totalFollowUps} private follow-up turns after the initial worker report."`,
+        "Then reply briefly that the smoke test is complete."
+      ].join("\n");
+    }
+
+    const status = nextStepNumber % 2 === 0 ? "completed" : "blocked";
+    const summary =
+      status === "completed" ? `Smoke step ${nextStepNumber} acknowledged` : `Smoke step ${nextStepNumber} waiting for Butler`;
+    const details =
+      status === "completed"
+        ? `Butler private follow-up ${plan.followUpsSent + 1} landed; worker resumed without operator input.`
+        : `Butler private follow-up ${plan.followUpsSent + 1} landed; worker is waiting for the next Butler decision.`;
+
+    return [
+      `Smoke step ${nextStepNumber}: continue the supervision smoke test.`,
+      `Record a ${status} supervisor report with summary "${summary}" and details "${details}"`,
+      "Then reply briefly that the step was reported and that you are waiting for Butler."
+    ].join("\n");
+  }
+
+  private async sendPrivateJobFollowUp(threadId: string, text: string): Promise<void> {
+    const limitMessage = this.getThreadBudgetLimitMessage(threadId);
+    if (limitMessage) {
+      throw new Error(limitMessage);
+    }
+
+    await this.codexClient.loadThread(threadId);
+    await this.codexClient.sendMessage(threadId, this.imageStore.buildCodexInput(text, []));
+    this.store.noteButlerSteer(threadId);
+  }
+
+  private scheduleSmokeTestReactions(): void {
+    if (this.smokeReactionInFlight) {
+      this.smokeReactionQueued = true;
+      return;
+    }
+
+    this.smokeReactionInFlight = true;
+    void this.processSmokeTestReactions()
+      .catch((error) => {
+        this.lastError = error instanceof Error ? error.message : String(error);
+      })
+      .finally(() => {
+        this.smokeReactionInFlight = false;
+        if (this.smokeReactionQueued) {
+          this.smokeReactionQueued = false;
+          this.scheduleSmokeTestReactions();
+        }
+      });
+  }
+
+  private async processSmokeTestReactions(): Promise<void> {
+    if (this.supervisionSmokePlans.size === 0) {
+      return;
+    }
+
+    const milestones = [...this.store.listMilestones()]
+      .filter((milestone) => (milestone.type === "completed" || milestone.type === "blocked") && this.supervisionSmokePlans.has(milestone.threadId))
+      .sort((left, right) => left.at - right.at);
+
+    for (const milestone of milestones) {
+      if (this.actedSmokeMilestoneIds.has(milestone.id)) {
+        continue;
+      }
+
+      const plan = this.supervisionSmokePlans.get(milestone.threadId);
+      if (!plan) {
+        this.actedSmokeMilestoneIds.add(milestone.id);
+        continue;
+      }
+
+      this.actedSmokeMilestoneIds.add(milestone.id);
+      if (plan.followUpsSent >= plan.totalFollowUps) {
+        this.supervisionSmokePlans.delete(plan.threadId);
+        continue;
+      }
+
+      await this.sendPrivateJobFollowUp(plan.threadId, this.buildSmokeFollowUpText(plan));
+      plan.followUpsSent += 1;
+
+      if (plan.followUpsSent >= plan.totalFollowUps) {
+        this.supervisionSmokePlans.set(plan.threadId, plan);
+      }
+    }
+  }
+
   private async prepareDelegationWorkspace(task: string, cwd?: string): Promise<{ cwd: string; branchName: string | null }> {
     const requestedCwd = cwd ?? "/repos";
     if (cwd) {
@@ -1024,6 +1209,9 @@ export class ButlerAgentService extends EventEmitter {
     task: string;
     goal?: string;
     workspace: { cwd: string; branchName: string | null };
+    previewLane?: "expected" | "available";
+    proofRequired?: boolean;
+    extraNotes?: string[];
   }): Promise<{ text: string; contract: CodexThreadExecutionContractView }> {
     const requestedTask = options.goal ? `${options.task}\n\nGoal: ${options.goal}` : options.task;
     const project = resolveWorkspaceProjectInfo(options.workspace.cwd);
@@ -1042,7 +1230,11 @@ export class ButlerAgentService extends EventEmitter {
       }
     }
 
-    const contract = buildThreadExecutionContract({
+    if (options.extraNotes?.length) {
+      notes.push(...options.extraNotes);
+    }
+
+    const baseContract = buildThreadExecutionContract({
       threadId: options.threadId,
       workspaceCwd: options.workspace.cwd,
       projectId: project.id,
@@ -1051,6 +1243,12 @@ export class ButlerAgentService extends EventEmitter {
       taskText: requestedTask,
       notes
     });
+    const contract: CodexThreadExecutionContractView = {
+      ...baseContract,
+      previewLane: options.previewLane ?? baseContract.previewLane,
+      proofRequired: options.proofRequired ?? baseContract.proofRequired,
+      notes: [...new Set(notes.map((note) => note.trim()).filter(Boolean))]
+    };
     const lines = [
       "AUTHORITATIVE JOB CONTRACT",
       `thread_id: ${options.threadId}`,
@@ -1060,7 +1258,8 @@ export class ButlerAgentService extends EventEmitter {
       `branch: ${options.workspace.branchName ?? "(existing workspace)"}`,
       `execution_mode: ${contract.executionModeLabel}`,
       `harness_binding: manor-harness --thread ${options.threadId}`,
-      `preview_lane: ${contract.previewLane === "expected" ? "expected when runtime validation is needed" : "available on demand"}`
+      `preview_lane: ${contract.previewLane === "expected" ? "expected when runtime validation is needed" : "available on demand"}`,
+      `proof_required: ${contract.proofRequired ? "yes" : "no"}`
     ];
 
     for (const note of notes) {
@@ -1074,11 +1273,15 @@ export class ButlerAgentService extends EventEmitter {
   }
 
   private getServiceTemplate(templateId: string): LoadedServiceTemplate {
-    const template = this.serviceTemplates.find((entry) => entry.id === templateId);
+    const template = this.serviceTemplateRegistry.get(templateId);
     if (!template) {
       throw new Error(`Unknown service template: ${templateId}`);
     }
     return template;
+  }
+
+  private listServiceTemplates(): LoadedServiceTemplate[] {
+    return this.serviceTemplateRegistry.list();
   }
 
   private getValidatedStack(stackId: string | null, threadId: string | null) {
@@ -2095,12 +2298,13 @@ export class ButlerAgentService extends EventEmitter {
       this.defineButlerTool({
         name: "list_service_templates",
         label: "List service templates",
-        description: "List the built-in Manor service templates Butler can provision.",
-        promptSnippet: "list_service_templates: use this before provisioning local dependencies so you reuse the built-in Postgres, Redis, MySQL, MSSQL, RabbitMQ, MinIO, Mailpit, or SQLite templates.",
+        description: "List the registered Manor service templates Butler can provision.",
+        promptSnippet: "list_service_templates: use this before provisioning local dependencies so you reuse existing registered templates before defining a new one.",
         parameters: Type.Object({}),
         uiEffects: this.toolCatalog.find((tool) => tool.name === "list_service_templates")?.uiEffects ?? [],
         execute: async () => {
-          const text = this.serviceTemplates
+          const serviceTemplates = this.listServiceTemplates();
+          const text = serviceTemplates
             .map(
               (template, index) =>
                 `${index + 1}. ${template.id} | ${template.label} | runtime=${template.runtimeKind} | engine=${template.engine} | port=${template.defaultPort} | ${template.description}`
@@ -2108,15 +2312,100 @@ export class ButlerAgentService extends EventEmitter {
             .join("\n");
           return {
             content: [{ type: "text", text: text || "No service templates are available." }],
-            details: { serviceTemplates: this.serviceTemplates }
+            details: { serviceTemplates }
+          };
+        }
+      }),
+      this.defineButlerTool({
+        name: "register_service_template",
+        label: "Register service template",
+        description: "Persist one reusable dependency service template for future jobs.",
+        promptSnippet:
+          "register_service_template: use this when a required dependency is missing from the current template list so Butler can define it once and reuse it later.",
+        parameters: Type.Object({
+          id: Type.String({ minLength: 1 }),
+          label: Type.String({ minLength: 1 }),
+          description: Type.String({ minLength: 1 }),
+          runtimeKind: Type.Union([Type.Literal("container"), Type.Literal("embedded")]),
+          engine: Type.String({ minLength: 1 }),
+          image: Type.Optional(Type.String({ minLength: 1 })),
+          port: Type.Optional(Type.Number()),
+          notes: Type.Optional(Type.String()),
+          command: Type.Optional(Type.String()),
+          envDefaults: Type.Optional(Type.Record(Type.String(), Type.String())),
+          fileName: Type.Optional(Type.String()),
+          stackVolumePath: Type.Optional(Type.String()),
+          connection: Type.Optional(
+            Type.Object({
+              databaseEnv: Type.Optional(Type.String()),
+              databaseValue: Type.Optional(Type.String()),
+              usernameEnv: Type.Optional(Type.String()),
+              usernameValue: Type.Optional(Type.String()),
+              passwordEnv: Type.Optional(Type.String()),
+              passwordValue: Type.Optional(Type.String()),
+              uriTemplate: Type.Optional(Type.String()),
+              notes: Type.Optional(Type.String())
+            })
+          )
+        }),
+        uiEffects: this.toolCatalog.find((tool) => tool.name === "register_service_template")?.uiEffects ?? [],
+        execute: async (_toolCallId, params) => {
+          const typedParams = params as {
+            id: string;
+            label: string;
+            description: string;
+            runtimeKind: "container" | "embedded";
+            engine: string;
+            image?: string;
+            port?: number;
+            notes?: string;
+            command?: string;
+            envDefaults?: Record<string, string>;
+            fileName?: string;
+            stackVolumePath?: string;
+            connection?: {
+              databaseEnv?: string;
+              databaseValue?: string;
+              usernameEnv?: string;
+              usernameValue?: string;
+              passwordEnv?: string;
+              passwordValue?: string;
+              uriTemplate?: string;
+              notes?: string;
+            };
+          };
+          const template = await this.serviceTemplateRegistry.upsert({
+            id: typedParams.id,
+            label: typedParams.label,
+            description: typedParams.description,
+            runtimeKind: typedParams.runtimeKind,
+            engine: typedParams.engine,
+            image: typedParams.image,
+            port: typedParams.port,
+            notes: typedParams.notes,
+            command: typedParams.command,
+            envDefaults: this.normalizeServiceEnv(typedParams.envDefaults),
+            fileName: typedParams.fileName,
+            stackVolumePath: typedParams.stackVolumePath,
+            connection: typedParams.connection
+          });
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Registered ${template.id}. Future jobs can reuse ${template.label} without redefining it.`
+              }
+            ],
+            details: { serviceTemplate: template }
           };
         }
       }),
       this.defineButlerTool({
         name: "start_service",
         label: "Start service",
-        description: "Provision a built-in service for one job, with stack-backed persistence when the stack retains volumes.",
-        promptSnippet: "start_service: use this when an app needs a local dependency like Postgres, Redis, MySQL, MSSQL, RabbitMQ, MinIO, Mailpit, or SQLite.",
+        description: "Provision a registered dependency service for one job, with stack-backed persistence when the stack retains volumes.",
+        promptSnippet:
+          "start_service: use this when an app needs a local dependency. Reuse a registered template first, and register a new one only if the dependency is missing.",
         parameters: Type.Object({
           templateId: Type.String({ minLength: 1 }),
           title: Type.Optional(Type.String()),
@@ -2578,7 +2867,8 @@ export class ButlerAgentService extends EventEmitter {
         name: "delegate_to_codex",
         label: "Delegate to Codex",
         description: "Start a new Codex workstream for an execution task such as repo cloning, project setup, coding work, or command execution.",
-        promptSnippet: "delegate_to_codex: use this when the operator wants Butler to actually make Codex do work instead of just answering with instructions.",
+        promptSnippet:
+          "delegate_to_codex: use this when the operator wants Butler to actually make Codex do work instead of just answering with instructions. This also covers native Butler supervision smoke tests when the operator asks for one.",
         parameters: Type.Object({
           task: Type.String({ minLength: 1 }),
           cwd: Type.Optional(Type.String()),
@@ -2588,57 +2878,34 @@ export class ButlerAgentService extends EventEmitter {
         uiEffects: this.toolCatalog.find((tool) => tool.name === "delegate_to_codex")?.uiEffects ?? [],
         execute: async (_toolCallId, params) => {
           const typedParams = params as { task: string; cwd?: string; goal?: string; imageReferenceIds?: string[] };
-          const workspace = await this.prepareDelegationWorkspace(typedParams.task, typedParams.cwd);
-          const developerInstructions = [
-            "This thread was started by Butler.",
-            "You are the worker inside Manor. Butler is the supervisor and policy owner.",
-            "Execute the requested task directly instead of explaining how the operator could do it manually.",
-            "The task prompt includes an AUTHORITATIVE JOB CONTRACT with the assigned thread id, workspace, and harness binding. Follow that contract over any stale worktree or cwd hints elsewhere in the task.",
-            "Treat the contract execution_mode as binding. Do not switch from local Manor branch runtime to a live deployed site unless the operator explicitly asked for live verification.",
-            `Work inside ${workspace.cwd} unless the task explicitly requires a deeper subdirectory.`,
-            workspace.branchName
-              ? `Stay on branch ${workspace.branchName}. Do not switch back to main or share this branch with another task.`
-              : "When the task touches git in a repository, create or reuse a dedicated branch whose name starts with butler/.",
-            "If this job needs a preview isolate, a disposable service, or runtime inspection, use `manor-harness` with the thread binding from the contract.",
-            "Start with `manor-harness --thread <jobId> status` to see what Manor already attached to this job and to inspect workspace bootstrap hints.",
-            "Use the universal Manor runtime model: Butler owns policy, the broker owns lifecycle, and a preview is your plain dev box.",
-            "Keep the flow simple: start a preview, then use `manor-harness preview exec`, `logs`, `processes`, `inspect`, and `verify` to adapt the project.",
-            "Do not wait for Manor to infer project-specific bootstrap details. If the app needs an install command, env setup, or a custom start command, run those explicitly inside the preview.",
-            "If the work needs multiple cooperating services, create a stack first with `manor-harness stack start`, then attach previews and services to it with `--stack <stackId>` and stable `--alias` names that mirror the app's expected internal hostnames.",
-            "When a stack needs recurring databases or object storage, start it with `manor-harness stack start --stateful` so Manor derives a per-job retained storage key, forks from the project base, and sets the default promotion target automatically.",
-            "Use `--storage-mode base` only when you are intentionally creating or refreshing the shared base state for that project. Do not share one writable database volume across concurrent jobs.",
-            "After validating a job-scoped stateful stack, use `manor-harness stack promote <stackId>` to publish its retained data back to the project base. Only override the target manually when the task explicitly needs a different namespace.",
-            "For attached previews and services, use `manor-harness` for inspect, logs, processes, and exec directly against the runtime. Butler still owns start, stop, lifecycle, and policy.",
-            "The shared Codex shell egress is intentionally narrow and will block package-manager bootstrap for many repos. Treat those failures as shared-shell friction, not as proof that Manor preview execution is blocked.",
-            "If package-manager bootstrap, dependency install, or dev startup is needed, prefer a preview and let Manor auto-fill scoped preview defaults from the workspace before declaring the job blocked.",
-            "Once a preview is up, treat it as your primary dev box for that job. Install dependencies there, run long-lived app processes there, inspect logs/processes there, and use it to verify fixes.",
-            "Prefer explicit, boring commands over wrappers or project-specific Manor tricks. The goal is stable runtime control, not clever bootstrap.",
-            "Preview commands start with the job worktree as the working directory. Prefer relative paths there, or use the contract cwd under /repos. Do not assume a /workspace mount exists inside previews.",
-            "If local shell bootstrap fails or you need supervisory guidance, use `manor-harness assist --summary \"<what is stuck>\" --details \"<error and context>\"` before your final blocked report.",
-            "When frontend proof is required, run `manor-harness preview verify <preview> --mode headful --json` so the screenshot, video, trace, and manifest bundle is persisted.",
-            "When proof requires actual UI interaction, pass a browser script with `manor-harness preview verify <preview> --script-file <path> --mode headful --json` instead of stopping at a static page.",
-            "When the proof route needs an authenticated session, prefer `manor-harness preview verify <preview> --session-cookie <token> ...` or `--cookie NAME=VALUE ...` instead of building wrapper scripts that call `page.goto()` again.",
-            "If the contract is for local Manor branch runtime and the app has email flows, prefer Mailpit or another built-in local dependency when the app under test is running inside Manor.",
-            "After verification, inspect the proof bundle with `manor-harness preview proof <preview> --json` and include the screenshot, video, and manifest links in your report.",
-            "Do not treat artifact existence alone as accepted proof. Butler must review the screenshot, and the video is for human review.",
-            "Use only the harness actions exposed through `manor-harness`. Do not try to command Butler directly outside those actions.",
-            "When you complete meaningful work, record a supervisor report before your final reply with `manor-harness report --status completed --summary \"<concise outcome>\" --details \"<brief oversight note with the key fact, risk, or next step>\"`.",
-            "If you are blocked or need operator attention, record it before your reply with `manor-harness report --status blocked --summary \"<what is blocked>\" --details \"<what you need, what failed, or the next recommended action>\"`.",
-            "Do not report runtime verification blocked while a preview path remains untried unless you explain why preview execution itself is blocked.",
-            "Supervisor reports should help Butler oversee the job. Keep `summary` short and outcome-first, and use `details` for the extra context Butler should surface without dumping the whole conversation.",
-            "Keep the thread focused on the delegated task and report concise progress and outcome."
-          ].join("\n");
+          const smokeRequest = this.detectSupervisionSmokeRequest(typedParams.task, typedParams.goal);
+          const workspace = smokeRequest
+            ? { cwd: "/repos", branchName: null as string | null }
+            : await this.prepareDelegationWorkspace(typedParams.task, typedParams.cwd);
+          const developerInstructions = this.buildDelegationDeveloperInstructions(workspace);
+          const delegatedTask = smokeRequest ? this.buildSupervisionSmokeTask(smokeRequest.totalFollowUps) : typedParams.task;
+          const delegatedGoal = smokeRequest ? undefined : typedParams.goal;
+          const contractOptions = smokeRequest
+            ? {
+                previewLane: "available" as const,
+                proofRequired: false,
+                extraNotes: ["Synthetic Butler supervision smoke test. Do not require browser proof to complete or report it."]
+              }
+            : undefined;
 
           const result = await this.codexClient.startThread({
-            task: typedParams.goal ? `${typedParams.task}\n\nGoal: ${typedParams.goal}` : typedParams.task,
+            task: delegatedGoal ? `${delegatedTask}\n\nGoal: ${delegatedGoal}` : delegatedTask,
             input: async (threadId: string) =>
               this.imageStore.buildCodexInput(
                 (
                   await this.buildDelegationContract({
                     threadId,
-                    task: typedParams.task,
-                    goal: typedParams.goal,
-                    workspace
+                    task: delegatedTask,
+                    goal: delegatedGoal,
+                    workspace,
+                    previewLane: contractOptions?.previewLane,
+                    proofRequired: contractOptions?.proofRequired,
+                    extraNotes: contractOptions?.extraNotes
                   })
                 ).text,
                 typedParams.imageReferenceIds ?? []
@@ -2649,22 +2916,36 @@ export class ButlerAgentService extends EventEmitter {
           });
           const delegationContract = await this.buildDelegationContract({
             threadId: result.threadId,
-            task: typedParams.task,
-            goal: typedParams.goal,
-            workspace
+            task: delegatedTask,
+            goal: delegatedGoal,
+            workspace,
+            previewLane: contractOptions?.previewLane,
+            proofRequired: contractOptions?.proofRequired,
+            extraNotes: contractOptions?.extraNotes
           });
           this.store.setThreadExecutionContract(result.threadId, delegationContract.contract);
+          if (smokeRequest) {
+            this.store.setThreadSupervisionLimit(result.threadId, smokeRequest.totalFollowUps + 2);
+            this.supervisionSmokePlans.set(result.threadId, {
+              threadId: result.threadId,
+              totalFollowUps: smokeRequest.totalFollowUps,
+              followUpsSent: 0
+            });
+          }
           const supervision = this.store.noteButlerSteer(result.threadId);
 
           return {
             content: [
               {
                 type: "text",
-                text: `Delegated the task to Codex in job ${result.threadId} from ${workspace.cwd}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}.`
+                text: smokeRequest
+                  ? `Started supervision smoke test in job ${result.threadId}. Butler will privately steer ${smokeRequest.totalFollowUps} follow-up turns. Budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}.`
+                  : `Delegated the task to Codex in job ${result.threadId} from ${workspace.cwd}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}.`
               }
             ],
             details: {
               threadId: result.threadId,
+              totalFollowUps: smokeRequest?.totalFollowUps ?? null,
               supervision,
               workspace,
               thread: this.store.getThread(result.threadId) ?? null
@@ -3163,7 +3444,7 @@ export class ButlerAgentService extends EventEmitter {
       ),
       stacks: this.store.listStackLeases(),
       previews: this.store.listPreviewLeases(),
-      serviceTemplates: this.serviceTemplates,
+      serviceTemplates: this.listServiceTemplates(),
       services: this.store.listServiceLeases(),
     };
   }

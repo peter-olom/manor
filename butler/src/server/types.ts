@@ -203,6 +203,7 @@ export interface PreviewProofRecordView {
 export interface LeaseLifecycleView {
   pinned?: boolean;
   lastActivityAt?: number;
+  ttlAnchorAt?: number;
   leaseTtlMs?: number | null;
   expiresAt?: number | null;
   expiredAt?: number | null;
@@ -319,6 +320,34 @@ export interface StackLeaseView extends LeaseLifecycleView {
   lastError: string | null;
   previewIds: string[];
   serviceIds: string[];
+}
+
+export interface RuntimeCleanupTaskView {
+  id: string;
+  threadId: string;
+  cwd: string | null;
+  createdAt: number;
+  updatedAt: number;
+  nextAttemptAt: number;
+  attempts: number;
+  lastError: string | null;
+  notifyOnError: boolean;
+  stacks: Array<{
+    id: string;
+    retainsVolumes: boolean;
+    status: StackLeaseStatus;
+  }>;
+  previews: Array<{
+    id: string;
+    stackId: string | null;
+    status: PreviewLeaseStatus;
+  }>;
+  services: Array<{
+    id: string;
+    stackId: string | null;
+    runtimeKind: "container" | "embedded";
+    status: ServiceLeaseStatus;
+  }>;
 }
 
 export type CodexMilestoneType = "started" | "completed" | "blocked";
@@ -601,6 +630,7 @@ export interface PersistedUiState {
   stackLeases?: StackLeaseView[];
   previewLeases?: PreviewLeaseView[];
   serviceLeases?: ServiceLeaseView[];
+  runtimeCleanupTasks?: RuntimeCleanupTaskView[];
   previewProofs?: PreviewProofRecordView[];
   workerReportsByThreadId?: Record<string, CodexWorkerReportView[]>;
   supervisionByThreadId?: Record<

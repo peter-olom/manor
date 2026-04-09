@@ -36,6 +36,8 @@ Preview defaults:
   manor-harness preview verify <previewSelector> [--mode headless|headful] [--path <route>] [--header KEY=VALUE ...] [--cookie NAME=VALUE ...] [--session-cookie <token>] [--wait-for <selector>] [--wait-ms <n>] [--script "<js>"] [--script-file <path>]
   manor-harness preview stop <previewSelector>
   manor-harness service templates
+  manor-harness service register-template --spec-file <path>
+  manor-harness service register-template --spec-json '<json>'
   manor-harness service list
   manor-harness service start --template <id> [--title <title>] [--cwd <path>] [--stack <stackSelector>] [--alias <name> ...] [--env KEY=VALUE ...]
   manor-harness service inspect <serviceSelector>
@@ -315,6 +317,22 @@ async function readScriptValue(args) {
   return script || undefined;
 }
 
+async function readJsonSpec(args, fileFlag, jsonFlag) {
+  const inlineJson = readFlag(args, jsonFlag, "");
+  if (inlineJson) {
+    return JSON.parse(inlineJson);
+  }
+
+  const filePath = readFlag(args, fileFlag, "");
+  if (!filePath) {
+    return null;
+  }
+
+  const resolvedPath = path.resolve(process.cwd(), filePath);
+  const raw = await fs.readFile(resolvedPath, "utf8");
+  return JSON.parse(raw);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const threadFlagIndex = args.indexOf("--thread");
@@ -447,6 +465,10 @@ async function main() {
     const subcommand = args[1];
     if (subcommand === "templates") {
       action = "service.templates";
+    } else if (subcommand === "register-template") {
+      const spec = await readJsonSpec(args, "--spec-file", "--spec-json");
+      action = "service.register_template";
+      params = spec ?? {};
     } else if (subcommand === "list") {
       action = "service.list";
     } else if (subcommand === "start") {

@@ -6,7 +6,7 @@ import { decoratePreviewVerification } from "./preview-verification.js";
 import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import { ButlerStateStore } from "./state-store.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
-import { type LoadedServiceTemplate, toServiceLeaseView } from "./service-templates.js";
+import { type LoadedServiceTemplate, ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
 import { detectExecutionMode } from "./thread-contract.js";
 import {
@@ -104,8 +104,7 @@ export class CodexHarnessService {
   private readonly brokerAccessPath: string;
   private readonly store: ButlerStateStore;
   private readonly runtimeBroker: RuntimeBrokerClient;
-  private readonly serviceTemplates: LoadedServiceTemplate[];
-  private readonly serviceTemplateMap: Map<string, LoadedServiceTemplate>;
+  private readonly serviceTemplateRegistry: ServiceTemplateRegistry;
   private readonly capabilities = new Map<string, HarnessCapability>();
 
   constructor(options: {
@@ -113,14 +112,13 @@ export class CodexHarnessService {
     stateDir: string;
     store: ButlerStateStore;
     runtimeBroker: RuntimeBrokerClient;
-    serviceTemplates: LoadedServiceTemplate[];
+    serviceTemplateRegistry: ServiceTemplateRegistry;
   }) {
     this.registryPath = path.join(options.codexHomeDir, "manor", "harness-capabilities.json");
     this.brokerAccessPath = path.join(options.stateDir, "codex-broker-access.json");
     this.store = options.store;
     this.runtimeBroker = options.runtimeBroker;
-    this.serviceTemplates = options.serviceTemplates;
-    this.serviceTemplateMap = new Map(this.serviceTemplates.map((template) => [template.id, template]));
+    this.serviceTemplateRegistry = options.serviceTemplateRegistry;
   }
 
   async load(): Promise<void> {
@@ -317,6 +315,8 @@ export class CodexHarnessService {
   private formatRuntimeModel(): string[] {
     return [
       "Runtime model: Manor owns preview lifecycle and isolation; you own what runs inside the preview.",
+      "Previews run the app or job code. Services provide backing infrastructure such as databases, queues, object storage, or mail capture.",
+      "Do not run the main app inside a service. If the app must execute, start or reuse a preview.",
       "Preview workflow: start a preview, then use exec, logs, processes, inspect, and verify to adapt the app like a normal dev box.",
       "Keep startup explicit. Do not assume Manor will infer the right install command, shell shape, or health endpoint for the project."
     ];
@@ -602,11 +602,15 @@ export class CodexHarnessService {
   }
 
   private getServiceTemplate(templateId: string): LoadedServiceTemplate {
-    const template = this.serviceTemplateMap.get(templateId);
+    const template = this.serviceTemplateRegistry.get(templateId);
     if (!template) {
       throw new Error(`Unknown service template: ${templateId}`);
     }
     return template;
+  }
+
+  private listServiceTemplates(): LoadedServiceTemplate[] {
+    return this.serviceTemplateRegistry.list();
   }
 
   private removeStackArtifacts(stackId: string) {
@@ -671,7 +675,7 @@ export class CodexHarnessService {
     }
 
     for (const service of brokerServices) {
-      const template = this.serviceTemplateMap.get(service.templateId);
+      const template = this.serviceTemplateRegistry.get(service.templateId);
       if (!template) {
         continue;
       }
@@ -759,7 +763,7 @@ export class CodexHarnessService {
       previewLines,
       serviceLines,
       proofLines,
-      `Service templates: ${this.serviceTemplates.map((template) => template.id).join(", ")}`
+      `Service templates: ${this.listServiceTemplates().map((template) => template.id).join(", ")}`
     ].join("\n");
   }
 
@@ -811,7 +815,7 @@ export class CodexHarnessService {
           proofs.length === 0
             ? "Proof bundles: none"
             : `Proof bundles:\n${proofs.map((proof, index) => `${index + 1}. ${proof.verification.runId} | preview=${proof.previewTitle} | ok=${proof.verification.ok} | url=${proof.verification.url}`).join("\n")}`,
-          `Service templates: ${this.serviceTemplates.map((template) => template.id).join(", ")}`,
+          `Service templates: ${this.listServiceTemplates().map((template) => template.id).join(", ")}`,
           ...formatWorkspaceBootstrapLines(workspaceBootstrap)
         ].join("\n"),
         data: {
@@ -822,7 +826,7 @@ export class CodexHarnessService {
           previews,
           services,
           proofs,
-          serviceTemplates: this.serviceTemplates,
+          serviceTemplates: this.listServiceTemplates(),
           workspaceBootstrap,
           executionContract: thread.executionContract
         }
@@ -885,7 +889,7 @@ export class CodexHarnessService {
       responseLines.push(...formatWorkspaceBootstrapLines(workspaceBootstrap));
       if (workspaceBootstrap?.ecosystem === "node") {
         responseLines.push(
-          "Shared Codex shell egress is intentionally narrower than preview egress. Treat package-manager download failures there as a shell limitation, not as proof that Manor runtime validation is blocked."
+          "The shared Codex shell is for code work only. Do not install dependencies, bootstrap package managers, or start app processes there. Runtime execution belongs in previews."
         );
       }
       responseLines.push(`If you drift out of ${capability.cwd}, keep using the thread-bound harness command instead of concluding Manor is unavailable.`);
@@ -1289,9 +1293,45 @@ export class CodexHarnessService {
     }
 
     if (action === "service.templates") {
+      const serviceTemplates = this.listServiceTemplates();
       return {
-        text: this.serviceTemplates.map((template, index) => `${index + 1}. ${template.id} | ${template.label} | ${template.description}`).join("\n"),
-        data: { serviceTemplates: this.serviceTemplates }
+        text: serviceTemplates.map((template, index) => `${index + 1}. ${template.id} | ${template.label} | ${template.description}`).join("\n"),
+        data: { serviceTemplates }
+      };
+    }
+
+    if (action === "service.register_template") {
+      const template = await this.serviceTemplateRegistry.upsert({
+        id: normalizeString(params.id),
+        label: normalizeString(params.label),
+        description: normalizeString(params.description),
+        runtimeKind: normalizeString(params.runtimeKind) === "embedded" ? "embedded" : "container",
+        engine: normalizeString(params.engine),
+        image: normalizeString(params.image) || undefined,
+        port: typeof params.port === "number" ? params.port : Number(params.port),
+        notes: normalizeString(params.notes) || undefined,
+        command: normalizeString(params.command) || undefined,
+        envDefaults: normalizeEnv(params.envDefaults),
+        fileName: normalizeString(params.fileName) || undefined,
+        stackVolumePath: normalizeString(params.stackVolumePath) || undefined,
+        connection:
+          params.connection && typeof params.connection === "object"
+            ? {
+                databaseEnv: normalizeString((params.connection as Record<string, unknown>).databaseEnv) || undefined,
+                databaseValue: normalizeString((params.connection as Record<string, unknown>).databaseValue) || undefined,
+                usernameEnv: normalizeString((params.connection as Record<string, unknown>).usernameEnv) || undefined,
+                usernameValue: normalizeString((params.connection as Record<string, unknown>).usernameValue) || undefined,
+                passwordEnv: normalizeString((params.connection as Record<string, unknown>).passwordEnv) || undefined,
+                passwordValue: normalizeString((params.connection as Record<string, unknown>).passwordValue) || undefined,
+                uriTemplate: normalizeString((params.connection as Record<string, unknown>).uriTemplate) || undefined,
+                notes: normalizeString((params.connection as Record<string, unknown>).notes) || undefined
+              }
+            : undefined
+      });
+      this.store.addEvent(capability.threadId, "harness/service/register-template", `Registered service template ${template.id}`);
+      return {
+        text: `Registered service template ${template.id}. Future jobs can reuse ${template.label}.`,
+        data: { serviceTemplate: template }
       };
     }
 
@@ -1341,7 +1381,7 @@ export class CodexHarnessService {
       const project = this.resolveWorkspaceProject(cwd, thread);
       const aliases = normalizeStringArray(params.aliases);
       const env = normalizeEnv(params.env);
-      const template = this.serviceTemplateMap.get(templateId);
+      const template = this.serviceTemplateRegistry.get(templateId);
 
       if (!template) {
         throw new Error(`Unknown service template: ${templateId}`);

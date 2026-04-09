@@ -119,6 +119,8 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
   const executionMode = detectExecutionMode(executionModeLabel);
   const previewLaneRaw = values.get("preview_lane") || "";
   const previewLane: CodexPreviewLane = /expected/i.test(previewLaneRaw) ? "expected" : "available";
+  const proofRequiredRaw = values.get("proof_required");
+  const proofRequired = proofRequiredRaw ? /^yes$/i.test(proofRequiredRaw) : previewLane === "expected";
 
   return {
     threadId,
@@ -129,7 +131,7 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
     executionMode,
     executionModeLabel,
     previewLane,
-    proofRequired: previewLane === "expected",
+    proofRequired,
     notes
   };
 }

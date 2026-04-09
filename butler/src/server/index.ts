@@ -13,7 +13,7 @@ import { ImageReferenceStore } from "./image-store.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
 import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
-import { loadServiceTemplates, toServiceLeaseView } from "./service-templates.js";
+import { ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { ButlerStateStore } from "./state-store.js";
 import { applyWorkspacePreviewDefaults, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 
@@ -25,12 +25,11 @@ const codexHomeDir = process.env.CODEX_SHARED_HOME_DIR ?? "/codex-home";
 const codexConfigDir = process.env.CODEX_SHARED_CONFIG_DIR ?? "/codex-config";
 const runtimeBrokerUrl = process.env.RUNTIME_BROKER_URL ?? "http://runtime-broker:8090";
 const runtimeBrokerToken = process.env.RUNTIME_BROKER_TOKEN ?? null;
-const serviceTemplateConfigPath = process.env.MANOR_SERVICE_TEMPLATE_CONFIG ?? "/opt/manor/config/service-templates.json";
 const hotReloadEnabled = process.env.BUTLER_HOT_RELOAD === "1";
 const publicPort = Number(process.env.BUTLER_PUBLIC_PORT ?? port);
 const previewLeaseTtlMs = Number(process.env.MANOR_PREVIEW_LEASE_TTL_MS ?? `${30 * 60 * 1000}`);
-const stackLeaseTtlMs = Number(process.env.MANOR_STACK_LEASE_TTL_MS ?? `${120 * 60 * 1000}`);
-const serviceLeaseTtlMs = Number(process.env.MANOR_SERVICE_LEASE_TTL_MS ?? `${120 * 60 * 1000}`);
+const stackLeaseTtlMs = Number(process.env.MANOR_STACK_LEASE_TTL_MS ?? `${30 * 60 * 1000}`);
+const serviceLeaseTtlMs = Number(process.env.MANOR_SERVICE_LEASE_TTL_MS ?? `${30 * 60 * 1000}`);
 const leaseReapGraceMs = Number(process.env.MANOR_LEASE_REAP_GRACE_MS ?? `${10 * 60 * 1000}`);
 const leaseSweepIntervalMs = Number(process.env.MANOR_LEASE_SWEEP_INTERVAL_MS ?? "60000");
 const artifactRetentionMs = Number(process.env.MANOR_ARTIFACT_RETENTION_MS ?? `${14 * 24 * 60 * 60 * 1000}`);
@@ -51,23 +50,29 @@ const store = new ButlerStateStore(uiStatePath, {
   artifactRetentionMs
 });
 await store.load();
+const serviceTemplateRegistry = new ServiceTemplateRegistry(path.join(stateDir, "service-templates.json"));
+await serviceTemplateRegistry.load();
 const imageStore = new ImageReferenceStore(imageReferenceDir);
 await imageStore.load();
 const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerToken);
-const serviceTemplates = await loadServiceTemplates(serviceTemplateConfigPath);
-const serviceTemplateMap = new Map(serviceTemplates.map((template) => [template.id, template]));
 const codexHarness = new CodexHarnessService({
   codexHomeDir,
   stateDir,
   store,
   runtimeBroker,
-  serviceTemplates
+  serviceTemplateRegistry
 });
 await codexHarness.load();
 await codexHarness.reconcileThreadCapabilities();
 const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, {
   onThreadCapabilityReady: async (threadId, cwd) => {
     await codexHarness.ensureThreadCapability(threadId, cwd);
+  },
+  onThreadDeleting: async (context) => {
+    await cleanupThreadRuntimeResources(context);
+  },
+  onRuntimeCleanupError: (threadId, message) => {
+    broadcastToast(`Thread cleanup failed for ${threadId.slice(0, 8)}: ${message}`, "error", 6000);
   },
   onThreadCapabilityRemoved: async (threadId) => {
     await codexHarness.revokeThreadCapability(threadId);
@@ -77,7 +82,7 @@ const butlerAgent = new ButlerAgentService({
   store,
   codexClient,
   runtimeBroker,
-  serviceTemplates,
+  serviceTemplateRegistry,
   piAuthPath: path.join(piAgentDir, "auth.json"),
   codexAuthPath: path.join(codexHomeDir, "auth.json"),
   codexConfigDir,
@@ -150,7 +155,7 @@ function currentButlerLiveSnapshot() {
 }
 
 function currentRuntimeSnapshot() {
-  return store.getRuntimeSnapshot(serviceTemplates);
+  return store.getRuntimeSnapshot(serviceTemplateRegistry.list());
 }
 
 function currentOpenThreadsSnapshot() {
@@ -174,6 +179,19 @@ function shouldAllowLocalThreadWindow(threadId: string, error: unknown): boolean
 
 function writeSseEvent(response: express.Response, eventName: string, payload: unknown): void {
   response.write(`event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`);
+}
+
+function broadcastToast(message: string, tone: "success" | "error" | "info" = "info", duration = 4000): void {
+  const payload = {
+    id: crypto.randomUUID(),
+    message,
+    tone,
+    duration
+  };
+
+  for (const client of sseClients) {
+    writeSseEvent(client, "toast", payload);
+  }
 }
 
 function sendInitialEvents(response: express.Response): void {
@@ -327,6 +345,78 @@ function removeStackArtifactsFromStore(stackId: string): void {
   store.removeStackLease(stackId);
 }
 
+function isIgnorableRuntimeCleanupError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return error.message.toLowerCase().includes("not found");
+}
+
+async function cleanupThreadRuntimeResources(context: {
+  threadId: string;
+  stacks: Array<{ id: string; retainsVolumes: boolean; status: string }>;
+  previews: Array<{ id: string; stackId: string | null; status: string }>;
+  services: Array<{ id: string; stackId: string | null; runtimeKind: string; status: string }>;
+}): Promise<void> {
+  const threadId = context.threadId;
+  const storedStacks = context.stacks.filter((lease) => lease.status !== "stopped");
+  const storedPreviews = context.previews.filter((lease) => lease.status !== "stopped");
+  const storedServices = context.services.filter((lease) => lease.status !== "stopped");
+
+  const [brokerStacks, brokerPreviews, brokerServices] = await Promise.all([
+    runtimeBroker.listStacks(threadId),
+    runtimeBroker.listLeases(threadId),
+    runtimeBroker.listServices(threadId)
+  ]);
+
+  const stacksById = new Map([...storedStacks, ...brokerStacks].map((lease) => [lease.id, lease]));
+  const stackIds = new Set(stacksById.keys());
+
+  for (const stack of stacksById.values()) {
+    try {
+      await runtimeBroker.stopStack(stack.id, { dropVolumes: Boolean(stack.retainsVolumes) });
+    } catch (error) {
+      if (!isIgnorableRuntimeCleanupError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  const previewsById = new Map(
+    [...storedPreviews, ...brokerPreviews]
+      .filter((lease) => !lease.stackId || !stackIds.has(lease.stackId))
+      .map((lease) => [lease.id, lease])
+  );
+
+  for (const preview of previewsById.values()) {
+    try {
+      await runtimeBroker.stopLease(preview.id);
+    } catch (error) {
+      if (!isIgnorableRuntimeCleanupError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  const servicesById = new Map(
+    [...storedServices, ...brokerServices]
+      .filter((service) => service.runtimeKind === "container")
+      .filter((service) => !service.stackId || !stackIds.has(service.stackId))
+      .map((service) => [service.id, service])
+  );
+
+  for (const service of servicesById.values()) {
+    try {
+      await runtimeBroker.stopService(service.id);
+    } catch (error) {
+      if (!isIgnorableRuntimeCleanupError(error)) {
+        throw error;
+      }
+    }
+  }
+}
+
 function readImageReferenceIds(body: unknown): string[] {
   if (!body || typeof body !== "object" || !("imageReferenceIds" in body)) {
     return [];
@@ -379,6 +469,10 @@ function sendUnavailableArtifactResponse(
     expiredAt: number | null;
   }
 ): void {
+  if (response.headersSent || response.writableEnded || response.destroyed) {
+    return;
+  }
+
   const expired = availability === "expired";
   const message = expired
     ? "Artifact expired after the 14 day retention window."
@@ -533,6 +627,10 @@ app.get(/^\/api\/artifacts\/(.+)$/, (request, response) => {
 
   const handleSendError = (error?: NodeJS.ErrnoException | null) => {
     if (!error) {
+      return;
+    }
+
+    if (response.headersSent || response.writableEnded || response.destroyed) {
       return;
     }
 
@@ -729,21 +827,21 @@ app.post("/api/threads/delete", async (request, response) => {
     return;
   }
 
-  try {
-    const result = await codexClient.deleteThread(threadId);
-    response.json({ ok: true, ...result });
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
+  void codexClient.deleteThread(threadId).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    broadcastToast(`Thread cleanup failed: ${message}`, "error", 6000);
+  });
+
+  response.status(202).json({ ok: true, started: true });
 });
 
 app.post("/api/threads/delete-all", async (_request, response) => {
-  try {
-    const result = await codexClient.deleteAllThreads();
-    response.json({ ok: true, ...result });
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
+  void codexClient.deleteAllThreads().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    broadcastToast(`Bulk thread cleanup failed: ${message}`, "error", 6000);
+  });
+
+  response.status(202).json({ ok: true, started: true });
 });
 
 app.post("/api/windows/open", async (request, response) => {
@@ -1042,7 +1140,6 @@ app.post("/api/previews/verify", async (request, response) => {
   }
 
   try {
-    store.notePreviewLeaseActivity(leaseId);
     const result = decoratePreviewVerification(
       await runtimeBroker.verifyLease({
         leaseId,
@@ -1099,7 +1196,7 @@ app.post("/api/services/start", async (request, response) => {
         )
       : {};
 
-  const template = serviceTemplateMap.get(templateId);
+  const template = serviceTemplateRegistry.get(templateId);
   if (!template) {
     response.status(400).json({ error: `Unknown service template: ${templateId}` });
     return;
@@ -1250,7 +1347,6 @@ app.use(/^\/preview\/([^/]+)(\/.*)?$/, (request, response) => {
     return;
   }
 
-  store.notePreviewLeaseActivity(leaseId);
   const suffix = match?.[2] ?? "/";
   const search = request.url.includes("?") ? request.url.slice(request.url.indexOf("?")) : "";
   request.url = `/routes/preview/${leaseId}${suffix}${search}`;
@@ -1342,8 +1438,18 @@ const leaseReaper = setInterval(() => {
   });
 }, leaseSweepIntervalMs);
 
+const runtimeCleanupWorker = setInterval(() => {
+  void codexClient.processPendingCleanupTasks().catch((error) => {
+    console.error("Runtime cleanup worker failed", error);
+  });
+}, leaseSweepIntervalMs);
+
 void sweepExpiredLeases().catch((error) => {
   console.error("Initial lease sweep failed", error);
+});
+
+void codexClient.processPendingCleanupTasks().catch((error) => {
+  console.error("Initial runtime cleanup sweep failed", error);
 });
 
 async function sweepExpiredArtifacts(): Promise<void> {
@@ -1468,7 +1574,7 @@ async function reconcileServiceLeases(): Promise<void> {
     }
 
     for (const service of brokerServices) {
-      const template = serviceTemplateMap.get(service.templateId);
+      const template = serviceTemplateRegistry.get(service.templateId);
       if (!template) {
         continue;
       }
@@ -1540,6 +1646,7 @@ server.listen(port, "0.0.0.0", () => {
 
 server.on("close", () => {
   clearInterval(leaseReaper);
+  clearInterval(runtimeCleanupWorker);
   clearInterval(artifactReaper);
   clearInterval(runtimeReconciler);
 });

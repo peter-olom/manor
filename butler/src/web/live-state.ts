@@ -7,6 +7,7 @@ import type {
   CodexThreadDetail,
   ImageReference,
   RuntimeSnapshot,
+  ServerToastEvent,
   ShellSnapshot,
   TransportState
 } from "./types";
@@ -42,6 +43,7 @@ const butlerLiveStore = createStore<ButlerLiveSnapshot | null>(null);
 const runtimeStore = createStore<RuntimeSnapshot | null>(null);
 const openThreadsStore = createStore<Record<string, CodexThreadDetail>>({});
 const imagesStore = createStore<ImageReference[]>([]);
+const serverToastStore = createStore<ServerToastEvent | null>(null);
 const transportStore = createStore<TransportState>({ connected: false, disconnected: false });
 
 let started = false;
@@ -102,6 +104,10 @@ function ensureStarted(): void {
     setTransportState({ connected: true, disconnected: false });
     openThreadsStore.setSnapshot(JSON.parse((event as MessageEvent<string>).data));
   });
+  eventSource.addEventListener("toast", (event) => {
+    setTransportState({ connected: true, disconnected: false });
+    serverToastStore.setSnapshot(JSON.parse((event as MessageEvent<string>).data));
+  });
   eventSource.addEventListener("heartbeat", () => {
     setTransportState({ connected: true, disconnected: false });
   });
@@ -129,6 +135,10 @@ export function useRuntimeSnapshot(): RuntimeSnapshot | null {
 
 export function useKnownImages(): ImageReference[] {
   return useStoreValue(imagesStore);
+}
+
+export function useServerToastEvent(): ServerToastEvent | null {
+  return useStoreValue(serverToastStore);
 }
 
 export function mergeKnownImages(images: ImageReference[]): void {

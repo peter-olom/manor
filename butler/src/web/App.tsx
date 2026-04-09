@@ -7,6 +7,7 @@ import { ButlerSurface } from "./ButlerSurface";
 import { CloseIcon, CopyIcon, ThemeIcon, ThreadsIcon, TrashIcon } from "./icons";
 import {
   useShellSnapshot,
+  useServerToastEvent,
   useTransportState
 } from "./live-state";
 import { StatusItem } from "./StatusItem";
@@ -76,6 +77,7 @@ function syncTerminalFrameTheme(frame: HTMLIFrameElement | null, lightTheme: boo
 export function App() {
   const initialWorkspaceQuery = readWorkspaceQuery();
   const shell = useShellSnapshot();
+  const serverToast = useServerToastEvent();
   const transport = useTransportState();
   const [selectedSurface, setSelectedSurface] = useState<WorkspaceSurface | null>(initialWorkspaceQuery.surface);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(initialWorkspaceQuery.threadId);
@@ -326,6 +328,14 @@ export function App() {
 
     hasShownDisconnectToastRef.current = false;
   }, [transport.disconnected]);
+
+  useEffect(() => {
+    if (!serverToast) {
+      return;
+    }
+
+    showToast(serverToast.message, serverToast.tone, serverToast.duration, serverToast.id);
+  }, [serverToast]);
 
   useEffect(() => {
     const isLightTheme = resolveThemePreference(themePreference, systemPrefersDark);

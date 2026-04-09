@@ -114,9 +114,9 @@ The intended rule is simple:
 - fork for job work
 - promote only after validation
 
-## Built-In Services
+## Service Templates
 
-Manor ships built-in service templates for:
+Manor ships built-in dependency templates for:
 
 - Postgres
 - Redis
@@ -131,6 +131,8 @@ Container-backed templates run as disposable private-network services.
 
 SQLite is provisioned directly in the selected worktree as an embedded file.
 
+If a dependency is missing, Butler or Codex can register a new template on first use and persist it for later jobs.
+
 When a stack retains volumes and a template declares a data path, Manor binds that service identity to one managed Docker volume.
 
 ## Worker Harness
@@ -142,7 +144,7 @@ That surface currently supports:
 - job context and runtime inventory
 - stack start, inspect, promote, and stop
 - preview start, inspect, logs, processes, exec, verify, and stop
-- service template listing
+- service template listing and registration
 - service start, inspect, logs, processes, exec, and stop
 - supervisor reporting back to Butler
 
@@ -221,7 +223,7 @@ Current local development assumptions:
 
 - `compose.yml`: local Manor stack
 - `butler/`: Butler backend and web app
-- `config/`: service templates and optional preview egress profiles
+- `config/`: optional preview egress profiles
 - `docker/butler/`: Butler image and auth helpers
 - `docker/butler-gateway/`: Butler reverse proxy
 - `docker/codex-box/`: Codex worker image and harness CLI

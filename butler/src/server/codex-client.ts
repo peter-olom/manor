@@ -7,7 +7,7 @@ import WebSocket, { type RawData } from "ws";
 import type { CodexInputItem } from "./image-store.js";
 import { cleanupManagedWorktree, resolveExistingWorkspaceCwd } from "./repo-worktree.js";
 import { ButlerStateStore } from "./state-store.js";
-import type { ModelOption, ReasoningEffort } from "./types.js";
+import type { ModelOption, ReasoningEffort, RuntimeCleanupTaskView } from "./types.js";
 
 type JsonRpcMessage = {
   id?: number;
@@ -18,6 +18,14 @@ type JsonRpcMessage = {
     code: number;
     message: string;
   };
+};
+
+type ThreadDeleteContext = {
+  threadId: string;
+  cwd: string | null;
+  stacks: RuntimeCleanupTaskView["stacks"];
+  previews: RuntimeCleanupTaskView["previews"];
+  services: RuntimeCleanupTaskView["services"];
 };
 
 function normalizeModelLabel(rawLabel: string, id: string): string {
@@ -102,6 +110,9 @@ export class CodexAppServerClient extends EventEmitter {
   private readonly codexHomeDir: string;
   private readonly onThreadCapabilityReady: ((threadId: string, cwd: string | null | undefined) => Promise<void>) | null;
   private readonly onThreadCapabilityRemoved: ((threadId: string) => Promise<void>) | null;
+  private readonly onThreadDeleting: ((context: ThreadDeleteContext) => Promise<void>) | null;
+  private readonly onRuntimeCleanupError: ((threadId: string, message: string) => void) | null;
+  private cleanupQueueRunning = false;
 
   constructor(
     baseUrl: string,
@@ -110,6 +121,8 @@ export class CodexAppServerClient extends EventEmitter {
     options?: {
       onThreadCapabilityReady?: (threadId: string, cwd: string | null | undefined) => Promise<void>;
       onThreadCapabilityRemoved?: (threadId: string) => Promise<void>;
+      onThreadDeleting?: (context: ThreadDeleteContext) => Promise<void>;
+      onRuntimeCleanupError?: (threadId: string, message: string) => void;
     }
   ) {
     super();
@@ -118,6 +131,8 @@ export class CodexAppServerClient extends EventEmitter {
     this.codexHomeDir = codexHomeDir;
     this.onThreadCapabilityReady = options?.onThreadCapabilityReady ?? null;
     this.onThreadCapabilityRemoved = options?.onThreadCapabilityRemoved ?? null;
+    this.onThreadDeleting = options?.onThreadDeleting ?? null;
+    this.onRuntimeCleanupError = options?.onRuntimeCleanupError ?? null;
   }
 
   start(): void {
@@ -758,9 +773,8 @@ export class CodexAppServerClient extends EventEmitter {
     return null;
   }
 
-  private async deleteThreadArtifacts(threadId: string): Promise<number> {
+  private async deleteThreadArtifacts(threadId: string, cwd: string | null): Promise<number> {
     const removed = new Set<string>();
-    const thread = this.store.getThread(threadId);
     const sessionsDir = path.join(this.codexHomeDir, "sessions");
     const snapshotsDir = path.join(this.codexHomeDir, "shell_snapshots");
 
@@ -785,14 +799,39 @@ export class CodexAppServerClient extends EventEmitter {
       removed.add(filePath);
     }
 
-    if (thread?.cwd) {
-      const cleanupCount = await cleanupManagedWorktree(thread.cwd).catch(() => 0);
+    if (cwd) {
+      const cleanupCount = await cleanupManagedWorktree(cwd).catch(() => 0);
       for (let index = 0; index < cleanupCount; index += 1) {
-        removed.add(`worktree-cleanup:${thread.id}:${index}`);
+        removed.add(`worktree-cleanup:${threadId}:${index}`);
       }
     }
 
     return removed.size;
+  }
+
+  private buildThreadDeleteContext(threadId: string): ThreadDeleteContext {
+    const thread = this.store.getThread(threadId);
+
+    return {
+      threadId,
+      cwd: thread?.cwd ?? null,
+      stacks: this.store.listStackLeases().filter((lease) => lease.threadId === threadId).map((lease) => ({
+        id: lease.id,
+        retainsVolumes: Boolean(lease.retainsVolumes),
+        status: lease.status
+      })),
+      previews: this.store.listPreviewLeases().filter((lease) => lease.threadId === threadId).map((lease) => ({
+        id: lease.id,
+        stackId: lease.stackId,
+        status: lease.status
+      })),
+      services: this.store.listServiceLeases().filter((lease) => lease.threadId === threadId).map((lease) => ({
+        id: lease.id,
+        stackId: lease.stackId,
+        runtimeKind: lease.runtimeKind,
+        status: lease.status
+      }))
+    };
   }
 
   private async unsubscribeThread(threadId: string): Promise<void> {
@@ -802,50 +841,89 @@ export class CodexAppServerClient extends EventEmitter {
     this.activeTurnIds.delete(threadId);
   }
 
+  private scheduleCleanupQueue(): void {
+    void this.processPendingCleanupTasks().catch(() => undefined);
+  }
+
+  private nextCleanupRetryDelayMs(attempts: number): number {
+    const cappedAttempts = Math.max(1, Math.min(attempts, 6));
+    return Math.min(15 * 60 * 1000, 30_000 * 2 ** (cappedAttempts - 1));
+  }
+
+  async processPendingCleanupTasks(): Promise<void> {
+    if (this.cleanupQueueRunning) {
+      return;
+    }
+
+    this.cleanupQueueRunning = true;
+    try {
+      for (const task of this.store.listDueRuntimeCleanupTasks()) {
+        try {
+          await this.onThreadDeleting?.({
+            threadId: task.threadId,
+            cwd: task.cwd,
+            stacks: task.stacks,
+            previews: task.previews,
+            services: task.services
+          });
+          await this.deleteThreadArtifacts(task.threadId, task.cwd);
+          this.store.completeRuntimeCleanupTask(task.id);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const nextAttemptAt = Date.now() + this.nextCleanupRetryDelayMs(task.attempts + 1);
+          const failed = this.store.failRuntimeCleanupTask(task.id, message, nextAttemptAt);
+          if (failed.notify) {
+            this.onRuntimeCleanupError?.(task.threadId, message);
+          }
+        }
+      }
+    } finally {
+      this.cleanupQueueRunning = false;
+    }
+  }
+
   async deleteThread(threadId: string): Promise<{ deletedArtifacts: number }> {
+    const context = this.buildThreadDeleteContext(threadId);
+    this.store.enqueueRuntimeCleanupTask({
+      threadId: context.threadId,
+      cwd: context.cwd,
+      stacks: context.stacks,
+      previews: context.previews,
+      services: context.services
+    });
     this.deletedThreadIds.add(threadId);
-    await this.unsubscribeThread(threadId);
-    const deletedArtifacts = await this.deleteThreadArtifacts(threadId);
     this.store.removeThread(threadId);
     await this.onThreadCapabilityRemoved?.(threadId);
     this.emit("change");
-    return { deletedArtifacts };
+    await this.unsubscribeThread(threadId);
+    this.scheduleCleanupQueue();
+    return { deletedArtifacts: 0 };
   }
 
   async deleteAllThreads(): Promise<{ deletedThreadIds: string[]; deletedArtifacts: number }> {
     const threadIds = this.store.listThreads().map((thread) => thread.id);
-    const threads = threadIds.map((threadId) => this.store.getThread(threadId)).filter(Boolean);
+    const deleteContexts = threadIds.map((threadId) => this.buildThreadDeleteContext(threadId));
+    for (const context of deleteContexts) {
+      this.store.enqueueRuntimeCleanupTask({
+        threadId: context.threadId,
+        cwd: context.cwd,
+        stacks: context.stacks,
+        previews: context.previews,
+        services: context.services
+      });
+    }
     for (const threadId of threadIds) {
       this.deletedThreadIds.add(threadId);
     }
+    this.store.removeThreads(threadIds);
     for (const threadId of threadIds) {
-      await this.unsubscribeThread(threadId);
       await this.onThreadCapabilityRemoved?.(threadId);
     }
-
-    const sessionsDir = path.join(this.codexHomeDir, "sessions");
-    const snapshotsDir = path.join(this.codexHomeDir, "shell_snapshots");
-    let deletedArtifacts = 0;
-
-    for (const filePath of await this.listFilesRecursive(sessionsDir)) {
-      await fs.rm(filePath, { force: true });
-      deletedArtifacts += 1;
-    }
-
-    for (const filePath of await this.listFilesRecursive(snapshotsDir)) {
-      await fs.rm(filePath, { force: true });
-      deletedArtifacts += 1;
-    }
-
-    for (const thread of threads) {
-      if (!thread?.cwd) {
-        continue;
-      }
-      deletedArtifacts += await cleanupManagedWorktree(thread.cwd).catch(() => 0);
-    }
-
-    this.store.removeThreads(threadIds);
     this.emit("change");
-    return { deletedThreadIds: threadIds, deletedArtifacts };
+    for (const threadId of threadIds) {
+      await this.unsubscribeThread(threadId);
+    }
+    this.scheduleCleanupQueue();
+    return { deletedThreadIds: threadIds, deletedArtifacts: 0 };
   }
 }

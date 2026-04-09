@@ -33,6 +33,7 @@ import type {
   PreviewVerificationFailedRequestView,
   PreviewVerificationView,
   PreviewLeaseView,
+  RuntimeCleanupTaskView,
   RuntimeSnapshot,
   StackLeaseView,
   ServiceLeaseView,
@@ -42,8 +43,8 @@ import type {
 const MAX_EVENT_LOG = 80;
 const DEFAULT_BUTLER_THREAD_LIMIT = 20;
 const DEFAULT_PREVIEW_LEASE_TTL_MS = 30 * 60 * 1000;
-const DEFAULT_STACK_LEASE_TTL_MS = 120 * 60 * 1000;
-const DEFAULT_SERVICE_LEASE_TTL_MS = 120 * 60 * 1000;
+const DEFAULT_STACK_LEASE_TTL_MS = 30 * 60 * 1000;
+const DEFAULT_SERVICE_LEASE_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_LEASE_REAP_GRACE_MS = 10 * 60 * 1000;
 const DEFAULT_ARTIFACT_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const LEASE_ACTIVITY_WRITE_THROTTLE_MS = 15_000;
@@ -515,6 +516,7 @@ export class ButlerStateStore extends EventEmitter {
   private readonly stackLeases = new Map<string, StackLeaseView>();
   private readonly previewLeases = new Map<string, PreviewLeaseView>();
   private readonly serviceLeases = new Map<string, ServiceLeaseView>();
+  private readonly runtimeCleanupTasks = new Map<string, RuntimeCleanupTaskView>();
   private readonly previewProofs = new Map<string, PreviewProofRecordView>();
   private readonly persistedSupervisionByThreadId = new Map<string, { butlerTurnsUsed: number; maxButlerTurns: number | null }>();
   private readonly persistedWorkerReportsByThreadId = new Map<string, CodexWorkerReportView[]>();
@@ -659,7 +661,11 @@ export class ButlerStateStore extends EventEmitter {
       typeof lease.lastActivityAt === "number" && Number.isFinite(lease.lastActivityAt)
         ? lease.lastActivityAt
         : lease.updatedAt ?? lease.createdAt ?? now;
-    const expiresAt = pinned ? null : lastActivityAt + leaseTtlMs;
+    const ttlAnchorAt =
+      typeof lease.ttlAnchorAt === "number" && Number.isFinite(lease.ttlAnchorAt)
+        ? lease.ttlAnchorAt
+        : lastActivityAt;
+    const expiresAt = pinned ? null : ttlAnchorAt + leaseTtlMs;
     const expired = !pinned && expiresAt !== null && now >= expiresAt;
     const expiredAt =
       expired
@@ -685,6 +691,7 @@ export class ButlerStateStore extends EventEmitter {
       pinned,
       leaseTtlMs,
       lastActivityAt,
+      ttlAnchorAt,
       expiresAt,
       expiredAt,
       reapAfterAt,
@@ -981,6 +988,12 @@ export class ButlerStateStore extends EventEmitter {
           this.serviceLeases.set(lease.id, this.normalizeServiceLease(lease as ServiceLeaseView));
         }
       }
+      this.runtimeCleanupTasks.clear();
+      for (const task of Array.isArray(data.runtimeCleanupTasks) ? data.runtimeCleanupTasks : []) {
+        if (task && typeof task === "object" && typeof task.id === "string" && typeof task.threadId === "string") {
+          this.runtimeCleanupTasks.set(task.id, task as RuntimeCleanupTaskView);
+        }
+      }
       this.persistedSupervisionByThreadId.clear();
       this.persistedWorkerReportsByThreadId.clear();
       this.persistedExecutionContractsByThreadId.clear();
@@ -1045,6 +1058,7 @@ export class ButlerStateStore extends EventEmitter {
       this.previewLeases.clear();
       this.previewProofs.clear();
       this.serviceLeases.clear();
+      this.runtimeCleanupTasks.clear();
       this.persistedSupervisionByThreadId.clear();
       this.persistedWorkerReportsByThreadId.clear();
       this.persistedExecutionContractsByThreadId.clear();
@@ -1069,6 +1083,7 @@ export class ButlerStateStore extends EventEmitter {
           (left, right) => right.verification.checkedAt - left.verification.checkedAt
         ),
         serviceLeases: [...this.serviceLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
+        runtimeCleanupTasks: [...this.runtimeCleanupTasks.values()].sort((left, right) => left.nextAttemptAt - right.nextAttemptAt),
         workerReportsByThreadId: Object.fromEntries(
           [...this.persistedWorkerReportsByThreadId.entries()].map(([threadId, reports]) => [threadId, reports])
         ),
@@ -1317,6 +1332,9 @@ export class ButlerStateStore extends EventEmitter {
     record.updatedAt = Date.now();
     record.turnCount = record.turns.length;
     this.refreshDerivedThreadState(record);
+    if (target.status === "completed" || target.status === "failed" || target.status === "interrupted") {
+      this.noteThreadLeaseActivity(threadId, target.completedAt ?? Date.now());
+    }
     this.emitChange();
   }
 
@@ -1341,6 +1359,9 @@ export class ButlerStateStore extends EventEmitter {
     }
     thread.turnCount = thread.turns.length;
     this.refreshDerivedThreadState(thread, activityAt);
+    if (normalized.type === "agentMessage") {
+      this.noteThreadLeaseActivity(threadId, activityAt);
+    }
     this.emitChange();
   }
 
@@ -1364,6 +1385,7 @@ export class ButlerStateStore extends EventEmitter {
 
     const thread = this.getOrCreateThread(threadId);
     this.refreshDerivedThreadState(thread, activityAt);
+    this.noteThreadLeaseActivity(threadId, activityAt);
     this.emitChange();
   }
 
@@ -1424,7 +1446,6 @@ export class ButlerStateStore extends EventEmitter {
     thread.supervisor = buildThreadSupervisor(thread);
     this.persistThreadSupervision(thread);
     this.captureMilestones(thread);
-    this.noteThreadLeaseActivity(thread.id, activityAt);
   }
 
   noteThreadLeaseActivity(threadId: string, at = Date.now()): void {
@@ -1437,7 +1458,10 @@ export class ButlerStateStore extends EventEmitter {
       if (typeof lease.lastActivityAt === "number" && at - lease.lastActivityAt < LEASE_ACTIVITY_WRITE_THROTTLE_MS) {
         continue;
       }
-      this.stackLeases.set(lease.id, this.normalizeStackLease({ ...lease, lastActivityAt: at, updatedAt: Math.max(lease.updatedAt, at) }, at));
+      this.stackLeases.set(
+        lease.id,
+        this.normalizeStackLease({ ...lease, lastActivityAt: at, ttlAnchorAt: at, updatedAt: Math.max(lease.updatedAt, at) }, at)
+      );
       changed = true;
     }
 
@@ -1448,7 +1472,10 @@ export class ButlerStateStore extends EventEmitter {
       if (typeof lease.lastActivityAt === "number" && at - lease.lastActivityAt < LEASE_ACTIVITY_WRITE_THROTTLE_MS) {
         continue;
       }
-      this.previewLeases.set(lease.id, this.normalizePreviewLease({ ...lease, lastActivityAt: at, updatedAt: Math.max(lease.updatedAt, at) }, at));
+      this.previewLeases.set(
+        lease.id,
+        this.normalizePreviewLease({ ...lease, lastActivityAt: at, ttlAnchorAt: at, updatedAt: Math.max(lease.updatedAt, at) }, at)
+      );
       changed = true;
     }
 
@@ -1459,7 +1486,10 @@ export class ButlerStateStore extends EventEmitter {
       if (typeof lease.lastActivityAt === "number" && at - lease.lastActivityAt < LEASE_ACTIVITY_WRITE_THROTTLE_MS) {
         continue;
       }
-      this.serviceLeases.set(lease.id, this.normalizeServiceLease({ ...lease, lastActivityAt: at, updatedAt: Math.max(lease.updatedAt, at) }, at));
+      this.serviceLeases.set(
+        lease.id,
+        this.normalizeServiceLease({ ...lease, lastActivityAt: at, ttlAnchorAt: at, updatedAt: Math.max(lease.updatedAt, at) }, at)
+      );
       changed = true;
     }
 
@@ -1486,11 +1516,7 @@ export class ButlerStateStore extends EventEmitter {
       at
     );
     this.stackLeases.set(leaseId, nextLease);
-    if (nextLease.threadId) {
-      this.noteThreadLeaseActivity(nextLease.threadId, at);
-    } else {
-      this.queueSave();
-    }
+    this.queueSave();
     this.emitChange();
     return nextLease;
   }
@@ -1515,8 +1541,6 @@ export class ButlerStateStore extends EventEmitter {
     this.previewLeases.set(leaseId, nextLease);
     if (nextLease.stackId) {
       this.noteStackLeaseActivity(nextLease.stackId, at);
-    } else if (nextLease.threadId) {
-      this.noteThreadLeaseActivity(nextLease.threadId, at);
     } else {
       this.queueSave();
     }
@@ -1606,6 +1630,70 @@ export class ButlerStateStore extends EventEmitter {
       .map((lease) => lease.id);
 
     return { stacks, previews, services };
+  }
+
+  enqueueRuntimeCleanupTask(input: {
+    threadId: string;
+    cwd: string | null;
+    notifyOnError?: boolean;
+    stacks: RuntimeCleanupTaskView["stacks"];
+    previews: RuntimeCleanupTaskView["previews"];
+    services: RuntimeCleanupTaskView["services"];
+  }): RuntimeCleanupTaskView {
+    const now = Date.now();
+    const task: RuntimeCleanupTaskView = {
+      id: input.threadId,
+      threadId: input.threadId,
+      cwd: input.cwd,
+      createdAt: now,
+      updatedAt: now,
+      nextAttemptAt: now,
+      attempts: 0,
+      lastError: null,
+      notifyOnError: input.notifyOnError !== false,
+      stacks: [...input.stacks],
+      previews: [...input.previews],
+      services: [...input.services]
+    };
+    this.runtimeCleanupTasks.set(task.id, task);
+    this.queueSave();
+    this.emitChange();
+    return task;
+  }
+
+  listDueRuntimeCleanupTasks(now = Date.now()): RuntimeCleanupTaskView[] {
+    return [...this.runtimeCleanupTasks.values()]
+      .filter((task) => task.nextAttemptAt <= now)
+      .sort((left, right) => left.nextAttemptAt - right.nextAttemptAt);
+  }
+
+  completeRuntimeCleanupTask(taskId: string): void {
+    if (!this.runtimeCleanupTasks.delete(taskId)) {
+      return;
+    }
+    this.queueSave();
+    this.emitChange();
+  }
+
+  failRuntimeCleanupTask(taskId: string, errorMessage: string, nextAttemptAt: number): { task: RuntimeCleanupTaskView | null; notify: boolean } {
+    const existing = this.runtimeCleanupTasks.get(taskId);
+    if (!existing) {
+      return { task: null, notify: false };
+    }
+
+    const notify = existing.notifyOnError;
+    const nextTask: RuntimeCleanupTaskView = {
+      ...existing,
+      attempts: existing.attempts + 1,
+      updatedAt: Date.now(),
+      nextAttemptAt,
+      lastError: errorMessage,
+      notifyOnError: false
+    };
+    this.runtimeCleanupTasks.set(taskId, nextTask);
+    this.queueSave();
+    this.emitChange();
+    return { task: nextTask, notify };
   }
 
   private pushMilestone(thread: CodexThreadRecord, type: CodexMilestoneEntry["type"], summary: string): void {
@@ -2036,6 +2124,7 @@ export class ButlerStateStore extends EventEmitter {
         ...lease,
         pinned: lease.pinned ?? existing?.pinned ?? false,
         lastActivityAt: lease.lastActivityAt ?? existing?.lastActivityAt ?? lease.updatedAt ?? lease.createdAt,
+        ttlAnchorAt: lease.ttlAnchorAt ?? existing?.ttlAnchorAt ?? lease.lastActivityAt ?? lease.updatedAt ?? lease.createdAt,
         leaseTtlMs: lease.leaseTtlMs ?? existing?.leaseTtlMs ?? this.stackLeaseTtlMs
       },
       Date.now()
@@ -2074,6 +2163,7 @@ export class ButlerStateStore extends EventEmitter {
         pinned: lease.pinned ?? existing?.pinned ?? false,
         lastVerification: lease.lastVerification ?? existing?.lastVerification ?? null,
         lastActivityAt: lease.lastActivityAt ?? existing?.lastActivityAt ?? lease.updatedAt ?? lease.createdAt,
+        ttlAnchorAt: lease.ttlAnchorAt ?? existing?.ttlAnchorAt ?? lease.lastActivityAt ?? lease.updatedAt ?? lease.createdAt,
         leaseTtlMs: lease.leaseTtlMs ?? existing?.leaseTtlMs ?? this.previewLeaseTtlMs
       },
       Date.now()
@@ -2234,6 +2324,7 @@ export class ButlerStateStore extends EventEmitter {
         ...lease,
         pinned: lease.pinned ?? existing?.pinned ?? false,
         lastActivityAt: lease.lastActivityAt ?? existing?.lastActivityAt ?? lease.updatedAt ?? lease.createdAt,
+        ttlAnchorAt: lease.ttlAnchorAt ?? existing?.ttlAnchorAt ?? lease.lastActivityAt ?? lease.updatedAt ?? lease.createdAt,
         leaseTtlMs: lease.leaseTtlMs ?? existing?.leaseTtlMs ?? this.serviceLeaseTtlMs
       },
       Date.now()
