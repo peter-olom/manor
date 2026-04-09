@@ -151,7 +151,7 @@ services:
       dockerfile: docker/egress/Dockerfile
     image: manor-egress:local
     container_name: manor-egress
-    command: ["squid", "-N", "-f", "/etc/squid/squid.conf"]
+    command: ["sh", "-lc", "rm -f /tmp/squid.pid && exec squid -N -f /etc/squid/squid.conf"]
     environment:
       MANOR_ROLE: egress
     volumes:
