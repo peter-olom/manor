@@ -98,26 +98,76 @@ function clipText(value: string | null | undefined, max = 160): string | null {
   return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized;
 }
 
-function formatWindowTitle(threadId: string): string {
-  return `Job ${threadId.slice(0, 8)}`;
+function summarizeTaskText(value: string | null | undefined, max = 120): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  return clipText(normalized, max);
 }
 
-function normalizeWindow(window: ButlerWindow): ButlerWindow {
+function deriveThreadTaskTitle(thread: CodexThreadRecord | null | undefined): string | null {
+  if (!thread) {
+    return null;
+  }
+
+  const fromContract = summarizeTaskText(thread.executionContract?.requestedTask);
+  if (fromContract) {
+    return fromContract;
+  }
+
+  const flattenedItems = thread.turns.flatMap((turn) => turn.items.map((item) => ({ turn, item })));
+  const latestUserPrompt = summarizeTaskText(
+    [...flattenedItems]
+      .reverse()
+      .find(({ item }) => item.type === "userMessage" && item.text.trim())?.item.text ?? null
+  );
+  if (latestUserPrompt) {
+    return latestUserPrompt;
+  }
+
+  return summarizeTaskText(thread.preview);
+}
+
+function formatFallbackJobLabel(threadId: string): string {
+  const normalizedThreadId = threadId.trim();
+  if (!normalizedThreadId) {
+    return "Job";
+  }
+
+  if (normalizedThreadId.length <= 13) {
+    return `Job ${normalizedThreadId}`;
+  }
+
+  return `Job ${normalizedThreadId.slice(0, 8)}-${normalizedThreadId.slice(-4)}`;
+}
+
+function formatWindowTitle(threadId: string, thread?: CodexThreadRecord): string {
+  const threadName = typeof thread?.name === "string" ? thread.name.trim() : "";
+  if (threadName) {
+    return threadName;
+  }
+
+  return formatFallbackJobLabel(threadId);
+}
+
+function normalizeWindow(window: ButlerWindow, thread?: CodexThreadRecord): ButlerWindow {
   return {
     threadId: window.threadId,
-    title: formatWindowTitle(window.threadId),
+    title: formatWindowTitle(window.threadId, thread),
     openedAt: window.openedAt
   };
 }
 
 function buildThreadSupervisor(thread: CodexThreadRecord): CodexThreadSupervisorView {
   const project = resolveWorkspaceProjectInfo(thread.cwd);
+  const latestUserPrompt = deriveThreadTaskTitle(thread);
   const flattenedItems = thread.turns.flatMap((turn) => turn.items.map((item) => ({ turn, item })));
-  const latestUserPrompt = clipText(
-    [...flattenedItems]
-      .reverse()
-      .find(({ item }) => item.type === "userMessage" && item.text.trim())?.item.text ?? null
-  );
   const latestAgentReply = clipText(
     [...flattenedItems]
       .reverse()
@@ -510,6 +560,41 @@ function normalizeTurn(turn: Record<string, unknown>): CodexTurnRecord {
   };
 }
 
+function restorePersistedItem(item: {
+  id?: unknown;
+  type?: unknown;
+  status?: unknown;
+  text?: unknown;
+  at?: unknown;
+}): CodexItemRecord {
+  return {
+    id: typeof item.id === "string" ? item.id : crypto.randomUUID(),
+    type: typeof item.type === "string" ? item.type : "unknown",
+    status: item.status === "started" ? "started" : "completed",
+    text: typeof item.text === "string" ? item.text : "",
+    at: typeof item.at === "number" && Number.isFinite(item.at) ? item.at : Date.now(),
+    raw: {}
+  };
+}
+
+function restorePersistedTurn(turn: {
+  id?: unknown;
+  status?: unknown;
+  error?: unknown;
+  startedAt?: unknown;
+  completedAt?: unknown;
+  items?: unknown;
+}): CodexTurnRecord {
+  return {
+    id: typeof turn.id === "string" ? turn.id : crypto.randomUUID(),
+    status: typeof turn.status === "string" ? turn.status : "unknown",
+    error: typeof turn.error === "string" ? turn.error : null,
+    startedAt: typeof turn.startedAt === "number" && Number.isFinite(turn.startedAt) ? turn.startedAt : Date.now(),
+    completedAt: typeof turn.completedAt === "number" && Number.isFinite(turn.completedAt) ? turn.completedAt : null,
+    items: Array.isArray(turn.items) ? turn.items.map((item) => restorePersistedItem((item ?? {}) as Record<string, unknown>)) : []
+  };
+}
+
 export class ButlerStateStore extends EventEmitter {
   private readonly uiStatePath: string;
   private readonly threads = new Map<string, CodexThreadRecord>();
@@ -551,12 +636,13 @@ export class ButlerStateStore extends EventEmitter {
       }
 
       seenThreadIds.add(threadId);
+      const thread = this.threads.get(threadId);
       nextWindows.push(
         normalizeWindow({
           threadId,
           title: window.title,
           openedAt: window.openedAt
-        })
+        }, thread)
       );
     }
 
@@ -951,6 +1037,7 @@ export class ButlerStateStore extends EventEmitter {
       const raw = await fs.readFile(this.uiStatePath, "utf8");
       const data = JSON.parse(raw) as PersistedUiState;
       this.threadInventoryReady = false;
+      this.threads.clear();
       this.windows = Array.isArray(data.windows)
         ? data.windows
             .filter((window): window is ButlerWindow => Boolean(window && typeof window.threadId === "string"))
@@ -1040,11 +1127,53 @@ export class ButlerStateStore extends EventEmitter {
         ) {
           this.persistedExecutionContractsByThreadId.set(threadId, {
             ...contract,
+            requestedTask:
+              typeof contract.requestedTask === "string" && contract.requestedTask.trim()
+                ? contract.requestedTask.trim()
+                : "Carry out the delegated task.",
+            operatorGoal:
+              typeof contract.operatorGoal === "string" && contract.operatorGoal.trim() ? contract.operatorGoal.trim() : null,
+            successConditions: Array.isArray(contract.successConditions)
+              ? contract.successConditions.filter((condition): condition is string => typeof condition === "string" && condition.trim().length > 0)
+              : [],
+            stopConditions: Array.isArray(contract.stopConditions)
+              ? contract.stopConditions.filter((condition): condition is string => typeof condition === "string" && condition.trim().length > 0)
+              : [],
+            escalationConditions: Array.isArray(contract.escalationConditions)
+              ? contract.escalationConditions.filter((condition): condition is string => typeof condition === "string" && condition.trim().length > 0)
+              : [],
             notes: Array.isArray(contract.notes)
               ? contract.notes.filter((note): note is string => typeof note === "string")
               : []
           });
         }
+      }
+      for (const thread of Array.isArray(data.threads) ? data.threads : []) {
+        if (thread && typeof thread === "object" && typeof thread.id === "string") {
+          this.restorePersistedThread(thread as CodexThreadDetailView);
+        }
+      }
+      const synthesizedThreadIds = new Set<string>([
+        ...this.windows.map((window) => window.threadId),
+        ...this.persistedSupervisionByThreadId.keys(),
+        ...this.persistedWorkerReportsByThreadId.keys(),
+        ...this.persistedExecutionContractsByThreadId.keys()
+      ]);
+      for (const threadId of synthesizedThreadIds) {
+        const record = this.getOrCreateThread(threadId);
+        if (!record.executionContract) {
+          const persistedContract = this.persistedExecutionContractsByThreadId.get(threadId);
+          if (persistedContract) {
+            record.executionContract = { ...persistedContract };
+          }
+        }
+        if (!record.workerReport) {
+          const latestReport = this.persistedWorkerReportsByThreadId.get(threadId)?.at(-1) ?? null;
+          if (latestReport) {
+            record.workerReport = { ...latestReport };
+          }
+        }
+        this.refreshDerivedThreadState(record);
       }
       for (const lease of this.previewLeases.values()) {
         if (lease.lastVerification) {
@@ -1052,6 +1181,7 @@ export class ButlerStateStore extends EventEmitter {
         }
       }
     } catch {
+      this.threads.clear();
       this.windows = [];
       this.focusedWindowId = null;
       this.stackLeases.clear();
@@ -1073,8 +1203,9 @@ export class ButlerStateStore extends EventEmitter {
 
     this.saveTimer = setTimeout(async () => {
       this.saveTimer = null;
-      this.windows = this.windows.map(normalizeWindow);
+      this.windows = this.windows.map((window) => normalizeWindow(window, this.threads.get(window.threadId)));
       const payload: PersistedUiState = {
+        threads: this.listThreads().map((thread) => this.toThreadDetailView(this.threads.get(thread.id) ?? this.getOrCreateThread(thread.id))),
         windows: this.windows,
         focusedWindowId: this.focusedWindowId,
         stackLeases: [...this.stackLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
@@ -1109,6 +1240,86 @@ export class ButlerStateStore extends EventEmitter {
     this.emit("change");
   }
 
+  private restorePersistedThread(thread: CodexThreadDetailView): void {
+    const threadId = typeof thread.id === "string" ? thread.id : null;
+    if (!threadId) {
+      return;
+    }
+
+    const record = this.getOrCreateThread(threadId);
+    record.name = typeof thread.name === "string" && thread.name.trim() ? thread.name.trim() : null;
+    record.preview = typeof thread.preview === "string" ? thread.preview : record.preview;
+    record.source = typeof thread.source === "string" ? thread.source : record.source;
+    record.cwd = typeof thread.cwd === "string" ? thread.cwd : record.cwd;
+    record.createdAt = typeof thread.createdAt === "number" && Number.isFinite(thread.createdAt) ? thread.createdAt : record.createdAt;
+    record.updatedAt = typeof thread.updatedAt === "number" && Number.isFinite(thread.updatedAt) ? thread.updatedAt : record.updatedAt;
+    record.status = normalizeStatus(thread.status);
+    record.modelProvider = typeof thread.modelProvider === "string" ? thread.modelProvider : record.modelProvider;
+    record.turnCount = typeof thread.turnCount === "number" && Number.isFinite(thread.turnCount) ? thread.turnCount : record.turnCount;
+    record.loaded = Boolean(thread.loaded);
+    record.contextUsage =
+      thread.contextUsage && typeof thread.contextUsage === "object"
+        ? {
+            tokens: typeof thread.contextUsage.tokens === "number" ? thread.contextUsage.tokens : null,
+            contextWindow: typeof thread.contextUsage.contextWindow === "number" ? thread.contextUsage.contextWindow : null,
+            percent: typeof thread.contextUsage.percent === "number" ? thread.contextUsage.percent : null
+          }
+        : record.contextUsage;
+    record.compaction =
+      thread.compaction && typeof thread.compaction === "object"
+        ? {
+            active: Boolean(thread.compaction.active),
+            count: typeof thread.compaction.count === "number" ? thread.compaction.count : 0,
+            lastStartedAt: typeof thread.compaction.lastStartedAt === "number" ? thread.compaction.lastStartedAt : null,
+            lastCompletedAt: typeof thread.compaction.lastCompletedAt === "number" ? thread.compaction.lastCompletedAt : null
+          }
+        : record.compaction;
+    record.supervision =
+      thread.supervision && typeof thread.supervision === "object"
+        ? {
+            butlerTurnsUsed: typeof thread.supervision.butlerTurnsUsed === "number" ? thread.supervision.butlerTurnsUsed : 0,
+            maxButlerTurns: typeof thread.supervision.maxButlerTurns === "number" ? thread.supervision.maxButlerTurns : null,
+            capReached: Boolean(thread.supervision.capReached)
+          }
+        : record.supervision;
+    record.executionContract = thread.executionContract ? { ...thread.executionContract } : record.executionContract;
+    record.turns = Array.isArray(thread.turns) ? thread.turns.map((turn) => restorePersistedTurn(turn)) : record.turns;
+    record.turnCount = Math.max(record.turnCount, record.turns.length);
+    record.eventLog = Array.isArray(thread.eventLog)
+      ? thread.eventLog
+          .filter(
+            (entry): entry is CodexEventEntry =>
+              Boolean(entry) &&
+              typeof entry === "object" &&
+              typeof entry.at === "number" &&
+              typeof entry.method === "string" &&
+              typeof entry.summary === "string"
+          )
+          .slice(0, MAX_EVENT_LOG)
+      : record.eventLog;
+    record.workerReport =
+      thread.workerReport &&
+      typeof thread.workerReport === "object" &&
+      typeof thread.workerReport.threadId === "string" &&
+      typeof thread.workerReport.turnId === "string" &&
+      (thread.workerReport.status === "completed" || thread.workerReport.status === "blocked") &&
+      typeof thread.workerReport.summary === "string"
+        ? {
+            threadId: thread.workerReport.threadId,
+            turnId: thread.workerReport.turnId,
+            status: thread.workerReport.status,
+            summary: thread.workerReport.summary,
+            details: typeof thread.workerReport.details === "string" ? thread.workerReport.details : null,
+            createdAt:
+              typeof thread.workerReport.createdAt === "number" ? thread.workerReport.createdAt : record.updatedAt,
+            updatedAt:
+              typeof thread.workerReport.updatedAt === "number" ? thread.workerReport.updatedAt : record.updatedAt
+          }
+        : record.workerReport;
+    this.refreshDerivedThreadState(record);
+    this.primeThreadMilestones(threadId);
+  }
+
   markThreadInventoryReady(): void {
     this.threadInventoryReady = true;
     if (this.reconcileThreadWindows()) {
@@ -1125,6 +1336,7 @@ export class ButlerStateStore extends EventEmitter {
 
     const created: CodexThreadRecord = {
       id,
+      name: null,
       preview: "",
       source: "unknown",
       cwd: null,
@@ -1186,6 +1398,9 @@ export class ButlerStateStore extends EventEmitter {
     }
 
     const record = this.getOrCreateThread(id);
+    if (Object.prototype.hasOwnProperty.call(thread, "name")) {
+      record.name = typeof thread.name === "string" && thread.name.trim() ? thread.name.trim() : null;
+    }
     record.preview = typeof thread.preview === "string" ? thread.preview : record.preview;
     record.source = typeof thread.source === "string" ? thread.source : record.source;
     record.cwd = typeof thread.cwd === "string" ? thread.cwd : record.cwd;
@@ -1764,11 +1979,11 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   openWindow(threadId: string): void {
-    this.getOrCreateThread(threadId);
+    const thread = this.getOrCreateThread(threadId);
     if (!this.windows.find((window) => window.threadId === threadId)) {
       this.windows.unshift({
         threadId,
-        title: formatWindowTitle(threadId),
+        title: formatWindowTitle(threadId, thread),
         openedAt: Date.now()
       });
     }
@@ -1877,6 +2092,7 @@ export class ButlerStateStore extends EventEmitter {
     return [...this.threads.values()]
       .map((thread) => ({
         id: thread.id,
+        name: thread.name,
         preview: thread.preview,
         source: thread.source,
         cwd: thread.cwd,
@@ -1923,6 +2139,7 @@ export class ButlerStateStore extends EventEmitter {
   private toThreadDetailView(thread: CodexThreadRecord): CodexThreadDetailView {
     return {
       id: thread.id,
+      name: thread.name,
       preview: thread.preview,
       source: thread.source,
       cwd: thread.cwd,
@@ -1996,7 +2213,7 @@ export class ButlerStateStore extends EventEmitter {
     if (this.reconcileThreadWindows()) {
       this.queueSave();
     }
-    this.windows = this.windows.map(normalizeWindow);
+    this.windows = this.windows.map((window) => normalizeWindow(window, this.threads.get(window.threadId)));
 
     return {
       codex: {
@@ -2392,7 +2609,7 @@ export class ButlerStateStore extends EventEmitter {
     if (this.reconcileThreadWindows()) {
       this.queueSave();
     }
-    this.windows = this.windows.map(normalizeWindow);
+    this.windows = this.windows.map((window) => normalizeWindow(window, this.threads.get(window.threadId)));
     const openThreads = Object.fromEntries(
       this.windows
         .map((window) => {

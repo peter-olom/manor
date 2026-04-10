@@ -2,9 +2,11 @@ import type { DragEvent, ReactNode, DragEvent as ReactDragEvent } from "react";
 import { isValidElement } from "react";
 
 import type {
+  ButlerThreadCallback,
   ButlerHistoryState,
   ButlerMessageRecord,
   ButlerThinkingLevel,
+  CodexThreadSummary,
   CodexThreadDetail,
   ImageReference,
   PreviewBrowserMode,
@@ -262,6 +264,19 @@ export function formatThreadBudget(supervision: { butlerTurnsUsed: number; maxBu
   return supervision.maxButlerTurns === null ? `${supervision.butlerTurnsUsed} turns` : `${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns} turns`;
 }
 
+export function formatJobIdLabel(threadId: string | null | undefined): string {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId) {
+    return "Job";
+  }
+
+  if (normalizedThreadId.length <= 13) {
+    return `Job ${normalizedThreadId}`;
+  }
+
+  return `Job ${normalizedThreadId.slice(0, 8)}-${normalizedThreadId.slice(-4)}`;
+}
+
 export function formatCodexCompactionState(compaction: {
   active: boolean;
   count: number;
@@ -281,6 +296,45 @@ export function describeStatus(status: ThreadStatus): string {
     return "Idle";
   }
   return "Unknown";
+}
+
+export function formatThreadTitle(thread: Pick<CodexThreadSummary, "preview" | "supervisor" | "executionContract">): string {
+  const candidates = [
+    thread.executionContract?.requestedTask,
+    thread.supervisor.latestUserPrompt,
+    thread.preview.startsWith("AUTHORITATIVE JOB CONTRACT") ? null : thread.preview
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = candidate?.replace(/\s+/g, " ").trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return "Untitled run";
+}
+
+export function describeCallbackState(
+  callback: ButlerThreadCallback | null | undefined
+): { label: string; tone: "waiting" | "recovered" | "closed" | "missing" } | null {
+  if (!callback) {
+    return null;
+  }
+
+  if (callback.callbackState === "missing_worker_callback") {
+    return { label: "Recovering", tone: "missing" };
+  }
+
+  if (callback.owesOperatorReply) {
+    return { label: "Awaiting callback", tone: "waiting" };
+  }
+
+  if (callback.resolutionState === "recovered_from_thread_state") {
+    return { label: "Recovered", tone: "recovered" };
+  }
+
+  return { label: "Closed", tone: "closed" };
 }
 
 export function itemTone(type: string): "user" | "assistant" | "system" {

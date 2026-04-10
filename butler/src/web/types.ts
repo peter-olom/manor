@@ -1,4 +1,10 @@
 export type ThreadStatus = "active" | "idle" | "unknown";
+export type ButlerCallbackState =
+  | "waiting"
+  | "received_worker_callback"
+  | "missing_worker_callback"
+  | "recovered_from_thread_state"
+  | "closed";
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 export type ButlerThinkingLevel = "off" | ReasoningEffort;
 export type ThemePreference = "system" | "light" | "dark";
@@ -191,6 +197,7 @@ export type ModelOption = {
 
 export type CodexThreadSummary = {
   id: string;
+  name: string | null;
   preview: string;
   source: string;
   cwd: string | null;
@@ -223,6 +230,25 @@ export type CodexThreadSummary = {
     summary: string;
     blocked: boolean;
   };
+  executionContract: {
+    threadId: string;
+    workspaceCwd: string | null;
+    projectId: string;
+    projectLabel: string;
+    branch: string | null;
+    executionMode: "local-manor-runtime" | "live-remote-runtime" | "unspecified";
+    executionModeLabel: string;
+    previewLane: "expected" | "available";
+    proofRequired: boolean;
+    operatorAcknowledgementRequired: boolean;
+    operatorCallbackRequired: boolean;
+    requestedTask: string;
+    operatorGoal: string | null;
+    successConditions: string[];
+    stopConditions: string[];
+    escalationConditions: string[];
+    notes: string[];
+  } | null;
 };
 
 export type CodexThreadDetail = CodexThreadSummary & {
@@ -254,6 +280,21 @@ export type CodexThreadDetail = CodexThreadSummary & {
     createdAt: number;
     updatedAt: number;
   } | null;
+};
+
+export type ButlerThreadCallback = {
+  threadId: string;
+  callbackState: ButlerCallbackState;
+  resolutionState: "received_worker_callback" | "recovered_from_thread_state" | null;
+  requestedAt: number;
+  lastEventAt: number | null;
+  lastWorkerStatusSeen: ThreadStatus | null;
+  lastTerminalReportAt: number | null;
+  operatorCloseoutStatus: "not_required" | "owed" | "posted";
+  owesOperatorReply: boolean;
+  closeoutChannel: "none" | "main_chat" | "background_notice";
+  closedAt: number | null;
+  updatedAt: number;
 };
 
 export type ButlerWindowRecord = {
@@ -455,6 +496,7 @@ export type ShellSnapshot = {
         summary: string;
       };
       notices: ButlerMessageRecord[];
+      callbacks: ButlerThreadCallback[];
     };
     lastError: string | null;
     compose: {

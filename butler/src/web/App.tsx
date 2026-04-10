@@ -24,9 +24,13 @@ import type {
 import {
   THEME_STORAGE_KEY,
   buildWorkspaceQuery,
+  describeCallbackState,
+  describeStatus,
   formatCodexCompactionState,
   formatContextUsage,
   formatCompactionState,
+  formatJobIdLabel,
+  formatThreadTitle,
   onboardingStatusLabel,
   readStoredValue,
   readWorkspaceQuery,
@@ -113,6 +117,10 @@ export function App() {
   const threadSummaryById = useMemo(
     () => new Map((shell?.codex.threads ?? []).map((thread) => [thread.id, thread])),
     [shell?.codex.threads]
+  );
+  const callbackByThreadId = useMemo(
+    () => new Map((shell?.butler.supervision.callbacks ?? []).map((callback) => [callback.threadId, callback])),
+    [shell?.butler.supervision.callbacks]
   );
   const activeThreadSummary = activeThreadId ? threadSummaryById.get(activeThreadId) ?? null : null;
 
@@ -723,27 +731,38 @@ export function App() {
           {shell.codex.threads.length === 0 ? (
             <div className="empty">No Codex threads are available yet.</div>
           ) : (
-            shell.codex.threads.map((thread) => (
-              <div key={thread.id} className={`thread-row ${shell.codex.focusedWindowId === thread.id ? "is-active" : ""}`}>
-                <button
-                  className="thread-row-main"
-                  onClick={() => {
-                    setThreadsDrawerOpen(false);
-                    openThread(thread.id);
-                  }}
-                >
-                  <div className="thread-row-top">
-                    <span className={`job-status is-${thread.status}`}>{thread.status === "active" ? "Working" : thread.status === "idle" ? "Idle" : "Unknown"}</span>
-                    <span className="job-time">{new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(thread.updatedAt)}</span>
-                  </div>
-                  <strong>{thread.preview || "Untitled run"}</strong>
-                  <span className="thread-row-id">{thread.id}</span>
-                </button>
-                <button className="thread-row-delete" onClick={() => confirmDeleteThread(thread.id)} aria-label="Delete thread" title="Delete thread">
-                  <TrashIcon />
-                </button>
-              </div>
-            ))
+            shell.codex.threads.map((thread) => {
+              const callback = callbackByThreadId.get(thread.id) ?? null;
+              const callbackState = describeCallbackState(callback);
+              return (
+                <div key={thread.id} className={`thread-row ${shell.codex.focusedWindowId === thread.id ? "is-active" : ""}`}>
+                  <button
+                    className="thread-row-main"
+                    onClick={() => {
+                      setThreadsDrawerOpen(false);
+                      openThread(thread.id);
+                    }}
+                  >
+                    <div className="thread-row-top">
+                      <div className="thread-row-statuses">
+                        <span className={`job-status is-${thread.status}`}>{describeStatus(thread.status)}</span>
+                        {callbackState ? <span className={`thread-callback-status is-${callbackState.tone}`}>{callbackState.label}</span> : null}
+                      </div>
+                      <span className="job-time">{new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(thread.updatedAt)}</span>
+                    </div>
+                    <strong>{formatThreadTitle(thread)}</strong>
+                    <span className="thread-row-summary">{thread.supervisor.summary}</span>
+                    <div className="thread-row-meta">
+                      <span className="thread-row-project">{thread.supervisor.projectLabel}</span>
+                      <span className="thread-row-id" title={thread.id}>{formatJobIdLabel(thread.id)}</span>
+                    </div>
+                  </button>
+                  <button className="thread-row-delete" onClick={() => confirmDeleteThread(thread.id)} aria-label="Delete thread" title="Delete thread">
+                    <TrashIcon />
+                  </button>
+                </div>
+              );
+            })
           )}
         </div>
       </aside>

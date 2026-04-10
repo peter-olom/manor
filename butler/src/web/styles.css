@@ -2325,6 +2325,13 @@ select {
   gap: 16px;
 }
 
+.thread-row-statuses {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
 .thread-row strong {
   font-size: 0.96rem;
   font-weight: 500;
@@ -2334,6 +2341,27 @@ select {
   text-overflow: ellipsis;
 }
 
+.thread-row-summary {
+  display: block;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.thread-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.thread-row-project {
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink-soft);
+}
+
 .thread-row-id {
   font-family: "IBM Plex Mono", "SFMono-Regular", "SF Mono", ui-monospace, monospace;
   font-size: 0.76rem;
@@ -2341,6 +2369,36 @@ select {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.thread-callback-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid color-mix(in srgb, var(--line-strong) 86%, transparent);
+  background: color-mix(in srgb, var(--surface) 84%, transparent);
+}
+
+.thread-callback-status.is-waiting {
+  color: var(--accent);
+}
+
+.thread-callback-status.is-missing {
+  color: var(--danger);
+}
+
+.thread-callback-status.is-recovered {
+  color: var(--success);
+}
+
+.thread-callback-status.is-closed {
+  color: var(--muted);
 }
 
 .modal-backdrop {

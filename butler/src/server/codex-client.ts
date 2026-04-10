@@ -271,6 +271,18 @@ export class CodexAppServerClient extends EventEmitter {
           }
         }
         break;
+      case "thread/name/updated":
+        if (params.thread && typeof params.thread === "object") {
+          const thread = params.thread as Record<string, unknown>;
+          if (typeof thread.id === "string") {
+            this.store.upsertThreadSummary(thread);
+            this.store.addEvent(thread.id, message.method, "Thread name updated");
+          }
+        } else if (typeof params.threadId === "string" && typeof params.name === "string") {
+          this.store.upsertThreadSummary({ id: params.threadId, name: params.name });
+          this.store.addEvent(params.threadId, message.method, "Thread name updated");
+        }
+        break;
       case "thread/status/changed":
         if (typeof params.threadId === "string") {
           this.store.setThreadStatus(params.threadId, params.status);

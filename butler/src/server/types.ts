@@ -1,6 +1,15 @@
 export type CodexThreadStatus = "active" | "idle" | "unknown";
 export type CodexExecutionMode = "local-manor-runtime" | "live-remote-runtime" | "unspecified";
 export type CodexPreviewLane = "expected" | "available";
+export type ButlerCallbackState =
+  | "waiting"
+  | "received_worker_callback"
+  | "missing_worker_callback"
+  | "recovered_from_thread_state"
+  | "closed";
+export type ButlerCallbackResolutionState = "received_worker_callback" | "recovered_from_thread_state" | null;
+export type ButlerOperatorCloseoutStatus = "not_required" | "owed" | "posted";
+export type ButlerCloseoutChannel = "none" | "main_chat" | "background_notice";
 
 export interface CodexThreadExecutionContractView {
   threadId: string;
@@ -14,7 +23,27 @@ export interface CodexThreadExecutionContractView {
   proofRequired: boolean;
   operatorAcknowledgementRequired: boolean;
   operatorCallbackRequired: boolean;
+  requestedTask: string;
+  operatorGoal: string | null;
+  successConditions: string[];
+  stopConditions: string[];
+  escalationConditions: string[];
   notes: string[];
+}
+
+export interface ButlerThreadCallbackView {
+  threadId: string;
+  callbackState: ButlerCallbackState;
+  resolutionState: ButlerCallbackResolutionState;
+  requestedAt: number;
+  lastEventAt: number | null;
+  lastWorkerStatusSeen: CodexThreadStatus | null;
+  lastTerminalReportAt: number | null;
+  operatorCloseoutStatus: ButlerOperatorCloseoutStatus;
+  owesOperatorReply: boolean;
+  closeoutChannel: ButlerCloseoutChannel;
+  closedAt: number | null;
+  updatedAt: number;
 }
 
 export interface CodexEventEntry {
@@ -375,6 +404,7 @@ export interface CodexThreadSupervisorView {
 
 export interface CodexThreadSummary {
   id: string;
+  name: string | null;
   preview: string;
   source: string;
   cwd: string | null;
@@ -568,6 +598,7 @@ export interface AppSnapshot {
       projects: CodexProjectSummaryView[];
       supervisor: ButlerSupervisorSummaryView;
       notices: ButlerMessageView[];
+      callbacks: ButlerThreadCallbackView[];
     };
     latestPreviewProofsByThreadId: Record<string, PreviewProofRecordView>;
     stacks: StackLeaseView[];
@@ -627,6 +658,7 @@ export interface AppBootstrapSnapshot {
 }
 
 export interface PersistedUiState {
+  threads?: CodexThreadDetailView[];
   windows: ButlerWindow[];
   focusedWindowId: string | null;
   stackLeases?: StackLeaseView[];

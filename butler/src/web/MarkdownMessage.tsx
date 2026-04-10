@@ -31,7 +31,12 @@ const CONTRACT_FIELD_LABELS: Record<string, string> = {
   proof_required: "Proof",
   operator_callback: "Callback",
   operator_acknowledgement: "Acknowledgement",
+  operator_goal: "Goal",
   preview_lane: "Preview lane",
+  requested_task: "Task",
+  success_condition: "Success condition",
+  stop_condition: "Stop condition",
+  escalation_condition: "Escalation condition",
   thread_id: "Job",
   harness_binding: "Harness",
   note: "Note"

@@ -1,5 +1,63 @@
 import type { CodexExecutionMode, CodexPreviewLane, CodexThreadExecutionContractView } from "./types.js";
 
+function normalizeContractText(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized || null;
+}
+
+function deriveRequestedTask(taskText: string): string {
+  return normalizeContractText(taskText) ?? "Carry out the delegated task.";
+}
+
+function deriveSuccessConditions(input: {
+  executionMode: CodexExecutionMode;
+  proofRequired: boolean;
+  operatorGoal: string | null;
+}): string[] {
+  const conditions = [
+    "The requested task is materially completed and the result matches the operator ask.",
+    input.executionMode === "live-remote-runtime"
+      ? "Verification is tied to the live deployed target, not a local substitute."
+      : "Verification stays on the assigned Manor workspace or preview path.",
+    "A concise supervisor report is recorded before the worker finishes."
+  ];
+
+  if (input.operatorGoal) {
+    conditions.push(`The result satisfies this goal: ${input.operatorGoal}`);
+  }
+
+  if (input.proofRequired) {
+    conditions.push("Persisted runtime proof is gathered before reporting completion.");
+  }
+
+  return conditions;
+}
+
+function deriveStopConditions(input: { proofRequired: boolean }): string[] {
+  const conditions = [
+    "Do not switch execution mode or runtime strategy inside the same job thread.",
+    "Do not treat shared-shell bootstrap alone as a valid reason to block a runtime task while a preview path remains untried."
+  ];
+
+  if (input.proofRequired) {
+    conditions.push("Do not report completion without the required proof bundle.");
+  }
+
+  return conditions;
+}
+
+function deriveEscalationConditions(): string[] {
+  return [
+    "Escalate when operator input is required to choose between materially different paths.",
+    "Escalate when auth, secrets, policy, or environment limits block progress after normal recovery attempts.",
+    "Escalate when risk or uncertainty could change the claimed outcome."
+  ];
+}
+
 export function detectExecutionMode(text: string): CodexExecutionMode {
   const normalized = text.toLowerCase();
   if (
@@ -35,11 +93,15 @@ export function buildThreadExecutionContract(input: {
   projectLabel: string;
   branch: string | null;
   taskText: string;
+  requestedTask?: string;
+  operatorGoal?: string | null;
   notes: string[];
 }): CodexThreadExecutionContractView {
   const executionMode = detectExecutionMode(input.taskText);
   const proofRequired = /playwright|proof|screenshot|video|verify|browser|ui|smoke/i.test(input.taskText);
   const previewLane: CodexPreviewLane = proofRequired ? "expected" : "available";
+  const operatorGoal = normalizeContractText(input.operatorGoal);
+  const requestedTask = normalizeContractText(input.requestedTask) ?? deriveRequestedTask(input.taskText);
 
   return {
     threadId: input.threadId,
@@ -53,6 +115,11 @@ export function buildThreadExecutionContract(input: {
     proofRequired,
     operatorAcknowledgementRequired: false,
     operatorCallbackRequired: false,
+    requestedTask,
+    operatorGoal,
+    successConditions: deriveSuccessConditions({ executionMode, proofRequired, operatorGoal }),
+    stopConditions: deriveStopConditions({ proofRequired }),
+    escalationConditions: deriveEscalationConditions(),
     notes: [...new Set(input.notes.map((note) => note.trim()).filter(Boolean))]
   };
 }
@@ -93,9 +160,16 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
     return null;
   }
 
+  const requestedTaskMarker = "\nREQUESTED TASK";
+  const requestedTaskStart = normalized.indexOf(requestedTaskMarker);
+  const contractBlock = requestedTaskStart >= 0 ? normalized.slice(0, requestedTaskStart).trim() : normalized;
+  const requestBlock = requestedTaskStart >= 0 ? normalized.slice(requestedTaskStart + requestedTaskMarker.length).trim() : "";
   const notes: string[] = [];
+  const successConditions: string[] = [];
+  const stopConditions: string[] = [];
+  const escalationConditions: string[] = [];
   const values = new Map<string, string>();
-  for (const line of normalized.split(/\r?\n/)) {
+  for (const line of contractBlock.split(/\r?\n/).slice(1)) {
     const marker = line.indexOf(":");
     if (marker === -1) {
       continue;
@@ -109,6 +183,18 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
       notes.push(value);
       continue;
     }
+    if (key === "success_condition") {
+      successConditions.push(value);
+      continue;
+    }
+    if (key === "stop_condition") {
+      stopConditions.push(value);
+      continue;
+    }
+    if (key === "escalation_condition") {
+      escalationConditions.push(value);
+      continue;
+    }
     values.set(key, value);
   }
 
@@ -116,6 +202,19 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
   if (!threadId) {
     return null;
   }
+
+  const requestLines = requestBlock.split("\n");
+  const goalLineIndex = requestLines.findIndex((line) => line.trim().startsWith("Goal:"));
+  const requestedTaskLines = goalLineIndex >= 0 ? requestLines.slice(0, goalLineIndex) : requestLines;
+  const requestedTask = requestedTaskLines.join("\n").trim() || values.get("requested_task") || "";
+  const operatorGoal =
+    goalLineIndex >= 0
+      ? requestLines
+          .slice(goalLineIndex)
+          .join("\n")
+          .trim()
+          .replace(/^Goal:\s*/i, "") || null
+      : normalizeContractText(values.get("operator_goal") ?? null);
 
   const executionModeLabel = values.get("execution_mode") || describeExecutionMode("unspecified");
   const executionMode = detectExecutionMode(executionModeLabel);
@@ -140,6 +239,14 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
     proofRequired,
     operatorAcknowledgementRequired,
     operatorCallbackRequired,
+    requestedTask: normalizeContractText(requestedTask) ?? "Carry out the delegated task.",
+    operatorGoal,
+    successConditions:
+      successConditions.length > 0
+        ? successConditions
+        : deriveSuccessConditions({ executionMode, proofRequired, operatorGoal }),
+    stopConditions: stopConditions.length > 0 ? stopConditions : deriveStopConditions({ proofRequired }),
+    escalationConditions: escalationConditions.length > 0 ? escalationConditions : deriveEscalationConditions(),
     notes
   };
 }
