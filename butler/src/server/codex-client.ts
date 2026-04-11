@@ -91,12 +91,22 @@ function normalizeInputItems(input: string | CodexInputItem[]): CodexInputItem[]
 }
 
 export class CodexAppServerClient extends EventEmitter {
+  private static readonly CONNECT_TIMEOUT_MS = 15_000;
+  private static readonly HEARTBEAT_INTERVAL_MS = 15_000;
+  private static readonly HEARTBEAT_TIMEOUT_MS = 10_000;
+  private static readonly RECONNECT_BASE_DELAY_MS = 1_500;
+  private static readonly RECONNECT_MAX_DELAY_MS = 15_000;
+
   private readonly baseUrl: string;
   private readonly store: ButlerStateStore;
   private socket: WebSocket | null = null;
   private nextId = 1;
   private readonly pending = new Map<number, { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void }>();
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private connectTimeoutTimer: NodeJS.Timeout | null = null;
+  private heartbeatIntervalTimer: NodeJS.Timeout | null = null;
+  private heartbeatTimeoutTimer: NodeJS.Timeout | null = null;
+  private reconnectAttempt = 0;
   private readonly resumedThreadIds = new Set<string>();
   private readonly directControlThreadIds = new Set<string>();
   private readonly activeTurnIds = new Map<string, string>();
@@ -166,11 +176,100 @@ export class CodexAppServerClient extends EventEmitter {
     };
   }
 
+  private clearConnectTimeout(): void {
+    if (this.connectTimeoutTimer) {
+      clearTimeout(this.connectTimeoutTimer);
+      this.connectTimeoutTimer = null;
+    }
+  }
+
+  private clearHeartbeatTimers(): void {
+    if (this.heartbeatIntervalTimer) {
+      clearInterval(this.heartbeatIntervalTimer);
+      this.heartbeatIntervalTimer = null;
+    }
+    if (this.heartbeatTimeoutTimer) {
+      clearTimeout(this.heartbeatTimeoutTimer);
+      this.heartbeatTimeoutTimer = null;
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) {
+      return;
+    }
+
+    const retryIndex = this.reconnectAttempt++;
+    const baseDelay = Math.min(
+      CodexAppServerClient.RECONNECT_MAX_DELAY_MS,
+      CodexAppServerClient.RECONNECT_BASE_DELAY_MS * 2 ** retryIndex
+    );
+    const jitter = Math.min(750, Math.round(baseDelay * 0.2 * Math.random()));
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, baseDelay + jitter);
+  }
+
+  private armHeartbeat(socket: WebSocket): void {
+    this.clearHeartbeatTimers();
+    this.heartbeatIntervalTimer = setInterval(() => {
+      if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) {
+        this.clearHeartbeatTimers();
+        return;
+      }
+
+      try {
+        socket.ping();
+      } catch {
+        socket.terminate();
+        return;
+      }
+
+      if (this.heartbeatTimeoutTimer) {
+        clearTimeout(this.heartbeatTimeoutTimer);
+      }
+      this.heartbeatTimeoutTimer = setTimeout(() => {
+        if (this.socket === socket) {
+          this.lastError = "Codex app-server heartbeat timed out";
+          this.emit("change");
+        }
+        socket.terminate();
+      }, CodexAppServerClient.HEARTBEAT_TIMEOUT_MS);
+    }, CodexAppServerClient.HEARTBEAT_INTERVAL_MS);
+  }
+
+  private markHeartbeatHealthy(socket: WebSocket): void {
+    if (this.socket !== socket) {
+      return;
+    }
+
+    if (this.heartbeatTimeoutTimer) {
+      clearTimeout(this.heartbeatTimeoutTimer);
+      this.heartbeatTimeoutTimer = null;
+    }
+  }
+
   private connect(): void {
     const socket = new WebSocket(this.baseUrl);
     this.socket = socket;
+    this.clearConnectTimeout();
+    this.connectTimeoutTimer = setTimeout(() => {
+      if (this.socket !== socket || this.connected) {
+        return;
+      }
+
+      this.lastError = "Timed out connecting to Codex app-server";
+      this.emit("change");
+      socket.terminate();
+    }, CodexAppServerClient.CONNECT_TIMEOUT_MS);
 
     socket.on("open", async () => {
+      if (this.socket !== socket) {
+        socket.close();
+        return;
+      }
+
       try {
         await this.call("initialize", {
           clientInfo: {
@@ -181,8 +280,11 @@ export class CodexAppServerClient extends EventEmitter {
         });
 
         socket.send(JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} }));
+        this.clearConnectTimeout();
         this.connected = true;
         this.lastError = null;
+        this.reconnectAttempt = 0;
+        this.armHeartbeat(socket);
         this.emit("change");
         await this.loadModels();
         await this.seedThreads();
@@ -195,6 +297,11 @@ export class CodexAppServerClient extends EventEmitter {
     });
 
     socket.on("message", (buffer: RawData) => {
+      if (this.socket !== socket) {
+        return;
+      }
+
+      this.markHeartbeatHealthy(socket);
       try {
         const message = JSON.parse(buffer.toString()) as JsonRpcMessage;
         this.handleMessage(message);
@@ -204,7 +311,17 @@ export class CodexAppServerClient extends EventEmitter {
       }
     });
 
+    socket.on("pong", () => {
+      this.markHeartbeatHealthy(socket);
+    });
+
     socket.on("close", () => {
+      if (this.socket !== socket) {
+        return;
+      }
+
+      this.clearConnectTimeout();
+      this.clearHeartbeatTimers();
       this.connected = false;
       this.socket = null;
       this.resumedThreadIds.clear();
@@ -216,17 +333,19 @@ export class CodexAppServerClient extends EventEmitter {
       }
       this.pending.clear();
 
-      if (!this.reconnectTimer) {
-        this.reconnectTimer = setTimeout(() => {
-          this.reconnectTimer = null;
-          this.connect();
-        }, 1500);
+      if (!this.lastError) {
+        this.lastError = "Codex app-server connection closed";
       }
+      this.scheduleReconnect();
 
       this.emit("change");
     });
 
     socket.on("error", (error: Error) => {
+      if (this.socket !== socket) {
+        return;
+      }
+
       this.lastError = error.message;
       this.emit("change");
     });

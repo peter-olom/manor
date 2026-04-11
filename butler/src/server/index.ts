@@ -433,16 +433,22 @@ app.get("/api/events", (request, response) => {
   response.setHeader("Connection", "keep-alive");
   response.setHeader("X-Accel-Buffering", "no");
   response.flushHeaders();
+  response.write("retry: 1000\n\n");
   sseHub.addClient(response);
   sseHub.sendInitialEvents(response);
   const heartbeat = setInterval(() => {
     response.write(`event: heartbeat\ndata: ${Date.now()}\n\n`);
   }, sseHub.heartbeatMs);
 
-  request.on("close", () => {
+  const cleanup = () => {
     clearInterval(heartbeat);
     sseHub.removeClient(response);
-  });
+  };
+
+  request.on("close", cleanup);
+  request.on("error", cleanup);
+  response.on("close", cleanup);
+  response.on("error", cleanup);
 });
 
 app.post("/api/chat/messages", async (request, response) => {

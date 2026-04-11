@@ -526,4 +526,7 @@ export type BootstrapSnapshot = {
 export type TransportState = {
   connected: boolean;
   disconnected: boolean;
+  reconnecting: boolean;
+  lastEventAt: number | null;
+  lastError: string | null;
 };

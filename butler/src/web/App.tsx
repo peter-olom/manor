@@ -329,12 +329,13 @@ export function App() {
     if (transport.disconnected) {
       if (!hasShownDisconnectToastRef.current) {
         hasShownDisconnectToastRef.current = true;
-        showToast("Live updates disconnected. Refresh the page if this persists.", "error", 0, "live-disconnect");
+        showToast("Live updates disconnected. Reconnecting automatically. Refresh only if this persists.", "error", 0, "live-disconnect");
       }
       return;
     }
 
     hasShownDisconnectToastRef.current = false;
+    setToast((current) => (current?.key === "live-disconnect" ? null : current));
   }, [transport.disconnected]);
 
   useEffect(() => {
