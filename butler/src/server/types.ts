@@ -1,6 +1,10 @@
 export type CodexThreadStatus = "active" | "idle" | "unknown";
-export type CodexExecutionMode = "local-manor-runtime" | "live-remote-runtime" | "unspecified";
-export type CodexPreviewLane = "expected" | "available";
+export type CodexExecutionLane =
+  | "shared-shell-bootstrap"
+  | "shared-shell-host-runtime"
+  | "preview-runtime"
+  | "live-remote-runtime";
+export type CodexProofMode = "none" | "operational" | "ui";
 export type ButlerCallbackState =
   | "waiting"
   | "received_worker_callback"
@@ -17,10 +21,10 @@ export interface CodexThreadExecutionContractView {
   projectId: string;
   projectLabel: string;
   branch: string | null;
-  executionMode: CodexExecutionMode;
-  executionModeLabel: string;
-  previewLane: CodexPreviewLane;
-  proofRequired: boolean;
+  executionLane: CodexExecutionLane;
+  executionLaneLabel: string;
+  proofMode: CodexProofMode;
+  proofModeLabel: string;
   operatorAcknowledgementRequired: boolean;
   operatorCallbackRequired: boolean;
   requestedTask: string;

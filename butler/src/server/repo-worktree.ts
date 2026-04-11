@@ -46,6 +46,10 @@ async function git(args: string[], cwd: string): Promise<string> {
   return stdout.trim();
 }
 
+function normalizeTaskText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
 async function pathExists(targetPath: string): Promise<boolean> {
   try {
     await fs.access(targetPath);
@@ -146,8 +150,44 @@ export async function resolveGitRoot(cwd: string): Promise<string | null> {
   }
 }
 
+export async function resolveWorkspaceBranchName(cwd: string): Promise<string | null> {
+  const repoRoot = await resolveGitRoot(cwd);
+  if (!repoRoot) {
+    return null;
+  }
+
+  const branchName = await git(["branch", "--show-current"], cwd).catch(() => "");
+  return branchName || null;
+}
+
 export function isManagedWorktree(cwd: string): boolean {
   return cwd.startsWith(`${MANAGED_WORKTREE_ROOT}/`);
+}
+
+export function taskRequiresManagedWorktree(taskText: string): boolean {
+  const normalized = normalizeTaskText(taskText);
+  if (/\b(read-only|report only|question only|no code changes|do not code|do not edit|do not modify)\b/.test(normalized)) {
+    return false;
+  }
+
+  return /\b(dedicated branch|isolated branch|branch isolation|isolated worktree|managed worktree|parallel jobs|parallel workstreams|checkout|new branch|create branch|switch branch|worktree)\b/.test(
+    normalized
+  );
+}
+
+export async function workspacePrefersHostRuntime(cwd: string): Promise<boolean> {
+  const repoRoot = await resolveGitRoot(cwd);
+  if (!repoRoot) {
+    return false;
+  }
+
+  const agentsPath = path.join(repoRoot, "AGENTS.md");
+  const agentsText = await fs.readFile(agentsPath, "utf8").catch(() => "");
+  if (!agentsText.trim()) {
+    return false;
+  }
+
+  return /\b(no docker setup|dev servers run on the host|run on the host)\b/i.test(agentsText);
 }
 
 export async function ensureTaskWorktree(options: {

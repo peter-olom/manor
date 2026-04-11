@@ -558,7 +558,7 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
         contract &&
         typeof contract === "object" &&
         typeof contract.threadId === "string" &&
-        typeof contract.executionMode === "string"
+        typeof contract.executionLane === "string"
       ) {
         access.persistedExecutionContractsByThreadId.set(threadId, {
           ...contract,

@@ -325,7 +325,7 @@ export async function inspectWorkspaceBootstrap(cwd: string | null | undefined):
     notes.push(`${managerDescription} will need to be bootstrapped before the app command can run.`);
   }
   if (installState === "missing" || needsPackageManagerDownload) {
-    notes.push("Use a preview as the main dev box for install, startup, logs, and verification.");
+    notes.push("Use the assigned runtime lane as the main dev box for install, startup, logs, and verification. Preview lanes should do that work inside the preview.");
   }
 
   const bootstrapHint =

@@ -95,6 +95,15 @@ export function summarizeTaskText(value: string | null | undefined, max = 120): 
   return clipText(normalized, max);
 }
 
+export function summarizePreviewText(value: string | null | undefined, max = 120): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const contract = parseThreadExecutionContract(value);
+  return summarizeTaskText(contract?.requestedTask ?? value, max);
+}
+
 export function deriveThreadTaskTitle(thread: CodexThreadRecord | null | undefined): string | null {
   if (!thread) {
     return null;
@@ -115,7 +124,7 @@ export function deriveThreadTaskTitle(thread: CodexThreadRecord | null | undefin
     return latestUserPrompt;
   }
 
-  return summarizeTaskText(thread.preview);
+  return summarizePreviewText(thread.preview);
 }
 
 export function formatFallbackJobLabel(threadId: string): string {
@@ -151,6 +160,7 @@ export function normalizeWindow(window: ButlerWindow, thread?: CodexThreadRecord
 export function buildThreadSupervisor(thread: CodexThreadRecord): CodexThreadSupervisorView {
   const project = resolveWorkspaceProjectInfo(thread.cwd);
   const latestUserPrompt = deriveThreadTaskTitle(thread);
+  const previewSummary = summarizePreviewText(thread.preview, 120);
   const flattenedItems = thread.turns.flatMap((turn) => turn.items.map((item) => ({ turn, item })));
   const latestAgentReply = clipText(
     [...flattenedItems]
@@ -171,15 +181,15 @@ export function buildThreadSupervisor(thread: CodexThreadRecord): CodexThreadSup
   } else if (thread.status === "active") {
     summary = latestUserPrompt
       ? `Working on "${latestUserPrompt}".`
-      : thread.preview
-        ? `Working on ${clipText(thread.preview, 120)}.`
+      : previewSummary
+        ? `Working on ${previewSummary}.`
         : "Work is in progress.";
   } else if (latestAgentReply) {
     summary = latestUserPrompt
       ? `Idle after "${latestUserPrompt}". Latest result: ${clipText(latestAgentReply, 120)}`
       : `Idle. Latest result: ${clipText(latestAgentReply, 120)}`;
-  } else if (thread.preview) {
-    summary = `Idle. Preview: ${clipText(thread.preview, 120)}`;
+  } else if (previewSummary) {
+    summary = `Idle. Task: ${previewSummary}`;
   } else if (thread.turnCount > 0) {
     summary = "Idle with prior activity.";
   }
@@ -578,4 +588,3 @@ export function restorePersistedTurn(turn: {
     items: Array.isArray(turn.items) ? turn.items.map((item) => restorePersistedItem((item ?? {}) as Record<string, unknown>)) : []
   };
 }
-

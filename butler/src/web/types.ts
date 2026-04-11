@@ -236,10 +236,10 @@ export type CodexThreadSummary = {
     projectId: string;
     projectLabel: string;
     branch: string | null;
-    executionMode: "local-manor-runtime" | "live-remote-runtime" | "unspecified";
-    executionModeLabel: string;
-    previewLane: "expected" | "available";
-    proofRequired: boolean;
+    executionLane: "shared-shell-bootstrap" | "shared-shell-host-runtime" | "preview-runtime" | "live-remote-runtime";
+    executionLaneLabel: string;
+    proofMode: "none" | "operational" | "ui";
+    proofModeLabel: string;
     operatorAcknowledgementRequired: boolean;
     operatorCallbackRequired: boolean;
     requestedTask: string;

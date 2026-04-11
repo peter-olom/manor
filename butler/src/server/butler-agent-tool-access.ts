@@ -21,6 +21,7 @@ import type {
 } from "./types.js";
 import type { CodexAppServerClient } from "./codex-client.js";
 import type { ProofScreenshotReview, ResolvedPreviewProof, SupervisionSmokePlan } from "./butler-agent-helpers.js";
+import type { CodexExecutionLane, CodexProofMode } from "./types.js";
 
 export type ButlerCustomTool = ReturnType<typeof defineTool>;
 
@@ -130,14 +131,14 @@ export type ButlerAgentToolAccess = {
   getThreadBudgetLimitMessage(threadId: string): string | null;
   buildSupervisionSmokeTask(totalFollowUps: number): string;
   detectSupervisionSmokeRequest(task: string, goal?: string): { totalFollowUps: number } | null;
-  buildDelegationDeveloperInstructions(workspace: { cwd: string; branchName: string | null }, task: string): string;
+  buildDelegationDeveloperInstructions(workspace: { cwd: string; branchName: string | null }, task: string): Promise<string>;
   buildDelegationContract(options: {
     threadId: string;
     task: string;
     goal?: string;
     workspace: { cwd: string; branchName: string | null };
-    previewLane?: "expected" | "available";
-    proofRequired?: boolean;
+    executionLane?: CodexExecutionLane;
+    proofMode?: CodexProofMode;
     operatorAcknowledgementRequired?: boolean;
     operatorCallbackRequired?: boolean;
     extraNotes?: string[];

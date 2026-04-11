@@ -4,7 +4,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "prepare_worktree",
     label: "Prepare worktree",
-    description: "Create a dedicated butler/ branch and isolated git worktree for one repo task.",
+    description: "Create an explicitly requested isolated branch and git worktree for one repo task.",
     uiEffects: [{ kind: "refreshThreads", description: "Keeps thread/project state aligned with worktree-backed tasks." }]
   },
   {

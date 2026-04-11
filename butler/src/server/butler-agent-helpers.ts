@@ -216,7 +216,7 @@ export function buildJobsSummary(store: ButlerStateStore, limit: number, status?
   return jobs
     .map(
       (thread, index) =>
-        `${index + 1}. ${thread.id} | project=${thread.supervisor.projectLabel} | status=${thread.status} | source=${thread.source} | updated=${new Date(thread.updatedAt).toISOString()} | preview=${thread.preview || "(empty)"} | summary=${thread.supervisor.summary}`
+        `${index + 1}. ${thread.id} | project=${thread.supervisor.projectLabel} | status=${thread.status} | source=${thread.source} | updated=${new Date(thread.updatedAt).toISOString()} | task=${thread.supervisor.latestUserPrompt ?? thread.executionContract?.requestedTask ?? "(empty)"} | contract=${thread.executionContract ? "present" : "none"} | summary=${thread.supervisor.summary}`
     )
     .join("\n");
 }
@@ -248,7 +248,8 @@ export function buildJobDetail(store: ButlerStateStore, threadId: string): strin
     `project=${thread.supervisor.projectLabel}`,
     `status=${thread.status}`,
     `source=${thread.source}`,
-    `preview=${thread.preview || "(empty)"}`,
+    `task=${thread.supervisor.latestUserPrompt ?? thread.executionContract?.requestedTask ?? "(empty)"}`,
+    `contract=${thread.executionContract ? "present" : "none"}`,
     lease ? `operator_preview=${lease.operatorUrl}` : "operator_preview=(none)",
     `summary=${thread.supervisor.summary}`,
     turns || "No turn details loaded yet."
@@ -411,18 +412,21 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "When Codex work changes state, summarize the outcome rather than replaying the full back-and-forth.",
     "If a delegated thread contract requires operator acknowledgement or operator callback, treat those as binding obligations in the main Butler chat.",
     "Each supervised Codex thread has a Butler steering budget. Default to 20 Butler-driven turns per thread unless that thread is explicitly overridden.",
-    "When work touches git in a repo, enforce a dedicated branch whose name starts with butler/.",
+    "Do not create a new branch or managed worktree unless the operator explicitly asks for branch isolation.",
+    "For read-only repo inspection, questions, or report-only tasks, do not force a new branch or managed worktree.",
     "Do not run two parallel Codex workstreams on the same repo branch.",
+    "For repository bootstrap tasks like cloning into /repos and creating the first branch, use the shared shell first. Bring up a preview only once the task actually needs runtime execution or proof.",
     "When a task needs multiple cooperating previews or disposable services, create a stack lease first so Butler can keep the whole environment under one isolated network and lifecycle.",
     "When the operator asks for a supervision or oversight smoke test, treat it as a native Butler behavior: delegate the run to Codex, let the operator prompt define the contract, and privately steer the worker for 2 to 5 follow-up turns.",
     "For recurring mutable databases or object stores, prefer job-scoped stateful stacks so each job gets its own retained writable copy forked from the project base by default.",
     "Reserve base-mode stacks for intentional seed or snapshot refresh work. Do not let multiple jobs share one writable database volume.",
     "When a task needs a live app review, prefer a preview lease on an isolated runtime instead of telling the operator to bind a raw host port.",
     "When preview bootstrap is unclear, inspect the workspace bootstrap hints before deciding on image, egress, or install steps.",
+    "Once Codex is inside a repo with its own AGENTS guidance, let that repo-specific install and runtime guidance override generic Manor defaults unless it would violate the Butler contract's execution mode, callback, or reporting obligations.",
     "When a project needs backing dependencies like Postgres, Redis, MySQL, MSSQL, RabbitMQ, MinIO, Mailpit, or SQLite, prefer registered service templates instead of ad hoc install steps. If the dependency is missing, register it once and reuse it later.",
     "A preview runs the app or job code. A service provides supporting infrastructure only. Do not run the main app inside a service.",
-    "Choose an execution mode explicitly before delegating or steering Codex: local Manor branch runtime or live deployed runtime.",
-    "When the operator asks to check out a branch, worktree, or repo and produce proof, default to local Manor branch runtime unless the operator explicitly asks for live, staging, or production verification.",
+    "Choose an execution lane explicitly before delegating or steering Codex: shared-shell bootstrap, shared-shell host runtime, preview runtime, or live deployed runtime.",
+    "When the operator asks to check out a branch, worktree, or repo, default to the lightest viable local lane. Use preview runtime only when the task actually needs isolated runtime execution, and use host runtime only when repo-local guidance explicitly says to run on the host.",
     "Do not silently substitute live deployed verification for local branch verification.",
     "If the needed execution mode changes, start a fresh Codex workstream instead of reusing an older thread with a different strategy.",
     "For local Manor runtime tasks that involve signup or email flows, prefer local dependency services like Mailpit when the app under test is running inside Manor.",

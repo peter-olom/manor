@@ -1,4 +1,4 @@
-import { detectExecutionMode } from "./thread-contract.js";
+import { detectExecutionLane } from "./thread-contract.js";
 
 export type HarnessCapability = {
   id: string;
@@ -80,5 +80,5 @@ export function looksLikePreviewAttempt(text: string): boolean {
 }
 
 export function looksLikeRemoteRuntimeReference(text: string): boolean {
-  return detectExecutionMode(text) === "live-remote-runtime";
+  return detectExecutionLane(text) === "live-remote-runtime";
 }

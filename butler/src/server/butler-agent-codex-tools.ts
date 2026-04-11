@@ -9,7 +9,7 @@ import {
   shouldAllowLocalThreadFallback
 } from "./butler-agent-helpers.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
-import { describeExecutionMode, detectExecutionMode } from "./thread-contract.js";
+import { describeExecutionLane, detectExecutionLane } from "./thread-contract.js";
 
 export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
   return [
@@ -212,17 +212,17 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
             `Job ${typedParams.threadId} is not a valid reusable Codex workstream. Start a fresh Codex job with delegate_to_codex instead.`
           );
         }
-        const requestedMode = detectExecutionMode(typedParams.text);
-        const currentMode =
-          thread.executionContract?.executionMode ??
-          detectExecutionMode([thread?.supervisor.latestUserPrompt, thread?.supervisor.latestAgentReply].filter(Boolean).join("\n"));
+        const requestedLane = detectExecutionLane(typedParams.text);
+        const currentLane =
+          thread.executionContract?.executionLane ??
+          detectExecutionLane([thread?.supervisor.latestUserPrompt, thread?.supervisor.latestAgentReply].filter(Boolean).join("\n"));
         if (
-          requestedMode !== "unspecified" &&
-          currentMode !== "unspecified" &&
-          requestedMode !== currentMode
+          requestedLane !== "shared-shell-bootstrap" &&
+          currentLane !== "shared-shell-bootstrap" &&
+          requestedLane !== currentLane
         ) {
           throw new Error(
-            `This follow-up changes execution mode from ${describeExecutionMode(currentMode)} to ${describeExecutionMode(requestedMode)}. Start a fresh Codex job with delegate_to_codex instead of reusing this thread.`
+            `This follow-up changes execution lane from ${describeExecutionLane(currentLane)} to ${describeExecutionLane(requestedLane)}. Start a fresh Codex job with delegate_to_codex instead of reusing this thread.`
           );
         }
         const limitMessage = access.getThreadBudgetLimitMessage(typedParams.threadId);

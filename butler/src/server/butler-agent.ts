@@ -68,14 +68,23 @@ import { readButlerAuthStatus } from "./auth-status.js";
 import { buildOnboardingView } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
-import { ensureTaskWorktree, resolveExistingWorkspaceCwd, resolveWorkspaceProjectInfo } from "./repo-worktree.js";
+import {
+  ensureTaskWorktree,
+  resolveExistingWorkspaceCwd,
+  resolveWorkspaceBranchName,
+  resolveWorkspaceProjectInfo,
+  taskRequiresManagedWorktree,
+  workspacePrefersHostRuntime
+} from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
 import {
   buildThreadExecutionContract,
-  describeExecutionMode,
-  detectExecutionMode,
+  describeExecutionLane,
+  describeProofMode,
+  detectExecutionLane,
+  detectProofMode,
   isSharedShellRepoBootstrapTask
 } from "./thread-contract.js";
 import {
@@ -97,6 +106,8 @@ import type {
   ButlerThinkingLevel,
   ButlerToolUiEffect,
   ButlerToolView,
+  CodexExecutionLane,
+  CodexProofMode,
   CodexThreadExecutionContractView,
   ModelOption
 } from "./types.js";
@@ -764,52 +775,86 @@ export class ButlerAgentService extends EventEmitter {
     return `Butler has reached the supervision limit for job ${threadId}. Used ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns} Butler turns. Raise the limit on that thread before asking Butler to steer it again.`;
   }
 
-  private buildDelegationDeveloperInstructions(
+  private async inferDelegationExecutionLane(task: string, cwd: string): Promise<CodexExecutionLane> {
+    const repoPrefersHost = await workspacePrefersHostRuntime(cwd);
+    return detectExecutionLane(task, { repoPrefersHostRuntime: repoPrefersHost });
+  }
+
+  private inferDelegationProofMode(task: string): CodexProofMode {
+    return detectProofMode(task);
+  }
+
+  private async buildDelegationDeveloperInstructions(
     workspace: { cwd: string; branchName: string | null },
     task: string
-  ): string {
+  ): Promise<string> {
     const repoBootstrapTask = isSharedShellRepoBootstrapTask(task);
+    const managedWorktreeTask = taskRequiresManagedWorktree(task);
+    const executionLane = await this.inferDelegationExecutionLane(task, workspace.cwd);
+    const proofMode = this.inferDelegationProofMode(task);
 
     return [
       "This thread was started by Butler.",
       "You are the worker inside Manor. Butler is the supervisor and policy owner.",
       "Execute the requested task directly instead of explaining how the operator could do it manually.",
       "The task prompt includes an AUTHORITATIVE JOB CONTRACT with the assigned thread id, workspace, and harness binding. Follow that contract over any stale worktree or cwd hints elsewhere in the task.",
-      "Treat the contract execution_mode as binding. Do not switch from local Manor branch runtime to a live deployed site unless the operator explicitly asked for live verification.",
+      "Treat the contract execution_lane and proof_mode as binding. Do not switch lanes or add extra proof obligations unless the operator explicitly changes the ask.",
+      "Once you are inside a repository with its own AGENTS guidance, follow that repo-specific install and runtime guidance over generic Manor defaults unless it would violate the contract's execution mode, callback, or reporting obligations.",
       `Work inside ${workspace.cwd} unless the task explicitly requires a deeper subdirectory.`,
       workspace.branchName
         ? `Stay on branch ${workspace.branchName}. Do not switch back to main or share this branch with another task.`
-        : "When the task touches git in a repository, create or reuse a dedicated branch whose name starts with butler/.",
-      repoBootstrapTask
-        ? "For repository bootstrap work like cloning into /repos, checking git status, and creating the first butler/ branch, use the shared Codex shell first. Do not start a preview just to run git clone, git status, or git checkout."
-        : "If this job needs a preview isolate, a disposable service, or runtime inspection, use `manor-harness` with the thread binding from the contract.",
-      repoBootstrapTask
-        ? "Once the repository exists and the task shifts from git/bootstrap work to runtime work, then move into a preview for installs, long-lived processes, or app verification."
-        : "Start with `manor-harness --thread <jobId> status` to see what Manor already attached to this job and to inspect workspace bootstrap hints.",
-      "Use the universal Manor runtime model: Butler owns policy, the broker owns lifecycle, and a preview is your plain dev box.",
-      "Keep the flow simple: start a preview, then use `manor-harness preview exec`, `logs`, `processes`, `inspect`, and `verify` to adapt the project.",
-      "Do not wait for Manor to infer project-specific bootstrap details. If the app needs an install command, env setup, or a custom start command, run those explicitly inside the preview.",
+        : repoBootstrapTask
+          ? "For repository bootstrap work in /repos, clone first in the shared shell workspace. After the repo exists, create the requested butler/ branch inside that repo."
+          : managedWorktreeTask
+            ? "Create or reuse the explicitly requested isolated branch or worktree before you make changes."
+            : "Stay on the existing checkout. Do not create a branch or managed worktree unless the operator explicitly asked for one.",
+      `Execution lane: ${describeExecutionLane(executionLane)}.`,
+      executionLane === "shared-shell-bootstrap"
+        ? "This task stays in the shared Codex shell for repo setup or local workspace work. Do not start a preview unless the contract is updated to a runtime lane."
+        : executionLane === "shared-shell-host-runtime"
+          ? "This task uses the shared Codex shell as the host runtime. Follow repo-local host-run guidance and do not switch to a preview unless the operator changes the contract."
+          : executionLane === "preview-runtime"
+            ? "This task uses a preview for runtime execution. Start with `manor-harness --thread <jobId> status`, then use the preview tools to install, run, inspect, and verify."
+            : "This task is tied to the live deployed target. Do not substitute a local preview or shared-shell result for the reported outcome.",
+      executionLane === "preview-runtime"
+        ? "When the preview lane is active, keep the flow simple: start a preview, then use `manor-harness preview exec`, `logs`, `processes`, `inspect`, and `verify` to adapt the project."
+        : "If you need supervisory guidance while staying in the assigned lane, use `manor-harness assist --summary \"<what is stuck>\" --details \"<error and context>\"` before your final blocked report.",
+      "Do not wait for Manor to infer project-specific bootstrap details once you are in the chosen runtime lane. If the app needs an install command, env setup, or a custom start command, run those explicitly there.",
       "If the work needs multiple cooperating services, create a stack first with `manor-harness stack start`, then attach previews and services to it with `--stack <stackId>` and stable `--alias` names that mirror the app's expected internal hostnames.",
       "When a stack needs recurring databases or object storage, start it with `manor-harness stack start --stateful` so Manor derives a per-job retained storage key, forks from the project base, and sets the default promotion target automatically.",
       "Use `--storage-mode base` only when you are intentionally creating or refreshing the shared base state for that project. Do not share one writable database volume across concurrent jobs.",
       "After validating a job-scoped stateful stack, use `manor-harness stack promote <stackId>` to publish its retained data back to the project base. Only override the target manually when the task explicitly needs a different namespace.",
       "For attached previews and services, use `manor-harness` for inspect, logs, processes, and exec directly against the runtime. Butler still owns start, stop, lifecycle, and policy.",
-      "The shared Codex shell is for workspace and code work only. Do not treat it as a runtime box, and do not install dependencies, bootstrap package managers, or start app processes there.",
-      "If dependency install, bootstrap, dev startup, or runtime verification is needed, do it inside a preview. Do not declare the job blocked from Codex-shell execution failures alone.",
-      "Once a preview is up, treat it as your primary dev box for that job. Install dependencies there, run long-lived app processes there, inspect logs/processes there, and use it to verify fixes.",
+      "The shared Codex shell is for workspace, git, and repo-directed setup work, plus host-runtime tasks when repo-local guidance explicitly says to run on the host.",
+      "Do not declare the job blocked from shared-shell failures when the contract lane still allows normal recovery inside that same lane.",
+      proofMode === "ui"
+        ? "Proof mode: headed UI proof. Before reporting completion, run headed preview verification and inspect the persisted proof bundle."
+        : proofMode === "operational"
+          ? "Proof mode: operational verification. Record the relevant runtime evidence in your report, but do not invent a browser proof requirement."
+          : "Proof mode: no persisted proof bundle is required unless the operator later asks for one.",
       "Prefer explicit, boring commands over wrappers or project-specific Manor tricks. The goal is stable runtime control, not clever bootstrap.",
-      "Preview commands start with the job worktree as the working directory. Prefer relative paths there, or use the contract cwd under /repos. Do not assume a /workspace mount exists inside previews.",
-      "If local shell bootstrap fails or you need supervisory guidance, use `manor-harness assist --summary \"<what is stuck>\" --details \"<error and context>\"` before your final blocked report.",
-      "When frontend proof is required, run `manor-harness preview verify <preview> --mode headful --json` so the screenshot, video, trace, and manifest bundle is persisted.",
-      "When proof requires actual UI interaction, pass a browser script with `manor-harness preview verify <preview> --script-file <path> --mode headful --json` instead of stopping at a static page.",
-      "When the proof route needs an authenticated session, prefer `manor-harness preview verify <preview> --session-cookie <token> ...` or `--cookie NAME=VALUE ...` instead of building wrapper scripts that call `page.goto()` again.",
-      "If the contract is for local Manor branch runtime and the app has email flows, prefer Mailpit or another built-in local dependency when the app under test is running inside Manor.",
-      "After verification, inspect the proof bundle with `manor-harness preview proof <preview> --json` and include the screenshot, video, and manifest links in your report.",
-      "Do not treat artifact existence alone as accepted proof. Butler must review the screenshot, and the video is for human review.",
+      executionLane === "preview-runtime"
+        ? "Preview commands start with the job worktree as the working directory. Prefer relative paths there, or use the contract cwd under /repos. Do not assume a /workspace mount exists inside previews."
+        : "Use the contract cwd as the working directory and keep commands explicit for the assigned lane.",
+      proofMode === "ui"
+        ? "When UI proof requires actual interaction, pass a browser script with `manor-harness preview verify <preview> --script-file <path> --mode headful --json` instead of stopping at a static page."
+        : "Do not add a browser verification step unless the contract or operator explicitly asks for UI proof.",
+      proofMode === "ui"
+        ? "When the proof route needs an authenticated session, prefer `manor-harness preview verify <preview> --session-cookie <token> ...` or `--cookie NAME=VALUE ...` instead of building wrapper scripts that call `page.goto()` again."
+        : "Keep verification in the assigned lane and report the concrete evidence you used.",
+      "If the contract is for local Manor runtime and the app has email flows, prefer Mailpit or another built-in local dependency when the app under test is running inside Manor.",
+      proofMode === "ui"
+        ? "After verification, inspect the proof bundle with `manor-harness preview proof <preview> --json` and include the screenshot, video, and manifest links in your report."
+        : "Do not pad the report with artifact links that the contract did not ask for.",
+      proofMode === "ui"
+        ? "Do not treat artifact existence alone as accepted proof. Butler must review the screenshot, and the video is for human review."
+        : "Use the smallest sufficient evidence set for the assigned proof mode.",
       "Use only the harness actions exposed through `manor-harness`. Do not try to command Butler directly outside those actions.",
       "When you complete meaningful work, record a supervisor report before your final reply with `manor-harness report --status completed --summary \"<concise outcome>\" --details \"<brief oversight note with the key fact, risk, or next step>\"`.",
       "If you are blocked or need operator attention, record it before your reply with `manor-harness report --status blocked --summary \"<what is blocked>\" --details \"<what you need, what failed, or the next recommended action>\"`.",
-      "Do not report runtime verification blocked while a preview path remains untried unless you explain why preview execution itself is blocked.",
+      executionLane === "preview-runtime"
+        ? "Do not report runtime verification blocked while the preview path remains untried unless you explain why preview execution itself is blocked."
+        : "Do not report the job blocked until you have exhausted the normal recovery steps inside the assigned lane.",
       "Supervisor reports should help Butler oversee the job. Keep `summary` short and outcome-first, and use `details` for the extra context Butler should surface without dumping the whole conversation.",
       "Keep the thread focused on the delegated task and report concise progress and outcome."
     ].join("\n");
@@ -946,13 +991,21 @@ export class ButlerAgentService extends EventEmitter {
       if (resolvedCwd && resolvedCwd !== cwd) {
         return {
           cwd: resolvedCwd,
-          branchName: null
+          branchName: await resolveWorkspaceBranchName(resolvedCwd)
         };
       }
     }
 
+    const resolvedCwd = await resolveExistingWorkspaceCwd(requestedCwd);
+    if (!taskRequiresManagedWorktree(task)) {
+      return {
+        cwd: resolvedCwd,
+        branchName: await resolveWorkspaceBranchName(resolvedCwd)
+      };
+    }
+
     const worktree = await ensureTaskWorktree({
-      cwd: requestedCwd,
+      cwd: resolvedCwd,
       task
     });
 
@@ -967,8 +1020,8 @@ export class ButlerAgentService extends EventEmitter {
     task: string;
     goal?: string;
     workspace: { cwd: string; branchName: string | null };
-    previewLane?: "expected" | "available";
-    proofRequired?: boolean;
+    executionLane?: CodexExecutionLane;
+    proofMode?: CodexProofMode;
     operatorAcknowledgementRequired?: boolean;
     operatorCallbackRequired?: boolean;
     extraNotes?: string[];
@@ -996,6 +1049,9 @@ export class ButlerAgentService extends EventEmitter {
       notes.push(...options.extraNotes);
     }
 
+    const executionLane = options.executionLane ?? (await this.inferDelegationExecutionLane(requestedTaskOnly, options.workspace.cwd));
+    const proofMode = options.proofMode ?? this.inferDelegationProofMode(requestedTaskOnly);
+
     const baseContract = buildThreadExecutionContract({
       threadId: options.threadId,
       workspaceCwd: options.workspace.cwd,
@@ -1003,14 +1059,14 @@ export class ButlerAgentService extends EventEmitter {
       projectLabel: project.label,
       branch: options.workspace.branchName,
       taskText: requestedTask,
+      executionLane,
+      proofMode,
       requestedTask: requestedTaskOnly,
       operatorGoal,
       notes
     });
     const contract: CodexThreadExecutionContractView = {
       ...baseContract,
-      previewLane: options.previewLane ?? baseContract.previewLane,
-      proofRequired: options.proofRequired ?? baseContract.proofRequired,
       operatorAcknowledgementRequired: options.operatorAcknowledgementRequired ?? baseContract.operatorAcknowledgementRequired,
       operatorCallbackRequired: options.operatorCallbackRequired ?? baseContract.operatorCallbackRequired,
       requestedTask: requestedTaskOnly,
@@ -1024,10 +1080,9 @@ export class ButlerAgentService extends EventEmitter {
       `project_id: ${project.id}`,
       `project_label: ${project.label}`,
       `branch: ${options.workspace.branchName ?? "(existing workspace)"}`,
-      `execution_mode: ${contract.executionModeLabel}`,
+      `execution_lane: ${contract.executionLaneLabel}`,
       `harness_binding: manor-harness --thread ${options.threadId}`,
-      `preview_lane: ${contract.previewLane === "expected" ? "expected when runtime validation is needed" : "available on demand"}`,
-      `proof_required: ${contract.proofRequired ? "yes" : "no"}`,
+      `proof_mode: ${contract.proofModeLabel}`,
       `operator_acknowledgement: ${contract.operatorAcknowledgementRequired ? "required" : "optional"}`,
       `operator_callback: ${contract.operatorCallbackRequired ? "required" : "optional"}`
     ];

@@ -14,8 +14,8 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
     access.defineButlerTool({
       name: "prepare_worktree",
       label: "Prepare worktree",
-      description: "Create a dedicated butler/ branch and isolated git worktree before parallel Codex work starts.",
-      promptSnippet: "prepare_worktree: use this before delegating repo work so parallel jobs do not share one checkout.",
+      description: "Create an explicitly requested isolated branch and worktree for one repo task.",
+      promptSnippet: "prepare_worktree: use this only when the operator explicitly wants branch or worktree isolation.",
       parameters: Type.Object({
         cwd: Type.String(),
         task: Type.String({ minLength: 1 })
@@ -665,19 +665,19 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         const delegatedTask = smokeRequest ? access.buildSupervisionSmokeTask(smokeRequest.totalFollowUps) : typedParams.task;
         const delegatedGoal = smokeRequest ? undefined : typedParams.goal;
         const repoBootstrapTask = !smokeRequest && isSharedShellRepoBootstrapTask(delegatedTask);
-        const developerInstructions = access.buildDelegationDeveloperInstructions(workspace, delegatedTask);
+        const developerInstructions = await access.buildDelegationDeveloperInstructions(workspace, delegatedTask);
         const contractOptions = smokeRequest
           ? {
-              previewLane: "available" as const,
-              proofRequired: false,
+              executionLane: "shared-shell-bootstrap" as const,
+              proofMode: "none" as const,
               operatorAcknowledgementRequired: true,
               operatorCallbackRequired: false,
               extraNotes: ["Synthetic Butler supervision smoke test. Do not require browser proof to complete or report it."]
             }
           : repoBootstrapTask
             ? {
-                previewLane: "available" as const,
-                proofRequired: false,
+                executionLane: "shared-shell-bootstrap" as const,
+                proofMode: "none" as const,
                 operatorAcknowledgementRequired: true,
                 operatorCallbackRequired: true,
                 extraNotes: [
@@ -699,8 +699,8 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
                   task: delegatedTask,
                   goal: delegatedGoal,
                   workspace,
-                  previewLane: contractOptions.previewLane,
-                  proofRequired: contractOptions.proofRequired,
+                  executionLane: contractOptions.executionLane,
+                  proofMode: contractOptions.proofMode,
                   operatorAcknowledgementRequired: contractOptions.operatorAcknowledgementRequired,
                   operatorCallbackRequired: contractOptions.operatorCallbackRequired,
                   extraNotes: contractOptions.extraNotes
@@ -717,8 +717,8 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           task: delegatedTask,
           goal: delegatedGoal,
           workspace,
-          previewLane: contractOptions.previewLane,
-          proofRequired: contractOptions.proofRequired,
+          executionLane: contractOptions.executionLane,
+          proofMode: contractOptions.proofMode,
           operatorAcknowledgementRequired: contractOptions.operatorAcknowledgementRequired,
           operatorCallbackRequired: contractOptions.operatorCallbackRequired,
           extraNotes: contractOptions.extraNotes
