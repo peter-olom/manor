@@ -15,7 +15,6 @@ import type { TSchema } from "@sinclair/typebox";
 import {
   buildLatestProofMap,
   buildMessagePage,
-  buildMilestoneNoticeText,
   buildSystemPrompt,
   collapseCallbackDuplicateMessages,
   contentToText,
@@ -115,6 +114,8 @@ import { ButlerStateStore } from "./state-store.js";
 import { CodexAppServerClient } from "./codex-client.js";
 import type { PreviewLeaseView, PreviewProofRecordView, PreviewVerificationArtifactView, PreviewVerificationView } from "./types.js";
 
+const CALLBACK_RECOVERY_TIMEOUT_MS = 30_000;
+
 export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
   private readonly codexClient: CodexAppServerClient;
@@ -125,7 +126,8 @@ export class ButlerAgentService extends EventEmitter {
   private readonly codexAuthPath: string;
   private readonly codexConfigDir: string;
   private readonly sessionDir: string;
-  private readonly noticeStatePath: string;
+  private readonly operatorMessageStatePath: string;
+  private readonly legacyNoticeStatePath: string;
   private readonly callbackStatePath: string;
   private readonly refreshRuntimeInventory: (() => Promise<void>) | null;
   private modelRegistry: ModelRegistry | null = null;
@@ -143,10 +145,8 @@ export class ButlerAgentService extends EventEmitter {
   private unsubscribeSession: (() => void) | null = null;
   private statusRefreshTimer: NodeJS.Timeout | null = null;
   private readonly operatorMessages: ButlerMessageView[] = [];
-  private readonly noticeMessages: ButlerMessageView[] = [];
-  private readonly seenMilestoneIds = new Set<string>();
   private readonly pendingChatCallbacks = new Map<string, PendingChatCallback>();
-  private readonly deliveredCallbackMilestoneIds = new Set<string>();
+  private readonly deliveredCloseoutIds = new Set<string>();
   private readonly supervisionSmokePlans = new Map<string, SupervisionSmokePlan>();
   private readonly actedSmokeMilestoneIds = new Set<string>();
   private smokeReactionInFlight = false;
@@ -184,7 +184,8 @@ export class ButlerAgentService extends EventEmitter {
     this.codexConfigDir = options.codexConfigDir;
     this.sessionDir = options.sessionDir;
     this.refreshRuntimeInventory = options.refreshRuntimeInventory ?? null;
-    this.noticeStatePath = path.join(this.sessionDir, "notices.json");
+    this.operatorMessageStatePath = path.join(this.sessionDir, "operator-messages.json");
+    this.legacyNoticeStatePath = path.join(this.sessionDir, "notices.json");
     this.callbackStatePath = path.join(this.sessionDir, "chat-callbacks.json");
     this.toolCatalog = this.buildToolCatalog();
   }
@@ -202,16 +203,15 @@ export class ButlerAgentService extends EventEmitter {
     }
   }
 
-  private async loadNoticeState(): Promise<void> {
+  private async loadOperatorMessageState(): Promise<void> {
     try {
-      const raw = await fs.readFile(this.noticeStatePath, "utf8");
+      const raw = await fs.readFile(this.operatorMessageStatePath, "utf8");
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) {
         return;
       }
 
       this.operatorMessages.splice(0, this.operatorMessages.length);
-      this.noticeMessages.splice(0, this.noticeMessages.length);
       for (const item of parsed) {
         if (!item || typeof item !== "object") {
           continue;
@@ -221,29 +221,57 @@ export class ButlerAgentService extends EventEmitter {
         const role = typeof item.role === "string" ? item.role : null;
         const text = typeof item.text === "string" ? item.text : null;
         const at = typeof item.at === "number" && Number.isFinite(item.at) ? item.at : null;
-        const kind = item.kind === "notice" || item.kind === "message" ? item.kind : null;
+        const kind = item.kind === "message" || typeof item.kind !== "string" ? "message" : null;
 
         if (!id || !role || !text || !kind) {
           continue;
         }
 
-        if (kind === "message") {
-          this.operatorMessages.push({ id, role, text, at, kind });
-        } else {
-          this.noticeMessages.push({ id, role, text, at, kind });
-        }
-        if (id.startsWith("notice-")) {
-          this.seenMilestoneIds.add(id.slice("notice-".length));
-        }
+        this.operatorMessages.push({ id, role, text, at, kind });
       }
 
       this.operatorMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
       if (this.operatorMessages.length > 40) {
         this.operatorMessages.splice(0, this.operatorMessages.length - 40);
       }
-      this.noticeMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
-      if (this.noticeMessages.length > 40) {
-        this.noticeMessages.splice(0, this.noticeMessages.length - 40);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+
+      await this.loadLegacyOperatorMessageState();
+    }
+  }
+
+  private async loadLegacyOperatorMessageState(): Promise<void> {
+    try {
+      const raw = await fs.readFile(this.legacyNoticeStatePath, "utf8");
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        return;
+      }
+
+      this.operatorMessages.splice(0, this.operatorMessages.length);
+      for (const item of parsed) {
+        if (!item || typeof item !== "object" || item.kind === "notice") {
+          continue;
+        }
+
+        const id = typeof item.id === "string" ? item.id : null;
+        const role = typeof item.role === "string" ? item.role : null;
+        const text = typeof item.text === "string" ? item.text : null;
+        const at = typeof item.at === "number" && Number.isFinite(item.at) ? item.at : null;
+
+        if (!id || !role || !text) {
+          continue;
+        }
+
+        this.operatorMessages.push({ id, role, text, at, kind: "message" });
+      }
+
+      this.operatorMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
+      if (this.operatorMessages.length > 40) {
+        this.operatorMessages.splice(0, this.operatorMessages.length - 40);
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -258,6 +286,7 @@ export class ButlerAgentService extends EventEmitter {
       const parsed = JSON.parse(raw) as {
         callbackRecords?: PendingChatCallback[];
         pendingCallbacks?: PendingChatCallback[];
+        deliveredCloseoutIds?: string[];
         deliveredMilestoneIds?: string[];
       };
 
@@ -283,9 +312,11 @@ export class ButlerAgentService extends EventEmitter {
             : callbackState === "received_worker_callback" || callbackState === "recovered_from_thread_state"
               ? callbackState
               : null;
+        const normalizedCallbackState =
+          callbackState === "received_worker_callback" || callbackState === "recovered_from_thread_state" ? "closed" : callbackState;
         this.pendingChatCallbacks.set(entry.threadId, {
           threadId: entry.threadId,
-          callbackState: callbackState === "received_worker_callback" || callbackState === "recovered_from_thread_state" ? "closed" : callbackState,
+          callbackState: normalizedCallbackState,
           resolutionState,
           requestedAt,
           lastEventAt: typeof entry.lastEventAt === "number" && Number.isFinite(entry.lastEventAt) ? entry.lastEventAt : updatedAt,
@@ -302,16 +333,15 @@ export class ButlerAgentService extends EventEmitter {
             entry.operatorCloseoutStatus === "owed" ||
             entry.operatorCloseoutStatus === "posted"
               ? entry.operatorCloseoutStatus
-              : callbackState === "closed"
+              : normalizedCallbackState === "closed"
                 ? "posted"
                 : "owed",
-          owesOperatorReply: typeof entry.owesOperatorReply === "boolean" ? entry.owesOperatorReply : callbackState !== "closed",
+          owesOperatorReply: typeof entry.owesOperatorReply === "boolean" ? entry.owesOperatorReply : normalizedCallbackState !== "closed",
           closeoutChannel:
             entry.closeoutChannel === "main_chat" ||
-            entry.closeoutChannel === "background_notice" ||
             entry.closeoutChannel === "none"
               ? entry.closeoutChannel
-              : callbackState === "closed"
+              : normalizedCallbackState === "closed"
                 ? "main_chat"
                 : "none",
           closedAt: typeof entry.closedAt === "number" && Number.isFinite(entry.closedAt) ? entry.closedAt : null,
@@ -319,10 +349,10 @@ export class ButlerAgentService extends EventEmitter {
         });
       }
 
-      this.deliveredCallbackMilestoneIds.clear();
-      for (const milestoneId of parsed.deliveredMilestoneIds ?? []) {
-        if (typeof milestoneId === "string" && milestoneId.trim()) {
-          this.deliveredCallbackMilestoneIds.add(milestoneId);
+      this.deliveredCloseoutIds.clear();
+      for (const closeoutId of [...(parsed.deliveredCloseoutIds ?? []), ...(parsed.deliveredMilestoneIds ?? [])]) {
+        if (typeof closeoutId === "string" && closeoutId.trim()) {
+          this.deliveredCloseoutIds.add(closeoutId);
         }
       }
     } catch (error) {
@@ -332,8 +362,8 @@ export class ButlerAgentService extends EventEmitter {
     }
   }
 
-  private async saveNoticeState(): Promise<void> {
-    await fs.writeFile(this.noticeStatePath, JSON.stringify([...this.operatorMessages, ...this.noticeMessages], null, 2), "utf8");
+  private async saveOperatorMessageState(): Promise<void> {
+    await fs.writeFile(this.operatorMessageStatePath, JSON.stringify(this.operatorMessages, null, 2), "utf8");
   }
 
   private async saveCallbackState(): Promise<void> {
@@ -342,7 +372,7 @@ export class ButlerAgentService extends EventEmitter {
       JSON.stringify(
         {
           callbackRecords: [...this.pendingChatCallbacks.values()],
-          deliveredMilestoneIds: [...this.deliveredCallbackMilestoneIds]
+          deliveredCloseoutIds: [...this.deliveredCloseoutIds]
         },
         null,
         2
@@ -373,14 +403,21 @@ export class ButlerAgentService extends EventEmitter {
 
   private queueDelegationAcknowledgement(threadId: string, text: string): void {
     const at = Date.now();
-    const noticeId = `delegation-ack-${threadId}`;
-    const existingNotice = this.operatorMessages.find((entry) => entry.id === noticeId);
-    if (existingNotice) {
-      existingNotice.text = text;
-      existingNotice.at = at;
+    const messageId = `delegation-ack-${threadId}`;
+    this.upsertOperatorMessage(messageId, text, at);
+    this.store.addEvent(threadId, "butler.acknowledgement.posted", "Butler posted the operator-facing delegation acknowledgement.");
+    void this.saveOperatorMessageState();
+    this.emit("change");
+  }
+
+  private upsertOperatorMessage(id: string, text: string, at: number): void {
+    const existingMessage = this.operatorMessages.find((entry) => entry.id === id);
+    if (existingMessage) {
+      existingMessage.text = text;
+      existingMessage.at = at;
     } else {
       this.operatorMessages.push({
-        id: noticeId,
+        id,
         role: "assistant",
         text,
         at,
@@ -391,13 +428,18 @@ export class ButlerAgentService extends EventEmitter {
     if (this.operatorMessages.length > 40) {
       this.operatorMessages.splice(0, this.operatorMessages.length - 40);
     }
-    this.store.addEvent(threadId, "butler.acknowledgement.posted", "Butler posted the operator-facing delegation acknowledgement.");
-    void this.saveNoticeState();
-    this.emit("change");
+  }
+
+  private buildCloseoutId(threadId: string, turnId: string): string {
+    return `${threadId}:${turnId}`;
+  }
+
+  private getFallbackTurnId(thread: ReturnType<ButlerStateStore["getThread"]>): string | null {
+    const latestTurnId = thread?.turns.at(-1)?.id ?? null;
+    return typeof latestTurnId === "string" && latestTurnId.trim() ? latestTurnId : null;
   }
 
   private buildChatCallbackText(
-    milestone: { type: "completed" | "blocked"; threadId: string; turnId: string; summary: string },
     thread: ReturnType<ButlerStateStore["getThread"]>,
     workerReport: ReturnType<ButlerStateStore["getWorkerReport"]>
   ): string | null {
@@ -406,7 +448,7 @@ export class ButlerAgentService extends EventEmitter {
     }
 
     const lead =
-      milestone.type === "completed"
+      workerReport.status === "completed"
         ? `Update on ${thread.supervisor.projectLabel}.`
         : `${thread.supervisor.projectLabel} needs attention.`;
     return [lead, workerReport.summary, workerReport.details].filter(Boolean).join("\n\n");
@@ -471,8 +513,12 @@ export class ButlerAgentService extends EventEmitter {
       const thread = this.store.getThread(callback.threadId);
       const workerReport = this.store.getWorkerReport(callback.threadId);
       const nextStatus = thread?.status ?? "unknown";
+      const fallbackAnchorAt = Math.max(callback.requestedAt, thread?.updatedAt ?? callback.requestedAt);
+      const callbackTimedOut = now - fallbackAnchorAt >= CALLBACK_RECOVERY_TIMEOUT_MS;
       const nextCallbackState =
-        workerReport || nextStatus !== "idle" || !(thread?.supervisor.latestAgentReply?.trim()) ? "waiting" : "missing_worker_callback";
+        workerReport || nextStatus !== "idle" || !(thread?.supervisor.latestAgentReply?.trim()) || !callbackTimedOut
+          ? "waiting"
+          : "missing_worker_callback";
 
       if (callback.lastWorkerStatusSeen !== nextStatus || callback.callbackState !== nextCallbackState) {
         callback.lastWorkerStatusSeen = nextStatus;
@@ -501,55 +547,6 @@ export class ButlerAgentService extends EventEmitter {
     }
 
     let changed = false;
-    const outstandingThreadIds = new Set(outstandingCallbacks.map((callback) => callback.threadId));
-    const milestones = [...this.store.listMilestones()]
-      .filter((milestone) => (milestone.type === "completed" || milestone.type === "blocked") && outstandingThreadIds.has(milestone.threadId))
-      .sort((left, right) => left.at - right.at);
-
-    for (const milestone of milestones) {
-      if (this.deliveredCallbackMilestoneIds.has(milestone.id)) {
-        continue;
-      }
-
-      const callbackMilestone = milestone as typeof milestone & { type: "completed" | "blocked" };
-      const thread = this.store.getThread(milestone.threadId);
-      const workerReport = this.store.getWorkerReport(milestone.threadId, milestone.turnId);
-      if (!thread || !workerReport || workerReport.status !== callbackMilestone.type) {
-        continue;
-      }
-
-      const text = this.buildChatCallbackText(callbackMilestone, thread, workerReport);
-      if (!text) {
-        continue;
-      }
-
-      this.operatorMessages.push({
-        id: `callback-${milestone.id}`,
-        role: "assistant",
-        text,
-        at: milestone.at,
-        kind: "message"
-      });
-      const callback = this.pendingChatCallbacks.get(milestone.threadId);
-      if (callback) {
-        callback.callbackState = "closed";
-        callback.resolutionState = "received_worker_callback";
-        callback.lastWorkerStatusSeen = thread.status;
-        callback.lastTerminalReportAt = workerReport.updatedAt;
-        callback.lastEventAt = milestone.at;
-        callback.operatorCloseoutStatus = "posted";
-        callback.owesOperatorReply = false;
-        callback.closeoutChannel = "main_chat";
-        callback.closedAt = milestone.at;
-        callback.updatedAt = Date.now();
-      }
-      this.store.addEvent(milestone.threadId, "butler.callback.received", "Butler received the worker callback and posted the closeout.");
-      this.store.addEvent(milestone.threadId, "butler.job.closed", "Butler closed the delegated job in main chat.");
-      this.deliveredCallbackMilestoneIds.add(milestone.id);
-      this.seenMilestoneIds.add(milestone.id);
-      changed = true;
-    }
-
     for (const callback of outstandingCallbacks) {
       if (!isCallbackOutstanding(callback)) {
         continue;
@@ -561,21 +558,58 @@ export class ButlerAgentService extends EventEmitter {
 
       const workerReport = this.store.getWorkerReport(callback.threadId);
       if (workerReport) {
+        const closeoutId = this.buildCloseoutId(callback.threadId, workerReport.turnId);
+        callback.lastTerminalReportAt = workerReport.updatedAt;
+        callback.lastEventAt = workerReport.updatedAt;
+        callback.lastWorkerStatusSeen = thread.status;
+        callback.updatedAt = Date.now();
+
+        if (!this.deliveredCloseoutIds.has(closeoutId)) {
+          const text = this.buildChatCallbackText(thread, workerReport);
+          if (!text) {
+            continue;
+          }
+
+          this.upsertOperatorMessage(`callback-${closeoutId}`, text, workerReport.updatedAt);
+          this.deliveredCloseoutIds.add(closeoutId);
+          this.store.addEvent(callback.threadId, "butler.callback.received", "Butler received the worker callback and posted the closeout.");
+          this.store.addEvent(callback.threadId, "butler.job.closed", "Butler closed the delegated job in main chat.");
+          changed = true;
+        }
+
+        callback.callbackState = "closed";
+        callback.resolutionState = "received_worker_callback";
+        callback.operatorCloseoutStatus = "posted";
+        callback.owesOperatorReply = false;
+        callback.closeoutChannel = "main_chat";
+        callback.closedAt = workerReport.updatedAt;
+        callback.updatedAt = Date.now();
+        changed = true;
         continue;
       }
 
+      if (callback.callbackState !== "missing_worker_callback") {
+        continue;
+      }
+
+      const fallbackTurnId = this.getFallbackTurnId(thread);
+      if (!fallbackTurnId) {
+        continue;
+      }
+      const closeoutId = this.buildCloseoutId(callback.threadId, fallbackTurnId);
       const text = this.buildFallbackChatCallbackText(thread);
       if (!text) {
         continue;
       }
 
-      this.operatorMessages.push({
-        id: `callback-fallback-${callback.threadId}`,
-        role: "assistant",
-        text,
-        at: thread.updatedAt,
-        kind: "message"
-      });
+      if (!this.deliveredCloseoutIds.has(closeoutId)) {
+        this.upsertOperatorMessage(`callback-fallback-${closeoutId}`, text, thread.updatedAt);
+        this.deliveredCloseoutIds.add(closeoutId);
+        this.store.addEvent(callback.threadId, "butler.recovery.invoked", "Butler recovered missing callback state from the worker thread.");
+        this.store.addEvent(callback.threadId, "butler.job.closed", "Butler closed the delegated job after thread-state recovery.");
+        changed = true;
+      }
+
       callback.callbackState = "closed";
       callback.resolutionState = "recovered_from_thread_state";
       callback.lastWorkerStatusSeen = thread.status;
@@ -585,8 +619,6 @@ export class ButlerAgentService extends EventEmitter {
       callback.closeoutChannel = "main_chat";
       callback.closedAt = thread.updatedAt;
       callback.updatedAt = Date.now();
-      this.store.addEvent(callback.threadId, "butler.recovery.invoked", "Butler recovered missing callback state from the worker thread.");
-      this.store.addEvent(callback.threadId, "butler.job.closed", "Butler closed the delegated job after thread-state recovery.");
       changed = true;
     }
 
@@ -595,7 +627,7 @@ export class ButlerAgentService extends EventEmitter {
       if (this.operatorMessages.length > 40) {
         this.operatorMessages.splice(0, this.operatorMessages.length - 40);
       }
-      await this.saveNoticeState();
+      await this.saveOperatorMessageState();
       await this.saveCallbackState();
       this.emit("change");
     }
@@ -605,72 +637,7 @@ export class ButlerAgentService extends EventEmitter {
 
   private handleStoreChange(): void {
     void (async () => {
-      let changed = false;
-
       await this.processPendingChatCallbacks();
-
-      for (const milestone of this.store.listMilestones()) {
-        if (milestone.type !== "completed" && milestone.type !== "blocked") {
-          continue;
-        }
-
-        if (this.deliveredCallbackMilestoneIds.has(milestone.id)) {
-          continue;
-        }
-
-        const noticeMilestone = milestone as typeof milestone & { type: "completed" | "blocked" };
-        const noticeId = `notice-${milestone.id}`;
-        const nextText = buildMilestoneNoticeText(this.store, noticeMilestone);
-        const existingNotice = this.noticeMessages.find((entry) => entry.id === noticeId);
-
-        if (!nextText) {
-          if (existingNotice) {
-            const index = this.noticeMessages.findIndex((entry) => entry.id === noticeId);
-            if (index >= 0) {
-              this.noticeMessages.splice(index, 1);
-            }
-            changed = true;
-          }
-          continue;
-        }
-
-        if (this.seenMilestoneIds.has(milestone.id)) {
-          if (existingNotice && existingNotice.text !== nextText) {
-            existingNotice.text = nextText;
-            changed = true;
-          } else if (!existingNotice) {
-            this.noticeMessages.push({
-              id: noticeId,
-              role: "assistant",
-              text: nextText,
-              at: milestone.at,
-              kind: "notice" as const
-            });
-            changed = true;
-          }
-          continue;
-        }
-
-        this.seenMilestoneIds.add(milestone.id);
-        this.noticeMessages.push({
-          id: noticeId,
-          role: "assistant",
-          text: nextText,
-          at: milestone.at,
-          kind: "notice" as const
-        });
-        changed = true;
-      }
-
-      if (changed) {
-        this.noticeMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
-        if (this.noticeMessages.length > 40) {
-          this.noticeMessages.splice(0, this.noticeMessages.length - 40);
-        }
-        await this.saveNoticeState();
-        this.emit("change");
-      }
-
       this.scheduleSmokeTestReactions();
     })().catch((error) => {
       this.lastError = error instanceof Error ? error.message : String(error);
@@ -680,7 +647,7 @@ export class ButlerAgentService extends EventEmitter {
 
   async start(): Promise<void> {
     await fs.mkdir(this.sessionDir, { recursive: true });
-    await this.loadNoticeState();
+    await this.loadOperatorMessageState();
     await this.loadCallbackState();
     this.auth = await readButlerAuthStatus(this.piAuthPath);
     this.modelRegistry = ModelRegistry.inMemory(AuthStorage.create(this.piAuthPath));

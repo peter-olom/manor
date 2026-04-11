@@ -25,7 +25,6 @@ import {
   BUTLER_DRAFT_STORAGE_KEY,
   BUTLER_HISTORY_AUTOLOAD_THRESHOLD_PX,
   BUTLER_HISTORY_PAGE_SIZE,
-  BUTLER_NOTICE_VISIBILITY_STORAGE_KEY,
   BUTLER_RUNTIME_VISIBILITY_STORAGE_KEY,
   buildMessageImageLookup,
   dedupeMessages,
@@ -58,7 +57,6 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
   const [followButler, setFollowButler] = useState(true);
   const [showTimeline, setShowTimeline] = useState(false);
   const [showRuntime, setShowRuntime] = useState(() => readStoredValue(BUTLER_RUNTIME_VISIBILITY_STORAGE_KEY) === "true");
-  const [showNotices, setShowNotices] = useState(() => readStoredValue(BUTLER_NOTICE_VISIBILITY_STORAGE_KEY) === "true");
   const [activeJumpId, setActiveJumpId] = useState<string | null>(null);
   const [pendingButlerText, setPendingButlerText] = useState<string | null>(null);
   const [butlerImages, setButlerImages] = useState<ImageReference[]>([]);
@@ -72,13 +70,6 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
   const butlerPrependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
   const butlerMessageTimesRef = useRef<Record<string, number>>({});
   const jumpFlashTimerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-    window.localStorage.setItem(BUTLER_NOTICE_VISIBILITY_STORAGE_KEY, showNotices ? "true" : "false");
-  }, [showNotices]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -363,25 +354,20 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
     });
   }
 
-  const butlerVisibleMessages = useMemo(
-    () => history.messages.filter((message) => showNotices || message.kind !== "notice"),
-    [history.messages, showNotices]
-  );
-  const butlerNoticeCount = shell?.butler.supervision.notices.length ?? 0;
   const butlerMessagesWithTimes = useMemo(
     () =>
-      butlerVisibleMessages.map((message, index) => {
+      history.messages.map((message, index) => {
         const knownAt = message.at ?? butlerMessageTimesRef.current[message.id];
         if (typeof knownAt === "number" && Number.isFinite(knownAt)) {
           butlerMessageTimesRef.current[message.id] = knownAt;
           return { ...message, at: knownAt };
         }
 
-        const fallbackAt = Date.now() - (butlerVisibleMessages.length - index) * 1000;
+        const fallbackAt = Date.now() - (history.messages.length - index) * 1000;
         butlerMessageTimesRef.current[message.id] = fallbackAt;
         return { ...message, at: fallbackAt };
       }),
-    [butlerVisibleMessages]
+    [history.messages]
   );
   const butlerPromptJumpList = useMemo(
     () => butlerMessagesWithTimes.filter((message) => message.role.startsWith("user")),
@@ -442,7 +428,7 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
           .map((row) => ({
             id: row.id,
             text: row.message.text || "",
-            includeImages: row.message.kind !== "notice" && !row.message.role.startsWith("assistant")
+            includeImages: !row.message.role.startsWith("assistant")
           })),
         knownImages
       ),
@@ -520,13 +506,6 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
                   ) : null}
                 </div>
               ) : null}
-              <button className={`conversation-toggle${showNotices ? " is-active" : ""}`} onClick={() => setShowNotices((current) => !current)} type="button">
-                <span className="conversation-toggle-icon" aria-hidden="true">
-                  {showNotices ? <ChevronUpIcon /> : <ChevronDownIcon />}
-                </span>
-                <span className="conversation-toggle-label">{showNotices ? "Hide notices" : "Show notices"}</span>
-                {butlerNoticeCount > 0 ? <span className="conversation-toggle-count">{butlerNoticeCount}</span> : null}
-              </button>
             </div>
           </div>
           <div
@@ -603,15 +582,15 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
                   }
 
                   const message = row.message;
-                  const toneClass = message.kind === "notice" ? "is-notice" : `is-${message.role.startsWith("assistant") ? "assistant" : "user"}`;
-                  const rowToneClass = message.kind === "notice" ? "is-notice" : message.role.startsWith("assistant") ? "is-assistant" : "is-user";
+                  const toneClass = `is-${message.role.startsWith("assistant") ? "assistant" : "user"}`;
+                  const rowToneClass = message.role.startsWith("assistant") ? "is-assistant" : "is-user";
                   const imageState = messageImages[row.id] ?? { displayText: message.text || "…", images: [] };
 
                   return (
                     <div key={row.id} className={`conversation-row ${rowToneClass}`}>
                       <article id={`butler-message-${message.id}`} className={`entry ${toneClass}${activeJumpId === message.id ? " is-jump-target" : ""}`}>
                         <div className="entry-head">
-                          <span>{message.kind === "notice" ? "Supervisor notice" : message.role.startsWith("assistant") ? "Butler" : "You"}</span>
+                          <span>{message.role.startsWith("assistant") ? "Butler" : "You"}</span>
                           <span className="entry-head-meta">
                             <span>{formatJumpLabel(message.at)}</span>
                             <button className="entry-copy" onClick={() => void copyText(message.text || "", "Message copied")} aria-label="Copy message" title="Copy message">

@@ -19,7 +19,7 @@ export type ButlerMessageRecord = {
   role: string;
   text: string;
   at: number | null;
-  kind: "message" | "notice";
+  kind: "message";
 };
 
 export type ButlerHistoryPageResponse = {
@@ -292,7 +292,7 @@ export type ButlerThreadCallback = {
   lastTerminalReportAt: number | null;
   operatorCloseoutStatus: "not_required" | "owed" | "posted";
   owesOperatorReply: boolean;
-  closeoutChannel: "none" | "main_chat" | "background_notice";
+  closeoutChannel: "none" | "main_chat";
   closedAt: number | null;
   updatedAt: number;
 };
@@ -495,7 +495,6 @@ export type ShellSnapshot = {
         updatedAt: number;
         summary: string;
       };
-      notices: ButlerMessageRecord[];
       callbacks: ButlerThreadCallback[];
     };
     lastError: string | null;

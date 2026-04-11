@@ -166,7 +166,6 @@ export type ButlerAgentSessionAccess = {
   sessionDir: string;
   operatorMessages: ButlerMessageView[];
   pendingChatCallbacks: Map<string, ButlerThreadCallbackView>;
-  noticeMessages: ButlerMessageView[];
   onboarding: ButlerOnboardingView;
   toolCatalog: ButlerToolView[];
   unsubscribeSession: (() => void) | null;

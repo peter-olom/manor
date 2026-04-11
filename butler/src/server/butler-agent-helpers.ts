@@ -375,30 +375,6 @@ export function requiresOperatorCallback(contract: CodexThreadExecutionContractV
   return Boolean(contract?.operatorCallbackRequired);
 }
 
-export function buildMilestoneNoticeText(
-  store: ButlerStateStore,
-  milestone: { type: "completed" | "blocked"; threadId: string; turnId: string; summary: string }
-): string | null {
-  const thread = store.getThread(milestone.threadId);
-  if (!thread) {
-    return null;
-  }
-
-  if (requiresOperatorCallback(thread.executionContract)) {
-    return null;
-  }
-
-  const workerReport = store.getWorkerReport(milestone.threadId, milestone.turnId);
-  if (workerReport && workerReport.status === milestone.type) {
-    const prefix =
-      milestone.type === "blocked"
-        ? `Codex needs attention on ${thread.supervisor.projectLabel}.`
-        : `Codex finished work on ${thread.supervisor.projectLabel}.`;
-    return [prefix, workerReport.summary, workerReport.details].filter(Boolean).join("\n\n");
-  }
-  return null;
-}
-
 export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: string): string {
   const supervisor = store.getSupervisorSummary();
   const projects = store.listProjectSummaries().slice(0, 8);
@@ -505,8 +481,8 @@ export function parseProofScreenshotReview(rawText: string): ProofScreenshotRevi
   }
 }
 
-export function mergeVisibleMessages(sessionMessages: ButlerMessageView[], notices: ButlerMessageView[]): ButlerMessageView[] {
-  return [...sessionMessages, ...notices].sort((left, right) => {
+export function mergeVisibleMessages(sessionMessages: ButlerMessageView[], extraMessages: ButlerMessageView[]): ButlerMessageView[] {
+  return [...sessionMessages, ...extraMessages].sort((left, right) => {
     const leftAt = left.at ?? 0;
     const rightAt = right.at ?? 0;
     if (leftAt === rightAt) {

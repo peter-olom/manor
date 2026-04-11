@@ -1027,8 +1027,7 @@ select {
   justify-content: flex-end;
 }
 
-.conversation-row.is-assistant,
-.conversation-row.is-notice {
+.conversation-row.is-assistant {
   justify-content: flex-start;
 }
 
@@ -1338,22 +1337,6 @@ select {
   max-width: 100%;
   background: var(--panel);
   --entry-bg: var(--panel);
-}
-
-.entry.is-notice {
-  max-width: 100%;
-  background: color-mix(in srgb, var(--panel) 70%, transparent);
-  --entry-bg: color-mix(in srgb, var(--panel) 70%, transparent);
-  --entry-muted: var(--muted);
-  --entry-table-line: var(--line);
-  --entry-blockquote-line: var(--line-strong);
-  --entry-code-bg: var(--code-bg);
-  --entry-code-bar-bg: var(--code-bar-bg);
-  --entry-code-bar-ink: var(--code-bar-ink);
-  --entry-code-border: var(--code-border);
-  --entry-code-ink: var(--code-ink);
-  --entry-code-inline-bg: var(--code-inline-bg);
-  --entry-code-inline-ink: var(--code-inline-ink);
 }
 
 .entry.is-jump-target {

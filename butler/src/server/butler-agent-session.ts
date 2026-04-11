@@ -341,7 +341,6 @@ export function getButlerShellSnapshot(access: ButlerAgentSessionAccess): AppShe
     supervision: {
       projects: access.store.listProjectSummaries(),
       supervisor: access.store.getSupervisorSummary(),
-      notices: access.noticeMessages as AppSnapshot["butler"]["supervision"]["notices"],
       callbacks: [...access.pendingChatCallbacks.values()].sort((left, right) => right.updatedAt - left.updatedAt)
     },
     lastError: access.lastError,

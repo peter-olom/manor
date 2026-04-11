@@ -13,7 +13,7 @@ export type ButlerCallbackState =
   | "closed";
 export type ButlerCallbackResolutionState = "received_worker_callback" | "recovered_from_thread_state" | null;
 export type ButlerOperatorCloseoutStatus = "not_required" | "owed" | "posted";
-export type ButlerCloseoutChannel = "none" | "main_chat" | "background_notice";
+export type ButlerCloseoutChannel = "none" | "main_chat";
 
 export interface CodexThreadExecutionContractView {
   threadId: string;
@@ -478,7 +478,7 @@ export interface ButlerMessageView {
   role: string;
   text: string;
   at: number | null;
-  kind: "message" | "notice";
+  kind: "message";
 }
 
 export interface ButlerMessagePageView {
@@ -601,7 +601,6 @@ export interface AppSnapshot {
     supervision: {
       projects: CodexProjectSummaryView[];
       supervisor: ButlerSupervisorSummaryView;
-      notices: ButlerMessageView[];
       callbacks: ButlerThreadCallbackView[];
     };
     latestPreviewProofsByThreadId: Record<string, PreviewProofRecordView>;
