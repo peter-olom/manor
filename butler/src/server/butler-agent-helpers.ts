@@ -1,0 +1,585 @@
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentSession } from "@mariozechner/pi-coding-agent";
+
+import { ButlerStateStore } from "./state-store.js";
+import type {
+  ButlerThreadCallbackView,
+  ButlerMessagePageView,
+  ButlerMessageView,
+  CodexThreadExecutionContractView,
+  PreviewLeaseView,
+  PreviewProofRecordView,
+  PreviewVerificationArtifactView,
+  PreviewVerificationView
+} from "./types.js";
+
+export type ProofScreenshotReview = {
+  verdict: string;
+  visibleState: string;
+  evidence: string;
+  concern: string;
+  rawText: string;
+  reviewedAt: number;
+  modelId: string;
+  modelProvider: string;
+};
+
+export type ResolvedPreviewProof = {
+  preview: Pick<PreviewLeaseView, "id" | "threadId" | "projectId" | "projectLabel" | "title" | "stackId">;
+  verification: PreviewVerificationView;
+  screenshot: PreviewVerificationArtifactView;
+  video: PreviewVerificationArtifactView | null;
+  manifest: PreviewVerificationArtifactView | null;
+  trace: PreviewVerificationArtifactView | null;
+};
+
+export type SupervisionSmokePlan = {
+  threadId: string;
+  totalFollowUps: number;
+  followUpsSent: number;
+};
+
+export type PendingChatCallback = ButlerThreadCallbackView;
+
+export const SNAPSHOT_MESSAGE_TAIL_LIMIT = 200;
+export const MAX_HISTORY_PAGE_SIZE = 1000;
+
+export function contentToText(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    return content
+      .map((entry) => {
+        if (entry && typeof entry === "object" && "text" in entry && typeof entry.text === "string") {
+          return entry.text;
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  return "";
+}
+
+export function extractMessageTimestamp(message: Record<string, unknown>): number | null {
+  const candidates = [message.timestamp, message.createdAt, message.at];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "number" && Number.isFinite(candidate)) {
+      return candidate;
+    }
+
+    if (typeof candidate === "string") {
+      const parsed = Date.parse(candidate);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  return null;
+}
+
+export function extractWorkspaceMentions(text: string): string[] {
+  const matches = text.match(/\/repos(?:\/\.manor-worktrees)?\/[^\s`"'()<>{}\]]+/g) ?? [];
+  return [...new Set(matches.map((entry) => entry.replace(/[.,;:!?]+$/g, "")))];
+}
+
+export function serializeMessages(session: AgentSession): ButlerMessageView[] {
+  const messages = session.messages
+    .map((message, index) => {
+      const role = "role" in message && typeof message.role === "string" ? message.role : "unknown";
+      const record = message as unknown as Record<string, unknown>;
+      const text =
+        "content" in message && contentToText(message.content).trim()
+          ? contentToText(message.content)
+          : typeof record.errorMessage === "string"
+            ? record.errorMessage
+            : "";
+      return {
+        id: `message-${index}`,
+        role,
+        text,
+        at: extractMessageTimestamp(record),
+        kind: "message" as const
+      };
+    });
+
+  return messages.filter((message) => {
+    if (!(message.role === "user" || message.role === "assistant" || message.role === "user-with-attachments")) {
+      return false;
+    }
+
+    if (message.role === "assistant" && !message.text.trim()) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+export function isAssistantFailureMessage(message: unknown): message is Record<string, unknown> & {
+  role: "assistant";
+  stopReason: "error" | "aborted";
+  errorMessage?: string;
+} {
+  if (!message || typeof message !== "object") {
+    return false;
+  }
+
+  const record = message as Record<string, unknown>;
+  return (
+    record.role === "assistant" &&
+    (record.stopReason === "error" || record.stopReason === "aborted") &&
+    (typeof record.errorMessage === "string" || !("errorMessage" in record))
+  );
+}
+
+export function sanitizeHistoryMessage(message: unknown): { message: unknown; changed: boolean } {
+  if (!message || typeof message !== "object") {
+    return { message, changed: false };
+  }
+
+  const record = message as Record<string, unknown>;
+  const role = typeof record.role === "string" ? record.role : null;
+  if (role !== "user" && role !== "user-with-attachments") {
+    return { message, changed: false };
+  }
+
+  const content = record.content;
+  if (!Array.isArray(content)) {
+    return { message, changed: false };
+  }
+
+  let removedImage = false;
+  const nextContent: Record<string, unknown>[] = [];
+  for (const entry of content) {
+    if (!entry || typeof entry !== "object") {
+      nextContent.push({ type: "text", text: String(entry ?? "") });
+      continue;
+    }
+
+    const part = entry as Record<string, unknown>;
+    if (part.type === "image") {
+      removedImage = true;
+      continue;
+    }
+
+    nextContent.push({ ...part });
+  }
+
+  if (!removedImage) {
+    return { message, changed: false };
+  }
+
+  nextContent.push({
+    type: "text",
+    text: "[Attached image omitted from persisted Butler history.]"
+  });
+
+  return {
+    changed: true,
+    message: {
+      ...record,
+      role: "user",
+      content: nextContent
+    }
+  };
+}
+
+export function sanitizeHistoryMessages(messages: AgentMessage[]): { messages: AgentMessage[]; changed: boolean } {
+  let changed = false;
+  const nextMessages = messages.map((message) => {
+    const sanitized = sanitizeHistoryMessage(message);
+    if (sanitized.changed) {
+      changed = true;
+    }
+    return sanitized.message as AgentMessage;
+  });
+
+  return { messages: changed ? nextMessages : messages, changed };
+}
+
+export function buildJobsSummary(store: ButlerStateStore, limit: number, status?: string): string {
+  const jobs = store
+    .listThreads()
+    .filter((thread) => !status || thread.status === status)
+    .slice(0, limit);
+
+  if (jobs.length === 0) {
+    return "No jobs matched that filter.";
+  }
+
+  return jobs
+    .map(
+      (thread, index) =>
+        `${index + 1}. ${thread.id} | project=${thread.supervisor.projectLabel} | status=${thread.status} | source=${thread.source} | updated=${new Date(thread.updatedAt).toISOString()} | preview=${thread.preview || "(empty)"} | summary=${thread.supervisor.summary}`
+    )
+    .join("\n");
+}
+
+export function shouldAllowLocalThreadFallback(store: ButlerStateStore, threadId: string, error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  const retryable = message.includes("failed to locate rollout") || message.includes("thread not found") || message.includes("thread not loaded");
+  return retryable && Boolean(store.getThread(threadId));
+}
+
+export function buildJobDetail(store: ButlerStateStore, threadId: string): string {
+  const thread = store.getThread(threadId);
+  if (!thread) {
+    return `Job ${threadId} was not found.`;
+  }
+  const lease = store.getThreadPreviewLease(threadId);
+
+  const turns = thread.turns
+    .map((turn, turnIndex) => {
+      const items = turn.items
+        .map((item, itemIndex) => `${turnIndex + 1}.${itemIndex + 1} ${item.type} (${item.status}) ${item.text}`.trim())
+        .join("\n");
+      return `Turn ${turnIndex + 1} | id=${turn.id} | status=${turn.status}\n${items}`;
+    })
+    .join("\n\n");
+
+  return [
+    `Job ${thread.id}`,
+    `project=${thread.supervisor.projectLabel}`,
+    `status=${thread.status}`,
+    `source=${thread.source}`,
+    `preview=${thread.preview || "(empty)"}`,
+    lease ? `operator_preview=${lease.operatorUrl}` : "operator_preview=(none)",
+    `summary=${thread.supervisor.summary}`,
+    turns || "No turn details loaded yet."
+  ].join("\n");
+}
+
+export function buildProjectsSummary(store: ButlerStateStore, limit: number): string {
+  const projects = store.listProjectSummaries().slice(0, limit);
+  if (projects.length === 0) {
+    return "No projects are active yet.";
+  }
+
+  return projects
+    .map(
+      (project, index) =>
+        `${index + 1}. ${project.label} | threads=${project.threadCount} | active=${project.activeCount} | blocked=${project.blockedCount} | updated=${new Date(project.updatedAt).toISOString()} | summary=${project.summary}`
+    )
+    .join("\n");
+}
+
+export function buildProjectDetail(store: ButlerStateStore, projectId: string): string {
+  const project = store.getProjectSummary(projectId);
+  if (!project) {
+    return `Project ${projectId} was not found.`;
+  }
+
+  const threadLines = project.threadIds
+    .map((threadId, index) => {
+      const thread = store.getThread(threadId);
+      if (!thread) {
+        return null;
+      }
+
+      return `${index + 1}. ${thread.id} | status=${thread.status} | summary=${thread.supervisor.summary}`;
+    })
+    .filter(Boolean)
+    .join("\n");
+
+  return [
+    `Project ${project.label}`,
+    `threads=${project.threadCount}`,
+    `active=${project.activeCount}`,
+    `blocked=${project.blockedCount}`,
+    `idle=${project.completedCount}`,
+    `summary=${project.summary}`,
+    threadLines || "No thread details loaded yet."
+  ].join("\n");
+}
+
+export function buildSupervisorOverview(store: ButlerStateStore): string {
+  const summary = store.getSupervisorSummary();
+  const leadProjects = store
+    .listProjectSummaries()
+    .slice(0, 5)
+    .map((project, index) => `${index + 1}. ${project.label} | ${project.summary}`)
+    .join("\n");
+
+  return [summary.summary, leadProjects].filter(Boolean).join("\n");
+}
+
+export function normalizeNoticeText(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized || null;
+}
+
+export function summarizeNoticeResult(value: string | null | undefined): string | null {
+  const normalized = normalizeNoticeText(value);
+  if (!normalized) {
+    return null;
+  }
+
+  const sentences = normalized
+    .split(/(?<=[.!?])\s+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  if (sentences.length === 0) {
+    return normalized;
+  }
+
+  const first = sentences[0];
+  if (first.length >= 24 || sentences.length === 1) {
+    return first;
+  }
+
+  return `${first} ${sentences[1] ?? ""}`.trim();
+}
+
+export function extractLatestNoticeTexts(thread: ReturnType<ButlerStateStore["getThread"]>) {
+  if (!thread) {
+    return {
+      latestUserPrompt: null as string | null,
+      latestAgentReply: null as string | null
+    };
+  }
+
+  const flattenedItems = thread.turns.flatMap((turn) => turn.items);
+  const latestUserPrompt =
+    normalizeNoticeText([...flattenedItems].reverse().find((item) => item.type === "userMessage" && item.text.trim())?.text) ?? null;
+  const latestAgentReply =
+    normalizeNoticeText([...flattenedItems].reverse().find((item) => item.type === "agentMessage" && item.text.trim())?.text) ?? null;
+
+  return { latestUserPrompt, latestAgentReply };
+}
+
+export function isCallbackClosed(callback: PendingChatCallback): boolean {
+  return callback.callbackState === "closed";
+}
+
+export function isCallbackOutstanding(callback: PendingChatCallback): boolean {
+  return callback.owesOperatorReply && !isCallbackClosed(callback);
+}
+
+export function requiresOperatorAcknowledgement(contract: CodexThreadExecutionContractView | null | undefined): boolean {
+  return Boolean(contract?.operatorAcknowledgementRequired);
+}
+
+export function requiresOperatorCallback(contract: CodexThreadExecutionContractView | null | undefined): boolean {
+  return Boolean(contract?.operatorCallbackRequired);
+}
+
+export function buildMilestoneNoticeText(
+  store: ButlerStateStore,
+  milestone: { type: "completed" | "blocked"; threadId: string; turnId: string; summary: string }
+): string | null {
+  const thread = store.getThread(milestone.threadId);
+  if (!thread) {
+    return null;
+  }
+
+  if (requiresOperatorCallback(thread.executionContract)) {
+    return null;
+  }
+
+  const workerReport = store.getWorkerReport(milestone.threadId, milestone.turnId);
+  if (workerReport && workerReport.status === milestone.type) {
+    const prefix =
+      milestone.type === "blocked"
+        ? `Codex needs attention on ${thread.supervisor.projectLabel}.`
+        : `Codex finished work on ${thread.supervisor.projectLabel}.`;
+    return [prefix, workerReport.summary, workerReport.details].filter(Boolean).join("\n\n");
+  }
+  return null;
+}
+
+export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: string): string {
+  const supervisor = store.getSupervisorSummary();
+  const projects = store.listProjectSummaries().slice(0, 8);
+
+  return [
+    "You are Butler, the supervisor inside Manor.",
+    "Keep the main Butler chat operator-facing and concise.",
+    "Use Codex project and thread summaries as your background memory.",
+    "Do not expose private Butler-to-Codex steering verbatim in the Butler chat.",
+    "If the operator asks for real execution, project setup, repository cloning, coding work, or shell work, delegate it to Codex instead of replying with manual shell instructions.",
+    "When Codex work changes state, summarize the outcome rather than replaying the full back-and-forth.",
+    "If a delegated thread contract requires operator acknowledgement or operator callback, treat those as binding obligations in the main Butler chat.",
+    "Each supervised Codex thread has a Butler steering budget. Default to 20 Butler-driven turns per thread unless that thread is explicitly overridden.",
+    "When work touches git in a repo, enforce a dedicated branch whose name starts with butler/.",
+    "Do not run two parallel Codex workstreams on the same repo branch.",
+    "When a task needs multiple cooperating previews or disposable services, create a stack lease first so Butler can keep the whole environment under one isolated network and lifecycle.",
+    "When the operator asks for a supervision or oversight smoke test, treat it as a native Butler behavior: delegate the run to Codex, let the operator prompt define the contract, and privately steer the worker for 2 to 5 follow-up turns.",
+    "For recurring mutable databases or object stores, prefer job-scoped stateful stacks so each job gets its own retained writable copy forked from the project base by default.",
+    "Reserve base-mode stacks for intentional seed or snapshot refresh work. Do not let multiple jobs share one writable database volume.",
+    "When a task needs a live app review, prefer a preview lease on an isolated runtime instead of telling the operator to bind a raw host port.",
+    "When preview bootstrap is unclear, inspect the workspace bootstrap hints before deciding on image, egress, or install steps.",
+    "When a project needs backing dependencies like Postgres, Redis, MySQL, MSSQL, RabbitMQ, MinIO, Mailpit, or SQLite, prefer registered service templates instead of ad hoc install steps. If the dependency is missing, register it once and reuse it later.",
+    "A preview runs the app or job code. A service provides supporting infrastructure only. Do not run the main app inside a service.",
+    "Choose an execution mode explicitly before delegating or steering Codex: local Manor branch runtime or live deployed runtime.",
+    "When the operator asks to check out a branch, worktree, or repo and produce proof, default to local Manor branch runtime unless the operator explicitly asks for live, staging, or production verification.",
+    "Do not silently substitute live deployed verification for local branch verification.",
+    "If the needed execution mode changes, start a fresh Codex workstream instead of reusing an older thread with a different strategy.",
+    "For local Manor runtime tasks that involve signup or email flows, prefer local dependency services like Mailpit when the app under test is running inside Manor.",
+    "Codex may operate inside attached isolates through manor-harness for inspect, logs, processes, and shell exec, but Butler still owns isolate lifecycle and policy.",
+    "When the operator provides reference images, keep track of the stored image references so you can pass them to Codex later and reuse them during verification.",
+    "Use the image reference tools whenever visual requirements depend on an uploaded image.",
+    "When proof of frontend execution is requested, do not accept artifact existence alone as proof. Run headed verification when needed, inspect the screenshot with the proof review tool, and surface the video download for human review.",
+    "Never reuse or mention a deleted, unknown, or cwd-less Codex thread as if it were a valid workstream.",
+    "",
+    `Supervisor state: ${supervisor.summary}`,
+    callbackSummary,
+    projects.length > 0 ? "Project summaries:" : "Project summaries: none yet.",
+    ...projects.map((project) => `- ${project.label}: ${project.summary}`)
+  ].join("\n");
+}
+
+export function findVerificationArtifact(
+  verification: PreviewVerificationView | null | undefined,
+  kind: PreviewVerificationArtifactView["kind"]
+): PreviewVerificationArtifactView | null {
+  if (!verification) {
+    return null;
+  }
+
+  return verification.artifacts.find((artifact) => artifact.kind === kind) ?? null;
+}
+
+export function stripMarkdownCodeFence(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("```")) {
+    return trimmed;
+  }
+
+  return trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+}
+
+export function parseProofScreenshotReview(rawText: string): ProofScreenshotReview | null {
+  const payload = stripMarkdownCodeFence(rawText);
+  if (!payload) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(payload) as Partial<ProofScreenshotReview>;
+    const parsedEvidence = (parsed as { evidence?: unknown }).evidence;
+    const evidence =
+      typeof parsedEvidence === "string"
+        ? parsedEvidence
+        : Array.isArray(parsedEvidence)
+          ? parsedEvidence
+              .map((entry: unknown) => (typeof entry === "string" ? entry.trim() : ""))
+              .filter(Boolean)
+              .join(" ")
+          : null;
+    if (
+      typeof parsed.verdict !== "string" ||
+      typeof parsed.visibleState !== "string" ||
+      typeof evidence !== "string" ||
+      typeof parsed.concern !== "string"
+    ) {
+      return null;
+    }
+
+    return {
+      verdict: parsed.verdict.trim(),
+      visibleState: parsed.visibleState.trim(),
+      evidence: evidence.trim(),
+      concern: parsed.concern.trim(),
+      rawText: payload,
+      reviewedAt: Date.now(),
+      modelId: "",
+      modelProvider: ""
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function mergeVisibleMessages(sessionMessages: ButlerMessageView[], notices: ButlerMessageView[]): ButlerMessageView[] {
+  return [...sessionMessages, ...notices].sort((left, right) => {
+    const leftAt = left.at ?? 0;
+    const rightAt = right.at ?? 0;
+    if (leftAt === rightAt) {
+      return left.id.localeCompare(right.id);
+    }
+    return leftAt - rightAt;
+  });
+}
+
+export function collapseCallbackDuplicateMessages(messages: ButlerMessageView[]): ButlerMessageView[] {
+  const collapsed: ButlerMessageView[] = [];
+  let delegationAcknowledged = false;
+  let callbackDelivered = false;
+
+  for (const message of messages) {
+    if (message.role === "user" || message.role === "user-with-attachments") {
+      delegationAcknowledged = false;
+      callbackDelivered = false;
+      collapsed.push(message);
+      continue;
+    }
+
+    if (message.id.startsWith("delegation-ack-")) {
+      delegationAcknowledged = true;
+      collapsed.push(message);
+      continue;
+    }
+
+    if (message.id.startsWith("callback-") || message.id.startsWith("callback-fallback-")) {
+      callbackDelivered = true;
+      collapsed.push(message);
+      continue;
+    }
+
+    if ((delegationAcknowledged || callbackDelivered) && message.kind === "message" && message.role === "assistant") {
+      continue;
+    }
+
+    collapsed.push(message);
+  }
+
+  return collapsed;
+}
+
+export function buildMessagePage(
+  visibleMessages: ButlerMessageView[],
+  before: number | null,
+  limit: number
+): ButlerMessagePageView {
+  const totalCount = visibleMessages.length;
+  const cappedLimit = Math.max(1, Math.min(Number.isFinite(limit) ? Math.trunc(limit) : SNAPSHOT_MESSAGE_TAIL_LIMIT, MAX_HISTORY_PAGE_SIZE));
+  const safeBefore =
+    typeof before === "number" && Number.isFinite(before)
+      ? Math.max(0, Math.min(Math.trunc(before), totalCount))
+      : totalCount;
+  const startIndex = Math.max(0, safeBefore - cappedLimit);
+
+  return {
+    messages: visibleMessages.slice(startIndex, safeBefore),
+    startIndex,
+    endIndex: safeBefore,
+    totalCount,
+    hasMore: startIndex > 0
+  };
+}
+
+export function buildLatestProofMap(proofs: PreviewProofRecordView[]): Record<string, PreviewProofRecordView> {
+  return Object.fromEntries(
+    proofs
+      .filter((proof) => Boolean(proof.threadId))
+      .reduce((accumulator, proof) => {
+        if (!proof.threadId || accumulator.has(proof.threadId)) {
+          return accumulator;
+        }
+        accumulator.set(proof.threadId, proof);
+        return accumulator;
+      }, new Map<string, PreviewProofRecordView>())
+      .entries()
+  );
+}

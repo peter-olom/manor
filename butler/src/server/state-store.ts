@@ -2,8 +2,57 @@ import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
-import { inferThreadExecutionContract, parseThreadExecutionContract } from "./thread-contract.js";
+import {
+  buildPreviewProofRecordId,
+  buildProjectSummary,
+  buildSupervisorSummary,
+  buildThreadSupervisor,
+  clipText,
+  DEFAULT_ARTIFACT_RETENTION_MS,
+  DEFAULT_BUTLER_THREAD_LIMIT,
+  DEFAULT_LEASE_REAP_GRACE_MS,
+  DEFAULT_PREVIEW_LEASE_TTL_MS,
+  DEFAULT_SERVICE_LEASE_TTL_MS,
+  DEFAULT_STACK_LEASE_TTL_MS,
+  deriveThreadTaskTitle,
+  emptyCodexCompaction,
+  emptyCodexContextUsage,
+  emptyCodexSupervision,
+  emptyThreadSupervisor,
+  formatFallbackJobLabel,
+  formatWindowTitle,
+  inferPersistedThreadExecutionContract,
+  LEASE_ACTIVITY_WRITE_THROTTLE_MS,
+  MAX_EVENT_LOG,
+  normalizeItem,
+  normalizePreviewVerification,
+  normalizeStatus,
+  normalizeTurn,
+  normalizeWindow,
+  restorePersistedTurn,
+  shouldExposeCodexItem
+} from "./state-store-helpers.js";
+import {
+  emitStateStoreChange,
+  getOrCreateStateStoreThread,
+  loadStateStore,
+  normalizeStateStorePreviewLease,
+  normalizeStateStorePreviewProofRecord,
+  normalizeStateStoreServiceLease,
+  normalizeStateStoreStackLease,
+  queueStateStoreSave,
+  reconcileStateStoreThreadWindows,
+  recordStateStorePreviewProofFromLease,
+  removeStateStorePreviewProofsForThread,
+  refreshStateStoreStackMembership,
+  restorePersistedStateStoreThread,
+  persistStateStoreThreadSupervision,
+  updateStateStoreArtifactAvailability,
+  upsertStateStorePreviewProofRecord,
+  applyStateStoreLeaseLifecycle,
+  type StateStoreInternalAccess
+} from "./state-store-internals.js";
+import { parseThreadExecutionContract } from "./thread-contract.js";
 import type {
   AppSnapshot,
   AppShellSnapshot,
@@ -40,561 +89,6 @@ import type {
   PersistedUiState
 } from "./types.js";
 
-const MAX_EVENT_LOG = 80;
-const DEFAULT_BUTLER_THREAD_LIMIT = 20;
-const DEFAULT_PREVIEW_LEASE_TTL_MS = 30 * 60 * 1000;
-const DEFAULT_STACK_LEASE_TTL_MS = 30 * 60 * 1000;
-const DEFAULT_SERVICE_LEASE_TTL_MS = 30 * 60 * 1000;
-const DEFAULT_LEASE_REAP_GRACE_MS = 10 * 60 * 1000;
-const DEFAULT_ARTIFACT_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
-const LEASE_ACTIVITY_WRITE_THROTTLE_MS = 15_000;
-
-function emptyCodexContextUsage(): CodexContextUsageView {
-  return {
-    tokens: null,
-    contextWindow: null,
-    percent: null
-  };
-}
-
-function emptyCodexCompaction(): CodexCompactionView {
-  return {
-    active: false,
-    count: 0,
-    lastStartedAt: null,
-    lastCompletedAt: null
-  };
-}
-
-function emptyCodexSupervision(): CodexSupervisionView {
-  return {
-    butlerTurnsUsed: 0,
-    maxButlerTurns: DEFAULT_BUTLER_THREAD_LIMIT,
-    capReached: false
-  };
-}
-
-function emptyThreadSupervisor(): CodexThreadSupervisorView {
-  return {
-    projectId: "unknown",
-    projectLabel: "Unknown",
-    latestUserPrompt: null,
-    latestAgentReply: null,
-    summary: "No supervisor summary yet.",
-    blocked: false
-  };
-}
-
-function clipText(value: string | null | undefined, max = 160): string | null {
-  if (!value) {
-    return null;
-  }
-
-  const normalized = value.replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return null;
-  }
-
-  return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized;
-}
-
-function summarizeTaskText(value: string | null | undefined, max = 120): string | null {
-  if (!value) {
-    return null;
-  }
-
-  const normalized = value.replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return null;
-  }
-
-  return clipText(normalized, max);
-}
-
-function deriveThreadTaskTitle(thread: CodexThreadRecord | null | undefined): string | null {
-  if (!thread) {
-    return null;
-  }
-
-  const fromContract = summarizeTaskText(thread.executionContract?.requestedTask);
-  if (fromContract) {
-    return fromContract;
-  }
-
-  const flattenedItems = thread.turns.flatMap((turn) => turn.items.map((item) => ({ turn, item })));
-  const latestUserPrompt = summarizeTaskText(
-    [...flattenedItems]
-      .reverse()
-      .find(({ item }) => item.type === "userMessage" && item.text.trim())?.item.text ?? null
-  );
-  if (latestUserPrompt) {
-    return latestUserPrompt;
-  }
-
-  return summarizeTaskText(thread.preview);
-}
-
-function formatFallbackJobLabel(threadId: string): string {
-  const normalizedThreadId = threadId.trim();
-  if (!normalizedThreadId) {
-    return "Job";
-  }
-
-  if (normalizedThreadId.length <= 13) {
-    return `Job ${normalizedThreadId}`;
-  }
-
-  return `Job ${normalizedThreadId.slice(0, 8)}-${normalizedThreadId.slice(-4)}`;
-}
-
-function formatWindowTitle(threadId: string, thread?: CodexThreadRecord): string {
-  const threadName = typeof thread?.name === "string" ? thread.name.trim() : "";
-  if (threadName) {
-    return threadName;
-  }
-
-  return formatFallbackJobLabel(threadId);
-}
-
-function normalizeWindow(window: ButlerWindow, thread?: CodexThreadRecord): ButlerWindow {
-  return {
-    threadId: window.threadId,
-    title: formatWindowTitle(window.threadId, thread),
-    openedAt: window.openedAt
-  };
-}
-
-function buildThreadSupervisor(thread: CodexThreadRecord): CodexThreadSupervisorView {
-  const project = resolveWorkspaceProjectInfo(thread.cwd);
-  const latestUserPrompt = deriveThreadTaskTitle(thread);
-  const flattenedItems = thread.turns.flatMap((turn) => turn.items.map((item) => ({ turn, item })));
-  const latestAgentReply = clipText(
-    [...flattenedItems]
-      .reverse()
-      .find(({ item }) => item.type === "agentMessage" && item.text.trim())?.item.text ?? null
-  );
-  const latestTurn = thread.turns.at(-1) ?? null;
-  const blocked =
-    Boolean(latestTurn?.error) ||
-    latestTurn?.status === "failed" ||
-    latestTurn?.status === "interrupted";
-
-  let summary = "No supervisor summary yet.";
-  if (blocked) {
-    summary = latestTurn?.error
-      ? `Blocked after ${latestUserPrompt ? `"${latestUserPrompt}"` : "the latest prompt"}. Error: ${clipText(latestTurn.error, 120)}`
-      : `Blocked after ${latestUserPrompt ? `"${latestUserPrompt}"` : "the latest prompt"}.`;
-  } else if (thread.status === "active") {
-    summary = latestUserPrompt
-      ? `Working on "${latestUserPrompt}".`
-      : thread.preview
-        ? `Working on ${clipText(thread.preview, 120)}.`
-        : "Work is in progress.";
-  } else if (latestAgentReply) {
-    summary = latestUserPrompt
-      ? `Idle after "${latestUserPrompt}". Latest result: ${clipText(latestAgentReply, 120)}`
-      : `Idle. Latest result: ${clipText(latestAgentReply, 120)}`;
-  } else if (thread.preview) {
-    summary = `Idle. Preview: ${clipText(thread.preview, 120)}`;
-  } else if (thread.turnCount > 0) {
-    summary = "Idle with prior activity.";
-  }
-
-  return {
-    projectId: project.id,
-    projectLabel: project.label,
-    latestUserPrompt,
-    latestAgentReply,
-    summary,
-    blocked
-  };
-}
-
-function buildProjectSummary(threads: CodexThreadRecord[]): CodexProjectSummaryView[] {
-  const grouped = new Map<string, CodexThreadRecord[]>();
-
-  for (const thread of threads) {
-    const group = grouped.get(thread.supervisor.projectId) ?? [];
-    group.push(thread);
-    grouped.set(thread.supervisor.projectId, group);
-  }
-
-  return [...grouped.entries()]
-    .map(([id, projectThreads]) => {
-      const sorted = [...projectThreads].sort((a, b) => b.updatedAt - a.updatedAt);
-      const activeCount = sorted.filter((thread) => thread.status === "active").length;
-      const blockedCount = sorted.filter((thread) => thread.supervisor.blocked).length;
-      const completedCount = sorted.filter((thread) => thread.status === "idle" && !thread.supervisor.blocked).length;
-      const lead = sorted[0];
-      const statusBits = [
-        activeCount > 0 ? `${activeCount} active` : null,
-        blockedCount > 0 ? `${blockedCount} blocked` : null,
-        completedCount > 0 ? `${completedCount} idle` : null
-      ].filter(Boolean);
-
-      return {
-        id,
-        label: lead?.supervisor.projectLabel ?? id,
-        threadCount: sorted.length,
-        activeCount,
-        blockedCount,
-        completedCount,
-        updatedAt: lead?.updatedAt ?? Date.now(),
-        summary: `${statusBits.length > 0 ? `${statusBits.join(", ")}.` : "No active work."} Latest: ${lead?.supervisor.summary ?? "No supervisor summary yet."}`,
-        threadIds: sorted.map((thread) => thread.id)
-      };
-    })
-    .sort((a, b) => b.updatedAt - a.updatedAt);
-}
-
-function buildSupervisorSummary(projects: CodexProjectSummaryView[], threads: CodexThreadRecord[]): ButlerSupervisorSummaryView {
-  const activeThreads = threads.filter((thread) => thread.status === "active").length;
-  const blockedThreads = threads.filter((thread) => thread.supervisor.blocked).length;
-  const completedThreads = threads.filter((thread) => thread.status === "idle" && !thread.supervisor.blocked).length;
-  const leadProject = projects[0];
-
-  return {
-    totalThreads: threads.length,
-    activeThreads,
-    blockedThreads,
-    completedThreads,
-    projectCount: projects.length,
-    updatedAt: leadProject?.updatedAt ?? Date.now(),
-    summary:
-      threads.length === 0
-        ? "No Codex workstreams are active yet."
-        : `${activeThreads} active, ${blockedThreads} blocked, ${completedThreads} idle across ${projects.length} project${projects.length === 1 ? "" : "s"}. ${leadProject ? `Most recent project: ${leadProject.label}.` : ""}`.trim()
-  };
-}
-
-function inferPersistedThreadExecutionContract(thread: CodexThreadRecord): CodexThreadExecutionContractView | null {
-  return inferThreadExecutionContract({
-    threadId: thread.id,
-    workspaceCwd: thread.cwd ?? "/repos",
-    projectId: thread.supervisor.projectId,
-    projectLabel: thread.supervisor.projectLabel,
-    branch: null,
-    previewText: thread.preview,
-    latestUserPrompt: thread.supervisor.latestUserPrompt
-  });
-}
-
-function normalizeStatus(status: unknown): CodexThreadStatus {
-  if (status && typeof status === "object" && "type" in status && typeof status.type === "string") {
-    if (status.type === "active" || status.type === "idle") {
-      return status.type;
-    }
-  }
-
-  return "unknown";
-}
-
-function normalizePreviewVerificationArtifact(
-  artifact: PreviewVerificationArtifactView,
-  defaults: {
-    checkedAt: number;
-    artifactRetentionMs: number;
-  }
-): PreviewVerificationArtifactView {
-  const retainedUntilAt =
-    typeof artifact.retainedUntilAt === "number" && Number.isFinite(artifact.retainedUntilAt)
-      ? artifact.retainedUntilAt
-      : defaults.checkedAt + defaults.artifactRetentionMs;
-  const expiredAt =
-    typeof artifact.expiredAt === "number" && Number.isFinite(artifact.expiredAt) ? artifact.expiredAt : null;
-  const availability =
-    artifact.availability === "expired" || artifact.availability === "missing" || artifact.availability === "available"
-      ? artifact.availability
-      : expiredAt !== null
-        ? "expired"
-        : typeof artifact.filePath === "string" && artifact.filePath.trim()
-          ? "available"
-          : "missing";
-
-  return {
-    kind:
-      artifact.kind === "manifest" ||
-      artifact.kind === "screenshot" ||
-      artifact.kind === "video" ||
-      artifact.kind === "trace" ||
-      artifact.kind === "html"
-        ? artifact.kind
-        : "other",
-    label: typeof artifact.label === "string" && artifact.label.trim() ? artifact.label.trim() : "Artifact",
-    fileName: typeof artifact.fileName === "string" && artifact.fileName.trim() ? artifact.fileName.trim() : "artifact",
-    filePath: typeof artifact.filePath === "string" ? artifact.filePath : "",
-    contentType: typeof artifact.contentType === "string" && artifact.contentType.trim() ? artifact.contentType.trim() : "application/octet-stream",
-    sizeBytes: typeof artifact.sizeBytes === "number" && Number.isFinite(artifact.sizeBytes) ? artifact.sizeBytes : null,
-    url: typeof artifact.url === "string" && artifact.url.trim() ? artifact.url : null,
-    downloadUrl: typeof artifact.downloadUrl === "string" && artifact.downloadUrl.trim() ? artifact.downloadUrl : null,
-    availability,
-    retainedUntilAt,
-    expiredAt
-  };
-}
-
-function normalizePreviewVerificationConsoleMessage(
-  message: PreviewVerificationConsoleMessageView
-): PreviewVerificationConsoleMessageView {
-  return {
-    type: typeof message.type === "string" && message.type.trim() ? message.type.trim() : "log",
-    text: typeof message.text === "string" ? message.text : "",
-    location: typeof message.location === "string" && message.location.trim() ? message.location.trim() : null
-  };
-}
-
-function normalizePreviewVerificationFailedRequest(
-  request: PreviewVerificationFailedRequestView
-): PreviewVerificationFailedRequestView {
-  return {
-    url: typeof request.url === "string" ? request.url : "",
-    method: typeof request.method === "string" && request.method.trim() ? request.method.trim() : "GET",
-    errorText: typeof request.errorText === "string" && request.errorText.trim() ? request.errorText.trim() : null
-  };
-}
-
-function normalizePreviewVerification(
-  verification: PreviewVerificationView,
-  artifactRetentionMs: number
-): PreviewVerificationView {
-  const checkedAt =
-    typeof verification.checkedAt === "number" && Number.isFinite(verification.checkedAt) ? verification.checkedAt : Date.now();
-
-  return {
-    runId: typeof verification.runId === "string" && verification.runId.trim() ? verification.runId.trim() : crypto.randomUUID(),
-    mode: verification.mode === "headful" ? "headful" : "headless",
-    checkedAt,
-    durationMs:
-      typeof verification.durationMs === "number" && Number.isFinite(verification.durationMs) && verification.durationMs >= 0
-        ? verification.durationMs
-        : 0,
-    ok: Boolean(verification.ok),
-    status: typeof verification.status === "number" && Number.isFinite(verification.status) ? verification.status : null,
-    title: typeof verification.title === "string" ? verification.title : "",
-    url: typeof verification.url === "string" ? verification.url : "",
-    error: typeof verification.error === "string" && verification.error.trim() ? verification.error.trim() : null,
-    failureKind:
-      verification.failureKind === "preview" ||
-      verification.failureKind === "http" ||
-      verification.failureKind === "auth" ||
-      verification.failureKind === "readiness" ||
-      verification.failureKind === "script" ||
-      verification.failureKind === "artifact" ||
-      verification.failureKind === "unknown"
-        ? verification.failureKind
-        : "none",
-    summary: {
-      consoleMessageCount:
-        typeof verification.summary?.consoleMessageCount === "number" && Number.isFinite(verification.summary.consoleMessageCount)
-          ? Math.max(0, Math.trunc(verification.summary.consoleMessageCount))
-          : 0,
-      pageErrorCount:
-        typeof verification.summary?.pageErrorCount === "number" && Number.isFinite(verification.summary.pageErrorCount)
-          ? Math.max(0, Math.trunc(verification.summary.pageErrorCount))
-          : 0,
-      failedRequestCount:
-        typeof verification.summary?.failedRequestCount === "number" && Number.isFinite(verification.summary.failedRequestCount)
-          ? Math.max(0, Math.trunc(verification.summary.failedRequestCount))
-          : 0,
-      responseErrorCount:
-        typeof verification.summary?.responseErrorCount === "number" && Number.isFinite(verification.summary.responseErrorCount)
-          ? Math.max(0, Math.trunc(verification.summary.responseErrorCount))
-          : 0,
-      assetFailureCount:
-        typeof verification.summary?.assetFailureCount === "number" && Number.isFinite(verification.summary.assetFailureCount)
-          ? Math.max(0, Math.trunc(verification.summary.assetFailureCount))
-          : 0,
-      phaseCount:
-        typeof verification.summary?.phaseCount === "number" && Number.isFinite(verification.summary.phaseCount)
-          ? Math.max(0, Math.trunc(verification.summary.phaseCount))
-          : Array.isArray(verification.phases)
-            ? verification.phases.length
-            : 0
-    },
-    phases: Array.isArray(verification.phases)
-      ? verification.phases
-          .filter((phase): phase is PreviewVerificationView["phases"][number] => Boolean(phase && typeof phase === "object"))
-          .map((phase) => ({
-            name: typeof phase.name === "string" && phase.name.trim() ? phase.name.trim() : "phase",
-            label: typeof phase.label === "string" && phase.label.trim() ? phase.label.trim() : "Phase",
-            status: phase.status === "failed" || phase.status === "skipped" ? phase.status : "completed",
-            startedAt:
-              typeof phase.startedAt === "number" && Number.isFinite(phase.startedAt) ? phase.startedAt : checkedAt,
-            completedAt:
-              typeof phase.completedAt === "number" && Number.isFinite(phase.completedAt) ? phase.completedAt : checkedAt,
-            durationMs:
-              typeof phase.durationMs === "number" && Number.isFinite(phase.durationMs) && phase.durationMs >= 0
-                ? phase.durationMs
-                : 0,
-            message: typeof phase.message === "string" && phase.message.trim() ? phase.message.trim() : null
-          }))
-      : [],
-    readiness: {
-      initialUrl: typeof verification.readiness?.initialUrl === "string" ? verification.readiness.initialUrl : "",
-      finalUrl: typeof verification.readiness?.finalUrl === "string" ? verification.readiness.finalUrl : "",
-      expectedPath:
-        typeof verification.readiness?.expectedPath === "string" && verification.readiness.expectedPath.trim()
-          ? verification.readiness.expectedPath.trim()
-          : null,
-      selector:
-        typeof verification.readiness?.selector === "string" && verification.readiness.selector.trim()
-          ? verification.readiness.selector.trim()
-          : null,
-      selectorSatisfied:
-        typeof verification.readiness?.selectorSatisfied === "boolean" ? verification.readiness.selectorSatisfied : null,
-      routeStatus:
-        typeof verification.readiness?.routeStatus === "number" && Number.isFinite(verification.readiness.routeStatus)
-          ? verification.readiness.routeStatus
-          : typeof verification.status === "number" && Number.isFinite(verification.status)
-            ? verification.status
-            : null,
-      routeOk: verification.readiness?.routeOk === true || Boolean(verification.ok),
-      loginRedirectDetected: verification.readiness?.loginRedirectDetected === true,
-      htmlErrorSignals: Array.isArray(verification.readiness?.htmlErrorSignals)
-        ? verification.readiness.htmlErrorSignals.filter(
-            (entry): entry is string => typeof entry === "string" && entry.trim().length > 0
-          )
-        : [],
-      sameOriginAssetFailureCount:
-        typeof verification.readiness?.sameOriginAssetFailureCount === "number" &&
-        Number.isFinite(verification.readiness.sameOriginAssetFailureCount)
-          ? Math.max(0, Math.trunc(verification.readiness.sameOriginAssetFailureCount))
-          : 0,
-      websocketFailureCount:
-        typeof verification.readiness?.websocketFailureCount === "number" &&
-        Number.isFinite(verification.readiness.websocketFailureCount)
-          ? Math.max(0, Math.trunc(verification.readiness.websocketFailureCount))
-          : 0,
-      notes: Array.isArray(verification.readiness?.notes)
-        ? verification.readiness.notes.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-        : []
-    },
-    auth: {
-      headerCount:
-        typeof verification.auth?.headerCount === "number" && Number.isFinite(verification.auth.headerCount)
-          ? Math.max(0, Math.trunc(verification.auth.headerCount))
-          : 0,
-      cookieCount:
-        typeof verification.auth?.cookieCount === "number" && Number.isFinite(verification.auth.cookieCount)
-          ? Math.max(0, Math.trunc(verification.auth.cookieCount))
-          : 0,
-      cookieNames: Array.isArray(verification.auth?.cookieNames)
-        ? verification.auth.cookieNames.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-        : [],
-      usedSessionCookie: verification.auth?.usedSessionCookie === true
-    },
-    artifacts: Array.isArray(verification.artifacts)
-      ? verification.artifacts
-          .filter((artifact): artifact is PreviewVerificationArtifactView => Boolean(artifact && typeof artifact === "object"))
-          .map((artifact) => normalizePreviewVerificationArtifact(artifact, { checkedAt, artifactRetentionMs }))
-      : [],
-    consoleMessages: Array.isArray(verification.consoleMessages)
-      ? verification.consoleMessages
-          .filter((message): message is PreviewVerificationConsoleMessageView => Boolean(message && typeof message === "object"))
-          .map((message) => normalizePreviewVerificationConsoleMessage(message))
-      : [],
-    pageErrors: Array.isArray(verification.pageErrors)
-      ? verification.pageErrors.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-      : [],
-    failedRequests: Array.isArray(verification.failedRequests)
-      ? verification.failedRequests
-          .filter((request): request is PreviewVerificationFailedRequestView => Boolean(request && typeof request === "object"))
-          .map((request) => normalizePreviewVerificationFailedRequest(request))
-      : []
-  };
-}
-
-function buildPreviewProofRecordId(previewId: string, verificationRunId: string): string {
-  return `${previewId}:${verificationRunId}`;
-}
-
-function summarizeItem(item: Record<string, unknown>): string {
-  if (item.type === "agentMessage" && typeof item.text === "string") {
-    return item.text;
-  }
-
-  if (item.type === "userMessage" && Array.isArray(item.content)) {
-    const text = item.content
-      .map((entry) => (entry && typeof entry === "object" && "text" in entry && typeof entry.text === "string" ? entry.text : ""))
-      .filter(Boolean)
-      .join("\n");
-    return text;
-  }
-
-  if (item.type === "commandExecution" && typeof item.command === "string") {
-    return item.command;
-  }
-
-  return "";
-}
-
-function normalizeItem(item: Record<string, unknown>, status: "started" | "completed"): CodexItemRecord {
-  const id = typeof item.id === "string" ? item.id : crypto.randomUUID();
-  return {
-    id,
-    type: typeof item.type === "string" ? item.type : "unknown",
-    status,
-    text: summarizeItem(item),
-    at: Date.now(),
-    raw: item
-  };
-}
-
-function shouldExposeCodexItem(item: CodexItemRecord): boolean {
-  if (item.type !== "agentMessage" && item.type !== "userMessage") {
-    return false;
-  }
-
-  return item.text.trim().length > 0;
-}
-
-function normalizeTurn(turn: Record<string, unknown>): CodexTurnRecord {
-  const rawItems = Array.isArray(turn.items) ? (turn.items as Record<string, unknown>[]) : [];
-  return {
-    id: typeof turn.id === "string" ? turn.id : crypto.randomUUID(),
-    status: typeof turn.status === "string" ? turn.status : "unknown",
-    error: typeof turn.error === "string" ? turn.error : null,
-    startedAt: Date.now(),
-    completedAt: typeof turn.status === "string" && turn.status === "completed" ? Date.now() : null,
-    items: rawItems.map((item) => normalizeItem(item, "completed"))
-  };
-}
-
-function restorePersistedItem(item: {
-  id?: unknown;
-  type?: unknown;
-  status?: unknown;
-  text?: unknown;
-  at?: unknown;
-}): CodexItemRecord {
-  return {
-    id: typeof item.id === "string" ? item.id : crypto.randomUUID(),
-    type: typeof item.type === "string" ? item.type : "unknown",
-    status: item.status === "started" ? "started" : "completed",
-    text: typeof item.text === "string" ? item.text : "",
-    at: typeof item.at === "number" && Number.isFinite(item.at) ? item.at : Date.now(),
-    raw: {}
-  };
-}
-
-function restorePersistedTurn(turn: {
-  id?: unknown;
-  status?: unknown;
-  error?: unknown;
-  startedAt?: unknown;
-  completedAt?: unknown;
-  items?: unknown;
-}): CodexTurnRecord {
-  return {
-    id: typeof turn.id === "string" ? turn.id : crypto.randomUUID(),
-    status: typeof turn.status === "string" ? turn.status : "unknown",
-    error: typeof turn.error === "string" ? turn.error : null,
-    startedAt: typeof turn.startedAt === "number" && Number.isFinite(turn.startedAt) ? turn.startedAt : Date.now(),
-    completedAt: typeof turn.completedAt === "number" && Number.isFinite(turn.completedAt) ? turn.completedAt : null,
-    items: Array.isArray(turn.items) ? turn.items.map((item) => restorePersistedItem((item ?? {}) as Record<string, unknown>)) : []
-  };
-}
-
 export class ButlerStateStore extends EventEmitter {
   private readonly uiStatePath: string;
   private readonly threads = new Map<string, CodexThreadRecord>();
@@ -620,98 +114,16 @@ export class ButlerStateStore extends EventEmitter {
   private readonly artifactRetentionMs: number;
   private readonly persistedExecutionContractsByThreadId = new Map<string, CodexThreadExecutionContractView>();
 
+  private getInternalAccess(): StateStoreInternalAccess {
+    return this as unknown as StateStoreInternalAccess;
+  }
+
   private reconcileThreadWindows(): boolean {
-    if (!this.threadInventoryReady) {
-      return false;
-    }
-
-    const knownThreadIds = new Set(this.threads.keys());
-    const seenThreadIds = new Set<string>();
-    const nextWindows: ButlerWindow[] = [];
-
-    for (const window of this.windows) {
-      const threadId = typeof window.threadId === "string" ? window.threadId.trim() : "";
-      if (!threadId || !knownThreadIds.has(threadId) || seenThreadIds.has(threadId)) {
-        continue;
-      }
-
-      seenThreadIds.add(threadId);
-      const thread = this.threads.get(threadId);
-      nextWindows.push(
-        normalizeWindow({
-          threadId,
-          title: window.title,
-          openedAt: window.openedAt
-        }, thread)
-      );
-    }
-
-    const nextFocusedWindowId =
-      this.focusedWindowId && seenThreadIds.has(this.focusedWindowId)
-        ? this.focusedWindowId
-        : nextWindows[0]?.threadId ?? null;
-
-    const windowsChanged =
-      nextWindows.length !== this.windows.length ||
-      nextWindows.some((window, index) => {
-        const current = this.windows[index];
-        return (
-          current?.threadId !== window.threadId ||
-          current?.openedAt !== window.openedAt ||
-          current?.title !== window.title
-        );
-      });
-    const focusChanged = this.focusedWindowId !== nextFocusedWindowId;
-
-    if (!windowsChanged && !focusChanged) {
-      return false;
-    }
-
-    this.windows = nextWindows;
-    this.focusedWindowId = nextFocusedWindowId;
-    return true;
+    return reconcileStateStoreThreadWindows(this.getInternalAccess());
   }
 
   private refreshStackMembership(stackId: string, now = Date.now()): void {
-    const lease = this.stackLeases.get(stackId);
-    if (!lease) {
-      return;
-    }
-
-    const previewIds = [...this.previewLeases.values()]
-      .filter((entry) => entry.stackId === stackId && entry.status !== "stopped")
-      .map((entry) => entry.id)
-      .sort();
-    const serviceIds = [...this.serviceLeases.values()]
-      .filter((entry) => entry.stackId === stackId && entry.status !== "stopped")
-      .map((entry) => entry.id)
-      .sort();
-    const previousPreviewIds = [...lease.previewIds].sort();
-    const previousServiceIds = [...lease.serviceIds].sort();
-    const membershipChanged =
-      previousPreviewIds.length !== previewIds.length ||
-      previousServiceIds.length !== serviceIds.length ||
-      previousPreviewIds.some((entry, index) => entry !== previewIds[index]) ||
-      previousServiceIds.some((entry, index) => entry !== serviceIds[index]);
-
-    if (!membershipChanged) {
-      return;
-    }
-
-    this.stackLeases.set(
-      stackId,
-      this.normalizeStackLease(
-        {
-          ...lease,
-          previewIds,
-          serviceIds,
-          updatedAt: Math.max(lease.updatedAt, now)
-        },
-        now
-      )
-    );
-    this.queueSave();
-    this.emitChange();
+    refreshStateStoreStackMembership(this.getInternalAccess(), stackId, now);
   }
 
   constructor(
@@ -737,587 +149,57 @@ export class ButlerStateStore extends EventEmitter {
     lease: T,
     defaults: { leaseTtlMs: number; now?: number }
   ): T {
-    const now = defaults.now ?? Date.now();
-    const pinned = Boolean(lease.pinned);
-    const leaseTtlMs =
-      typeof lease.leaseTtlMs === "number" && Number.isFinite(lease.leaseTtlMs) && lease.leaseTtlMs > 0
-        ? lease.leaseTtlMs
-        : defaults.leaseTtlMs;
-    const lastActivityAt =
-      typeof lease.lastActivityAt === "number" && Number.isFinite(lease.lastActivityAt)
-        ? lease.lastActivityAt
-        : lease.updatedAt ?? lease.createdAt ?? now;
-    const ttlAnchorAt =
-      typeof lease.ttlAnchorAt === "number" && Number.isFinite(lease.ttlAnchorAt)
-        ? lease.ttlAnchorAt
-        : lastActivityAt;
-    const expiresAt = pinned ? null : ttlAnchorAt + leaseTtlMs;
-    const expired = !pinned && expiresAt !== null && now >= expiresAt;
-    const expiredAt =
-      expired
-        ? typeof lease.expiredAt === "number" && Number.isFinite(lease.expiredAt)
-          ? lease.expiredAt
-          : now
-        : null;
-    const reapAfterAt = expired && expiredAt !== null ? expiredAt + this.leaseReapGraceMs : null;
-    const idleThreshold = Math.max(60_000, Math.floor(leaseTtlMs / 2));
-    const lifecycleState =
-      lease.status === "starting"
-        ? "starting"
-        : lease.status === "stopping"
-          ? "stopping"
-          : expired
-            ? "expired"
-            : now - lastActivityAt >= idleThreshold
-              ? "idle"
-              : "active";
-
-    return {
-      ...lease,
-      pinned,
-      leaseTtlMs,
-      lastActivityAt,
-      ttlAnchorAt,
-      expiresAt,
-      expiredAt,
-      reapAfterAt,
-      lifecycleState
-    };
+    return applyStateStoreLeaseLifecycle(this.getInternalAccess(), lease, defaults);
   }
 
   private normalizePreviewLease(lease: PreviewLeaseView, now = Date.now()): PreviewLeaseView {
-    const normalizedLease = {
-      ...lease,
-      stackId: typeof lease.stackId === "string" && lease.stackId.trim() ? lease.stackId.trim() : null,
-      aliases: Array.isArray(lease.aliases)
-        ? [...new Set(lease.aliases.map((alias) => (typeof alias === "string" ? alias.trim() : "")).filter(Boolean))]
-        : [],
-      lastVerification:
-        lease.lastVerification && typeof lease.lastVerification === "object"
-          ? normalizePreviewVerification(lease.lastVerification, this.artifactRetentionMs)
-          : null,
-      bootstrap: {
-        waitSeconds:
-          typeof lease.bootstrap?.waitSeconds === "number" && Number.isFinite(lease.bootstrap.waitSeconds) && lease.bootstrap.waitSeconds > 0
-            ? Math.trunc(lease.bootstrap.waitSeconds)
-            : 120,
-        hint: typeof lease.bootstrap?.hint === "string" && lease.bootstrap.hint.trim() ? lease.bootstrap.hint.trim() : null,
-        heartbeatKind:
-          lease.bootstrap?.heartbeatKind === "http" ||
-          lease.bootstrap?.heartbeatKind === "tcp" ||
-          lease.bootstrap?.heartbeatKind === "command"
-            ? lease.bootstrap.heartbeatKind
-            : "none",
-        heartbeatTarget:
-          typeof lease.bootstrap?.heartbeatTarget === "string" && lease.bootstrap.heartbeatTarget.trim()
-            ? lease.bootstrap.heartbeatTarget.trim()
-            : null,
-        heartbeatIntervalSeconds:
-          typeof lease.bootstrap?.heartbeatIntervalSeconds === "number" &&
-          Number.isFinite(lease.bootstrap.heartbeatIntervalSeconds) &&
-          lease.bootstrap.heartbeatIntervalSeconds > 0
-            ? Math.trunc(lease.bootstrap.heartbeatIntervalSeconds)
-            : 5,
-        phase:
-          lease.bootstrap?.phase === "pulling_image" ||
-          lease.bootstrap?.phase === "starting_container" ||
-          lease.bootstrap?.phase === "bootstrapping" ||
-          lease.bootstrap?.phase === "waiting_for_heartbeat" ||
-          lease.bootstrap?.phase === "ready" ||
-          lease.bootstrap?.phase === "failed"
-            ? lease.bootstrap.phase
-            : lease.status === "running"
-              ? "ready"
-              : "starting_container",
-        startedAt: typeof lease.bootstrap?.startedAt === "number" && Number.isFinite(lease.bootstrap.startedAt) ? lease.bootstrap.startedAt : null,
-        readyAt: typeof lease.bootstrap?.readyAt === "number" && Number.isFinite(lease.bootstrap.readyAt) ? lease.bootstrap.readyAt : null,
-        lastHeartbeatAt:
-          typeof lease.bootstrap?.lastHeartbeatAt === "number" && Number.isFinite(lease.bootstrap.lastHeartbeatAt)
-            ? lease.bootstrap.lastHeartbeatAt
-            : null,
-        lastHeartbeatError:
-          typeof lease.bootstrap?.lastHeartbeatError === "string" && lease.bootstrap.lastHeartbeatError.trim()
-            ? lease.bootstrap.lastHeartbeatError.trim()
-            : null
-      }
-    } as PreviewLeaseView;
-
-    return this.applyLeaseLifecycle(normalizedLease, { leaseTtlMs: this.previewLeaseTtlMs, now });
+    return normalizeStateStorePreviewLease(this.getInternalAccess(), lease, now);
   }
 
   private normalizeStackLease(lease: StackLeaseView, now = Date.now()): StackLeaseView {
-    const normalizedLease = {
-      ...lease,
-      worktreePath: typeof lease.worktreePath === "string" && lease.worktreePath.trim() ? lease.worktreePath.trim() : null,
-      networkName: typeof lease.networkName === "string" ? lease.networkName.trim() : "",
-      storageMode:
-        lease.storageMode === "job" || lease.storageMode === "base" || lease.storageMode === "custom" || lease.storageMode === "ephemeral"
-          ? lease.storageMode
-          : "ephemeral",
-      retainsVolumes: Boolean(lease.retainsVolumes),
-      baseStorageKey: typeof lease.baseStorageKey === "string" && lease.baseStorageKey.trim() ? lease.baseStorageKey.trim() : null,
-      storageKey: typeof lease.storageKey === "string" && lease.storageKey.trim() ? lease.storageKey.trim() : null,
-      cloneFromStorageKey:
-        typeof lease.cloneFromStorageKey === "string" && lease.cloneFromStorageKey.trim()
-          ? lease.cloneFromStorageKey.trim()
-          : null,
-      defaultPromoteTargetStorageKey:
-        typeof lease.defaultPromoteTargetStorageKey === "string" && lease.defaultPromoteTargetStorageKey.trim()
-          ? lease.defaultPromoteTargetStorageKey.trim()
-          : null,
-      volumeNames: Array.isArray(lease.volumeNames)
-        ? [...new Set(lease.volumeNames.map((name) => (typeof name === "string" ? name.trim() : "")).filter(Boolean))]
-        : [],
-      previewIds: Array.isArray(lease.previewIds)
-        ? [...new Set(lease.previewIds.map((id) => (typeof id === "string" ? id.trim() : "")).filter(Boolean))]
-        : [],
-      serviceIds: Array.isArray(lease.serviceIds)
-        ? [...new Set(lease.serviceIds.map((id) => (typeof id === "string" ? id.trim() : "")).filter(Boolean))]
-        : []
-    } as StackLeaseView;
-
-    return this.applyLeaseLifecycle(normalizedLease, { leaseTtlMs: this.stackLeaseTtlMs, now });
+    return normalizeStateStoreStackLease(this.getInternalAccess(), lease, now);
   }
 
   private normalizeServiceLease(lease: ServiceLeaseView, now = Date.now()): ServiceLeaseView {
-    const normalizedLease = {
-      ...lease,
-      stackId: typeof lease.stackId === "string" && lease.stackId.trim() ? lease.stackId.trim() : null,
-      storageKind:
-        lease.storageKind === "volume" || lease.storageKind === "worktree" || lease.storageKind === "ephemeral"
-          ? lease.storageKind
-          : "ephemeral",
-      sticky: Boolean(lease.sticky),
-      volumeName: typeof lease.volumeName === "string" && lease.volumeName.trim() ? lease.volumeName.trim() : null,
-      volumeMountPath:
-        typeof lease.volumeMountPath === "string" && lease.volumeMountPath.trim() ? lease.volumeMountPath.trim() : null,
-      aliases: Array.isArray(lease.aliases)
-        ? [...new Set(lease.aliases.map((alias) => (typeof alias === "string" ? alias.trim() : "")).filter(Boolean))]
-        : []
-    } as ServiceLeaseView;
-
-    return this.applyLeaseLifecycle(normalizedLease, { leaseTtlMs: this.serviceLeaseTtlMs, now });
+    return normalizeStateStoreServiceLease(this.getInternalAccess(), lease, now);
   }
 
   private normalizePreviewProofRecord(record: PreviewProofRecordView): PreviewProofRecordView {
-    const verification = normalizePreviewVerification(record.verification, this.artifactRetentionMs);
-    const createdAt =
-      typeof record.createdAt === "number" && Number.isFinite(record.createdAt) ? record.createdAt : verification.checkedAt;
-    const updatedAt =
-      typeof record.updatedAt === "number" && Number.isFinite(record.updatedAt) ? record.updatedAt : verification.checkedAt;
-
-    return {
-      id:
-        typeof record.id === "string" && record.id.trim()
-          ? record.id.trim()
-          : buildPreviewProofRecordId(record.previewId, verification.runId),
-      previewId: typeof record.previewId === "string" && record.previewId.trim() ? record.previewId.trim() : "unknown",
-      threadId: typeof record.threadId === "string" && record.threadId.trim() ? record.threadId.trim() : null,
-      projectId: typeof record.projectId === "string" && record.projectId.trim() ? record.projectId.trim() : "unknown",
-      projectLabel: typeof record.projectLabel === "string" && record.projectLabel.trim() ? record.projectLabel.trim() : "Unknown",
-      previewTitle: typeof record.previewTitle === "string" && record.previewTitle.trim() ? record.previewTitle.trim() : "Preview",
-      stackId: typeof record.stackId === "string" && record.stackId.trim() ? record.stackId.trim() : null,
-      verification,
-      createdAt,
-      updatedAt: Math.max(updatedAt, createdAt)
-    };
+    return normalizeStateStorePreviewProofRecord(this.getInternalAccess(), record);
   }
 
   private upsertPreviewProofRecord(record: PreviewProofRecordView, options?: { emitChange?: boolean }): PreviewProofRecordView {
-    const normalized = this.normalizePreviewProofRecord(record);
-    this.previewProofs.set(normalized.id, normalized);
-    this.queueSave();
-    if (options?.emitChange !== false) {
-      this.emitChange();
-    }
-    return normalized;
+    return upsertStateStorePreviewProofRecord(this.getInternalAccess(), record, options);
   }
 
   private recordPreviewProofFromLease(
     lease: Pick<PreviewLeaseView, "id" | "threadId" | "projectId" | "projectLabel" | "title" | "stackId" | "lastVerification">,
     options?: { emitChange?: boolean }
   ): PreviewProofRecordView | null {
-    if (!lease.lastVerification) {
-      return null;
-    }
-
-    const verification = normalizePreviewVerification(lease.lastVerification, this.artifactRetentionMs);
-    return this.upsertPreviewProofRecord(
-      {
-        id: buildPreviewProofRecordId(lease.id, verification.runId),
-        previewId: lease.id,
-        threadId: lease.threadId,
-        projectId: lease.projectId,
-        projectLabel: lease.projectLabel,
-        previewTitle: lease.title,
-        stackId: lease.stackId,
-        verification,
-        createdAt: verification.checkedAt,
-        updatedAt: verification.checkedAt
-      },
-      options
-    );
+    return recordStateStorePreviewProofFromLease(this.getInternalAccess(), lease, options);
   }
 
   private updateArtifactAvailability(
     filePath: string,
     mutate: (artifact: PreviewVerificationArtifactView) => PreviewVerificationArtifactView
   ): boolean {
-    const targetPath = path.resolve(filePath);
-    const now = Date.now();
-    let changed = false;
-
-    for (const [proofId, proof] of this.previewProofs.entries()) {
-      let proofChanged = false;
-      const nextArtifacts = proof.verification.artifacts.map((artifact) => {
-        if (!artifact.filePath || path.resolve(artifact.filePath) !== targetPath) {
-          return artifact;
-        }
-        proofChanged = true;
-        return mutate(artifact);
-      });
-      if (proofChanged) {
-        changed = true;
-        this.previewProofs.set(
-          proofId,
-          this.normalizePreviewProofRecord({
-            ...proof,
-            verification: {
-              ...proof.verification,
-              artifacts: nextArtifacts
-            },
-            updatedAt: now
-          })
-        );
-      }
-    }
-
-    for (const [leaseId, lease] of this.previewLeases.entries()) {
-      if (!lease.lastVerification) {
-        continue;
-      }
-      let previewChanged = false;
-      const nextArtifacts = lease.lastVerification.artifacts.map((artifact) => {
-        if (!artifact.filePath || path.resolve(artifact.filePath) !== targetPath) {
-          return artifact;
-        }
-        previewChanged = true;
-        return mutate(artifact);
-      });
-      if (!previewChanged) {
-        continue;
-      }
-      this.previewLeases.set(
-        leaseId,
-        this.normalizePreviewLease(
-          {
-            ...lease,
-            lastVerification: {
-              ...lease.lastVerification,
-              artifacts: nextArtifacts
-            },
-            updatedAt: Math.max(lease.updatedAt, now)
-          },
-          now
-        )
-      );
-      changed = true;
-    }
-
-    if (changed) {
-      this.queueSave();
-      this.emitChange();
-    }
-
-    return changed;
+    return updateStateStoreArtifactAvailability(this.getInternalAccess(), filePath, mutate);
   }
 
   async load(): Promise<void> {
-    try {
-      const raw = await fs.readFile(this.uiStatePath, "utf8");
-      const data = JSON.parse(raw) as PersistedUiState;
-      this.threadInventoryReady = false;
-      this.threads.clear();
-      this.windows = Array.isArray(data.windows)
-        ? data.windows
-            .filter((window): window is ButlerWindow => Boolean(window && typeof window.threadId === "string"))
-            .map((window) =>
-              normalizeWindow({
-                threadId: window.threadId,
-                title: typeof window.title === "string" ? window.title : "",
-                openedAt: typeof window.openedAt === "number" ? window.openedAt : Date.now()
-              })
-            )
-        : [];
-      this.focusedWindowId = typeof data.focusedWindowId === "string" ? data.focusedWindowId : null;
-      this.stackLeases.clear();
-      for (const lease of Array.isArray(data.stackLeases) ? data.stackLeases : []) {
-        if (lease && typeof lease === "object" && typeof lease.id === "string") {
-          this.stackLeases.set(lease.id, this.normalizeStackLease(lease as StackLeaseView));
-        }
-      }
-      this.previewLeases.clear();
-      for (const lease of Array.isArray(data.previewLeases) ? data.previewLeases : []) {
-        if (lease && typeof lease === "object" && typeof lease.id === "string") {
-          this.previewLeases.set(lease.id, this.normalizePreviewLease(lease as PreviewLeaseView));
-        }
-      }
-      this.previewProofs.clear();
-      for (const proof of Array.isArray(data.previewProofs) ? data.previewProofs : []) {
-        if (proof && typeof proof === "object" && typeof proof.previewId === "string") {
-          const normalized = this.normalizePreviewProofRecord(proof as PreviewProofRecordView);
-          this.previewProofs.set(normalized.id, normalized);
-        }
-      }
-      this.serviceLeases.clear();
-      for (const lease of Array.isArray(data.serviceLeases) ? data.serviceLeases : []) {
-        if (lease && typeof lease === "object" && typeof lease.id === "string") {
-          this.serviceLeases.set(lease.id, this.normalizeServiceLease(lease as ServiceLeaseView));
-        }
-      }
-      this.runtimeCleanupTasks.clear();
-      for (const task of Array.isArray(data.runtimeCleanupTasks) ? data.runtimeCleanupTasks : []) {
-        if (task && typeof task === "object" && typeof task.id === "string" && typeof task.threadId === "string") {
-          this.runtimeCleanupTasks.set(task.id, task as RuntimeCleanupTaskView);
-        }
-      }
-      this.persistedSupervisionByThreadId.clear();
-      this.persistedWorkerReportsByThreadId.clear();
-      this.persistedExecutionContractsByThreadId.clear();
-      for (const [threadId, policy] of Object.entries(data.supervisionByThreadId ?? {})) {
-        this.persistedSupervisionByThreadId.set(threadId, {
-          butlerTurnsUsed: typeof policy?.butlerTurnsUsed === "number" ? policy.butlerTurnsUsed : 0,
-          maxButlerTurns: typeof policy?.maxButlerTurns === "number" ? policy.maxButlerTurns : null
-        });
-      }
-      for (const [threadId, rawReports] of Object.entries(data.workerReportsByThreadId ?? {})) {
-        const entries = Array.isArray(rawReports) ? rawReports : rawReports ? [rawReports] : [];
-        const reports = entries
-          .filter(
-            (report): report is CodexWorkerReportView =>
-              Boolean(report) &&
-              typeof report === "object" &&
-              typeof report.threadId === "string" &&
-              typeof report.turnId === "string" &&
-              (report.status === "completed" || report.status === "blocked") &&
-              typeof report.summary === "string"
-          )
-          .map((report) => ({
-            threadId: report.threadId,
-            turnId: report.turnId,
-            status: report.status,
-            summary: report.summary.trim(),
-            details: typeof report.details === "string" && report.details.trim() ? report.details.trim() : null,
-            createdAt: typeof report.createdAt === "number" ? report.createdAt : Date.now(),
-            updatedAt: typeof report.updatedAt === "number" ? report.updatedAt : Date.now()
-          }))
-          .sort((left, right) => left.createdAt - right.createdAt)
-          .slice(-20);
-
-        if (reports.length > 0) {
-          this.persistedWorkerReportsByThreadId.set(threadId, reports);
-        }
-      }
-      for (const [threadId, contract] of Object.entries(data.executionContractsByThreadId ?? {})) {
-        if (
-          contract &&
-          typeof contract === "object" &&
-          typeof contract.threadId === "string" &&
-          typeof contract.executionMode === "string"
-        ) {
-          this.persistedExecutionContractsByThreadId.set(threadId, {
-            ...contract,
-            requestedTask:
-              typeof contract.requestedTask === "string" && contract.requestedTask.trim()
-                ? contract.requestedTask.trim()
-                : "Carry out the delegated task.",
-            operatorGoal:
-              typeof contract.operatorGoal === "string" && contract.operatorGoal.trim() ? contract.operatorGoal.trim() : null,
-            successConditions: Array.isArray(contract.successConditions)
-              ? contract.successConditions.filter((condition): condition is string => typeof condition === "string" && condition.trim().length > 0)
-              : [],
-            stopConditions: Array.isArray(contract.stopConditions)
-              ? contract.stopConditions.filter((condition): condition is string => typeof condition === "string" && condition.trim().length > 0)
-              : [],
-            escalationConditions: Array.isArray(contract.escalationConditions)
-              ? contract.escalationConditions.filter((condition): condition is string => typeof condition === "string" && condition.trim().length > 0)
-              : [],
-            notes: Array.isArray(contract.notes)
-              ? contract.notes.filter((note): note is string => typeof note === "string")
-              : []
-          });
-        }
-      }
-      for (const thread of Array.isArray(data.threads) ? data.threads : []) {
-        if (thread && typeof thread === "object" && typeof thread.id === "string") {
-          this.restorePersistedThread(thread as CodexThreadDetailView);
-        }
-      }
-      const synthesizedThreadIds = new Set<string>([
-        ...this.windows.map((window) => window.threadId),
-        ...this.persistedSupervisionByThreadId.keys(),
-        ...this.persistedWorkerReportsByThreadId.keys(),
-        ...this.persistedExecutionContractsByThreadId.keys()
-      ]);
-      for (const threadId of synthesizedThreadIds) {
-        const record = this.getOrCreateThread(threadId);
-        if (!record.executionContract) {
-          const persistedContract = this.persistedExecutionContractsByThreadId.get(threadId);
-          if (persistedContract) {
-            record.executionContract = { ...persistedContract };
-          }
-        }
-        if (!record.workerReport) {
-          const latestReport = this.persistedWorkerReportsByThreadId.get(threadId)?.at(-1) ?? null;
-          if (latestReport) {
-            record.workerReport = { ...latestReport };
-          }
-        }
-        this.refreshDerivedThreadState(record);
-      }
-      for (const lease of this.previewLeases.values()) {
-        if (lease.lastVerification) {
-          this.recordPreviewProofFromLease(lease, { emitChange: false });
-        }
-      }
-    } catch {
-      this.threads.clear();
-      this.windows = [];
-      this.focusedWindowId = null;
-      this.stackLeases.clear();
-      this.previewLeases.clear();
-      this.previewProofs.clear();
-      this.serviceLeases.clear();
-      this.runtimeCleanupTasks.clear();
-      this.persistedSupervisionByThreadId.clear();
-      this.persistedWorkerReportsByThreadId.clear();
-      this.persistedExecutionContractsByThreadId.clear();
-      this.threadInventoryReady = false;
-    }
+    await loadStateStore(this.getInternalAccess());
   }
 
   private queueSave(): void {
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer);
-    }
-
-    this.saveTimer = setTimeout(async () => {
-      this.saveTimer = null;
-      this.windows = this.windows.map((window) => normalizeWindow(window, this.threads.get(window.threadId)));
-      const payload: PersistedUiState = {
-        threads: this.listThreads().map((thread) => this.toThreadDetailView(this.threads.get(thread.id) ?? this.getOrCreateThread(thread.id))),
-        windows: this.windows,
-        focusedWindowId: this.focusedWindowId,
-        stackLeases: [...this.stackLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
-        previewLeases: [...this.previewLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
-        previewProofs: [...this.previewProofs.values()].sort(
-          (left, right) => right.verification.checkedAt - left.verification.checkedAt
-        ),
-        serviceLeases: [...this.serviceLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
-        runtimeCleanupTasks: [...this.runtimeCleanupTasks.values()].sort((left, right) => left.nextAttemptAt - right.nextAttemptAt),
-        workerReportsByThreadId: Object.fromEntries(
-          [...this.persistedWorkerReportsByThreadId.entries()].map(([threadId, reports]) => [threadId, reports])
-        ),
-        supervisionByThreadId: Object.fromEntries(
-          [...this.persistedSupervisionByThreadId.entries()].map(([threadId, policy]) => [
-            threadId,
-            {
-              butlerTurnsUsed: policy.butlerTurnsUsed,
-              maxButlerTurns: policy.maxButlerTurns
-            }
-          ])
-        ),
-        executionContractsByThreadId: Object.fromEntries(
-          [...this.persistedExecutionContractsByThreadId.entries()].map(([threadId, contract]) => [threadId, contract])
-        )
-      };
-      await fs.mkdir(path.dirname(this.uiStatePath), { recursive: true });
-      await fs.writeFile(this.uiStatePath, JSON.stringify(payload, null, 2));
-    }, 150);
+    queueStateStoreSave(this.getInternalAccess());
   }
 
   private emitChange(): void {
-    this.emit("change");
+    emitStateStoreChange(this.getInternalAccess());
   }
 
   private restorePersistedThread(thread: CodexThreadDetailView): void {
-    const threadId = typeof thread.id === "string" ? thread.id : null;
-    if (!threadId) {
-      return;
-    }
-
-    const record = this.getOrCreateThread(threadId);
-    record.name = typeof thread.name === "string" && thread.name.trim() ? thread.name.trim() : null;
-    record.preview = typeof thread.preview === "string" ? thread.preview : record.preview;
-    record.source = typeof thread.source === "string" ? thread.source : record.source;
-    record.cwd = typeof thread.cwd === "string" ? thread.cwd : record.cwd;
-    record.createdAt = typeof thread.createdAt === "number" && Number.isFinite(thread.createdAt) ? thread.createdAt : record.createdAt;
-    record.updatedAt = typeof thread.updatedAt === "number" && Number.isFinite(thread.updatedAt) ? thread.updatedAt : record.updatedAt;
-    record.status = normalizeStatus(thread.status);
-    record.modelProvider = typeof thread.modelProvider === "string" ? thread.modelProvider : record.modelProvider;
-    record.turnCount = typeof thread.turnCount === "number" && Number.isFinite(thread.turnCount) ? thread.turnCount : record.turnCount;
-    record.loaded = Boolean(thread.loaded);
-    record.contextUsage =
-      thread.contextUsage && typeof thread.contextUsage === "object"
-        ? {
-            tokens: typeof thread.contextUsage.tokens === "number" ? thread.contextUsage.tokens : null,
-            contextWindow: typeof thread.contextUsage.contextWindow === "number" ? thread.contextUsage.contextWindow : null,
-            percent: typeof thread.contextUsage.percent === "number" ? thread.contextUsage.percent : null
-          }
-        : record.contextUsage;
-    record.compaction =
-      thread.compaction && typeof thread.compaction === "object"
-        ? {
-            active: Boolean(thread.compaction.active),
-            count: typeof thread.compaction.count === "number" ? thread.compaction.count : 0,
-            lastStartedAt: typeof thread.compaction.lastStartedAt === "number" ? thread.compaction.lastStartedAt : null,
-            lastCompletedAt: typeof thread.compaction.lastCompletedAt === "number" ? thread.compaction.lastCompletedAt : null
-          }
-        : record.compaction;
-    record.supervision =
-      thread.supervision && typeof thread.supervision === "object"
-        ? {
-            butlerTurnsUsed: typeof thread.supervision.butlerTurnsUsed === "number" ? thread.supervision.butlerTurnsUsed : 0,
-            maxButlerTurns: typeof thread.supervision.maxButlerTurns === "number" ? thread.supervision.maxButlerTurns : null,
-            capReached: Boolean(thread.supervision.capReached)
-          }
-        : record.supervision;
-    record.executionContract = thread.executionContract ? { ...thread.executionContract } : record.executionContract;
-    record.turns = Array.isArray(thread.turns) ? thread.turns.map((turn) => restorePersistedTurn(turn)) : record.turns;
-    record.turnCount = Math.max(record.turnCount, record.turns.length);
-    record.eventLog = Array.isArray(thread.eventLog)
-      ? thread.eventLog
-          .filter(
-            (entry): entry is CodexEventEntry =>
-              Boolean(entry) &&
-              typeof entry === "object" &&
-              typeof entry.at === "number" &&
-              typeof entry.method === "string" &&
-              typeof entry.summary === "string"
-          )
-          .slice(0, MAX_EVENT_LOG)
-      : record.eventLog;
-    record.workerReport =
-      thread.workerReport &&
-      typeof thread.workerReport === "object" &&
-      typeof thread.workerReport.threadId === "string" &&
-      typeof thread.workerReport.turnId === "string" &&
-      (thread.workerReport.status === "completed" || thread.workerReport.status === "blocked") &&
-      typeof thread.workerReport.summary === "string"
-        ? {
-            threadId: thread.workerReport.threadId,
-            turnId: thread.workerReport.turnId,
-            status: thread.workerReport.status,
-            summary: thread.workerReport.summary,
-            details: typeof thread.workerReport.details === "string" ? thread.workerReport.details : null,
-            createdAt:
-              typeof thread.workerReport.createdAt === "number" ? thread.workerReport.createdAt : record.updatedAt,
-            updatedAt:
-              typeof thread.workerReport.updatedAt === "number" ? thread.workerReport.updatedAt : record.updatedAt
-          }
-        : record.workerReport;
-    this.refreshDerivedThreadState(record);
-    this.primeThreadMilestones(threadId);
+    restorePersistedStateStoreThread(this.getInternalAccess(), thread);
   }
 
   markThreadInventoryReady(): void {
@@ -1329,66 +211,15 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   private getOrCreateThread(id: string): CodexThreadRecord {
-    const existing = this.threads.get(id);
-    if (existing) {
-      return existing;
-    }
-
-    const created: CodexThreadRecord = {
-      id,
-      name: null,
-      preview: "",
-      source: "unknown",
-      cwd: null,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      status: "unknown",
-      modelProvider: null,
-      turnCount: 0,
-      loaded: false,
-      contextUsage: emptyCodexContextUsage(),
-      compaction: emptyCodexCompaction(),
-      supervision: emptyCodexSupervision(),
-      supervisor: emptyThreadSupervisor(),
-      executionContract: null,
-      turns: [],
-      eventLog: [],
-      milestones: [],
-      workerReport: null
-    };
-    const persisted = this.persistedSupervisionByThreadId.get(id);
-    if (persisted) {
-      created.supervision.butlerTurnsUsed = persisted.butlerTurnsUsed;
-      created.supervision.maxButlerTurns = persisted.maxButlerTurns;
-      created.supervision.capReached =
-        persisted.maxButlerTurns !== null && persisted.butlerTurnsUsed >= persisted.maxButlerTurns;
-    }
-    const persistedReports = this.persistedWorkerReportsByThreadId.get(id);
-    const persistedReport = persistedReports?.at(-1) ?? null;
-    if (persistedReport) {
-      created.workerReport = { ...persistedReport };
-    }
-    const persistedContract = this.persistedExecutionContractsByThreadId.get(id);
-    if (persistedContract) {
-      created.executionContract = { ...persistedContract };
-    }
-    this.threads.set(id, created);
-    return created;
+    return getOrCreateStateStoreThread(this.getInternalAccess(), id);
   }
 
   private persistThreadSupervision(thread: CodexThreadRecord): void {
-    this.persistedSupervisionByThreadId.set(thread.id, {
-      butlerTurnsUsed: thread.supervision.butlerTurnsUsed,
-      maxButlerTurns: thread.supervision.maxButlerTurns
-    });
+    persistStateStoreThreadSupervision(this.getInternalAccess(), thread);
   }
 
   private removePreviewProofsForThread(threadId: string): void {
-    for (const [proofId, proof] of this.previewProofs.entries()) {
-      if (proof.threadId === threadId) {
-        this.previewProofs.delete(proofId);
-      }
-    }
+    removeStateStorePreviewProofsForThread(this.getInternalAccess(), threadId);
   }
 
   upsertThreadSummary(thread: Record<string, unknown>): void {

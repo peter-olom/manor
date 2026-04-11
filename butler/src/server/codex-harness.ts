@@ -1,103 +1,32 @@
 import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-
+import {
+  type BrokerAccessRegistryPayload,
+  type HarnessCapability,
+  type HarnessRegistryPayload,
+  looksLikeHarnessLookupFailure,
+  looksLikePreviewAttempt,
+  looksLikeRemoteRuntimeReference,
+  looksLikeSharedShellBootstrapFailure,
+  normalizeEnv,
+  normalizeHeartbeatKind,
+  normalizePositiveInteger,
+  normalizeString,
+  normalizeStringArray
+} from "./codex-harness-helpers.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
 import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import { ButlerStateStore } from "./state-store.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
-import { detectExecutionMode } from "./thread-contract.js";
 import {
   applyWorkspacePreviewDefaults,
   formatWorkspaceBootstrapLines,
   inspectWorkspaceBootstrap
 } from "./workspace-bootstrap.js";
 import type { PreviewLeaseView } from "./types.js";
-
-type HarnessCapability = {
-  id: string;
-  token: string;
-  threadId: string;
-  cwd: string;
-  createdAt: number;
-  updatedAt: number;
-};
-
-type HarnessRegistryPayload = {
-  capabilities: HarnessCapability[];
-};
-
-type BrokerAccessRegistryPayload = {
-  grants: Array<{
-    token: string;
-    threadId: string;
-    createdAt: number;
-    updatedAt: number;
-  }>;
-};
-
-function normalizeString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function normalizeStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return [...new Set(value.map((entry) => normalizeString(entry)).filter(Boolean))];
-}
-
-function normalizeEnv(value: unknown): Record<string, string> {
-  if (!value || typeof value !== "object") {
-    return {};
-  }
-
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
-      .map(([key, entryValue]) => [key.trim(), entryValue.trim()])
-      .filter(([key, entryValue]) => key.length > 0 && entryValue.length > 0)
-  );
-}
-
-function normalizePositiveInteger(value: unknown): number | null {
-  const numeric = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(numeric) || numeric <= 0) {
-    return null;
-  }
-  return Math.max(1, Math.trunc(numeric));
-}
-
-function normalizeHeartbeatKind(value: unknown): "none" | "http" | "tcp" | "command" | null {
-  const normalized = normalizeString(value);
-  if (normalized === "none" || normalized === "http" || normalized === "tcp" || normalized === "command") {
-    return normalized;
-  }
-  return null;
-}
-
-function looksLikeHarnessLookupFailure(text: string): boolean {
-  return /no manor harness capability|open this job through butler first|harness unavailable|no capability is available/i.test(text);
-}
-
-function looksLikeSharedShellBootstrapFailure(text: string): boolean {
-  return /corepack|node_modules|package-manager|package manager|dependency install|bootstrap|npm|pnpm|yarn|playwright|browser install|eai_again|403/i.test(
-    text
-  );
-}
-
-function looksLikePreviewAttempt(text: string): boolean {
-  return /manor-harness preview|preview start|preview verify|preview inspect|pulling_image|pulling image|heartbeat|operator url|bootstrap phase|service start|stack start|preview execution/i.test(
-    text
-  );
-}
-
-function looksLikeRemoteRuntimeReference(text: string): boolean {
-  return detectExecutionMode(text) === "live-remote-runtime";
-}
 
 export class CodexHarnessService {
   private readonly registryPath: string;
@@ -710,18 +639,6 @@ export class CodexHarnessService {
     return this.store.listServiceLeases().filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
   }
 
-  private describeStackStorage(stack: {
-    storageMode: "ephemeral" | "job" | "base" | "custom";
-    baseStorageKey: string | null;
-    storageKey: string | null;
-    cloneFromStorageKey: string | null;
-    defaultPromoteTargetStorageKey: string | null;
-    retainsVolumes: boolean;
-    volumeNames: string[];
-  }) {
-    return formatStackStorageSummary(stack);
-  }
-
   private describeCapability(capability: HarnessCapability): string {
     const thread = this.getThreadContext(capability);
     const project = this.resolveWorkspaceProject(capability.cwd, thread);
@@ -733,7 +650,7 @@ export class CodexHarnessService {
     const stackLines =
       stacks.length === 0
         ? "Stacks: none"
-        : `Stacks:\n${stacks.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | network=${lease.networkName} | ${this.describeStackStorage(lease)} | previews=${lease.previewIds.length} | services=${lease.serviceIds.length}`).join("\n")}`;
+        : `Stacks:\n${stacks.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | network=${lease.networkName} | ${formatStackStorageSummary(lease)} | previews=${lease.previewIds.length} | services=${lease.serviceIds.length}`).join("\n")}`;
     const previewLines =
       previews.length === 0
         ? "Previews: none"
@@ -805,7 +722,7 @@ export class CodexHarnessService {
           ...this.formatRuntimeModel(),
           stacks.length === 0
             ? "Stacks: none"
-            : `Stacks:\n${stacks.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | network=${lease.networkName} | ${this.describeStackStorage(lease)} | previews=${lease.previewIds.length} | services=${lease.serviceIds.length}`).join("\n")}`,
+            : `Stacks:\n${stacks.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | network=${lease.networkName} | ${formatStackStorageSummary(lease)} | previews=${lease.previewIds.length} | services=${lease.serviceIds.length}`).join("\n")}`,
           previews.length === 0
             ? "Previews: none"
             : `Previews:\n${previews.map((lease, index) => `${index + 1}. ${this.formatPreviewVisibility(capability.threadId, lease)}`).join("\n")}`,
@@ -954,7 +871,7 @@ export class CodexHarnessService {
             : stacks
                 .map(
                   (stack, index) =>
-                    `${index + 1}. ${stack.id} | ${stack.title} | ${stack.status} | network=${stack.networkName} | ${this.describeStackStorage(stack)} | previews=${stack.previewIds.length} | services=${stack.serviceIds.length}`
+                    `${index + 1}. ${stack.id} | ${stack.title} | ${stack.status} | network=${stack.networkName} | ${formatStackStorageSummary(stack)} | previews=${stack.previewIds.length} | services=${stack.serviceIds.length}`
                 )
                 .join("\n"),
         data: { stacks }
@@ -987,7 +904,7 @@ export class CodexHarnessService {
       this.store.upsertStackLease(stack);
       this.store.addEvent(capability.threadId, "harness/stack/start", `Started stack ${stack.id}`);
       return {
-        text: `Started stack ${stack.title}. Network=${stack.networkName}. ${this.describeStackStorage(stack)}.`,
+        text: `Started stack ${stack.title}. Network=${stack.networkName}. ${formatStackStorageSummary(stack)}.`,
         data: { stack }
       };
     }
@@ -998,7 +915,7 @@ export class CodexHarnessService {
       this.store.upsertStackLease(inspected);
       this.store.noteStackLeaseActivity(inspected.id);
       return {
-        text: `${inspected.title} is ${inspected.status}. Network=${inspected.networkName}. ${this.describeStackStorage(inspected)}. Previews=${inspected.previewIds.length}. Services=${inspected.serviceIds.length}.`,
+        text: `${inspected.title} is ${inspected.status}. Network=${inspected.networkName}. ${formatStackStorageSummary(inspected)}. Previews=${inspected.previewIds.length}. Services=${inspected.serviceIds.length}.`,
         data: { stack: inspected }
       };
     }

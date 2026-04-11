@@ -4,9 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "npm run build:web && npm run build:server",
+    "build": "npm run check:max-loc && npm run build:web && npm run build:server",
     "build:server": "tsc -p tsconfig.server.json",
     "build:web": "vite build",
+    "check:max-loc": "node ./scripts/check-max-loc.mjs",
     "dev:start": "tsx watch src/server/index.ts",
     "start": "node dist/server/index.js"
   },

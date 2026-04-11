@@ -11,8 +11,22 @@ import { CodexAppServerClient } from "./codex-client.js";
 import { CodexHarnessService } from "./codex-harness.js";
 import { ImageReferenceStore } from "./image-store.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
-import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
+import {
+  ButlerSseHub,
+  cleanupThreadRuntimeResources,
+  currentBootstrapSnapshot,
+  decodeArtifactRelativePath,
+  pruneEmptyArtifactParents,
+  readImageReferenceIds,
+  removeStackArtifactsFromStore,
+  resolvePreviewProxyTarget,
+  resolveProjectMetadata,
+  sendUnavailableArtifactResponse,
+  shouldAllowLocalThreadWindow,
+  type RuntimeServerAccess,
+  validateRequestedStack
+} from "./server-runtime-helpers.js";
 import { ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { ButlerStateStore } from "./state-store.js";
 import { applyWorkspacePreviewDefaults, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
@@ -55,6 +69,8 @@ await serviceTemplateRegistry.load();
 const imageStore = new ImageReferenceStore(imageReferenceDir);
 await imageStore.load();
 const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerToken);
+let runtimeAccess!: RuntimeServerAccess;
+let sseHub!: ButlerSseHub;
 const codexHarness = new CodexHarnessService({
   codexHomeDir,
   stateDir,
@@ -69,10 +85,10 @@ const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, 
     await codexHarness.ensureThreadCapability(threadId, cwd);
   },
   onThreadDeleting: async (context) => {
-    await cleanupThreadRuntimeResources(context);
+    await cleanupThreadRuntimeResources(runtimeAccess, context);
   },
   onRuntimeCleanupError: (threadId, message) => {
-    broadcastToast(`Thread cleanup failed for ${threadId.slice(0, 8)}: ${message}`, "error", 6000);
+    sseHub.broadcastToast(`Thread cleanup failed for ${threadId.slice(0, 8)}: ${message}`, "error", 6000);
   },
   onThreadCapabilityRemoved: async (threadId) => {
     await codexHarness.revokeThreadCapability(threadId);
@@ -90,6 +106,16 @@ const butlerAgent = new ButlerAgentService({
   imageStore,
   refreshRuntimeInventory: syncRuntimeInventory
 });
+runtimeAccess = {
+  artifactsDir,
+  butlerAgent,
+  codexClient,
+  runtimeBroker,
+  runtimeBrokerUrl,
+  serviceTemplateRegistry,
+  store
+};
+sseHub = new ButlerSseHub(runtimeAccess);
 
 await fs.mkdir(stateDir, { recursive: true });
 await fs.mkdir(piAgentDir, { recursive: true });
@@ -104,15 +130,6 @@ const previewProxy = httpProxy.createProxyServer({
   changeOrigin: false,
   ws: true
 });
-
-function resolvePreviewProxyTarget(leaseId: string): string | null {
-  const lease = store.getPreviewLease(leaseId);
-  if (!lease || lease.status === "stopped" || lease.status === "stopping") {
-    return null;
-  }
-
-  return runtimeBrokerUrl;
-}
 
 let viteDevServer: import("vite").ViteDevServer | null = null;
 
@@ -135,364 +152,9 @@ if (hotReloadEnabled) {
   });
 }
 
-const sseClients = new Set<express.Response>();
-const sseHeartbeatMs = 15000;
-const sseBroadcastDebounceMs = 24;
-const broadcastCache = {
-  shell: "",
-  butlerLive: "",
-  runtime: "",
-  threads: ""
-};
-let broadcastTimer: NodeJS.Timeout | null = null;
-
-function currentShellSnapshot() {
-  return store.getShellSnapshot(butlerAgent.getShellSnapshot(), codexClient.getConnectionState());
-}
-
-function currentButlerLiveSnapshot() {
-  return butlerAgent.getLiveSnapshot();
-}
-
-function currentRuntimeSnapshot() {
-  return store.getRuntimeSnapshot(serviceTemplateRegistry.list());
-}
-
-function currentOpenThreadsSnapshot() {
-  return store.listOpenThreadDetails();
-}
-
-function currentBootstrapSnapshot() {
-  return {
-    shell: currentShellSnapshot(),
-    butlerLive: currentButlerLiveSnapshot(),
-    runtime: currentRuntimeSnapshot(),
-    openThreads: currentOpenThreadsSnapshot()
-  };
-}
-
-function shouldAllowLocalThreadWindow(threadId: string, error: unknown): boolean {
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  const retryable = message.includes("failed to locate rollout") || message.includes("thread not found") || message.includes("thread not loaded");
-  return retryable && Boolean(store.getThread(threadId));
-}
-
-function writeSseEvent(response: express.Response, eventName: string, payload: unknown): void {
-  response.write(`event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`);
-}
-
-function broadcastToast(message: string, tone: "success" | "error" | "info" = "info", duration = 4000): void {
-  const payload = {
-    id: crypto.randomUUID(),
-    message,
-    tone,
-    duration
-  };
-
-  for (const client of sseClients) {
-    writeSseEvent(client, "toast", payload);
-  }
-}
-
-function sendInitialEvents(response: express.Response): void {
-  writeSseEvent(response, "shell", currentShellSnapshot());
-  writeSseEvent(response, "butlerLive", currentButlerLiveSnapshot());
-  writeSseEvent(response, "runtime", currentRuntimeSnapshot());
-  writeSseEvent(response, "threads", currentOpenThreadsSnapshot());
-}
-
-function flushBroadcasts(force = false): void {
-  if (broadcastTimer) {
-    clearTimeout(broadcastTimer);
-    broadcastTimer = null;
-  }
-
-  const shell = currentShellSnapshot();
-  const butlerLive = currentButlerLiveSnapshot();
-  const runtime = currentRuntimeSnapshot();
-  const threads = currentOpenThreadsSnapshot();
-
-  const nextPayloads = {
-    shell: JSON.stringify(shell),
-    butlerLive: JSON.stringify(butlerLive),
-    runtime: JSON.stringify(runtime),
-    threads: JSON.stringify(threads)
-  };
-
-  for (const client of sseClients) {
-    if (force || nextPayloads.shell !== broadcastCache.shell) {
-      writeSseEvent(client, "shell", shell);
-    }
-    if (force || nextPayloads.butlerLive !== broadcastCache.butlerLive) {
-      writeSseEvent(client, "butlerLive", butlerLive);
-    }
-    if (force || nextPayloads.runtime !== broadcastCache.runtime) {
-      writeSseEvent(client, "runtime", runtime);
-    }
-    if (force || nextPayloads.threads !== broadcastCache.threads) {
-      writeSseEvent(client, "threads", threads);
-    }
-  }
-
-  broadcastCache.shell = nextPayloads.shell;
-  broadcastCache.butlerLive = nextPayloads.butlerLive;
-  broadcastCache.runtime = nextPayloads.runtime;
-  broadcastCache.threads = nextPayloads.threads;
-}
-
-function scheduleBroadcast(): void {
-  if (broadcastTimer !== null) {
-    return;
-  }
-
-  broadcastTimer = setTimeout(() => {
-    broadcastTimer = null;
-    flushBroadcasts();
-  }, sseBroadcastDebounceMs);
-}
-
-function matchStackSelector<T extends { id: string; title: string }>(stacks: T[], selector: string): T | null {
-  const normalizedSelector = selector.trim();
-  if (!normalizedSelector) {
-    return null;
-  }
-
-  const directIdMatch = stacks.find((stack) => stack.id === normalizedSelector);
-  if (directIdMatch) {
-    return directIdMatch;
-  }
-
-  const exactTitleMatches = stacks.filter((stack) => stack.title === normalizedSelector);
-  if (exactTitleMatches.length === 1) {
-    return exactTitleMatches[0];
-  }
-
-  const foldedSelector = normalizedSelector.toLowerCase();
-  const foldedTitleMatches = stacks.filter((stack) => stack.title.trim().toLowerCase() === foldedSelector);
-  if (foldedTitleMatches.length === 1) {
-    return foldedTitleMatches[0];
-  }
-
-  return null;
-}
-
-function resolveProjectMetadata(cwd: string | null | undefined, fallbackId: string, fallbackLabel: string) {
-  const project = resolveWorkspaceProjectInfo(cwd);
-  if (project.id === "unknown") {
-    return {
-      id: fallbackId,
-      label: fallbackLabel
-    };
-  }
-  return project;
-}
-
-async function resolveRequestedStack(stackSelector: string | null, threadId: string | null): Promise<{
-  id: string;
-  threadId: string | null;
-  worktreePath: string | null;
-  title: string;
-} | null> {
-  if (!stackSelector) {
-    return null;
-  }
-
-  const visibleStacks = store
-    .listStackLeases()
-    .filter((stack) => !threadId || stack.threadId === threadId || !stack.threadId);
-  const storedMatch = matchStackSelector(visibleStacks, stackSelector);
-  if (storedMatch) {
-    return storedMatch;
-  }
-
-  const brokerMatch = matchStackSelector(await runtimeBroker.listStacks(threadId), stackSelector);
-  if (brokerMatch) {
-    store.upsertStackLease(brokerMatch);
-    return brokerMatch;
-  }
-
-  const stack = await runtimeBroker.inspectStack(stackSelector);
-  store.upsertStackLease(stack);
-  return stack;
-}
-
-async function validateRequestedStack(stackId: string | null, threadId: string | null) {
-  const stack = await resolveRequestedStack(stackId, threadId);
-  if (!stack) {
-    return null;
-  }
-
-  if (threadId && stack.threadId && stack.threadId !== threadId) {
-    throw new Error(`Stack ${stack.id} belongs to a different job`);
-  }
-
-  return stack;
-}
-
-function removeStackArtifactsFromStore(stackId: string): void {
-  for (const lease of store.listPreviewLeases()) {
-    if (lease.stackId === stackId) {
-      store.removePreviewLease(lease.id);
-    }
-  }
-
-  for (const lease of store.listServiceLeases()) {
-    if (lease.stackId === stackId) {
-      store.removeServiceLease(lease.id);
-    }
-  }
-
-  store.removeStackLease(stackId);
-}
-
-function isIgnorableRuntimeCleanupError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-
-  return error.message.toLowerCase().includes("not found");
-}
-
-async function cleanupThreadRuntimeResources(context: {
-  threadId: string;
-  stacks: Array<{ id: string; retainsVolumes: boolean; status: string }>;
-  previews: Array<{ id: string; stackId: string | null; status: string }>;
-  services: Array<{ id: string; stackId: string | null; runtimeKind: string; status: string }>;
-}): Promise<void> {
-  const threadId = context.threadId;
-  const storedStacks = context.stacks.filter((lease) => lease.status !== "stopped");
-  const storedPreviews = context.previews.filter((lease) => lease.status !== "stopped");
-  const storedServices = context.services.filter((lease) => lease.status !== "stopped");
-
-  const [brokerStacks, brokerPreviews, brokerServices] = await Promise.all([
-    runtimeBroker.listStacks(threadId),
-    runtimeBroker.listLeases(threadId),
-    runtimeBroker.listServices(threadId)
-  ]);
-
-  const stacksById = new Map([...storedStacks, ...brokerStacks].map((lease) => [lease.id, lease]));
-  const stackIds = new Set(stacksById.keys());
-
-  for (const stack of stacksById.values()) {
-    try {
-      await runtimeBroker.stopStack(stack.id, { dropVolumes: Boolean(stack.retainsVolumes) });
-    } catch (error) {
-      if (!isIgnorableRuntimeCleanupError(error)) {
-        throw error;
-      }
-    }
-  }
-
-  const previewsById = new Map(
-    [...storedPreviews, ...brokerPreviews]
-      .filter((lease) => !lease.stackId || !stackIds.has(lease.stackId))
-      .map((lease) => [lease.id, lease])
-  );
-
-  for (const preview of previewsById.values()) {
-    try {
-      await runtimeBroker.stopLease(preview.id);
-    } catch (error) {
-      if (!isIgnorableRuntimeCleanupError(error)) {
-        throw error;
-      }
-    }
-  }
-
-  const servicesById = new Map(
-    [...storedServices, ...brokerServices]
-      .filter((service) => service.runtimeKind === "container")
-      .filter((service) => !service.stackId || !stackIds.has(service.stackId))
-      .map((service) => [service.id, service])
-  );
-
-  for (const service of servicesById.values()) {
-    try {
-      await runtimeBroker.stopService(service.id);
-    } catch (error) {
-      if (!isIgnorableRuntimeCleanupError(error)) {
-        throw error;
-      }
-    }
-  }
-}
-
-function readImageReferenceIds(body: unknown): string[] {
-  if (!body || typeof body !== "object" || !("imageReferenceIds" in body)) {
-    return [];
-  }
-
-  const value = (body as { imageReferenceIds?: unknown }).imageReferenceIds;
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
-}
-
-function decodeArtifactRelativePath(relativePath: string): string {
-  return relativePath
-    .split("/")
-    .map((segment: string) => {
-      try {
-        return decodeURIComponent(segment);
-      } catch {
-        return segment;
-      }
-    })
-    .join(path.sep);
-}
-
-async function pruneEmptyArtifactParents(startPath: string): Promise<void> {
-  let currentPath = path.dirname(startPath);
-  while (currentPath.startsWith(`${artifactsDir}${path.sep}`)) {
-    try {
-      const entries = await fs.readdir(currentPath);
-      if (entries.length > 0) {
-        return;
-      }
-      await fs.rmdir(currentPath);
-      currentPath = path.dirname(currentPath);
-    } catch {
-      return;
-    }
-  }
-}
-
-function sendUnavailableArtifactResponse(
-  response: express.Response,
-  availability: "expired" | "missing",
-  artifact: {
-    label: string;
-    fileName: string;
-    retainedUntilAt: number | null;
-    expiredAt: number | null;
-  }
-): void {
-  if (response.headersSent || response.writableEnded || response.destroyed) {
-    return;
-  }
-
-  const expired = availability === "expired";
-  const message = expired
-    ? "Artifact expired after the 14 day retention window."
-    : "Artifact metadata is still available, but the file itself is no longer present.";
-  response.setHeader("Cache-Control", "private, no-store");
-  response.setHeader("X-Artifact-Availability", availability);
-  response.setHeader("X-Artifact-Error", message);
-  response.status(410).json({
-    error: message,
-    availability,
-    label: artifact.label,
-    fileName: artifact.fileName,
-    retainedUntilAt: artifact.retainedUntilAt,
-    expiredAt: artifact.expiredAt
-  });
-}
-
-store.on("change", scheduleBroadcast);
-codexClient.on("change", scheduleBroadcast);
-butlerAgent.on("change", scheduleBroadcast);
+store.on("change", () => sseHub.schedule());
+codexClient.on("change", () => sseHub.schedule());
+butlerAgent.on("change", () => sseHub.schedule());
 
 app.get("/api/health", (_request, response) => {
   response.json({
@@ -507,11 +169,11 @@ app.get("/livez", (_request, response) => {
 });
 
 app.get("/api/bootstrap", (_request, response) => {
-  response.json(currentBootstrapSnapshot());
+  response.json(currentBootstrapSnapshot(runtimeAccess));
 });
 
 app.get("/api/shell", (_request, response) => {
-  response.json(currentShellSnapshot());
+  response.json(store.getShellSnapshot(butlerAgent.getShellSnapshot(), codexClient.getConnectionState()));
 });
 
 app.get("/api/runtime", async (_request, response) => {
@@ -521,7 +183,7 @@ app.get("/api/runtime", async (_request, response) => {
     console.error("Runtime inventory sync failed", error);
   }
 
-  response.json(currentRuntimeSnapshot());
+  response.json(store.getRuntimeSnapshot(serviceTemplateRegistry.list()));
 });
 
 app.get("/api/threads/:threadId", (request, response) => {
@@ -651,7 +313,7 @@ app.get(/^\/api\/artifacts\/(.+)$/, (request, response) => {
   if (retainedUntilAt !== null && retainedUntilAt <= Date.now()) {
     void fs.rm(filePath, { force: true }).catch(() => {});
     store.markPreviewProofArtifactExpired(filePath, Date.now());
-    void pruneEmptyArtifactParents(filePath).catch(() => {});
+    void pruneEmptyArtifactParents(artifactsDir, filePath).catch(() => {});
     sendUnavailable();
     return;
   }
@@ -721,15 +383,15 @@ app.get("/api/events", (request, response) => {
   response.setHeader("Connection", "keep-alive");
   response.setHeader("X-Accel-Buffering", "no");
   response.flushHeaders();
-  sseClients.add(response);
-  sendInitialEvents(response);
+  sseHub.addClient(response);
+  sseHub.sendInitialEvents(response);
   const heartbeat = setInterval(() => {
     response.write(`event: heartbeat\ndata: ${Date.now()}\n\n`);
-  }, sseHeartbeatMs);
+  }, sseHub.heartbeatMs);
 
   request.on("close", () => {
     clearInterval(heartbeat);
-    sseClients.delete(response);
+    sseHub.removeClient(response);
   });
 });
 
@@ -829,7 +491,7 @@ app.post("/api/threads/delete", async (request, response) => {
 
   void codexClient.deleteThread(threadId).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
-    broadcastToast(`Thread cleanup failed: ${message}`, "error", 6000);
+    sseHub.broadcastToast(`Thread cleanup failed: ${message}`, "error", 6000);
   });
 
   response.status(202).json({ ok: true, started: true });
@@ -838,7 +500,7 @@ app.post("/api/threads/delete", async (request, response) => {
 app.post("/api/threads/delete-all", async (_request, response) => {
   void codexClient.deleteAllThreads().catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
-    broadcastToast(`Bulk thread cleanup failed: ${message}`, "error", 6000);
+    sseHub.broadcastToast(`Bulk thread cleanup failed: ${message}`, "error", 6000);
   });
 
   response.status(202).json({ ok: true, started: true });
@@ -856,7 +518,7 @@ app.post("/api/windows/open", async (request, response) => {
     store.openWindow(threadId);
     response.json({ ok: true });
   } catch (error) {
-    if (shouldAllowLocalThreadWindow(threadId, error)) {
+    if (shouldAllowLocalThreadWindow(runtimeAccess, threadId, error)) {
       store.openWindow(threadId);
       response.json({ ok: true, localFallback: true });
       return;
@@ -882,7 +544,7 @@ app.post("/api/windows/focus", async (request, response) => {
     store.focusWindow(threadId);
     response.json({ ok: true });
   } catch (error) {
-    if (shouldAllowLocalThreadWindow(threadId, error)) {
+    if (shouldAllowLocalThreadWindow(runtimeAccess, threadId, error)) {
       store.focusWindow(threadId);
       if (store.getShellSnapshot(butlerAgent.getShellSnapshot(), codexClient.getConnectionState()).codex.windows.some((window) => window.threadId === threadId)) {
         response.json({ ok: true, localFallback: true });
@@ -954,7 +616,7 @@ app.post("/api/stacks/stop", async (request, response) => {
 
   try {
     await runtimeBroker.stopStack(stackId, { dropVolumes });
-    removeStackArtifactsFromStore(stackId);
+    removeStackArtifactsFromStore(runtimeAccess, stackId);
     response.json({ ok: true });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -1048,7 +710,7 @@ app.post("/api/previews/start", async (request, response) => {
 
   try {
     const thread = threadId ? store.getThread(threadId) ?? null : null;
-    const requestedStack = await validateRequestedStack(stackId || null, threadId);
+    const requestedStack = await validateRequestedStack(runtimeAccess, stackId || null, threadId);
     const worktreePath = cwd || requestedStack?.worktreePath || thread?.cwd || "";
     const project = resolveProjectMetadata(worktreePath, thread?.supervisor.projectId ?? "preview", thread?.supervisor.projectLabel ?? "preview");
     const workspaceBootstrap = await inspectWorkspaceBootstrap(worktreePath);
@@ -1204,7 +866,7 @@ app.post("/api/services/start", async (request, response) => {
 
   try {
     const thread = threadId ? store.getThread(threadId) ?? null : null;
-    const requestedStack = await validateRequestedStack(stackId || null, threadId);
+    const requestedStack = await validateRequestedStack(runtimeAccess, stackId || null, threadId);
     const serviceId = crypto.randomUUID();
     const mergedEnv = { ...template.envDefaults, ...env };
     const effectiveTitle = title || `${template.label} ${serviceId.slice(0, 8)}`;
@@ -1341,7 +1003,7 @@ app.use(/^\/preview\/([^/]+)(\/.*)?$/, (request, response) => {
     return;
   }
 
-  const target = resolvePreviewProxyTarget(leaseId);
+  const target = resolvePreviewProxyTarget(runtimeAccess, leaseId);
   if (!target) {
     response.status(404).json({ error: "Preview lease not found" });
     return;
@@ -1399,7 +1061,7 @@ async function sweepExpiredLeases(): Promise<void> {
       } catch {
         // ignore broker cleanup failures and still evict the local lease
       }
-      removeStackArtifactsFromStore(stackId);
+      removeStackArtifactsFromStore(runtimeAccess, stackId);
     }
 
     for (const leaseId of expired.previews) {
@@ -1474,7 +1136,7 @@ async function sweepExpiredArtifacts(): Promise<void> {
         if (retainedUntilAt <= now) {
           await fs.rm(artifact.filePath, { force: true }).catch(() => {});
           store.markPreviewProofArtifactExpired(artifact.filePath, now);
-          await pruneEmptyArtifactParents(artifact.filePath);
+          await pruneEmptyArtifactParents(artifactsDir, artifact.filePath);
           continue;
         }
 
@@ -1515,7 +1177,7 @@ async function reconcileStackLeases(): Promise<void> {
 
     for (const lease of storedStacks) {
       if (!brokerStackIds.has(lease.id)) {
-        removeStackArtifactsFromStore(lease.id);
+        removeStackArtifactsFromStore(runtimeAccess, lease.id);
       }
     }
 
