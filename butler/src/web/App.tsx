@@ -729,7 +729,7 @@ export function App() {
         </div>
         <div className="threads-drawer-body">
           {shell.codex.threads.length === 0 ? (
-            <div className="empty">No Codex threads are available yet.</div>
+            <div className="empty threads-drawer-empty">No Codex threads are available yet.</div>
           ) : (
             shell.codex.threads.map((thread) => {
               const callback = callbackByThreadId.get(thread.id) ?? null;

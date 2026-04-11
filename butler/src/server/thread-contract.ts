@@ -58,6 +58,38 @@ function deriveEscalationConditions(): string[] {
   ];
 }
 
+export function requiresPersistedProof(taskText: string): boolean {
+  const normalized = taskText.toLowerCase();
+
+  if (
+    /\b(playwright|screenshot|video|trace|headful|browser|ui|frontend|visual|proof bundle|proof review)\b/.test(normalized)
+  ) {
+    return true;
+  }
+
+  if (/\bverify\b/.test(normalized) && /\b(browser|ui|page|screen|visual|frontend|mailpit|proof)\b/.test(normalized)) {
+    return true;
+  }
+
+  if (/\bsmoke(?:\s+test)?\b/.test(normalized) && /\b(browser|ui|page|screen|frontend|visual|proof)\b/.test(normalized)) {
+    return true;
+  }
+
+  return false;
+}
+
+export function isSharedShellRepoBootstrapTask(taskText: string): boolean {
+  const normalized = taskText.toLowerCase();
+  const mentionsClone = /\b(git clone|clone(?:\s+the)?\s+github\s+repository|clone(?:\s+the)?\s+repository)\b/.test(normalized);
+  const mentionsRepoRoot = /\/repos\b/.test(normalized);
+  const mentionsBranchSetup =
+    /\b(create|switch|checkout)\b/.test(normalized) && /\bbranch\b/.test(normalized) && /\bbutler\//.test(normalized);
+  const mentionsGitStatus = /\b(default branch|working tree status|git status)\b/.test(normalized);
+  const mentionsRuntime = /\b(start|run|serve|dev server|preview|browser|ui|playwright|screenshot|video)\b/.test(normalized);
+
+  return mentionsClone && mentionsRepoRoot && (mentionsBranchSetup || mentionsGitStatus) && !mentionsRuntime;
+}
+
 export function detectExecutionMode(text: string): CodexExecutionMode {
   const normalized = text.toLowerCase();
   if (
@@ -98,7 +130,7 @@ export function buildThreadExecutionContract(input: {
   notes: string[];
 }): CodexThreadExecutionContractView {
   const executionMode = detectExecutionMode(input.taskText);
-  const proofRequired = /playwright|proof|screenshot|video|verify|browser|ui|smoke/i.test(input.taskText);
+  const proofRequired = requiresPersistedProof(input.taskText);
   const previewLane: CodexPreviewLane = proofRequired ? "expected" : "available";
   const operatorGoal = normalizeContractText(input.operatorGoal);
   const requestedTask = normalizeContractText(input.requestedTask) ?? deriveRequestedTask(input.taskText);

@@ -2275,6 +2275,10 @@ select {
   padding: 10px 0 18px;
 }
 
+.threads-drawer-empty {
+  padding: 4px 18px 0;
+}
+
 .thread-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -3102,6 +3106,10 @@ select {
   .threads-drawer-actions {
     justify-content: space-between;
     gap: 10px;
+  }
+
+  .threads-drawer-empty {
+    padding-inline: 14px;
   }
 
   .thread-row {
