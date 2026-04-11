@@ -33,8 +33,10 @@ import type {
   PreviewLeaseView,
   PreviewProofRecordView,
   PreviewVerificationArtifactView,
+  ProjectArtifactView,
   ProjectMemoryEntryView,
   ProjectMemoryView,
+  ProjectPolicyView,
   RuntimeCleanupTaskView,
   ServiceLeaseView,
   StackLeaseView
@@ -53,6 +55,8 @@ export type StateStoreInternalAccess = {
   persistedExecutionContractsByThreadId: Map<string, CodexThreadExecutionContractView>;
   persistedJobMemoriesByThreadId: Map<string, JobMemoryView>;
   persistedProjectMemoriesByProjectId: Map<string, ProjectMemoryView>;
+  persistedProjectArtifactsByProjectId: Map<string, ProjectArtifactView[]>;
+  persistedProjectPoliciesByProjectId: Map<string, ProjectPolicyView[]>;
   windows: ButlerWindow[];
   focusedWindowId: string | null;
   saveTimer: NodeJS.Timeout | null;
@@ -533,6 +537,8 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     access.persistedExecutionContractsByThreadId.clear();
     access.persistedJobMemoriesByThreadId.clear();
     access.persistedProjectMemoriesByProjectId.clear();
+    access.persistedProjectArtifactsByProjectId.clear();
+    access.persistedProjectPoliciesByProjectId.clear();
     for (const [threadId, policy] of Object.entries(data.supervisionByThreadId ?? {})) {
       access.persistedSupervisionByThreadId.set(threadId, {
         butlerTurnsUsed: typeof policy?.butlerTurnsUsed === "number" ? policy.butlerTurnsUsed : 0,
@@ -722,6 +728,102 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
         updatedAt: typeof memory.updatedAt === "number" ? memory.updatedAt : Date.now()
       });
     }
+    for (const [projectId, artifacts] of Object.entries(data.projectArtifactsByProjectId ?? {})) {
+      const entries = (Array.isArray(artifacts) ? artifacts : [])
+        .filter(
+          (entry): entry is ProjectArtifactView =>
+            Boolean(entry) &&
+            typeof entry === "object" &&
+            typeof entry.id === "string" &&
+            typeof entry.title === "string" &&
+            typeof entry.fileName === "string" &&
+            typeof entry.filePath === "string"
+        )
+        .map((entry) => ({
+          id: entry.id.trim(),
+          projectId,
+          projectLabel:
+            typeof entry.projectLabel === "string" && entry.projectLabel.trim() ? entry.projectLabel.trim() : projectId || "Unknown",
+          kind: (
+            entry.kind === "seed" ||
+            entry.kind === "reference" ||
+            entry.kind === "download" ||
+            entry.kind === "research" ||
+            entry.kind === "report"
+              ? entry.kind
+              : "other"
+          ) as ProjectArtifactView["kind"],
+          title: entry.title.trim(),
+          description: typeof entry.description === "string" && entry.description.trim() ? entry.description.trim() : null,
+          fileName: entry.fileName.trim(),
+          filePath: entry.filePath.trim(),
+          contentType: typeof entry.contentType === "string" && entry.contentType.trim() ? entry.contentType.trim() : "application/octet-stream",
+          sizeBytes:
+            typeof entry.sizeBytes === "number" && Number.isFinite(entry.sizeBytes) && entry.sizeBytes >= 0
+              ? Math.trunc(entry.sizeBytes)
+              : 0,
+          tags: normalizeStringList(entry.tags),
+          metadata:
+            entry.metadata && typeof entry.metadata === "object"
+              ? Object.fromEntries(
+                  Object.entries(entry.metadata as Record<string, unknown>)
+                    .filter((item): item is [string, string] => typeof item[0] === "string" && typeof item[1] === "string")
+                    .map(([key, value]) => [key.trim(), value.trim()])
+                    .filter(([key]) => key.length > 0)
+                )
+              : {},
+          source: {
+            kind: (
+              entry.source?.kind === "inline" || entry.source?.kind === "url" ? entry.source.kind : "generated"
+            ) as ProjectArtifactView["source"]["kind"],
+            url: typeof entry.source?.url === "string" && entry.source.url.trim() ? entry.source.url.trim() : null,
+            createdByThreadId:
+              typeof entry.source?.createdByThreadId === "string" && entry.source.createdByThreadId.trim()
+                ? entry.source.createdByThreadId.trim()
+                : null,
+            checksumSha256:
+              typeof entry.source?.checksumSha256 === "string" && entry.source.checksumSha256.trim()
+                ? entry.source.checksumSha256.trim()
+                : null
+          },
+          textPreview: typeof entry.textPreview === "string" && entry.textPreview.trim() ? entry.textPreview : null,
+          createdAt: typeof entry.createdAt === "number" ? entry.createdAt : Date.now(),
+          updatedAt: typeof entry.updatedAt === "number" ? entry.updatedAt : Date.now()
+        }))
+        .sort((left, right) => right.updatedAt - left.updatedAt);
+      if (entries.length > 0) {
+        access.persistedProjectArtifactsByProjectId.set(projectId, entries);
+      }
+    }
+    for (const [projectId, policies] of Object.entries(data.projectPoliciesByProjectId ?? {})) {
+      const entries = (Array.isArray(policies) ? policies : [])
+        .filter(
+          (entry): entry is ProjectPolicyView =>
+            Boolean(entry) &&
+            typeof entry === "object" &&
+            typeof entry.id === "string" &&
+            typeof entry.title === "string" &&
+            typeof entry.instruction === "string" &&
+            Array.isArray(entry.artifacts) &&
+            Array.isArray(entry.triggers)
+        )
+        .map((entry) => ({
+          id: entry.id.trim(),
+          projectId,
+          projectLabel:
+            typeof entry.projectLabel === "string" && entry.projectLabel.trim() ? entry.projectLabel.trim() : projectId || "Unknown",
+          title: entry.title.trim(),
+          instruction: entry.instruction.trim(),
+          artifacts: normalizeStringList(entry.artifacts),
+          triggers: normalizeStringList(entry.triggers),
+          createdAt: typeof entry.createdAt === "number" ? entry.createdAt : Date.now(),
+          updatedAt: typeof entry.updatedAt === "number" ? entry.updatedAt : Date.now()
+        }))
+        .sort((left, right) => right.updatedAt - left.updatedAt);
+      if (entries.length > 0) {
+        access.persistedProjectPoliciesByProjectId.set(projectId, entries);
+      }
+    }
     for (const thread of Array.isArray(data.threads) ? data.threads : []) {
       if (thread && typeof thread === "object" && typeof thread.id === "string") {
         restorePersistedStateStoreThread(access, thread as CodexThreadDetailView);
@@ -775,6 +877,8 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     access.persistedExecutionContractsByThreadId.clear();
     access.persistedJobMemoriesByThreadId.clear();
     access.persistedProjectMemoriesByProjectId.clear();
+    access.persistedProjectArtifactsByProjectId.clear();
+    access.persistedProjectPoliciesByProjectId.clear();
     access.threadInventoryReady = false;
   }
 }
@@ -816,6 +920,12 @@ export function queueStateStoreSave(access: StateStoreInternalAccess): void {
       ),
       projectMemoriesByProjectId: Object.fromEntries(
         [...access.persistedProjectMemoriesByProjectId.entries()].map(([projectId, memory]) => [projectId, memory])
+      ),
+      projectArtifactsByProjectId: Object.fromEntries(
+        [...access.persistedProjectArtifactsByProjectId.entries()].map(([projectId, artifacts]) => [projectId, artifacts])
+      ),
+      projectPoliciesByProjectId: Object.fromEntries(
+        [...access.persistedProjectPoliciesByProjectId.entries()].map(([projectId, policies]) => [projectId, policies])
       )
     };
     await fs.mkdir(path.dirname(access.uiStatePath), { recursive: true });

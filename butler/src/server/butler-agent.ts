@@ -4,12 +4,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { getModel } from "@mariozechner/pi-ai";
-import {
-  AuthStorage,
-  defineTool,
-  ModelRegistry,
-  type AgentSession
-} from "@mariozechner/pi-coding-agent";
+import { AuthStorage, defineTool, ModelRegistry, type AgentSession } from "@mariozechner/pi-coding-agent";
 import type { TSchema } from "@sinclair/typebox";
 
 import {
@@ -64,6 +59,7 @@ import {
   updateButlerComposeSettings
 } from "./butler-agent-session.js";
 import { buildButlerServiceTools } from "./butler-agent-service-tools.js";
+import { buildButlerProjectTools } from "./butler-agent-project-tools.js";
 import { buildButlerDelegationTools, buildButlerStackPreviewTools } from "./butler-agent-stack-preview-tools.js";
 import { reviewButlerProofScreenshot } from "./butler-agent-proof-review.js";
 import type { ButlerAgentSessionAccess, ButlerAgentToolAccess } from "./butler-agent-tool-access.js";
@@ -71,6 +67,7 @@ import { BUTLER_TOOL_CATALOG } from "./butler-agent-tool-catalog.js";
 import { readButlerAuthStatus } from "./auth-status.js";
 import { buildOnboardingView } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
+import { formatProjectPolicyContextLines } from "./project-artifacts-policies.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
 import {
   ensureTaskWorktree,
@@ -131,6 +128,7 @@ export class ButlerAgentService extends EventEmitter {
   private readonly codexAuthPath: string;
   private readonly codexConfigDir: string;
   private readonly sessionDir: string;
+  private readonly artifactsDir: string;
   private readonly operatorMessageStatePath: string;
   private readonly legacyNoticeStatePath: string;
   private readonly callbackStatePath: string;
@@ -178,6 +176,7 @@ export class ButlerAgentService extends EventEmitter {
     codexAuthPath: string;
     codexConfigDir: string;
     sessionDir: string;
+    artifactsDir: string;
     refreshRuntimeInventory?: () => Promise<void>;
   }) {
     super();
@@ -190,6 +189,7 @@ export class ButlerAgentService extends EventEmitter {
     this.codexAuthPath = options.codexAuthPath;
     this.codexConfigDir = options.codexConfigDir;
     this.sessionDir = options.sessionDir;
+    this.artifactsDir = options.artifactsDir;
     this.refreshRuntimeInventory = options.refreshRuntimeInventory ?? null;
     this.operatorMessageStatePath = path.join(this.sessionDir, "operator-messages.json");
     this.legacyNoticeStatePath = path.join(this.sessionDir, "notices.json");
@@ -1100,12 +1100,16 @@ export class ButlerAgentService extends EventEmitter {
       }
     }
 
-    if (options.extraNotes?.length) {
-      notes.push(...options.extraNotes);
-    }
+    if (options.extraNotes?.length) notes.push(...options.extraNotes);
 
     const executionLane = options.executionLane ?? (await this.inferDelegationExecutionLane(requestedTaskOnly, options.workspace.cwd));
     const proofMode = options.proofMode ?? this.inferDelegationProofMode(requestedTaskOnly);
+    const projectPolicyLines = formatProjectPolicyContextLines({ store: this.store, projectId: project.id });
+    if (projectPolicyLines.length > 0)
+      notes.push(
+        "Load the remembered project policies into your plan before provisioning previews or services.",
+        ...projectPolicyLines.slice(1)
+      );
 
     const baseContract = buildThreadExecutionContract({
       threadId: options.threadId,
@@ -1444,18 +1448,11 @@ export class ButlerAgentService extends EventEmitter {
     volumeNames: string[];
   }): string { return formatStackStorageSummary(stack); }
 
-  private async reviewProofScreenshot(proof: ResolvedPreviewProof, options?: { expectedOutcome?: string }): Promise<ProofScreenshotReview> {
-    return reviewButlerProofScreenshot(this.getSessionAccess(), proof, options);
-  }
+  private async reviewProofScreenshot(proof: ResolvedPreviewProof, options?: { expectedOutcome?: string }): Promise<ProofScreenshotReview> { return reviewButlerProofScreenshot(this.getSessionAccess(), proof, options); }
 
   private buildCustomTools() {
     const toolAccess = this.getToolAccess();
-    return [
-      ...buildButlerStackPreviewTools(toolAccess),
-      ...buildButlerServiceTools(toolAccess),
-      ...buildButlerCodexTools(toolAccess),
-      ...buildButlerDelegationTools(toolAccess)
-    ];
+    return [...buildButlerStackPreviewTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerCodexTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
   }
 
   private async createOrRefreshSession(): Promise<void> { await createOrRefreshButlerSession(this.getSessionAccess()); }

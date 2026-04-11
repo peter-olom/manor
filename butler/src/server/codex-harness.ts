@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { handleHarnessArtifactPolicyAction } from "./codex-harness-artifact-policy.js";
 import {
   type BrokerAccessRegistryPayload,
   type HarnessCapability,
@@ -18,6 +19,10 @@ import {
 import { formatHarnessExecutionContract, formatHarnessRuntimeModel } from "./codex-harness-format.js";
 import { formatHarnessJobMemory, formatHarnessProjectMemory, handleHarnessMemoryAction } from "./codex-harness-memory.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
+import {
+  applyServiceStartedPolicies,
+  formatProjectPolicyContextLines
+} from "./project-artifacts-policies.js";
 import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import { ButlerStateStore } from "./state-store.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
@@ -34,6 +39,7 @@ import type { PreviewLeaseView } from "./types.js";
 export class CodexHarnessService {
   private readonly registryPath: string;
   private readonly brokerAccessPath: string;
+  private readonly artifactsDir: string;
   private readonly store: ButlerStateStore;
   private readonly runtimeBroker: RuntimeBrokerClient;
   private readonly serviceTemplateRegistry: ServiceTemplateRegistry;
@@ -42,12 +48,14 @@ export class CodexHarnessService {
   constructor(options: {
     codexHomeDir: string;
     stateDir: string;
+    artifactsDir: string;
     store: ButlerStateStore;
     runtimeBroker: RuntimeBrokerClient;
     serviceTemplateRegistry: ServiceTemplateRegistry;
   }) {
     this.registryPath = path.join(options.codexHomeDir, "manor", "harness-capabilities.json");
     this.brokerAccessPath = path.join(options.stateDir, "codex-broker-access.json");
+    this.artifactsDir = options.artifactsDir;
     this.store = options.store;
     this.runtimeBroker = options.runtimeBroker;
     this.serviceTemplateRegistry = options.serviceTemplateRegistry;
@@ -85,26 +93,15 @@ export class CodexHarnessService {
   }
 
   private async save(): Promise<void> {
-    const payload: HarnessRegistryPayload = {
-      capabilities: [...this.capabilities.values()].sort((left, right) => left.createdAt - right.createdAt)
-    };
-    const brokerAccessPayload: BrokerAccessRegistryPayload = {
-      grants: payload.capabilities.map((capability) => ({
-        token: capability.token,
-        threadId: capability.threadId,
-        createdAt: capability.createdAt,
-        updatedAt: capability.updatedAt
-      }))
-    };
+    const payload: HarnessRegistryPayload = { capabilities: [...this.capabilities.values()].sort((left, right) => left.createdAt - right.createdAt) };
+    const brokerAccessPayload: BrokerAccessRegistryPayload = { grants: payload.capabilities.map((capability) => ({ token: capability.token, threadId: capability.threadId, createdAt: capability.createdAt, updatedAt: capability.updatedAt })) };
     await fs.writeFile(this.registryPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
     await fs.writeFile(this.brokerAccessPath, `${JSON.stringify(brokerAccessPayload, null, 2)}\n`, "utf8");
   }
 
   async ensureThreadCapability(threadId: string, cwd: string | null | undefined): Promise<HarnessCapability | null> {
     const normalizedCwd = normalizeString(cwd);
-    if (!threadId || !normalizedCwd) {
-      return null;
-    }
+    if (!threadId || !normalizedCwd) return null;
     const now = Date.now();
     const existing = this.capabilities.get(threadId);
     const nextCapability: HarnessCapability = existing
@@ -178,49 +175,31 @@ export class CodexHarnessService {
     }
   }
 
-  async revokeThreadCapability(threadId: string): Promise<void> {
-    if (!this.capabilities.delete(threadId)) {
-      return;
-    }
-    await this.save();
-  }
+  async revokeThreadCapability(threadId: string): Promise<void> { if (this.capabilities.delete(threadId)) await this.save(); }
 
   private getCapabilityByToken(token: string): HarnessCapability | null {
     const normalized = normalizeString(token);
-    if (!normalized) {
-      return null;
-    }
+    if (!normalized) return null;
     for (const capability of this.capabilities.values()) {
-      if (capability.token === normalized) {
-        return capability;
-      }
+      if (capability.token === normalized) return capability;
     }
-
     return null;
   }
 
   private requireCapability(token: string): HarnessCapability {
     const capability = this.getCapabilityByToken(token);
-    if (!capability) {
-      throw new Error("Invalid Codex harness token");
-    }
+    if (!capability) throw new Error("Invalid Codex harness token");
     const thread = this.store.getThread(capability.threadId);
-    if (!thread) {
-      throw new Error("Codex harness capability references an unknown thread");
-    }
+    if (!thread) throw new Error("Codex harness capability references an unknown thread");
     return capability;
   }
 
   private getThreadContext(capability: HarnessCapability) {
     const thread = this.store.getThread(capability.threadId);
-    if (!thread) {
-      throw new Error("Codex thread is no longer available");
-    }
+    if (!thread) throw new Error("Codex thread is no longer available");
     return thread;
   }
-  private listThreadProofs(threadId: string) {
-    return this.store.listPreviewProofs().filter((proof) => proof.threadId === threadId);
-  }
+  private listThreadProofs(threadId: string) { return this.store.listPreviewProofs().filter((proof) => proof.threadId === threadId); }
   private formatPreviewVisibility(threadId: string, lease: PreviewLeaseView): string {
     const proofs = this.listThreadProofs(threadId).filter((proof) => proof.previewId === lease.id).slice(0, 2);
     const verification = lease.lastVerification;
@@ -650,6 +629,7 @@ export class CodexHarnessService {
       ...formatHarnessExecutionContract(thread),
       ...formatHarnessJobMemory(this.store, capability.threadId),
       ...formatHarnessProjectMemory(this.store, project.id),
+      ...formatProjectPolicyContextLines({ store: this.store, projectId: project.id }),
       ...formatHarnessRuntimeModel(),
       stackLines,
       previewLines,
@@ -668,13 +648,7 @@ export class CodexHarnessService {
     const action = normalizeString(input.action);
     const params = input.params ?? {};
     const thread = this.getThreadContext(capability);
-    if (
-      action === "context" ||
-      action.startsWith("stack.") ||
-      action.startsWith("preview.") ||
-      action.startsWith("service.") ||
-      action.startsWith("assist.")
-    ) {
+    if (action === "context" || action.startsWith("stack.") || action.startsWith("preview.") || action.startsWith("service.") || action.startsWith("assist.")) {
       await this.maybeAdoptWorkspaceStack(capability);
     }
     if (action === "context") {
@@ -694,6 +668,7 @@ export class CodexHarnessService {
           ...formatHarnessExecutionContract(thread),
           ...formatHarnessJobMemory(this.store, capability.threadId),
           ...formatHarnessProjectMemory(this.store, project.id),
+          ...formatProjectPolicyContextLines({ store: this.store, projectId: project.id }),
           ...formatHarnessRuntimeModel(),
           stacks.length === 0
             ? "Stacks: none"
@@ -764,6 +739,20 @@ export class CodexHarnessService {
     });
     if (memoryAction) {
       return memoryAction;
+    }
+    const artifactOrPolicyAction = await handleHarnessArtifactPolicyAction({
+      action,
+      threadId: capability.threadId,
+      cwd: capability.cwd,
+      artifactsDir: this.artifactsDir,
+      thread,
+      store: this.store,
+      runtimeBroker: this.runtimeBroker,
+      params,
+      resolveWorkspaceProject: (workspaceCwd, targetThread) => this.resolveWorkspaceProject(workspaceCwd, targetThread)
+    });
+    if (artifactOrPolicyAction) {
+      return artifactOrPolicyAction;
     }
     if (action === "assist.request") {
       const summary = normalizeString(params.summary);
@@ -1324,9 +1313,16 @@ export class CodexHarnessService {
         this.store.upsertServiceLease(lease);
         this.store.noteServiceLeaseActivity(lease.id);
         this.store.addEvent(capability.threadId, "harness/service/start", `Started service ${lease.id}`);
+        const policyApplications = await applyServiceStartedPolicies({
+          artifactsDir: this.artifactsDir,
+          store: this.store,
+          runtimeBroker: this.runtimeBroker,
+          service: lease,
+          stack
+        });
         return {
-          text: `Prepared ${template.label} at ${lease.connection.uri ?? filePath}.`,
-          data: { service: lease }
+          text: `Prepared ${template.label} at ${lease.connection.uri ?? filePath}.${policyApplications.length > 0 ? ` Surfaced ${policyApplications.length} project policy hint${policyApplications.length === 1 ? "" : "s"}.` : ""}`,
+          data: { service: lease, policyApplications }
         };
       }
 
@@ -1374,9 +1370,16 @@ export class CodexHarnessService {
       this.store.upsertServiceLease(lease);
       this.store.noteServiceLeaseActivity(lease.id);
       this.store.addEvent(capability.threadId, "harness/service/start", `Started service ${lease.id}`);
+      const policyApplications = await applyServiceStartedPolicies({
+        artifactsDir: this.artifactsDir,
+        store: this.store,
+        runtimeBroker: this.runtimeBroker,
+        service: lease,
+        stack
+      });
       return {
-        text: `Started ${template.label}. Host=${lease.connection.host} Port=${lease.connection.port}.${lease.sticky ? ` Sticky volume=${lease.volumeName}.` : ""}`,
-        data: { service: lease }
+        text: `Started ${template.label}. Host=${lease.connection.host} Port=${lease.connection.port}.${lease.sticky ? ` Sticky volume=${lease.volumeName}.` : ""}${policyApplications.length > 0 ? ` Surfaced ${policyApplications.length} project policy hint${policyApplications.length === 1 ? "" : "s"}.` : ""}`,
+        data: { service: lease, policyApplications }
       };
     }
 

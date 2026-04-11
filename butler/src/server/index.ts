@@ -10,6 +10,7 @@ import { ButlerAgentService } from "./butler-agent.js";
 import { CodexAppServerClient } from "./codex-client.js";
 import { CodexHarnessService } from "./codex-harness.js";
 import { ImageReferenceStore } from "./image-store.js";
+import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-routes.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import {
@@ -74,6 +75,7 @@ let sseHub!: ButlerSseHub;
 const codexHarness = new CodexHarnessService({
   codexHomeDir,
   stateDir,
+  artifactsDir,
   store,
   runtimeBroker,
   serviceTemplateRegistry
@@ -104,6 +106,7 @@ const butlerAgent = new ButlerAgentService({
   codexConfigDir,
   sessionDir,
   imageStore,
+  artifactsDir,
   refreshRuntimeInventory: syncRuntimeInventory
 });
 runtimeAccess = {
@@ -132,6 +135,12 @@ const previewProxy = httpProxy.createProxyServer({
 });
 
 let viteDevServer: import("vite").ViteDevServer | null = null;
+const { applyServiceStartedPoliciesForServer } = registerProjectArtifactPolicyRoutes({
+  app,
+  artifactsDir,
+  store,
+  runtimeBroker
+});
 
 if (hotReloadEnabled) {
   const { createServer } = await import("vite");
@@ -251,6 +260,7 @@ app.post("/api/memory/promotions/resolve", (request, response) => {
     projectMemory: store.getProjectMemory(candidate.projectId)
   });
 });
+
 
 app.post("/api/images/upload", async (request, response) => {
   const name = typeof request.body?.name === "string" ? request.body.name : "";
@@ -957,7 +967,8 @@ app.post("/api/services/start", async (request, response) => {
         env: mergedEnv
       });
       store.upsertServiceLease(lease);
-      response.json({ ok: true, service: lease });
+      const policyApplications = await applyServiceStartedPoliciesForServer(lease, requestedStack);
+      response.json({ ok: true, service: lease, policyApplications });
       return;
     }
 
@@ -1003,7 +1014,8 @@ app.post("/api/services/start", async (request, response) => {
       env: service.env
     });
     store.upsertServiceLease(lease);
-    response.json({ ok: true, service: lease });
+    const policyApplications = await applyServiceStartedPoliciesForServer(lease, requestedStack);
+    response.json({ ok: true, service: lease, policyApplications });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }

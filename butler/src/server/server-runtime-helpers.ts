@@ -9,6 +9,7 @@ import type { CodexAppServerClient } from "./codex-client.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { ServiceTemplateRegistry } from "./service-templates.js";
 import type { ButlerStateStore } from "./state-store.js";
+import type { StackStorageMode } from "./types.js";
 import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 
 type RuntimeServerAccess = {
@@ -208,7 +209,7 @@ async function resolveRequestedStack(
   access: RuntimeServerAccess,
   stackSelector: string | null,
   threadId: string | null
-): Promise<{ id: string; threadId: string | null; worktreePath: string | null; title: string } | null> {
+): Promise<{ id: string; threadId: string | null; worktreePath: string | null; title: string; storageMode: StackStorageMode } | null> {
   if (!stackSelector) {
     return null;
   }

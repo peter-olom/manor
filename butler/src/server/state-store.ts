@@ -61,6 +61,15 @@ import {
   submitStateStorePromotionCandidate,
   syncStateStoreThreadJobMemory
 } from "./state-store-memory.js";
+import {
+  findStateStoreProjectArtifactById,
+  getStateStoreProjectArtifact,
+  getStateStoreProjectPolicy,
+  listStateStoreProjectArtifacts,
+  listStateStoreProjectPolicies,
+  upsertStateStoreProjectArtifact,
+  upsertStateStoreProjectPolicy
+} from "./state-store-project-assets.js";
 import { buildStateStoreRuntimeSnapshot, buildStateStoreShellSnapshot, buildStateStoreSnapshot } from "./state-store-snapshot.js";
 import { parseThreadExecutionContract } from "./thread-contract.js";
 import type {
@@ -96,6 +105,8 @@ import type {
   PreviewVerificationView,
   PreviewLeaseView,
   ProjectMemoryView,
+  ProjectArtifactView,
+  ProjectPolicyView,
   RuntimeCleanupTaskView,
   RuntimeSnapshot,
   StackLeaseView,
@@ -129,6 +140,8 @@ export class ButlerStateStore extends EventEmitter {
   private readonly persistedExecutionContractsByThreadId = new Map<string, CodexThreadExecutionContractView>();
   private readonly persistedJobMemoriesByThreadId = new Map<string, JobMemoryView>();
   private readonly persistedProjectMemoriesByProjectId = new Map<string, ProjectMemoryView>();
+  private readonly persistedProjectArtifactsByProjectId = new Map<string, ProjectArtifactView[]>();
+  private readonly persistedProjectPoliciesByProjectId = new Map<string, ProjectPolicyView[]>();
 
   private getInternalAccess(): StateStoreInternalAccess {
     return this as unknown as StateStoreInternalAccess;
@@ -184,39 +197,19 @@ export class ButlerStateStore extends EventEmitter {
     return normalizeStateStorePreviewProofRecord(this.getInternalAccess(), record);
   }
 
-  private upsertPreviewProofRecord(record: PreviewProofRecordView, options?: { emitChange?: boolean }): PreviewProofRecordView {
-    return upsertStateStorePreviewProofRecord(this.getInternalAccess(), record, options);
-  }
+  private upsertPreviewProofRecord(record: PreviewProofRecordView, options?: { emitChange?: boolean }): PreviewProofRecordView { return upsertStateStorePreviewProofRecord(this.getInternalAccess(), record, options); }
 
-  private recordPreviewProofFromLease(
-    lease: Pick<PreviewLeaseView, "id" | "threadId" | "projectId" | "projectLabel" | "title" | "stackId" | "lastVerification">,
-    options?: { emitChange?: boolean }
-  ): PreviewProofRecordView | null {
-    return recordStateStorePreviewProofFromLease(this.getInternalAccess(), lease, options);
-  }
+  private recordPreviewProofFromLease(lease: Pick<PreviewLeaseView, "id" | "threadId" | "projectId" | "projectLabel" | "title" | "stackId" | "lastVerification">, options?: { emitChange?: boolean }): PreviewProofRecordView | null { return recordStateStorePreviewProofFromLease(this.getInternalAccess(), lease, options); }
 
-  private updateArtifactAvailability(
-    filePath: string,
-    mutate: (artifact: PreviewVerificationArtifactView) => PreviewVerificationArtifactView
-  ): boolean {
-    return updateStateStoreArtifactAvailability(this.getInternalAccess(), filePath, mutate);
-  }
+  private updateArtifactAvailability(filePath: string, mutate: (artifact: PreviewVerificationArtifactView) => PreviewVerificationArtifactView): boolean { return updateStateStoreArtifactAvailability(this.getInternalAccess(), filePath, mutate); }
 
-  async load(): Promise<void> {
-    await loadStateStore(this.getInternalAccess());
-  }
+  async load(): Promise<void> { await loadStateStore(this.getInternalAccess()); }
 
-  private queueSave(): void {
-    queueStateStoreSave(this.getInternalAccess());
-  }
+  private queueSave(): void { queueStateStoreSave(this.getInternalAccess()); }
 
-  private emitChange(): void {
-    emitStateStoreChange(this.getInternalAccess());
-  }
+  private emitChange(): void { emitStateStoreChange(this.getInternalAccess()); }
 
-  private restorePersistedThread(thread: CodexThreadDetailView): void {
-    restorePersistedStateStoreThread(this.getInternalAccess(), thread);
-  }
+  private restorePersistedThread(thread: CodexThreadDetailView): void { restorePersistedStateStoreThread(this.getInternalAccess(), thread); }
 
   markThreadInventoryReady(): void {
     this.threadInventoryReady = true;
@@ -226,33 +219,33 @@ export class ButlerStateStore extends EventEmitter {
     }
   }
 
-  private getOrCreateThread(id: string): CodexThreadRecord {
-    return getOrCreateStateStoreThread(this.getInternalAccess(), id);
-  }
+  private getOrCreateThread(id: string): CodexThreadRecord { return getOrCreateStateStoreThread(this.getInternalAccess(), id); }
 
-  private persistThreadSupervision(thread: CodexThreadRecord): void {
-    persistStateStoreThreadSupervision(this.getInternalAccess(), thread);
-  }
+  private persistThreadSupervision(thread: CodexThreadRecord): void { persistStateStoreThreadSupervision(this.getInternalAccess(), thread); }
 
-  private removePreviewProofsForThread(threadId: string): void {
-    removeStateStorePreviewProofsForThread(this.getInternalAccess(), threadId);
-  }
+  private removePreviewProofsForThread(threadId: string): void { removeStateStorePreviewProofsForThread(this.getInternalAccess(), threadId); }
 
-  getJobMemory(threadId: string): JobMemoryView | null {
-    return getStateStoreJobMemory(this.getInternalAccess(), threadId);
-  }
+  getJobMemory(threadId: string): JobMemoryView | null { return getStateStoreJobMemory(this.getInternalAccess(), threadId); }
 
-  getProjectMemory(projectId: string): ProjectMemoryView | null {
-    return getStateStoreProjectMemory(this.getInternalAccess(), projectId);
-  }
+  getProjectMemory(projectId: string): ProjectMemoryView | null { return getStateStoreProjectMemory(this.getInternalAccess(), projectId); }
 
-  listProjectMemories(): ProjectMemoryView[] {
-    return listStateStoreProjectMemories(this.getInternalAccess());
-  }
+  listProjectMemories(): ProjectMemoryView[] { return listStateStoreProjectMemories(this.getInternalAccess()); }
 
-  listPendingPromotionCandidates(projectId?: string | null): JobMemoryPromotionCandidateView[] {
-    return listStateStorePendingPromotionCandidates(this.getInternalAccess(), projectId);
-  }
+  listProjectArtifacts(projectId?: string | null): ProjectArtifactView[] { return listStateStoreProjectArtifacts(this.getInternalAccess(), projectId); }
+
+  getProjectArtifact(projectId: string, artifactId: string): ProjectArtifactView | null { return getStateStoreProjectArtifact(this.getInternalAccess(), projectId, artifactId); }
+
+  findProjectArtifactById(artifactId: string): ProjectArtifactView | null { return findStateStoreProjectArtifactById(this.getInternalAccess(), artifactId); }
+
+  upsertProjectArtifact(artifact: ProjectArtifactView): ProjectArtifactView { return upsertStateStoreProjectArtifact(this.getInternalAccess(), artifact); }
+
+  listProjectPolicies(projectId?: string | null): ProjectPolicyView[] { return listStateStoreProjectPolicies(this.getInternalAccess(), projectId); }
+
+  getProjectPolicy(projectId: string, policyId: string): ProjectPolicyView | null { return getStateStoreProjectPolicy(this.getInternalAccess(), projectId, policyId); }
+
+  upsertProjectPolicy(policy: ProjectPolicyView): ProjectPolicyView { return upsertStateStoreProjectPolicy(this.getInternalAccess(), policy); }
+
+  listPendingPromotionCandidates(projectId?: string | null): JobMemoryPromotionCandidateView[] { return listStateStorePendingPromotionCandidates(this.getInternalAccess(), projectId); }
 
   recordJobCheckpoint(
     threadId: string,

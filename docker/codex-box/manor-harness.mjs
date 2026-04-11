@@ -20,6 +20,13 @@ function printHelp() {
   manor-harness [--thread <jobId>] memory decision --summary "<text>" [--details "<text>"] [--promote]
   manor-harness [--thread <jobId>] memory note --summary "<text>" [--details "<text>"] [--promote]
   manor-harness [--thread <jobId>] memory promote --kind checkpoint|decision|note --summary "<text>" [--details "<text>"]
+  manor-harness [--thread <jobId>] artifact list
+  manor-harness [--thread <jobId>] artifact read <artifactId>
+  manor-harness [--thread <jobId>] artifact save-text --title "<text>" [--kind seed|reference|download|research|report|other] [--description "<text>"] [--file-name <name>] [--content-type <mime>] [--tag <text> ...] [--metadata KEY=VALUE ...] [--body "<text>"]
+  manor-harness [--thread <jobId>] artifact download --title "<text>" --url <url> [--kind seed|reference|download|research|report|other] [--description "<text>"] [--file-name <name>] [--content-type <mime>] [--tag <text> ...] [--metadata KEY=VALUE ...]
+  manor-harness [--thread <jobId>] policy list
+  manor-harness [--thread <jobId>] policy remember --title "<text>" --instruction "<text>" [--policy-id <id>] [--artifact <artifactId> ...] [--trigger <text> ...]
+  manor-harness [--thread <jobId>] policy invoke <policyId|title> [--service <serviceId>]
   manor-harness [--thread <jobId>] stack list
   manor-harness [--thread <jobId>] stack start [--title <title>] [--cwd <path>] [--stateful] [--storage-mode ephemeral|job|base|custom] [--retain-volumes] [--storage-key <key>] [--clone-from <key>]
   manor-harness [--thread <jobId>] stack inspect <stackSelector>
@@ -425,6 +432,59 @@ async function main() {
         kind: readFlag(args, "--kind"),
         summary: readFlag(args, "--summary"),
         details: readFlag(args, "--details")
+      };
+    }
+  } else if (args[0] === "artifact") {
+    const subcommand = args[1];
+    if (subcommand === "list") {
+      action = "artifact.list";
+    } else if (subcommand === "read" && args[2]) {
+      action = "artifact.read";
+      params = { artifactId: args[2] };
+    } else if (subcommand === "save-text") {
+      const pipedInput = await readStdinIfPresent();
+      action = "artifact.save_text";
+      params = {
+        title: readFlag(args, "--title"),
+        kind: readFlag(args, "--kind"),
+        description: readFlag(args, "--description"),
+        fileName: readFlag(args, "--file-name"),
+        contentType: readFlag(args, "--content-type"),
+        tags: readRepeatedFlag(args, "--tag"),
+        metadata: Object.fromEntries(parseRepeatedKeyValueFlags(args, "--metadata")),
+        text: readFlag(args, "--body") || pipedInput.stdin || ""
+      };
+    } else if (subcommand === "download") {
+      action = "artifact.download";
+      params = {
+        title: readFlag(args, "--title"),
+        url: readFlag(args, "--url"),
+        kind: readFlag(args, "--kind"),
+        description: readFlag(args, "--description"),
+        fileName: readFlag(args, "--file-name"),
+        contentType: readFlag(args, "--content-type"),
+        tags: readRepeatedFlag(args, "--tag"),
+        metadata: Object.fromEntries(parseRepeatedKeyValueFlags(args, "--metadata"))
+      };
+    }
+  } else if (args[0] === "policy") {
+    const subcommand = args[1];
+    if (subcommand === "list") {
+      action = "policy.list";
+    } else if (subcommand === "remember") {
+      action = "policy.remember";
+      params = {
+        title: readFlag(args, "--title"),
+        instruction: readFlag(args, "--instruction"),
+        policyId: readFlag(args, "--policy-id"),
+        artifacts: readRepeatedFlag(args, "--artifact"),
+        triggers: readRepeatedFlag(args, "--trigger")
+      };
+    } else if (subcommand === "invoke" && args[2]) {
+      action = "policy.invoke";
+      params = {
+        selector: args[2],
+        serviceId: readFlag(args, "--service")
       };
     }
   } else if (args[0] === "preview") {

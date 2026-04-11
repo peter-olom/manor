@@ -479,6 +479,45 @@ export interface ProjectMemoryView {
   updatedAt: number;
 }
 
+export type ProjectArtifactKind = "seed" | "reference" | "download" | "research" | "report" | "other";
+export type ProjectArtifactSourceKind = "inline" | "url" | "generated";
+
+export interface ProjectArtifactView {
+  id: string;
+  projectId: string;
+  projectLabel: string;
+  kind: ProjectArtifactKind;
+  title: string;
+  description: string | null;
+  fileName: string;
+  filePath: string;
+  contentType: string;
+  sizeBytes: number;
+  tags: string[];
+  metadata: Record<string, string>;
+  source: {
+    kind: ProjectArtifactSourceKind;
+    url: string | null;
+    createdByThreadId: string | null;
+    checksumSha256: string | null;
+  };
+  textPreview: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ProjectPolicyView {
+  id: string;
+  projectId: string;
+  projectLabel: string;
+  title: string;
+  instruction: string;
+  artifacts: string[];
+  triggers: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface CodexThreadSupervisorView {
   projectId: string;
   projectLabel: string;
@@ -765,4 +804,6 @@ export interface PersistedUiState {
   executionContractsByThreadId?: Record<string, CodexThreadExecutionContractView>;
   jobMemoriesByThreadId?: Record<string, JobMemoryView>;
   projectMemoriesByProjectId?: Record<string, ProjectMemoryView>;
+  projectArtifactsByProjectId?: Record<string, ProjectArtifactView[]>;
+  projectPoliciesByProjectId?: Record<string, ProjectPolicyView[]>;
 }

@@ -98,6 +98,48 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while choosing a service template." }]
   },
   {
+    name: "list_project_artifacts",
+    label: "List project artifacts",
+    description: "List durable project artifacts such as saved seeds, downloads, and reusable analysis files.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while choosing reusable project files." }]
+  },
+  {
+    name: "save_project_artifact",
+    label: "Save project artifact",
+    description: "Persist a durable text artifact for the current project outside the repo.",
+    uiEffects: [{ kind: "refreshThreads", description: "Makes newly stored project artifacts available immediately." }]
+  },
+  {
+    name: "download_project_artifact",
+    label: "Download project artifact",
+    description: "Download a file from a URL and persist it as a durable project artifact.",
+    uiEffects: [{ kind: "refreshThreads", description: "Makes downloaded project artifacts available immediately." }]
+  },
+  {
+    name: "read_project_artifact",
+    label: "Read project artifact",
+    description: "Read one stored project artifact and its text content when applicable.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while inspecting a stored artifact." }]
+  },
+  {
+    name: "list_project_policies",
+    label: "List project policies",
+    description: "List durable project policies Butler can surface or apply when matching events happen.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while reviewing remembered rules." }]
+  },
+  {
+    name: "remember_project_policy",
+    label: "Remember project policy",
+    description: "Create or update a durable instruction bundle with triggers and artifact references.",
+    uiEffects: [{ kind: "refreshThreads", description: "Makes new remembered project behavior available immediately." }]
+  },
+  {
+    name: "invoke_project_policy",
+    label: "Invoke project policy",
+    description: "Load or execute one remembered policy directly by id, title, or alias.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler supervising while a remembered policy is applied or loaded." }]
+  },
+  {
     name: "register_service_template",
     label: "Register service template",
     description: "Persist one dependency service template so future jobs can reuse it without redefining the runtime details.",

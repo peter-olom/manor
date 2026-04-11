@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { Type } from "@sinclair/typebox";
 
+import { applyServiceStartedPolicies } from "./project-artifacts-policies.js";
 import { toServiceLeaseView } from "./service-templates.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
 
@@ -181,9 +182,16 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
             env: mergedEnv
           });
           access.store.upsertServiceLease(lease);
+          const policyApplications = await applyServiceStartedPolicies({
+            artifactsDir: "/artifacts",
+            store: access.store,
+            runtimeBroker: access.runtimeBroker,
+            service: lease,
+            stack
+          });
           return {
-            content: [{ type: "text", text: `Provisioned ${template.label}. ${lease.connection.uri ?? filePath}` }],
-            details: { service: lease }
+            content: [{ type: "text", text: `Provisioned ${template.label}. ${lease.connection.uri ?? filePath}${policyApplications.length > 0 ? ` Surfaced ${policyApplications.length} project policy hint${policyApplications.length === 1 ? "" : "s"}.` : ""}` }],
+            details: { service: lease, policyApplications }
           };
         }
 
@@ -230,14 +238,21 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
         });
         access.store.upsertServiceLease(lease);
         access.store.noteServiceLeaseActivity(lease.id);
+        const policyApplications = await applyServiceStartedPolicies({
+          artifactsDir: "/artifacts",
+          store: access.store,
+          runtimeBroker: access.runtimeBroker,
+          service: lease,
+          stack
+        });
         return {
           content: [
             {
               type: "text",
-              text: `Started ${template.label}. Host=${lease.connection.host} Port=${lease.connection.port}.${lease.sticky ? ` Sticky volume=${lease.volumeName}.` : ""}`
+              text: `Started ${template.label}. Host=${lease.connection.host} Port=${lease.connection.port}.${lease.sticky ? ` Sticky volume=${lease.volumeName}.` : ""}${policyApplications.length > 0 ? ` Surfaced ${policyApplications.length} project policy hint${policyApplications.length === 1 ? "" : "s"}.` : ""}`
             }
           ],
-          details: { service: lease }
+          details: { service: lease, policyApplications }
         };
       }
     }),
