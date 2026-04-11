@@ -2,12 +2,16 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import {
+  buildEmptyJobMemory,
+  buildEmptyProjectMemory,
   buildPreviewProofRecordId,
   emptyCodexCompaction,
   emptyCodexContextUsage,
   emptyCodexSupervision,
   emptyThreadSupervisor,
   MAX_EVENT_LOG,
+  normalizeJobMemoryEntryKind,
+  normalizeStringList,
   normalizePreviewVerification,
   normalizeStatus,
   normalizeWindow,
@@ -21,10 +25,16 @@ import type {
   CodexThreadRecord,
   CodexThreadSummary,
   CodexWorkerReportView,
+  JobMemoryDecisionView,
+  JobMemoryEntryView,
+  JobMemoryPromotionCandidateView,
+  JobMemoryView,
   PersistedUiState,
   PreviewLeaseView,
   PreviewProofRecordView,
   PreviewVerificationArtifactView,
+  ProjectMemoryEntryView,
+  ProjectMemoryView,
   RuntimeCleanupTaskView,
   ServiceLeaseView,
   StackLeaseView
@@ -41,6 +51,8 @@ export type StateStoreInternalAccess = {
   persistedSupervisionByThreadId: Map<string, { butlerTurnsUsed: number; maxButlerTurns: number | null }>;
   persistedWorkerReportsByThreadId: Map<string, CodexWorkerReportView[]>;
   persistedExecutionContractsByThreadId: Map<string, CodexThreadExecutionContractView>;
+  persistedJobMemoriesByThreadId: Map<string, JobMemoryView>;
+  persistedProjectMemoriesByProjectId: Map<string, ProjectMemoryView>;
   windows: ButlerWindow[];
   focusedWindowId: string | null;
   saveTimer: NodeJS.Timeout | null;
@@ -519,6 +531,8 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     access.persistedSupervisionByThreadId.clear();
     access.persistedWorkerReportsByThreadId.clear();
     access.persistedExecutionContractsByThreadId.clear();
+    access.persistedJobMemoriesByThreadId.clear();
+    access.persistedProjectMemoriesByProjectId.clear();
     for (const [threadId, policy] of Object.entries(data.supervisionByThreadId ?? {})) {
       access.persistedSupervisionByThreadId.set(threadId, {
         butlerTurnsUsed: typeof policy?.butlerTurnsUsed === "number" ? policy.butlerTurnsUsed : 0,
@@ -580,6 +594,134 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
         });
       }
     }
+    for (const [threadId, memory] of Object.entries(data.jobMemoriesByThreadId ?? {})) {
+      if (!memory || typeof memory !== "object" || typeof memory.threadId !== "string") {
+        continue;
+      }
+      access.persistedJobMemoriesByThreadId.set(threadId, {
+        threadId,
+        projectId: typeof memory.projectId === "string" && memory.projectId.trim() ? memory.projectId.trim() : "unknown",
+        projectLabel:
+          typeof memory.projectLabel === "string" && memory.projectLabel.trim()
+            ? memory.projectLabel.trim()
+            : typeof memory.projectId === "string" && memory.projectId.trim()
+              ? memory.projectId.trim()
+              : "Unknown",
+        operatorGoal: typeof memory.operatorGoal === "string" && memory.operatorGoal.trim() ? memory.operatorGoal.trim() : null,
+        requestedTask: typeof memory.requestedTask === "string" && memory.requestedTask.trim() ? memory.requestedTask.trim() : null,
+        currentPlan: normalizeStringList(memory.currentPlan),
+        latestCheckpoint:
+          typeof memory.latestCheckpoint === "string" && memory.latestCheckpoint.trim() ? memory.latestCheckpoint.trim() : null,
+        nextAction: typeof memory.nextAction === "string" && memory.nextAction.trim() ? memory.nextAction.trim() : null,
+        blockers: normalizeStringList(memory.blockers),
+        assumptions: normalizeStringList(memory.assumptions),
+        proofRequirements: normalizeStringList(memory.proofRequirements),
+        notes: normalizeStringList(memory.notes, 40),
+        decisions: (Array.isArray(memory.decisions) ? memory.decisions : [])
+          .filter(
+            (entry): entry is JobMemoryDecisionView =>
+              Boolean(entry) && typeof entry === "object" && typeof entry.id === "string" && typeof entry.summary === "string"
+          )
+          .map((entry) => ({
+            id: entry.id,
+            summary: entry.summary.trim(),
+            details: typeof entry.details === "string" && entry.details.trim() ? entry.details.trim() : null,
+            at: typeof entry.at === "number" ? entry.at : Date.now()
+          }))
+          .slice(-20),
+        entries: (Array.isArray(memory.entries) ? memory.entries : [])
+          .filter(
+            (entry): entry is JobMemoryEntryView =>
+              Boolean(entry) && typeof entry === "object" && typeof entry.id === "string" && typeof entry.summary === "string"
+          )
+          .map((entry) => ({
+            id: entry.id,
+            kind: normalizeJobMemoryEntryKind(entry.kind),
+            summary: entry.summary.trim(),
+            details: typeof entry.details === "string" && entry.details.trim() ? entry.details.trim() : null,
+            nextAction: typeof entry.nextAction === "string" && entry.nextAction.trim() ? entry.nextAction.trim() : null,
+            blockers: normalizeStringList(entry.blockers),
+            plan: normalizeStringList(entry.plan),
+            assumptions: normalizeStringList(entry.assumptions),
+            proofRequirements: normalizeStringList(entry.proofRequirements),
+            promote: Boolean(entry.promote),
+            promotionCandidateId:
+              typeof entry.promotionCandidateId === "string" && entry.promotionCandidateId.trim() ? entry.promotionCandidateId.trim() : null,
+            at: typeof entry.at === "number" ? entry.at : Date.now()
+          }))
+          .slice(-40),
+        promotionCandidates: (Array.isArray(memory.promotionCandidates) ? memory.promotionCandidates : [])
+          .filter(
+            (entry): entry is JobMemoryPromotionCandidateView =>
+              Boolean(entry) &&
+              typeof entry === "object" &&
+              typeof entry.id === "string" &&
+              typeof entry.sourceEntryId === "string" &&
+              typeof entry.summary === "string"
+          )
+          .map((entry): JobMemoryPromotionCandidateView => {
+            const status: JobMemoryPromotionCandidateView["status"] =
+              entry.status === "accepted" ? "accepted" : entry.status === "rejected" ? "rejected" : "pending";
+
+            return {
+              id: entry.id,
+              threadId,
+              projectId:
+                typeof entry.projectId === "string" && entry.projectId.trim()
+                  ? entry.projectId.trim()
+                  : typeof memory.projectId === "string" && memory.projectId.trim()
+                    ? memory.projectId.trim()
+                    : "unknown",
+              projectLabel:
+                typeof entry.projectLabel === "string" && entry.projectLabel.trim()
+                  ? entry.projectLabel.trim()
+                  : typeof memory.projectLabel === "string" && memory.projectLabel.trim()
+                    ? memory.projectLabel.trim()
+                    : "Unknown",
+              kind: normalizeJobMemoryEntryKind(entry.kind),
+              sourceEntryId: entry.sourceEntryId.trim(),
+              summary: entry.summary.trim(),
+              details: typeof entry.details === "string" && entry.details.trim() ? entry.details.trim() : null,
+              status,
+              createdAt: typeof entry.createdAt === "number" ? entry.createdAt : Date.now(),
+              updatedAt: typeof entry.updatedAt === "number" ? entry.updatedAt : Date.now(),
+              resolvedAt: typeof entry.resolvedAt === "number" ? entry.resolvedAt : null
+            };
+          })
+          .slice(-20),
+        updatedAt: typeof memory.updatedAt === "number" ? memory.updatedAt : Date.now()
+      });
+    }
+    for (const [projectId, memory] of Object.entries(data.projectMemoriesByProjectId ?? {})) {
+      if (!memory || typeof memory !== "object" || typeof memory.projectId !== "string") {
+        continue;
+      }
+      access.persistedProjectMemoriesByProjectId.set(projectId, {
+        projectId,
+        projectLabel:
+          typeof memory.projectLabel === "string" && memory.projectLabel.trim()
+            ? memory.projectLabel.trim()
+            : typeof memory.projectId === "string" && memory.projectId.trim()
+              ? memory.projectId.trim()
+              : "Unknown",
+        summary: typeof memory.summary === "string" && memory.summary.trim() ? memory.summary.trim() : null,
+        entries: (Array.isArray(memory.entries) ? memory.entries : [])
+          .filter(
+            (entry): entry is ProjectMemoryEntryView =>
+              Boolean(entry) && typeof entry === "object" && typeof entry.id === "string" && typeof entry.summary === "string"
+          )
+          .map((entry) => ({
+            id: entry.id,
+            sourceThreadId: typeof entry.sourceThreadId === "string" && entry.sourceThreadId.trim() ? entry.sourceThreadId.trim() : "",
+            kind: normalizeJobMemoryEntryKind(entry.kind),
+            summary: entry.summary.trim(),
+            details: typeof entry.details === "string" && entry.details.trim() ? entry.details.trim() : null,
+            acceptedAt: typeof entry.acceptedAt === "number" ? entry.acceptedAt : Date.now()
+          }))
+          .slice(-60),
+        updatedAt: typeof memory.updatedAt === "number" ? memory.updatedAt : Date.now()
+      });
+    }
     for (const thread of Array.isArray(data.threads) ? data.threads : []) {
       if (thread && typeof thread === "object" && typeof thread.id === "string") {
         restorePersistedStateStoreThread(access, thread as CodexThreadDetailView);
@@ -589,7 +731,8 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
       ...access.windows.map((window) => window.threadId),
       ...access.persistedSupervisionByThreadId.keys(),
       ...access.persistedWorkerReportsByThreadId.keys(),
-      ...access.persistedExecutionContractsByThreadId.keys()
+      ...access.persistedExecutionContractsByThreadId.keys(),
+      ...access.persistedJobMemoriesByThreadId.keys()
     ]);
     for (const threadId of synthesizedThreadIds) {
       const record = access.getOrCreateThread(threadId);
@@ -603,6 +746,12 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
         const latestReport = access.persistedWorkerReportsByThreadId.get(threadId)?.at(-1) ?? null;
         if (latestReport) {
           record.workerReport = { ...latestReport };
+        }
+      }
+      if (!record.jobMemory) {
+        const persistedMemory = access.persistedJobMemoriesByThreadId.get(threadId);
+        if (persistedMemory) {
+          record.jobMemory = { ...persistedMemory };
         }
       }
       access.refreshDerivedThreadState(record);
@@ -624,6 +773,8 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     access.persistedSupervisionByThreadId.clear();
     access.persistedWorkerReportsByThreadId.clear();
     access.persistedExecutionContractsByThreadId.clear();
+    access.persistedJobMemoriesByThreadId.clear();
+    access.persistedProjectMemoriesByProjectId.clear();
     access.threadInventoryReady = false;
   }
 }
@@ -659,6 +810,12 @@ export function queueStateStoreSave(access: StateStoreInternalAccess): void {
       ),
       executionContractsByThreadId: Object.fromEntries(
         [...access.persistedExecutionContractsByThreadId.entries()].map(([threadId, contract]) => [threadId, contract])
+      ),
+      jobMemoriesByThreadId: Object.fromEntries(
+        [...access.persistedJobMemoriesByThreadId.entries()].map(([threadId, memory]) => [threadId, memory])
+      ),
+      projectMemoriesByProjectId: Object.fromEntries(
+        [...access.persistedProjectMemoriesByProjectId.entries()].map(([projectId, memory]) => [projectId, memory])
       )
     };
     await fs.mkdir(path.dirname(access.uiStatePath), { recursive: true });
@@ -713,6 +870,7 @@ export function restorePersistedStateStoreThread(access: StateStoreInternalAcces
         }
       : record.supervision;
   record.executionContract = thread.executionContract ? { ...thread.executionContract } : record.executionContract;
+  record.jobMemory = thread.jobMemory ? { ...thread.jobMemory } : record.jobMemory;
   record.turns = Array.isArray(thread.turns) ? thread.turns.map((turn) => restorePersistedTurn(turn)) : record.turns;
   record.turnCount = Math.max(record.turnCount, record.turns.length);
   record.eventLog = Array.isArray(thread.eventLog)
@@ -771,6 +929,12 @@ export function getOrCreateStateStoreThread(access: StateStoreInternalAccess, id
     supervision: emptyCodexSupervision(),
     supervisor: emptyThreadSupervisor(),
     executionContract: null,
+    jobMemory: buildEmptyJobMemory({
+      threadId: id,
+      projectId: "unknown",
+      projectLabel: "Unknown",
+      contract: null
+    }),
     turns: [],
     eventLog: [],
     milestones: [],
@@ -790,6 +954,17 @@ export function getOrCreateStateStoreThread(access: StateStoreInternalAccess, id
   const persistedContract = access.persistedExecutionContractsByThreadId.get(id);
   if (persistedContract) {
     created.executionContract = { ...persistedContract };
+  }
+  const persistedJobMemory = access.persistedJobMemoriesByThreadId.get(id);
+  if (persistedJobMemory) {
+    created.jobMemory = { ...persistedJobMemory };
+  } else {
+    created.jobMemory = buildEmptyJobMemory({
+      threadId: id,
+      projectId: created.supervisor.projectId,
+      projectLabel: created.supervisor.projectLabel,
+      contract: created.executionContract
+    });
   }
   access.threads.set(id, created);
   return created;

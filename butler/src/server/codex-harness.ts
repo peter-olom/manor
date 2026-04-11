@@ -5,6 +5,7 @@ import {
   type BrokerAccessRegistryPayload,
   type HarnessCapability,
   type HarnessRegistryPayload,
+  normalizeString,
   looksLikeHarnessLookupFailure,
   looksLikePreviewAttempt,
   looksLikeRemoteRuntimeReference,
@@ -12,9 +13,10 @@ import {
   normalizeEnv,
   normalizeHeartbeatKind,
   normalizePositiveInteger,
-  normalizeString,
   normalizeStringArray
 } from "./codex-harness-helpers.js";
+import { formatHarnessExecutionContract, formatHarnessRuntimeModel } from "./codex-harness-format.js";
+import { formatHarnessJobMemory, formatHarnessProjectMemory, handleHarnessMemoryAction } from "./codex-harness-memory.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
 import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import { ButlerStateStore } from "./state-store.js";
@@ -215,30 +217,6 @@ export class CodexHarnessService {
       throw new Error("Codex thread is no longer available");
     }
     return thread;
-  }
-  private formatExecutionContract(thread: ReturnType<CodexHarnessService["getThreadContext"]>): string[] {
-    const contract = thread.executionContract;
-    if (!contract) {
-      return ["Execution contract: none"];
-    }
-    return [
-      `Execution lane: ${contract.executionLaneLabel}`,
-      `Contract workspace: ${contract.workspaceCwd ?? "(unknown)"}`,
-      `Contract branch: ${contract.branch ?? "(unknown)"}`,
-      `Proof mode: ${contract.proofModeLabel}`,
-      ...(contract.notes.length > 0 ? [`Contract notes:\n${contract.notes.map((note, index) => `${index + 1}. ${note}`).join("\n")}`] : [])
-    ];
-  }
-  private formatRuntimeModel(): string[] {
-    return [
-      "Runtime model: Manor owns preview lifecycle and isolation; the contract lane decides whether work stays in the shared shell, runs on the host, or moves into a preview.",
-      "Repository bootstrap and git-only setup can stay in the shared shell. Use previews only when the contract lane or repo guidance actually requires isolated runtime execution.",
-      "Previews run the app or job code. Services provide backing infrastructure such as databases, queues, object storage, or mail capture.",
-      "Do not run the main app inside a service. If the app must execute, start or reuse a preview.",
-      "When the contract lane is preview runtime, start a preview and use exec, logs, processes, inspect, and verify to adapt the app like a normal dev box.",
-      "Keep startup explicit. Do not assume Manor will infer the right install command, shell shape, or health endpoint for the project.",
-      "If the repo has its own AGENTS guidance for install or runtime shape, follow that repo guidance over these generic defaults unless the execution contract explicitly requires preview-only proof."
-    ];
   }
   private listThreadProofs(threadId: string) {
     return this.store.listPreviewProofs().filter((proof) => proof.threadId === threadId);
@@ -669,8 +647,10 @@ export class CodexHarnessService {
       `Workspace: ${capability.cwd}`,
       `Project: ${project.label}`,
       `Summary: ${thread.supervisor.summary}`,
-      ...this.formatExecutionContract(thread),
-      ...this.formatRuntimeModel(),
+      ...formatHarnessExecutionContract(thread),
+      ...formatHarnessJobMemory(this.store, capability.threadId),
+      ...formatHarnessProjectMemory(this.store, project.id),
+      ...formatHarnessRuntimeModel(),
       stackLines,
       previewLines,
       serviceLines,
@@ -711,8 +691,10 @@ export class CodexHarnessService {
           `Harness binding: manor-harness --thread ${thread.id}`,
           `Project: ${project.label}`,
           `Summary: ${thread.supervisor.summary}`,
-          ...this.formatExecutionContract(thread),
-          ...this.formatRuntimeModel(),
+          ...formatHarnessExecutionContract(thread),
+          ...formatHarnessJobMemory(this.store, capability.threadId),
+          ...formatHarnessProjectMemory(this.store, project.id),
+          ...formatHarnessRuntimeModel(),
           stacks.length === 0
             ? "Stacks: none"
             : `Stacks:\n${stacks.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | network=${lease.networkName} | ${formatStackStorageSummary(lease)} | previews=${lease.previewIds.length} | services=${lease.serviceIds.length}`).join("\n")}`,
@@ -732,6 +714,9 @@ export class CodexHarnessService {
           threadId: thread.id,
           cwd: capability.cwd,
           harnessBinding: `manor-harness --thread ${thread.id}`,
+          jobMemory: this.store.getJobMemory(thread.id),
+          projectMemory: this.store.getProjectMemory(project.id),
+          pendingPromotionCandidates: this.store.listPendingPromotionCandidates(project.id),
           stacks,
           previews,
           services,
@@ -770,6 +755,16 @@ export class CodexHarnessService {
         data: { report }
       };
     }
+    const memoryAction = handleHarnessMemoryAction({
+      action,
+      threadId: capability.threadId,
+      projectId: this.resolveWorkspaceProject(capability.cwd, thread).id,
+      store: this.store,
+      params
+    });
+    if (memoryAction) {
+      return memoryAction;
+    }
     if (action === "assist.request") {
       const summary = normalizeString(params.summary);
       const details = normalizeString(params.details) || null;
@@ -791,8 +786,8 @@ export class CodexHarnessService {
       );
       const responseLines = ["Butler guidance for this job:"];
       responseLines.push(`Thread-bound harness command: manor-harness --thread ${capability.threadId} ...`);
-      responseLines.push(...this.formatExecutionContract(thread));
-      responseLines.push(...this.formatRuntimeModel());
+      responseLines.push(...formatHarnessExecutionContract(thread));
+      responseLines.push(...formatHarnessRuntimeModel());
       responseLines.push(...formatWorkspaceBootstrapLines(workspaceBootstrap));
       if (workspaceBootstrap?.ecosystem === "node") {
         responseLines.push(

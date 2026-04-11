@@ -403,6 +403,82 @@ export interface CodexMilestoneEntry {
   summary: string;
 }
 
+export type JobMemoryEntryKind = "checkpoint" | "decision" | "note";
+export type JobMemoryPromotionCandidateStatus = "pending" | "accepted" | "rejected";
+
+export interface JobMemoryDecisionView {
+  id: string;
+  summary: string;
+  details: string | null;
+  at: number;
+}
+
+export interface JobMemoryPromotionCandidateView {
+  id: string;
+  threadId: string;
+  projectId: string;
+  projectLabel: string;
+  kind: JobMemoryEntryKind;
+  sourceEntryId: string;
+  summary: string;
+  details: string | null;
+  status: JobMemoryPromotionCandidateStatus;
+  createdAt: number;
+  updatedAt: number;
+  resolvedAt: number | null;
+}
+
+export interface JobMemoryEntryView {
+  id: string;
+  kind: JobMemoryEntryKind;
+  summary: string;
+  details: string | null;
+  nextAction: string | null;
+  blockers: string[];
+  plan: string[];
+  assumptions: string[];
+  proofRequirements: string[];
+  promote: boolean;
+  promotionCandidateId: string | null;
+  at: number;
+}
+
+export interface JobMemoryView {
+  threadId: string;
+  projectId: string;
+  projectLabel: string;
+  operatorGoal: string | null;
+  requestedTask: string | null;
+  currentPlan: string[];
+  latestCheckpoint: string | null;
+  nextAction: string | null;
+  blockers: string[];
+  assumptions: string[];
+  proofRequirements: string[];
+  notes: string[];
+  decisions: JobMemoryDecisionView[];
+  entries: JobMemoryEntryView[];
+  promotionCandidates: JobMemoryPromotionCandidateView[];
+  updatedAt: number;
+}
+
+export interface ProjectMemoryEntryView {
+  id: string;
+  sourceThreadId: string;
+  kind: JobMemoryEntryKind;
+  summary: string;
+  details: string | null;
+  acceptedAt: number;
+}
+
+export interface ProjectMemoryView {
+  projectId: string;
+  projectLabel: string;
+  summary: string | null;
+  entries: ProjectMemoryEntryView[];
+  updatedAt: number;
+}
+
 export interface CodexThreadSupervisorView {
   projectId: string;
   projectLabel: string;
@@ -429,6 +505,7 @@ export interface CodexThreadSummary {
   supervision: CodexSupervisionView;
   supervisor: CodexThreadSupervisorView;
   executionContract: CodexThreadExecutionContractView | null;
+  jobMemory: JobMemoryView | null;
 }
 
 export interface CodexThreadRecord extends CodexThreadSummary {
@@ -505,6 +582,8 @@ export interface CodexProjectSummaryView {
   updatedAt: number;
   summary: string;
   threadIds: string[];
+  memorySummary: string | null;
+  pendingPromotionCount: number;
 }
 
 export interface ButlerSupervisorSummaryView {
@@ -684,4 +763,6 @@ export interface PersistedUiState {
     }
   >;
   executionContractsByThreadId?: Record<string, CodexThreadExecutionContractView>;
+  jobMemoriesByThreadId?: Record<string, JobMemoryView>;
+  projectMemoriesByProjectId?: Record<string, ProjectMemoryView>;
 }

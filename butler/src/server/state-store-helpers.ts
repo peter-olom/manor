@@ -16,6 +16,11 @@ import type {
   CodexThreadSupervisorView,
   CodexTurnRecord,
   CodexWorkerReportView,
+  JobMemoryEntryKind,
+  JobMemoryEntryView,
+  JobMemoryPromotionCandidateView,
+  JobMemoryView,
+  ProjectMemoryView,
   PreviewProofRecordView,
   PreviewVerificationArtifactView,
   PreviewVerificationConsoleMessageView,
@@ -67,6 +72,99 @@ export function emptyThreadSupervisor(): CodexThreadSupervisorView {
     summary: "No supervisor summary yet.",
     blocked: false
   };
+}
+
+export function deriveProofRequirements(contract: CodexThreadExecutionContractView | null): string[] {
+  if (!contract) {
+    return [];
+  }
+
+  const requirements = new Set<string>();
+  if (contract.proofMode === "ui") {
+    requirements.add("Headed UI proof is required before completion.");
+  } else if (contract.proofMode === "operational") {
+    requirements.add("Operational verification is required before completion.");
+  }
+
+  for (const condition of contract.successConditions) {
+    if (/\b(proof|verify|verification|artifact|screenshot|video|trace)\b/i.test(condition)) {
+      requirements.add(condition.trim());
+    }
+  }
+
+  return [...requirements];
+}
+
+export function buildEmptyJobMemory(input: {
+  threadId: string;
+  projectId: string;
+  projectLabel: string;
+  contract?: CodexThreadExecutionContractView | null;
+}): JobMemoryView {
+  return {
+    threadId: input.threadId,
+    projectId: input.projectId,
+    projectLabel: input.projectLabel,
+    operatorGoal: input.contract?.operatorGoal ?? null,
+    requestedTask: input.contract?.requestedTask ?? null,
+    currentPlan: [],
+    latestCheckpoint: null,
+    nextAction: null,
+    blockers: [],
+    assumptions: [],
+    proofRequirements: deriveProofRequirements(input.contract ?? null),
+    notes: [],
+    decisions: [],
+    entries: [],
+    promotionCandidates: [],
+    updatedAt: Date.now()
+  };
+}
+
+export function buildEmptyProjectMemory(projectId: string, projectLabel: string): ProjectMemoryView {
+  return {
+    projectId,
+    projectLabel,
+    summary: null,
+    entries: [],
+    updatedAt: Date.now()
+  };
+}
+
+export function normalizeStringList(values: unknown, limit = 20): string[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+
+  return [...new Set(values.map((value) => (typeof value === "string" ? value.trim() : "")).filter(Boolean))].slice(0, limit);
+}
+
+export function normalizeJobMemoryEntryKind(value: unknown): JobMemoryEntryKind {
+  return value === "checkpoint" || value === "decision" || value === "note" ? value : "note";
+}
+
+export function summarizeJobMemory(jobMemory: JobMemoryView | null | undefined, status: CodexThreadStatus): string | null {
+  if (!jobMemory) {
+    return null;
+  }
+
+  const lead =
+    jobMemory.latestCheckpoint ??
+    jobMemory.decisions.at(-1)?.summary ??
+    jobMemory.notes.at(-1) ??
+    null;
+  if (!lead) {
+    return null;
+  }
+
+  const parts = [lead];
+  if (jobMemory.nextAction && status === "active") {
+    parts.push(`Next: ${jobMemory.nextAction}`);
+  } else if (jobMemory.blockers.length > 0) {
+    parts.push(`Blocked by ${jobMemory.blockers[0]}`);
+  }
+
+  return clipText(parts.join(" "), 160);
 }
 
 export function clipText(value: string | null | undefined, max = 160): string | null {
@@ -172,22 +270,32 @@ export function buildThreadSupervisor(thread: CodexThreadRecord): CodexThreadSup
     Boolean(latestTurn?.error) ||
     latestTurn?.status === "failed" ||
     latestTurn?.status === "interrupted";
+  const memorySummary = summarizeJobMemory(thread.jobMemory, thread.status);
 
   let summary = "No supervisor summary yet.";
   if (blocked) {
+    const blockerLead = thread.jobMemory?.blockers[0] ?? null;
     summary = latestTurn?.error
       ? `Blocked after ${latestUserPrompt ? `"${latestUserPrompt}"` : "the latest prompt"}. Error: ${clipText(latestTurn.error, 120)}`
-      : `Blocked after ${latestUserPrompt ? `"${latestUserPrompt}"` : "the latest prompt"}.`;
+      : blockerLead
+        ? `Blocked after ${latestUserPrompt ? `"${latestUserPrompt}"` : "the latest prompt"}. Blocker: ${clipText(blockerLead, 120)}`
+        : `Blocked after ${latestUserPrompt ? `"${latestUserPrompt}"` : "the latest prompt"}.`;
   } else if (thread.status === "active") {
-    summary = latestUserPrompt
-      ? `Working on "${latestUserPrompt}".`
-      : previewSummary
-        ? `Working on ${previewSummary}.`
-        : "Work is in progress.";
+    summary = memorySummary
+      ? latestUserPrompt
+        ? `Working on "${latestUserPrompt}". ${memorySummary}`
+        : memorySummary
+      : latestUserPrompt
+        ? `Working on "${latestUserPrompt}".`
+        : previewSummary
+          ? `Working on ${previewSummary}.`
+          : "Work is in progress.";
   } else if (latestAgentReply) {
     summary = latestUserPrompt
       ? `Idle after "${latestUserPrompt}". Latest result: ${clipText(latestAgentReply, 120)}`
       : `Idle. Latest result: ${clipText(latestAgentReply, 120)}`;
+  } else if (memorySummary) {
+    summary = latestUserPrompt ? `Idle after "${latestUserPrompt}". ${memorySummary}` : `Idle. ${memorySummary}`;
   } else if (previewSummary) {
     summary = `Idle. Task: ${previewSummary}`;
   } else if (thread.turnCount > 0) {
@@ -204,7 +312,10 @@ export function buildThreadSupervisor(thread: CodexThreadRecord): CodexThreadSup
   };
 }
 
-export function buildProjectSummary(threads: CodexThreadRecord[]): CodexProjectSummaryView[] {
+export function buildProjectSummary(
+  threads: CodexThreadRecord[],
+  projectMemories?: Map<string, ProjectMemoryView>
+): CodexProjectSummaryView[] {
   const grouped = new Map<string, CodexThreadRecord[]>();
 
   for (const thread of threads) {
@@ -220,11 +331,16 @@ export function buildProjectSummary(threads: CodexThreadRecord[]): CodexProjectS
       const blockedCount = sorted.filter((thread) => thread.supervisor.blocked).length;
       const completedCount = sorted.filter((thread) => thread.status === "idle" && !thread.supervisor.blocked).length;
       const lead = sorted[0];
+      const projectMemory = projectMemories?.get(id) ?? null;
       const statusBits = [
         activeCount > 0 ? `${activeCount} active` : null,
         blockedCount > 0 ? `${blockedCount} blocked` : null,
         completedCount > 0 ? `${completedCount} idle` : null
       ].filter(Boolean);
+      const pendingPromotionCount = sorted.reduce(
+        (count, thread) => count + (thread.jobMemory?.promotionCandidates.filter((entry) => entry.status === "pending").length ?? 0),
+        0
+      );
 
       return {
         id,
@@ -234,8 +350,16 @@ export function buildProjectSummary(threads: CodexThreadRecord[]): CodexProjectS
         blockedCount,
         completedCount,
         updatedAt: lead?.updatedAt ?? Date.now(),
-        summary: `${statusBits.length > 0 ? `${statusBits.join(", ")}.` : "No active work."} Latest: ${lead?.supervisor.summary ?? "No supervisor summary yet."}`,
-        threadIds: sorted.map((thread) => thread.id)
+        summary: [
+          `${statusBits.length > 0 ? `${statusBits.join(", ")}.` : "No active work."}`,
+          projectMemory?.summary ? `Memory: ${projectMemory.summary}` : `Latest: ${lead?.supervisor.summary ?? "No supervisor summary yet."}`,
+          pendingPromotionCount > 0 ? `${pendingPromotionCount} promotion candidate${pendingPromotionCount === 1 ? "" : "s"} pending.` : null
+        ]
+          .filter(Boolean)
+          .join(" "),
+        threadIds: sorted.map((thread) => thread.id),
+        memorySummary: projectMemory?.summary ?? null,
+        pendingPromotionCount
       };
     })
     .sort((a, b) => b.updatedAt - a.updatedAt);

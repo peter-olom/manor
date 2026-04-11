@@ -94,7 +94,11 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         const typedParams = params as { projectId: string };
         return {
           content: [{ type: "text", text: buildProjectDetail(access.store, typedParams.projectId) }],
-          details: { project: access.store.getProjectSummary(typedParams.projectId) ?? null }
+          details: {
+            project: access.store.getProjectSummary(typedParams.projectId) ?? null,
+            projectMemory: access.store.getProjectMemory(typedParams.projectId),
+            pendingPromotionCandidates: access.store.listPendingPromotionCandidates(typedParams.projectId)
+          }
         };
       }
     }),

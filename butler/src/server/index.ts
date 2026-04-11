@@ -202,6 +202,56 @@ app.get("/api/threads/:threadId", (request, response) => {
   response.json({ thread });
 });
 
+app.get("/api/memory/jobs/:threadId", (request, response) => {
+  const threadId = typeof request.params.threadId === "string" ? request.params.threadId : "";
+  if (!threadId) {
+    response.status(400).json({ error: "threadId is required" });
+    return;
+  }
+
+  const jobMemory = store.getJobMemory(threadId);
+  if (!jobMemory) {
+    response.status(404).json({ error: "Job memory not found" });
+    return;
+  }
+
+  response.json({ jobMemory });
+});
+
+app.get("/api/memory/projects/:projectId", (request, response) => {
+  const projectId = typeof request.params.projectId === "string" ? request.params.projectId : "";
+  if (!projectId) {
+    response.status(400).json({ error: "projectId is required" });
+    return;
+  }
+
+  response.json({
+    projectMemory: store.getProjectMemory(projectId),
+    pendingPromotionCandidates: store.listPendingPromotionCandidates(projectId)
+  });
+});
+
+app.post("/api/memory/promotions/resolve", (request, response) => {
+  const candidateId = typeof request.body?.candidateId === "string" ? request.body.candidateId.trim() : "";
+  const accepted = typeof request.body?.accepted === "boolean" ? request.body.accepted : null;
+  if (!candidateId || accepted === null) {
+    response.status(400).json({ error: "candidateId and accepted are required" });
+    return;
+  }
+
+  const candidate = store.resolvePromotionCandidate(candidateId, accepted);
+  if (!candidate) {
+    response.status(404).json({ error: "Promotion candidate not found" });
+    return;
+  }
+
+  response.json({
+    ok: true,
+    candidate,
+    projectMemory: store.getProjectMemory(candidate.projectId)
+  });
+});
+
 app.post("/api/images/upload", async (request, response) => {
   const name = typeof request.body?.name === "string" ? request.body.name : "";
   const mimeType = typeof request.body?.mimeType === "string" ? request.body.mimeType : "";

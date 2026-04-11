@@ -824,6 +824,9 @@ export class ButlerAgentService extends EventEmitter {
         ? "Do not treat artifact existence alone as accepted proof. Butler must review the screenshot, and the video is for human review."
         : "Use the smallest sufficient evidence set for the assigned proof mode.",
       "Use only the harness actions exposed through `manor-harness`. Do not try to command Butler directly outside those actions.",
+      "Keep Butler-owned memory current as you work. After a meaningful checkpoint, record it with `manor-harness memory checkpoint --summary \"<what changed>\" --next-action \"<next step>\"` and add blockers, plan steps, assumptions, or proof requirements when they matter.",
+      "When you make a durable decision or capture a reusable note for this job, record it with `manor-harness memory decision ...` or `manor-harness memory note ...`.",
+      "If a checkpoint, decision, or note should be promoted into shared project memory later, mark it with `--promote` or submit an explicit candidate with `manor-harness memory promote ...`. Do not write shared project memory directly.",
       "When you complete meaningful work, record a supervisor report before your final reply with `manor-harness report --status completed --summary \"<concise outcome>\" --details \"<brief oversight note with the key fact, risk, or next step>\"`.",
       "If you are blocked or need operator attention, record it before your reply with `manor-harness report --status blocked --summary \"<what is blocked>\" --details \"<what you need, what failed, or the next recommended action>\"`.",
       executionLane === "preview-runtime"

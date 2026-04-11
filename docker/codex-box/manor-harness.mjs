@@ -14,6 +14,12 @@ function printHelp() {
   manor-harness [--thread <jobId>] status
   manor-harness [--thread <jobId>] report --status completed|blocked --summary "<text>" [--details "<text>"] [--turn-id <id>]
   manor-harness [--thread <jobId>] assist --summary "<text>" [--details "<text>"] [--question "<text>"]
+  manor-harness [--thread <jobId>] memory
+  manor-harness [--thread <jobId>] memory project
+  manor-harness [--thread <jobId>] memory checkpoint --summary "<text>" [--details "<text>"] [--next-action "<text>"] [--blocker "<text>" ...] [--plan "<text>" ...] [--assumption "<text>" ...] [--proof "<text>" ...] [--promote]
+  manor-harness [--thread <jobId>] memory decision --summary "<text>" [--details "<text>"] [--promote]
+  manor-harness [--thread <jobId>] memory note --summary "<text>" [--details "<text>"] [--promote]
+  manor-harness [--thread <jobId>] memory promote --kind checkpoint|decision|note --summary "<text>" [--details "<text>"]
   manor-harness [--thread <jobId>] stack list
   manor-harness [--thread <jobId>] stack start [--title <title>] [--cwd <path>] [--stateful] [--storage-mode ephemeral|job|base|custom] [--retain-volumes] [--storage-key <key>] [--clone-from <key>]
   manor-harness [--thread <jobId>] stack inspect <stackSelector>
@@ -381,6 +387,46 @@ async function main() {
       details: readFlag(args, "--details"),
       question: readFlag(args, "--question")
     };
+  } else if (args[0] === "memory") {
+    const subcommand = args[1];
+    if (!subcommand) {
+      action = "memory.context";
+    } else if (subcommand === "project") {
+      action = "memory.context";
+    } else if (subcommand === "checkpoint") {
+      action = "memory.checkpoint";
+      params = {
+        summary: readFlag(args, "--summary"),
+        details: readFlag(args, "--details"),
+        nextAction: readFlag(args, "--next-action"),
+        blockers: readRepeatedFlag(args, "--blocker"),
+        plan: readRepeatedFlag(args, "--plan"),
+        assumptions: readRepeatedFlag(args, "--assumption"),
+        proofRequirements: readRepeatedFlag(args, "--proof"),
+        promote: args.includes("--promote")
+      };
+    } else if (subcommand === "decision") {
+      action = "memory.decision";
+      params = {
+        summary: readFlag(args, "--summary"),
+        details: readFlag(args, "--details"),
+        promote: args.includes("--promote")
+      };
+    } else if (subcommand === "note") {
+      action = "memory.note";
+      params = {
+        summary: readFlag(args, "--summary"),
+        details: readFlag(args, "--details"),
+        promote: args.includes("--promote")
+      };
+    } else if (subcommand === "promote") {
+      action = "memory.promote";
+      params = {
+        kind: readFlag(args, "--kind"),
+        summary: readFlag(args, "--summary"),
+        details: readFlag(args, "--details")
+      };
+    }
   } else if (args[0] === "preview") {
     const subcommand = args[1];
     if (subcommand === "list") {

@@ -251,6 +251,7 @@ export function buildJobDetail(store: ButlerStateStore, threadId: string): strin
     return `Job ${threadId} was not found.`;
   }
   const lease = store.getThreadPreviewLease(threadId);
+  const jobMemory = store.getJobMemory(threadId);
 
   const turns = thread.turns
     .map((turn, turnIndex) => {
@@ -270,6 +271,14 @@ export function buildJobDetail(store: ButlerStateStore, threadId: string): strin
     `contract=${thread.executionContract ? "present" : "none"}`,
     lease ? `operator_preview=${lease.operatorUrl}` : "operator_preview=(none)",
     `summary=${thread.supervisor.summary}`,
+    jobMemory?.latestCheckpoint ? `latest_checkpoint=${jobMemory.latestCheckpoint}` : "latest_checkpoint=(none)",
+    jobMemory?.nextAction ? `next_action=${jobMemory.nextAction}` : "next_action=(none)",
+    jobMemory && jobMemory.blockers.length > 0 ? `blockers=${jobMemory.blockers.join(" | ")}` : "blockers=(none)",
+    jobMemory && jobMemory.promotionCandidates.length > 0
+      ? `promotion_candidates=${jobMemory.promotionCandidates
+          .map((candidate) => `${candidate.kind}:${candidate.status}:${candidate.summary}`)
+          .join(" | ")}`
+      : "promotion_candidates=(none)",
     turns || "No turn details loaded yet."
   ].join("\n");
 }
@@ -293,6 +302,8 @@ export function buildProjectDetail(store: ButlerStateStore, projectId: string): 
   if (!project) {
     return `Project ${projectId} was not found.`;
   }
+  const projectMemory = store.getProjectMemory(projectId);
+  const pendingPromotions = store.listPendingPromotionCandidates(projectId);
 
   const threadLines = project.threadIds
     .map((threadId, index) => {
@@ -313,6 +324,16 @@ export function buildProjectDetail(store: ButlerStateStore, projectId: string): 
     `blocked=${project.blockedCount}`,
     `idle=${project.completedCount}`,
     `summary=${project.summary}`,
+    projectMemory?.summary ? `project_memory=${projectMemory.summary}` : "project_memory=(none)",
+    projectMemory && projectMemory.entries.length > 0
+      ? `project_entries=${projectMemory.entries
+          .slice(-5)
+          .map((entry) => `${entry.kind}:${entry.summary}`)
+          .join(" | ")}`
+      : "project_entries=(none)",
+    pendingPromotions.length > 0
+      ? `pending_promotions=${pendingPromotions.map((entry) => `${entry.kind}:${entry.summary}`).join(" | ")}`
+      : "pending_promotions=(none)",
     threadLines || "No thread details loaded yet."
   ].join("\n");
 }

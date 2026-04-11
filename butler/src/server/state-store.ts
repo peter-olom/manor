@@ -3,11 +3,9 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import {
-  buildPreviewProofRecordId,
   buildProjectSummary,
   buildSupervisorSummary,
   buildThreadSupervisor,
-  clipText,
   DEFAULT_ARTIFACT_RETENTION_MS,
   DEFAULT_BUTLER_THREAD_LIMIT,
   DEFAULT_LEASE_REAP_GRACE_MS,
@@ -28,7 +26,6 @@ import {
   normalizePreviewVerification,
   normalizeStatus,
   normalizeTurn,
-  normalizeWindow,
   restorePersistedTurn,
   shouldExposeCodexItem
 } from "./state-store-helpers.js";
@@ -52,6 +49,19 @@ import {
   applyStateStoreLeaseLifecycle,
   type StateStoreInternalAccess
 } from "./state-store-internals.js";
+import {
+  getStateStoreJobMemory,
+  getStateStoreProjectMemory,
+  listStateStorePendingPromotionCandidates,
+  listStateStoreProjectMemories,
+  recordStateStoreJobCheckpoint,
+  recordStateStoreJobDecision,
+  recordStateStoreJobNote,
+  resolveStateStorePromotionCandidate,
+  submitStateStorePromotionCandidate,
+  syncStateStoreThreadJobMemory
+} from "./state-store-memory.js";
+import { buildStateStoreRuntimeSnapshot, buildStateStoreShellSnapshot, buildStateStoreSnapshot } from "./state-store-snapshot.js";
 import { parseThreadExecutionContract } from "./thread-contract.js";
 import type {
   AppSnapshot,
@@ -76,12 +86,16 @@ import type {
   CodexTurnRecord,
   CodexTurnView,
   CodexWorkerReportView,
+  JobMemoryEntryKind,
+  JobMemoryPromotionCandidateView,
+  JobMemoryView,
   PreviewProofRecordView,
   PreviewVerificationArtifactView,
   PreviewVerificationConsoleMessageView,
   PreviewVerificationFailedRequestView,
   PreviewVerificationView,
   PreviewLeaseView,
+  ProjectMemoryView,
   RuntimeCleanupTaskView,
   RuntimeSnapshot,
   StackLeaseView,
@@ -113,6 +127,8 @@ export class ButlerStateStore extends EventEmitter {
   private readonly leaseReapGraceMs: number;
   private readonly artifactRetentionMs: number;
   private readonly persistedExecutionContractsByThreadId = new Map<string, CodexThreadExecutionContractView>();
+  private readonly persistedJobMemoriesByThreadId = new Map<string, JobMemoryView>();
+  private readonly persistedProjectMemoriesByProjectId = new Map<string, ProjectMemoryView>();
 
   private getInternalAccess(): StateStoreInternalAccess {
     return this as unknown as StateStoreInternalAccess;
@@ -222,6 +238,76 @@ export class ButlerStateStore extends EventEmitter {
     removeStateStorePreviewProofsForThread(this.getInternalAccess(), threadId);
   }
 
+  getJobMemory(threadId: string): JobMemoryView | null {
+    return getStateStoreJobMemory(this.getInternalAccess(), threadId);
+  }
+
+  getProjectMemory(projectId: string): ProjectMemoryView | null {
+    return getStateStoreProjectMemory(this.getInternalAccess(), projectId);
+  }
+
+  listProjectMemories(): ProjectMemoryView[] {
+    return listStateStoreProjectMemories(this.getInternalAccess());
+  }
+
+  listPendingPromotionCandidates(projectId?: string | null): JobMemoryPromotionCandidateView[] {
+    return listStateStorePendingPromotionCandidates(this.getInternalAccess(), projectId);
+  }
+
+  recordJobCheckpoint(
+    threadId: string,
+    checkpoint: {
+      summary: string;
+      details?: string | null;
+      nextAction?: string | null;
+      blockers?: string[];
+      plan?: string[];
+      assumptions?: string[];
+      proofRequirements?: string[];
+      promote?: boolean;
+    }
+  ): JobMemoryView {
+    return recordStateStoreJobCheckpoint(this.getInternalAccess(), threadId, checkpoint);
+  }
+
+  recordJobDecision(
+    threadId: string,
+    decision: {
+      summary: string;
+      details?: string | null;
+      promote?: boolean;
+    }
+  ): JobMemoryView {
+    return recordStateStoreJobDecision(this.getInternalAccess(), threadId, decision);
+  }
+
+  recordJobNote(
+    threadId: string,
+    note: {
+      summary: string;
+      details?: string | null;
+      promote?: boolean;
+    }
+  ): JobMemoryView {
+    return recordStateStoreJobNote(this.getInternalAccess(), threadId, note);
+  }
+
+  submitJobMemoryPromotionCandidate(
+    threadId: string,
+    candidate: {
+      kind: JobMemoryEntryKind;
+      summary: string;
+      details?: string | null;
+      sourceEntryId: string;
+    }
+  ): JobMemoryPromotionCandidateView {
+    return submitStateStorePromotionCandidate(this.getInternalAccess(), threadId, candidate);
+  }
+
+  resolvePromotionCandidate(candidateId: string, accepted: boolean): JobMemoryPromotionCandidateView | null {
+    return resolveStateStorePromotionCandidate(this.getInternalAccess(), candidateId, accepted);
+  }
+
   upsertThreadSummary(thread: Record<string, unknown>): void {
     const id = typeof thread.id === "string" ? thread.id : undefined;
     if (!id) {
@@ -258,6 +344,7 @@ export class ButlerStateStore extends EventEmitter {
       if (inferredContract) {
         record.executionContract = inferredContract;
         this.persistedExecutionContractsByThreadId.set(id, inferredContract);
+        this.refreshDerivedThreadState(record);
       }
     }
     this.emitChange();
@@ -487,6 +574,7 @@ export class ButlerStateStore extends EventEmitter {
       lastStartedAt,
       lastCompletedAt
     };
+    syncStateStoreThreadJobMemory(this.getInternalAccess(), thread);
     thread.supervision.capReached =
       thread.supervision.maxButlerTurns !== null && thread.supervision.butlerTurnsUsed >= thread.supervision.maxButlerTurns;
     thread.supervisor = buildThreadSupervisor(thread);
@@ -868,6 +956,7 @@ export class ButlerStateStore extends EventEmitter {
     this.persistedSupervisionByThreadId.delete(threadId);
     this.persistedWorkerReportsByThreadId.delete(threadId);
     this.persistedExecutionContractsByThreadId.delete(threadId);
+    this.persistedJobMemoriesByThreadId.delete(threadId);
     this.latestStartedTurnIds.delete(threadId);
     this.latestCompletedTurnIds.delete(threadId);
     this.latestBlockedTurnIds.delete(threadId);
@@ -906,6 +995,7 @@ export class ButlerStateStore extends EventEmitter {
       this.persistedSupervisionByThreadId.delete(threadId);
       this.persistedWorkerReportsByThreadId.delete(threadId);
       this.persistedExecutionContractsByThreadId.delete(threadId);
+      this.persistedJobMemoriesByThreadId.delete(threadId);
       this.latestStartedTurnIds.delete(threadId);
       this.latestCompletedTurnIds.delete(threadId);
       this.latestBlockedTurnIds.delete(threadId);
@@ -937,7 +1027,8 @@ export class ButlerStateStore extends EventEmitter {
         compaction: thread.compaction,
         supervision: thread.supervision,
         supervisor: thread.supervisor,
-        executionContract: thread.executionContract
+        executionContract: thread.executionContract,
+        jobMemory: thread.jobMemory
       }))
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
@@ -985,6 +1076,7 @@ export class ButlerStateStore extends EventEmitter {
       supervision: thread.supervision,
       supervisor: thread.supervisor,
       executionContract: thread.executionContract,
+      jobMemory: thread.jobMemory,
       turns: thread.turns.map((turn) => this.toTurnView(turn)),
       eventLog: thread.eventLog,
       workerReport: thread.workerReport
@@ -1011,26 +1103,7 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   getRuntimeSnapshot(serviceTemplates: AppSnapshot["butler"]["serviceTemplates"]): RuntimeSnapshot {
-    const latestPreviewProofsByThreadId = Object.fromEntries(
-      this.listPreviewProofs()
-        .filter((proof) => Boolean(proof.threadId))
-        .reduce((accumulator, proof) => {
-          if (!proof.threadId || accumulator.has(proof.threadId)) {
-            return accumulator;
-          }
-          accumulator.set(proof.threadId, proof);
-          return accumulator;
-        }, new Map<string, PreviewProofRecordView>())
-        .entries()
-    );
-
-    return {
-      latestPreviewProofsByThreadId,
-      stacks: this.listStackLeases(),
-      previews: this.listPreviewLeases(),
-      serviceTemplates,
-      services: this.listServiceLeases()
-    };
+    return buildStateStoreRuntimeSnapshot(this as unknown as Parameters<typeof buildStateStoreRuntimeSnapshot>[0], serviceTemplates);
   }
 
   getShellSnapshot(
@@ -1041,22 +1114,7 @@ export class ButlerStateStore extends EventEmitter {
       compose: AppSnapshot["codex"]["compose"];
     }
   ): AppShellSnapshot {
-    if (this.reconcileThreadWindows()) {
-      this.queueSave();
-    }
-    this.windows = this.windows.map((window) => normalizeWindow(window, this.threads.get(window.threadId)));
-
-    return {
-      codex: {
-        connected: codexConnection.connected,
-        lastError: codexConnection.lastError,
-        threads: this.listThreads(),
-        windows: this.windows,
-        focusedWindowId: this.focusedWindowId,
-        compose: codexConnection.compose
-      },
-      butler
-    };
+    return buildStateStoreShellSnapshot(this as unknown as Parameters<typeof buildStateStoreShellSnapshot>[0], butler, codexConnection);
   }
 
   recordWorkerReport(
@@ -1146,7 +1204,7 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   listProjectSummaries(): CodexProjectSummaryView[] {
-    return buildProjectSummary([...this.threads.values()]);
+    return buildProjectSummary([...this.threads.values()], this.persistedProjectMemoriesByProjectId);
   }
 
   getProjectSummary(projectId: string): CodexProjectSummaryView | undefined {
@@ -1155,7 +1213,7 @@ export class ButlerStateStore extends EventEmitter {
 
   getSupervisorSummary(): ButlerSupervisorSummaryView {
     const threads = [...this.threads.values()];
-    return buildSupervisorSummary(buildProjectSummary(threads), threads);
+    return buildSupervisorSummary(buildProjectSummary(threads, this.persistedProjectMemoriesByProjectId), threads);
   }
 
   listMilestones(): CodexMilestoneEntry[] {
@@ -1437,54 +1495,6 @@ export class ButlerStateStore extends EventEmitter {
     lastError: string | null;
     compose: AppSnapshot["codex"]["compose"];
   }): AppSnapshot {
-    if (this.reconcileThreadWindows()) {
-      this.queueSave();
-    }
-    this.windows = this.windows.map((window) => normalizeWindow(window, this.threads.get(window.threadId)));
-    const openThreads = Object.fromEntries(
-      this.windows
-        .map((window) => {
-          const thread = this.threads.get(window.threadId);
-          return thread ? [window.threadId, thread] : null;
-        })
-        .filter((entry): entry is [string, CodexThreadRecord] => Boolean(entry))
-    );
-    const latestPreviewProofsByThreadId = Object.fromEntries(
-      this.listPreviewProofs()
-        .filter((proof) => Boolean(proof.threadId))
-        .reduce((accumulator, proof) => {
-          if (!proof.threadId || accumulator.has(proof.threadId)) {
-            return accumulator;
-          }
-          accumulator.set(proof.threadId, proof);
-          return accumulator;
-        }, new Map<string, PreviewProofRecordView>())
-        .entries()
-    );
-
-    return {
-      codex: {
-        connected: codexConnection.connected,
-        lastError: codexConnection.lastError,
-        threads: this.listThreads(),
-        windows: this.windows,
-        focusedWindowId: this.focusedWindowId,
-        openThreads,
-        compose: codexConnection.compose
-      },
-      butler: {
-        ...butler,
-        supervision: {
-          ...butler.supervision,
-          projects: this.listProjectSummaries(),
-          supervisor: this.getSupervisorSummary()
-        },
-        latestPreviewProofsByThreadId,
-        stacks: this.listStackLeases(),
-        previews: this.listPreviewLeases(),
-        serviceTemplates: butler.serviceTemplates,
-        services: this.listServiceLeases()
-      }
-    };
+    return buildStateStoreSnapshot(this as unknown as Parameters<typeof buildStateStoreSnapshot>[0], butler, codexConnection);
   }
 }
