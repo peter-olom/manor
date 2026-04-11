@@ -5,7 +5,6 @@ import { Type } from "@sinclair/typebox";
 import { decoratePreviewVerification } from "./preview-verification.js";
 import { normalizeStackStorageMode } from "./stack-storage.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
-import { requiresOperatorAcknowledgement, requiresOperatorCallback } from "./butler-agent-helpers.js";
 import { isSharedShellRepoBootstrapTask } from "./thread-contract.js";
 import { applyWorkspacePreviewDefaults, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 
@@ -670,24 +669,17 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           ? {
               executionLane: "shared-shell-bootstrap" as const,
               proofMode: "none" as const,
-              operatorAcknowledgementRequired: true,
-              operatorCallbackRequired: false,
               extraNotes: ["Synthetic Butler supervision smoke test. Do not require browser proof to complete or report it."]
             }
           : repoBootstrapTask
             ? {
                 executionLane: "shared-shell-bootstrap" as const,
                 proofMode: "none" as const,
-                operatorAcknowledgementRequired: true,
-                operatorCallbackRequired: true,
                 extraNotes: [
                   "For repository bootstrap tasks in /repos, do the initial clone, git status, and branch creation in the shared Codex shell. Use a preview only if later runtime validation is actually needed."
                 ]
               }
-            : {
-                operatorAcknowledgementRequired: true,
-                operatorCallbackRequired: true
-              };
+            : {};
 
         const result = await access.codexClient.startThread({
           task: delegatedGoal ? `${delegatedTask}\n\nGoal: ${delegatedGoal}` : delegatedTask,
@@ -701,8 +693,6 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
                   workspace,
                   executionLane: contractOptions.executionLane,
                   proofMode: contractOptions.proofMode,
-                  operatorAcknowledgementRequired: contractOptions.operatorAcknowledgementRequired,
-                  operatorCallbackRequired: contractOptions.operatorCallbackRequired,
                   extraNotes: contractOptions.extraNotes
                 })
               ).text,
@@ -719,20 +709,17 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           workspace,
           executionLane: contractOptions.executionLane,
           proofMode: contractOptions.proofMode,
-          operatorAcknowledgementRequired: contractOptions.operatorAcknowledgementRequired,
-          operatorCallbackRequired: contractOptions.operatorCallbackRequired,
           extraNotes: contractOptions.extraNotes
         });
         access.store.setThreadExecutionContract(result.threadId, delegationContract.contract);
         access.store.addEvent(result.threadId, "butler.delegation.created", "Butler created the execution contract for this delegated job.");
-        if (requiresOperatorAcknowledgement(delegationContract.contract)) {
-          access.queueDelegationAcknowledgement(
-            result.threadId,
-            smokeRequest
-              ? `Started supervision smoke test in job ${result.threadId}. Butler will privately steer ${smokeRequest.totalFollowUps} follow-up turns.`
-              : `Accepted. I delegated this to Codex in job ${result.threadId} and will return here with the result.`
-          );
-        }
+        access.queueDelegationAcknowledgement(
+          result.threadId,
+          smokeRequest
+            ? `Accepted. I started a supervision smoke test in job ${result.threadId}. I will return here when it completes.`
+            : `Accepted. I delegated this to Codex in job ${result.threadId} and will return here with the result.`
+        );
+        access.registerPendingChatCallback(result.threadId);
         if (smokeRequest) {
           access.store.setThreadSupervisionLimit(result.threadId, smokeRequest.totalFollowUps + 2);
           access.supervisionSmokePlans.set(result.threadId, {
@@ -740,8 +727,6 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
             totalFollowUps: smokeRequest.totalFollowUps,
             followUpsSent: 0
           });
-        } else if (requiresOperatorCallback(delegationContract.contract)) {
-          access.registerPendingChatCallback(result.threadId);
         }
         const supervision = access.store.noteButlerSteer(result.threadId);
 

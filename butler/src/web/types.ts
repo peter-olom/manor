@@ -240,8 +240,6 @@ export type CodexThreadSummary = {
     executionLaneLabel: string;
     proofMode: "none" | "operational" | "ui";
     proofModeLabel: string;
-    operatorAcknowledgementRequired: boolean;
-    operatorCallbackRequired: boolean;
     requestedTask: string;
     operatorGoal: string | null;
     successConditions: string[];

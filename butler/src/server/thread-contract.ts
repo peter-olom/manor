@@ -187,8 +187,6 @@ export function buildThreadExecutionContract(input: {
     executionLaneLabel: describeExecutionLane(executionLane),
     proofMode,
     proofModeLabel: describeProofMode(proofMode),
-    operatorAcknowledgementRequired: false,
-    operatorCallbackRequired: false,
     requestedTask,
     operatorGoal,
     successConditions: deriveSuccessConditions({ executionLane, proofMode, operatorGoal }),
@@ -335,10 +333,6 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
   const taskContext = [requestedTask, operatorGoal].filter(Boolean).join("\n");
   const executionLane = parseExecutionLane(values.get("execution_lane")) ?? detectExecutionLane(taskContext);
   const proofMode = parseProofMode(values.get("proof_mode")) ?? detectProofMode(taskContext);
-  const operatorAcknowledgementRaw = values.get("operator_acknowledgement");
-  const operatorAcknowledgementRequired = operatorAcknowledgementRaw ? /^required$/i.test(operatorAcknowledgementRaw) : false;
-  const operatorCallbackRaw = values.get("operator_callback");
-  const operatorCallbackRequired = operatorCallbackRaw ? /^required$/i.test(operatorCallbackRaw) : false;
 
   return {
     threadId,
@@ -350,8 +344,6 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
     executionLaneLabel: describeExecutionLane(executionLane),
     proofMode,
     proofModeLabel: describeProofMode(proofMode),
-    operatorAcknowledgementRequired,
-    operatorCallbackRequired,
     requestedTask,
     operatorGoal,
     successConditions:

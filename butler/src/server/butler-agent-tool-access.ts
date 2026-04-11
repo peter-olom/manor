@@ -139,8 +139,6 @@ export type ButlerAgentToolAccess = {
     workspace: { cwd: string; branchName: string | null };
     executionLane?: CodexExecutionLane;
     proofMode?: CodexProofMode;
-    operatorAcknowledgementRequired?: boolean;
-    operatorCallbackRequired?: boolean;
     extraNotes?: string[];
   }): Promise<{ text: string; contract: CodexThreadExecutionContractView }>;
   queueDelegationAcknowledgement(threadId: string, text: string): void;

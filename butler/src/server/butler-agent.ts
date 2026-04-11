@@ -27,8 +27,6 @@ import {
   mergeVisibleMessages,
   normalizeNoticeText,
   parseProofScreenshotReview,
-  requiresOperatorAcknowledgement,
-  requiresOperatorCallback,
   sanitizeHistoryMessage,
   sanitizeHistoryMessages,
   serializeMessages,
@@ -989,8 +987,6 @@ export class ButlerAgentService extends EventEmitter {
     workspace: { cwd: string; branchName: string | null };
     executionLane?: CodexExecutionLane;
     proofMode?: CodexProofMode;
-    operatorAcknowledgementRequired?: boolean;
-    operatorCallbackRequired?: boolean;
     extraNotes?: string[];
   }): Promise<{ text: string; contract: CodexThreadExecutionContractView }> {
     const requestedTask = options.goal ? `${options.task}\n\nGoal: ${options.goal}` : options.task;
@@ -1034,8 +1030,6 @@ export class ButlerAgentService extends EventEmitter {
     });
     const contract: CodexThreadExecutionContractView = {
       ...baseContract,
-      operatorAcknowledgementRequired: options.operatorAcknowledgementRequired ?? baseContract.operatorAcknowledgementRequired,
-      operatorCallbackRequired: options.operatorCallbackRequired ?? baseContract.operatorCallbackRequired,
       requestedTask: requestedTaskOnly,
       operatorGoal,
       notes: [...new Set(notes.map((note) => note.trim()).filter(Boolean))]
@@ -1050,8 +1044,6 @@ export class ButlerAgentService extends EventEmitter {
       `execution_lane: ${contract.executionLaneLabel}`,
       `harness_binding: manor-harness --thread ${options.threadId}`,
       `proof_mode: ${contract.proofModeLabel}`,
-      `operator_acknowledgement: ${contract.operatorAcknowledgementRequired ? "required" : "optional"}`,
-      `operator_callback: ${contract.operatorCallbackRequired ? "required" : "optional"}`
     ];
 
     if (contract.operatorGoal) {

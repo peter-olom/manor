@@ -367,14 +367,6 @@ export function isCallbackOutstanding(callback: PendingChatCallback): boolean {
   return callback.owesOperatorReply && !isCallbackClosed(callback);
 }
 
-export function requiresOperatorAcknowledgement(contract: CodexThreadExecutionContractView | null | undefined): boolean {
-  return Boolean(contract?.operatorAcknowledgementRequired);
-}
-
-export function requiresOperatorCallback(contract: CodexThreadExecutionContractView | null | undefined): boolean {
-  return Boolean(contract?.operatorCallbackRequired);
-}
-
 export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: string): string {
   const supervisor = store.getSupervisorSummary();
   const projects = store.listProjectSummaries().slice(0, 8);
@@ -386,7 +378,7 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Do not expose private Butler-to-Codex steering verbatim in the Butler chat.",
     "If the operator asks for real execution, project setup, repository cloning, coding work, or shell work, delegate it to Codex instead of replying with manual shell instructions.",
     "When Codex work changes state, summarize the outcome rather than replaying the full back-and-forth.",
-    "If a delegated thread contract requires operator acknowledgement or operator callback, treat those as binding obligations in the main Butler chat.",
+    "Every operator-originated delegation must get one promise message immediately and one terminal reply when the delegated task completes or blocks.",
     "Each supervised Codex thread has a Butler steering budget. Default to 20 Butler-driven turns per thread unless that thread is explicitly overridden.",
     "Do not create a new branch or managed worktree unless the operator explicitly asks for branch isolation.",
     "For read-only repo inspection, questions, or report-only tasks, do not force a new branch or managed worktree.",

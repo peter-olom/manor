@@ -25,8 +25,6 @@ export interface CodexThreadExecutionContractView {
   executionLaneLabel: string;
   proofMode: CodexProofMode;
   proofModeLabel: string;
-  operatorAcknowledgementRequired: boolean;
-  operatorCallbackRequired: boolean;
   requestedTask: string;
   operatorGoal: string | null;
   successConditions: string[];

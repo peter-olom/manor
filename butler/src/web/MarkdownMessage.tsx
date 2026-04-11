@@ -29,8 +29,6 @@ const CONTRACT_FIELD_LABELS: Record<string, string> = {
   workspace_cwd: "Workspace",
   execution_lane: "Lane",
   proof_mode: "Proof",
-  operator_callback: "Callback",
-  operator_acknowledgement: "Acknowledgement",
   operator_goal: "Goal",
   requested_task: "Task",
   success_condition: "Success condition",
@@ -46,9 +44,7 @@ const CONTRACT_SUMMARY_FIELD_ORDER = [
   "branch",
   "workspace_cwd",
   "execution_lane",
-  "proof_mode",
-  "operator_callback",
-  "operator_acknowledgement"
+  "proof_mode"
 ];
 
 function titleCaseContractKey(value: string): string {
