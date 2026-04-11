@@ -5,6 +5,7 @@ import { getModel } from "@mariozechner/pi-ai";
 import { AuthStorage, createAgentSession, DefaultResourceLoader, ModelRegistry, SessionManager } from "@mariozechner/pi-coding-agent";
 
 import {
+  BUTLER_BACKGROUND_PROMPT_PREFIX,
   buildLatestProofMap,
   buildMessagePage,
   buildSystemPrompt,
@@ -374,15 +375,41 @@ export function promptButler(
   text: string,
   imageReferenceIds: string[] = []
 ): void {
+  void queueButlerPrompt(access, text, imageReferenceIds, { background: false });
+}
+
+export async function promptButlerInternal(
+  access: ButlerAgentSessionAccess,
+  text: string,
+  imageReferenceIds: string[] = []
+): Promise<void> {
+  const normalizedText = text.trimStart().startsWith(BUTLER_BACKGROUND_PROMPT_PREFIX)
+    ? text
+    : `${BUTLER_BACKGROUND_PROMPT_PREFIX}\n${text}`;
+  const ok = await queueButlerPrompt(access, normalizedText, imageReferenceIds, { background: true });
+  if (!ok) {
+    throw new Error(access.lastError ?? "Butler background supervision prompt failed.");
+  }
+}
+
+async function queueButlerPrompt(
+  access: ButlerAgentSessionAccess,
+  text: string,
+  imageReferenceIds: string[],
+  options: { background: boolean }
+): Promise<boolean> {
   if (!access.session) {
     throw new Error("Butler agent is not ready");
   }
 
-  access.pending = true;
-  access.lastError = null;
-  access.emit("change");
+  if (!options.background) {
+    access.pending = true;
+    access.lastError = null;
+    access.emit("change");
+  }
 
   const execute = async () => {
+    let ok = true;
     try {
       const nextAuth = await readButlerAuthStatus(access.piAuthPath);
       if (nextAuth.mode !== access.auth.mode || nextAuth.loggedIn !== access.auth.loggedIn) {
@@ -397,14 +424,21 @@ export function promptButler(
       access.lastError = null;
     } catch (error) {
       access.lastError = error instanceof Error ? error.message : String(error);
+      ok = false;
     } finally {
       await access.refreshExternalStatus();
-      access.pending = false;
+      if (!options.background) {
+        access.pending = false;
+      }
       access.emit("change");
     }
+
+    return ok;
   };
 
-  access.promptQueue = access.promptQueue.then(execute, execute);
+  const queued = access.promptQueue.then(execute, execute);
+  access.promptQueue = queued.then(() => undefined);
+  return queued;
 }
 
 export async function updateButlerComposeSettings(

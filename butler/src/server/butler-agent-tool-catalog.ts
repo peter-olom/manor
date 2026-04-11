@@ -202,8 +202,14 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "message_job",
     label: "Message job",
-    description: "Privately send a follow-up instruction into one Codex job thread without surfacing the full steering text in Butler chat.",
+    description: "Privately send a follow-up instruction into one Codex job thread and explicitly decide how the next worker report should be handled.",
     uiEffects: [{ kind: "refreshThread", description: "Refreshes the target run after Butler steers it." }]
+  },
+  {
+    name: "reply_to_operator",
+    label: "Reply to operator",
+    description: "Post the single operator-visible closeout for one delegated job and close its pending reply obligation.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps the main Butler chat aligned with the delegated job outcome." }]
   },
   {
     name: "delete_job",

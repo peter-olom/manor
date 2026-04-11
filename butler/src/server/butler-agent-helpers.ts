@@ -43,6 +43,11 @@ export type PendingChatCallback = ButlerThreadCallbackView;
 
 export const SNAPSHOT_MESSAGE_TAIL_LIMIT = 200;
 export const MAX_HISTORY_PAGE_SIZE = 1000;
+export const BUTLER_BACKGROUND_PROMPT_PREFIX = "[[BUTLER_BACKGROUND]]";
+
+export function isButlerBackgroundPromptText(text: string | null | undefined): boolean {
+  return typeof text === "string" && text.trimStart().startsWith(BUTLER_BACKGROUND_PROMPT_PREFIX);
+}
 
 export function contentToText(content: unknown): string {
   if (typeof content === "string") {
@@ -89,36 +94,49 @@ export function extractWorkspaceMentions(text: string): string[] {
 }
 
 export function serializeMessages(session: AgentSession): ButlerMessageView[] {
-  const messages = session.messages
-    .map((message, index) => {
-      const role = "role" in message && typeof message.role === "string" ? message.role : "unknown";
-      const record = message as unknown as Record<string, unknown>;
-      const text =
-        "content" in message && contentToText(message.content).trim()
-          ? contentToText(message.content)
-          : typeof record.errorMessage === "string"
-            ? record.errorMessage
-            : "";
-      return {
-        id: `message-${index}`,
-        role,
-        text,
-        at: extractMessageTimestamp(record),
-        kind: "message" as const
-      };
-    });
+  const serialized: ButlerMessageView[] = [];
+  let hideAssistantReply = false;
 
-  return messages.filter((message) => {
-    if (!(message.role === "user" || message.role === "assistant" || message.role === "user-with-attachments")) {
-      return false;
+  for (let index = 0; index < session.messages.length; index += 1) {
+    const message = session.messages[index];
+    const role = "role" in message && typeof message.role === "string" ? message.role : "unknown";
+    const record = message as unknown as Record<string, unknown>;
+    const text =
+      "content" in message && contentToText(message.content).trim()
+        ? contentToText(message.content)
+        : typeof record.errorMessage === "string"
+          ? record.errorMessage
+          : "";
+
+    if (role === "user") {
+      hideAssistantReply = isButlerBackgroundPromptText(text);
+      if (hideAssistantReply) {
+        continue;
+      }
+    } else if (hideAssistantReply && role === "assistant") {
+      continue;
     }
 
-    if (message.role === "assistant" && !message.text.trim()) {
-      return false;
+    const nextMessage = {
+      id: `message-${index}`,
+      role,
+      text,
+      at: extractMessageTimestamp(record),
+      kind: "message" as const
+    };
+
+    if (!(nextMessage.role === "user" || nextMessage.role === "assistant" || nextMessage.role === "user-with-attachments")) {
+      continue;
     }
 
-    return true;
-  });
+    if (nextMessage.role === "assistant" && !nextMessage.text.trim()) {
+      continue;
+    }
+
+    serialized.push(nextMessage);
+  }
+
+  return serialized;
 }
 
 export function isAssistantFailureMessage(message: unknown): message is Record<string, unknown> & {
@@ -367,6 +385,107 @@ export function isCallbackOutstanding(callback: PendingChatCallback): boolean {
   return callback.owesOperatorReply && !isCallbackClosed(callback);
 }
 
+export function buildCloseoutId(threadId: string, turnId: string): string {
+  return `${threadId}:${turnId}`;
+}
+
+export function getFallbackTurnId(thread: ReturnType<ButlerStateStore["getThread"]>): string | null {
+  const latestTurnId = thread?.turns.at(-1)?.id ?? null;
+  return typeof latestTurnId === "string" && latestTurnId.trim() ? latestTurnId : null;
+}
+
+export function buildChatCallbackText(
+  thread: ReturnType<ButlerStateStore["getThread"]>,
+  workerReport: ReturnType<ButlerStateStore["getWorkerReport"]>
+): string | null {
+  if (!thread || !workerReport) {
+    return null;
+  }
+
+  const lead =
+    workerReport.status === "completed"
+      ? `Update on ${thread.supervisor.projectLabel}.`
+      : `${thread.supervisor.projectLabel} needs attention.`;
+  return [lead, workerReport.summary, workerReport.details].filter(Boolean).join("\n\n");
+}
+
+export function buildFallbackChatCallbackText(thread: ReturnType<ButlerStateStore["getThread"]>): string | null {
+  if (!thread || thread.status !== "idle") {
+    return null;
+  }
+
+  const latestReply = thread.supervisor.latestAgentReply?.trim();
+  if (!latestReply) {
+    return null;
+  }
+
+  return [
+    `Update on ${thread.supervisor.projectLabel}.`,
+    "I never got feedback from the worker, so I checked the thread directly.",
+    latestReply
+  ].join("\n\n");
+}
+
+export function describePendingCallbacks(store: ButlerStateStore, callbacks: PendingChatCallback[]): string {
+  const outstandingCallbacks = callbacks.filter(isCallbackOutstanding);
+  if (outstandingCallbacks.length === 0) {
+    return "Delegated callback state: none pending.";
+  }
+
+  const lines = outstandingCallbacks
+    .map((callback) => {
+      const thread = store.getThread(callback.threadId);
+      const projectLabel = thread?.supervisor.projectLabel ?? "unknown";
+      const status = callback.lastWorkerStatusSeen ?? thread?.status ?? "unknown";
+      const workerReport = callback.lastTerminalReportAt !== null ? store.getWorkerReport(callback.threadId) : null;
+      if (callback.callbackState === "missing_worker_callback") {
+        return `- job ${callback.threadId} on ${projectLabel}: no worker callback received; latest known thread status is ${status}. Butler still owes one operator reply and may need to inspect the thread directly before replying.`;
+      }
+      if (callback.callbackState === "received_worker_callback" && workerReport) {
+        const details = [workerReport.summary, workerReport.details].filter(Boolean).join(" | ");
+        return `- job ${callback.threadId} on ${projectLabel}: worker callback received (${workerReport.status}). Butler still owes one operator reply. Latest report: ${details}`;
+      }
+      return `- job ${callback.threadId} on ${projectLabel}: waiting on worker callback; latest known thread status is ${status}.`;
+    })
+    .join("\n");
+
+  return ["Delegated callback state:", lines].join("\n");
+}
+
+export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: PendingChatCallback): string {
+  const thread = store.getThread(callback.threadId);
+  const workerReport = store.getWorkerReport(callback.threadId);
+  const relevantWorkerReport = workerReport && workerReport.updatedAt >= callback.requestedAt ? workerReport : null;
+  const latestReply = thread?.supervisor.latestAgentReply?.trim() ?? "";
+
+  return [
+    BUTLER_BACKGROUND_PROMPT_PREFIX,
+    "This is an internal delegated-job supervision event, not an operator turn.",
+    "Do not write a normal Butler chat reply.",
+    "If the job should continue privately, use message_job and set nextWorkerReportAction explicitly.",
+    "If the job is done, blocked, or needs operator input now, use reply_to_operator exactly once.",
+    "You may use read_job first if you need transcript context.",
+    `Job id: ${callback.threadId}`,
+    `Project: ${thread?.supervisor.projectLabel ?? "unknown"}`,
+    `Current thread status: ${thread?.status ?? "unknown"}`,
+    `Callback state: ${callback.callbackState}`,
+    callback.reviewReason === "thread_recovery"
+      ? "Review source: Butler did not get a worker callback and recovered the job from thread state."
+      : "Review source: Butler received a worker callback and must decide what to do next.",
+    callback.lastPrivateSteerText ? `Latest private Butler steer already sent: ${callback.lastPrivateSteerText}` : "Latest private Butler steer already sent: none",
+    `Current next worker report action: ${callback.nextWorkerReportAction}.`,
+    "Do not send the same private steer twice.",
+    "Use nextWorkerReportAction=review when Butler should inspect the next worker report before deciding what to surface.",
+    "Use nextWorkerReportAction=reply_to_operator only when the next terminal worker report should be posted straight to the operator without another Butler review.",
+    "Decide from the job context and thread state, not from worker phrasing heuristics.",
+    relevantWorkerReport ? `Worker report status: ${relevantWorkerReport.status}` : "Worker report status: none",
+    relevantWorkerReport ? `Worker report summary: ${relevantWorkerReport.summary}` : "Worker report summary: none",
+    relevantWorkerReport && relevantWorkerReport.details ? `Worker report details: ${relevantWorkerReport.details}` : "Worker report details: none",
+    latestReply ? `Latest worker reply: ${latestReply}` : "Latest worker reply: none",
+    "After you act, reply with exactly INTERNAL_REVIEW_COMPLETE."
+  ].join("\n");
+}
+
 export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: string): string {
   const supervisor = store.getSupervisorSummary();
   const projects = store.listProjectSummaries().slice(0, 8);
@@ -376,9 +495,13 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Keep the main Butler chat operator-facing and concise.",
     "Use Codex project and thread summaries as your background memory.",
     "Do not expose private Butler-to-Codex steering verbatim in the Butler chat.",
+    "Worker callbacks and thread recovery are background supervision signals, not operator-visible chat by themselves.",
     "If the operator asks for real execution, project setup, repository cloning, coding work, or shell work, delegate it to Codex instead of replying with manual shell instructions.",
     "When Codex work changes state, summarize the outcome rather than replaying the full back-and-forth.",
     "Every operator-originated delegation must get one promise message immediately and one terminal reply when the delegated task completes or blocks.",
+    "When the operator privately steers an existing job, renew the terminal reply obligation and do not treat an older worker report as the final answer for that newer operator turn.",
+    "When you use message_job, set nextWorkerReportAction explicitly. Default to review unless the next worker report should go straight to the operator.",
+    "When an internal supervision event arrives, decide privately whether to steer the worker again or post the final operator update with reply_to_operator.",
     "Each supervised Codex thread has a Butler steering budget. Default to 20 Butler-driven turns per thread unless that thread is explicitly overridden.",
     "Do not create a new branch or managed worktree unless the operator explicitly asks for branch isolation.",
     "For read-only repo inspection, questions, or report-only tasks, do not force a new branch or managed worktree.",

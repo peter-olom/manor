@@ -325,6 +325,10 @@ export function describeCallbackState(
     return { label: "Recovering", tone: "missing" };
   }
 
+  if (callback.reviewState === "running" || callback.reviewState === "queued") {
+    return { label: "Butler reviewing", tone: "waiting" };
+  }
+
   if (callback.owesOperatorReply) {
     return { label: "Awaiting callback", tone: "waiting" };
   }

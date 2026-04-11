@@ -13,14 +13,20 @@ import {
 import type { TSchema } from "@sinclair/typebox";
 
 import {
+  buildCallbackReviewPrompt,
+  buildCloseoutId,
+  buildChatCallbackText,
+  buildFallbackChatCallbackText,
   buildLatestProofMap,
   buildMessagePage,
   buildSystemPrompt,
   collapseCallbackDuplicateMessages,
   contentToText,
+  describePendingCallbacks,
   extractLatestNoticeTexts,
   extractWorkspaceMentions,
   findVerificationArtifact,
+  getFallbackTurnId,
   isAssistantFailureMessage,
   isCallbackOutstanding,
   MAX_HISTORY_PAGE_SIZE,
@@ -50,6 +56,7 @@ import {
   getButlerSnapshot,
   getVisibleButlerMessages,
   promptButler,
+  promptButlerInternal,
   restoreButlerCompactionState,
   runButlerPrompt,
   sanitizeButlerSessionMessages,
@@ -149,6 +156,8 @@ export class ButlerAgentService extends EventEmitter {
   private readonly actedSmokeMilestoneIds = new Set<string>();
   private smokeReactionInFlight = false;
   private smokeReactionQueued = false;
+  private callbackReviewInFlight = false;
+  private callbackReviewQueued = false;
   private compaction: Omit<ButlerCompactionView, "autoEnabled" | "active" | "count"> = {
     lastReason: null,
     lastStartedAt: null,
@@ -311,7 +320,16 @@ export class ButlerAgentService extends EventEmitter {
               ? callbackState
               : null;
         const normalizedCallbackState =
-          callbackState === "received_worker_callback" || callbackState === "recovered_from_thread_state" ? "closed" : callbackState;
+          (entry.operatorCloseoutStatus === "posted" || entry.owesOperatorReply === false) &&
+          (callbackState === "received_worker_callback" || callbackState === "recovered_from_thread_state")
+            ? "closed"
+            : callbackState;
+        const normalizedReviewReason =
+          normalizedCallbackState === "received_worker_callback"
+            ? "worker_callback"
+            : normalizedCallbackState === "missing_worker_callback"
+              ? "thread_recovery"
+              : null;
         this.pendingChatCallbacks.set(entry.threadId, {
           threadId: entry.threadId,
           callbackState: normalizedCallbackState,
@@ -326,6 +344,10 @@ export class ButlerAgentService extends EventEmitter {
             typeof entry.lastTerminalReportAt === "number" && Number.isFinite(entry.lastTerminalReportAt)
               ? entry.lastTerminalReportAt
               : null,
+          lastPrivateSteerText: typeof entry.lastPrivateSteerText === "string" && entry.lastPrivateSteerText.trim() ? entry.lastPrivateSteerText : null,
+          lastPrivateSteerAt:
+            typeof entry.lastPrivateSteerAt === "number" && Number.isFinite(entry.lastPrivateSteerAt) ? entry.lastPrivateSteerAt : null,
+          nextWorkerReportAction: entry.nextWorkerReportAction === "reply_to_operator" ? "reply_to_operator" : "review",
           operatorCloseoutStatus:
             entry.operatorCloseoutStatus === "not_required" ||
             entry.operatorCloseoutStatus === "owed" ||
@@ -342,6 +364,8 @@ export class ButlerAgentService extends EventEmitter {
               : normalizedCallbackState === "closed"
                 ? "main_chat"
                 : "none",
+          reviewState: normalizedReviewReason ? "queued" : "idle",
+          reviewReason: normalizedReviewReason,
           closedAt: typeof entry.closedAt === "number" && Number.isFinite(entry.closedAt) ? entry.closedAt : null,
           updatedAt
         });
@@ -379,8 +403,11 @@ export class ButlerAgentService extends EventEmitter {
     );
   }
 
-  private registerPendingChatCallback(threadId: string): void {
+  private registerPendingChatCallback(threadId: string, options?: { privateSteerText?: string | null; nextWorkerReportAction?: "review" | "reply_to_operator" }): void {
     const now = Date.now();
+    const existing = this.pendingChatCallbacks.get(threadId);
+    const privateSteerText = typeof options?.privateSteerText === "string" && options.privateSteerText.trim() ? options.privateSteerText.trim() : null;
+    const nextWorkerReportAction = options?.nextWorkerReportAction === "reply_to_operator" ? "reply_to_operator" : "review";
     this.pendingChatCallbacks.set(threadId, {
       threadId,
       callbackState: "waiting",
@@ -389,13 +416,20 @@ export class ButlerAgentService extends EventEmitter {
       lastEventAt: now,
       lastWorkerStatusSeen: this.store.getThread(threadId)?.status ?? null,
       lastTerminalReportAt: null,
+      lastPrivateSteerText: privateSteerText,
+      lastPrivateSteerAt: privateSteerText ? now : null,
+      nextWorkerReportAction,
       operatorCloseoutStatus: "owed",
       owesOperatorReply: true,
       closeoutChannel: "none",
+      reviewState: "idle",
+      reviewReason: null,
       closedAt: null,
       updatedAt: now
     });
-    this.store.addEvent(threadId, "butler.callback.registered", "Butler registered an operator closeout obligation.");
+    this.store.addEvent(threadId, existing ? "butler.callback.rearmed" : "butler.callback.registered", existing
+      ? "Butler renewed the operator closeout obligation after a private steer."
+      : "Butler registered an operator closeout obligation.");
     void this.saveCallbackState();
   }
 
@@ -428,66 +462,57 @@ export class ButlerAgentService extends EventEmitter {
     }
   }
 
-  private buildCloseoutId(threadId: string, turnId: string): string {
-    return `${threadId}:${turnId}`;
-  }
+  private async postOperatorJobReply(threadId: string, text: string): Promise<void> {
+    const callback = this.pendingChatCallbacks.get(threadId);
+    if (!callback || !isCallbackOutstanding(callback)) {
+      throw new Error(`Job ${threadId} does not have an outstanding operator reply obligation.`);
+    }
+    const thread = this.store.getThread(threadId);
+    if (!thread) {
+      throw new Error(`Job ${threadId} is no longer available.`);
+    }
+    const workerReport = this.store.getWorkerReport(threadId);
+    const relevantWorkerReport = workerReport && workerReport.updatedAt >= callback.requestedAt ? workerReport : null;
+    const closeoutTurnId = relevantWorkerReport?.turnId ?? getFallbackTurnId(thread);
+    if (!closeoutTurnId) {
+      throw new Error(`Job ${threadId} does not have a turn Butler can close against yet.`);
+    }
+    const closeoutId = buildCloseoutId(threadId, closeoutTurnId);
+    const messageId = relevantWorkerReport ? `callback-${closeoutId}` : `callback-fallback-${closeoutId}`;
+    const at = relevantWorkerReport?.updatedAt ?? thread.updatedAt;
+    const resolutionState = relevantWorkerReport ? "received_worker_callback" : "recovered_from_thread_state";
+    this.upsertOperatorMessage(messageId, text.trim(), at);
+    this.deliveredCloseoutIds.add(closeoutId);
+    callback.callbackState = "closed";
+    callback.resolutionState = resolutionState;
+    callback.lastWorkerStatusSeen = thread.status;
+    callback.lastEventAt = at;
+    callback.lastTerminalReportAt = relevantWorkerReport?.updatedAt ?? callback.lastTerminalReportAt;
+    callback.lastPrivateSteerText = callback.lastPrivateSteerText ?? null;
+    callback.lastPrivateSteerAt = callback.lastPrivateSteerAt ?? null;
+    callback.nextWorkerReportAction = "review";
+    callback.operatorCloseoutStatus = "posted";
+    callback.owesOperatorReply = false;
+    callback.closeoutChannel = "main_chat";
+    callback.reviewState = "idle";
+    callback.reviewReason = null;
+    callback.closedAt = at;
+    callback.updatedAt = Date.now();
 
-  private getFallbackTurnId(thread: ReturnType<ButlerStateStore["getThread"]>): string | null {
-    const latestTurnId = thread?.turns.at(-1)?.id ?? null;
-    return typeof latestTurnId === "string" && latestTurnId.trim() ? latestTurnId : null;
-  }
-
-  private buildChatCallbackText(
-    thread: ReturnType<ButlerStateStore["getThread"]>,
-    workerReport: ReturnType<ButlerStateStore["getWorkerReport"]>
-  ): string | null {
-    if (!thread || !workerReport) {
-      return null;
+    this.store.addEvent(threadId, resolutionState === "received_worker_callback" ? "butler.job.closed" : "butler.recovery.invoked", resolutionState === "received_worker_callback"
+      ? "Butler posted the operator-facing closeout after reviewing the worker callback."
+      : "Butler posted the operator-facing closeout after recovering from thread state.");
+    if (resolutionState === "recovered_from_thread_state") {
+      this.store.addEvent(threadId, "butler.job.closed", "Butler closed the delegated job after thread-state recovery.");
     }
 
-    const lead =
-      workerReport.status === "completed"
-        ? `Update on ${thread.supervisor.projectLabel}.`
-        : `${thread.supervisor.projectLabel} needs attention.`;
-    return [lead, workerReport.summary, workerReport.details].filter(Boolean).join("\n\n");
-  }
-
-  private buildFallbackChatCallbackText(thread: ReturnType<ButlerStateStore["getThread"]>): string | null {
-    if (!thread || thread.status !== "idle") {
-      return null;
-    }
-
-    const latestReply = thread.supervisor.latestAgentReply?.trim();
-    if (!latestReply) {
-      return null;
-    }
-
-    return [
-      `Update on ${thread.supervisor.projectLabel}.`,
-      "I never got feedback from the worker, so I checked the thread directly.",
-      latestReply
-    ].join("\n\n");
+    await this.saveOperatorMessageState();
+    await this.saveCallbackState();
+    this.emit("change");
   }
 
   private describePendingCallbacks(): string {
-    const outstandingCallbacks = [...this.pendingChatCallbacks.values()].filter(isCallbackOutstanding);
-    if (outstandingCallbacks.length === 0) {
-      return "Delegated callback state: none pending.";
-    }
-
-    const lines = outstandingCallbacks
-      .map((callback) => {
-        const thread = this.store.getThread(callback.threadId);
-        const projectLabel = thread?.supervisor.projectLabel ?? "unknown";
-        const status = callback.lastWorkerStatusSeen ?? thread?.status ?? "unknown";
-        if (callback.callbackState === "missing_worker_callback") {
-          return `- job ${callback.threadId} on ${projectLabel}: no worker callback received; latest known thread status is ${status}. If asked, say you never got feedback from the worker and that you are checking the thread directly.`;
-        }
-        return `- job ${callback.threadId} on ${projectLabel}: waiting on worker callback; latest known thread status is ${status}.`;
-      })
-      .join("\n");
-
-    return ["Delegated callback state:", lines].join("\n");
+    return describePendingCallbacks(this.store, [...this.pendingChatCallbacks.values()]);
   }
 
   private async reconcilePendingChatCallbacks(): Promise<void> {
@@ -510,20 +535,32 @@ export class ButlerAgentService extends EventEmitter {
 
       const thread = this.store.getThread(callback.threadId);
       const workerReport = this.store.getWorkerReport(callback.threadId);
+      const relevantWorkerReport = workerReport && workerReport.updatedAt >= callback.requestedAt ? workerReport : null;
       const nextStatus = thread?.status ?? "unknown";
       const fallbackAnchorAt = Math.max(callback.requestedAt, thread?.updatedAt ?? callback.requestedAt);
       const callbackTimedOut = now - fallbackAnchorAt >= CALLBACK_RECOVERY_TIMEOUT_MS;
       const nextCallbackState =
-        workerReport || nextStatus !== "idle" || !(thread?.supervisor.latestAgentReply?.trim()) || !callbackTimedOut
-          ? "waiting"
-          : "missing_worker_callback";
+        relevantWorkerReport
+          ? "received_worker_callback"
+          : nextStatus !== "idle" ||
+              !(thread?.supervisor.latestAgentReply?.trim()) ||
+              (thread?.updatedAt ?? 0) < callback.requestedAt ||
+              !callbackTimedOut
+            ? "waiting"
+            : "missing_worker_callback";
 
       if (callback.lastWorkerStatusSeen !== nextStatus || callback.callbackState !== nextCallbackState) {
         callback.lastWorkerStatusSeen = nextStatus;
         callback.lastEventAt = thread?.updatedAt ?? now;
-        callback.lastTerminalReportAt = workerReport?.updatedAt ?? callback.lastTerminalReportAt;
+        callback.lastTerminalReportAt = relevantWorkerReport?.updatedAt ?? callback.lastTerminalReportAt;
+        if (callback.callbackState !== "received_worker_callback" && nextCallbackState === "received_worker_callback") {
+          callback.reviewState = "queued";
+          callback.reviewReason = "worker_callback";
+        }
         if (callback.callbackState !== "missing_worker_callback" && nextCallbackState === "missing_worker_callback") {
           this.store.addEvent(callback.threadId, "butler.callback.missing", "No worker callback arrived, so Butler is checking thread state directly.");
+          callback.reviewState = "queued";
+          callback.reviewReason = "thread_recovery";
         }
         callback.callbackState = nextCallbackState;
         callback.updatedAt = now;
@@ -555,69 +592,43 @@ export class ButlerAgentService extends EventEmitter {
       }
 
       const workerReport = this.store.getWorkerReport(callback.threadId);
-      if (workerReport) {
-        const closeoutId = this.buildCloseoutId(callback.threadId, workerReport.turnId);
-        callback.lastTerminalReportAt = workerReport.updatedAt;
-        callback.lastEventAt = workerReport.updatedAt;
+      const relevantWorkerReport = workerReport && workerReport.updatedAt >= callback.requestedAt ? workerReport : null;
+      if (relevantWorkerReport) {
+        callback.lastTerminalReportAt = relevantWorkerReport.updatedAt;
+        callback.lastEventAt = relevantWorkerReport.updatedAt;
         callback.lastWorkerStatusSeen = thread.status;
-        callback.updatedAt = Date.now();
-
-        if (!this.deliveredCloseoutIds.has(closeoutId)) {
-          const text = this.buildChatCallbackText(thread, workerReport);
-          if (!text) {
+        if (callback.nextWorkerReportAction === "reply_to_operator") {
+          const text = buildChatCallbackText(thread, relevantWorkerReport);
+          if (text) {
+            await this.postOperatorJobReply(callback.threadId, text);
+            changed = true;
             continue;
           }
-
-          this.upsertOperatorMessage(`callback-${closeoutId}`, text, workerReport.updatedAt);
-          this.deliveredCloseoutIds.add(closeoutId);
-          this.store.addEvent(callback.threadId, "butler.callback.received", "Butler received the worker callback and posted the closeout.");
-          this.store.addEvent(callback.threadId, "butler.job.closed", "Butler closed the delegated job in main chat.");
+        }
+        if (
+          callback.callbackState !== "received_worker_callback" ||
+          callback.reviewReason !== "worker_callback" ||
+          callback.reviewState === "idle"
+        ) {
+          callback.callbackState = "received_worker_callback";
+          callback.reviewState = "queued";
+          callback.reviewReason = "worker_callback";
+          callback.updatedAt = Date.now();
+          this.store.addEvent(callback.threadId, "butler.callback.received", "Butler received the worker callback and queued an internal supervision review.");
           changed = true;
         }
-
-        callback.callbackState = "closed";
-        callback.resolutionState = "received_worker_callback";
-        callback.operatorCloseoutStatus = "posted";
-        callback.owesOperatorReply = false;
-        callback.closeoutChannel = "main_chat";
-        callback.closedAt = workerReport.updatedAt;
-        callback.updatedAt = Date.now();
-        changed = true;
         continue;
       }
 
       if (callback.callbackState !== "missing_worker_callback") {
         continue;
       }
-
-      const fallbackTurnId = this.getFallbackTurnId(thread);
-      if (!fallbackTurnId) {
-        continue;
-      }
-      const closeoutId = this.buildCloseoutId(callback.threadId, fallbackTurnId);
-      const text = this.buildFallbackChatCallbackText(thread);
-      if (!text) {
-        continue;
-      }
-
-      if (!this.deliveredCloseoutIds.has(closeoutId)) {
-        this.upsertOperatorMessage(`callback-fallback-${closeoutId}`, text, thread.updatedAt);
-        this.deliveredCloseoutIds.add(closeoutId);
-        this.store.addEvent(callback.threadId, "butler.recovery.invoked", "Butler recovered missing callback state from the worker thread.");
-        this.store.addEvent(callback.threadId, "butler.job.closed", "Butler closed the delegated job after thread-state recovery.");
+      if (callback.reviewState !== "queued" || callback.reviewReason !== "thread_recovery") {
+        callback.reviewState = "queued";
+        callback.reviewReason = "thread_recovery";
+        callback.updatedAt = Date.now();
         changed = true;
       }
-
-      callback.callbackState = "closed";
-      callback.resolutionState = "recovered_from_thread_state";
-      callback.lastWorkerStatusSeen = thread.status;
-      callback.lastEventAt = thread.updatedAt;
-      callback.operatorCloseoutStatus = "posted";
-      callback.owesOperatorReply = false;
-      callback.closeoutChannel = "main_chat";
-      callback.closedAt = thread.updatedAt;
-      callback.updatedAt = Date.now();
-      changed = true;
     }
 
     if (changed) {
@@ -636,6 +647,7 @@ export class ButlerAgentService extends EventEmitter {
   private handleStoreChange(): void {
     void (async () => {
       await this.processPendingChatCallbacks();
+      this.scheduleCallbackReviews();
       this.scheduleSmokeTestReactions();
     })().catch((error) => {
       this.lastError = error instanceof Error ? error.message : String(error);
@@ -683,6 +695,7 @@ export class ButlerAgentService extends EventEmitter {
     }
 
     await this.reconcilePendingChatCallbacks();
+    this.scheduleCallbackReviews();
   }
 
   // This is the single discoverable registry for Butler actions and their UI
@@ -695,13 +708,9 @@ export class ButlerAgentService extends EventEmitter {
     return this.toolCatalog.find((tool) => tool.name === name)?.uiEffects ?? [];
   }
 
-  private getToolAccess(): ButlerAgentToolAccess {
-    return this as unknown as ButlerAgentToolAccess;
-  }
+  private getToolAccess(): ButlerAgentToolAccess { return this as unknown as ButlerAgentToolAccess; }
 
-  private getSessionAccess(): ButlerAgentSessionAccess {
-    return this as unknown as ButlerAgentSessionAccess;
-  }
+  private getSessionAccess(): ButlerAgentSessionAccess { return this as unknown as ButlerAgentSessionAccess; }
 
   private defineButlerTool<TParams extends Record<string, unknown>>(definition: {
     name: string;
@@ -892,6 +901,86 @@ export class ButlerAgentService extends EventEmitter {
     await this.codexClient.sendMessage(threadId, this.imageStore.buildCodexInput(text, []));
     this.store.noteButlerSteer(threadId);
     this.store.addEvent(threadId, "butler.supervision.turn_spent", "Butler spent a private supervision turn on this job.");
+  }
+
+  private scheduleCallbackReviews(): void {
+    if (this.callbackReviewInFlight) {
+      this.callbackReviewQueued = true;
+      return;
+    }
+
+    this.callbackReviewInFlight = true;
+    void this.processCallbackReviews()
+      .catch((error) => {
+        this.lastError = error instanceof Error ? error.message : String(error);
+      })
+      .finally(() => {
+        this.callbackReviewInFlight = false;
+        if (this.callbackReviewQueued) {
+          this.callbackReviewQueued = false;
+          this.scheduleCallbackReviews();
+        }
+      });
+  }
+
+  private async processCallbackReviews(): Promise<void> {
+    const pendingReviews = [...this.pendingChatCallbacks.values()]
+      .filter((callback) => isCallbackOutstanding(callback) && callback.reviewState === "queued")
+      .sort((left, right) => left.updatedAt - right.updatedAt);
+
+    if (pendingReviews.length === 0) {
+      return;
+    }
+
+    for (const callback of pendingReviews) {
+      const liveCallback = this.pendingChatCallbacks.get(callback.threadId);
+      if (!liveCallback || !isCallbackOutstanding(liveCallback) || liveCallback.reviewState !== "queued") {
+        continue;
+      }
+
+      liveCallback.reviewState = "running";
+      liveCallback.updatedAt = Date.now();
+      await this.saveCallbackState();
+      this.emit("change");
+
+      try {
+        await promptButlerInternal(this.getSessionAccess(), buildCallbackReviewPrompt(this.store, liveCallback));
+      } catch (error) {
+        const nextCallback = this.pendingChatCallbacks.get(callback.threadId);
+        if (nextCallback && isCallbackOutstanding(nextCallback)) {
+          nextCallback.reviewState = "queued";
+          nextCallback.updatedAt = Date.now();
+          await this.saveCallbackState();
+          this.emit("change");
+        }
+        throw error;
+      }
+
+      const nextCallback = this.pendingChatCallbacks.get(callback.threadId);
+      if (!nextCallback || !isCallbackOutstanding(nextCallback)) {
+        continue;
+      }
+      if (nextCallback.reviewState === "running") {
+        const thread = this.store.getThread(callback.threadId);
+        const workerReport = this.store.getWorkerReport(callback.threadId);
+        const relevantWorkerReport = workerReport && workerReport.updatedAt >= nextCallback.requestedAt ? workerReport : null;
+        const safeCloseoutText =
+          nextCallback.callbackState === "received_worker_callback"
+            ? buildChatCallbackText(thread, relevantWorkerReport)
+            : nextCallback.callbackState === "missing_worker_callback"
+              ? buildFallbackChatCallbackText(thread)
+              : null;
+        if (safeCloseoutText) {
+          await this.postOperatorJobReply(callback.threadId, safeCloseoutText);
+          continue;
+        }
+
+        nextCallback.reviewState = "idle";
+        nextCallback.updatedAt = Date.now();
+        await this.saveCallbackState();
+        this.emit("change");
+      }
+    }
   }
 
   private scheduleSmokeTestReactions(): void {
@@ -1328,10 +1417,7 @@ export class ButlerAgentService extends EventEmitter {
   }
 
   private normalizeServiceEnv(value: unknown): Record<string, string> {
-    if (!value || typeof value !== "object") {
-      return {};
-    }
-
+    if (!value || typeof value !== "object") return {};
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
         .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
@@ -1341,10 +1427,7 @@ export class ButlerAgentService extends EventEmitter {
   }
 
   private normalizeStringArray(value: unknown): string[] {
-    if (!Array.isArray(value)) {
-      return [];
-    }
-
+    if (!Array.isArray(value)) return [];
     return [...new Set(value.map((entry) => (typeof entry === "string" ? entry.trim() : "")).filter(Boolean))];
   }
 
@@ -1356,16 +1439,9 @@ export class ButlerAgentService extends EventEmitter {
     defaultPromoteTargetStorageKey: string | null;
     retainsVolumes: boolean;
     volumeNames: string[];
-  }): string {
-    return formatStackStorageSummary(stack);
-  }
+  }): string { return formatStackStorageSummary(stack); }
 
-  private async reviewProofScreenshot(
-    proof: ResolvedPreviewProof,
-    options?: {
-      expectedOutcome?: string;
-    }
-  ): Promise<ProofScreenshotReview> {
+  private async reviewProofScreenshot(proof: ResolvedPreviewProof, options?: { expectedOutcome?: string }): Promise<ProofScreenshotReview> {
     return reviewButlerProofScreenshot(this.getSessionAccess(), proof, options);
   }
 
@@ -1379,61 +1455,37 @@ export class ButlerAgentService extends EventEmitter {
     ];
   }
 
-  private async createOrRefreshSession(): Promise<void> {
-    await createOrRefreshButlerSession(this.getSessionAccess());
-  }
+  private async createOrRefreshSession(): Promise<void> { await createOrRefreshButlerSession(this.getSessionAccess()); }
 
-  private async sanitizePersistedSessions(): Promise<void> {
-    await sanitizePersistedButlerSessions(this.getSessionAccess());
-  }
+  private async sanitizePersistedSessions(): Promise<void> { await sanitizePersistedButlerSessions(this.getSessionAccess()); }
 
-  private restoreCompactionState(): void {
-    restoreButlerCompactionState(this.getSessionAccess());
-  }
+  private restoreCompactionState(): void { restoreButlerCompactionState(this.getSessionAccess()); }
 
-  private getContextUsage(): ButlerContextUsageView {
-    return getButlerContextUsage(this.getSessionAccess());
-  }
+  private getContextUsage(): ButlerContextUsageView { return getButlerContextUsage(this.getSessionAccess()); }
 
-  private getCompactionSnapshot(): ButlerCompactionView {
-    return getButlerCompactionSnapshot(this.getSessionAccess());
-  }
+  private getCompactionSnapshot(): ButlerCompactionView { return getButlerCompactionSnapshot(this.getSessionAccess()); }
 
   private async runPrompt(text: string, imageReferenceIds: string[] = []): Promise<void> {
     await runButlerPrompt(this.getSessionAccess(), text, imageReferenceIds);
   }
 
-  private extractLatestAssistantFailure(): string | null {
-    return extractButlerAssistantFailure(this.getSessionAccess());
-  }
+  private extractLatestAssistantFailure(): string | null { return extractButlerAssistantFailure(this.getSessionAccess()); }
 
-  private dropTrailingFailedTurns(): void {
-    dropTrailingFailedButlerTurns(this.getSessionAccess());
-  }
+  private dropTrailingFailedTurns(): void { dropTrailingFailedButlerTurns(this.getSessionAccess()); }
 
-  private sanitizeSessionMessages(): void {
-    sanitizeButlerSessionMessages(this.getSessionAccess());
-  }
+  private sanitizeSessionMessages(): void { sanitizeButlerSessionMessages(this.getSessionAccess()); }
 
-  private getVisibleMessages(): ButlerMessageView[] {
-    return getVisibleButlerMessages(this.getSessionAccess());
-  }
+  private getVisibleMessages(): ButlerMessageView[] { return getVisibleButlerMessages(this.getSessionAccess()); }
 
   getMessagePage(before: number | null, limit: number): ButlerMessagePageView {
     return getButlerMessagePage(this.getSessionAccess(), before, limit);
   }
 
-  getLiveSnapshot(): ButlerLiveSnapshot {
-    return getButlerLiveSnapshot(this.getSessionAccess());
-  }
+  getLiveSnapshot(): ButlerLiveSnapshot { return getButlerLiveSnapshot(this.getSessionAccess()); }
 
-  getShellSnapshot(): AppShellSnapshot["butler"] {
-    return getButlerShellSnapshot(this.getSessionAccess());
-  }
+  getShellSnapshot(): AppShellSnapshot["butler"] { return getButlerShellSnapshot(this.getSessionAccess()); }
 
-  getSnapshot(): AppSnapshot["butler"] {
-    return getButlerSnapshot(this.getSessionAccess());
-  }
+  getSnapshot(): AppSnapshot["butler"] { return getButlerSnapshot(this.getSessionAccess()); }
 
   prompt(text: string, imageReferenceIds: string[] = []): void {
     promptButler(this.getSessionAccess(), text, imageReferenceIds);

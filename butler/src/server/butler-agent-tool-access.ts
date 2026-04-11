@@ -11,6 +11,7 @@ import type {
   ButlerAuthStatus,
   ButlerCompactionView,
   ButlerMessageView,
+  ButlerNextWorkerReportAction,
   ButlerOnboardingView,
   ButlerThreadCallbackView,
   ButlerToolView,
@@ -142,7 +143,11 @@ export type ButlerAgentToolAccess = {
     extraNotes?: string[];
   }): Promise<{ text: string; contract: CodexThreadExecutionContractView }>;
   queueDelegationAcknowledgement(threadId: string, text: string): void;
-  registerPendingChatCallback(threadId: string): void;
+  registerPendingChatCallback(
+    threadId: string,
+    options?: { privateSteerText?: string | null; nextWorkerReportAction?: ButlerNextWorkerReportAction }
+  ): void;
+  postOperatorJobReply(threadId: string, text: string): Promise<void>;
   getSnapshot(): AppSnapshot["butler"];
 };
 

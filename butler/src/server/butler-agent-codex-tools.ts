@@ -197,15 +197,22 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       name: "message_job",
       label: "Message job",
       description: "Privately send a follow-up into one Codex job thread when the execution mode and strategy are still the same.",
-      promptSnippet: "message_job: steer a Codex job privately only when the task stays on the same execution mode and runtime strategy.",
+      promptSnippet:
+        "message_job: steer a Codex job privately only when the task stays on the same execution mode and runtime strategy. Always set nextWorkerReportAction explicitly.",
       parameters: Type.Object({
         threadId: Type.String(),
         text: Type.String({ minLength: 1 }),
-        imageReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 })))
+        imageReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+        nextWorkerReportAction: Type.Optional(Type.Union([Type.Literal("review"), Type.Literal("reply_to_operator")]))
       }),
       uiEffects: access.getToolUiEffects("message_job"),
       execute: async (_toolCallId, params) => {
-        const typedParams = params as { threadId: string; text: string; imageReferenceIds?: string[] };
+        const typedParams = params as {
+          threadId: string;
+          text: string;
+          imageReferenceIds?: string[];
+          nextWorkerReportAction?: "review" | "reply_to_operator";
+        };
         const thread = access.store.getThread(typedParams.threadId);
         if (!thread || !thread.cwd || thread.source === "unknown" || thread.turnCount === 0) {
           throw new Error(
@@ -240,18 +247,45 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           typedParams.threadId,
           access.imageStore.buildCodexInput(typedParams.text, typedParams.imageReferenceIds ?? [])
         );
+        access.registerPendingChatCallback(typedParams.threadId, {
+          privateSteerText: typedParams.text,
+          nextWorkerReportAction: typedParams.nextWorkerReportAction ?? "review"
+        });
         const supervision = access.store.noteButlerSteer(typedParams.threadId);
         access.store.addEvent(typedParams.threadId, "butler.supervision.turn_spent", "Butler spent a private supervision turn on this job.");
         return {
           content: [
             {
               type: "text",
-              text: `Sent a private follow-up to job ${typedParams.threadId}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}.`
+              text: `Sent a private follow-up to job ${typedParams.threadId}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}. Next worker report action: ${typedParams.nextWorkerReportAction ?? "review"}.`
             }
           ],
           details: {
             supervision,
             thread: access.store.getThread(typedParams.threadId) ?? null
+          }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "reply_to_operator",
+      label: "Reply to operator",
+      description: "Post the one operator-facing delegated-job update Butler has decided to surface.",
+      promptSnippet:
+        "reply_to_operator: use this only when Butler has decided the delegated job is finished, blocked, or needs operator input now.",
+      parameters: Type.Object({
+        threadId: Type.String(),
+        text: Type.String({ minLength: 1 })
+      }),
+      uiEffects: access.getToolUiEffects("reply_to_operator"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as { threadId: string; text: string };
+        await access.postOperatorJobReply(typedParams.threadId, typedParams.text);
+        return {
+          content: [{ type: "text", text: `Posted the operator-facing update for job ${typedParams.threadId}.` }],
+          details: {
+            thread: access.store.getThread(typedParams.threadId) ?? null,
+            supervision: access.store.getThreadSupervision(typedParams.threadId)
           }
         };
       }

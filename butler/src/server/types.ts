@@ -14,6 +14,9 @@ export type ButlerCallbackState =
 export type ButlerCallbackResolutionState = "received_worker_callback" | "recovered_from_thread_state" | null;
 export type ButlerOperatorCloseoutStatus = "not_required" | "owed" | "posted";
 export type ButlerCloseoutChannel = "none" | "main_chat";
+export type ButlerNextWorkerReportAction = "review" | "reply_to_operator";
+export type ButlerCallbackReviewState = "idle" | "queued" | "running";
+export type ButlerCallbackReviewReason = "worker_callback" | "thread_recovery" | null;
 
 export interface CodexThreadExecutionContractView {
   threadId: string;
@@ -41,9 +44,14 @@ export interface ButlerThreadCallbackView {
   lastEventAt: number | null;
   lastWorkerStatusSeen: CodexThreadStatus | null;
   lastTerminalReportAt: number | null;
+  lastPrivateSteerText: string | null;
+  lastPrivateSteerAt: number | null;
+  nextWorkerReportAction: ButlerNextWorkerReportAction;
   operatorCloseoutStatus: ButlerOperatorCloseoutStatus;
   owesOperatorReply: boolean;
   closeoutChannel: ButlerCloseoutChannel;
+  reviewState: ButlerCallbackReviewState;
+  reviewReason: ButlerCallbackReviewReason;
   closedAt: number | null;
   updatedAt: number;
 }

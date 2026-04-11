@@ -288,9 +288,14 @@ export type ButlerThreadCallback = {
   lastEventAt: number | null;
   lastWorkerStatusSeen: ThreadStatus | null;
   lastTerminalReportAt: number | null;
+  lastPrivateSteerText: string | null;
+  lastPrivateSteerAt: number | null;
+  nextWorkerReportAction: "review" | "reply_to_operator";
   operatorCloseoutStatus: "not_required" | "owed" | "posted";
   owesOperatorReply: boolean;
   closeoutChannel: "none" | "main_chat";
+  reviewState: "idle" | "queued" | "running";
+  reviewReason: "worker_callback" | "thread_recovery" | null;
   closedAt: number | null;
   updatedAt: number;
 };
