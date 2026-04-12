@@ -27,7 +27,8 @@ export type ProofScreenshotReview = {
 export type ResolvedPreviewProof = {
   preview: Pick<PreviewLeaseView, "id" | "threadId" | "projectId" | "projectLabel" | "title" | "stackId">;
   verification: PreviewVerificationView;
-  screenshot: PreviewVerificationArtifactView;
+  primaryScreenshot: PreviewVerificationArtifactView;
+  screenshots: PreviewVerificationArtifactView[];
   video: PreviewVerificationArtifactView | null;
   manifest: PreviewVerificationArtifactView | null;
   trace: PreviewVerificationArtifactView | null;
@@ -559,11 +560,43 @@ export function findVerificationArtifact(
   verification: PreviewVerificationView | null | undefined,
   kind: PreviewVerificationArtifactView["kind"]
 ): PreviewVerificationArtifactView | null {
+  return findVerificationArtifacts(verification, kind)[0] ?? null;
+}
+
+export function findVerificationArtifacts(
+  verification: PreviewVerificationView | null | undefined,
+  kind: PreviewVerificationArtifactView["kind"]
+): PreviewVerificationArtifactView[] {
   if (!verification) {
-    return null;
+    return [];
   }
 
-  return verification.artifacts.find((artifact) => artifact.kind === kind) ?? null;
+  const artifacts = verification.artifacts.filter((artifact) => artifact.kind === kind);
+  if (kind !== "screenshot") {
+    return artifacts;
+  }
+
+  return [...artifacts].sort((left, right) => {
+    const rank = (artifact: PreviewVerificationArtifactView) => {
+      const label = artifact.label.toLowerCase();
+      if (label.includes("final")) {
+        return 0;
+      }
+      if (label.includes("after script")) {
+        return 1;
+      }
+      if (label.includes("ready")) {
+        return 2;
+      }
+      return 3;
+    };
+
+    const delta = rank(left) - rank(right);
+    if (delta !== 0) {
+      return delta;
+    }
+    return left.label.localeCompare(right.label);
+  });
 }
 
 export function stripMarkdownCodeFence(text: string): string {
@@ -687,8 +720,7 @@ export function buildMessagePage(
 
 export function buildLatestProofMap(proofs: PreviewProofRecordView[]): Record<string, PreviewProofRecordView> {
   return Object.fromEntries(
-    proofs
-      .filter((proof) => Boolean(proof.threadId))
+    getVisibleThreadProofs(proofs)
       .reduce((accumulator, proof) => {
         if (!proof.threadId || accumulator.has(proof.threadId)) {
           return accumulator;
@@ -698,4 +730,107 @@ export function buildLatestProofMap(proofs: PreviewProofRecordView[]): Record<st
       }, new Map<string, PreviewProofRecordView>())
       .entries()
   );
+}
+
+export function buildProofsByThreadMap(proofs: PreviewProofRecordView[]): Record<string, PreviewProofRecordView[]> {
+  return Object.fromEntries(
+    getVisibleThreadProofs(proofs)
+      .reduce((accumulator, proof) => {
+        if (!proof.threadId) {
+          return accumulator;
+        }
+        const entries = accumulator.get(proof.threadId) ?? [];
+        entries.push(proof);
+        accumulator.set(proof.threadId, entries);
+        return accumulator;
+      }, new Map<string, PreviewProofRecordView[]>())
+      .entries()
+  );
+}
+
+function getVisibleThreadProofs(proofs: PreviewProofRecordView[]): PreviewProofRecordView[] {
+  const byThread = proofs
+    .filter((proof) => Boolean(proof.threadId))
+    .reduce((accumulator, proof) => {
+      if (!proof.threadId) {
+        return accumulator;
+      }
+      const entries = accumulator.get(proof.threadId) ?? [];
+      entries.push(proof);
+      accumulator.set(proof.threadId, entries);
+      return accumulator;
+    }, new Map<string, PreviewProofRecordView[]>());
+
+  return [...byThread.values()].flatMap((threadProofs) => collapseSupersededThreadProofs(threadProofs));
+}
+
+function collapseSupersededThreadProofs(threadProofs: PreviewProofRecordView[]): PreviewProofRecordView[] {
+  const sorted = [...threadProofs].sort((left, right) => {
+    const leftAt = left.verification.checkedAt || left.updatedAt || left.createdAt;
+    const rightAt = right.verification.checkedAt || right.updatedAt || right.createdAt;
+    return rightAt - leftAt;
+  });
+
+  const visible: PreviewProofRecordView[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const proof of sorted) {
+    const key = getProofTargetKey(proof);
+    if (key) {
+      if (seenKeys.has(key)) {
+        continue;
+      }
+      seenKeys.add(key);
+      visible.push(proof);
+      continue;
+    }
+
+    visible.push(proof);
+  }
+
+  return visible;
+}
+
+function getProofTargetKey(proof: PreviewProofRecordView): string | null {
+  const fromError = parseCheckedUrlFromProofError(proof.verification.error);
+  const candidates = [
+    fromError,
+    proof.verification.url,
+    proof.verification.readiness.finalUrl
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizeProofTargetUrl(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
+function parseCheckedUrlFromProofError(errorText: string | null): string | null {
+  if (!errorText || !errorText.includes("LIVE_CHECK_RESULT")) {
+    return null;
+  }
+
+  const match = errorText.match(/"checkedUrl":"([^"]+)"/);
+  return match?.[1] ?? null;
+}
+
+function normalizeProofTargetUrl(rawUrl: string | null | undefined): string | null {
+  if (!rawUrl) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.pathname.startsWith("/preview/")) {
+      return null;
+    }
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return null;
+  }
 }

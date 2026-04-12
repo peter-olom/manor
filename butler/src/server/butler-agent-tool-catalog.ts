@@ -68,6 +68,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "refreshThreads", description: "Refreshes preview proof state after a verification run." }]
   },
   {
+    name: "verify_browser",
+    label: "Verify browser",
+    description: "Run Playwright verification for a direct URL and persist screenshot, video, trace, and manifest artifacts on the current job thread.",
+    uiEffects: [{ kind: "refreshThreads", description: "Refreshes thread proof state after a browser verification run." }]
+  },
+  {
     name: "review_preview_proof",
     label: "Review preview proof",
     description: "Inspect the latest screenshot proof for one preview or job and surface the video download for human review.",

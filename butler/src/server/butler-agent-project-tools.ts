@@ -1,6 +1,11 @@
 import { Type } from "@sinclair/typebox";
 
 import {
+  decorateProjectArtifactWithAccess,
+  formatProjectArtifactAccessLine,
+  getProjectArtifactUserDownloadUrl
+} from "./project-artifact-access.js";
+import {
   buildProjectPolicy,
   createProjectArtifactFromText,
   createProjectArtifactFromUrl,
@@ -33,15 +38,10 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
         const text =
           artifacts.length === 0
             ? "No durable project artifacts are stored."
-            : artifacts
-                .map(
-                  (artifact, index) =>
-                    `${index + 1}. ${artifact.id} | ${artifact.kind} | ${artifact.title} | ${artifact.fileName} | ${artifact.sizeBytes} bytes`
-                )
-                .join("\n");
+            : artifacts.map((artifact, index) => `${index + 1}. ${artifact.kind} | ${formatProjectArtifactAccessLine(artifact)} | ${artifact.sizeBytes} bytes`).join("\n");
         return {
           content: [{ type: "text", text }],
-          details: { artifacts }
+          details: { artifacts: artifacts.map((artifact) => decorateProjectArtifactWithAccess(artifact)) }
         };
       }
     }),
@@ -107,7 +107,7 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
         access.store.upsertProjectArtifact(artifact);
         return {
           content: [{ type: "text", text: `Saved ${artifact.title} as a durable project artifact.` }],
-          details: { artifact }
+          details: { artifact: decorateProjectArtifactWithAccess(artifact) }
         };
       }
     }),
@@ -173,7 +173,7 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
         access.store.upsertProjectArtifact(artifact);
         return {
           content: [{ type: "text", text: `Downloaded ${artifact.title} into durable project storage.` }],
-          details: { artifact }
+          details: { artifact: decorateProjectArtifactWithAccess(artifact) }
         };
       }
     }),
@@ -213,11 +213,12 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
               type: "text",
               text: [
                 `${artifact.title} | ${artifact.kind} | ${artifact.fileName} | ${artifact.sizeBytes} bytes`,
+                `Download: ${getProjectArtifactUserDownloadUrl(artifact)}`,
                 content.content ? content.content : "Binary or non-text artifact."
               ].join("\n\n")
             }
           ],
-          details: { artifact, content: content.content, contentTruncated: content.truncated }
+          details: { artifact: decorateProjectArtifactWithAccess(artifact), content: content.content, contentTruncated: content.truncated }
         };
       }
     }),

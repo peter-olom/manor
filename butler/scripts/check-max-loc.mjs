@@ -9,6 +9,27 @@ const repoRoot = path.resolve(scriptDir, "..", "..");
 const allowedExtensions = new Set([".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".mts", ".cts"]);
 const excludedSegments = new Set([".git", "node_modules", "dist", "artifacts", "state", "test-results", "repos"]);
 
+function listFilesFromFs(rootDir, currentDir = rootDir) {
+  const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+  const results = [];
+
+  for (const entry of entries) {
+    if (excludedSegments.has(entry.name)) {
+      continue;
+    }
+
+    const absolutePath = path.join(currentDir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...listFilesFromFs(rootDir, absolutePath));
+      continue;
+    }
+
+    results.push(path.relative(rootDir, absolutePath));
+  }
+
+  return results;
+}
+
 function countLines(source) {
   if (!source) {
     return 0;
@@ -37,13 +58,19 @@ function shouldCheck(relativePath) {
   return !segments.some((segment) => excludedSegments.has(segment));
 }
 
-const listedFiles = execFileSync("git", ["ls-files", "-co", "--exclude-standard"], {
-  cwd: repoRoot,
-  encoding: "utf8"
-})
-  .split("\n")
-  .map((entry) => entry.trim())
-  .filter(Boolean);
+const listedFiles = (() => {
+  try {
+    return execFileSync("git", ["ls-files", "-co", "--exclude-standard"], {
+      cwd: repoRoot,
+      encoding: "utf8"
+    })
+      .split("\n")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  } catch {
+    return listFilesFromFs(repoRoot);
+  }
+})();
 
 const violations = listedFiles
   .filter(shouldCheck)

@@ -656,13 +656,11 @@ select {
   align-items: center;
   justify-content: flex-end;
   gap: 12px;
-  flex-wrap: wrap;
-  width: 100%;
+  flex-wrap: nowrap;
   overflow: visible;
 }
 
 .thread-toolbar-disclosure {
-  margin-left: auto;
   position: relative;
   z-index: 12;
 }
@@ -723,21 +721,37 @@ select {
 .thread-preview-verification {
   padding: 12px 18px 0;
   background: var(--panel);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .preview-verification-summary {
   display: grid;
   gap: 8px;
+}
+
+.runtime-item-verification .preview-verification-summary,
+.runtime-item .preview-verification-summary {
+  flex-basis: 100%;
+}
+
+.preview-verification-trigger {
+  width: 100%;
+  display: grid;
+  gap: 8px;
   padding: 12px;
   border: 1px solid var(--line);
   background: color-mix(in srgb, var(--surface) 88%, transparent);
+  text-align: left;
+  cursor: pointer;
 }
 
-.preview-verification-summary.is-passed {
+.preview-verification-summary.is-passed .preview-verification-trigger {
   border-color: color-mix(in srgb, var(--success) 28%, var(--line));
 }
 
-.preview-verification-summary.is-failed {
+.preview-verification-summary.is-failed .preview-verification-trigger {
   border-color: color-mix(in srgb, var(--danger) 28%, var(--line));
 }
 
@@ -775,6 +789,52 @@ select {
   color: var(--muted);
 }
 
+.preview-verification-trigger-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.preview-verification-trigger-summary {
+  min-width: 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.preview-verification-trigger-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.preview-verification-trigger-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preview-verification-trigger-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.preview-verification-body {
+  display: grid;
+  gap: 12px;
+  padding: 0 12px 12px;
+  border: 1px solid var(--line);
+  border-top: 0;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+}
+
 .preview-verification-issues {
   display: grid;
   gap: 6px;
@@ -802,6 +862,16 @@ select {
   color: var(--muted);
   opacity: 0.82;
   cursor: default;
+}
+
+.thread-proof-panel {
+  right: 0;
+}
+
+.thread-proof-list {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
 }
 
 .panel-action {
@@ -2652,11 +2722,12 @@ select {
   }
 
   .thread-toolbar-group {
-    justify-content: space-between;
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
   }
 
   .thread-toolbar-disclosure {
-    margin-left: 0;
     flex: 1 1 auto;
   }
 
@@ -2673,6 +2744,13 @@ select {
 
   .thread-preview-verification {
     padding: 10px 16px 0;
+    gap: 8px;
+  }
+
+  .thread-proof-panel {
+    left: 0;
+    right: 0;
+    width: auto;
   }
 
   .runtime-group {
@@ -3068,6 +3146,10 @@ select {
 
   .modal-backdrop {
     padding: 16px;
+  }
+
+  .preview-verification-summary {
+    flex-basis: 100%;
   }
 
   .toast-region {

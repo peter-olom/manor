@@ -2,8 +2,10 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { createWriteStream, promises as fs } from "node:fs";
 import { Readable } from "node:stream";
+import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { pipeline } from "node:stream/promises";
 
+import { formatProjectArtifactAccessLine } from "./project-artifact-access.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type {
@@ -224,7 +226,7 @@ export async function createProjectArtifactFromUrl(input: {
   const previewChunks: Buffer[] = [];
   let previewBytes = 0;
   let sizeBytes = 0;
-  const source = Readable.fromWeb(response.body as globalThis.ReadableStream<Uint8Array>);
+  const source = Readable.fromWeb(response.body as NodeReadableStream<Uint8Array>);
   source.on("data", (chunk: Buffer | string) => {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     sizeBytes += buffer.byteLength;
@@ -378,7 +380,7 @@ function getPolicyArtifacts(store: ButlerStateStore, policy: ProjectPolicyView):
 
 function summarizePolicyArtifacts(artifacts: ProjectArtifactView[]): string {
   return artifacts.length > 0
-    ? artifacts.map((artifact) => `${artifact.title} (${artifact.fileName})`).join(", ")
+    ? artifacts.map((artifact) => formatProjectArtifactAccessLine(artifact)).join("; ")
     : "none";
 }
 

@@ -140,7 +140,39 @@ export function findVerificationArtifact(
   verification: PreviewVerification,
   kind: PreviewVerificationArtifact["kind"]
 ): PreviewVerificationArtifact | null {
-  return verification.artifacts.find((artifact) => artifact.kind === kind) ?? null;
+  return findVerificationArtifacts(verification, kind)[0] ?? null;
+}
+
+export function findVerificationArtifacts(
+  verification: PreviewVerification,
+  kind: PreviewVerificationArtifact["kind"]
+): PreviewVerificationArtifact[] {
+  const artifacts = verification.artifacts.filter((artifact) => artifact.kind === kind);
+  if (kind !== "screenshot") {
+    return artifacts;
+  }
+
+  return [...artifacts].sort((left, right) => {
+    const rank = (artifact: PreviewVerificationArtifact) => {
+      const label = artifact.label.toLowerCase();
+      if (label.includes("final")) {
+        return 0;
+      }
+      if (label.includes("after script")) {
+        return 1;
+      }
+      if (label.includes("ready")) {
+        return 2;
+      }
+      return 3;
+    };
+
+    const delta = rank(left) - rank(right);
+    if (delta !== 0) {
+      return delta;
+    }
+    return left.label.localeCompare(right.label);
+  });
 }
 
 export function describeArtifactAvailability(artifact: PreviewVerificationArtifact): {

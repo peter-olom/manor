@@ -1,3 +1,4 @@
+import { buildLatestProofMap, buildProofsByThreadMap } from "./butler-agent-helpers.js";
 import { normalizeWindow } from "./state-store-helpers.js";
 import type {
   AppShellSnapshot,
@@ -23,28 +24,14 @@ type SnapshotAccess = {
   getSupervisorSummary(): AppSnapshot["butler"]["supervision"]["supervisor"];
 };
 
-function buildLatestPreviewProofsByThreadId(access: SnapshotAccess): Record<string, PreviewProofRecordView> {
-  return Object.fromEntries(
-    access
-      .listPreviewProofs()
-      .filter((proof) => Boolean(proof.threadId))
-      .reduce((accumulator, proof) => {
-        if (!proof.threadId || accumulator.has(proof.threadId)) {
-          return accumulator;
-        }
-        accumulator.set(proof.threadId, proof);
-        return accumulator;
-      }, new Map<string, PreviewProofRecordView>())
-      .entries()
-  );
-}
-
 export function buildStateStoreRuntimeSnapshot(
   access: SnapshotAccess,
   serviceTemplates: AppSnapshot["butler"]["serviceTemplates"]
 ): RuntimeSnapshot {
+  const previewProofs = access.listPreviewProofs();
   return {
-    latestPreviewProofsByThreadId: buildLatestPreviewProofsByThreadId(access),
+    latestPreviewProofsByThreadId: buildLatestProofMap(previewProofs),
+    previewProofsByThreadId: buildProofsByThreadMap(previewProofs),
     stacks: access.listStackLeases(),
     previews: access.listPreviewLeases(),
     serviceTemplates,
@@ -138,7 +125,8 @@ export function buildStateStoreSnapshot(
         projects: access.listProjectSummaries(),
         supervisor: access.getSupervisorSummary()
       },
-      latestPreviewProofsByThreadId: buildLatestPreviewProofsByThreadId(access),
+      latestPreviewProofsByThreadId: buildLatestProofMap(access.listPreviewProofs()),
+      previewProofsByThreadId: buildProofsByThreadMap(access.listPreviewProofs()),
       stacks: access.listStackLeases(),
       previews: access.listPreviewLeases(),
       serviceTemplates: butler.serviceTemplates,

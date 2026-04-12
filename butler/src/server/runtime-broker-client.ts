@@ -143,22 +143,89 @@ export class RuntimeBrokerClient {
     private readonly token: string | null = null
   ) {}
 
-  private async request<T>(pathname: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(new URL(pathname, this.baseUrl), {
-      ...init,
-      headers: {
-        "content-type": "application/json",
-        ...(this.token ? { "x-manor-broker-token": this.token } : {}),
-        ...(init?.headers ?? {})
-      }
-    });
+  private async sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
 
-    const payload = (await response.json()) as { error?: string } & T;
-    if (!response.ok) {
-      throw new Error(payload.error || `Runtime broker request failed with ${response.status}`);
+  private normalizeMethod(method: string | undefined): string {
+    return method?.trim().toUpperCase() || "GET";
+  }
+
+  private isIdempotentMethod(method: string): boolean {
+    return ["GET", "HEAD", "OPTIONS"].includes(method);
+  }
+
+  private isRetryableFetchError(error: unknown, method: string): boolean {
+    if (!(error instanceof Error)) {
+      return false;
     }
 
-    return payload;
+    const cause = error.cause as
+      | {
+          code?: string;
+          hostname?: string;
+        }
+      | undefined;
+    const brokerHostname = new URL(this.baseUrl).hostname;
+    const code = typeof cause?.code === "string" ? cause.code : "";
+    const hostname = typeof cause?.hostname === "string" ? cause.hostname : "";
+    const idempotent = this.isIdempotentMethod(method);
+    return (
+      error.message === "fetch failed" &&
+      (idempotent
+        ? ["ENOTFOUND", "ECONNREFUSED", "ECONNRESET", "EAI_AGAIN"].includes(code)
+        : ["ENOTFOUND", "ECONNREFUSED", "EAI_AGAIN"].includes(code)) &&
+      (!hostname || hostname === brokerHostname)
+    );
+  }
+
+  private formatRetryableFetchError(error: unknown): Error {
+    if (!(error instanceof Error)) {
+      return new Error(String(error));
+    }
+
+    const cause = error.cause as
+      | {
+          code?: string;
+        }
+      | undefined;
+    const code = typeof cause?.code === "string" ? cause.code : "unavailable";
+    return new Error(`Runtime broker is not ready yet (${code}). Retry shortly.`);
+  }
+
+  private async request<T>(pathname: string, init?: RequestInit): Promise<T> {
+    const retryDelaysMs = [250, 500, 1000, 2000];
+    let attempt = 0;
+    const method = this.normalizeMethod(init?.method);
+
+    while (true) {
+      try {
+        const response = await fetch(new URL(pathname, this.baseUrl), {
+          ...init,
+          headers: {
+            "content-type": "application/json",
+            ...(this.token ? { "x-manor-broker-token": this.token } : {}),
+            ...(init?.headers ?? {})
+          }
+        });
+
+        const payload = (await response.json()) as { error?: string } & T;
+        if (!response.ok) {
+          throw new Error(payload.error || `Runtime broker request failed with ${response.status}`);
+        }
+
+        return payload;
+      } catch (error) {
+        if (!this.isRetryableFetchError(error, method)) {
+          throw error;
+        }
+        if (attempt >= retryDelaysMs.length) {
+          throw this.formatRetryableFetchError(error);
+        }
+        await this.sleep(retryDelaysMs[attempt] ?? 250);
+        attempt += 1;
+      }
+    }
   }
 
   async createLease(input: {
@@ -236,6 +303,7 @@ export class RuntimeBrokerClient {
     leaseId: string;
     mode?: PreviewBrowserMode;
     path?: string;
+    targetUrl?: string;
     headers?: Record<string, string>;
     cookies?: Array<{ name: string; value: string }>;
     waitForSelector?: string;
@@ -247,6 +315,38 @@ export class RuntimeBrokerClient {
       body: JSON.stringify({
         mode: input.mode === "headful" ? "headful" : "headless",
         path: input.path,
+        targetUrl: input.targetUrl,
+        headers: input.headers,
+        cookies: input.cookies,
+        waitForSelector: input.waitForSelector,
+        postLoadWaitMs: input.postLoadWaitMs,
+        script: input.script
+      })
+    });
+  }
+
+  async verifyBrowser(input: {
+    threadId: string;
+    projectId: string;
+    projectLabel: string;
+    title?: string;
+    targetUrl: string;
+    mode?: PreviewBrowserMode;
+    headers?: Record<string, string>;
+    cookies?: Array<{ name: string; value: string }>;
+    waitForSelector?: string;
+    postLoadWaitMs?: number;
+    script?: string;
+  }): Promise<PreviewVerificationView> {
+    return this.request("/browser/verify", {
+      method: "POST",
+      body: JSON.stringify({
+        threadId: input.threadId,
+        projectId: input.projectId,
+        projectLabel: input.projectLabel,
+        title: input.title,
+        targetUrl: input.targetUrl,
+        mode: input.mode === "headful" ? "headful" : "headless",
         headers: input.headers,
         cookies: input.cookies,
         waitForSelector: input.waitForSelector,

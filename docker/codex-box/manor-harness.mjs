@@ -46,7 +46,9 @@ Preview defaults:
   manor-harness preview processes <previewSelector>
   manor-harness preview logs <previewSelector> [--tail <n>]
   manor-harness preview exec <previewSelector> -- <command>
-  manor-harness preview verify <previewSelector> [--mode headless|headful] [--path <route>] [--header KEY=VALUE ...] [--cookie NAME=VALUE ...] [--session-cookie <token>] [--wait-for <selector>] [--wait-ms <n>] [--script "<js>"] [--script-file <path>]
+  manor-harness preview verify <previewSelector> [--mode headless|headful] [--path <route>] [--target-url <url>] [--header KEY=VALUE ...] [--cookie NAME=VALUE ...] [--session-cookie <token>] [--wait-for <selector>] [--wait-ms <n>] [--script "<js>"] [--script-file <path>]
+  manor-harness browser verify --url <url> [--title <text>] [--mode headless|headful] [--header KEY=VALUE ...] [--cookie NAME=VALUE ...] [--session-cookie <token>] [--wait-for <selector>] [--wait-ms <n>] [--script "<js>"] [--script-file <path>]
+  manor-harness browser proof [--run-id <id>]
   manor-harness preview stop <previewSelector>
   manor-harness service templates
   manor-harness service register-template --spec-file <path>
@@ -63,8 +65,10 @@ Proof tips:
   Use --cookie NAME=VALUE to add cookies without hand-building a Cookie header.
   Use --session-cookie <token> as shorthand for better-auth.session_token=<token>.
   Cookies are injected into the browser context directly; headers remain separate.
+  For live deployed pages or arbitrary external URLs, prefer browser verify over redirect previews.
+  Do not use direct curl or fetch from the shared Codex shell to judge live-site browser reachability. That shell is behind restricted egress by design.
   Example:
-    manor-harness preview verify <preview> --mode headful --path buyer/messages --session-cookie buyer-token --script-file .local/proof.js --json
+    manor-harness browser verify --url https://example.com/dashboard --mode headful --session-cookie buyer-token --script-file .local/proof.js --json
 
 Add --json to print the Butler response payload as JSON.
 Set MANOR_THREAD_ID or pass --thread <jobId> to bind the harness explicitly when you are outside the job workspace.`);
@@ -556,6 +560,7 @@ async function main() {
         leaseId: args[2],
         mode: readFlag(args, "--mode"),
         path: readFlag(args, "--path"),
+        targetUrl: readFlag(args, "--target-url"),
         waitForSelector: readFlag(args, "--wait-for"),
         postLoadWaitMs: readPositiveIntFlag(args, "--wait-ms"),
         headers,
@@ -566,6 +571,31 @@ async function main() {
     } else if (subcommand === "stop" && args[2]) {
       action = "preview.stop";
       params = { leaseId: args[2] };
+    }
+  } else if (args[0] === "browser") {
+    const subcommand = args[1];
+    if (subcommand === "verify") {
+      const headers = Object.fromEntries(parseRepeatedKeyValueFlags(args, "--header"));
+      const cookies = parseRepeatedKeyValueFlags(args, "--cookie");
+      const sessionCookie = readFlag(args, "--session-cookie", "");
+      const script = await readScriptValue(args);
+      action = "browser.verify";
+      params = {
+        targetUrl: readFlag(args, "--url"),
+        title: readFlag(args, "--title"),
+        mode: readFlag(args, "--mode"),
+        waitForSelector: readFlag(args, "--wait-for"),
+        postLoadWaitMs: readPositiveIntFlag(args, "--wait-ms"),
+        headers,
+        cookies: Object.fromEntries(cookies),
+        sessionCookie,
+        script
+      };
+    } else if (subcommand === "proof") {
+      action = "browser.proof";
+      params = {
+        runId: readFlag(args, "--run-id")
+      };
     }
   } else if (args[0] === "service") {
     const subcommand = args[1];

@@ -1,5 +1,10 @@
 import { normalizeString, normalizeStringArray } from "./codex-harness-helpers.js";
 import {
+  decorateProjectArtifactWithAccess,
+  formatProjectArtifactAccessLine,
+  getProjectArtifactUserDownloadUrl
+} from "./project-artifact-access.js";
+import {
   buildProjectPolicy,
   createProjectArtifactFromText,
   createProjectArtifactFromUrl,
@@ -36,13 +41,8 @@ export async function handleHarnessArtifactPolicyAction(input: {
       text:
         artifacts.length === 0
           ? "No project artifacts are stored."
-          : artifacts
-              .map(
-                (artifact, index) =>
-                  `${index + 1}. ${artifact.id} | ${artifact.kind} | ${artifact.title} | ${artifact.fileName} | ${artifact.sizeBytes} bytes`
-              )
-              .join("\n"),
-      data: { artifacts }
+          : artifacts.map((artifact, index) => `${index + 1}. ${artifact.kind} | ${formatProjectArtifactAccessLine(artifact)} | ${artifact.sizeBytes} bytes`).join("\n"),
+      data: { artifacts: artifacts.map((artifact) => decorateProjectArtifactWithAccess(artifact)) }
     };
   }
   if (action === "artifact.read") {
@@ -55,9 +55,10 @@ export async function handleHarnessArtifactPolicyAction(input: {
     return {
       text: [
         `${artifact.title} | ${artifact.kind} | ${artifact.fileName} | ${artifact.sizeBytes} bytes`,
+        `Download: ${getProjectArtifactUserDownloadUrl(artifact)}`,
         content.content ? content.content : "Binary or non-text artifact."
       ].join("\n\n"),
-      data: { artifact, content: content.content, contentTruncated: content.truncated }
+      data: { artifact: decorateProjectArtifactWithAccess(artifact), content: content.content, contentTruncated: content.truncated }
     };
   }
   if (action === "artifact.save_text") {
@@ -92,7 +93,7 @@ export async function handleHarnessArtifactPolicyAction(input: {
     store.addEvent(threadId, "harness/artifact/save", `Saved artifact ${artifact.title}`);
     return {
       text: `Saved ${artifact.title} as a durable project artifact.`,
-      data: { artifact }
+      data: { artifact: decorateProjectArtifactWithAccess(artifact) }
     };
   }
   if (action === "artifact.download") {
@@ -127,7 +128,7 @@ export async function handleHarnessArtifactPolicyAction(input: {
     store.addEvent(threadId, "harness/artifact/download", `Downloaded artifact ${artifact.title}`);
     return {
       text: `Downloaded ${artifact.title} into durable project storage.`,
-      data: { artifact }
+      data: { artifact: decorateProjectArtifactWithAccess(artifact) }
     };
   }
   if (action === "policy.list") {

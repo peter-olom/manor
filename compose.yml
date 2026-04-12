@@ -212,13 +212,11 @@ services:
       RUNTIME_OPERATOR_BASE_URL_INTERNAL: http://butler:8080
       RUNTIME_PLAYWRIGHT_CONTAINER: manor-playwright
       RUNTIME_BROKER_TOKEN: ${RUNTIME_BROKER_TOKEN:-manor-local-runtime-broker-token}
-      RUNTIME_ARTIFACTS_DIR: /artifacts
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config/preview-egress-profiles.json:/opt/manor/config/preview-egress-profiles.json:ro
       - ./state/butler:/state:ro
       - ./state/runtime-broker:/runtime-state
-      - ./artifacts:/artifacts
     depends_on:
       preview-egress:
         condition: service_healthy
@@ -239,7 +237,6 @@ services:
     shm_size: "2gb"
     volumes:
       - ./state/playwright:/state
-      - ./artifacts:/artifacts
     networks:
       - control
       - work

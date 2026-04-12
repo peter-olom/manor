@@ -51,14 +51,23 @@ export async function reviewButlerProofScreenshot(
     throw new Error(auth.error);
   }
 
-  const screenshotBuffer = await fs.readFile(proof.screenshot.filePath);
+  const preferredScreenshots = proof.screenshots.filter((artifact) => /after script|final/i.test(artifact.label));
+  const screenshots = (preferredScreenshots.length > 0 ? preferredScreenshots : proof.screenshots).slice(-4);
+  const screenshotPayloads = await Promise.all(
+    screenshots.map(async (artifact) => ({
+      artifact,
+      buffer: await fs.readFile(artifact.filePath)
+    }))
+  );
   const reviewPrompt = [
-    "Review this Playwright screenshot as proof of frontend execution.",
-    "Be strict and describe only what is visibly present in the screenshot.",
+    "Review these Playwright screenshots as proof of frontend execution.",
+    "Treat them as an ordered sequence from the same run.",
+    "Be strict and describe only what is visibly present in the screenshots.",
     "Return JSON only with keys verdict, visibleState, evidence, concern.",
     "Set verdict to one of: credible, unclear, failed.",
     options?.expectedOutcome?.trim() ? `Expected outcome: ${options.expectedOutcome.trim()}` : "",
     `Preview title: ${proof.preview.title}`,
+    `Screenshot sequence: ${screenshots.map((artifact) => artifact.label).join(", ")}`,
     `Verification mode: ${proof.verification.mode}`,
     `Verification status: ${proof.verification.status ?? "none"}`,
     `Verification failure kind: ${proof.verification.failureKind}`,
@@ -79,11 +88,11 @@ export async function reviewButlerProofScreenshot(
           timestamp: Date.now(),
           content: [
             { type: "text", text: reviewPrompt },
-            {
-              type: "image",
-              data: screenshotBuffer.toString("base64"),
-              mimeType: proof.screenshot.contentType || "image/png"
-            }
+            ...screenshotPayloads.map(({ artifact, buffer }) => ({
+              type: "image" as const,
+              data: buffer.toString("base64"),
+              mimeType: artifact.contentType || "image/png"
+            }))
           ]
         }
       ]

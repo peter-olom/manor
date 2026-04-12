@@ -10,6 +10,7 @@ import {
   looksLikeHarnessLookupFailure,
   looksLikePreviewAttempt,
   looksLikeRemoteRuntimeReference,
+  looksLikeSharedShellEgressDiagnosis,
   looksLikeSharedShellBootstrapFailure,
   normalizeEnv,
   normalizeHeartbeatKind,
@@ -233,7 +234,9 @@ export class CodexHarnessService {
     if (report.status === "completed") {
       if (thread.executionContract?.proofMode === "ui" && threadProofs.length === 0) {
         throw new Error(
-          "This job requires persisted browser proof. Run manor-harness preview verify --mode headful --json before reporting completed."
+          thread.executionContract?.executionLane === "live-remote-runtime"
+            ? "This job requires persisted browser proof. Run manor-harness browser verify --url <https://...> --mode headful --json before reporting completed."
+            : "This job requires persisted browser proof. Run manor-harness preview verify --mode headful --json before reporting completed."
         );
       }
       return;
@@ -241,6 +244,15 @@ export class CodexHarnessService {
     if (looksLikeHarnessLookupFailure(combined)) {
       throw new Error(
         `This job already has a Manor harness binding. Retry from ${capability.cwd} or use manor-harness --thread ${capability.threadId} instead of reporting the job blocked.`
+      );
+    }
+    if (
+      executionLane === "live-remote-runtime" &&
+      thread.executionContract?.proofMode === "ui" &&
+      looksLikeSharedShellEgressDiagnosis(combined)
+    ) {
+      throw new Error(
+        "The shared Codex shell is intentionally behind restricted egress. Do not report a live-site browser job blocked from direct shell curl or fetch checks. Verify broker health, then rerun manor-harness browser verify."
       );
     }
 
@@ -761,6 +773,16 @@ export class CodexHarnessService {
       if (!summary) {
         throw new Error("assist.request requires a non-empty summary");
       }
+      const combined = [summary, details, question].filter(Boolean).join("\n");
+      if (
+        thread.executionContract?.executionLane === "live-remote-runtime" &&
+        thread.executionContract?.proofMode === "ui" &&
+        looksLikeSharedShellEgressDiagnosis(combined)
+      ) {
+        throw new Error(
+          "The shared Codex shell is intentionally behind restricted egress. Do not escalate a live-site browser job from direct shell curl or fetch denials. Check Butler and runtime-broker health, then rerun manor-harness browser verify."
+        );
+      }
       const workspaceBootstrap = await inspectWorkspaceBootstrap(capability.cwd);
       const stacks = await this.reconcileThreadStacks(capability.threadId);
       const activeStack = stacks.find((stack) => stack.status !== "stopped") ?? null;
@@ -781,6 +803,11 @@ export class CodexHarnessService {
       if (workspaceBootstrap?.ecosystem === "node") {
         responseLines.push(
           "The shared Codex shell is for git, workspace, and repo-directed setup work. Use host runtime there only when the contract lane or repo guidance explicitly says to run on the host."
+        );
+      }
+      if (thread.executionContract?.executionLane === "live-remote-runtime" && thread.executionContract?.proofMode === "ui") {
+        responseLines.push(
+          "The shared Codex shell sits behind restricted egress. Do not use direct curl or fetch from that shell to judge live-site reachability for browser proof."
         );
       }
       responseLines.push(`If you drift out of ${capability.cwd}, keep using the thread-bound harness command instead of concluding Manor is unavailable.`);
@@ -807,7 +834,11 @@ export class CodexHarnessService {
           : "Do not hunt for Manor-specific bootstrap magic. Run the repo commands explicitly inside the assigned lane."
       );
       if (thread.executionContract?.proofMode === "ui") {
-        responseLines.push("For authenticated headed proof, prefer `manor-harness preview verify <preview> --session-cookie <token>` or `--cookie NAME=VALUE` instead of wrapping a second `page.goto()` inside the browser script.");
+        responseLines.push(
+          thread.executionContract?.executionLane === "live-remote-runtime"
+            ? "For live deployed browser proof, prefer `manor-harness browser verify --url <https://...> --session-cookie <token>` or `--cookie NAME=VALUE` instead of redirect previews or scripts that call `page.goto()` again."
+            : "For authenticated headed proof, prefer `manor-harness preview verify <preview> --session-cookie <token>` or `--cookie NAME=VALUE` instead of wrapping a second `page.goto()` inside the browser script."
+        );
       }
       responseLines.push("Do not use `corepack enable` in the shared shell for preview-oriented runtime setup. If repo-local instructions explicitly require a root-level host install step, follow the repo guidance instead.");
       responseLines.push(
@@ -1090,6 +1121,7 @@ export class CodexHarnessService {
       const preview = await this.resolveThreadPreview(capability, normalizeString(params.leaseId));
       const mode = normalizeString(params.mode) === "headful" ? "headful" : "headless";
       const targetPath = normalizeString(params.path) || undefined;
+      const targetUrl = normalizeString(params.targetUrl) || undefined;
       const script = normalizeString(params.script) || undefined;
       const waitForSelector = normalizeString(params.waitForSelector) || undefined;
       const postLoadWaitMs = normalizePositiveInteger(params.postLoadWaitMs) ?? undefined;
@@ -1106,6 +1138,7 @@ export class CodexHarnessService {
           leaseId: preview.id,
           mode,
           path: targetPath,
+          targetUrl,
           script,
           waitForSelector,
           postLoadWaitMs,
@@ -1122,6 +1155,57 @@ export class CodexHarnessService {
           result.ok
             ? `Preview verified (${result.mode}): ${result.title || result.url}`
             : `Preview verification failed (${result.mode}) kind=${result.failureKind}${result.status ? ` status=${result.status}` : ""}.`,
+        data: { verification: result }
+      };
+    }
+
+    if (action === "browser.verify") {
+      const mode = normalizeString(params.mode) === "headful" ? "headful" : "headless";
+      const targetUrl = normalizeString(params.targetUrl);
+      const title = normalizeString(params.title) || targetUrl || "Browser proof";
+      const script = normalizeString(params.script) || undefined;
+      const waitForSelector = normalizeString(params.waitForSelector) || undefined;
+      const postLoadWaitMs = normalizePositiveInteger(params.postLoadWaitMs) ?? undefined;
+      const headers = normalizeEnv(params.headers);
+      const cookies = normalizeEnv(params.cookies);
+      const sessionCookie = normalizeString(params.sessionCookie);
+      if (!targetUrl) {
+        throw new Error("browser.verify requires targetUrl");
+      }
+      if (sessionCookie) {
+        cookies["better-auth.session_token"] = sessionCookie;
+      }
+      const project = this.resolveWorkspaceProject(capability.cwd, thread);
+      const result = decoratePreviewVerification(
+        await this.runtimeBroker.verifyBrowser({
+          threadId: capability.threadId,
+          projectId: project.id,
+          projectLabel: project.label,
+          title,
+          targetUrl,
+          mode,
+          script,
+          waitForSelector,
+          postLoadWaitMs,
+          headers: Object.keys(headers).length > 0 ? headers : undefined,
+          cookies:
+            Object.keys(cookies).length > 0
+              ? Object.entries(cookies).map(([name, value]) => ({ name, value }))
+              : undefined
+        })
+      );
+      this.store.recordBrowserVerification({
+        threadId: capability.threadId,
+        projectId: project.id,
+        projectLabel: project.label,
+        title,
+        verification: result
+      });
+      return {
+        text:
+          result.ok
+            ? `Browser verified (${result.mode}): ${result.title || result.url}`
+            : `Browser verification failed (${result.mode}) kind=${result.failureKind}${result.status ? ` status=${result.status}` : ""}.`,
         data: { verification: result }
       };
     }
@@ -1173,6 +1257,58 @@ export class CodexHarnessService {
         ].join("\n"),
         data: {
           preview,
+          verification
+        }
+      };
+    }
+
+    if (action === "browser.proof") {
+      const runId = normalizeString(params.runId) || null;
+      const browserProof =
+        runId
+          ? this.store
+              .listPreviewProofs()
+              .find(
+                (proof) =>
+                  proof.threadId === capability.threadId &&
+                  proof.previewId === `browser:${capability.threadId}` &&
+                  proof.verification.runId === runId
+              ) ?? null
+          : this.store
+              .listPreviewProofs()
+              .find(
+                (proof) =>
+                  proof.threadId === capability.threadId && proof.previewId === `browser:${capability.threadId}`
+              ) ?? null;
+      if (!browserProof) {
+        throw new Error(`Thread ${capability.threadId} does not have a recorded browser proof yet.`);
+      }
+      const verification = decoratePreviewVerification(browserProof.verification);
+      const artifactLines = await Promise.all(
+        verification.artifacts.map(async (artifact) => {
+          const exists =
+            artifact.availability === "available" && artifact.filePath
+              ? await fs
+                  .stat(artifact.filePath)
+                  .then(() => true)
+                  .catch(() => false)
+              : false;
+          const availability = artifact.availability === "available" && exists ? "ready" : artifact.availability;
+          return `${artifact.kind} | file=${artifact.filePath || "(none)"} | url=${artifact.url ?? "(none)"} | download=${artifact.downloadUrl ?? "(none)"} | ${availability}`;
+        })
+      );
+
+      return {
+        text: [
+          `Browser proof for thread ${capability.threadId}`,
+          `Verification run=${verification.runId} mode=${verification.mode} ok=${verification.ok} status=${verification.status ?? "none"} failure=${verification.failureKind}`,
+          verification.phases.length > 0
+            ? `Phases:\n${verification.phases.map((phase, index) => `${index + 1}. ${phase.label} | ${phase.status} | ${phase.durationMs}ms${phase.message ? ` | ${phase.message}` : ""}`).join("\n")}`
+            : "Phases: none",
+          `Readiness: routeOk=${verification.readiness.routeOk} selector=${verification.readiness.selector ?? "(none)"} selectorSatisfied=${verification.readiness.selectorSatisfied === null ? "n/a" : verification.readiness.selectorSatisfied} assetFailures=${verification.readiness.sameOriginAssetFailureCount} websocketFailures=${verification.readiness.websocketFailureCount} loginRedirect=${verification.readiness.loginRedirectDetected}`,
+          artifactLines.length > 0 ? `Artifacts:\n${artifactLines.join("\n")}` : "Artifacts: none"
+        ].join("\n"),
+        data: {
           verification
         }
       };

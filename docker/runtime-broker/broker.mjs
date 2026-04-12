@@ -18,23 +18,21 @@ const brokerToken = process.env.RUNTIME_BROKER_TOKEN ?? null;
 const codexAccessRegistryPath = process.env.RUNTIME_CODEX_ACCESS_FILE ?? "/state/codex-broker-access.json";
 const stackBindingRegistryPath = process.env.RUNTIME_STACK_BINDINGS_FILE ?? "/opt/manor/runtime-broker/state/stack-thread-bindings.json";
 const internalOperatorBaseUrl = process.env.RUNTIME_OPERATOR_BASE_URL_INTERNAL ?? "http://butler:8080";
+const codexWorkspaceContainerName = process.env.RUNTIME_CODEX_WORKSPACE_CONTAINER ?? "manor-codex-box";
+const butlerContainerName = process.env.RUNTIME_BUTLER_CONTAINER ?? "manor-butler";
+const butlerArtifactsRootDir = path.posix.resolve(process.env.RUNTIME_BUTLER_ARTIFACTS_DIR ?? "/artifacts");
 const playwrightContainerName = process.env.RUNTIME_PLAYWRIGHT_CONTAINER ?? "manor-playwright";
 const runtimeBrokerContainerName = process.env.RUNTIME_BROKER_CONTAINER ?? "manor-runtime-broker";
 const previewEgressContainerName = process.env.RUNTIME_PREVIEW_EGRESS_CONTAINER ?? "manor-preview-egress";
-const artifactsRootDir = path.resolve(process.env.RUNTIME_ARTIFACTS_DIR ?? "/artifacts");
 const playwrightArtifactsScratchDir = process.env.RUNTIME_PLAYWRIGHT_ARTIFACT_ROOT ?? "/tmp/manor-playwright-artifacts";
 const stackNetworkPrefix = process.env.RUNTIME_STACK_NETWORK_PREFIX ?? "manor-stack";
 const stackVolumePrefix = process.env.RUNTIME_STACK_VOLUME_PREFIX ?? "manor-stack-vol";
 const stackInfraReconnectIntervalMs = Number(process.env.RUNTIME_STACK_INFRA_RECONNECT_INTERVAL_MS ?? "30000");
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
-const leaseTransitions = new Map();
-const leaseBootstrapStates = new Map();
-const activeLeaseBootstrapMonitors = new Set();
-const pendingPreviewLeases = new Map();
-const retainedPreviewLeases = new Map();
+const leaseTransitions = new Map(), leaseBootstrapStates = new Map(), activeLeaseBootstrapMonitors = new Set();
+const pendingPreviewLeases = new Map(), retainedPreviewLeases = new Map();
 const noHeartbeatReadyDelayMs = Number(process.env.RUNTIME_NO_HEARTBEAT_READY_DELAY_MS ?? "2000");
-const app = express();
-app.use(express.json());
+const app = express(); app.use(express.json());
 const brokerContext = {
   previewNetwork,
   previewOutboundNetwork,
@@ -47,10 +45,12 @@ const brokerContext = {
   codexAccessRegistryPath,
   stackBindingRegistryPath,
   internalOperatorBaseUrl,
+  codexWorkspaceContainerName,
+  butlerContainerName,
+  butlerArtifactsRootDir,
   playwrightContainerName,
   runtimeBrokerContainerName,
   previewEgressContainerName,
-  artifactsRootDir,
   playwrightArtifactsScratchDir,
   stackNetworkPrefix,
   stackVolumePrefix,
@@ -126,6 +126,7 @@ const {
   overwriteManagedStackVolume,
   parseAliases,
   persistVerificationArtifacts,
+  resolveCodexWorkspaceMounts,
   previewEgressProfiles,
   reconcileManagedRuntimeState,
   rejectIfLeaseRetainedFailed,
@@ -595,6 +596,7 @@ app.post("/leases", async (request, response) => {
     }
 
     const networkName = stack?.Name || previewNetwork;
+    const workspaceMounts = await resolveCodexWorkspaceMounts();
 
     const runtimeContainer = await docker.createContainer({
       Image: lease.image,
@@ -624,8 +626,8 @@ app.post("/leases", async (request, response) => {
       },
       HostConfig: {
         AutoRemove: true,
-        VolumesFrom: ["manor-codex-box"],
-        NetworkMode: networkName
+        NetworkMode: networkName,
+        Mounts: workspaceMounts
       },
       NetworkingConfig: {
         EndpointsConfig: {
@@ -642,6 +644,7 @@ app.post("/leases", async (request, response) => {
     }
 
     await runtimeContainer.start();
+    await ensureNetworkConnection(sharedWorkNetwork, lease.containerName, aliases);
     const container = await inspectContainer(lease.containerName);
     if (!container) {
       throw new Error("Preview container did not start");
@@ -1038,10 +1041,14 @@ app.post("/leases/:leaseId/verify", async (request, response) => {
     const baseTargetUrl = internalTargetHost
       ? `http://${internalTargetHost}:${targetPort}/`
       : `${internalOperatorBaseUrl}${routeBase}/${request.params.leaseId}/`;
-    const targetUrl = appendPreviewRoutePath(baseTargetUrl, request.body?.path);
+    const requestedTargetUrl = normalizeString(request.body?.targetUrl);
+    const targetUrl = requestedTargetUrl || appendPreviewRoutePath(baseTargetUrl, request.body?.path);
+    if (!/^https?:\/\//i.test(targetUrl)) {
+      response.status(400).json({ error: "targetUrl must be an absolute http or https URL when provided." });
+      return;
+    }
     const runId = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
     const remoteOutputDir = path.posix.join(playwrightArtifactsScratchDir, request.params.leaseId, runId);
-    const localOutputDir = path.join(artifactsRootDir, "previews", request.params.leaseId, runId);
     const mode = request.body?.mode === "headful" ? "headful" : "headless";
     const script = normalizeString(request.body?.script) || undefined;
     const waitForSelector = normalizeString(request.body?.waitForSelector) || undefined;
@@ -1078,8 +1085,92 @@ app.post("/leases/:leaseId/verify", async (request, response) => {
       throw new Error(output.stderr.trim() || output.stdout.trim() || "Preview verification failed");
     }
     const parsed = JSON.parse(output.stdout.trim());
-    const persisted = await persistVerificationArtifacts(playwrightContainer, parsed, remoteOutputDir, localOutputDir);
+    const persisted = await persistVerificationArtifacts(playwrightContainer, parsed, remoteOutputDir, {
+      leaseId: request.params.leaseId,
+      runId
+    });
     response.json(persisted);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/browser/verify", async (request, response) => {
+  if (!hasBrokerAccess(request)) {
+    response.status(403).json({ error: "Forbidden" });
+    return;
+  }
+
+  const threadId = normalizeString(request.body?.threadId);
+  const projectId = normalizeString(request.body?.projectId);
+  const projectLabel = normalizeString(request.body?.projectLabel);
+  const title = normalizeString(request.body?.title) || "Browser proof";
+  const targetUrl = normalizeString(request.body?.targetUrl);
+  if (!threadId || !projectId || !projectLabel || !targetUrl) {
+    response.status(400).json({ error: "threadId, projectId, projectLabel, and targetUrl are required." });
+    return;
+  }
+  if (!/^https?:\/\//i.test(targetUrl)) {
+    response.status(400).json({ error: "targetUrl must be an absolute http or https URL." });
+    return;
+  }
+
+  try {
+    const playwrightContainer = docker.getContainer(playwrightContainerName);
+    await playwrightContainer.inspect();
+    const runId = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+    const remoteOutputDir = path.posix.join(playwrightArtifactsScratchDir, "browser", threadId, runId);
+    const mode = request.body?.mode === "headful" ? "headful" : "headless";
+    const script = normalizeString(request.body?.script) || undefined;
+    const waitForSelector = normalizeString(request.body?.waitForSelector) || undefined;
+    const postLoadWaitMs =
+      typeof request.body?.postLoadWaitMs === "number" && Number.isFinite(request.body.postLoadWaitMs)
+        ? Math.max(0, Math.trunc(request.body.postLoadWaitMs))
+        : undefined;
+    const headers = normalizeHeaderMap(request.body?.headers);
+    const cookies = normalizeCookieEntries(request.body?.cookies);
+    const options = JSON.stringify({
+      runId,
+      mode,
+      targetUrl,
+      outputDir: remoteOutputDir,
+      waitForSelector,
+      postLoadWaitMs,
+      headers,
+      cookies,
+      script
+    });
+    const execCommand =
+      mode === "headful"
+        ? ["xvfb-run", "-a", "node", "/opt/manor/playwright/verify-preview.mjs", options]
+        : ["node", "/opt/manor/playwright/verify-preview.mjs", options];
+    const exec = await playwrightContainer.exec({
+      AttachStdout: true,
+      AttachStderr: true,
+      Cmd: execCommand,
+      WorkingDir: "/opt/manor/playwright",
+      Tty: false
+    });
+    const output = await collectExecOutput(playwrightContainer, exec);
+    if (output.exitCode !== 0) {
+      throw new Error(output.stderr.trim() || output.stdout.trim() || "Browser verification failed");
+    }
+    const parsed = JSON.parse(output.stdout.trim());
+    const persisted = await persistVerificationArtifacts(playwrightContainer, parsed, remoteOutputDir, {
+      kind: "browser",
+      threadId,
+      runId
+    });
+    response.json({
+      ...persisted,
+      browserProof: {
+        threadId,
+        projectId,
+        projectLabel,
+        title,
+        targetUrl
+      }
+    });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
@@ -1257,13 +1348,7 @@ app.post("/services", async (request, response) => {
 
     const serviceContainer = await docker.createContainer(containerOptions);
     await serviceContainer.start();
-    if (!stackId) {
-      try {
-        await docker.getNetwork(sharedWorkNetwork).connect({ Container: serviceContainer.id });
-      } catch {
-        // already connected or shared network unavailable
-      }
-    }
+    await ensureNetworkConnection(sharedWorkNetwork, serviceContainer.id, serviceAliases);
     const container = await inspectContainer(containerName);
     if (!container) {
       throw new Error("Service container did not start");

@@ -496,6 +496,7 @@ export function normalizePreviewVerification(
       verification.failureKind === "http" ||
       verification.failureKind === "auth" ||
       verification.failureKind === "readiness" ||
+      verification.failureKind === "verifier" ||
       verification.failureKind === "script" ||
       verification.failureKind === "artifact" ||
       verification.failureKind === "unknown"

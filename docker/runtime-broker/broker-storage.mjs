@@ -1,10 +1,8 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
-import { Readable } from "node:stream";
 
 export function createBrokerStorage(context, deps = {}) {
-  const { previewNetwork, previewOutboundNetwork, sharedWorkNetwork, previewImage, routeBase, previewEgressConfigPath, previewEgressAdminUrl, brokerToken, codexAccessRegistryPath, stackBindingRegistryPath, internalOperatorBaseUrl, playwrightContainerName, runtimeBrokerContainerName, previewEgressContainerName, artifactsRootDir, playwrightArtifactsScratchDir, stackNetworkPrefix, stackVolumePrefix, stackInfraReconnectIntervalMs, docker, leaseTransitions, leaseBootstrapStates, activeLeaseBootstrapMonitors, pendingPreviewLeases, retainedPreviewLeases, noHeartbeatReadyDelayMs } = context;
+  const { previewNetwork, previewOutboundNetwork, sharedWorkNetwork, previewImage, routeBase, previewEgressConfigPath, previewEgressAdminUrl, brokerToken, codexAccessRegistryPath, stackBindingRegistryPath, internalOperatorBaseUrl, codexWorkspaceContainerName, butlerContainerName, butlerArtifactsRootDir, playwrightContainerName, runtimeBrokerContainerName, previewEgressContainerName, playwrightArtifactsScratchDir, stackNetworkPrefix, stackVolumePrefix, stackInfraReconnectIntervalMs, docker, leaseTransitions, leaseBootstrapStates, activeLeaseBootstrapMonitors, pendingPreviewLeases, retainedPreviewLeases, noHeartbeatReadyDelayMs } = context;
   const {
     ensureImage,
     ensureVolumeIsIdle,
@@ -21,6 +19,40 @@ export function createBrokerStorage(context, deps = {}) {
     resolveWorktreeProjectInfo,
     toManagedVolumeName
   } = deps;
+
+async function resolveCodexWorkspaceMounts() {
+  const codexContainer = docker.getContainer(codexWorkspaceContainerName);
+  const inspection = await codexContainer.inspect();
+  const mounts = Array.isArray(inspection.Mounts) ? inspection.Mounts : [];
+  const workspaceMounts = mounts
+    .filter((mount) => mount?.Destination === "/repos")
+    .map((mount) => {
+      if (mount.Type === "volume" && mount.Name) {
+        return {
+          Type: "volume",
+          Source: mount.Name,
+          Target: mount.Destination,
+          ReadOnly: mount.RW === false
+        };
+      }
+      if (mount.Source) {
+        return {
+          Type: mount.Type || "bind",
+          Source: mount.Source,
+          Target: mount.Destination,
+          ReadOnly: mount.RW === false
+        };
+      }
+      return null;
+    })
+    .filter(Boolean);
+
+  if (workspaceMounts.length === 0) {
+    throw new Error(`Could not resolve /repos mount from ${codexWorkspaceContainerName}`);
+  }
+
+  return workspaceMounts;
+}
 
 async function listStackMemberContainers(stackId) {
   return listManagedContainers((labels) => labels["manor.stack-id"] === stackId);
@@ -333,11 +365,12 @@ async function serializeStackFromNetwork(networkSummary) {
 }
 
 async function collectExecOutput(containerRef, exec, options = {}) {
-  const stdinText = typeof options.stdin === "string" ? options.stdin : "";
+  const stdinPayload =
+    typeof options.stdin === "string" || Buffer.isBuffer(options.stdin) ? options.stdin : "";
   const stdinProvided = options.stdinProvided === true;
   const stream = await exec.start({ hijack: true, stdin: stdinProvided });
   if (stdinProvided) {
-    stream.write(stdinText);
+    stream.write(stdinPayload);
     stream.end();
   }
   const output = await new Promise((resolve, reject) => {
@@ -400,9 +433,37 @@ async function removeContainerPath(containerRef, targetPath) {
   await collectExecOutput(containerRef, exec).catch(() => null);
 }
 
-async function persistVerificationArtifacts(containerRef, verification, remoteOutputDir, localOutputDir) {
-  fs.mkdirSync(localOutputDir, { recursive: true });
+async function writeContainerFile(containerRef, filePath, contents) {
+  const exec = await containerRef.exec({
+    AttachStdout: true,
+    AttachStderr: true,
+    AttachStdin: true,
+    Cmd: [
+      "bash",
+      "-lc",
+      `mkdir -p ${JSON.stringify(path.posix.dirname(filePath))} && cat > ${JSON.stringify(filePath)}`
+    ],
+    Tty: false
+  });
+  const output = await collectExecOutput(containerRef, exec, { stdin: contents, stdinProvided: true });
+  if (output.exitCode !== 0) {
+    throw new Error(output.stderr.trim() || output.stdout.trim() || `Could not write container file ${filePath}`);
+  }
+}
+
+function resolveVerificationArtifactTargetDir(outputLocation) {
+  if (outputLocation?.kind === "browser") {
+    return path.posix.join(butlerArtifactsRootDir, "browser", outputLocation.threadId, outputLocation.runId);
+  }
+
+  return path.posix.join(butlerArtifactsRootDir, "previews", outputLocation.leaseId, outputLocation.runId);
+}
+
+async function persistVerificationArtifacts(containerRef, verification, remoteOutputDir, outputLocation) {
   const archiveStartedAt = Date.now();
+  const butlerContainer = docker.getContainer(butlerContainerName);
+  await butlerContainer.inspect();
+  const targetDir = resolveVerificationArtifactTargetDir(outputLocation);
 
   const persistedArtifacts = [];
   for (const artifact of Array.isArray(verification.artifacts) ? verification.artifacts : []) {
@@ -416,24 +477,23 @@ async function persistVerificationArtifacts(containerRef, verification, remoteOu
     if (!remotePath) {
       continue;
     }
-    const localPath = path.join(localOutputDir, path.basename(remotePath));
+    const localPath = path.posix.join(targetDir, path.posix.basename(remotePath));
     const contents = await readContainerFile(containerRef, remotePath);
-    fs.writeFileSync(localPath, contents);
-    const stats = fs.statSync(localPath);
+    await writeContainerFile(butlerContainer, localPath, contents);
     persistedArtifacts.push({
       ...artifact,
-      fileName: path.basename(localPath),
+      fileName: path.posix.basename(localPath),
       filePath: localPath,
-      sizeBytes: stats.size,
+      sizeBytes: contents.byteLength,
       url: null
     });
   }
 
-  const manifestPath = path.join(localOutputDir, "manifest.json");
+  const manifestPath = path.posix.join(targetDir, "manifest.json");
   const manifestArtifact = {
     kind: "manifest",
     label: "Manifest",
-    fileName: path.basename(manifestPath),
+    fileName: path.posix.basename(manifestPath),
     filePath: manifestPath,
     contentType: "application/json",
     sizeBytes: 0,
@@ -461,15 +521,16 @@ async function persistVerificationArtifacts(containerRef, verification, remoteOu
       : {}),
     phaseCount: Array.isArray(persistedVerification.phases) ? persistedVerification.phases.length : 0
   };
-  fs.writeFileSync(manifestPath, `${JSON.stringify(persistedVerification, null, 2)}\n`, "utf8");
-  manifestArtifact.sizeBytes = fs.statSync(manifestPath).size;
-  fs.writeFileSync(manifestPath, `${JSON.stringify(persistedVerification, null, 2)}\n`, "utf8");
+  const manifestBuffer = Buffer.from(`${JSON.stringify(persistedVerification, null, 2)}\n`, "utf8");
+  manifestArtifact.sizeBytes = manifestBuffer.byteLength;
+  await writeContainerFile(butlerContainer, manifestPath, manifestBuffer);
 
   await removeContainerPath(containerRef, remoteOutputDir);
   return persistedVerification;
 }
 
   return {
+    resolveCodexWorkspaceMounts,
     listStackMemberContainers,
     listManagedServiceContainersByVolume,
     ensureManagedStackVolume,
@@ -482,6 +543,7 @@ async function persistVerificationArtifacts(containerRef, verification, remoteOu
     collectExecOutput,
     readContainerFile,
     removeContainerPath,
+    writeContainerFile,
     persistVerificationArtifacts
   };
 }

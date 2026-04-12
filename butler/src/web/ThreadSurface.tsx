@@ -72,6 +72,7 @@ export function ThreadSurface({
   const [followRun, setFollowRun] = useState(true);
   const [showTimeline, setShowTimeline] = useState(false);
   const [showThreadRuntime, setShowThreadRuntime] = useState(false);
+  const [showThreadProofs, setShowThreadProofs] = useState(false);
   const [busyStackId, setBusyStackId] = useState<string | null>(null);
   const [busyServiceId, setBusyServiceId] = useState<string | null>(null);
   const [busyPreviewVerification, setBusyPreviewVerification] = useState<{ leaseId: string; mode: "headless" | "headful" } | null>(null);
@@ -90,6 +91,7 @@ export function ThreadSurface({
     setThreadImages([]);
     setFollowRun(true);
     setShowThreadRuntime(false);
+    setShowThreadProofs(false);
   }, [activeThread?.id]);
 
   useEffect(() => {
@@ -396,9 +398,15 @@ export function ThreadSurface({
     activeThread && runtime ? runtime.previews.filter((lease) => lease.threadId === activeThread.id && lease.status !== "stopped") : [];
   const activeThreadServices =
     activeThread && runtime ? runtime.services.filter((service) => service.threadId === activeThread.id && service.status !== "stopped") : [];
+  const activeThreadPreviewProofs =
+    activeThread && runtime
+      ? runtime.previewProofsByThreadId[activeThread.id] ??
+        (runtime.latestPreviewProofsByThreadId[activeThread.id] ? [runtime.latestPreviewProofsByThreadId[activeThread.id]!] : [])
+      : [];
   const activeThreadPreviewVerification =
+    activeThreadPreviewProofs[0]?.verification ??
     activeThreadPreviews.find((lease) => Boolean(lease.lastVerification))?.lastVerification ??
-    (activeThread && runtime ? runtime.latestPreviewProofsByThreadId[activeThread.id]?.verification ?? null : null);
+    null;
   const activeThreadRuntimeLeaseCount = activeThreadStacks.length + activeThreadPreviews.length + activeThreadServices.length;
 
   if (!shell || !runtime || !activeThread) {
@@ -412,9 +420,61 @@ export function ThreadSurface({
     <div className="workspace-panel">
       <div className="thread-toolbar">
         <div className="thread-toolbar-group">
+          {activeThreadPreviewVerification ? (
+            <div className="conversation-disclosure thread-toolbar-disclosure">
+              <button
+                className={`conversation-toggle thread-toolbar-toggle${showThreadProofs ? " is-active" : ""}`}
+                onClick={() => {
+                  setShowThreadProofs((current) => {
+                    const next = !current;
+                    if (next) {
+                      setShowThreadRuntime(false);
+                    }
+                    return next;
+                  });
+                }}
+                type="button"
+              >
+                <span className="conversation-toggle-icon" aria-hidden="true">
+                  {showThreadProofs ? <ChevronUpIcon /> : <ChevronDownIcon />}
+                </span>
+                <span className="conversation-toggle-label">{showThreadProofs ? "Hide proof" : "Show proof"}</span>
+                <span className="conversation-toggle-count">{activeThreadPreviewProofs.length || 1}</span>
+              </button>
+              {showThreadProofs ? (
+                <div className="conversation-disclosure-panel runtime-disclosure-panel thread-proof-panel">
+                  <div className="thread-proof-list">
+                    {(activeThreadPreviewProofs.length > 1
+                      ? activeThreadPreviewProofs.map((proof) => proof.verification)
+                      : [activeThreadPreviewVerification]
+                    ).map((verification) => (
+                      <PreviewVerificationSummary
+                        key={verification.runId}
+                        verification={verification}
+                        onPreviewArtifact={onPreviewMedia}
+                        onResourceUnavailable={(message) => showToast(message, "error", 5000)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {activeThreadRuntimeLeaseCount > 0 ? (
             <div className="conversation-disclosure thread-toolbar-disclosure">
-              <button className={`conversation-toggle thread-toolbar-toggle${showThreadRuntime ? " is-active" : ""}`} onClick={() => setShowThreadRuntime((current) => !current)} type="button">
+              <button
+                className={`conversation-toggle thread-toolbar-toggle${showThreadRuntime ? " is-active" : ""}`}
+                onClick={() => {
+                  setShowThreadRuntime((current) => {
+                    const next = !current;
+                    if (next) {
+                      setShowThreadProofs(false);
+                    }
+                    return next;
+                  });
+                }}
+                type="button"
+              >
                 <span className="conversation-toggle-icon" aria-hidden="true">
                   {showThreadRuntime ? <ChevronUpIcon /> : <ChevronDownIcon />}
                 </span>
@@ -454,11 +514,6 @@ export function ThreadSurface({
           </button>
         </div>
       </div>
-      {activeThreadPreviewVerification ? (
-        <div className="thread-preview-verification">
-          <PreviewVerificationSummary verification={activeThreadPreviewVerification} onPreviewArtifact={onPreviewMedia} onResourceUnavailable={(message) => showToast(message, "error", 5000)} />
-        </div>
-      ) : null}
 
       <div className={`workspace-body ${showTimeline ? "is-detail-open" : "is-detail-closed"}`}>
         <section className="conversation-pane conversation-pane-full">

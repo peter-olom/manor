@@ -82,3 +82,9 @@ export function looksLikePreviewAttempt(text: string): boolean {
 export function looksLikeRemoteRuntimeReference(text: string): boolean {
   return detectExecutionLane(text) === "live-remote-runtime";
 }
+
+export function looksLikeSharedShellEgressDiagnosis(text: string): boolean {
+  return /manor-egress|err_access_denied|squid 403|direct host checks?|job host cannot reach|outbound https is being denied|curl(?:\s+-\S+)*\s+https?:\/\//i.test(
+    text
+  );
+}

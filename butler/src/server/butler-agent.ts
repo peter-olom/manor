@@ -21,6 +21,7 @@ import {
   extractLatestNoticeTexts,
   extractWorkspaceMentions,
   findVerificationArtifact,
+  findVerificationArtifacts,
   getFallbackTurnId,
   isAssistantFailureMessage,
   isCallbackOutstanding,
@@ -800,6 +801,9 @@ export class ButlerAgentService extends EventEmitter {
       "After validating a job-scoped stateful stack, use `manor-harness stack promote <stackId>` to publish its retained data back to the project base. Only override the target manually when the task explicitly needs a different namespace.",
       "For attached previews and services, use `manor-harness` for inspect, logs, processes, and exec directly against the runtime. Butler still owns start, stop, lifecycle, and policy.",
       "The shared Codex shell is for workspace, git, and repo-directed setup work, plus host-runtime tasks when repo-local guidance explicitly says to run on the host.",
+      executionLane === "live-remote-runtime" && proofMode === "ui"
+        ? "For live deployed browser proof, do not use direct curl or fetch from the shared shell to judge target reachability. That shell is behind restricted egress. Check Butler or runtime-broker health, then use manor-harness browser verify."
+        : "Do not treat shared-shell network checks as stronger evidence than the runtime lane the contract assigned.",
       "Do not declare the job blocked from shared-shell failures when the contract lane still allows normal recovery inside that same lane.",
       proofMode === "ui"
         ? "Proof mode: headed UI proof. Before reporting completion, run headed preview verification and inspect the persisted proof bundle."
@@ -811,14 +815,20 @@ export class ButlerAgentService extends EventEmitter {
         ? "Preview commands start with the job worktree as the working directory. Prefer relative paths there, or use the contract cwd under /repos. Do not assume a /workspace mount exists inside previews."
         : "Use the contract cwd as the working directory and keep commands explicit for the assigned lane.",
       proofMode === "ui"
-        ? "When UI proof requires actual interaction, pass a browser script with `manor-harness preview verify <preview> --script-file <path> --mode headful --json` instead of stopping at a static page."
+        ? executionLane === "live-remote-runtime"
+          ? "When live deployed UI proof requires actual interaction, use `manor-harness browser verify --url <https://...> --script-file <path> --mode headful --json` instead of building redirect previews."
+          : "When UI proof requires actual interaction, pass a browser script with `manor-harness preview verify <preview> --script-file <path> --mode headful --json` instead of stopping at a static page."
         : "Do not add a browser verification step unless the contract or operator explicitly asks for UI proof.",
       proofMode === "ui"
-        ? "When the proof route needs an authenticated session, prefer `manor-harness preview verify <preview> --session-cookie <token> ...` or `--cookie NAME=VALUE ...` instead of building wrapper scripts that call `page.goto()` again."
+        ? executionLane === "live-remote-runtime"
+          ? "When live deployed proof needs an authenticated session, prefer `manor-harness browser verify --url <https://...> --session-cookie <token> ...` or `--cookie NAME=VALUE ...` instead of building wrapper scripts that call `page.goto()` again."
+          : "When the proof route needs an authenticated session, prefer `manor-harness preview verify <preview> --session-cookie <token> ...` or `--cookie NAME=VALUE ...` instead of building wrapper scripts that call `page.goto()` again."
         : "Keep verification in the assigned lane and report the concrete evidence you used.",
       "If the contract is for local Manor runtime and the app has email flows, prefer Mailpit or another built-in local dependency when the app under test is running inside Manor.",
       proofMode === "ui"
-        ? "After verification, inspect the proof bundle with `manor-harness preview proof <preview> --json` and include the screenshot, video, and manifest links in your report."
+        ? executionLane === "live-remote-runtime"
+          ? "After live deployed verification, inspect the proof bundle with `manor-harness browser proof --json` and include the screenshot, video, and manifest links in your report."
+          : "After verification, inspect the proof bundle with `manor-harness preview proof <preview> --json` and include the screenshot, video, and manifest links in your report."
         : "Do not pad the report with artifact links that the contract did not ask for.",
       proofMode === "ui"
         ? "Do not treat artifact existence alone as accepted proof. Butler must review the screenshot, and the video is for human review."
@@ -1330,22 +1340,24 @@ export class ButlerAgentService extends EventEmitter {
       throw new Error(`Preview ${subject.id} does not have verification run ${runId.trim()}.`);
     }
 
-    const screenshot = findVerificationArtifact(decoratedVerification, "screenshot");
-    if (!screenshot?.filePath) {
-      throw new Error(`Preview ${subject.id} has no screenshot artifact to review.`);
-    }
-    if (screenshot.availability !== "available") {
-      throw new Error(
-        screenshot.availability === "expired"
-          ? `Preview ${subject.id} screenshot proof expired after retention.`
-          : `Preview ${subject.id} screenshot proof is no longer available.`
-      );
+    const screenshots = findVerificationArtifacts(decoratedVerification, "screenshot");
+    const availableScreenshots = screenshots.filter((artifact) => artifact.filePath && artifact.availability === "available");
+    if (availableScreenshots.length === 0) {
+      const latestScreenshot = screenshots.at(-1) ?? null;
+      if (!latestScreenshot?.filePath) {
+        throw new Error(`Preview ${subject.id} has no screenshot artifact to review.`);
+      }
+
+      throw new Error(latestScreenshot.availability === "expired"
+        ? `Preview ${subject.id} screenshot proof expired after retention.`
+        : `Preview ${subject.id} screenshot proof is no longer available.`);
     }
 
     return {
       preview: subject,
       verification: decoratedVerification,
-      screenshot,
+      primaryScreenshot: availableScreenshots[0]!,
+      screenshots: availableScreenshots,
       video: findVerificationArtifact(decoratedVerification, "video"),
       manifest: findVerificationArtifact(decoratedVerification, "manifest"),
       trace: findVerificationArtifact(decoratedVerification, "trace")

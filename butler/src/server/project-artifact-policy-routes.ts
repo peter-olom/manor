@@ -1,3 +1,6 @@
+import path from "node:path";
+import { promises as fs } from "node:fs";
+
 import type { Express, Response } from "express";
 
 import {
@@ -11,6 +14,7 @@ import {
   resolveProjectPolicyArtifactIds,
   readProjectArtifactContent
 } from "./project-artifacts-policies.js";
+import { decorateProjectArtifactWithAccess } from "./project-artifact-access.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { ButlerStateStore } from "./state-store.js";
 import { resolveProjectMetadata } from "./server-runtime-helpers.js";
@@ -33,6 +37,36 @@ export function registerProjectArtifactPolicyRoutes(input: {
     response.status(status).json({ error: message });
   }
 
+  async function sendProjectArtifactFile(response: Response, artifact = null as ReturnType<typeof store.getProjectArtifact>) {
+    if (!artifact) {
+      response.status(404).json({ error: "Artifact not found" });
+      return;
+    }
+
+    const filePath = path.resolve(artifact.filePath);
+    const rootPath = path.resolve(artifactsDir);
+    if (filePath !== rootPath && !filePath.startsWith(`${rootPath}${path.sep}`)) {
+      response.status(400).json({ error: "Artifact path is invalid" });
+      return;
+    }
+
+    try {
+      await fs.access(filePath);
+    } catch {
+      response.status(404).json({ error: "Artifact file is missing" });
+      return;
+    }
+
+    const downloadRequested = response.req.query.download === "1";
+    response.setHeader("Cache-Control", "private, max-age=3600");
+    if (downloadRequested) {
+      response.download(filePath, artifact.fileName);
+      return;
+    }
+    response.type(artifact.contentType);
+    response.sendFile(filePath);
+  }
+
   app.get("/api/project-artifacts/:projectId", (request, response) => {
     const projectId = typeof request.params.projectId === "string" ? request.params.projectId.trim() : "";
     if (!projectId) {
@@ -40,7 +74,7 @@ export function registerProjectArtifactPolicyRoutes(input: {
       return;
     }
 
-    response.json({ artifacts: store.listProjectArtifacts(projectId) });
+    response.json({ artifacts: store.listProjectArtifacts(projectId).map((artifact) => decorateProjectArtifactWithAccess(artifact)) });
   });
 
   app.get("/api/project-artifacts/:projectId/:artifactId", async (request, response) => {
@@ -59,10 +93,25 @@ export function registerProjectArtifactPolicyRoutes(input: {
 
     try {
       const content = await readProjectArtifactContent(artifact);
-      response.json({ artifact, content: content.content, contentTruncated: content.truncated });
+      response.json({ artifact: decorateProjectArtifactWithAccess(artifact), content: content.content, contentTruncated: content.truncated });
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
+  });
+
+  // Trusted appliance boundary: these file links are intentionally unauthenticated because
+  // Butler, Codex, previews, and local operators all live inside the same control-plane trust zone.
+  // If Butler is ever exposed outside that appliance boundary, move this route behind signed or scoped links.
+  app.get("/api/project-artifacts/:projectId/:artifactId/file", async (request, response) => {
+    const projectId = typeof request.params.projectId === "string" ? request.params.projectId.trim() : "";
+    const artifactId = typeof request.params.artifactId === "string" ? request.params.artifactId.trim() : "";
+    if (!projectId || !artifactId) {
+      response.status(400).json({ error: "projectId and artifactId are required" });
+      return;
+    }
+
+    const artifact = store.getProjectArtifact(projectId, artifactId);
+    await sendProjectArtifactFile(response, artifact);
   });
 
   app.post("/api/project-artifacts/save-text", async (request, response) => {
@@ -110,7 +159,7 @@ export function registerProjectArtifactPolicyRoutes(input: {
       if (threadId) {
         store.addEvent(threadId, "artifact/save-text", `Saved project artifact ${artifact.title}`);
       }
-      response.json({ ok: true, artifact });
+      response.json({ ok: true, artifact: decorateProjectArtifactWithAccess(artifact) });
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -161,7 +210,7 @@ export function registerProjectArtifactPolicyRoutes(input: {
       if (threadId) {
         store.addEvent(threadId, "artifact/download", `Downloaded project artifact ${artifact.title}`);
       }
-      response.json({ ok: true, artifact });
+      response.json({ ok: true, artifact: decorateProjectArtifactWithAccess(artifact) });
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }

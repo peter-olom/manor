@@ -135,6 +135,7 @@ export type PreviewVerificationFailureKind =
   | "http"
   | "auth"
   | "readiness"
+  | "verifier"
   | "script"
   | "artifact"
   | "unknown";
@@ -728,6 +729,7 @@ export interface AppSnapshot {
       callbacks: ButlerThreadCallbackView[];
     };
     latestPreviewProofsByThreadId: Record<string, PreviewProofRecordView>;
+    previewProofsByThreadId: Record<string, PreviewProofRecordView[]>;
     stacks: StackLeaseView[];
     previews: PreviewLeaseView[];
     serviceTemplates: ServiceTemplateView[];
@@ -750,16 +752,17 @@ export interface AppShellSnapshot {
       : never
     : never;
   butler: AppSnapshot["butler"] extends infer TButler
-    ? TButler extends {
+      ? TButler extends {
         messages: unknown;
         messageCount: unknown;
         latestPreviewProofsByThreadId: unknown;
+        previewProofsByThreadId: unknown;
         stacks: unknown;
         previews: unknown;
         serviceTemplates: unknown;
         services: unknown;
       }
-      ? Omit<TButler, "messages" | "messageCount" | "latestPreviewProofsByThreadId" | "stacks" | "previews" | "serviceTemplates" | "services">
+      ? Omit<TButler, "messages" | "messageCount" | "latestPreviewProofsByThreadId" | "previewProofsByThreadId" | "stacks" | "previews" | "serviceTemplates" | "services">
       : never
     : never;
 }
@@ -771,6 +774,7 @@ export interface ButlerLiveSnapshot {
 
 export interface RuntimeSnapshot {
   latestPreviewProofsByThreadId: Record<string, PreviewProofRecordView>;
+  previewProofsByThreadId: Record<string, PreviewProofRecordView[]>;
   stacks: StackLeaseView[];
   previews: PreviewLeaseView[];
   serviceTemplates: ServiceTemplateView[];

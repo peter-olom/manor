@@ -416,13 +416,14 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
     access.defineButlerTool({
       name: "verify_preview",
       label: "Verify preview",
-      description: "Run Playwright verification for one preview and persist screenshot, video, trace, and manifest artifacts.",
+      description: "Run Playwright verification for one preview and persist screenshots, video, trace, and manifest artifacts.",
       promptSnippet:
         "verify_preview: use this to produce proof artifacts for a preview. Use headful mode when the operator wants frontend proof with video.",
       parameters: Type.Object({
         leaseId: Type.String(),
         mode: Type.Optional(Type.Union([Type.Literal("headless"), Type.Literal("headful")])),
         path: Type.Optional(Type.String()),
+        targetUrl: Type.Optional(Type.String()),
         script: Type.Optional(Type.String()),
         waitForSelector: Type.Optional(Type.String()),
         postLoadWaitMs: Type.Optional(Type.Number({ minimum: 0 })),
@@ -436,6 +437,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           leaseId: string;
           mode?: "headless" | "headful";
           path?: string;
+          targetUrl?: string;
           script?: string;
           waitForSelector?: string;
           postLoadWaitMs?: number;
@@ -457,6 +459,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
             leaseId: preview.id,
             mode: typedParams.mode === "headful" ? "headful" : "headless",
             path: typedParams.path?.trim() || undefined,
+            targetUrl: typedParams.targetUrl?.trim() || undefined,
             script: typedParams.script?.trim() || undefined,
             waitForSelector: typedParams.waitForSelector?.trim() || undefined,
             postLoadWaitMs:
@@ -471,10 +474,11 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         access.store.recordPreviewLeaseVerification(preview.id, verification);
         access.store.notePreviewLeaseActivity(preview.id);
 
-        const screenshot = verification.artifacts.find((artifact) => artifact.kind === "screenshot") ?? null;
+        const screenshots = verification.artifacts.filter((artifact) => artifact.kind === "screenshot");
+        const screenshot = screenshots.at(-1) ?? null;
         const video = verification.artifacts.find((artifact) => artifact.kind === "video") ?? null;
         const proofNotes = [
-          screenshot?.url ? "screenshot ready" : "screenshot missing",
+          screenshots.length > 0 ? `${screenshots.length} screenshots ready` : "screenshots missing",
           video?.downloadUrl ? "video ready" : "video missing"
         ].join(", ");
 
@@ -490,7 +494,109 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           details: {
             preview,
             verification,
+            screenshots,
             screenshot,
+            video
+          }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "verify_browser",
+      label: "Verify browser",
+      description: "Run Playwright verification for a direct URL and persist screenshot, video, trace, and manifest artifacts on the current job thread.",
+      promptSnippet:
+        "verify_browser: use this for live deployed sites or arbitrary URLs when the browser should verify the actual target directly instead of going through a preview route.",
+      parameters: Type.Object({
+        threadId: Type.Optional(Type.String()),
+        targetUrl: Type.String({ minLength: 1 }),
+        title: Type.Optional(Type.String()),
+        mode: Type.Optional(Type.Union([Type.Literal("headless"), Type.Literal("headful")])),
+        headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+        cookies: Type.Optional(Type.Record(Type.String(), Type.String())),
+        sessionCookie: Type.Optional(Type.String()),
+        waitForSelector: Type.Optional(Type.String()),
+        postLoadWaitMs: Type.Optional(Type.Number({ minimum: 0 })),
+        script: Type.Optional(Type.String())
+      }),
+      uiEffects: access.getToolUiEffects("verify_browser"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as {
+          threadId?: string;
+          targetUrl: string;
+          title?: string;
+          mode?: "headless" | "headful";
+          headers?: Record<string, string>;
+          cookies?: Record<string, string>;
+          sessionCookie?: string;
+          waitForSelector?: string;
+          postLoadWaitMs?: number;
+          script?: string;
+        };
+        const threadId = typedParams.threadId?.trim() || null;
+        const thread = threadId ? access.store.getThread(threadId) ?? null : null;
+        const cwd = thread?.cwd || "";
+        const project = access.resolveWorkspaceProject(
+          cwd,
+          thread?.supervisor.projectId ?? "browser",
+          thread?.supervisor.projectLabel ?? "browser"
+        );
+        const cookieEntries = Object.entries(typedParams.cookies ?? {})
+          .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
+          .map(([name, value]) => [name.trim(), value.trim()] as const)
+          .filter(([name, value]) => name.length > 0 && value.length > 0);
+        const sessionCookie = typeof typedParams.sessionCookie === "string" ? typedParams.sessionCookie.trim() : "";
+        if (sessionCookie) {
+          cookieEntries.push(["better-auth.session_token", sessionCookie]);
+        }
+        const verification = decoratePreviewVerification(
+          await access.runtimeBroker.verifyBrowser({
+            threadId: threadId ?? "browser",
+            projectId: project.id,
+            projectLabel: project.label,
+            title: typedParams.title?.trim() || typedParams.targetUrl.trim(),
+            targetUrl: typedParams.targetUrl.trim(),
+            mode: typedParams.mode === "headful" ? "headful" : "headless",
+            headers:
+              typedParams.headers && Object.keys(typedParams.headers).length > 0 ? typedParams.headers : undefined,
+            cookies: cookieEntries.length > 0 ? cookieEntries.map(([name, value]) => ({ name, value })) : undefined,
+            waitForSelector: typedParams.waitForSelector?.trim() || undefined,
+            postLoadWaitMs:
+              typeof typedParams.postLoadWaitMs === "number" && Number.isFinite(typedParams.postLoadWaitMs)
+                ? Math.max(0, Math.trunc(typedParams.postLoadWaitMs))
+                : undefined,
+            script: typedParams.script?.trim() || undefined
+          })
+        );
+        if (threadId) {
+          access.store.recordBrowserVerification({
+            threadId,
+            projectId: project.id,
+            projectLabel: project.label,
+            title: typedParams.title?.trim() || typedParams.targetUrl.trim(),
+            verification
+          });
+        }
+
+        const screenshots = verification.artifacts.filter((artifact) => artifact.kind === "screenshot");
+        const video = verification.artifacts.find((artifact) => artifact.kind === "video") ?? null;
+        const proofNotes = [
+          screenshots.length > 0 ? `${screenshots.length} screenshots ready` : "screenshots missing",
+          video?.downloadUrl ? "video ready" : "video missing"
+        ].join(", ");
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: verification.ok
+                ? `Verified ${typedParams.targetUrl.trim()} in ${verification.mode} mode. ${proofNotes}.`
+                : `Verification failed for ${typedParams.targetUrl.trim()} in ${verification.mode} mode. Failure=${verification.failureKind}.${verification.status ? ` Status=${verification.status}.` : ""}`
+            }
+          ],
+          details: {
+            verification,
+            screenshots,
             video
           }
         };
@@ -499,7 +605,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
     access.defineButlerTool({
       name: "review_preview_proof",
       label: "Review preview proof",
-      description: "Inspect the latest screenshot proof for one preview or job and surface the video download for human review.",
+      description: "Inspect the latest Playwright screenshots for one preview or job and surface the video download for human review.",
       promptSnippet:
         "review_preview_proof: use this when frontend execution proof is demanded. Do not sign off until the screenshot has been reviewed and the video bundle is surfaced for human review.",
       parameters: Type.Object({
@@ -544,14 +650,19 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
                 `Reviewed proof for ${proof.preview.title}.`,
                 proofSummary,
                 proof.video?.downloadUrl ? `Video download: ${proof.video.downloadUrl}` : "Video download: unavailable",
-                proof.screenshot.url ? `Screenshot: ${proof.screenshot.url}` : "Screenshot: unavailable"
+                ...(proof.screenshots.length > 0
+                  ? proof.screenshots.map((artifact, index) =>
+                      artifact.url ? `Screenshot ${index + 1}: ${artifact.url}` : `Screenshot ${index + 1}: unavailable`
+                    )
+                  : ["Screenshot: unavailable"])
               ].join("\n")
             }
           ],
           details: {
             preview: proof.preview,
             verification: proof.verification,
-            screenshot: proof.screenshot,
+            screenshots: proof.screenshots,
+            screenshot: proof.primaryScreenshot,
             video: proof.video,
             manifest: proof.manifest,
             trace: proof.trace,

@@ -107,6 +107,7 @@ export type PreviewVerificationFailureKind =
   | "http"
   | "auth"
   | "readiness"
+  | "verifier"
   | "script"
   | "artifact"
   | "unknown";
@@ -308,6 +309,7 @@ export type ButlerWindowRecord = {
 
 export type RuntimeSnapshot = {
   latestPreviewProofsByThreadId: Record<string, PreviewProofRecord>;
+  previewProofsByThreadId: Record<string, PreviewProofRecord[]>;
   stacks: Array<{
     id: string;
     threadId: string | null;

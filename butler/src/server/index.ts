@@ -847,6 +847,7 @@ app.post("/api/previews/verify", async (request, response) => {
   const leaseId = typeof request.body?.leaseId === "string" ? request.body.leaseId : "";
   const mode = request.body?.mode === "headful" ? "headful" : "headless";
   const targetPath = typeof request.body?.path === "string" ? request.body.path : "";
+  const targetUrl = typeof request.body?.targetUrl === "string" ? request.body.targetUrl.trim() : "";
   const script = typeof request.body?.script === "string" ? request.body.script : "";
   const waitForSelector = typeof request.body?.waitForSelector === "string" ? request.body.waitForSelector : "";
   const postLoadWaitMs =
@@ -873,6 +874,7 @@ app.post("/api/previews/verify", async (request, response) => {
         leaseId,
         mode,
         path: targetPath || undefined,
+        targetUrl: targetUrl || undefined,
         headers: Object.keys(headers).length > 0 ? headers : undefined,
         waitForSelector: waitForSelector || undefined,
         postLoadWaitMs: postLoadWaitMs > 0 ? postLoadWaitMs : undefined,
@@ -881,6 +883,83 @@ app.post("/api/previews/verify", async (request, response) => {
     );
     const lease = store.recordPreviewLeaseVerification(leaseId, result);
     response.json({ ok: true, verification: result, lease });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/browser/verify", async (request, response) => {
+  const threadId = typeof request.body?.threadId === "string" ? request.body.threadId.trim() : "";
+  const targetUrl = typeof request.body?.targetUrl === "string" ? request.body.targetUrl.trim() : "";
+  const title = typeof request.body?.title === "string" ? request.body.title.trim() : "";
+  const mode = request.body?.mode === "headful" ? "headful" : "headless";
+  const script = typeof request.body?.script === "string" ? request.body.script : "";
+  const waitForSelector = typeof request.body?.waitForSelector === "string" ? request.body.waitForSelector : "";
+  const postLoadWaitMs =
+    typeof request.body?.postLoadWaitMs === "number" && Number.isFinite(request.body.postLoadWaitMs)
+      ? Math.max(0, Math.trunc(request.body.postLoadWaitMs))
+      : 0;
+  const cookies =
+    request.body?.cookies && typeof request.body.cookies === "object"
+      ? Object.fromEntries(
+          Object.entries(request.body.cookies as Record<string, unknown>)
+            .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
+            .map(([key, value]) => [key.trim(), value])
+            .filter(([key, value]) => key.length > 0 && value.length > 0)
+        )
+      : {};
+  const sessionCookie = typeof request.body?.sessionCookie === "string" ? request.body.sessionCookie.trim() : "";
+  const headers =
+    request.body?.headers && typeof request.body.headers === "object"
+      ? Object.fromEntries(
+          Object.entries(request.body.headers as Record<string, unknown>)
+            .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
+            .map(([key, value]) => [key.trim(), value])
+            .filter(([key, value]) => key.length > 0 && value.length > 0)
+        )
+      : {};
+
+  if (!threadId || !targetUrl) {
+    response.status(400).json({ error: "threadId and targetUrl are required" });
+    return;
+  }
+
+  try {
+    const thread = store.getThread(threadId);
+    const project = resolveProjectMetadata(
+      thread?.cwd ?? "",
+      thread?.supervisor.projectId ?? "browser",
+      thread?.supervisor.projectLabel ?? "browser"
+    );
+    const result = decoratePreviewVerification(
+      await runtimeBroker.verifyBrowser({
+        threadId,
+        projectId: project.id,
+        projectLabel: project.label,
+        title: title || targetUrl,
+        targetUrl,
+        mode,
+        headers: Object.keys(headers).length > 0 ? headers : undefined,
+        cookies:
+          Object.keys(cookies).length > 0 || sessionCookie
+            ? [
+                ...Object.entries(cookies).map(([name, value]) => ({ name, value })),
+                ...(sessionCookie ? [{ name: "better-auth.session_token", value: sessionCookie }] : [])
+              ]
+            : undefined,
+        waitForSelector: waitForSelector || undefined,
+        postLoadWaitMs: postLoadWaitMs > 0 ? postLoadWaitMs : undefined,
+        script: script.trim() || undefined
+      })
+    );
+    store.recordBrowserVerification({
+      threadId,
+      projectId: project.id,
+      projectLabel: project.label,
+      title: title || targetUrl,
+      verification: result
+    });
+    response.json({ ok: true, verification: result });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }

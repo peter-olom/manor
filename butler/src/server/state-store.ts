@@ -1303,6 +1303,39 @@ export class ButlerStateStore extends EventEmitter {
     return nextLease;
   }
 
+  recordBrowserVerification(input: {
+    threadId: string;
+    projectId: string;
+    projectLabel: string;
+    title: string;
+    verification: PreviewVerificationView;
+  }): PreviewProofRecordView {
+    const checkedAt =
+      typeof input.verification.checkedAt === "number" && Number.isFinite(input.verification.checkedAt)
+        ? input.verification.checkedAt
+        : Date.now();
+    const verification = normalizePreviewVerification(input.verification, this.artifactRetentionMs);
+    const record = upsertStateStorePreviewProofRecord(
+      this as unknown as StateStoreInternalAccess,
+      {
+        id: `browser:${input.threadId}:${verification.runId}`,
+        previewId: `browser:${input.threadId}`,
+        threadId: input.threadId,
+        projectId: input.projectId,
+        projectLabel: input.projectLabel,
+        previewTitle: input.title.trim() || "Browser proof",
+        stackId: null,
+        verification,
+        createdAt: checkedAt,
+        updatedAt: checkedAt
+      },
+      { emitChange: false }
+    );
+    this.queueSave();
+    this.emitChange();
+    return record;
+  }
+
   markPreviewLeaseStopping(leaseId: string): PreviewLeaseView | null {
     const lease = this.previewLeases.get(leaseId);
     if (!lease) {
