@@ -434,7 +434,7 @@ async function serializeInspectedService(containerName, container) {
   const labels = container.Config?.Labels || {};
   const stackId = labels["manor.stack-id"] || null;
   const effectiveThreadId = await resolveAttachedThreadId(labels["manor.thread-id"] || null, stackId);
-  const worktreePath = container.Config?.WorkingDir || null;
+  const worktreePath = labels["manor.worktree-path"] || null;
   const project = resolveWorktreeProjectInfo(
     worktreePath,
     labels["manor.project-id"] || "service",

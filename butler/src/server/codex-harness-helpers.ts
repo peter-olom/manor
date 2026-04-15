@@ -1,5 +1,3 @@
-import { detectExecutionLane } from "./thread-contract.js";
-
 export type HarnessCapability = {
   id: string;
   token: string;
@@ -77,10 +75,6 @@ export function looksLikePreviewAttempt(text: string): boolean {
   return /manor-harness preview|preview start|preview verify|preview inspect|pulling_image|pulling image|heartbeat|operator url|bootstrap phase|service start|stack start|preview execution/i.test(
     text
   );
-}
-
-export function looksLikeRemoteRuntimeReference(text: string): boolean {
-  return detectExecutionLane(text) === "live-remote-runtime";
 }
 
 export function looksLikeSharedShellEgressDiagnosis(text: string): boolean {

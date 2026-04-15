@@ -237,7 +237,7 @@ export type CodexThreadSummary = {
     projectId: string;
     projectLabel: string;
     branch: string | null;
-    executionLane: "shared-shell-bootstrap" | "shared-shell-host-runtime" | "preview-runtime" | "live-remote-runtime";
+    executionLane: "codex-shell" | "preview-runtime";
     executionLaneLabel: string;
     proofMode: "none" | "operational" | "ui";
     proofModeLabel: string;
@@ -420,6 +420,12 @@ export type ShellSnapshot = {
   codex: {
     connected: boolean;
     lastError: string | null;
+    auth: {
+      mode: "chatgpt" | "api" | "none" | "unknown";
+      loggedIn: boolean;
+      validationError: string | null;
+      lastValidatedAt: number | null;
+    };
     threads: CodexThreadSummary[];
     windows: ButlerWindowRecord[];
     focusedWindowId: string | null;
@@ -438,6 +444,8 @@ export type ShellSnapshot = {
     auth: {
       mode: "chatgpt" | "api" | "none" | "unknown";
       loggedIn: boolean;
+      validationError: string | null;
+      lastValidatedAt: number | null;
     };
     tools: Array<{
       name: string;

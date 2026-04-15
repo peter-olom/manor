@@ -5,7 +5,7 @@ services:
       dockerfile: docker/butler/Dockerfile
       args:
         CODEX_VERSION: 0.118.0
-        BUTLER_INSTALL_MODE: ${BUTLER_INSTALL_MODE:-development}
+        BUTLER_INSTALL_MODE: ${BUTLER_INSTALL_MODE:-production}
     image: manor-butler:local
     container_name: manor-butler
     hostname: manor-butler
@@ -22,7 +22,7 @@ services:
       MANOR_IMAGE_REFERENCE_DIR: /artifacts/manor-images
       BUTLER_PORT: 8080
       BUTLER_PUBLIC_PORT: ${BUTLER_HOST_PORT:-8180}
-      BUTLER_HOT_RELOAD: ${BUTLER_HOT_RELOAD:-1}
+      BUTLER_HOT_RELOAD: ${BUTLER_HOT_RELOAD:-0}
       BUTLER_TTYD_PORT: 7682
       BUTLER_TTYD_BASE_PATH: /butler-terminal/
       MANOR_PREVIEW_LEASE_TTL_MS: ${MANOR_PREVIEW_LEASE_TTL_MS:-1800000}
@@ -47,20 +47,13 @@ services:
       RUNTIME_BROKER_URL: http://runtime-broker:8090
       RUNTIME_BROKER_TOKEN: ${RUNTIME_BROKER_TOKEN:-manor-local-runtime-broker-token}
     volumes:
-      - ./state/butler:/state
-      - ./state/butler-home:/home/butler/.codex
-      - ./state/butler-pi:/home/butler/.pi
-      - ./state/codex-home:/codex-home
-      - ./state/codex-config:/codex-config:ro
-      - ./butler/src:/opt/manor/butler/src
-      - ./butler/index.html:/opt/manor/butler/index.html:ro
-      - ./butler/package.json:/opt/manor/butler/package.json:ro
-      - ./butler/package-lock.json:/opt/manor/butler/package-lock.json:ro
-      - ./butler/tsconfig.json:/opt/manor/butler/tsconfig.json:ro
-      - ./butler/tsconfig.server.json:/opt/manor/butler/tsconfig.server.json:ro
-      - ./butler/vite.config.ts:/opt/manor/butler/vite.config.ts:ro
-      - ./repos:/repos
-      - ./artifacts:/artifacts
+      - butler-state:/state
+      - butler-home:/home/butler/.codex
+      - butler-pi:/home/butler/.pi
+      - codex-home:/codex-home
+      - codex-config:/codex-config:ro
+      - repos:/repos
+      - artifacts:/artifacts
     depends_on:
       codex-box:
         condition: service_healthy
@@ -130,11 +123,11 @@ services:
       egress:
         condition: service_healthy
     volumes:
-      - ./state/codex:/state
-      - ./state/codex-home:/home/codex/.codex
-      - ./state/codex-config:/home/codex/.config
-      - ./repos:/repos
-      - ./artifacts:/artifacts
+      - codex-state:/state
+      - codex-home:/home/codex/.codex
+      - codex-config:/home/codex/.config
+      - repos:/repos
+      - artifacts:/artifacts
     healthcheck:
       test: ["CMD", "node", "/opt/manor/codex-box/healthcheck.mjs"]
       interval: 10s
@@ -155,7 +148,7 @@ services:
     environment:
       MANOR_ROLE: egress
     volumes:
-      - ./state/egress:/state
+      - egress-state:/state
     healthcheck:
       test: ["CMD", "sh", "-lc", "nc -z 127.0.0.1 3128"]
       interval: 10s
@@ -180,7 +173,7 @@ services:
       PREVIEW_EGRESS_DYNAMIC_PORT_END: 3299
     volumes:
       - ./config/preview-egress-profiles.json:/opt/manor/config/preview-egress-profiles.json:ro
-      - ./state/preview-egress:/state
+      - preview-egress-state:/state
     healthcheck:
       test: ["CMD", "sh", "-lc", "nc -z 127.0.0.1 3128"]
       interval: 10s
@@ -215,8 +208,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config/preview-egress-profiles.json:/opt/manor/config/preview-egress-profiles.json:ro
-      - ./state/butler:/state:ro
-      - ./state/runtime-broker:/runtime-state
+      - butler-state:/state:ro
+      - runtime-broker-state:/runtime-state
     depends_on:
       preview-egress:
         condition: service_healthy
@@ -236,7 +229,7 @@ services:
       MANOR_ROLE: playwright
     shm_size: "2gb"
     volumes:
-      - ./state/playwright:/state
+      - playwright-state:/state
     networks:
       - control
       - work
@@ -250,3 +243,17 @@ networks:
   preview:
     internal: true
   internet: {}
+
+volumes:
+  artifacts:
+  butler-home:
+  butler-pi:
+  butler-state:
+  codex-config:
+  codex-home:
+  codex-state:
+  egress-state:
+  playwright-state:
+  preview-egress-state:
+  repos:
+  runtime-broker-state:

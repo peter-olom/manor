@@ -1,3 +1,9 @@
+if [[ -n "${MANOR_REAL_PATH:-}" ]]; then
+  export PATH="/opt/manor/codex-box/install-guard-bin:${MANOR_REAL_PATH}"
+elif [[ ":${PATH}:" != *":/opt/manor/codex-box/install-guard-bin:"* ]]; then
+  export PATH="/opt/manor/codex-box/install-guard-bin:${PATH}"
+fi
+
 if [[ -f "${HOME}/.cargo/env" ]]; then
   source "${HOME}/.cargo/env"
 fi

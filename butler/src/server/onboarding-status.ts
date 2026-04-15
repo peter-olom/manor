@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { readCodexAuthStatus } from "./auth-status.js";
 import type { ButlerAuthStatus, ButlerOnboardingView, OnboardingCommandSet } from "./types.js";
 
 function authModeLabel(auth: ButlerAuthStatus): string {
@@ -15,34 +16,12 @@ function authModeLabel(auth: ButlerAuthStatus): string {
   return "Not connected";
 }
 
-export async function readCodexAuthStatus(codexAuthPath: string): Promise<ButlerAuthStatus> {
-  try {
-    const raw = await fs.readFile(codexAuthPath, "utf8");
-    const data = JSON.parse(raw) as {
-      auth_mode?: string | null;
-      OPENAI_API_KEY?: string | null;
-      tokens?: {
-        access_token?: string;
-        refresh_token?: string;
-        access?: string;
-        refresh?: string;
-      };
-    };
-
-    if (data.auth_mode === "api" && data.OPENAI_API_KEY) {
-      return { mode: "api", loggedIn: true };
-    }
-
-    const accessToken = data.tokens?.access_token ?? data.tokens?.access;
-    const refreshToken = data.tokens?.refresh_token ?? data.tokens?.refresh;
-    if (data.auth_mode === "chatgpt" && accessToken && refreshToken) {
-      return { mode: "chatgpt", loggedIn: true };
-    }
-
-    return { mode: "none", loggedIn: false };
-  } catch {
-    return { mode: "none", loggedIn: false };
+function pendingAuthDetail(auth: ButlerAuthStatus, fallback: string): string {
+  if (auth.validationError && auth.mode !== "none") {
+    return `Stored ${authModeLabel(auth)} credentials are invalid. ${auth.validationError}`;
   }
+
+  return fallback;
 }
 
 async function readGithubAuthStatus(codexConfigDir: string): Promise<boolean> {
@@ -56,10 +35,9 @@ async function readGithubAuthStatus(codexConfigDir: string): Promise<boolean> {
 
 export async function buildOnboardingView(options: {
   butlerAuth: ButlerAuthStatus;
-  codexAuthPath: string;
+  codexAuth: ButlerAuthStatus;
   codexConfigDir: string;
 }): Promise<ButlerOnboardingView> {
-  const codexAuth = await readCodexAuthStatus(options.codexAuthPath);
   const githubLoggedIn = await readGithubAuthStatus(options.codexConfigDir);
 
   const steps: ButlerOnboardingView["steps"] = [
@@ -69,7 +47,7 @@ export async function buildOnboardingView(options: {
       status: options.butlerAuth.loggedIn ? "complete" : "pending",
       detail: options.butlerAuth.loggedIn
         ? `Connected through ${authModeLabel(options.butlerAuth)}.`
-        : "Connect Butler before using Butler chat.",
+        : pendingAuthDetail(options.butlerAuth, "Connect Butler before using Butler chat."),
       commandSets: [
         {
           target: "localShell",
@@ -92,17 +70,17 @@ export async function buildOnboardingView(options: {
     {
       id: "codexAuth",
       title: "Sign in to Codex",
-      status: codexAuth.loggedIn ? "complete" : "pending",
-      detail: codexAuth.loggedIn
-        ? `Connected through ${authModeLabel(codexAuth)}.`
-        : "Connect Codex before opening Codex runs.",
+      status: options.codexAuth.loggedIn ? "complete" : "pending",
+      detail: options.codexAuth.loggedIn
+        ? `Connected through ${authModeLabel(options.codexAuth)}.`
+        : pendingAuthDetail(options.codexAuth, "Connect Codex before opening Codex runs."),
       commandSets: buildCodexCommandSets({
-        localShellCommands: codexAuth.loggedIn
+        localShellCommands: options.codexAuth.loggedIn
           ? ["docker exec manor-codex-box codex-auth status"]
           : ["docker exec -it manor-codex-box codex-auth device", "docker exec manor-codex-box codex-auth api-key"],
         terminalTarget: "codexTerminal",
-        terminalCommands: codexAuth.loggedIn ? ["codex-auth status"] : ["codex-auth device", "codex-auth api-key"],
-        connectedDetail: codexAuth.loggedIn ? "Check Codex auth from the built-in Terminal or your local shell." : undefined,
+        terminalCommands: options.codexAuth.loggedIn ? ["codex-auth status"] : ["codex-auth device", "codex-auth api-key"],
+        connectedDetail: options.codexAuth.loggedIn ? "Check Codex auth from the built-in Terminal or your local shell." : undefined,
         pendingTerminalDetail: "Run this in the built-in Terminal before opening Codex runs."
       })
     },

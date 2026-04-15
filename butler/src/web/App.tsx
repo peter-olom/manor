@@ -26,6 +26,7 @@ import {
   buildWorkspaceQuery,
   describeCallbackState,
   describeStatus,
+  formatAuthStatus,
   formatCodexCompactionState,
   formatContextUsage,
   formatCompactionState,
@@ -535,7 +536,12 @@ export function App() {
             </select>
           </label>
           <StatusItem kind="codex" tone={shell.codex.connected ? "accent" : "neutral"} label="Codex" value={shell.codex.connected ? "Connected" : "Offline"} />
-          <StatusItem kind="auth" tone={shell.butler.auth.loggedIn ? "success" : "neutral"} label="Auth" value={shell.butler.auth.mode} />
+          <StatusItem
+            kind="auth"
+            tone={shell.codex.auth.loggedIn ? "success" : shell.codex.auth.mode === "none" ? "neutral" : "danger"}
+            label="Auth"
+            value={formatAuthStatus(shell.codex.auth)}
+          />
           <StatusItem kind="context" tone="neutral" label="Context" value={topbarContextValue} />
           <StatusItem kind="compaction" tone={topbarCompactionTone} label="Compact" value={topbarCompactionValue} />
         </div>

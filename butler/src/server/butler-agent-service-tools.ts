@@ -47,6 +47,7 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
         port: Type.Optional(Type.Number()),
         notes: Type.Optional(Type.String()),
         command: Type.Optional(Type.String()),
+        workingDir: Type.Optional(Type.String()),
         envDefaults: Type.Optional(Type.Record(Type.String(), Type.String())),
         fileName: Type.Optional(Type.String()),
         stackVolumePath: Type.Optional(Type.String()),
@@ -75,6 +76,7 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
           port?: number;
           notes?: string;
           command?: string;
+          workingDir?: string;
           envDefaults?: Record<string, string>;
           fileName?: string;
           stackVolumePath?: string;
@@ -99,6 +101,7 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
           port: typedParams.port,
           notes: typedParams.notes,
           command: typedParams.command,
+          workingDir: typedParams.workingDir,
           envDefaults: access.normalizeServiceEnv(typedParams.envDefaults),
           fileName: typedParams.fileName,
           stackVolumePath: typedParams.stackVolumePath,
@@ -210,6 +213,7 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
           targetPort: template.defaultPort,
           image: template.image,
           command: template.command,
+          workingDir: template.workingDir,
           stackVolumePath: template.stackVolumePath,
           env: mergedEnv
         });

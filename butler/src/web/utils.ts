@@ -319,6 +319,19 @@ export function formatCodexCompactionState(compaction: {
   return compaction.count > 0 ? `${compaction.count}` : "Auto";
 }
 
+export function formatAuthStatus(auth: {
+  mode: "chatgpt" | "api" | "none" | "unknown";
+  loggedIn: boolean;
+}): string {
+  if (auth.mode === "chatgpt") {
+    return "ChatGPT";
+  }
+  if (auth.mode === "api") {
+    return "API key";
+  }
+  return "Not connected";
+}
+
 export function describeStatus(status: ThreadStatus): string {
   if (status === "active") {
     return "Working";

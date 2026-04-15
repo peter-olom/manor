@@ -62,8 +62,8 @@ Today it provides:
 - the official Codex CLI
 - Codex app-server mode
 - a direct shell via `ttyd`
-- repo and worktree access under `./repos`
-- shared runtime state under `./state`
+- repo and worktree access through a dedicated Docker volume mounted at `/repos`
+- shared runtime state through dedicated Docker volumes
 - local helper access through `manor-harness`
 
 Codex does the work. Butler owns lifecycle and policy.
@@ -214,14 +214,16 @@ Then open:
 
 Current local development assumptions:
 
-- Butler source is bind-mounted into the Butler container
-- Butler hot reload is enabled by default in Compose
-- Codex state, Butler state, artifacts, and repos are persisted under `./state`, `./artifacts`, and `./repos`
+- the default stack is deployment-safe and persists core state in named Docker volumes
+- Butler source hot reload is opt-in through the development overlay
+- local hot-reload runs use `docker compose -f compose.yml -f compose.dev.yml up -d --build`
+- older host-side `state`, `artifacts`, and `repos` directories are not mounted by default anymore
 - runtime broker operations affect live Docker resources on the host
 
 ## Repo Layout
 
-- `compose.yml`: local Manor stack
+- `compose.yml`: deployment-safe Manor stack with named Docker volumes
+- `compose.dev.yml`: optional local Butler hot-reload overlay
 - `butler/`: Butler backend and web app
 - `config/`: optional preview egress profiles
 - `docker/butler/`: Butler image and auth helpers
@@ -231,9 +233,6 @@ Current local development assumptions:
 - `docker/preview-egress/`: optional restrictive preview egress control plane
 - `docker/runtime-broker/`: preview, service, and stack runtime broker
 - `docker/playwright/`: browser automation image
-- `repos/`: checked-out repos and worktrees
-- `artifacts/`: screenshots, recordings, and other job artifacts
-- `state/`: persisted runtime state
 
 ## Verification
 

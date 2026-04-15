@@ -32,7 +32,10 @@ export function resolvePreviewProxyTarget(access: RuntimeServerAccess, leaseId: 
 }
 
 function currentShellSnapshot(access: RuntimeServerAccess) {
-  return access.store.getShellSnapshot(access.butlerAgent.getShellSnapshot(), access.codexClient.getConnectionState());
+  return access.store.getShellSnapshot(access.butlerAgent.getShellSnapshot(), {
+    ...access.codexClient.getConnectionState(),
+    auth: access.butlerAgent.getCodexAuthStatus()
+  });
 }
 
 function currentButlerLiveSnapshot(access: RuntimeServerAccess) {

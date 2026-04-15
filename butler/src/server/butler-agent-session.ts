@@ -376,8 +376,8 @@ export function promptButler(
   access: ButlerAgentSessionAccess,
   text: string,
   imageReferenceIds: string[] = []
-): void {
-  void queueButlerPrompt(access, text, imageReferenceIds, { background: false });
+): Promise<boolean> {
+  return queueButlerPrompt(access, text, imageReferenceIds, { background: false });
 }
 
 export async function promptButlerInternal(

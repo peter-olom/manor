@@ -48,13 +48,47 @@ COPY docker/codex-box/gh-auth-headless.sh /usr/local/bin/gh-auth-headless
 COPY docker/codex-box/gh-headless-browser.sh /usr/local/bin/gh-headless-browser
 COPY docker/codex-box/bootstrap-tools.sh /usr/local/bin/codex-bootstrap-tools
 COPY docker/codex-box/manor-harness.mjs /usr/local/bin/manor-harness
+COPY docker/codex-box/install-guard.sh /opt/manor/codex-box/install-guard.sh
+COPY docker/codex-box/python-guard.sh /opt/manor/codex-box/python-guard.sh
+COPY docker/codex-box/manor-shell-env.sh /etc/profile.d/manor-shell-env.sh
 COPY docker/codex-box/healthcheck.mjs /opt/manor/codex-box/healthcheck.mjs
 COPY docker/codex-box/zshrc /home/codex/.zshrc
 COPY docker/codex-box/zprofile /home/codex/.zprofile
 
-ENV PATH="/home/codex/.local/bin:/home/codex/.local/share/mise/shims:/home/codex/.local/share/mise/bin:${PATH}"
+ENV MANOR_REAL_PATH="/home/codex/.local/bin:/home/codex/.local/share/mise/shims:/home/codex/.local/share/mise/bin:${PATH}"
+ENV PATH="/opt/manor/codex-box/install-guard-bin:${MANOR_REAL_PATH}"
 
-RUN chmod +x /usr/local/bin/start-codex-app-server /usr/local/bin/codex-auth /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/codex-bootstrap-tools /usr/local/bin/manor-harness \
+RUN mkdir -p /opt/manor/codex-box/install-guard-bin \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/npm \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/npx \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/pnpm \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/pnpx \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/yarn \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/yarnpkg \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/bun \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/bunx \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/pip \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/pip3 \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/pipx \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/uv \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/uvx \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/poetry \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/gem \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/bundle \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/composer \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/cargo \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/go \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/corepack \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/playwright \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/apt \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/apt-get \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/apk \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/dnf \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/yum \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/brew \
+    && ln -sf /opt/manor/codex-box/python-guard.sh /opt/manor/codex-box/install-guard-bin/python \
+    && ln -sf /opt/manor/codex-box/python-guard.sh /opt/manor/codex-box/install-guard-bin/python3 \
+    && chmod +x /usr/local/bin/start-codex-app-server /usr/local/bin/codex-auth /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/codex-bootstrap-tools /usr/local/bin/manor-harness /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/python-guard.sh /etc/profile.d/manor-shell-env.sh \
     && chown codex:codex /home/codex/.zshrc /home/codex/.zprofile
 
 USER codex

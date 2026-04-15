@@ -101,6 +101,7 @@ const {
   ensurePreviewOutboundNetwork,
   ensureStackInfrastructure,
   findStackNetwork,
+  getLeaseTransition,
   getRetainedPreviewLease,
   getStackCloneSourceKeyFromLabels,
   getStackPromoteTargetKeyFromLabels,
@@ -1274,6 +1275,7 @@ app.post("/services", async (request, response) => {
         "manor.title": payload.title,
         "manor.target-port": String(Number(payload.targetPort || 0)),
         "manor.worktree-path": typeof payload.worktreePath === "string" ? payload.worktreePath : "",
+        "manor.working-dir": typeof payload.workingDir === "string" ? payload.workingDir : "",
         "manor.storage-kind": "ephemeral",
         "manor.volume-name": "",
         "manor.volume-mount-path": ""
@@ -1290,6 +1292,10 @@ app.post("/services", async (request, response) => {
         }
       }
     };
+
+    if (typeof payload.workingDir === "string" && payload.workingDir) {
+      containerOptions.WorkingDir = payload.workingDir;
+    }
 
     if (typeof payload.command === "string" && payload.command) {
       containerOptions.Entrypoint = ["sh", "-lc"];

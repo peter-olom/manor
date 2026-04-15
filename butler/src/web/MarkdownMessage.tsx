@@ -27,7 +27,7 @@ const CONTRACT_FIELD_LABELS: Record<string, string> = {
   project_label: "Project",
   branch: "Branch",
   workspace_cwd: "Workspace",
-  execution_lane: "Lane",
+  execution_guidance: "Execution",
   proof_mode: "Proof",
   operator_goal: "Goal",
   requested_task: "Task",
@@ -43,7 +43,7 @@ const CONTRACT_SUMMARY_FIELD_ORDER = [
   "project_label",
   "branch",
   "workspace_cwd",
-  "execution_lane",
+  "execution_guidance",
   "proof_mode"
 ];
 

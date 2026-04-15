@@ -182,7 +182,10 @@ app.get("/api/bootstrap", (_request, response) => {
 });
 
 app.get("/api/shell", (_request, response) => {
-  response.json(store.getShellSnapshot(butlerAgent.getShellSnapshot(), codexClient.getConnectionState()));
+  response.json(store.getShellSnapshot(butlerAgent.getShellSnapshot(), {
+    ...codexClient.getConnectionState(),
+    auth: butlerAgent.getCodexAuthStatus()
+  }));
 });
 
 app.get("/api/runtime", async (_request, response) => {
@@ -612,7 +615,10 @@ app.post("/api/windows/focus", async (request, response) => {
   } catch (error) {
     if (shouldAllowLocalThreadWindow(runtimeAccess, threadId, error)) {
       store.focusWindow(threadId);
-      if (store.getShellSnapshot(butlerAgent.getShellSnapshot(), codexClient.getConnectionState()).codex.windows.some((window) => window.threadId === threadId)) {
+      if (store.getShellSnapshot(butlerAgent.getShellSnapshot(), {
+        ...codexClient.getConnectionState(),
+        auth: butlerAgent.getCodexAuthStatus()
+      }).codex.windows.some((window) => window.threadId === threadId)) {
         response.json({ ok: true, localFallback: true });
         return;
       }
@@ -1066,6 +1072,7 @@ app.post("/api/services/start", async (request, response) => {
       targetPort: template.defaultPort,
       image: template.image,
       command: template.command,
+      workingDir: template.workingDir,
       stackVolumePath: template.stackVolumePath,
       env: mergedEnv
     });

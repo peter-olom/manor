@@ -21,7 +21,7 @@ import type {
   PreviewVerificationView
 } from "./types.js";
 import type { CodexAppServerClient } from "./codex-client.js";
-import type { ProofScreenshotReview, ResolvedPreviewProof, SupervisionSmokePlan } from "./butler-agent-helpers.js";
+import type { ButlerOperatorThreadGuard, ProofScreenshotReview, ResolvedPreviewProof, SupervisionSmokePlan } from "./butler-agent-helpers.js";
 import type { CodexExecutionLane, CodexProofMode } from "./types.js";
 
 export type ButlerCustomTool = ReturnType<typeof defineTool>;
@@ -133,6 +133,8 @@ export type ButlerAgentToolAccess = {
   buildSupervisionSmokeTask(totalFollowUps: number): string;
   detectSupervisionSmokeRequest(task: string, goal?: string): { totalFollowUps: number } | null;
   buildDelegationDeveloperInstructions(workspace: { cwd: string; branchName: string | null }, task: string): Promise<string>;
+  getActiveOperatorThreadGuard(): ButlerOperatorThreadGuard | null;
+  noteThreadFocus(threadId: string, reason?: string): void;
   buildDelegationContract(options: {
     threadId: string;
     task: string;
@@ -148,6 +150,7 @@ export type ButlerAgentToolAccess = {
     options?: { privateSteerText?: string | null; nextWorkerReportAction?: ButlerNextWorkerReportAction }
   ): void;
   postOperatorJobReply(threadId: string, text: string): Promise<void>;
+  getCodexAuthStatus(): ButlerAuthStatus;
   getSnapshot(): AppSnapshot["butler"];
 };
 
@@ -155,6 +158,7 @@ export type ButlerAgentSessionAccess = {
   modelRegistry: ModelRegistry | null;
   session: AgentSession | null;
   auth: ButlerAuthStatus;
+  codexAuth: ButlerAuthStatus;
   compaction: Omit<ButlerCompactionView, "autoEnabled" | "active" | "count">;
   ready: boolean;
   pending: boolean;

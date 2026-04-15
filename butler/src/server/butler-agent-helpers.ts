@@ -41,10 +41,16 @@ export type SupervisionSmokePlan = {
 };
 
 export type PendingChatCallback = ButlerThreadCallbackView;
+export type ButlerOperatorThreadGuard = {
+  explicitThreadIds: string[];
+  lockedThreadId: string | null;
+  contextPrompt: string | null;
+};
 
 export const SNAPSHOT_MESSAGE_TAIL_LIMIT = 200;
 export const MAX_HISTORY_PAGE_SIZE = 1000;
 export const BUTLER_BACKGROUND_PROMPT_PREFIX = "[[BUTLER_BACKGROUND]]";
+const THREAD_ID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 
 export function isButlerBackgroundPromptText(text: string | null | undefined): boolean {
   return typeof text === "string" && text.trimStart().startsWith(BUTLER_BACKGROUND_PROMPT_PREFIX);
@@ -92,6 +98,79 @@ export function extractMessageTimestamp(message: Record<string, unknown>): numbe
 export function extractWorkspaceMentions(text: string): string[] {
   const matches = text.match(/\/repos(?:\/\.manor-worktrees)?\/[^\s`"'()<>{}\]]+/g) ?? [];
   return [...new Set(matches.map((entry) => entry.replace(/[.,;:!?]+$/g, "")))];
+}
+
+export function extractReferencedThreadIds(text: string): string[] {
+  const matches = text.match(THREAD_ID_PATTERN) ?? [];
+  return [...new Set(matches.map((entry) => entry.toLowerCase()))];
+}
+
+function looksLikeThreadFollowUp(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  const explicitFollowUpPatterns = [
+    /\bthat (job|thread|run|workstream)\b/,
+    /\bthis (job|thread|run|workstream)\b/,
+    /\bsame (job|thread|run|workstream)\b/,
+    /\bcontinue (it|that|this|the job|the thread)\b/,
+    /\breuse (it|that|this|the job|the thread)\b/,
+    /\bswitch (it|that|this|the job|the thread)\b/,
+    /\bopen (a )?pr\b/,
+    /\bcreate (a )?pr\b/,
+    /\bpush it\b/,
+    /\bdo that\b/,
+    /\bgo ahead\b/,
+    /\bfix it\b/
+  ];
+
+  return explicitFollowUpPatterns.some((pattern) => pattern.test(normalized));
+}
+
+export function buildOperatorThreadGuard(
+  store: ButlerStateStore,
+  text: string,
+  recentFocusedThreadId: string | null
+): ButlerOperatorThreadGuard {
+  const explicitThreadIds = extractReferencedThreadIds(text);
+  const contextLines: string[] = [];
+  let lockedThreadId: string | null = explicitThreadIds.length === 1 ? explicitThreadIds[0]! : null;
+
+  if (explicitThreadIds.length > 0) {
+    contextLines.push(
+      "Operator referenced these exact job ids in the latest turn. Treat them as authoritative and do not silently substitute a different job."
+    );
+
+    for (const threadId of explicitThreadIds) {
+      const thread = store.getThread(threadId);
+      if (!thread) {
+        contextLines.push(`- ${threadId} | not currently tracked`);
+        continue;
+      }
+
+      contextLines.push(
+        `- ${thread.id} | project=${thread.supervisor.projectLabel} | status=${thread.status} | summary=${thread.supervisor.summary}`
+      );
+    }
+  } else if (recentFocusedThreadId && looksLikeThreadFollowUp(text)) {
+    const thread = store.getThread(recentFocusedThreadId);
+    if (thread) {
+      lockedThreadId = thread.id;
+      contextLines.push("The latest operator message looks like a follow-up to the job currently in active discussion.");
+      contextLines.push(
+        `- ${thread.id} | project=${thread.supervisor.projectLabel} | status=${thread.status} | summary=${thread.supervisor.summary}`
+      );
+      contextLines.push("Unless the operator clearly switches jobs, keep this follow-up bound to that same job.");
+    }
+  }
+
+  return {
+    explicitThreadIds,
+    lockedThreadId,
+    contextPrompt: contextLines.length > 0 ? contextLines.join("\n") : null
+  };
 }
 
 export function serializeMessages(session: AgentSession): ButlerMessageView[] {
@@ -528,26 +607,32 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Do not create a new branch or managed worktree unless the operator explicitly asks for branch isolation.",
     "For read-only repo inspection, questions, or report-only tasks, do not force a new branch or managed worktree.",
     "Do not run two parallel Codex workstreams on the same repo branch.",
-    "For repository bootstrap tasks like cloning into /repos and creating the first branch, use the shared shell first. Bring up a preview only once the task actually needs runtime execution or proof.",
+    "For repository bootstrap tasks like cloning into /repos and creating the first branch, use Codex-shell first. Bring up preview runtime only once the task actually needs execution or proof.",
     "When a task needs multiple cooperating previews or disposable services, create a stack lease first so Butler can keep the whole environment under one isolated network and lifecycle.",
     "When the operator asks for a supervision or oversight smoke test, treat it as a native Butler behavior: delegate the run to Codex, let the operator prompt define the contract, and privately steer the worker for 2 to 5 follow-up turns.",
     "For recurring mutable databases or object stores, prefer job-scoped stateful stacks so each job gets its own retained writable copy forked from the project base by default.",
     "Reserve base-mode stacks for intentional seed or snapshot refresh work. Do not let multiple jobs share one writable database volume.",
-    "When a task needs a live app review, prefer a preview lease on an isolated runtime instead of telling the operator to bind a raw host port.",
+    "When a local task needs app review, prefer a preview lease on an isolated runtime instead of telling the operator to bind a raw host port.",
+    "When the target is already online, keep the job in preview runtime and use direct browser verification instead of creating a local preview just for proof.",
     "When preview bootstrap is unclear, inspect the workspace bootstrap hints before deciding on image, egress, or install steps.",
     "Once Codex is inside a repo with its own AGENTS guidance, let that repo-specific install and runtime guidance override generic Manor defaults unless it would violate the Butler contract's execution mode, callback, or reporting obligations.",
     "When a project needs backing dependencies like Postgres, Redis, MySQL, MSSQL, RabbitMQ, MinIO, Mailpit, or SQLite, prefer registered service templates instead of ad hoc install steps. If the dependency is missing, register it once and reuse it later.",
     "A preview runs the app or job code. A service provides supporting infrastructure only. Do not run the main app inside a service.",
-    "Choose an execution lane explicitly before delegating or steering Codex: shared-shell bootstrap, shared-shell host runtime, preview runtime, or live deployed runtime.",
-    "When the operator asks to check out a branch, worktree, or repo, default to the lightest viable local lane. Use preview runtime only when the task actually needs isolated runtime execution, and use host runtime only when repo-local guidance explicitly says to run on the host.",
-    "Do not silently substitute live deployed verification for local branch verification.",
-    "If the needed execution mode changes, start a fresh Codex workstream instead of reusing an older thread with a different strategy.",
+    "Treat Codex-shell as the place for repository, git, and code-editing work. Treat Manor previews, stacks, and services as the execution tools when the task needs a running process, logs, browser work, or direct target verification.",
+    "Do not treat 'use Codex-shell' in the operator ask as a ban on previews. It is execution guidance, not a binding permission model.",
+    "When the operator asks to check out a branch, worktree, or repo, start in Codex-shell. Bring up Manor runtime only when the task actually needs execution or proof.",
+    "Example: if the operator says 'clone and run this project', keep it in one job. Let Codex clone in Codex-shell, then use Manor runtime for execution and verification.",
+    "Example: if the operator says 'pull latest main and tell me what changed', keep it repo-only in Codex-shell.",
+    "Example: if the operator says 'open this already-online URL and verify login works', keep the same job and use direct browser verification instead of a local preview.",
+    "Do not silently substitute runtime verification for repo-only work, or repo-only checks for runtime verification.",
+    "If an existing thread later needs execution, refresh the worker guidance in that same thread instead of talking about lane promotion.",
     "For local Manor runtime tasks that involve signup or email flows, prefer local dependency services like Mailpit when the app under test is running inside Manor.",
     "Codex may operate inside attached isolates through manor-harness for inspect, logs, processes, and shell exec, but Butler still owns isolate lifecycle and policy.",
     "When the operator provides reference images, keep track of the stored image references so you can pass them to Codex later and reuse them during verification.",
     "Use the image reference tools whenever visual requirements depend on an uploaded image.",
     "When proof of frontend execution is requested, do not accept artifact existence alone as proof. Run headed verification when needed, inspect the screenshot with the proof review tool, and surface the video download for human review.",
     "Never reuse or mention a deleted, unknown, or cwd-less Codex thread as if it were a valid workstream.",
+    "If the operator names a specific job id, verify and reason about that exact job. Do not answer as if a different job were the same one.",
     "",
     `Supervisor state: ${supervisor.summary}`,
     callbackSummary,

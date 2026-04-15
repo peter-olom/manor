@@ -7,7 +7,7 @@ export function StatusItem({
   value
 }: {
   kind: "codex" | "auth" | "model" | "context" | "compaction";
-  tone: "accent" | "success" | "neutral";
+  tone: "accent" | "success" | "danger" | "neutral";
   label: string;
   value: string;
 }) {

@@ -506,7 +506,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       label: "Verify browser",
       description: "Run Playwright verification for a direct URL and persist screenshot, video, trace, and manifest artifacts on the current job thread.",
       promptSnippet:
-        "verify_browser: use this for live deployed sites or arbitrary URLs when the browser should verify the actual target directly instead of going through a preview route.",
+        "verify_browser: use this for already-online sites or arbitrary URLs when the browser should verify the actual target directly instead of going through a preview route.",
       parameters: Type.Object({
         threadId: Type.Optional(Type.String()),
         targetUrl: Type.String({ minLength: 1 }),
@@ -778,16 +778,16 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         const developerInstructions = await access.buildDelegationDeveloperInstructions(workspace, delegatedTask);
         const contractOptions = smokeRequest
           ? {
-              executionLane: "shared-shell-bootstrap" as const,
+              executionLane: "codex-shell" as const,
               proofMode: "none" as const,
               extraNotes: ["Synthetic Butler supervision smoke test. Do not require browser proof to complete or report it."]
             }
           : repoBootstrapTask
             ? {
-                executionLane: "shared-shell-bootstrap" as const,
+                executionLane: "codex-shell" as const,
                 proofMode: "none" as const,
                 extraNotes: [
-                  "For repository bootstrap tasks in /repos, do the initial clone, git status, and branch creation in the shared Codex shell. Use a preview only if later runtime validation is actually needed."
+                  "For repository bootstrap tasks in /repos, do the initial clone, git status, and branch creation in Codex-shell. Use preview runtime only if later execution is actually needed."
                 ]
               }
             : {};
@@ -824,6 +824,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         });
         access.store.setThreadExecutionContract(result.threadId, delegationContract.contract);
         access.store.addEvent(result.threadId, "butler.delegation.created", "Butler created the execution contract for this delegated job.");
+        access.noteThreadFocus(result.threadId, "delegate_to_codex");
         access.queueDelegationAcknowledgement(
           result.threadId,
           smokeRequest

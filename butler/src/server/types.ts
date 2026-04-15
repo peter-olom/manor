@@ -1,9 +1,5 @@
 export type CodexThreadStatus = "active" | "idle" | "unknown";
-export type CodexExecutionLane =
-  | "shared-shell-bootstrap"
-  | "shared-shell-host-runtime"
-  | "preview-runtime"
-  | "live-remote-runtime";
+export type CodexExecutionLane = "codex-shell" | "preview-runtime";
 export type CodexProofMode = "none" | "operational" | "ui";
 export type ButlerCallbackState =
   | "waiting"
@@ -653,6 +649,8 @@ export interface ButlerToolView {
 export interface ButlerAuthStatus {
   mode: "chatgpt" | "api" | "none" | "unknown";
   loggedIn: boolean;
+  validationError: string | null;
+  lastValidatedAt: number | null;
 }
 
 export interface ButlerContextUsageView {
@@ -700,6 +698,7 @@ export interface AppSnapshot {
   codex: {
     connected: boolean;
     lastError: string | null;
+    auth: ButlerAuthStatus;
     threads: CodexThreadSummary[];
     windows: ButlerWindow[];
     focusedWindowId: string | null;

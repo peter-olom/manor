@@ -1,0 +1,15 @@
+services:
+  butler:
+    build:
+      args:
+        BUTLER_INSTALL_MODE: development
+    environment:
+      BUTLER_HOT_RELOAD: 1
+    volumes:
+      - ./butler/src:/opt/manor/butler/src
+      - ./butler/index.html:/opt/manor/butler/index.html:ro
+      - ./butler/package.json:/opt/manor/butler/package.json:ro
+      - ./butler/package-lock.json:/opt/manor/butler/package-lock.json:ro
+      - ./butler/tsconfig.json:/opt/manor/butler/tsconfig.json:ro
+      - ./butler/tsconfig.server.json:/opt/manor/butler/tsconfig.server.json:ro
+      - ./butler/vite.config.ts:/opt/manor/butler/vite.config.ts:ro

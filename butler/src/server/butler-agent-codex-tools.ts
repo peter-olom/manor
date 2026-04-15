@@ -9,7 +9,6 @@ import {
   shouldAllowLocalThreadFallback
 } from "./butler-agent-helpers.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
-import { describeExecutionLane, detectExecutionLane } from "./thread-contract.js";
 
 export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
   return [
@@ -55,6 +54,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
             "Codex live thread refresh was unavailable, so Butler used the saved local job transcript."
           );
         }
+        access.noteThreadFocus(typedParams.threadId, "read_job");
         return {
           content: [{ type: "text", text: buildJobDetail(access.store, typedParams.threadId) }],
           details: {
@@ -166,6 +166,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           );
         }
         access.store.openWindow(typedParams.threadId);
+        access.noteThreadFocus(typedParams.threadId, "open_job_window");
         return {
           content: [{ type: "text", text: `Opened a window for job ${typedParams.threadId}.` }],
           details: {
@@ -182,7 +183,10 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       parameters: Type.Object({}),
       uiEffects: access.getToolUiEffects("list_open_windows"),
       execute: async () => {
-        const snapshot = access.store.getSnapshot(access.getSnapshot(), access.codexClient.getConnectionState());
+        const snapshot = access.store.getSnapshot(access.getSnapshot(), {
+          ...access.codexClient.getConnectionState(),
+          auth: access.getCodexAuthStatus()
+        });
 
         const text =
           snapshot.codex.windows.length === 0
@@ -200,9 +204,9 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
     access.defineButlerTool({
       name: "message_job",
       label: "Message job",
-      description: "Privately send a follow-up into one Codex job thread when the execution mode and strategy are still the same.",
+      description: "Privately send a follow-up into one Codex job thread and refresh its worker guidance for the new ask.",
       promptSnippet:
-        "message_job: steer a Codex job privately only when the task stays on the same execution mode and runtime strategy. Always set nextWorkerReportAction explicitly.",
+        "message_job: steer a Codex job privately, refresh the contract guidance for the new ask, and always set nextWorkerReportAction explicitly.",
       parameters: Type.Object({
         threadId: Type.String(),
         text: Type.String({ minLength: 1 }),
@@ -217,23 +221,27 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           imageReferenceIds?: string[];
           nextWorkerReportAction?: "review" | "reply_to_operator";
         };
+        const activeGuard = access.getActiveOperatorThreadGuard();
+        if (activeGuard) {
+          if (activeGuard.explicitThreadIds.length > 0 && !activeGuard.explicitThreadIds.includes(typedParams.threadId)) {
+            throw new Error(
+              `The latest operator turn explicitly referenced job ${activeGuard.explicitThreadIds.join(", ")}. Use one of those exact jobs or clarify before steering ${typedParams.threadId}.`
+            );
+          }
+          if (
+            activeGuard.explicitThreadIds.length === 0 &&
+            activeGuard.lockedThreadId &&
+            activeGuard.lockedThreadId !== typedParams.threadId
+          ) {
+            throw new Error(
+              `The latest operator turn is currently anchored to job ${activeGuard.lockedThreadId}. Use that exact job or clarify before steering ${typedParams.threadId}.`
+            );
+          }
+        }
         const thread = access.store.getThread(typedParams.threadId);
         if (!thread || !thread.cwd || thread.source === "unknown" || thread.turnCount === 0) {
           throw new Error(
             `Job ${typedParams.threadId} is not a valid reusable Codex workstream. Start a fresh Codex job with delegate_to_codex instead.`
-          );
-        }
-        const requestedLane = detectExecutionLane(typedParams.text);
-        const currentLane =
-          thread.executionContract?.executionLane ??
-          detectExecutionLane([thread?.supervisor.latestUserPrompt, thread?.supervisor.latestAgentReply].filter(Boolean).join("\n"));
-        if (
-          requestedLane !== "shared-shell-bootstrap" &&
-          currentLane !== "shared-shell-bootstrap" &&
-          requestedLane !== currentLane
-        ) {
-          throw new Error(
-            `This follow-up changes execution lane from ${describeExecutionLane(currentLane)} to ${describeExecutionLane(requestedLane)}. Start a fresh Codex job with delegate_to_codex instead of reusing this thread.`
           );
         }
         const limitMessage = access.getThreadBudgetLimitMessage(typedParams.threadId);
@@ -246,10 +254,31 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
             }
           };
         }
+        const refreshedTask = [thread.executionContract?.requestedTask, `Follow-up instruction:\n${typedParams.text}`]
+          .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          .join("\n\n");
+        const refreshedContract = await access.buildDelegationContract({
+          threadId: typedParams.threadId,
+          task: refreshedTask || typedParams.text,
+          workspace: {
+            cwd: thread.cwd,
+            branchName: thread.executionContract?.branch ?? null
+          },
+          extraNotes: ["Butler refreshed this contract after a follow-up. Apply the new follow-up together with the existing thread context."]
+        });
+        access.store.setThreadExecutionContract(typedParams.threadId, refreshedContract.contract);
+        access.store.addEvent(
+          typedParams.threadId,
+          "butler.contract.refreshed",
+          "Butler refreshed this job contract after a private follow-up."
+        );
         await access.codexClient.loadThread(typedParams.threadId);
         await access.codexClient.sendMessage(
           typedParams.threadId,
-          access.imageStore.buildCodexInput(typedParams.text, typedParams.imageReferenceIds ?? [])
+          access.imageStore.buildCodexInput(
+            `${refreshedContract.text}\n\nFOLLOW-UP INSTRUCTION\n${typedParams.text}`,
+            typedParams.imageReferenceIds ?? []
+          )
         );
         access.registerPendingChatCallback(typedParams.threadId, {
           privateSteerText: typedParams.text,
@@ -257,11 +286,12 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         });
         const supervision = access.store.noteButlerSteer(typedParams.threadId);
         access.store.addEvent(typedParams.threadId, "butler.supervision.turn_spent", "Butler spent a private supervision turn on this job.");
+        access.noteThreadFocus(typedParams.threadId, "message_job");
         return {
           content: [
             {
               type: "text",
-              text: `Sent a private follow-up to job ${typedParams.threadId}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}. Next worker report action: ${typedParams.nextWorkerReportAction ?? "review"}.`
+              text: `Sent a private follow-up to job ${typedParams.threadId}. Refreshed the worker contract. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}. Next worker report action: ${typedParams.nextWorkerReportAction ?? "review"}.`
             }
           ],
           details: {

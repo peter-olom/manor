@@ -371,6 +371,7 @@ export class RuntimeBrokerClient {
     targetPort: number;
     image: string;
     command?: string | null;
+    workingDir?: string | null;
     stackVolumePath?: string | null;
     env?: Record<string, string>;
   }): Promise<ServicePayload> {

@@ -9,7 +9,6 @@ import {
   normalizeString,
   looksLikeHarnessLookupFailure,
   looksLikePreviewAttempt,
-  looksLikeRemoteRuntimeReference,
   looksLikeSharedShellEgressDiagnosis,
   looksLikeSharedShellBootstrapFailure,
   normalizeEnv,
@@ -29,7 +28,7 @@ import { ButlerStateStore } from "./state-store.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
-import { isSharedShellRepoBootstrapTask } from "./thread-contract.js";
+import { isSharedShellRepoBootstrapTask, taskNeedsRuntimeExecution } from "./thread-contract.js";
 import {
   applyWorkspacePreviewDefaults,
   formatWorkspaceBootstrapLines,
@@ -225,18 +224,11 @@ export class CodexHarnessService {
   ): Promise<void> {
     const thread = this.getThreadContext(capability);
     const combined = [report.summary, report.details].filter(Boolean).join("\n");
-    const executionLane = thread.executionContract?.executionLane ?? "shared-shell-bootstrap";
-    if (executionLane !== "live-remote-runtime" && looksLikeRemoteRuntimeReference(combined)) {
-      throw new Error("This job is locked away from the live deployed target. Do not report outcomes against a remote deployment.");
-    }
-
     const threadProofs = this.listThreadProofs(capability.threadId);
     if (report.status === "completed") {
       if (thread.executionContract?.proofMode === "ui" && threadProofs.length === 0) {
         throw new Error(
-          thread.executionContract?.executionLane === "live-remote-runtime"
-            ? "This job requires persisted browser proof. Run manor-harness browser verify --url <https://...> --mode headful --json before reporting completed."
-            : "This job requires persisted browser proof. Run manor-harness preview verify --mode headful --json before reporting completed."
+          "This job requires persisted browser proof. Use manor-harness browser verify for direct URLs or manor-harness preview verify for preview-backed pages before reporting completed."
         );
       }
       return;
@@ -246,30 +238,27 @@ export class CodexHarnessService {
         `This job already has a Manor harness binding. Retry from ${capability.cwd} or use manor-harness --thread ${capability.threadId} instead of reporting the job blocked.`
       );
     }
-    if (
-      executionLane === "live-remote-runtime" &&
-      thread.executionContract?.proofMode === "ui" &&
-      looksLikeSharedShellEgressDiagnosis(combined)
-    ) {
+    if (thread.executionContract?.proofMode === "ui" && looksLikeSharedShellEgressDiagnosis(combined)) {
       throw new Error(
-        "The shared Codex shell is intentionally behind restricted egress. Do not report a live-site browser job blocked from direct shell curl or fetch checks. Verify broker health, then rerun manor-harness browser verify."
+        "Codex-shell is not valid evidence for browser reachability. Use manor-harness browser verify for direct URLs or manor-harness preview verify for preview-backed pages before reporting the job blocked."
       );
     }
 
     const requestedTask = thread.executionContract?.requestedTask ?? thread.supervisor.latestUserPrompt ?? "";
     const repoBootstrapTask = isSharedShellRepoBootstrapTask(requestedTask);
+    const runtimeLikelyNeeded = taskNeedsRuntimeExecution(requestedTask) || thread.executionContract?.proofMode !== "none";
     const workspaceBootstrap = await inspectWorkspaceBootstrap(capability.cwd);
     const previews = await this.reconcileThreadPreviews(capability.threadId);
     const previewAttempted = previews.length > 0 || looksLikePreviewAttempt(combined);
     if (
-      executionLane === "preview-runtime" &&
+      runtimeLikelyNeeded &&
       !repoBootstrapTask &&
       workspaceBootstrap?.suggestedPreview &&
       !previewAttempted &&
       looksLikeSharedShellBootstrapFailure(combined)
     ) {
       throw new Error(
-        "Do not report this job blocked from shared-shell bootstrap alone. Start a preview first or explain why preview execution itself is blocked."
+        "Do not report this job blocked from Codex-shell setup alone. If the task needs execution, start runtime execution first or explain why execution itself is blocked."
       );
     }
   }
@@ -774,13 +763,9 @@ export class CodexHarnessService {
         throw new Error("assist.request requires a non-empty summary");
       }
       const combined = [summary, details, question].filter(Boolean).join("\n");
-      if (
-        thread.executionContract?.executionLane === "live-remote-runtime" &&
-        thread.executionContract?.proofMode === "ui" &&
-        looksLikeSharedShellEgressDiagnosis(combined)
-      ) {
+      if (thread.executionContract?.proofMode === "ui" && looksLikeSharedShellEgressDiagnosis(combined)) {
         throw new Error(
-          "The shared Codex shell is intentionally behind restricted egress. Do not escalate a live-site browser job from direct shell curl or fetch denials. Check Butler and runtime-broker health, then rerun manor-harness browser verify."
+          "Codex-shell is not valid evidence for browser reachability. Use manor-harness browser verify for direct URLs or manor-harness preview verify for preview-backed pages before escalating."
         );
       }
       const workspaceBootstrap = await inspectWorkspaceBootstrap(capability.cwd);
@@ -800,14 +785,16 @@ export class CodexHarnessService {
       responseLines.push(...formatHarnessExecutionContract(thread));
       responseLines.push(...formatHarnessRuntimeModel());
       responseLines.push(...formatWorkspaceBootstrapLines(workspaceBootstrap));
+      const requestedTask = thread.executionContract?.requestedTask ?? thread.supervisor.latestUserPrompt ?? "";
+      const runtimeLikelyNeeded = taskNeedsRuntimeExecution(requestedTask) || thread.executionContract?.proofMode !== "none";
       if (workspaceBootstrap?.ecosystem === "node") {
         responseLines.push(
-          "The shared Codex shell is for git, workspace, and repo-directed setup work. Use host runtime there only when the contract lane or repo guidance explicitly says to run on the host."
+          "Codex-shell is for git, workspace, and repo-directed edits only. Any running process or browser verification should use Manor runtime."
         );
       }
-      if (thread.executionContract?.executionLane === "live-remote-runtime" && thread.executionContract?.proofMode === "ui") {
+      if (thread.executionContract?.proofMode === "ui") {
         responseLines.push(
-          "The shared Codex shell sits behind restricted egress. Do not use direct curl or fetch from that shell to judge live-site reachability for browser proof."
+          "Do not use direct curl or fetch from Codex-shell to judge browser reachability. Use browser verify for direct URLs and preview verify for preview-backed pages."
         );
       }
       responseLines.push(`If you drift out of ${capability.cwd}, keep using the thread-bound harness command instead of concluding Manor is unavailable.`);
@@ -815,36 +802,32 @@ export class CodexHarnessService {
         responseLines.push(`Use the existing stack ${activeStack.id} for the preview unless you have a reason to split the runtime.`);
       }
       responseLines.push("Previews now default to normal outbound internet access. Use an explicit egress mode only when you need to block or restrict outbound traffic.");
-      if (thread.executionContract?.executionLane === "preview-runtime") {
-        responseLines.push("Once the preview is up, keep the flow simple: install what the app needs, start the app, inspect logs and processes, then verify.");
-      } else if (thread.executionContract?.executionLane === "shared-shell-host-runtime") {
-        responseLines.push("Stay in the shared shell host-runtime lane. Follow the repo commands directly there and only use previews if the contract is changed.");
+      if (runtimeLikelyNeeded) {
+        responseLines.push("Once runtime work starts, keep the flow simple: run the app or target, inspect logs and processes, then verify.");
       } else {
-        responseLines.push("Stay in the assigned lane and keep the commands explicit. Do not escalate to a heavier runtime lane unless the contract changes.");
+        responseLines.push("Stay in Codex-shell and keep the commands explicit unless the task later needs execution or proof.");
       }
-      if (thread.executionContract?.executionLane === "preview-runtime" && previewDefaults.bootstrapHint) {
+      if (runtimeLikelyNeeded && previewDefaults.bootstrapHint) {
         responseLines.push(`Preview bootstrap hint: ${previewDefaults.bootstrapHint}.`);
       }
-      if (thread.executionContract?.executionLane === "preview-runtime" && workspaceBootstrap?.suggestedPreview?.suggestedInstallCommand) {
+      if (runtimeLikelyNeeded && workspaceBootstrap?.suggestedPreview?.suggestedInstallCommand) {
         responseLines.push(`Suggested install step inside the preview: ${workspaceBootstrap.suggestedPreview.suggestedInstallCommand}.`);
       }
       responseLines.push(
-        thread.executionContract?.executionLane === "preview-runtime"
+        runtimeLikelyNeeded
           ? "Do not hunt for Manor-specific bootstrap magic. If the project needs a command, run that command explicitly inside the preview."
-          : "Do not hunt for Manor-specific bootstrap magic. Run the repo commands explicitly inside the assigned lane."
+          : "Do not hunt for Manor-specific bootstrap magic. Run the repo commands explicitly in Codex-shell."
       );
       if (thread.executionContract?.proofMode === "ui") {
         responseLines.push(
-          thread.executionContract?.executionLane === "live-remote-runtime"
-            ? "For live deployed browser proof, prefer `manor-harness browser verify --url <https://...> --session-cookie <token>` or `--cookie NAME=VALUE` instead of redirect previews or scripts that call `page.goto()` again."
-            : "For authenticated headed proof, prefer `manor-harness preview verify <preview> --session-cookie <token>` or `--cookie NAME=VALUE` instead of wrapping a second `page.goto()` inside the browser script."
+          "For authenticated headed proof, prefer `manor-harness browser verify --url <https://...> --session-cookie <token>` for direct URLs or `manor-harness preview verify <preview> --session-cookie <token>` for preview-backed pages instead of wrapping a second `page.goto()` inside the browser script."
         );
       }
-      responseLines.push("Do not use `corepack enable` in the shared shell for preview-oriented runtime setup. If repo-local instructions explicitly require a root-level host install step, follow the repo guidance instead.");
+      responseLines.push("Do not use `corepack enable` in Codex-shell for preview-oriented runtime setup. If repo-local instructions explicitly require a root-level install step, follow the repo guidance instead.");
       responseLines.push(
-        thread.executionContract?.executionLane === "preview-runtime"
-          ? "Only report the job blocked after preview-based execution is attempted."
-          : "Only report the job blocked after you exhaust the normal recovery steps inside the assigned lane."
+        runtimeLikelyNeeded
+          ? "Only report the job blocked after runtime execution is attempted."
+          : "Only report the job blocked after you exhaust the normal recovery steps for the requested repo work."
       );
       if (question) {
         responseLines.push(`Requested help: ${question}`);
@@ -1346,6 +1329,7 @@ export class CodexHarnessService {
         port: typeof params.port === "number" ? params.port : Number(params.port),
         notes: normalizeString(params.notes) || undefined,
         command: normalizeString(params.command) || undefined,
+        workingDir: normalizeString(params.workingDir) || undefined,
         envDefaults: normalizeEnv(params.envDefaults),
         fileName: normalizeString(params.fileName) || undefined,
         stackVolumePath: normalizeString(params.stackVolumePath) || undefined,
@@ -1477,6 +1461,7 @@ export class CodexHarnessService {
         targetPort: template.defaultPort,
         image: template.image,
         command: template.command,
+        workingDir: template.workingDir,
         stackVolumePath: template.stackVolumePath,
         env: { ...template.envDefaults, ...env }
       });

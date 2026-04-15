@@ -71,7 +71,7 @@ import {
   upsertStateStoreProjectPolicy
 } from "./state-store-project-assets.js";
 import { buildStateStoreRuntimeSnapshot, buildStateStoreShellSnapshot, buildStateStoreSnapshot } from "./state-store-snapshot.js";
-import { parseThreadExecutionContract } from "./thread-contract.js";
+import { normalizeExecutionLane, parseThreadExecutionContract } from "./thread-contract.js";
 import type {
   AppSnapshot,
   AppShellSnapshot,
@@ -345,9 +345,12 @@ export class ButlerStateStore extends EventEmitter {
 
   setThreadExecutionContract(threadId: string, contract: CodexThreadExecutionContractView): void {
     const record = this.getOrCreateThread(threadId);
-    record.executionContract = { ...contract };
+    record.executionContract = {
+      ...contract,
+      executionLane: normalizeExecutionLane(contract.executionLane)
+    };
     record.updatedAt = Date.now();
-    this.persistedExecutionContractsByThreadId.set(threadId, { ...contract });
+    this.persistedExecutionContractsByThreadId.set(threadId, { ...record.executionContract });
     this.refreshDerivedThreadState(record);
     this.queueSave();
     this.emitChange();
@@ -1104,6 +1107,7 @@ export class ButlerStateStore extends EventEmitter {
     codexConnection: {
       connected: boolean;
       lastError: string | null;
+      auth: AppSnapshot["codex"]["auth"];
       compose: AppSnapshot["codex"]["compose"];
     }
   ): AppShellSnapshot {
@@ -1519,6 +1523,7 @@ export class ButlerStateStore extends EventEmitter {
   }, codexConnection: {
     connected: boolean;
     lastError: string | null;
+    auth: AppSnapshot["codex"]["auth"];
     compose: AppSnapshot["codex"]["compose"];
   }): AppSnapshot {
     return buildStateStoreSnapshot(this as unknown as Parameters<typeof buildStateStoreSnapshot>[0], butler, codexConnection);

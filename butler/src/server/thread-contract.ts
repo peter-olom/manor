@@ -14,17 +14,12 @@ function deriveRequestedTask(taskText: string): string {
 }
 
 function deriveSuccessConditions(input: {
-  executionLane: CodexExecutionLane;
   proofMode: CodexProofMode;
   operatorGoal: string | null;
 }): string[] {
   const conditions = [
     "The requested task is materially completed and the result matches the operator ask.",
-    input.executionLane === "live-remote-runtime"
-      ? "Verification is tied to the live deployed target, not a local substitute."
-      : input.executionLane === "preview-runtime"
-        ? "Verification stays on the assigned Manor preview path."
-        : "Verification stays on the assigned Manor workspace or shared-shell host path.",
+    "Verification matches the work that was actually performed.",
     "A concise supervisor report is recorded before the worker finishes."
   ];
 
@@ -41,11 +36,14 @@ function deriveSuccessConditions(input: {
   return conditions;
 }
 
-function deriveStopConditions(input: { executionLane: CodexExecutionLane; proofMode: CodexProofMode }): string[] {
-  const conditions = ["Do not switch execution lane or runtime strategy inside the same job thread."];
+function deriveStopConditions(input: { proofMode: CodexProofMode }): string[] {
+  const conditions = [
+    "Do not change the contract workspace or proof obligations unless the operator changes the ask.",
+    "Use Codex-shell for repository work and Manor previews, stacks, or services when execution is needed."
+  ];
 
-  if (input.executionLane === "preview-runtime") {
-    conditions.push("Do not treat shared-shell bootstrap alone as a valid reason to block a preview-runtime task while the preview path remains untried.");
+  if (input.proofMode !== "none") {
+    conditions.push("Do not treat Codex-shell checks alone as sufficient verification when runtime evidence is required.");
   }
 
   if (input.proofMode === "ui") {
@@ -102,49 +100,64 @@ export function isSharedShellRepoBootstrapTask(taskText: string): boolean {
   return mentionsClone && mentionsRepoRoot && (mentionsBranchSetup || mentionsGitStatus) && !mentionsRuntime;
 }
 
-export function detectExecutionLane(
-  taskText: string,
-  options?: {
-    repoPrefersHostRuntime?: boolean;
-  }
-): CodexExecutionLane {
+export function detectExplicitExecutionLane(taskText: string): CodexExecutionLane | null {
   const normalized = taskText.toLowerCase();
 
   if (
-    /live deployed|live deployment|production|prod\b|staging\b|already-online deployment|https?:\/\/|inuoja\.com/.test(normalized)
-  ) {
-    return "live-remote-runtime";
-  }
-
-  if (isSharedShellRepoBootstrapTask(taskText)) {
-    return "shared-shell-bootstrap";
-  }
-
-  if (options?.repoPrefersHostRuntime) {
-    return "shared-shell-host-runtime";
-  }
-
-  if (
-    /\b(start|run|serve|dev server|preview|browser|ui|playwright|screenshot|video|install|dependency|dependencies|bootstrap|logs?|process(?:es)?|mailpit|runtime)\b/.test(
-      normalized
-    )
+    /\b(preview runtime only|use previews?|in previews?|runtime execution only|preview-backed execution)\b/.test(normalized)
   ) {
     return "preview-runtime";
   }
 
-  return "shared-shell-bootstrap";
+  if (/\b(repo work only|repo-only|no previews?\b|do not (?:run|execute)|report only)\b/.test(normalized)) {
+    return "codex-shell";
+  }
+
+  return null;
+}
+
+export function normalizeExecutionLane(value: string | CodexExecutionLane | null | undefined): CodexExecutionLane {
+  const normalized = typeof value === "string" ? value.toLowerCase().trim() : "";
+  if (normalized === "preview-runtime") {
+    return "preview-runtime";
+  }
+  return "codex-shell";
+}
+
+export function detectExecutionLane(taskText: string): CodexExecutionLane {
+  return taskNeedsRuntimeExecution(taskText) ? "preview-runtime" : "codex-shell";
+}
+
+export function taskNeedsRuntimeExecution(taskText: string): boolean {
+  const normalized = taskText.toLowerCase();
+  const explicitLane = detectExplicitExecutionLane(taskText);
+
+  if (explicitLane) {
+    return explicitLane === "preview-runtime";
+  }
+
+  if (isSharedShellRepoBootstrapTask(taskText)) {
+    return false;
+  }
+
+  if (
+    /\b(start|run|serve|dev server|preview|browser|ui|playwright|screenshot|video|logs?|process(?:es)?|mailpit|runtime|production|prod\b|staging\b|already-online deployment)\b/.test(
+      normalized
+    ) ||
+    /https?:\/\//.test(normalized)
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 export function describeExecutionLane(lane: CodexExecutionLane): string {
   switch (lane) {
-    case "shared-shell-bootstrap":
-      return "shared shell bootstrap or repo work";
-    case "shared-shell-host-runtime":
-      return "shared shell host runtime";
+    case "codex-shell":
+      return "Codex-shell";
     case "preview-runtime":
       return "preview runtime";
-    case "live-remote-runtime":
-      return "live deployed runtime";
   }
 }
 
@@ -189,8 +202,8 @@ export function buildThreadExecutionContract(input: {
     proofModeLabel: describeProofMode(proofMode),
     requestedTask,
     operatorGoal,
-    successConditions: deriveSuccessConditions({ executionLane, proofMode, operatorGoal }),
-    stopConditions: deriveStopConditions({ executionLane, proofMode }),
+    successConditions: deriveSuccessConditions({ proofMode, operatorGoal }),
+    stopConditions: deriveStopConditions({ proofMode }),
     escalationConditions: deriveEscalationConditions(),
     notes: [...new Set(input.notes.map((note) => note.trim()).filter(Boolean))]
   };
@@ -231,19 +244,7 @@ function parseExecutionLane(value: string | null | undefined): CodexExecutionLan
   if (!normalized) {
     return null;
   }
-  if (normalized.includes("live")) {
-    return "live-remote-runtime";
-  }
-  if (normalized.includes("host")) {
-    return "shared-shell-host-runtime";
-  }
-  if (normalized.includes("preview")) {
-    return "preview-runtime";
-  }
-  if (normalized.includes("shared shell") || normalized.includes("bootstrap")) {
-    return "shared-shell-bootstrap";
-  }
-  return null;
+  return normalizeExecutionLane(normalized);
 }
 
 function parseProofMode(value: string | null | undefined): CodexProofMode | null {
@@ -331,8 +332,11 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
       : normalizeContractText(values.get("operator_goal") ?? null);
   const requestedTask = normalizeContractText(requestedTaskText) ?? "Carry out the delegated task.";
   const taskContext = [requestedTask, operatorGoal].filter(Boolean).join("\n");
-  const executionLane = parseExecutionLane(values.get("execution_lane")) ?? detectExecutionLane(taskContext);
   const proofMode = parseProofMode(values.get("proof_mode")) ?? detectProofMode(taskContext);
+  const executionLane =
+    proofMode !== "none" || taskNeedsRuntimeExecution(taskContext)
+      ? "preview-runtime"
+      : detectExecutionLane(taskContext);
 
   return {
     threadId,
@@ -346,11 +350,8 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
     proofModeLabel: describeProofMode(proofMode),
     requestedTask,
     operatorGoal,
-    successConditions:
-      successConditions.length > 0
-        ? successConditions
-        : deriveSuccessConditions({ executionLane, proofMode, operatorGoal }),
-    stopConditions: stopConditions.length > 0 ? stopConditions : deriveStopConditions({ executionLane, proofMode }),
+    successConditions: successConditions.length > 0 ? successConditions : deriveSuccessConditions({ proofMode, operatorGoal }),
+    stopConditions: stopConditions.length > 0 ? stopConditions : deriveStopConditions({ proofMode }),
     escalationConditions: escalationConditions.length > 0 ? escalationConditions : deriveEscalationConditions(),
     notes
   };

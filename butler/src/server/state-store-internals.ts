@@ -17,6 +17,7 @@ import {
   normalizeWindow,
   restorePersistedTurn
 } from "./state-store-helpers.js";
+import { describeExecutionLane, normalizeExecutionLane } from "./thread-contract.js";
 import type {
   ButlerWindow,
   CodexEventEntry,
@@ -580,8 +581,11 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
         typeof contract.threadId === "string" &&
         typeof contract.executionLane === "string"
       ) {
+        const executionLane = normalizeExecutionLane(contract.executionLane);
         access.persistedExecutionContractsByThreadId.set(threadId, {
           ...contract,
+          executionLane,
+          executionLaneLabel: describeExecutionLane(executionLane),
           requestedTask:
             typeof contract.requestedTask === "string" && contract.requestedTask.trim()
               ? contract.requestedTask.trim()

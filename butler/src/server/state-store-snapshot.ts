@@ -45,6 +45,7 @@ export function buildStateStoreShellSnapshot(
   codexConnection: {
     connected: boolean;
     lastError: string | null;
+    auth: AppSnapshot["codex"]["auth"];
     compose: AppSnapshot["codex"]["compose"];
   }
 ): AppShellSnapshot {
@@ -57,6 +58,7 @@ export function buildStateStoreShellSnapshot(
     codex: {
       connected: codexConnection.connected,
       lastError: codexConnection.lastError,
+      auth: codexConnection.auth,
       threads: access.listThreads(),
       windows: access.windows,
       focusedWindowId: access.focusedWindowId,
@@ -92,6 +94,7 @@ export function buildStateStoreSnapshot(
   codexConnection: {
     connected: boolean;
     lastError: string | null;
+    auth: AppSnapshot["codex"]["auth"];
     compose: AppSnapshot["codex"]["compose"];
   }
 ): AppSnapshot {
@@ -112,6 +115,7 @@ export function buildStateStoreSnapshot(
     codex: {
       connected: codexConnection.connected,
       lastError: codexConnection.lastError,
+      auth: codexConnection.auth,
       threads: access.listThreads(),
       windows: access.windows,
       focusedWindowId: access.focusedWindowId,

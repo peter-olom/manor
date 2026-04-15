@@ -175,21 +175,6 @@ export function taskRequiresManagedWorktree(taskText: string): boolean {
   );
 }
 
-export async function workspacePrefersHostRuntime(cwd: string): Promise<boolean> {
-  const repoRoot = await resolveGitRoot(cwd);
-  if (!repoRoot) {
-    return false;
-  }
-
-  const agentsPath = path.join(repoRoot, "AGENTS.md");
-  const agentsText = await fs.readFile(agentsPath, "utf8").catch(() => "");
-  if (!agentsText.trim()) {
-    return false;
-  }
-
-  return /\b(no docker setup|dev servers run on the host|run on the host)\b/i.test(agentsText);
-}
-
 export async function ensureTaskWorktree(options: {
   cwd: string;
   task: string;

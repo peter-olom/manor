@@ -13,6 +13,7 @@ export type ServiceTemplateInput = {
   port?: number;
   notes?: string | null;
   command?: string;
+  workingDir?: string;
   envDefaults?: Record<string, string>;
   fileName?: string;
   stackVolumePath?: string;
@@ -58,6 +59,8 @@ const DEFAULT_TEMPLATE_INPUTS: ServiceTemplateInput[] = [
     engine: "redis",
     image: "redis:7-bookworm",
     port: 6379,
+    command: "redis-server --dir /data --appendonly yes",
+    workingDir: "/data",
     stackVolumePath: "/data",
     connection: {
       uriTemplate: "redis://{HOST}:{PORT}/0"
@@ -181,6 +184,7 @@ const DEFAULT_TEMPLATE_INPUTS: ServiceTemplateInput[] = [
 
 export type LoadedServiceTemplate = ServiceTemplateView & {
   command: string | null;
+  workingDir: string | null;
   envDefaults: Record<string, string>;
   fileName: string | null;
   connection: {
@@ -258,6 +262,7 @@ function normalizeTemplateInput(input: ServiceTemplateInput): LoadedServiceTempl
     stackVolumePath: normalizeNullableString(input.stackVolumePath),
     notes: normalizeNullableString(input.notes),
     command: normalizeNullableString(input.command),
+    workingDir: normalizeNullableString(input.workingDir),
     envDefaults: normalizeRecord(input.envDefaults),
     fileName: normalizeNullableString(input.fileName),
     connection: {
@@ -284,6 +289,7 @@ function serializeTemplate(template: LoadedServiceTemplate): ServiceTemplateInpu
     port: template.defaultPort,
     notes: template.notes ?? undefined,
     command: template.command ?? undefined,
+    workingDir: template.workingDir ?? undefined,
     envDefaults: template.envDefaults,
     fileName: template.fileName ?? undefined,
     stackVolumePath: template.stackVolumePath ?? undefined,
