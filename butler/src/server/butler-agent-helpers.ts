@@ -628,7 +628,7 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "If an existing thread later needs execution, refresh the worker guidance in that same thread instead of talking about lane promotion.",
     "For local Manor runtime tasks that involve signup or email flows, prefer local dependency services like Mailpit when the app under test is running inside Manor.",
     "Codex may operate inside attached isolates through manor-harness for inspect, logs, processes, and shell exec, but Butler still owns isolate lifecycle and policy.",
-    "When the operator provides reference images, keep track of the stored image references so you can pass them to Codex later and reuse them during verification.",
+    "When the operator provides reference images or files, keep track of the stored reference ids so you can pass them to Codex later and reuse them during verification.",
     "Use the image reference tools whenever visual requirements depend on an uploaded image.",
     "When proof of frontend execution is requested, do not accept artifact existence alone as proof. Run headed verification when needed, inspect the screenshot with the proof review tool, and surface the video download for human review.",
     "Never reuse or mention a deleted, unknown, or cwd-less Codex thread as if it were a valid workstream.",
@@ -892,6 +892,10 @@ function getProofTargetKey(proof: PreviewProofRecordView): string | null {
   }
 
   return null;
+}
+
+export function resolveProofBundleKey(proof: PreviewProofRecordView): string | null {
+  return getProofTargetKey(proof);
 }
 
 function parseCheckedUrlFromProofError(errorText: string | null): string | null {

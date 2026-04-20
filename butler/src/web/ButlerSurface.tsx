@@ -18,7 +18,7 @@ import { mergeKnownImages, useButlerLiveSnapshot, useKnownImages, useRuntimeSnap
 import type {
   ButlerHistoryPageResponse,
   ButlerHistoryState,
-  ImageReference,
+  FileReference,
   PreviewMedia
 } from "./types";
 import {
@@ -59,11 +59,10 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
   const [showRuntime, setShowRuntime] = useState(() => readStoredValue(BUTLER_RUNTIME_VISIBILITY_STORAGE_KEY) === "true");
   const [activeJumpId, setActiveJumpId] = useState<string | null>(null);
   const [pendingButlerText, setPendingButlerText] = useState<string | null>(null);
-  const [butlerImages, setButlerImages] = useState<ImageReference[]>([]);
-  const [butlerUploadingImages, setButlerUploadingImages] = useState(0);
+  const [butlerAttachments, setButlerAttachments] = useState<FileReference[]>([]);
+  const [butlerUploadingAttachments, setButlerUploadingAttachments] = useState(0);
   const [busyStackId, setBusyStackId] = useState<string | null>(null);
   const [busyServiceId, setBusyServiceId] = useState<string | null>(null);
-  const [busyPreviewVerification, setBusyPreviewVerification] = useState<{ leaseId: string; mode: "headless" | "headful" } | null>(null);
   const butlerScrollRef = useRef<HTMLDivElement | null>(null);
   const butlerTimelineScrollRef = useRef<HTMLDivElement | null>(null);
   const butlerScrollTopRef = useRef(0);
@@ -151,36 +150,45 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
     };
   }, []);
 
-  async function uploadImages(files: FileList | File[]) {
-    const imageFiles = [...files].filter((file) => file.type.startsWith("image/"));
-    if (imageFiles.length === 0) {
-      showToast("Only image files are supported", "error");
+  async function uploadAttachments(files: FileList | File[]) {
+    const uploadFiles = [...files];
+    if (uploadFiles.length === 0) {
       return;
     }
 
-    setButlerUploadingImages((current) => current + imageFiles.length);
+    setButlerUploadingAttachments((current) => current + uploadFiles.length);
 
     try {
       const uploaded = await Promise.all(
-        imageFiles.map(async (file) => {
+        uploadFiles.map(async (file) => {
           const data = await readFileAsBase64(file);
-          const result = await postJson<{ ok: true; image: ImageReference }>("/api/images/upload", {
+          if (file.type.startsWith("image/")) {
+            const result = await postJson<{ ok: true; image: FileReference }>("/api/images/upload", {
+              name: file.name,
+              mimeType: file.type,
+              sizeBytes: file.size,
+              data
+            });
+            mergeKnownImages([result.image]);
+            return result.image;
+          }
+
+          const result = await postJson<{ ok: true; file: FileReference }>("/api/files/upload", {
             name: file.name,
             mimeType: file.type,
             sizeBytes: file.size,
             data
           });
-          return result.image;
+          return result.file;
         })
       );
 
-      setButlerImages((current) => [...current, ...uploaded]);
-      mergeKnownImages(uploaded);
-      showToast(imageFiles.length === 1 ? "Image attached" : `${imageFiles.length} images attached`);
+      setButlerAttachments((current) => [...current, ...uploaded]);
+      showToast(uploadFiles.length === 1 ? "File attached" : `${uploadFiles.length} files attached`);
     } catch (error) {
       showErrorToast(error);
     } finally {
-      setButlerUploadingImages((current) => Math.max(0, current - imageFiles.length));
+      setButlerUploadingAttachments((current) => Math.max(0, current - uploadFiles.length));
     }
   }
 
@@ -216,22 +224,24 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
 
   async function sendButlerMessage(rawText: string) {
     const text = rawText.trim();
-    const composerImages = [...butlerImages];
-    if (!text && composerImages.length === 0) {
+    const composerAttachments = [...butlerAttachments];
+    if (!text && composerAttachments.length === 0) {
       return;
     }
 
-    const attachmentCount = composerImages.length;
+    const attachmentCount = composerAttachments.length;
     const messageSummary = text || formatAttachmentSummary(attachmentCount);
-    setButlerImages([]);
+    setButlerAttachments([]);
     setFollowButler(true);
     setPendingButlerText(messageSummary);
 
     try {
-      await postJson("/api/chat/messages", { text, imageReferenceIds: composerImages.map((image) => image.id) });
+      const imageReferenceIds = composerAttachments.filter((item) => item.mimeType.startsWith("image/")).map((item) => item.id);
+      const fileReferenceIds = composerAttachments.filter((item) => !item.mimeType.startsWith("image/")).map((item) => item.id);
+      await postJson("/api/chat/messages", { text, imageReferenceIds, fileReferenceIds });
     } catch (error) {
       setPendingButlerText(null);
-      setButlerImages((current) => (current.length === 0 ? composerImages : current));
+      setButlerAttachments((current) => (current.length === 0 ? composerAttachments : current));
       throw error;
     }
   }
@@ -275,22 +285,6 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
       showToast("Preview stopped");
     } catch (error) {
       showErrorToast(error);
-    }
-  }
-
-  async function verifyPreviewLease(leaseId: string, mode: "headless" | "headful" = "headless") {
-    setBusyPreviewVerification({ leaseId, mode });
-    try {
-      const result = await postJson<{ ok: true; verification: { ok: boolean; title: string; status: number | null } }>("/api/previews/verify", { leaseId, mode });
-      showToast(
-        result.verification.ok
-          ? `Preview verified${result.verification.title ? `: ${result.verification.title}` : ""}`
-          : `Preview check failed${result.verification.status ? ` (${result.verification.status})` : ""}`
-      );
-    } catch (error) {
-      showErrorToast(error);
-    } finally {
-      setBusyPreviewVerification((current) => (current?.leaseId === leaseId && current.mode === mode ? null : current));
     }
   }
 
@@ -485,7 +479,6 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
                         previews={runtime.previews.filter((preview) => preview.status !== "stopped")}
                         services={runtime.services.filter((service) => service.status !== "stopped")}
                         busyStackId={busyStackId}
-                        busyPreviewVerification={busyPreviewVerification}
                         busyServiceId={busyServiceId}
                         onFocusThread={(threadId) => {
                           if (threadId) {
@@ -495,7 +488,6 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
                         onPinStack={(stackId, pinned) => void pinStackLease(stackId, pinned)}
                         onStopStack={(stackId) => void stopStackLease(stackId)}
                         onPinPreview={(leaseId, pinned) => void pinPreviewLease(leaseId, pinned)}
-                        onVerifyPreview={(leaseId, mode) => void verifyPreviewLease(leaseId, mode)}
                         onStopPreview={(leaseId) => void stopPreviewLease(leaseId)}
                         onPinService={(serviceId, pinned) => void pinServiceLease(serviceId, pinned)}
                         onStopService={(serviceId) => void stopServiceLease(serviceId)}
@@ -584,7 +576,7 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
                   const message = row.message;
                   const toneClass = `is-${message.role.startsWith("assistant") ? "assistant" : "user"}`;
                   const rowToneClass = message.role.startsWith("assistant") ? "is-assistant" : "is-user";
-                  const imageState = messageImages[row.id] ?? { displayText: message.text || "…", images: [] };
+                  const imageState = messageImages[row.id] ?? { displayText: message.text || "…", images: [], files: [] };
 
                   return (
                     <div key={row.id} className={`conversation-row ${rowToneClass}`}>
@@ -610,6 +602,22 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
                                 <button key={image.id} className="message-image-button" type="button" onClick={() => onPreviewMedia({ name: image.name, url: image.url, kind: "image", downloadUrl: image.url })}>
                                   <img src={image.url} alt={image.name} className="message-image-thumb" />
                                 </button>
+                              ))}
+                            </div>
+                          ) : null}
+                          {imageState.files.length > 0 ? (
+                            <div className="message-file-strip">
+                              {imageState.files.map((file) => (
+                                <a
+                                  key={file.id}
+                                  className="message-file-pill"
+                                  href={file.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title={file.name}
+                                >
+                                  {file.name}
+                                </a>
                               ))}
                             </div>
                           ) : null}
@@ -640,10 +648,10 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
             thinkingLevel={shell.butler.compose.thinkingLevel}
             availableModels={shell.butler.compose.availableModels}
             availableThinkingLevels={shell.butler.compose.availableThinkingLevels}
-            images={butlerImages}
-            uploadingImages={butlerUploadingImages}
-            onFilesSelected={(files) => void uploadImages(files)}
-            onRemoveImage={(imageId) => setButlerImages((current) => current.filter((image) => image.id !== imageId))}
+            attachments={butlerAttachments}
+            uploadingAttachments={butlerUploadingAttachments}
+            onFilesSelected={(files) => void uploadAttachments(files)}
+            onRemoveAttachment={(attachmentId) => setButlerAttachments((current) => current.filter((entry) => entry.id !== attachmentId))}
             onPreviewImage={(image) => onPreviewMedia({ name: image.name, url: image.url, kind: "image", downloadUrl: image.url })}
             onSend={async (text) => {
               try {

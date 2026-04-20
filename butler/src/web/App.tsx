@@ -441,6 +441,19 @@ export function App() {
     });
   }
 
+  function confirmDeleteProof(proofId: string) {
+    setConfirmDialog({
+      title: "Delete proof?",
+      message: "This proof run and its files will be removed permanently.",
+      confirmLabel: "Delete proof",
+      tone: "danger",
+      onConfirm: async () => {
+        await postJson("/api/proofs/delete", { proofId });
+        showToast("Proof deleted");
+      }
+    });
+  }
+
   function confirmDeleteAllThreads() {
     setConfirmDialog({
       title: "Delete all threads?",
@@ -711,6 +724,7 @@ export function App() {
               onPreviewMedia={setPreviewMedia}
               onOpenThread={openThread}
               onDeleteThread={confirmDeleteThread}
+              onDeleteProof={confirmDeleteProof}
               showToast={showToast}
               showErrorToast={showErrorToast}
               copyText={copyText}

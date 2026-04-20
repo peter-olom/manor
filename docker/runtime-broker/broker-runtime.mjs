@@ -106,6 +106,26 @@ async function runHeartbeatCheck(lease) {
   }
 }
 
+async function runPreviewNetworkReachabilityCheck(lease) {
+  await new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host: lease.containerName, port: lease.targetPort });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("Preview network probe timed out"));
+    }, 2_500);
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      socket.end();
+      resolve();
+    });
+    socket.once("error", (error) => {
+      clearTimeout(timer);
+      socket.destroy();
+      reject(error);
+    });
+  });
+}
+
 async function monitorLeaseBootstrap(lease) {
   const bootstrap = leaseBootstrapStates.get(lease.id) ?? lease.bootstrap;
   if (!bootstrap) {
@@ -150,13 +170,22 @@ async function monitorLeaseBootstrap(lease) {
       }
 
       if (Date.now() >= stableAt) {
-        mergeLeaseBootstrapState(lease.id, {
-          phase: "ready",
-          readyAt: Date.now(),
-          lastHeartbeatAt: Date.now(),
-          lastHeartbeatError: null
-        });
-        return;
+        try {
+          await runPreviewNetworkReachabilityCheck(lease);
+          mergeLeaseBootstrapState(lease.id, {
+            phase: "ready",
+            readyAt: Date.now(),
+            lastHeartbeatAt: Date.now(),
+            lastHeartbeatError: null
+          });
+          return;
+        } catch (error) {
+          mergeLeaseBootstrapState(lease.id, {
+            phase: bootstrap.hint ? "bootstrapping" : "waiting_for_heartbeat",
+            lastHeartbeatAt: Date.now(),
+            lastHeartbeatError: error instanceof Error ? error.message : String(error)
+          });
+        }
       }
 
       await sleep(500);
@@ -164,9 +193,12 @@ async function monitorLeaseBootstrap(lease) {
 
     mergeLeaseBootstrapState(lease.id, {
       phase: "failed",
-      lastHeartbeatError: `Bootstrap timed out after ${bootstrap.waitSeconds}s.`
+      lastHeartbeatError: `Bootstrap timed out after ${bootstrap.waitSeconds}s. Preview port was not reachable on the shared network (bind to 0.0.0.0).`
     });
-    retainFailedLease(lease, `Bootstrap timed out after ${bootstrap.waitSeconds}s.`);
+    retainFailedLease(
+      lease,
+      `Bootstrap timed out after ${bootstrap.waitSeconds}s. Preview port was not reachable on the shared network (bind to 0.0.0.0).`
+    );
     return;
   }
 
@@ -308,6 +340,7 @@ async function serializeLiveLeaseFromSummary(containerSummary) {
       routePrefix: `${routeBase}/${labels["manor.lease-id"] || ""}/`,
       operatorUrl: `${routeBase}/${labels["manor.lease-id"] || ""}/`,
       command: Array.isArray(containerSummary.Command) ? containerSummary.Command.join(" ") : containerSummary.Command || "",
+      workspaceMode: labels["manor.workspace-mode"] === "snapshot" ? "snapshot" : "shared",
       image: containerSummary.Image || previewImage,
       egressProfile: labels["manor.egress-profile"] || "internet",
       egressDomains:
@@ -357,6 +390,7 @@ async function serializeInspectedLease(containerName, container) {
         routePrefix: `${routeBase}/${labels["manor.lease-id"] || ""}/`,
         operatorUrl: `${routeBase}/${labels["manor.lease-id"] || ""}/`,
         command: Array.isArray(container.Config?.Cmd) ? container.Config.Cmd.join(" ") : "",
+        workspaceMode: labels["manor.workspace-mode"] === "snapshot" ? "snapshot" : "shared",
         image: container.Config?.Image || previewImage,
         egressProfile:
           container.Config?.Env?.find((entry) => entry.startsWith("MANOR_EGRESS_PROFILE="))?.slice("MANOR_EGRESS_PROFILE=".length) ||

@@ -1,14 +1,16 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import { AttachmentIcon, CloseIcon, SendIcon } from "./icons";
-import type { ButlerThinkingLevel, ImageReference, ModelOption, PreviewableImage } from "./types";
+import type { ButlerThinkingLevel, FileReference, ModelOption, PreviewableImage } from "./types";
 import {
   DRAFT_PERSIST_DELAY_MS,
-  isImageDrag,
+  isFileDrag,
   readStoredValue,
   resizeComposerTextarea,
   writeStoredValue
 } from "./utils";
+
+const FILE_UPLOAD_ACCEPT = ".pdf,.ppt,.pptx,.xls,.xlsx,.doc,.docx,.txt,.csv,.json,.md,.zip,image/*,*/*";
 
 export const ButlerComposer = memo(function ButlerComposer({
   draftStorageKey,
@@ -16,10 +18,10 @@ export const ButlerComposer = memo(function ButlerComposer({
   thinkingLevel,
   availableModels,
   availableThinkingLevels,
-  images,
-  uploadingImages,
+  attachments,
+  uploadingAttachments,
   onFilesSelected,
-  onRemoveImage,
+  onRemoveAttachment,
   onPreviewImage,
   onSend,
   onModelChange,
@@ -30,10 +32,10 @@ export const ButlerComposer = memo(function ButlerComposer({
   thinkingLevel: ButlerThinkingLevel;
   availableModels: ModelOption[];
   availableThinkingLevels: ButlerThinkingLevel[];
-  images: ImageReference[];
-  uploadingImages: number;
+  attachments: FileReference[];
+  uploadingAttachments: number;
   onFilesSelected: (files: FileList | File[]) => void;
-  onRemoveImage: (imageId: string) => void;
+  onRemoveAttachment: (attachmentId: string) => void;
   onPreviewImage: (image: PreviewableImage) => void;
   onSend: (text: string) => Promise<void>;
   onModelChange: (modelKey: string) => void;
@@ -73,7 +75,7 @@ export const ButlerComposer = memo(function ButlerComposer({
 
   async function handleSend() {
     const text = draft.trim();
-    if (!text && images.length === 0) {
+    if (!text && attachments.length === 0) {
       return;
     }
 
@@ -105,19 +107,19 @@ export const ButlerComposer = memo(function ButlerComposer({
     event.target.value = "";
   }
 
-  const canSend = (draft.trim().length > 0 || images.length > 0) && uploadingImages === 0;
+  const canSend = (draft.trim().length > 0 || attachments.length > 0) && uploadingAttachments === 0;
 
   return (
     <div
       className={`composer${dragActive ? " is-drop-target" : ""}`}
       onDragEnter={(event) => {
-        if (isImageDrag(event)) {
+        if (isFileDrag(event)) {
           event.preventDefault();
           setDragActive(true);
         }
       }}
       onDragOver={(event) => {
-        if (isImageDrag(event)) {
+        if (isFileDrag(event)) {
           event.preventDefault();
         }
       }}
@@ -131,43 +133,53 @@ export const ButlerComposer = memo(function ButlerComposer({
         event.preventDefault();
         event.stopPropagation();
         setDragActive(false);
-        if (!isImageDrag(event)) {
+        if (!isFileDrag(event)) {
           return;
         }
         onFilesSelected(event.dataTransfer.files);
       }}
     >
-      <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFileSelection} />
-      {images.length > 0 || uploadingImages > 0 ? (
+      <input ref={fileInputRef} type="file" accept={FILE_UPLOAD_ACCEPT} multiple hidden onChange={handleFileSelection} />
+      {attachments.length > 0 || uploadingAttachments > 0 ? (
         <div>
-          {images.length > 0 ? (
+          {attachments.length > 0 ? (
             <div className="composer-attachments composer-attachments-static">
-              {images.map((image) => (
-                <div key={image.id} className="composer-attachment">
-                  <button
-                    className="composer-attachment-preview"
-                    type="button"
-                    onClick={() => onPreviewImage({ id: image.id, name: image.name, url: image.url })}
-                    aria-label={`Preview ${image.name}`}
-                    title={image.name}
-                  >
-                    <img src={image.url} alt={image.name} className="composer-attachment-thumb" />
-                  </button>
+              {attachments.map((attachment) => (
+                <div key={attachment.id} className="composer-attachment">
+                  {attachment.mimeType.startsWith("image/") ? (
+                    <button
+                      className="composer-attachment-preview"
+                      type="button"
+                      onClick={() => onPreviewImage({ id: attachment.id, name: attachment.name, url: attachment.url })}
+                      aria-label={`Preview ${attachment.name}`}
+                      title={attachment.name}
+                    >
+                      <img src={attachment.url} alt={attachment.name} className="composer-attachment-thumb" />
+                    </button>
+                  ) : (
+                    <button className="composer-attachment-preview" type="button" onClick={() => window.open(attachment.url, "_blank")} aria-label={`Open ${attachment.name}`} title={attachment.name}>
+                      <span className="composer-attachment-name">File</span>
+                    </button>
+                  )}
                   <div className="composer-attachment-copy">
                     <button
                       className="composer-attachment-name composer-attachment-name-button"
                       type="button"
-                      onClick={() => onPreviewImage({ id: image.id, name: image.name, url: image.url })}
-                      title={image.name}
+                      onClick={() =>
+                        attachment.mimeType.startsWith("image/")
+                          ? onPreviewImage({ id: attachment.id, name: attachment.name, url: attachment.url })
+                          : window.open(attachment.url, "_blank")
+                      }
+                      title={attachment.name}
                     >
-                      {image.name}
+                      {attachment.name}
                     </button>
                   </div>
                   <button
                     className="composer-attachment-remove"
                     type="button"
-                    onClick={() => onRemoveImage(image.id)}
-                    aria-label={`Remove ${image.name}`}
+                    onClick={() => onRemoveAttachment(attachment.id)}
+                    aria-label={`Remove ${attachment.name}`}
                   >
                     <CloseIcon />
                   </button>
@@ -175,7 +187,7 @@ export const ButlerComposer = memo(function ButlerComposer({
               ))}
             </div>
           ) : null}
-          {uploadingImages > 0 ? <div className="composer-uploading">Uploading {uploadingImages}…</div> : null}
+          {uploadingAttachments > 0 ? <div className="composer-uploading">Uploading {uploadingAttachments}…</div> : null}
         </div>
       ) : null}
       <div className="composer-main">
@@ -197,8 +209,8 @@ export const ButlerComposer = memo(function ButlerComposer({
             className="composer-add-image composer-add-image-mobile"
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            aria-label="Add image"
-            title="Add image"
+            aria-label="Add file"
+            title="Add file"
           >
             <AttachmentIcon />
           </button>
@@ -229,7 +241,7 @@ export const ButlerComposer = memo(function ButlerComposer({
         </div>
         <div className="composer-note">Cmd/Ctrl + Enter sends</div>
         <div className="composer-actions composer-actions-desktop">
-          <button className="composer-add-image" type="button" onClick={() => fileInputRef.current?.click()} aria-label="Add image" title="Add image">
+          <button className="composer-add-image" type="button" onClick={() => fileInputRef.current?.click()} aria-label="Add file" title="Add file">
             <AttachmentIcon />
           </button>
           <button className="composer-send composer-send-desktop" onClick={() => void handleSend()} disabled={!canSend} aria-label="Send message">
@@ -240,7 +252,7 @@ export const ButlerComposer = memo(function ButlerComposer({
           </button>
         </div>
       </div>
-      {dragActive ? <div className="composer-drop-note">Drop image files to attach them</div> : null}
+      {dragActive ? <div className="composer-drop-note">Drop files to attach them</div> : null}
     </div>
   );
 });

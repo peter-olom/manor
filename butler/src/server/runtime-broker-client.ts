@@ -24,6 +24,7 @@ type LeasePayload = {
   routePrefix: string;
   operatorUrl: string;
   command: string;
+  workspaceMode: "shared" | "snapshot";
   image: string;
   egressProfile: PreviewEgressProfile;
   egressDomains: string[];
@@ -136,6 +137,86 @@ type LeaseExecPayload = {
 type ServiceListPayload = ServicePayload[];
 type LeaseListPayload = LeasePayload[];
 type StackListPayload = StackPayload[];
+type BrowserSessionSummaryPayload = {
+  sessionId: string;
+  runId: string;
+  mode: PreviewBrowserMode;
+  targetUrl: string;
+  title: string;
+  url: string;
+  status: number | null;
+  startedAt: number;
+  actionCount: number;
+};
+
+type BrowserSessionStatePayload = {
+  ok: true;
+  session: {
+    sessionId: string;
+    runId: string;
+    mode: PreviewBrowserMode;
+    targetUrl: string;
+    outputDir: string;
+    startedAt: number;
+    lastActivityAt: number;
+    status: number | null;
+    title: string;
+    url: string;
+    actionCount: number;
+    auth: {
+      headerCount: number;
+      cookieCount: number;
+      cookieNames: string[];
+      usedSessionCookie: boolean;
+    };
+  };
+  tracked: {
+    kind: "preview" | "browser";
+    leaseId: string | null;
+    threadId: string | null;
+    projectId: string | null;
+    projectLabel: string | null;
+    title: string | null;
+    runId: string;
+    outputDir: string;
+  } | null;
+};
+
+type BrowserSessionActionPayload = {
+  ok: true;
+  action: {
+    type: string;
+    durationMs: number;
+  };
+  state: {
+    title: string;
+    url: string;
+    status: number | null;
+    actionCount: number;
+  };
+};
+
+type BrowserSessionStopPayload = {
+  ok: true;
+  verification: PreviewVerificationView;
+  tracked: {
+    kind: "preview" | "browser";
+    leaseId: string | null;
+    threadId: string | null;
+    projectId: string | null;
+    projectLabel: string | null;
+    title: string | null;
+    runId: string;
+    outputDir: string;
+  } | null;
+  browserProof?: {
+    threadId: string;
+    projectId: string;
+    projectLabel: string;
+    title: string;
+    targetUrl: string;
+  };
+};
 
 export class RuntimeBrokerClient {
   constructor(
@@ -209,9 +290,21 @@ export class RuntimeBrokerClient {
           }
         });
 
-        const payload = (await response.json()) as { error?: string } & T;
+        const payload = (await response.json()) as {
+          error?: string;
+          stage?: string;
+          hint?: string | null;
+          failureKind?: string;
+        } & T;
         if (!response.ok) {
-          throw new Error(payload.error || `Runtime broker request failed with ${response.status}`);
+          const messageParts = [payload.error || `Runtime broker request failed with ${response.status}`];
+          if (typeof payload.stage === "string" && payload.stage.trim()) {
+            messageParts.push(`stage=${payload.stage.trim()}`);
+          }
+          if (typeof payload.hint === "string" && payload.hint.trim()) {
+            messageParts.push(`hint=${payload.hint.trim()}`);
+          }
+          throw new Error(messageParts.join(" | "));
         }
 
         return payload;
@@ -240,6 +333,7 @@ export class RuntimeBrokerClient {
     branchName: string | null;
     targetPort: number;
     command: string;
+    workspaceMode?: "shared" | "snapshot";
     image?: string;
     egressProfile?: PreviewEgressProfile;
     egressDomains?: string[];
@@ -299,18 +393,18 @@ export class RuntimeBrokerClient {
     });
   }
 
-  async verifyLease(input: {
+  async startPreviewBrowserSession(input: {
     leaseId: string;
     mode?: PreviewBrowserMode;
     path?: string;
     targetUrl?: string;
     headers?: Record<string, string>;
     cookies?: Array<{ name: string; value: string }>;
+    sessionCookie?: string;
     waitForSelector?: string;
     postLoadWaitMs?: number;
-    script?: string;
-  }): Promise<PreviewVerificationView> {
-    return this.request(`/leases/${input.leaseId}/verify`, {
+  }): Promise<BrowserSessionSummaryPayload> {
+    const payload = await this.request<{ ok: true; session: BrowserSessionSummaryPayload }>(`/leases/${input.leaseId}/browser-sessions`, {
       method: "POST",
       body: JSON.stringify({
         mode: input.mode === "headful" ? "headful" : "headless",
@@ -318,27 +412,28 @@ export class RuntimeBrokerClient {
         targetUrl: input.targetUrl,
         headers: input.headers,
         cookies: input.cookies,
+        sessionCookie: input.sessionCookie,
         waitForSelector: input.waitForSelector,
-        postLoadWaitMs: input.postLoadWaitMs,
-        script: input.script
+        postLoadWaitMs: input.postLoadWaitMs
       })
     });
+    return payload.session;
   }
 
-  async verifyBrowser(input: {
+  async startBrowserSession(input: {
     threadId: string;
     projectId: string;
     projectLabel: string;
-    title?: string;
+    title: string;
     targetUrl: string;
     mode?: PreviewBrowserMode;
     headers?: Record<string, string>;
     cookies?: Array<{ name: string; value: string }>;
+    sessionCookie?: string;
     waitForSelector?: string;
     postLoadWaitMs?: number;
-    script?: string;
-  }): Promise<PreviewVerificationView> {
-    return this.request("/browser/verify", {
+  }): Promise<BrowserSessionSummaryPayload> {
+    const payload = await this.request<{ ok: true; session: BrowserSessionSummaryPayload }>("/browser/sessions", {
       method: "POST",
       body: JSON.stringify({
         threadId: input.threadId,
@@ -349,9 +444,53 @@ export class RuntimeBrokerClient {
         mode: input.mode === "headful" ? "headful" : "headless",
         headers: input.headers,
         cookies: input.cookies,
+        sessionCookie: input.sessionCookie,
         waitForSelector: input.waitForSelector,
-        postLoadWaitMs: input.postLoadWaitMs,
-        script: input.script
+        postLoadWaitMs: input.postLoadWaitMs
+      })
+    });
+    return payload.session;
+  }
+
+  async inspectBrowserSession(sessionId: string): Promise<BrowserSessionStatePayload> {
+    return this.request<BrowserSessionStatePayload>(`/browser/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "GET"
+    });
+  }
+
+  async runBrowserSessionAction(
+    sessionId: string,
+    input: {
+      type: string;
+      selector?: string;
+      value?: string;
+      values?: string[];
+      text?: string;
+      key?: string;
+      url?: string;
+      urlIncludes?: string;
+      script?: string;
+      ms?: number;
+      x?: number;
+      y?: number;
+      delayMs?: number;
+      timeoutMs?: number;
+      label?: string;
+      fileName?: string;
+      autoCapture?: boolean;
+    }
+  ): Promise<BrowserSessionActionPayload> {
+    return this.request<BrowserSessionActionPayload>(`/browser/sessions/${encodeURIComponent(sessionId)}/actions`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    });
+  }
+
+  async stopBrowserSession(sessionId: string, reason?: string): Promise<BrowserSessionStopPayload> {
+    return this.request<BrowserSessionStopPayload>(`/browser/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+      body: JSON.stringify({
+        reason: reason ?? "browser session stop"
       })
     });
   }

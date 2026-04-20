@@ -477,6 +477,57 @@ export function normalizePreviewVerification(
 ): PreviewVerificationView {
   const checkedAt =
     typeof verification.checkedAt === "number" && Number.isFinite(verification.checkedAt) ? verification.checkedAt : Date.now();
+  const normalizeDiagnosticStage = (stage: unknown, fallbackName: string) => {
+    if (!stage || typeof stage !== "object") {
+      return null;
+    }
+    const stageRecord = stage as Record<string, unknown>;
+    const failureKind: PreviewVerificationView["failureKind"] | null =
+      stageRecord.failureKind === "none" ||
+      stageRecord.failureKind === "preview" ||
+      stageRecord.failureKind === "http" ||
+      stageRecord.failureKind === "auth" ||
+      stageRecord.failureKind === "readiness" ||
+      stageRecord.failureKind === "verifier" ||
+      stageRecord.failureKind === "script" ||
+      stageRecord.failureKind === "artifact" ||
+      stageRecord.failureKind === "unknown"
+        ? (stageRecord.failureKind as PreviewVerificationView["failureKind"])
+        : null;
+    return {
+      name:
+        typeof stageRecord.name === "string" && stageRecord.name.trim()
+          ? stageRecord.name.trim()
+          : fallbackName,
+      ok: stageRecord.ok === null || typeof stageRecord.ok === "boolean" ? stageRecord.ok : null,
+      detail: typeof stageRecord.detail === "string" ? stageRecord.detail.trim() : "",
+      status:
+        typeof stageRecord.status === "number" && Number.isFinite(stageRecord.status)
+          ? Math.trunc(stageRecord.status)
+          : null,
+      hint:
+        typeof stageRecord.hint === "string" && stageRecord.hint.trim()
+          ? stageRecord.hint.trim()
+          : null,
+      failureKind
+    };
+  };
+
+  const normalizedDiagnostics = verification.diagnostics
+    ? {
+        stages: {
+          processUp: normalizeDiagnosticStage(verification.diagnostics.stages?.processUp, "process_up"),
+          networkReachable: normalizeDiagnosticStage(verification.diagnostics.stages?.networkReachable, "network_reachable"),
+          routeAuth: normalizeDiagnosticStage(verification.diagnostics.stages?.routeAuth, "route_auth"),
+          uiSelectorVisible: normalizeDiagnosticStage(verification.diagnostics.stages?.uiSelectorVisible, "ui_selector_visible")
+        },
+        remediationHints: Array.isArray(verification.diagnostics.remediationHints)
+          ? verification.diagnostics.remediationHints.filter(
+              (entry): entry is string => typeof entry === "string" && entry.trim().length > 0
+            )
+          : []
+      }
+    : undefined;
 
   return {
     runId: typeof verification.runId === "string" && verification.runId.trim() ? verification.runId.trim() : crypto.randomUUID(),
@@ -602,6 +653,7 @@ export function normalizePreviewVerification(
         : [],
       usedSessionCookie: verification.auth?.usedSessionCookie === true
     },
+    diagnostics: normalizedDiagnostics,
     artifacts: Array.isArray(verification.artifacts)
       ? verification.artifacts
           .filter((artifact): artifact is PreviewVerificationArtifactView => Boolean(artifact && typeof artifact === "object"))

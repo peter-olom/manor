@@ -62,16 +62,34 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "refreshThreads", description: "Refreshes one preview lease before Butler acts on it." }]
   },
   {
-    name: "verify_preview",
-    label: "Verify preview",
-    description: "Run Playwright verification for one preview and persist screenshot, video, trace, and manifest artifacts.",
-    uiEffects: [{ kind: "refreshThreads", description: "Refreshes preview proof state after a verification run." }]
+    name: "start_preview_browser_session",
+    label: "Start preview browser session",
+    description: "Attach a browser sidecar to one preview and begin a live recorded session.",
+    uiEffects: [{ kind: "refreshThreads", description: "Refreshes preview state when a browser session begins." }]
   },
   {
-    name: "verify_browser",
-    label: "Verify browser",
-    description: "Run Playwright verification for a direct URL and persist screenshot, video, trace, and manifest artifacts on the current job thread.",
-    uiEffects: [{ kind: "refreshThreads", description: "Refreshes thread proof state after a browser verification run." }]
+    name: "start_browser_session",
+    label: "Start browser session",
+    description: "Start a live recorded browser session for a direct URL.",
+    uiEffects: [{ kind: "refreshThreads", description: "Refreshes thread state when a browser session begins." }]
+  },
+  {
+    name: "browser_session_state",
+    label: "Browser session state",
+    description: "Inspect one active browser session state before further actions.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while monitoring live browser state." }]
+  },
+  {
+    name: "browser_session_action",
+    label: "Browser session action",
+    description: "Execute one explicit action in an active browser session, including manual screenshots.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while driving a live browser session." }]
+  },
+  {
+    name: "stop_browser_session",
+    label: "Stop browser session",
+    description: "Stop one browser session and persist the final proof bundle (video plus screenshots).",
+    uiEffects: [{ kind: "refreshThreads", description: "Refreshes proof state after browser session finalization." }]
   },
   {
     name: "review_preview_proof",

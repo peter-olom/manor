@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { Type } from "@sinclair/typebox";
 
 import { decoratePreviewVerification } from "./preview-verification.js";
+import { buildCodexInputWithReferences } from "./reference-inputs.js";
 import { normalizeStackStorageMode } from "./stack-storage.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
 import { isSharedShellRepoBootstrapTask } from "./thread-contract.js";
@@ -237,6 +238,11 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         title: Type.String({ minLength: 1 }),
         command: Type.String({ minLength: 1 }),
         port: Type.Number({ minimum: 1, maximum: 65535 }),
+        workspaceMode: Type.Optional(
+          Type.Union([Type.Literal("shared"), Type.Literal("snapshot")], {
+            description: "shared keeps the preview on the source worktree; snapshot copies into an isolated disposable workspace."
+          })
+        ),
         stackId: Type.Optional(Type.String()),
         aliases: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
         env: Type.Optional(Type.Record(Type.String(), Type.String())),
@@ -294,6 +300,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           title: string;
           command: string;
           port: number;
+          workspaceMode?: "shared" | "snapshot";
           stackId?: string;
           aliases?: string[];
           env?: Record<string, string>;
@@ -344,6 +351,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           branchName: thread?.cwd === typedParams.cwd ? null : null,
           targetPort: typedParams.port,
           command: typedParams.command,
+          workspaceMode: typedParams.workspaceMode === "snapshot" ? "snapshot" : "shared",
           image: previewDefaults.image,
           egressProfile: previewDefaults.egressProfile ?? "internet",
           egressDomains: previewDefaults.egressDomains ?? [],
@@ -360,7 +368,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           content: [
             {
               type: "text",
-              text: `Started preview ${lease.title} at ${lease.operatorUrl}. Bootstrap=${lease.bootstrap.phase}${lease.bootstrap.hint ? ` (${lease.bootstrap.hint})` : ""}.${previewDefaults.autofilled.length > 0 ? ` Auto-filled ${previewDefaults.autofilled.join(", ")} from workspace bootstrap.` : ""}`
+              text: `Started preview ${lease.title} at ${lease.operatorUrl}. Workspace=${lease.workspaceMode}. Bootstrap=${lease.bootstrap.phase}${lease.bootstrap.hint ? ` (${lease.bootstrap.hint})` : ""}.${previewDefaults.autofilled.length > 0 ? ` Auto-filled ${previewDefaults.autofilled.join(", ")} from workspace bootstrap.` : ""}`
             }
           ],
           details: { lease, workspaceBootstrap, previewDefaults }
@@ -406,7 +414,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           content: [
             {
               type: "text",
-              text: `${lease.title} is ${lease.runtime.status}. Bootstrap=${lease.bootstrap.phase}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}. Domains=${domains}.`
+              text: `${lease.title} is ${lease.runtime.status}. Bootstrap=${lease.bootstrap.phase}. Workspace=${lease.workspaceMode}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}. Domains=${domains}.`
             }
           ],
           details: { lease }
@@ -414,31 +422,29 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       }
     }),
     access.defineButlerTool({
-      name: "verify_preview",
-      label: "Verify preview",
-      description: "Run Playwright verification for one preview and persist screenshots, video, trace, and manifest artifacts.",
+      name: "start_preview_browser_session",
+      label: "Start preview browser session",
+      description: "Attach a browser sidecar to one preview and begin a live recorded session.",
       promptSnippet:
-        "verify_preview: use this to produce proof artifacts for a preview. Use headful mode when the operator wants frontend proof with video.",
+        "start_preview_browser_session: open a live browser session for a preview. The timer and recording begin immediately; stop the session later to persist proof.",
       parameters: Type.Object({
         leaseId: Type.String(),
         mode: Type.Optional(Type.Union([Type.Literal("headless"), Type.Literal("headful")])),
         path: Type.Optional(Type.String()),
         targetUrl: Type.Optional(Type.String()),
-        script: Type.Optional(Type.String()),
         waitForSelector: Type.Optional(Type.String()),
         postLoadWaitMs: Type.Optional(Type.Number({ minimum: 0 })),
         headers: Type.Optional(Type.Record(Type.String(), Type.String())),
         cookies: Type.Optional(Type.Record(Type.String(), Type.String())),
         sessionCookie: Type.Optional(Type.String())
       }),
-      uiEffects: access.getToolUiEffects("verify_preview"),
+      uiEffects: access.getToolUiEffects("start_preview_browser_session"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as {
           leaseId: string;
           mode?: "headless" | "headful";
           path?: string;
           targetUrl?: string;
-          script?: string;
           waitForSelector?: string;
           postLoadWaitMs?: number;
           headers?: Record<string, string>;
@@ -454,59 +460,41 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         if (sessionCookie) {
           cookieEntries.push(["better-auth.session_token", sessionCookie]);
         }
-        const verification = decoratePreviewVerification(
-          await access.runtimeBroker.verifyLease({
-            leaseId: preview.id,
-            mode: typedParams.mode === "headful" ? "headful" : "headless",
-            path: typedParams.path?.trim() || undefined,
-            targetUrl: typedParams.targetUrl?.trim() || undefined,
-            script: typedParams.script?.trim() || undefined,
-            waitForSelector: typedParams.waitForSelector?.trim() || undefined,
-            postLoadWaitMs:
-              typeof typedParams.postLoadWaitMs === "number" && Number.isFinite(typedParams.postLoadWaitMs)
-                ? Math.max(0, Math.trunc(typedParams.postLoadWaitMs))
-                : undefined,
-            headers:
-              typedParams.headers && Object.keys(typedParams.headers).length > 0 ? typedParams.headers : undefined,
-            cookies: cookieEntries.length > 0 ? cookieEntries.map(([name, value]) => ({ name, value })) : undefined
-          })
-        );
-        access.store.recordPreviewLeaseVerification(preview.id, verification);
+        const session = await access.runtimeBroker.startPreviewBrowserSession({
+          leaseId: preview.id,
+          mode: typedParams.mode === "headful" ? "headful" : "headless",
+          path: typedParams.path?.trim() || undefined,
+          targetUrl: typedParams.targetUrl?.trim() || undefined,
+          waitForSelector: typedParams.waitForSelector?.trim() || undefined,
+          postLoadWaitMs:
+            typeof typedParams.postLoadWaitMs === "number" && Number.isFinite(typedParams.postLoadWaitMs)
+              ? Math.max(0, Math.trunc(typedParams.postLoadWaitMs))
+              : undefined,
+          headers: typedParams.headers && Object.keys(typedParams.headers).length > 0 ? typedParams.headers : undefined,
+          cookies: cookieEntries.length > 0 ? cookieEntries.map(([name, value]) => ({ name, value })) : undefined
+        });
         access.store.notePreviewLeaseActivity(preview.id);
-
-        const screenshots = verification.artifacts.filter((artifact) => artifact.kind === "screenshot");
-        const screenshot = screenshots.at(-1) ?? null;
-        const video = verification.artifacts.find((artifact) => artifact.kind === "video") ?? null;
-        const proofNotes = [
-          screenshots.length > 0 ? `${screenshots.length} screenshots ready` : "screenshots missing",
-          video?.downloadUrl ? "video ready" : "video missing"
-        ].join(", ");
 
         return {
           content: [
             {
               type: "text",
-              text: verification.ok
-                ? `Verified ${preview.title} in ${verification.mode} mode. ${proofNotes}.`
-                : `Verification failed for ${preview.title} in ${verification.mode} mode. Failure=${verification.failureKind}.${verification.status ? ` Status=${verification.status}.` : ""}`
+              text: `Started browser session ${session.sessionId} for ${preview.title}. Recording is live until the session is stopped.`
             }
           ],
           details: {
             preview,
-            verification,
-            screenshots,
-            screenshot,
-            video
+            session
           }
         };
       }
     }),
     access.defineButlerTool({
-      name: "verify_browser",
-      label: "Verify browser",
-      description: "Run Playwright verification for a direct URL and persist screenshot, video, trace, and manifest artifacts on the current job thread.",
+      name: "start_browser_session",
+      label: "Start browser session",
+      description: "Start a live recorded browser session for a direct URL.",
       promptSnippet:
-        "verify_browser: use this for already-online sites or arbitrary URLs when the browser should verify the actual target directly instead of going through a preview route.",
+        "start_browser_session: open a live browser session for a direct URL. Proof is persisted only after stop_browser_session.",
       parameters: Type.Object({
         threadId: Type.Optional(Type.String()),
         targetUrl: Type.String({ minLength: 1 }),
@@ -516,10 +504,9 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         cookies: Type.Optional(Type.Record(Type.String(), Type.String())),
         sessionCookie: Type.Optional(Type.String()),
         waitForSelector: Type.Optional(Type.String()),
-        postLoadWaitMs: Type.Optional(Type.Number({ minimum: 0 })),
-        script: Type.Optional(Type.String())
+        postLoadWaitMs: Type.Optional(Type.Number({ minimum: 0 }))
       }),
-      uiEffects: access.getToolUiEffects("verify_browser"),
+      uiEffects: access.getToolUiEffects("start_browser_session"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as {
           threadId?: string;
@@ -531,7 +518,6 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           sessionCookie?: string;
           waitForSelector?: string;
           postLoadWaitMs?: number;
-          script?: string;
         };
         const threadId = typedParams.threadId?.trim() || null;
         const thread = threadId ? access.store.getThread(threadId) ?? null : null;
@@ -549,55 +535,209 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         if (sessionCookie) {
           cookieEntries.push(["better-auth.session_token", sessionCookie]);
         }
-        const verification = decoratePreviewVerification(
-          await access.runtimeBroker.verifyBrowser({
-            threadId: threadId ?? "browser",
-            projectId: project.id,
-            projectLabel: project.label,
-            title: typedParams.title?.trim() || typedParams.targetUrl.trim(),
-            targetUrl: typedParams.targetUrl.trim(),
-            mode: typedParams.mode === "headful" ? "headful" : "headless",
-            headers:
-              typedParams.headers && Object.keys(typedParams.headers).length > 0 ? typedParams.headers : undefined,
-            cookies: cookieEntries.length > 0 ? cookieEntries.map(([name, value]) => ({ name, value })) : undefined,
-            waitForSelector: typedParams.waitForSelector?.trim() || undefined,
-            postLoadWaitMs:
-              typeof typedParams.postLoadWaitMs === "number" && Number.isFinite(typedParams.postLoadWaitMs)
-                ? Math.max(0, Math.trunc(typedParams.postLoadWaitMs))
-                : undefined,
-            script: typedParams.script?.trim() || undefined
-          })
-        );
-        if (threadId) {
-          access.store.recordBrowserVerification({
-            threadId,
-            projectId: project.id,
-            projectLabel: project.label,
-            title: typedParams.title?.trim() || typedParams.targetUrl.trim(),
-            verification
-          });
-        }
-
-        const screenshots = verification.artifacts.filter((artifact) => artifact.kind === "screenshot");
-        const video = verification.artifacts.find((artifact) => artifact.kind === "video") ?? null;
-        const proofNotes = [
-          screenshots.length > 0 ? `${screenshots.length} screenshots ready` : "screenshots missing",
-          video?.downloadUrl ? "video ready" : "video missing"
-        ].join(", ");
+        const session = await access.runtimeBroker.startBrowserSession({
+          threadId: threadId ?? "browser",
+          projectId: project.id,
+          projectLabel: project.label,
+          title: typedParams.title?.trim() || typedParams.targetUrl.trim(),
+          targetUrl: typedParams.targetUrl.trim(),
+          mode: typedParams.mode === "headful" ? "headful" : "headless",
+          headers: typedParams.headers && Object.keys(typedParams.headers).length > 0 ? typedParams.headers : undefined,
+          cookies: cookieEntries.length > 0 ? cookieEntries.map(([name, value]) => ({ name, value })) : undefined,
+          waitForSelector: typedParams.waitForSelector?.trim() || undefined,
+          postLoadWaitMs:
+            typeof typedParams.postLoadWaitMs === "number" && Number.isFinite(typedParams.postLoadWaitMs)
+              ? Math.max(0, Math.trunc(typedParams.postLoadWaitMs))
+              : undefined
+        });
 
         return {
           content: [
             {
               type: "text",
-              text: verification.ok
-                ? `Verified ${typedParams.targetUrl.trim()} in ${verification.mode} mode. ${proofNotes}.`
-                : `Verification failed for ${typedParams.targetUrl.trim()} in ${verification.mode} mode. Failure=${verification.failureKind}.${verification.status ? ` Status=${verification.status}.` : ""}`
+              text: `Started browser session ${session.sessionId}. Recording is live until the session is stopped.`
+            }
+          ],
+          details: {
+            session
+          }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "browser_session_state",
+      label: "Browser session state",
+      description: "Inspect one active browser session state.",
+      promptSnippet: "browser_session_state: use this to confirm session health, URL, and action count before continuing.",
+      parameters: Type.Object({
+        sessionId: Type.String({ minLength: 1 })
+      }),
+      uiEffects: access.getToolUiEffects("browser_session_state"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as { sessionId: string };
+        const result = await access.runtimeBroker.inspectBrowserSession(typedParams.sessionId.trim());
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Session ${result.session.sessionId} is active at ${result.session.url}. Actions=${result.session.actionCount}.`
+            }
+          ],
+          details: result
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "browser_session_action",
+      label: "Browser session action",
+      description: "Run one explicit action in an active browser session, including manual screenshots.",
+      promptSnippet:
+        "browser_session_action: use this for stepwise browser control. Use actionType=screenshot at any checkpoint where visual proof should be captured.",
+      parameters: Type.Object({
+        sessionId: Type.String({ minLength: 1 }),
+        actionType: Type.String({ minLength: 1 }),
+        selector: Type.Optional(Type.String()),
+        value: Type.Optional(Type.String()),
+        values: Type.Optional(Type.Array(Type.String())),
+        text: Type.Optional(Type.String()),
+        key: Type.Optional(Type.String()),
+        url: Type.Optional(Type.String()),
+        urlIncludes: Type.Optional(Type.String()),
+        script: Type.Optional(Type.String()),
+        ms: Type.Optional(Type.Number({ minimum: 0 })),
+        x: Type.Optional(Type.Number()),
+        y: Type.Optional(Type.Number()),
+        delayMs: Type.Optional(Type.Number({ minimum: 0 })),
+        timeoutMs: Type.Optional(Type.Number({ minimum: 0 })),
+        label: Type.Optional(Type.String()),
+        fileName: Type.Optional(Type.String()),
+        autoCapture: Type.Optional(Type.Boolean())
+      }),
+      uiEffects: access.getToolUiEffects("browser_session_action"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as {
+          sessionId: string;
+          actionType: string;
+          selector?: string;
+          value?: string;
+          values?: string[];
+          text?: string;
+          key?: string;
+          url?: string;
+          urlIncludes?: string;
+          script?: string;
+          ms?: number;
+          x?: number;
+          y?: number;
+          delayMs?: number;
+          timeoutMs?: number;
+          label?: string;
+          fileName?: string;
+          autoCapture?: boolean;
+        };
+
+        const result = await access.runtimeBroker.runBrowserSessionAction(typedParams.sessionId.trim(), {
+          type: typedParams.actionType.trim(),
+          selector: typedParams.selector?.trim() || undefined,
+          value: typedParams.value?.trim() || undefined,
+          values: Array.isArray(typedParams.values) ? typedParams.values.map((entry) => entry.trim()).filter(Boolean) : [],
+          text: typedParams.text || undefined,
+          key: typedParams.key?.trim() || undefined,
+          url: typedParams.url?.trim() || undefined,
+          urlIncludes: typedParams.urlIncludes?.trim() || undefined,
+          script: typedParams.script,
+          ms:
+            typeof typedParams.ms === "number" && Number.isFinite(typedParams.ms)
+              ? Math.max(0, Math.trunc(typedParams.ms))
+              : undefined,
+          x: typeof typedParams.x === "number" && Number.isFinite(typedParams.x) ? typedParams.x : undefined,
+          y: typeof typedParams.y === "number" && Number.isFinite(typedParams.y) ? typedParams.y : undefined,
+          delayMs:
+            typeof typedParams.delayMs === "number" && Number.isFinite(typedParams.delayMs)
+              ? Math.max(0, Math.trunc(typedParams.delayMs))
+              : undefined,
+          timeoutMs:
+            typeof typedParams.timeoutMs === "number" && Number.isFinite(typedParams.timeoutMs)
+              ? Math.max(0, Math.trunc(typedParams.timeoutMs))
+              : undefined,
+          label: typedParams.label?.trim() || undefined,
+          fileName: typedParams.fileName?.trim() || undefined,
+          autoCapture: typedParams.autoCapture
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Browser action ${result.action.type} completed. URL=${result.state.url}. Actions=${result.state.actionCount}.`
+            }
+          ],
+          details: result
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "stop_browser_session",
+      label: "Stop browser session",
+      description: "Stop a browser session and persist the final proof bundle.",
+      promptSnippet:
+        "stop_browser_session: finalize browser proof. This stops the timer and saves one video plus captured screenshots.",
+      parameters: Type.Object({
+        sessionId: Type.String({ minLength: 1 }),
+        reason: Type.Optional(Type.String()),
+        leaseId: Type.Optional(Type.String())
+      }),
+      uiEffects: access.getToolUiEffects("stop_browser_session"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as {
+          sessionId: string;
+          reason?: string;
+          leaseId?: string;
+        };
+
+        const result = await access.runtimeBroker.stopBrowserSession(
+          typedParams.sessionId.trim(),
+          typedParams.reason?.trim() || undefined
+        );
+        const verification = decoratePreviewVerification(result.verification);
+
+        if (result.browserProof) {
+          access.store.recordBrowserVerification({
+            threadId: result.browserProof.threadId,
+            projectId: result.browserProof.projectId,
+            projectLabel: result.browserProof.projectLabel,
+            title: result.browserProof.title,
+            verification
+          });
+        } else {
+          const effectivePreviewLeaseId =
+            typedParams.leaseId?.trim() || (result.tracked?.kind === "preview" ? result.tracked.leaseId : null);
+          if (effectivePreviewLeaseId) {
+            access.store.recordPreviewLeaseVerification(effectivePreviewLeaseId, verification);
+            access.store.notePreviewLeaseActivity(effectivePreviewLeaseId);
+          }
+        }
+
+        const screenshots = verification.artifacts.filter((artifact) => artifact.kind === "screenshot");
+        const video = verification.artifacts.find((artifact) => artifact.kind === "video") ?? null;
+        const remediationHint = verification.failureKind !== "none" ? verification.diagnostics?.remediationHints?.[0] ?? "" : "";
+        const signalSummary =
+          verification.failureKind === "none"
+            ? "Signals=none."
+            : `Signals=${verification.failureKind}.${verification.status ? ` Status=${verification.status}.` : ""}${remediationHint ? ` Hint=${remediationHint}.` : ""}`;
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Stopped browser session with proof run ${verification.runId}. Saved ${screenshots.length} screenshots and ${video ? "1 video" : "no video"}. ${signalSummary}`
             }
           ],
           details: {
             verification,
             screenshots,
-            video
+            video,
+            browserProof: result.browserProof ?? null
           }
         };
       }
@@ -758,7 +898,8 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         task: Type.String({ minLength: 1 }),
         goal: Type.Optional(Type.String({ minLength: 1 })),
         cwd: Type.Optional(Type.String()),
-        imageReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 })))
+        imageReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+        fileReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 })))
       }),
       uiEffects: access.getToolUiEffects("delegate_to_codex"),
       execute: async (_toolCallId, params) => {
@@ -767,6 +908,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           goal?: string;
           cwd?: string;
           imageReferenceIds?: string[];
+          fileReferenceIds?: string[];
         };
         const smokeRequest = access.detectSupervisionSmokeRequest(typedParams.task, typedParams.goal);
         const workspace = smokeRequest
@@ -795,8 +937,8 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         const result = await access.codexClient.startThread({
           task: delegatedGoal ? `${delegatedTask}\n\nGoal: ${delegatedGoal}` : delegatedTask,
           input: async (threadId: string) =>
-            access.imageStore.buildCodexInput(
-              (
+            buildCodexInputWithReferences({
+              text: (
                 await access.buildDelegationContract({
                   threadId,
                   task: delegatedTask,
@@ -807,8 +949,11 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
                   extraNotes: contractOptions.extraNotes
                 })
               ).text,
-              typedParams.imageReferenceIds ?? []
-            ),
+              imageStore: access.imageStore,
+              imageReferenceIds: typedParams.imageReferenceIds ?? [],
+              fileStore: access.fileStore,
+              fileReferenceIds: typedParams.fileReferenceIds ?? []
+            }),
           cwd: workspace.cwd,
           developerInstructions,
           openWindow: true

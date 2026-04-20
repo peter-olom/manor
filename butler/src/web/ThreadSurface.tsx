@@ -14,7 +14,7 @@ import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
 import { RuntimePanel } from "./RuntimePanel";
 import { mergeKnownImages, useKnownImages, useRuntimeSnapshot, useShellSnapshot, useThreadDetail } from "./live-state";
 import type {
-  ImageReference,
+  FileReference,
   PreviewMedia,
   ReasoningEffort
 } from "./types";
@@ -26,7 +26,7 @@ import {
   formatJumpLabel,
   formatThreadBudget,
   groupTimelineItems,
-  isImageDrag,
+  isFileDrag,
   itemLabel,
   itemTone,
   readStoredValue,
@@ -37,11 +37,14 @@ import {
   writeStoredValue
 } from "./utils";
 
+const FILE_UPLOAD_ACCEPT = ".pdf,.ppt,.pptx,.xls,.xlsx,.doc,.docx,.txt,.csv,.json,.md,.zip,image/*,*/*";
+
 type ThreadSurfaceProps = {
   threadId: string | null;
   onPreviewMedia: (media: PreviewMedia) => void;
   onOpenThread: (threadId: string) => void;
   onDeleteThread: (threadId: string) => void;
+  onDeleteProof: (proofId: string) => void;
   showToast: (message: string, tone?: "success" | "error" | "info", duration?: number, key?: string) => void;
   showErrorToast: (error: unknown, key?: string, duration?: number) => void;
   copyText: (value: string, successMessage: string) => Promise<void>;
@@ -52,6 +55,7 @@ export function ThreadSurface({
   onPreviewMedia,
   onOpenThread,
   onDeleteThread,
+  onDeleteProof,
   showToast,
   showErrorToast,
   copyText
@@ -61,8 +65,8 @@ export function ThreadSurface({
   const knownImages = useKnownImages();
   const activeThread = useThreadDetail(threadId);
   const [threadDraft, setThreadDraft] = useState("");
-  const [threadImages, setThreadImages] = useState<ImageReference[]>([]);
-  const [threadUploadingImages, setThreadUploadingImages] = useState(0);
+  const [threadAttachments, setThreadAttachments] = useState<FileReference[]>([]);
+  const [threadUploadingAttachments, setThreadUploadingAttachments] = useState(0);
   const [threadDragActive, setThreadDragActive] = useState(false);
   const [pendingThreadRequest, setPendingThreadRequest] = useState<{
     threadId: string;
@@ -75,7 +79,6 @@ export function ThreadSurface({
   const [showThreadProofs, setShowThreadProofs] = useState(false);
   const [busyStackId, setBusyStackId] = useState<string | null>(null);
   const [busyServiceId, setBusyServiceId] = useState<string | null>(null);
-  const [busyPreviewVerification, setBusyPreviewVerification] = useState<{ leaseId: string; mode: "headless" | "headful" } | null>(null);
   const [activeJumpId, setActiveJumpId] = useState<string | null>(null);
   const runScrollRef = useRef<HTMLDivElement | null>(null);
   const runTimelineScrollRef = useRef<HTMLDivElement | null>(null);
@@ -88,7 +91,7 @@ export function ThreadSurface({
   useEffect(() => {
     const nextThreadId = activeThread?.id ?? null;
     setThreadDraft(nextThreadId ? readStoredValue(`${THREAD_DRAFT_STORAGE_KEY_PREFIX}${nextThreadId}`) : "");
-    setThreadImages([]);
+    setThreadAttachments([]);
     setFollowRun(true);
     setShowThreadRuntime(false);
     setShowThreadProofs(false);
@@ -143,34 +146,43 @@ export function ThreadSurface({
     }
   }, [activeThread, pendingThreadRequest]);
 
-  async function uploadThreadImages(files: FileList | File[]) {
-    const imageFiles = [...files].filter((file) => file.type.startsWith("image/"));
-    if (imageFiles.length === 0) {
-      showToast("Only image files are supported", "error");
+  async function uploadThreadAttachments(files: FileList | File[]) {
+    const uploadFiles = [...files];
+    if (uploadFiles.length === 0) {
       return;
     }
 
-    setThreadUploadingImages((current) => current + imageFiles.length);
+    setThreadUploadingAttachments((current) => current + uploadFiles.length);
     try {
       const uploaded = await Promise.all(
-        imageFiles.map(async (file) => {
+        uploadFiles.map(async (file) => {
           const data = await readFileAsBase64(file);
-          const result = await postJson<{ ok: true; image: ImageReference }>("/api/images/upload", {
+          if (file.type.startsWith("image/")) {
+            const result = await postJson<{ ok: true; image: FileReference }>("/api/images/upload", {
+              name: file.name,
+              mimeType: file.type,
+              sizeBytes: file.size,
+              data
+            });
+            mergeKnownImages([result.image]);
+            return result.image;
+          }
+
+          const result = await postJson<{ ok: true; file: FileReference }>("/api/files/upload", {
             name: file.name,
             mimeType: file.type,
             sizeBytes: file.size,
             data
           });
-          return result.image;
+          return result.file;
         })
       );
-      setThreadImages((current) => [...current, ...uploaded]);
-      mergeKnownImages(uploaded);
-      showToast(imageFiles.length === 1 ? "Image attached" : `${imageFiles.length} images attached`);
+      setThreadAttachments((current) => [...current, ...uploaded]);
+      showToast(uploadFiles.length === 1 ? "File attached" : `${uploadFiles.length} files attached`);
     } catch (error) {
       showErrorToast(error);
     } finally {
-      setThreadUploadingImages((current) => Math.max(0, current - imageFiles.length));
+      setThreadUploadingAttachments((current) => Math.max(0, current - uploadFiles.length));
     }
   }
 
@@ -180,14 +192,14 @@ export function ThreadSurface({
     }
 
     const text = threadDraft.trim();
-    const composerImages = [...threadImages];
-    if (!text && composerImages.length === 0) {
+    const composerAttachments = [...threadAttachments];
+    if (!text && composerAttachments.length === 0) {
       return;
     }
 
-    const messageSummary = text || formatAttachmentSummary(composerImages.length);
+    const messageSummary = text || formatAttachmentSummary(composerAttachments.length);
     setThreadDraft("");
-    setThreadImages([]);
+    setThreadAttachments([]);
     writeStoredValue(`${THREAD_DRAFT_STORAGE_KEY_PREFIX}${activeThread.id}`, "");
     setFollowRun(true);
     setPendingThreadRequest({
@@ -200,12 +212,13 @@ export function ThreadSurface({
       await postJson("/api/threads/messages", {
         threadId: activeThread.id,
         text,
-        imageReferenceIds: composerImages.map((image) => image.id)
+        imageReferenceIds: composerAttachments.filter((item) => item.mimeType.startsWith("image/")).map((item) => item.id),
+        fileReferenceIds: composerAttachments.filter((item) => !item.mimeType.startsWith("image/")).map((item) => item.id)
       });
     } catch (error) {
       setPendingThreadRequest((current) => (current?.threadId === activeThread.id && current.text === messageSummary ? null : current));
       setThreadDraft((current) => (current.trim().length === 0 ? text : current));
-      setThreadImages((current) => (current.length === 0 ? composerImages : current));
+      setThreadAttachments((current) => (current.length === 0 ? composerAttachments : current));
       showErrorToast(error);
     }
   }
@@ -253,22 +266,6 @@ export function ThreadSurface({
       showToast("Preview stopped");
     } catch (error) {
       showErrorToast(error);
-    }
-  }
-
-  async function verifyPreviewLease(leaseId: string, mode: "headless" | "headful" = "headless") {
-    setBusyPreviewVerification({ leaseId, mode });
-    try {
-      const result = await postJson<{ ok: true; verification: { ok: boolean; title: string; status: number | null } }>("/api/previews/verify", { leaseId, mode });
-      showToast(
-        result.verification.ok
-          ? `Preview verified${result.verification.title ? `: ${result.verification.title}` : ""}`
-          : `Preview check failed${result.verification.status ? ` (${result.verification.status})` : ""}`
-      );
-    } catch (error) {
-      showErrorToast(error);
-    } finally {
-      setBusyPreviewVerification((current) => (current?.leaseId === leaseId && current.mode === mode ? null : current));
     }
   }
 
@@ -444,15 +441,19 @@ export function ThreadSurface({
               {showThreadProofs ? (
                 <div className="conversation-disclosure-panel runtime-disclosure-panel thread-proof-panel">
                   <div className="thread-proof-list">
-                    {(activeThreadPreviewProofs.length > 1
-                      ? activeThreadPreviewProofs.map((proof) => proof.verification)
-                      : [activeThreadPreviewVerification]
-                    ).map((verification) => (
+                    {(activeThreadPreviewProofs.length > 0
+                      ? activeThreadPreviewProofs.map((proof) => ({ proof, verification: proof.verification }))
+                      : activeThreadPreviewVerification
+                        ? [{ proof: null, verification: activeThreadPreviewVerification }]
+                        : []
+                    ).map(({ proof, verification }) => (
                       <PreviewVerificationSummary
                         key={verification.runId}
+                        proof={proof}
                         verification={verification}
                         onPreviewArtifact={onPreviewMedia}
                         onResourceUnavailable={(message) => showToast(message, "error", 5000)}
+                        onDeleteProof={proof ? onDeleteProof : undefined}
                       />
                     ))}
                   </div>
@@ -488,7 +489,6 @@ export function ThreadSurface({
                     previews={activeThreadPreviews}
                     services={activeThreadServices}
                     busyStackId={busyStackId}
-                    busyPreviewVerification={busyPreviewVerification}
                     busyServiceId={busyServiceId}
                     onFocusThread={(nextThreadId) => {
                       if (nextThreadId) {
@@ -498,7 +498,6 @@ export function ThreadSurface({
                     onPinStack={(stackId, pinned) => void pinStackLease(stackId, pinned)}
                     onStopStack={(stackId) => void stopStackLease(stackId)}
                     onPinPreview={(leaseId, pinned) => void pinPreviewLease(leaseId, pinned)}
-                    onVerifyPreview={(leaseId, mode) => void verifyPreviewLease(leaseId, mode)}
                     onStopPreview={(leaseId) => void stopPreviewLease(leaseId)}
                     onPinService={(serviceId, pinned) => void pinServiceLease(serviceId, pinned)}
                     onStopService={(serviceId) => void stopServiceLease(serviceId)}
@@ -567,7 +566,7 @@ export function ThreadSurface({
 
                   const tone = itemTone(row.item.type);
                   const rowToneClass = tone === "user" ? "is-user" : "is-assistant";
-                  const imageState = messageImages[row.id] ?? { displayText: row.item.text || "Running shell command", images: [] };
+                  const imageState = messageImages[row.id] ?? { displayText: row.item.text || "Running shell command", images: [], files: [] };
 
                   return (
                     <div key={row.id} className={`conversation-row ${rowToneClass}`}>
@@ -589,6 +588,22 @@ export function ThreadSurface({
                                 <button key={image.id} className="message-image-button" type="button" onClick={() => onPreviewMedia({ name: image.name, url: image.url, kind: "image", downloadUrl: image.url })}>
                                   <img src={image.url} alt={image.name} className="message-image-thumb" />
                                 </button>
+                              ))}
+                            </div>
+                          ) : null}
+                          {imageState.files.length > 0 ? (
+                            <div className="message-file-strip">
+                              {imageState.files.map((file) => (
+                                <a
+                                  key={file.id}
+                                  className="message-file-pill"
+                                  href={file.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title={file.name}
+                                >
+                                  {file.name}
+                                </a>
                               ))}
                             </div>
                           ) : null}
@@ -616,13 +631,13 @@ export function ThreadSurface({
           <div
             className={`composer${threadDragActive ? " is-drop-target" : ""}`}
             onDragEnter={(event) => {
-              if (isImageDrag(event)) {
+              if (isFileDrag(event)) {
                 event.preventDefault();
                 setThreadDragActive(true);
               }
             }}
             onDragOver={(event) => {
-              if (isImageDrag(event)) {
+              if (isFileDrag(event)) {
                 event.preventDefault();
               }
             }}
@@ -636,41 +651,55 @@ export function ThreadSurface({
               event.preventDefault();
               event.stopPropagation();
               setThreadDragActive(false);
-              if (!isImageDrag(event)) {
+              if (!isFileDrag(event)) {
                 return;
               }
-              void uploadThreadImages(event.dataTransfer.files);
+              void uploadThreadAttachments(event.dataTransfer.files);
             }}
           >
-            <input ref={threadFileInputRef} type="file" accept="image/*" multiple hidden onChange={(event) => {
+            <input ref={threadFileInputRef} type="file" accept={FILE_UPLOAD_ACCEPT} multiple hidden onChange={(event) => {
               const files = event.target.files;
               if (files && files.length > 0) {
-                void uploadThreadImages(files);
+                void uploadThreadAttachments(files);
               }
               event.target.value = "";
             }} />
-            {threadImages.length > 0 || threadUploadingImages > 0 ? (
+            {threadAttachments.length > 0 || threadUploadingAttachments > 0 ? (
               <div>
-                {threadImages.length > 0 ? (
+                {threadAttachments.length > 0 ? (
                   <div className="composer-attachments composer-attachments-static">
-                    {threadImages.map((image) => (
-                      <div key={image.id} className="composer-attachment">
-                        <button className="composer-attachment-preview" type="button" onClick={() => onPreviewMedia({ name: image.name, url: image.url, kind: "image", downloadUrl: image.url })}>
-                          <img src={image.url} alt={image.name} className="composer-attachment-thumb" />
-                        </button>
+                    {threadAttachments.map((attachment) => (
+                      <div key={attachment.id} className="composer-attachment">
+                        {attachment.mimeType.startsWith("image/") ? (
+                          <button className="composer-attachment-preview" type="button" onClick={() => onPreviewMedia({ name: attachment.name, url: attachment.url, kind: "image", downloadUrl: attachment.url })}>
+                            <img src={attachment.url} alt={attachment.name} className="composer-attachment-thumb" />
+                          </button>
+                        ) : (
+                          <button className="composer-attachment-preview" type="button" onClick={() => window.open(attachment.url, "_blank")}>
+                            <span className="composer-attachment-name">File</span>
+                          </button>
+                        )}
                         <div className="composer-attachment-copy">
-                          <button className="composer-attachment-name composer-attachment-name-button" type="button" onClick={() => onPreviewMedia({ name: image.name, url: image.url, kind: "image", downloadUrl: image.url })}>
-                            {image.name}
+                          <button
+                            className="composer-attachment-name composer-attachment-name-button"
+                            type="button"
+                            onClick={() =>
+                              attachment.mimeType.startsWith("image/")
+                                ? onPreviewMedia({ name: attachment.name, url: attachment.url, kind: "image", downloadUrl: attachment.url })
+                                : window.open(attachment.url, "_blank")
+                            }
+                          >
+                            {attachment.name}
                           </button>
                         </div>
-                        <button className="composer-attachment-remove" type="button" onClick={() => setThreadImages((current) => current.filter((entry) => entry.id !== image.id))}>
+                        <button className="composer-attachment-remove" type="button" onClick={() => setThreadAttachments((current) => current.filter((entry) => entry.id !== attachment.id))}>
                           ×
                         </button>
                       </div>
                     ))}
                   </div>
                 ) : null}
-                {threadUploadingImages > 0 ? <div className="composer-uploading">Uploading {threadUploadingImages}…</div> : null}
+                {threadUploadingAttachments > 0 ? <div className="composer-uploading">Uploading {threadUploadingAttachments}…</div> : null}
               </div>
             ) : null}
             <div className="composer-main">
@@ -688,10 +717,10 @@ export function ThreadSurface({
                 rows={3}
               />
               <div className="composer-mobile-actions">
-                <button className="composer-add-image composer-add-image-mobile" type="button" onClick={() => threadFileInputRef.current?.click()} aria-label="Add image" title="Add image">
+                <button className="composer-add-image composer-add-image-mobile" type="button" onClick={() => threadFileInputRef.current?.click()} aria-label="Add file" title="Add file">
                   <AttachmentIcon />
                 </button>
-                <button className="composer-send composer-send-mobile" onClick={() => void sendThreadMessage()} disabled={(!threadDraft.trim() && threadImages.length === 0) || threadUploadingImages > 0} aria-label="Send message">
+                <button className="composer-send composer-send-mobile" onClick={() => void sendThreadMessage()} disabled={(!threadDraft.trim() && threadAttachments.length === 0) || threadUploadingAttachments > 0} aria-label="Send message">
                   <span className="composer-send-label">Send</span>
                   <span className="composer-send-icon">
                     <SendIcon />
@@ -748,10 +777,10 @@ export function ThreadSurface({
               </div>
               <div className="composer-note">Cmd/Ctrl + Enter sends</div>
               <div className="composer-actions composer-actions-desktop">
-                <button className="composer-add-image" type="button" onClick={() => threadFileInputRef.current?.click()} aria-label="Add image" title="Add image">
+                <button className="composer-add-image" type="button" onClick={() => threadFileInputRef.current?.click()} aria-label="Add file" title="Add file">
                   <AttachmentIcon />
                 </button>
-                <button className="composer-send composer-send-desktop" onClick={() => void sendThreadMessage()} disabled={(!threadDraft.trim() && threadImages.length === 0) || threadUploadingImages > 0} aria-label="Send message">
+                <button className="composer-send composer-send-desktop" onClick={() => void sendThreadMessage()} disabled={(!threadDraft.trim() && threadAttachments.length === 0) || threadUploadingAttachments > 0} aria-label="Send message">
                   <span className="composer-send-label">Send</span>
                   <span className="composer-send-icon">
                     <SendIcon />
@@ -759,7 +788,7 @@ export function ThreadSurface({
                 </button>
               </div>
             </div>
-            {threadDragActive ? <div className="composer-drop-note">Drop image files to attach them</div> : null}
+            {threadDragActive ? <div className="composer-drop-note">Drop files to attach them</div> : null}
           </div>
         </section>
         <aside className={`detail-pane ${showTimeline ? "is-open" : "is-closed"}`}>

@@ -61,6 +61,14 @@ export function normalizeHeartbeatKind(value: unknown): "none" | "http" | "tcp" 
   return null;
 }
 
+export function normalizeWorkspaceMode(value: unknown): "shared" | "snapshot" | null {
+  const normalized = normalizeString(value).toLowerCase();
+  if (normalized === "shared" || normalized === "snapshot") {
+    return normalized;
+  }
+  return null;
+}
+
 export function looksLikeHarnessLookupFailure(text: string): boolean {
   return /no manor harness capability|open this job through butler first|harness unavailable|no capability is available/i.test(text);
 }
@@ -72,7 +80,7 @@ export function looksLikeSharedShellBootstrapFailure(text: string): boolean {
 }
 
 export function looksLikePreviewAttempt(text: string): boolean {
-  return /manor-harness preview|preview start|preview verify|preview inspect|pulling_image|pulling image|heartbeat|operator url|bootstrap phase|service start|stack start|preview execution/i.test(
+  return /manor-harness preview|preview start|preview use|browser use|preview inspect|pulling_image|pulling image|heartbeat|operator url|bootstrap phase|service start|stack start|preview execution/i.test(
     text
   );
 }

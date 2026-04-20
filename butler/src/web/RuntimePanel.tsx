@@ -1,19 +1,17 @@
 import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
 import type { PreviewMedia, RuntimeSnapshot } from "./types";
-import { formatLeaseState, formatPreviewBootstrap, formatStackStorage, previewVerificationActionLabel } from "./utils";
+import { formatLeaseState, formatPreviewBootstrap, formatStackStorage } from "./utils";
 
 export function RuntimePanel({
   stacks,
   previews,
   services,
   busyStackId,
-  busyPreviewVerification,
   busyServiceId,
   onFocusThread,
   onPinStack,
   onStopStack,
   onPinPreview,
-  onVerifyPreview,
   onStopPreview,
   onPinService,
   onStopService,
@@ -24,13 +22,11 @@ export function RuntimePanel({
   previews: RuntimeSnapshot["previews"];
   services: RuntimeSnapshot["services"];
   busyStackId: string | null;
-  busyPreviewVerification: { leaseId: string; mode: "headless" | "headful" } | null;
   busyServiceId: string | null;
   onFocusThread: (threadId: string | null) => void;
   onPinStack: (stackId: string, pinned: boolean) => void;
   onStopStack: (stackId: string) => void;
   onPinPreview: (leaseId: string, pinned: boolean) => void;
-  onVerifyPreview: (leaseId: string, mode: "headless" | "headful") => void;
   onStopPreview: (leaseId: string) => void;
   onPinService: (serviceId: string, pinned: boolean) => void;
   onStopService: (serviceId: string) => void;
@@ -101,21 +97,7 @@ export function RuntimePanel({
                   <a className="panel-action panel-action-link" href={lease.operatorUrl} target="_blank" rel="noreferrer">
                     Open
                   </a>
-                  <button
-                    className="panel-action"
-                    onClick={() => onVerifyPreview(lease.id, "headless")}
-                    disabled={busyPreviewVerification?.leaseId === lease.id}
-                  >
-                    {previewVerificationActionLabel("headless", busyPreviewVerification, lease.id, true)}
-                  </button>
-                  <button
-                    className="panel-action"
-                    onClick={() => onVerifyPreview(lease.id, "headful")}
-                    disabled={busyPreviewVerification?.leaseId === lease.id}
-                  >
-                    {previewVerificationActionLabel("headful", busyPreviewVerification, lease.id, true)}
-                  </button>
-                  <button className="panel-action" onClick={() => onStopPreview(lease.id)} disabled={busyPreviewVerification?.leaseId === lease.id}>
+                  <button className="panel-action" onClick={() => onStopPreview(lease.id)}>
                     Stop
                   </button>
                 </div>

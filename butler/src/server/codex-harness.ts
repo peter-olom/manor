@@ -14,7 +14,8 @@ import {
   normalizeEnv,
   normalizeHeartbeatKind,
   normalizePositiveInteger,
-  normalizeStringArray
+  normalizeStringArray,
+  normalizeWorkspaceMode
 } from "./codex-harness-helpers.js";
 import { formatHarnessExecutionContract, formatHarnessRuntimeModel } from "./codex-harness-format.js";
 import { formatHarnessJobMemory, formatHarnessProjectMemory, handleHarnessMemoryAction } from "./codex-harness-memory.js";
@@ -34,7 +35,7 @@ import {
   formatWorkspaceBootstrapLines,
   inspectWorkspaceBootstrap
 } from "./workspace-bootstrap.js";
-import type { PreviewLeaseView } from "./types.js";
+import type { PreviewLeaseView, PreviewVerificationView } from "./types.js";
 
 export class CodexHarnessService {
   private readonly registryPath: string;
@@ -200,11 +201,15 @@ export class CodexHarnessService {
     return thread;
   }
   private listThreadProofs(threadId: string) { return this.store.listPreviewProofs().filter((proof) => proof.threadId === threadId); }
+  private formatProofSignal(verification: Pick<PreviewVerificationView, "failureKind" | "status">): string {
+    const statusPart = verification.status ? ` status=${verification.status}` : "";
+    return verification.failureKind === "none" ? `signal=none${statusPart}` : `signal=${verification.failureKind}${statusPart}`;
+  }
   private formatPreviewVisibility(threadId: string, lease: PreviewLeaseView): string {
     const proofs = this.listThreadProofs(threadId).filter((proof) => proof.previewId === lease.id).slice(0, 2);
     const verification = lease.lastVerification;
     const verificationLine = verification
-      ? `lastProof=${verification.runId} ok=${verification.ok} status=${verification.status ?? "none"} url=${verification.url}`
+      ? `lastProof=${verification.runId} ${this.formatProofSignal(verification)} url=${verification.url}`
       : "lastProof=none";
     const heartbeatLine = `heartbeat=${lease.bootstrap.heartbeatKind}${lease.bootstrap.heartbeatTarget ? ` ${lease.bootstrap.heartbeatTarget}` : ""}${lease.bootstrap.lastHeartbeatError ? ` err=${lease.bootstrap.lastHeartbeatError}` : ""}`;
     const proofLine =
@@ -228,7 +233,7 @@ export class CodexHarnessService {
     if (report.status === "completed") {
       if (thread.executionContract?.proofMode === "ui" && threadProofs.length === 0) {
         throw new Error(
-          "This job requires persisted browser proof. Use manor-harness browser verify for direct URLs or manor-harness preview verify for preview-backed pages before reporting completed."
+          "This job requires persisted browser proof. Start a browser-use session, perform user-like actions, then stop the session to persist proof before reporting completed."
         );
       }
       return;
@@ -240,7 +245,7 @@ export class CodexHarnessService {
     }
     if (thread.executionContract?.proofMode === "ui" && looksLikeSharedShellEgressDiagnosis(combined)) {
       throw new Error(
-        "Codex-shell is not valid evidence for browser reachability. Use manor-harness browser verify for direct URLs or manor-harness preview verify for preview-backed pages before reporting the job blocked."
+        "Codex-shell is not valid evidence for browser reachability. Use a browser-use session and return the persisted proof outcome before reporting the job blocked."
       );
     }
 
@@ -618,7 +623,7 @@ export class CodexHarnessService {
         : `Proof bundles:\n${proofs
             .map(
               (proof, index) =>
-                `${index + 1}. ${proof.verification.runId} | preview=${proof.previewTitle} | ok=${proof.verification.ok} | url=${proof.verification.url}`
+                `${index + 1}. ${proof.verification.runId} | preview=${proof.previewTitle} | ${this.formatProofSignal(proof.verification)} | url=${proof.verification.url}`
             )
             .join("\n")}`;
 
@@ -682,7 +687,7 @@ export class CodexHarnessService {
             : `Services:\n${services.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | ${lease.connection.uri ?? `${lease.connection.host}:${lease.connection.port}`}`).join("\n")}`,
           proofs.length === 0
             ? "Proof bundles: none"
-            : `Proof bundles:\n${proofs.map((proof, index) => `${index + 1}. ${proof.verification.runId} | preview=${proof.previewTitle} | ok=${proof.verification.ok} | url=${proof.verification.url}`).join("\n")}`,
+            : `Proof bundles:\n${proofs.map((proof, index) => `${index + 1}. ${proof.verification.runId} | preview=${proof.previewTitle} | ${this.formatProofSignal(proof.verification)} | url=${proof.verification.url}`).join("\n")}`,
           `Service templates: ${this.listServiceTemplates().map((template) => template.id).join(", ")}`,
           ...formatWorkspaceBootstrapLines(workspaceBootstrap)
         ].join("\n"),
@@ -765,7 +770,7 @@ export class CodexHarnessService {
       const combined = [summary, details, question].filter(Boolean).join("\n");
       if (thread.executionContract?.proofMode === "ui" && looksLikeSharedShellEgressDiagnosis(combined)) {
         throw new Error(
-          "Codex-shell is not valid evidence for browser reachability. Use manor-harness browser verify for direct URLs or manor-harness preview verify for preview-backed pages before escalating."
+          "Codex-shell is not valid evidence for browser reachability. Use a browser-use session and persisted proof before escalating."
         );
       }
       const workspaceBootstrap = await inspectWorkspaceBootstrap(capability.cwd);
@@ -794,7 +799,7 @@ export class CodexHarnessService {
       }
       if (thread.executionContract?.proofMode === "ui") {
         responseLines.push(
-          "Do not use direct curl or fetch from Codex-shell to judge browser reachability. Use browser verify for direct URLs and preview verify for preview-backed pages."
+          "Do not use direct curl or fetch from Codex-shell to judge browser reachability. Use browser-use sessions for runtime browser evidence."
         );
       }
       responseLines.push(`If you drift out of ${capability.cwd}, keep using the thread-bound harness command instead of concluding Manor is unavailable.`);
@@ -810,6 +815,7 @@ export class CodexHarnessService {
       if (runtimeLikelyNeeded && previewDefaults.bootstrapHint) {
         responseLines.push(`Preview bootstrap hint: ${previewDefaults.bootstrapHint}.`);
       }
+      responseLines.push("For smoke checks that should not modify the source workspace, start previews with workspaceMode=snapshot.");
       if (runtimeLikelyNeeded && workspaceBootstrap?.suggestedPreview?.suggestedInstallCommand) {
         responseLines.push(`Suggested install step inside the preview: ${workspaceBootstrap.suggestedPreview.suggestedInstallCommand}.`);
       }
@@ -820,7 +826,7 @@ export class CodexHarnessService {
       );
       if (thread.executionContract?.proofMode === "ui") {
         responseLines.push(
-          "For authenticated headed proof, prefer `manor-harness browser verify --url <https://...> --session-cookie <token>` for direct URLs or `manor-harness preview verify <preview> --session-cookie <token>` for preview-backed pages instead of wrapping a second `page.goto()` inside the browser script."
+          "For authenticated headed proof, pass session cookies when starting browser-use sessions and drive interactions through browser.use.action commands."
         );
       }
       responseLines.push("Do not use `corepack enable` in Codex-shell for preview-oriented runtime setup. If repo-local instructions explicitly require a root-level install step, follow the repo guidance instead.");
@@ -978,6 +984,7 @@ export class CodexHarnessService {
       const heartbeatKind = normalizeHeartbeatKind(params.heartbeatKind) ?? undefined;
       const heartbeatTarget = normalizeString(params.heartbeatTarget) || undefined;
       const heartbeatIntervalSeconds = normalizePositiveInteger(params.heartbeatIntervalSeconds) ?? undefined;
+      const workspaceMode = normalizeWorkspaceMode(params.workspaceMode) ?? "shared";
 
       if (!command || !Number.isFinite(port) || port <= 0) {
         throw new Error("preview.start requires command and port");
@@ -995,6 +1002,7 @@ export class CodexHarnessService {
         branchName: null,
         targetPort: port,
         command,
+        workspaceMode,
         image,
         egressProfile,
         egressDomains,
@@ -1008,7 +1016,7 @@ export class CodexHarnessService {
       this.store.upsertPreviewLease(lease);
       this.store.addEvent(capability.threadId, "harness/preview/start", `Started preview ${lease.id}`);
       return {
-        text: `Started preview ${lease.title} at ${lease.operatorUrl}.${previewDefaults.autofilled.length > 0 ? ` Auto-filled ${previewDefaults.autofilled.join(", ")} from workspace bootstrap.` : ""}`,
+        text: `Started preview ${lease.title} at ${lease.operatorUrl}. Workspace=${lease.workspaceMode}.${previewDefaults.autofilled.length > 0 ? ` Auto-filled ${previewDefaults.autofilled.join(", ")} from workspace bootstrap.` : ""}`,
         data: { lease, workspaceBootstrap, previewDefaults }
       };
     }
@@ -1022,15 +1030,16 @@ export class CodexHarnessService {
       return {
         text: [
           `${lease.title} is ${inspected.runtime.status}. Bootstrap=${lease.bootstrap.phase}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}.`,
+          `Workspace mode: ${lease.workspaceMode}`,
           `Aliases: ${lease.aliases.join(", ") || "(none)"}`,
           `Target: ${lease.targetHost}:${lease.targetPort}`,
           `Heartbeat: ${lease.bootstrap.heartbeatKind}${lease.bootstrap.heartbeatTarget ? ` ${lease.bootstrap.heartbeatTarget}` : ""}`,
           lease.bootstrap.lastHeartbeatError ? `Last heartbeat error: ${lease.bootstrap.lastHeartbeatError}` : "",
           lease.lastVerification
-            ? `Last proof: run=${lease.lastVerification.runId} ok=${lease.lastVerification.ok} status=${lease.lastVerification.status ?? "none"} url=${lease.lastVerification.url}`
+            ? `Last proof: run=${lease.lastVerification.runId} ${this.formatProofSignal(lease.lastVerification)} url=${lease.lastVerification.url}`
             : "Last proof: none",
           proofs.length > 0
-            ? `Archived proofs:\n${proofs.map((proof, index) => `${index + 1}. ${proof.verification.runId} | ok=${proof.verification.ok} | url=${proof.verification.url}`).join("\n")}`
+            ? `Archived proofs:\n${proofs.map((proof, index) => `${index + 1}. ${proof.verification.runId} | ${this.formatProofSignal(proof.verification)} | url=${proof.verification.url}`).join("\n")}`
             : "Archived proofs: none"
         ]
           .filter(Boolean)
@@ -1100,96 +1109,159 @@ export class CodexHarnessService {
       };
     }
 
-    if (action === "preview.verify") {
+    if (action === "browser.use.start_preview") {
       const preview = await this.resolveThreadPreview(capability, normalizeString(params.leaseId));
       const mode = normalizeString(params.mode) === "headful" ? "headful" : "headless";
       const targetPath = normalizeString(params.path) || undefined;
       const targetUrl = normalizeString(params.targetUrl) || undefined;
-      const script = normalizeString(params.script) || undefined;
       const waitForSelector = normalizeString(params.waitForSelector) || undefined;
       const postLoadWaitMs = normalizePositiveInteger(params.postLoadWaitMs) ?? undefined;
       const headers = normalizeEnv(params.headers);
       const cookies = normalizeEnv(params.cookies);
       const sessionCookie = normalizeString(params.sessionCookie);
-      if (sessionCookie) {
-        cookies["better-auth.session_token"] = sessionCookie;
+      if (preview.status === "stopped") {
+        throw new Error(`Preview ${preview.id} is stopped. Start it first.`);
       }
-      this.requireThreadPreviewReady(capability, preview.id);
       this.store.notePreviewLeaseActivity(preview.id);
-      const result = decoratePreviewVerification(
-        await this.runtimeBroker.verifyLease({
-          leaseId: preview.id,
-          mode,
-          path: targetPath,
-          targetUrl,
-          script,
-          waitForSelector,
-          postLoadWaitMs,
-          headers: Object.keys(headers).length > 0 ? headers : undefined,
-          cookies:
-            Object.keys(cookies).length > 0
-              ? Object.entries(cookies).map(([name, value]) => ({ name, value }))
-              : undefined
-        })
-      );
-      this.store.recordPreviewLeaseVerification(preview.id, result);
+      const session = await this.runtimeBroker.startPreviewBrowserSession({
+        leaseId: preview.id,
+        mode,
+        path: targetPath,
+        targetUrl,
+        waitForSelector,
+        postLoadWaitMs,
+        headers: Object.keys(headers).length > 0 ? headers : undefined,
+        cookies:
+          Object.keys(cookies).length > 0
+            ? Object.entries(cookies).map(([name, value]) => ({ name, value }))
+            : undefined,
+        sessionCookie: sessionCookie || undefined
+      });
       return {
-        text:
-          result.ok
-            ? `Preview verified (${result.mode}): ${result.title || result.url}`
-            : `Preview verification failed (${result.mode}) kind=${result.failureKind}${result.status ? ` status=${result.status}` : ""}.`,
-        data: { verification: result }
+        text: `Browser-use session started for preview ${preview.id}. Session=${session.sessionId}. URL=${session.url}`,
+        data: { session, preview }
       };
     }
 
-    if (action === "browser.verify") {
+    if (action === "browser.use.start_url") {
       const mode = normalizeString(params.mode) === "headful" ? "headful" : "headless";
       const targetUrl = normalizeString(params.targetUrl);
-      const title = normalizeString(params.title) || targetUrl || "Browser proof";
-      const script = normalizeString(params.script) || undefined;
+      const title = normalizeString(params.title) || targetUrl || "Browser use session";
       const waitForSelector = normalizeString(params.waitForSelector) || undefined;
       const postLoadWaitMs = normalizePositiveInteger(params.postLoadWaitMs) ?? undefined;
       const headers = normalizeEnv(params.headers);
       const cookies = normalizeEnv(params.cookies);
       const sessionCookie = normalizeString(params.sessionCookie);
       if (!targetUrl) {
-        throw new Error("browser.verify requires targetUrl");
+        throw new Error("browser.use.start_url requires targetUrl");
       }
-      if (sessionCookie) {
-        cookies["better-auth.session_token"] = sessionCookie;
-      }
+
       const project = this.resolveWorkspaceProject(capability.cwd, thread);
-      const result = decoratePreviewVerification(
-        await this.runtimeBroker.verifyBrowser({
-          threadId: capability.threadId,
-          projectId: project.id,
-          projectLabel: project.label,
-          title,
-          targetUrl,
-          mode,
-          script,
-          waitForSelector,
-          postLoadWaitMs,
-          headers: Object.keys(headers).length > 0 ? headers : undefined,
-          cookies:
-            Object.keys(cookies).length > 0
-              ? Object.entries(cookies).map(([name, value]) => ({ name, value }))
-              : undefined
-        })
-      );
-      this.store.recordBrowserVerification({
+      const session = await this.runtimeBroker.startBrowserSession({
         threadId: capability.threadId,
         projectId: project.id,
         projectLabel: project.label,
         title,
-        verification: result
+        targetUrl,
+        mode,
+        waitForSelector,
+        postLoadWaitMs,
+        headers: Object.keys(headers).length > 0 ? headers : undefined,
+        cookies:
+          Object.keys(cookies).length > 0
+            ? Object.entries(cookies).map(([name, value]) => ({ name, value }))
+            : undefined,
+        sessionCookie: sessionCookie || undefined
       });
       return {
-        text:
-          result.ok
-            ? `Browser verified (${result.mode}): ${result.title || result.url}`
-            : `Browser verification failed (${result.mode}) kind=${result.failureKind}${result.status ? ` status=${result.status}` : ""}.`,
-        data: { verification: result }
+        text: `Browser-use session started. Session=${session.sessionId}. URL=${session.url}`,
+        data: { session }
+      };
+    }
+
+    if (action === "browser.use.state") {
+      const sessionId = normalizeString(params.sessionId);
+      if (!sessionId) {
+        throw new Error("browser.use.state requires sessionId");
+      }
+      const result = await this.runtimeBroker.inspectBrowserSession(sessionId);
+      return {
+        text: `Session ${result.session.sessionId} is active at ${result.session.url}. Actions=${result.session.actionCount}.`,
+        data: { session: result.session }
+      };
+    }
+
+    if (action === "browser.use.action") {
+      const sessionId = normalizeString(params.sessionId);
+      const actionType = normalizeString(params.actionType || params.type);
+      if (!sessionId) {
+        throw new Error("browser.use.action requires sessionId");
+      }
+      if (!actionType) {
+        throw new Error("browser.use.action requires actionType");
+      }
+
+      const result = await this.runtimeBroker.runBrowserSessionAction(sessionId, {
+        type: actionType,
+        selector: normalizeString(params.selector) || undefined,
+        value: normalizeString(params.value) || undefined,
+        values: normalizeStringArray(params.values),
+        text: normalizeString(params.text) || undefined,
+        key: normalizeString(params.key) || undefined,
+        url: normalizeString(params.url) || undefined,
+        urlIncludes: normalizeString(params.urlIncludes) || undefined,
+        script: typeof params.script === "string" ? params.script : undefined,
+        ms: normalizePositiveInteger(params.ms) ?? undefined,
+        x: typeof params.x === "number" && Number.isFinite(params.x) ? params.x : undefined,
+        y: typeof params.y === "number" && Number.isFinite(params.y) ? params.y : undefined,
+        delayMs: normalizePositiveInteger(params.delayMs) ?? undefined,
+        timeoutMs: normalizePositiveInteger(params.timeoutMs) ?? undefined,
+        label: normalizeString(params.label) || undefined,
+        fileName: normalizeString(params.fileName) || undefined,
+        autoCapture: params.autoCapture === false ? false : undefined
+      });
+      return {
+        text: `Browser-use action ${result.action.type} completed. URL=${result.state.url}. Actions=${result.state.actionCount}.`,
+        data: { result }
+      };
+    }
+
+    if (action === "browser.use.stop") {
+      const sessionId = normalizeString(params.sessionId);
+      const reason = normalizeString(params.reason) || undefined;
+      const previewLeaseId = normalizeString(params.leaseId) || null;
+      if (!sessionId) {
+        throw new Error("browser.use.stop requires sessionId");
+      }
+
+      const result = await this.runtimeBroker.stopBrowserSession(sessionId, reason);
+      const verification = decoratePreviewVerification(result.verification);
+
+      if (result.browserProof) {
+        this.store.recordBrowserVerification({
+          threadId: result.browserProof.threadId,
+          projectId: result.browserProof.projectId,
+          projectLabel: result.browserProof.projectLabel,
+          title: result.browserProof.title,
+          verification
+        });
+      } else {
+        const effectivePreviewLeaseId =
+          previewLeaseId || (result.tracked?.kind === "preview" ? result.tracked.leaseId : null);
+        if (effectivePreviewLeaseId) {
+          this.store.recordPreviewLeaseVerification(effectivePreviewLeaseId, verification);
+          this.store.notePreviewLeaseActivity(effectivePreviewLeaseId);
+        }
+      }
+
+      const remediationHint = verification.failureKind !== "none" ? verification.diagnostics?.remediationHints?.[0] ?? "" : "";
+      const signalSummary =
+        verification.failureKind === "none"
+          ? `Signals=none${verification.status ? ` status=${verification.status}` : ""}.`
+          : `Signals=${verification.failureKind}${verification.status ? ` status=${verification.status}` : ""}.${remediationHint ? ` Hint: ${remediationHint}` : ""}`;
+      return {
+        text: `Browser-use session stopped with proof run ${verification.runId}. ${signalSummary}`,
+        data: { verification, browserProof: result.browserProof ?? null }
       };
     }
 
@@ -1231,7 +1303,7 @@ export class CodexHarnessService {
       return {
         text: [
           `Preview ${preview.id}`,
-          `Verification run=${verification.runId} mode=${verification.mode} ok=${verification.ok} status=${verification.status ?? "none"} failure=${verification.failureKind}`,
+          `Verification run=${verification.runId} mode=${verification.mode} ${this.formatProofSignal(verification)}`,
           verification.phases.length > 0
             ? `Phases:\n${verification.phases.map((phase, index) => `${index + 1}. ${phase.label} | ${phase.status} | ${phase.durationMs}ms${phase.message ? ` | ${phase.message}` : ""}`).join("\n")}`
             : "Phases: none",
@@ -1284,7 +1356,7 @@ export class CodexHarnessService {
       return {
         text: [
           `Browser proof for thread ${capability.threadId}`,
-          `Verification run=${verification.runId} mode=${verification.mode} ok=${verification.ok} status=${verification.status ?? "none"} failure=${verification.failureKind}`,
+          `Verification run=${verification.runId} mode=${verification.mode} ${this.formatProofSignal(verification)}`,
           verification.phases.length > 0
             ? `Phases:\n${verification.phases.map((phase, index) => `${index + 1}. ${phase.label} | ${phase.status} | ${phase.durationMs}ms${phase.message ? ` | ${phase.message}` : ""}`).join("\n")}`
             : "Phases: none",

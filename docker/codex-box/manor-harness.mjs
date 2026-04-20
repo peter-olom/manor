@@ -33,12 +33,13 @@ function printHelp() {
   manor-harness [--thread <jobId>] stack promote <stackSelector> [--to <storageKey>]
   manor-harness [--thread <jobId>] stack stop <stackSelector> [--drop-volumes]
   manor-harness [--thread <jobId>] preview list
-  manor-harness [--thread <jobId>] preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--stack <stackSelector>] [--alias <name> ...] [--env KEY=VALUE ...] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>]
+  manor-harness [--thread <jobId>] preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--stack <stackSelector>] [--alias <name> ...] [--env KEY=VALUE ...] [--workspace-mode shared|snapshot] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>]
 
 Preview defaults:
   egress-profile=internet
   heartbeat-kind=http
   heartbeat-target=/
+  workspace-mode=shared (use snapshot for disposable smoke runs that should not mutate the source worktree)
   preview commands start in the job worktree; prefer relative paths there or the contract cwd under /repos
   preview lifecycle is broker-managed; install, start, and debug the app explicitly with preview exec/logs/processes
   manor-harness preview inspect <previewSelector>
@@ -46,9 +47,12 @@ Preview defaults:
   manor-harness preview processes <previewSelector>
   manor-harness preview logs <previewSelector> [--tail <n>]
   manor-harness preview exec <previewSelector> -- <command>
-  manor-harness preview verify <previewSelector> [--mode headless|headful] [--path <route>] [--target-url <url>] [--header KEY=VALUE ...] [--cookie NAME=VALUE ...] [--session-cookie <token>] [--wait-for <selector>] [--wait-ms <n>] [--script "<js>"] [--script-file <path>]
-  manor-harness browser verify --url <url> [--title <text>] [--mode headless|headful] [--header KEY=VALUE ...] [--cookie NAME=VALUE ...] [--session-cookie <token>] [--wait-for <selector>] [--wait-ms <n>] [--script "<js>"] [--script-file <path>]
+  manor-harness preview use start <previewSelector> [--mode headless|headful] [--path <route>] [--target-url <url>] [--header KEY=VALUE ...] [--cookie NAME=VALUE ...] [--session-cookie <token>] [--wait-for <selector>] [--wait-ms <n>]
   manor-harness browser proof [--run-id <id>]
+  manor-harness browser use start --url <url> [--title <text>] [--mode headless|headful] [--header KEY=VALUE ...] [--cookie NAME=VALUE ...] [--session-cookie <token>] [--wait-for <selector>] [--wait-ms <n>]
+  manor-harness browser use state <sessionId>
+  manor-harness browser use action <sessionId> --type click|fill|type|press|hover|select|check|uncheck|wait_for|scroll|navigate|evaluate|screenshot [--selector <css>] [--value <text>] [--values <text> ...] [--text <text>] [--key <key>] [--url <url>] [--url-includes <text>] [--script "<js>"] [--script-file <path>] [--ms <n>] [--x <n>] [--y <n>] [--delay-ms <n>] [--timeout-ms <n>] [--label <text>] [--file-name <name>] [--no-capture]
+  manor-harness browser use stop <sessionId> [--reason <text>] [--lease <previewSelector>]
   manor-harness preview stop <previewSelector>
   manor-harness service templates
   manor-harness service register-template --spec-file <path>
@@ -65,10 +69,12 @@ Proof tips:
   Use --cookie NAME=VALUE to add cookies without hand-building a Cookie header.
   Use --session-cookie <token> as shorthand for better-auth.session_token=<token>.
   Cookies are injected into the browser context directly; headers remain separate.
-  For live deployed pages or arbitrary external URLs, prefer browser verify over redirect previews.
+  Proof is session-driven: start browser sidecar, run actions, optionally capture screenshots, then stop session.
   Do not use direct curl or fetch from the shared Codex shell to judge live-site browser reachability. That shell is behind restricted egress by design.
   Example:
-    manor-harness browser verify --url https://example.com/dashboard --mode headful --session-cookie buyer-token --script-file .local/proof.js --json
+    manor-harness browser use start --url https://example.com/dashboard --mode headful --session-cookie buyer-token --json
+    manor-harness browser use action <sessionId> --type screenshot --label "after-login" --file-name after-login.png --json
+    manor-harness browser use stop <sessionId> --reason "proof complete" --json
 
 Add --json to print the Butler response payload as JSON.
 Set MANOR_THREAD_ID or pass --thread <jobId> to bind the harness explicitly when you are outside the job workspace.`);
@@ -283,6 +289,15 @@ function readPositiveIntFlag(args, name) {
   }
   const value = Number(raw);
   return Number.isFinite(value) && value > 0 ? Math.trunc(value) : undefined;
+}
+
+function readNumberFlag(args, name) {
+  const raw = readFlag(args, name, "");
+  if (!raw) {
+    return undefined;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
 }
 
 function readCommandAfterDoubleDash(args) {
@@ -512,6 +527,7 @@ async function main() {
         stackId: readFlag(args, "--stack"),
         aliases: readRepeatedFlag(args, "--alias"),
         env,
+        workspaceMode: readFlag(args, "--workspace-mode"),
         command: readFlag(args, "--command"),
         port: Number(readFlag(args, "--port", "0")),
         image: readFlag(args, "--image"),
@@ -550,14 +566,13 @@ async function main() {
         stdin: pipedInput.stdin,
         stdinProvided: pipedInput.stdinProvided
       };
-    } else if (subcommand === "verify" && args[2]) {
+    } else if (subcommand === "use" && args[2] === "start" && args[3]) {
       const headers = Object.fromEntries(parseRepeatedKeyValueFlags(args, "--header"));
       const cookies = parseRepeatedKeyValueFlags(args, "--cookie");
       const sessionCookie = readFlag(args, "--session-cookie", "");
-      const script = await readScriptValue(args);
-      action = "preview.verify";
+      action = "browser.use.start_preview";
       params = {
-        leaseId: args[2],
+        leaseId: args[3],
         mode: readFlag(args, "--mode"),
         path: readFlag(args, "--path"),
         targetUrl: readFlag(args, "--target-url"),
@@ -565,8 +580,7 @@ async function main() {
         postLoadWaitMs: readPositiveIntFlag(args, "--wait-ms"),
         headers,
         cookies: Object.fromEntries(cookies),
-        sessionCookie,
-        script
+        sessionCookie
       };
     } else if (subcommand === "stop" && args[2]) {
       action = "preview.stop";
@@ -574,28 +588,62 @@ async function main() {
     }
   } else if (args[0] === "browser") {
     const subcommand = args[1];
-    if (subcommand === "verify") {
-      const headers = Object.fromEntries(parseRepeatedKeyValueFlags(args, "--header"));
-      const cookies = parseRepeatedKeyValueFlags(args, "--cookie");
-      const sessionCookie = readFlag(args, "--session-cookie", "");
-      const script = await readScriptValue(args);
-      action = "browser.verify";
-      params = {
-        targetUrl: readFlag(args, "--url"),
-        title: readFlag(args, "--title"),
-        mode: readFlag(args, "--mode"),
-        waitForSelector: readFlag(args, "--wait-for"),
-        postLoadWaitMs: readPositiveIntFlag(args, "--wait-ms"),
-        headers,
-        cookies: Object.fromEntries(cookies),
-        sessionCookie,
-        script
-      };
-    } else if (subcommand === "proof") {
+    if (subcommand === "proof") {
       action = "browser.proof";
       params = {
         runId: readFlag(args, "--run-id")
       };
+    } else if (subcommand === "use") {
+      const useSubcommand = args[2];
+      if (useSubcommand === "start") {
+        const headers = Object.fromEntries(parseRepeatedKeyValueFlags(args, "--header"));
+        const cookies = parseRepeatedKeyValueFlags(args, "--cookie");
+        const sessionCookie = readFlag(args, "--session-cookie", "");
+        action = "browser.use.start_url";
+        params = {
+          targetUrl: readFlag(args, "--url"),
+          title: readFlag(args, "--title"),
+          mode: readFlag(args, "--mode"),
+          waitForSelector: readFlag(args, "--wait-for"),
+          postLoadWaitMs: readPositiveIntFlag(args, "--wait-ms"),
+          headers,
+          cookies: Object.fromEntries(cookies),
+          sessionCookie
+        };
+      } else if (useSubcommand === "state" && args[3]) {
+        action = "browser.use.state";
+        params = { sessionId: args[3] };
+      } else if (useSubcommand === "action" && args[3]) {
+        const script = await readScriptValue(args);
+        action = "browser.use.action";
+        params = {
+          sessionId: args[3],
+          actionType: readFlag(args, "--type"),
+          selector: readFlag(args, "--selector"),
+          value: readFlag(args, "--value"),
+          values: readRepeatedFlag(args, "--values"),
+          text: readFlag(args, "--text"),
+          key: readFlag(args, "--key"),
+          url: readFlag(args, "--url"),
+          urlIncludes: readFlag(args, "--url-includes"),
+          script,
+          ms: readPositiveIntFlag(args, "--ms"),
+          x: readNumberFlag(args, "--x"),
+          y: readNumberFlag(args, "--y"),
+          delayMs: readPositiveIntFlag(args, "--delay-ms"),
+          timeoutMs: readPositiveIntFlag(args, "--timeout-ms"),
+          label: readFlag(args, "--label"),
+          fileName: readFlag(args, "--file-name"),
+          autoCapture: !args.includes("--no-capture")
+        };
+      } else if (useSubcommand === "stop" && args[3]) {
+        action = "browser.use.stop";
+        params = {
+          sessionId: args[3],
+          reason: readFlag(args, "--reason"),
+          leaseId: readFlag(args, "--lease")
+        };
+      }
     }
   } else if (args[0] === "service") {
     const subcommand = args[1];

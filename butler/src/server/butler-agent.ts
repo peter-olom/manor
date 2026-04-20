@@ -68,6 +68,7 @@ import { reviewButlerProofScreenshot } from "./butler-agent-proof-review.js";
 import type { ButlerAgentSessionAccess, ButlerAgentToolAccess } from "./butler-agent-tool-access.js";
 import { BUTLER_TOOL_CATALOG } from "./butler-agent-tool-catalog.js";
 import { readButlerAuthStatus, readCodexAuthStatus } from "./auth-status.js";
+import { type FileReferenceStore } from "./file-store.js";
 import { buildOnboardingView } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
 import { formatProjectPolicyContextLines } from "./project-artifacts-policies.js";
@@ -126,6 +127,7 @@ export class ButlerAgentService extends EventEmitter {
   private readonly runtimeBroker: RuntimeBrokerClient;
   private readonly serviceTemplateRegistry: ServiceTemplateRegistry;
   private readonly imageStore: ImageReferenceStore;
+  private readonly fileStore: FileReferenceStore;
   private readonly piAuthPath: string;
   private readonly codexAuthPath: string;
   private readonly codexConfigDir: string;
@@ -177,6 +179,7 @@ export class ButlerAgentService extends EventEmitter {
     runtimeBroker: RuntimeBrokerClient;
     serviceTemplateRegistry: ServiceTemplateRegistry;
     imageStore: ImageReferenceStore;
+    fileStore: FileReferenceStore;
     piAuthPath: string;
     codexAuthPath: string;
     codexConfigDir: string;
@@ -190,6 +193,7 @@ export class ButlerAgentService extends EventEmitter {
     this.runtimeBroker = options.runtimeBroker;
     this.serviceTemplateRegistry = options.serviceTemplateRegistry;
     this.imageStore = options.imageStore;
+    this.fileStore = options.fileStore;
     this.piAuthPath = options.piAuthPath;
     this.codexAuthPath = options.codexAuthPath;
     this.codexConfigDir = options.codexConfigDir;
@@ -844,13 +848,13 @@ export class ButlerAgentService extends EventEmitter {
       "For attached previews and services, use `manor-harness` for inspect, logs, processes, and exec directly against the runtime. Butler still owns start, stop, lifecycle, and policy.",
       "Codex-shell is for workspace, git, and repo-directed edits only. If the task needs a running process, browser session, service, or direct target verification, use Manor runtime.",
       runtimeLikelyNeeded && proofMode === "ui"
-        ? "Do not use direct shell curl or fetch as stronger evidence than preview-runtime verification. Use `manor-harness browser verify` for direct URLs and `manor-harness preview verify` for preview-backed pages."
+        ? "Do not use direct shell curl or fetch as stronger evidence than preview-runtime verification. Use browser-use sessions to gather browser evidence."
         : "Do not treat Codex-shell checks as stronger evidence than runtime verification when the task needs execution.",
       runtimeLikelyNeeded
         ? "Do not declare the job blocked from Codex-shell setup failures while normal runtime execution or verification remains untried."
         : "Do not report the job blocked until you have exhausted the normal recovery steps for the requested repo work.",
       proofMode === "ui"
-        ? "Proof mode: headed UI proof. Before reporting completion, run headed verification with browser verify for direct URLs or preview verify for preview-backed pages, then inspect the persisted proof bundle."
+        ? "Proof mode: headed UI proof. Before reporting completion, run headed browser-use sessions, then inspect the persisted proof bundle."
         : proofMode === "operational"
           ? "Proof mode: operational verification. Record the relevant runtime evidence in your report, but do not invent a browser proof requirement."
           : "Proof mode: no persisted proof bundle is required unless the operator later asks for one.",
@@ -859,10 +863,10 @@ export class ButlerAgentService extends EventEmitter {
         ? "Preview commands start with the job worktree as the working directory. Prefer relative paths there, or use the contract cwd under /repos. Do not assume a /workspace mount exists inside previews."
         : "Use the contract cwd as the working directory and keep commands explicit in Codex-shell.",
       proofMode === "ui"
-        ? "When UI proof requires actual interaction, use `manor-harness browser verify --url <https://...> --script-file <path> --mode headful --json` for direct URLs or `manor-harness preview verify <preview> --script-file <path> --mode headful --json` for preview-backed pages."
+        ? "When UI proof requires interaction, use browser-use sessions (`preview use start` or `browser use start`), execute stepwise actions with `browser use action`, then stop the session for persisted proof."
         : "Do not add a browser verification step unless the contract or operator explicitly asks for UI proof.",
       proofMode === "ui"
-        ? "When proof needs an authenticated session, prefer `manor-harness browser verify --url <https://...> --session-cookie <token> ...` or `manor-harness preview verify <preview> --session-cookie <token> ...` instead of wrapper scripts that call `page.goto()` again."
+        ? "When proof needs an authenticated session, pass `--session-cookie <token>` when starting browser-use sessions instead of custom wrappers."
         : "Report the concrete evidence you used without inventing extra proof steps.",
       "If the contract is for local Manor runtime and the app has email flows, prefer Mailpit or another built-in local dependency when the app under test is running inside Manor.",
       proofMode === "ui"

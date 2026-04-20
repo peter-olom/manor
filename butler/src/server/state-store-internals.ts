@@ -227,6 +227,7 @@ export function normalizeStateStorePreviewLease(
 ): PreviewLeaseView {
   const normalizedLease = {
     ...lease,
+    workspaceMode: lease.workspaceMode === "snapshot" ? "snapshot" : "shared",
     stackId: typeof lease.stackId === "string" && lease.stackId.trim() ? lease.stackId.trim() : null,
     aliases: Array.isArray(lease.aliases)
       ? [...new Set(lease.aliases.map((alias) => (typeof alias === "string" ? alias.trim() : "")).filter(Boolean))]

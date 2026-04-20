@@ -2,9 +2,11 @@ FROM mcr.microsoft.com/playwright:v1.55.0-noble
 
 WORKDIR /opt/manor/playwright
 
-COPY docker/playwright/verify-preview.mjs /opt/manor/playwright/verify-preview.mjs
+COPY docker/playwright/browser-use-server.mjs /opt/manor/playwright/browser-use-server.mjs
+COPY docker/playwright/start-browser-use.sh /usr/local/bin/start-browser-use
 
 RUN npm init -y \
-  && npm install playwright@1.55.0
+  && npm install playwright@1.55.0 \
+  && chmod +x /usr/local/bin/start-browser-use
 
-CMD ["bash", "-lc", "echo 'Playwright worker is running'; sleep infinity"]
+CMD ["/usr/local/bin/start-browser-use"]

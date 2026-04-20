@@ -1,23 +1,28 @@
 import { useState } from "react";
 
 import { probeResourceAvailability, triggerResourceDownload } from "./api";
-import { ChevronDownIcon, ChevronUpIcon } from "./icons";
-import type { PreviewMedia, PreviewVerification, PreviewVerificationArtifact } from "./types";
+import { ChevronDownIcon, ChevronUpIcon, TrashIcon } from "./icons";
+import type { PreviewMedia, PreviewProofRecord, PreviewVerification, PreviewVerificationArtifact } from "./types";
 import {
   describeArtifactAvailability,
   findVerificationArtifact,
   findVerificationArtifacts,
-  formatVerificationSummary
+  formatVerificationSummary,
+  formatVerificationTimestamp
 } from "./utils";
 
 export function PreviewVerificationSummary({
+  proof,
   verification,
   onPreviewArtifact,
-  onResourceUnavailable
+  onResourceUnavailable,
+  onDeleteProof
 }: {
+  proof?: PreviewProofRecord | null;
   verification: PreviewVerification;
   onPreviewArtifact?: (media: PreviewMedia) => void;
   onResourceUnavailable?: (message: string) => void;
+  onDeleteProof?: (proofId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const screenshotArtifacts = findVerificationArtifacts(verification, "screenshot");
@@ -28,7 +33,7 @@ export function PreviewVerificationSummary({
       .filter((artifact): artifact is PreviewVerificationArtifact => Boolean(artifact))
   ];
   const issueLines = [
-    verification.failureKind !== "none" ? `Failure: ${verification.failureKind}` : null,
+    verification.failureKind !== "none" ? `Signal: ${verification.failureKind}` : null,
     verification.error,
     verification.readiness.loginRedirectDetected ? "Redirected to login during verification." : null,
     ...verification.readiness.htmlErrorSignals,
@@ -45,29 +50,53 @@ export function PreviewVerificationSummary({
   ].slice(0, 3);
   const availableArtifactCount = primaryArtifacts.filter((artifact) => artifact.availability === "available").length;
   const compactSummary = issueLines[0] ?? (availableArtifactCount > 0 ? `${availableArtifactCount} proof files` : "Open proof");
+  const proofTimestamp = formatVerificationTimestamp(proof?.createdAt ?? verification.checkedAt);
 
   return (
-    <div className={`preview-verification-summary${verification.ok ? " is-passed" : " is-failed"}`}>
-      <button
-        className="preview-verification-trigger"
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span className="preview-verification-summary-head">
-          <span className="preview-verification-status">{verification.ok ? "Passed" : "Failed"}</span>
-          <span className="preview-verification-meta">{formatVerificationSummary(verification)}</span>
-        </span>
-        <span className="preview-verification-trigger-copy">
-          <span className="preview-verification-trigger-summary">{compactSummary}</span>
-          <span className="preview-verification-trigger-action">
-            {open ? "Hide proof" : "Open proof"}
-            <span className="preview-verification-trigger-icon" aria-hidden="true">
-              {open ? <ChevronUpIcon /> : <ChevronDownIcon />}
-            </span>
+    <div className="preview-verification-summary">
+      <div className="preview-verification-trigger-row">
+        <button
+          className="preview-verification-trigger"
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+        >
+          <span className="preview-verification-summary-head">
+            <span className="preview-verification-status">Recorded</span>
+            <span className="preview-verification-meta">{formatVerificationSummary(verification)}</span>
+            <span className="preview-verification-stamp">{proofTimestamp}</span>
           </span>
-        </span>
-      </button>
+          <span className="preview-verification-trigger-summary">{compactSummary}</span>
+        </button>
+        <div className="preview-verification-actions">
+          {proof && onDeleteProof ? (
+            <button
+              className="panel-action panel-action-icon panel-action-icon-danger preview-verification-delete"
+              type="button"
+              aria-label="Delete proof"
+              title="Delete proof"
+              onClick={() => onDeleteProof(proof.id)}
+            >
+              <TrashIcon />
+            </button>
+          ) : (
+            <span className="preview-verification-delete-spacer" aria-hidden="true" />
+          )}
+          <button
+            className="preview-verification-toggle"
+            type="button"
+            aria-expanded={open}
+            onClick={() => setOpen((current) => !current)}
+          >
+            <span className="preview-verification-trigger-action">
+              {open ? "Hide proof" : "Open proof"}
+              <span className="preview-verification-trigger-icon" aria-hidden="true">
+                {open ? <ChevronUpIcon /> : <ChevronDownIcon />}
+              </span>
+            </span>
+          </button>
+        </div>
+      </div>
       {open ? (
         <div className="preview-verification-body">
           {issueLines.length > 0 ? (

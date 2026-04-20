@@ -1409,6 +1409,35 @@ export class ButlerStateStore extends EventEmitter {
     );
   }
 
+  removePreviewProof(proofId: string): PreviewProofRecordView | null {
+    const existing = this.previewProofs.get(proofId);
+    if (!existing) {
+      return null;
+    }
+
+    this.previewProofs.delete(proofId);
+
+    const lease = this.previewLeases.get(existing.previewId);
+    if (lease?.lastVerification?.runId === existing.verification.runId) {
+      const nextVerification =
+        [...this.previewProofs.values()]
+          .filter((proof) => proof.previewId === existing.previewId)
+          .sort((left, right) => right.verification.checkedAt - left.verification.checkedAt)[0]?.verification ?? null;
+
+      this.previewLeases.set(
+        lease.id,
+        this.normalizePreviewLease({
+          ...lease,
+          lastVerification: nextVerification
+        })
+      );
+    }
+
+    this.queueSave();
+    this.emitChange();
+    return this.normalizePreviewProofRecord(existing);
+  }
+
   findPreviewProofArtifactByFilePath(filePath: string): { proof: PreviewProofRecordView; artifact: PreviewVerificationArtifactView } | null {
     const targetPath = path.resolve(filePath);
     for (const proof of this.listPreviewProofs()) {

@@ -349,6 +349,19 @@ export function readImageReferenceIds(body: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
 }
 
+export function readFileReferenceIds(body: unknown): string[] {
+  if (!body || typeof body !== "object" || !("fileReferenceIds" in body)) {
+    return [];
+  }
+
+  const value = (body as { fileReferenceIds?: unknown }).fileReferenceIds;
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+}
+
 export function decodeArtifactRelativePath(relativePath: string): string {
   return relativePath
     .split("/")

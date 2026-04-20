@@ -9,7 +9,7 @@ import type {
   CodexThreadSummary,
   CodexThreadDetail,
   ImageReference,
-  PreviewBrowserMode,
+  PreviewableFile,
   PreviewVerification,
   PreviewVerificationArtifact,
   PreviewableImage,
@@ -115,25 +115,18 @@ export function formatVerificationSummary(verification: PreviewVerification): st
   return bits.join(" • ");
 }
 
-export function previewVerificationActionLabel(
-  mode: PreviewBrowserMode,
-  busy:
-    | {
-        leaseId: string;
-        mode: PreviewBrowserMode;
-      }
-    | null,
-  leaseId: string,
-  compact = false
-): string {
-  if (!busy || busy.leaseId !== leaseId || busy.mode !== mode) {
-    if (compact) {
-      return mode === "headful" ? "Headed" : "Verify";
-    }
-    return mode === "headful" ? "Verify headed" : "Verify preview";
+export function formatVerificationTimestamp(value: number | null | undefined): string {
+  if (!value) {
+    return "Unknown time";
   }
 
-  return busy.mode === "headful" ? "Verifying…" : "Checking…";
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(value);
 }
 
 export function findVerificationArtifact(
@@ -444,7 +437,7 @@ export function extractCodeLanguage(children: ReactNode): string {
 }
 
 export function formatAttachmentSummary(count: number): string {
-  return count === 1 ? "Attached 1 reference image." : `Attached ${count} reference images.`;
+  return count === 1 ? "Attached 1 reference file." : `Attached ${count} reference files.`;
 }
 
 export function extractReferencedImages(text: string, knownImages: ImageReference[]): PreviewableImage[] {
@@ -468,8 +461,20 @@ export function extractReferencedImages(text: string, knownImages: ImageReferenc
       continue;
     }
 
+    if (
+      line.startsWith("Pass these ids in imageReferenceIds") ||
+      line.startsWith("Pass these ids in fileReferenceIds") ||
+      line.startsWith("Use shell tools to inspect these files when needed.")
+    ) {
+      continue;
+    }
+
     if (!line.startsWith("- ")) {
-      break;
+      if (line === "Stored reference files:" || line === "Attached reference files:") {
+        collecting = false;
+        continue;
+      }
+      continue;
     }
 
     const body = line.slice(2).trim();
@@ -504,7 +509,74 @@ export function extractReferencedImages(text: string, knownImages: ImageReferenc
   return images;
 }
 
-export function stripReferencedImagesSection(text: string): string {
+export function extractReferencedFiles(text: string): PreviewableFile[] {
+  const lines = text.split("\n");
+  const files: PreviewableFile[] = [];
+  let collecting = false;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+
+    if (line === "Stored reference files:" || line === "Attached reference files:") {
+      collecting = true;
+      continue;
+    }
+
+    if (!collecting) {
+      continue;
+    }
+
+    if (!line) {
+      continue;
+    }
+
+    if (
+      line.startsWith("Pass these ids in imageReferenceIds") ||
+      line.startsWith("Pass these ids in fileReferenceIds") ||
+      line.startsWith("Use shell tools to inspect these files when needed.")
+    ) {
+      continue;
+    }
+
+    if (!line.startsWith("- ")) {
+      if (line === "Stored reference images:" || line === "Attached reference images:") {
+        collecting = false;
+        continue;
+      }
+      continue;
+    }
+
+    const body = line.slice(2).trim();
+    const previewMatch = body.match(/preview:\s*\[open\]\(([^)]+)\)/i);
+    const segments = body.split("|").map((segment) => segment.trim());
+    const first = segments[0] ?? "";
+    const second = segments[1] ?? "";
+
+    const idLooksValid = /^[0-9a-fA-F-]{16,}$/.test(first);
+    const id = idLooksValid ? first : cryptoRandomIdFallback(first, second);
+    const name = idLooksValid ? second || first : first;
+    const url = previewMatch?.[1] ?? (idLooksValid ? `/api/files/${encodeURIComponent(first)}` : `/api/files/${encodeURIComponent(id)}`);
+
+    if (!name) {
+      continue;
+    }
+
+    files.push({
+      id,
+      name,
+      url
+    });
+  }
+
+  return files;
+}
+
+function cryptoRandomIdFallback(first: string, second: string): string {
+  const candidate = `${first}|${second}`.trim();
+  return candidate.length > 0 ? candidate : `${Date.now()}`;
+}
+
+export function stripReferencedSections(text: string): string {
   const lines = text.split("\n");
   const kept: string[] = [];
   let skipping = false;
@@ -512,7 +584,12 @@ export function stripReferencedImagesSection(text: string): string {
   for (const rawLine of lines) {
     const line = rawLine.trim();
 
-    if (line === "Stored reference images:" || line === "Attached reference images:") {
+    if (
+      line === "Stored reference images:" ||
+      line === "Attached reference images:" ||
+      line === "Stored reference files:" ||
+      line === "Attached reference files:"
+    ) {
       skipping = true;
       continue;
     }
@@ -522,7 +599,12 @@ export function stripReferencedImagesSection(text: string): string {
         continue;
       }
 
-      if (line.startsWith("- ")) {
+      if (
+        line.startsWith("- ") ||
+        line.startsWith("Pass these ids in imageReferenceIds") ||
+        line.startsWith("Pass these ids in fileReferenceIds") ||
+        line.startsWith("Use shell tools to inspect these files when needed.")
+      ) {
         continue;
       }
 
@@ -537,6 +619,10 @@ export function stripReferencedImagesSection(text: string): string {
 
 export function isImageDrag(event: DragEvent | ReactDragEvent<HTMLElement>): boolean {
   return [...event.dataTransfer.items].some((item) => item.kind === "file" && item.type.startsWith("image/"));
+}
+
+export function isFileDrag(event: DragEvent | ReactDragEvent<HTMLElement>): boolean {
+  return [...event.dataTransfer.items].some((item) => item.kind === "file");
 }
 
 export function readStoredValue(key: string): string {
@@ -645,16 +731,17 @@ export function dedupePreviewableImages(images: PreviewableImage[]): Previewable
 export function buildMessageImageLookup(
   rows: Array<{ id: string; text: string; includeImages: boolean }>,
   knownImages: ImageReference[]
-): Record<string, { displayText: string; images: PreviewableImage[] }> {
+): Record<string, { displayText: string; images: PreviewableImage[]; files: PreviewableFile[] }> {
   return Object.fromEntries(
     rows.map((row) => {
       if (!row.includeImages) {
-        return [row.id, { displayText: row.text || "…", images: [] }];
+        return [row.id, { displayText: row.text || "…", images: [], files: [] }];
       }
 
       const images = dedupePreviewableImages(extractReferencedImages(row.text || "", knownImages));
-      const displayText = images.length > 0 ? stripReferencedImagesSection(row.text || "") || "…" : row.text || "…";
-      return [row.id, { displayText, images }];
+      const files = extractReferencedFiles(row.text || "");
+      const displayText = images.length > 0 || files.length > 0 ? stripReferencedSections(row.text || "") || "…" : row.text || "…";
+      return [row.id, { displayText, images, files }];
     })
   );
 }

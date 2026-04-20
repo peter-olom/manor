@@ -736,6 +736,16 @@ select {
   gap: 8px;
 }
 
+.preview-verification-trigger-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: stretch;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+}
+
 .runtime-item-verification .preview-verification-summary,
 .runtime-item .preview-verification-summary {
   flex-basis: 100%;
@@ -745,19 +755,11 @@ select {
   width: 100%;
   display: grid;
   gap: 8px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  padding: 0;
+  border: 0;
+  background: transparent;
   text-align: left;
   cursor: pointer;
-}
-
-.preview-verification-summary.is-passed .preview-verification-trigger {
-  border-color: color-mix(in srgb, var(--success) 28%, var(--line));
-}
-
-.preview-verification-summary.is-failed .preview-verification-trigger {
-  border-color: color-mix(in srgb, var(--danger) 28%, var(--line));
 }
 
 .preview-verification-summary-head {
@@ -781,12 +783,8 @@ select {
   background: color-mix(in srgb, var(--panel) 72%, transparent);
 }
 
-.preview-verification-summary.is-passed .preview-verification-status {
-  color: var(--success);
-}
-
-.preview-verification-summary.is-failed .preview-verification-status {
-  color: var(--danger);
+.preview-verification-status {
+  color: var(--accent);
 }
 
 .preview-verification-meta {
@@ -794,12 +792,13 @@ select {
   color: var(--muted);
 }
 
+.preview-verification-stamp {
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
 .preview-verification-trigger-copy {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-width: 0;
+  display: none;
 }
 
 .preview-verification-trigger-summary {
@@ -829,6 +828,25 @@ select {
 .preview-verification-trigger-icon svg {
   width: 14px;
   height: 14px;
+}
+
+.preview-verification-actions {
+  display: grid;
+  justify-items: end;
+  align-content: center;
+  gap: 6px;
+  min-width: 88px;
+}
+
+.preview-verification-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
 }
 
 .preview-verification-body {
@@ -867,6 +885,23 @@ select {
   color: var(--muted);
   opacity: 0.82;
   cursor: default;
+}
+
+.preview-verification-delete {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  padding: 0;
+}
+
+.preview-verification-delete svg {
+  width: 12px;
+  height: 12px;
+}
+
+.preview-verification-delete-spacer {
+  width: 16px;
+  height: 16px;
 }
 
 .thread-proof-panel {
@@ -1918,6 +1953,36 @@ select {
   height: 44px;
   object-fit: cover;
   background: var(--code-bg);
+}
+
+.message-file-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.message-file-pill {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 88%, var(--accent) 12%);
+  color: var(--ink);
+  font-size: 0.78rem;
+  line-height: 1.1;
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.message-file-pill:hover {
+  border-color: var(--accent);
+  color: var(--ink);
+  text-decoration: none;
 }
 
 .composer-main {

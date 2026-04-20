@@ -73,7 +73,22 @@ export type ImageReference = {
   url: string;
 };
 
+export type FileReference = {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  createdAt: number;
+  url: string;
+};
+
 export type PreviewableImage = {
+  id: string;
+  name: string;
+  url: string;
+};
+
+export type PreviewableFile = {
   id: string;
   name: string;
   url: string;
@@ -159,6 +174,43 @@ export type PreviewVerification = {
     cookieCount: number;
     cookieNames: string[];
     usedSessionCookie: boolean;
+  };
+  diagnostics?: {
+    stages: {
+      processUp: {
+        name: string;
+        ok: boolean | null;
+        detail: string;
+        status: number | null;
+        hint: string | null;
+        failureKind: PreviewVerificationFailureKind | null;
+      } | null;
+      networkReachable: {
+        name: string;
+        ok: boolean | null;
+        detail: string;
+        status: number | null;
+        hint: string | null;
+        failureKind: PreviewVerificationFailureKind | null;
+      } | null;
+      routeAuth: {
+        name: string;
+        ok: boolean | null;
+        detail: string;
+        status: number | null;
+        hint: string | null;
+        failureKind: PreviewVerificationFailureKind | null;
+      } | null;
+      uiSelectorVisible: {
+        name: string;
+        ok: boolean | null;
+        detail: string;
+        status: number | null;
+        hint: string | null;
+        failureKind: PreviewVerificationFailureKind | null;
+      } | null;
+    };
+    remediationHints: string[];
   };
   artifacts: PreviewVerificationArtifact[];
   consoleMessages: Array<{
@@ -348,6 +400,7 @@ export type RuntimeSnapshot = {
     routePrefix: string;
     operatorUrl: string;
     command: string;
+    workspaceMode: "shared" | "snapshot";
     image: string;
     egressProfile: string;
     egressDomains: string[];

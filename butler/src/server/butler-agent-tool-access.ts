@@ -2,6 +2,7 @@ import type { AgentSession, ModelRegistry } from "@mariozechner/pi-coding-agent"
 import { defineTool } from "@mariozechner/pi-coding-agent";
 import type { TSchema } from "@sinclair/typebox";
 
+import type { FileReferenceStore } from "./file-store.js";
 import type { ImageReferenceStore } from "./image-store.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-templates.js";
@@ -45,6 +46,7 @@ export type ButlerAgentToolAccess = {
   runtimeBroker: RuntimeBrokerClient;
   serviceTemplateRegistry: ServiceTemplateRegistry;
   imageStore: ImageReferenceStore;
+  fileStore: FileReferenceStore;
   supervisionSmokePlans: Map<string, SupervisionSmokePlan>;
   defineButlerTool: ButlerToolDefiner;
   getToolUiEffects(name: string): ButlerToolUiEffect[];
@@ -167,6 +169,7 @@ export type ButlerAgentSessionAccess = {
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;
   imageStore: ImageReferenceStore;
+  fileStore: FileReferenceStore;
   piAuthPath: string;
   codexAuthPath: string;
   codexConfigDir: string;

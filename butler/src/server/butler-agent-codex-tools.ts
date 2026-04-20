@@ -9,6 +9,7 @@ import {
   shouldAllowLocalThreadFallback
 } from "./butler-agent-helpers.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import { buildCodexInputWithReferences } from "./reference-inputs.js";
 
 export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
   return [
@@ -143,6 +144,29 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       }
     }),
     access.defineButlerTool({
+      name: "list_file_references",
+      label: "List file references",
+      description: "List stored non-image file references Butler can reuse.",
+      promptSnippet: "list_file_references: inspect uploaded files when document analysis is needed.",
+      parameters: Type.Object({}),
+      uiEffects: access.getToolUiEffects("list_file_references"),
+      execute: async () => {
+        const files = access.fileStore.list();
+        const text =
+          files.length === 0
+            ? "No file references are stored."
+            : files
+                .map(
+                  (file, index) => `${index + 1}. ${file.id} | ${file.name} | ${file.mimeType} | ${file.sizeBytes} bytes`
+                )
+                .join("\n");
+        return {
+          content: [{ type: "text", text }],
+          details: { files }
+        };
+      }
+    }),
+    access.defineButlerTool({
       name: "open_job_window",
       label: "Open job window",
       description: "Open a focused job window in the Butler UI for a specific Codex job.",
@@ -211,6 +235,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         threadId: Type.String(),
         text: Type.String({ minLength: 1 }),
         imageReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+        fileReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
         nextWorkerReportAction: Type.Optional(Type.Union([Type.Literal("review"), Type.Literal("reply_to_operator")]))
       }),
       uiEffects: access.getToolUiEffects("message_job"),
@@ -219,6 +244,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           threadId: string;
           text: string;
           imageReferenceIds?: string[];
+          fileReferenceIds?: string[];
           nextWorkerReportAction?: "review" | "reply_to_operator";
         };
         const activeGuard = access.getActiveOperatorThreadGuard();
@@ -275,10 +301,13 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         await access.codexClient.loadThread(typedParams.threadId);
         await access.codexClient.sendMessage(
           typedParams.threadId,
-          access.imageStore.buildCodexInput(
-            `${refreshedContract.text}\n\nFOLLOW-UP INSTRUCTION\n${typedParams.text}`,
-            typedParams.imageReferenceIds ?? []
-          )
+          buildCodexInputWithReferences({
+            text: `${refreshedContract.text}\n\nFOLLOW-UP INSTRUCTION\n${typedParams.text}`,
+            imageStore: access.imageStore,
+            imageReferenceIds: typedParams.imageReferenceIds ?? [],
+            fileStore: access.fileStore,
+            fileReferenceIds: typedParams.fileReferenceIds ?? []
+          })
         );
         access.registerPendingChatCallback(typedParams.threadId, {
           privateSteerText: typedParams.text,

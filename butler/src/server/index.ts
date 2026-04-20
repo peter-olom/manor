@@ -9,15 +9,18 @@ import httpProxy from "http-proxy";
 import { ButlerAgentService } from "./butler-agent.js";
 import { CodexAppServerClient } from "./codex-client.js";
 import { CodexHarnessService } from "./codex-harness.js";
+import { FileReferenceStore } from "./file-store.js";
 import { ImageReferenceStore } from "./image-store.js";
 import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-routes.js";
-import { decoratePreviewVerification } from "./preview-verification.js";
+import { buildCodexInputWithReferences, buildReferencePromptText } from "./reference-inputs.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
+import { resolveProofBundleKey } from "./butler-agent-helpers.js";
 import {
   ButlerSseHub,
   cleanupThreadRuntimeResources,
   currentBootstrapSnapshot,
   decodeArtifactRelativePath,
+  readFileReferenceIds,
   pruneEmptyArtifactParents,
   readImageReferenceIds,
   removeStackArtifactsFromStore,
@@ -49,8 +52,10 @@ const leaseReapGraceMs = Number(process.env.MANOR_LEASE_REAP_GRACE_MS ?? `${10 *
 const leaseSweepIntervalMs = Number(process.env.MANOR_LEASE_SWEEP_INTERVAL_MS ?? "60000");
 const artifactRetentionMs = Number(process.env.MANOR_ARTIFACT_RETENTION_MS ?? `${14 * 24 * 60 * 60 * 1000}`);
 const artifactSweepIntervalMs = Number(process.env.MANOR_ARTIFACT_SWEEP_INTERVAL_MS ?? `${60 * 60 * 1000}`);
-const imageReferenceDir = process.env.MANOR_IMAGE_REFERENCE_DIR ?? path.resolve(process.cwd(), "../artifacts/manor-images");
 const artifactsDir = path.resolve(process.env.MANOR_ARTIFACTS_DIR ?? "/artifacts");
+const imageReferenceDir = process.env.MANOR_IMAGE_REFERENCE_DIR ?? path.resolve(process.cwd(), "../artifacts/manor-images");
+const fileReferenceDir = process.env.MANOR_FILE_REFERENCE_DIR ?? path.join(artifactsDir, "manor-files");
+const jsonBodyLimit = process.env.MANOR_UPLOAD_JSON_LIMIT ?? "64mb";
 
 const uiStatePath = path.join(stateDir, "butler-ui.json");
 const sessionDir = path.join(stateDir, "pi-sessions");
@@ -69,9 +74,53 @@ const serviceTemplateRegistry = new ServiceTemplateRegistry(path.join(stateDir, 
 await serviceTemplateRegistry.load();
 const imageStore = new ImageReferenceStore(imageReferenceDir);
 await imageStore.load();
+const fileStore = new FileReferenceStore(fileReferenceDir);
+await fileStore.load();
 const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerToken);
 let runtimeAccess!: RuntimeServerAccess;
 let sseHub!: ButlerSseHub;
+
+async function deletePreviewProofFiles(proofId: string): Promise<{ removedFiles: number }> {
+  const proof = store.getPreviewProofById(proofId);
+  if (!proof) {
+    const error = new Error("Proof was not found");
+    (error as Error & { statusCode?: number }).statusCode = 404;
+    throw error;
+  }
+
+  const bundleKey = resolveProofBundleKey(proof);
+  const bundleProofs = bundleKey && proof.threadId
+    ? store
+        .listPreviewProofs()
+        .filter((entry) => entry.threadId === proof.threadId && resolveProofBundleKey(entry) === bundleKey)
+    : [proof];
+
+  const filePaths = [...new Set(
+    bundleProofs.flatMap((entry) =>
+      entry.verification.artifacts
+        .map((artifact) => artifact.filePath)
+        .filter((filePath): filePath is string => Boolean(filePath))
+    )
+  )];
+
+  let removedFiles = 0;
+  for (const filePath of filePaths) {
+    const resolvedPath = path.resolve(filePath);
+    if (resolvedPath !== artifactsDir && !resolvedPath.startsWith(`${artifactsDir}${path.sep}`)) {
+      continue;
+    }
+
+    await fs.rm(resolvedPath, { force: true }).catch(() => {});
+    await pruneEmptyArtifactParents(artifactsDir, resolvedPath).catch(() => {});
+    removedFiles += 1;
+  }
+
+  for (const entry of bundleProofs) {
+    store.removePreviewProof(entry.id);
+  }
+
+  return { removedFiles };
+}
 const codexHarness = new CodexHarnessService({
   codexHomeDir,
   stateDir,
@@ -106,6 +155,7 @@ const butlerAgent = new ButlerAgentService({
   codexConfigDir,
   sessionDir,
   imageStore,
+  fileStore,
   artifactsDir,
   refreshRuntimeInventory: syncRuntimeInventory
 });
@@ -127,7 +177,7 @@ await butlerAgent.start();
 codexClient.start();
 
 const app = express();
-app.use(express.json({ limit: "20mb" }));
+app.use(express.json({ limit: jsonBodyLimit }));
 const server = http.createServer(app);
 const previewProxy = httpProxy.createProxyServer({
   changeOrigin: false,
@@ -311,6 +361,60 @@ app.get("/api/images/:imageId", (request, response) => {
   response.sendFile(filePath);
 });
 
+app.post("/api/files/upload", async (request, response) => {
+  const name = typeof request.body?.name === "string" ? request.body.name : "";
+  const mimeType = typeof request.body?.mimeType === "string" ? request.body.mimeType : "";
+  const data = typeof request.body?.data === "string" ? request.body.data : "";
+  const sizeBytes = typeof request.body?.sizeBytes === "number" ? request.body.sizeBytes : undefined;
+
+  if (!name || !data) {
+    response.status(400).json({ error: "name and data are required" });
+    return;
+  }
+
+  try {
+    const file = await fileStore.create({ name, mimeType, data, sizeBytes });
+    response.status(201).json({ ok: true, file });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get("/api/files", (request, response) => {
+  const limitRaw = Array.isArray(request.query.limit) ? request.query.limit[0] : request.query.limit;
+  const limit = typeof limitRaw === "string" && limitRaw.length > 0 ? Number(limitRaw) : 200;
+
+  if (!Number.isFinite(limit) || limit <= 0) {
+    response.status(400).json({ error: "limit must be a positive number" });
+    return;
+  }
+
+  response.json({ files: fileStore.list(limit) });
+});
+
+app.get("/api/files/:fileId", (request, response) => {
+  const fileId = typeof request.params.fileId === "string" ? request.params.fileId : "";
+  const filePath = fileStore.getFilePath(fileId);
+  const file = fileStore.get(fileId);
+
+  if (!filePath || !file) {
+    response.status(404).json({ error: "File reference was not found" });
+    return;
+  }
+
+  const downloadRequested = Array.isArray(request.query.download)
+    ? request.query.download[0] === "1"
+    : request.query.download === "1";
+
+  response.setHeader("Cache-Control", "private, max-age=31536000, immutable");
+  if (downloadRequested) {
+    response.download(filePath, file.name);
+    return;
+  }
+  response.type(file.mimeType);
+  response.sendFile(filePath);
+});
+
 app.get(/^\/api\/artifacts\/(.+)$/, (request, response) => {
   const relativePath =
     typeof request.params?.["0"] === "string"
@@ -467,13 +571,22 @@ app.get("/api/events", (request, response) => {
 app.post("/api/chat/messages", async (request, response) => {
   const text = typeof request.body?.text === "string" ? request.body.text : "";
   const imageReferenceIds = readImageReferenceIds(request.body);
-  if (!text.trim() && imageReferenceIds.length === 0) {
-    response.status(400).json({ error: "text or imageReferenceIds is required" });
+  const fileReferenceIds = readFileReferenceIds(request.body);
+  if (!text.trim() && imageReferenceIds.length === 0 && fileReferenceIds.length === 0) {
+    response.status(400).json({ error: "text, imageReferenceIds, or fileReferenceIds is required" });
     return;
   }
 
   try {
-    const promptText = imageStore.buildPromptText(text, imageReferenceIds, { includeIds: true });
+    const promptText = buildReferencePromptText({
+      text,
+      imageStore,
+      imageReferenceIds,
+      fileStore,
+      fileReferenceIds,
+      includeIds: true,
+      includeFilePaths: true
+    });
     butlerAgent.prompt(promptText, imageReferenceIds);
     response.status(202).json({ ok: true });
   } catch (error) {
@@ -502,13 +615,23 @@ app.post("/api/threads/messages", async (request, response) => {
   const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : "";
   const text = typeof request.body?.text === "string" ? request.body.text : "";
   const imageReferenceIds = readImageReferenceIds(request.body);
-  if (!threadId || (!text.trim() && imageReferenceIds.length === 0)) {
-    response.status(400).json({ error: "threadId plus text or imageReferenceIds is required" });
+  const fileReferenceIds = readFileReferenceIds(request.body);
+  if (!threadId || (!text.trim() && imageReferenceIds.length === 0 && fileReferenceIds.length === 0)) {
+    response.status(400).json({ error: "threadId plus text, imageReferenceIds, or fileReferenceIds is required" });
     return;
   }
 
   try {
-    await codexClient.sendMessage(threadId, imageStore.buildCodexInput(text, imageReferenceIds));
+    await codexClient.sendMessage(
+      threadId,
+      buildCodexInputWithReferences({
+        text,
+        imageStore,
+        imageReferenceIds,
+        fileStore,
+        fileReferenceIds
+      })
+    );
     response.status(202).json({ ok: true });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -573,6 +696,25 @@ app.post("/api/threads/delete-all", async (_request, response) => {
   });
 
   response.status(202).json({ ok: true, started: true });
+});
+
+app.post("/api/proofs/delete", async (request, response) => {
+  const proofId = typeof request.body?.proofId === "string" ? request.body.proofId : "";
+  if (!proofId) {
+    response.status(400).json({ error: "proofId is required" });
+    return;
+  }
+
+  try {
+    const result = await deletePreviewProofFiles(proofId);
+    response.json({ ok: true, proofId, removedFiles: result.removedFiles });
+  } catch (error) {
+    const statusCode =
+      typeof (error as { statusCode?: unknown })?.statusCode === "number"
+        ? Number((error as { statusCode?: number }).statusCode)
+        : 500;
+    response.status(statusCode).json({ error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 app.post("/api/windows/open", async (request, response) => {
@@ -779,6 +921,10 @@ app.post("/api/previews/start", async (request, response) => {
     typeof request.body?.heartbeatIntervalSeconds === "number"
       ? request.body.heartbeatIntervalSeconds
       : Number(request.body?.heartbeatIntervalSeconds ?? 0);
+  const workspaceMode =
+    request.body?.workspaceMode === "snapshot" || request.body?.workspaceMode === "shared"
+      ? request.body.workspaceMode
+      : "shared";
 
   try {
     const thread = threadId ? store.getThread(threadId) ?? null : null;
@@ -814,6 +960,7 @@ app.post("/api/previews/start", async (request, response) => {
       branchName: null,
       targetPort: portValue,
       command,
+      workspaceMode,
       image: previewDefaults.image,
       egressProfile: previewDefaults.egressProfile ?? "internet",
       egressDomains: previewDefaults.egressDomains ?? [],
@@ -844,128 +991,6 @@ app.post("/api/previews/stop", async (request, response) => {
     await runtimeBroker.stopLease(leaseId);
     store.removePreviewLease(leaseId);
     response.json({ ok: true });
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post("/api/previews/verify", async (request, response) => {
-  const leaseId = typeof request.body?.leaseId === "string" ? request.body.leaseId : "";
-  const mode = request.body?.mode === "headful" ? "headful" : "headless";
-  const targetPath = typeof request.body?.path === "string" ? request.body.path : "";
-  const targetUrl = typeof request.body?.targetUrl === "string" ? request.body.targetUrl.trim() : "";
-  const script = typeof request.body?.script === "string" ? request.body.script : "";
-  const waitForSelector = typeof request.body?.waitForSelector === "string" ? request.body.waitForSelector : "";
-  const postLoadWaitMs =
-    typeof request.body?.postLoadWaitMs === "number" && Number.isFinite(request.body.postLoadWaitMs)
-      ? Math.max(0, Math.trunc(request.body.postLoadWaitMs))
-      : 0;
-  const headers =
-    request.body?.headers && typeof request.body.headers === "object"
-      ? Object.fromEntries(
-          Object.entries(request.body.headers as Record<string, unknown>)
-            .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
-            .map(([key, value]) => [key.trim(), value])
-            .filter(([key, value]) => key.length > 0 && value.length > 0)
-        )
-      : {};
-  if (!leaseId) {
-    response.status(400).json({ error: "leaseId is required" });
-    return;
-  }
-
-  try {
-    const result = decoratePreviewVerification(
-      await runtimeBroker.verifyLease({
-        leaseId,
-        mode,
-        path: targetPath || undefined,
-        targetUrl: targetUrl || undefined,
-        headers: Object.keys(headers).length > 0 ? headers : undefined,
-        waitForSelector: waitForSelector || undefined,
-        postLoadWaitMs: postLoadWaitMs > 0 ? postLoadWaitMs : undefined,
-        script: script.trim() || undefined
-      })
-    );
-    const lease = store.recordPreviewLeaseVerification(leaseId, result);
-    response.json({ ok: true, verification: result, lease });
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post("/api/browser/verify", async (request, response) => {
-  const threadId = typeof request.body?.threadId === "string" ? request.body.threadId.trim() : "";
-  const targetUrl = typeof request.body?.targetUrl === "string" ? request.body.targetUrl.trim() : "";
-  const title = typeof request.body?.title === "string" ? request.body.title.trim() : "";
-  const mode = request.body?.mode === "headful" ? "headful" : "headless";
-  const script = typeof request.body?.script === "string" ? request.body.script : "";
-  const waitForSelector = typeof request.body?.waitForSelector === "string" ? request.body.waitForSelector : "";
-  const postLoadWaitMs =
-    typeof request.body?.postLoadWaitMs === "number" && Number.isFinite(request.body.postLoadWaitMs)
-      ? Math.max(0, Math.trunc(request.body.postLoadWaitMs))
-      : 0;
-  const cookies =
-    request.body?.cookies && typeof request.body.cookies === "object"
-      ? Object.fromEntries(
-          Object.entries(request.body.cookies as Record<string, unknown>)
-            .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
-            .map(([key, value]) => [key.trim(), value])
-            .filter(([key, value]) => key.length > 0 && value.length > 0)
-        )
-      : {};
-  const sessionCookie = typeof request.body?.sessionCookie === "string" ? request.body.sessionCookie.trim() : "";
-  const headers =
-    request.body?.headers && typeof request.body.headers === "object"
-      ? Object.fromEntries(
-          Object.entries(request.body.headers as Record<string, unknown>)
-            .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
-            .map(([key, value]) => [key.trim(), value])
-            .filter(([key, value]) => key.length > 0 && value.length > 0)
-        )
-      : {};
-
-  if (!threadId || !targetUrl) {
-    response.status(400).json({ error: "threadId and targetUrl are required" });
-    return;
-  }
-
-  try {
-    const thread = store.getThread(threadId);
-    const project = resolveProjectMetadata(
-      thread?.cwd ?? "",
-      thread?.supervisor.projectId ?? "browser",
-      thread?.supervisor.projectLabel ?? "browser"
-    );
-    const result = decoratePreviewVerification(
-      await runtimeBroker.verifyBrowser({
-        threadId,
-        projectId: project.id,
-        projectLabel: project.label,
-        title: title || targetUrl,
-        targetUrl,
-        mode,
-        headers: Object.keys(headers).length > 0 ? headers : undefined,
-        cookies:
-          Object.keys(cookies).length > 0 || sessionCookie
-            ? [
-                ...Object.entries(cookies).map(([name, value]) => ({ name, value })),
-                ...(sessionCookie ? [{ name: "better-auth.session_token", value: sessionCookie }] : [])
-              ]
-            : undefined,
-        waitForSelector: waitForSelector || undefined,
-        postLoadWaitMs: postLoadWaitMs > 0 ? postLoadWaitMs : undefined,
-        script: script.trim() || undefined
-      })
-    );
-    store.recordBrowserVerification({
-      threadId,
-      projectId: project.id,
-      projectLabel: project.label,
-      title: title || targetUrl,
-      verification: result
-    });
-    response.json({ ok: true, verification: result });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }

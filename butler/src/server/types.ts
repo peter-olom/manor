@@ -204,6 +204,25 @@ export interface PreviewVerificationAuthView {
   usedSessionCookie: boolean;
 }
 
+export interface PreviewVerificationDiagnosticStageView {
+  name: string;
+  ok: boolean | null;
+  detail: string;
+  status: number | null;
+  hint: string | null;
+  failureKind: PreviewVerificationFailureKind | null;
+}
+
+export interface PreviewVerificationDiagnosticsView {
+  stages: {
+    processUp: PreviewVerificationDiagnosticStageView | null;
+    networkReachable: PreviewVerificationDiagnosticStageView | null;
+    routeAuth: PreviewVerificationDiagnosticStageView | null;
+    uiSelectorVisible: PreviewVerificationDiagnosticStageView | null;
+  };
+  remediationHints: string[];
+}
+
 export interface PreviewVerificationView {
   runId: string;
   mode: PreviewBrowserMode;
@@ -219,6 +238,7 @@ export interface PreviewVerificationView {
   phases: PreviewVerificationPhaseView[];
   readiness: PreviewVerificationReadinessView;
   auth: PreviewVerificationAuthView;
+  diagnostics?: PreviewVerificationDiagnosticsView;
   artifacts: PreviewVerificationArtifactView[];
   consoleMessages: PreviewVerificationConsoleMessageView[];
   pageErrors: string[];
@@ -265,6 +285,7 @@ export interface PreviewLeaseView extends LeaseLifecycleView {
   routePrefix: string;
   operatorUrl: string;
   command: string;
+  workspaceMode: "shared" | "snapshot";
   image: string;
   egressProfile: PreviewEgressProfile;
   egressDomains: string[];
