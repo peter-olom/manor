@@ -339,7 +339,7 @@ export function formatThreadTitle(thread: Pick<CodexThreadSummary, "preview" | "
   const candidates = [
     thread.executionContract?.requestedTask,
     thread.supervisor.latestUserPrompt,
-    thread.preview.startsWith("AUTHORITATIVE JOB CONTRACT") ? null : thread.preview
+    thread.preview.startsWith("MANOR JOB BRIEF") ? null : thread.preview
   ];
 
   for (const candidate of candidates) {
@@ -389,20 +389,33 @@ export function itemTone(type: string): "user" | "assistant" | "system" {
 }
 
 export function itemLabel(type: string): string {
-  if (type === "userMessage") {
-    return "You";
+  switch (type) {
+    case "userMessage":
+      return "You";
+    case "agentMessage":
+      return "Codex";
+    case "commandExecution":
+      return "Shell";
+    case "mcpToolCall":
+      return "Tool";
+    case "reasoning":
+      return "Reasoning";
+    case "plan":
+      return "Plan";
+    case "fileChange":
+      return "Changes";
+    default:
+      return type;
   }
-  if (type === "agentMessage") {
-    return "Codex";
-  }
-  return type;
 }
 
 export function shouldRenderItem(item: { type: string; text: string }): boolean {
-  if (item.type !== "agentMessage" && item.type !== "userMessage") {
-    return false;
+  const text = item.text.trim();
+  if (text) {
+    return true;
   }
-  return Boolean(item.text.trim());
+
+  return item.type === "commandExecution";
 }
 
 export function onboardingStatusLabel(status: "complete" | "pending"): string {

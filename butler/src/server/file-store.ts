@@ -21,7 +21,7 @@ export type FileReferenceView = {
   url: string;
 };
 
-const MAX_FILE_BYTES = 40 * 1024 * 1024;
+export const MAX_FILE_BYTES = 40 * 1024 * 1024;
 
 function normalizeMimeType(mimeType: string): string {
   const normalized = mimeType.trim().toLowerCase();
@@ -117,9 +117,18 @@ export class FileReferenceStore {
   }
 
   async create(input: { name: string; mimeType: string; data: string; sizeBytes?: number }): Promise<FileReferenceView> {
-    const mimeType = normalizeMimeType(input.mimeType);
     const normalizedBase64 = normalizeBase64(input.data);
-    const buffer = Buffer.from(normalizedBase64, "base64");
+    return this.createFromBuffer({
+      name: input.name,
+      mimeType: input.mimeType,
+      buffer: Buffer.from(normalizedBase64, "base64"),
+      sizeBytes: input.sizeBytes
+    });
+  }
+
+  async createFromBuffer(input: { name: string; mimeType: string; buffer: Buffer; sizeBytes?: number }): Promise<FileReferenceView> {
+    const mimeType = normalizeMimeType(input.mimeType);
+    const buffer = input.buffer;
     if (buffer.byteLength === 0) {
       throw new Error("File upload was empty");
     }

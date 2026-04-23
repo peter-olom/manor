@@ -54,6 +54,38 @@ async function resolveCodexWorkspaceMounts() {
   return workspaceMounts;
 }
 
+async function resolveCodexWorkspaceUser() {
+  const codexContainer = docker.getContainer(codexWorkspaceContainerName);
+  const inspection = await codexContainer.inspect();
+  const configuredUser = normalizeString(inspection?.Config?.User || "");
+  if (/^\d+:\d+$/.test(configuredUser)) {
+    return configuredUser;
+  }
+  if (/^\d+$/.test(configuredUser)) {
+    return `${configuredUser}:${configuredUser}`;
+  }
+
+  const exec = await codexContainer.exec({
+    AttachStdout: true,
+    AttachStderr: true,
+    Cmd: ["sh", "-c", "printf '%s:%s' \"$(id -u)\" \"$(id -g)\""],
+    Tty: false
+  });
+  const output = await collectExecOutput(codexContainer, exec);
+  if (output.exitCode !== 0) {
+    throw new Error(
+      output.stderr.trim() ||
+        output.stdout.trim() ||
+        `Could not resolve workspace user from ${codexWorkspaceContainerName}`
+    );
+  }
+  const user = output.stdout.trim();
+  if (!/^\d+:\d+$/.test(user)) {
+    throw new Error(`Unexpected workspace user from ${codexWorkspaceContainerName}: ${user || "(empty)"}`);
+  }
+  return user;
+}
+
 async function listStackMemberContainers(stackId) {
   return listManagedContainers((labels) => labels["manor.stack-id"] === stackId);
 }
@@ -531,6 +563,7 @@ async function persistVerificationArtifacts(containerRef, verification, remoteOu
 
   return {
     resolveCodexWorkspaceMounts,
+    resolveCodexWorkspaceUser,
     listStackMemberContainers,
     listManagedServiceContainersByVolume,
     ensureManagedStackVolume,

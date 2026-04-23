@@ -228,9 +228,9 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
     access.defineButlerTool({
       name: "message_job",
       label: "Message job",
-      description: "Privately send a follow-up into one Codex job thread and refresh its worker guidance for the new ask.",
+      description: "Privately send a follow-up into one Codex job thread without restating the whole job brief.",
       promptSnippet:
-        "message_job: steer a Codex job privately, refresh the contract guidance for the new ask, and always set nextWorkerReportAction explicitly.",
+        "message_job: steer a Codex job privately with one concise follow-up, and always set nextWorkerReportAction explicitly.",
       parameters: Type.Object({
         threadId: Type.String(),
         text: Type.String({ minLength: 1 }),
@@ -280,29 +280,11 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
             }
           };
         }
-        const refreshedTask = [thread.executionContract?.requestedTask, `Follow-up instruction:\n${typedParams.text}`]
-          .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-          .join("\n\n");
-        const refreshedContract = await access.buildDelegationContract({
-          threadId: typedParams.threadId,
-          task: refreshedTask || typedParams.text,
-          workspace: {
-            cwd: thread.cwd,
-            branchName: thread.executionContract?.branch ?? null
-          },
-          extraNotes: ["Butler refreshed this contract after a follow-up. Apply the new follow-up together with the existing thread context."]
-        });
-        access.store.setThreadExecutionContract(typedParams.threadId, refreshedContract.contract);
-        access.store.addEvent(
-          typedParams.threadId,
-          "butler.contract.refreshed",
-          "Butler refreshed this job contract after a private follow-up."
-        );
         await access.codexClient.loadThread(typedParams.threadId);
         await access.codexClient.sendMessage(
           typedParams.threadId,
           buildCodexInputWithReferences({
-            text: `${refreshedContract.text}\n\nFOLLOW-UP INSTRUCTION\n${typedParams.text}`,
+            text: `BUTLER FOLLOW-UP\nApply this within the existing job context.\n\n${typedParams.text}`,
             imageStore: access.imageStore,
             imageReferenceIds: typedParams.imageReferenceIds ?? [],
             fileStore: access.fileStore,
@@ -320,7 +302,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           content: [
             {
               type: "text",
-              text: `Sent a private follow-up to job ${typedParams.threadId}. Refreshed the worker contract. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}. Next worker report action: ${typedParams.nextWorkerReportAction ?? "review"}.`
+              text: `Sent a private follow-up to job ${typedParams.threadId}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}. Next worker report action: ${typedParams.nextWorkerReportAction ?? "review"}.`
             }
           ],
           details: {

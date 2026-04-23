@@ -44,6 +44,35 @@ trap cleanup EXIT INT TERM
 
 listen_url="${CODEX_APP_SERVER_LISTEN:-ws://0.0.0.0:8080}"
 
+append_toml_string_config() {
+  local key="$1"
+  local value="$2"
+  local encoded=""
+
+  encoded="$(
+    python3 - "$value" <<'PY'
+import json
+import sys
+
+print(json.dumps(sys.argv[1]))
+PY
+  )"
+
+  args+=(-c "${key}=${encoded}")
+}
+
+validate_personality() {
+  local value="$1"
+  case "$value" in
+    none|friendly|pragmatic) ;;
+    *)
+      echo "CODEX_PERSONALITY must be one of: none, friendly, pragmatic" >&2
+      echo "Use CODEX_MODEL_INSTRUCTIONS_FILE for markdown instruction overrides." >&2
+      exit 1
+      ;;
+  esac
+}
+
 args=(
   app-server
   --listen "$listen_url"
@@ -79,7 +108,16 @@ if [[ -n "${CODEX_MODEL:-}" ]]; then
 fi
 
 if [[ -n "${CODEX_PERSONALITY:-}" ]]; then
-  args+=(-c "personality=\"${CODEX_PERSONALITY}\"")
+  validate_personality "${CODEX_PERSONALITY}"
+  append_toml_string_config "personality" "${CODEX_PERSONALITY}"
+fi
+
+if [[ -n "${CODEX_MODEL_INSTRUCTIONS_FILE:-}" ]]; then
+  if [[ ! -f "${CODEX_MODEL_INSTRUCTIONS_FILE}" ]]; then
+    echo "CODEX_MODEL_INSTRUCTIONS_FILE does not exist: ${CODEX_MODEL_INSTRUCTIONS_FILE}" >&2
+    exit 1
+  fi
+  append_toml_string_config "model_instructions_file" "${CODEX_MODEL_INSTRUCTIONS_FILE}"
 fi
 
 ttyd \

@@ -1,6 +1,5 @@
 export type CodexThreadStatus = "active" | "idle" | "unknown";
-export type CodexExecutionLane = "codex-shell" | "preview-runtime";
-export type CodexProofMode = "none" | "operational" | "ui";
+export type CodexProofExpectation = "none" | "requested";
 export type ButlerCallbackState =
   | "waiting"
   | "received_worker_callback"
@@ -20,15 +19,10 @@ export interface CodexThreadExecutionContractView {
   projectId: string;
   projectLabel: string;
   branch: string | null;
-  executionLane: CodexExecutionLane;
-  executionLaneLabel: string;
-  proofMode: CodexProofMode;
-  proofModeLabel: string;
   requestedTask: string;
   operatorGoal: string | null;
-  successConditions: string[];
-  stopConditions: string[];
-  escalationConditions: string[];
+  proofExpectation: CodexProofExpectation;
+  proofExpectationLabel: string;
   notes: string[];
 }
 

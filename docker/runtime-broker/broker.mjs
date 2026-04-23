@@ -1,11 +1,12 @@
 import express from "express";
 import crypto from "node:crypto";
 import path from "node:path";
-import net from "node:net";
 import { Readable } from "node:stream";
 import Docker from "dockerode";
+import { createBrokerBrowserController } from "./broker-browser.mjs";
 import { createBrokerCore } from "./broker-core.mjs";
 import { createBrokerRuntime } from "./broker-runtime.mjs";
+import { registerBrokerServiceRoutes } from "./broker-services.mjs";
 import { createBrokerStorage } from "./broker-storage.mjs";
 const port = Number(process.env.RUNTIME_BROKER_PORT ?? "8090");
 const previewNetwork = process.env.RUNTIME_PREVIEW_NETWORK ?? "manor_work";
@@ -142,6 +143,7 @@ const {
   parseAliases,
   persistVerificationArtifacts,
   resolveCodexWorkspaceMounts,
+  resolveCodexWorkspaceUser,
   previewEgressProfiles,
   reconcileManagedRuntimeState,
   rejectIfLeaseRetainedFailed,
@@ -184,39 +186,6 @@ app.use((request, response, next) => {
   }
   response.status(403).json({ error: "Forbidden" });
 });
-
-async function callPlaywrightControl(pathname, init = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60_000);
-  try {
-    const response = await fetch(new URL(pathname, playwrightControlUrl), {
-      ...init,
-      headers: {
-        "content-type": "application/json",
-        ...(init.headers ?? {})
-      },
-      signal: controller.signal
-    });
-    const payload = await response.json().catch(() => ({ error: "Playwright control request failed" }));
-    if (!response.ok) {
-      throw new Error(payload?.error || `Playwright control request failed with ${response.status}`);
-    }
-    return payload;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-function normalizeAbsoluteHttpUrl(value) {
-  const targetUrl = normalizeString(value);
-  if (!targetUrl) {
-    return "";
-  }
-  if (!/^https?:\/\//i.test(targetUrl)) {
-    return "";
-  }
-  return targetUrl;
-}
 
 function shellQuote(value) {
   return JSON.stringify(String(value));
@@ -344,354 +313,30 @@ function buildSnapshotWorkspaceCommand(sourceWorktreePath, runtimeWorktreePath, 
   ].join("; ");
 }
 
-function parsePreviewRouteTarget(rawTargetUrl) {
-  if (!rawTargetUrl) {
-    return null;
-  }
-
-  try {
-    const parsed = new URL(rawTargetUrl);
-    const match = parsed.pathname.match(/^\/(?:preview|routes\/preview)\/([^/]+)(\/.*)?$/);
-    if (!match) {
-      return null;
-    }
-    return {
-      leaseId: match[1],
-      suffix: match[2] || "/",
-      search: parsed.search || ""
-    };
-  } catch {
-    return null;
-  }
-}
-
-function buildDirectTargetUrl(baseTargetUrl, suffix, search = "") {
-  const target = new URL(baseTargetUrl);
-  target.pathname = suffix.startsWith("/") ? suffix : `/${suffix}`;
-  target.search = search;
-  return target.toString();
-}
-
-function maybeInjectPreviewHostOverride(headers, targetUrl, targetPort, aliases) {
-  const hasHostHeader = Object.keys(headers).some((key) => key.toLowerCase() === "host");
-  if (hasHostHeader) {
-    return headers;
-  }
-
-  try {
-    const parsed = new URL(targetUrl);
-    const normalizedHost = parsed.hostname.toLowerCase();
-    const leaseAliases = new Set(aliases.map((alias) => alias.toLowerCase()));
-    if (!leaseAliases.has(normalizedHost)) {
-      return headers;
-    }
-  } catch {
-    return headers;
-  }
-
-  return {
-    ...headers,
-    host: `localhost:${targetPort}`
-  };
-}
-
-function createSmokeStage(name, ok, detail, options = {}) {
-  return {
-    name,
-    ok: ok === null ? null : ok === true,
-    detail: normalizeString(detail),
-    status: typeof options.status === "number" && Number.isFinite(options.status) ? options.status : null,
-    hint: normalizeString(options.hint) || null,
-    failureKind: normalizeString(options.failureKind) || null
-  };
-}
-
-function buildPreflightError(stage) {
-  const message = `${stage.name} failed: ${stage.detail}${stage.hint ? ` Hint: ${stage.hint}` : ""}`;
-  const error = new Error(message);
-  error.preflightStage = stage;
-  return error;
-}
-
-function probeTcpReachability(host, portNumber, timeoutMs = previewNetworkProbeTimeoutMs) {
-  return new Promise((resolve) => {
-    const socket = net.createConnection({ host, port: portNumber });
-    const timer = setTimeout(() => {
-      socket.destroy();
-      resolve({ ok: false, code: "TIMEOUT", message: `Timed out after ${timeoutMs}ms.` });
-    }, timeoutMs);
-
-    socket.once("connect", () => {
-      clearTimeout(timer);
-      socket.end();
-      resolve({ ok: true, code: null, message: "TCP connection established." });
-    });
-
-    socket.once("error", (error) => {
-      clearTimeout(timer);
-      socket.destroy();
-      resolve({
-        ok: false,
-        code: error && typeof error.code === "string" ? error.code : "ERROR",
-        message: error instanceof Error ? error.message : String(error)
-      });
-    });
-  });
-}
-
-function mapPreflightFailureHint(code) {
-  if (code === "ECONNREFUSED" || code === "TIMEOUT") {
-    return "Ensure the preview server listens on 0.0.0.0 and the configured preview port.";
-  }
-  if (code === "ENOTFOUND") {
-    return "The preview host alias could not be resolved on the shared runtime network.";
-  }
-  return "Confirm the preview process is running and reachable on the configured port.";
-}
-
-function resolveContainerReachableHost(container, fallbackHost) {
-  const networks = container?.NetworkSettings?.Networks && typeof container.NetworkSettings.Networks === "object"
-    ? container.NetworkSettings.Networks
-    : {};
-
-  if (typeof fallbackHost === "string" && fallbackHost) {
-    return fallbackHost;
-  }
-
-  const preview = networks[previewNetwork];
-  if (preview?.IPAddress) {
-    return preview.IPAddress;
-  }
-
-  const preferred = networks[sharedWorkNetwork];
-  if (preferred?.IPAddress) {
-    return preferred.IPAddress;
-  }
-
-  for (const value of Object.values(networks)) {
-    if (value && typeof value === "object" && typeof value.IPAddress === "string" && value.IPAddress) {
-      return value.IPAddress;
-    }
-  }
-
-  return fallbackHost;
-}
-
-function resolveContainerBrowserHost(container, fallbackHost) {
-  const networks = container?.NetworkSettings?.Networks && typeof container.NetworkSettings.Networks === "object"
-    ? container.NetworkSettings.Networks
-    : {};
-
-  const shared = networks[sharedWorkNetwork];
-  if (shared?.IPAddress) {
-    return shared.IPAddress;
-  }
-
-  const preview = networks[previewNetwork];
-  if (preview?.IPAddress) {
-    return preview.IPAddress;
-  }
-
-  for (const [networkName, value] of Object.entries(networks)) {
-    if (
-      networkName.startsWith("manor_stack_") &&
-      value &&
-      typeof value === "object" &&
-      typeof value.IPAddress === "string" &&
-      value.IPAddress
-    ) {
-      return value.IPAddress;
-    }
-  }
-
-  if (typeof fallbackHost === "string" && fallbackHost) {
-    return fallbackHost;
-  }
-
-  for (const value of Object.values(networks)) {
-    if (value && typeof value === "object" && typeof value.IPAddress === "string" && value.IPAddress) {
-      return value.IPAddress;
-    }
-  }
-
-  return fallbackHost;
-}
-
-function resolvePreviewBrowserTarget(input) {
-  const targetHost = resolveTargetHost(input.containerName, input.aliases) || input.containerName;
-  const reachableHost = resolveContainerReachableHost(input.container, targetHost);
-  const browserHost = resolveContainerBrowserHost(input.container, targetHost);
-  const baseTargetUrl = `http://${browserHost}:${input.targetPort}/`;
-  const requestedTargetUrl = normalizeAbsoluteHttpUrl(input.requestedTargetUrl);
-
-  if (!requestedTargetUrl) {
-    return {
-      targetHost,
-      reachableHost,
-      baseTargetUrl,
-      targetUrl: appendPreviewRoutePath(baseTargetUrl, input.path),
-      originalTargetUrl: null,
-      translatedFromPreviewRoute: false,
-      customTarget: false
-    };
-  }
-
-  const routeTarget = parsePreviewRouteTarget(requestedTargetUrl);
-  if (routeTarget) {
-    if (routeTarget.leaseId !== input.leaseId) {
-      throw new Error(
-        `Requested targetUrl points to preview ${routeTarget.leaseId}, but this request is for preview ${input.leaseId}.`
-      );
-    }
-    return {
-      targetHost,
-      reachableHost,
-      baseTargetUrl,
-      targetUrl: buildDirectTargetUrl(baseTargetUrl, routeTarget.suffix, routeTarget.search),
-      originalTargetUrl: requestedTargetUrl,
-      translatedFromPreviewRoute: true,
-      customTarget: false
-    };
-  }
-
-  return {
-    targetHost,
-    reachableHost,
-    baseTargetUrl,
-    targetUrl: requestedTargetUrl,
-    originalTargetUrl: null,
-    translatedFromPreviewRoute: false,
-    customTarget: true
-  };
-}
-
-async function runPreviewSmokePreflight(input) {
-  const stages = {};
-
-  const running = Boolean(input.container?.State?.Running);
-  stages.processUp = createSmokeStage(
-    "process_up",
-    running,
-    running ? "Preview container is running." : "Preview container is not running.",
-    {
-      hint: running ? null : "Start the preview process and confirm it remains running before browser smoke.",
-      failureKind: "preview"
-    }
-  );
-  if (!running) {
-    throw buildPreflightError(stages.processUp);
-  }
-
-  const probe = await probeTcpReachability(input.reachableHost, input.targetPort, previewNetworkProbeTimeoutMs);
-  stages.networkReachable = createSmokeStage(
-    "network_reachable",
-    probe.ok,
-    probe.ok
-      ? `Shared network can reach ${input.reachableHost}:${input.targetPort}.`
-      : `Shared network could not reach ${input.reachableHost}:${input.targetPort} (${probe.code || "ERROR"}: ${probe.message}).`,
-    {
-      hint: probe.ok ? null : mapPreflightFailureHint(probe.code),
-      failureKind: "readiness"
-    }
-  );
-  if (!probe.ok) {
-    throw buildPreflightError(stages.networkReachable);
-  }
-
-  stages.routeAuth = createSmokeStage(
-    "route_auth",
-    true,
-    input.customTarget
-      ? "Custom target URL provided; route-auth stage handled by target endpoint."
-      : input.translatedFromPreviewRoute
-      ? "Brokered preview route target was translated to direct runtime target."
-      : "Direct runtime target selected; no preview route auth gate required."
-  );
-
-  return stages;
-}
-
-function buildBrowserUseOutputDir(scope, runId) {
-  if (scope.kind === "preview") {
-    return path.posix.join(playwrightArtifactsScratchDir, "browser-use", "preview", scope.leaseId, runId);
-  }
-  return path.posix.join(playwrightArtifactsScratchDir, "browser-use", "browser", scope.threadId, runId);
-}
-
-async function startPlaywrightBrowserUseSession(input) {
-  const runId = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
-  const sessionId = crypto.randomUUID();
-  const outputDir = buildBrowserUseOutputDir(input.scope, runId);
-  const payload = await callPlaywrightControl("/sessions", {
-    method: "POST",
-    body: JSON.stringify({
-      sessionId,
-      runId,
-      mode: input.mode,
-      targetUrl: input.targetUrl,
-      outputDir,
-      waitForSelector: input.waitForSelector,
-      postLoadWaitMs: input.postLoadWaitMs,
-      headers: input.headers,
-      cookies: input.cookies,
-      preflightStages: input.preflightStages || undefined
-    })
-  });
-
-  const summary = payload?.session;
-  if (!summary || typeof summary !== "object" || typeof summary.sessionId !== "string") {
-    throw new Error("Playwright control did not return a valid session summary.");
-  }
-
-  browserUseSessions.set(summary.sessionId, {
-    kind: input.scope.kind,
-    leaseId: input.scope.kind === "preview" ? input.scope.leaseId : null,
-    threadId: input.scope.kind === "browser" ? input.scope.threadId : null,
-    projectId: input.scope.kind === "browser" ? input.scope.projectId : null,
-    projectLabel: input.scope.kind === "browser" ? input.scope.projectLabel : null,
-    title: input.scope.kind === "browser" ? input.scope.title : null,
-    runId,
-    outputDir,
-    preflightStages: input.preflightStages || null
-  });
-
-  return {
-    sessionId: summary.sessionId,
-    runId,
-    mode: summary.mode,
-    targetUrl: summary.targetUrl,
-    title: summary.title || "",
-    url: summary.url || summary.targetUrl,
-    status: typeof summary.status === "number" ? summary.status : null,
-    startedAt: typeof summary.startedAt === "number" ? summary.startedAt : Date.now(),
-    actionCount: typeof summary.actionCount === "number" ? summary.actionCount : 0
-  };
-}
-
-async function closePlaywrightBrowserUseSession(sessionId, reason) {
-  const tracked = browserUseSessions.get(sessionId);
-  if (!tracked) {
-    throw new Error(`Browser session ${sessionId} was not found.`);
-  }
-
-  const payload = await callPlaywrightControl(`/sessions/${encodeURIComponent(sessionId)}`, {
-    method: "DELETE",
-    body: JSON.stringify({ reason })
-  });
-  const verification = payload?.verification;
-  if (!verification || typeof verification !== "object") {
-    throw new Error("Playwright control did not return verification output.");
-  }
-
-  const playwrightContainer = docker.getContainer(playwrightContainerName);
-  await playwrightContainer.inspect();
-  const persisted = await persistVerificationArtifacts(playwrightContainer, verification, tracked.outputDir, tracked.kind === "preview"
-    ? { leaseId: tracked.leaseId, runId: tracked.runId }
-    : { kind: "browser", threadId: tracked.threadId, runId: tracked.runId });
-
-  browserUseSessions.delete(sessionId);
-  return { tracked, verification: persisted };
-}
+const browserController = createBrokerBrowserController({
+  docker,
+  playwrightControlUrl,
+  playwrightArtifactsScratchDir,
+  playwrightContainerName,
+  previewNetwork,
+  sharedWorkNetwork,
+  previewNetworkProbeTimeoutMs,
+  browserUseSessions,
+  hasBrokerAccess,
+  requireContainer,
+  rejectIfLeaseRetainedFailed,
+  rejectIfLeaseUnavailable,
+  parseAliases,
+  normalizeString,
+  normalizePositiveInteger,
+  normalizeEnv,
+  normalizeCookieEntries,
+  normalizeHeaderMap,
+  resolveTargetHost,
+  appendPreviewRoutePath,
+  persistVerificationArtifacts
+});
+browserController.registerRoutes(app);
 
 app.get("/health", async (_request, response) => {
   try {
@@ -1126,6 +771,10 @@ app.post("/leases", async (request, response) => {
 
     const networkName = stack?.Name || previewNetwork;
     const workspaceMounts = await resolveCodexWorkspaceMounts();
+    const sharedWorkspaceUser = lease.workspaceMode === "shared" ? await resolveCodexWorkspaceUser() : null;
+    if (sharedWorkspaceUser && !envVars.some((entry) => /^HOME=/.test(entry))) {
+      envVars.push("HOME=/tmp/manor-preview-home");
+    }
     const sourceWorktreePath = lease.worktreePath;
     const runtimeWorktreePath =
       lease.workspaceMode === "snapshot" ? `/tmp/manor-preview-workspaces/${lease.id}` : sourceWorktreePath;
@@ -1153,6 +802,7 @@ app.post("/leases", async (request, response) => {
         "manor.worktree-source-path": sourceWorktreePath,
         "manor.worktree-runtime-path": runtimeWorktreePath,
         "manor.workspace-mode": lease.workspaceMode === "snapshot" ? "snapshot" : "shared",
+        "manor.workspace-user": sharedWorkspaceUser ?? "",
         "manor.target-port": String(lease.targetPort),
         "manor.egress-profile": lease.egressProfile,
         "manor.egress-policy-name": dynamicPolicyName ?? "",
@@ -1168,6 +818,7 @@ app.post("/leases", async (request, response) => {
         NetworkMode: networkName,
         Mounts: workspaceMounts
       },
+      User: sharedWorkspaceUser ?? undefined,
       NetworkingConfig: {
         EndpointsConfig: {
           [networkName]: {
@@ -1547,246 +1198,6 @@ app.post("/leases/:leaseId/exec", async (request, response) => {
   }
 });
 
-app.post("/leases/:leaseId/browser-sessions", async (request, response) => {
-  if (!hasBrokerAccess(request)) {
-    response.status(403).json({ error: "Forbidden" });
-    return;
-  }
-  if (rejectIfLeaseRetainedFailed(request.params.leaseId, response)) {
-    return;
-  }
-  const required = await requireContainer(request.params.leaseId, response);
-  if (!required) {
-    return;
-  }
-  if (rejectIfLeaseUnavailable(required, request.params.leaseId, response)) {
-    return;
-  }
-
-  try {
-    const labels = required.container.Config?.Labels || {};
-    const aliases = parseAliases(labels["manor.aliases"]);
-    const targetPort =
-      Number(required.container.Config?.Env?.find((entry) => entry.startsWith("PORT="))?.slice(5) || "3000");
-    const targetResolution = resolvePreviewBrowserTarget({
-      leaseId: request.params.leaseId,
-      containerName: required.containerName,
-      container: required.container,
-      aliases,
-      targetPort,
-      requestedTargetUrl: request.body?.targetUrl,
-      path: request.body?.path
-    });
-    const targetUrl = targetResolution.targetUrl;
-    if (!/^https?:\/\//i.test(targetUrl)) {
-      response.status(400).json({ error: "targetUrl must be an absolute http or https URL when provided." });
-      return;
-    }
-
-    const preflightStages = await runPreviewSmokePreflight({
-      container: required.container,
-      targetPort,
-      reachableHost: targetResolution.reachableHost,
-      translatedFromPreviewRoute: targetResolution.translatedFromPreviewRoute,
-      customTarget: targetResolution.customTarget
-    });
-
-    const mode = request.body?.mode === "headful" ? "headful" : "headless";
-    const waitForSelector = normalizeString(request.body?.waitForSelector) || undefined;
-    const postLoadWaitMs =
-      typeof request.body?.postLoadWaitMs === "number" && Number.isFinite(request.body.postLoadWaitMs)
-        ? Math.max(0, Math.trunc(request.body.postLoadWaitMs))
-        : undefined;
-    const hostAliases = [
-      required.containerName,
-      ...aliases,
-      targetResolution.targetHost,
-      targetResolution.reachableHost
-    ].filter(Boolean);
-    const headers = maybeInjectPreviewHostOverride(
-      normalizeHeaderMap(request.body?.headers),
-      targetUrl,
-      targetPort,
-      hostAliases
-    );
-    const cookies = normalizeCookieEntries(request.body?.cookies);
-    const sessionCookie = normalizeString(request.body?.sessionCookie);
-    if (sessionCookie) {
-      cookies.push({ name: "better-auth.session_token", value: sessionCookie });
-    }
-
-    const session = await startPlaywrightBrowserUseSession({
-      mode,
-      targetUrl,
-      waitForSelector,
-      postLoadWaitMs,
-      headers,
-      cookies,
-      preflightStages,
-      scope: {
-        kind: "preview",
-        leaseId: request.params.leaseId
-      }
-    });
-    response.json({ ok: true, session });
-  } catch (error) {
-    const preflightStage =
-      typeof error === "object" && error !== null && "preflightStage" in error ? error.preflightStage : null;
-    if (preflightStage && typeof preflightStage === "object") {
-      response.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-        stage: preflightStage.name,
-        hint: preflightStage.hint || null,
-        failureKind: preflightStage.failureKind || "readiness"
-      });
-      return;
-    }
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post("/browser/sessions", async (request, response) => {
-  if (!hasBrokerAccess(request)) {
-    response.status(403).json({ error: "Forbidden" });
-    return;
-  }
-
-  const threadId = normalizeString(request.body?.threadId);
-  const projectId = normalizeString(request.body?.projectId);
-  const projectLabel = normalizeString(request.body?.projectLabel);
-  const title = normalizeString(request.body?.title) || "Browser use session";
-  const targetUrl = normalizeAbsoluteHttpUrl(request.body?.targetUrl);
-  if (!threadId || !projectId || !projectLabel || !targetUrl) {
-    response.status(400).json({ error: "threadId, projectId, projectLabel, and targetUrl are required." });
-    return;
-  }
-
-  try {
-    const mode = request.body?.mode === "headful" ? "headful" : "headless";
-    const waitForSelector = normalizeString(request.body?.waitForSelector) || undefined;
-    const postLoadWaitMs =
-      typeof request.body?.postLoadWaitMs === "number" && Number.isFinite(request.body.postLoadWaitMs)
-        ? Math.max(0, Math.trunc(request.body.postLoadWaitMs))
-        : undefined;
-    const headers = normalizeHeaderMap(request.body?.headers);
-    const cookies = normalizeCookieEntries(request.body?.cookies);
-    const sessionCookie = normalizeString(request.body?.sessionCookie);
-    if (sessionCookie) {
-      cookies.push({ name: "better-auth.session_token", value: sessionCookie });
-    }
-
-    const session = await startPlaywrightBrowserUseSession({
-      mode,
-      targetUrl,
-      waitForSelector,
-      postLoadWaitMs,
-      headers,
-      cookies,
-      scope: {
-        kind: "browser",
-        threadId,
-        projectId,
-        projectLabel,
-        title
-      }
-    });
-    response.json({ ok: true, session });
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get("/browser/sessions/:sessionId", async (request, response) => {
-  if (!hasBrokerAccess(request)) {
-    response.status(403).json({ error: "Forbidden" });
-    return;
-  }
-  const sessionId = normalizeString(request.params.sessionId);
-  if (!sessionId) {
-    response.status(400).json({ error: "sessionId is required." });
-    return;
-  }
-  if (!browserUseSessions.has(sessionId)) {
-    response.status(404).json({ error: `Browser session ${sessionId} was not found.` });
-    return;
-  }
-
-  try {
-    const payload = await callPlaywrightControl(`/sessions/${encodeURIComponent(sessionId)}`, {
-      method: "GET"
-    });
-    response.json({
-      ...payload,
-      tracked: browserUseSessions.get(sessionId) ?? null
-    });
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post("/browser/sessions/:sessionId/actions", async (request, response) => {
-  if (!hasBrokerAccess(request)) {
-    response.status(403).json({ error: "Forbidden" });
-    return;
-  }
-  const sessionId = normalizeString(request.params.sessionId);
-  if (!sessionId) {
-    response.status(400).json({ error: "sessionId is required." });
-    return;
-  }
-  if (!browserUseSessions.has(sessionId)) {
-    response.status(404).json({ error: `Browser session ${sessionId} was not found.` });
-    return;
-  }
-
-  try {
-    const payload = await callPlaywrightControl(`/sessions/${encodeURIComponent(sessionId)}/actions`, {
-      method: "POST",
-      body: JSON.stringify(request.body ?? {})
-    });
-    response.json(payload);
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.delete("/browser/sessions/:sessionId", async (request, response) => {
-  if (!hasBrokerAccess(request)) {
-    response.status(403).json({ error: "Forbidden" });
-    return;
-  }
-  const sessionId = normalizeString(request.params.sessionId);
-  if (!sessionId) {
-    response.status(400).json({ error: "sessionId is required." });
-    return;
-  }
-
-  try {
-    const { verification, tracked } = await closePlaywrightBrowserUseSession(
-      sessionId,
-      normalizeString(request.body?.reason) || "browser session stop"
-    );
-    if (tracked.kind === "browser") {
-      response.json({
-        ok: true,
-        verification,
-        tracked,
-        browserProof: {
-          threadId: tracked.threadId,
-          projectId: tracked.projectId,
-          projectLabel: tracked.projectLabel,
-          title: tracked.title,
-          targetUrl: verification.url
-        }
-      });
-      return;
-    }
-    response.json({ ok: true, verification, tracked });
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
 app.delete("/leases/:leaseId", async (request, response) => {
   if (!hasBrokerAccess(request)) {
     response.status(403).json({ error: "Forbidden" });
@@ -1808,392 +1219,39 @@ app.delete("/leases/:leaseId", async (request, response) => {
   clearLeaseTransition(request.params.leaseId);
   clearLeaseBootstrapState(request.params.leaseId);
   clearRetainedPreviewLease(request.params.leaseId);
-  const previewSessionIds = [...browserUseSessions.entries()]
-    .filter(([, metadata]) => metadata.kind === "preview" && metadata.leaseId === request.params.leaseId)
-    .map(([sessionId]) => sessionId);
+  const previewSessionIds = browserController.listPreviewSessionIdsForLease(request.params.leaseId);
   for (const sessionId of previewSessionIds) {
-    await closePlaywrightBrowserUseSession(sessionId, "preview stopped").catch(() => undefined);
+    await browserController.closePlaywrightBrowserUseSession(sessionId, "preview stopped").catch(() => undefined);
   }
   response.json({ ok: true, leaseId: request.params.leaseId });
 });
-
-app.post("/services", async (request, response) => {
-  if (!hasBrokerAccess(request)) {
-    response.status(403).json({ error: "Forbidden" });
-    return;
-  }
-  const payload = request.body ?? {};
-  if (typeof payload.templateId !== "string" || !payload.templateId) {
-    response.status(400).json({ error: "templateId is required" });
-    return;
-  }
-
-  if (typeof payload.title !== "string" || !payload.title) {
-    response.status(400).json({ error: "title is required" });
-    return;
-  }
-
-  const serviceId = payload.serviceId || crypto.randomUUID();
-  const containerName = toServiceContainerName(serviceId);
-  const stackId = normalizeString(payload.stackId) || null;
-  const stack = stackId ? await findStackNetwork(stackId) : null;
-  if (stackId && !stack) {
-    response.status(400).json({ error: `Unknown stack: ${stackId}` });
-    return;
-  }
-  const retainsVolumes = stack?.Labels?.["manor.retains-volumes"] === "true";
-  const stackScopeKey = getStackScopeKeyFromLabels(stack?.Labels);
-  const stackCloneSourceKey = getStackCloneSourceKeyFromLabels(stack?.Labels);
-  const aliases = normalizeStringArray(payload.aliases);
-  const stackVolumePath = normalizeString(payload.stackVolumePath) || null;
-  const env = typeof payload.env === "object" && payload.env ? payload.env : {};
-  const envVars = [];
-  const storage = {
-    kind: "ephemeral",
-    sticky: false,
-    volumeName: null,
-    volumeMountPath: null
-  };
-
-  for (const [key, value] of Object.entries(env)) {
-    if (typeof value === "string") {
-      envVars.push(`${key}=${value}`);
-    }
-  }
-
-  try {
-    await ensureImage(payload.image);
-
-    const existing = await inspectContainer(containerName);
-    if (existing) {
-      await docker.getContainer(containerName).remove({ force: true });
-    }
-
-    const networkName = stack?.Name || previewNetwork;
-    const serviceAliases = [...new Set([containerName, ...aliases])];
-    const targetHost = resolveTargetHost(containerName, aliases);
-
-    const containerOptions = {
-      Image: payload.image,
-      name: containerName,
-      Env: envVars,
-      Labels: {
-        "manor.managed": "true",
-        "manor.runtime-kind": "service",
-        "manor.service-id": serviceId,
-        "manor.thread-id": payload.threadId ?? "",
-        "manor.project-id": payload.projectId || "service",
-        "manor.project-label": payload.projectLabel || payload.projectId || "service",
-        "manor.stack-id": stackId ?? "",
-        "manor.aliases": aliases.join(","),
-        "manor.template-id": payload.templateId,
-        "manor.template-label": payload.templateLabel || payload.templateId,
-        "manor.title": payload.title,
-        "manor.target-port": String(Number(payload.targetPort || 0)),
-        "manor.worktree-path": typeof payload.worktreePath === "string" ? payload.worktreePath : "",
-        "manor.working-dir": typeof payload.workingDir === "string" ? payload.workingDir : "",
-        "manor.storage-kind": "ephemeral",
-        "manor.volume-name": "",
-        "manor.volume-mount-path": ""
-      },
-      HostConfig: {
-        AutoRemove: true,
-        NetworkMode: networkName
-      },
-      NetworkingConfig: {
-        EndpointsConfig: {
-          [networkName]: {
-            Aliases: serviceAliases
-          }
-        }
-      }
-    };
-
-    if (typeof payload.workingDir === "string" && payload.workingDir) {
-      containerOptions.WorkingDir = payload.workingDir;
-    }
-
-    if (typeof payload.command === "string" && payload.command) {
-      containerOptions.Entrypoint = ["sh", "-lc"];
-      containerOptions.Cmd = [payload.command];
-    }
-
-    if (retainsVolumes && stackScopeKey && stackVolumePath) {
-      const volumeKey = aliases[0] || payload.templateId;
-      const volumeTemplateLabel = payload.templateLabel || payload.templateId;
-      const { volumeName } =
-        stackCloneSourceKey && stackCloneSourceKey !== stackScopeKey
-          ? await cloneManagedStackVolume({
-              sourceScopeKey: stackCloneSourceKey,
-              targetScopeKey: stackScopeKey,
-              templateId: payload.templateId,
-              templateLabel: volumeTemplateLabel,
-              volumeKey,
-              mountPath: stackVolumePath,
-              threadId: payload.threadId ?? null,
-              projectId: payload.projectId || "service",
-              projectLabel: payload.projectLabel || payload.projectId || "service"
-            })
-          : await ensureManagedStackVolume({
-              scopeKey: stackScopeKey,
-              templateId: payload.templateId,
-              templateLabel: volumeTemplateLabel,
-              volumeKey,
-              mountPath: stackVolumePath,
-              threadId: payload.threadId ?? null,
-              projectId: payload.projectId || "service",
-              projectLabel: payload.projectLabel || payload.projectId || "service"
-            });
-      const activeUsers = await listManagedServiceContainersByVolume(volumeName, serviceId);
-      if (activeUsers.length > 0) {
-        const existingTitle = activeUsers[0].Labels?.["manor.title"] || activeUsers[0].Labels?.["manor.service-id"] || "service";
-        throw new Error(
-          `Persistent volume ${volumeName} is already attached to ${existingTitle}. Use a distinct alias or stop the existing service first.`
-        );
-      }
-
-      containerOptions.HostConfig.Mounts = [
-        {
-          Type: "volume",
-          Source: volumeName,
-          Target: stackVolumePath
-        }
-      ];
-      containerOptions.Labels["manor.storage-kind"] = "volume";
-      containerOptions.Labels["manor.volume-name"] = volumeName;
-      containerOptions.Labels["manor.volume-mount-path"] = stackVolumePath;
-      storage.kind = "volume";
-      storage.sticky = true;
-      storage.volumeName = volumeName;
-      storage.volumeMountPath = stackVolumePath;
-    }
-
-    const serviceContainer = await docker.createContainer(containerOptions);
-    await serviceContainer.start();
-    await ensureNetworkConnection(sharedWorkNetwork, serviceContainer.id, serviceAliases);
-    const container = await inspectContainer(containerName);
-    if (!container) {
-      throw new Error("Service container did not start");
-    }
-
-    response.json({
-      id: serviceId,
-      threadId: payload.threadId ?? null,
-      projectId: payload.projectId || "service",
-      projectLabel: payload.projectLabel || payload.projectId || "service",
-      title: payload.title,
-      stackId,
-      aliases,
-      templateId: payload.templateId,
-      templateLabel: payload.templateLabel || payload.templateId,
-      runtimeKind: payload.runtimeKind || "container",
-      containerName,
-      targetHost,
-      targetPort: Number(payload.targetPort || 0),
-      worktreePath: typeof payload.worktreePath === "string" ? payload.worktreePath : null,
-      image: payload.image,
-      status: container?.State?.Running ? "running" : "starting",
-      storageKind: storage.kind,
-      sticky: storage.sticky,
-      volumeName: storage.volumeName,
-      volumeMountPath: storage.volumeMountPath,
-      createdAt: new Date(container.Created).getTime(),
-      updatedAt: Date.now(),
-      lastError: container.State?.Error || null,
-      env
-    });
-  } catch (error) {
-    response.status(500).json({
-      id: serviceId,
-      threadId: payload.threadId ?? null,
-      projectId: payload.projectId || "service",
-      projectLabel: payload.projectLabel || payload.projectId || "service",
-      title: payload.title,
-      stackId,
-      aliases,
-      templateId: payload.templateId,
-      templateLabel: payload.templateLabel || payload.templateId,
-      runtimeKind: payload.runtimeKind || "container",
-      containerName,
-      targetHost,
-      targetPort: Number(payload.targetPort || 0),
-      worktreePath: typeof payload.worktreePath === "string" ? payload.worktreePath : null,
-      image: payload.image,
-      status: "failed",
-      storageKind: storage.kind,
-      sticky: storage.sticky,
-      volumeName: storage.volumeName,
-      volumeMountPath: storage.volumeMountPath,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      lastError: error instanceof Error ? error.message : String(error),
-      env,
-      error: error instanceof Error ? error.message : String(error)
-    });
-  }
-});
-
-app.get("/services", async (request, response) => {
-  const requestedThreadId = typeof request.query.threadId === "string" ? request.query.threadId : null;
-  if (!authorizeScopedThread(request, response, requestedThreadId)) {
-    return;
-  }
-
-  try {
-    const containers = await listManagedContainers((labels) => labels["manor.runtime-kind"] === "service");
-    const services = (await Promise.all(containers.map((container) => serializeLiveServiceFromSummary(container)))).filter(
-      (service) => !requestedThreadId || service.threadId === requestedThreadId
-    );
-
-    response.json(services);
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get("/services/:serviceId", async (request, response) => {
-  const required = await requireServiceContainer(request.params.serviceId, response);
-  if (!required) {
-    return;
-  }
-  const { containerName, container } = required;
-  const effectiveThreadId = await resolveAttachedThreadId(
-    container.Config?.Labels?.["manor.thread-id"] || null,
-    container.Config?.Labels?.["manor.stack-id"] || null
-  );
-  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
-    return;
-  }
-
-  response.json(await serializeInspectedService(containerName, container));
-});
-
-app.get("/services/:serviceId/processes", async (request, response) => {
-  const required = await requireServiceContainer(request.params.serviceId, response);
-  if (!required) {
-    return;
-  }
-  const effectiveThreadId = await resolveAttachedThreadId(
-    required.container.Config?.Labels?.["manor.thread-id"] || null,
-    required.container.Config?.Labels?.["manor.stack-id"] || null
-  );
-  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
-    return;
-  }
-
-  try {
-    const top = await required.containerRef.top();
-    response.json({
-      titles: Array.isArray(top.Titles) ? top.Titles : [],
-      processes: Array.isArray(top.Processes) ? top.Processes : []
-    });
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get("/services/:serviceId/logs", async (request, response) => {
-  const required = await requireServiceContainer(request.params.serviceId, response);
-  if (!required) {
-    return;
-  }
-  const effectiveThreadId = await resolveAttachedThreadId(
-    required.container.Config?.Labels?.["manor.thread-id"] || null,
-    required.container.Config?.Labels?.["manor.stack-id"] || null
-  );
-  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
-    return;
-  }
-
-  const tailRaw = Number(request.query.tail ?? "200");
-  const tail = Number.isFinite(tailRaw) && tailRaw > 0 ? Math.min(Math.trunc(tailRaw), 1000) : 200;
-
-  try {
-    const stream = await required.containerRef.logs({
-      stdout: true,
-      stderr: true,
-      tail,
-      timestamps: false
-    });
-    const logs =
-      Buffer.isBuffer(stream)
-        ? stream.toString("utf8")
-        : await new Promise((resolve, reject) => {
-            const chunks = [];
-            stream.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-            stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-            stream.on("error", reject);
-          });
-
-    response.json({
-      leaseId: request.params.serviceId,
-      logs
-    });
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post("/services/:serviceId/exec", async (request, response) => {
-  const required = await requireServiceContainer(request.params.serviceId, response);
-  if (!required) {
-    return;
-  }
-  const effectiveThreadId = await resolveAttachedThreadId(
-    required.container.Config?.Labels?.["manor.thread-id"] || null,
-    required.container.Config?.Labels?.["manor.stack-id"] || null
-  );
-  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
-    return;
-  }
-
-  const command = typeof request.body?.command === "string" ? request.body.command.trim() : "";
-  const commandArgs = normalizeExecArgs(request.body?.commandArgs);
-  const cwd = typeof request.body?.cwd === "string" ? request.body.cwd.trim() : "";
-  const stdin = typeof request.body?.stdin === "string" ? request.body.stdin : "";
-  const stdinProvided = request.body?.stdinProvided === true;
-  if (!command && commandArgs.length === 0) {
-    response.status(400).json({ error: "command is required" });
-    return;
-  }
-
-  try {
-    const execCommand = commandArgs.length > 0 ? commandArgs : buildShellCommand(command, cwd);
-    const exec = await required.containerRef.exec({
-      AttachStdin: stdinProvided,
-      AttachStdout: true,
-      AttachStderr: true,
-      Cmd: execCommand,
-      WorkingDir: cwd || undefined,
-      Tty: false
-    });
-    const output = await collectExecOutput(required.containerRef, exec, { stdin, stdinProvided });
-    response.json({
-      leaseId: request.params.serviceId,
-      command,
-      exitCode: output.exitCode,
-      stdout: output.stdout,
-      stderr: output.stderr
-    });
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.delete("/services/:serviceId", async (request, response) => {
-  if (!hasBrokerAccess(request)) {
-    response.status(403).json({ error: "Forbidden" });
-    return;
-  }
-  const containerName = toServiceContainerName(request.params.serviceId);
-
-  try {
-    await docker.getContainer(containerName).remove({ force: true });
-  } catch {
-    // already gone
-  }
-
-  response.json({ ok: true, serviceId: request.params.serviceId });
+registerBrokerServiceRoutes({
+  app,
+  docker,
+  previewNetwork,
+  sharedWorkNetwork,
+  hasBrokerAccess,
+  authorizeScopedThread,
+  requireServiceContainer,
+  resolveAttachedThreadId,
+  findStackNetwork,
+  normalizeString,
+  normalizeStringArray,
+  normalizeEnv,
+  normalizeExecArgs,
+  buildShellCommand,
+  collectExecOutput,
+  ensureImage,
+  inspectContainer,
+  cloneManagedStackVolume,
+  ensureManagedStackVolume,
+  listManagedServiceContainersByVolume,
+  ensureNetworkConnection,
+  listManagedContainers,
+  serializeLiveServiceFromSummary,
+  serializeInspectedService,
+  toServiceContainerName,
+  resolveTargetHost
 });
 
 process.on("uncaughtException", (error) => {

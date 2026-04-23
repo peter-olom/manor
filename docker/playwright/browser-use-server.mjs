@@ -611,11 +611,7 @@ async function startSession(input) {
 
   const contextPhase = phaseTracker.start("create_context", "Create context");
   const context = await browser.newContext({
-    viewport: { width: 1440, height: 900 },
-    recordVideo: {
-      dir: outputDir,
-      size: { width: 1440, height: 900 }
-    }
+    viewport: { width: 1440, height: 900 }
   });
   context.setDefaultNavigationTimeout(45_000);
   context.setDefaultTimeout(15_000);
@@ -635,6 +631,7 @@ async function startSession(input) {
   phaseTracker.finish(contextPhase, "completed", `Headers=${Object.keys(headers).length}. Cookies=${cookies.length}.`);
 
   const page = await context.newPage();
+  const videoPath = path.join(outputDir, "video.webm");
 
   const session = {
     sessionId,
@@ -655,14 +652,14 @@ async function startSession(input) {
     browser,
     context,
     page,
-    videoRef: page.video(),
+    screencastEnabled: false,
     targetOrigin: safeOrigin(targetUrl),
     phaseTracker,
     screenshotArtifacts: [],
     manifestPath: path.join(outputDir, "manifest.json"),
     htmlPath: path.join(outputDir, "page.html"),
     tracePath: path.join(outputDir, "trace.zip"),
-    videoPath: null,
+    videoPath,
     error: null,
     failedPhase: null,
     selectorSatisfied: waitForSelector ? false : null,
@@ -678,6 +675,20 @@ async function startSession(input) {
     visualContentDetected: null,
     visualSignals: null
   };
+
+  const screencastPhase = phaseTracker.start("start_screencast", "Start screencast");
+  try {
+    if (!page.screencast || typeof page.screencast.start !== "function" || typeof page.screencast.showActions !== "function") {
+      throw new Error("Playwright screencast API is unavailable.");
+    }
+    await page.screencast.start({ path: videoPath });
+    await page.screencast.showActions({ position: "top-right" });
+    session.screencastEnabled = true;
+    phaseTracker.finish(screencastPhase, "completed", "Native action annotations enabled.");
+  } catch (error) {
+    phaseTracker.finish(screencastPhase, "failed", toErrorMessage(error));
+    throw error;
+  }
 
   attachPageObservers(session);
 
@@ -931,6 +942,10 @@ async function stopSession(session, reason = "completed") {
       await session.context.tracing.stop({ path: session.tracePath }).catch(() => undefined);
     }
 
+    if (session.screencastEnabled && session.page?.screencast && typeof session.page.screencast.stop === "function") {
+      await session.page.screencast.stop().catch(() => undefined);
+    }
+
     if (session.page && !session.page.isClosed()) {
       await session.page.close().catch(() => undefined);
     }
@@ -942,23 +957,6 @@ async function stopSession(session, reason = "completed") {
 
   if (session.context) {
     await session.context.close().catch(() => undefined);
-  }
-
-  if (session.videoRef) {
-    const recordedPath = await Promise.race([
-      session.videoRef.path().catch(() => null),
-      new Promise((resolve) => setTimeout(() => resolve(null), 15_000))
-    ]);
-
-    if (recordedPath) {
-      const targetPath = path.join(session.outputDir, "video.webm");
-      if (recordedPath !== targetPath) {
-        await fs.rename(recordedPath, targetPath).catch(async () => {
-          await fs.copyFile(recordedPath, targetPath).catch(() => undefined);
-        });
-      }
-      session.videoPath = targetPath;
-    }
   }
 
   if (session.browser) {

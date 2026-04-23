@@ -210,6 +210,13 @@ Then open:
 
 - `http://127.0.0.1:8180`
 
+## Codex Personalization
+
+- Codex worker model instructions are mounted from `config/codex-model-instructions.md`
+- `compose.yml` passes that markdown file into the Codex CLI through `CODEX_MODEL_INSTRUCTIONS_FILE`
+- `CODEX_PERSONALITY` remains available for Codex's built-in preset personalities (`none`, `friendly`, `pragmatic`)
+- edit the markdown if you want to change default worker tone or reporting behavior without teaching Butler a new prompt rule
+
 ## Development Notes
 
 Current local development assumptions:

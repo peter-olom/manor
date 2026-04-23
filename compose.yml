@@ -107,6 +107,8 @@ services:
       HOME: /home/codex
       CODEX_HOME: /home/codex/.codex
       CODEX_APP_SERVER_LISTEN: ws://0.0.0.0:8080
+      CODEX_PERSONALITY: ${CODEX_PERSONALITY:-pragmatic}
+      CODEX_MODEL_INSTRUCTIONS_FILE: ${CODEX_MODEL_INSTRUCTIONS_FILE:-/opt/manor/config/codex-model-instructions.md}
       CODEX_AUTH_BOOTSTRAP: ${CODEX_AUTH_BOOTSTRAP:-auto}
       CODEX_FORCED_LOGIN_METHOD: ${CODEX_FORCED_LOGIN_METHOD:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -126,6 +128,7 @@ services:
       - codex-state:/state
       - codex-home:/home/codex/.codex
       - codex-config:/home/codex/.config
+      - ./config/codex-model-instructions.md:/opt/manor/config/codex-model-instructions.md:ro
       - repos:/repos
       - artifacts:/artifacts
     healthcheck:

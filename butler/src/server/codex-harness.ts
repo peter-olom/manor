@@ -8,9 +8,6 @@ import {
   type HarnessRegistryPayload,
   normalizeString,
   looksLikeHarnessLookupFailure,
-  looksLikePreviewAttempt,
-  looksLikeSharedShellEgressDiagnosis,
-  looksLikeSharedShellBootstrapFailure,
   normalizeEnv,
   normalizeHeartbeatKind,
   normalizePositiveInteger,
@@ -19,6 +16,15 @@ import {
 } from "./codex-harness-helpers.js";
 import { formatHarnessExecutionContract, formatHarnessRuntimeModel } from "./codex-harness-format.js";
 import { formatHarnessJobMemory, formatHarnessProjectMemory, handleHarnessMemoryAction } from "./codex-harness-memory.js";
+import {
+  reconcileHarnessThreadPreviews,
+  reconcileHarnessThreadServices,
+  reconcileHarnessThreadStacks,
+  removeHarnessStackArtifacts,
+  resolveHarnessThreadPreview,
+  resolveHarnessThreadService,
+  resolveHarnessThreadStack
+} from "./codex-harness-runtime.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
 import {
   applyServiceStartedPolicies,
@@ -29,7 +35,6 @@ import { ButlerStateStore } from "./state-store.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
-import { isSharedShellRepoBootstrapTask, taskNeedsRuntimeExecution } from "./thread-contract.js";
 import {
   applyWorkspacePreviewDefaults,
   formatWorkspaceBootstrapLines,
@@ -60,6 +65,14 @@ export class CodexHarnessService {
     this.store = options.store;
     this.runtimeBroker = options.runtimeBroker;
     this.serviceTemplateRegistry = options.serviceTemplateRegistry;
+  }
+
+  private getRuntimeAccess() {
+    return {
+      store: this.store,
+      runtimeBroker: this.runtimeBroker,
+      serviceTemplateRegistry: this.serviceTemplateRegistry
+    };
   }
 
   async load(): Promise<void> {
@@ -231,9 +244,9 @@ export class CodexHarnessService {
     const combined = [report.summary, report.details].filter(Boolean).join("\n");
     const threadProofs = this.listThreadProofs(capability.threadId);
     if (report.status === "completed") {
-      if (thread.executionContract?.proofMode === "ui" && threadProofs.length === 0) {
+      if (thread.executionContract?.proofExpectation === "requested" && threadProofs.length === 0) {
         throw new Error(
-          "This job requires persisted browser proof. Start a browser-use session, perform user-like actions, then stop the session to persist proof before reporting completed."
+          "This job asked for proof. Gather persisted proof before reporting completed."
         );
       }
       return;
@@ -241,29 +254,6 @@ export class CodexHarnessService {
     if (looksLikeHarnessLookupFailure(combined)) {
       throw new Error(
         `This job already has a Manor harness binding. Retry from ${capability.cwd} or use manor-harness --thread ${capability.threadId} instead of reporting the job blocked.`
-      );
-    }
-    if (thread.executionContract?.proofMode === "ui" && looksLikeSharedShellEgressDiagnosis(combined)) {
-      throw new Error(
-        "Codex-shell is not valid evidence for browser reachability. Use a browser-use session and return the persisted proof outcome before reporting the job blocked."
-      );
-    }
-
-    const requestedTask = thread.executionContract?.requestedTask ?? thread.supervisor.latestUserPrompt ?? "";
-    const repoBootstrapTask = isSharedShellRepoBootstrapTask(requestedTask);
-    const runtimeLikelyNeeded = taskNeedsRuntimeExecution(requestedTask) || thread.executionContract?.proofMode !== "none";
-    const workspaceBootstrap = await inspectWorkspaceBootstrap(capability.cwd);
-    const previews = await this.reconcileThreadPreviews(capability.threadId);
-    const previewAttempted = previews.length > 0 || looksLikePreviewAttempt(combined);
-    if (
-      runtimeLikelyNeeded &&
-      !repoBootstrapTask &&
-      workspaceBootstrap?.suggestedPreview &&
-      !previewAttempted &&
-      looksLikeSharedShellBootstrapFailure(combined)
-    ) {
-      throw new Error(
-        "Do not report this job blocked from Codex-shell setup alone. If the task needs execution, start runtime execution first or explain why execution itself is blocked."
       );
     }
   }
@@ -295,114 +285,6 @@ export class CodexHarnessService {
     return lease;
   }
 
-  private matchThreadPreview(threadId: string, selector: string) {
-    const normalizedSelector = normalizeString(selector);
-    if (!normalizedSelector) {
-      return null;
-    }
-
-    const threadPreviews = this.store
-      .listPreviewLeases()
-      .filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
-    const directIdMatch = threadPreviews.find((lease) => lease.id === normalizedSelector);
-    if (directIdMatch) {
-      return directIdMatch;
-    }
-
-    const exactTitleMatches = threadPreviews.filter((lease) => lease.title === normalizedSelector);
-    if (exactTitleMatches.length === 1) {
-      return exactTitleMatches[0];
-    }
-
-    const exactAliasMatches = threadPreviews.filter((lease) => lease.aliases.includes(normalizedSelector));
-    if (exactAliasMatches.length === 1) {
-      return exactAliasMatches[0];
-    }
-
-    const foldedSelector = normalizedSelector.toLowerCase();
-    const foldedTitleMatches = threadPreviews.filter((lease) => lease.title.trim().toLowerCase() === foldedSelector);
-    if (foldedTitleMatches.length === 1) {
-      return foldedTitleMatches[0];
-    }
-
-    const foldedAliasMatches = threadPreviews.filter((lease) =>
-      lease.aliases.some((alias) => alias.trim().toLowerCase() === foldedSelector)
-    );
-    if (foldedAliasMatches.length === 1) {
-      return foldedAliasMatches[0];
-    }
-
-    return null;
-  }
-
-  private matchThreadService(threadId: string, selector: string) {
-    const normalizedSelector = normalizeString(selector);
-    if (!normalizedSelector) {
-      return null;
-    }
-
-    const threadServices = this.store
-      .listServiceLeases()
-      .filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
-    const directIdMatch = threadServices.find((lease) => lease.id === normalizedSelector);
-    if (directIdMatch) {
-      return directIdMatch;
-    }
-
-    const exactTitleMatches = threadServices.filter((lease) => lease.title === normalizedSelector);
-    if (exactTitleMatches.length === 1) {
-      return exactTitleMatches[0];
-    }
-
-    const exactAliasMatches = threadServices.filter((lease) => lease.aliases.includes(normalizedSelector));
-    if (exactAliasMatches.length === 1) {
-      return exactAliasMatches[0];
-    }
-
-    const foldedSelector = normalizedSelector.toLowerCase();
-    const foldedTitleMatches = threadServices.filter((lease) => lease.title.trim().toLowerCase() === foldedSelector);
-    if (foldedTitleMatches.length === 1) {
-      return foldedTitleMatches[0];
-    }
-
-    const foldedAliasMatches = threadServices.filter((lease) =>
-      lease.aliases.some((alias) => alias.trim().toLowerCase() === foldedSelector)
-    );
-    if (foldedAliasMatches.length === 1) {
-      return foldedAliasMatches[0];
-    }
-
-    return null;
-  }
-
-  private matchThreadStack(threadId: string, selector: string) {
-    const normalizedSelector = normalizeString(selector);
-    if (!normalizedSelector) {
-      return null;
-    }
-
-    const threadStacks = this.store
-      .listStackLeases()
-      .filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
-    const directIdMatch = threadStacks.find((lease) => lease.id === normalizedSelector);
-    if (directIdMatch) {
-      return directIdMatch;
-    }
-
-    const exactTitleMatches = threadStacks.filter((lease) => lease.title === normalizedSelector);
-    if (exactTitleMatches.length === 1) {
-      return exactTitleMatches[0];
-    }
-
-    const foldedSelector = normalizedSelector.toLowerCase();
-    const foldedTitleMatches = threadStacks.filter((lease) => lease.title.trim().toLowerCase() === foldedSelector);
-    if (foldedTitleMatches.length === 1) {
-      return foldedTitleMatches[0];
-    }
-
-    return null;
-  }
-
   private resolveWorkspaceProject(
     cwd: string | null | undefined,
     thread: ReturnType<CodexHarnessService["getThreadContext"]>
@@ -419,48 +301,15 @@ export class CodexHarnessService {
   }
 
   private async resolveThreadStack(capability: HarnessCapability, stackSelector: string) {
-    const storedMatch = this.matchThreadStack(capability.threadId, stackSelector);
-    if (storedMatch) {
-      return storedMatch;
-    }
-
-    await this.reconcileThreadStacks(capability.threadId);
-    const refreshedMatch = this.matchThreadStack(capability.threadId, stackSelector);
-    if (refreshedMatch) {
-      return refreshedMatch;
-    }
-
-    throw new Error(`Stack ${stackSelector} is not attached to this job`);
+    return resolveHarnessThreadStack(this.getRuntimeAccess(), capability.threadId, stackSelector);
   }
 
   private async resolveThreadPreview(capability: HarnessCapability, previewSelector: string) {
-    const storedMatch = this.matchThreadPreview(capability.threadId, previewSelector);
-    if (storedMatch) {
-      return storedMatch;
-    }
-
-    await this.reconcileThreadPreviews(capability.threadId);
-    const refreshedMatch = this.matchThreadPreview(capability.threadId, previewSelector);
-    if (refreshedMatch) {
-      return refreshedMatch;
-    }
-
-    throw new Error(`Preview ${previewSelector} is not attached to this job`);
+    return resolveHarnessThreadPreview(this.getRuntimeAccess(), capability.threadId, previewSelector);
   }
 
   private async resolveThreadService(capability: HarnessCapability, serviceSelector: string) {
-    const storedMatch = this.matchThreadService(capability.threadId, serviceSelector);
-    if (storedMatch) {
-      return storedMatch;
-    }
-
-    await this.reconcileThreadServices(capability.threadId);
-    const refreshedMatch = this.matchThreadService(capability.threadId, serviceSelector);
-    if (refreshedMatch) {
-      return refreshedMatch;
-    }
-
-    throw new Error(`Service ${serviceSelector} is not attached to this job`);
+    return resolveHarnessThreadService(this.getRuntimeAccess(), capability.threadId, serviceSelector);
   }
 
   private async maybeAdoptWorkspaceStack(capability: HarnessCapability) {
@@ -501,100 +350,19 @@ export class CodexHarnessService {
   }
 
   private removeStackArtifacts(stackId: string) {
-    for (const lease of this.store.listPreviewLeases()) {
-      if (lease.stackId === stackId) {
-        this.store.removePreviewLease(lease.id);
-      }
-    }
-    for (const lease of this.store.listServiceLeases()) {
-      if (lease.stackId === stackId) {
-        this.store.removeServiceLease(lease.id);
-      }
-    }
-    this.store.removeStackLease(stackId);
+    removeHarnessStackArtifacts(this.store, stackId);
   }
 
   private async reconcileThreadPreviews(threadId: string) {
-    const brokerLeases = await this.runtimeBroker.listLeases(threadId);
-    const brokerLeaseMap = new Map(brokerLeases.map((lease) => [lease.id, lease]));
-    const storedLeases = this.store.listPreviewLeases().filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
-
-    for (const lease of storedLeases) {
-      if (!brokerLeaseMap.has(lease.id)) {
-        this.store.removePreviewLease(lease.id);
-      }
-    }
-
-    for (const lease of brokerLeases) {
-      this.store.upsertPreviewLease(lease);
-    }
-
-    return brokerLeases.sort((left, right) => right.updatedAt - left.updatedAt);
+    return reconcileHarnessThreadPreviews(this.getRuntimeAccess(), threadId);
   }
 
   private async reconcileThreadStacks(threadId: string) {
-    const brokerStacks = await this.runtimeBroker.listStacks(threadId);
-    const brokerStackIds = new Set(brokerStacks.map((stack) => stack.id));
-    const storedStacks = this.store.listStackLeases().filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
-
-    for (const lease of storedStacks) {
-      if (!brokerStackIds.has(lease.id)) {
-        this.store.removeStackLease(lease.id);
-      }
-    }
-
-    for (const stack of brokerStacks) {
-      this.store.upsertStackLease(stack);
-    }
-
-    return this.store.listStackLeases().filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
+    return reconcileHarnessThreadStacks(this.getRuntimeAccess(), threadId);
   }
 
   private async reconcileThreadServices(threadId: string) {
-    const brokerServices = await this.runtimeBroker.listServices(threadId);
-    const brokerServiceIds = new Set(brokerServices.map((service) => service.id));
-    const storedServices = this.store.listServiceLeases().filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
-
-    for (const lease of storedServices) {
-      if (lease.runtimeKind === "container" && !brokerServiceIds.has(lease.id)) {
-        this.store.removeServiceLease(lease.id);
-      }
-    }
-
-    for (const service of brokerServices) {
-      const template = this.serviceTemplateRegistry.get(service.templateId);
-      if (!template) {
-        continue;
-      }
-
-      this.store.upsertServiceLease(
-        toServiceLeaseView({
-          id: service.id,
-          threadId: service.threadId,
-          projectId: service.projectId,
-          projectLabel: service.projectLabel,
-          title: service.title,
-          stackId: service.stackId,
-          aliases: service.aliases,
-          template,
-          containerName: service.containerName,
-          targetHost: service.targetHost,
-          targetPort: service.targetPort,
-          worktreePath: service.worktreePath,
-          status: service.status,
-          storageKind: service.storageKind,
-          sticky: service.sticky,
-          volumeName: service.volumeName,
-          volumeMountPath: service.volumeMountPath,
-          createdAt: service.createdAt,
-          updatedAt: service.updatedAt,
-          lastError: service.lastError,
-          env: service.env
-        })
-      );
-    }
-
-    return this.store.listServiceLeases().filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
+    return reconcileHarnessThreadServices(this.getRuntimeAccess(), threadId);
   }
 
   private describeCapability(capability: HarnessCapability): string {
@@ -767,12 +535,6 @@ export class CodexHarnessService {
       if (!summary) {
         throw new Error("assist.request requires a non-empty summary");
       }
-      const combined = [summary, details, question].filter(Boolean).join("\n");
-      if (thread.executionContract?.proofMode === "ui" && looksLikeSharedShellEgressDiagnosis(combined)) {
-        throw new Error(
-          "Codex-shell is not valid evidence for browser reachability. Use a browser-use session and persisted proof before escalating."
-        );
-      }
       const workspaceBootstrap = await inspectWorkspaceBootstrap(capability.cwd);
       const stacks = await this.reconcileThreadStacks(capability.threadId);
       const activeStack = stacks.find((stack) => stack.status !== "stopped") ?? null;
@@ -790,51 +552,25 @@ export class CodexHarnessService {
       responseLines.push(...formatHarnessExecutionContract(thread));
       responseLines.push(...formatHarnessRuntimeModel());
       responseLines.push(...formatWorkspaceBootstrapLines(workspaceBootstrap));
-      const requestedTask = thread.executionContract?.requestedTask ?? thread.supervisor.latestUserPrompt ?? "";
-      const runtimeLikelyNeeded = taskNeedsRuntimeExecution(requestedTask) || thread.executionContract?.proofMode !== "none";
-      if (workspaceBootstrap?.ecosystem === "node") {
-        responseLines.push(
-          "Codex-shell is for git, workspace, and repo-directed edits only. Any running process or browser verification should use Manor runtime."
-        );
-      }
-      if (thread.executionContract?.proofMode === "ui") {
-        responseLines.push(
-          "Do not use direct curl or fetch from Codex-shell to judge browser reachability. Use browser-use sessions for runtime browser evidence."
-        );
-      }
       responseLines.push(`If you drift out of ${capability.cwd}, keep using the thread-bound harness command instead of concluding Manor is unavailable.`);
       if (activeStack) {
         responseLines.push(`Use the existing stack ${activeStack.id} for the preview unless you have a reason to split the runtime.`);
       }
       responseLines.push("Previews now default to normal outbound internet access. Use an explicit egress mode only when you need to block or restrict outbound traffic.");
-      if (runtimeLikelyNeeded) {
-        responseLines.push("Once runtime work starts, keep the flow simple: run the app or target, inspect logs and processes, then verify.");
-      } else {
-        responseLines.push("Stay in Codex-shell and keep the commands explicit unless the task later needs execution or proof.");
-      }
-      if (runtimeLikelyNeeded && previewDefaults.bootstrapHint) {
+      responseLines.push("Use Codex-shell for repo work. Move into Manor runtime only when you actually need it.");
+      if (previewDefaults.bootstrapHint) {
         responseLines.push(`Preview bootstrap hint: ${previewDefaults.bootstrapHint}.`);
       }
       responseLines.push("For smoke checks that should not modify the source workspace, start previews with workspaceMode=snapshot.");
-      if (runtimeLikelyNeeded && workspaceBootstrap?.suggestedPreview?.suggestedInstallCommand) {
+      if (workspaceBootstrap?.suggestedPreview?.suggestedInstallCommand) {
         responseLines.push(`Suggested install step inside the preview: ${workspaceBootstrap.suggestedPreview.suggestedInstallCommand}.`);
       }
-      responseLines.push(
-        runtimeLikelyNeeded
-          ? "Do not hunt for Manor-specific bootstrap magic. If the project needs a command, run that command explicitly inside the preview."
-          : "Do not hunt for Manor-specific bootstrap magic. Run the repo commands explicitly in Codex-shell."
-      );
-      if (thread.executionContract?.proofMode === "ui") {
-        responseLines.push(
-          "For authenticated headed proof, pass session cookies when starting browser-use sessions and drive interactions through browser.use.action commands."
-        );
+      responseLines.push("Do not hunt for Manor-specific bootstrap magic. If the project needs a command, choose it and run it explicitly.");
+      if (thread.executionContract?.proofExpectation === "requested") {
+        responseLines.push("This job asked for proof. Browser-use sessions are the simplest way to capture durable browser artifacts.");
       }
       responseLines.push("Do not use `corepack enable` in Codex-shell for preview-oriented runtime setup. If repo-local instructions explicitly require a root-level install step, follow the repo guidance instead.");
-      responseLines.push(
-        runtimeLikelyNeeded
-          ? "Only report the job blocked after runtime execution is attempted."
-          : "Only report the job blocked after you exhaust the normal recovery steps for the requested repo work."
-      );
+      responseLines.push("Only report the job blocked when you can say what you tried and why the next sensible step still cannot proceed.");
       if (question) {
         responseLines.push(`Requested help: ${question}`);
       }
@@ -1295,7 +1031,7 @@ export class CodexHarnessService {
                   .catch(() => false)
               : false;
           const availability = artifact.availability === "available" && exists ? "ready" : artifact.availability;
-          return `${artifact.kind} | file=${artifact.filePath || "(none)"} | url=${artifact.url ?? "(none)"} | download=${artifact.downloadUrl ?? "(none)"} | ${availability}`;
+          return `${artifact.kind} | label=${artifact.label} | ${availability}`;
         })
       );
 
@@ -1349,7 +1085,7 @@ export class CodexHarnessService {
                   .catch(() => false)
               : false;
           const availability = artifact.availability === "available" && exists ? "ready" : artifact.availability;
-          return `${artifact.kind} | file=${artifact.filePath || "(none)"} | url=${artifact.url ?? "(none)"} | download=${artifact.downloadUrl ?? "(none)"} | ${availability}`;
+          return `${artifact.kind} | label=${artifact.label} | ${availability}`;
         })
       );
 

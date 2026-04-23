@@ -41,7 +41,8 @@ COPY docker/butler/zshrc /home/butler/.zshrc
 COPY docker/butler/zprofile /home/butler/.zprofile
 
 RUN chmod +x /usr/local/bin/start-butler /usr/local/bin/butler-auth /usr/local/bin/butler-chatgpt-login.mjs /usr/local/bin/start-butler-shell \
-  && npm run build \
+  && npm run build:web \
+  && npm run build:server \
   && if [ "$BUTLER_INSTALL_MODE" = "production" ]; then npm prune --omit=dev; fi
 
 EXPOSE 8080 7682

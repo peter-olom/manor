@@ -23,7 +23,6 @@ import type {
 } from "./types.js";
 import type { CodexAppServerClient } from "./codex-client.js";
 import type { ButlerOperatorThreadGuard, ProofScreenshotReview, ResolvedPreviewProof, SupervisionSmokePlan } from "./butler-agent-helpers.js";
-import type { CodexExecutionLane, CodexProofMode } from "./types.js";
 
 export type ButlerCustomTool = ReturnType<typeof defineTool>;
 
@@ -142,8 +141,6 @@ export type ButlerAgentToolAccess = {
     task: string;
     goal?: string;
     workspace: { cwd: string; branchName: string | null };
-    executionLane?: CodexExecutionLane;
-    proofMode?: CodexProofMode;
     extraNotes?: string[];
   }): Promise<{ text: string; contract: CodexThreadExecutionContractView }>;
   queueDelegationAcknowledgement(threadId: string, text: string): void;

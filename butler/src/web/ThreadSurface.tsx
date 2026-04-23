@@ -7,7 +7,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent
 } from "react";
 
-import { postJson, readFileAsBase64 } from "./api";
+import { postJson, uploadAttachment } from "./api";
 import { ArrowDownIcon, AttachmentIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon, SendIcon, TrashIcon } from "./icons";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
@@ -77,6 +77,8 @@ export function ThreadSurface({
   const [showTimeline, setShowTimeline] = useState(false);
   const [showThreadRuntime, setShowThreadRuntime] = useState(false);
   const [showThreadProofs, setShowThreadProofs] = useState(false);
+  const [expandedSystemItems, setExpandedSystemItems] = useState<Record<string, boolean>>({});
+  const [expandedToolGroups, setExpandedToolGroups] = useState<Record<string, boolean>>({});
   const [busyStackId, setBusyStackId] = useState<string | null>(null);
   const [busyServiceId, setBusyServiceId] = useState<string | null>(null);
   const [activeJumpId, setActiveJumpId] = useState<string | null>(null);
@@ -95,6 +97,8 @@ export function ThreadSurface({
     setFollowRun(true);
     setShowThreadRuntime(false);
     setShowThreadProofs(false);
+    setExpandedSystemItems({});
+    setExpandedToolGroups({});
   }, [activeThread?.id]);
 
   useEffect(() => {
@@ -156,25 +160,11 @@ export function ThreadSurface({
     try {
       const uploaded = await Promise.all(
         uploadFiles.map(async (file) => {
-          const data = await readFileAsBase64(file);
-          if (file.type.startsWith("image/")) {
-            const result = await postJson<{ ok: true; image: FileReference }>("/api/images/upload", {
-              name: file.name,
-              mimeType: file.type,
-              sizeBytes: file.size,
-              data
-            });
-            mergeKnownImages([result.image]);
-            return result.image;
+          const uploadedReference = await uploadAttachment(file);
+          if (uploadedReference.mimeType.startsWith("image/")) {
+            mergeKnownImages([uploadedReference]);
           }
-
-          const result = await postJson<{ ok: true; file: FileReference }>("/api/files/upload", {
-            name: file.name,
-            mimeType: file.type,
-            sizeBytes: file.size,
-            data
-          });
-          return result.file;
+          return uploadedReference;
         })
       );
       setThreadAttachments((current) => [...current, ...uploaded]);
@@ -281,6 +271,20 @@ export function ThreadSurface({
     }
   }
 
+  function toggleSystemItemExpanded(itemId: string) {
+    setExpandedSystemItems((current) => ({
+      ...current,
+      [itemId]: !current[itemId]
+    }));
+  }
+
+  function toggleToolGroupExpanded(groupId: string) {
+    setExpandedToolGroups((current) => ({
+      ...current,
+      [groupId]: !current[groupId]
+    }));
+  }
+
   async function pinPreviewLease(leaseId: string, pinned: boolean) {
     try {
       await postJson("/api/previews/pin", { leaseId, pinned });
@@ -353,13 +357,72 @@ export function ThreadSurface({
   const showThreadWorkingIndicator = Boolean(pendingThreadRequest && activeThread && pendingThreadRequest.threadId === activeThread.id) || activeThread?.status === "active";
   const runPromptJumpList = useMemo(() => activeRunItems.filter((item) => item.type === "userMessage"), [activeRunItems]);
   const runTimelineGroups = useMemo(() => groupTimelineItems(runPromptJumpList), [runPromptJumpList]);
+
+  type RunConversationRow =
+    | { id: string; kind: "item"; item: (typeof activeRunItems)[number] }
+    | { id: string; kind: "toolGroup"; turnId: string; at: number; items: Array<(typeof activeRunItems)[number]> }
+    | { id: string; kind: "pending"; text: string }
+    | { id: string; kind: "working" };
+
   const runConversationRows = useMemo(
-    () => [
-      ...activeRunItems.map((item) => ({ id: item.id, kind: "item" as const, item })),
-      ...(showPendingThreadEntry && pendingThreadRequest ? [{ id: `pending-${pendingThreadRequest.sentAt}`, kind: "pending" as const, text: pendingThreadRequest.text }] : []),
-      ...(showThreadWorkingIndicator ? [{ id: `working-${activeThread?.id ?? "thread"}`, kind: "working" as const }] : [])
-    ],
-    [activeRunItems, activeThread?.id, pendingThreadRequest, showPendingThreadEntry, showThreadWorkingIndicator]
+    () => {
+      const rows: RunConversationRow[] = [];
+
+      if (activeThread) {
+        for (const turn of activeThread.turns) {
+          const turnItems = turn.items
+            .filter(shouldRenderItem)
+            .map((item) => ({ ...item, turnId: turn.id, turnStartedAt: turn.startedAt }));
+          if (turnItems.length === 0) {
+            continue;
+          }
+
+          const systemItems = turnItems.filter((item) => itemTone(item.type) === "system");
+          const settled = turn.status === "completed" || turn.status === "failed" || turn.status === "interrupted";
+          const shouldCollapseSystemItems =
+            settled && systemItems.length > 0 && turnItems.some((item) => item.type === "agentMessage");
+
+          if (!shouldCollapseSystemItems) {
+            rows.push(...turnItems.map((item) => ({ id: item.id, kind: "item" as const, item })));
+            continue;
+          }
+
+          const anchorItemId =
+            [...turnItems].reverse().find((item) => item.type === "agentMessage")?.id ??
+            [...turnItems].reverse().find((item) => itemTone(item.type) !== "system")?.id ??
+            null;
+
+          for (const item of turnItems) {
+            if (itemTone(item.type) === "system") {
+              continue;
+            }
+
+            rows.push({ id: item.id, kind: "item", item });
+
+            if (anchorItemId && item.id === anchorItemId) {
+              rows.push({
+                id: `tool-group-${turn.id}`,
+                kind: "toolGroup",
+                turnId: turn.id,
+                at: systemItems.at(-1)?.at ?? item.at,
+                items: systemItems
+              });
+            }
+          }
+        }
+      }
+
+      if (showPendingThreadEntry && pendingThreadRequest) {
+        rows.push({ id: `pending-${pendingThreadRequest.sentAt}`, kind: "pending", text: pendingThreadRequest.text });
+      }
+
+      if (showThreadWorkingIndicator) {
+        rows.push({ id: `working-${activeThread?.id ?? "thread"}`, kind: "working" });
+      }
+
+      return rows;
+    },
+    [activeThread, pendingThreadRequest, showPendingThreadEntry, showThreadWorkingIndicator]
   );
   const deferredRows = useDeferredValue(runConversationRows);
   const latestRunActivityKey = deferredRows.length > 0 ? `${deferredRows[deferredRows.length - 1].id}:${deferredRows.length}` : "empty";
@@ -377,16 +440,14 @@ export function ThreadSurface({
   const messageImages = useMemo(
     () =>
       buildMessageImageLookup(
-        deferredRows
-          .filter((row): row is Extract<(typeof deferredRows)[number], { kind: "item" }> => row.kind === "item")
-          .map((row) => ({
-            id: row.id,
-            text: row.item.text || "",
-            includeImages: row.item.type === "userMessage"
-          })),
+        activeRunItems.map((item) => ({
+          id: item.id,
+          text: item.text || "",
+          includeImages: item.type === "userMessage"
+        })),
         knownImages
       ),
-    [deferredRows, knownImages]
+    [activeRunItems, knownImages]
   );
 
   const activeThreadStacks =
@@ -412,6 +473,70 @@ export function ThreadSurface({
 
   const codexEffortOptions =
     shell.codex.compose.availableModels.find((model) => model.id === shell.codex.compose.model)?.supportedReasoningEfforts ?? [];
+
+  function renderSystemStrip(item: (typeof activeRunItems)[number]) {
+    const imageState = messageImages[item.id] ?? { displayText: item.text || "Running shell command", images: [], files: [] };
+    const systemText = imageState.displayText || "Running shell command";
+    const isExpanded = Boolean(expandedSystemItems[item.id]);
+
+    return (
+      <article id={`run-message-${item.id}`} className={`system-strip${activeJumpId === item.id ? " is-jump-target" : ""}`}>
+        <div className="system-strip-shell">
+          <button
+            className="system-strip-toggle"
+            type="button"
+            aria-expanded={isExpanded}
+            onClick={() => toggleSystemItemExpanded(item.id)}
+          >
+            <span className="system-strip-head">
+              <span className="system-strip-label">{itemLabel(item.type)}</span>
+              <span className="system-strip-head-meta">
+                <span>{formatJumpLabel(item.at)}</span>
+                <span className="system-strip-expand" aria-hidden="true">
+                  {isExpanded ? <ChevronUpIcon /> : <ChevronDownIcon />}
+                </span>
+              </span>
+            </span>
+            <span className={`system-strip-body${isExpanded ? " is-expanded" : ""}`}>{systemText}</span>
+          </button>
+          <button
+            className="system-strip-copy"
+            type="button"
+            onClick={() => void copyText(systemText, "Message copied")}
+            aria-label="Copy activity"
+            title="Copy activity"
+          >
+            <CopyIcon />
+          </button>
+        </div>
+        {imageState.images.length > 0 ? (
+          <div className="message-image-strip">
+            {imageState.images.map((image) => (
+              <button key={image.id} className="message-image-button" type="button" onClick={() => onPreviewMedia({ name: image.name, url: image.url, kind: "image", downloadUrl: image.url })}>
+                <img src={image.url} alt={image.name} className="message-image-thumb" />
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {imageState.files.length > 0 ? (
+          <div className="message-file-strip">
+            {imageState.files.map((file) => (
+              <a
+                key={file.id}
+                className="message-file-pill"
+                href={file.url}
+                target="_blank"
+                rel="noreferrer"
+                title={file.name}
+              >
+                {file.name}
+              </a>
+            ))}
+          </div>
+        ) : null}
+      </article>
+    );
+  }
 
   return (
     <div className="workspace-panel">
@@ -564,9 +689,65 @@ export function ThreadSurface({
                     );
                   }
 
+                  if (row.kind === "toolGroup") {
+                    const isExpanded = Boolean(expandedToolGroups[row.id]);
+                    const preview = row.items
+                      .slice(0, 3)
+                      .map((item) => {
+                        const imageState = messageImages[item.id] ?? { displayText: item.text || "Running shell command" };
+                        const displayText = (imageState.displayText || "Running shell command").replace(/\s+/g, " ").trim();
+                        return `${itemLabel(item.type)}: ${displayText}`;
+                      })
+                      .join(" • ");
+
+                    return (
+                      <div key={row.id} className="conversation-row is-system">
+                        <article id={`run-message-${row.id}`} className="tool-group-strip">
+                          <button
+                            className="tool-group-toggle"
+                            type="button"
+                            aria-expanded={isExpanded}
+                            onClick={() => toggleToolGroupExpanded(row.id)}
+                          >
+                            <span className="tool-group-head">
+                              <span className="tool-group-label">Tool calls</span>
+                              <span className="tool-group-head-meta">
+                                <span>{`${row.items.length} ${row.items.length === 1 ? "call" : "calls"}`}</span>
+                                <span>{formatJumpLabel(row.at)}</span>
+                                <span className="tool-group-expand" aria-hidden="true">
+                                  {isExpanded ? <ChevronUpIcon /> : <ChevronDownIcon />}
+                                </span>
+                              </span>
+                            </span>
+                            <span className="tool-group-preview">{preview}</span>
+                          </button>
+                          {isExpanded ? (
+                            <div className="tool-group-panel">
+                              {row.items.map((item) => (
+                                <div key={item.id} className="tool-group-item">
+                                  {renderSystemStrip(item)}
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </article>
+                      </div>
+                    );
+                  }
+
                   const tone = itemTone(row.item.type);
-                  const rowToneClass = tone === "user" ? "is-user" : "is-assistant";
+                  const isSystemItem = tone === "system";
+                  const rowToneClass = tone === "user" ? "is-user" : isSystemItem ? "is-system" : "is-assistant";
                   const imageState = messageImages[row.id] ?? { displayText: row.item.text || "Running shell command", images: [], files: [] };
+                  const systemText = imageState.displayText || "Running shell command";
+
+                  if (isSystemItem) {
+                    return (
+                      <div key={row.id} className={`conversation-row ${rowToneClass}`}>
+                        {renderSystemStrip(row.item)}
+                      </div>
+                    );
+                  }
 
                   return (
                     <div key={row.id} className={`conversation-row ${rowToneClass}`}>
@@ -581,7 +762,7 @@ export function ThreadSurface({
                           </span>
                         </div>
                         <div className="entry-text">
-                          <MarkdownMessage text={imageState.displayText || "Running shell command"} onPreviewMedia={onPreviewMedia} onResourceUnavailable={(message) => showToast(message, "error", 5000)} />
+                          <MarkdownMessage text={systemText} onPreviewMedia={onPreviewMedia} onResourceUnavailable={(message) => showToast(message, "error", 5000)} />
                           {imageState.images.length > 0 ? (
                             <div className="message-image-strip">
                               {imageState.images.map((image) => (

@@ -94,7 +94,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "review_preview_proof",
     label: "Review preview proof",
-    description: "Inspect the latest screenshot proof for one preview or job and surface the video download for human review.",
+    description: "Inspect the latest screenshot proof for one preview or job and decide whether the recorded proof is convincing.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while reviewing proof artifacts." }]
   },
   {

@@ -8,7 +8,7 @@ import {
   useState
 } from "react";
 
-import { getJson, postJson, readFileAsBase64 } from "./api";
+import { getJson, postJson, uploadAttachment } from "./api";
 import { ButlerComposer } from "./ButlerComposer";
 import { ArrowDownIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon } from "./icons";
 import { MarkdownMessage } from "./MarkdownMessage";
@@ -161,25 +161,11 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
     try {
       const uploaded = await Promise.all(
         uploadFiles.map(async (file) => {
-          const data = await readFileAsBase64(file);
-          if (file.type.startsWith("image/")) {
-            const result = await postJson<{ ok: true; image: FileReference }>("/api/images/upload", {
-              name: file.name,
-              mimeType: file.type,
-              sizeBytes: file.size,
-              data
-            });
-            mergeKnownImages([result.image]);
-            return result.image;
+          const uploadedReference = await uploadAttachment(file);
+          if (uploadedReference.mimeType.startsWith("image/")) {
+            mergeKnownImages([uploadedReference]);
           }
-
-          const result = await postJson<{ ok: true; file: FileReference }>("/api/files/upload", {
-            name: file.name,
-            mimeType: file.type,
-            sizeBytes: file.size,
-            data
-          });
-          return result.file;
+          return uploadedReference;
         })
       );
 

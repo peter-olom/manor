@@ -1,3 +1,22 @@
+import type { FileReference } from "./types";
+
+async function readErrorMessage(response: Response): Promise<string> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    const payload = await response.json().catch(() => ({ error: "" }));
+    if (typeof payload.error === "string" && payload.error.trim()) {
+      return payload.error;
+    }
+  }
+
+  const text = await response.text().catch(() => "");
+  if (response.status === 413) {
+    return "Upload exceeded the configured limit";
+  }
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized || `Request failed with ${response.status}`;
+}
+
 export async function postJson<T = void>(url: string, body: unknown): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
@@ -8,8 +27,7 @@ export async function postJson<T = void>(url: string, body: unknown): Promise<T>
   });
 
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: "Request failed" }));
-    throw new Error(typeof payload.error === "string" ? payload.error : "Request failed");
+    throw new Error(await readErrorMessage(response));
   }
 
   if (response.status === 204) {
@@ -22,24 +40,36 @@ export async function postJson<T = void>(url: string, body: unknown): Promise<T>
 export async function getJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: "Request failed" }));
-    throw new Error(typeof payload.error === "string" ? payload.error : "Request failed");
+    throw new Error(await readErrorMessage(response));
   }
 
   return (await response.json().catch(() => undefined)) as T;
 }
 
-export async function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(reader.error ?? new Error(`Failed to read ${file.name}`));
-    reader.onload = () => {
-      const result = typeof reader.result === "string" ? reader.result : "";
-      const [, base64 = ""] = result.split(",", 2);
-      resolve(base64);
-    };
-    reader.readAsDataURL(file);
+export async function uploadAttachment(file: File): Promise<FileReference> {
+  const response = await fetch(file.type.startsWith("image/") ? "/api/images/upload" : "/api/files/upload", {
+    method: "POST",
+    headers: {
+      "Content-Type": file.type || "application/octet-stream",
+      "X-Manor-Upload-Name": encodeURIComponent(file.name),
+      "X-Manor-Upload-Size": String(file.size),
+      "X-Manor-Upload-Mime-Type": file.type || "application/octet-stream"
+    },
+    body: file
   });
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
+
+  const payload = (await response.json().catch(() => undefined)) as
+    | { ok: true; image?: FileReference; file?: FileReference }
+    | undefined;
+  const uploaded = payload?.image ?? payload?.file;
+  if (!uploaded) {
+    throw new Error("Upload failed");
+  }
+  return uploaded;
 }
 
 function inferDownloadFileName(href: string, contentDisposition: string | null): string {

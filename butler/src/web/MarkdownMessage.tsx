@@ -27,25 +27,14 @@ const CONTRACT_FIELD_LABELS: Record<string, string> = {
   project_label: "Project",
   branch: "Branch",
   workspace_cwd: "Workspace",
-  execution_guidance: "Execution",
-  proof_mode: "Proof",
+  proof_expectation: "Proof",
   operator_goal: "Goal",
-  requested_task: "Task",
-  success_condition: "Success condition",
-  stop_condition: "Stop condition",
-  escalation_condition: "Escalation condition",
   thread_id: "Job",
   harness_binding: "Harness",
   note: "Note"
 };
 
-const CONTRACT_SUMMARY_FIELD_ORDER = [
-  "project_label",
-  "branch",
-  "workspace_cwd",
-  "execution_guidance",
-  "proof_mode"
-];
+const CONTRACT_SUMMARY_FIELD_ORDER = ["project_label", "branch", "workspace_cwd", "proof_expectation"];
 
 function titleCaseContractKey(value: string): string {
   return value
@@ -57,7 +46,7 @@ function titleCaseContractKey(value: string): string {
 
 function parseAuthoritativeContractMessage(text: string): ParsedContractMessage | null {
   const normalized = text.replace(/\r\n/g, "\n").trim();
-  if (!normalized.startsWith("AUTHORITATIVE JOB CONTRACT")) {
+  if (!normalized.startsWith("MANOR JOB BRIEF")) {
     return null;
   }
 

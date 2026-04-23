@@ -289,15 +289,10 @@ export type CodexThreadSummary = {
     projectId: string;
     projectLabel: string;
     branch: string | null;
-    executionLane: "codex-shell" | "preview-runtime";
-    executionLaneLabel: string;
-    proofMode: "none" | "operational" | "ui";
-    proofModeLabel: string;
     requestedTask: string;
     operatorGoal: string | null;
-    successConditions: string[];
-    stopConditions: string[];
-    escalationConditions: string[];
+    proofExpectation: "none" | "requested";
+    proofExpectationLabel: string;
     notes: string[];
   } | null;
 };

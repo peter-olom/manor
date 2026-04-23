@@ -20,7 +20,6 @@ import {
   formatFallbackJobLabel,
   formatWindowTitle,
   inferPersistedThreadExecutionContract,
-  LEASE_ACTIVITY_WRITE_THROTTLE_MS,
   MAX_EVENT_LOG,
   normalizeItem,
   normalizePreviewVerification,
@@ -62,6 +61,20 @@ import {
   syncStateStoreThreadJobMemory
 } from "./state-store-memory.js";
 import {
+  completeStateStoreRuntimeCleanupTask,
+  enqueueStateStoreRuntimeCleanupTask,
+  failStateStoreRuntimeCleanupTask,
+  listStateStoreDueRuntimeCleanupTasks,
+  listStateStoreExpiredLeaseIds,
+  noteStateStorePreviewLeaseActivity,
+  noteStateStoreServiceLeaseActivity,
+  noteStateStoreStackLeaseActivity,
+  noteStateStoreThreadLeaseActivity,
+  setStateStorePreviewLeasePinned,
+  setStateStoreServiceLeasePinned,
+  setStateStoreStackLeasePinned
+} from "./state-store-runtime.js";
+import {
   findStateStoreProjectArtifactById,
   getStateStoreProjectArtifact,
   getStateStoreProjectPolicy,
@@ -71,7 +84,7 @@ import {
   upsertStateStoreProjectPolicy
 } from "./state-store-project-assets.js";
 import { buildStateStoreRuntimeSnapshot, buildStateStoreShellSnapshot, buildStateStoreSnapshot } from "./state-store-snapshot.js";
-import { normalizeExecutionLane, parseThreadExecutionContract } from "./thread-contract.js";
+import { parseThreadExecutionContract } from "./thread-contract.js";
 import type {
   AppSnapshot,
   AppShellSnapshot,
@@ -225,6 +238,53 @@ export class ButlerStateStore extends EventEmitter {
 
   private removePreviewProofsForThread(threadId: string): void { removeStateStorePreviewProofsForThread(this.getInternalAccess(), threadId); }
 
+  private mergeTurnItems(existingItems: CodexItemRecord[], incomingItems: CodexItemRecord[]): CodexItemRecord[] {
+    const merged = new Map<string, CodexItemRecord>();
+
+    for (const item of incomingItems) {
+      merged.set(item.id, { ...item });
+    }
+
+    for (const item of existingItems) {
+      const existing = merged.get(item.id);
+      if (!existing) {
+        merged.set(item.id, { ...item });
+        continue;
+      }
+
+      merged.set(item.id, {
+        ...existing,
+        status: existing.status === "completed" ? existing.status : item.status,
+        text: existing.text || item.text,
+        at: Math.min(existing.at, item.at)
+      });
+    }
+
+    return [...merged.values()].sort((left, right) => left.at - right.at);
+  }
+
+  private mergeTurnRecord(existingTurn: CodexTurnRecord | undefined, incomingTurn: CodexTurnRecord): CodexTurnRecord {
+    if (!existingTurn) {
+      return incomingTurn;
+    }
+
+    return {
+      ...incomingTurn,
+      status: incomingTurn.status === "unknown" ? existingTurn.status : incomingTurn.status,
+      error: incomingTurn.error ?? existingTurn.error,
+      startedAt: Math.min(existingTurn.startedAt, incomingTurn.startedAt),
+      completedAt: incomingTurn.completedAt ?? existingTurn.completedAt,
+      items: this.mergeTurnItems(existingTurn.items, incomingTurn.items)
+    };
+  }
+
+  private collectOrphanSystemItems(existingTurns: CodexTurnRecord[], incomingTurnIds: Set<string>): CodexItemRecord[] {
+    return existingTurns
+      .filter((turn) => !incomingTurnIds.has(turn.id))
+      .flatMap((turn) => turn.items.filter((item) => item.type !== "userMessage" && item.type !== "agentMessage"))
+      .sort((left, right) => left.at - right.at);
+  }
+
   getJobMemory(threadId: string): JobMemoryView | null { return getStateStoreJobMemory(this.getInternalAccess(), threadId); }
 
   getProjectMemory(projectId: string): ProjectMemoryView | null { return getStateStoreProjectMemory(this.getInternalAccess(), projectId); }
@@ -325,8 +385,16 @@ export class ButlerStateStore extends EventEmitter {
     }
 
     if (Array.isArray(thread.turns)) {
-      record.turnCount = thread.turns.length;
-      record.turns = (thread.turns as Record<string, unknown>[]).map((turn) => normalizeTurn(turn));
+      const existingTurnsById = new Map(record.turns.map((turn) => [turn.id, turn]));
+      const incomingTurns = (thread.turns as Record<string, unknown>[]).map((turn) => normalizeTurn(turn));
+      const incomingTurnIds = new Set(incomingTurns.map((turn) => turn.id));
+      const orphanSystemItems = this.collectOrphanSystemItems(record.turns, incomingTurnIds);
+      record.turnCount = incomingTurns.length;
+      record.turns = incomingTurns.map((turn) => this.mergeTurnRecord(existingTurnsById.get(turn.id), turn));
+      if (orphanSystemItems.length > 0 && record.turns.length > 0) {
+        const lastTurn = record.turns[record.turns.length - 1]!;
+        lastTurn.items = this.mergeTurnItems(lastTurn.items, orphanSystemItems);
+      }
     } else {
       record.turnCount = Math.max(record.turnCount, record.turns.length);
     }
@@ -345,10 +413,7 @@ export class ButlerStateStore extends EventEmitter {
 
   setThreadExecutionContract(threadId: string, contract: CodexThreadExecutionContractView): void {
     const record = this.getOrCreateThread(threadId);
-    record.executionContract = {
-      ...contract,
-      executionLane: normalizeExecutionLane(contract.executionLane)
-    };
+    record.executionContract = { ...contract };
     record.updatedAt = Date.now();
     this.persistedExecutionContractsByThreadId.set(threadId, { ...record.executionContract });
     this.refreshDerivedThreadState(record);
@@ -475,7 +540,18 @@ export class ButlerStateStore extends EventEmitter {
 
     if (existing) {
       existing.status = normalized.status;
-      existing.text = normalized.text || existing.text;
+      if (normalized.type === "agentMessage") {
+        existing.text = normalized.text || existing.text;
+      } else if (!existing.text) {
+        existing.text = normalized.text;
+      } else if (
+        normalized.type === "commandExecution" &&
+        normalized.text &&
+        existing.text !== normalized.text &&
+        !existing.text.startsWith(normalized.text)
+      ) {
+        existing.text = `${normalized.text}\n${existing.text}`;
+      }
       existing.at = activityAt;
       existing.raw = normalized.raw;
     } else {
@@ -494,25 +570,37 @@ export class ButlerStateStore extends EventEmitter {
     this.emitChange();
   }
 
-  appendItemDelta(threadId: string, turnId: string, itemId: string, delta: string): void {
+  appendItemDelta(
+    threadId: string,
+    turnId: string,
+    itemId: string,
+    delta: string,
+    itemType = "agentMessage"
+  ): void {
     const turn = this.getOrCreateTurn(threadId, turnId);
     const activityAt = Date.now();
     const target = turn.items.find((item) => item.id === itemId);
     if (!target) {
       turn.items.push({
         id: itemId,
-        type: "agentMessage",
+        type: itemType,
         status: "started",
         text: delta,
         at: activityAt,
         raw: {}
       });
     } else {
+      if (!target.type || target.type === "unknown") {
+        target.type = itemType;
+      }
       target.text += delta;
+      target.status = "started";
       target.at = activityAt;
     }
 
     const thread = this.getOrCreateThread(threadId);
+    thread.updatedAt = activityAt;
+    thread.turnCount = thread.turns.length;
     this.refreshDerivedThreadState(thread, activityAt);
     this.noteThreadLeaseActivity(threadId, activityAt);
     this.emitChange();
@@ -579,169 +667,31 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   noteThreadLeaseActivity(threadId: string, at = Date.now()): void {
-    let changed = false;
-
-    for (const lease of this.stackLeases.values()) {
-      if (lease.threadId !== threadId || lease.status === "stopped") {
-        continue;
-      }
-      if (typeof lease.lastActivityAt === "number" && at - lease.lastActivityAt < LEASE_ACTIVITY_WRITE_THROTTLE_MS) {
-        continue;
-      }
-      this.stackLeases.set(
-        lease.id,
-        this.normalizeStackLease({ ...lease, lastActivityAt: at, ttlAnchorAt: at, updatedAt: Math.max(lease.updatedAt, at) }, at)
-      );
-      changed = true;
-    }
-
-    for (const lease of this.previewLeases.values()) {
-      if (lease.threadId !== threadId || lease.status === "stopped") {
-        continue;
-      }
-      if (typeof lease.lastActivityAt === "number" && at - lease.lastActivityAt < LEASE_ACTIVITY_WRITE_THROTTLE_MS) {
-        continue;
-      }
-      this.previewLeases.set(
-        lease.id,
-        this.normalizePreviewLease({ ...lease, lastActivityAt: at, ttlAnchorAt: at, updatedAt: Math.max(lease.updatedAt, at) }, at)
-      );
-      changed = true;
-    }
-
-    for (const lease of this.serviceLeases.values()) {
-      if (lease.threadId !== threadId || lease.status === "stopped") {
-        continue;
-      }
-      if (typeof lease.lastActivityAt === "number" && at - lease.lastActivityAt < LEASE_ACTIVITY_WRITE_THROTTLE_MS) {
-        continue;
-      }
-      this.serviceLeases.set(
-        lease.id,
-        this.normalizeServiceLease({ ...lease, lastActivityAt: at, ttlAnchorAt: at, updatedAt: Math.max(lease.updatedAt, at) }, at)
-      );
-      changed = true;
-    }
-
-    if (changed) {
-      this.queueSave();
-    }
+    noteStateStoreThreadLeaseActivity(this.getInternalAccess(), threadId, at);
   }
 
   noteStackLeaseActivity(leaseId: string, at = Date.now()): StackLeaseView | null {
-    const lease = this.stackLeases.get(leaseId);
-    if (!lease) {
-      return null;
-    }
-    if (typeof lease.lastActivityAt === "number" && at - lease.lastActivityAt < LEASE_ACTIVITY_WRITE_THROTTLE_MS) {
-      return this.normalizeStackLease(lease, at);
-    }
-
-    const nextLease = this.normalizeStackLease(
-      {
-        ...lease,
-        lastActivityAt: at,
-        updatedAt: Math.max(lease.updatedAt, at)
-      },
-      at
-    );
-    this.stackLeases.set(leaseId, nextLease);
-    this.queueSave();
-    this.emitChange();
-    return nextLease;
+    return noteStateStoreStackLeaseActivity(this.getInternalAccess(), leaseId, at);
   }
 
   notePreviewLeaseActivity(leaseId: string, at = Date.now()): PreviewLeaseView | null {
-    const lease = this.previewLeases.get(leaseId);
-    if (!lease) {
-      return null;
-    }
-    if (typeof lease.lastActivityAt === "number" && at - lease.lastActivityAt < LEASE_ACTIVITY_WRITE_THROTTLE_MS) {
-      return this.normalizePreviewLease(lease, at);
-    }
-
-    const nextLease = this.normalizePreviewLease(
-      {
-        ...lease,
-        lastActivityAt: at,
-        updatedAt: Math.max(lease.updatedAt, at)
-      },
-      at
-    );
-    this.previewLeases.set(leaseId, nextLease);
-    if (nextLease.stackId) {
-      this.noteStackLeaseActivity(nextLease.stackId, at);
-    } else {
-      this.queueSave();
-    }
-    this.emitChange();
-    return nextLease;
+    return noteStateStorePreviewLeaseActivity(this.getInternalAccess(), leaseId, at);
   }
 
   noteServiceLeaseActivity(leaseId: string, at = Date.now()): ServiceLeaseView | null {
-    const lease = this.serviceLeases.get(leaseId);
-    if (!lease) {
-      return null;
-    }
-    if (typeof lease.lastActivityAt === "number" && at - lease.lastActivityAt < LEASE_ACTIVITY_WRITE_THROTTLE_MS) {
-      return this.normalizeServiceLease(lease, at);
-    }
-
-    const nextLease = this.normalizeServiceLease(
-      {
-        ...lease,
-        lastActivityAt: at,
-        updatedAt: Math.max(lease.updatedAt, at)
-      },
-      at
-    );
-    this.serviceLeases.set(leaseId, nextLease);
-    if (nextLease.stackId) {
-      this.noteStackLeaseActivity(nextLease.stackId, at);
-    } else {
-      this.queueSave();
-    }
-    this.emitChange();
-    return nextLease;
+    return noteStateStoreServiceLeaseActivity(this.getInternalAccess(), leaseId, at);
   }
 
   setStackLeasePinned(leaseId: string, pinned: boolean): StackLeaseView | null {
-    const lease = this.stackLeases.get(leaseId);
-    if (!lease) {
-      return null;
-    }
-
-    const nextLease = this.normalizeStackLease({ ...lease, pinned }, Date.now());
-    this.stackLeases.set(leaseId, nextLease);
-    this.queueSave();
-    this.emitChange();
-    return nextLease;
+    return setStateStoreStackLeasePinned(this.getInternalAccess(), leaseId, pinned);
   }
 
   setPreviewLeasePinned(leaseId: string, pinned: boolean): PreviewLeaseView | null {
-    const lease = this.previewLeases.get(leaseId);
-    if (!lease) {
-      return null;
-    }
-
-    const nextLease = this.normalizePreviewLease({ ...lease, pinned }, Date.now());
-    this.previewLeases.set(leaseId, nextLease);
-    this.queueSave();
-    this.emitChange();
-    return nextLease;
+    return setStateStorePreviewLeasePinned(this.getInternalAccess(), leaseId, pinned);
   }
 
   setServiceLeasePinned(leaseId: string, pinned: boolean): ServiceLeaseView | null {
-    const lease = this.serviceLeases.get(leaseId);
-    if (!lease) {
-      return null;
-    }
-
-    const nextLease = this.normalizeServiceLease({ ...lease, pinned }, Date.now());
-    this.serviceLeases.set(leaseId, nextLease);
-    this.queueSave();
-    this.emitChange();
-    return nextLease;
+    return setStateStoreServiceLeasePinned(this.getInternalAccess(), leaseId, pinned);
   }
 
   listExpiredLeaseIds(now = Date.now()): {
@@ -749,17 +699,7 @@ export class ButlerStateStore extends EventEmitter {
     previews: string[];
     services: string[];
   } {
-    const stacks = this.listStackLeases()
-      .filter((lease) => typeof lease.reapAfterAt === "number" && lease.reapAfterAt <= now)
-      .map((lease) => lease.id);
-    const previews = this.listPreviewLeases()
-      .filter((lease) => typeof lease.reapAfterAt === "number" && lease.reapAfterAt <= now)
-      .map((lease) => lease.id);
-    const services = this.listServiceLeases()
-      .filter((lease) => typeof lease.reapAfterAt === "number" && lease.reapAfterAt <= now)
-      .map((lease) => lease.id);
-
-    return { stacks, previews, services };
+    return listStateStoreExpiredLeaseIds(this.getInternalAccess(), now);
   }
 
   enqueueRuntimeCleanupTask(input: {
@@ -770,60 +710,19 @@ export class ButlerStateStore extends EventEmitter {
     previews: RuntimeCleanupTaskView["previews"];
     services: RuntimeCleanupTaskView["services"];
   }): RuntimeCleanupTaskView {
-    const now = Date.now();
-    const task: RuntimeCleanupTaskView = {
-      id: input.threadId,
-      threadId: input.threadId,
-      cwd: input.cwd,
-      createdAt: now,
-      updatedAt: now,
-      nextAttemptAt: now,
-      attempts: 0,
-      lastError: null,
-      notifyOnError: input.notifyOnError !== false,
-      stacks: [...input.stacks],
-      previews: [...input.previews],
-      services: [...input.services]
-    };
-    this.runtimeCleanupTasks.set(task.id, task);
-    this.queueSave();
-    this.emitChange();
-    return task;
+    return enqueueStateStoreRuntimeCleanupTask(this.getInternalAccess(), input);
   }
 
   listDueRuntimeCleanupTasks(now = Date.now()): RuntimeCleanupTaskView[] {
-    return [...this.runtimeCleanupTasks.values()]
-      .filter((task) => task.nextAttemptAt <= now)
-      .sort((left, right) => left.nextAttemptAt - right.nextAttemptAt);
+    return listStateStoreDueRuntimeCleanupTasks(this.getInternalAccess(), now);
   }
 
   completeRuntimeCleanupTask(taskId: string): void {
-    if (!this.runtimeCleanupTasks.delete(taskId)) {
-      return;
-    }
-    this.queueSave();
-    this.emitChange();
+    completeStateStoreRuntimeCleanupTask(this.getInternalAccess(), taskId);
   }
 
   failRuntimeCleanupTask(taskId: string, errorMessage: string, nextAttemptAt: number): { task: RuntimeCleanupTaskView | null; notify: boolean } {
-    const existing = this.runtimeCleanupTasks.get(taskId);
-    if (!existing) {
-      return { task: null, notify: false };
-    }
-
-    const notify = existing.notifyOnError;
-    const nextTask: RuntimeCleanupTaskView = {
-      ...existing,
-      attempts: existing.attempts + 1,
-      updatedAt: Date.now(),
-      nextAttemptAt,
-      lastError: errorMessage,
-      notifyOnError: false
-    };
-    this.runtimeCleanupTasks.set(taskId, nextTask);
-    this.queueSave();
-    this.emitChange();
-    return { task: nextTask, notify };
+    return failStateStoreRuntimeCleanupTask(this.getInternalAccess(), taskId, errorMessage, nextAttemptAt);
   }
 
   private pushMilestone(thread: CodexThreadRecord, type: CodexMilestoneEntry["type"], summary: string): void {

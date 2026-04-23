@@ -80,16 +80,8 @@ export function deriveProofRequirements(contract: CodexThreadExecutionContractVi
   }
 
   const requirements = new Set<string>();
-  if (contract.proofMode === "ui") {
-    requirements.add("Headed UI proof is required before completion.");
-  } else if (contract.proofMode === "operational") {
-    requirements.add("Operational verification is required before completion.");
-  }
-
-  for (const condition of contract.successConditions) {
-    if (/\b(proof|verify|verification|artifact|screenshot|video|trace)\b/i.test(condition)) {
-      requirements.add(condition.trim());
-    }
+  if (contract.proofExpectation === "requested") {
+    requirements.add("Proof was requested for this job.");
   }
 
   return [...requirements];
@@ -696,6 +688,10 @@ export function summarizeItem(item: Record<string, unknown>): string {
     return item.command;
   }
 
+  if (typeof item.text === "string") {
+    return item.text;
+  }
+
   return "";
 }
 
@@ -712,11 +708,11 @@ export function normalizeItem(item: Record<string, unknown>, status: "started" |
 }
 
 export function shouldExposeCodexItem(item: CodexItemRecord): boolean {
-  if (item.type !== "agentMessage" && item.type !== "userMessage") {
-    return false;
+  if (item.text.trim().length > 0) {
+    return true;
   }
 
-  return item.text.trim().length > 0;
+  return item.type === "commandExecution";
 }
 
 export function normalizeTurn(turn: Record<string, unknown>): CodexTurnRecord {

@@ -372,8 +372,21 @@ export class CodexAppServerClient extends EventEmitter {
 
     const params = message.params ?? {};
     const threadId = typeof params.threadId === "string" ? params.threadId : null;
+    const streamingItemMatch = message.method.match(/^item\/([^/]+)\/(delta|outputDelta)$/);
 
     if (threadId && this.deletedThreadIds.has(threadId)) {
+      return;
+    }
+
+    if (
+      streamingItemMatch &&
+      typeof params.threadId === "string" &&
+      typeof params.turnId === "string" &&
+      typeof params.itemId === "string" &&
+      typeof params.delta === "string"
+    ) {
+      this.store.appendItemDelta(params.threadId, params.turnId, params.itemId, params.delta, streamingItemMatch[1] ?? "unknown");
+      this.emit("change");
       return;
     }
 
@@ -434,16 +447,6 @@ export class CodexAppServerClient extends EventEmitter {
             params.item as Record<string, unknown>,
             message.method.endsWith("completed") ? "completed" : "started"
           );
-        }
-        break;
-      case "item/agentMessage/delta":
-        if (
-          typeof params.threadId === "string" &&
-          typeof params.turnId === "string" &&
-          typeof params.itemId === "string" &&
-          typeof params.delta === "string"
-        ) {
-          this.store.appendItemDelta(params.threadId, params.turnId, params.itemId, params.delta);
         }
         break;
       case "thread/tokenUsage/updated":
@@ -597,7 +600,6 @@ export class CodexAppServerClient extends EventEmitter {
       cwd: overrides?.cwd ?? this.defaultCwd,
       approvalPolicy: "never",
       sandbox: "danger-full-access",
-      personality: "pragmatic",
       serviceName: overrides?.serviceName ?? "Butler"
     };
 

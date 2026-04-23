@@ -9,24 +9,22 @@ import httpProxy from "http-proxy";
 import { ButlerAgentService } from "./butler-agent.js";
 import { CodexAppServerClient } from "./codex-client.js";
 import { CodexHarnessService } from "./codex-harness.js";
-import { FileReferenceStore } from "./file-store.js";
-import { ImageReferenceStore } from "./image-store.js";
+import { FileReferenceStore, MAX_FILE_BYTES } from "./file-store.js";
+import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
 import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-routes.js";
 import { buildCodexInputWithReferences, buildReferencePromptText } from "./reference-inputs.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
-import { resolveProofBundleKey } from "./butler-agent-helpers.js";
+import { registerServerAssetRoutes } from "./server-asset-routes.js";
 import {
   ButlerSseHub,
   cleanupThreadRuntimeResources,
   currentBootstrapSnapshot,
-  decodeArtifactRelativePath,
-  readFileReferenceIds,
   pruneEmptyArtifactParents,
   readImageReferenceIds,
+  readFileReferenceIds,
   removeStackArtifactsFromStore,
   resolvePreviewProxyTarget,
   resolveProjectMetadata,
-  sendUnavailableArtifactResponse,
   shouldAllowLocalThreadWindow,
   type RuntimeServerAccess,
   validateRequestedStack
@@ -56,6 +54,8 @@ const artifactsDir = path.resolve(process.env.MANOR_ARTIFACTS_DIR ?? "/artifacts
 const imageReferenceDir = process.env.MANOR_IMAGE_REFERENCE_DIR ?? path.resolve(process.cwd(), "../artifacts/manor-images");
 const fileReferenceDir = process.env.MANOR_FILE_REFERENCE_DIR ?? path.join(artifactsDir, "manor-files");
 const jsonBodyLimit = process.env.MANOR_UPLOAD_JSON_LIMIT ?? "64mb";
+const imageUploadBinaryLimit = process.env.MANOR_IMAGE_UPLOAD_BINARY_LIMIT ?? `${Math.ceil(MAX_IMAGE_BYTES / (1024 * 1024))}mb`;
+const fileUploadBinaryLimit = process.env.MANOR_FILE_UPLOAD_BINARY_LIMIT ?? `${Math.ceil(MAX_FILE_BYTES / (1024 * 1024))}mb`;
 
 const uiStatePath = path.join(stateDir, "butler-ui.json");
 const sessionDir = path.join(stateDir, "pi-sessions");
@@ -79,48 +79,6 @@ await fileStore.load();
 const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerToken);
 let runtimeAccess!: RuntimeServerAccess;
 let sseHub!: ButlerSseHub;
-
-async function deletePreviewProofFiles(proofId: string): Promise<{ removedFiles: number }> {
-  const proof = store.getPreviewProofById(proofId);
-  if (!proof) {
-    const error = new Error("Proof was not found");
-    (error as Error & { statusCode?: number }).statusCode = 404;
-    throw error;
-  }
-
-  const bundleKey = resolveProofBundleKey(proof);
-  const bundleProofs = bundleKey && proof.threadId
-    ? store
-        .listPreviewProofs()
-        .filter((entry) => entry.threadId === proof.threadId && resolveProofBundleKey(entry) === bundleKey)
-    : [proof];
-
-  const filePaths = [...new Set(
-    bundleProofs.flatMap((entry) =>
-      entry.verification.artifacts
-        .map((artifact) => artifact.filePath)
-        .filter((filePath): filePath is string => Boolean(filePath))
-    )
-  )];
-
-  let removedFiles = 0;
-  for (const filePath of filePaths) {
-    const resolvedPath = path.resolve(filePath);
-    if (resolvedPath !== artifactsDir && !resolvedPath.startsWith(`${artifactsDir}${path.sep}`)) {
-      continue;
-    }
-
-    await fs.rm(resolvedPath, { force: true }).catch(() => {});
-    await pruneEmptyArtifactParents(artifactsDir, resolvedPath).catch(() => {});
-    removedFiles += 1;
-  }
-
-  for (const entry of bundleProofs) {
-    store.removePreviewProof(entry.id);
-  }
-
-  return { removedFiles };
-}
 const codexHarness = new CodexHarnessService({
   codexHomeDir,
   stateDir,
@@ -185,11 +143,29 @@ const previewProxy = httpProxy.createProxyServer({
 });
 
 let viteDevServer: import("vite").ViteDevServer | null = null;
+const imageUploadBinaryParser = express.raw({
+  type: (request) => typeof request.headers["x-manor-upload-name"] === "string",
+  limit: imageUploadBinaryLimit
+});
+const fileUploadBinaryParser = express.raw({
+  type: (request) => typeof request.headers["x-manor-upload-name"] === "string",
+  limit: fileUploadBinaryLimit
+});
+
 const { applyServiceStartedPoliciesForServer } = registerProjectArtifactPolicyRoutes({
   app,
   artifactsDir,
   store,
   runtimeBroker
+});
+registerServerAssetRoutes({
+  app,
+  artifactsDir,
+  store,
+  imageStore,
+  fileStore,
+  imageUploadBinaryParser,
+  fileUploadBinaryParser
 });
 
 if (hotReloadEnabled) {
@@ -313,200 +289,6 @@ app.post("/api/memory/promotions/resolve", (request, response) => {
     projectMemory: store.getProjectMemory(candidate.projectId)
   });
 });
-
-
-app.post("/api/images/upload", async (request, response) => {
-  const name = typeof request.body?.name === "string" ? request.body.name : "";
-  const mimeType = typeof request.body?.mimeType === "string" ? request.body.mimeType : "";
-  const data = typeof request.body?.data === "string" ? request.body.data : "";
-  const sizeBytes = typeof request.body?.sizeBytes === "number" ? request.body.sizeBytes : undefined;
-
-  if (!name || !mimeType || !data) {
-    response.status(400).json({ error: "name, mimeType, and data are required" });
-    return;
-  }
-
-  try {
-    const image = await imageStore.create({ name, mimeType, data, sizeBytes });
-    response.status(201).json({ ok: true, image });
-  } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get("/api/images", (request, response) => {
-  const limitRaw = Array.isArray(request.query.limit) ? request.query.limit[0] : request.query.limit;
-  const limit = typeof limitRaw === "string" && limitRaw.length > 0 ? Number(limitRaw) : 200;
-
-  if (!Number.isFinite(limit) || limit <= 0) {
-    response.status(400).json({ error: "limit must be a positive number" });
-    return;
-  }
-
-  response.json({ images: imageStore.list(limit) });
-});
-
-app.get("/api/images/:imageId", (request, response) => {
-  const imageId = typeof request.params.imageId === "string" ? request.params.imageId : "";
-  const filePath = imageStore.getFilePath(imageId);
-  const image = imageStore.get(imageId);
-
-  if (!filePath || !image) {
-    response.status(404).json({ error: "Image reference was not found" });
-    return;
-  }
-
-  response.setHeader("Cache-Control", "private, max-age=31536000, immutable");
-  response.type(image.mimeType);
-  response.sendFile(filePath);
-});
-
-app.post("/api/files/upload", async (request, response) => {
-  const name = typeof request.body?.name === "string" ? request.body.name : "";
-  const mimeType = typeof request.body?.mimeType === "string" ? request.body.mimeType : "";
-  const data = typeof request.body?.data === "string" ? request.body.data : "";
-  const sizeBytes = typeof request.body?.sizeBytes === "number" ? request.body.sizeBytes : undefined;
-
-  if (!name || !data) {
-    response.status(400).json({ error: "name and data are required" });
-    return;
-  }
-
-  try {
-    const file = await fileStore.create({ name, mimeType, data, sizeBytes });
-    response.status(201).json({ ok: true, file });
-  } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get("/api/files", (request, response) => {
-  const limitRaw = Array.isArray(request.query.limit) ? request.query.limit[0] : request.query.limit;
-  const limit = typeof limitRaw === "string" && limitRaw.length > 0 ? Number(limitRaw) : 200;
-
-  if (!Number.isFinite(limit) || limit <= 0) {
-    response.status(400).json({ error: "limit must be a positive number" });
-    return;
-  }
-
-  response.json({ files: fileStore.list(limit) });
-});
-
-app.get("/api/files/:fileId", (request, response) => {
-  const fileId = typeof request.params.fileId === "string" ? request.params.fileId : "";
-  const filePath = fileStore.getFilePath(fileId);
-  const file = fileStore.get(fileId);
-
-  if (!filePath || !file) {
-    response.status(404).json({ error: "File reference was not found" });
-    return;
-  }
-
-  const downloadRequested = Array.isArray(request.query.download)
-    ? request.query.download[0] === "1"
-    : request.query.download === "1";
-
-  response.setHeader("Cache-Control", "private, max-age=31536000, immutable");
-  if (downloadRequested) {
-    response.download(filePath, file.name);
-    return;
-  }
-  response.type(file.mimeType);
-  response.sendFile(filePath);
-});
-
-app.get(/^\/api\/artifacts\/(.+)$/, (request, response) => {
-  const relativePath =
-    typeof request.params?.["0"] === "string"
-      ? request.params["0"]
-      : Array.isArray(request.params)
-        ? request.params[0]
-        : "";
-  if (!relativePath) {
-    response.status(404).json({ error: "Artifact was not found" });
-    return;
-  }
-
-  const decodedPath = decodeArtifactRelativePath(relativePath);
-  const filePath = path.resolve(artifactsDir, decodedPath);
-  if (filePath !== artifactsDir && !filePath.startsWith(`${artifactsDir}${path.sep}`)) {
-    response.status(400).json({ error: "Artifact path is invalid" });
-    return;
-  }
-
-  const downloadRequested = Array.isArray(request.query.download)
-    ? request.query.download[0] === "1"
-    : request.query.download === "1";
-  const knownArtifact = store.findPreviewProofArtifactByFilePath(filePath);
-  const retainedUntilAt =
-    typeof knownArtifact?.artifact.retainedUntilAt === "number" && Number.isFinite(knownArtifact.artifact.retainedUntilAt)
-      ? knownArtifact.artifact.retainedUntilAt
-      : null;
-
-  const sendUnavailable = () => {
-    if (!knownArtifact) {
-      response.status(404).json({ error: "Artifact was not found" });
-      return;
-    }
-
-    const refreshedArtifact = store.findPreviewProofArtifactByFilePath(filePath)?.artifact ?? knownArtifact.artifact;
-    const availability = refreshedArtifact.availability === "expired" ? "expired" : "missing";
-    sendUnavailableArtifactResponse(response, availability, refreshedArtifact);
-  };
-
-  const handleSendError = (error?: NodeJS.ErrnoException | null) => {
-    if (!error) {
-      return;
-    }
-
-    if (response.headersSent || response.writableEnded || response.destroyed) {
-      return;
-    }
-
-    if ("statusCode" in error && error.statusCode === 404) {
-      if (knownArtifact) {
-        store.markPreviewProofArtifactMissing(filePath);
-        sendUnavailable();
-        return;
-      }
-
-      response.status(404).json({ error: "Artifact was not found" });
-      return;
-    }
-
-    response.status(500).json({ error: "Artifact could not be read" });
-  };
-
-  if (retainedUntilAt !== null && retainedUntilAt <= Date.now()) {
-    void fs.rm(filePath, { force: true }).catch(() => {});
-    store.markPreviewProofArtifactExpired(filePath, Date.now());
-    void pruneEmptyArtifactParents(artifactsDir, filePath).catch(() => {});
-    sendUnavailable();
-    return;
-  }
-
-  void fs
-    .access(filePath)
-    .then(() => {
-      response.setHeader("Cache-Control", "private, max-age=3600");
-      response.setHeader("X-Artifact-Availability", "available");
-      if (downloadRequested) {
-        response.download(filePath, path.basename(filePath), handleSendError);
-        return;
-      }
-
-      response.sendFile(filePath, handleSendError);
-    })
-    .catch(() => {
-      if (knownArtifact) {
-        store.markPreviewProofArtifactMissing(filePath);
-        sendUnavailable();
-        return;
-      }
-      response.status(404).json({ error: "Artifact was not found" });
-    });
-});
-
 app.get("/api/chat/history", (request, response) => {
   const beforeRaw = Array.isArray(request.query.before) ? request.query.before[0] : request.query.before;
   const limitRaw = Array.isArray(request.query.limit) ? request.query.limit[0] : request.query.limit;
@@ -696,25 +478,6 @@ app.post("/api/threads/delete-all", async (_request, response) => {
   });
 
   response.status(202).json({ ok: true, started: true });
-});
-
-app.post("/api/proofs/delete", async (request, response) => {
-  const proofId = typeof request.body?.proofId === "string" ? request.body.proofId : "";
-  if (!proofId) {
-    response.status(400).json({ error: "proofId is required" });
-    return;
-  }
-
-  try {
-    const result = await deletePreviewProofFiles(proofId);
-    response.json({ ok: true, proofId, removedFiles: result.removedFiles });
-  } catch (error) {
-    const statusCode =
-      typeof (error as { statusCode?: unknown })?.statusCode === "number"
-        ? Number((error as { statusCode?: number }).statusCode)
-        : 500;
-    response.status(statusCode).json({ error: error instanceof Error ? error.message : String(error) });
-  }
 });
 
 app.post("/api/windows/open", async (request, response) => {

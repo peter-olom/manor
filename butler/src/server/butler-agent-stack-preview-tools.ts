@@ -745,9 +745,9 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
     access.defineButlerTool({
       name: "review_preview_proof",
       label: "Review preview proof",
-      description: "Inspect the latest Playwright screenshots for one preview or job and surface the video download for human review.",
+      description: "Inspect the latest Playwright screenshots for one preview or job and decide whether the recorded proof is convincing.",
       promptSnippet:
-        "review_preview_proof: use this when frontend execution proof is demanded. Do not sign off until the screenshot has been reviewed and the video bundle is surfaced for human review.",
+        "review_preview_proof: use this when frontend execution proof is demanded. Do not sign off until the screenshot has been reviewed and the recorded proof is clearly convincing.",
       parameters: Type.Object({
         leaseId: Type.Optional(Type.String()),
         threadId: Type.Optional(Type.String()),
@@ -772,30 +772,30 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           expectedOutcome: typedParams.expectedOutcome
         });
 
-        const videoRequirementMet = Boolean(proof.video?.downloadUrl);
+        const videoRequirementMet = Boolean(proof.video?.downloadUrl ?? proof.video?.url);
         const proofVerdict = videoRequirementMet ? review.verdict : "incomplete";
+        const screenshotSummary =
+          proof.screenshots.length > 0
+            ? `${proof.screenshots.length} recorded (${proof.screenshots
+                .slice(0, 3)
+                .map((artifact) => artifact.label)
+                .join(", ")}${proof.screenshots.length > 3 ? ", ..." : ""})`
+            : "none";
         const proofSummary = [
           `Verdict=${proofVerdict}`,
           `FailureKind=${proof.verification.failureKind}`,
           `Visible=${review.visibleState}`,
           `Evidence=${review.evidence}`,
-          `Concern=${videoRequirementMet ? review.concern : "Video proof is missing for human review."}`
+          `Concern=${videoRequirementMet ? review.concern : "Recorded video proof is missing."}`,
+          `RecordedVideo=${videoRequirementMet ? "yes" : "no"}`,
+          `Screenshots=${screenshotSummary}`
         ].join("\n");
 
         return {
           content: [
             {
               type: "text",
-              text: [
-                `Reviewed proof for ${proof.preview.title}.`,
-                proofSummary,
-                proof.video?.downloadUrl ? `Video download: ${proof.video.downloadUrl}` : "Video download: unavailable",
-                ...(proof.screenshots.length > 0
-                  ? proof.screenshots.map((artifact, index) =>
-                      artifact.url ? `Screenshot ${index + 1}: ${artifact.url}` : `Screenshot ${index + 1}: unavailable`
-                    )
-                  : ["Screenshot: unavailable"])
-              ].join("\n")
+              text: [`Reviewed proof for ${proof.preview.title}.`, proofSummary].join("\n")
             }
           ],
           details: {
@@ -918,21 +918,15 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         const delegatedGoal = smokeRequest ? undefined : typedParams.goal;
         const repoBootstrapTask = !smokeRequest && isSharedShellRepoBootstrapTask(delegatedTask);
         const developerInstructions = await access.buildDelegationDeveloperInstructions(workspace, delegatedTask);
-        const contractOptions = smokeRequest
+        const extraNotes = smokeRequest
           ? {
-              executionLane: "codex-shell" as const,
-              proofMode: "none" as const,
-              extraNotes: ["Synthetic Butler supervision smoke test. Do not require browser proof to complete or report it."]
+              notes: ["Synthetic Butler supervision smoke test. Do not gather proof unless the smoke test explicitly asks for it."]
             }
           : repoBootstrapTask
             ? {
-                executionLane: "codex-shell" as const,
-                proofMode: "none" as const,
-                extraNotes: [
-                  "For repository bootstrap tasks in /repos, do the initial clone, git status, and branch creation in Codex-shell. Use preview runtime only if later execution is actually needed."
-                ]
+                notes: ["This job starts in the shared /repos workspace. Create or clone the repo first, then continue inside that repo."]
               }
-            : {};
+            : { notes: undefined };
 
         const result = await access.codexClient.startThread({
           task: delegatedGoal ? `${delegatedTask}\n\nGoal: ${delegatedGoal}` : delegatedTask,
@@ -944,9 +938,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
                   task: delegatedTask,
                   goal: delegatedGoal,
                   workspace,
-                  executionLane: contractOptions.executionLane,
-                  proofMode: contractOptions.proofMode,
-                  extraNotes: contractOptions.extraNotes
+                  extraNotes: extraNotes.notes
                 })
               ).text,
               imageStore: access.imageStore,
@@ -963,12 +955,10 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           task: delegatedTask,
           goal: delegatedGoal,
           workspace,
-          executionLane: contractOptions.executionLane,
-          proofMode: contractOptions.proofMode,
-          extraNotes: contractOptions.extraNotes
+          extraNotes: extraNotes.notes
         });
         access.store.setThreadExecutionContract(result.threadId, delegationContract.contract);
-        access.store.addEvent(result.threadId, "butler.delegation.created", "Butler created the execution contract for this delegated job.");
+        access.store.addEvent(result.threadId, "butler.delegation.created", "Butler created the job brief for this delegated job.");
         access.noteThreadFocus(result.threadId, "delegate_to_codex");
         access.queueDelegationAcknowledgement(
           result.threadId,

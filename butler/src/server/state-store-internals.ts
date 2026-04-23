@@ -17,7 +17,6 @@ import {
   normalizeWindow,
   restorePersistedTurn
 } from "./state-store-helpers.js";
-import { describeExecutionLane, normalizeExecutionLane } from "./thread-contract.js";
 import type {
   ButlerWindow,
   CodexEventEntry,
@@ -580,27 +579,18 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
         contract &&
         typeof contract === "object" &&
         typeof contract.threadId === "string" &&
-        typeof contract.executionLane === "string"
+        typeof contract.requestedTask === "string"
       ) {
-        const executionLane = normalizeExecutionLane(contract.executionLane);
         access.persistedExecutionContractsByThreadId.set(threadId, {
           ...contract,
-          executionLane,
-          executionLaneLabel: describeExecutionLane(executionLane),
           requestedTask:
             typeof contract.requestedTask === "string" && contract.requestedTask.trim()
               ? contract.requestedTask.trim()
               : "Carry out the delegated task.",
           operatorGoal: typeof contract.operatorGoal === "string" && contract.operatorGoal.trim() ? contract.operatorGoal.trim() : null,
-          successConditions: Array.isArray(contract.successConditions)
-            ? contract.successConditions.filter((condition): condition is string => typeof condition === "string" && condition.trim().length > 0)
-            : [],
-          stopConditions: Array.isArray(contract.stopConditions)
-            ? contract.stopConditions.filter((condition): condition is string => typeof condition === "string" && condition.trim().length > 0)
-            : [],
-          escalationConditions: Array.isArray(contract.escalationConditions)
-            ? contract.escalationConditions.filter((condition): condition is string => typeof condition === "string" && condition.trim().length > 0)
-            : [],
+          proofExpectation: contract.proofExpectation === "requested" ? "requested" : "none",
+          proofExpectationLabel:
+            contract.proofExpectation === "requested" ? "proof requested" : "no explicit proof request",
           notes: Array.isArray(contract.notes) ? contract.notes.filter((note): note is string => typeof note === "string") : []
         });
       }
