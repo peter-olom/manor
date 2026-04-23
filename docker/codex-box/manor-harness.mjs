@@ -40,6 +40,7 @@ Preview defaults:
   heartbeat-kind=http
   heartbeat-target=/
   workspace-mode=shared (use snapshot for disposable smoke runs that should not mutate the source worktree)
+  runtime rule: do repo and git work in Codex-shell; do installs, app startup, builds, and browser checks in previews
   preview commands start in the job worktree; prefer relative paths there or the contract cwd under /repos
   preview lifecycle is broker-managed; install, start, and debug the app explicitly with preview exec/logs/processes
   manor-harness preview inspect <previewSelector>

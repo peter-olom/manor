@@ -37,6 +37,16 @@ That gives Manor a practical default:
 
 - `one job -> one worktree -> one isolated stack -> zero or more previews/services`
 
+## Execution Rule
+
+Manor keeps repo work and runtime work separate on purpose.
+
+- do repository, git, and edit work in the warm Codex worker
+- do package installs, app startup, builds, and browser checks in previews
+- use shared previews when runtime changes should persist in the mounted worktree
+- use snapshot previews for disposable smoke runs that should not mutate the source worktree
+- treat worker-side package installation as an exception, not the default path
+
 ## Butler
 
 Butler is the operator-facing control plane.
@@ -66,7 +76,7 @@ Today it provides:
 - shared runtime state through dedicated Docker volumes
 - local helper access through `manor-harness`
 
-Codex does the work. Butler owns lifecycle and policy.
+Codex owns repository work. Butler and the broker own runtime lifecycle and policy.
 
 ## Previews
 
@@ -79,6 +89,7 @@ Current preview behavior:
 - raw host port publishing is not the default path
 - previews are heartbeat-gated during startup
 - preview egress defaults to normal outbound internet access
+- previews are the default place for installs, builds, app startup, and runtime verification
 - `none`, named profiles, and custom domain policies remain available when a preview needs stricter outbound control
 
 ## Stacks

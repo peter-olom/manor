@@ -36,7 +36,8 @@ run_real() {
 block() {
   cat >&2 <<EOF
 ${name} is blocked from package installation in the shared Codex box.
-Use a Manor preview for dependency installs and project execution.
+Do repo and git work here.
+Use a Manor preview for package installs, app startup, builds, and project execution.
 EOF
   exit 126
 }
