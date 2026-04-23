@@ -137,6 +137,7 @@ const {
   normalizeCookieEntries,
   normalizeExecArgs,
   normalizeHeaderMap,
+  normalizePositiveInteger,
   normalizeString,
   normalizeStringArray,
   overwriteManagedStackVolume,
@@ -189,6 +190,19 @@ app.use((request, response, next) => {
 
 function shellQuote(value) {
   return JSON.stringify(String(value));
+}
+
+function normalizeEnv(value) {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter((entry) => typeof entry[0] === "string" && typeof entry[1] === "string")
+      .map(([key, envValue]) => [key.trim(), envValue.trim()])
+      .filter(([key, envValue]) => key.length > 0 && envValue.length > 0)
+  );
 }
 
 function sleep(ms) {

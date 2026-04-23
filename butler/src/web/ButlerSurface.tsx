@@ -18,6 +18,7 @@ import { mergeKnownImages, useButlerLiveSnapshot, useKnownImages, useRuntimeSnap
 import type {
   ButlerHistoryPageResponse,
   ButlerHistoryState,
+  ComposerPrefill,
   FileReference,
   PreviewMedia
 } from "./types";
@@ -42,12 +43,22 @@ import {
 type ButlerSurfaceProps = {
   onOpenThread: (threadId: string) => void;
   onPreviewMedia: (media: PreviewMedia) => void;
+  composerPrefill: ComposerPrefill | null;
+  onComposerPrefillConsumed: (prefillId: string) => void;
   showToast: (message: string, tone?: "success" | "error" | "info", duration?: number, key?: string) => void;
   showErrorToast: (error: unknown, key?: string, duration?: number) => void;
   copyText: (value: string, successMessage: string) => Promise<void>;
 };
 
-export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErrorToast, copyText }: ButlerSurfaceProps) {
+export function ButlerSurface({
+  onOpenThread,
+  onPreviewMedia,
+  composerPrefill,
+  onComposerPrefillConsumed,
+  showToast,
+  showErrorToast,
+  copyText
+}: ButlerSurfaceProps) {
   const shell = useShellSnapshot();
   const live = useButlerLiveSnapshot();
   const runtime = useRuntimeSnapshot();
@@ -59,6 +70,7 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
   const [showRuntime, setShowRuntime] = useState(() => readStoredValue(BUTLER_RUNTIME_VISIBILITY_STORAGE_KEY) === "true");
   const [activeJumpId, setActiveJumpId] = useState<string | null>(null);
   const [pendingButlerText, setPendingButlerText] = useState<string | null>(null);
+  const [butlerDraftPrefill, setButlerDraftPrefill] = useState<{ id: string; text: string } | null>(null);
   const [butlerAttachments, setButlerAttachments] = useState<FileReference[]>([]);
   const [butlerUploadingAttachments, setButlerUploadingAttachments] = useState(0);
   const [busyStackId, setBusyStackId] = useState<string | null>(null);
@@ -149,6 +161,21 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!composerPrefill || composerPrefill.target.kind !== "butler") {
+      return;
+    }
+
+    setButlerAttachments((current) =>
+      current.some((entry) => entry.id === composerPrefill.attachment.id) ? current : [...current, composerPrefill.attachment]
+    );
+    if (composerPrefill.attachment.mimeType.startsWith("image/")) {
+      mergeKnownImages([composerPrefill.attachment]);
+    }
+    setPendingButlerText(null);
+    setButlerDraftPrefill({ id: composerPrefill.id, text: composerPrefill.text });
+  }, [composerPrefill]);
 
   async function uploadAttachments(files: FileList | File[]) {
     const uploadFiles = [...files];
@@ -630,6 +657,7 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
           ) : null}
           <ButlerComposer
             draftStorageKey={BUTLER_DRAFT_STORAGE_KEY}
+            draftPrefill={butlerDraftPrefill}
             modelKey={butlerModelKey}
             thinkingLevel={shell.butler.compose.thinkingLevel}
             availableModels={shell.butler.compose.availableModels}
@@ -649,6 +677,11 @@ export function ButlerSurface({ onOpenThread, onPreviewMedia, showToast, showErr
             }}
             onModelChange={(model) => void updateButlerCompose(model)}
             onThinkingLevelChange={(level) => void updateButlerCompose(butlerModelKey, level)}
+            onDraftPrefillApplied={(prefillId) => {
+              setButlerDraftPrefill((current) => (current?.id === prefillId ? null : current));
+              onComposerPrefillConsumed(prefillId);
+              showToast("Annotated proof added to Butler", "success", 2200);
+            }}
           />
         </section>
         <aside className={`detail-pane ${showTimeline ? "is-open" : "is-closed"}`}>

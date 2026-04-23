@@ -101,6 +101,22 @@ export type PreviewMedia = {
   downloadUrl: string | null;
 };
 
+export type ComposerPrefillTarget =
+  | {
+      kind: "butler";
+    }
+  | {
+      kind: "thread";
+      threadId: string;
+    };
+
+export type ComposerPrefill = {
+  id: string;
+  target: ComposerPrefillTarget;
+  text: string;
+  attachment: FileReference;
+};
+
 export type PreviewVerificationArtifact = {
   kind: "manifest" | "screenshot" | "video" | "trace" | "html" | "other";
   label: string;

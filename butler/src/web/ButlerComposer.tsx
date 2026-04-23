@@ -12,8 +12,19 @@ import {
 
 const FILE_UPLOAD_ACCEPT = ".pdf,.ppt,.pptx,.xls,.xlsx,.doc,.docx,.txt,.csv,.json,.md,.zip,image/*,*/*";
 
+function appendDraftText(current: string, addition: string): string {
+  const trimmedAddition = addition.trim();
+  if (!trimmedAddition) {
+    return current;
+  }
+
+  const trimmedCurrent = current.trim();
+  return trimmedCurrent ? `${trimmedCurrent}\n\n${trimmedAddition}` : trimmedAddition;
+}
+
 export const ButlerComposer = memo(function ButlerComposer({
   draftStorageKey,
+  draftPrefill,
   modelKey,
   thinkingLevel,
   availableModels,
@@ -25,9 +36,11 @@ export const ButlerComposer = memo(function ButlerComposer({
   onPreviewImage,
   onSend,
   onModelChange,
-  onThinkingLevelChange
+  onThinkingLevelChange,
+  onDraftPrefillApplied
 }: {
   draftStorageKey: string;
+  draftPrefill?: { id: string; text: string } | null;
   modelKey: string;
   thinkingLevel: ButlerThinkingLevel;
   availableModels: ModelOption[];
@@ -40,12 +53,14 @@ export const ButlerComposer = memo(function ButlerComposer({
   onSend: (text: string) => Promise<void>;
   onModelChange: (modelKey: string) => void;
   onThinkingLevelChange: (thinkingLevel: ButlerThinkingLevel) => void;
+  onDraftPrefillApplied?: (prefillId: string) => void;
 }) {
   const [draft, setDraft] = useState(() => readStoredValue(draftStorageKey));
   const [dragActive, setDragActive] = useState(false);
   const persistTimerRef = useRef<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const lastAppliedPrefillIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     setDraft(readStoredValue(draftStorageKey));
@@ -72,6 +87,20 @@ export const ButlerComposer = memo(function ButlerComposer({
   useLayoutEffect(() => {
     resizeComposerTextarea(textareaRef.current);
   }, [draft]);
+
+  useEffect(() => {
+    if (!draftPrefill || lastAppliedPrefillIdRef.current === draftPrefill.id) {
+      return;
+    }
+
+    lastAppliedPrefillIdRef.current = draftPrefill.id;
+    setDraft((current) => {
+      const next = appendDraftText(current, draftPrefill.text);
+      writeStoredValue(draftStorageKey, next);
+      return next;
+    });
+    onDraftPrefillApplied?.(draftPrefill.id);
+  }, [draftPrefill, draftStorageKey, onDraftPrefillApplied]);
 
   async function handleSend() {
     const text = draft.trim();

@@ -2747,11 +2747,19 @@ select {
 }
 
 .modal-card-image {
-  width: min(960px, 100%);
+  width: min(80vw, 1440px);
+  height: min(80vh, 980px);
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .modal-card-video {
   width: min(1040px, 100%);
+}
+
+.modal-card-annotation {
+  width: min(80vw, 1480px);
+  height: min(80vh, 980px);
 }
 
 .modal-head {
@@ -2765,6 +2773,28 @@ select {
   display: inline-flex;
   align-items: center;
   gap: 10px;
+}
+
+.modal-icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.modal-icon-action svg {
+  width: 17px;
+  height: 17px;
+}
+
+.modal-icon-action:hover {
+  border-color: color-mix(in srgb, var(--accent) 56%, var(--line-strong));
 }
 
 .modal-head h2 {
@@ -2804,8 +2834,8 @@ select {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 240px;
-  max-height: min(72vh, 900px);
+  min-height: 0;
+  height: 100%;
   overflow: auto;
   background: color-mix(in srgb, var(--surface) 65%, var(--bg));
 }
@@ -2813,7 +2843,7 @@ select {
 .modal-image {
   display: block;
   max-width: 100%;
-  max-height: min(70vh, 860px);
+  max-height: 100%;
   object-fit: contain;
 }
 
@@ -2822,6 +2852,227 @@ select {
   width: min(100%, 960px);
   max-height: min(70vh, 860px);
   background: #000;
+}
+
+.proof-annotation-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  gap: 16px;
+  min-height: 0;
+  height: 100%;
+}
+
+.proof-annotation-stage-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.proof-annotation-hint p,
+.proof-annotation-sidebar-head p,
+.proof-annotation-target,
+.proof-annotation-warning {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.proof-annotation-stage-shell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 68%, var(--bg));
+}
+
+.proof-annotation-stage {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.proof-annotation-image {
+  display: block;
+}
+
+.proof-annotation-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.proof-annotation-mark {
+  cursor: pointer;
+}
+
+.proof-annotation-badge-text {
+  fill: #ffffff;
+  font-size: 4px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  pointer-events: none;
+}
+
+.proof-annotation-draft {
+  fill: rgba(255, 107, 44, 0.12);
+  stroke: #ff6b2c;
+  stroke-width: 0.55;
+  stroke-dasharray: 2.4 1.2;
+}
+
+.proof-annotation-sidebar {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  padding: 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.proof-annotation-sidebar-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.proof-annotation-sidebar-head strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.proof-annotation-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.proof-annotation-empty {
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  height: 100%;
+  border: 1px dashed var(--line-strong);
+  color: var(--muted);
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+}
+
+.proof-annotation-list {
+  display: grid;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.proof-annotation-item {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.proof-annotation-item.is-active {
+  border-color: color-mix(in srgb, var(--accent) 56%, var(--line-strong));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.proof-annotation-item-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.proof-annotation-item-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: #ff6b2c;
+  color: #ffffff;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.proof-annotation-item-label {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.proof-annotation-item textarea {
+  width: 100%;
+  min-height: 84px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  resize: vertical;
+}
+
+.proof-annotation-remove {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.proof-annotation-remove svg {
+  width: 14px;
+  height: 14px;
+}
+
+.proof-annotation-remove:hover {
+  color: var(--danger-ink);
+}
+
+.proof-annotation-sidebar-footer {
+  display: grid;
+  gap: 10px;
+}
+
+.proof-annotation-warning {
+  color: var(--danger-ink);
+}
+
+.proof-annotation-attach {
+  width: 100%;
+}
+
+.proof-annotation-attach:disabled,
+.modal-head-actions .modal-icon-action:disabled,
+.modal-head-actions .modal-close:disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
 }
 
 .toast-region {
@@ -3263,6 +3514,24 @@ select {
   .threads-backdrop {
     inset: 0;
   }
+
+  .modal-card-annotation {
+    width: min(92vw, 1040px);
+    height: min(86vh, 920px);
+  }
+
+  .proof-annotation-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(220px, 34vh);
+  }
+
+  .proof-annotation-stage-shell {
+    max-height: none;
+  }
+
+  .proof-annotation-sidebar {
+    max-height: none;
+  }
 }
 
 @media (max-width: 640px) {
@@ -3415,6 +3684,23 @@ select {
     padding: 16px;
   }
 
+  .modal-card-image {
+    width: calc(100vw - 32px);
+    height: min(86vh, 880px);
+  }
+
+  .modal-card-annotation {
+    padding: 14px;
+  }
+
+  .proof-annotation-stage-shell {
+    min-height: 0;
+  }
+
+  .proof-annotation-sidebar {
+    padding: 12px;
+  }
+
   .preview-verification-summary {
     flex-basis: 100%;
   }
@@ -3478,5 +3764,9 @@ select {
 
   .composer textarea {
     padding-right: 126px;
+  }
+
+  .proof-annotation-item {
+    padding: 9px;
   }
 }

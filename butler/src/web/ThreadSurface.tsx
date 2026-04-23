@@ -14,6 +14,7 @@ import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
 import { RuntimePanel } from "./RuntimePanel";
 import { mergeKnownImages, useKnownImages, useRuntimeSnapshot, useShellSnapshot, useThreadDetail } from "./live-state";
 import type {
+  ComposerPrefill,
   FileReference,
   PreviewMedia,
   ReasoningEffort
@@ -45,10 +46,22 @@ type ThreadSurfaceProps = {
   onOpenThread: (threadId: string) => void;
   onDeleteThread: (threadId: string) => void;
   onDeleteProof: (proofId: string) => void;
+  composerPrefill: ComposerPrefill | null;
+  onComposerPrefillConsumed: (prefillId: string) => void;
   showToast: (message: string, tone?: "success" | "error" | "info", duration?: number, key?: string) => void;
   showErrorToast: (error: unknown, key?: string, duration?: number) => void;
   copyText: (value: string, successMessage: string) => Promise<void>;
 };
+
+function appendComposerText(current: string, addition: string): string {
+  const trimmedAddition = addition.trim();
+  if (!trimmedAddition) {
+    return current;
+  }
+
+  const trimmedCurrent = current.trim();
+  return trimmedCurrent ? `${trimmedCurrent}\n\n${trimmedAddition}` : trimmedAddition;
+}
 
 export function ThreadSurface({
   threadId,
@@ -56,6 +69,8 @@ export function ThreadSurface({
   onOpenThread,
   onDeleteThread,
   onDeleteProof,
+  composerPrefill,
+  onComposerPrefillConsumed,
   showToast,
   showErrorToast,
   copyText
@@ -89,6 +104,7 @@ export function ThreadSurface({
   const threadFileInputRef = useRef<HTMLInputElement | null>(null);
   const threadDraftPersistTimerRef = useRef<number | null>(null);
   const jumpFlashTimerRef = useRef<number | null>(null);
+  const lastAppliedPrefillIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const nextThreadId = activeThread?.id ?? null;
@@ -134,6 +150,30 @@ export function ThreadSurface({
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (
+      !activeThread ||
+      !composerPrefill ||
+      composerPrefill.target.kind !== "thread" ||
+      composerPrefill.target.threadId !== activeThread.id ||
+      lastAppliedPrefillIdRef.current === composerPrefill.id
+    ) {
+      return;
+    }
+
+    lastAppliedPrefillIdRef.current = composerPrefill.id;
+    setThreadAttachments((current) =>
+      current.some((entry) => entry.id === composerPrefill.attachment.id) ? current : [...current, composerPrefill.attachment]
+    );
+    if (composerPrefill.attachment.mimeType.startsWith("image/")) {
+      mergeKnownImages([composerPrefill.attachment]);
+    }
+    setThreadDraft((current) => appendComposerText(current, composerPrefill.text));
+    setFollowRun(true);
+    onComposerPrefillConsumed(composerPrefill.id);
+    showToast("Annotated proof added to the thread composer", "success", 2200);
+  }, [activeThread, composerPrefill, onComposerPrefillConsumed, showToast]);
 
   useEffect(() => {
     if (!pendingThreadRequest || !activeThread) {

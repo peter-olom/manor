@@ -128,6 +128,51 @@ export function AttachmentIcon() {
   );
 }
 
+export function DownloadIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d="M8 2.5v7M5 7.5 8 10.5l3-3M3.5 13.5h9"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="square"
+        strokeLinejoin="miter"
+      />
+    </svg>
+  );
+}
+
+export function PencilIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d="M3 11.8 3.6 14l2.2-.6 6.8-6.8-2.8-2.8L3 11.8ZM9.8 3.8l1-1a1.3 1.3 0 0 1 1.9 0l.5.5a1.3 1.3 0 0 1 0 1.9l-1 1"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="square"
+        strokeLinejoin="miter"
+      />
+    </svg>
+  );
+}
+
+export function ImageIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d="M2.5 3.5h11v9h-11zM4.5 10l2.2-2.2 1.7 1.7 1.4-1.4 2.2 2.2M5.5 6h.01"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="square"
+        strokeLinejoin="miter"
+      />
+    </svg>
+  );
+}
+
 export function CopyIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">

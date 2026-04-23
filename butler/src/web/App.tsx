@@ -4,8 +4,10 @@ import manorLogoUrl from "./assets/manor-logo.svg";
 import manorLogoDarkUrl from "./assets/manor-logo-dark.svg";
 import { postJson } from "./api";
 import { ButlerSurface } from "./ButlerSurface";
+import { ImagePreviewModal } from "./ImagePreviewModal";
 import { CloseIcon, CopyIcon, ThemeIcon, ThreadsIcon, TrashIcon } from "./icons";
 import {
+  mergeKnownImages,
   useShellSnapshot,
   useServerToastEvent,
   useTransportState
@@ -14,7 +16,10 @@ import { StatusItem } from "./StatusItem";
 import { ThreadSurface } from "./ThreadSurface";
 import type {
   AppToast,
+  ComposerPrefill,
+  ComposerPrefillTarget,
   ConfirmDialogState,
+  FileReference,
   PreviewMedia,
   SetupCommandMode,
   TerminalTarget,
@@ -98,6 +103,7 @@ export function App() {
   const [setupCommandTarget, setSetupCommandTarget] = useState<SetupCommandMode>("builtInTerminal");
   const [threadsDrawerOpen, setThreadsDrawerOpen] = useState(false);
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
+  const [composerPrefill, setComposerPrefill] = useState<ComposerPrefill | null>(null);
   const [toast, setToast] = useState<AppToast | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
@@ -115,6 +121,14 @@ export function App() {
     selectedSurface === "thread"
       ? selectedThreadId ?? shell?.codex.focusedWindowId ?? null
       : null;
+  const composerPrefillTarget: ComposerPrefillTarget | null =
+    selectedSurface === "thread" && activeThreadId
+      ? { kind: "thread", threadId: activeThreadId }
+      : selectedSurface === "butler"
+        ? { kind: "butler" }
+        : null;
+  const composerPrefillTargetLabel =
+    composerPrefillTarget?.kind === "thread" ? "this thread" : composerPrefillTarget?.kind === "butler" ? "Butler" : null;
   const threadSummaryById = useMemo(
     () => new Map((shell?.codex.threads ?? []).map((thread) => [thread.id, thread])),
     [shell?.codex.threads]
@@ -143,6 +157,12 @@ export function App() {
   function showErrorToast(error: unknown, key?: string, duration = 3600) {
     const message = error instanceof Error ? error.message : String(error);
     showToast(message, "error", duration, key);
+  }
+
+  function createClientId(): string {
+    return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `composer-prefill-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
   async function copyText(value: string, successMessage: string) {
@@ -526,6 +546,36 @@ export function App() {
     ? activeThreadSummary.compaction.active ? "accent" : "neutral"
     : shell?.butler.compaction.active ? "accent" : "neutral";
 
+  function handleComposerPrefillConsumed(prefillId: string) {
+    setComposerPrefill((current) => (current?.id === prefillId ? null : current));
+  }
+
+  function handleAnnotatedProofAttached(payload: { attachment: FileReference; text: string }) {
+    if (!composerPrefillTarget) {
+      showToast("Open Butler or a thread before attaching annotated proof.", "error", 3600);
+      return;
+    }
+
+    if (payload.attachment.mimeType.startsWith("image/")) {
+      mergeKnownImages([payload.attachment]);
+    }
+
+    setComposerPrefill({
+      id: createClientId(),
+      target: composerPrefillTarget,
+      text: payload.text,
+      attachment: payload.attachment
+    });
+    setPreviewMedia(null);
+    showToast(
+      composerPrefillTarget.kind === "thread"
+        ? "Annotated proof added to the thread composer"
+        : "Annotated proof added to Butler",
+      "success",
+      2200
+    );
+  }
+
   if (!shell) {
     return <div className="shell loading">Loading Butler…</div>;
   }
@@ -717,7 +767,15 @@ export function App() {
               </section>
             </div>
           ) : activeTabId === "terminal" ? null : activeTabId === "butler" ? (
-            <ButlerSurface onOpenThread={openThread} onPreviewMedia={setPreviewMedia} showToast={showToast} showErrorToast={showErrorToast} copyText={copyText} />
+            <ButlerSurface
+              onOpenThread={openThread}
+              onPreviewMedia={setPreviewMedia}
+              composerPrefill={composerPrefill}
+              onComposerPrefillConsumed={handleComposerPrefillConsumed}
+              showToast={showToast}
+              showErrorToast={showErrorToast}
+              copyText={copyText}
+            />
           ) : (
             <ThreadSurface
               threadId={activeThreadId}
@@ -725,6 +783,8 @@ export function App() {
               onOpenThread={openThread}
               onDeleteThread={confirmDeleteThread}
               onDeleteProof={confirmDeleteProof}
+              composerPrefill={composerPrefill}
+              onComposerPrefillConsumed={handleComposerPrefillConsumed}
               showToast={showToast}
               showErrorToast={showErrorToast}
               copyText={copyText}
@@ -810,32 +870,40 @@ export function App() {
         </div>
       ) : null}
 
-      {previewMedia ? (
-        <div className="modal-backdrop" onClick={() => setPreviewMedia(null)}>
-          <div className={`modal-card modal-card-image${previewMedia.kind === "video" ? " modal-card-video" : ""}`} role="dialog" aria-modal="true" aria-labelledby="image-preview-title" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-head">
-              <h2 id="image-preview-title">{previewMedia.name}</h2>
-              <div className="modal-head-actions">
-                {previewMedia.downloadUrl ? (
-                  <a className="panel-action panel-action-link" href={previewMedia.downloadUrl} download>
-                    Download
-                  </a>
-                ) : null}
-                <button className="modal-close" onClick={() => setPreviewMedia(null)} aria-label="Close image preview">
-                  <CloseIcon />
-                </button>
+      {previewMedia
+        ? previewMedia.kind === "video"
+          ? (
+              <div className="modal-backdrop" onClick={() => setPreviewMedia(null)}>
+                <div className="modal-card modal-card-image modal-card-video" role="dialog" aria-modal="true" aria-labelledby="image-preview-title" onClick={(event) => event.stopPropagation()}>
+                  <div className="modal-head">
+                    <h2 id="image-preview-title">{previewMedia.name}</h2>
+                    <div className="modal-head-actions">
+                      {previewMedia.downloadUrl ? (
+                        <a className="panel-action panel-action-link" href={previewMedia.downloadUrl} download>
+                          Download
+                        </a>
+                      ) : null}
+                      <button className="modal-close" onClick={() => setPreviewMedia(null)} aria-label="Close image preview">
+                        <CloseIcon />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="modal-image-shell">
+                    <video src={previewMedia.url} className="modal-video" controls playsInline preload="metadata" />
+                  </div>
+                </div>
               </div>
-            </div>
-            <div className="modal-image-shell">
-              {previewMedia.kind === "video" ? (
-                <video src={previewMedia.url} className="modal-video" controls playsInline preload="metadata" />
-              ) : (
-                <img src={previewMedia.url} alt={previewMedia.name} className="modal-image" />
-              )}
-            </div>
-          </div>
-        </div>
-      ) : null}
+            )
+          : (
+              <ImagePreviewModal
+                media={previewMedia}
+                attachTargetLabel={composerPrefillTargetLabel}
+                onAttached={handleAnnotatedProofAttached}
+                onClose={() => setPreviewMedia(null)}
+                showErrorToast={showErrorToast}
+              />
+            )
+        : null}
 
       {toast ? (
         <div className="toast-region" aria-live="polite" aria-atomic="true">
