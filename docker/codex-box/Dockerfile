@@ -1,6 +1,6 @@
 FROM node:22-bookworm
 
-ARG CODEX_VERSION=0.118.0
+ARG CODEX_VERSION=0.124.0
 ARG MISE_VERSION=2026.4.3
 ARG TTYD_VERSION=1.7.7
 
@@ -48,6 +48,7 @@ COPY docker/codex-box/gh-auth-headless.sh /usr/local/bin/gh-auth-headless
 COPY docker/codex-box/gh-headless-browser.sh /usr/local/bin/gh-headless-browser
 COPY docker/codex-box/bootstrap-tools.sh /usr/local/bin/codex-bootstrap-tools
 COPY docker/codex-box/manor-harness.mjs /usr/local/bin/manor-harness
+COPY docker/codex-auto-update.sh /usr/local/bin/manor-codex-auto-update
 COPY docker/codex-box/install-guard.sh /opt/manor/codex-box/install-guard.sh
 COPY docker/codex-box/python-guard.sh /opt/manor/codex-box/python-guard.sh
 COPY docker/codex-box/manor-shell-env.sh /etc/profile.d/manor-shell-env.sh
@@ -88,7 +89,7 @@ RUN mkdir -p /opt/manor/codex-box/install-guard-bin \
     && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/brew \
     && ln -sf /opt/manor/codex-box/python-guard.sh /opt/manor/codex-box/install-guard-bin/python \
     && ln -sf /opt/manor/codex-box/python-guard.sh /opt/manor/codex-box/install-guard-bin/python3 \
-    && chmod +x /usr/local/bin/start-codex-app-server /usr/local/bin/codex-auth /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/codex-bootstrap-tools /usr/local/bin/manor-harness /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/python-guard.sh /etc/profile.d/manor-shell-env.sh \
+    && chmod +x /usr/local/bin/start-codex-app-server /usr/local/bin/codex-auth /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/codex-bootstrap-tools /usr/local/bin/manor-harness /usr/local/bin/manor-codex-auto-update /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/python-guard.sh /etc/profile.d/manor-shell-env.sh \
     && chown codex:codex /home/codex/.zshrc /home/codex/.zprofile
 
 USER codex

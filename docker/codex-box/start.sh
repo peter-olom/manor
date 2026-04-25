@@ -5,6 +5,7 @@ set -euo pipefail
 mkdir -p "${CODEX_HOME:-$HOME/.codex}" /state /repos /artifacts
 
 /usr/local/bin/codex-bootstrap-tools
+/usr/local/bin/manor-codex-auto-update
 
 github_host="${GITHUB_HOST:-github.com}"
 

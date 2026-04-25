@@ -16,6 +16,20 @@ Manor currently runs as one Docker Compose project with these services:
 - `preview-egress`: the separate outbound path for preview runtimes
 - `playwright`: the browser automation sidecar
 
+## Install
+
+Run `./install.sh` from the project root for a guided setup.
+
+The installer checks Docker and Compose, writes local Compose settings, and can start Manor. Use `./install.sh -y` for the default non-interactive install.
+
+Interactive defaults:
+
+- host port: `8180`
+- Codex auto-update on reboot: off
+- Codex auto-update target: `latest`
+- require Codex auto-update before startup: off
+- start Manor after install: yes
+
 ## Core Model
 
 The working model is:

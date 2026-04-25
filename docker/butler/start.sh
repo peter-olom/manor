@@ -4,6 +4,8 @@ set -euo pipefail
 
 mkdir -p "${CODEX_HOME:-$HOME/.codex}" "${PI_AGENT_DIR:-$HOME/.pi/agent}" /state /repos /artifacts
 
+/usr/local/bin/manor-codex-auto-update
+
 /usr/local/bin/butler-auth bootstrap
 
 ttyd_port="${BUTLER_TTYD_PORT:-7682}"

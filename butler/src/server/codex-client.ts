@@ -65,6 +65,38 @@ function normalizeModelLabel(rawLabel: string, id: string): string {
   return `${head}-${version}${suffix ? ` ${suffix}` : ""}`;
 }
 
+function parseModelSortKey(model: Pick<ModelOption, "id" | "label">): { version: number[]; suffixWeight: number; label: string } {
+  const source = `${model.id} ${model.label}`.toLowerCase().replace(/\s+/g, "-");
+  const match = source.match(/(?:^|-)gpt-(\d+(?:\.\d+)*)([^ ]*)/);
+  const version = match ? match[1]!.split(".").map((part) => Number.parseInt(part, 10)).filter(Number.isFinite) : [];
+  const suffixWeight = match?.[2] ? match[2]!.split("-").filter(Boolean).length : 0;
+
+  return {
+    version,
+    suffixWeight,
+    label: model.label.toLowerCase()
+  };
+}
+
+function compareModelsByNewest(a: ModelOption, b: ModelOption): number {
+  const aKey = parseModelSortKey(a);
+  const bKey = parseModelSortKey(b);
+  const length = Math.max(aKey.version.length, bKey.version.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const difference = (bKey.version[index] ?? -1) - (aKey.version[index] ?? -1);
+    if (difference !== 0) {
+      return difference;
+    }
+  }
+
+  if (aKey.suffixWeight !== bKey.suffixWeight) {
+    return aKey.suffixWeight - bKey.suffixWeight;
+  }
+
+  return aKey.label.localeCompare(bKey.label);
+}
+
 function normalizeInputItems(input: string | CodexInputItem[]): CodexInputItem[] {
   if (typeof input === "string") {
     const message = input.trim();
@@ -554,7 +586,7 @@ export class CodexAppServerClient extends EventEmitter {
       cursor = typeof result.nextCursor === "string" ? result.nextCursor : null;
     } while (cursor);
 
-    this.availableModels = models;
+    this.availableModels = [...models].sort(compareModelsByNewest);
     const defaultModel = this.availableModels.find((model) => model.id === this.selectedModel) ?? this.availableModels[0] ?? null;
     this.selectedModel = defaultModel?.id ?? null;
     this.selectedEffort = defaultModel ? this.resolveEffort(defaultModel, this.selectedEffort) : null;

@@ -1,6 +1,6 @@
 FROM node:22-bookworm
 
-ARG CODEX_VERSION=0.118.0
+ARG CODEX_VERSION=0.124.0
 ARG BUTLER_INSTALL_MODE=development
 ARG TTYD_VERSION=1.7.7
 
@@ -37,10 +37,11 @@ COPY docker/butler/start.sh /usr/local/bin/start-butler
 COPY docker/butler/auth.sh /usr/local/bin/butler-auth
 COPY docker/butler/chatgpt-login.mjs /usr/local/bin/butler-chatgpt-login.mjs
 COPY docker/butler/terminal-shell.sh /usr/local/bin/start-butler-shell
+COPY docker/codex-auto-update.sh /usr/local/bin/manor-codex-auto-update
 COPY docker/butler/zshrc /home/butler/.zshrc
 COPY docker/butler/zprofile /home/butler/.zprofile
 
-RUN chmod +x /usr/local/bin/start-butler /usr/local/bin/butler-auth /usr/local/bin/butler-chatgpt-login.mjs /usr/local/bin/start-butler-shell \
+RUN chmod +x /usr/local/bin/start-butler /usr/local/bin/butler-auth /usr/local/bin/butler-chatgpt-login.mjs /usr/local/bin/start-butler-shell /usr/local/bin/manor-codex-auto-update \
   && npm run build:web \
   && npm run build:server \
   && if [ "$BUTLER_INSTALL_MODE" = "production" ]; then npm prune --omit=dev; fi

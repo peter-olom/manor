@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: docker/butler/Dockerfile
       args:
-        CODEX_VERSION: 0.118.0
+        CODEX_VERSION: ${CODEX_VERSION:-0.124.0}
         BUTLER_INSTALL_MODE: ${BUTLER_INSTALL_MODE:-production}
     image: manor-butler:local
     container_name: manor-butler
@@ -33,6 +33,9 @@ services:
       CODEX_BASE_URL: ws://codex-box:8080
       BUTLER_AUTH_BOOTSTRAP: ${BUTLER_AUTH_BOOTSTRAP:-auto}
       BUTLER_FORCED_LOGIN_METHOD: ${BUTLER_FORCED_LOGIN_METHOD:-}
+      MANOR_CODEX_AUTO_UPDATE: ${MANOR_CODEX_AUTO_UPDATE:-0}
+      MANOR_CODEX_AUTO_UPDATE_VERSION: ${MANOR_CODEX_AUTO_UPDATE_VERSION:-latest}
+      MANOR_CODEX_AUTO_UPDATE_REQUIRED: ${MANOR_CODEX_AUTO_UPDATE_REQUIRED:-0}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_API_KEY_FILE: ${OPENAI_API_KEY_FILE:-}
       HTTP_PROXY: http://egress:3128
@@ -93,7 +96,7 @@ services:
       context: .
       dockerfile: docker/codex-box/Dockerfile
       args:
-        CODEX_VERSION: 0.118.0
+        CODEX_VERSION: ${CODEX_VERSION:-0.124.0}
     image: manor-codex-box:local
     container_name: manor-codex-box
     hostname: manor-codex
@@ -111,6 +114,9 @@ services:
       CODEX_MODEL_INSTRUCTIONS_FILE: ${CODEX_MODEL_INSTRUCTIONS_FILE:-/opt/manor/config/codex-model-instructions.md}
       CODEX_AUTH_BOOTSTRAP: ${CODEX_AUTH_BOOTSTRAP:-auto}
       CODEX_FORCED_LOGIN_METHOD: ${CODEX_FORCED_LOGIN_METHOD:-}
+      MANOR_CODEX_AUTO_UPDATE: ${MANOR_CODEX_AUTO_UPDATE:-0}
+      MANOR_CODEX_AUTO_UPDATE_VERSION: ${MANOR_CODEX_AUTO_UPDATE_VERSION:-latest}
+      MANOR_CODEX_AUTO_UPDATE_REQUIRED: ${MANOR_CODEX_AUTO_UPDATE_REQUIRED:-0}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_API_KEY_FILE: ${OPENAI_API_KEY_FILE:-}
       HTTP_PROXY: http://egress:3128
