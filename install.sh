@@ -144,6 +144,9 @@ write_env() {
         skip["MANOR_CODEX_AUTO_UPDATE"] = 1
         skip["MANOR_CODEX_AUTO_UPDATE_VERSION"] = 1
         skip["MANOR_CODEX_AUTO_UPDATE_REQUIRED"] = 1
+        skip["MANOR_PI_AUTO_UPDATE"] = 1
+        skip["MANOR_PI_AUTO_UPDATE_VERSION"] = 1
+        skip["MANOR_PI_AUTO_UPDATE_REQUIRED"] = 1
       }
       {
         split($0, parts, "=")
@@ -159,6 +162,9 @@ write_env() {
     printf 'MANOR_CODEX_AUTO_UPDATE=%s\n' "${codex_auto_update}"
     printf 'MANOR_CODEX_AUTO_UPDATE_VERSION=%s\n' "${codex_auto_update_version}"
     printf 'MANOR_CODEX_AUTO_UPDATE_REQUIRED=%s\n' "${codex_auto_update_required}"
+    printf 'MANOR_PI_AUTO_UPDATE=%s\n' "${pi_auto_update}"
+    printf 'MANOR_PI_AUTO_UPDATE_VERSION=%s\n' "${pi_auto_update_version}"
+    printf 'MANOR_PI_AUTO_UPDATE_REQUIRED=%s\n' "${pi_auto_update_required}"
   } >> "${temp_file}"
 
   mv "${temp_file}" "${env_file}"
@@ -185,6 +191,22 @@ if [[ "${codex_auto_update}" = "1" ]]; then
   codex_auto_update_required="$(prompt_bool "Require Codex auto-update to succeed before startup" "${codex_auto_update_required}")"
 else
   codex_auto_update_required="0"
+fi
+
+pi_auto_update_default="${MANOR_PI_AUTO_UPDATE:-$(env_value MANOR_PI_AUTO_UPDATE || true)}"
+pi_auto_update_default="${pi_auto_update_default:-0}"
+pi_auto_update="$(prompt_bool "Auto-update PI on Manor reboot" "${pi_auto_update_default}")"
+
+pi_auto_update_version="${MANOR_PI_AUTO_UPDATE_VERSION:-$(env_value MANOR_PI_AUTO_UPDATE_VERSION || true)}"
+pi_auto_update_version="${pi_auto_update_version:-latest}"
+pi_auto_update_required="${MANOR_PI_AUTO_UPDATE_REQUIRED:-$(env_value MANOR_PI_AUTO_UPDATE_REQUIRED || true)}"
+pi_auto_update_required="${pi_auto_update_required:-0}"
+
+if [[ "${pi_auto_update}" = "1" ]]; then
+  pi_auto_update_version="$(prompt_value "PI auto-update target" "${pi_auto_update_version}")"
+  pi_auto_update_required="$(prompt_bool "Require PI auto-update to succeed before startup" "${pi_auto_update_required}")"
+else
+  pi_auto_update_required="0"
 fi
 
 if [[ "${start_after}" -eq 1 ]]; then

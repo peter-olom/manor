@@ -5,6 +5,7 @@ set -euo pipefail
 mkdir -p "${CODEX_HOME:-$HOME/.codex}" "${PI_AGENT_DIR:-$HOME/.pi/agent}" /state /repos /artifacts
 
 /usr/local/bin/manor-codex-auto-update
+/usr/local/bin/manor-pi-auto-update
 
 /usr/local/bin/butler-auth bootstrap
 

@@ -45,6 +45,8 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
   const preferredModel =
     access.auth.mode === "chatgpt" ? getModel("openai-codex", "gpt-5.4") : getModel("openai", "gpt-5.4");
   const resourceLoader = new DefaultResourceLoader({
+    cwd: "/repos",
+    agentDir: path.dirname(access.piAuthPath),
     systemPromptOverride: () => buildSystemPrompt(access.store, access.describePendingCallbacks())
   });
   await resourceLoader.reload();

@@ -12,8 +12,8 @@
     "start": "node dist/server/index.js"
   },
   "dependencies": {
-    "@mariozechner/pi-ai": "0.65.0",
-    "@mariozechner/pi-coding-agent": "0.65.0",
+    "@mariozechner/pi-ai": "0.70.2",
+    "@mariozechner/pi-coding-agent": "0.70.2",
     "@sinclair/typebox": "^0.34.41",
     "express": "^5.1.0",
     "highlight.js": "^11.11.1",

@@ -1,6 +1,7 @@
 FROM node:22-bookworm
 
 ARG CODEX_VERSION=0.124.0
+ARG PI_VERSION=0.70.2
 ARG BUTLER_INSTALL_MODE=development
 ARG TTYD_VERSION=1.7.7
 
@@ -30,7 +31,8 @@ RUN apt-get update \
   && git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git /home/butler/.oh-my-zsh \
   && mkdir -p /home/butler/.oh-my-zsh/custom \
   && npm install -g "@openai/codex@${CODEX_VERSION}" \
-  && npm install
+  && npm install \
+  && npm install "@mariozechner/pi-ai@${PI_VERSION}" "@mariozechner/pi-coding-agent@${PI_VERSION}"
 
 COPY butler/ ./
 COPY docker/butler/start.sh /usr/local/bin/start-butler
@@ -38,10 +40,11 @@ COPY docker/butler/auth.sh /usr/local/bin/butler-auth
 COPY docker/butler/chatgpt-login.mjs /usr/local/bin/butler-chatgpt-login.mjs
 COPY docker/butler/terminal-shell.sh /usr/local/bin/start-butler-shell
 COPY docker/codex-auto-update.sh /usr/local/bin/manor-codex-auto-update
+COPY docker/pi-auto-update.sh /usr/local/bin/manor-pi-auto-update
 COPY docker/butler/zshrc /home/butler/.zshrc
 COPY docker/butler/zprofile /home/butler/.zprofile
 
-RUN chmod +x /usr/local/bin/start-butler /usr/local/bin/butler-auth /usr/local/bin/butler-chatgpt-login.mjs /usr/local/bin/start-butler-shell /usr/local/bin/manor-codex-auto-update \
+RUN chmod +x /usr/local/bin/start-butler /usr/local/bin/butler-auth /usr/local/bin/butler-chatgpt-login.mjs /usr/local/bin/start-butler-shell /usr/local/bin/manor-codex-auto-update /usr/local/bin/manor-pi-auto-update \
   && npm run build:web \
   && npm run build:server \
   && if [ "$BUTLER_INSTALL_MODE" = "production" ]; then npm prune --omit=dev; fi
