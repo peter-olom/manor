@@ -816,6 +816,9 @@ export class ButlerAgentService extends EventEmitter {
       "Do not wait for Manor to infer project commands. If the project needs install, run, test, or bootstrap commands, choose and run them explicitly.",
       "Prefer simple execution over ceremony. Do not restate a plan unless it helps unblock the job.",
       "Use only the harness actions exposed through `manor-harness`.",
+      "Treat the job brief acceptance points as the supervisor contract. Complete and verify each point before reporting completed.",
+      "When reporting completion, include brief evidence for each acceptance point in the supervisor report details. For UI work, reference the relevant screenshot, video, trace, or browser proof when available.",
+      "Do not claim an acceptance point is complete unless you have checked it. If evidence is missing or a point is incomplete, report blocked or continue the work.",
       "Keep Butler-owned memory current when it materially helps continuation. Use `manor-harness memory checkpoint`, `memory decision`, and `memory note` sparingly and only when the information is worth preserving.",
       "When you complete meaningful work, record a supervisor report before your final reply with `manor-harness report --status completed --summary \"<concise outcome>\" --details \"<brief oversight note with the key fact, risk, or next step>\"`.",
       "If you are blocked or need operator attention, record it before your reply with `manor-harness report --status blocked --summary \"<what is blocked>\" --details \"<what you need, what failed, or the next recommended action>\"`.",
@@ -839,20 +842,6 @@ export class ButlerAgentService extends EventEmitter {
       "- do not continue to any later step until Butler sends the next follow-up",
       "Only finish when Butler explicitly tells you to finalize the smoke test."
     ].join("\n");
-  }
-
-  private detectSupervisionSmokeRequest(task: string, goal?: string): { totalFollowUps: number } | null {
-    const combined = [task, goal].filter(Boolean).join("\n");
-    if (!/\bsmoke\b/i.test(combined)) {
-      return null;
-    }
-    if (!/\b(supervision|oversight)\b/i.test(combined)) {
-      return null;
-    }
-
-    const turnsMatch = combined.match(/\b([2-5])\s+turns?\b/i) ?? combined.match(/\bturns?\s*[:=]?\s*([2-5])\b/i);
-    const totalFollowUps = turnsMatch ? Number.parseInt(turnsMatch[1] ?? "3", 10) : 3;
-    return { totalFollowUps: Math.max(2, Math.min(5, totalFollowUps)) };
   }
 
   private buildSmokeFollowUpText(plan: SupervisionSmokePlan): string {
@@ -1123,6 +1112,10 @@ export class ButlerAgentService extends EventEmitter {
       `harness_binding: manor-harness --thread ${options.threadId}`,
       `proof_expectation: ${describeProofExpectation(contract.proofExpectation)}`,
     ];
+
+    for (const point of contract.acceptancePoints) {
+      lines.push(`acceptance_point: ${point}`);
+    }
 
     if (contract.operatorGoal) {
       lines.push(`operator_goal: ${contract.operatorGoal}`);

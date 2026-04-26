@@ -28,6 +28,7 @@ const CONTRACT_FIELD_LABELS: Record<string, string> = {
   branch: "Branch",
   workspace_cwd: "Workspace",
   proof_expectation: "Proof",
+  acceptance_point: "Acceptance",
   operator_goal: "Goal",
   thread_id: "Job",
   harness_binding: "Harness",

@@ -13,6 +13,64 @@ function deriveRequestedTask(taskText: string): string {
   return normalizeContractText(taskText) ?? "Carry out the delegated task.";
 }
 
+function normalizeAcceptancePoint(value: string): string | null {
+  const normalized = value
+    .replace(/^[-*]\s+/, "")
+    .replace(/^\d+[.)]\s+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized || normalized.length < 3) {
+    return null;
+  }
+  return normalized.replace(/[.;]\s*$/, "");
+}
+
+export function deriveAcceptancePoints(taskText: string, requestedTask?: string | null): string[] {
+  const source = [requestedTask ?? "", taskText].filter(Boolean).join("\n");
+  const points: string[] = [];
+  const seen = new Set<string>();
+  const addPoint = (value: string): void => {
+    const point = normalizeAcceptancePoint(value);
+    if (!point) {
+      return;
+    }
+    const key = point.toLowerCase();
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    points.push(point);
+  };
+
+  for (const line of source.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (/^[-*]\s+\S/.test(trimmed) || /^\d+[.)]\s+\S/.test(trimmed)) {
+      addPoint(trimmed);
+    }
+    if (points.length >= 8) {
+      return points;
+    }
+  }
+
+  const sentence = normalizeContractText(requestedTask ?? taskText) ?? "";
+  const listMatch = sentence.match(/\b(?:with|including|include|covering|for)\s+([^.;:]+,[^.;:]+)/i);
+  if (listMatch) {
+    const listText = listMatch[1].replace(/^.*\be\.g\.\s*/i, "");
+    for (const part of listText.split(/\s*,\s*|\s+and\s+/)) {
+      addPoint(part);
+      if (points.length >= 8) {
+        return points;
+      }
+    }
+  }
+
+  if (points.length === 0) {
+    addPoint(deriveRequestedTask(taskText));
+  }
+
+  return points.slice(0, 8);
+}
+
 export function detectProofExpectation(taskText: string): CodexProofExpectation {
   const normalized = taskText.toLowerCase();
   return /\b(proof|artifact|artifacts|screenshot|screenshots|video|videos|record|recording|trace|capture)\b/.test(normalized)
@@ -50,6 +108,7 @@ export function buildThreadExecutionContract(input: {
   const operatorGoal = normalizeContractText(input.operatorGoal);
   const requestedTask = normalizeContractText(input.requestedTask) ?? deriveRequestedTask(input.taskText);
   const proofExpectation = detectProofExpectation([requestedTask, operatorGoal].filter(Boolean).join("\n"));
+  const acceptancePoints = deriveAcceptancePoints(input.taskText, requestedTask);
 
   return {
     threadId: input.threadId,
@@ -59,6 +118,7 @@ export function buildThreadExecutionContract(input: {
     branch: input.branch,
     requestedTask,
     operatorGoal,
+    acceptancePoints,
     proofExpectation,
     proofExpectationLabel: describeProofExpectation(proofExpectation),
     notes: [...new Set(input.notes.map((note) => note.trim()).filter(Boolean))]
@@ -124,6 +184,7 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
   const contractBlock = normalized.slice(0, requestedTaskStart).trim();
   const requestBlock = normalized.slice(requestedTaskStart + requestedTaskMarker.length).trim();
   const notes: string[] = [];
+  const acceptancePoints: string[] = [];
   const values = new Map<string, string>();
 
   for (const line of contractBlock.split(/\r?\n/).slice(1)) {
@@ -138,6 +199,13 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
     }
     if (key === "note") {
       notes.push(value);
+      continue;
+    }
+    if (key === "acceptance_point") {
+      const point = normalizeAcceptancePoint(value);
+      if (point) {
+        acceptancePoints.push(point);
+      }
       continue;
     }
     values.set(key, value);
@@ -172,6 +240,7 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
     branch: values.get("branch") || null,
     requestedTask,
     operatorGoal,
+    acceptancePoints: [...new Set(acceptancePoints)],
     proofExpectation,
     proofExpectationLabel: describeProofExpectation(proofExpectation),
     notes

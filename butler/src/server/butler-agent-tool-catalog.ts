@@ -257,6 +257,15 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     ]
   },
   {
+    name: "run_supervision_smoke_test",
+    label: "Run supervision smoke test",
+    description: "Start a synthetic Codex job to verify Butler can privately steer worker callbacks.",
+    uiEffects: [
+      { kind: "openWindow", description: "Opens the synthetic Codex workstream as a tab." },
+      { kind: "focusWindow", description: "Moves focus into the synthetic Codex workstream." }
+    ]
+  },
+  {
     name: "open_job_window",
     label: "Open job window",
     description: "Open a focused job window in the Butler UI for a specific Codex job.",
@@ -272,9 +281,27 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "focusButler", description: "Stays in supervisor mode while checking current tabs." }]
   },
   {
+    name: "read_supervision_checklist",
+    label: "Read checklist",
+    description: "Read one delegated job's structured acceptance points, evidence, Butler decisions, and heartbeat.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while reviewing structured job state." }]
+  },
+  {
+    name: "review_acceptance_point",
+    label: "Review point",
+    description: "Record Butler's accept, reject, or waive decision for one acceptance point.",
+    uiEffects: [{ kind: "refreshThread", description: "Refreshes the target run after Butler updates checklist state." }]
+  },
+  {
+    name: "flush_rejected_acceptance_points",
+    label: "Send rejected points",
+    description: "Send one batched private worker follow-up for all queued rejected acceptance points.",
+    uiEffects: [{ kind: "refreshThread", description: "Refreshes the target run after Butler sends rejected checklist work back." }]
+  },
+  {
     name: "message_job",
     label: "Message job",
-    description: "Privately send a follow-up instruction into one Codex job thread and explicitly decide how the next worker report should be handled.",
+    description: "Privately send a non-checklist follow-up instruction into one Codex job thread and explicitly decide how the next worker report should be handled.",
     uiEffects: [{ kind: "refreshThread", description: "Refreshes the target run after Butler steers it." }]
   },
   {

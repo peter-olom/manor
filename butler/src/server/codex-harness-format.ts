@@ -5,10 +5,14 @@ export function formatHarnessExecutionContract(thread: CodexThreadRecord): strin
   if (!contract) {
     return ["Job brief: none"];
   }
+  const acceptancePoints = Array.isArray(contract.acceptancePoints) ? contract.acceptancePoints : [];
   return [
     `Job workspace: ${contract.workspaceCwd ?? "(unknown)"}`,
     `Job branch: ${contract.branch ?? "(unknown)"}`,
     `Proof expectation: ${contract.proofExpectationLabel}`,
+    ...(acceptancePoints.length > 0
+      ? [`Acceptance points:\n${acceptancePoints.map((point, index) => `${index + 1}. ${point}`).join("\n")}`]
+      : []),
     ...(contract.notes.length > 0 ? [`Job notes:\n${contract.notes.map((note, index) => `${index + 1}. ${note}`).join("\n")}`] : [])
   ];
 }

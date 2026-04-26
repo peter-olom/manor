@@ -919,23 +919,16 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           imageReferenceIds?: string[];
           fileReferenceIds?: string[];
         };
-        const smokeRequest = access.detectSupervisionSmokeRequest(typedParams.task, typedParams.goal);
-        const workspace = smokeRequest
-          ? { cwd: "/repos", branchName: null as string | null }
-          : await access.prepareDelegationWorkspace(typedParams.task, typedParams.cwd);
-        const delegatedTask = smokeRequest ? access.buildSupervisionSmokeTask(smokeRequest.totalFollowUps) : typedParams.task;
-        const delegatedGoal = smokeRequest ? undefined : typedParams.goal;
-        const repoBootstrapTask = !smokeRequest && isSharedShellRepoBootstrapTask(delegatedTask);
+        const workspace = await access.prepareDelegationWorkspace(typedParams.task, typedParams.cwd);
+        const delegatedTask = typedParams.task;
+        const delegatedGoal = typedParams.goal;
+        const repoBootstrapTask = isSharedShellRepoBootstrapTask(delegatedTask);
         const developerInstructions = await access.buildDelegationDeveloperInstructions(workspace, delegatedTask);
-        const extraNotes = smokeRequest
+        const extraNotes = repoBootstrapTask
           ? {
-              notes: ["Synthetic Butler supervision smoke test. Do not gather proof unless the smoke test explicitly asks for it."]
+              notes: ["This job starts in the shared /repos workspace. Create or clone the repo first, then continue inside that repo."]
             }
-          : repoBootstrapTask
-            ? {
-                notes: ["This job starts in the shared /repos workspace. Create or clone the repo first, then continue inside that repo."]
-              }
-            : { notes: undefined };
+          : { notes: undefined };
 
         const result = await access.codexClient.startThread({
           task: delegatedGoal ? `${delegatedTask}\n\nGoal: ${delegatedGoal}` : delegatedTask,
@@ -972,33 +965,115 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         access.noteThreadFocus(result.threadId, "delegate_to_codex");
         access.queueDelegationAcknowledgement(
           result.threadId,
-          smokeRequest
-            ? `Accepted. I started a supervision smoke test in job ${result.threadId}. I will return here when it completes.`
-            : `Accepted. I delegated this to Codex in job ${result.threadId} and will return here with the result.`
+          `Accepted. I delegated this to Codex in job ${result.threadId} and will return here with the result.`
         );
         access.registerPendingChatCallback(result.threadId);
-        if (smokeRequest) {
-          access.store.setThreadSupervisionLimit(result.threadId, smokeRequest.totalFollowUps + 2);
-          access.supervisionSmokePlans.set(result.threadId, {
-            threadId: result.threadId,
-            totalFollowUps: smokeRequest.totalFollowUps,
-            followUpsSent: 0
-          });
-        }
         const supervision = access.store.noteButlerSteer(result.threadId);
 
         return {
           content: [
             {
               type: "text",
-              text: smokeRequest
-                ? `Started supervision smoke test in job ${result.threadId}. Butler will privately steer ${smokeRequest.totalFollowUps} follow-up turns. Budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}.`
-                : `Delegated the task to Codex in job ${result.threadId} from ${workspace.cwd}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}.`
+              text: `Delegated the task to Codex in job ${result.threadId} from ${workspace.cwd}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}.`
             }
           ],
           details: {
             threadId: result.threadId,
-            totalFollowUps: smokeRequest?.totalFollowUps ?? null,
+            thinkingBudget: typedParams.thinkingBudget ?? null,
+            supervision,
+            workspace,
+            thread: access.store.getThread(result.threadId) ?? null
+          }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "run_supervision_smoke_test",
+      label: "Run supervision smoke test",
+      description:
+        "Start a synthetic Codex job that exists only to verify Butler can privately steer a worker through supervisor callbacks.",
+      promptSnippet:
+        "run_supervision_smoke_test: intentionally test Butler's own supervision loop. Use only when you decide the operator is asking to verify Butler supervision itself, not for ordinary implementation tasks that need tests or smoke verification.",
+      parameters: Type.Object({
+        totalFollowUps: Type.Optional(Type.Union([
+          Type.Literal(2),
+          Type.Literal(3),
+          Type.Literal(4),
+          Type.Literal(5)
+        ])),
+        thinkingBudget: Type.Optional(Type.Union([
+          Type.Literal("low"),
+          Type.Literal("medium"),
+          Type.Literal("high"),
+          Type.Literal("xhigh")
+        ]))
+      }),
+      uiEffects: access.getToolUiEffects("run_supervision_smoke_test"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as {
+          totalFollowUps?: 2 | 3 | 4 | 5;
+          thinkingBudget?: ReasoningEffort;
+        };
+        const totalFollowUps = typedParams.totalFollowUps ?? 3;
+        const workspace = { cwd: "/repos", branchName: null as string | null };
+        const delegatedTask = access.buildSupervisionSmokeTask(totalFollowUps);
+        const developerInstructions = await access.buildDelegationDeveloperInstructions(workspace, delegatedTask);
+        const extraNotes = ["Synthetic Butler supervision smoke test. Do not gather proof unless the smoke test explicitly asks for it."];
+
+        const result = await access.codexClient.startThread({
+          task: delegatedTask,
+          input: async (threadId: string) =>
+            buildCodexInputWithReferences({
+              text: (
+                await access.buildDelegationContract({
+                  threadId,
+                  task: delegatedTask,
+                  workspace,
+                  extraNotes
+                })
+              ).text,
+              imageStore: access.imageStore,
+              imageReferenceIds: [],
+              fileStore: access.fileStore,
+              fileReferenceIds: []
+            }),
+          cwd: workspace.cwd,
+          developerInstructions,
+          effort: typedParams.thinkingBudget ?? null,
+          openWindow: true
+        });
+        const delegationContract = await access.buildDelegationContract({
+          threadId: result.threadId,
+          task: delegatedTask,
+          workspace,
+          extraNotes
+        });
+        access.store.setThreadExecutionContract(result.threadId, delegationContract.contract);
+        access.store.addEvent(result.threadId, "butler.delegation.created", "Butler created a synthetic supervision smoke job.");
+        access.noteThreadFocus(result.threadId, "run_supervision_smoke_test");
+        access.queueDelegationAcknowledgement(
+          result.threadId,
+          `Accepted. I started a supervision smoke test in job ${result.threadId}. I will return here when it completes.`
+        );
+        access.registerPendingChatCallback(result.threadId);
+        access.store.setThreadSupervisionLimit(result.threadId, totalFollowUps + 2);
+        access.supervisionSmokePlans.set(result.threadId, {
+          threadId: result.threadId,
+          totalFollowUps,
+          followUpsSent: 0
+        });
+        const supervision = access.store.noteButlerSteer(result.threadId);
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Started supervision smoke test in job ${result.threadId}. Butler will privately steer ${totalFollowUps} follow-up turns. Budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}.`
+            }
+          ],
+          details: {
+            threadId: result.threadId,
+            totalFollowUps,
             thinkingBudget: typedParams.thinkingBudget ?? null,
             supervision,
             workspace,

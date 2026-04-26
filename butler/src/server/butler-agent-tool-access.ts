@@ -132,7 +132,6 @@ export type ButlerAgentToolAccess = {
   ): Promise<ProofScreenshotReview>;
   getThreadBudgetLimitMessage(threadId: string): string | null;
   buildSupervisionSmokeTask(totalFollowUps: number): string;
-  detectSupervisionSmokeRequest(task: string, goal?: string): { totalFollowUps: number } | null;
   buildDelegationDeveloperInstructions(workspace: { cwd: string; branchName: string | null }, task: string): Promise<string>;
   getActiveOperatorThreadGuard(): ButlerOperatorThreadGuard | null;
   noteThreadFocus(threadId: string, reason?: string): void;

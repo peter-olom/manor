@@ -49,6 +49,14 @@ import {
   type StateStoreInternalAccess
 } from "./state-store-internals.js";
 import {
+  buildQueuedRejectionInstruction,
+  buildSupervisionChecklist,
+  clearQueuedRejectionInstructions,
+  recordChecklistWorkerEvidence,
+  reviewChecklistAcceptancePoint,
+  updateChecklistHeartbeat
+} from "./supervision-checklist.js";
+import {
   getStateStoreJobMemory,
   getStateStoreProjectMemory,
   listStateStorePendingPromotionCandidates,
@@ -126,6 +134,8 @@ import type {
   RuntimeSnapshot,
   StackLeaseView,
   ServiceLeaseView,
+  SupervisionChecklistItemStatus,
+  SupervisionChecklistView,
   PersistedUiState
 } from "./types.js";
 
@@ -153,6 +163,7 @@ export class ButlerStateStore extends EventEmitter {
   private readonly leaseReapGraceMs: number;
   private readonly artifactRetentionMs: number;
   private readonly persistedExecutionContractsByThreadId = new Map<string, CodexThreadExecutionContractView>();
+  private readonly persistedSupervisionChecklistsByThreadId = new Map<string, SupervisionChecklistView>();
   private readonly persistedJobMemoriesByThreadId = new Map<string, JobMemoryView>();
   private readonly persistedProjectMemoriesByProjectId = new Map<string, ProjectMemoryView>();
   private readonly persistedButlerMemoryEntries: ButlerMemoryEntryView[] = [];
@@ -394,10 +405,7 @@ export class ButlerStateStore extends EventEmitter {
     record.status = normalizeStatus(thread.status);
     record.modelProvider = typeof thread.modelProvider === "string" ? thread.modelProvider : record.modelProvider;
     const parsedExecutionContract = parseThreadExecutionContract(record.preview);
-    if (parsedExecutionContract) {
-      record.executionContract = parsedExecutionContract;
-      this.persistedExecutionContractsByThreadId.set(id, parsedExecutionContract);
-    }
+    if (parsedExecutionContract) { record.executionContract = parsedExecutionContract; record.supervisionChecklist = buildSupervisionChecklist(record, parsedExecutionContract); this.persistedExecutionContractsByThreadId.set(id, parsedExecutionContract); this.persistedSupervisionChecklistsByThreadId.set(id, { ...record.supervisionChecklist }); }
 
     if (Array.isArray(thread.turns)) {
       const existingTurnsById = new Map(record.turns.map((turn) => [turn.id, turn]));
@@ -419,7 +427,9 @@ export class ButlerStateStore extends EventEmitter {
       const inferredContract = inferPersistedThreadExecutionContract(record);
       if (inferredContract) {
         record.executionContract = inferredContract;
+        record.supervisionChecklist = buildSupervisionChecklist(record, inferredContract);
         this.persistedExecutionContractsByThreadId.set(id, inferredContract);
+        this.persistedSupervisionChecklistsByThreadId.set(id, { ...record.supervisionChecklist });
         this.refreshDerivedThreadState(record);
       }
     }
@@ -427,22 +437,30 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   setThreadExecutionContract(threadId: string, contract: CodexThreadExecutionContractView): void {
-    const record = this.getOrCreateThread(threadId);
-    record.executionContract = { ...contract };
-    record.updatedAt = Date.now();
-    this.persistedExecutionContractsByThreadId.set(threadId, { ...record.executionContract });
-    this.refreshDerivedThreadState(record);
-    this.queueSave();
-    this.emitChange();
+    const record = this.getOrCreateThread(threadId); record.executionContract = { ...contract };
+    record.supervisionChecklist = buildSupervisionChecklist(record, contract); record.updatedAt = Date.now();
+    this.persistedExecutionContractsByThreadId.set(threadId, { ...record.executionContract }); this.persistedSupervisionChecklistsByThreadId.set(threadId, { ...record.supervisionChecklist });
+    this.refreshDerivedThreadState(record); this.queueSave(); this.emitChange();
   }
 
-  markLoadedThreads(threadIds: string[]): void {
-    const loaded = new Set(threadIds);
-    for (const record of this.threads.values()) {
-      record.loaded = loaded.has(record.id);
-    }
-    this.emitChange();
+  getSupervisionChecklist(threadId: string): SupervisionChecklistView | null { return this.getOrCreateThread(threadId).supervisionChecklist; }
+
+  reviewAcceptancePoint(input: { threadId: string; pointId: string; status: SupervisionChecklistItemStatus; note?: string | null; nextInstruction?: string | null }): SupervisionChecklistView {
+    const thread = this.getOrCreateThread(input.threadId); const checklist = thread.supervisionChecklist;
+    if (!checklist) throw new Error(`No supervision checklist exists for job ${input.threadId}.`);
+    reviewChecklistAcceptancePoint(checklist, input); thread.updatedAt = checklist.updatedAt;
+    this.persistedSupervisionChecklistsByThreadId.set(input.threadId, { ...checklist }); this.queueSave(); this.emitChange(); return checklist;
   }
+
+  buildQueuedRejectionInstruction(threadId: string): string | null { const checklist = this.getOrCreateThread(threadId).supervisionChecklist; return checklist ? buildQueuedRejectionInstruction(checklist) : null; }
+
+  clearQueuedRejectionInstructions(threadId: string): SupervisionChecklistView | null {
+    const thread = this.getOrCreateThread(threadId); if (!thread.supervisionChecklist) return null;
+    clearQueuedRejectionInstructions(thread.supervisionChecklist); this.persistedSupervisionChecklistsByThreadId.set(threadId, { ...thread.supervisionChecklist });
+    this.queueSave(); this.emitChange(); return thread.supervisionChecklist;
+  }
+
+  markLoadedThreads(threadIds: string[]): void { const loaded = new Set(threadIds); for (const record of this.threads.values()) record.loaded = loaded.has(record.id); this.emitChange(); }
 
   enableMilestones(): void {
     this.latestStartedTurnIds.clear();
@@ -676,6 +694,10 @@ export class ButlerStateStore extends EventEmitter {
     syncStateStoreThreadJobMemory(this.getInternalAccess(), thread);
     thread.supervision.capReached =
       thread.supervision.maxButlerTurns !== null && thread.supervision.butlerTurnsUsed >= thread.supervision.maxButlerTurns;
+    const checklist = updateChecklistHeartbeat(thread.supervisionChecklist, thread, activityAt);
+    if (checklist) {
+      this.persistedSupervisionChecklistsByThreadId.set(thread.id, { ...checklist });
+    }
     thread.supervisor = buildThreadSupervisor(thread);
     this.persistThreadSupervision(thread);
     this.captureMilestones(thread);
@@ -863,13 +885,10 @@ export class ButlerStateStore extends EventEmitter {
       }
     }
     this.removePreviewProofsForThread(threadId);
-    this.persistedSupervisionByThreadId.delete(threadId);
-    this.persistedWorkerReportsByThreadId.delete(threadId);
-    this.persistedExecutionContractsByThreadId.delete(threadId);
-    this.persistedJobMemoriesByThreadId.delete(threadId);
-    this.latestStartedTurnIds.delete(threadId);
-    this.latestCompletedTurnIds.delete(threadId);
-    this.latestBlockedTurnIds.delete(threadId);
+    this.persistedSupervisionByThreadId.delete(threadId); this.persistedWorkerReportsByThreadId.delete(threadId);
+    this.persistedExecutionContractsByThreadId.delete(threadId); this.persistedSupervisionChecklistsByThreadId.delete(threadId);
+    this.persistedJobMemoriesByThreadId.delete(threadId); this.latestStartedTurnIds.delete(threadId);
+    this.latestCompletedTurnIds.delete(threadId); this.latestBlockedTurnIds.delete(threadId);
     this.windows = this.windows.filter((window) => window.threadId !== threadId);
     if (this.focusedWindowId === threadId) {
       this.focusedWindowId = this.windows[0]?.threadId ?? null;
@@ -902,13 +921,10 @@ export class ButlerStateStore extends EventEmitter {
         }
       }
       this.removePreviewProofsForThread(threadId);
-      this.persistedSupervisionByThreadId.delete(threadId);
-      this.persistedWorkerReportsByThreadId.delete(threadId);
-      this.persistedExecutionContractsByThreadId.delete(threadId);
-      this.persistedJobMemoriesByThreadId.delete(threadId);
-      this.latestStartedTurnIds.delete(threadId);
-      this.latestCompletedTurnIds.delete(threadId);
-      this.latestBlockedTurnIds.delete(threadId);
+      this.persistedSupervisionByThreadId.delete(threadId); this.persistedWorkerReportsByThreadId.delete(threadId);
+      this.persistedExecutionContractsByThreadId.delete(threadId); this.persistedSupervisionChecklistsByThreadId.delete(threadId);
+      this.persistedJobMemoriesByThreadId.delete(threadId); this.latestStartedTurnIds.delete(threadId);
+      this.latestCompletedTurnIds.delete(threadId); this.latestBlockedTurnIds.delete(threadId);
     }
 
     this.windows = this.windows.filter((window) => !targets.has(window.threadId));
@@ -938,6 +954,7 @@ export class ButlerStateStore extends EventEmitter {
         supervision: thread.supervision,
         supervisor: thread.supervisor,
         executionContract: thread.executionContract,
+        supervisionChecklist: thread.supervisionChecklist,
         jobMemory: thread.jobMemory
       }))
       .sort((a, b) => b.updatedAt - a.updatedAt);
@@ -986,6 +1003,7 @@ export class ButlerStateStore extends EventEmitter {
       supervision: thread.supervision,
       supervisor: thread.supervisor,
       executionContract: thread.executionContract,
+      supervisionChecklist: thread.supervisionChecklist,
       jobMemory: thread.jobMemory,
       turns: thread.turns.map((turn) => this.toTurnView(turn)),
       eventLog: thread.eventLog,
@@ -1059,6 +1077,10 @@ export class ButlerStateStore extends EventEmitter {
 
     thread.workerReport = nextReport;
     thread.updatedAt = now;
+    const checklist = recordChecklistWorkerEvidence(thread.supervisionChecklist, thread, nextReport, now);
+    if (checklist) {
+      this.persistedSupervisionChecklistsByThreadId.set(thread.id, { ...checklist });
+    }
     const history = this.persistedWorkerReportsByThreadId.get(threadId) ?? [];
     const nextHistory = [...history.filter((entry) => entry.turnId !== turnId), nextReport]
       .sort((left, right) => left.createdAt - right.createdAt)

@@ -41,7 +41,8 @@ import type {
   ProjectPolicyView,
   RuntimeCleanupTaskView,
   ServiceLeaseView,
-  StackLeaseView
+  StackLeaseView,
+  SupervisionChecklistView
 } from "./types.js";
 
 export type StateStoreInternalAccess = {
@@ -55,6 +56,7 @@ export type StateStoreInternalAccess = {
   persistedSupervisionByThreadId: Map<string, { butlerTurnsUsed: number; maxButlerTurns: number | null }>;
   persistedWorkerReportsByThreadId: Map<string, CodexWorkerReportView[]>;
   persistedExecutionContractsByThreadId: Map<string, CodexThreadExecutionContractView>;
+  persistedSupervisionChecklistsByThreadId: Map<string, SupervisionChecklistView>;
   persistedJobMemoriesByThreadId: Map<string, JobMemoryView>;
   persistedProjectMemoriesByProjectId: Map<string, ProjectMemoryView>;
   persistedButlerMemoryEntries: ButlerMemoryEntryView[];
@@ -76,6 +78,63 @@ export type StateStoreInternalAccess = {
   primeThreadMilestones(threadId: string): void;
   emit(event: "change"): boolean;
 };
+
+function normalizeSupervisionChecklist(raw: SupervisionChecklistView): SupervisionChecklistView {
+  const now = Date.now();
+  const items = raw.items
+    .filter((item) => item && typeof item === "object" && typeof item.text === "string" && item.text.trim())
+    .map((item, index) => {
+      const status: SupervisionChecklistView["items"][number]["status"] =
+        item.status === "accepted" || item.status === "rejected" || item.status === "waived" ? item.status : "pending";
+      return {
+        id: typeof item.id === "string" && item.id.trim() ? item.id.trim() : `point-${index + 1}`,
+        text: item.text.trim(),
+        status,
+        butlerNote: typeof item.butlerNote === "string" && item.butlerNote.trim() ? item.butlerNote.trim() : null,
+        queuedInstruction:
+          typeof item.queuedInstruction === "string" && item.queuedInstruction.trim() ? item.queuedInstruction.trim() : null,
+        decidedAt: typeof item.decidedAt === "number" && Number.isFinite(item.decidedAt) ? item.decidedAt : null,
+        evidence: Array.isArray(item.evidence)
+          ? item.evidence
+              .filter((entry) => entry && typeof entry === "object" && typeof entry.summary === "string")
+              .map((entry) => ({
+                id: typeof entry.id === "string" && entry.id.trim() ? entry.id.trim() : crypto.randomUUID(),
+                source: entry.source === "butler_review" ? ("butler_review" as const) : ("worker_report" as const),
+                summary: entry.summary.trim(),
+                details: typeof entry.details === "string" && entry.details.trim() ? entry.details.trim() : null,
+                reportTurnId: typeof entry.reportTurnId === "string" && entry.reportTurnId.trim() ? entry.reportTurnId.trim() : null,
+                createdAt: typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : now
+              }))
+          : []
+      };
+    });
+
+  return {
+    threadId: raw.threadId,
+    projectId: typeof raw.projectId === "string" && raw.projectId.trim() ? raw.projectId.trim() : "unknown",
+    projectLabel: typeof raw.projectLabel === "string" && raw.projectLabel.trim() ? raw.projectLabel.trim() : "Unknown",
+    requestedTask: typeof raw.requestedTask === "string" && raw.requestedTask.trim() ? raw.requestedTask.trim() : "Carry out the delegated task.",
+    items,
+    heartbeat: {
+      lastThreadEventAt:
+        typeof raw.heartbeat?.lastThreadEventAt === "number" && Number.isFinite(raw.heartbeat.lastThreadEventAt)
+          ? raw.heartbeat.lastThreadEventAt
+          : null,
+      lastWorkerReportAt:
+        typeof raw.heartbeat?.lastWorkerReportAt === "number" && Number.isFinite(raw.heartbeat.lastWorkerReportAt)
+          ? raw.heartbeat.lastWorkerReportAt
+          : null,
+      lastKnownThreadStatus:
+        raw.heartbeat?.lastKnownThreadStatus === "active" || raw.heartbeat?.lastKnownThreadStatus === "idle"
+          ? raw.heartbeat.lastKnownThreadStatus
+          : "unknown",
+      stale: Boolean(raw.heartbeat?.stale)
+    },
+    reviewState: raw.reviewState === "reviewed" ? "reviewed" : "needs_review",
+    createdAt: typeof raw.createdAt === "number" && Number.isFinite(raw.createdAt) ? raw.createdAt : now,
+    updatedAt: typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : now
+  };
+}
 
 export function reconcileStateStoreThreadWindows(access: StateStoreInternalAccess): boolean {
   if (!access.threadInventoryReady) {
@@ -539,6 +598,7 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     access.persistedSupervisionByThreadId.clear();
     access.persistedWorkerReportsByThreadId.clear();
     access.persistedExecutionContractsByThreadId.clear();
+    access.persistedSupervisionChecklistsByThreadId.clear();
     access.persistedJobMemoriesByThreadId.clear();
     access.persistedProjectMemoriesByProjectId.clear();
     access.persistedButlerMemoryEntries.splice(0, access.persistedButlerMemoryEntries.length);
@@ -592,11 +652,24 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
               ? contract.requestedTask.trim()
               : "Carry out the delegated task.",
           operatorGoal: typeof contract.operatorGoal === "string" && contract.operatorGoal.trim() ? contract.operatorGoal.trim() : null,
+          acceptancePoints: Array.isArray(contract.acceptancePoints)
+            ? contract.acceptancePoints.filter((point): point is string => typeof point === "string" && Boolean(point.trim()))
+            : [],
           proofExpectation: contract.proofExpectation === "requested" ? "requested" : "none",
           proofExpectationLabel:
             contract.proofExpectation === "requested" ? "proof requested" : "no explicit proof request",
           notes: Array.isArray(contract.notes) ? contract.notes.filter((note): note is string => typeof note === "string") : []
         });
+      }
+    }
+    for (const [threadId, checklist] of Object.entries(data.supervisionChecklistsByThreadId ?? {})) {
+      if (
+        checklist &&
+        typeof checklist === "object" &&
+        typeof checklist.threadId === "string" &&
+        Array.isArray(checklist.items)
+      ) {
+        access.persistedSupervisionChecklistsByThreadId.set(threadId, normalizeSupervisionChecklist(checklist));
       }
     }
     for (const [threadId, memory] of Object.entries(data.jobMemoriesByThreadId ?? {})) {
@@ -893,6 +966,7 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     access.persistedSupervisionByThreadId.clear();
     access.persistedWorkerReportsByThreadId.clear();
     access.persistedExecutionContractsByThreadId.clear();
+    access.persistedSupervisionChecklistsByThreadId.clear();
     access.persistedJobMemoriesByThreadId.clear();
     access.persistedProjectMemoriesByProjectId.clear();
     access.persistedButlerMemoryEntries.splice(0, access.persistedButlerMemoryEntries.length);
@@ -933,6 +1007,9 @@ export function queueStateStoreSave(access: StateStoreInternalAccess): void {
       ),
       executionContractsByThreadId: Object.fromEntries(
         [...access.persistedExecutionContractsByThreadId.entries()].map(([threadId, contract]) => [threadId, contract])
+      ),
+      supervisionChecklistsByThreadId: Object.fromEntries(
+        [...access.persistedSupervisionChecklistsByThreadId.entries()].map(([threadId, checklist]) => [threadId, checklist])
       ),
       jobMemoriesByThreadId: Object.fromEntries(
         [...access.persistedJobMemoriesByThreadId.entries()].map(([threadId, memory]) => [threadId, memory])
@@ -1000,6 +1077,9 @@ export function restorePersistedStateStoreThread(access: StateStoreInternalAcces
         }
       : record.supervision;
   record.executionContract = thread.executionContract ? { ...thread.executionContract } : record.executionContract;
+  record.supervisionChecklist = thread.supervisionChecklist
+    ? normalizeSupervisionChecklist(thread.supervisionChecklist)
+    : record.supervisionChecklist;
   record.jobMemory = thread.jobMemory ? { ...thread.jobMemory } : record.jobMemory;
   record.turns = Array.isArray(thread.turns) ? thread.turns.map((turn) => restorePersistedTurn(turn)) : record.turns;
   record.turnCount = Math.max(record.turnCount, record.turns.length);
@@ -1059,6 +1139,7 @@ export function getOrCreateStateStoreThread(access: StateStoreInternalAccess, id
     supervision: emptyCodexSupervision(),
     supervisor: emptyThreadSupervisor(),
     executionContract: null,
+    supervisionChecklist: null,
     jobMemory: buildEmptyJobMemory({
       threadId: id,
       projectId: "unknown",
@@ -1084,6 +1165,36 @@ export function getOrCreateStateStoreThread(access: StateStoreInternalAccess, id
   const persistedContract = access.persistedExecutionContractsByThreadId.get(id);
   if (persistedContract) {
     created.executionContract = { ...persistedContract };
+  }
+  const persistedChecklist = access.persistedSupervisionChecklistsByThreadId.get(id);
+  if (persistedChecklist) {
+    created.supervisionChecklist = { ...persistedChecklist };
+  } else if (created.executionContract) {
+    const now = Date.now();
+    created.supervisionChecklist = {
+      threadId: id,
+      projectId: created.executionContract.projectId,
+      projectLabel: created.executionContract.projectLabel,
+      requestedTask: created.executionContract.requestedTask,
+      items: created.executionContract.acceptancePoints.map((point, index) => ({
+        id: `point-${index + 1}`,
+        text: point,
+        status: "pending",
+        butlerNote: null,
+        queuedInstruction: null,
+        decidedAt: null,
+        evidence: []
+      })),
+      heartbeat: {
+        lastThreadEventAt: null,
+        lastWorkerReportAt: null,
+        lastKnownThreadStatus: created.status,
+        stale: false
+      },
+      reviewState: "needs_review",
+      createdAt: now,
+      updatedAt: now
+    };
   }
   const persistedJobMemory = access.persistedJobMemoriesByThreadId.get(id);
   if (persistedJobMemory) {

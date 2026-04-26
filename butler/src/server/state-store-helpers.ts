@@ -83,6 +83,9 @@ export function deriveProofRequirements(contract: CodexThreadExecutionContractVi
   if (contract.proofExpectation === "requested") {
     requirements.add("Proof was requested for this job.");
   }
+  for (const point of Array.isArray(contract.acceptancePoints) ? contract.acceptancePoints : []) {
+    requirements.add(`Evidence required for: ${point}`);
+  }
 
   return [...requirements];
 }

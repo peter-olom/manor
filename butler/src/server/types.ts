@@ -21,6 +21,7 @@ export interface CodexThreadExecutionContractView {
   branch: string | null;
   requestedTask: string;
   operatorGoal: string | null;
+  acceptancePoints: string[];
   proofExpectation: CodexProofExpectation;
   proofExpectationLabel: string;
   notes: string[];
@@ -97,6 +98,47 @@ export interface CodexWorkerReportView {
   status: CodexWorkerReportStatus;
   summary: string;
   details: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type SupervisionChecklistItemStatus = "pending" | "accepted" | "rejected" | "waived";
+export type SupervisionChecklistEvidenceSource = "worker_report" | "butler_review";
+
+export interface SupervisionChecklistEvidenceView {
+  id: string;
+  source: SupervisionChecklistEvidenceSource;
+  summary: string;
+  details: string | null;
+  reportTurnId: string | null;
+  createdAt: number;
+}
+
+export interface SupervisionChecklistItemView {
+  id: string;
+  text: string;
+  status: SupervisionChecklistItemStatus;
+  butlerNote: string | null;
+  queuedInstruction: string | null;
+  decidedAt: number | null;
+  evidence: SupervisionChecklistEvidenceView[];
+}
+
+export interface SupervisionChecklistHeartbeatView {
+  lastThreadEventAt: number | null;
+  lastWorkerReportAt: number | null;
+  lastKnownThreadStatus: CodexThreadStatus;
+  stale: boolean;
+}
+
+export interface SupervisionChecklistView {
+  threadId: string;
+  projectId: string;
+  projectLabel: string;
+  requestedTask: string;
+  items: SupervisionChecklistItemView[];
+  heartbeat: SupervisionChecklistHeartbeatView;
+  reviewState: "needs_review" | "reviewed";
   createdAt: number;
   updatedAt: number;
 }
@@ -566,6 +608,7 @@ export interface CodexThreadSummary {
   supervision: CodexSupervisionView;
   supervisor: CodexThreadSupervisorView;
   executionContract: CodexThreadExecutionContractView | null;
+  supervisionChecklist: SupervisionChecklistView | null;
   jobMemory: JobMemoryView | null;
 }
 
@@ -831,6 +874,7 @@ export interface PersistedUiState {
   >;
   executionContractsByThreadId?: Record<string, CodexThreadExecutionContractView>;
   jobMemoriesByThreadId?: Record<string, JobMemoryView>;
+  supervisionChecklistsByThreadId?: Record<string, SupervisionChecklistView>;
   projectMemoriesByProjectId?: Record<string, ProjectMemoryView>;
   butlerMemoryEntries?: ButlerMemoryEntryView[];
   projectArtifactsByProjectId?: Record<string, ProjectArtifactView[]>;

@@ -226,12 +226,126 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       }
     }),
     access.defineButlerTool({
+      name: "read_supervision_checklist",
+      label: "Read checklist",
+      description: "Read the structured Butler supervision checklist for one delegated Codex job.",
+      promptSnippet: "read_supervision_checklist: inspect acceptance points, worker evidence, Butler decisions, and heartbeat for one job.",
+      parameters: Type.Object({
+        threadId: Type.String()
+      }),
+      uiEffects: access.getToolUiEffects("read_supervision_checklist"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as { threadId: string };
+        const checklist = access.store.getSupervisionChecklist(typedParams.threadId);
+        const text = checklist
+          ? [
+              `Supervision checklist for job ${typedParams.threadId}: ${checklist.reviewState}`,
+              `Heartbeat: ${checklist.heartbeat.lastKnownThreadStatus}${checklist.heartbeat.stale ? " stale" : ""}`,
+              ...checklist.items.map((item) => {
+                const latestEvidence = item.evidence.at(-1);
+                return `${item.id}: ${item.status} - ${item.text}${item.butlerNote ? ` | Butler: ${item.butlerNote}` : ""}${latestEvidence ? ` | Evidence: ${latestEvidence.summary}` : ""}`;
+              })
+            ].join("\n")
+          : `No supervision checklist exists for job ${typedParams.threadId}.`;
+        return {
+          content: [{ type: "text", text }],
+          details: { checklist }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "review_acceptance_point",
+      label: "Review point",
+      description:
+        "Record Butler's structured review decision for one acceptance point. Rejections require nextInstruction and are queued for one batched worker follow-up.",
+      promptSnippet:
+        "review_acceptance_point: mark one acceptance point accepted, rejected, or waived after Butler reviews evidence; rejected points require nextInstruction.",
+      parameters: Type.Object({
+        threadId: Type.String(),
+        pointId: Type.String(),
+        status: Type.Union([Type.Literal("accepted"), Type.Literal("rejected"), Type.Literal("waived")]),
+        note: Type.Optional(Type.String()),
+        nextInstruction: Type.Optional(Type.String())
+      }),
+      uiEffects: access.getToolUiEffects("review_acceptance_point"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as {
+          threadId: string;
+          pointId: string;
+          status: "accepted" | "rejected" | "waived";
+          note?: string;
+          nextInstruction?: string;
+        };
+        if (typedParams.status === "rejected" && !typedParams.nextInstruction?.trim()) {
+          throw new Error("Rejected acceptance points require nextInstruction so Butler can batch one worker follow-up.");
+        }
+        const checklist = access.store.reviewAcceptancePoint({
+          threadId: typedParams.threadId,
+          pointId: typedParams.pointId,
+          status: typedParams.status,
+          note: typedParams.note,
+          nextInstruction: typedParams.nextInstruction
+        });
+        const item = checklist.items.find((entry) => entry.id === typedParams.pointId);
+        return {
+          content: [{ type: "text", text: `${typedParams.pointId} marked ${typedParams.status}${item ? `: ${item.text}` : ""}.` }],
+          details: { checklist }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "flush_rejected_acceptance_points",
+      label: "Send rejected points",
+      description: "Send one private worker follow-up containing all queued rejected acceptance-point instructions.",
+      promptSnippet: "flush_rejected_acceptance_points: after marking all rejected points, batch-send the queued fixes to the worker once.",
+      parameters: Type.Object({
+        threadId: Type.String()
+      }),
+      uiEffects: access.getToolUiEffects("flush_rejected_acceptance_points"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as { threadId: string };
+        const text = access.store.buildQueuedRejectionInstruction(typedParams.threadId);
+        if (!text) {
+          return {
+            content: [{ type: "text", text: `No queued rejected acceptance points for job ${typedParams.threadId}.` }],
+            details: { checklist: access.store.getSupervisionChecklist(typedParams.threadId) }
+          };
+        }
+        const limitMessage = access.getThreadBudgetLimitMessage(typedParams.threadId);
+        if (limitMessage) {
+          return {
+            content: [{ type: "text", text: limitMessage }],
+            details: {
+              checklist: access.store.getSupervisionChecklist(typedParams.threadId),
+              supervision: access.store.getThreadSupervision(typedParams.threadId)
+            }
+          };
+        }
+        await access.codexClient.loadThread(typedParams.threadId);
+        await access.codexClient.sendMessage(typedParams.threadId, text);
+        access.store.clearQueuedRejectionInstructions(typedParams.threadId);
+        access.registerPendingChatCallback(typedParams.threadId, {
+          privateSteerText: text,
+          nextWorkerReportAction: "review"
+        });
+        const supervision = access.store.noteButlerSteer(typedParams.threadId);
+        access.store.addEvent(typedParams.threadId, "butler.supervision.rejection_followup", "Butler sent queued rejected checklist items to the worker.");
+        return {
+          content: [{ type: "text", text: `Sent queued rejected acceptance points to job ${typedParams.threadId}.` }],
+          details: {
+            supervision,
+            checklist: access.store.getSupervisionChecklist(typedParams.threadId)
+          }
+        };
+      }
+    }),
+    access.defineButlerTool({
       name: "message_job",
       label: "Message job",
       description:
-        "Send a private follow-up instruction into one existing valid Codex job. Use when Butler decides an existing job needs steering, continuation, retry, cleanup, or a question.",
+        "Send a private follow-up instruction into one existing valid Codex job outside checklist rejection review. Use flush_rejected_acceptance_points for rejected acceptance points.",
       promptSnippet:
-        "message_job: steer, continue, retry, stop, clean up, or ask an existing valid Codex job.",
+        "message_job: steer, continue, retry, stop, clean up, or ask an existing valid Codex job when this is not rejected-checklist steering.",
       parameters: Type.Object({
         threadId: Type.String(),
         text: Type.String({ minLength: 1 }),

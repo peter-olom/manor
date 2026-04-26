@@ -332,6 +332,10 @@ export function buildJobDetail(store: ButlerStateStore, threadId: string): strin
   }
   const lease = store.getThreadPreviewLease(threadId);
   const jobMemory = store.getJobMemory(threadId);
+  const checklist = store.getSupervisionChecklist(threadId);
+  const checklistSummary = checklist
+    ? checklist.items.map((item) => `${item.id}:${item.status}:${item.text}`).join(" | ")
+    : "(none)";
 
   const turns = thread.turns
     .map((turn, turnIndex) => {
@@ -349,6 +353,7 @@ export function buildJobDetail(store: ButlerStateStore, threadId: string): strin
     `source=${thread.source}`,
     `task=${thread.supervisor.latestUserPrompt ?? thread.executionContract?.requestedTask ?? "(empty)"}`,
     `contract=${thread.executionContract ? "present" : "none"}`,
+    `checklist=${checklistSummary}`,
     lease ? `operator_preview=${lease.operatorUrl}` : "operator_preview=(none)",
     `summary=${thread.supervisor.summary}`,
     jobMemory?.latestCheckpoint ? `latest_checkpoint=${jobMemory.latestCheckpoint}` : "latest_checkpoint=(none)",
@@ -558,18 +563,35 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
   const workerReport = store.getWorkerReport(callback.threadId);
   const relevantWorkerReport = workerReport && workerReport.updatedAt >= callback.requestedAt ? workerReport : null;
   const latestReply = thread?.supervisor.latestAgentReply?.trim() ?? "";
+  const contract = thread?.executionContract ?? null;
+  const acceptancePoints = Array.isArray(contract?.acceptancePoints) ? contract.acceptancePoints : [];
+  const checklist = thread?.supervisionChecklist ?? null;
+  const checklistLines =
+    checklist?.items.map((item) => {
+      const latestEvidence = item.evidence.at(-1);
+      return `${item.id}: ${item.status} - ${item.text}${latestEvidence ? ` | latest evidence: ${latestEvidence.summary}` : ""}${item.butlerNote ? ` | Butler note: ${item.butlerNote}` : ""}${item.queuedInstruction ? ` | queued instruction: ${item.queuedInstruction}` : ""}`;
+    }) ?? [];
 
   return [
     BUTLER_BACKGROUND_PROMPT_PREFIX,
     "This is an internal delegated-job supervision event, not an operator turn.",
     "Do not write a normal Butler chat reply.",
-    "If the job should continue privately, use message_job and set nextWorkerReportAction explicitly.",
+    "If checklist points are rejected, use review_acceptance_point with nextInstruction, then flush_rejected_acceptance_points once after all rejected points are marked.",
+    "Use message_job only for private follow-ups that are not rejected-checklist steering.",
     "If the job is done, blocked, or needs operator input now, use reply_to_operator exactly once.",
     "You may use read_job first if you need transcript context.",
     `Job id: ${callback.threadId}`,
     `Project: ${thread?.supervisor.projectLabel ?? "unknown"}`,
     `Current thread status: ${thread?.status ?? "unknown"}`,
     `Callback state: ${callback.callbackState}`,
+    contract ? `Requested task: ${contract.requestedTask}` : "Requested task: unknown",
+    acceptancePoints.length > 0
+      ? `Acceptance points:\n${acceptancePoints.map((point, index) => `${index + 1}. ${point}`).join("\n")}`
+      : "Acceptance points: none recorded; infer the operator-visible outcome from the requested task.",
+    checklist
+      ? `Structured supervision checklist:\n${checklistLines.join("\n")}\nHeartbeat: ${checklist.heartbeat.lastKnownThreadStatus}${checklist.heartbeat.stale ? " stale" : ""}. Review state: ${checklist.reviewState}.`
+      : "Structured supervision checklist: none.",
+    contract ? `Proof expectation: ${contract.proofExpectationLabel}` : "Proof expectation: unknown",
     callback.reviewReason === "thread_recovery"
       ? "Review source: Butler did not get a worker callback and recovered the job from thread state."
       : "Review source: Butler received a worker callback and must decide what to do next.",
@@ -580,6 +602,12 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     "Use nextWorkerReportAction=review when Butler should inspect the next worker report before deciding what to surface.",
     "Use nextWorkerReportAction=reply_to_operator only when the next terminal worker report should be posted straight to the operator without another Butler review.",
     "Decide from the job context and thread state, not from worker phrasing heuristics.",
+    "Review the worker report and available proof against every acceptance point.",
+    "Use review_acceptance_point to record accepted, rejected, or waived decisions in the structured checklist. Workers only submit evidence; Butler owns acceptance.",
+    "For each rejected point, include nextInstruction. If multiple points are rejected, mark them all first, then use flush_rejected_acceptance_points once to send one batched worker follow-up.",
+    "For frontend or visual claims, use review_preview_proof when preview proof is available or when the worker references screenshots, video, trace, or browser proof.",
+    "If any acceptance point lacks convincing evidence or appears incomplete, reject it with nextInstruction instead of writing the rejected-point steering directly in operator chat.",
+    "Use reply_to_operator only when all acceptance points are accepted, the job is genuinely blocked, or operator input is needed.",
     relevantWorkerReport ? `Worker report status: ${relevantWorkerReport.status}` : "Worker report status: none",
     relevantWorkerReport ? `Worker report summary: ${relevantWorkerReport.summary}` : "Worker report summary: none",
     relevantWorkerReport && relevantWorkerReport.details ? `Worker report details: ${relevantWorkerReport.details}` : "Worker report details: none",
@@ -604,9 +632,10 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "You have real callable tools. A tool is used only when you emit a structured tool call to the harness; writing a tool name, JSON, or function-call-looking text in chat is not tool use.",
     "Use your judgment to decide whether to answer directly, inspect Butler state with tools, message an existing Codex job, or delegate a new Codex workstream.",
     "Tool selection guide: use list_jobs for broad Codex job/thread checks, counts, status summaries, or project filtering; use read_job only when inspecting one specific job by id.",
+    "Use read_supervision_checklist to inspect a delegated job's structured acceptance points and evidence; use review_acceptance_point when you have reviewed evidence and are accepting, rejecting, or waiving one point; use flush_rejected_acceptance_points after marking all rejected points.",
     "After delegate_to_codex returns, use its real result to acknowledge the real job id. Never invent or predict a job id.",
     "When using delegate_to_codex, set thinkingBudget deliberately: low is the default for most execution and coding; medium is for jobs needing extra agency, planning, ambiguity handling, or product judgment; high is for tough issues, usually after medium has not produced the right outcome or for clearly hard incidents; xhigh is exceptional and should be used for fewer than 1% of jobs.",
-    "For operator follow-up on an existing valid Codex job, consider message_job when the job needs new instructions; answer directly when the request can be handled from existing state.",
+    "For operator follow-up on an existing valid Codex job, consider message_job when the job needs new instructions outside checklist rejection review; answer directly when the request can be handled from existing state.",
     "Never say you delegated, started, asked, messaged, or handed off work unless the corresponding tool call has completed successfully.",
     "Do not expose private Butler-to-Codex steering verbatim in the Butler chat.",
     "Worker callbacks and thread recovery are background supervision signals, not operator-visible chat by themselves.",
@@ -615,7 +644,7 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Every operator-originated delegation must get one promise message immediately and one terminal reply when the delegated task completes or blocks.",
     "When the operator privately steers an existing job, renew the terminal reply obligation and do not treat an older worker report as the final answer for that newer operator turn.",
     "When you use message_job, set nextWorkerReportAction explicitly. Default to review unless the next worker report should go straight to the operator.",
-    "When an internal supervision event arrives, decide privately whether to steer the worker again or post the final operator update with reply_to_operator.",
+    "When an internal supervision event arrives, decide privately whether to accept, waive, reject-and-flush checklist points, otherwise steer the worker, or post the final operator update with reply_to_operator.",
     "When you steer Codex privately, prefer concise outcome-based follow-ups over replaying the whole plan or tool sequence.",
     "Only restate detailed method guidance when the operator explicitly constrained the method or the previous attempt failed because the worker chose poorly.",
     "Each supervised Codex thread has a Butler steering budget. Default to 20 Butler-driven turns per thread unless that thread is explicitly overridden.",
@@ -624,7 +653,7 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Do not run two parallel Codex workstreams on the same repo branch.",
     "For repository bootstrap tasks like cloning into /repos and creating the first branch, use Codex-shell first. Bring up preview runtime only once the task actually needs execution or proof.",
     "When a task needs multiple cooperating previews or disposable services, create a stack lease first so Butler can keep the whole environment under one isolated network and lifecycle.",
-    "When the operator asks for a supervision or oversight smoke test, treat it as a native Butler behavior and decide whether Codex delegation plus private steering is appropriate.",
+    "When you decide the operator is asking to verify Butler supervision itself, use the dedicated supervision smoke-test tool. Do not infer smoke-test mode from keywords inside ordinary implementation or verification tasks.",
     "For recurring mutable databases or object stores, prefer job-scoped stateful stacks so each job gets its own retained writable copy forked from the project base by default.",
     "Reserve base-mode stacks for intentional seed or snapshot refresh work. Do not let multiple jobs share one writable database volume.",
     "When a local task needs app review, prefer a preview lease on an isolated runtime instead of telling the operator to bind a raw host port.",

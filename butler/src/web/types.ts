@@ -307,9 +307,41 @@ export type CodexThreadSummary = {
     branch: string | null;
     requestedTask: string;
     operatorGoal: string | null;
+    acceptancePoints: string[];
     proofExpectation: "none" | "requested";
     proofExpectationLabel: string;
     notes: string[];
+  } | null;
+  supervisionChecklist: {
+    threadId: string;
+    projectId: string;
+    projectLabel: string;
+    requestedTask: string;
+    items: Array<{
+      id: string;
+      text: string;
+      status: "pending" | "accepted" | "rejected" | "waived";
+      butlerNote: string | null;
+      queuedInstruction: string | null;
+      decidedAt: number | null;
+      evidence: Array<{
+        id: string;
+        source: "worker_report" | "butler_review";
+        summary: string;
+        details: string | null;
+        reportTurnId: string | null;
+        createdAt: number;
+      }>;
+    }>;
+    heartbeat: {
+      lastThreadEventAt: number | null;
+      lastWorkerReportAt: number | null;
+      lastKnownThreadStatus: ThreadStatus;
+      stale: boolean;
+    };
+    reviewState: "needs_review" | "reviewed";
+    createdAt: number;
+    updatedAt: number;
   } | null;
 };
 
