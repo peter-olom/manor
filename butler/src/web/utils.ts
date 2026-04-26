@@ -396,6 +396,12 @@ export function itemLabel(type: string): string {
       return "Codex";
     case "commandExecution":
       return "Shell";
+    case "webSearch":
+      return "Web Search";
+    case "web_search_call":
+      return "Web Search";
+    case "function_call":
+      return "Tool";
     case "mcpToolCall":
       return "Tool";
     case "reasoning":

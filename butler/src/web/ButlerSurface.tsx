@@ -18,6 +18,7 @@ import { mergeKnownImages, useButlerLiveSnapshot, useKnownImages, useRuntimeSnap
 import type {
   ButlerHistoryPageResponse,
   ButlerHistoryState,
+  CodexThreadSummary,
   ComposerPrefill,
   FileReference,
   PreviewMedia
@@ -31,6 +32,7 @@ import {
   dedupeMessages,
   formatAttachmentSummary,
   formatContextUsage,
+  formatJobIdLabel,
   formatJumpLabel,
   formatVerificationSummary,
   groupTimelineItems,
@@ -39,6 +41,169 @@ import {
   scrollElementToLatest,
   writeStoredValue
 } from "./utils";
+
+type ChecklistThread = CodexThreadSummary & {
+  supervisionChecklist: NonNullable<CodexThreadSummary["supervisionChecklist"]>;
+};
+
+type ChecklistCounts = {
+  total: number;
+  accepted: number;
+  rejected: number;
+  waived: number;
+  pending: number;
+};
+
+function getChecklistCounts(checklist: ChecklistThread["supervisionChecklist"]): ChecklistCounts {
+  return checklist.items.reduce(
+    (counts, item) => ({
+      ...counts,
+      [item.status]: counts[item.status] + 1
+    }),
+    { total: checklist.items.length, accepted: 0, rejected: 0, waived: 0, pending: 0 }
+  );
+}
+
+function getChecklistTone(counts: ChecklistCounts, stale: boolean): "pending" | "accepted" | "rejected" | "waived" {
+  if (counts.rejected > 0) {
+    return "rejected";
+  }
+  if (stale || counts.pending > 0) {
+    return "pending";
+  }
+  if (counts.accepted + counts.waived >= counts.total && counts.total > 0) {
+    return "accepted";
+  }
+  return "waived";
+}
+
+function formatChecklistProgress(counts: ChecklistCounts): string {
+  if (counts.total === 0) {
+    return "No points";
+  }
+
+  return `${counts.accepted}/${counts.total} accepted`;
+}
+
+function findMentionedChecklistThreads(text: string, checklistsByThreadId: Map<string, ChecklistThread>): ChecklistThread[] {
+  const matches = new Set<ChecklistThread>();
+  for (const [threadId, thread] of checklistsByThreadId) {
+    if (text.includes(threadId)) {
+      matches.add(thread);
+      continue;
+    }
+
+    const shortId = threadId.split("-").at(-1);
+    if (shortId && shortId.length >= 6 && text.includes(shortId)) {
+      matches.add(thread);
+    }
+  }
+  return [...matches];
+}
+
+function ChecklistSummaryStrip({
+  threads,
+  onOpenThread
+}: {
+  threads: ChecklistThread[];
+  onOpenThread: (threadId: string) => void;
+}) {
+  if (threads.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="checklist-attachments" aria-label="Attached checklists">
+      {threads.map((thread) => {
+        const checklist = thread.supervisionChecklist;
+        const counts = getChecklistCounts(checklist);
+        const tone = getChecklistTone(counts, checklist.heartbeat.stale);
+        const branch = thread.executionContract?.branch ?? null;
+        const cwd = thread.executionContract?.workspaceCwd ?? thread.cwd;
+        return (
+          <button key={thread.id} type="button" className={`checklist-attachment is-${tone}`} onClick={() => onOpenThread(thread.id)}>
+            <span className="checklist-attachment-main">
+              <span className="checklist-attachment-title">{checklist.projectLabel}</span>
+              <span className="checklist-attachment-meta">
+                {formatJobIdLabel(thread.id)}
+                {branch ? ` · ${branch}` : cwd ? ` · ${cwd}` : ""}
+              </span>
+            </span>
+            <span className="checklist-attachment-progress">{formatChecklistProgress(counts)}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ChecklistProjectPanel({
+  projects,
+  onOpenThread
+}: {
+  projects: Array<{ id: string; label: string; threads: ChecklistThread[] }>;
+  onOpenThread: (threadId: string) => void;
+}) {
+  if (projects.length === 0) {
+    return <div className="checklist-empty">No delegated checklists yet.</div>;
+  }
+
+  return (
+    <div className="checklist-panel">
+      {projects.map((project) => (
+        <section key={project.id} className="checklist-project">
+          <div className="checklist-project-head">
+            <span>{project.label}</span>
+            <span>{project.threads.length}</span>
+          </div>
+          <div className="checklist-job-list">
+            {project.threads.map((thread) => {
+              const checklist = thread.supervisionChecklist;
+              const counts = getChecklistCounts(checklist);
+              const tone = getChecklistTone(counts, checklist.heartbeat.stale);
+              const branch = thread.executionContract?.branch ?? null;
+              const cwd = thread.executionContract?.workspaceCwd ?? thread.cwd;
+              return (
+                <button key={thread.id} type="button" className={`checklist-job is-${tone}`} onClick={() => onOpenThread(thread.id)}>
+                  <span className="checklist-job-top">
+                    <span className="checklist-job-id">{formatJobIdLabel(thread.id)}</span>
+                    <span className="checklist-job-progress">{formatChecklistProgress(counts)}</span>
+                  </span>
+                  <span className="checklist-job-task">{checklist.requestedTask}</span>
+                  <span className="checklist-job-meta">
+                    {branch ?? cwd ?? "workspace pending"}
+                    {checklist.heartbeat.stale ? " · stale" : ""}
+                  </span>
+                  <span className="checklist-point-row">
+                    <span>{counts.pending} pending</span>
+                    <span>{counts.rejected} rejected</span>
+                    <span>{counts.waived} waived</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+type ButlerViewState = {
+  scrollTop: number;
+  follow: boolean;
+  showTimeline: boolean;
+  showRuntime: boolean | null;
+  showChecklists: boolean;
+};
+
+const butlerViewState: ButlerViewState = {
+  scrollTop: 0,
+  follow: true,
+  showTimeline: false,
+  showRuntime: null,
+  showChecklists: false
+};
 
 type ButlerSurfaceProps = {
   onOpenThread: (threadId: string) => void;
@@ -68,6 +233,7 @@ export function ButlerSurface({
   const [followButler, setFollowButler] = useState(true);
   const [showTimeline, setShowTimeline] = useState(false);
   const [showRuntime, setShowRuntime] = useState(() => readStoredValue(BUTLER_RUNTIME_VISIBILITY_STORAGE_KEY) === "true");
+  const [showChecklists, setShowChecklists] = useState(false);
   const [activeJumpId, setActiveJumpId] = useState<string | null>(null);
   const [pendingButlerText, setPendingButlerText] = useState<string | null>(null);
   const [butlerDraftPrefill, setButlerDraftPrefill] = useState<{ id: string; text: string } | null>(null);
@@ -82,13 +248,58 @@ export function ButlerSurface({
   const butlerPrependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
   const butlerMessageTimesRef = useRef<Record<string, number>>({});
   const jumpFlashTimerRef = useRef<number | null>(null);
+  const butlerViewRestoredRef = useRef(false);
+  const checklistThreads = useMemo(
+    () =>
+      (shell?.codex.threads ?? [])
+        .filter((thread): thread is ChecklistThread => Boolean(thread.supervisionChecklist) && thread.status === "active")
+        .sort((left, right) => right.updatedAt - left.updatedAt),
+    [shell?.codex.threads]
+  );
+  const checklistsByThreadId = useMemo(
+    () => new Map(checklistThreads.map((thread) => [thread.id, thread])),
+    [checklistThreads]
+  );
+  const checklistProjects = useMemo(() => {
+    const groups = new Map<string, { id: string; label: string; threads: ChecklistThread[] }>();
+    for (const thread of checklistThreads) {
+      const checklist = thread.supervisionChecklist;
+      const projectId = checklist.projectId || thread.supervisor.projectId || "unknown";
+      const label = checklist.projectLabel || thread.supervisor.projectLabel || "Unknown";
+      const group = groups.get(projectId) ?? { id: projectId, label, threads: [] };
+      group.threads.push(thread);
+      groups.set(projectId, group);
+    }
+    return [...groups.values()].sort((left, right) => left.label.localeCompare(right.label));
+  }, [checklistThreads]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
     window.localStorage.setItem(BUTLER_RUNTIME_VISIBILITY_STORAGE_KEY, showRuntime ? "true" : "false");
+    butlerViewState.showRuntime = showRuntime;
   }, [showRuntime]);
+
+  useLayoutEffect(() => {
+    setFollowButler(butlerViewState.follow);
+    setShowTimeline(butlerViewState.showTimeline);
+    setShowChecklists(butlerViewState.showChecklists);
+    if (butlerViewState.showRuntime !== null) {
+      setShowRuntime(butlerViewState.showRuntime);
+    }
+    butlerViewRestoredRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!butlerViewRestoredRef.current) {
+      return;
+    }
+    butlerViewState.follow = followButler;
+    butlerViewState.showTimeline = showTimeline;
+    butlerViewState.showRuntime = showRuntime;
+    butlerViewState.showChecklists = showChecklists;
+  }, [followButler, showChecklists, showRuntime, showTimeline]);
 
   useEffect(() => {
     if (!live) {
@@ -465,6 +676,18 @@ export function ButlerSurface({
     scrollElementToLatest(butlerScrollRef.current);
   }, [followButler, latestButlerActivityKey, showRuntime]);
 
+  useLayoutEffect(() => {
+    if (!butlerViewRestoredRef.current || followButler || butlerPrependAnchorRef.current) {
+      return;
+    }
+    const scroller = butlerScrollRef.current;
+    if (!scroller || deferredRows.length === 0) {
+      return;
+    }
+    scroller.scrollTop = Math.min(butlerViewState.scrollTop, Math.max(0, scroller.scrollHeight - scroller.clientHeight));
+    butlerScrollTopRef.current = scroller.scrollTop;
+  }, [deferredRows.length, followButler]);
+
   useEffect(() => {
     if (!followButler || butlerPrependAnchorRef.current || typeof ResizeObserver === "undefined") {
       return;
@@ -583,6 +806,22 @@ export function ButlerSurface({
                   ) : null}
                 </div>
               ) : null}
+              {checklistThreads.length > 0 ? (
+                <div className="conversation-disclosure">
+                  <button className={`conversation-toggle${showChecklists ? " is-active" : ""}`} onClick={() => setShowChecklists((current) => !current)} type="button">
+                    <span className="conversation-toggle-icon" aria-hidden="true">
+                      {showChecklists ? <ChevronUpIcon /> : <ChevronDownIcon />}
+                    </span>
+                    <span className="conversation-toggle-label">{showChecklists ? "Hide checklists" : "Show checklists"}</span>
+                    <span className="conversation-toggle-count">{checklistThreads.length}</span>
+                  </button>
+                  {showChecklists ? (
+                    <div className="conversation-disclosure-panel checklist-disclosure-panel">
+                      <ChecklistProjectPanel projects={checklistProjects} onOpenThread={onOpenThread} />
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </div>
           <div
@@ -593,6 +832,8 @@ export function ButlerSurface({
               const remaining = element.scrollHeight - element.scrollTop - element.clientHeight;
               const isNearBottom = remaining < 32;
               butlerScrollTopRef.current = element.scrollTop;
+              butlerViewState.scrollTop = element.scrollTop;
+              butlerViewState.follow = isNearBottom;
               setFollowButler((current) => (current === isNearBottom ? current : isNearBottom));
 
               if (
@@ -664,6 +905,9 @@ export function ButlerSurface({
                   const toneClass = `is-${message.role.startsWith("assistant") ? "assistant" : "user"}`;
                   const rowToneClass = message.role.startsWith("assistant") ? "is-assistant" : "is-user";
                   const imageState = messageImages[row.id] ?? { displayText: message.text || "…", images: [], files: [] };
+                  const attachedChecklists = message.role.startsWith("assistant")
+                    ? findMentionedChecklistThreads(message.text || "", checklistsByThreadId)
+                    : [];
 
                   return (
                     <div key={row.id} className={`conversation-row ${rowToneClass}`}>
@@ -705,6 +949,7 @@ export function ButlerSurface({
                               ))}
                             </div>
                           ) : null}
+                          <ChecklistSummaryStrip threads={attachedChecklists} onOpenThread={onOpenThread} />
                         </div>
                         <div className="entry-actions" aria-label="Message actions">
                           <button className="entry-action" onClick={() => void copyText(message.text || "", "Message copied")} aria-label="Copy message" title="Copy message">

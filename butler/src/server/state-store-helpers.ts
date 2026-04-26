@@ -691,6 +691,27 @@ export function summarizeItem(item: Record<string, unknown>): string {
     return item.command;
   }
 
+  if ((item.type === "webSearch" || item.type === "web_search_call") && item.action && typeof item.action === "object") {
+    const action = item.action as Record<string, unknown>;
+    const query = typeof item.query === "string" ? item.query : typeof action.query === "string" ? action.query : null;
+    const queries = Array.isArray(action.queries) ? action.queries.filter((entry): entry is string => typeof entry === "string") : [];
+    return [query ? `Search: ${query}` : "Web search", queries.length > 1 ? `Queries: ${queries.join("; ")}` : ""]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  if (item.type === "function_call" && typeof item.name === "string") {
+    return typeof item.arguments === "string" && item.arguments.trim()
+      ? `Tool call: ${item.name}\n${item.arguments}`
+      : `Tool call: ${item.name}`;
+  }
+
+  if (typeof item.type === "string" && item.type.endsWith("_call") && item.action && typeof item.action === "object") {
+    const action = item.action as Record<string, unknown>;
+    const summary = typeof action.query === "string" ? action.query : typeof action.type === "string" ? action.type : "";
+    return summary ? `${item.type}: ${summary}` : item.type;
+  }
+
   if (typeof item.text === "string") {
     return item.text;
   }

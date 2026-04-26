@@ -16,6 +16,8 @@ import { StatusItem } from "./StatusItem";
 import { ThreadSurface } from "./ThreadSurface";
 import type {
   AppToast,
+  ButlerThreadCallback,
+  CodexThreadSummary,
   ComposerPrefill,
   ComposerPrefillTarget,
   ConfirmDialogState,
@@ -43,6 +45,17 @@ import {
   resolveThemePreference
 } from "./utils";
 
+function isClosedPlaceholderThread(thread: CodexThreadSummary, callback: ButlerThreadCallback | null | undefined): boolean {
+  return (
+    thread.status === "unknown" &&
+    callback?.callbackState === "closed" &&
+    !thread.executionContract &&
+    !thread.supervisionChecklist &&
+    thread.supervisor.summary === "No supervisor summary yet." &&
+    !thread.supervisor.latestUserPrompt &&
+    !thread.supervisor.latestAgentReply
+  );
+}
 
 function syncTerminalFrameTheme(frame: HTMLIFrameElement | null, lightTheme: boolean) {
   const doc = frame?.contentDocument;
@@ -136,6 +149,13 @@ export function App() {
   const callbackByThreadId = useMemo(
     () => new Map((shell?.butler.supervision.callbacks ?? []).map((callback) => [callback.threadId, callback])),
     [shell?.butler.supervision.callbacks]
+  );
+  const visibleCodexThreads = useMemo(
+    () =>
+      (shell?.codex.threads ?? []).filter(
+        (thread) => !isClosedPlaceholderThread(thread, callbackByThreadId.get(thread.id))
+      ),
+    [callbackByThreadId, shell?.codex.threads]
   );
   const activeThreadSummary = activeThreadId ? threadSummaryById.get(activeThreadId) ?? null : null;
 
@@ -809,10 +829,10 @@ export function App() {
           </div>
         </div>
         <div className="threads-drawer-body">
-          {shell.codex.threads.length === 0 ? (
+          {visibleCodexThreads.length === 0 ? (
             <div className="empty threads-drawer-empty">No Codex threads are available yet.</div>
           ) : (
-            shell.codex.threads.map((thread) => {
+            visibleCodexThreads.map((thread) => {
               const callback = callbackByThreadId.get(thread.id) ?? null;
               const callbackState = describeCallbackState(callback);
               return (

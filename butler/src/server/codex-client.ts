@@ -122,6 +122,22 @@ function normalizeInputItems(input: string | CodexInputItem[]): CodexInputItem[]
   return normalized;
 }
 
+function decodeDelta(params: Record<string, unknown>): string | null {
+  if (typeof params.delta === "string") {
+    return params.delta;
+  }
+
+  if (typeof params.deltaBase64 !== "string") {
+    return null;
+  }
+
+  try {
+    return Buffer.from(params.deltaBase64, "base64").toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
 export class CodexAppServerClient extends EventEmitter {
   private static readonly CONNECT_TIMEOUT_MS = 15_000;
   private static readonly HEARTBEAT_INTERVAL_MS = 15_000;
@@ -404,20 +420,26 @@ export class CodexAppServerClient extends EventEmitter {
 
     const params = message.params ?? {};
     const threadId = typeof params.threadId === "string" ? params.threadId : null;
-    const streamingItemMatch = message.method.match(/^item\/([^/]+)\/(delta|outputDelta)$/);
+    const streamingItemMatch = message.method.match(/^item\/([^/]+)\/(delta|outputDelta|summaryTextDelta|textDelta)$/);
+    const streamingCommandExecMatch = message.method === "command/exec/outputDelta";
 
     if (threadId && this.deletedThreadIds.has(threadId)) {
       return;
     }
 
-    if (
-      streamingItemMatch &&
-      typeof params.threadId === "string" &&
-      typeof params.turnId === "string" &&
-      typeof params.itemId === "string" &&
-      typeof params.delta === "string"
-    ) {
-      this.store.appendItemDelta(params.threadId, params.turnId, params.itemId, params.delta, streamingItemMatch[1] ?? "unknown");
+    if ((streamingItemMatch || streamingCommandExecMatch) && typeof params.threadId === "string" && typeof params.turnId === "string" && typeof params.itemId === "string") {
+      const delta = decodeDelta(params);
+      if (delta === null) {
+        return;
+      }
+
+      this.store.appendItemDelta(
+        params.threadId,
+        params.turnId,
+        params.itemId,
+        delta,
+        streamingCommandExecMatch ? "commandExecution" : (streamingItemMatch?.[1] ?? "unknown")
+      );
       this.emit("change");
       return;
     }

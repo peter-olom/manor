@@ -1053,6 +1053,114 @@ select {
   padding: 12px;
 }
 
+.checklist-disclosure-panel {
+  width: min(820px, calc(100vw - 36px));
+  padding: 0;
+}
+
+.checklist-panel {
+  display: grid;
+  gap: 0;
+}
+
+.checklist-empty {
+  padding: 18px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.checklist-project {
+  display: grid;
+  gap: 0;
+}
+
+.checklist-project + .checklist-project {
+  border-top: 1px solid var(--line);
+}
+
+.checklist-project-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-weight: 700;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
+}
+
+.checklist-job-list {
+  display: grid;
+  gap: 0;
+}
+
+.checklist-job {
+  display: grid;
+  gap: 7px;
+  width: 100%;
+  padding: 12px 14px;
+  text-align: left;
+  border-left: 3px solid var(--line-strong);
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  cursor: pointer;
+}
+
+.checklist-job:hover {
+  background: color-mix(in srgb, var(--surface) 88%, var(--panel) 12%);
+}
+
+.checklist-job.is-accepted {
+  border-left-color: var(--green);
+}
+
+.checklist-job.is-rejected {
+  border-left-color: var(--danger-ink);
+}
+
+.checklist-job.is-pending {
+  border-left-color: var(--accent);
+}
+
+.checklist-job-top,
+.checklist-point-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.checklist-job-id,
+.checklist-job-progress,
+.checklist-job-meta,
+.checklist-point-row {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.checklist-job-id {
+  font-family: "IBM Plex Mono", "SFMono-Regular", "SF Mono", ui-monospace, monospace;
+  color: var(--ink-soft);
+}
+
+.checklist-job-task {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.86rem;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.checklist-job-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .conversation-toggle {
   display: inline-flex;
   align-items: center;
@@ -1652,6 +1760,65 @@ select {
 .tool-group-item .system-strip {
   width: 100%;
   background: color-mix(in srgb, var(--surface) 88%, var(--panel) 12%);
+}
+
+.checklist-attachments {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.checklist-attachment {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  background: color-mix(in srgb, var(--surface) 72%, var(--panel) 28%);
+  text-align: left;
+  cursor: pointer;
+}
+
+.checklist-attachment:hover {
+  border-color: var(--line-strong);
+}
+
+.checklist-attachment.is-accepted {
+  border-left-color: var(--green);
+}
+
+.checklist-attachment.is-rejected {
+  border-left-color: var(--danger-ink);
+}
+
+.checklist-attachment.is-pending {
+  border-left-color: var(--accent);
+}
+
+.checklist-attachment-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.checklist-attachment-title {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.84rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.checklist-attachment-meta,
+.checklist-attachment-progress {
+  color: var(--muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
 }
 
 .working-indicator {

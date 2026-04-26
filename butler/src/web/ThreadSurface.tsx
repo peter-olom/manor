@@ -1,6 +1,7 @@
 import {
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -40,6 +41,22 @@ import {
 
 const FILE_UPLOAD_ACCEPT = ".pdf,.ppt,.pptx,.xls,.xlsx,.doc,.docx,.txt,.csv,.json,.md,.zip,image/*,*/*";
 
+type ThreadScrollPosition = {
+  top: number;
+  follow: boolean;
+};
+
+type ThreadPanelState = {
+  showTimeline: boolean;
+  showThreadRuntime: boolean;
+  showThreadProofs: boolean;
+  expandedSystemItems: Record<string, boolean>;
+  expandedToolGroups: Record<string, boolean>;
+};
+
+const threadScrollPositions = new Map<string, ThreadScrollPosition>();
+const threadPanelStates = new Map<string, ThreadPanelState>();
+
 type ThreadSurfaceProps = {
   threadId: string | null;
   onPreviewMedia: (media: PreviewMedia) => void;
@@ -61,6 +78,16 @@ function appendComposerText(current: string, addition: string): string {
 
   const trimmedCurrent = current.trim();
   return trimmedCurrent ? `${trimmedCurrent}\n\n${trimmedAddition}` : trimmedAddition;
+}
+
+function saveThreadScrollPosition(threadId: string | null, element: HTMLDivElement, setFollowRun: (updater: (current: boolean) => boolean) => void) {
+  const remaining = element.scrollHeight - element.scrollTop - element.clientHeight;
+  const isNearBottom = remaining < 32;
+  if (threadId) {
+    threadScrollPositions.set(threadId, { top: element.scrollTop, follow: isNearBottom });
+  }
+  setFollowRun((current) => (current === isNearBottom ? current : isNearBottom));
+  return isNearBottom;
 }
 
 export function ThreadSurface({
@@ -100,22 +127,46 @@ export function ThreadSurface({
   const runScrollRef = useRef<HTMLDivElement | null>(null);
   const runTimelineScrollRef = useRef<HTMLDivElement | null>(null);
   const runScrollTopRef = useRef(0);
+  const restoredThreadScrollRef = useRef<string | null>(null);
+  const restoredThreadPanelRef = useRef<string | null>(null);
+  const skipNextPanelStateSaveRef = useRef(false);
   const threadTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const threadFileInputRef = useRef<HTMLInputElement | null>(null);
   const threadDraftPersistTimerRef = useRef<number | null>(null);
   const jumpFlashTimerRef = useRef<number | null>(null);
   const lastAppliedPrefillIdRef = useRef<string | null>(null);
 
-  useEffect(() => {
-    const nextThreadId = activeThread?.id ?? null;
+  useLayoutEffect(() => {
+    const nextThreadId = threadId;
+    const panelState = nextThreadId ? threadPanelStates.get(nextThreadId) : null;
     setThreadDraft(nextThreadId ? readStoredValue(`${THREAD_DRAFT_STORAGE_KEY_PREFIX}${nextThreadId}`) : "");
     setThreadAttachments([]);
-    setFollowRun(true);
-    setShowThreadRuntime(false);
-    setShowThreadProofs(false);
-    setExpandedSystemItems({});
-    setExpandedToolGroups({});
-  }, [activeThread?.id]);
+    setFollowRun(nextThreadId ? (threadScrollPositions.get(nextThreadId)?.follow ?? true) : true);
+    setShowTimeline(panelState?.showTimeline ?? false);
+    setShowThreadRuntime(panelState?.showThreadRuntime ?? false);
+    setShowThreadProofs(panelState?.showThreadProofs ?? false);
+    setExpandedSystemItems(panelState?.expandedSystemItems ?? {});
+    setExpandedToolGroups(panelState?.expandedToolGroups ?? {});
+    restoredThreadPanelRef.current = nextThreadId;
+    skipNextPanelStateSaveRef.current = true;
+  }, [threadId]);
+
+  useEffect(() => {
+    if (!threadId || restoredThreadPanelRef.current !== threadId) {
+      return;
+    }
+    if (skipNextPanelStateSaveRef.current) {
+      skipNextPanelStateSaveRef.current = false;
+      return;
+    }
+    threadPanelStates.set(threadId, {
+      showTimeline,
+      showThreadRuntime,
+      showThreadProofs,
+      expandedSystemItems,
+      expandedToolGroups
+    });
+  }, [expandedSystemItems, expandedToolGroups, showThreadProofs, showThreadRuntime, showTimeline, threadId]);
 
   useEffect(() => {
     if (!activeThread?.id) {
@@ -142,6 +193,20 @@ export function ThreadSurface({
   useEffect(() => {
     resizeComposerTextarea(threadTextareaRef.current);
   }, [threadDraft]);
+
+  useEffect(() => {
+    const scroller = runScrollRef.current;
+    if (!scroller || !threadId || activeThread?.id !== threadId || restoredThreadScrollRef.current !== threadId) {
+      return;
+    }
+
+    const saveScrollPosition = () => {
+      runScrollTopRef.current = scroller.scrollTop;
+      saveThreadScrollPosition(threadId, scroller, setFollowRun);
+    };
+    scroller.addEventListener("scroll", saveScrollPosition, { passive: true });
+    return () => scroller.removeEventListener("scroll", saveScrollPosition);
+  }, [activeThread?.id, threadId]);
 
   useEffect(() => {
     return () => {
@@ -375,6 +440,7 @@ export function ThreadSurface({
     setFollowRun(false);
     requestAnimationFrame(() => {
       scrollElementToCenteredTarget(scroller, target);
+      saveThreadScrollPosition(threadId, scroller, setFollowRun);
       requestAnimationFrame(() => {
         triggerJumpFlash(itemId);
       });
@@ -465,17 +531,81 @@ export function ThreadSurface({
     [activeThread, pendingThreadRequest, showPendingThreadEntry, showThreadWorkingIndicator]
   );
   const deferredRows = useDeferredValue(runConversationRows);
+  const renderedRowsCurrent = deferredRows === runConversationRows;
   const latestRunActivityKey = deferredRows.length > 0 ? `${deferredRows[deferredRows.length - 1].id}:${deferredRows.length}` : "empty";
 
-  useEffect(() => {
-    if (!followRun || !runScrollRef.current) {
+  useLayoutEffect(() => {
+    if (!threadId || activeThread?.id !== threadId || !renderedRowsCurrent || restoredThreadScrollRef.current === threadId) {
       return;
     }
 
-    requestAnimationFrame(() => {
+    const scroller = runScrollRef.current;
+    if (!scroller || deferredRows.length === 0) {
+      return;
+    }
+
+    const saved = threadScrollPositions.get(threadId);
+    if (saved) {
+      scroller.scrollTop = Math.min(saved.top, Math.max(0, scroller.scrollHeight - scroller.clientHeight));
+      runScrollTopRef.current = scroller.scrollTop;
+      setFollowRun((current) => (current === saved.follow ? current : saved.follow));
+    } else {
+      scrollElementToLatest(scroller);
+      runScrollTopRef.current = scroller.scrollTop;
+    }
+    restoredThreadScrollRef.current = threadId;
+  }, [activeThread?.id, deferredRows.length, renderedRowsCurrent, threadId]);
+
+  useEffect(() => {
+    if (!followRun || !runScrollRef.current || activeThread?.id !== threadId || !renderedRowsCurrent) {
+      return;
+    }
+
+    const scheduledThreadId = threadId;
+    const frameId = requestAnimationFrame(() => {
+      if (
+        scheduledThreadId !== threadId ||
+        scheduledThreadId !== activeThread?.id ||
+        threadScrollPositions.get(scheduledThreadId)?.follow === false
+      ) {
+        return;
+      }
       scrollElementToLatest(runScrollRef.current);
     });
-  }, [followRun, latestRunActivityKey]);
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [activeThread?.id, followRun, latestRunActivityKey, renderedRowsCurrent, threadId]);
+
+  useEffect(() => {
+    const scroller = runScrollRef.current;
+    if (!scroller || !followRun || activeThread?.id !== threadId || !renderedRowsCurrent) {
+      return;
+    }
+
+    const scheduledThreadId = threadId;
+    const keepLatestVisible = () => {
+      if (
+        scheduledThreadId !== threadId ||
+        scheduledThreadId !== activeThread?.id ||
+        threadScrollPositions.get(scheduledThreadId)?.follow === false
+      ) {
+        return;
+      }
+      scrollElementToLatest(scroller);
+    };
+    const observer = new ResizeObserver(keepLatestVisible);
+    observer.observe(scroller);
+    const content = scroller.firstElementChild;
+    if (content) {
+      observer.observe(content);
+    }
+    const frameId = requestAnimationFrame(keepLatestVisible);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      observer.disconnect();
+    };
+  }, [activeThread?.id, followRun, renderedRowsCurrent, threadId]);
 
   const messageImages = useMemo(
     () =>
@@ -686,10 +816,10 @@ export function ThreadSurface({
             className="conversation-scroll"
             onScroll={(event) => {
               const element = event.currentTarget;
-              const remaining = element.scrollHeight - element.scrollTop - element.clientHeight;
-              const isNearBottom = remaining < 32;
               runScrollTopRef.current = element.scrollTop;
-              setFollowRun((current) => (current === isNearBottom ? current : isNearBottom));
+              if (activeThread?.id === threadId && restoredThreadScrollRef.current === threadId) {
+                saveThreadScrollPosition(threadId, element, setFollowRun);
+              }
             }}
           >
             {deferredRows.length === 0 ? (
