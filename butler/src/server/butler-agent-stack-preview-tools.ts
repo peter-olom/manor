@@ -6,6 +6,7 @@ import { decoratePreviewVerification } from "./preview-verification.js";
 import { buildCodexInputWithReferences } from "./reference-inputs.js";
 import { normalizeStackStorageMode } from "./stack-storage.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import type { ReasoningEffort } from "./types.js";
 import { isSharedShellRepoBootstrapTask } from "./thread-contract.js";
 import { applyWorkspacePreviewDefaults, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 
@@ -891,13 +892,20 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
     access.defineButlerTool({
       name: "delegate_to_codex",
       label: "Delegate to Codex",
-      description: "Start a new Codex workstream for an execution task such as repo cloning, project setup, coding work, or command execution.",
+      description:
+        "Start a new Codex workstream for execution such as repo cloning, project setup, coding work, shell work, file generation, app building, or command execution. Optionally choose the Codex thinking budget for the delegated turn.",
       promptSnippet:
-        "delegate_to_codex: use this when the operator is asking for real execution, coding, shell work, repo setup, or other task delivery by Codex.",
+        "delegate_to_codex: start new execution, coding, shell work, repo setup, app build, file generation, or other task delivery by Codex. Budget policy: use low for most execution/coding; medium for extra agency, planning, ambiguity, or product judgment; high for tough issues after medium underperforms or clearly hard incidents; xhigh is exceptional and under 1% usage.",
       parameters: Type.Object({
         task: Type.String({ minLength: 1 }),
         goal: Type.Optional(Type.String({ minLength: 1 })),
         cwd: Type.Optional(Type.String()),
+        thinkingBudget: Type.Optional(Type.Union([
+          Type.Literal("low"),
+          Type.Literal("medium"),
+          Type.Literal("high"),
+          Type.Literal("xhigh")
+        ])),
         imageReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
         fileReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 })))
       }),
@@ -907,6 +915,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           task: string;
           goal?: string;
           cwd?: string;
+          thinkingBudget?: ReasoningEffort;
           imageReferenceIds?: string[];
           fileReferenceIds?: string[];
         };
@@ -948,6 +957,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
             }),
           cwd: workspace.cwd,
           developerInstructions,
+          effort: typedParams.thinkingBudget ?? null,
           openWindow: true
         });
         const delegationContract = await access.buildDelegationContract({
@@ -989,6 +999,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           details: {
             threadId: result.threadId,
             totalFollowUps: smokeRequest?.totalFollowUps ?? null,
+            thinkingBudget: typedParams.thinkingBudget ?? null,
             supervision,
             workspace,
             thread: access.store.getThread(result.threadId) ?? null

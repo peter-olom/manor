@@ -24,6 +24,30 @@ function hasOwnField(value: unknown, key: string): boolean {
 export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifactsDir: string): ButlerCustomTool[] {
   return [
     access.defineButlerTool({
+      name: "remember_insight",
+      label: "Remember insight",
+      description: "Store a durable Butler memory for important operator preferences, decisions, reusable ideas, or context from the main chat.",
+      promptSnippet: "remember_insight: use this when the operator asks Butler to remember something or when a valuable reusable insight should survive chat cleanup.",
+      parameters: Type.Object({
+        summary: Type.String({ minLength: 1 }),
+        details: Type.Optional(Type.String()),
+        tags: Type.Optional(Type.Array(Type.String()))
+      }),
+      uiEffects: access.getToolUiEffects("remember_insight"),
+      execute: async (_toolCallId, params) => {
+        const entry = access.store.recordButlerMemory({
+          summary: params.summary as string,
+          details: typeof params.details === "string" ? params.details : null,
+          source: "butler_tool",
+          tags: params.tags
+        });
+        return {
+          content: [{ type: "text", text: `Remembered: ${entry.summary}` }],
+          details: { entry }
+        };
+      }
+    }),
+    access.defineButlerTool({
       name: "list_project_artifacts",
       label: "List project artifacts",
       description: "List durable project artifacts such as seeds, research files, references, and downloaded inputs.",

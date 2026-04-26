@@ -83,12 +83,14 @@ import {
   upsertStateStoreProjectArtifact,
   upsertStateStoreProjectPolicy
 } from "./state-store-project-assets.js";
+import { recordStateStoreButlerMemory } from "./state-store-butler-memory.js";
 import { buildStateStoreRuntimeSnapshot, buildStateStoreShellSnapshot, buildStateStoreSnapshot } from "./state-store-snapshot.js";
 import { parseThreadExecutionContract } from "./thread-contract.js";
 import type {
   AppSnapshot,
   AppShellSnapshot,
   ButlerSupervisorSummaryView,
+  ButlerMemoryEntryView,
   ButlerMessageView,
   ButlerWindow,
   CodexCompactionView,
@@ -153,6 +155,7 @@ export class ButlerStateStore extends EventEmitter {
   private readonly persistedExecutionContractsByThreadId = new Map<string, CodexThreadExecutionContractView>();
   private readonly persistedJobMemoriesByThreadId = new Map<string, JobMemoryView>();
   private readonly persistedProjectMemoriesByProjectId = new Map<string, ProjectMemoryView>();
+  private readonly persistedButlerMemoryEntries: ButlerMemoryEntryView[] = [];
   private readonly persistedProjectArtifactsByProjectId = new Map<string, ProjectArtifactView[]>();
   private readonly persistedProjectPoliciesByProjectId = new Map<string, ProjectPolicyView[]>();
 
@@ -290,6 +293,18 @@ export class ButlerStateStore extends EventEmitter {
   getProjectMemory(projectId: string): ProjectMemoryView | null { return getStateStoreProjectMemory(this.getInternalAccess(), projectId); }
 
   listProjectMemories(): ProjectMemoryView[] { return listStateStoreProjectMemories(this.getInternalAccess()); }
+
+  listButlerMemory(): ButlerMemoryEntryView[] { return [...this.persistedButlerMemoryEntries]; }
+
+  recordButlerMemory(input: {
+    summary: string;
+    details?: string | null;
+    source?: ButlerMemoryEntryView["source"];
+    sourceMessageId?: string | null;
+    tags?: unknown;
+  }): ButlerMemoryEntryView {
+    return recordStateStoreButlerMemory(this.getInternalAccess(), input);
+  }
 
   listProjectArtifacts(projectId?: string | null): ProjectArtifactView[] { return listStateStoreProjectArtifacts(this.getInternalAccess(), projectId); }
 

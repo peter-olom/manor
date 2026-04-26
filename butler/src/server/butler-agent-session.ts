@@ -1,7 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { getModel } from "@mariozechner/pi-ai";
 import { AuthStorage, createAgentSession, DefaultResourceLoader, ModelRegistry, SessionManager } from "@mariozechner/pi-coding-agent";
 
 import {
@@ -42,8 +41,6 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
   await sanitizePersistedButlerSessions(access);
 
   const authStorage = AuthStorage.create(access.piAuthPath);
-  const preferredModel =
-    access.auth.mode === "chatgpt" ? getModel("openai-codex", "gpt-5.4") : getModel("openai", "gpt-5.4");
   const resourceLoader = new DefaultResourceLoader({
     cwd: "/repos",
     agentDir: path.dirname(access.piAuthPath),
@@ -56,8 +53,7 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
       cwd: "/repos",
       authStorage,
       modelRegistry: access.modelRegistry,
-      model: preferredModel,
-      tools: [],
+      noTools: "builtin",
       customTools: access.buildCustomTools(),
       sessionManager: SessionManager.continueRecent("/repos", access.sessionDir),
       resourceLoader

@@ -1073,6 +1073,14 @@ select {
   color: var(--ink);
 }
 
+.conversation-danger-toggle {
+  color: var(--danger);
+}
+
+.conversation-danger-toggle:hover {
+  color: var(--danger-strong);
+}
+
 .conversation-toggle-icon {
   display: inline-flex;
   align-items: center;
@@ -1691,31 +1699,65 @@ select {
   gap: 8px;
 }
 
+.entry-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.entry.is-user .entry-actions {
+  justify-content: flex-end;
+}
+
+.entry-action,
 .entry-copy {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 32px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 6px;
   color: var(--entry-muted);
   opacity: 0.92;
 }
 
+.entry-action svg,
 .entry-copy svg {
-  width: 14px;
-  height: 14px;
+  width: 15px;
+  height: 15px;
 }
 
+.entry-action:hover,
 .entry-copy:hover {
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  border-color: color-mix(in srgb, var(--ink) 11%, transparent);
   color: var(--ink);
   opacity: 1;
 }
 
+.entry-delete {
+  color: var(--danger);
+}
+
+.entry-delete:hover {
+  color: var(--danger-strong);
+}
+
+.entry.is-user .entry-action,
 .entry.is-user .entry-copy {
   color: var(--bubble-user-muted);
 }
 
+.entry.is-user .entry-delete {
+  color: color-mix(in srgb, var(--bubble-user-ink) 78%, var(--danger));
+}
+
+.entry.is-user .entry-action:hover,
 .entry.is-user .entry-copy:hover {
+  background: color-mix(in srgb, var(--bubble-user-ink) 9%, transparent);
+  border-color: color-mix(in srgb, var(--bubble-user-ink) 14%, transparent);
   color: var(--bubble-user-ink);
 }
 

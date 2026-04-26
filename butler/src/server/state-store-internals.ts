@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
@@ -25,6 +26,7 @@ import type {
   CodexThreadRecord,
   CodexThreadSummary,
   CodexWorkerReportView,
+  ButlerMemoryEntryView,
   JobMemoryDecisionView,
   JobMemoryEntryView,
   JobMemoryPromotionCandidateView,
@@ -55,6 +57,7 @@ export type StateStoreInternalAccess = {
   persistedExecutionContractsByThreadId: Map<string, CodexThreadExecutionContractView>;
   persistedJobMemoriesByThreadId: Map<string, JobMemoryView>;
   persistedProjectMemoriesByProjectId: Map<string, ProjectMemoryView>;
+  persistedButlerMemoryEntries: ButlerMemoryEntryView[];
   persistedProjectArtifactsByProjectId: Map<string, ProjectArtifactView[]>;
   persistedProjectPoliciesByProjectId: Map<string, ProjectPolicyView[]>;
   windows: ButlerWindow[];
@@ -538,6 +541,7 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     access.persistedExecutionContractsByThreadId.clear();
     access.persistedJobMemoriesByThreadId.clear();
     access.persistedProjectMemoriesByProjectId.clear();
+    access.persistedButlerMemoryEntries.splice(0, access.persistedButlerMemoryEntries.length);
     access.persistedProjectArtifactsByProjectId.clear();
     access.persistedProjectPoliciesByProjectId.clear();
     for (const [threadId, policy] of Object.entries(data.supervisionByThreadId ?? {})) {
@@ -723,6 +727,25 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
         updatedAt: typeof memory.updatedAt === "number" ? memory.updatedAt : Date.now()
       });
     }
+    access.persistedButlerMemoryEntries.splice(
+      0,
+      access.persistedButlerMemoryEntries.length,
+      ...(Array.isArray(data.butlerMemoryEntries) ? data.butlerMemoryEntries : [])
+        .filter((entry): entry is ButlerMemoryEntryView => Boolean(entry) && typeof entry === "object" && typeof entry.summary === "string")
+        .map((entry): ButlerMemoryEntryView => {
+          const source: ButlerMemoryEntryView["source"] = entry.source === "manual_chat_save" ? "manual_chat_save" : "butler_tool";
+          return {
+            id: typeof entry.id === "string" && entry.id.trim() ? entry.id.trim() : crypto.randomUUID(),
+            summary: entry.summary.trim(),
+            details: typeof entry.details === "string" && entry.details.trim() ? entry.details.trim() : null,
+            source,
+            sourceMessageId: typeof entry.sourceMessageId === "string" && entry.sourceMessageId.trim() ? entry.sourceMessageId.trim() : null,
+            tags: normalizeStringList(entry.tags, 12),
+            createdAt: typeof entry.createdAt === "number" ? entry.createdAt : Date.now()
+          };
+        })
+        .slice(-100)
+    );
     for (const [projectId, artifacts] of Object.entries(data.projectArtifactsByProjectId ?? {})) {
       const entries = (Array.isArray(artifacts) ? artifacts : [])
         .filter(
@@ -872,6 +895,7 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     access.persistedExecutionContractsByThreadId.clear();
     access.persistedJobMemoriesByThreadId.clear();
     access.persistedProjectMemoriesByProjectId.clear();
+    access.persistedButlerMemoryEntries.splice(0, access.persistedButlerMemoryEntries.length);
     access.persistedProjectArtifactsByProjectId.clear();
     access.persistedProjectPoliciesByProjectId.clear();
     access.threadInventoryReady = false;
@@ -916,6 +940,7 @@ export function queueStateStoreSave(access: StateStoreInternalAccess): void {
       projectMemoriesByProjectId: Object.fromEntries(
         [...access.persistedProjectMemoriesByProjectId.entries()].map(([projectId, memory]) => [projectId, memory])
       ),
+      butlerMemoryEntries: access.persistedButlerMemoryEntries,
       projectArtifactsByProjectId: Object.fromEntries(
         [...access.persistedProjectArtifactsByProjectId.entries()].map(([projectId, artifacts]) => [projectId, artifacts])
       ),

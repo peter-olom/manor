@@ -10,7 +10,7 @@ import {
 
 import { getJson, postJson, uploadAttachment } from "./api";
 import { ButlerComposer } from "./ButlerComposer";
-import { ArrowDownIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon } from "./icons";
+import { ArrowDownIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon, MemoryIcon, TrashIcon } from "./icons";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
 import { RuntimePanel } from "./RuntimePanel";
@@ -75,6 +75,7 @@ export function ButlerSurface({
   const [butlerUploadingAttachments, setButlerUploadingAttachments] = useState(0);
   const [busyStackId, setBusyStackId] = useState<string | null>(null);
   const [busyServiceId, setBusyServiceId] = useState<string | null>(null);
+  const [savingMemoryMessageId, setSavingMemoryMessageId] = useState<string | null>(null);
   const butlerScrollRef = useRef<HTMLDivElement | null>(null);
   const butlerTimelineScrollRef = useRef<HTMLDivElement | null>(null);
   const butlerScrollTopRef = useRef(0);
@@ -268,6 +269,69 @@ export function ButlerSurface({
       await postJson("/api/chat/settings", { model: modelKey, thinkingLevel });
     } catch (error) {
       showErrorToast(error);
+    }
+  }
+
+  async function clearButlerChat() {
+    if (!window.confirm("Clear the entire Butler chat?")) {
+      return;
+    }
+
+    try {
+      await postJson("/api/chat/clear", {});
+      setHistory({ messages: [], loadedStart: 0, totalCount: 0 });
+      setPendingButlerText(null);
+      setFollowButler(true);
+      showToast("Butler chat cleared");
+    } catch (error) {
+      showErrorToast(error);
+    }
+  }
+
+  async function deleteButlerChatFrom(messageId: string) {
+    if (!window.confirm("Delete this prompt and every later Butler message?")) {
+      return;
+    }
+
+    try {
+      await postJson("/api/chat/delete-from", { messageId });
+      setHistory((current) => {
+        const index = current.messages.findIndex((message) => message.id === messageId);
+        if (index < 0) {
+          return current;
+        }
+        return {
+          messages: current.messages.slice(0, index),
+          loadedStart: current.loadedStart,
+          totalCount: Math.max(0, current.loadedStart + index)
+        };
+      });
+      setPendingButlerText(null);
+      setFollowButler(true);
+      showToast("Butler chat trimmed");
+    } catch (error) {
+      showErrorToast(error);
+    }
+  }
+
+  async function saveButlerMessageToMemory(messageId: string, text: string) {
+    const trimmed = text.trim();
+    if (!trimmed || savingMemoryMessageId) return;
+    const firstLine = trimmed.split(/\r?\n/).find((line) => line.trim())?.trim() ?? trimmed;
+    const summary = firstLine.length > 180 ? `${firstLine.slice(0, 177)}...` : firstLine;
+    setSavingMemoryMessageId(messageId);
+    try {
+      await postJson("/api/memory/butler/remember", {
+        summary,
+        details: trimmed.length > summary.length ? trimmed : null,
+        sourceMessageId: messageId,
+        tags: ["butler-chat"]
+      });
+      showToast("Saved to memory", "success", 2500);
+    } catch (error) {
+      showErrorToast(error, "save-memory");
+    } finally {
+      setSavingMemoryMessageId(null);
     }
   }
 
@@ -476,6 +540,14 @@ export function ButlerSurface({
         <section className="conversation-pane conversation-pane-full has-toolbar">
           <div className="conversation-toolbar">
             <div className="conversation-toolbar-group">
+              {history.totalCount > 0 ? (
+                <button className="conversation-toggle conversation-danger-toggle" onClick={() => void clearButlerChat()} type="button" title="Clear Butler chat">
+                  <span className="conversation-toggle-icon" aria-hidden="true">
+                    <TrashIcon />
+                  </span>
+                  <span className="conversation-toggle-label">Clear chat</span>
+                </button>
+              ) : null}
               {runtime && activeRuntimeLeaseCount > 0 ? (
                 <div className="conversation-disclosure">
                   <button className={`conversation-toggle${showRuntime ? " is-active" : ""}`} onClick={() => setShowRuntime((current) => !current)} type="button">
@@ -569,9 +641,6 @@ export function ButlerSurface({
                             <span>You</span>
                             <span className="entry-head-meta">
                               <span>sending</span>
-                              <button className="entry-copy" onClick={() => void copyText(row.text, "Message copied")} aria-label="Copy message" title="Copy message">
-                                <CopyIcon />
-                              </button>
                             </span>
                           </div>
                           <div className="entry-text">
@@ -580,6 +649,11 @@ export function ButlerSurface({
                               onPreviewMedia={onPreviewMedia}
                               onResourceUnavailable={(message) => showToast(message, "error", 5000)}
                             />
+                          </div>
+                          <div className="entry-actions" aria-label="Message actions">
+                            <button className="entry-action" onClick={() => void copyText(row.text, "Message copied")} aria-label="Copy message" title="Copy message">
+                              <CopyIcon />
+                            </button>
                           </div>
                         </article>
                       </div>
@@ -598,9 +672,6 @@ export function ButlerSurface({
                           <span>{message.role.startsWith("assistant") ? "Butler" : "You"}</span>
                           <span className="entry-head-meta">
                             <span>{formatJumpLabel(message.at)}</span>
-                            <button className="entry-copy" onClick={() => void copyText(message.text || "", "Message copied")} aria-label="Copy message" title="Copy message">
-                              <CopyIcon />
-                            </button>
                           </span>
                         </div>
                         <div className="entry-text">
@@ -633,6 +704,21 @@ export function ButlerSurface({
                                 </a>
                               ))}
                             </div>
+                          ) : null}
+                        </div>
+                        <div className="entry-actions" aria-label="Message actions">
+                          <button className="entry-action" onClick={() => void copyText(message.text || "", "Message copied")} aria-label="Copy message" title="Copy message">
+                            <CopyIcon />
+                          </button>
+                          {message.role.startsWith("assistant") && message.text ? (
+                            <button className="entry-action" disabled={savingMemoryMessageId === message.id} onClick={() => void saveButlerMessageToMemory(message.id, message.text || "")} aria-label="Save to memory" title="Save to memory">
+                              <MemoryIcon />
+                            </button>
+                          ) : null}
+                          {!message.role.startsWith("assistant") ? (
+                            <button className="entry-action entry-delete" onClick={() => void deleteButlerChatFrom(message.id)} aria-label="Delete from this message" title="Delete this message and everything after it">
+                              <TrashIcon />
+                            </button>
                           ) : null}
                         </div>
                       </article>

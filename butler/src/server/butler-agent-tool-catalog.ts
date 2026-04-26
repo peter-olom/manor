@@ -122,6 +122,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while choosing a service template." }]
   },
   {
+    name: "remember_insight",
+    label: "Remember insight",
+    description: "Store a durable Butler memory from the main chat.",
+    uiEffects: [{ kind: "refreshThreads", description: "Makes new Butler memory available immediately." }]
+  },
+  {
     name: "list_project_artifacts",
     label: "List project artifacts",
     description: "List durable project artifacts such as saved seeds, downloads, and reusable analysis files.",
@@ -208,7 +214,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "list_jobs",
     label: "List jobs",
-    description: "List Codex jobs, their statuses, and short previews.",
+    description: "List Codex jobs/threads across statuses, including active and inactive jobs.",
     uiEffects: [{ kind: "refreshThreads", description: "Keeps the run list current." }]
   },
   {
@@ -220,7 +226,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "read_job",
     label: "Read job",
-    description: "Read a Codex job in detail, including loaded turns and messages.",
+    description: "Read one specific Codex job/thread in detail by thread id.",
     uiEffects: [{ kind: "refreshThread", description: "Loads the latest run transcript into Butler." }]
   },
   {
@@ -244,7 +250,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "delegate_to_codex",
     label: "Delegate to Codex",
-    description: "Start a new Codex workstream for an execution task such as repo cloning, project setup, coding work, or command execution.",
+    description: "Start a new Codex workstream for an execution task such as repo cloning, project setup, coding work, or command execution, with an optional thinking budget.",
     uiEffects: [
       { kind: "openWindow", description: "Opens the delegated Codex workstream as a tab." },
       { kind: "focusWindow", description: "Moves focus into the new Codex workstream." }

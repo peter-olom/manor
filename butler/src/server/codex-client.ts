@@ -726,6 +726,7 @@ export class CodexAppServerClient extends EventEmitter {
     input?: CodexInputItem[] | ((threadId: string) => CodexInputItem[] | Promise<CodexInputItem[]>);
     cwd?: string | null;
     developerInstructions?: string | null;
+    effort?: ReasoningEffort | null;
     openWindow?: boolean;
   }): Promise<{ threadId: string }> {
     const task = options.task.trim();
@@ -769,8 +770,9 @@ export class CodexAppServerClient extends EventEmitter {
       params.model = this.selectedModel;
     }
 
-    if (this.selectedEffort) {
-      params.effort = this.selectedEffort;
+    const requestedEffort = options.effort ?? this.selectedEffort;
+    if (requestedEffort) {
+      params.effort = requestedEffort;
     }
 
     const turnResult = await this.call("turn/start", params);

@@ -44,23 +44,18 @@ import {
 import { buildButlerCodexTools } from "./butler-agent-codex-tools.js";
 import {
   createOrRefreshButlerSession,
-  dropTrailingFailedButlerTurns,
-  extractLatestAssistantFailure as extractButlerAssistantFailure,
-  getButlerCompactionSnapshot,
-  getButlerContextUsage,
   getButlerLiveSnapshot,
   getButlerMessagePage,
   getButlerShellSnapshot,
   getButlerSnapshot,
-  getVisibleButlerMessages,
   promptButler,
   promptButlerInternal,
   restoreButlerCompactionState,
-  runButlerPrompt,
   sanitizeButlerSessionMessages,
   sanitizePersistedButlerSessions,
   updateButlerComposeSettings
 } from "./butler-agent-session.js";
+import { clearButlerSessionChat, deleteButlerSessionChatFrom, keepOperatorMessagesBefore } from "./butler-agent-chat-hygiene.js";
 import { buildButlerServiceTools } from "./butler-agent-service-tools.js";
 import { buildButlerProjectTools } from "./butler-agent-project-tools.js";
 import { buildButlerDelegationTools, buildButlerStackPreviewTools } from "./butler-agent-stack-preview-tools.js";
@@ -100,7 +95,6 @@ import type {
   ButlerAuthStatus,
   ButlerThreadCallbackView,
   ButlerCompactionView,
-  ButlerContextUsageView,
   ButlerMessageView,
   ButlerMessagePageView,
   ButlerOnboardingView,
@@ -403,6 +397,10 @@ export class ButlerAgentService extends EventEmitter {
       "utf8"
     );
   }
+
+  async clearChat(): Promise<void> { this.operatorMessages.splice(0, this.operatorMessages.length); await this.saveOperatorMessageState(); clearButlerSessionChat(this.session); this.lastError = null; this.emit("change"); }
+
+  async deleteChatFromMessage(messageId: string): Promise<void> { keepOperatorMessagesBefore(this.operatorMessages, deleteButlerSessionChatFrom(this.session, messageId)); await this.saveOperatorMessageState(); this.lastError = null; this.emit("change"); }
 
   private registerPendingChatCallback(threadId: string, options?: { privateSteerText?: string | null; nextWorkerReportAction?: "review" | "reply_to_operator" }): void {
     const now = Date.now();
@@ -1436,25 +1434,9 @@ export class ButlerAgentService extends EventEmitter {
 
   private restoreCompactionState(): void { restoreButlerCompactionState(this.getSessionAccess()); }
 
-  private getContextUsage(): ButlerContextUsageView { return getButlerContextUsage(this.getSessionAccess()); }
-
-  private getCompactionSnapshot(): ButlerCompactionView { return getButlerCompactionSnapshot(this.getSessionAccess()); }
-
-  private async runPrompt(text: string, imageReferenceIds: string[] = []): Promise<void> {
-    await runButlerPrompt(this.getSessionAccess(), text, imageReferenceIds);
-  }
-
-  private extractLatestAssistantFailure(): string | null { return extractButlerAssistantFailure(this.getSessionAccess()); }
-
-  private dropTrailingFailedTurns(): void { dropTrailingFailedButlerTurns(this.getSessionAccess()); }
-
   private sanitizeSessionMessages(): void { sanitizeButlerSessionMessages(this.getSessionAccess()); }
 
-  private getVisibleMessages(): ButlerMessageView[] { return getVisibleButlerMessages(this.getSessionAccess()); }
-
-  getMessagePage(before: number | null, limit: number): ButlerMessagePageView {
-    return getButlerMessagePage(this.getSessionAccess(), before, limit);
-  }
+  getMessagePage(before: number | null, limit: number): ButlerMessagePageView { return getButlerMessagePage(this.getSessionAccess(), before, limit); }
 
   getLiveSnapshot(): ButlerLiveSnapshot { return getButlerLiveSnapshot(this.getSessionAccess()); }
 
@@ -1467,22 +1449,13 @@ export class ButlerAgentService extends EventEmitter {
   private async promptOperatorTurn(text: string, imageReferenceIds: string[] = []): Promise<void> {
     const guard = buildOperatorThreadGuard(this.store, text, this.getRecentFocusedThreadId());
     this.activeOperatorThreadGuard = guard;
-
     if (guard.lockedThreadId && this.store.getThread(guard.lockedThreadId)) {
       this.noteThreadFocus(guard.lockedThreadId, guard.explicitThreadIds.length > 0 ? "operator_reference" : "operator_follow_up");
     }
 
     try {
       if (guard.contextPrompt) {
-        await promptButlerInternal(
-          this.getSessionAccess(),
-          [
-            "This is hidden grounding for the next operator turn.",
-            "Do not answer it directly.",
-            "Use it to keep job references exact during the next operator turn only.",
-            guard.contextPrompt
-          ].join("\n")
-        );
+        await promptButlerInternal(this.getSessionAccess(), ["This is hidden grounding for the next operator turn.", "Do not answer it directly.", "Use it to keep job references exact during the next operator turn only.", guard.contextPrompt].join("\n"));
       }
       await promptButler(this.getSessionAccess(), text, imageReferenceIds);
     } finally {
@@ -1490,11 +1463,7 @@ export class ButlerAgentService extends EventEmitter {
     }
   }
 
-  prompt(text: string, imageReferenceIds: string[] = []): void {
-    void this.promptOperatorTurn(text, imageReferenceIds);
-  }
+  prompt(text: string, imageReferenceIds: string[] = []): void { void this.promptOperatorTurn(text, imageReferenceIds); }
 
-  async updateComposeSettings(provider: string, modelId: string, thinkingLevel: ButlerThinkingLevel): Promise<void> {
-    await updateButlerComposeSettings(this.getSessionAccess(), provider, modelId, thinkingLevel);
-  }
+  async updateComposeSettings(provider: string, modelId: string, thinkingLevel: ButlerThinkingLevel): Promise<void> { await updateButlerComposeSettings(this.getSessionAccess(), provider, modelId, thinkingLevel); }
 }

@@ -289,6 +289,27 @@ app.post("/api/memory/promotions/resolve", (request, response) => {
     projectMemory: store.getProjectMemory(candidate.projectId)
   });
 });
+
+app.post("/api/memory/butler/remember", (request, response) => {
+  const summary = typeof request.body?.summary === "string" ? request.body.summary.trim() : "";
+  const details = typeof request.body?.details === "string" && request.body.details.trim() ? request.body.details.trim() : null;
+  const sourceMessageId = typeof request.body?.sourceMessageId === "string" && request.body.sourceMessageId.trim() ? request.body.sourceMessageId.trim() : null;
+  const tags = Array.isArray(request.body?.tags) ? request.body.tags : [];
+  if (!summary) {
+    response.status(400).json({ error: "summary is required" });
+    return;
+  }
+
+  const entry = store.recordButlerMemory({
+    summary,
+    details,
+    source: "manual_chat_save",
+    sourceMessageId,
+    tags
+  });
+  response.json({ ok: true, entry });
+});
+
 app.get("/api/chat/history", (request, response) => {
   const beforeRaw = Array.isArray(request.query.before) ? request.query.before[0] : request.query.before;
   const limitRaw = Array.isArray(request.query.limit) ? request.query.limit[0] : request.query.limit;
@@ -387,6 +408,30 @@ app.post("/api/chat/settings", async (request, response) => {
 
   try {
     await butlerAgent.updateComposeSettings(provider, model, thinkingLevel);
+    response.json({ ok: true });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/chat/clear", async (_request, response) => {
+  try {
+    await butlerAgent.clearChat();
+    response.json({ ok: true });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/chat/delete-from", async (request, response) => {
+  const messageId = typeof request.body?.messageId === "string" ? request.body.messageId : "";
+  if (!messageId) {
+    response.status(400).json({ error: "messageId is required" });
+    return;
+  }
+
+  try {
+    await butlerAgent.deleteChatFromMessage(messageId);
     response.json({ ok: true });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });

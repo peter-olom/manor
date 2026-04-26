@@ -491,6 +491,16 @@ export interface ProjectMemoryView {
   updatedAt: number;
 }
 
+export interface ButlerMemoryEntryView {
+  id: string;
+  summary: string;
+  details: string | null;
+  source: "butler_tool" | "manual_chat_save";
+  sourceMessageId: string | null;
+  tags: string[];
+  createdAt: number;
+}
+
 export type ProjectArtifactKind = "seed" | "reference" | "download" | "research" | "report" | "other";
 export type ProjectArtifactSourceKind = "inline" | "url" | "generated";
 
@@ -822,6 +832,7 @@ export interface PersistedUiState {
   executionContractsByThreadId?: Record<string, CodexThreadExecutionContractView>;
   jobMemoriesByThreadId?: Record<string, JobMemoryView>;
   projectMemoriesByProjectId?: Record<string, ProjectMemoryView>;
+  butlerMemoryEntries?: ButlerMemoryEntryView[];
   projectArtifactsByProjectId?: Record<string, ProjectArtifactView[]>;
   projectPoliciesByProjectId?: Record<string, ProjectPolicyView[]>;
 }

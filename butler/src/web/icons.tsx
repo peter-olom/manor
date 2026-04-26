@@ -223,6 +223,21 @@ export function TrashIcon() {
   );
 }
 
+export function MemoryIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d="M4 3.5h8v9H4zM6 5.5h4M6 8h4M6 10.5h2"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="square"
+        strokeLinejoin="miter"
+      />
+    </svg>
+  );
+}
+
 export function CloseIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">

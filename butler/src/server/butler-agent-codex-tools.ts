@@ -16,8 +16,8 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
     access.defineButlerTool({
       name: "list_jobs",
       label: "List jobs",
-      description: "List tracked Codex jobs and their current summaries.",
-      promptSnippet: "list_jobs: inspect active, idle, or blocked jobs before deciding which run to inspect next.",
+      description: "List tracked Codex jobs/threads across statuses, including active and inactive jobs, with current summaries.",
+      promptSnippet: "list_jobs: use for broad Codex job/thread checks, counts, active/idle/blocked status summaries, or finding jobs by project before choosing one to inspect.",
       parameters: Type.Object({
         limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
         status: Type.Optional(Type.String())
@@ -35,8 +35,8 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
     access.defineButlerTool({
       name: "read_job",
       label: "Read job",
-      description: "Read a Codex job in detail, including loaded turns and messages.",
-      promptSnippet: "read_job: load a job transcript and supervisor state before summarizing or steering it.",
+      description: "Read one specific Codex job/thread in detail by thread id, including loaded turns and messages.",
+      promptSnippet: "read_job: use after you have a specific thread id and need that job's transcript, supervisor state, or details.",
       parameters: Type.Object({
         threadId: Type.String()
       }),
@@ -228,9 +228,10 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
     access.defineButlerTool({
       name: "message_job",
       label: "Message job",
-      description: "Privately send a follow-up into one Codex job thread without restating the whole job brief.",
+      description:
+        "Send a private follow-up instruction into one existing valid Codex job. Use when Butler decides an existing job needs steering, continuation, retry, cleanup, or a question.",
       promptSnippet:
-        "message_job: steer a Codex job privately with one concise follow-up, and always set nextWorkerReportAction explicitly.",
+        "message_job: steer, continue, retry, stop, clean up, or ask an existing valid Codex job.",
       parameters: Type.Object({
         threadId: Type.String(),
         text: Type.String({ minLength: 1 }),
