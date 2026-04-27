@@ -438,6 +438,25 @@ app.post("/api/chat/delete-from", async (request, response) => {
   }
 });
 
+app.get("/api/composer/suggestions", async (request, response) => {
+  const trigger = request.query.trigger === "$" ? "$" : request.query.trigger === "@" ? "@" : null;
+  const query = typeof request.query.q === "string" ? request.query.q : "";
+  const cwd = typeof request.query.cwd === "string" ? request.query.cwd : null;
+  const threadId = typeof request.query.threadId === "string" ? request.query.threadId : null;
+
+  if (!trigger) {
+    response.status(400).json({ error: "trigger is required" });
+    return;
+  }
+
+  try {
+    const suggestions = await codexClient.listComposerSuggestions({ trigger, query, cwd, threadId });
+    response.json({ suggestions });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 app.post("/api/threads/messages", async (request, response) => {
   const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : "";
   const text = typeof request.body?.text === "string" ? request.body.text : "";
@@ -456,7 +475,8 @@ app.post("/api/threads/messages", async (request, response) => {
         imageStore,
         imageReferenceIds,
         fileStore,
-        fileReferenceIds
+        fileReferenceIds,
+        extraInputItems: Array.isArray(request.body?.inputItems) ? request.body.inputItems : []
       })
     );
     response.status(202).json({ ok: true });

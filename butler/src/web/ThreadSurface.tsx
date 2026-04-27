@@ -9,12 +9,14 @@ import {
 } from "react";
 
 import { postJson, uploadAttachment } from "./api";
+import { ComposerMentions } from "./ComposerMentions";
 import { ArrowDownIcon, AttachmentIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon, SendIcon, TrashIcon } from "./icons";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
 import { RuntimePanel } from "./RuntimePanel";
 import { mergeKnownImages, useKnownImages, useRuntimeSnapshot, useShellSnapshot, useThreadDetail } from "./live-state";
 import type {
+  ComposerInputItem,
   ComposerPrefill,
   FileReference,
   PreviewMedia,
@@ -109,7 +111,9 @@ export function ThreadSurface({
   const [threadDraft, setThreadDraft] = useState("");
   const [threadAttachments, setThreadAttachments] = useState<FileReference[]>([]);
   const [threadUploadingAttachments, setThreadUploadingAttachments] = useState(0);
+  const [threadInputItems, setThreadInputItems] = useState<ComposerInputItem[]>([]);
   const [threadDragActive, setThreadDragActive] = useState(false);
+  const [threadMentionsOpen, setThreadMentionsOpen] = useState(false);
   const [pendingThreadRequest, setPendingThreadRequest] = useState<{
     threadId: string;
     text: string;
@@ -288,12 +292,14 @@ export function ThreadSurface({
 
     const text = threadDraft.trim();
     const composerAttachments = [...threadAttachments];
+    const composerInputItems = [...threadInputItems];
     if (!text && composerAttachments.length === 0) {
       return;
     }
 
     const messageSummary = text || formatAttachmentSummary(composerAttachments.length);
     setThreadDraft("");
+    setThreadInputItems([]);
     setThreadAttachments([]);
     writeStoredValue(`${THREAD_DRAFT_STORAGE_KEY_PREFIX}${activeThread.id}`, "");
     setFollowRun(true);
@@ -307,12 +313,14 @@ export function ThreadSurface({
       await postJson("/api/threads/messages", {
         threadId: activeThread.id,
         text,
+        inputItems: composerInputItems,
         imageReferenceIds: composerAttachments.filter((item) => item.mimeType.startsWith("image/")).map((item) => item.id),
         fileReferenceIds: composerAttachments.filter((item) => !item.mimeType.startsWith("image/")).map((item) => item.id)
       });
     } catch (error) {
       setPendingThreadRequest((current) => (current?.threadId === activeThread.id && current.text === messageSummary ? null : current));
       setThreadDraft((current) => (current.trim().length === 0 ? text : current));
+      setThreadInputItems((current) => (current.length === 0 ? composerInputItems : current));
       setThreadAttachments((current) => (current.length === 0 ? composerAttachments : current));
       showErrorToast(error);
     }
@@ -1053,7 +1061,16 @@ export function ThreadSurface({
                 {threadUploadingAttachments > 0 ? <div className="composer-uploading">Uploading {threadUploadingAttachments}…</div> : null}
               </div>
             ) : null}
-            <div className="composer-main">
+            <div className={`composer-main${threadMentionsOpen ? " has-suggestions" : ""}`}>
+              <ComposerMentions
+                draft={threadDraft}
+                textareaRef={threadTextareaRef}
+                contextCwd={activeThread.executionContract?.workspaceCwd ?? activeThread.cwd}
+                threadId={activeThread.id}
+                onDraftChange={setThreadDraft}
+                onInputItemsChange={setThreadInputItems}
+                onOpenChange={setThreadMentionsOpen}
+              />
               <textarea
                 ref={threadTextareaRef}
                 name="codex-thread-message"

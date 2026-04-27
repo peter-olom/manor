@@ -28,6 +28,65 @@ type ThreadDeleteContext = {
   services: RuntimeCleanupTaskView["services"];
 };
 
+export type ComposerSuggestionInputItem =
+  | {
+      type: "skill";
+      name: string;
+      path: string;
+    }
+  | {
+      type: "mention";
+      name?: string;
+      path: string;
+    };
+
+export type ComposerSuggestion = {
+  id: string;
+  kind: "file" | "directory" | "skill" | "app" | "plugin" | "agent";
+  label: string;
+  detail: string | null;
+  insertText: string;
+  inputItem?: ComposerSuggestionInputItem;
+};
+
+type FsDirectoryEntry = {
+  fileName: string;
+  isDirectory: boolean;
+  isFile: boolean;
+};
+
+const COMPOSER_FILE_EXCLUDED_NAMES = new Set([
+  ".git",
+  ".next",
+  ".turbo",
+  "coverage",
+  "dist",
+  "node_modules",
+  "target"
+]);
+const COMPOSER_SUGGESTION_LIMIT = 32;
+
+function normalizeSuggestionQuery(query: string): string {
+  return query.trim().toLowerCase();
+}
+
+function relativeDisplayPath(root: string, entryPath: string): string {
+  const relative = path.relative(root, entryPath);
+  return relative && !relative.startsWith("..") ? relative : entryPath;
+}
+
+function matchesSuggestion(query: string, ...values: Array<string | null | undefined>): boolean {
+  if (!query) {
+    return true;
+  }
+
+  return values.some((value) => value?.toLowerCase().includes(query));
+}
+
+function slugFromName(name: string): string {
+  return name.trim().toLowerCase().replace(/[^a-z0-9:_-]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
 function normalizeModelLabel(rawLabel: string, id: string): string {
   const source = rawLabel.trim() || id.trim();
   if (!source) {
@@ -324,6 +383,9 @@ export class CodexAppServerClient extends EventEmitter {
             name: "manor-butler",
             title: "Manor Butler",
             version: "0.1.0"
+          },
+          capabilities: {
+            experimentalApi: true
           }
         });
 
@@ -613,6 +675,200 @@ export class CodexAppServerClient extends EventEmitter {
     this.selectedModel = defaultModel?.id ?? null;
     this.selectedEffort = defaultModel ? this.resolveEffort(defaultModel, this.selectedEffort) : null;
     this.emit("change");
+  }
+
+  private async listComposerFiles(root: string, query: string): Promise<ComposerSuggestion[]> {
+    const normalizedRoot = await this.requireExistingWorkspace(root);
+    if (!normalizedRoot) {
+      return [];
+    }
+
+    const suggestions: ComposerSuggestion[] = [];
+    const queue: Array<{ dir: string; depth: number }> = [{ dir: normalizedRoot, depth: 0 }];
+    const maxDepth = query.length >= 2 ? 5 : 2;
+
+    while (queue.length > 0 && suggestions.length < COMPOSER_SUGGESTION_LIMIT) {
+      const current = queue.shift()!;
+      const result = await this.call("fs/readDirectory", { path: current.dir }).catch(() => null);
+      const entries = Array.isArray(result?.entries) ? (result.entries as FsDirectoryEntry[]) : [];
+
+      for (const entry of entries) {
+        if (!entry || typeof entry.fileName !== "string" || COMPOSER_FILE_EXCLUDED_NAMES.has(entry.fileName)) {
+          continue;
+        }
+
+        const entryPath = path.join(current.dir, entry.fileName);
+        const relativePath = relativeDisplayPath(normalizedRoot, entryPath);
+        const isDirectory = Boolean(entry.isDirectory);
+        const isFile = Boolean(entry.isFile);
+
+        if ((isFile || isDirectory) && matchesSuggestion(query, entry.fileName, relativePath)) {
+          suggestions.push({
+            id: `file:${entryPath}`,
+            kind: isDirectory ? "directory" : "file",
+            label: entry.fileName,
+            detail: relativePath,
+            insertText: `@${relativePath}`
+          });
+        }
+
+        if (isDirectory && current.depth < maxDepth && suggestions.length < COMPOSER_SUGGESTION_LIMIT) {
+          queue.push({ dir: entryPath, depth: current.depth + 1 });
+        }
+
+        if (suggestions.length >= COMPOSER_SUGGESTION_LIMIT) {
+          break;
+        }
+      }
+    }
+
+    return suggestions;
+  }
+
+  private async listComposerSkills(cwd: string, query: string): Promise<ComposerSuggestion[]> {
+    const result = await this.call("skills/list", {
+      cwds: [cwd],
+      forceReload: false
+    });
+
+    const groups = Array.isArray(result.data) ? (result.data as Record<string, unknown>[]) : [];
+    const skills = groups.flatMap((group) => (Array.isArray(group.skills) ? (group.skills as Record<string, unknown>[]) : []));
+
+    return skills
+      .filter((skill) => typeof skill.name === "string" && typeof skill.path === "string")
+      .filter((skill) =>
+        matchesSuggestion(
+          query,
+          skill.name as string,
+          typeof skill.description === "string" ? skill.description : null,
+          typeof (skill.interface as Record<string, unknown> | undefined)?.displayName === "string"
+            ? ((skill.interface as Record<string, unknown>).displayName as string)
+            : null
+        )
+      )
+      .slice(0, COMPOSER_SUGGESTION_LIMIT)
+      .map((skill) => {
+        const interfaceInfo = skill.interface && typeof skill.interface === "object" ? (skill.interface as Record<string, unknown>) : null;
+        const name = skill.name as string;
+        const displayName = typeof interfaceInfo?.displayName === "string" ? interfaceInfo.displayName : name;
+        return {
+          id: `skill:${skill.path as string}`,
+          kind: "skill",
+          label: displayName,
+          detail: name,
+          insertText: `$${name}`,
+          inputItem: {
+            type: "skill",
+            name,
+            path: skill.path as string
+          }
+        };
+      });
+  }
+
+  private async listComposerApps(query: string, threadId?: string | null): Promise<ComposerSuggestion[]> {
+    const result = await this.call("app/list", {
+      limit: 100,
+      ...(threadId ? { threadId } : {})
+    });
+    const apps = Array.isArray(result.data) ? (result.data as Record<string, unknown>[]) : [];
+
+    return apps
+      .filter((app) => typeof app.id === "string" && typeof app.name === "string")
+      .filter((app) => app.isAccessible !== false && app.isEnabled !== false)
+      .filter((app) => matchesSuggestion(query, app.name as string, typeof app.description === "string" ? app.description : null))
+      .slice(0, COMPOSER_SUGGESTION_LIMIT)
+      .map((app) => {
+        const name = app.name as string;
+        const slug = slugFromName(name);
+        return {
+          id: `app:${app.id as string}`,
+          kind: "app",
+          label: name,
+          detail: typeof app.description === "string" ? app.description : null,
+          insertText: `$${slug}`,
+          inputItem: {
+            type: "mention",
+            name,
+            path: `app://${app.id as string}`
+          }
+        };
+      });
+  }
+
+  private async listComposerPlugins(query: string): Promise<ComposerSuggestion[]> {
+    const result = await this.call("plugin/list", { limit: 100 });
+    const marketplaces = Array.isArray(result.marketplaces) ? (result.marketplaces as Record<string, unknown>[]) : [];
+    const plugins = marketplaces.flatMap((marketplace) =>
+      Array.isArray(marketplace.plugins) ? (marketplace.plugins as Record<string, unknown>[]) : []
+    );
+
+    return plugins
+      .filter((plugin) => typeof plugin.name === "string")
+      .filter((plugin) => {
+        const interfaceInfo = plugin.interface && typeof plugin.interface === "object" ? (plugin.interface as Record<string, unknown>) : null;
+        return matchesSuggestion(
+          query,
+          plugin.name as string,
+          typeof interfaceInfo?.displayName === "string" ? interfaceInfo.displayName : null,
+          typeof interfaceInfo?.shortDescription === "string" ? interfaceInfo.shortDescription : null
+        );
+      })
+      .slice(0, COMPOSER_SUGGESTION_LIMIT)
+      .map((plugin) => {
+        const interfaceInfo = plugin.interface && typeof plugin.interface === "object" ? (plugin.interface as Record<string, unknown>) : null;
+        const name = plugin.name as string;
+        return {
+          id: `plugin:${typeof plugin.id === "string" ? plugin.id : name}`,
+          kind: "plugin",
+          label: typeof interfaceInfo?.displayName === "string" ? interfaceInfo.displayName : name,
+          detail: typeof interfaceInfo?.shortDescription === "string" ? interfaceInfo.shortDescription : name,
+          insertText: `@${name}`
+        };
+      });
+  }
+
+  private async listComposerAgents(query: string): Promise<ComposerSuggestion[]> {
+    const result = await this.call("collaborationMode/list", {}).catch(() => null);
+    const modes = Array.isArray(result?.data) ? (result.data as Record<string, unknown>[]) : [];
+
+    return modes
+      .filter((mode) => typeof mode.name === "string" && typeof mode.mode === "string")
+      .filter((mode) => matchesSuggestion(query, mode.name as string, mode.mode as string))
+      .slice(0, COMPOSER_SUGGESTION_LIMIT)
+      .map((mode) => ({
+        id: `agent:${mode.mode as string}`,
+        kind: "agent",
+        label: mode.name as string,
+        detail: mode.mode as string,
+        insertText: `@${mode.name as string}`
+      }));
+  }
+
+  async listComposerSuggestions(options: {
+    trigger: "@" | "$";
+    query: string;
+    cwd?: string | null;
+    threadId?: string | null;
+  }): Promise<ComposerSuggestion[]> {
+    const query = normalizeSuggestionQuery(options.query);
+    const cwd = (await this.requireExistingWorkspace(options.cwd).catch(() => null)) ?? this.defaultCwd;
+
+    if (options.trigger === "$") {
+      const [skills, apps] = await Promise.all([
+        this.listComposerSkills(cwd, query).catch(() => []),
+        this.listComposerApps(query, options.threadId).catch(() => [])
+      ]);
+      return [...skills, ...apps].slice(0, COMPOSER_SUGGESTION_LIMIT);
+    }
+
+    const [files, plugins, agents] = await Promise.all([
+      this.listComposerFiles(cwd, query).catch(() => []),
+      this.listComposerPlugins(query).catch(() => []),
+      this.listComposerAgents(query).catch(() => [])
+    ]);
+
+    return [...files, ...plugins, ...agents].slice(0, COMPOSER_SUGGESTION_LIMIT);
   }
 
   private resolveEffort(model: ModelOption, effort: ReasoningEffort | null): ReasoningEffort | null {

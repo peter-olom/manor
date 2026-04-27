@@ -1,7 +1,8 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
+import { ComposerMentions } from "./ComposerMentions";
 import { AttachmentIcon, CloseIcon, SendIcon } from "./icons";
-import type { ButlerThinkingLevel, FileReference, ModelOption, PreviewableImage } from "./types";
+import type { ButlerThinkingLevel, ComposerInputItem, FileReference, ModelOption, PreviewableImage } from "./types";
 import {
   DRAFT_PERSIST_DELAY_MS,
   isFileDrag,
@@ -31,6 +32,8 @@ export const ButlerComposer = memo(function ButlerComposer({
   availableThinkingLevels,
   attachments,
   uploadingAttachments,
+  contextCwd,
+  threadId,
   onFilesSelected,
   onRemoveAttachment,
   onPreviewImage,
@@ -50,13 +53,17 @@ export const ButlerComposer = memo(function ButlerComposer({
   onFilesSelected: (files: FileList | File[]) => void;
   onRemoveAttachment: (attachmentId: string) => void;
   onPreviewImage: (image: PreviewableImage) => void;
-  onSend: (text: string) => Promise<void>;
+  contextCwd?: string | null;
+  threadId?: string | null;
+  onSend: (text: string, inputItems: ComposerInputItem[]) => Promise<void>;
   onModelChange: (modelKey: string) => void;
   onThinkingLevelChange: (thinkingLevel: ButlerThinkingLevel) => void;
   onDraftPrefillApplied?: (prefillId: string) => void;
 }) {
   const [draft, setDraft] = useState(() => readStoredValue(draftStorageKey));
   const [dragActive, setDragActive] = useState(false);
+  const [mentionsOpen, setMentionsOpen] = useState(false);
+  const [inputItems, setInputItems] = useState<ComposerInputItem[]>([]);
   const persistTimerRef = useRef<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -108,13 +115,16 @@ export const ButlerComposer = memo(function ButlerComposer({
       return;
     }
 
+    const sentInputItems = [...inputItems];
     setDraft("");
+    setInputItems([]);
     writeStoredValue(draftStorageKey, "");
 
     try {
-      await onSend(text);
+      await onSend(text, sentInputItems);
     } catch (error) {
       setDraft((current) => (current.trim().length === 0 ? text : current));
+      setInputItems((current) => (current.length === 0 ? sentInputItems : current));
       throw error;
     }
   }
@@ -219,7 +229,16 @@ export const ButlerComposer = memo(function ButlerComposer({
           {uploadingAttachments > 0 ? <div className="composer-uploading">Uploading {uploadingAttachments}…</div> : null}
         </div>
       ) : null}
-      <div className="composer-main">
+      <div className={`composer-main${mentionsOpen ? " has-suggestions" : ""}`}>
+        <ComposerMentions
+          draft={draft}
+          textareaRef={textareaRef}
+          contextCwd={contextCwd}
+          threadId={threadId}
+          onDraftChange={setDraft}
+          onInputItemsChange={setInputItems}
+          onOpenChange={setMentionsOpen}
+        />
         <textarea
           ref={textareaRef}
           name="butler-chat-message"

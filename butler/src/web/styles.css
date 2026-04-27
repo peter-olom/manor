@@ -160,6 +160,18 @@ select {
   color: var(--muted);
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .app-shell {
   position: relative;
   display: grid;
@@ -2248,6 +2260,99 @@ select {
   background: color-mix(in srgb, var(--surface) 80%, var(--accent) 20%);
 }
 
+.composer-suggestions {
+  position: absolute;
+  left: 16px;
+  right: auto;
+  bottom: calc(100% + 8px);
+  z-index: 8;
+  width: min(720px, calc(100% - 32px));
+  max-height: 284px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: none;
+}
+
+.composer-suggestion {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: center;
+  width: 100%;
+  min-height: 42px;
+  gap: 10px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.composer-suggestion:last-child {
+  border-bottom: 0;
+}
+
+.composer-suggestion.is-active,
+.composer-suggestion:hover {
+  background: var(--surface);
+}
+
+.composer-suggestion-kind {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--muted);
+}
+
+.composer-suggestion-kind svg {
+  width: 16px;
+  height: 16px;
+}
+
+.composer-suggestion-kind.is-skill,
+.composer-suggestion-kind.is-app {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+  color: var(--accent);
+}
+
+.composer-suggestion-kind.is-plugin,
+.composer-suggestion-kind.is-agent {
+  border-color: color-mix(in srgb, var(--green) 35%, var(--line));
+  color: var(--green);
+}
+
+.composer-suggestion-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.composer-suggestion-label,
+.composer-suggestion-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-suggestion-label {
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.composer-suggestion-detail {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
 .composer-attachments {
   display: flex;
   flex-wrap: wrap;
@@ -2388,10 +2493,17 @@ select {
 }
 
 .composer-main {
+  position: relative;
   display: flex;
   align-items: flex-end;
   flex: 1 1 auto;
+  width: 100%;
   min-height: 0;
+  border: 1px solid transparent;
+}
+
+.composer-main.has-suggestions {
+  border-color: var(--line-strong);
 }
 
 .composer textarea {
@@ -3634,6 +3746,18 @@ select {
     position: relative;
     min-height: 144px;
     max-width: 100%;
+  }
+
+  .composer-suggestions {
+    left: 12px;
+    width: min(720px, calc(100% - 24px));
+    max-height: 220px;
+    margin: 0;
+  }
+
+  .composer-suggestion {
+    grid-template-columns: 34px minmax(0, 1fr);
+    min-height: 40px;
   }
 
   .composer-main {

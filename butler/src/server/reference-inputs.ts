@@ -95,6 +95,7 @@ export function buildCodexInputWithReferences(input: {
   imageReferenceIds: string[];
   fileStore: FileReferenceStore;
   fileReferenceIds: string[];
+  extraInputItems?: unknown[];
 }): CodexInputItem[] {
   const promptText = buildReferencePromptText({
     text: input.text,
@@ -119,11 +120,33 @@ export function buildCodexInputWithReferences(input: {
     });
   }
 
+  for (const item of input.extraInputItems ?? []) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+
+    const record = item as Record<string, unknown>;
+    if (record.type === "skill" && typeof record.name === "string" && typeof record.path === "string") {
+      output.push({ type: "skill", name: record.name, path: record.path });
+    }
+
+    if (record.type === "mention" && typeof record.path === "string") {
+      output.push({
+        type: "mention",
+        path: record.path,
+        ...(typeof record.name === "string" ? { name: record.name } : {})
+      });
+    }
+  }
+
   const normalized = output.filter((item) => {
     if (item.type === "text") {
       return item.text.trim().length > 0;
     }
-    return item.path.trim().length > 0;
+    if (item.type === "skill" || item.type === "mention" || item.type === "localImage") {
+      return item.path.trim().length > 0;
+    }
+    return true;
   });
 
   if (normalized.length === 0) {

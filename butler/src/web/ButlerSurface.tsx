@@ -998,6 +998,7 @@ export function ButlerSurface({
             onFilesSelected={(files) => void uploadAttachments(files)}
             onRemoveAttachment={(attachmentId) => setButlerAttachments((current) => current.filter((entry) => entry.id !== attachmentId))}
             onPreviewImage={(image) => onPreviewMedia({ name: image.name, url: image.url, kind: "image", downloadUrl: image.url })}
+            contextCwd="/repos/manor"
             onSend={async (text) => {
               try {
                 await sendButlerMessage(text);

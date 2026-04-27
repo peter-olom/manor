@@ -12,6 +12,16 @@ export type CodexInputItem =
   | {
       type: "localImage";
       path: string;
+    }
+  | {
+      type: "skill";
+      name: string;
+      path: string;
+    }
+  | {
+      type: "mention";
+      name?: string;
+      path: string;
     };
 
 type PersistedImageReference = {

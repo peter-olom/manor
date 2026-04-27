@@ -94,6 +94,27 @@ export type PreviewableFile = {
   url: string;
 };
 
+export type ComposerInputItem =
+  | {
+      type: "skill";
+      name: string;
+      path: string;
+    }
+  | {
+      type: "mention";
+      name?: string;
+      path: string;
+    };
+
+export type ComposerSuggestion = {
+  id: string;
+  kind: "file" | "directory" | "skill" | "app" | "plugin" | "agent";
+  label: string;
+  detail: string | null;
+  insertText: string;
+  inputItem?: ComposerInputItem;
+};
+
 export type PreviewMedia = {
   name: string;
   url: string;
