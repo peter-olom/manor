@@ -130,6 +130,10 @@ export const ButlerComposer = memo(function ButlerComposer({
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    if (event.defaultPrevented) {
+      return;
+    }
+
     if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) {
       return;
     }

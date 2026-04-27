@@ -12,7 +12,7 @@ import { CodexHarnessService } from "./codex-harness.js";
 import { FileReferenceStore, MAX_FILE_BYTES } from "./file-store.js";
 import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
 import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-routes.js";
-import { buildCodexInputWithReferences, buildReferencePromptText } from "./reference-inputs.js";
+import { buildCodexInputWithReferences, buildComposerInputItemsPrompt, buildReferencePromptText } from "./reference-inputs.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { registerServerAssetRoutes } from "./server-asset-routes.js";
 import {
@@ -375,13 +375,14 @@ app.post("/api/chat/messages", async (request, response) => {
   const text = typeof request.body?.text === "string" ? request.body.text : "";
   const imageReferenceIds = readImageReferenceIds(request.body);
   const fileReferenceIds = readFileReferenceIds(request.body);
-  if (!text.trim() && imageReferenceIds.length === 0 && fileReferenceIds.length === 0) {
-    response.status(400).json({ error: "text, imageReferenceIds, or fileReferenceIds is required" });
+  const inputItems = Array.isArray(request.body?.inputItems) ? request.body.inputItems : [];
+  if (!text.trim() && imageReferenceIds.length === 0 && fileReferenceIds.length === 0 && inputItems.length === 0) {
+    response.status(400).json({ error: "text, imageReferenceIds, fileReferenceIds, or inputItems is required" });
     return;
   }
 
   try {
-    const promptText = buildReferencePromptText({
+    const referencePromptText = buildReferencePromptText({
       text,
       imageStore,
       imageReferenceIds,
@@ -390,6 +391,8 @@ app.post("/api/chat/messages", async (request, response) => {
       includeIds: true,
       includeFilePaths: true
     });
+    const inputItemsPromptText = buildComposerInputItemsPrompt(inputItems);
+    const promptText = [referencePromptText, inputItemsPromptText].filter(Boolean).join("\n\n");
     butlerAgent.prompt(promptText, imageReferenceIds);
     response.status(202).json({ ok: true });
   } catch (error) {

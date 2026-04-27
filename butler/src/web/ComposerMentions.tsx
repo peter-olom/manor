@@ -243,6 +243,7 @@ export function ComposerMentions({
         setSelectedIndex((current) => (current - 1 + currentSuggestions.length) % currentSuggestions.length);
       } else if (event.key === "Enter" || event.key === "Tab") {
         event.preventDefault();
+        event.stopPropagation();
         insertSuggestion(currentSuggestions[selectedIndexRef.current] ?? currentSuggestions[0]!);
       } else if (event.key === "Escape") {
         event.preventDefault();

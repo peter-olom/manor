@@ -19,6 +19,7 @@ import type {
   ButlerHistoryPageResponse,
   ButlerHistoryState,
   CodexThreadSummary,
+  ComposerInputItem,
   ComposerPrefill,
   FileReference,
   PreviewMedia
@@ -447,7 +448,7 @@ export function ButlerSurface({
     }
   }
 
-  async function sendButlerMessage(rawText: string) {
+  async function sendButlerMessage(rawText: string, inputItems: ComposerInputItem[] = []) {
     const text = rawText.trim();
     const composerAttachments = [...butlerAttachments];
     if (!text && composerAttachments.length === 0) {
@@ -463,7 +464,12 @@ export function ButlerSurface({
     try {
       const imageReferenceIds = composerAttachments.filter((item) => item.mimeType.startsWith("image/")).map((item) => item.id);
       const fileReferenceIds = composerAttachments.filter((item) => !item.mimeType.startsWith("image/")).map((item) => item.id);
-      await postJson("/api/chat/messages", { text, imageReferenceIds, fileReferenceIds });
+      await postJson("/api/chat/messages", {
+        text,
+        imageReferenceIds,
+        fileReferenceIds,
+        ...(inputItems.length > 0 ? { inputItems } : {})
+      });
     } catch (error) {
       setPendingButlerText(null);
       setButlerAttachments((current) => (current.length === 0 ? composerAttachments : current));
@@ -999,9 +1005,9 @@ export function ButlerSurface({
             onRemoveAttachment={(attachmentId) => setButlerAttachments((current) => current.filter((entry) => entry.id !== attachmentId))}
             onPreviewImage={(image) => onPreviewMedia({ name: image.name, url: image.url, kind: "image", downloadUrl: image.url })}
             contextCwd="/repos/manor"
-            onSend={async (text) => {
+            onSend={async (text, inputItems) => {
               try {
-                await sendButlerMessage(text);
+                await sendButlerMessage(text, inputItems);
               } catch (error) {
                 showErrorToast(error);
                 throw error;

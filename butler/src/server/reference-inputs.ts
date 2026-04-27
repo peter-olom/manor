@@ -89,6 +89,29 @@ export function buildReferencePromptText(input: {
   return `${lead}\n\n${sections.join("\n")}`;
 }
 
+export function buildComposerInputItemsPrompt(inputItems: unknown[]): string {
+  const lines: string[] = [];
+
+  for (const item of inputItems) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+
+    const record = item as Record<string, unknown>;
+    if (record.type === "skill" && typeof record.name === "string" && typeof record.path === "string") {
+      lines.push(`- skill: ${record.name} (${record.path})`);
+    } else if (record.type === "mention" && typeof record.path === "string") {
+      lines.push(`- app: ${typeof record.name === "string" ? record.name : record.path} (${record.path})`);
+    }
+  }
+
+  if (lines.length === 0) {
+    return "";
+  }
+
+  return ["Selected composer context:", "Use these selected Codex context items when delegating or reasoning about the operator request.", ...lines].join("\n");
+}
+
 export function buildCodexInputWithReferences(input: {
   text: string;
   imageStore: ImageReferenceStore;

@@ -417,6 +417,10 @@ export function ThreadSurface({
   }
 
   function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>, submit: () => void) {
+    if (event.defaultPrevented) {
+      return;
+    }
+
     if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) {
       return;
     }
