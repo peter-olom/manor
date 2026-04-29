@@ -14,6 +14,10 @@ const visualReadyPollIntervalMs = Number(process.env.MANOR_PLAYWRIGHT_VISUAL_REA
 const MAX_CAPTURED_CONSOLE_MESSAGES = 20;
 const MAX_CAPTURED_PAGE_ERRORS = 12;
 const MAX_CAPTURED_FAILED_REQUESTS = 20;
+const RESOLUTION_PROFILES = {
+  "1080p": { width: 1920, height: 1080 },
+  "2k": { width: 2560, height: 1440 }
+};
 
 function now() {
   return Date.now();
@@ -108,7 +112,7 @@ function createPhaseTracker() {
       const phase = {
         name,
         label,
-        status: "completed",
+        status: "active",
         startedAt: now(),
         completedAt: now(),
         durationMs: 0,
@@ -456,6 +460,12 @@ function writeJson(response, statusCode, payload) {
 
 const sessions = new Map();
 
+function normalizeResolution(value) {
+  const requested = typeof value === "string" ? value.trim().toLowerCase() : "";
+  const name = requested === "2k" || requested === "1440p" ? "2k" : "1080p";
+  return { name, viewport: RESOLUTION_PROFILES[name] };
+}
+
 function sessionSummary(session) {
   return {
     sessionId: session.sessionId,
@@ -468,6 +478,8 @@ function sessionSummary(session) {
     status: session.status,
     title: session.title,
     url: session.url,
+    resolution: session.resolution,
+    viewport: session.viewport,
     actionCount: session.actions.length,
     auth: {
       headerCount: Object.keys(session.headers).length,
@@ -582,6 +594,34 @@ function formatAutoCaptureLabel(session, type) {
   return `After ${humanizeActionType(type)} ${actionNumber}`;
 }
 
+async function cleanupFailedSession(session, error) {
+  session.error = toErrorMessage(error);
+  if (!session.failedPhase) {
+    const activePhase = [...session.phaseTracker.phases].reverse().find((phase) => phase.status === "active");
+    session.failedPhase = activePhase?.name ?? "startup";
+    if (activePhase) {
+      session.phaseTracker.finish(activePhase, "failed", session.error);
+    }
+  }
+
+  if (session.context && session.tracingEnabled) {
+    await session.context.tracing.stop({ path: session.tracePath }).catch(() => undefined);
+  }
+  if (session.screencastEnabled && session.page?.screencast && typeof session.page.screencast.stop === "function") {
+    await session.page.screencast.stop().catch(() => undefined);
+  }
+  if (session.page && !session.page.isClosed()) {
+    await session.page.close().catch(() => undefined);
+  }
+  if (session.context) {
+    await session.context.close().catch(() => undefined);
+  }
+  if (session.browser) {
+    await session.browser.close().catch(() => undefined);
+  }
+  sessions.delete(session.sessionId);
+}
+
 async function startSession(input) {
   const targetUrl = typeof input.targetUrl === "string" ? input.targetUrl.trim() : "";
   const outputDir = typeof input.outputDir === "string" ? input.outputDir.trim() : "";
@@ -593,6 +633,7 @@ async function startSession(input) {
   const runId = typeof input.runId === "string" && input.runId.trim() ? input.runId.trim() : `${Date.now()}-${randomUUID().slice(0, 8)}`;
   const sessionId = typeof input.sessionId === "string" && input.sessionId.trim() ? input.sessionId.trim() : randomUUID();
   const waitForSelector = typeof input.waitForSelector === "string" ? input.waitForSelector.trim() : "";
+  const resolution = normalizeResolution(input.resolution);
   const postLoadWaitMs =
     typeof input.postLoadWaitMs === "number" && Number.isFinite(input.postLoadWaitMs)
       ? Math.max(0, Math.trunc(input.postLoadWaitMs))
@@ -611,7 +652,7 @@ async function startSession(input) {
 
   const contextPhase = phaseTracker.start("create_context", "Create context");
   const context = await browser.newContext({
-    viewport: { width: 1440, height: 900 }
+    viewport: resolution.viewport
   });
   context.setDefaultNavigationTimeout(45_000);
   context.setDefaultTimeout(15_000);
@@ -627,7 +668,6 @@ async function startSession(input) {
       }))
     );
   }
-  await context.tracing.start({ screenshots: true, snapshots: true });
   phaseTracker.finish(contextPhase, "completed", `Headers=${Object.keys(headers).length}. Cookies=${cookies.length}.`);
 
   const page = await context.newPage();
@@ -648,11 +688,14 @@ async function startSession(input) {
     title: "",
     url: targetUrl,
     status: null,
+    resolution: resolution.name,
+    viewport: resolution.viewport,
     actions: [],
     browser,
     context,
     page,
     screencastEnabled: false,
+    tracingEnabled: false,
     targetOrigin: safeOrigin(targetUrl),
     phaseTracker,
     screenshotArtifacts: [],
@@ -676,66 +719,72 @@ async function startSession(input) {
     visualSignals: null
   };
 
-  const screencastPhase = phaseTracker.start("start_screencast", "Start screencast");
   try {
+    sessions.set(sessionId, session);
+
+    const screencastPhase = phaseTracker.start("start_screencast", "Start screencast");
     if (!page.screencast || typeof page.screencast.start !== "function" || typeof page.screencast.showActions !== "function") {
       throw new Error("Playwright screencast API is unavailable.");
     }
-    await page.screencast.start({ path: videoPath });
+    await page.screencast.start({ path: videoPath, size: resolution.viewport });
     await page.screencast.showActions({ position: "top-right" });
     session.screencastEnabled = true;
     phaseTracker.finish(screencastPhase, "completed", "Native action annotations enabled.");
+
+    const tracingPhase = phaseTracker.start("start_trace", "Start trace");
+    await context.tracing.start({ screenshots: true, snapshots: true });
+    session.tracingEnabled = true;
+    phaseTracker.finish(tracingPhase, "completed", "Trace capture enabled after video sizing.");
+
+    attachPageObservers(session);
+
+    const openPhase = phaseTracker.start("open_page", "Open page");
+    const response = await page.goto(targetUrl, { waitUntil: "load", timeout: 45_000 });
+    session.status = response?.status() ?? null;
+    phaseTracker.finish(openPhase, "completed", session.status === null ? "No response status was reported." : `HTTP ${session.status}.`);
+
+    const readyPhase = phaseTracker.start("await_ready", "Wait for ready");
+    await page.locator("body").first().waitFor({ state: "attached", timeout: 45_000 });
+    if (waitForSelector) {
+      await page.locator(waitForSelector).first().waitFor({ state: "visible", timeout: 45_000 });
+      session.selectorSatisfied = true;
+      session.visualContentDetected = true;
+      session.visualSignals = {
+        bodyVisible: true,
+        bodyTextLength: 0,
+        visibleElementCount: 1,
+        mediaElementCount: 0,
+        rootChildCount: 0,
+        ready: true
+      };
+    }
+    if (postLoadWaitMs > 0) {
+      await page.waitForTimeout(postLoadWaitMs);
+    }
+    if (!waitForSelector) {
+      const visual = await waitForVisualReadiness(page, visualReadyTimeoutMs);
+      session.visualContentDetected = visual.ready;
+      session.visualSignals = visual.signals;
+    }
+    phaseTracker.finish(
+      readyPhase,
+      "completed",
+      waitForSelector
+        ? `Locator ready: ${waitForSelector}`
+        : session.visualContentDetected
+          ? "Page loaded and visible UI content detected."
+          : "Page loaded but no visible UI content was detected."
+    );
+
+    session.title = await page.title().catch(() => "");
+    session.url = page.url() || targetUrl;
+
+    await captureScreenshot(session, "ready.png", "Ready screenshot");
   } catch (error) {
-    phaseTracker.finish(screencastPhase, "failed", toErrorMessage(error));
+    await cleanupFailedSession(session, error);
     throw error;
   }
 
-  attachPageObservers(session);
-
-  const openPhase = phaseTracker.start("open_page", "Open page");
-  const response = await page.goto(targetUrl, { waitUntil: "load", timeout: 45_000 });
-  session.status = response?.status() ?? null;
-  phaseTracker.finish(openPhase, "completed", session.status === null ? "No response status was reported." : `HTTP ${session.status}.`);
-
-  const readyPhase = phaseTracker.start("await_ready", "Wait for ready");
-  await page.locator("body").first().waitFor({ state: "attached", timeout: 45_000 });
-  if (waitForSelector) {
-    await page.locator(waitForSelector).first().waitFor({ state: "visible", timeout: 45_000 });
-    session.selectorSatisfied = true;
-    session.visualContentDetected = true;
-    session.visualSignals = {
-      bodyVisible: true,
-      bodyTextLength: 0,
-      visibleElementCount: 1,
-      mediaElementCount: 0,
-      rootChildCount: 0,
-      ready: true
-    };
-  }
-  if (postLoadWaitMs > 0) {
-    await page.waitForTimeout(postLoadWaitMs);
-  }
-  if (!waitForSelector) {
-    const visual = await waitForVisualReadiness(page, visualReadyTimeoutMs);
-    session.visualContentDetected = visual.ready;
-    session.visualSignals = visual.signals;
-  }
-  phaseTracker.finish(
-    readyPhase,
-    "completed",
-    waitForSelector
-      ? `Locator ready: ${waitForSelector}`
-      : session.visualContentDetected
-        ? "Page loaded and visible UI content detected."
-        : "Page loaded but no visible UI content was detected."
-  );
-
-  session.title = await page.title().catch(() => "");
-  session.url = page.url() || targetUrl;
-
-  await captureScreenshot(session, "ready.png", "Ready screenshot");
-
-  sessions.set(sessionId, session);
   return sessionSummary(session);
 }
 
@@ -906,6 +955,8 @@ async function runAction(session, input) {
         title: session.title,
         url: session.url,
         status: session.status,
+        resolution: session.resolution,
+        viewport: session.viewport,
         actionCount: session.actions.length
       }
     };
@@ -938,7 +989,7 @@ async function stopSession(session, reason = "completed") {
       }
     }
 
-    if (session.context) {
+    if (session.context && session.tracingEnabled) {
       await session.context.tracing.stop({ path: session.tracePath }).catch(() => undefined);
     }
 
@@ -1085,6 +1136,8 @@ async function stopSession(session, reason = "completed") {
     status: session.status,
     title: session.title,
     url: session.url,
+    resolution: session.resolution,
+    viewport: session.viewport,
     error,
     failureKind,
     summary: {

@@ -9,6 +9,20 @@ import {
 } from "./state-store-internals.js";
 import type { PreviewLeaseView, RuntimeCleanupTaskView, ServiceLeaseView, StackLeaseView } from "./types.js";
 
+function refreshStackChildLeaseLifecycles(access: StateStoreInternalAccess, stackId: string, now: number): void {
+  for (const [leaseId, lease] of access.previewLeases.entries()) {
+    if (lease.stackId === stackId && lease.status !== "stopped") {
+      access.previewLeases.set(leaseId, normalizeStateStorePreviewLease(access, lease, now));
+    }
+  }
+
+  for (const [leaseId, lease] of access.serviceLeases.entries()) {
+    if (lease.stackId === stackId && lease.status !== "stopped") {
+      access.serviceLeases.set(leaseId, normalizeStateStoreServiceLease(access, lease, now));
+    }
+  }
+}
+
 export function noteStateStoreThreadLeaseActivity(access: StateStoreInternalAccess, threadId: string, at = Date.now()): void {
   let changed = false;
 
@@ -145,8 +159,10 @@ export function setStateStoreStackLeasePinned(access: StateStoreInternalAccess, 
     return null;
   }
 
-  const nextLease = normalizeStateStoreStackLease(access, { ...lease, pinned }, Date.now());
+  const now = Date.now();
+  const nextLease = normalizeStateStoreStackLease(access, { ...lease, pinned }, now);
   access.stackLeases.set(leaseId, nextLease);
+  refreshStackChildLeaseLifecycles(access, leaseId, now);
   queueStateStoreSave(access);
   emitStateStoreChange(access);
   return nextLease;

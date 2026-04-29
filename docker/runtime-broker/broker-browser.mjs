@@ -338,6 +338,7 @@ export function createBrokerBrowserController(options) {
         mode: input.mode,
         targetUrl: input.targetUrl,
         outputDir,
+        resolution: input.resolution,
         waitForSelector: input.waitForSelector,
         postLoadWaitMs: input.postLoadWaitMs,
         headers: input.headers,
@@ -371,6 +372,8 @@ export function createBrokerBrowserController(options) {
       title: summary.title || "",
       url: summary.url || summary.targetUrl,
       status: typeof summary.status === "number" ? summary.status : null,
+      resolution: typeof summary.resolution === "string" ? summary.resolution : undefined,
+      viewport: summary.viewport && typeof summary.viewport === "object" ? summary.viewport : undefined,
       startedAt: typeof summary.startedAt === "number" ? summary.startedAt : Date.now(),
       actionCount: typeof summary.actionCount === "number" ? summary.actionCount : 0
     };
@@ -458,6 +461,7 @@ export function createBrokerBrowserController(options) {
         });
 
         const mode = request.body?.mode === "headful" ? "headful" : "headless";
+        const resolution = normalizeString(request.body?.resolution) || undefined;
         const waitForSelector = normalizeString(request.body?.waitForSelector) || undefined;
         const postLoadWaitMs = normalizePositiveInteger(request.body?.postLoadWaitMs) ?? undefined;
         const hostAliases = [
@@ -481,6 +485,7 @@ export function createBrokerBrowserController(options) {
         const session = await startPlaywrightBrowserUseSession({
           mode,
           targetUrl,
+          resolution,
           waitForSelector,
           postLoadWaitMs,
           headers,
@@ -526,6 +531,7 @@ export function createBrokerBrowserController(options) {
 
       try {
         const mode = request.body?.mode === "headful" ? "headful" : "headless";
+        const resolution = normalizeString(request.body?.resolution) || undefined;
         const waitForSelector = normalizeString(request.body?.waitForSelector) || undefined;
         const postLoadWaitMs = normalizePositiveInteger(request.body?.postLoadWaitMs) ?? undefined;
         const headers = normalizeHeaderMap(request.body?.headers);
@@ -538,6 +544,7 @@ export function createBrokerBrowserController(options) {
         const session = await startPlaywrightBrowserUseSession({
           mode,
           targetUrl,
+          resolution,
           waitForSelector,
           postLoadWaitMs,
           headers,

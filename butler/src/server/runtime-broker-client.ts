@@ -145,6 +145,8 @@ type BrowserSessionSummaryPayload = {
   title: string;
   url: string;
   status: number | null;
+  resolution?: string;
+  viewport?: { width: number; height: number };
   startedAt: number;
   actionCount: number;
 };
@@ -162,6 +164,8 @@ type BrowserSessionStatePayload = {
     status: number | null;
     title: string;
     url: string;
+    resolution?: string;
+    viewport?: { width: number; height: number };
     actionCount: number;
     auth: {
       headerCount: number;
@@ -401,6 +405,7 @@ export class RuntimeBrokerClient {
     headers?: Record<string, string>;
     cookies?: Array<{ name: string; value: string }>;
     sessionCookie?: string;
+    resolution?: string;
     waitForSelector?: string;
     postLoadWaitMs?: number;
   }): Promise<BrowserSessionSummaryPayload> {
@@ -413,6 +418,7 @@ export class RuntimeBrokerClient {
         headers: input.headers,
         cookies: input.cookies,
         sessionCookie: input.sessionCookie,
+        resolution: input.resolution,
         waitForSelector: input.waitForSelector,
         postLoadWaitMs: input.postLoadWaitMs
       })
@@ -430,6 +436,7 @@ export class RuntimeBrokerClient {
     headers?: Record<string, string>;
     cookies?: Array<{ name: string; value: string }>;
     sessionCookie?: string;
+    resolution?: string;
     waitForSelector?: string;
     postLoadWaitMs?: number;
   }): Promise<BrowserSessionSummaryPayload> {
@@ -445,6 +452,7 @@ export class RuntimeBrokerClient {
         headers: input.headers,
         cookies: input.cookies,
         sessionCookie: input.sessionCookie,
+        resolution: input.resolution,
         waitForSelector: input.waitForSelector,
         postLoadWaitMs: input.postLoadWaitMs
       })

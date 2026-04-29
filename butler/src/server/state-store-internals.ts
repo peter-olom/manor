@@ -233,10 +233,11 @@ export function refreshStateStoreStackMembership(access: StateStoreInternalAcces
 export function applyStateStoreLeaseLifecycle<T extends PreviewLeaseView | StackLeaseView | ServiceLeaseView>(
   access: StateStoreInternalAccess,
   lease: T,
-  defaults: { leaseTtlMs: number; now?: number }
+  defaults: { leaseTtlMs: number; now?: number; inheritedPinned?: boolean }
 ): T {
   const now = defaults.now ?? Date.now();
   const pinned = Boolean(lease.pinned);
+  const effectivelyPinned = pinned || Boolean(defaults.inheritedPinned);
   const leaseTtlMs =
     typeof lease.leaseTtlMs === "number" && Number.isFinite(lease.leaseTtlMs) && lease.leaseTtlMs > 0
       ? lease.leaseTtlMs
@@ -247,8 +248,8 @@ export function applyStateStoreLeaseLifecycle<T extends PreviewLeaseView | Stack
       : lease.updatedAt ?? lease.createdAt ?? now;
   const ttlAnchorAt =
     typeof lease.ttlAnchorAt === "number" && Number.isFinite(lease.ttlAnchorAt) ? lease.ttlAnchorAt : lastActivityAt;
-  const expiresAt = pinned ? null : ttlAnchorAt + leaseTtlMs;
-  const expired = !pinned && expiresAt !== null && now >= expiresAt;
+  const expiresAt = effectivelyPinned ? null : ttlAnchorAt + leaseTtlMs;
+  const expired = !effectivelyPinned && expiresAt !== null && now >= expiresAt;
   const expiredAt =
     expired
       ? typeof lease.expiredAt === "number" && Number.isFinite(lease.expiredAt)
@@ -279,6 +280,15 @@ export function applyStateStoreLeaseLifecycle<T extends PreviewLeaseView | Stack
     reapAfterAt,
     lifecycleState
   };
+}
+
+function stackPinProtectsChild(access: StateStoreInternalAccess, stackId: string | null): boolean {
+  if (!stackId) {
+    return false;
+  }
+
+  const stack = access.stackLeases.get(stackId);
+  return Boolean(stack?.pinned && stack.status !== "stopped");
 }
 
 export function normalizeStateStorePreviewLease(
@@ -343,7 +353,11 @@ export function normalizeStateStorePreviewLease(
     }
   } as PreviewLeaseView;
 
-  return applyStateStoreLeaseLifecycle(access, normalizedLease, { leaseTtlMs: access.previewLeaseTtlMs, now });
+  return applyStateStoreLeaseLifecycle(access, normalizedLease, {
+    leaseTtlMs: access.previewLeaseTtlMs,
+    now,
+    inheritedPinned: stackPinProtectsChild(access, normalizedLease.stackId)
+  });
 }
 
 export function normalizeStateStoreStackLease(access: StateStoreInternalAccess, lease: StackLeaseView, now = Date.now()): StackLeaseView {
@@ -399,7 +413,11 @@ export function normalizeStateStoreServiceLease(
       : []
   } as ServiceLeaseView;
 
-  return applyStateStoreLeaseLifecycle(access, normalizedLease, { leaseTtlMs: access.serviceLeaseTtlMs, now });
+  return applyStateStoreLeaseLifecycle(access, normalizedLease, {
+    leaseTtlMs: access.serviceLeaseTtlMs,
+    now,
+    inheritedPinned: stackPinProtectsChild(access, normalizedLease.stackId)
+  });
 }
 
 export function normalizeStateStorePreviewProofRecord(

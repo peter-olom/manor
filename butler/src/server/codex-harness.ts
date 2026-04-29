@@ -850,6 +850,7 @@ export class CodexHarnessService {
       const mode = normalizeString(params.mode) === "headful" ? "headful" : "headless";
       const targetPath = normalizeString(params.path) || undefined;
       const targetUrl = normalizeString(params.targetUrl) || undefined;
+      const resolution = normalizeString(params.resolution) || undefined;
       const waitForSelector = normalizeString(params.waitForSelector) || undefined;
       const postLoadWaitMs = normalizePositiveInteger(params.postLoadWaitMs) ?? undefined;
       const headers = normalizeEnv(params.headers);
@@ -864,6 +865,7 @@ export class CodexHarnessService {
         mode,
         path: targetPath,
         targetUrl,
+        resolution,
         waitForSelector,
         postLoadWaitMs,
         headers: Object.keys(headers).length > 0 ? headers : undefined,
@@ -883,6 +885,7 @@ export class CodexHarnessService {
       const mode = normalizeString(params.mode) === "headful" ? "headful" : "headless";
       const targetUrl = normalizeString(params.targetUrl);
       const title = normalizeString(params.title) || targetUrl || "Browser use session";
+      const resolution = normalizeString(params.resolution) || undefined;
       const waitForSelector = normalizeString(params.waitForSelector) || undefined;
       const postLoadWaitMs = normalizePositiveInteger(params.postLoadWaitMs) ?? undefined;
       const headers = normalizeEnv(params.headers);
@@ -900,6 +903,7 @@ export class CodexHarnessService {
         title,
         targetUrl,
         mode,
+        resolution,
         waitForSelector,
         postLoadWaitMs,
         headers: Object.keys(headers).length > 0 ? headers : undefined,

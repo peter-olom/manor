@@ -48,9 +48,9 @@ Preview defaults:
   manor-harness preview processes <previewSelector>
   manor-harness preview logs <previewSelector> [--tail <n>]
   manor-harness preview exec <previewSelector> -- <command>
-  manor-harness preview use start <previewSelector> [--mode headless|headful] [--path <route>] [--target-url <url>] [--header KEY=VALUE ...] [--cookie NAME=VALUE ...] [--session-cookie <token>] [--wait-for <selector>] [--wait-ms <n>]
+  manor-harness preview use start <previewSelector> [--mode headless|headful] [--resolution 1080p|2k] [--path <route>] [--target-url <url>] [--header KEY=VALUE ...] [--cookie NAME=VALUE ...] [--session-cookie <token>] [--wait-for <selector>] [--wait-ms <n>]
   manor-harness browser proof [--run-id <id>]
-  manor-harness browser use start --url <url> [--title <text>] [--mode headless|headful] [--header KEY=VALUE ...] [--cookie NAME=VALUE ...] [--session-cookie <token>] [--wait-for <selector>] [--wait-ms <n>]
+  manor-harness browser use start --url <url> [--title <text>] [--mode headless|headful] [--resolution 1080p|2k] [--header KEY=VALUE ...] [--cookie NAME=VALUE ...] [--session-cookie <token>] [--wait-for <selector>] [--wait-ms <n>]
   manor-harness browser use state <sessionId>
   manor-harness browser use action <sessionId> --type click|fill|type|press|hover|select|check|uncheck|wait_for|scroll|navigate|evaluate|screenshot [--selector <css>] [--value <text>] [--values <text> ...] [--text <text>] [--key <key>] [--url <url>] [--url-includes <text>] [--script "<js>"] [--script-file <path>] [--ms <n>] [--x <n>] [--y <n>] [--delay-ms <n>] [--timeout-ms <n>] [--label <text>] [--file-name <name>] [--no-capture]
   manor-harness browser use stop <sessionId> [--reason <text>] [--lease <previewSelector>]
@@ -575,6 +575,7 @@ async function main() {
       params = {
         leaseId: args[3],
         mode: readFlag(args, "--mode"),
+        resolution: readFlag(args, "--resolution"),
         path: readFlag(args, "--path"),
         targetUrl: readFlag(args, "--target-url"),
         waitForSelector: readFlag(args, "--wait-for"),
@@ -605,6 +606,7 @@ async function main() {
           targetUrl: readFlag(args, "--url"),
           title: readFlag(args, "--title"),
           mode: readFlag(args, "--mode"),
+          resolution: readFlag(args, "--resolution"),
           waitForSelector: readFlag(args, "--wait-for"),
           postLoadWaitMs: readPositiveIntFlag(args, "--wait-ms"),
           headers,

@@ -431,6 +431,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       parameters: Type.Object({
         leaseId: Type.String(),
         mode: Type.Optional(Type.Union([Type.Literal("headless"), Type.Literal("headful")])),
+        resolution: Type.Optional(Type.Union([Type.Literal("1080p"), Type.Literal("2k"), Type.Literal("1440p")])),
         path: Type.Optional(Type.String()),
         targetUrl: Type.Optional(Type.String()),
         waitForSelector: Type.Optional(Type.String()),
@@ -444,6 +445,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         const typedParams = params as {
           leaseId: string;
           mode?: "headless" | "headful";
+          resolution?: string;
           path?: string;
           targetUrl?: string;
           waitForSelector?: string;
@@ -464,6 +466,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         const session = await access.runtimeBroker.startPreviewBrowserSession({
           leaseId: preview.id,
           mode: typedParams.mode === "headful" ? "headful" : "headless",
+          resolution: typedParams.resolution?.trim() || undefined,
           path: typedParams.path?.trim() || undefined,
           targetUrl: typedParams.targetUrl?.trim() || undefined,
           waitForSelector: typedParams.waitForSelector?.trim() || undefined,
@@ -501,6 +504,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         targetUrl: Type.String({ minLength: 1 }),
         title: Type.Optional(Type.String()),
         mode: Type.Optional(Type.Union([Type.Literal("headless"), Type.Literal("headful")])),
+        resolution: Type.Optional(Type.Union([Type.Literal("1080p"), Type.Literal("2k"), Type.Literal("1440p")])),
         headers: Type.Optional(Type.Record(Type.String(), Type.String())),
         cookies: Type.Optional(Type.Record(Type.String(), Type.String())),
         sessionCookie: Type.Optional(Type.String()),
@@ -514,6 +518,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           targetUrl: string;
           title?: string;
           mode?: "headless" | "headful";
+          resolution?: string;
           headers?: Record<string, string>;
           cookies?: Record<string, string>;
           sessionCookie?: string;
@@ -543,6 +548,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           title: typedParams.title?.trim() || typedParams.targetUrl.trim(),
           targetUrl: typedParams.targetUrl.trim(),
           mode: typedParams.mode === "headful" ? "headful" : "headless",
+          resolution: typedParams.resolution?.trim() || undefined,
           headers: typedParams.headers && Object.keys(typedParams.headers).length > 0 ? typedParams.headers : undefined,
           cookies: cookieEntries.length > 0 ? cookieEntries.map(([name, value]) => ({ name, value })) : undefined,
           waitForSelector: typedParams.waitForSelector?.trim() || undefined,
