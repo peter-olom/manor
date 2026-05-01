@@ -1,4 +1,5 @@
 import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
+import { OpenIcon, PinIcon, StopIcon } from "./icons";
 import type { PreviewMedia, RuntimeSnapshot } from "./types";
 import { formatLeaseState, formatPreviewBootstrap, formatStackStorage } from "./utils";
 
@@ -53,11 +54,11 @@ export function RuntimePanel({
                   </span>
                 </button>
                 <div className="runtime-item-actions">
-                  <button className="panel-action" onClick={() => onPinStack(stack.id, !stack.pinned)}>
-                    {stack.pinned ? "Unpin" : "Pin"}
+                  <button className="panel-action panel-action-icon" onClick={() => onPinStack(stack.id, !stack.pinned)} aria-label={stack.pinned ? "Unpin stack" : "Pin stack"} title={stack.pinned ? "Unpin" : "Pin"}>
+                    <PinIcon pinned={stack.pinned} />
                   </button>
-                  <button className="panel-action" onClick={() => onStopStack(stack.id)} disabled={busyStackId === stack.id}>
-                    {busyStackId === stack.id ? "Stopping…" : "Stop"}
+                  <button className="panel-action panel-action-icon panel-action-icon-danger" onClick={() => onStopStack(stack.id)} disabled={busyStackId === stack.id} aria-label={busyStackId === stack.id ? "Stopping stack" : "Stop stack"} title={busyStackId === stack.id ? "Stopping" : "Stop"}>
+                    <StopIcon />
                   </button>
                 </div>
               </article>
@@ -91,14 +92,19 @@ export function RuntimePanel({
                   </div>
                 ) : null}
                 <div className="runtime-item-actions">
-                  <button className="panel-action" onClick={() => onPinPreview(lease.id, !lease.pinned)}>
-                    {lease.pinned ? "Unpin" : "Pin"}
+                  <button className="panel-action panel-action-icon" onClick={() => onPinPreview(lease.id, !lease.pinned)} aria-label={lease.pinned ? "Unpin preview" : "Pin preview"} title={lease.pinned ? "Unpin" : "Pin"}>
+                    <PinIcon pinned={lease.pinned} />
                   </button>
-                  <a className="panel-action panel-action-link" href={lease.operatorUrl} target="_blank" rel="noreferrer">
-                    Open
+                  <a className="panel-action panel-action-link panel-action-icon" href={lease.operatorUrl} target="_blank" rel="noreferrer" aria-label="Open preview" title="Open">
+                    <OpenIcon />
                   </a>
-                  <button className="panel-action" onClick={() => onStopPreview(lease.id)}>
-                    Stop
+                  {lease.tailnetUrl ? (
+                    <a className="panel-action panel-action-link panel-action-icon" href={lease.tailnetUrl} target="_blank" rel="noreferrer" aria-label="Open tailnet preview" title="Open tailnet">
+                      <OpenIcon />
+                    </a>
+                  ) : null}
+                  <button className="panel-action panel-action-icon panel-action-icon-danger" onClick={() => onStopPreview(lease.id)} aria-label="Stop preview" title="Stop">
+                    <StopIcon />
                   </button>
                 </div>
               </article>
@@ -124,11 +130,11 @@ export function RuntimePanel({
                   </span>
                 </button>
                 <div className="runtime-item-actions">
-                  <button className="panel-action" onClick={() => onPinService(service.id, !service.pinned)}>
-                    {service.pinned ? "Unpin" : "Pin"}
+                  <button className="panel-action panel-action-icon" onClick={() => onPinService(service.id, !service.pinned)} aria-label={service.pinned ? "Unpin service" : "Pin service"} title={service.pinned ? "Unpin" : "Pin"}>
+                    <PinIcon pinned={service.pinned} />
                   </button>
-                  <button className="panel-action" onClick={() => onStopService(service.id)} disabled={busyServiceId === service.id}>
-                    {busyServiceId === service.id ? "Stopping…" : "Stop"}
+                  <button className="panel-action panel-action-icon panel-action-icon-danger" onClick={() => onStopService(service.id)} disabled={busyServiceId === service.id} aria-label={busyServiceId === service.id ? "Stopping service" : "Stop service"} title={busyServiceId === service.id ? "Stopping" : "Stop"}>
+                    <StopIcon />
                   </button>
                 </div>
               </article>

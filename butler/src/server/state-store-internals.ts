@@ -303,6 +303,9 @@ export function normalizeStateStorePreviewLease(
     aliases: Array.isArray(lease.aliases)
       ? [...new Set(lease.aliases.map((alias) => (typeof alias === "string" ? alias.trim() : "")).filter(Boolean))]
       : [],
+    publicPort: typeof lease.publicPort === "number" && Number.isFinite(lease.publicPort) && lease.publicPort > 0 ? lease.publicPort : null,
+    publicUrl: typeof lease.publicUrl === "string" && lease.publicUrl.trim() ? lease.publicUrl.trim() : null,
+    tailnetUrl: typeof lease.tailnetUrl === "string" && lease.tailnetUrl.trim() ? lease.tailnetUrl.trim() : null,
     lastVerification:
       lease.lastVerification && typeof lease.lastVerification === "object"
         ? normalizePreviewVerification(lease.lastVerification, access.artifactRetentionMs)

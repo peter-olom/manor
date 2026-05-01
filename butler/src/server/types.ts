@@ -318,6 +318,9 @@ export interface PreviewLeaseView extends LeaseLifecycleView {
   containerName: string;
   targetHost: string;
   targetPort: number;
+  publicPort: number | null;
+  publicUrl: string | null;
+  tailnetUrl: string | null;
   routePrefix: string;
   operatorUrl: string;
   command: string;

@@ -2,7 +2,7 @@
 import net from "node:net";
 
 export function createBrokerRuntime(context, deps = {}) {
-  const { previewNetwork, previewOutboundNetwork, sharedWorkNetwork, previewImage, routeBase, previewEgressConfigPath, previewEgressAdminUrl, brokerToken, codexAccessRegistryPath, stackBindingRegistryPath, internalOperatorBaseUrl, playwrightContainerName, runtimeBrokerContainerName, previewEgressContainerName, artifactsRootDir, playwrightArtifactsScratchDir, stackNetworkPrefix, stackVolumePrefix, stackInfraReconnectIntervalMs, docker, leaseTransitions, leaseBootstrapStates, activeLeaseBootstrapMonitors, pendingPreviewLeases, retainedPreviewLeases, noHeartbeatReadyDelayMs } = context;
+  const { previewNetwork, previewOutboundNetwork, sharedWorkNetwork, previewImage, previewExposeHost, previewPortStart, previewPortEnd, previewPublicHost, previewTailnetHost, routeBase, previewEgressConfigPath, previewEgressAdminUrl, brokerToken, codexAccessRegistryPath, stackBindingRegistryPath, internalOperatorBaseUrl, playwrightContainerName, runtimeBrokerContainerName, previewEgressContainerName, artifactsRootDir, playwrightArtifactsScratchDir, stackNetworkPrefix, stackVolumePrefix, stackInfraReconnectIntervalMs, docker, leaseTransitions, leaseBootstrapStates, activeLeaseBootstrapMonitors, pendingPreviewLeases, retainedPreviewLeases, noHeartbeatReadyDelayMs } = context;
   const {
     buildShellCommand,
     collectExecOutput,
@@ -40,6 +40,70 @@ async function ensureImage(imageName) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeHostForUrl(host) {
+  const normalized = String(host ?? "").trim();
+  if (!normalized) {
+    return "";
+  }
+  return normalized.includes(":") && !normalized.startsWith("[") ? `[${normalized}]` : normalized;
+}
+
+function buildExternalPreviewUrl(host, port) {
+  const normalizedHost = normalizeHostForUrl(host);
+  if (!normalizedHost || !Number.isFinite(port) || port <= 0) {
+    return null;
+  }
+  return `http://${normalizedHost}:${port}/`;
+}
+
+async function isPortAvailable(host, port) {
+  return await new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => resolve(false));
+    server.listen(port, host || "0.0.0.0", () => {
+      server.close(() => resolve(true));
+    });
+  });
+}
+
+async function listPublishedPreviewPorts() {
+  const containers = await docker.listContainers({
+    all: true,
+    filters: {
+      label: ["manor.managed=true"]
+    }
+  });
+  const ports = new Set();
+  for (const container of containers) {
+    const labels = container.Labels || {};
+    if (!labels["manor.lease-id"]) {
+      continue;
+    }
+    const port = Number(labels["manor.public-port"] || "0");
+    if (Number.isFinite(port) && port > 0) {
+      ports.add(port);
+    }
+  }
+  return ports;
+}
+
+async function allocatePreviewHostPort() {
+  const start = Number.isFinite(previewPortStart) ? Math.trunc(previewPortStart) : 43000;
+  const end = Number.isFinite(previewPortEnd) ? Math.trunc(previewPortEnd) : 43999;
+  const lower = Math.max(1, Math.min(start, end));
+  const upper = Math.min(65535, Math.max(start, end));
+  const published = await listPublishedPreviewPorts();
+  for (let port = lower; port <= upper; port += 1) {
+    if (published.has(port)) {
+      continue;
+    }
+    if (await isPortAvailable(previewExposeHost, port)) {
+      return port;
+    }
+  }
+  throw new Error("No preview host ports are available");
 }
 
 async function runHeartbeatCheck(lease) {
@@ -294,10 +358,14 @@ function scheduleLeaseBootstrapMonitor(lease) {
 
 function serializeLease(lease, options = {}) {
   const targetPort = Number(options.targetPort ?? lease.targetPort ?? 3000);
+  const labels = options.labels ?? {};
+  const publicPort = Number(lease.publicPort ?? labels["manor.public-port"] ?? 0) || null;
+  const publicUrl = lease.publicUrl ?? labels["manor.public-url"] ?? buildExternalPreviewUrl(previewPublicHost, publicPort);
+  const tailnetUrl = lease.tailnetUrl ?? labels["manor.tailnet-url"] ?? buildExternalPreviewUrl(previewTailnetHost, publicPort);
   const status = resolveLeaseStatus(options.containerState ?? lease.status ?? "stopped", lease.id);
   const bootstrap = getLeaseBootstrapState(
     lease.id,
-    options.labels ?? null,
+    labels,
     targetPort,
     status,
     Boolean(options.containerRunning)
@@ -306,6 +374,10 @@ function serializeLease(lease, options = {}) {
   return {
     ...lease,
     targetPort,
+    publicPort,
+    publicUrl,
+    tailnetUrl,
+    operatorUrl: publicUrl || lease.operatorUrl,
     status,
     bootstrap: serializeBootstrapState(bootstrap)
   };
@@ -337,6 +409,9 @@ async function serializeLiveLeaseFromSummary(containerSummary) {
       containerName,
       targetHost: resolveTargetHost(containerName, aliases),
       targetPort: Number(labels["manor.target-port"] || labels["manor.port"] || "3000"),
+      publicPort: Number(labels["manor.public-port"] || "0") || null,
+      publicUrl: labels["manor.public-url"] || null,
+      tailnetUrl: labels["manor.tailnet-url"] || null,
       routePrefix: `${routeBase}/${labels["manor.lease-id"] || ""}/`,
       operatorUrl: `${routeBase}/${labels["manor.lease-id"] || ""}/`,
       command: Array.isArray(containerSummary.Command) ? containerSummary.Command.join(" ") : containerSummary.Command || "",
@@ -387,6 +462,9 @@ async function serializeInspectedLease(containerName, container) {
         containerName,
         targetHost: resolveTargetHost(containerName, aliases),
         targetPort: Number(container.Config?.Env?.find((entry) => entry.startsWith("PORT="))?.slice(5) || "3000"),
+        publicPort: Number(labels["manor.public-port"] || "0") || null,
+        publicUrl: labels["manor.public-url"] || null,
+        tailnetUrl: labels["manor.tailnet-url"] || null,
         routePrefix: `${routeBase}/${labels["manor.lease-id"] || ""}/`,
         operatorUrl: `${routeBase}/${labels["manor.lease-id"] || ""}/`,
         command: Array.isArray(container.Config?.Cmd) ? container.Config.Cmd.join(" ") : "",
@@ -520,6 +598,8 @@ async function serializeInspectedService(containerName, container) {
   return {
     ensureImage,
     sleep,
+    buildExternalPreviewUrl,
+    allocatePreviewHostPort,
     runHeartbeatCheck,
     monitorLeaseBootstrap,
     scheduleLeaseBootstrapMonitor,

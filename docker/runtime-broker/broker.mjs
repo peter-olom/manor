@@ -13,6 +13,11 @@ const previewNetwork = process.env.RUNTIME_PREVIEW_NETWORK ?? "manor_work";
 const previewOutboundNetwork = process.env.RUNTIME_PREVIEW_OUTBOUND_NETWORK ?? "manor_preview_outbound";
 const sharedWorkNetwork = process.env.RUNTIME_SERVICE_SHARED_NETWORK ?? "manor_work";
 const previewImage = process.env.RUNTIME_PREVIEW_IMAGE ?? "node:22-bookworm";
+const previewExposeHost = process.env.RUNTIME_PREVIEW_EXPOSE_HOST ?? "0.0.0.0";
+const previewPortStart = Number(process.env.RUNTIME_PREVIEW_PORT_START ?? "43000");
+const previewPortEnd = Number(process.env.RUNTIME_PREVIEW_PORT_END ?? "43999");
+const previewPublicHost = process.env.RUNTIME_PREVIEW_PUBLIC_HOST ?? "127.0.0.1";
+const previewTailnetHost = process.env.RUNTIME_PREVIEW_TAILNET_HOST ?? "";
 const routeBase = process.env.RUNTIME_ROUTE_BASE ?? "/preview";
 const previewEgressConfigPath = process.env.RUNTIME_PREVIEW_EGRESS_CONFIG ?? "/opt/manor/config/preview-egress-profiles.json";
 const previewEgressAdminUrl = process.env.RUNTIME_PREVIEW_EGRESS_ADMIN_URL ?? "http://preview-egress:8091";
@@ -53,6 +58,11 @@ const brokerContext = {
   previewOutboundNetwork,
   sharedWorkNetwork,
   previewImage,
+  previewExposeHost,
+  previewPortStart,
+  previewPortEnd,
+  previewPublicHost,
+  previewTailnetHost,
   routeBase,
   previewEgressConfigPath,
   previewEgressAdminUrl,
@@ -143,6 +153,8 @@ const {
   overwriteManagedStackVolume,
   parseAliases,
   persistVerificationArtifacts,
+  allocatePreviewHostPort,
+  buildExternalPreviewUrl,
   resolveCodexWorkspaceMounts,
   resolveCodexWorkspaceUser,
   previewEgressProfiles,
@@ -713,8 +725,25 @@ app.post("/leases", async (request, response) => {
   const aliases = [...new Set([lease.containerName, ...lease.aliases])];
   let proxyPort = null;
   let dynamicPolicyName = null;
+  let publicPort = null;
+  let publicUrl = null;
+  let tailnetUrl = null;
 
   try {
+    publicPort = await allocatePreviewHostPort();
+    publicUrl = buildExternalPreviewUrl(previewPublicHost, publicPort);
+    tailnetUrl = buildExternalPreviewUrl(previewTailnetHost, publicPort);
+    lease.publicPort = publicPort;
+    lease.publicUrl = publicUrl;
+    lease.tailnetUrl = tailnetUrl;
+    lease.operatorUrl = publicUrl || lease.operatorUrl;
+    if (publicUrl) {
+      envVars.push(`MANOR_PREVIEW_PUBLIC_URL=${publicUrl}`);
+    }
+    if (tailnetUrl) {
+      envVars.push(`MANOR_PREVIEW_TAILNET_URL=${tailnetUrl}`);
+    }
+
     if (stack?.Name) {
       await ensureStackInfrastructure(stack.Name, {
         includePreviewEgress: isPreviewProxyEgress(lease.egressProfile, lease.egressDomains)
@@ -818,6 +847,9 @@ app.post("/leases", async (request, response) => {
         "manor.workspace-mode": lease.workspaceMode === "snapshot" ? "snapshot" : "shared",
         "manor.workspace-user": sharedWorkspaceUser ?? "",
         "manor.target-port": String(lease.targetPort),
+        "manor.public-port": String(publicPort),
+        "manor.public-url": publicUrl ?? "",
+        "manor.tailnet-url": tailnetUrl ?? "",
         "manor.egress-profile": lease.egressProfile,
         "manor.egress-policy-name": dynamicPolicyName ?? "",
         "manor.egress-domains": lease.egressDomains.join(","),
@@ -830,7 +862,18 @@ app.post("/leases", async (request, response) => {
       HostConfig: {
         AutoRemove: true,
         NetworkMode: networkName,
-        Mounts: workspaceMounts
+        Mounts: workspaceMounts,
+        PortBindings: {
+          [`${lease.targetPort}/tcp`]: [
+            {
+              HostIp: previewExposeHost || "0.0.0.0",
+              HostPort: String(publicPort)
+            }
+          ]
+        }
+      },
+      ExposedPorts: {
+        [`${lease.targetPort}/tcp`]: {}
       },
       User: sharedWorkspaceUser ?? undefined,
       NetworkingConfig: {

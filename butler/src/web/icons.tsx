@@ -223,6 +223,45 @@ export function TrashIcon() {
   );
 }
 
+export function PinIcon({ pinned = false }: { pinned?: boolean }) {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d={pinned ? "M5.5 2.8h5l-.8 4 2.3 2.3-2 2-2.3-2.3-3.9.8v-5l1.7 1.7 1.7-1.7-1.7-1.8ZM5 11l-2 2" : "M5.5 2.8h5l-.8 4 2.3 2.3-2 2-2.3-2.3-3.9.8v-5l1.7 1.7 1.7-1.7-1.7-1.8Z"}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="square"
+        strokeLinejoin="miter"
+      />
+      {!pinned ? <path d="M5 11l-2 2" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="square" /> : null}
+    </svg>
+  );
+}
+
+export function OpenIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d="M6.5 3.5h6v6M12.5 3.5 7.2 8.8M5 5.5H3.5v7h7V11"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="square"
+        strokeLinejoin="miter"
+      />
+    </svg>
+  );
+}
+
+export function StopIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M4.5 4.5h7v7h-7z" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="miter" />
+    </svg>
+  );
+}
+
 export function MemoryIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
