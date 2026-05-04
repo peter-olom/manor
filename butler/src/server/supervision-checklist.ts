@@ -57,6 +57,9 @@ export function reviewChecklistAcceptancePoint(
   if (input.status === "pending") {
     throw new Error("Butler review must accept, reject, or waive an acceptance point.");
   }
+  if (input.status === "rejected" && !input.nextInstruction?.trim()) {
+    throw new Error("Rejected acceptance points require nextInstruction so Butler can batch one worker follow-up.");
+  }
 
   const now = Date.now();
   const item = checklist.items.find((entry) => entry.id === input.pointId);

@@ -1,5 +1,7 @@
 import type { CodexProofExpectation, CodexThreadExecutionContractView } from "./types.js";
 
+const MAX_ACCEPTANCE_POINTS = 24;
+
 function normalizeContractText(value: string | null | undefined): string | null {
   if (!value) {
     return null;
@@ -47,9 +49,13 @@ export function deriveAcceptancePoints(taskText: string, requestedTask?: string 
     if (/^[-*]\s+\S/.test(trimmed) || /^\d+[.)]\s+\S/.test(trimmed)) {
       addPoint(trimmed);
     }
-    if (points.length >= 8) {
+    if (points.length >= MAX_ACCEPTANCE_POINTS) {
       return points;
     }
+  }
+
+  if (points.length > 0) {
+    return points;
   }
 
   const sentence = normalizeContractText(requestedTask ?? taskText) ?? "";
@@ -58,7 +64,7 @@ export function deriveAcceptancePoints(taskText: string, requestedTask?: string 
     const listText = listMatch[1].replace(/^.*\be\.g\.\s*/i, "");
     for (const part of listText.split(/\s*,\s*|\s+and\s+/)) {
       addPoint(part);
-      if (points.length >= 8) {
+      if (points.length >= MAX_ACCEPTANCE_POINTS) {
         return points;
       }
     }
@@ -68,7 +74,7 @@ export function deriveAcceptancePoints(taskText: string, requestedTask?: string 
     addPoint(deriveRequestedTask(taskText));
   }
 
-  return points.slice(0, 8);
+  return points.slice(0, MAX_ACCEPTANCE_POINTS);
 }
 
 export function detectProofExpectation(taskText: string): CodexProofExpectation {

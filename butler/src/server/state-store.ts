@@ -6,6 +6,7 @@ import {
   buildProjectSummary,
   buildSupervisorSummary,
   buildThreadSupervisor,
+  dedupeCodexChatItems,
   DEFAULT_ARTIFACT_RETENTION_MS,
   DEFAULT_BUTLER_THREAD_LIMIT,
   DEFAULT_LEASE_REAP_GRACE_MS,
@@ -274,7 +275,7 @@ export class ButlerStateStore extends EventEmitter {
       });
     }
 
-    return [...merged.values()].sort((left, right) => left.at - right.at);
+    return dedupeCodexChatItems([...merged.values()]);
   }
 
   private mergeTurnRecord(existingTurn: CodexTurnRecord | undefined, incomingTurn: CodexTurnRecord): CodexTurnRecord {
@@ -981,7 +982,7 @@ export class ButlerStateStore extends EventEmitter {
       error: turn.error,
       startedAt: turn.startedAt,
       completedAt: turn.completedAt,
-      items: turn.items.filter(shouldExposeCodexItem).map((item) => this.toItemView(item))
+      items: dedupeCodexChatItems(turn.items).filter(shouldExposeCodexItem).map((item) => this.toItemView(item))
     };
   }
 

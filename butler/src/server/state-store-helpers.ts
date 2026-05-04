@@ -731,6 +731,42 @@ export function normalizeItem(item: Record<string, unknown>, status: "started" |
   };
 }
 
+function isSyntheticCodexItemId(id: string): boolean {
+  return /^item-\d+$/.test(id);
+}
+
+export function dedupeCodexChatItems(items: CodexItemRecord[]): CodexItemRecord[] {
+  const bySignature = new Map<string, CodexItemRecord>();
+  const passthrough: CodexItemRecord[] = [];
+
+  for (const item of items) {
+    const normalizedText = item.text.replace(/\s+/g, " ").trim();
+    if ((item.type !== "userMessage" && item.type !== "agentMessage") || !normalizedText) {
+      passthrough.push(item);
+      continue;
+    }
+
+    const signature = `${item.type}:${normalizedText}`;
+    const existing = bySignature.get(signature);
+    if (!existing) {
+      bySignature.set(signature, item);
+      continue;
+    }
+
+    const keepExisting = !isSyntheticCodexItemId(existing.id) || isSyntheticCodexItemId(item.id);
+    const kept = keepExisting ? existing : item;
+    const dropped = keepExisting ? item : existing;
+    bySignature.set(signature, {
+      ...kept,
+      status: kept.status === "completed" || dropped.status === "completed" ? "completed" : kept.status,
+      at: Math.min(kept.at, dropped.at),
+      raw: Object.keys(kept.raw).length > 0 ? kept.raw : dropped.raw
+    });
+  }
+
+  return [...passthrough, ...bySignature.values()].sort((left, right) => left.at - right.at);
+}
+
 export function shouldExposeCodexItem(item: CodexItemRecord): boolean {
   if (item.text.trim().length > 0) {
     return true;

@@ -16,6 +16,7 @@ import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
 import { RuntimePanel } from "./RuntimePanel";
 import { mergeKnownImages, useKnownImages, useRuntimeSnapshot, useShellSnapshot, useThreadDetail } from "./live-state";
 import type {
+  CodexThreadDetail,
   ComposerInputItem,
   ComposerPrefill,
   FileReference,
@@ -50,6 +51,7 @@ type ThreadScrollPosition = {
 
 type ThreadPanelState = {
   showTimeline: boolean;
+  showThreadChecklist: boolean;
   showThreadRuntime: boolean;
   showThreadProofs: boolean;
   expandedSystemItems: Record<string, boolean>;
@@ -58,6 +60,26 @@ type ThreadPanelState = {
 
 const threadScrollPositions = new Map<string, ThreadScrollPosition>();
 const threadPanelStates = new Map<string, ThreadPanelState>();
+
+type ThreadChecklist = NonNullable<CodexThreadDetail["supervisionChecklist"]>;
+
+function getThreadChecklistProgress(checklist: ThreadChecklist): { completed: number; total: number } {
+  const completed = checklist.items.filter((item) => item.status === "accepted" || item.status === "waived").length;
+  return { completed, total: checklist.items.length };
+}
+
+function formatChecklistItemStatus(status: ThreadChecklist["items"][number]["status"]): string {
+  if (status === "accepted") {
+    return "Done";
+  }
+  if (status === "waived") {
+    return "Waived";
+  }
+  if (status === "rejected") {
+    return "Needs work";
+  }
+  return "Pending";
+}
 
 type ThreadSurfaceProps = {
   threadId: string | null;
@@ -121,6 +143,7 @@ export function ThreadSurface({
   } | null>(null);
   const [followRun, setFollowRun] = useState(true);
   const [showTimeline, setShowTimeline] = useState(false);
+  const [showThreadChecklist, setShowThreadChecklist] = useState(false);
   const [showThreadRuntime, setShowThreadRuntime] = useState(false);
   const [showThreadProofs, setShowThreadProofs] = useState(false);
   const [expandedSystemItems, setExpandedSystemItems] = useState<Record<string, boolean>>({});
@@ -147,6 +170,7 @@ export function ThreadSurface({
     setThreadAttachments([]);
     setFollowRun(nextThreadId ? (threadScrollPositions.get(nextThreadId)?.follow ?? true) : true);
     setShowTimeline(panelState?.showTimeline ?? false);
+    setShowThreadChecklist(panelState?.showThreadChecklist ?? false);
     setShowThreadRuntime(panelState?.showThreadRuntime ?? false);
     setShowThreadProofs(panelState?.showThreadProofs ?? false);
     setExpandedSystemItems(panelState?.expandedSystemItems ?? {});
@@ -165,12 +189,23 @@ export function ThreadSurface({
     }
     threadPanelStates.set(threadId, {
       showTimeline,
+      showThreadChecklist,
       showThreadRuntime,
       showThreadProofs,
       expandedSystemItems,
       expandedToolGroups
     });
-  }, [expandedSystemItems, expandedToolGroups, showThreadProofs, showThreadRuntime, showTimeline, threadId]);
+  }, [expandedSystemItems, expandedToolGroups, showThreadChecklist, showThreadProofs, showThreadRuntime, showTimeline, threadId]);
+
+  useEffect(() => {
+    if (!activeThread?.id || !activeThread.supervisionChecklist?.items.length) {
+      return;
+    }
+    if (threadPanelStates.has(activeThread.id)) {
+      return;
+    }
+    setShowThreadChecklist(true);
+  }, [activeThread?.id, activeThread?.supervisionChecklist?.items.length]);
 
   useEffect(() => {
     if (!activeThread?.id) {
@@ -648,6 +683,9 @@ export function ThreadSurface({
     activeThreadPreviews.find((lease) => Boolean(lease.lastVerification))?.lastVerification ??
     null;
   const activeThreadRuntimeLeaseCount = activeThreadStacks.length + activeThreadPreviews.length + activeThreadServices.length;
+  const activeChecklist = activeThread?.supervisionChecklist ?? null;
+  const activeChecklistProgress = activeChecklist ? getThreadChecklistProgress(activeChecklist) : null;
+  const activeChecklistProgressLabel = activeChecklistProgress ? `${activeChecklistProgress.completed}/${activeChecklistProgress.total}` : null;
 
   if (!shell || !runtime || !activeThread) {
     return <div className="workspace-panel"><div className="empty">This run is open, but its turn history has not loaded yet.</div></div>;
@@ -724,6 +762,53 @@ export function ThreadSurface({
     <div className="workspace-panel">
       <div className="thread-toolbar">
         <div className="thread-toolbar-group">
+          {activeChecklist && activeChecklist.items.length > 0 ? (
+            <div className="conversation-disclosure thread-toolbar-disclosure">
+              <button
+                className={`conversation-toggle thread-toolbar-toggle${showThreadChecklist ? " is-active" : ""}`}
+                onClick={() => {
+                  setShowThreadChecklist((current) => {
+                    const next = !current;
+                    if (next) {
+                      setShowThreadProofs(false);
+                      setShowThreadRuntime(false);
+                    }
+                    return next;
+                  });
+                }}
+                type="button"
+              >
+                <span className="conversation-toggle-icon" aria-hidden="true">
+                  {showThreadChecklist ? <ChevronUpIcon /> : <ChevronDownIcon />}
+                </span>
+                <span className="conversation-toggle-label">Checklist</span>
+                <span className="conversation-toggle-count">{activeChecklistProgressLabel}</span>
+              </button>
+              {showThreadChecklist ? (
+                <div className="conversation-disclosure-panel thread-checklist-panel">
+                  <div className="thread-checklist-head">
+                    <div>
+                      <h3>Checklist</h3>
+                      <p>{activeChecklist.requestedTask}</p>
+                    </div>
+                    <span className="thread-checklist-progress">{activeChecklistProgressLabel}</span>
+                  </div>
+                  <ol className="thread-checklist-items">
+                    {activeChecklist.items.map((item) => {
+                      const completed = item.status === "accepted" || item.status === "waived";
+                      return (
+                        <li key={item.id} className={`thread-checklist-item is-${item.status}${completed ? " is-complete" : ""}`}>
+                          <span className="thread-checklist-marker" aria-hidden="true" />
+                          <span className="thread-checklist-text">{item.text}</span>
+                          <span className="thread-checklist-status">{formatChecklistItemStatus(item.status)}</span>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {activeThreadPreviewVerification ? (
             <div className="conversation-disclosure thread-toolbar-disclosure">
               <button
@@ -732,6 +817,7 @@ export function ThreadSurface({
                   setShowThreadProofs((current) => {
                     const next = !current;
                     if (next) {
+                      setShowThreadChecklist(false);
                       setShowThreadRuntime(false);
                     }
                     return next;
@@ -776,6 +862,7 @@ export function ThreadSurface({
                   setShowThreadRuntime((current) => {
                     const next = !current;
                     if (next) {
+                      setShowThreadChecklist(false);
                       setShowThreadProofs(false);
                     }
                     return next;

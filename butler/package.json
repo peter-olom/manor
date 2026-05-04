@@ -9,7 +9,8 @@
     "build:web": "vite build",
     "check:max-loc": "node ./scripts/check-max-loc.mjs",
     "dev:start": "tsx watch src/server/index.ts",
-    "start": "node dist/server/index.js"
+    "start": "node dist/server/index.js",
+    "test": "tsx --test \"test/**/*.test.ts\""
   },
   "dependencies": {
     "@mariozechner/pi-ai": "0.70.2",
