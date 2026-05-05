@@ -671,6 +671,30 @@ export interface ButlerMessageView {
   kind: "message";
 }
 
+export type ButlerActivityItemKind = "thinking" | "tool";
+export type ButlerActivityItemStatus = "active" | "completed" | "error";
+export type ButlerActivityTurnStatus = "active" | "completed";
+
+export interface ButlerActivityItemView {
+  id: string;
+  kind: ButlerActivityItemKind;
+  status: ButlerActivityItemStatus;
+  title: string;
+  text: string;
+  at: number;
+  updatedAt: number;
+  contentIndex: number | null;
+  toolCallId: string | null;
+}
+
+export interface ButlerActivityTurnView {
+  id: string;
+  status: ButlerActivityTurnStatus;
+  startedAt: number;
+  completedAt: number | null;
+  items: ButlerActivityItemView[];
+}
+
 export interface ButlerMessagePageView {
   messages: ButlerMessageView[];
   startIndex: number;
@@ -840,6 +864,7 @@ export interface AppShellSnapshot {
 export interface ButlerLiveSnapshot {
   messages: ButlerMessageView[];
   messageCount: number;
+  activityTurns: ButlerActivityTurnView[];
 }
 
 export interface RuntimeSnapshot {

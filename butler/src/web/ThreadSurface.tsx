@@ -8,18 +8,23 @@ import {
   type KeyboardEvent as ReactKeyboardEvent
 } from "react";
 
-import { postJson, uploadAttachment } from "./api";
+import { getJson, postJson, uploadAttachment } from "./api";
 import { ComposerMentions } from "./ComposerMentions";
-import { ArrowDownIcon, AttachmentIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon, SendIcon, TrashIcon } from "./icons";
+import { ArrowDownIcon, AttachmentIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon, SendIcon, StopIcon, TrashIcon } from "./icons";
 import { MarkdownMessage } from "./MarkdownMessage";
+import { ProjectArtifactsPanel } from "./ProjectArtifactsPanel";
+import { ThreadArtifactsPanel } from "./ThreadArtifactsPanel";
 import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
 import { RuntimePanel } from "./RuntimePanel";
+import { SandSpinner } from "./SandSpinner";
 import { mergeKnownImages, useKnownImages, useRuntimeSnapshot, useShellSnapshot, useThreadDetail } from "./live-state";
+import { useThreadArtifacts } from "./useThreadArtifacts";
 import type {
   CodexThreadDetail,
   ComposerInputItem,
   ComposerPrefill,
   FileReference,
+  GeneratedImage,
   PreviewMedia,
   ReasoningEffort
 } from "./types";
@@ -141,11 +146,16 @@ export function ThreadSurface({
     text: string;
     sentAt: number;
   } | null>(null);
+  const [stoppingThreadId, setStoppingThreadId] = useState<string | null>(null);
   const [followRun, setFollowRun] = useState(true);
   const [showTimeline, setShowTimeline] = useState(false);
   const [showThreadChecklist, setShowThreadChecklist] = useState(false);
   const [showThreadRuntime, setShowThreadRuntime] = useState(false);
   const [showThreadProofs, setShowThreadProofs] = useState(false);
+  const [showThreadGeneratedImages, setShowThreadGeneratedImages] = useState(false);
+  const [showProjectArtifacts, setShowProjectArtifacts] = useState(false);
+  const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>([]);
+  const { projectArtifacts, promotingThreadArtifactId, promoteThreadArtifact, resetArtifacts, threadArtifacts } = useThreadArtifacts(activeThread, showErrorToast, showToast);
   const [expandedSystemItems, setExpandedSystemItems] = useState<Record<string, boolean>>({});
   const [expandedToolGroups, setExpandedToolGroups] = useState<Record<string, boolean>>({});
   const [busyStackId, setBusyStackId] = useState<string | null>(null);
@@ -173,6 +183,10 @@ export function ThreadSurface({
     setShowThreadChecklist(panelState?.showThreadChecklist ?? false);
     setShowThreadRuntime(panelState?.showThreadRuntime ?? false);
     setShowThreadProofs(panelState?.showThreadProofs ?? false);
+    setShowThreadGeneratedImages(false);
+    setShowProjectArtifacts(false);
+    setGeneratedImages([]);
+    resetArtifacts();
     setExpandedSystemItems(panelState?.expandedSystemItems ?? {});
     setExpandedToolGroups(panelState?.expandedToolGroups ?? {});
     restoredThreadPanelRef.current = nextThreadId;
@@ -206,6 +220,32 @@ export function ThreadSurface({
     }
     setShowThreadChecklist(true);
   }, [activeThread?.id, activeThread?.supervisionChecklist?.items.length]);
+
+  useEffect(() => {
+    if (!activeThread?.id) {
+      setGeneratedImages([]);
+      return;
+    }
+
+    let cancelled = false;
+    getJson<{ images: GeneratedImage[] }>(`/api/threads/${encodeURIComponent(activeThread.id)}/generated-images`)
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+        setGeneratedImages(payload.images);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setGeneratedImages([]);
+          showErrorToast(error, "generated-images", 3000);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeThread?.id, activeThread?.updatedAt, showErrorToast]);
 
   useEffect(() => {
     if (!activeThread?.id) {
@@ -377,6 +417,22 @@ export function ThreadSurface({
     }
   }
 
+  async function stopThreadRequest(threadId: string) {
+    setStoppingThreadId(threadId);
+    try {
+      const result = await postJson<{ stopped?: boolean }>("/api/threads/stop", { threadId });
+      if (result?.stopped) {
+        setPendingThreadRequest((current) => (current?.threadId === threadId ? null : current));
+      } else {
+        showToast("No active Codex request to stop", "error", 2500);
+      }
+    } catch (error) {
+      showErrorToast(error);
+    } finally {
+      setStoppingThreadId((current) => (current === threadId ? null : current));
+    }
+  }
+
   async function stopStackLease(stackId: string) {
     setBusyStackId(stackId);
     try {
@@ -514,6 +570,7 @@ export function ThreadSurface({
   type RunConversationRow =
     | { id: string; kind: "item"; item: (typeof activeRunItems)[number] }
     | { id: string; kind: "toolGroup"; turnId: string; at: number; items: Array<(typeof activeRunItems)[number]> }
+    | { id: string; kind: "generatedImages"; images: GeneratedImage[] }
     | { id: string; kind: "pending"; text: string }
     | { id: string; kind: "working" };
 
@@ -565,6 +622,10 @@ export function ThreadSurface({
         }
       }
 
+      if (generatedImages.length > 0) {
+        rows.push({ id: `generated-images-${activeThread?.id ?? "thread"}`, kind: "generatedImages", images: generatedImages });
+      }
+
       if (showPendingThreadEntry && pendingThreadRequest) {
         rows.push({ id: `pending-${pendingThreadRequest.sentAt}`, kind: "pending", text: pendingThreadRequest.text });
       }
@@ -575,7 +636,7 @@ export function ThreadSurface({
 
       return rows;
     },
-    [activeThread, pendingThreadRequest, showPendingThreadEntry, showThreadWorkingIndicator]
+    [activeThread, generatedImages, pendingThreadRequest, showPendingThreadEntry, showThreadWorkingIndicator]
   );
   const deferredRows = useDeferredValue(runConversationRows);
   const renderedRowsCurrent = deferredRows === runConversationRows;
@@ -686,6 +747,7 @@ export function ThreadSurface({
   const activeChecklist = activeThread?.supervisionChecklist ?? null;
   const activeChecklistProgress = activeChecklist ? getThreadChecklistProgress(activeChecklist) : null;
   const activeChecklistProgressLabel = activeChecklistProgress ? `${activeChecklistProgress.completed}/${activeChecklistProgress.total}` : null;
+  const generatedImagesById = useMemo(() => new Map(generatedImages.map((image) => [image.id, image])), [generatedImages]);
 
   if (!shell || !runtime || !activeThread) {
     return <div className="workspace-panel"><div className="empty">This run is open, but its turn history has not loaded yet.</div></div>;
@@ -694,9 +756,38 @@ export function ThreadSurface({
   const codexEffortOptions =
     shell.codex.compose.availableModels.find((model) => model.id === shell.codex.compose.model)?.supportedReasoningEfforts ?? [];
 
+  function renderGeneratedImageStrip(images: GeneratedImage[]) {
+    if (images.length === 0) {
+      return null;
+    }
+
+    return (
+      <div className="message-generated-image-strip">
+        {images.map((image) => (
+          <button
+            key={image.id}
+            className="message-generated-image-button"
+            type="button"
+            onClick={() =>
+              onPreviewMedia({
+                name: image.fileName,
+                url: image.url,
+                kind: "image",
+                downloadUrl: image.downloadUrl
+              })
+            }
+          >
+            <img src={image.url} alt={image.fileName} className="message-generated-image-thumb" />
+          </button>
+        ))}
+      </div>
+    );
+  }
+
   function renderSystemStrip(item: (typeof activeRunItems)[number]) {
     const imageState = messageImages[item.id] ?? { displayText: item.text || "Running shell command", images: [], files: [] };
-    const systemText = imageState.displayText || "Running shell command";
+    const generatedItemImages = item.type === "image_generation_call" ? [generatedImagesById.get(item.id)].filter((image): image is GeneratedImage => Boolean(image)) : [];
+    const systemText = generatedItemImages.length > 0 ? "Generated image" : imageState.displayText || "Running shell command";
     const isExpanded = Boolean(expandedSystemItems[item.id]);
 
     return (
@@ -738,6 +829,7 @@ export function ThreadSurface({
             ))}
           </div>
         ) : null}
+        {renderGeneratedImageStrip(generatedItemImages)}
         {imageState.files.length > 0 ? (
           <div className="message-file-strip">
             {imageState.files.map((file) => (
@@ -771,6 +863,8 @@ export function ThreadSurface({
                     const next = !current;
                     if (next) {
                       setShowThreadProofs(false);
+                      setShowThreadGeneratedImages(false);
+                      setShowProjectArtifacts(false);
                       setShowThreadRuntime(false);
                     }
                     return next;
@@ -818,6 +912,8 @@ export function ThreadSurface({
                     const next = !current;
                     if (next) {
                       setShowThreadChecklist(false);
+                      setShowThreadGeneratedImages(false);
+                      setShowProjectArtifacts(false);
                       setShowThreadRuntime(false);
                     }
                     return next;
@@ -854,6 +950,66 @@ export function ThreadSurface({
               ) : null}
             </div>
           ) : null}
+          {threadArtifacts.length > 0 ? (
+            <div className="conversation-disclosure thread-toolbar-disclosure">
+              <button
+                className={`conversation-toggle thread-toolbar-toggle${showThreadGeneratedImages ? " is-active" : ""}`}
+                onClick={() => {
+                  setShowThreadGeneratedImages((current) => {
+                    const next = !current;
+                    if (next) {
+                      setShowThreadChecklist(false);
+                      setShowThreadProofs(false);
+                      setShowProjectArtifacts(false);
+                      setShowThreadRuntime(false);
+                    }
+                    return next;
+                  });
+                }}
+                type="button"
+              >
+                <span className="conversation-toggle-icon" aria-hidden="true">
+                  {showThreadGeneratedImages ? <ChevronUpIcon /> : <ChevronDownIcon />}
+                </span>
+                <span className="conversation-toggle-label">{showThreadGeneratedImages ? "Hide artifacts" : "Artifacts"}</span>
+                <span className="conversation-toggle-count">{threadArtifacts.length}</span>
+              </button>
+              {showThreadGeneratedImages ? (
+                <div className="conversation-disclosure-panel runtime-disclosure-panel thread-artifacts-panel">
+                  <ThreadArtifactsPanel artifacts={threadArtifacts} promotingArtifactId={promotingThreadArtifactId} onPreviewMedia={onPreviewMedia} onPromoteArtifact={(artifact) => void promoteThreadArtifact(artifact)} />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          <div className="conversation-disclosure thread-toolbar-disclosure">
+            <button
+              className={`conversation-toggle thread-toolbar-toggle${showProjectArtifacts ? " is-active" : ""}`}
+              onClick={() => {
+                setShowProjectArtifacts((current) => {
+                  const next = !current;
+                  if (next) {
+                    setShowThreadChecklist(false);
+                    setShowThreadProofs(false);
+                    setShowThreadGeneratedImages(false);
+                    setShowThreadRuntime(false);
+                  }
+                  return next;
+                });
+              }}
+              type="button"
+            >
+              <span className="conversation-toggle-icon" aria-hidden="true">
+                {showProjectArtifacts ? <ChevronUpIcon /> : <ChevronDownIcon />}
+              </span>
+              <span className="conversation-toggle-label">{showProjectArtifacts ? "Hide persisted" : "Persisted"}</span>
+              <span className="conversation-toggle-count">{projectArtifacts.length}</span>
+            </button>
+            {showProjectArtifacts ? (
+              <div className="conversation-disclosure-panel runtime-disclosure-panel thread-artifacts-panel">
+                <ProjectArtifactsPanel artifacts={projectArtifacts} onPreviewMedia={onPreviewMedia} />
+              </div>
+            ) : null}
+          </div>
           {activeThreadRuntimeLeaseCount > 0 ? (
             <div className="conversation-disclosure thread-toolbar-disclosure">
               <button
@@ -864,6 +1020,8 @@ export function ThreadSurface({
                     if (next) {
                       setShowThreadChecklist(false);
                       setShowThreadProofs(false);
+                      setShowThreadGeneratedImages(false);
+                      setShowProjectArtifacts(false);
                     }
                     return next;
                   });
@@ -952,8 +1110,23 @@ export function ThreadSurface({
                       <div key={row.id} className="conversation-row is-assistant">
                         <div className={`working-indicator ${activeThread.status === "active" ? "is-streaming" : "is-pending"}`} aria-live="polite">
                           <span className="working-indicator-label">Codex</span>
-                          <span className="working-indicator-text">{activeThread.status === "active" ? "Working" : "Running"}</span>
+                          <SandSpinner />
                         </div>
+                      </div>
+                    );
+                  }
+
+                  if (row.kind === "generatedImages") {
+                    return (
+                      <div key={row.id} className="conversation-row is-assistant">
+                        <article className="entry is-assistant">
+                          <div className="entry-head">
+                            <span>Codex</span>
+                          </div>
+                          <div className="entry-text">
+                            {renderGeneratedImageStrip(row.images)}
+                          </div>
+                        </article>
                       </div>
                     );
                   }
@@ -1008,7 +1181,11 @@ export function ThreadSurface({
                   const isSystemItem = tone === "system";
                   const rowToneClass = tone === "user" ? "is-user" : isSystemItem ? "is-system" : "is-assistant";
                   const imageState = messageImages[row.id] ?? { displayText: row.item.text || "Running shell command", images: [], files: [] };
-                  const systemText = imageState.displayText || "Running shell command";
+                  const generatedItemImages =
+                    row.item.type === "image_generation_call"
+                      ? [generatedImagesById.get(row.item.id)].filter((image): image is GeneratedImage => Boolean(image))
+                      : [];
+                  const systemText = generatedItemImages.length > 0 ? "Generated image" : imageState.displayText || "Running shell command";
 
                   if (isSystemItem) {
                     return (
@@ -1041,6 +1218,7 @@ export function ThreadSurface({
                               ))}
                             </div>
                           ) : null}
+                          {renderGeneratedImageStrip(generatedItemImages)}
                           {imageState.files.length > 0 ? (
                             <div className="message-file-strip">
                               {imageState.files.map((file) => (
@@ -1179,10 +1357,10 @@ export function ThreadSurface({
                 <button className="composer-add-image composer-add-image-mobile" type="button" onClick={() => threadFileInputRef.current?.click()} aria-label="Add file" title="Add file">
                   <AttachmentIcon />
                 </button>
-                <button className="composer-send composer-send-mobile" onClick={() => void sendThreadMessage()} disabled={(!threadDraft.trim() && threadAttachments.length === 0) || threadUploadingAttachments > 0} aria-label="Send message">
-                  <span className="composer-send-label">Send</span>
+                <button className={`composer-send composer-send-mobile${showThreadWorkingIndicator ? " is-stop" : ""}`} onClick={() => showThreadWorkingIndicator ? void stopThreadRequest(activeThread.id) : void sendThreadMessage()} disabled={showThreadWorkingIndicator ? stoppingThreadId === activeThread.id : ((!threadDraft.trim() && threadAttachments.length === 0) || threadUploadingAttachments > 0)} aria-label={showThreadWorkingIndicator ? "Stop request" : "Send message"}>
+                  <span className="composer-send-label">{showThreadWorkingIndicator ? "Stop" : "Send"}</span>
                   <span className="composer-send-icon">
-                    <SendIcon />
+                    {showThreadWorkingIndicator ? <StopIcon /> : <SendIcon />}
                   </span>
                 </button>
               </div>
@@ -1239,10 +1417,10 @@ export function ThreadSurface({
                 <button className="composer-add-image" type="button" onClick={() => threadFileInputRef.current?.click()} aria-label="Add file" title="Add file">
                   <AttachmentIcon />
                 </button>
-                <button className="composer-send composer-send-desktop" onClick={() => void sendThreadMessage()} disabled={(!threadDraft.trim() && threadAttachments.length === 0) || threadUploadingAttachments > 0} aria-label="Send message">
-                  <span className="composer-send-label">Send</span>
+                <button className={`composer-send composer-send-desktop${showThreadWorkingIndicator ? " is-stop" : ""}`} onClick={() => showThreadWorkingIndicator ? void stopThreadRequest(activeThread.id) : void sendThreadMessage()} disabled={showThreadWorkingIndicator ? stoppingThreadId === activeThread.id : ((!threadDraft.trim() && threadAttachments.length === 0) || threadUploadingAttachments > 0)} aria-label={showThreadWorkingIndicator ? "Stop request" : "Send message"}>
+                  <span className="composer-send-label">{showThreadWorkingIndicator ? "Stop" : "Send"}</span>
                   <span className="composer-send-icon">
-                    <SendIcon />
+                    {showThreadWorkingIndicator ? <StopIcon /> : <SendIcon />}
                   </span>
                 </button>
               </div>

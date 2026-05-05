@@ -50,6 +50,7 @@ import {
   getButlerSnapshot,
   promptButler,
   promptButlerInternal,
+  stopButlerPrompt,
   restoreButlerCompactionState,
   sanitizeButlerSessionMessages,
   sanitizePersistedButlerSessions,
@@ -92,6 +93,7 @@ import type {
   AppSnapshot,
   AppShellSnapshot,
   ButlerLiveSnapshot,
+  ButlerActivityTurnView,
   ButlerAuthStatus,
   ButlerThreadCallbackView,
   ButlerCompactionView,
@@ -136,6 +138,10 @@ export class ButlerAgentService extends EventEmitter {
   };
   private ready = false;
   private pending = false;
+  private stopRequestedAt: number | null = null;
+  private readonly activityTurns: ButlerActivityTurnView[] = [];
+  private activeActivityTurnId: string | null = null;
+  private activitySequence = 0;
   private lastError: string | null = null;
   private promptQueue: Promise<void> = Promise.resolve();
   private readonly toolCatalog: ButlerToolView[];
@@ -1459,6 +1465,8 @@ export class ButlerAgentService extends EventEmitter {
   }
 
   prompt(text: string, imageReferenceIds: string[] = []): void { void this.promptOperatorTurn(text, imageReferenceIds); }
+
+  async stopPrompt(): Promise<boolean> { return stopButlerPrompt(this.getSessionAccess()); }
 
   async updateComposeSettings(provider: string, modelId: string, thinkingLevel: ButlerThinkingLevel): Promise<void> { await updateButlerComposeSettings(this.getSessionAccess(), provider, modelId, thinkingLevel); }
 }

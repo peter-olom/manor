@@ -225,6 +225,7 @@ export class CodexAppServerClient extends EventEmitter {
   private selectedEffort: ReasoningEffort | null = null;
   private readonly defaultCwd = "/repos";
   private readonly codexHomeDir: string;
+  private readonly artifactsDir: string | null;
   private readonly onThreadCapabilityReady: ((threadId: string, cwd: string | null | undefined) => Promise<void>) | null;
   private readonly onThreadCapabilityRemoved: ((threadId: string) => Promise<void>) | null;
   private readonly onThreadDeleting: ((context: ThreadDeleteContext) => Promise<void>) | null;
@@ -240,12 +241,14 @@ export class CodexAppServerClient extends EventEmitter {
       onThreadCapabilityRemoved?: (threadId: string) => Promise<void>;
       onThreadDeleting?: (context: ThreadDeleteContext) => Promise<void>;
       onRuntimeCleanupError?: (threadId: string, message: string) => void;
+      artifactsDir?: string | null;
     }
   ) {
     super();
     this.baseUrl = baseUrl;
     this.store = store;
     this.codexHomeDir = codexHomeDir;
+    this.artifactsDir = options?.artifactsDir ? path.resolve(options.artifactsDir) : null;
     this.onThreadCapabilityReady = options?.onThreadCapabilityReady ?? null;
     this.onThreadCapabilityRemoved = options?.onThreadCapabilityRemoved ?? null;
     this.onThreadDeleting = options?.onThreadDeleting ?? null;
@@ -1119,6 +1122,23 @@ export class CodexAppServerClient extends EventEmitter {
     }
   }
 
+  async stopThread(threadId: string): Promise<boolean> {
+    const activeTurnId = this.activeTurnIds.get(threadId);
+    if (!activeTurnId) {
+      return false;
+    }
+
+    await this.call("turn/interrupt", {
+      threadId,
+      expectedTurnId: activeTurnId
+    });
+    this.activeTurnIds.delete(threadId);
+    this.store.setThreadStatus(threadId, "idle");
+    this.store.addEvent(threadId, "turn/interrupt", "Turn interrupted by operator");
+    this.emit("change");
+    return true;
+  }
+
   private async listFilesRecursive(root: string): Promise<string[]> {
     const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
     const files: string[] = [];
@@ -1222,6 +1242,7 @@ export class CodexAppServerClient extends EventEmitter {
     const removed = new Set<string>();
     const sessionsDir = path.join(this.codexHomeDir, "sessions");
     const snapshotsDir = path.join(this.codexHomeDir, "shell_snapshots");
+    const generatedImagesDir = path.join(this.codexHomeDir, "generated_images", threadId);
 
     const sessionFiles = await this.listFilesRecursive(sessionsDir);
     for (const filePath of sessionFiles) {
@@ -1244,6 +1265,26 @@ export class CodexAppServerClient extends EventEmitter {
       removed.add(filePath);
     }
 
+    const generatedImages = await this.listFilesRecursive(generatedImagesDir);
+    await fs.rm(generatedImagesDir, { recursive: true, force: true });
+    for (const filePath of generatedImages) {
+      removed.add(filePath);
+    }
+
+    const previewProofs = this.store.listPreviewProofs().filter((proof) => proof.threadId === threadId);
+    for (const proof of previewProofs) {
+      for (const artifact of proof.verification.artifacts) {
+        if (!artifact.filePath || artifact.availability !== "available") {
+          continue;
+        }
+        const filePath = path.resolve(artifact.filePath);
+        await fs.rm(filePath, { force: true }).catch(() => undefined);
+        removed.add(filePath);
+        await this.pruneArtifactParents(filePath);
+      }
+      this.store.removePreviewProof(proof.id);
+    }
+
     if (cwd) {
       const cleanupCount = await cleanupManagedWorktree(cwd).catch(() => 0);
       for (let index = 0; index < cleanupCount; index += 1) {
@@ -1252,6 +1293,21 @@ export class CodexAppServerClient extends EventEmitter {
     }
 
     return removed.size;
+  }
+
+  private async pruneArtifactParents(filePath: string): Promise<void> {
+    if (!this.artifactsDir) {
+      return;
+    }
+    let current = path.dirname(path.resolve(filePath));
+    while (current.startsWith(`${this.artifactsDir}${path.sep}`) && current !== this.artifactsDir) {
+      try {
+        await fs.rmdir(current);
+      } catch {
+        break;
+      }
+      current = path.dirname(current);
+    }
   }
 
   private buildThreadDeleteContext(threadId: string): ThreadDeleteContext {

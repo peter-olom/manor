@@ -274,6 +274,81 @@ export async function createProjectArtifactFromUrl(input: {
   };
 }
 
+export async function createProjectArtifactFromFile(input: {
+  artifactsDir: string;
+  projectId: string;
+  projectLabel: string;
+  threadId?: string | null;
+  kind: ProjectArtifactKind;
+  title: string;
+  description?: string | null;
+  sourceFilePath: string;
+  fileName?: string | null;
+  contentType?: string | null;
+  tags?: string[];
+  metadata?: Record<string, string>;
+}): Promise<ProjectArtifactView> {
+  const sourceFilePath = path.resolve(input.sourceFilePath);
+  const stats = await fs.stat(sourceFilePath);
+  if (!stats.isFile()) {
+    throw new Error("Source artifact is not a file");
+  }
+  if (stats.size > MAX_PROJECT_ARTIFACT_DOWNLOAD_BYTES) {
+    throw new Error(`Artifact exceeds ${MAX_PROJECT_ARTIFACT_DOWNLOAD_BYTES} bytes`);
+  }
+
+  const fileName = sanitizeFileName(input.fileName || path.basename(sourceFilePath) || "artifact.bin");
+  const contentType = detectContentType(fileName, input.contentType);
+  const target = await createArtifactFileTarget({
+    artifactsDir: input.artifactsDir,
+    projectId: input.projectId,
+    fileName
+  });
+  const hash = crypto.createHash("sha256");
+  const previewChunks: Buffer[] = [];
+  let previewBytes = 0;
+  const handle = await fs.open(sourceFilePath, "r");
+  try {
+    for await (const chunk of handle.createReadStream()) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      hash.update(buffer);
+      if (previewBytes < MAX_TEXT_PREVIEW_BYTES) {
+        const slice = buffer.subarray(0, Math.min(buffer.byteLength, MAX_TEXT_PREVIEW_BYTES - previewBytes));
+        previewChunks.push(slice);
+        previewBytes += slice.byteLength;
+      }
+    }
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+  await fs.copyFile(sourceFilePath, target.filePath);
+  const previewBuffer = previewChunks.length > 0 ? Buffer.concat(previewChunks) : Buffer.alloc(0);
+  const now = Date.now();
+  return {
+    id: crypto.randomUUID(),
+    projectId: input.projectId,
+    projectLabel: input.projectLabel,
+    kind: input.kind,
+    title: input.title.trim(),
+    description: typeof input.description === "string" && input.description.trim() ? input.description.trim() : null,
+    fileName: target.fileName,
+    filePath: target.filePath,
+    contentType,
+    sizeBytes: stats.size,
+    tags: normalizeList(input.tags),
+    metadata: input.metadata ?? {},
+    source: {
+      kind: "generated",
+      url: null,
+      createdByThreadId: input.threadId?.trim() || null,
+      checksumSha256: hash.digest("hex")
+    },
+    textPreview: buildTextPreview(previewBuffer, contentType, target.fileName),
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
 export async function readProjectArtifactContent(artifact: ProjectArtifactView): Promise<{
   content: string | null;
   truncated: boolean;

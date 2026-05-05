@@ -926,6 +926,167 @@ select {
   padding: 12px;
 }
 
+.thread-generated-images-panel {
+  right: 0;
+  width: min(720px, calc(100vw - 36px));
+  max-height: min(70vh, 620px);
+}
+
+.thread-generated-images-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  padding: 12px;
+}
+
+.thread-generated-image-card {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 84%, transparent);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.thread-generated-image-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--line-strong));
+  background: color-mix(in srgb, var(--surface) 94%, var(--accent) 6%);
+}
+
+.thread-generated-image-thumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+}
+
+.thread-generated-image-meta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.thread-generated-image-meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-artifacts-panel {
+  right: 0;
+  width: min(760px, calc(100vw - 36px));
+  max-height: min(70vh, 620px);
+}
+
+.thread-artifacts-list {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.thread-artifact-row {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+}
+
+.thread-artifact-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 84px;
+  height: 52px;
+  border: 1px solid var(--line);
+  background: var(--code-bg);
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-decoration: none;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.thread-artifact-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.thread-artifact-preview-file {
+  cursor: pointer;
+}
+
+.thread-artifact-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.thread-artifact-name,
+.thread-artifact-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-artifact-name {
+  color: var(--ink);
+  font-size: 0.82rem;
+}
+
+.thread-artifact-meta {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.thread-artifact-icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.thread-artifact-icon-action svg {
+  width: 16px;
+  height: 16px;
+}
+
+.thread-artifact-icon-action:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+@media (max-width: 720px) {
+  .thread-artifact-row {
+    grid-template-columns: 72px minmax(0, 1fr) auto;
+  }
+
+  .thread-artifact-preview {
+    width: 72px;
+    height: 48px;
+  }
+
+  .thread-artifact-icon-action[href] {
+    display: none;
+  }
+}
+
 .panel-action {
   display: inline-flex;
   align-items: center;
@@ -1965,6 +2126,16 @@ select {
   font-size: 0.78rem;
 }
 
+.sand-spinner {
+  display: inline-block;
+  width: 1.2em;
+  text-align: center;
+  font-family: "SFMono-Regular", "Menlo", "Monaco", monospace;
+  font-size: 1.05rem;
+  line-height: 1;
+  color: var(--muted);
+}
+
 .working-indicator-text {
   display: inline-block;
   font-size: 0.94rem;
@@ -1984,6 +2155,84 @@ select {
   background-clip: text;
   -webkit-text-fill-color: transparent;
   animation: workingGlassSweep 2.2s ease-in-out infinite;
+}
+
+.butler-activity-panel {
+  width: min(760px, 100%);
+  color: var(--muted);
+}
+
+.butler-activity-panel.is-active {
+  padding: 0;
+}
+
+.butler-activity-panel summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.butler-activity-panel summary span:first-child {
+  color: var(--ink);
+}
+
+.butler-activity-list {
+  display: grid;
+  gap: 0;
+}
+
+.butler-activity-item {
+  display: grid;
+  gap: 6px;
+  padding: 5px 0;
+  border-top: 0;
+}
+
+.butler-activity-panel.is-active .butler-activity-item:first-child {
+  border-top: 0;
+}
+
+.butler-activity-item-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.butler-activity-item-head span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.butler-activity-item.is-active .butler-activity-item-head span:last-child {
+  color: var(--accent);
+}
+
+.butler-activity-item.is-error .butler-activity-item-head span:last-child {
+  color: var(--danger);
+}
+
+.butler-activity-text,
+.butler-activity-empty {
+  margin: 0;
+  color: var(--muted);
+  font-family: "SFMono-Regular", "Menlo", "Monaco", monospace;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.butler-activity-empty {
+  padding: 9px 12px;
 }
 
 .entry-head {
@@ -2583,6 +2832,33 @@ select {
   background: var(--code-bg);
 }
 
+.message-generated-image-strip {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.message-generated-image-button {
+  display: block;
+  width: min(520px, 100%);
+  padding: 0;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.message-generated-image-button:hover {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--line-strong));
+}
+
+.message-generated-image-thumb {
+  display: block;
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  background: var(--code-bg);
+}
+
 .message-file-strip {
   display: flex;
   flex-wrap: wrap;
@@ -2729,6 +3005,11 @@ select {
   letter-spacing: 0.02em;
   background: transparent;
   cursor: pointer;
+}
+
+.composer-send.is-stop {
+  border-color: color-mix(in srgb, var(--danger) 58%, transparent);
+  color: var(--danger);
 }
 
 .composer-send-mobile {

@@ -122,6 +122,62 @@ export type PreviewMedia = {
   downloadUrl: string | null;
 };
 
+export type GeneratedImage = {
+  id: string;
+  fileName: string;
+  sizeBytes: number;
+  createdAt: number;
+  url: string;
+  downloadUrl: string;
+};
+
+export type ThreadArtifact = {
+  id: string;
+  threadId: string;
+  source: "generated-image";
+  kind: "image" | "video" | "markdown" | "pdf" | "html" | "other";
+  label: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number | null;
+  createdAt: number;
+  url: string | null;
+  downloadUrl: string | null;
+  previewKind: "image" | "video" | null;
+  promotedProjectArtifactId: string | null;
+};
+
+export type ProjectArtifact = {
+  id: string;
+  projectId: string;
+  projectLabel: string;
+  kind: "seed" | "reference" | "download" | "research" | "report" | "other";
+  title: string;
+  description: string | null;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  tags: string[];
+  metadata: Record<string, string>;
+  source: {
+    kind: "inline" | "url" | "generated";
+    url: string | null;
+    createdByThreadId: string | null;
+    checksumSha256: string | null;
+  };
+  textPreview: string | null;
+  createdAt: number;
+  updatedAt: number;
+  access: {
+    path: string;
+    downloadPath: string;
+    internalUrl: string;
+    internalDownloadUrl: string;
+    publicUrl: string | null;
+    publicDownloadUrl: string | null;
+  };
+};
+
 export type ComposerPrefillTarget =
   | {
       kind: "butler";
@@ -644,6 +700,27 @@ export type ShellSnapshot = {
 export type ButlerLiveSnapshot = {
   messages: ButlerMessageRecord[];
   messageCount: number;
+  activityTurns: ButlerActivityTurn[];
+};
+
+export type ButlerActivityItem = {
+  id: string;
+  kind: "thinking" | "tool";
+  status: "active" | "completed" | "error";
+  title: string;
+  text: string;
+  at: number;
+  updatedAt: number;
+  contentIndex: number | null;
+  toolCallId: string | null;
+};
+
+export type ButlerActivityTurn = {
+  id: string;
+  status: "active" | "completed";
+  startedAt: number;
+  completedAt: number | null;
+  items: ButlerActivityItem[];
 };
 
 export type BootstrapSnapshot = {

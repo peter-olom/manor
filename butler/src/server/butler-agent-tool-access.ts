@@ -9,6 +9,7 @@ import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-t
 import type { ButlerStateStore } from "./state-store.js";
 import type {
   AppSnapshot,
+  ButlerActivityTurnView,
   ButlerAuthStatus,
   ButlerCompactionView,
   ButlerMessageView,
@@ -160,6 +161,10 @@ export type ButlerAgentSessionAccess = {
   compaction: Omit<ButlerCompactionView, "autoEnabled" | "active" | "count">;
   ready: boolean;
   pending: boolean;
+  stopRequestedAt: number | null;
+  activityTurns: ButlerActivityTurnView[];
+  activeActivityTurnId: string | null;
+  activitySequence: number;
   lastError: string | null;
   promptQueue: Promise<void>;
   store: ButlerStateStore;

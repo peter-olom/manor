@@ -14,10 +14,12 @@ import { ArrowDownIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon, MemoryIcon, Tr
 import { MarkdownMessage } from "./MarkdownMessage";
 import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
 import { RuntimePanel } from "./RuntimePanel";
+import { SandSpinner } from "./SandSpinner";
 import { mergeKnownImages, useButlerLiveSnapshot, useKnownImages, useRuntimeSnapshot, useShellSnapshot } from "./live-state";
 import type {
   ButlerHistoryPageResponse,
   ButlerHistoryState,
+  ButlerActivityTurn,
   CodexThreadSummary,
   ComposerInputItem,
   ComposerPrefill,
@@ -46,6 +48,56 @@ import {
 type ChecklistThread = CodexThreadSummary & {
   supervisionChecklist: NonNullable<CodexThreadSummary["supervisionChecklist"]>;
 };
+
+function getActivitySummary(turn: ButlerActivityTurn): string {
+  const thinkingCount = turn.items.filter((item) => item.kind === "thinking").length;
+  const toolCount = turn.items.filter((item) => item.kind === "tool").length;
+  const parts = [
+    thinkingCount > 0 ? `${thinkingCount} thinking ${thinkingCount === 1 ? "update" : "updates"}` : null,
+    toolCount > 0 ? `${toolCount} ${toolCount === 1 ? "tool call" : "tool calls"}` : null
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : "No activity recorded";
+}
+
+function ButlerActivityList({ turn }: { turn: ButlerActivityTurn }) {
+  if (turn.items.length === 0) {
+    return <div className="butler-activity-empty">Preparing request</div>;
+  }
+
+  return (
+    <div className="butler-activity-list">
+      {turn.items.map((item) => (
+        <div key={item.id} className={`butler-activity-item is-${item.kind} is-${item.status}`}>
+          <div className="butler-activity-item-head">
+            <span>{item.kind === "thinking" ? "Thinking" : item.title}</span>
+            <span>{item.status === "active" ? "running" : item.status === "error" ? "error" : "done"}</span>
+          </div>
+          {item.text ? <div className="butler-activity-text">{item.text}</div> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ButlerActivityPanel({ turn, active }: { turn: ButlerActivityTurn; active: boolean }) {
+  if (active) {
+    return (
+      <div className="butler-activity-panel is-active" aria-live="polite">
+        <ButlerActivityList turn={turn} />
+      </div>
+    );
+  }
+
+  return (
+    <details className="butler-activity-panel">
+      <summary>
+        <span>Butler activity</span>
+        <span>{getActivitySummary(turn)}</span>
+      </summary>
+      <ButlerActivityList turn={turn} />
+    </details>
+  );
+}
 
 type ChecklistCounts = {
   total: number;
@@ -489,6 +541,18 @@ export function ButlerSurface({
     }
   }
 
+  async function stopButlerRequest() {
+    try {
+      const result = await postJson<{ stopped?: boolean }>("/api/chat/stop", {});
+      setPendingButlerText(null);
+      if (!result?.stopped) {
+        showToast("No active Butler request to stop", "error", 2500);
+      }
+    } catch (error) {
+      showErrorToast(error);
+    }
+  }
+
   async function clearButlerChat() {
     if (!window.confirm("Clear the entire Butler chat?")) {
       return;
@@ -662,13 +726,33 @@ export function ButlerSurface({
     [butlerMessagesWithTimes]
   );
   const butlerTimelineGroups = useMemo(() => groupTimelineItems(butlerPromptJumpList), [butlerPromptJumpList]);
+  const activeButlerActivityTurn = useMemo(
+    () => live?.activityTurns.find((turn) => turn.status === "active") ?? null,
+    [live?.activityTurns]
+  );
   const butlerConversationRows = useMemo(
-    () => [
-      ...butlerMessagesWithTimes.map((message) => ({ id: message.id, kind: "message" as const, message })),
-      ...(pendingButlerText ? [{ id: `pending-${pendingButlerText}`, kind: "pending" as const, text: pendingButlerText }] : []),
-      ...((shell?.butler.pending || shell?.butler.isStreaming) ? [{ id: "butler-working", kind: "working" as const }] : [])
-    ],
-    [butlerMessagesWithTimes, pendingButlerText, shell?.butler.isStreaming, shell?.butler.pending]
+    () => {
+      const timestampedRows = [
+        ...butlerMessagesWithTimes.map((message) => ({ id: message.id, kind: "message" as const, message, at: message.at })),
+        ...(live?.activityTurns ?? [])
+          .filter((turn) => turn.status === "completed" && turn.items.length > 0)
+          .map((turn) => ({
+            id: turn.id,
+            kind: "activity" as const,
+            turn,
+            active: false,
+            at: turn.completedAt ?? turn.startedAt
+          }))
+      ].sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
+
+      return [
+        ...timestampedRows,
+        ...(pendingButlerText ? [{ id: `pending-${pendingButlerText}`, kind: "pending" as const, text: pendingButlerText }] : []),
+        ...((shell?.butler.pending || shell?.butler.isStreaming) ? [{ id: "butler-working", kind: "working" as const }] : []),
+        ...(activeButlerActivityTurn ? [{ id: `${activeButlerActivityTurn.id}-live`, kind: "activity" as const, turn: activeButlerActivityTurn, active: true }] : [])
+      ];
+    },
+    [activeButlerActivityTurn, butlerMessagesWithTimes, live?.activityTurns, pendingButlerText, shell?.butler.isStreaming, shell?.butler.pending]
   );
   const deferredRows = useDeferredValue(butlerConversationRows);
   const latestButlerActivityKey =
@@ -738,25 +822,6 @@ export function ButlerSurface({
   const activeRuntimeLeaseCount = (runtime?.stacks.filter((stack) => stack.status !== "stopped").length ?? 0) +
     (runtime?.previews.filter((lease) => lease.status !== "stopped").length ?? 0) +
     (runtime?.services.filter((service) => service.status !== "stopped").length ?? 0);
-  const butlerStatus = (() => {
-    if (!shell) {
-      return "Loading";
-    }
-    if (!live) {
-      return "Loading";
-    }
-    if (shell.butler.lastError) {
-      return shell.butler.lastError;
-    }
-    if (shell.butler.compaction.active || shell.butler.isStreaming) {
-      return "Working";
-    }
-    if (shell.butler.pending) {
-      return "Running";
-    }
-    return "Ready";
-  })();
-
   if (!shell) {
     return <div className="workspace-panel"><div className="shell loading">Loading Butler…</div></div>;
   }
@@ -874,8 +939,16 @@ export function ButlerSurface({
                       <div key={row.id} className="conversation-row is-assistant">
                         <div className={`working-indicator ${shell.butler.isStreaming ? "is-streaming" : "is-pending"}`} aria-live="polite">
                           <span className="working-indicator-label">Butler</span>
-                          <span className="working-indicator-text">{butlerStatus}</span>
+                          <SandSpinner />
                         </div>
+                      </div>
+                    );
+                  }
+
+                  if (row.kind === "activity") {
+                    return (
+                      <div key={row.id} className="conversation-row is-assistant">
+                        <ButlerActivityPanel turn={row.turn} active={row.active} />
                       </div>
                     );
                   }
@@ -1001,6 +1074,7 @@ export function ButlerSurface({
             availableThinkingLevels={shell.butler.compose.availableThinkingLevels}
             attachments={butlerAttachments}
             uploadingAttachments={butlerUploadingAttachments}
+            running={Boolean(shell.butler.pending || shell.butler.isStreaming || shell.butler.compaction.active)}
             onFilesSelected={(files) => void uploadAttachments(files)}
             onRemoveAttachment={(attachmentId) => setButlerAttachments((current) => current.filter((entry) => entry.id !== attachmentId))}
             onPreviewImage={(image) => onPreviewMedia({ name: image.name, url: image.url, kind: "image", downloadUrl: image.url })}
@@ -1013,6 +1087,7 @@ export function ButlerSurface({
                 throw error;
               }
             }}
+            onStop={() => void stopButlerRequest()}
             onModelChange={(model) => void updateButlerCompose(model)}
             onThinkingLevelChange={(level) => void updateButlerCompose(butlerModelKey, level)}
             onDraftPrefillApplied={(prefillId) => {

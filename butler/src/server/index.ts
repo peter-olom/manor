@@ -31,6 +31,7 @@ import {
 } from "./server-runtime-helpers.js";
 import { ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { ButlerStateStore } from "./state-store.js";
+import { registerThreadArtifactRoutes } from "./thread-artifact-routes.js";
 import { applyWorkspacePreviewDefaults, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 
 const port = Number(process.env.BUTLER_PORT ?? "8080");
@@ -101,7 +102,8 @@ const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, 
   },
   onThreadCapabilityRemoved: async (threadId) => {
     await codexHarness.revokeThreadCapability(threadId);
-  }
+  },
+  artifactsDir
 });
 const butlerAgent = new ButlerAgentService({
   store,
@@ -238,6 +240,13 @@ app.get("/api/threads/:threadId", (request, response) => {
   }
 
   response.json({ thread });
+});
+
+registerThreadArtifactRoutes({
+  app,
+  artifactsDir,
+  codexHomeDir,
+  store
 });
 
 app.get("/api/memory/jobs/:threadId", (request, response) => {
@@ -400,6 +409,15 @@ app.post("/api/chat/messages", async (request, response) => {
   }
 });
 
+app.post("/api/chat/stop", async (_request, response) => {
+  try {
+    const stopped = await butlerAgent.stopPrompt();
+    response.json({ ok: true, stopped });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 app.post("/api/chat/settings", async (request, response) => {
   const model = typeof request.body?.model === "string" ? request.body.model : "";
   const provider = typeof request.body?.provider === "string" ? request.body.provider : "";
@@ -483,6 +501,21 @@ app.post("/api/threads/messages", async (request, response) => {
       })
     );
     response.status(202).json({ ok: true });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/threads/stop", async (request, response) => {
+  const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : "";
+  if (!threadId) {
+    response.status(400).json({ error: "threadId is required" });
+    return;
+  }
+
+  try {
+    const stopped = await codexClient.stopThread(threadId);
+    response.json({ ok: true, stopped });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }

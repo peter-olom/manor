@@ -20,6 +20,7 @@ import {
 } from "./butler-agent-helpers.js";
 import type { ButlerAgentSessionAccess } from "./butler-agent-tool-access.js";
 import { readButlerAuthStatus } from "./auth-status.js";
+import { getButlerActivityTurns, recordButlerActivityEvent } from "./butler-activity.js";
 import type {
   AppShellSnapshot,
   AppSnapshot,
@@ -75,6 +76,8 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
   restoreButlerCompactionState(access);
 
   access.unsubscribeSession = access.session.subscribe((event) => {
+    recordButlerActivityEvent(access, event);
+
     if (event.type === "compaction_start") {
       access.compaction.lastReason = event.reason;
       access.compaction.lastStartedAt = Date.now();
@@ -315,7 +318,8 @@ export function getButlerLiveSnapshot(access: ButlerAgentSessionAccess): ButlerL
 
   return {
     messages: visibleMessages.slice(Math.max(0, messageCount - SNAPSHOT_MESSAGE_TAIL_LIMIT)),
-    messageCount
+    messageCount,
+    activityTurns: getButlerActivityTurns(access)
   };
 }
 
@@ -378,6 +382,20 @@ export function promptButler(
   return queueButlerPrompt(access, text, imageReferenceIds, { background: false });
 }
 
+export async function stopButlerPrompt(access: ButlerAgentSessionAccess): Promise<boolean> {
+  const active = Boolean(access.pending || access.session?.isStreaming || access.session?.isCompacting);
+  access.stopRequestedAt = Date.now();
+  access.pending = false;
+  access.lastError = null;
+
+  if (access.session && (access.session.isStreaming || access.session.isCompacting)) {
+    await access.session.abort();
+  }
+
+  access.emit("change");
+  return active;
+}
+
 export async function promptButlerInternal(
   access: ButlerAgentSessionAccess,
   text: string,
@@ -402,6 +420,8 @@ async function queueButlerPrompt(
     throw new Error("Butler agent is not ready");
   }
 
+  const queuedAt = Date.now();
+
   if (!options.background) {
     access.pending = true;
     access.lastError = null;
@@ -420,10 +440,17 @@ async function queueButlerPrompt(
         access.auth = nextAuth;
       }
       await access.reconcilePendingChatCallbacks();
+      if (!options.background && access.stopRequestedAt !== null && access.stopRequestedAt >= queuedAt) {
+        return false;
+      }
       await runButlerPrompt(access, text, imageReferenceIds);
       access.lastError = null;
     } catch (error) {
-      access.lastError = error instanceof Error ? error.message : String(error);
+      if (!options.background && access.stopRequestedAt !== null && access.stopRequestedAt >= queuedAt) {
+        access.lastError = null;
+      } else {
+        access.lastError = error instanceof Error ? error.message : String(error);
+      }
       ok = false;
     } finally {
       await access.refreshExternalStatus();

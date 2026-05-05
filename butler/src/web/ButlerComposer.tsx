@@ -1,7 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import { ComposerMentions } from "./ComposerMentions";
-import { AttachmentIcon, CloseIcon, SendIcon } from "./icons";
+import { AttachmentIcon, CloseIcon, SendIcon, StopIcon } from "./icons";
 import type { ButlerThinkingLevel, ComposerInputItem, FileReference, ModelOption, PreviewableImage } from "./types";
 import {
   DRAFT_PERSIST_DELAY_MS,
@@ -32,12 +32,14 @@ export const ButlerComposer = memo(function ButlerComposer({
   availableThinkingLevels,
   attachments,
   uploadingAttachments,
+  running,
   contextCwd,
   threadId,
   onFilesSelected,
   onRemoveAttachment,
   onPreviewImage,
   onSend,
+  onStop,
   onModelChange,
   onThinkingLevelChange,
   onDraftPrefillApplied
@@ -50,12 +52,14 @@ export const ButlerComposer = memo(function ButlerComposer({
   availableThinkingLevels: ButlerThinkingLevel[];
   attachments: FileReference[];
   uploadingAttachments: number;
+  running?: boolean;
   onFilesSelected: (files: FileList | File[]) => void;
   onRemoveAttachment: (attachmentId: string) => void;
   onPreviewImage: (image: PreviewableImage) => void;
   contextCwd?: string | null;
   threadId?: string | null;
   onSend: (text: string, inputItems: ComposerInputItem[]) => Promise<void>;
+  onStop?: () => void;
   onModelChange: (modelKey: string) => void;
   onThinkingLevelChange: (thinkingLevel: ButlerThinkingLevel) => void;
   onDraftPrefillApplied?: (prefillId: string) => void;
@@ -266,10 +270,10 @@ export const ButlerComposer = memo(function ButlerComposer({
           >
             <AttachmentIcon />
           </button>
-          <button className="composer-send composer-send-mobile" onClick={() => void handleSend()} disabled={!canSend} aria-label="Send message">
-            <span className="composer-send-label">Send</span>
+          <button className={`composer-send composer-send-mobile${running ? " is-stop" : ""}`} onClick={() => running ? onStop?.() : void handleSend()} disabled={!running && !canSend} aria-label={running ? "Stop request" : "Send message"}>
+            <span className="composer-send-label">{running ? "Stop" : "Send"}</span>
             <span className="composer-send-icon">
-              <SendIcon />
+              {running ? <StopIcon /> : <SendIcon />}
             </span>
           </button>
         </div>
@@ -296,10 +300,10 @@ export const ButlerComposer = memo(function ButlerComposer({
           <button className="composer-add-image" type="button" onClick={() => fileInputRef.current?.click()} aria-label="Add file" title="Add file">
             <AttachmentIcon />
           </button>
-          <button className="composer-send composer-send-desktop" onClick={() => void handleSend()} disabled={!canSend} aria-label="Send message">
-            <span className="composer-send-label">Send</span>
+          <button className={`composer-send composer-send-desktop${running ? " is-stop" : ""}`} onClick={() => running ? onStop?.() : void handleSend()} disabled={!running && !canSend} aria-label={running ? "Stop request" : "Send message"}>
+            <span className="composer-send-label">{running ? "Stop" : "Send"}</span>
             <span className="composer-send-icon">
-              <SendIcon />
+              {running ? <StopIcon /> : <SendIcon />}
             </span>
           </button>
         </div>
