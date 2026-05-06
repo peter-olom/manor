@@ -142,6 +142,9 @@ test("operator thread guard only treats tracked ids as authoritative jobs", asyn
   assert.deepEqual(referenceGuard.explicitThreadIds, []);
   assert.equal(referenceGuard.lockedThreadId, trackedThreadId);
   assert.match(referenceGuard.contextPrompt ?? "", /none resolve to tracked Codex jobs/);
+
+  const contextGuard = buildOperatorThreadGuard(store, "Actually use the staging account I just found.", trackedThreadId);
+  assert.equal(contextGuard.lockedThreadId, trackedThreadId);
 });
 
 test("completed checklists can refresh for new follow-up work", async () => {
@@ -187,6 +190,8 @@ test("system prompt advises focused checklist refresh for new work", async () =>
 
   assert.match(prompt, /use message_job with refreshChecklist/);
   assert.match(prompt, /genuine new slice of work/);
+  assert.match(prompt, /hold_job_context/);
+  assert.match(prompt, /newer context for an active job/);
 });
 
 test("callback helper only treats owed non-closed callbacks as outstanding", () => {
@@ -327,6 +332,42 @@ test("callback review prompt keeps proof-required jobs behind evidence review", 
   assert.match(prompt, /review_preview_proof/);
   assert.match(prompt, /If any acceptance point lacks convincing evidence/);
   assert.match(prompt, /Use reply_to_operator only when all acceptance points are accepted/);
+});
+
+test("callback review prompt includes held operator context", async () => {
+  const store = await createStore();
+  const contract = makeContract();
+  store.upsertThreadSummary({
+    id: contract.threadId,
+    status: "active",
+    cwd: contract.workspaceCwd,
+    turns: [{ id: "turn-1", status: "completed", items: [] }]
+  });
+  store.setThreadExecutionContract(contract.threadId, contract);
+  store.addEvent(contract.threadId, "butler.context.held", "Use the newly supplied staging account before closing.");
+
+  const prompt = buildCallbackReviewPrompt(store, {
+    threadId: contract.threadId,
+    callbackState: "received_worker_callback",
+    resolutionState: null,
+    requestedAt: Date.now() - 1000,
+    lastEventAt: Date.now(),
+    lastWorkerStatusSeen: "active",
+    lastTerminalReportAt: null,
+    lastPrivateSteerText: null,
+    lastPrivateSteerAt: null,
+    nextWorkerReportAction: "review",
+    operatorCloseoutStatus: "owed",
+    owesOperatorReply: true,
+    closeoutChannel: "none",
+    reviewState: "queued",
+    reviewReason: "worker_callback",
+    closedAt: null,
+    updatedAt: Date.now()
+  });
+
+  assert.match(prompt, /Held operator context/);
+  assert.match(prompt, /newly supplied staging account/);
 });
 
 test("thread snapshot merge removes synthetic duplicate chat messages", async () => {

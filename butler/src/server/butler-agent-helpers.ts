@@ -123,7 +123,9 @@ function looksLikeThreadFollowUp(text: string): boolean {
     /\bpush it\b/,
     /\bdo that\b/,
     /\bgo ahead\b/,
-    /\bfix it\b/
+    /\bfix it\b/,
+    /\b(actually|also|btw|one more thing|new context|new info|update|correction)\b/,
+    /\b(for|on) (that|this|the same)\b/
   ];
 
   return explicitFollowUpPatterns.some((pattern) => pattern.test(normalized));
@@ -574,6 +576,12 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
   const latestReply = thread?.supervisor.latestAgentReply?.trim() ?? "";
   const contract = thread?.executionContract ?? null;
   const acceptancePoints = Array.isArray(contract?.acceptancePoints) ? contract.acceptancePoints : [];
+  const heldContextLines =
+    thread?.eventLog
+      .filter((entry) => entry.method === "butler.context.held" && entry.at >= callback.requestedAt - 1000)
+      .slice(0, 5)
+      .reverse()
+      .map((entry, index) => `${index + 1}. ${entry.summary}`) ?? [];
   const checklist = thread?.supervisionChecklist ?? null;
   const checklistLines =
     checklist?.items.map((item) => {
@@ -605,6 +613,9 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
       ? "Review source: Butler did not get a worker callback and recovered the job from thread state."
       : "Review source: Butler received a worker callback and must decide what to do next.",
     callback.lastPrivateSteerText ? `Latest private Butler steer already sent: ${callback.lastPrivateSteerText}` : "Latest private Butler steer already sent: none",
+    heldContextLines.length > 0
+      ? `Held operator context to consider before closing or steering:\n${heldContextLines.join("\n")}`
+      : "Held operator context to consider before closing or steering: none",
     `Current next worker report action: ${callback.nextWorkerReportAction}.`,
     "Do not send the same private steer twice.",
     "Prefer concise outcome-based follow-ups over re-sending the whole job brief.",
@@ -646,6 +657,8 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "When using delegate_to_codex, set thinkingBudget deliberately: low is the default for most execution and coding; medium is for jobs needing extra agency, planning, ambiguity handling, or product judgment; high is for tough issues, usually after medium has not produced the right outcome or for clearly hard incidents; xhigh is exceptional and should be used for fewer than 1% of jobs.",
     "For operator follow-up on an existing valid Codex job, consider message_job when the job needs new instructions outside checklist rejection review; answer directly when the request can be handled from existing state.",
     "When new work arrives for an existing job and the visible checklist is already fully accepted or waived, use message_job with refreshChecklist so the new work gets a clear focused checklist.",
+    "When the operator gives newer context for an active job, choose deliberately: use message_job immediately if the worker should change course now, or hold_job_context if Butler should wait for the current turn and apply that context during review.",
+    "Do not merely acknowledge newer active-job context unless no valid job can be identified or the context is already satisfied by known state.",
     "Do not refresh a checklist for small clarifications, thank-you messages, or rejected-checklist follow-up; only refresh it for a genuine new slice of work.",
     "Never say you delegated, started, asked, messaged, or handed off work unless the corresponding tool call has completed successfully.",
     "Do not expose private Butler-to-Codex steering verbatim in the Butler chat.",

@@ -340,6 +340,45 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       }
     }),
     access.defineButlerTool({
+      name: "hold_job_context",
+      label: "Hold job context",
+      description:
+        "Record newer operator context for one active Codex job without interrupting the worker. Butler will apply the held context during the next callback review.",
+      promptSnippet:
+        "hold_job_context: use when the operator gives newer context for an active job, but the worker can finish the current turn before Butler decides whether to steer, accept, reject, or close.",
+      parameters: Type.Object({
+        threadId: Type.String(),
+        text: Type.String({ minLength: 1 })
+      }),
+      uiEffects: access.getToolUiEffects("hold_job_context"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as { threadId: string; text: string };
+        const activeGuard = access.getActiveOperatorThreadGuard();
+        if (activeGuard) {
+          if (activeGuard.explicitThreadIds.length > 0 && !activeGuard.explicitThreadIds.includes(typedParams.threadId)) {
+            throw new Error(`The latest operator turn explicitly referenced job ${activeGuard.explicitThreadIds.join(", ")}. Hold context on one of those exact jobs or clarify before using ${typedParams.threadId}.`);
+          }
+          if (activeGuard.explicitThreadIds.length === 0 && activeGuard.lockedThreadId && activeGuard.lockedThreadId !== typedParams.threadId) {
+            throw new Error(`The latest operator turn is currently anchored to job ${activeGuard.lockedThreadId}. Hold context on that exact job or clarify before using ${typedParams.threadId}.`);
+          }
+        }
+        const thread = access.store.getThread(typedParams.threadId);
+        if (!thread || !thread.cwd || thread.source === "unknown" || thread.turnCount === 0) {
+          throw new Error(`Job ${typedParams.threadId} is not a valid reusable Codex workstream.`);
+        }
+        if (thread.status !== "active") {
+          throw new Error(`Job ${typedParams.threadId} is not active. Answer directly or use message_job if the worker needs a new turn.`);
+        }
+        access.registerPendingChatCallback(typedParams.threadId, { nextWorkerReportAction: "review" });
+        access.noteThreadFocus(typedParams.threadId, "hold_job_context");
+        access.store.addEvent(typedParams.threadId, "butler.context.held", typedParams.text.trim());
+        return {
+          content: [{ type: "text", text: `Held newer operator context for job ${typedParams.threadId}. Butler will apply it during the next review.` }],
+          details: { thread: access.store.getThread(typedParams.threadId) ?? null }
+        };
+      }
+    }),
+    access.defineButlerTool({
       name: "message_job",
       label: "Message job",
       description:
