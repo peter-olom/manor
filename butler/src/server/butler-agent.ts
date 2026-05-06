@@ -65,6 +65,7 @@ import type { ButlerAgentSessionAccess, ButlerAgentToolAccess } from "./butler-a
 import { BUTLER_TOOL_CATALOG } from "./butler-agent-tool-catalog.js";
 import { normalizeButlerActivitySummaryTurns } from "./butler-activity.js";
 import { readButlerAuthStatus, readCodexAuthStatus } from "./auth-status.js";
+import { notifyDirectCodexMessage, type DirectCodexMessageAccess, type DirectCodexMessagePingInput } from "./direct-codex-message.js";
 import { type FileReferenceStore } from "./file-store.js";
 import { buildOnboardingView } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
@@ -431,6 +432,8 @@ export class ButlerAgentService extends EventEmitter {
   async clearChat(): Promise<void> { this.operatorMessages.splice(0, this.operatorMessages.length); await this.saveOperatorMessageState(); clearButlerSessionChat(this.session); this.lastError = null; this.emit("change"); }
 
   async deleteChatFromMessage(messageId: string): Promise<void> { keepOperatorMessagesBefore(this.operatorMessages, deleteButlerSessionChatFrom(this.session, messageId)); await this.saveOperatorMessageState(); this.lastError = null; this.emit("change"); }
+
+  async notifyDirectCodexMessage(input: DirectCodexMessagePingInput & { threadId: string }): Promise<void> { await notifyDirectCodexMessage(this as unknown as DirectCodexMessageAccess, input); }
 
   private registerPendingChatCallback(threadId: string, options?: { privateSteerText?: string | null; nextWorkerReportAction?: "review" | "reply_to_operator" }): void {
     const now = Date.now();

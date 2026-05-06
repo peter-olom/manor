@@ -483,6 +483,7 @@ app.post("/api/threads/messages", async (request, response) => {
   const text = typeof request.body?.text === "string" ? request.body.text : "";
   const imageReferenceIds = readImageReferenceIds(request.body);
   const fileReferenceIds = readFileReferenceIds(request.body);
+  const inputItems = Array.isArray(request.body?.inputItems) ? request.body.inputItems : [];
   if (!threadId || (!text.trim() && imageReferenceIds.length === 0 && fileReferenceIds.length === 0)) {
     response.status(400).json({ error: "threadId plus text, imageReferenceIds, or fileReferenceIds is required" });
     return;
@@ -497,9 +498,16 @@ app.post("/api/threads/messages", async (request, response) => {
         imageReferenceIds,
         fileStore,
         fileReferenceIds,
-        extraInputItems: Array.isArray(request.body?.inputItems) ? request.body.inputItems : []
+        extraInputItems: inputItems
       })
     );
+    await butlerAgent.notifyDirectCodexMessage({
+      threadId,
+      text,
+      imageReferenceIds,
+      fileReferenceIds,
+      inputItems
+    });
     response.status(202).json({ ok: true });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });

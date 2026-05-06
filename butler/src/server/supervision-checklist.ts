@@ -7,6 +7,7 @@ import type {
   SupervisionChecklistItemStatus,
   SupervisionChecklistView
 } from "./types.js";
+import { buildThreadExecutionContract } from "./thread-contract.js";
 
 export function buildSupervisionChecklist(
   thread: CodexThreadRecord,
@@ -167,4 +168,37 @@ export function updateChecklistHeartbeat(
   checklist.heartbeat.stale = thread.status === "active" && lastWorkerSignal !== null && Date.now() - lastWorkerSignal > 10 * 60 * 1000;
   checklist.updatedAt = activityAt;
   return checklist;
+}
+
+export function refreshCompletedChecklistForFollowup(
+  thread: CodexThreadRecord,
+  taskText: string
+): { contract: CodexThreadExecutionContractView; checklist: SupervisionChecklistView } | null {
+  const existingChecklist = thread.supervisionChecklist;
+  const trimmedTask = taskText.trim();
+  if (
+    !trimmedTask ||
+    !existingChecklist ||
+    existingChecklist.items.length === 0 ||
+    !existingChecklist.items.every((item) => item.status === "accepted" || item.status === "waived")
+  ) {
+    return null;
+  }
+
+  const existingContract = thread.executionContract;
+  const contract = buildThreadExecutionContract({
+    threadId: thread.id,
+    workspaceCwd: existingContract?.workspaceCwd ?? thread.cwd ?? "/repos",
+    projectId: existingContract?.projectId ?? thread.supervisor.projectId ?? "unknown",
+    projectLabel: existingContract?.projectLabel ?? thread.supervisor.projectLabel ?? "Unknown",
+    branch: existingContract?.branch ?? null,
+    taskText: trimmedTask,
+    requestedTask: "Follow-up work",
+    operatorGoal: null,
+    notes: ["Refreshed after new follow-up work arrived with the previous checklist already complete."]
+  });
+  contract.requestedTask = trimmedTask;
+  const checklist = buildSupervisionChecklist({ ...thread, supervisionChecklist: null }, contract);
+  checklist.reviewState = "needs_review";
+  return { contract, checklist };
 }

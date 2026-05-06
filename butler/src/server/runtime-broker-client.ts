@@ -225,6 +225,79 @@ type BrowserSessionStopPayload = {
   };
 };
 
+type DesktopProofStatusPayload = {
+  available: boolean;
+  status: string;
+  message: string;
+  health: {
+    ok: boolean;
+    display: string;
+    desktopHome?: string;
+    xdgConfigHome?: string;
+    vncUrl: string;
+    activeSessionCount: number;
+  } | null;
+};
+
+type DesktopSessionSummaryPayload = {
+  sessionId: string;
+  runId: string;
+  mode: "headful";
+  title: string;
+  command: string;
+  cwd: string;
+  outputDir: string;
+  startedAt: number;
+  lastActivityAt: number;
+  pid: number | null;
+  running: boolean;
+  exitCode: number | null;
+  actionCount: number;
+  vncUrl: string;
+};
+
+type DesktopSessionStatePayload = {
+  ok: true;
+  session: DesktopSessionSummaryPayload;
+  tracked: {
+    threadId: string;
+    projectId: string;
+    projectLabel: string;
+    title: string;
+    runId: string;
+    outputDir: string;
+  } | null;
+};
+
+type DesktopSessionActionPayload = {
+  ok: true;
+  action: {
+    type: string;
+    durationMs: number;
+    output?: unknown;
+  };
+  state: DesktopSessionSummaryPayload;
+};
+
+type DesktopSessionStopPayload = {
+  ok: true;
+  verification: PreviewVerificationView;
+  tracked: {
+    threadId: string;
+    projectId: string;
+    projectLabel: string;
+    title: string;
+    runId: string;
+    outputDir: string;
+  } | null;
+  desktopProof?: {
+    threadId: string;
+    projectId: string;
+    projectLabel: string;
+    title: string;
+  };
+};
+
 export class RuntimeBrokerClient {
   constructor(
     private readonly baseUrl: string,
@@ -502,6 +575,66 @@ export class RuntimeBrokerClient {
       method: "DELETE",
       body: JSON.stringify({
         reason: reason ?? "browser session stop"
+      })
+    });
+  }
+
+  async getDesktopProofStatus(): Promise<DesktopProofStatusPayload> {
+    return this.request<DesktopProofStatusPayload>("/desktop/status");
+  }
+
+  async startDesktopSession(input: {
+    threadId: string;
+    projectId: string;
+    projectLabel: string;
+    title: string;
+    command: string;
+    cwd?: string;
+    env?: Record<string, string>;
+    waitMs?: number;
+  }): Promise<DesktopSessionSummaryPayload> {
+    const payload = await this.request<{ ok: true; session: DesktopSessionSummaryPayload }>("/desktop/sessions", {
+      method: "POST",
+      body: JSON.stringify(input)
+    });
+    return payload.session;
+  }
+
+  async inspectDesktopSession(sessionId: string): Promise<DesktopSessionStatePayload> {
+    return this.request<DesktopSessionStatePayload>(`/desktop/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "GET"
+    });
+  }
+
+  async runDesktopSessionAction(
+    sessionId: string,
+    input: {
+      type: string;
+      label?: string;
+      fileName?: string;
+      ms?: number;
+      x?: number;
+      y?: number;
+      toX?: number;
+      toY?: number;
+      button?: number;
+      windowId?: string;
+      key?: string;
+      text?: string;
+      delayMs?: number;
+    }
+  ): Promise<DesktopSessionActionPayload> {
+    return this.request<DesktopSessionActionPayload>(`/desktop/sessions/${encodeURIComponent(sessionId)}/actions`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    });
+  }
+
+  async stopDesktopSession(sessionId: string, reason?: string): Promise<DesktopSessionStopPayload> {
+    return this.request<DesktopSessionStopPayload>(`/desktop/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+      body: JSON.stringify({
+        reason: reason ?? "desktop session stop"
       })
     });
   }

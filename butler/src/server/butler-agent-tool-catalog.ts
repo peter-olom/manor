@@ -301,7 +301,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "message_job",
     label: "Message job",
-    description: "Privately send a non-checklist follow-up instruction into one Codex job thread and explicitly decide how the next worker report should be handled.",
+    description: "Privately send a non-checklist follow-up instruction into one Codex job thread, optionally refreshing a completed checklist for new work, and explicitly decide how the next worker report should be handled.",
     uiEffects: [{ kind: "refreshThread", description: "Refreshes the target run after Butler steers it." }]
   },
   {

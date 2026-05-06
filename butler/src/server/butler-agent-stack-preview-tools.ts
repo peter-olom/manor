@@ -750,6 +750,230 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       }
     }),
     access.defineButlerTool({
+      name: "desktop_proof_status",
+      label: "Desktop proof status",
+      description: "Check whether the opt-in headed desktop proof sidecar is available.",
+      promptSnippet:
+        "desktop_proof_status: use this before native Electron proof. If unavailable, ask the operator to enable the desktop profile before claiming native proof is blocked; do not fall back to a private Xvfb display for VNC-visible proof.",
+      parameters: Type.Object({}),
+      uiEffects: access.getToolUiEffects("desktop_proof_status"),
+      execute: async () => {
+        const status = await access.runtimeBroker.getDesktopProofStatus();
+        return {
+          content: [
+            {
+              type: "text",
+              text: status.available
+                ? `Desktop proof sidecar is ready. Active sessions=${status.health?.activeSessionCount ?? 0}.`
+                : `Desktop proof sidecar is unavailable. ${status.message}`
+            }
+          ],
+          details: { status }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "start_desktop_session",
+      label: "Start desktop session",
+      description: "Start a headed desktop proof session for an Electron or native desktop command.",
+      promptSnippet:
+        "start_desktop_session: launch Electron/native desktop commands in the opt-in headed desktop sidecar so they are visible in noVNC. Stop the session to persist screenshots and logs.",
+      parameters: Type.Object({
+        threadId: Type.Optional(Type.String()),
+        command: Type.String({ minLength: 1 }),
+        title: Type.Optional(Type.String()),
+        cwd: Type.Optional(Type.String()),
+        env: Type.Optional(Type.Record(Type.String(), Type.String())),
+        waitMs: Type.Optional(Type.Number({ minimum: 0 }))
+      }),
+      uiEffects: access.getToolUiEffects("start_desktop_session"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as {
+          threadId?: string;
+          command: string;
+          title?: string;
+          cwd?: string;
+          env?: Record<string, string>;
+          waitMs?: number;
+        };
+        const threadId = typedParams.threadId?.trim() || null;
+        const thread = threadId ? access.store.getThread(threadId) ?? null : null;
+        const cwd = typedParams.cwd?.trim() || thread?.cwd || "";
+        const project = access.resolveWorkspaceProject(
+          cwd,
+          thread?.supervisor.projectId ?? "desktop",
+          thread?.supervisor.projectLabel ?? "desktop"
+        );
+        const session = await access.runtimeBroker.startDesktopSession({
+          threadId: threadId ?? "desktop",
+          projectId: project.id,
+          projectLabel: project.label,
+          title: typedParams.title?.trim() || typedParams.command.trim(),
+          command: typedParams.command.trim(),
+          cwd: cwd || undefined,
+          env: typedParams.env && Object.keys(typedParams.env).length > 0 ? typedParams.env : undefined,
+          waitMs:
+            typeof typedParams.waitMs === "number" && Number.isFinite(typedParams.waitMs)
+              ? Math.max(0, Math.trunc(typedParams.waitMs))
+              : undefined
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Started desktop session ${session.sessionId}. Stop it to persist proof.`
+            }
+          ],
+          details: { session }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "desktop_session_state",
+      label: "Desktop session state",
+      description: "Inspect one active headed desktop proof session.",
+      promptSnippet: "desktop_session_state: confirm native desktop session health before continuing.",
+      parameters: Type.Object({
+        sessionId: Type.String({ minLength: 1 })
+      }),
+      uiEffects: access.getToolUiEffects("desktop_session_state"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as { sessionId: string };
+        const result = await access.runtimeBroker.inspectDesktopSession(typedParams.sessionId.trim());
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Desktop session ${result.session.sessionId} is ${result.session.running ? "running" : "stopped"}. Actions=${result.session.actionCount}.`
+            }
+          ],
+          details: result
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "desktop_session_action",
+      label: "Desktop session action",
+      description: "Run one action in a headed desktop session, such as screenshot, wait, click, drag, key, type, window control, or clipboard control.",
+      promptSnippet:
+        "desktop_session_action: use screenshot checkpoints, window listing/focus, clipboard, and simple desktop input while native Electron proof is running.",
+      parameters: Type.Object({
+        sessionId: Type.String({ minLength: 1 }),
+        actionType: Type.String({ minLength: 1 }),
+        label: Type.Optional(Type.String()),
+        fileName: Type.Optional(Type.String()),
+        ms: Type.Optional(Type.Number({ minimum: 0 })),
+        x: Type.Optional(Type.Number()),
+        y: Type.Optional(Type.Number()),
+        toX: Type.Optional(Type.Number()),
+        toY: Type.Optional(Type.Number()),
+        button: Type.Optional(Type.Number({ minimum: 1 })),
+        windowId: Type.Optional(Type.String()),
+        key: Type.Optional(Type.String()),
+        text: Type.Optional(Type.String()),
+        delayMs: Type.Optional(Type.Number({ minimum: 0 }))
+      }),
+      uiEffects: access.getToolUiEffects("desktop_session_action"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as {
+          sessionId: string;
+          actionType: string;
+          label?: string;
+          fileName?: string;
+          ms?: number;
+          x?: number;
+          y?: number;
+          toX?: number;
+          toY?: number;
+          button?: number;
+          windowId?: string;
+          key?: string;
+          text?: string;
+          delayMs?: number;
+        };
+        const result = await access.runtimeBroker.runDesktopSessionAction(typedParams.sessionId.trim(), {
+          type: typedParams.actionType.trim(),
+          label: typedParams.label?.trim() || undefined,
+          fileName: typedParams.fileName?.trim() || undefined,
+          ms:
+            typeof typedParams.ms === "number" && Number.isFinite(typedParams.ms)
+              ? Math.max(0, Math.trunc(typedParams.ms))
+              : undefined,
+          x: typeof typedParams.x === "number" && Number.isFinite(typedParams.x) ? typedParams.x : undefined,
+          y: typeof typedParams.y === "number" && Number.isFinite(typedParams.y) ? typedParams.y : undefined,
+          toX: typeof typedParams.toX === "number" && Number.isFinite(typedParams.toX) ? typedParams.toX : undefined,
+          toY: typeof typedParams.toY === "number" && Number.isFinite(typedParams.toY) ? typedParams.toY : undefined,
+          button:
+            typeof typedParams.button === "number" && Number.isFinite(typedParams.button)
+              ? Math.max(1, Math.trunc(typedParams.button))
+              : undefined,
+          windowId: typedParams.windowId?.trim() || undefined,
+          key: typedParams.key?.trim() || undefined,
+          text: typedParams.text || undefined,
+          delayMs:
+            typeof typedParams.delayMs === "number" && Number.isFinite(typedParams.delayMs)
+              ? Math.max(0, Math.trunc(typedParams.delayMs))
+              : undefined
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Desktop action ${result.action.type} completed. Actions=${result.state.actionCount}.`
+            }
+          ],
+          details: result
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "stop_desktop_session",
+      label: "Stop desktop session",
+      description: "Stop a headed desktop proof session and persist screenshots and logs.",
+      promptSnippet:
+        "stop_desktop_session: finalize native desktop proof. This saves desktop screenshots and command logs.",
+      parameters: Type.Object({
+        sessionId: Type.String({ minLength: 1 }),
+        reason: Type.Optional(Type.String())
+      }),
+      uiEffects: access.getToolUiEffects("stop_desktop_session"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as {
+          sessionId: string;
+          reason?: string;
+        };
+        const result = await access.runtimeBroker.stopDesktopSession(
+          typedParams.sessionId.trim(),
+          typedParams.reason?.trim() || undefined
+        );
+        const verification = decoratePreviewVerification(result.verification);
+        if (result.desktopProof) {
+          access.store.recordBrowserVerification({
+            threadId: result.desktopProof.threadId,
+            projectId: result.desktopProof.projectId,
+            projectLabel: result.desktopProof.projectLabel,
+            title: result.desktopProof.title,
+            verification
+          });
+        }
+        const screenshots = verification.artifacts.filter((artifact) => artifact.kind === "screenshot");
+        const remediationHint = verification.failureKind !== "none" ? verification.diagnostics?.remediationHints?.[0] ?? "" : "";
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Stopped desktop session with proof run ${verification.runId}. Saved ${screenshots.length} screenshots. ${verification.failureKind === "none" ? "Signals=none." : `Signals=${verification.failureKind}.${remediationHint ? ` Hint=${remediationHint}.` : ""}`}`
+            }
+          ],
+          details: {
+            verification,
+            screenshots,
+            desktopProof: result.desktopProof ?? null
+          }
+        };
+      }
+    }),
+    access.defineButlerTool({
       name: "review_preview_proof",
       label: "Review preview proof",
       description: "Inspect the latest Playwright screenshots for one preview or job and decide whether the recorded proof is convincing.",

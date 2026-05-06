@@ -35,6 +35,7 @@ import {
   formatContextUsage,
   formatJumpLabel,
   formatThreadBudget,
+  groupGeneratedImagesByTimeline,
   groupTimelineItems,
   isFileDrag,
   itemLabel,
@@ -622,10 +623,6 @@ export function ThreadSurface({
         }
       }
 
-      if (generatedImages.length > 0) {
-        rows.push({ id: `generated-images-${activeThread?.id ?? "thread"}`, kind: "generatedImages", images: generatedImages });
-      }
-
       if (showPendingThreadEntry && pendingThreadRequest) {
         rows.push({ id: `pending-${pendingThreadRequest.sentAt}`, kind: "pending", text: pendingThreadRequest.text });
       }
@@ -634,7 +631,31 @@ export function ThreadSurface({
         rows.push({ id: `working-${activeThread?.id ?? "thread"}`, kind: "working" });
       }
 
-      return rows;
+      if (generatedImages.length === 0) {
+        return rows;
+      }
+
+      const placement = groupGeneratedImagesByTimeline(
+        rows.map((row) => ({
+          id: row.id,
+          at: row.kind === "item" ? row.item.at : row.kind === "toolGroup" ? row.at : null,
+          text: row.kind === "item" ? row.item.text : row.kind === "toolGroup" ? row.items.map((item) => item.text).join("\n") : null
+        })),
+        generatedImages
+      );
+      const positionedRows: RunConversationRow[] = [];
+      if (placement.before.length > 0) {
+        positionedRows.push({ id: `generated-images-before-${activeThread?.id ?? "thread"}`, kind: "generatedImages", images: placement.before });
+      }
+      for (const row of rows) {
+        positionedRows.push(row);
+        const images = placement.byAnchorId[row.id] ?? [];
+        if (images.length > 0) {
+          positionedRows.push({ id: `generated-images-${row.id}`, kind: "generatedImages", images });
+        }
+      }
+
+      return positionedRows;
     },
     [activeThread, generatedImages, pendingThreadRequest, showPendingThreadEntry, showThreadWorkingIndicator]
   );
@@ -747,7 +768,6 @@ export function ThreadSurface({
   const activeChecklist = activeThread?.supervisionChecklist ?? null;
   const activeChecklistProgress = activeChecklist ? getThreadChecklistProgress(activeChecklist) : null;
   const activeChecklistProgressLabel = activeChecklistProgress ? `${activeChecklistProgress.completed}/${activeChecklistProgress.total}` : null;
-  const generatedImagesById = useMemo(() => new Map(generatedImages.map((image) => [image.id, image])), [generatedImages]);
 
   if (!shell || !runtime || !activeThread) {
     return <div className="workspace-panel"><div className="empty">This run is open, but its turn history has not loaded yet.</div></div>;
@@ -786,8 +806,7 @@ export function ThreadSurface({
 
   function renderSystemStrip(item: (typeof activeRunItems)[number]) {
     const imageState = messageImages[item.id] ?? { displayText: item.text || "Running shell command", images: [], files: [] };
-    const generatedItemImages = item.type === "image_generation_call" ? [generatedImagesById.get(item.id)].filter((image): image is GeneratedImage => Boolean(image)) : [];
-    const systemText = generatedItemImages.length > 0 ? "Generated image" : imageState.displayText || "Running shell command";
+    const systemText = imageState.displayText || "Running shell command";
     const isExpanded = Boolean(expandedSystemItems[item.id]);
 
     return (
@@ -829,7 +848,6 @@ export function ThreadSurface({
             ))}
           </div>
         ) : null}
-        {renderGeneratedImageStrip(generatedItemImages)}
         {imageState.files.length > 0 ? (
           <div className="message-file-strip">
             {imageState.files.map((file) => (
@@ -1181,11 +1199,7 @@ export function ThreadSurface({
                   const isSystemItem = tone === "system";
                   const rowToneClass = tone === "user" ? "is-user" : isSystemItem ? "is-system" : "is-assistant";
                   const imageState = messageImages[row.id] ?? { displayText: row.item.text || "Running shell command", images: [], files: [] };
-                  const generatedItemImages =
-                    row.item.type === "image_generation_call"
-                      ? [generatedImagesById.get(row.item.id)].filter((image): image is GeneratedImage => Boolean(image))
-                      : [];
-                  const systemText = generatedItemImages.length > 0 ? "Generated image" : imageState.displayText || "Running shell command";
+                  const systemText = imageState.displayText || "Running shell command";
 
                   if (isSystemItem) {
                     return (
@@ -1218,7 +1232,6 @@ export function ThreadSurface({
                               ))}
                             </div>
                           ) : null}
-                          {renderGeneratedImageStrip(generatedItemImages)}
                           {imageState.files.length > 0 ? (
                             <div className="message-file-strip">
                               {imageState.files.map((file) => (

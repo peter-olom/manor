@@ -54,6 +54,11 @@ Preview defaults:
   manor-harness browser use state <sessionId>
   manor-harness browser use action <sessionId> --type click|fill|type|press|hover|select|check|uncheck|wait_for|scroll|navigate|evaluate|screenshot [--selector <css>] [--value <text>] [--values <text> ...] [--text <text>] [--key <key>] [--url <url>] [--url-includes <text>] [--script "<js>"] [--script-file <path>] [--ms <n>] [--x <n>] [--y <n>] [--delay-ms <n>] [--timeout-ms <n>] [--label <text>] [--file-name <name>] [--no-capture]
   manor-harness browser use stop <sessionId> [--reason <text>] [--lease <previewSelector>]
+  manor-harness desktop status
+  manor-harness desktop use start --command "<cmd>" [--title <text>] [--cwd <path>] [--env KEY=VALUE ...] [--wait-ms <n>]
+  manor-harness desktop use state <sessionId>
+  manor-harness desktop use action <sessionId> --type screenshot|wait|click|drag|key|type|window_list|focus_window|close_window|clipboard_set|clipboard_get [--label <text>] [--file-name <name>] [--ms <n>] [--x <n>] [--y <n>] [--to-x <n>] [--to-y <n>] [--button <n>] [--window-id <id>] [--key <key>] [--text <text>] [--delay-ms <n>]
+  manor-harness desktop use stop <sessionId> [--reason <text>]
   manor-harness preview stop <previewSelector>
   manor-harness service templates
   manor-harness service register-template --spec-file <path>
@@ -71,6 +76,8 @@ Proof tips:
   Use --session-cookie <token> as shorthand for better-auth.session_token=<token>.
   Cookies are injected into the browser context directly; headers remain separate.
   Proof is session-driven: start browser sidecar, run actions, optionally capture screenshots, then stop session.
+  Native Electron or VNC-visible proof is desktop-driven: check desktop status, start a desktop session, capture screenshots/actions there, then stop it.
+  Do not create a private Xvfb display when the operator asked for a VNC-visible desktop app.
   Do not use direct curl or fetch from the shared Codex shell to judge live-site browser reachability. That shell is behind restricted egress by design.
   Example:
     manor-harness browser use start --url https://example.com/dashboard --mode headful --session-cookie buyer-token --json
@@ -645,6 +652,50 @@ async function main() {
           sessionId: args[3],
           reason: readFlag(args, "--reason"),
           leaseId: readFlag(args, "--lease")
+        };
+      }
+    }
+  } else if (args[0] === "desktop") {
+    const subcommand = args[1];
+    if (subcommand === "status") {
+      action = "desktop.status";
+    } else if (subcommand === "use") {
+      const useSubcommand = args[2];
+      if (useSubcommand === "start") {
+        action = "desktop.use.start";
+        params = {
+          title: readFlag(args, "--title"),
+          command: readFlag(args, "--command"),
+          cwd: readFlag(args, "--cwd"),
+          env: Object.fromEntries(parseRepeatedKeyValueFlags(args, "--env")),
+          waitMs: readPositiveIntFlag(args, "--wait-ms")
+        };
+      } else if (useSubcommand === "state" && args[3]) {
+        action = "desktop.use.state";
+        params = { sessionId: args[3] };
+      } else if (useSubcommand === "action" && args[3]) {
+        action = "desktop.use.action";
+        params = {
+          sessionId: args[3],
+          actionType: readFlag(args, "--type"),
+          label: readFlag(args, "--label"),
+          fileName: readFlag(args, "--file-name"),
+          ms: readPositiveIntFlag(args, "--ms"),
+          x: readNumberFlag(args, "--x"),
+          y: readNumberFlag(args, "--y"),
+          toX: readNumberFlag(args, "--to-x"),
+          toY: readNumberFlag(args, "--to-y"),
+          button: readPositiveIntFlag(args, "--button"),
+          windowId: readFlag(args, "--window-id"),
+          key: readFlag(args, "--key"),
+          text: readFlag(args, "--text"),
+          delayMs: readPositiveIntFlag(args, "--delay-ms")
+        };
+      } else if (useSubcommand === "stop" && args[3]) {
+        action = "desktop.use.stop";
+        params = {
+          sessionId: args[3],
+          reason: readFlag(args, "--reason")
         };
       }
     }

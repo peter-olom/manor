@@ -351,6 +351,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         text: Type.String({ minLength: 1 }),
         imageReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
         fileReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+        refreshChecklist: Type.Optional(Type.Boolean()),
         nextWorkerReportAction: Type.Optional(Type.Union([Type.Literal("review"), Type.Literal("reply_to_operator")]))
       }),
       uiEffects: access.getToolUiEffects("message_job"),
@@ -360,6 +361,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           text: string;
           imageReferenceIds?: string[];
           fileReferenceIds?: string[];
+          refreshChecklist?: boolean;
           nextWorkerReportAction?: "review" | "reply_to_operator";
         };
         const activeGuard = access.getActiveOperatorThreadGuard();
@@ -396,6 +398,9 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           };
         }
         await access.codexClient.loadThread(typedParams.threadId);
+        const refreshedChecklist = typedParams.refreshChecklist
+          ? access.store.refreshCompletedSupervisionChecklistForFollowup(typedParams.threadId, typedParams.text)
+          : null;
         await access.codexClient.sendMessage(
           typedParams.threadId,
           buildCodexInputWithReferences({
@@ -421,6 +426,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
             }
           ],
           details: {
+            checklist: refreshedChecklist,
             supervision,
             thread: access.store.getThread(typedParams.threadId) ?? null
           }

@@ -4,6 +4,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import Docker from "dockerode";
 import { createBrokerBrowserController } from "./broker-browser.mjs";
+import { createBrokerDesktopController } from "./broker-desktop.mjs";
 import { createBrokerCore } from "./broker-core.mjs";
 import { createBrokerRuntime } from "./broker-runtime.mjs";
 import { registerBrokerServiceRoutes } from "./broker-services.mjs";
@@ -30,9 +31,12 @@ const butlerContainerName = process.env.RUNTIME_BUTLER_CONTAINER ?? "manor-butle
 const butlerArtifactsRootDir = path.posix.resolve(process.env.RUNTIME_BUTLER_ARTIFACTS_DIR ?? "/artifacts");
 const playwrightContainerName = process.env.RUNTIME_PLAYWRIGHT_CONTAINER ?? "manor-playwright";
 const playwrightControlUrl = process.env.RUNTIME_PLAYWRIGHT_CONTROL_URL ?? "http://manor-playwright:3777";
+const desktopProofContainerName = process.env.RUNTIME_DESKTOP_PROOF_CONTAINER ?? "manor-desktop-proof";
+const desktopProofControlUrl = process.env.RUNTIME_DESKTOP_PROOF_CONTROL_URL ?? "http://desktop-proof:3888";
 const runtimeBrokerContainerName = process.env.RUNTIME_BROKER_CONTAINER ?? "manor-runtime-broker";
 const previewEgressContainerName = process.env.RUNTIME_PREVIEW_EGRESS_CONTAINER ?? "manor-preview-egress";
 const playwrightArtifactsScratchDir = process.env.RUNTIME_PLAYWRIGHT_ARTIFACT_ROOT ?? "/tmp/manor-playwright-artifacts";
+const desktopProofArtifactsScratchDir = process.env.RUNTIME_DESKTOP_PROOF_ARTIFACT_ROOT ?? "/tmp/manor-desktop-proof-artifacts";
 const stackNetworkPrefix = process.env.RUNTIME_STACK_NETWORK_PREFIX ?? "manor-stack";
 const stackVolumePrefix = process.env.RUNTIME_STACK_VOLUME_PREFIX ?? "manor-stack-vol";
 const stackInfraReconnectIntervalMs = Number(process.env.RUNTIME_STACK_INFRA_RECONNECT_INTERVAL_MS ?? "30000");
@@ -43,6 +47,7 @@ const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 const leaseTransitions = new Map(), leaseBootstrapStates = new Map(), activeLeaseBootstrapMonitors = new Set();
 const pendingPreviewLeases = new Map(), retainedPreviewLeases = new Map();
 const browserUseSessions = new Map();
+const desktopProofSessions = new Map();
 const noHeartbeatReadyDelayMs = Number(process.env.RUNTIME_NO_HEARTBEAT_READY_DELAY_MS ?? "2000");
 const runtimeReconcileState = {
   running: false,
@@ -74,9 +79,11 @@ const brokerContext = {
   butlerContainerName,
   butlerArtifactsRootDir,
   playwrightContainerName,
+  desktopProofContainerName,
   runtimeBrokerContainerName,
   previewEgressContainerName,
   playwrightArtifactsScratchDir,
+  desktopProofArtifactsScratchDir,
   stackNetworkPrefix,
   stackVolumePrefix,
   stackInfraReconnectIntervalMs,
@@ -363,6 +370,20 @@ const browserController = createBrokerBrowserController({
   persistVerificationArtifacts
 });
 browserController.registerRoutes(app);
+
+const desktopController = createBrokerDesktopController({
+  docker,
+  desktopProofControlUrl,
+  desktopProofContainerName,
+  desktopProofArtifactsScratchDir,
+  desktopProofSessions,
+  hasBrokerAccess,
+  normalizeString,
+  normalizePositiveInteger,
+  normalizeEnv,
+  persistVerificationArtifacts
+});
+desktopController.registerRoutes(app);
 
 app.get("/health", async (_request, response) => {
   try {

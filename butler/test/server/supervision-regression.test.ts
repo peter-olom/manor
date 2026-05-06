@@ -8,6 +8,8 @@ import {
   buildCallbackReviewPrompt,
   buildChatCallbackText,
   buildFallbackChatCallbackText,
+  buildOperatorThreadGuard,
+  buildSystemPrompt,
   isCallbackOutstanding
 } from "../../src/server/butler-agent-helpers.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
@@ -119,6 +121,72 @@ test("queued rejection follow-ups batch rejected points and clear after flush", 
 
   store.clearQueuedRejectionInstructions(contract.threadId);
   assert.equal(store.buildQueuedRejectionInstruction(contract.threadId), null);
+});
+
+test("operator thread guard only treats tracked ids as authoritative jobs", async () => {
+  const store = await createStore();
+  const trackedThreadId = "019dfa69-05c4-7593-b607-c408475c6754";
+  const imageReferenceId = "7259b2a1-1111-4222-8333-123456789abc";
+  store.upsertThreadSummary({
+    id: trackedThreadId,
+    status: "idle",
+    cwd: "/workspace",
+    turns: [{ id: "turn-1", status: "completed", items: [] }]
+  });
+
+  const trackedGuard = buildOperatorThreadGuard(store, `Please steer ${trackedThreadId}`, null);
+  assert.deepEqual(trackedGuard.explicitThreadIds, [trackedThreadId]);
+  assert.equal(trackedGuard.lockedThreadId, trackedThreadId);
+
+  const referenceGuard = buildOperatorThreadGuard(store, `Use ${imageReferenceId} and fix it`, trackedThreadId);
+  assert.deepEqual(referenceGuard.explicitThreadIds, []);
+  assert.equal(referenceGuard.lockedThreadId, trackedThreadId);
+  assert.match(referenceGuard.contextPrompt ?? "", /none resolve to tracked Codex jobs/);
+});
+
+test("completed checklists can refresh for new follow-up work", async () => {
+  const store = await createStore();
+  const contract = makeContract();
+  store.upsertThreadSummary({
+    id: contract.threadId,
+    status: "active",
+    cwd: contract.workspaceCwd,
+    turns: [{ id: "turn-1", status: "completed", items: [] }]
+  });
+  store.setThreadExecutionContract(contract.threadId, contract);
+
+  for (const item of store.getSupervisionChecklist(contract.threadId)?.items ?? []) {
+    store.reviewAcceptancePoint({ threadId: contract.threadId, pointId: item.id, status: "accepted" });
+  }
+
+  const refreshed = store.refreshCompletedSupervisionChecklistForFollowup(
+    contract.threadId,
+    "- Add checklist refresh support\n- Cover it with tests"
+  );
+
+  assert.ok(refreshed);
+  assert.equal(refreshed.reviewState, "needs_review");
+  assert.deepEqual(refreshed.items.map((item) => item.text), ["Add checklist refresh support", "Cover it with tests"]);
+  assert.deepEqual(refreshed.items.map((item) => item.status), ["pending", "pending"]);
+});
+
+test("incomplete checklists do not refresh for follow-up work", async () => {
+  const store = await createStore();
+  const contract = makeContract();
+  store.setThreadExecutionContract(contract.threadId, contract);
+
+  const refreshed = store.refreshCompletedSupervisionChecklistForFollowup(contract.threadId, "- Add another item");
+
+  assert.equal(refreshed, null);
+  assert.deepEqual(store.getSupervisionChecklist(contract.threadId)?.items.map((item) => item.text), contract.acceptancePoints);
+});
+
+test("system prompt advises focused checklist refresh for new work", async () => {
+  const store = await createStore();
+  const prompt = buildSystemPrompt(store, "No callbacks.");
+
+  assert.match(prompt, /use message_job with refreshChecklist/);
+  assert.match(prompt, /genuine new slice of work/);
 });
 
 test("callback helper only treats owed non-closed callbacks as outstanding", () => {

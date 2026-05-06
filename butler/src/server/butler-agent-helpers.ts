@@ -134,19 +134,26 @@ export function buildOperatorThreadGuard(
   text: string,
   recentFocusedThreadId: string | null
 ): ButlerOperatorThreadGuard {
-  const explicitThreadIds = extractReferencedThreadIds(text);
+  const referencedIds = extractReferencedThreadIds(text);
+  const explicitThreadIds = referencedIds.filter((threadId) => Boolean(store.getThread(threadId)));
   const contextLines: string[] = [];
   let lockedThreadId: string | null = explicitThreadIds.length === 1 ? explicitThreadIds[0]! : null;
 
-  if (explicitThreadIds.length > 0) {
-    contextLines.push(
-      "Operator referenced these exact job ids in the latest turn. Treat them as authoritative and do not silently substitute a different job."
-    );
+  if (referencedIds.length > 0) {
+    if (explicitThreadIds.length > 0) {
+      contextLines.push(
+        "Operator referenced these exact tracked job ids in the latest turn. Treat them as authoritative and do not silently substitute a different job."
+      );
+    } else {
+      contextLines.push(
+        "The latest operator turn contains UUID-like references, but none resolve to tracked Codex jobs. Treat them as files, images, or artifacts unless the operator explicitly clarifies they are job ids."
+      );
+    }
 
-    for (const threadId of explicitThreadIds) {
+    for (const threadId of referencedIds) {
       const thread = store.getThread(threadId);
       if (!thread) {
-        contextLines.push(`- ${threadId} | not currently tracked`);
+        contextLines.push(`- ${threadId} | not currently tracked as a Codex job`);
         continue;
       }
 
@@ -154,7 +161,9 @@ export function buildOperatorThreadGuard(
         `- ${thread.id} | project=${thread.supervisor.projectLabel} | status=${thread.status} | summary=${thread.supervisor.summary}`
       );
     }
-  } else if (recentFocusedThreadId && looksLikeThreadFollowUp(text)) {
+  }
+
+  if (explicitThreadIds.length === 0 && recentFocusedThreadId && looksLikeThreadFollowUp(text)) {
     const thread = store.getThread(recentFocusedThreadId);
     if (thread) {
       lockedThreadId = thread.id;
@@ -636,6 +645,8 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "After delegate_to_codex returns, use its real result to acknowledge the real job id. Never invent or predict a job id.",
     "When using delegate_to_codex, set thinkingBudget deliberately: low is the default for most execution and coding; medium is for jobs needing extra agency, planning, ambiguity handling, or product judgment; high is for tough issues, usually after medium has not produced the right outcome or for clearly hard incidents; xhigh is exceptional and should be used for fewer than 1% of jobs.",
     "For operator follow-up on an existing valid Codex job, consider message_job when the job needs new instructions outside checklist rejection review; answer directly when the request can be handled from existing state.",
+    "When new work arrives for an existing job and the visible checklist is already fully accepted or waived, use message_job with refreshChecklist so the new work gets a clear focused checklist.",
+    "Do not refresh a checklist for small clarifications, thank-you messages, or rejected-checklist follow-up; only refresh it for a genuine new slice of work.",
     "Never say you delegated, started, asked, messaged, or handed off work unless the corresponding tool call has completed successfully.",
     "Do not expose private Butler-to-Codex steering verbatim in the Butler chat.",
     "Worker callbacks and thread recovery are background supervision signals, not operator-visible chat by themselves.",
@@ -675,6 +686,7 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "When the operator provides reference images or files, keep track of the stored reference ids so you can pass them to Codex later and reuse them during verification.",
     "Use the image reference tools whenever visual requirements depend on an uploaded image.",
     "When proof of frontend execution is requested, do not accept artifact existence alone as proof. Run headed verification when needed, inspect the screenshot with the proof review tool, and make sure the recorded session was persisted for later review.",
+    "For Electron, native app, or VNC-visible headed proof, steer Codex to the desktop proof tools. Do not let a worker satisfy that request with a private Xvfb display that the operator cannot see.",
     "Never reuse or mention a deleted, unknown, or cwd-less Codex thread as if it were a valid workstream.",
     "If the operator names a specific job id, verify and reason about that exact job. Do not answer as if a different job were the same one.",
     "",

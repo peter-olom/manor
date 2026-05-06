@@ -54,6 +54,7 @@ import {
   buildSupervisionChecklist,
   clearQueuedRejectionInstructions,
   recordChecklistWorkerEvidence,
+  refreshCompletedChecklistForFollowup,
   reviewChecklistAcceptancePoint,
   updateChecklistHeartbeat
 } from "./supervision-checklist.js";
@@ -445,6 +446,8 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   getSupervisionChecklist(threadId: string): SupervisionChecklistView | null { return this.getOrCreateThread(threadId).supervisionChecklist; }
+
+  refreshCompletedSupervisionChecklistForFollowup(threadId: string, taskText: string): SupervisionChecklistView | null { const record = this.getOrCreateThread(threadId); const refreshed = refreshCompletedChecklistForFollowup(record, taskText); if (!refreshed) return null; record.executionContract = { ...refreshed.contract }; record.supervisionChecklist = refreshed.checklist; record.updatedAt = Date.now(); this.persistedExecutionContractsByThreadId.set(threadId, { ...record.executionContract }); this.persistedSupervisionChecklistsByThreadId.set(threadId, { ...record.supervisionChecklist }); this.refreshDerivedThreadState(record); this.queueSave(); this.emitChange(); return record.supervisionChecklist; }
 
   reviewAcceptancePoint(input: { threadId: string; pointId: string; status: SupervisionChecklistItemStatus; note?: string | null; nextInstruction?: string | null }): SupervisionChecklistView {
     const thread = this.getOrCreateThread(input.threadId); const checklist = thread.supervisionChecklist;

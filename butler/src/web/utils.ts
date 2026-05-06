@@ -8,6 +8,7 @@ import type {
   ButlerThinkingLevel,
   CodexThreadSummary,
   CodexThreadDetail,
+  GeneratedImage,
   ImageReference,
   PreviewableFile,
   PreviewVerification,
@@ -763,6 +764,85 @@ export function buildMessageImageLookup(
       return [row.id, { displayText, images, files }];
     })
   );
+}
+
+export type TimelineImageAnchor = {
+  id: string;
+  at: number | null | undefined;
+  text?: string | null | undefined;
+};
+
+function stripGeneratedImagePrefix(value: string): string {
+  return value.replace(/^(?:ig|msg|call)_/, "");
+}
+
+function commonPrefixLength(left: string, right: string): number {
+  let index = 0;
+  while (index < left.length && index < right.length && left[index] === right[index]) {
+    index += 1;
+  }
+  return index;
+}
+
+function looksLikeGeneratedImageAnchor(anchor: TimelineImageAnchor): boolean {
+  const normalized = (anchor.text ?? "").toLowerCase();
+  return /\b(imagegen|image generation|generated image|visual direction)\b/.test(normalized);
+}
+
+function looksLikeImageGenerationPromptAnchor(anchor: TimelineImageAnchor): boolean {
+  const normalized = (anchor.text ?? "").toLowerCase();
+  return /\b(imagegen|image generation|visual direction first)\b/.test(normalized);
+}
+
+export function groupGeneratedImagesByTimeline<TImage extends Pick<GeneratedImage, "createdAt" | "id">>(
+  anchors: TimelineImageAnchor[],
+  images: TImage[]
+): {
+  before: TImage[];
+  byAnchorId: Record<string, TImage[]>;
+} {
+  const orderedAnchors = anchors
+    .filter((anchor): anchor is { id: string; at: number } => typeof anchor.at === "number" && Number.isFinite(anchor.at))
+    .sort((left, right) => left.at - right.at);
+  const before: TImage[] = [];
+  const byAnchorId: Record<string, TImage[]> = {};
+
+  for (const image of [...images].sort((left, right) => left.createdAt - right.createdAt)) {
+    const normalizedImageId = stripGeneratedImagePrefix(image.id);
+    let anchorId =
+      anchors
+        .map((anchor) => ({
+          id: anchor.id,
+          score: commonPrefixLength(stripGeneratedImagePrefix(anchor.id), normalizedImageId)
+        }))
+        .filter((candidate) => candidate.score >= 20)
+        .sort((left, right) => right.score - left.score)[0]?.id ?? null;
+
+    if (!anchorId) {
+      for (const anchor of orderedAnchors) {
+        if (anchor.at > image.createdAt) {
+          break;
+        }
+        anchorId = anchor.id;
+      }
+    }
+
+    if (!anchorId && orderedAnchors[0]?.at && image.createdAt < orderedAnchors[0].at - 60_000) {
+      anchorId =
+        anchors.filter(looksLikeImageGenerationPromptAnchor).at(-1)?.id ??
+        anchors.filter(looksLikeGeneratedImageAnchor).at(-1)?.id ??
+        null;
+    }
+
+    if (!anchorId) {
+      before.push(image);
+      continue;
+    }
+
+    byAnchorId[anchorId] = [...(byAnchorId[anchorId] ?? []), image];
+  }
+
+  return { before, byAnchorId };
 }
 
 export function resolveSetupCommandTarget(target: SetupCommandMode, nextTerminalTarget: TerminalTarget): "localShell" | "butlerTerminal" | "codexTerminal" {

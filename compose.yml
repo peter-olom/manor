@@ -49,8 +49,8 @@ services:
       http_proxy: http://egress:3128
       https_proxy: http://egress:3128
       all_proxy: http://egress:3128
-      NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright
-      no_proxy: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright
+      NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright,desktop-proof
+      no_proxy: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright,desktop-proof
       RUNTIME_BROKER_URL: http://runtime-broker:8090
       RUNTIME_BROKER_TOKEN: ${RUNTIME_BROKER_TOKEN:-manor-local-runtime-broker-token}
     volumes:
@@ -129,8 +129,8 @@ services:
       http_proxy: http://egress:3128
       https_proxy: http://egress:3128
       all_proxy: http://egress:3128
-      NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright
-      no_proxy: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright
+      NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright,desktop-proof
+      no_proxy: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright,desktop-proof
     depends_on:
       egress:
         condition: service_healthy
@@ -222,6 +222,8 @@ services:
       RUNTIME_OPERATOR_BASE_URL: http://127.0.0.1:${BUTLER_HOST_PORT:-8180}
       RUNTIME_OPERATOR_BASE_URL_INTERNAL: http://butler:8080
       RUNTIME_PLAYWRIGHT_CONTAINER: manor-playwright
+      RUNTIME_DESKTOP_PROOF_CONTAINER: manor-desktop-proof
+      RUNTIME_DESKTOP_PROOF_CONTROL_URL: http://desktop-proof:3888
       RUNTIME_BROKER_TOKEN: ${RUNTIME_BROKER_TOKEN:-manor-local-runtime-broker-token}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -266,6 +268,31 @@ services:
       - work
       - internet
 
+  desktop-proof:
+    profiles: ["desktop"]
+    build:
+      context: .
+      dockerfile: docker/desktop-proof/Dockerfile
+    image: manor-desktop-proof:local
+    container_name: manor-desktop-proof
+    environment:
+      MANOR_ROLE: desktop-proof
+      MANOR_DESKTOP_PROOF_PORT: 3888
+      MANOR_DESKTOP_PROOF_VNC_PORT: 6080
+      MANOR_DESKTOP_PROOF_RFB_PORT: 5900
+      MANOR_DESKTOP_PROOF_HOME: /state/home
+      DISPLAY: :99
+    shm_size: "2gb"
+    ports:
+      - "127.0.0.1:${DESKTOP_PROOF_NOVNC_PORT:-6080}:6080"
+    volumes:
+      - desktop-proof-state:/state
+      - repos:/repos
+    networks:
+      - control
+      - work
+      - internet
+
 networks:
   control:
     internal: true
@@ -283,6 +310,7 @@ volumes:
   codex-config:
   codex-home:
   codex-state:
+  desktop-proof-state:
   egress-state:
   playwright-state:
   preview-egress-state:

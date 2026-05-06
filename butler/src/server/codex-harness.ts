@@ -15,6 +15,7 @@ import {
   normalizeWorkspaceMode
 } from "./codex-harness-helpers.js";
 import { formatHarnessExecutionContract, formatHarnessRuntimeModel } from "./codex-harness-format.js";
+import { handleHarnessDesktopAction } from "./codex-harness-desktop.js";
 import { formatHarnessJobMemory, formatHarnessProjectMemory, handleHarnessMemoryAction } from "./codex-harness-memory.js";
 import {
   reconcileHarnessThreadPreviews,
@@ -40,7 +41,23 @@ import {
   formatWorkspaceBootstrapLines,
   inspectWorkspaceBootstrap
 } from "./workspace-bootstrap.js";
-import type { PreviewLeaseView, PreviewVerificationView } from "./types.js";
+import type { CodexThreadRecord, PreviewLeaseView, PreviewVerificationView } from "./types.js";
+
+function mentionsNativeDesktopTarget(thread: CodexThreadRecord): boolean {
+  const contract = thread.executionContract;
+  const text = [
+    thread.supervisor.summary,
+    thread.supervisor.latestAgentReply,
+    contract?.requestedTask,
+    contract?.operatorGoal,
+    ...(contract?.acceptancePoints ?? []),
+    ...(contract?.notes ?? [])
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
+  return /\b(electron|native|desktop|headed|vnc|novnc)\b/.test(text);
+}
 
 export class CodexHarnessService {
   private readonly registryPath: string;
@@ -567,7 +584,11 @@ export class CodexHarnessService {
       }
       responseLines.push("Do not hunt for Manor-specific bootstrap magic. If the project needs a command, choose it and run it explicitly.");
       if (thread.executionContract?.proofExpectation === "requested") {
-        responseLines.push("This job asked for proof. Browser-use sessions are the simplest way to capture durable browser artifacts.");
+        responseLines.push(
+          mentionsNativeDesktopTarget(thread)
+            ? "This job asked for native headed proof. Use desktop status/start/action/stop so the app appears in the noVNC-visible desktop."
+            : "This job asked for proof. Browser-use sessions are the simplest way to capture durable browser artifacts."
+        );
       }
       responseLines.push("Do not use `corepack enable` in Codex-shell for preview-oriented runtime setup. If repo-local instructions explicitly require a root-level install step, follow the repo guidance instead.");
       responseLines.push("Only report the job blocked when you can say what you tried and why the next sensible step still cannot proceed.");
@@ -1003,6 +1024,19 @@ export class CodexHarnessService {
         text: `Browser-use session stopped with proof run ${verification.runId}. ${signalSummary}`,
         data: { verification, browserProof: result.browserProof ?? null }
       };
+    }
+
+    const desktopResult = await handleHarnessDesktopAction({
+      action,
+      params,
+      capability,
+      thread,
+      runtimeBroker: this.runtimeBroker,
+      store: this.store,
+      resolveWorkspaceProject: (cwd, targetThread) => this.resolveWorkspaceProject(cwd, targetThread)
+    });
+    if (desktopResult) {
+      return desktopResult;
     }
 
     if (action === "preview.proof") {

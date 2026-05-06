@@ -15,12 +15,30 @@ Manor currently runs as one Docker Compose project with these services:
 - `egress`: the restricted outbound proxy for Butler and Codex
 - `preview-egress`: the separate outbound path for preview runtimes
 - `playwright`: the browser automation sidecar
+- `desktop-proof`: optional headed desktop proof sidecar for Electron/native app smoke checks
 
 ## Install
 
 Run `./install.sh` from the project root for a guided setup.
 
 The installer checks Docker and Compose, writes local Compose settings, and can start Manor. Use `./install.sh -y` for the default non-interactive install.
+
+For daily control after install:
+
+```bash
+./manor.sh start
+./manor.sh stop
+./manor.sh status
+./manor.sh logs
+```
+
+For the optional headed desktop proof sidecar:
+
+```bash
+./manor.sh desktop start
+./manor.sh desktop stop
+./manor.sh desktop status
+```
 
 Interactive defaults:
 
@@ -57,6 +75,7 @@ Manor keeps repo work and runtime work separate on purpose.
 
 - do repository, git, and edit work in the warm Codex worker
 - do package installs, app startup, builds, and browser checks in previews
+- use the optional desktop proof sidecar only when native headed app verification is needed
 - use shared previews when runtime changes should persist in the mounted worktree
 - use snapshot previews for disposable smoke runs that should not mutate the source worktree
 - treat worker-side package installation as an exception, not the default path
@@ -105,6 +124,20 @@ Current preview behavior:
 - preview egress defaults to normal outbound internet access
 - previews are the default place for installs, builds, app startup, and runtime verification
 - `none`, named profiles, and custom domain policies remain available when a preview needs stricter outbound control
+
+## Headed Desktop Proof
+
+Electron and native desktop checks use a separate opt-in sidecar instead of the browser automation sidecar.
+
+Start it only when needed:
+
+```bash
+./manor.sh desktop start --build
+```
+
+Then use the harness desktop commands to start a headed session, capture screenshots, list/focus windows, use clipboard or pointer input, and stop the session so Manor persists screenshots and logs.
+
+The sidecar runs a virtual display, window manager, x11vnc, noVNC, screenshot capture, simple desktop input tooling, and a persistent desktop home under the sidecar state volume. Browser proof remains on the lighter Playwright sidecar.
 
 ## Stacks
 
@@ -265,6 +298,7 @@ Current local development assumptions:
 - `docker/preview-egress/`: optional restrictive preview egress control plane
 - `docker/runtime-broker/`: preview, service, and stack runtime broker
 - `docker/playwright/`: browser automation image
+- `docker/desktop-proof/`: optional headed desktop proof image
 
 ## Verification
 

@@ -164,14 +164,16 @@ export function registerThreadArtifactRoutes(input: {
       return;
     }
 
-    const images = (await listThreadGeneratedImageArtifacts(threadId)).map((artifact) => ({
-      id: artifact.fileName.replace(/\.[^.]+$/, ""),
-      fileName: artifact.fileName,
-      sizeBytes: artifact.sizeBytes ?? 0,
-      createdAt: artifact.createdAt,
-      url: artifact.url,
-      downloadUrl: artifact.downloadUrl
-    }));
+    const images = (await listThreadGeneratedImageArtifacts(threadId))
+      .sort((left, right) => left.createdAt - right.createdAt)
+      .map((artifact) => ({
+        id: artifact.fileName.replace(/\.[^.]+$/, ""),
+        fileName: artifact.fileName,
+        sizeBytes: artifact.sizeBytes ?? 0,
+        createdAt: artifact.createdAt,
+        url: artifact.url,
+        downloadUrl: artifact.downloadUrl
+      }));
     response.json({ images });
   });
 

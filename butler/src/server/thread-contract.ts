@@ -95,7 +95,10 @@ export function isSharedShellRepoBootstrapTask(taskText: string): boolean {
   const mentionsBranchSetup =
     /\b(create|switch|checkout)\b/.test(normalized) && /\bbranch\b/.test(normalized) && /\bbutler\//.test(normalized);
   const mentionsGitStatus = /\b(default branch|working tree status|git status)\b/.test(normalized);
-  const mentionsRuntime = /\b(start|run|serve|dev server|preview|browser|ui|playwright|screenshot|video)\b/.test(normalized);
+  const mentionsRuntime =
+    /\b(start|run|serve|dev server|preview|browser|ui|playwright|screenshot|video|electron|native|desktop|headed|vnc|novnc)\b/.test(
+      normalized
+    );
 
   return mentionsClone && mentionsRepoRoot && (mentionsBranchSetup || mentionsGitStatus) && !mentionsRuntime;
 }
