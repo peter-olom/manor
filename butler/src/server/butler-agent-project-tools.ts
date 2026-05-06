@@ -7,6 +7,7 @@ import {
 } from "./project-artifact-access.js";
 import {
   buildProjectPolicy,
+  createProjectArtifactFromFile,
   createProjectArtifactFromText,
   createProjectArtifactFromUrl,
   findProjectPolicyBySelector,
@@ -131,6 +132,85 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
         access.store.upsertProjectArtifact(artifact);
         return {
           content: [{ type: "text", text: `Saved ${artifact.title} as a durable project artifact.` }],
+          details: { artifact: decorateProjectArtifactWithAccess(artifact) }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "share_project_file",
+      label: "Share project file",
+      description: "Store an existing local file as a durable project artifact and return a host-clickable download link.",
+      promptSnippet: "share_project_file: use this when the operator asks for a download link to an existing local file.",
+      parameters: Type.Object({
+        sourceFilePath: Type.String({ minLength: 1 }),
+        title: Type.Optional(Type.String()),
+        kind: Type.Optional(
+          Type.Union([
+            Type.Literal("seed"),
+            Type.Literal("reference"),
+            Type.Literal("download"),
+            Type.Literal("research"),
+            Type.Literal("report"),
+            Type.Literal("other")
+          ])
+        ),
+        projectId: Type.Optional(Type.String()),
+        projectLabel: Type.Optional(Type.String()),
+        threadId: Type.Optional(Type.String()),
+        cwd: Type.Optional(Type.String()),
+        description: Type.Optional(Type.String()),
+        fileName: Type.Optional(Type.String()),
+        contentType: Type.Optional(Type.String()),
+        tags: Type.Optional(Type.Array(Type.String())),
+        metadata: Type.Optional(Type.Record(Type.String(), Type.String()))
+      }),
+      uiEffects: access.getToolUiEffects("share_project_file"),
+      execute: async (_toolCallId, params) => {
+        const threadId = typeof params.threadId === "string" ? params.threadId.trim() : "";
+        const thread = threadId ? access.store.getThread(threadId) ?? null : null;
+        const sourceFilePath = (params.sourceFilePath as string).trim();
+        const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : thread?.cwd ?? sourceFilePath;
+        const project = access.resolveWorkspaceProject(
+          cwd,
+          (typeof params.projectId === "string" && params.projectId.trim()) || thread?.supervisor.projectId || "project",
+          (typeof params.projectLabel === "string" && params.projectLabel.trim()) || thread?.supervisor.projectLabel || "project"
+        );
+        const fileName = typeof params.fileName === "string" && params.fileName.trim() ? params.fileName.trim() : null;
+        const artifact = await createProjectArtifactFromFile({
+          artifactsDir,
+          projectId: project.id,
+          projectLabel: project.label,
+          threadId: threadId || null,
+          kind:
+            params.kind === "seed" ||
+            params.kind === "reference" ||
+            params.kind === "download" ||
+            params.kind === "research" ||
+            params.kind === "report"
+              ? params.kind
+              : "download",
+          title:
+            typeof params.title === "string" && params.title.trim()
+              ? params.title.trim()
+              : fileName || sourceFilePath.split("/").filter(Boolean).at(-1) || "File download",
+          description: typeof params.description === "string" ? params.description : null,
+          sourceFilePath,
+          fileName,
+          contentType: typeof params.contentType === "string" ? params.contentType : null,
+          tags: Array.isArray(params.tags) ? params.tags : [],
+          metadata: normalizeArtifactMetadata(params.metadata)
+        });
+        access.store.upsertProjectArtifact(artifact);
+        return {
+          content: [
+            {
+              type: "text",
+              text: [
+                `Download: ${getProjectArtifactUserDownloadUrl(artifact)}`,
+                `File name: ${artifact.fileName}`
+              ].join("\n")
+            }
+          ],
           details: { artifact: decorateProjectArtifactWithAccess(artifact) }
         };
       }

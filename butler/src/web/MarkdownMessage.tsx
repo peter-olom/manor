@@ -143,13 +143,16 @@ function describeMessageResource(rawUrl: string | null | undefined): {
     const parsed = normalizedUrl.startsWith("/") ? new URL(normalizedUrl, baseOrigin) : new URL(normalizedUrl);
     const pathname = parsed.pathname.toLowerCase();
     const isArtifact = pathname.startsWith("/api/artifacts/");
+    const isProjectArtifact = pathname.startsWith("/api/project-artifacts/");
+    const isFileReference = pathname.startsWith("/api/files/");
     const isPreview = pathname.startsWith("/preview/");
+    const isHttp = parsed.protocol === "http:" || parsed.protocol === "https:";
 
-    if (!isArtifact && !isPreview) {
+    if (!isArtifact && !isProjectArtifact && !isFileReference && !isPreview && !isHttp) {
       return null;
     }
 
-    let displayText = "Open file";
+    let displayText = isHttp && !normalizedUrl.startsWith("/") ? parsed.toString() : "Open file";
     let download = false;
     let previewKind: "image" | "video" | null = null;
 
@@ -170,12 +173,12 @@ function describeMessageResource(rawUrl: string | null | undefined): {
     } else if (pathname.endsWith(".html")) {
       displayText = "Download HTML";
       download = true;
-    } else if (isArtifact) {
+    } else if (isArtifact || isProjectArtifact || isFileReference) {
       displayText = "Download file";
       download = true;
     }
 
-    if (download && isArtifact && !parsed.searchParams.has("download")) {
+    if (download && (isArtifact || isProjectArtifact || isFileReference) && !parsed.searchParams.has("download")) {
       parsed.searchParams.set("download", "1");
     }
 

@@ -70,6 +70,9 @@ function detectContentType(fileName: string, fallback?: string | null): string {
   const lower = fileName.toLowerCase();
   if (lower.endsWith(".sql")) return "application/sql";
   if (lower.endsWith(".json")) return "application/json";
+  if (lower.endsWith(".html") || lower.endsWith(".htm")) return "text/html";
+  if (lower.endsWith(".css")) return "text/css";
+  if (lower.endsWith(".js") || lower.endsWith(".mjs") || lower.endsWith(".cjs")) return "text/javascript";
   if (lower.endsWith(".md")) return "text/markdown";
   if (lower.endsWith(".txt")) return "text/plain";
   if (lower.endsWith(".csv")) return "text/csv";

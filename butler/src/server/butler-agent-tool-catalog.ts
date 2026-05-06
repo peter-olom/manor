@@ -140,6 +140,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "refreshThreads", description: "Makes newly stored project artifacts available immediately." }]
   },
   {
+    name: "share_project_file",
+    label: "Share project file",
+    description: "Persist an existing local file as a durable project artifact and return a download link.",
+    uiEffects: [{ kind: "refreshThreads", description: "Makes newly shared project files available immediately." }]
+  },
+  {
     name: "download_project_artifact",
     label: "Download project artifact",
     description: "Download a file from a URL and persist it as a durable project artifact.",
