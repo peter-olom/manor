@@ -63,6 +63,7 @@ import { buildButlerDelegationTools, buildButlerStackPreviewTools } from "./butl
 import { reviewButlerProofScreenshot } from "./butler-agent-proof-review.js";
 import type { ButlerAgentSessionAccess, ButlerAgentToolAccess } from "./butler-agent-tool-access.js";
 import { BUTLER_TOOL_CATALOG } from "./butler-agent-tool-catalog.js";
+import { normalizeButlerActivitySummaryTurns } from "./butler-activity.js";
 import { readButlerAuthStatus, readCodexAuthStatus } from "./auth-status.js";
 import { type FileReferenceStore } from "./file-store.js";
 import { buildOnboardingView } from "./onboarding-status.js";
@@ -125,6 +126,7 @@ export class ButlerAgentService extends EventEmitter {
   private readonly sessionDir: string;
   private readonly artifactsDir: string;
   private readonly operatorMessageStatePath: string;
+  private readonly activitySummaryStatePath: string;
   private readonly legacyNoticeStatePath: string;
   private readonly callbackStatePath: string;
   private readonly refreshRuntimeInventory: (() => Promise<void>) | null;
@@ -140,6 +142,7 @@ export class ButlerAgentService extends EventEmitter {
   private pending = false;
   private stopRequestedAt: number | null = null;
   private readonly activityTurns: ButlerActivityTurnView[] = [];
+  private readonly activitySummaryTurns: ButlerActivityTurnView[] = [];
   private activeActivityTurnId: string | null = null;
   private activitySequence = 0;
   private lastError: string | null = null;
@@ -196,6 +199,7 @@ export class ButlerAgentService extends EventEmitter {
     this.artifactsDir = options.artifactsDir;
     this.refreshRuntimeInventory = options.refreshRuntimeInventory ?? null;
     this.operatorMessageStatePath = path.join(this.sessionDir, "operator-messages.json");
+    this.activitySummaryStatePath = path.join(this.sessionDir, "activity-summaries.json");
     this.legacyNoticeStatePath = path.join(this.sessionDir, "notices.json");
     this.callbackStatePath = path.join(this.sessionDir, "chat-callbacks.json");
     this.toolCatalog = this.buildToolCatalog();
@@ -385,8 +389,28 @@ export class ButlerAgentService extends EventEmitter {
     }
   }
 
-  private async saveOperatorMessageState(): Promise<void> {
-    await fs.writeFile(this.operatorMessageStatePath, JSON.stringify(this.operatorMessages, null, 2), "utf8");
+  private async saveOperatorMessageState(): Promise<void> { await fs.writeFile(this.operatorMessageStatePath, JSON.stringify(this.operatorMessages, null, 2), "utf8"); }
+
+  private async loadActivitySummaryState(): Promise<void> {
+    try {
+      const raw = await fs.readFile(this.activitySummaryStatePath, "utf8");
+      this.activitySummaryTurns.splice(0, this.activitySummaryTurns.length, ...normalizeButlerActivitySummaryTurns(JSON.parse(raw)));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
+  private async saveActivitySummaryState(): Promise<void> { await fs.writeFile(this.activitySummaryStatePath, JSON.stringify(this.activitySummaryTurns, null, 2), "utf8"); }
+
+  private persistActivitySummaryTurn(turn: ButlerActivityTurnView): void {
+    const nextTurns = normalizeButlerActivitySummaryTurns([
+      ...this.activitySummaryTurns.filter((entry) => entry.id !== turn.id),
+      turn
+    ]);
+    this.activitySummaryTurns.splice(0, this.activitySummaryTurns.length, ...nextTurns);
+    void this.saveActivitySummaryState();
   }
 
   private async saveCallbackState(): Promise<void> {
@@ -665,6 +689,7 @@ export class ButlerAgentService extends EventEmitter {
   async start(): Promise<void> {
     await fs.mkdir(this.sessionDir, { recursive: true });
     await this.loadOperatorMessageState();
+    await this.loadActivitySummaryState();
     await this.loadCallbackState();
     this.auth = await readButlerAuthStatus(this.piAuthPath);
     this.codexAuth = await readCodexAuthStatus(this.codexAuthPath);

@@ -163,6 +163,7 @@ export type ButlerAgentSessionAccess = {
   pending: boolean;
   stopRequestedAt: number | null;
   activityTurns: ButlerActivityTurnView[];
+  activitySummaryTurns: ButlerActivityTurnView[];
   activeActivityTurnId: string | null;
   activitySequence: number;
   lastError: string | null;
@@ -188,4 +189,5 @@ export type ButlerAgentSessionAccess = {
   buildCustomTools(): ButlerCustomTool[];
   listServiceTemplates(): LoadedServiceTemplate[];
   emit(event: "change"): boolean;
+  persistActivitySummaryTurn(turn: ButlerActivityTurnView): void;
 };

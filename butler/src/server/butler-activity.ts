@@ -5,9 +5,40 @@ import type { ButlerActivityItemView, ButlerActivityTurnView } from "./types.js"
 
 const MAX_ACTIVITY_TURNS = 20;
 const MAX_ACTIVITY_TEXT = 3000;
+const REDACTED_THINKING_SUMMARY = "Thinking update recorded.";
+const TOOL_MAIN_DATA_KEYS = [
+  "message",
+  "text",
+  "content",
+  "prompt",
+  "query",
+  "q",
+  "command",
+  "cmd",
+  "summary",
+  "description",
+  "path",
+  "url",
+  "status"
+];
+
+function stripMarkdownFormatting(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, (match) => match.replace(/```[a-zA-Z0-9_-]*\n?/g, "").replace(/```/g, ""))
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^>\s?/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+\.\s+/gm, "")
+    .replace(/(\*\*|__)(.*?)\1/g, "$2")
+    .replace(/(?<!\w)(\*|_)(?!\s)(.*?)(?<!\s)\1(?!\w)/g, "$2")
+    .replace(/~~(.*?)~~/g, "$1");
+}
 
 function clipText(text: string): string {
-  const normalized = text.replace(/\\n/g, " ").replace(/\s+/g, " ").trim();
+  const normalized = stripMarkdownFormatting(text).replace(/\\n/g, " ").replace(/\s+/g, " ").trim();
   if (normalized.length <= MAX_ACTIVITY_TEXT) {
     return normalized;
   }
@@ -35,19 +66,103 @@ function readThinkingText(content: unknown): string {
   );
 }
 
-function stringifyValue(value: unknown): string {
+function collectToolMainData(value: unknown, depth = 0): string[] {
   if (value === null || value === undefined) {
-    return "";
+    return [];
   }
 
   if (typeof value === "string") {
-    return clipText(value);
+    return [value];
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return [String(value)];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => collectToolMainData(entry, depth + 1));
+  }
+
+  if (typeof value !== "object" || depth > 3) {
+    return [];
+  }
+
+  const record = value as Record<string, unknown>;
+  const content = record.content;
+  if (Array.isArray(content)) {
+    const contentText = content
+      .flatMap((entry) => {
+        if (entry && typeof entry === "object" && "text" in entry && typeof entry.text === "string") {
+          return [entry.text];
+        }
+        return collectToolMainData(entry, depth + 1);
+      })
+      .filter(Boolean);
+    if (contentText.length > 0) {
+      return contentText;
+    }
+  }
+
+  for (const key of TOOL_MAIN_DATA_KEYS) {
+    const entry = record[key];
+    if (typeof entry === "string" && entry.trim()) {
+      return [`${key}: ${entry}`];
+    }
+    if (entry && typeof entry === "object") {
+      const nested = collectToolMainData(entry, depth + 1);
+      if (nested.length > 0) {
+        return nested.map((part) => (part.includes(":") ? part : `${key}: ${part}`));
+      }
+    }
+  }
+
+  const primitivePairs = Object.entries(record)
+    .filter(([, entry]) => typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean")
+    .filter(([key]) => !["id", "type", "source", "createdAt"].includes(key))
+    .slice(0, 3)
+    .map(([key, entry]) => `${key}: ${String(entry)}`);
+  if (primitivePairs.length > 0) {
+    return primitivePairs;
   }
 
   try {
-    return clipText(JSON.stringify(value, null, 2));
+    return [JSON.stringify(value)];
   } catch {
-    return clipText(String(value));
+    return [String(value)];
+  }
+}
+
+function formatToolData(value: unknown): string {
+  const [mainData] = collectToolMainData(value).map((entry) => clipText(entry)).filter(Boolean);
+  return mainData ?? "";
+}
+
+function summarizeActivityTurn(turn: ButlerActivityTurnView): ButlerActivityTurnView {
+  return {
+    ...turn,
+    status: "completed",
+    completedAt: turn.completedAt ?? Date.now(),
+    items: turn.items.map((item) => ({
+      ...item,
+      status: item.status === "active" ? "completed" : item.status,
+      text: item.kind === "thinking" ? REDACTED_THINKING_SUMMARY : formatPersistedActivityText(item)
+    }))
+  };
+}
+
+function formatPersistedActivityText(item: ButlerActivityItemView): string {
+  if (!item.text) {
+    return "";
+  }
+
+  if (item.kind === "thinking") {
+    return item.status === "completed" ? REDACTED_THINKING_SUMMARY : clipText(item.text);
+  }
+
+  try {
+    return formatToolData(JSON.parse(item.text)) || clipText(item.text);
+  } catch {
+    return clipText(item.text);
   }
 }
 
@@ -89,6 +204,9 @@ function completeActivityTurn(access: ButlerAgentSessionAccess, at = Date.now())
       item.status = "completed";
       item.updatedAt = at;
     }
+  }
+  if (typeof access.persistActivitySummaryTurn === "function") {
+    access.persistActivitySummaryTurn(summarizeActivityTurn(turn));
   }
   access.activeActivityTurnId = null;
 }
@@ -206,7 +324,7 @@ function recordAssistantUpdate(access: ButlerAgentSessionAccess, event: Extract<
     const id = typeof block?.id === "string" ? block.id : null;
     upsertToolItem(turn, {
       title: name,
-      text: stringifyValue(block?.arguments),
+      text: formatToolData(block?.arguments),
       status: streamEvent.type === "toolcall_end" ? "completed" : "active",
       contentIndex: streamEvent.contentIndex,
       toolCallId: id
@@ -240,7 +358,7 @@ export function recordButlerActivityEvent(access: ButlerAgentSessionAccess, even
   if (event.type === "tool_execution_start") {
     upsertToolItem(ensureActivityTurn(access, at), {
       title: event.toolName,
-      text: stringifyValue(event.args),
+      text: formatToolData(event.args),
       status: "active",
       toolCallId: event.toolCallId,
       at
@@ -251,7 +369,7 @@ export function recordButlerActivityEvent(access: ButlerAgentSessionAccess, even
   if (event.type === "tool_execution_update") {
     upsertToolItem(ensureActivityTurn(access, at), {
       title: event.toolName,
-      text: stringifyValue(event.partialResult),
+      text: formatToolData(event.partialResult),
       status: "active",
       toolCallId: event.toolCallId,
       at
@@ -262,7 +380,7 @@ export function recordButlerActivityEvent(access: ButlerAgentSessionAccess, even
   if (event.type === "tool_execution_end") {
     upsertToolItem(ensureActivityTurn(access, at), {
       title: event.toolName,
-      text: stringifyValue(event.result),
+      text: formatToolData(event.result),
       status: event.isError ? "error" : "completed",
       toolCallId: event.toolCallId,
       at
@@ -276,11 +394,69 @@ export function recordButlerActivityEvent(access: ButlerAgentSessionAccess, even
 }
 
 export function getButlerActivityTurns(access: ButlerAgentSessionAccess): ButlerActivityTurnView[] {
-  return access.activityTurns
+  const turnsById = new Map<string, ButlerActivityTurnView>();
+  const activitySummaryTurns = Array.isArray(access.activitySummaryTurns) ? access.activitySummaryTurns : [];
+  for (const turn of activitySummaryTurns) {
+    turnsById.set(turn.id, turn);
+  }
+  for (const turn of access.activityTurns) {
+    turnsById.set(turn.id, turn);
+  }
+
+  return [...turnsById.values()]
     .filter((turn) => turn.status === "active" || turn.items.length > 0)
+    .sort((left, right) => left.startedAt - right.startedAt)
     .slice(-MAX_ACTIVITY_TURNS)
     .map((turn) => ({
       ...turn,
-      items: turn.items.map((item) => ({ ...item }))
+      items: turn.items.map((item) => ({ ...item, text: formatPersistedActivityText(item) }))
     }));
+}
+
+export function normalizeButlerActivitySummaryTurns(turns: unknown): ButlerActivityTurnView[] {
+  if (!Array.isArray(turns)) {
+    return [];
+  }
+
+  return turns
+    .flatMap((turn): ButlerActivityTurnView[] => {
+      if (!turn || typeof turn !== "object") {
+        return [];
+      }
+      const entry = turn as Record<string, unknown>;
+      const id = typeof entry.id === "string" && entry.id.trim() ? entry.id : null;
+      const startedAt = typeof entry.startedAt === "number" && Number.isFinite(entry.startedAt) ? entry.startedAt : null;
+      if (!id || startedAt === null || !Array.isArray(entry.items)) {
+        return [];
+      }
+      const completedAt = typeof entry.completedAt === "number" && Number.isFinite(entry.completedAt) ? entry.completedAt : startedAt;
+      const items = entry.items.flatMap((item): ButlerActivityItemView[] => {
+        if (!item || typeof item !== "object") {
+          return [];
+        }
+        const record = item as Record<string, unknown>;
+        const kind = record.kind === "thinking" || record.kind === "tool" ? record.kind : null;
+        const itemId = typeof record.id === "string" && record.id.trim() ? record.id : null;
+        const title = typeof record.title === "string" && record.title.trim() ? record.title : kind === "thinking" ? "Thinking" : "Tool call";
+        if (!kind || !itemId) {
+          return [];
+        }
+        return [
+          {
+            id: itemId,
+            kind,
+            status: record.status === "error" ? "error" : "completed",
+            title,
+            text: kind === "thinking" ? REDACTED_THINKING_SUMMARY : clipText(typeof record.text === "string" ? record.text : ""),
+            at: typeof record.at === "number" && Number.isFinite(record.at) ? record.at : startedAt,
+            updatedAt: typeof record.updatedAt === "number" && Number.isFinite(record.updatedAt) ? record.updatedAt : completedAt,
+            contentIndex: typeof record.contentIndex === "number" && Number.isFinite(record.contentIndex) ? record.contentIndex : null,
+            toolCallId: typeof record.toolCallId === "string" && record.toolCallId.trim() ? record.toolCallId : null
+          }
+        ];
+      });
+      return items.length > 0 ? [{ id, status: "completed", startedAt, completedAt, items }] : [];
+    })
+    .sort((left, right) => left.startedAt - right.startedAt)
+    .slice(-MAX_ACTIVITY_TURNS);
 }
