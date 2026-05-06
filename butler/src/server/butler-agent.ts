@@ -1475,7 +1475,7 @@ export class ButlerAgentService extends EventEmitter {
 
   getCodexAuthStatus(): ButlerAuthStatus { return this.codexAuth; }
 
-  private async promptOperatorTurn(text: string, imageReferenceIds: string[] = []): Promise<void> {
+  private async promptOperatorTurn(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer" } = {}): Promise<void> {
     const guard = buildOperatorThreadGuard(this.store, text, this.getRecentFocusedThreadId());
     this.activeOperatorThreadGuard = guard;
     if (guard.lockedThreadId && this.store.getThread(guard.lockedThreadId)) {
@@ -1486,13 +1486,13 @@ export class ButlerAgentService extends EventEmitter {
       if (guard.contextPrompt) {
         await promptButlerInternal(this.getSessionAccess(), ["This is hidden grounding for the next operator turn.", "Do not answer it directly.", "Use it to keep job references exact during the next operator turn only.", guard.contextPrompt].join("\n"));
       }
-      await promptButler(this.getSessionAccess(), text, imageReferenceIds);
+      await promptButler(this.getSessionAccess(), text, imageReferenceIds, options);
     } finally {
       this.activeOperatorThreadGuard = null;
     }
   }
 
-  prompt(text: string, imageReferenceIds: string[] = []): void { void this.promptOperatorTurn(text, imageReferenceIds); }
+  prompt(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer" } = {}): void { void this.promptOperatorTurn(text, imageReferenceIds, options); }
 
   async stopPrompt(): Promise<boolean> { return stopButlerPrompt(this.getSessionAccess()); }
 

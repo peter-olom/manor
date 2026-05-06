@@ -9,7 +9,7 @@ import {
 } from "react";
 
 import { getJson, postJson, uploadAttachment } from "./api";
-import { ButlerComposer } from "./ButlerComposer";
+import { ButlerComposer, type ButlerComposerSendOptions } from "./ButlerComposer";
 import { ArrowDownIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon, MemoryIcon, TrashIcon } from "./icons";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
@@ -514,7 +514,7 @@ export function ButlerSurface({
     }
   }
 
-  async function sendButlerMessage(rawText: string, inputItems: ComposerInputItem[] = []) {
+  async function sendButlerMessage(rawText: string, inputItems: ComposerInputItem[] = [], options: ButlerComposerSendOptions = {}) {
     const text = rawText.trim();
     const composerAttachments = [...butlerAttachments];
     if (!text && composerAttachments.length === 0) {
@@ -535,6 +535,7 @@ export function ButlerSurface({
         text,
         imageReferenceIds,
         fileReferenceIds,
+        mode: options.mode ?? "queue",
         ...(inputItems.length > 0 ? { inputItems } : {})
       });
     } catch (error) {
@@ -1108,9 +1109,9 @@ export function ButlerSurface({
             onRemoveAttachment={(attachmentId) => setButlerAttachments((current) => current.filter((entry) => entry.id !== attachmentId))}
             onPreviewImage={(image) => onPreviewMedia({ name: image.name, url: image.url, kind: "image", downloadUrl: image.url })}
             contextCwd="/repos/manor"
-            onSend={async (text, inputItems) => {
+            onSend={async (text, inputItems, options) => {
               try {
-                await sendButlerMessage(text, inputItems);
+                await sendButlerMessage(text, inputItems, options);
               } catch (error) {
                 showErrorToast(error);
                 throw error;

@@ -374,11 +374,16 @@ export function getButlerSnapshot(access: ButlerAgentSessionAccess): AppSnapshot
   };
 }
 
-export function promptButler(
+export async function promptButler(
   access: ButlerAgentSessionAccess,
   text: string,
-  imageReferenceIds: string[] = []
+  imageReferenceIds: string[] = [],
+  options: { mode?: "queue" | "steer" } = {}
 ): Promise<boolean> {
+  if (options.mode === "steer") {
+    await stopButlerPrompt(access);
+  }
+
   return queueButlerPrompt(access, text, imageReferenceIds, { background: false });
 }
 

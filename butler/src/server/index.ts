@@ -385,6 +385,7 @@ app.post("/api/chat/messages", async (request, response) => {
   const imageReferenceIds = readImageReferenceIds(request.body);
   const fileReferenceIds = readFileReferenceIds(request.body);
   const inputItems = Array.isArray(request.body?.inputItems) ? request.body.inputItems : [];
+  const mode = request.body?.mode === "steer" ? "steer" : "queue";
   if (!text.trim() && imageReferenceIds.length === 0 && fileReferenceIds.length === 0 && inputItems.length === 0) {
     response.status(400).json({ error: "text, imageReferenceIds, fileReferenceIds, or inputItems is required" });
     return;
@@ -402,7 +403,7 @@ app.post("/api/chat/messages", async (request, response) => {
     });
     const inputItemsPromptText = buildComposerInputItemsPrompt(inputItems);
     const promptText = [referencePromptText, inputItemsPromptText].filter(Boolean).join("\n\n");
-    butlerAgent.prompt(promptText, imageReferenceIds);
+    butlerAgent.prompt(promptText, imageReferenceIds, { mode });
     response.status(202).json({ ok: true });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });

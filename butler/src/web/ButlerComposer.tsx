@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 
 import { ComposerMentions } from "./ComposerMentions";
 import { AttachmentIcon, CloseIcon, SendIcon, StopIcon } from "./icons";
@@ -12,6 +12,10 @@ import {
 } from "./utils";
 
 const FILE_UPLOAD_ACCEPT = ".pdf,.ppt,.pptx,.xls,.xlsx,.doc,.docx,.txt,.csv,.json,.md,.zip,image/*,*/*";
+
+export type ButlerComposerSendOptions = {
+  mode?: "queue" | "steer";
+};
 
 function appendDraftText(current: string, addition: string): string {
   const trimmedAddition = addition.trim();
@@ -58,7 +62,7 @@ export const ButlerComposer = memo(function ButlerComposer({
   onPreviewImage: (image: PreviewableImage) => void;
   contextCwd?: string | null;
   threadId?: string | null;
-  onSend: (text: string, inputItems: ComposerInputItem[]) => Promise<void>;
+  onSend: (text: string, inputItems: ComposerInputItem[], options?: ButlerComposerSendOptions) => Promise<void>;
   onStop?: () => void;
   onModelChange: (modelKey: string) => void;
   onThinkingLevelChange: (thinkingLevel: ButlerThinkingLevel) => void;
@@ -113,7 +117,7 @@ export const ButlerComposer = memo(function ButlerComposer({
     onDraftPrefillApplied?.(draftPrefill.id);
   }, [draftPrefill, draftStorageKey, onDraftPrefillApplied]);
 
-  async function handleSend() {
+  async function handleSend(options: ButlerComposerSendOptions = {}) {
     const text = draft.trim();
     if (!text && attachments.length === 0) {
       return;
@@ -125,7 +129,7 @@ export const ButlerComposer = memo(function ButlerComposer({
     writeStoredValue(draftStorageKey, "");
 
     try {
-      await onSend(text, sentInputItems);
+      await onSend(text, sentInputItems, options);
     } catch (error) {
       setDraft((current) => (current.trim().length === 0 ? text : current));
       setInputItems((current) => (current.length === 0 ? sentInputItems : current));
@@ -143,7 +147,11 @@ export const ButlerComposer = memo(function ButlerComposer({
     }
 
     event.preventDefault();
-    void handleSend();
+    void handleSend({ mode: event.shiftKey ? "steer" : "queue" });
+  }
+
+  function handleSendButtonClick(event: ReactMouseEvent<HTMLButtonElement>) {
+    void handleSend({ mode: event.shiftKey && (event.metaKey || event.ctrlKey) ? "steer" : "queue" });
   }
 
   function handleFileSelection(event: React.ChangeEvent<HTMLInputElement>) {
@@ -155,6 +163,7 @@ export const ButlerComposer = memo(function ButlerComposer({
   }
 
   const canSend = (draft.trim().length > 0 || attachments.length > 0) && uploadingAttachments === 0;
+  const showStop = Boolean(running && !canSend);
 
   return (
     <div
@@ -270,10 +279,10 @@ export const ButlerComposer = memo(function ButlerComposer({
           >
             <AttachmentIcon />
           </button>
-          <button className={`composer-send composer-send-mobile${running ? " is-stop" : ""}`} onClick={() => running ? onStop?.() : void handleSend()} disabled={!running && !canSend} aria-label={running ? "Stop request" : "Send message"}>
-            <span className="composer-send-label">{running ? "Stop" : "Send"}</span>
+          <button className={`composer-send composer-send-mobile${showStop ? " is-stop" : ""}`} onClick={showStop ? () => onStop?.() : handleSendButtonClick} disabled={!showStop && !canSend} aria-label={showStop ? "Stop request" : running ? "Queue message" : "Send message"}>
+            <span className="composer-send-label">{showStop ? "Stop" : "Send"}</span>
             <span className="composer-send-icon">
-              {running ? <StopIcon /> : <SendIcon />}
+              {showStop ? <StopIcon /> : <SendIcon />}
             </span>
           </button>
         </div>
@@ -295,15 +304,15 @@ export const ButlerComposer = memo(function ButlerComposer({
             ))}
           </select>
         </div>
-        <div className="composer-note">Cmd/Ctrl + Enter sends</div>
+        <div className="composer-note">Cmd/Ctrl + Enter queues · Cmd/Ctrl + Shift + Enter sends now</div>
         <div className="composer-actions composer-actions-desktop">
           <button className="composer-add-image" type="button" onClick={() => fileInputRef.current?.click()} aria-label="Add file" title="Add file">
             <AttachmentIcon />
           </button>
-          <button className={`composer-send composer-send-desktop${running ? " is-stop" : ""}`} onClick={() => running ? onStop?.() : void handleSend()} disabled={!running && !canSend} aria-label={running ? "Stop request" : "Send message"}>
-            <span className="composer-send-label">{running ? "Stop" : "Send"}</span>
+          <button className={`composer-send composer-send-desktop${showStop ? " is-stop" : ""}`} onClick={showStop ? () => onStop?.() : handleSendButtonClick} disabled={!showStop && !canSend} aria-label={showStop ? "Stop request" : running ? "Queue message" : "Send message"}>
+            <span className="composer-send-label">{showStop ? "Stop" : "Send"}</span>
             <span className="composer-send-icon">
-              {running ? <StopIcon /> : <SendIcon />}
+              {showStop ? <StopIcon /> : <SendIcon />}
             </span>
           </button>
         </div>

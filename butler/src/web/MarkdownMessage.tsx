@@ -139,6 +139,8 @@ function describeMessageResource(rawUrl: string | null | undefined): {
   }
 
   try {
+    const rawTrimmed = typeof rawUrl === "string" ? rawUrl.trim().replace(/^`+|`+$/g, "") : "";
+    const rawHttpUrl = /^https?:\/\//i.test(rawTrimmed);
     const baseOrigin = typeof window !== "undefined" ? window.location.origin : "http://localhost";
     const parsed = normalizedUrl.startsWith("/") ? new URL(normalizedUrl, baseOrigin) : new URL(normalizedUrl);
     const pathname = parsed.pathname.toLowerCase();
@@ -146,7 +148,7 @@ function describeMessageResource(rawUrl: string | null | undefined): {
     const isProjectArtifact = pathname.startsWith("/api/project-artifacts/");
     const isFileReference = pathname.startsWith("/api/files/");
     const isPreview = pathname.startsWith("/preview/");
-    const isHttp = parsed.protocol === "http:" || parsed.protocol === "https:";
+    const isHttp = rawHttpUrl && (parsed.protocol === "http:" || parsed.protocol === "https:");
 
     if (!isArtifact && !isProjectArtifact && !isFileReference && !isPreview && !isHttp) {
       return null;
