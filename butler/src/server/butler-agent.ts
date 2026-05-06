@@ -63,7 +63,7 @@ import { buildButlerDelegationTools, buildButlerStackPreviewTools } from "./butl
 import { reviewButlerProofScreenshot } from "./butler-agent-proof-review.js";
 import type { ButlerAgentSessionAccess, ButlerAgentToolAccess } from "./butler-agent-tool-access.js";
 import { BUTLER_TOOL_CATALOG } from "./butler-agent-tool-catalog.js";
-import { normalizeButlerActivitySummaryTurns } from "./butler-activity.js";
+import { keepButlerActivityBefore, normalizeButlerActivitySummaryTurns } from "./butler-activity.js";
 import { readButlerAuthStatus, readCodexAuthStatus } from "./auth-status.js";
 import { notifyDirectCodexMessage, type DirectCodexMessageAccess, type DirectCodexMessagePingInput } from "./direct-codex-message.js";
 import { type FileReferenceStore } from "./file-store.js";
@@ -429,9 +429,9 @@ export class ButlerAgentService extends EventEmitter {
     );
   }
 
-  async clearChat(): Promise<void> { this.operatorMessages.splice(0, this.operatorMessages.length); await this.saveOperatorMessageState(); clearButlerSessionChat(this.session); this.lastError = null; this.emit("change"); }
+  async clearChat(): Promise<void> { this.operatorMessages.splice(0, this.operatorMessages.length); this.activityTurns.splice(0, this.activityTurns.length); this.activitySummaryTurns.splice(0, this.activitySummaryTurns.length); this.activeActivityTurnId = null; await Promise.all([this.saveOperatorMessageState(), this.saveActivitySummaryState()]); clearButlerSessionChat(this.session); this.lastError = null; this.emit("change"); }
 
-  async deleteChatFromMessage(messageId: string): Promise<void> { keepOperatorMessagesBefore(this.operatorMessages, deleteButlerSessionChatFrom(this.session, messageId)); await this.saveOperatorMessageState(); this.lastError = null; this.emit("change"); }
+  async deleteChatFromMessage(messageId: string): Promise<void> { const deleteFrom = deleteButlerSessionChatFrom(this.session, messageId); keepOperatorMessagesBefore(this.operatorMessages, deleteFrom); const prunedActivity = keepButlerActivityBefore(this as unknown as ButlerAgentSessionAccess, deleteFrom); await Promise.all([this.saveOperatorMessageState(), ...(prunedActivity ? [this.saveActivitySummaryState()] : [])]); this.lastError = null; this.emit("change"); }
 
   async notifyDirectCodexMessage(input: DirectCodexMessagePingInput & { threadId: string }): Promise<void> { await notifyDirectCodexMessage(this as unknown as DirectCodexMessageAccess, input); }
 

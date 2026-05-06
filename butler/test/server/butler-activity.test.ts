@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { getButlerActivityTurns, recordButlerActivityEvent } from "../../src/server/butler-activity.js";
+import { getButlerActivityTurns, keepButlerActivityBefore, recordButlerActivityEvent } from "../../src/server/butler-activity.js";
 import type { ButlerAgentSessionAccess } from "../../src/server/butler-agent-tool-access.js";
 
 function makeAccess(): ButlerAgentSessionAccess {
@@ -169,4 +169,76 @@ test("Butler activity normalizes persisted item text when read back", () => {
   const turns = getButlerActivityTurns(access);
   assert.equal(turns[0]?.items[0]?.text, "Thinking update recorded.");
   assert.equal(turns[0]?.items[1]?.text, "Remembered: Agent Slidev desktop app direction");
+});
+
+test("Butler activity is pruned when chat is deleted from a prompt", () => {
+  const access = makeAccess();
+  access.activeActivityTurnId = "active-turn";
+  access.activityTurns.push(
+    {
+      id: "kept-turn",
+      status: "completed",
+      startedAt: 100,
+      completedAt: 150,
+      items: [
+        {
+          id: "kept-tool",
+          kind: "tool",
+          status: "completed",
+          title: "kept_tool",
+          text: "done",
+          at: 120,
+          updatedAt: 150,
+          contentIndex: null,
+          toolCallId: "kept-tool"
+        }
+      ]
+    },
+    {
+      id: "active-turn",
+      status: "active",
+      startedAt: 250,
+      completedAt: null,
+      items: [
+        {
+          id: "active-tool",
+          kind: "tool",
+          status: "active",
+          title: "active_tool",
+          text: "running",
+          at: 250,
+          updatedAt: 250,
+          contentIndex: null,
+          toolCallId: "active-tool"
+        }
+      ]
+    }
+  );
+  access.activitySummaryTurns.push(
+    access.activityTurns[0]!,
+    {
+      id: "deleted-summary",
+      status: "completed",
+      startedAt: 220,
+      completedAt: 260,
+      items: [
+        {
+          id: "deleted-tool",
+          kind: "tool",
+          status: "completed",
+          title: "deleted_tool",
+          text: "done",
+          at: 230,
+          updatedAt: 260,
+          contentIndex: null,
+          toolCallId: "deleted-tool"
+        }
+      ]
+    }
+  );
+
+  assert.equal(keepButlerActivityBefore(access, 200), true);
+  assert.deepEqual(access.activityTurns.map((turn) => turn.id), ["kept-turn"]);
+  assert.deepEqual(access.activitySummaryTurns.map((turn) => turn.id), ["kept-turn"]);
+  assert.equal(access.activeActivityTurnId, null);
 });

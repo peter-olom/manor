@@ -413,6 +413,34 @@ export function getButlerActivityTurns(access: ButlerAgentSessionAccess): Butler
     }));
 }
 
+function shouldKeepActivityTurnBefore(turn: ButlerActivityTurnView, timestamp: number): boolean {
+  const activityAt = turn.completedAt ?? turn.startedAt;
+  return activityAt < timestamp;
+}
+
+export function keepButlerActivityBefore(access: ButlerAgentSessionAccess, timestamp: number | null): boolean {
+  if (timestamp === null) {
+    return false;
+  }
+
+  const nextActivityTurns = access.activityTurns.filter((turn) => shouldKeepActivityTurnBefore(turn, timestamp));
+  const nextSummaryTurns = access.activitySummaryTurns.filter((turn) => shouldKeepActivityTurnBefore(turn, timestamp));
+  const removed = nextActivityTurns.length !== access.activityTurns.length || nextSummaryTurns.length !== access.activitySummaryTurns.length;
+
+  if (!removed) {
+    return false;
+  }
+
+  access.activityTurns.splice(0, access.activityTurns.length, ...nextActivityTurns);
+  access.activitySummaryTurns.splice(0, access.activitySummaryTurns.length, ...nextSummaryTurns);
+
+  if (access.activeActivityTurnId && !access.activityTurns.some((turn) => turn.id === access.activeActivityTurnId)) {
+    access.activeActivityTurnId = null;
+  }
+
+  return true;
+}
+
 export function normalizeButlerActivitySummaryTurns(turns: unknown): ButlerActivityTurnView[] {
   if (!Array.isArray(turns)) {
     return [];

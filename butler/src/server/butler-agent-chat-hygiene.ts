@@ -10,8 +10,23 @@ type SessionEntryLike = {
   message?: {
     role?: string;
     timestamp?: number;
+    createdAt?: unknown;
+    at?: unknown;
   };
 };
+
+function parseTimestamp(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
 
 function appendsContextMessage(entry: SessionEntryLike): boolean {
   return entry.type === "message" || entry.type === "custom_message" || entry.type === "branch_summary";
@@ -79,7 +94,7 @@ export function deleteButlerSessionChatFrom(session: AgentSession | null, messag
   }
 
   const messageIndex = Number.parseInt(match[1], 10);
-  const targetMessage = session.messages[messageIndex] as { role?: string; timestamp?: number } | undefined;
+  const targetMessage = session.messages[messageIndex] as { role?: string; timestamp?: unknown; createdAt?: unknown; at?: unknown } | undefined;
   if (!targetMessage || typeof targetMessage.role !== "string" || !targetMessage.role.startsWith("user")) {
     throw new Error("Only operator messages can be used as a delete point.");
   }
@@ -102,13 +117,12 @@ export function deleteButlerSessionChatFrom(session: AgentSession | null, messag
   session.agent.state.messages = nextContext.messages;
 
   const targetAt =
-    typeof targetMessage.timestamp === "number" && Number.isFinite(targetMessage.timestamp)
-      ? targetMessage.timestamp
-      : targetEntry.timestamp
-        ? Date.parse(targetEntry.timestamp)
-        : Number.NaN;
+    parseTimestamp(targetMessage.timestamp) ??
+    parseTimestamp(targetMessage.createdAt) ??
+    parseTimestamp(targetMessage.at) ??
+    parseTimestamp(targetEntry.timestamp);
 
-  return Number.isFinite(targetAt) ? targetAt : null;
+  return targetAt;
 }
 
 export function keepOperatorMessagesBefore(messages: ButlerMessageView[], timestamp: number | null): void {

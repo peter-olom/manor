@@ -59,6 +59,10 @@ function getActivitySummary(turn: ButlerActivityTurn): string {
   return parts.length > 0 ? parts.join(" · ") : "No activity recorded";
 }
 
+function getActivityTurnTime(turn: ButlerActivityTurn): number {
+  return turn.completedAt ?? turn.startedAt;
+}
+
 function ButlerActivityList({ turn }: { turn: ButlerActivityTurn }) {
   if (turn.items.length === 0) {
     return <div className="butler-activity-empty">Preparing request</div>;
@@ -289,6 +293,7 @@ export function ButlerSurface({
   const [showChecklists, setShowChecklists] = useState(false);
   const [activeJumpId, setActiveJumpId] = useState<string | null>(null);
   const [pendingButlerText, setPendingButlerText] = useState<string | null>(null);
+  const [hideButlerActivityFrom, setHideButlerActivityFrom] = useState<number | null>(null);
   const [butlerDraftPrefill, setButlerDraftPrefill] = useState<{ id: string; text: string } | null>(null);
   const [butlerAttachments, setButlerAttachments] = useState<FileReference[]>([]);
   const [butlerUploadingAttachments, setButlerUploadingAttachments] = useState(0);
@@ -389,6 +394,15 @@ export function ButlerSurface({
       });
     });
   }, [live]);
+
+  useEffect(() => {
+    if (hideButlerActivityFrom === null || !live) {
+      return;
+    }
+    if (!live.activityTurns.some((turn) => getActivityTurnTime(turn) >= hideButlerActivityFrom)) {
+      setHideButlerActivityFrom(null);
+    }
+  }, [hideButlerActivityFrom, live]);
 
   useEffect(() => {
     const anchor = butlerPrependAnchorRef.current;
@@ -512,6 +526,7 @@ export function ButlerSurface({
     setButlerAttachments([]);
     setFollowButler(true);
     setPendingButlerText(messageSummary);
+    setHideButlerActivityFrom(null);
 
     try {
       const imageReferenceIds = composerAttachments.filter((item) => item.mimeType.startsWith("image/")).map((item) => item.id);
@@ -561,6 +576,7 @@ export function ButlerSurface({
     try {
       await postJson("/api/chat/clear", {});
       setHistory({ messages: [], loadedStart: 0, totalCount: 0 });
+      setHideButlerActivityFrom(0);
       setPendingButlerText(null);
       setFollowButler(true);
       showToast("Butler chat cleared");
@@ -575,7 +591,10 @@ export function ButlerSurface({
     }
 
     try {
+      const targetMessage = history.messages.find((message) => message.id === messageId);
+      const targetAt = targetMessage?.at ?? butlerMessageTimesRef.current[messageId] ?? Date.now();
       await postJson("/api/chat/delete-from", { messageId });
+      setHideButlerActivityFrom(targetAt);
       setHistory((current) => {
         const index = current.messages.findIndex((message) => message.id === messageId);
         if (index < 0) {
@@ -726,15 +745,25 @@ export function ButlerSurface({
     [butlerMessagesWithTimes]
   );
   const butlerTimelineGroups = useMemo(() => groupTimelineItems(butlerPromptJumpList), [butlerPromptJumpList]);
+  const visibleButlerActivityTurns = useMemo(
+    () => {
+      const turns = live?.activityTurns ?? [];
+      if (hideButlerActivityFrom === null) {
+        return turns;
+      }
+      return turns.filter((turn) => getActivityTurnTime(turn) < hideButlerActivityFrom);
+    },
+    [hideButlerActivityFrom, live?.activityTurns]
+  );
   const activeButlerActivityTurn = useMemo(
-    () => live?.activityTurns.find((turn) => turn.status === "active") ?? null,
-    [live?.activityTurns]
+    () => visibleButlerActivityTurns.find((turn) => turn.status === "active") ?? null,
+    [visibleButlerActivityTurns]
   );
   const butlerConversationRows = useMemo(
     () => {
       const timestampedRows = [
         ...butlerMessagesWithTimes.map((message) => ({ id: message.id, kind: "message" as const, message, at: message.at })),
-        ...(live?.activityTurns ?? [])
+        ...visibleButlerActivityTurns
           .filter((turn) => turn.status === "completed" && turn.items.length > 0)
           .map((turn) => ({
             id: turn.id,
@@ -752,7 +781,7 @@ export function ButlerSurface({
         ...(activeButlerActivityTurn ? [{ id: `${activeButlerActivityTurn.id}-live`, kind: "activity" as const, turn: activeButlerActivityTurn, active: true }] : [])
       ];
     },
-    [activeButlerActivityTurn, butlerMessagesWithTimes, live?.activityTurns, pendingButlerText, shell?.butler.isStreaming, shell?.butler.pending]
+    [activeButlerActivityTurn, butlerMessagesWithTimes, pendingButlerText, shell?.butler.isStreaming, shell?.butler.pending, visibleButlerActivityTurns]
   );
   const deferredRows = useDeferredValue(butlerConversationRows);
   const latestButlerActivityKey =
