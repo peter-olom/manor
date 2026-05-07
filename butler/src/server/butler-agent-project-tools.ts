@@ -17,6 +17,7 @@ import {
   readProjectArtifactContent
 } from "./project-artifacts-policies.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import { formatButlerMemoryRetrieval, retrieveButlerMemory } from "./memory-retrieval.js";
 
 function hasOwnField(value: unknown, key: string): boolean {
   return Boolean(value) && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key);
@@ -45,6 +46,34 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
         return {
           content: [{ type: "text", text: `Remembered: ${entry.summary}` }],
           details: { entry }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "retrieve_memory",
+      label: "Retrieve memory",
+      description: "Retrieve a scoped durable memory brief for a project, job, or stateful operator question without mutating memory.",
+      promptSnippet:
+        "retrieve_memory: use for stateful project questions, cross-thread follow-ups, prior decisions, unresolved outcomes, or when the operator expects Butler to remember work; skip it for casual chat.",
+      parameters: Type.Object({
+        projectId: Type.Optional(Type.String()),
+        threadId: Type.Optional(Type.String()),
+        query: Type.Optional(Type.String()),
+        limit: Type.Optional(Type.Number({ minimum: 1, maximum: 20 })),
+        includeGlobal: Type.Optional(Type.Boolean())
+      }),
+      uiEffects: access.getToolUiEffects("retrieve_memory"),
+      execute: async (_toolCallId, params) => {
+        const retrieval = retrieveButlerMemory(access.store, {
+          projectId: typeof params.projectId === "string" ? params.projectId : null,
+          threadId: typeof params.threadId === "string" ? params.threadId : null,
+          query: typeof params.query === "string" ? params.query : null,
+          limit: typeof params.limit === "number" ? params.limit : null,
+          includeGlobal: typeof params.includeGlobal === "boolean" ? params.includeGlobal : false
+        });
+        return {
+          content: [{ type: "text", text: formatButlerMemoryRetrieval(retrieval) }],
+          details: { retrieval }
         };
       }
     }),

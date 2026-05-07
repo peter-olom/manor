@@ -16,9 +16,23 @@ import type {
 } from "./types.js";
 
 export function syncStateStoreThreadJobMemory(access: StateStoreInternalAccess, thread: CodexThreadRecord): JobMemoryView {
-  const projectId = thread.supervisor.projectId || "unknown";
-  const projectLabel = thread.supervisor.projectLabel || projectId || "Unknown";
-  const current = thread.jobMemory ?? buildEmptyJobMemory({ threadId: thread.id, projectId, projectLabel, contract: thread.executionContract });
+  const fallbackProjectId =
+    thread.executionContract?.projectId ??
+    (thread.supervisor.projectId && thread.supervisor.projectId !== "unknown" ? thread.supervisor.projectId : "unknown");
+  const fallbackProjectLabel =
+    thread.executionContract?.projectLabel ??
+    (thread.supervisor.projectLabel && thread.supervisor.projectLabel !== "Unknown" ? thread.supervisor.projectLabel : fallbackProjectId);
+  const current =
+    thread.jobMemory ??
+    buildEmptyJobMemory({ threadId: thread.id, projectId: fallbackProjectId, projectLabel: fallbackProjectLabel, contract: thread.executionContract });
+  const projectId =
+    thread.supervisor.projectId && thread.supervisor.projectId !== "unknown"
+      ? thread.supervisor.projectId
+      : thread.executionContract?.projectId ?? current.projectId ?? "unknown";
+  const projectLabel =
+    thread.supervisor.projectLabel && thread.supervisor.projectLabel !== "Unknown"
+      ? thread.supervisor.projectLabel
+      : thread.executionContract?.projectLabel ?? current.projectLabel ?? projectId ?? "Unknown";
   const nextMemory: JobMemoryView = {
     ...current,
     threadId: thread.id,
@@ -31,7 +45,7 @@ export function syncStateStoreThreadJobMemory(access: StateStoreInternalAccess, 
     updatedAt: Math.max(current.updatedAt, thread.updatedAt)
   };
   thread.jobMemory = nextMemory;
-  access.persistedJobMemoriesByThreadId.set(thread.id, { ...nextMemory });
+  access.persistedJobMemoriesByThreadId.set(thread.id, cloneJobMemory(nextMemory));
   return nextMemory;
 }
 
@@ -42,7 +56,7 @@ export function getStateStoreJobMemory(access: StateStoreInternalAccess, threadI
   }
 
   const persisted = access.persistedJobMemoriesByThreadId.get(threadId);
-  return persisted ? { ...persisted } : null;
+  return persisted ? cloneJobMemory(persisted) : null;
 }
 
 export function getStateStoreProjectMemory(access: StateStoreInternalAccess, projectId: string): ProjectMemoryView | null {
@@ -56,14 +70,44 @@ export function listStateStoreProjectMemories(access: StateStoreInternalAccess):
     .sort((left, right) => right.updatedAt - left.updatedAt);
 }
 
+export function listStateStoreJobMemories(access: StateStoreInternalAccess, projectId?: string | null): JobMemoryView[] {
+  for (const thread of access.threads.values()) {
+    syncStateStoreThreadJobMemory(access, thread);
+  }
+  return [...access.persistedJobMemoriesByThreadId.values()]
+    .filter((memory) => !projectId || memory.projectId === projectId)
+    .map((memory) => cloneJobMemory(memory))
+    .sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
 export function listStateStorePendingPromotionCandidates(
   access: StateStoreInternalAccess,
   projectId?: string | null
 ): JobMemoryPromotionCandidateView[] {
-  return [...access.threads.values()]
-    .flatMap((thread) => syncStateStoreThreadJobMemory(access, thread).promotionCandidates)
+  return listStateStoreJobMemories(access, projectId)
+    .flatMap((memory) => memory.promotionCandidates)
     .filter((candidate) => candidate.status === "pending" && (!projectId || candidate.projectId === projectId))
     .sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
+function cloneJobMemory(memory: JobMemoryView): JobMemoryView {
+  return {
+    ...memory,
+    currentPlan: [...memory.currentPlan],
+    blockers: [...memory.blockers],
+    assumptions: [...memory.assumptions],
+    proofRequirements: [...memory.proofRequirements],
+    notes: [...memory.notes],
+    decisions: memory.decisions.map((entry) => ({ ...entry })),
+    entries: memory.entries.map((entry) => ({
+      ...entry,
+      blockers: [...entry.blockers],
+      plan: [...entry.plan],
+      assumptions: [...entry.assumptions],
+      proofRequirements: [...entry.proofRequirements]
+    })),
+    promotionCandidates: memory.promotionCandidates.map((entry) => ({ ...entry }))
+  };
 }
 
 function getOrCreateProjectMemory(access: StateStoreInternalAccess, projectId: string, projectLabel: string): ProjectMemoryView {
@@ -272,8 +316,7 @@ export function resolveStateStorePromotionCandidate(
   accepted: boolean
 ): JobMemoryPromotionCandidateView | null {
   const now = Date.now();
-  for (const thread of access.threads.values()) {
-    const jobMemory = syncStateStoreThreadJobMemory(access, thread);
+  for (const jobMemory of listStateStoreJobMemories(access)) {
     const candidate = jobMemory.promotionCandidates.find((entry) => entry.id === candidateId);
     if (!candidate) {
       continue;
@@ -293,14 +336,18 @@ export function resolveStateStorePromotionCandidate(
       promotionCandidates: jobMemory.promotionCandidates.map((entry) => (entry.id === candidateId ? updatedCandidate : entry)),
       updatedAt: now
     };
-    thread.jobMemory = nextMemory;
-    access.persistedJobMemoriesByThreadId.set(thread.id, { ...nextMemory });
+    const thread = access.threads.get(jobMemory.threadId);
+    if (thread) {
+      thread.jobMemory = nextMemory;
+      thread.updatedAt = Math.max(thread.updatedAt, now);
+    }
+    access.persistedJobMemoriesByThreadId.set(jobMemory.threadId, cloneJobMemory(nextMemory));
 
     if (accepted) {
       const projectMemory = getOrCreateProjectMemory(access, updatedCandidate.projectId, updatedCandidate.projectLabel);
       const nextProjectEntry: ProjectMemoryEntryView = {
         id: crypto.randomUUID(),
-        sourceThreadId: thread.id,
+        sourceThreadId: jobMemory.threadId,
         kind: updatedCandidate.kind,
         summary: updatedCandidate.summary,
         details: updatedCandidate.details,
@@ -315,7 +362,9 @@ export function resolveStateStorePromotionCandidate(
       access.persistedProjectMemoriesByProjectId.set(updatedCandidate.projectId, nextProjectMemory);
     }
 
-    access.refreshDerivedThreadState(thread, now);
+    if (thread) {
+      access.refreshDerivedThreadState(thread, now);
+    }
     queueStateStoreSave(access);
     emitStateStoreChange(access);
     return updatedCandidate;

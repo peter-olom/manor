@@ -536,6 +536,18 @@ export interface ProjectMemoryView {
   updatedAt: number;
 }
 
+export interface ButlerMemoryRetrievalView {
+  query: string | null;
+  projectId: string | null;
+  threadId: string | null;
+  projectRollups: ProjectMemoryView[];
+  jobMemories: JobMemoryView[];
+  butlerMemories: ButlerMemoryEntryView[];
+  pendingPromotionCandidates: JobMemoryPromotionCandidateView[];
+  warnings: string[];
+  retrievedAt: number;
+}
+
 export interface ButlerMemoryEntryView {
   id: string;
   summary: string;

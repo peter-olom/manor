@@ -18,7 +18,9 @@ plugins=(
   pip
 )
 
-source "${ZSH}/oh-my-zsh.sh"
+if [[ -f "${ZSH}/oh-my-zsh.sh" ]]; then
+  source "${ZSH}/oh-my-zsh.sh"
+fi
 
 autoload -Uz compinit && compinit
 

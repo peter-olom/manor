@@ -15,6 +15,7 @@ import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-r
 import { buildCodexInputWithReferences, buildComposerInputItemsPrompt, buildReferencePromptText } from "./reference-inputs.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { registerServerAssetRoutes } from "./server-asset-routes.js";
+import { retrieveButlerMemory } from "./memory-retrieval.js";
 import {
   ButlerSseHub,
   cleanupThreadRuntimeResources,
@@ -275,6 +276,24 @@ app.get("/api/memory/projects/:projectId", (request, response) => {
   response.json({
     projectMemory: store.getProjectMemory(projectId),
     pendingPromotionCandidates: store.listPendingPromotionCandidates(projectId)
+  });
+});
+
+app.get("/api/memory/retrieve", (request, response) => {
+  const projectId = typeof request.query.projectId === "string" ? request.query.projectId : null;
+  const threadId = typeof request.query.threadId === "string" ? request.query.threadId : null;
+  const query = typeof request.query.query === "string" ? request.query.query : null;
+  const limitRaw = typeof request.query.limit === "string" ? Number(request.query.limit) : null;
+  const includeGlobal = request.query.includeGlobal === "1" || request.query.includeGlobal === "true";
+
+  response.json({
+    retrieval: retrieveButlerMemory(store, {
+      projectId,
+      threadId,
+      query,
+      limit: Number.isFinite(limitRaw) ? limitRaw : null,
+      includeGlobal
+    })
   });
 });
 

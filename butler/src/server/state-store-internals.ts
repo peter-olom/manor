@@ -18,6 +18,7 @@ import {
   normalizeWindow,
   restorePersistedTurn
 } from "./state-store-helpers.js";
+import { loadStateStoreSqliteMemory, persistStateStoreSqliteMemory } from "./state-store-sqlite-memory.js";
 import type {
   ButlerWindow,
   CodexEventEntry,
@@ -840,6 +841,11 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
         })
         .slice(-100)
     );
+    const sqliteLoaded = await loadStateStoreSqliteMemory(access);
+    // TODO: Remove JSON-to-SQLite memory migration after existing installs have had a stable migration window.
+    if (!sqliteLoaded && (access.persistedJobMemoriesByThreadId.size > 0 || access.persistedProjectMemoriesByProjectId.size > 0 || access.persistedButlerMemoryEntries.length > 0)) {
+      await persistStateStoreSqliteMemory(access);
+    }
     for (const [projectId, artifacts] of Object.entries(data.projectArtifactsByProjectId ?? {})) {
       const entries = (Array.isArray(artifacts) ? artifacts : [])
         .filter(
@@ -1047,6 +1053,7 @@ export function queueStateStoreSave(access: StateStoreInternalAccess): void {
       )
     };
     await fs.mkdir(path.dirname(access.uiStatePath), { recursive: true });
+    await persistStateStoreSqliteMemory(access);
     await fs.writeFile(access.uiStatePath, JSON.stringify(payload, null, 2));
   }, 150);
 }

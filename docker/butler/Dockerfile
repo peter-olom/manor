@@ -28,7 +28,6 @@ RUN apt-get update \
   && curl -fsSL "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.${ttyd_arch}" -o /usr/local/bin/ttyd \
   && chmod +x /usr/local/bin/ttyd \
   && mkdir -p /home/butler \
-  && git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git /home/butler/.oh-my-zsh \
   && mkdir -p /home/butler/.oh-my-zsh/custom \
   && npm install -g "@openai/codex@${CODEX_VERSION}" \
   && npm install \

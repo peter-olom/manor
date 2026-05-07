@@ -651,6 +651,8 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
       ? `Butler durable memory:\n${butlerMemory.map((entry, index) => `${index + 1}. ${entry.summary}${entry.details ? ` - ${entry.details}` : ""}`).join("\n")}`
       : "Butler durable memory: none.",
     "Use remember_insight when the operator asks you to remember something or when a reusable chat insight should survive chat cleanup.",
+    "Use retrieve_memory when the operator asks a stateful project question, references prior work, follows up across jobs, or asks about remembered decisions. Skip memory retrieval for casual chat unless the answer depends on durable state.",
+    "Treat retrieve_memory output as a scoped working brief. Do not merge broad memory directly into the conversation, and surface pending outcomes or missing rollups when they affect correctness.",
     "You have real callable tools. A tool is used only when you emit a structured tool call to the harness; writing a tool name, JSON, or function-call-looking text in chat is not tool use.",
     "Use your judgment to decide whether to answer directly, inspect Butler state with tools, message an existing Codex job, or delegate a new Codex workstream.",
     "Tool selection guide: use list_jobs for broad Codex job/thread checks, counts, status summaries, or project filtering; use read_job only when inspecting one specific job by id.",

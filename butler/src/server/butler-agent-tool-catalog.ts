@@ -128,6 +128,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "refreshThreads", description: "Makes new Butler memory available immediately." }]
   },
   {
+    name: "retrieve_memory",
+    label: "Retrieve memory",
+    description: "Retrieve a scoped durable memory brief for project work, job follow-ups, and prior decisions.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps memory retrieval scoped before Butler answers or acts." }]
+  },
+  {
     name: "list_project_artifacts",
     label: "List project artifacts",
     description: "List durable project artifacts such as saved seeds, downloads, and reusable analysis files.",

@@ -61,7 +61,7 @@ import {
 import {
   getStateStoreJobMemory,
   getStateStoreProjectMemory,
-  listStateStorePendingPromotionCandidates,
+  listStateStoreJobMemories, listStateStorePendingPromotionCandidates,
   listStateStoreProjectMemories,
   recordStateStoreJobCheckpoint,
   recordStateStoreJobDecision,
@@ -305,7 +305,7 @@ export class ButlerStateStore extends EventEmitter {
 
   getProjectMemory(projectId: string): ProjectMemoryView | null { return getStateStoreProjectMemory(this.getInternalAccess(), projectId); }
 
-  listProjectMemories(): ProjectMemoryView[] { return listStateStoreProjectMemories(this.getInternalAccess()); }
+  listProjectMemories(): ProjectMemoryView[] { return listStateStoreProjectMemories(this.getInternalAccess()); } listJobMemories(projectId?: string | null): JobMemoryView[] { return listStateStoreJobMemories(this.getInternalAccess(), projectId); }
 
   listButlerMemory(): ButlerMemoryEntryView[] { return [...this.persistedButlerMemoryEntries]; }
 
