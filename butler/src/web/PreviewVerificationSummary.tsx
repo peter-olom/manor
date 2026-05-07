@@ -5,7 +5,6 @@ import { ChevronDownIcon, ChevronUpIcon, TrashIcon } from "./icons";
 import type { PreviewMedia, PreviewProofRecord, PreviewVerification, PreviewVerificationArtifact } from "./types";
 import {
   describeArtifactAvailability,
-  findVerificationArtifact,
   findVerificationArtifacts,
   formatVerificationSummary,
   formatVerificationTimestamp
@@ -26,12 +25,7 @@ export function PreviewVerificationSummary({
 }) {
   const [open, setOpen] = useState(false);
   const screenshotArtifacts = findVerificationArtifacts(verification, "screenshot");
-  const primaryArtifacts = [
-    ...screenshotArtifacts,
-    ...["video", "manifest", "trace"]
-      .map((kind) => findVerificationArtifact(verification, kind as PreviewVerificationArtifact["kind"]))
-      .filter((artifact): artifact is PreviewVerificationArtifact => Boolean(artifact))
-  ];
+  const primaryArtifacts = [...screenshotArtifacts, ...verification.artifacts.filter((artifact) => artifact.kind !== "screenshot")];
   const issueLines = [
     verification.failureKind !== "none" ? `Signal: ${verification.failureKind}` : null,
     verification.error,
@@ -112,7 +106,7 @@ export function PreviewVerificationSummary({
             <div className="preview-verification-links">
               {primaryArtifacts.map((artifact) => {
                 const downloadKind =
-                  artifact.kind === "manifest" || artifact.kind === "trace" || artifact.kind === "html";
+                  artifact.kind === "manifest" || artifact.kind === "trace" || artifact.kind === "html" || artifact.kind === "file" || artifact.kind === "other";
                 const href = downloadKind ? artifact.downloadUrl ?? artifact.url ?? undefined : artifact.url ?? undefined;
                 const previewKind = artifact.kind === "screenshot" ? "image" : artifact.kind === "video" ? "video" : null;
                 const availability = describeArtifactAvailability(artifact);

@@ -27,7 +27,9 @@ export type ProofScreenshotReview = {
 export type ResolvedPreviewProof = {
   preview: Pick<PreviewLeaseView, "id" | "threadId" | "projectId" | "projectLabel" | "title" | "stackId">;
   verification: PreviewVerificationView;
-  primaryScreenshot: PreviewVerificationArtifactView;
+  primaryArtifact: PreviewVerificationArtifactView;
+  primaryScreenshot: PreviewVerificationArtifactView | null;
+  artifacts: PreviewVerificationArtifactView[];
   screenshots: PreviewVerificationArtifactView[];
   video: PreviewVerificationArtifactView | null;
   manifest: PreviewVerificationArtifactView | null;
@@ -625,7 +627,7 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     "Review the worker report and available proof against every acceptance point.",
     "Use review_acceptance_point to record accepted, rejected, or waived decisions in the structured checklist. Workers only submit evidence; Butler owns acceptance.",
     "For each rejected point, include nextInstruction. If multiple points are rejected, mark them all first, then use flush_rejected_acceptance_points once to send one batched worker follow-up.",
-    "For frontend or visual claims, use review_preview_proof when preview proof is available or when the worker references screenshots, video, trace, or browser proof.",
+    "Use review_preview_proof when proof is available or when the worker references screenshots, video, trace, browser proof, desktop proof, logs, or file proof.",
     "If any acceptance point lacks convincing evidence or appears incomplete, reject it with nextInstruction instead of writing the rejected-point steering directly in operator chat.",
     "Use reply_to_operator only when all acceptance points are accepted, the job is genuinely blocked, or operator input is needed.",
     relevantWorkerReport ? `Worker report status: ${relevantWorkerReport.status}` : "Worker report status: none",

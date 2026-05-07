@@ -24,6 +24,7 @@ function printHelp() {
   manor-harness [--thread <jobId>] artifact read <artifactId>
   manor-harness [--thread <jobId>] artifact save-text --title "<text>" [--kind seed|reference|download|research|report|other] [--description "<text>"] [--file-name <name>] [--content-type <mime>] [--tag <text> ...] [--metadata KEY=VALUE ...] [--body "<text>"]
   manor-harness [--thread <jobId>] artifact download --title "<text>" --url <url> [--kind seed|reference|download|research|report|other] [--description "<text>"] [--file-name <name>] [--content-type <mime>] [--tag <text> ...] [--metadata KEY=VALUE ...]
+  manor-harness [--thread <jobId>] proof file <filePath> [--title <text>] [--label <text>] [--content-type <mime>]
   manor-harness [--thread <jobId>] policy list
   manor-harness [--thread <jobId>] policy remember --title "<text>" --instruction "<text>" [--policy-id <id>] [--artifact <artifactId> ...] [--trigger <text> ...]
   manor-harness [--thread <jobId>] policy invoke <policyId|title> [--service <serviceId>]
@@ -77,6 +78,7 @@ Proof tips:
   Cookies are injected into the browser context directly; headers remain separate.
   Proof is session-driven: start browser sidecar, run actions, optionally capture screenshots, then stop session.
   Native Electron or VNC-visible proof is desktop-driven: check desktop status, start a desktop session, capture screenshots/actions there, then stop it.
+  File proof is for cases where the durable evidence is a generated file, PDF, Office file, archive, report, export, log, or saved artifact.
   Do not create a private Xvfb display when the operator asked for a VNC-visible desktop app.
   Do not use direct curl or fetch from the shared Codex shell to judge live-site browser reachability. That shell is behind restricted egress by design.
   Example:
@@ -654,6 +656,17 @@ async function main() {
           leaseId: readFlag(args, "--lease")
         };
       }
+    }
+  } else if (args[0] === "proof") {
+    const subcommand = args[1];
+    if (subcommand === "file" && args[2]) {
+      action = "proof.file";
+      params = {
+        filePath: args[2],
+        title: readFlag(args, "--title"),
+        label: readFlag(args, "--label"),
+        contentType: readFlag(args, "--content-type")
+      };
     }
   } else if (args[0] === "desktop") {
     const subcommand = args[1];

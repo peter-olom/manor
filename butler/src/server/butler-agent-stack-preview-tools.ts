@@ -975,10 +975,10 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
     }),
     access.defineButlerTool({
       name: "review_preview_proof",
-      label: "Review preview proof",
-      description: "Inspect the latest Playwright screenshots for one preview or job and decide whether the recorded proof is convincing.",
+      label: "Review proof",
+      description: "Inspect the latest proof bundle for one preview or job and decide whether the recorded artifacts are convincing.",
       promptSnippet:
-        "review_preview_proof: use this when frontend execution proof is demanded. Do not sign off until the screenshot has been reviewed and the recorded proof is clearly convincing.",
+        "review_preview_proof: use this when proof is demanded. It can review browser, desktop, and file proof bundles. Do not sign off until the recorded proof is clearly convincing.",
       parameters: Type.Object({
         leaseId: Type.Optional(Type.String()),
         threadId: Type.Optional(Type.String()),
@@ -1003,23 +1003,23 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           expectedOutcome: typedParams.expectedOutcome
         });
 
-        const videoRequirementMet = Boolean(proof.video?.downloadUrl ?? proof.video?.url);
-        const proofVerdict = videoRequirementMet ? review.verdict : "incomplete";
-        const screenshotSummary =
-          proof.screenshots.length > 0
-            ? `${proof.screenshots.length} recorded (${proof.screenshots
+        const availableArtifactCount = proof.artifacts.length;
+        const proofVerdict = availableArtifactCount > 0 ? review.verdict : "incomplete";
+        const artifactSummary =
+          availableArtifactCount > 0
+            ? `${availableArtifactCount} available (${proof.artifacts
                 .slice(0, 3)
-                .map((artifact) => artifact.label)
-                .join(", ")}${proof.screenshots.length > 3 ? ", ..." : ""})`
+                .map((artifact) => `${artifact.kind}:${artifact.label}`)
+                .join(", ")}${availableArtifactCount > 3 ? ", ..." : ""})`
             : "none";
         const proofSummary = [
           `Verdict=${proofVerdict}`,
           `FailureKind=${proof.verification.failureKind}`,
           `Visible=${review.visibleState}`,
           `Evidence=${review.evidence}`,
-          `Concern=${videoRequirementMet ? review.concern : "Recorded video proof is missing."}`,
-          `RecordedVideo=${videoRequirementMet ? "yes" : "no"}`,
-          `Screenshots=${screenshotSummary}`
+          `Concern=${availableArtifactCount > 0 ? review.concern : "Recorded proof artifacts are missing."}`,
+          `RecordedVideo=${proof.video ? "yes" : "no"}`,
+          `Artifacts=${artifactSummary}`
         ].join("\n");
 
         return {
@@ -1032,13 +1032,15 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           details: {
             preview: proof.preview,
             verification: proof.verification,
+            artifacts: proof.artifacts,
             screenshots: proof.screenshots,
             screenshot: proof.primaryScreenshot,
+            primaryArtifact: proof.primaryArtifact,
             video: proof.video,
             manifest: proof.manifest,
             trace: proof.trace,
             review,
-            proofComplete: videoRequirementMet
+            proofComplete: availableArtifactCount > 0
           }
         };
       }

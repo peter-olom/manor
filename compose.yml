@@ -5,7 +5,7 @@ services:
       dockerfile: docker/butler/Dockerfile
       args:
         CODEX_VERSION: ${CODEX_VERSION:-0.124.0}
-        PI_VERSION: ${PI_VERSION:-0.70.2}
+        PI_VERSION: ${PI_VERSION:-0.73.0}
         BUTLER_INSTALL_MODE: ${BUTLER_INSTALL_MODE:-production}
     image: manor-butler:local
     container_name: manor-butler

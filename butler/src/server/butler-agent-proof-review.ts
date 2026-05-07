@@ -4,23 +4,24 @@ import { complete, type Model } from "@mariozechner/pi-ai";
 import type { AgentSession, ModelRegistry } from "@mariozechner/pi-coding-agent";
 
 import { contentToText, parseProofScreenshotReview, type ProofScreenshotReview, type ResolvedPreviewProof } from "./butler-agent-helpers.js";
+import { inspectProofArtifacts } from "./proof-artifact-inspector.js";
 
 type ButlerProofReviewAccess = {
   modelRegistry: ModelRegistry | null;
   session: AgentSession | null;
 };
 
-async function resolveButlerProofReviewModel(access: ButlerProofReviewAccess): Promise<Model<any>> {
+async function resolveButlerProofReviewModel(access: ButlerProofReviewAccess, needsVision: boolean): Promise<Model<any>> {
   if (!access.modelRegistry) {
     throw new Error("Butler model registry is not ready");
   }
 
   const currentModel = access.session?.model;
-  if (currentModel?.input.includes("image")) {
+  if (currentModel && (!needsVision || currentModel.input.includes("image"))) {
     return currentModel;
   }
 
-  const availableModels = access.modelRegistry.getAvailable().filter((model) => model.input.includes("image"));
+  const availableModels = access.modelRegistry.getAvailable().filter((model) => !needsVision || model.input.includes("image"));
   const currentProvider = currentModel?.provider ?? null;
   const preferredModel =
     (currentProvider ? availableModels.find((model) => model.provider === currentProvider) : null) ??
@@ -45,29 +46,31 @@ export async function reviewButlerProofScreenshot(
     throw new Error("Butler model registry is not ready");
   }
 
-  const model = await resolveButlerProofReviewModel(access);
+  const inspection = await inspectProofArtifacts(proof.artifacts);
+  const preferredScreenshots = inspection.imageArtifacts.filter((artifact) => /after script|final/i.test(artifact.label));
+  const images = (preferredScreenshots.length > 0 ? preferredScreenshots : inspection.imageArtifacts).slice(-4);
+  const imagePayloads = await Promise.all(
+    images.map(async (artifact) => ({
+      artifact,
+      buffer: await fs.readFile(artifact.filePath)
+    }))
+  );
+  const model = await resolveButlerProofReviewModel(access, imagePayloads.length > 0);
   const auth = await access.modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) {
     throw new Error(auth.error);
   }
 
-  const preferredScreenshots = proof.screenshots.filter((artifact) => /after script|final/i.test(artifact.label));
-  const screenshots = (preferredScreenshots.length > 0 ? preferredScreenshots : proof.screenshots).slice(-4);
-  const screenshotPayloads = await Promise.all(
-    screenshots.map(async (artifact) => ({
-      artifact,
-      buffer: await fs.readFile(artifact.filePath)
-    }))
-  );
   const reviewPrompt = [
-    "Review these Playwright screenshots as proof of frontend execution.",
-    "Treat them as an ordered sequence from the same run.",
-    "Be strict and describe only what is visibly present in the screenshots.",
+    "Review these proof artifacts. They may be browser screenshots/video, desktop screenshots/logs, or standalone files.",
+    "Be strict and describe only what the artifacts directly support.",
     "Return JSON only with keys verdict, visibleState, evidence, concern.",
     "Set verdict to one of: credible, unclear, failed.",
     options?.expectedOutcome?.trim() ? `Expected outcome: ${options.expectedOutcome.trim()}` : "",
-    `Preview title: ${proof.preview.title}`,
-    `Screenshot sequence: ${screenshots.map((artifact) => artifact.label).join(", ")}`,
+    `Proof title: ${proof.preview.title}`,
+    `Artifacts:\n${inspection.artifactSummary}`,
+    imagePayloads.length > 0 ? `Image sequence: ${images.map((artifact) => artifact.label).join(", ")}` : "",
+    inspection.textEvidence ? `Inspected artifact evidence:\n${inspection.textEvidence}` : "",
     `Verification mode: ${proof.verification.mode}`,
     `Verification status: ${proof.verification.status ?? "none"}`,
     `Verification failure kind: ${proof.verification.failureKind}`,
@@ -81,14 +84,14 @@ export async function reviewButlerProofScreenshot(
     model,
     {
       systemPrompt:
-        "You are a strict UI proof reviewer. Judge only what is clearly visible. Do not assume success when the page looks blank, loading, or error-like.",
+        "You are a strict proof reviewer. Judge only what is directly visible or readable in the supplied artifacts. Do not assume success from filenames alone.",
       messages: [
         {
           role: "user",
           timestamp: Date.now(),
           content: [
             { type: "text", text: reviewPrompt },
-            ...screenshotPayloads.map(({ artifact, buffer }) => ({
+            ...imagePayloads.map(({ artifact, buffer }) => ({
               type: "image" as const,
               data: buffer.toString("base64"),
               mimeType: artifact.contentType || "image/png"
@@ -104,17 +107,17 @@ export async function reviewButlerProofScreenshot(
   );
 
   if (response.stopReason === "error" || response.stopReason === "aborted") {
-    throw new Error(response.errorMessage || "Butler screenshot review failed.");
+    throw new Error(response.errorMessage || "Butler proof review failed.");
   }
 
   const rawText = contentToText(response.content).trim();
   if (!rawText) {
-    throw new Error("Butler screenshot review returned no text.");
+    throw new Error("Butler proof review returned no text.");
   }
 
   const parsed = parseProofScreenshotReview(rawText) ?? {
     verdict: "unclear",
-    visibleState: "The screenshot review model returned unstructured output.",
+    visibleState: "The proof review model returned unstructured output.",
     evidence: rawText,
     concern: "Review output needs manual interpretation.",
     rawText,

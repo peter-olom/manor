@@ -195,7 +195,7 @@ export type ComposerPrefill = {
 };
 
 export type PreviewVerificationArtifact = {
-  kind: "manifest" | "screenshot" | "video" | "trace" | "html" | "other";
+  kind: "manifest" | "screenshot" | "video" | "trace" | "html" | "file" | "other";
   label: string;
   fileName: string;
   filePath: string;

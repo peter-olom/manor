@@ -430,7 +430,8 @@ export function normalizePreviewVerificationArtifact(
       artifact.kind === "screenshot" ||
       artifact.kind === "video" ||
       artifact.kind === "trace" ||
-      artifact.kind === "html"
+      artifact.kind === "html" ||
+      artifact.kind === "file"
         ? artifact.kind
         : "other",
     label: typeof artifact.label === "string" && artifact.label.trim() ? artifact.label.trim() : "Artifact",

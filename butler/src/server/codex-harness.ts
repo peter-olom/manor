@@ -17,6 +17,7 @@ import {
 import { formatHarnessExecutionContract, formatHarnessRuntimeModel } from "./codex-harness-format.js";
 import { handleHarnessDesktopAction } from "./codex-harness-desktop.js";
 import { formatHarnessJobMemory, formatHarnessProjectMemory, handleHarnessMemoryAction } from "./codex-harness-memory.js";
+import { handleHarnessProofAction } from "./codex-harness-proof.js";
 import {
   reconcileHarnessThreadPreviews,
   reconcileHarnessThreadServices,
@@ -493,6 +494,16 @@ export class CodexHarnessService {
         }
       };
     }
+    const proofResult = await handleHarnessProofAction({
+      action,
+      params,
+      capability,
+      thread,
+      store: this.store,
+      artifactsDir: this.artifactsDir,
+      resolveWorkspaceProject: () => this.resolveWorkspaceProject(capability.cwd, thread)
+    });
+    if (proofResult) return proofResult;
     if (action === "report") {
       const status = normalizeString(params.status);
       const summary = normalizeString(params.summary);

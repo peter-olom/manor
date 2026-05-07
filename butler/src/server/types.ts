@@ -158,7 +158,7 @@ export type PreviewBootstrapPhase =
   | "ready"
   | "failed";
 
-export type PreviewVerificationArtifactKind = "manifest" | "screenshot" | "video" | "trace" | "html" | "other";
+export type PreviewVerificationArtifactKind = "manifest" | "screenshot" | "video" | "trace" | "html" | "file" | "other";
 export type PreviewVerificationArtifactAvailability = "available" | "expired" | "missing";
 export type PreviewBrowserMode = "headless" | "headful";
 export type PreviewVerificationFailureKind =

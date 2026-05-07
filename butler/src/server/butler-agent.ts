@@ -846,14 +846,14 @@ export class ButlerAgentService extends EventEmitter {
             : "Stay on the existing checkout. Do not create a branch or managed worktree unless the operator explicitly asked for one.",
       "Use Codex-shell for repository, git, and code-editing work.",
       "When the task needs a running app, disposable dependency, browser interaction, or durable proof, use manor-harness and choose the simplest working path.",
-      "Browser-use sessions already record video, tracing, a ready screenshot, a final screenshot, and per-action screenshots by default. Use them when the task asks for browser proof.",
+      "Browser-use sessions already record video, tracing, a ready screenshot, a final screenshot, and per-action screenshots by default. Use them when the task asks for browser proof. Use file proof when a durable file, PDF, Office file, archive, report, export, or log is the simplest evidence.",
       "Do not wait for Manor to infer project commands. If the project needs install, run, test, or bootstrap commands, choose and run them explicitly.",
       "Keep visible Codex chatter useful: post brief progress notes before major phases, after meaningful findings, and before long-running verification.",
       "Do not bury the thread in tool calls only. If you are about to run several commands or inspect several files, say what you are doing and what you learned afterward.",
       "Prefer simple execution over ceremony. Keep progress notes concise and avoid restating obvious plans.",
       "Use only the harness actions exposed through `manor-harness`.",
       "Treat the job brief acceptance points as the supervisor contract. Complete and verify each point before reporting completed.",
-      "When reporting completion, include brief evidence for each acceptance point in the supervisor report details. For UI work, reference the relevant screenshot, video, trace, or browser proof when available.",
+      "When reporting completion, include brief evidence for each acceptance point in the supervisor report details. Reference the relevant screenshot, video, trace, browser proof, desktop proof, log, or file proof when available.",
       "Do not claim an acceptance point is complete unless you have checked it. If evidence is missing or a point is incomplete, report blocked or continue the work.",
       "Keep Butler-owned memory current when it materially helps continuation. Use `manor-harness memory checkpoint`, `memory decision`, and `memory note` sparingly and only when the information is worth preserving.",
       "When you complete meaningful work, record a supervisor report before your final reply with `manor-harness report --status completed --summary \"<concise outcome>\" --details \"<brief oversight note with the key fact, risk, or next step>\"`.",
@@ -1330,23 +1330,16 @@ export class ButlerAgentService extends EventEmitter {
       throw new Error(`Preview ${subject.id} does not have verification run ${runId.trim()}.`);
     }
 
-    const screenshots = findVerificationArtifacts(decoratedVerification, "screenshot");
-    const availableScreenshots = screenshots.filter((artifact) => artifact.filePath && artifact.availability === "available");
-    if (availableScreenshots.length === 0) {
-      const latestScreenshot = screenshots.at(-1) ?? null;
-      if (!latestScreenshot?.filePath) {
-        throw new Error(`Preview ${subject.id} has no screenshot artifact to review.`);
-      }
-
-      throw new Error(latestScreenshot.availability === "expired"
-        ? `Preview ${subject.id} screenshot proof expired after retention.`
-        : `Preview ${subject.id} screenshot proof is no longer available.`);
-    }
+    const artifacts = decoratedVerification.artifacts.filter((artifact) => artifact.filePath && artifact.availability === "available");
+    if (artifacts.length === 0) throw new Error(`Preview ${subject.id} has no available proof artifact to review.`);
+    const availableScreenshots = findVerificationArtifacts(decoratedVerification, "screenshot").filter((artifact) => artifact.filePath && artifact.availability === "available");
 
     return {
       preview: subject,
       verification: decoratedVerification,
-      primaryScreenshot: availableScreenshots[0]!,
+      primaryArtifact: availableScreenshots[0] ?? artifacts[0]!,
+      primaryScreenshot: availableScreenshots[0] ?? null,
+      artifacts,
       screenshots: availableScreenshots,
       video: findVerificationArtifact(decoratedVerification, "video"),
       manifest: findVerificationArtifact(decoratedVerification, "manifest"),
