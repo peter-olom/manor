@@ -37,6 +37,7 @@ import {
   normalizeStateStorePreviewProofRecord,
   normalizeStateStoreServiceLease,
   normalizeStateStoreStackLease,
+  flushStateStoreSave,
   queueStateStoreSave,
   reconcileStateStoreThreadWindows,
   recordStateStorePreviewProofFromLease,
@@ -60,7 +61,7 @@ import {
 } from "./supervision-checklist.js";
 import { getStateStoreJobMemory, getStateStoreProjectMemory, listStateStoreJobMemories, listStateStorePendingPromotionCandidates, listStateStoreProjectMemories, recordStateStoreJobCheckpoint, recordStateStoreJobDecision, recordStateStoreJobNote, resolveStateStorePromotionCandidate, submitStateStorePromotionCandidate, syncStateStoreThreadJobMemory } from "./state-store-memory.js";
 import { completeStateStoreRuntimeCleanupTask, enqueueStateStoreRuntimeCleanupTask, failStateStoreRuntimeCleanupTask, listStateStoreDueRuntimeCleanupTasks, listStateStoreExpiredLeaseIds, noteStateStorePreviewLeaseActivity, noteStateStoreServiceLeaseActivity, noteStateStoreStackLeaseActivity, noteStateStoreThreadLeaseActivity, setStateStorePreviewLeasePinned, setStateStoreServiceLeasePinned, setStateStoreStackLeasePinned } from "./state-store-runtime.js";
-import { findStateStoreProjectArtifactById, getStateStoreProjectArtifact, getStateStoreProjectPolicy, listStateStoreProjectArtifacts, listStateStoreProjectPolicies, upsertStateStoreProjectArtifact, upsertStateStoreProjectPolicy } from "./state-store-project-assets.js";
+import { findStateStoreProjectArtifactById, getStateStoreProjectArtifact, getStateStoreProjectPolicy, listStateStoreProjectArtifacts, listStateStoreProjectPolicies, pruneMissingStateStoreProjectArtifacts, removeStateStoreProjectArtifact, searchStateStoreProjectArtifacts, upsertStateStoreProjectArtifact, upsertStateStoreProjectPolicy } from "./state-store-project-assets.js";
 import { recordStateStoreButlerMemory } from "./state-store-butler-memory.js";
 import { listStateStoreDesktopSessions, removeStateStoreDesktopSession, replaceStateStoreDesktopSessions, upsertStateStoreDesktopSession } from "./state-store-desktop.js";
 import { buildStateStoreRuntimeSnapshot, buildStateStoreShellSnapshot, buildStateStoreSnapshot } from "./state-store-snapshot.js";
@@ -294,11 +295,17 @@ export class ButlerStateStore extends EventEmitter {
 
   listProjectArtifacts(projectId?: string | null): ProjectArtifactView[] { return listStateStoreProjectArtifacts(this.getInternalAccess(), projectId); }
 
+  searchProjectArtifacts(input: { projectId?: string | null; query?: string | null; kind?: ProjectArtifactView["kind"] | null; tags?: string[]; limit?: number | null }): Promise<ProjectArtifactView[]> { return searchStateStoreProjectArtifacts(this.getInternalAccess(), input); }
+
   getProjectArtifact(projectId: string, artifactId: string): ProjectArtifactView | null { return getStateStoreProjectArtifact(this.getInternalAccess(), projectId, artifactId); }
 
   findProjectArtifactById(artifactId: string): ProjectArtifactView | null { return findStateStoreProjectArtifactById(this.getInternalAccess(), artifactId); }
 
   upsertProjectArtifact(artifact: ProjectArtifactView): ProjectArtifactView { return upsertStateStoreProjectArtifact(this.getInternalAccess(), artifact); }
+
+  removeProjectArtifact(projectId: string, artifactId: string): ProjectArtifactView | null { return removeStateStoreProjectArtifact(this.getInternalAccess(), projectId, artifactId); }
+  pruneMissingProjectArtifacts(projectId?: string | null): Promise<number> { return pruneMissingStateStoreProjectArtifacts(this.getInternalAccess(), projectId); }
+  flushSave(): Promise<void> { return flushStateStoreSave(this.getInternalAccess()); }
 
   listProjectPolicies(projectId?: string | null): ProjectPolicyView[] { return listStateStoreProjectPolicies(this.getInternalAccess(), projectId); }
 

@@ -172,7 +172,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "list_project_artifacts",
     label: "List project artifacts",
-    description: "List durable project artifacts such as saved seeds, downloads, and reusable analysis files.",
+    description: "List or search durable project artifacts such as saved seeds, downloads, and reusable analysis files.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while choosing reusable project files." }]
   },
   {

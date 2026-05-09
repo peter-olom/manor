@@ -80,15 +80,47 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
     access.defineButlerTool({
       name: "list_project_artifacts",
       label: "List project artifacts",
-      description: "List durable project artifacts such as seeds, research files, references, and downloaded inputs.",
-      promptSnippet: "list_project_artifacts: use this before recreating seed files, fixtures, or reusable reference documents.",
+      description: "List or search durable project artifacts such as seeds, research files, references, and downloaded inputs.",
+      promptSnippet: "list_project_artifacts: use this before recreating seed files, fixtures, or reusable reference documents; pass query to search.",
       parameters: Type.Object({
-        projectId: Type.Optional(Type.String())
+        projectId: Type.Optional(Type.String()),
+        query: Type.Optional(Type.String()),
+        kind: Type.Optional(
+          Type.Union([
+            Type.Literal("seed"),
+            Type.Literal("reference"),
+            Type.Literal("download"),
+            Type.Literal("research"),
+            Type.Literal("report"),
+            Type.Literal("other")
+          ])
+        ),
+        tags: Type.Optional(Type.Array(Type.String())),
+        limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 }))
       }),
       uiEffects: access.getToolUiEffects("list_project_artifacts"),
       execute: async (_toolCallId, params) => {
         const projectId = typeof params.projectId === "string" && params.projectId.trim() ? params.projectId.trim() : null;
-        const artifacts = access.store.listProjectArtifacts(projectId);
+        const query = typeof params.query === "string" && params.query.trim() ? params.query.trim() : null;
+        const kind =
+          params.kind === "seed" ||
+          params.kind === "reference" ||
+          params.kind === "download" ||
+          params.kind === "research" ||
+          params.kind === "report" ||
+          params.kind === "other"
+            ? params.kind
+            : null;
+        const tags = Array.isArray(params.tags) ? params.tags : [];
+        const limit = typeof params.limit === "number" ? params.limit : null;
+        const pruned = await access.store.pruneMissingProjectArtifacts(projectId);
+        if (pruned > 0) {
+          await access.store.flushSave();
+        }
+        const artifacts =
+          query || kind || tags.length > 0 || limit
+            ? await access.store.searchProjectArtifacts({ projectId, query, kind, tags, limit })
+            : access.store.listProjectArtifacts(projectId);
         const text =
           artifacts.length === 0
             ? "No durable project artifacts are stored."

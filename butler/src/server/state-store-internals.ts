@@ -841,11 +841,6 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
         })
         .slice(-100)
     );
-    const sqliteLoaded = await loadStateStoreSqliteMemory(access);
-    // TODO: Remove JSON-to-SQLite memory migration after existing installs have had a stable migration window.
-    if (!sqliteLoaded && (access.persistedJobMemoriesByThreadId.size > 0 || access.persistedProjectMemoriesByProjectId.size > 0 || access.persistedButlerMemoryEntries.length > 0)) {
-      await persistStateStoreSqliteMemory(access);
-    }
     for (const [projectId, artifacts] of Object.entries(data.projectArtifactsByProjectId ?? {})) {
       const entries = (Array.isArray(artifacts) ? artifacts : [])
         .filter(
@@ -942,6 +937,15 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
         access.persistedProjectPoliciesByProjectId.set(projectId, entries);
       }
     }
+    await loadStateStoreSqliteMemory(access);
+    if (
+      access.persistedJobMemoriesByThreadId.size > 0 ||
+      access.persistedProjectMemoriesByProjectId.size > 0 ||
+      access.persistedButlerMemoryEntries.length > 0 ||
+      access.persistedProjectArtifactsByProjectId.size > 0
+    ) {
+      await persistStateStoreSqliteMemory(access);
+    }
     for (const thread of Array.isArray(data.threads) ? data.threads : []) {
       if (thread && typeof thread === "object" && typeof thread.id === "string") {
         restorePersistedStateStoreThread(access, thread as CodexThreadDetailView);
@@ -1001,58 +1005,48 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
   }
 }
 
+export async function persistStateStoreNow(access: StateStoreInternalAccess): Promise<void> {
+  access.windows = access.windows.map((window) => normalizeWindow(window, access.threads.get(window.threadId)));
+  const payload: PersistedUiState = {
+    threads: access.listThreads().map((thread) => access.toThreadDetailView(access.threads.get(thread.id) ?? access.getOrCreateThread(thread.id))),
+    windows: access.windows,
+    focusedWindowId: access.focusedWindowId,
+    stackLeases: [...access.stackLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
+    previewLeases: [...access.previewLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
+    previewProofs: [...access.previewProofs.values()].sort((left, right) => right.verification.checkedAt - left.verification.checkedAt),
+    serviceLeases: [...access.serviceLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
+    runtimeCleanupTasks: [...access.runtimeCleanupTasks.values()].sort((left, right) => left.nextAttemptAt - right.nextAttemptAt),
+    workerReportsByThreadId: Object.fromEntries([...access.persistedWorkerReportsByThreadId.entries()].map(([threadId, reports]) => [threadId, reports])),
+    supervisionByThreadId: Object.fromEntries([...access.persistedSupervisionByThreadId.entries()].map(([threadId, policy]) => [threadId, { butlerTurnsUsed: policy.butlerTurnsUsed, maxButlerTurns: policy.maxButlerTurns }])),
+    executionContractsByThreadId: Object.fromEntries([...access.persistedExecutionContractsByThreadId.entries()].map(([threadId, contract]) => [threadId, contract])),
+    supervisionChecklistsByThreadId: Object.fromEntries([...access.persistedSupervisionChecklistsByThreadId.entries()].map(([threadId, checklist]) => [threadId, checklist])),
+    jobMemoriesByThreadId: Object.fromEntries([...access.persistedJobMemoriesByThreadId.entries()].map(([threadId, memory]) => [threadId, memory])),
+    projectMemoriesByProjectId: Object.fromEntries([...access.persistedProjectMemoriesByProjectId.entries()].map(([projectId, memory]) => [projectId, memory])),
+    butlerMemoryEntries: access.persistedButlerMemoryEntries,
+    projectArtifactsByProjectId: Object.fromEntries([...access.persistedProjectArtifactsByProjectId.entries()].map(([projectId, artifacts]) => [projectId, artifacts])),
+    projectPoliciesByProjectId: Object.fromEntries([...access.persistedProjectPoliciesByProjectId.entries()].map(([projectId, policies]) => [projectId, policies]))
+  };
+  await fs.mkdir(path.dirname(access.uiStatePath), { recursive: true });
+  await persistStateStoreSqliteMemory(access);
+  await fs.writeFile(access.uiStatePath, JSON.stringify(payload, null, 2));
+}
+
+export async function flushStateStoreSave(access: StateStoreInternalAccess): Promise<void> {
+  if (access.saveTimer) {
+    clearTimeout(access.saveTimer);
+    access.saveTimer = null;
+  }
+  await persistStateStoreNow(access);
+}
+
 export function queueStateStoreSave(access: StateStoreInternalAccess): void {
   if (access.saveTimer) {
     clearTimeout(access.saveTimer);
   }
 
-  access.saveTimer = setTimeout(async () => {
+  access.saveTimer = setTimeout(() => {
     access.saveTimer = null;
-    access.windows = access.windows.map((window) => normalizeWindow(window, access.threads.get(window.threadId)));
-    const payload: PersistedUiState = {
-      threads: access.listThreads().map((thread) => access.toThreadDetailView(access.threads.get(thread.id) ?? access.getOrCreateThread(thread.id))),
-      windows: access.windows,
-      focusedWindowId: access.focusedWindowId,
-      stackLeases: [...access.stackLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
-      previewLeases: [...access.previewLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
-      previewProofs: [...access.previewProofs.values()].sort((left, right) => right.verification.checkedAt - left.verification.checkedAt),
-      serviceLeases: [...access.serviceLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
-      runtimeCleanupTasks: [...access.runtimeCleanupTasks.values()].sort((left, right) => left.nextAttemptAt - right.nextAttemptAt),
-      workerReportsByThreadId: Object.fromEntries(
-        [...access.persistedWorkerReportsByThreadId.entries()].map(([threadId, reports]) => [threadId, reports])
-      ),
-      supervisionByThreadId: Object.fromEntries(
-        [...access.persistedSupervisionByThreadId.entries()].map(([threadId, policy]) => [
-          threadId,
-          {
-            butlerTurnsUsed: policy.butlerTurnsUsed,
-            maxButlerTurns: policy.maxButlerTurns
-          }
-        ])
-      ),
-      executionContractsByThreadId: Object.fromEntries(
-        [...access.persistedExecutionContractsByThreadId.entries()].map(([threadId, contract]) => [threadId, contract])
-      ),
-      supervisionChecklistsByThreadId: Object.fromEntries(
-        [...access.persistedSupervisionChecklistsByThreadId.entries()].map(([threadId, checklist]) => [threadId, checklist])
-      ),
-      jobMemoriesByThreadId: Object.fromEntries(
-        [...access.persistedJobMemoriesByThreadId.entries()].map(([threadId, memory]) => [threadId, memory])
-      ),
-      projectMemoriesByProjectId: Object.fromEntries(
-        [...access.persistedProjectMemoriesByProjectId.entries()].map(([projectId, memory]) => [projectId, memory])
-      ),
-      butlerMemoryEntries: access.persistedButlerMemoryEntries,
-      projectArtifactsByProjectId: Object.fromEntries(
-        [...access.persistedProjectArtifactsByProjectId.entries()].map(([projectId, artifacts]) => [projectId, artifacts])
-      ),
-      projectPoliciesByProjectId: Object.fromEntries(
-        [...access.persistedProjectPoliciesByProjectId.entries()].map(([projectId, policies]) => [projectId, policies])
-      )
-    };
-    await fs.mkdir(path.dirname(access.uiStatePath), { recursive: true });
-    await persistStateStoreSqliteMemory(access);
-    await fs.writeFile(access.uiStatePath, JSON.stringify(payload, null, 2));
+    void persistStateStoreNow(access);
   }, 150);
 }
 

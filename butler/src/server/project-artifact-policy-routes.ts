@@ -17,7 +17,7 @@ import {
 import { decorateProjectArtifactWithAccess } from "./project-artifact-access.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { ButlerStateStore } from "./state-store.js";
-import { resolveProjectMetadata } from "./server-runtime-helpers.js";
+import { pruneEmptyArtifactParents, resolveProjectMetadata } from "./server-runtime-helpers.js";
 
 function hasOwnBodyField(value: unknown, key: string): boolean {
   return Boolean(value) && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key);
@@ -37,6 +37,38 @@ export function registerProjectArtifactPolicyRoutes(input: {
     response.status(status).json({ error: message });
   }
 
+  function isProjectArtifactFilePathValid(filePath: string): boolean {
+    const rootPath = path.resolve(artifactsDir);
+    return filePath === rootPath || filePath.startsWith(`${rootPath}${path.sep}`);
+  }
+
+  async function flushIfPruned(count: number): Promise<void> {
+    if (count > 0) {
+      await store.flushSave();
+    }
+  }
+
+  async function pruneMissingProjectArtifacts(projectId: string): Promise<void> {
+    await flushIfPruned(await store.pruneMissingProjectArtifacts(projectId));
+  }
+
+  async function removeProjectArtifactRecord(projectId: string, artifactId: string): Promise<void> {
+    if (store.removeProjectArtifact(projectId, artifactId)) {
+      await store.flushSave();
+    }
+  }
+
+  async function deleteProjectArtifactFile(artifact: NonNullable<ReturnType<typeof store.getProjectArtifact>>): Promise<boolean> {
+    const filePath = path.resolve(artifact.filePath);
+    if (!isProjectArtifactFilePathValid(filePath)) {
+      return false;
+    }
+    const existed = await fs.access(filePath).then(() => true).catch(() => false);
+    await fs.rm(filePath, { force: true });
+    await pruneEmptyArtifactParents(artifactsDir, filePath).catch(() => {});
+    return existed;
+  }
+
   async function sendProjectArtifactFile(response: Response, artifact = null as ReturnType<typeof store.getProjectArtifact>) {
     if (!artifact) {
       response.status(404).json({ error: "Artifact not found" });
@@ -44,8 +76,8 @@ export function registerProjectArtifactPolicyRoutes(input: {
     }
 
     const filePath = path.resolve(artifact.filePath);
-    const rootPath = path.resolve(artifactsDir);
-    if (filePath !== rootPath && !filePath.startsWith(`${rootPath}${path.sep}`)) {
+    if (!isProjectArtifactFilePathValid(filePath)) {
+      await removeProjectArtifactRecord(artifact.projectId, artifact.id);
       response.status(400).json({ error: "Artifact path is invalid" });
       return;
     }
@@ -53,6 +85,7 @@ export function registerProjectArtifactPolicyRoutes(input: {
     try {
       await fs.access(filePath);
     } catch {
+      await removeProjectArtifactRecord(artifact.projectId, artifact.id);
       response.status(404).json({ error: "Artifact file is missing" });
       return;
     }
@@ -67,14 +100,35 @@ export function registerProjectArtifactPolicyRoutes(input: {
     response.sendFile(filePath);
   }
 
-  app.get("/api/project-artifacts/:projectId", (request, response) => {
+  app.get("/api/project-artifacts/:projectId", async (request, response) => {
     const projectId = typeof request.params.projectId === "string" ? request.params.projectId.trim() : "";
     if (!projectId) {
       response.status(400).json({ error: "projectId is required" });
       return;
     }
 
-    response.json({ artifacts: store.listProjectArtifacts(projectId).map((artifact) => decorateProjectArtifactWithAccess(artifact)) });
+    await pruneMissingProjectArtifacts(projectId);
+    const query = typeof request.query.query === "string" ? request.query.query.trim() : "";
+    const kind =
+      request.query.kind === "seed" ||
+      request.query.kind === "reference" ||
+      request.query.kind === "download" ||
+      request.query.kind === "research" ||
+      request.query.kind === "report" ||
+      request.query.kind === "other"
+        ? request.query.kind
+        : null;
+    const tags =
+      typeof request.query.tags === "string"
+        ? request.query.tags.split(",")
+        : Array.isArray(request.query.tags)
+          ? request.query.tags.filter((tag): tag is string => typeof tag === "string")
+          : [];
+    const limit = typeof request.query.limit === "string" ? Number(request.query.limit) : null;
+    const artifacts = query || kind || tags.length > 0 || limit
+      ? await store.searchProjectArtifacts({ projectId, query, kind, tags, limit })
+      : store.listProjectArtifacts(projectId);
+    response.json({ artifacts: artifacts.map((artifact) => decorateProjectArtifactWithAccess(artifact)) });
   });
 
   app.get("/api/project-artifacts/:projectId/:artifactId", async (request, response) => {
@@ -92,9 +146,20 @@ export function registerProjectArtifactPolicyRoutes(input: {
     }
 
     try {
+      if (!isProjectArtifactFilePathValid(path.resolve(artifact.filePath))) {
+        await removeProjectArtifactRecord(projectId, artifactId);
+        response.status(400).json({ error: "Artifact path is invalid" });
+        return;
+      }
+      await fs.access(artifact.filePath);
       const content = await readProjectArtifactContent(artifact);
       response.json({ artifact: decorateProjectArtifactWithAccess(artifact), content: content.content, contentTruncated: content.truncated });
     } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        await removeProjectArtifactRecord(projectId, artifactId);
+        response.status(404).json({ error: "Artifact file is missing" });
+        return;
+      }
       response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
@@ -112,6 +177,25 @@ export function registerProjectArtifactPolicyRoutes(input: {
 
     const artifact = store.getProjectArtifact(projectId, artifactId);
     await sendProjectArtifactFile(response, artifact);
+  });
+
+  app.delete("/api/project-artifacts/:projectId/:artifactId", async (request, response) => {
+    const projectId = typeof request.params.projectId === "string" ? request.params.projectId.trim() : "";
+    const artifactId = typeof request.params.artifactId === "string" ? request.params.artifactId.trim() : "";
+    if (!projectId || !artifactId) {
+      response.status(400).json({ error: "projectId and artifactId are required" });
+      return;
+    }
+
+    const artifact = store.getProjectArtifact(projectId, artifactId);
+    if (!artifact) {
+      response.status(404).json({ error: "Artifact not found" });
+      return;
+    }
+
+    const removedFile = await deleteProjectArtifactFile(artifact);
+    await removeProjectArtifactRecord(projectId, artifactId);
+    response.json({ ok: true, removedFile });
   });
 
   app.post("/api/project-artifacts/save-text", async (request, response) => {
