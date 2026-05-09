@@ -280,7 +280,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "list_projects",
     label: "List projects",
-    description: "List known project directories and current tracked work separately.",
+    description: "List known project directories, nested Git repositories, and current tracked work separately.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while checking project inventory and workstream activity." }]
   },
   {

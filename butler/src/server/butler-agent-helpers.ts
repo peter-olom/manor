@@ -404,6 +404,7 @@ export function buildProjectInventorySummary(
 ): string {
   const limitedProjects = projects.slice(0, limit);
   const limitedGroups = workstreamGroups.slice(0, limit);
+  const gitBackedCount = projects.filter((project) => project.gitBacked).length;
   const activeGroups = workstreamGroups.filter((project) => project.activeCount > 0);
   const activeProjectGroups = activeGroups.filter((project) => project.kind === "project");
   const activeWorkspaceGroups = activeGroups.filter((project) => project.kind === "workspace");
@@ -411,7 +412,7 @@ export function buildProjectInventorySummary(
   const projectLines =
     limitedProjects.length === 0
       ? ["No known project directories were found."]
-      : limitedProjects.map((project, index) => `${index + 1}. ${project.label}`);
+      : limitedProjects.map((project, index) => `${index + 1}. ${project.label}${project.gitBacked ? " | git" : ""}`);
 
   const groupLines =
     limitedGroups.length === 0
@@ -423,6 +424,7 @@ export function buildProjectInventorySummary(
 
   return [
     `Known projects: ${projects.length}`,
+    `Git-backed projects: ${gitBackedCount}`,
     ...projectLines,
     projects.length > limitedProjects.length ? `... ${projects.length - limitedProjects.length} more known project(s).` : null,
     "",

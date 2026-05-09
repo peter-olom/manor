@@ -203,16 +203,21 @@ test("shared root work is grouped as a workspace, not a project", async () => {
 
 test("project inventory lists workspace projects separately from tracked work", async () => {
   const workspaceRoot = await mkdtemp(path.join(tmpdir(), "manor-workspace-projects-"));
-  await mkdir(path.join(workspaceRoot, "beta"));
-  await mkdir(path.join(workspaceRoot, "alpha"));
+  await mkdir(path.join(workspaceRoot, "beta", ".git"), { recursive: true });
+  await mkdir(path.join(workspaceRoot, "alpha", ".git"), { recursive: true });
+  await mkdir(path.join(workspaceRoot, "plain-folder"));
+  await mkdir(path.join(workspaceRoot, "nested", "gamma", ".git"), { recursive: true });
   await mkdir(path.join(workspaceRoot, ".manor-worktrees"));
 
   const projects = await listWorkspaceProjectDirectories(workspaceRoot);
   assert.deepEqual(
-    projects.map((project) => [project.id, project.label, project.kind]),
+    projects.map((project) => [project.id, project.label, project.kind, project.gitBacked]),
     [
-      ["alpha", "alpha", "project"],
-      ["beta", "beta", "project"]
+      ["alpha", "alpha", "project", true],
+      ["beta", "beta", "project", true],
+      ["nested", "nested", "project", false],
+      ["nested/gamma", "nested/gamma", "project", true],
+      ["plain-folder", "plain-folder", "project", false]
     ]
   );
 
@@ -231,7 +236,8 @@ test("project inventory lists workspace projects separately from tracked work", 
   });
 
   const summary = buildProjectInventorySummary(projects, store.listProjectSummaries(), 10);
-  assert.match(summary, /Known projects: 2/);
+  assert.match(summary, /Known projects: 5/);
+  assert.match(summary, /Git-backed projects: 3/);
   assert.match(summary, /Tracked workstream groups: 2/);
   assert.match(summary, /Active now: 0 project group\(s\), 1 workspace bucket\(s\)/);
 });

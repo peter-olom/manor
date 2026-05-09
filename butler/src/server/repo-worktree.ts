@@ -15,6 +15,7 @@ export interface WorkspaceProjectDirectory {
   label: string;
   cwd: string;
   kind: "project";
+  gitBacked: boolean;
 }
 
 export function resolveWorkspaceProjectInfo(cwd: string | null | undefined): { id: string; label: string; kind: WorkstreamGroupKind } {
@@ -108,23 +109,68 @@ export async function resolveExistingWorkspaceCwd(cwd: string): Promise<string> 
 }
 
 export async function listWorkspaceProjectDirectories(root: string = SHARED_WORKSPACE_ROOT): Promise<WorkspaceProjectDirectory[]> {
-  let entries: Dirent[];
-  try {
-    entries = await fs.readdir(root, { withFileTypes: true });
-  } catch {
+  const normalizedRoot = path.resolve(root);
+  const projectsByCwd = new Map<string, WorkspaceProjectDirectory>();
+
+  async function readDirectoryEntries(directory: string): Promise<Dirent[] | null> {
+    try {
+      return await fs.readdir(directory, { withFileTypes: true });
+    } catch {
+      return null;
+    }
+  }
+
+  function addProject(directory: string, gitBacked: boolean): void {
+    const relativeLabel = path.relative(normalizedRoot, directory) || path.basename(directory);
+    const existing = projectsByCwd.get(directory);
+    projectsByCwd.set(directory, {
+      id: existing?.id ?? relativeLabel,
+      label: existing?.label ?? relativeLabel,
+      cwd: directory,
+      kind: "project",
+      gitBacked: Boolean(existing?.gitBacked || gitBacked)
+    });
+  }
+
+  async function visitGitRepositories(directory: string): Promise<void> {
+    const entries = await readDirectoryEntries(directory);
+    if (!entries) {
+      return;
+    }
+    if (entries.some((entry) => entry.isDirectory() && entry.name === ".git")) {
+      addProject(directory, true);
+      return;
+    }
+
+    const childDirectories = entries
+      .filter((entry) => entry.isDirectory())
+      .filter((entry) => !entry.name.startsWith("."))
+      .map((entry) => path.join(directory, entry.name));
+
+    await Promise.all(childDirectories.map((childDirectory) => visitGitRepositories(childDirectory)));
+  }
+
+  const rootEntries = await readDirectoryEntries(normalizedRoot);
+  if (!rootEntries) {
     return [];
   }
 
-  return entries
+  const topLevelDirectories = rootEntries
     .filter((entry) => entry.isDirectory())
     .filter((entry) => !entry.name.startsWith("."))
-    .map((entry) => ({
-      id: entry.name,
-      label: entry.name,
-      cwd: path.join(root, entry.name),
-      kind: "project" as const
-    }))
-    .sort((left, right) => left.label.localeCompare(right.label));
+    .map((entry) => path.join(normalizedRoot, entry.name));
+
+  await Promise.all(
+    topLevelDirectories.map(async (directory) => {
+      const entries = await readDirectoryEntries(directory);
+      addProject(directory, Boolean(entries?.some((entry) => entry.isDirectory() && entry.name === ".git")));
+      if (!entries?.some((entry) => entry.isDirectory() && entry.name === ".git")) {
+        await visitGitRepositories(directory);
+      }
+    })
+  );
+
+  return [...projectsByCwd.values()].sort((left, right) => left.label.localeCompare(right.label));
 }
 
 export async function cleanupManagedWorktree(cwd: string): Promise<number> {

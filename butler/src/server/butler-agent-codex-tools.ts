@@ -68,9 +68,9 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
     access.defineButlerTool({
       name: "list_projects",
       label: "List projects",
-      description: "List known project directories and current tracked work separately.",
+      description: "List known project directories, nested Git repositories, and current tracked work separately.",
       promptSnippet:
-        "list_projects: use for project inventory questions. It returns known project directories first, then tracked workstream groups and active-work counts separately.",
+        "list_projects: use for project inventory questions. It returns top-level project directories plus nested Git repositories first, then tracked workstream groups and active-work counts separately.",
       parameters: Type.Object({
         limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 }))
       }),
