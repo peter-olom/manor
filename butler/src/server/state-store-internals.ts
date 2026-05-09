@@ -950,9 +950,7 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     const synthesizedThreadIds = new Set<string>([
       ...access.windows.map((window) => window.threadId),
       ...access.persistedSupervisionByThreadId.keys(),
-      ...access.persistedWorkerReportsByThreadId.keys(),
-      ...access.persistedExecutionContractsByThreadId.keys(),
-      ...access.persistedJobMemoriesByThreadId.keys()
+      ...access.persistedExecutionContractsByThreadId.keys()
     ]);
     for (const threadId of synthesizedThreadIds) {
       const record = access.getOrCreateThread(threadId);

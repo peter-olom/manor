@@ -111,6 +111,8 @@ import type {
   PersistedUiState
 } from "./types.js";
 
+type JobMemoryWriteContext = { projectId?: string | null; projectLabel?: string | null; operatorGoal?: string | null; requestedTask?: string | null; proofRequirements?: string[] };
+
 export class ButlerStateStore extends EventEmitter {
   private readonly uiStatePath: string;
   private readonly threads = new Map<string, CodexThreadRecord>();
@@ -339,6 +341,8 @@ export class ButlerStateStore extends EventEmitter {
       summary: string;
       details?: string | null;
       promote?: boolean;
+      sourceEntryId?: string;
+      context?: JobMemoryWriteContext;
     }
   ): JobMemoryView {
     return recordStateStoreJobNote(this.getInternalAccess(), threadId, note);
@@ -351,6 +355,7 @@ export class ButlerStateStore extends EventEmitter {
       summary: string;
       details?: string | null;
       sourceEntryId: string;
+      context?: JobMemoryWriteContext;
     }
   ): JobMemoryPromotionCandidateView {
     return submitStateStorePromotionCandidate(this.getInternalAccess(), threadId, candidate);
@@ -860,9 +865,9 @@ export class ButlerStateStore extends EventEmitter {
       }
     }
     this.removePreviewProofsForThread(threadId);
-    this.persistedSupervisionByThreadId.delete(threadId); this.persistedWorkerReportsByThreadId.delete(threadId);
+    this.persistedSupervisionByThreadId.delete(threadId);
     this.persistedExecutionContractsByThreadId.delete(threadId); this.persistedSupervisionChecklistsByThreadId.delete(threadId);
-    this.persistedJobMemoriesByThreadId.delete(threadId); this.latestStartedTurnIds.delete(threadId);
+    this.latestStartedTurnIds.delete(threadId);
     this.latestCompletedTurnIds.delete(threadId); this.latestBlockedTurnIds.delete(threadId);
     this.windows = this.windows.filter((window) => window.threadId !== threadId);
     if (this.focusedWindowId === threadId) {
@@ -896,9 +901,9 @@ export class ButlerStateStore extends EventEmitter {
         }
       }
       this.removePreviewProofsForThread(threadId);
-      this.persistedSupervisionByThreadId.delete(threadId); this.persistedWorkerReportsByThreadId.delete(threadId);
+      this.persistedSupervisionByThreadId.delete(threadId);
       this.persistedExecutionContractsByThreadId.delete(threadId); this.persistedSupervisionChecklistsByThreadId.delete(threadId);
-      this.persistedJobMemoriesByThreadId.delete(threadId); this.latestStartedTurnIds.delete(threadId);
+      this.latestStartedTurnIds.delete(threadId);
       this.latestCompletedTurnIds.delete(threadId); this.latestBlockedTurnIds.delete(threadId);
     }
 
@@ -1038,8 +1043,9 @@ export class ButlerStateStore extends EventEmitter {
       throw new Error("Cannot record a worker report before the thread has an active or completed turn");
     }
 
-    const now = Date.now();
     const existing = thread.workerReport;
+    const timestamp = Date.now();
+    const now = existing?.turnId === turnId && timestamp <= existing.updatedAt ? existing.updatedAt + 1 : timestamp;
     const nextReport: CodexWorkerReportView = {
       threadId,
       turnId,

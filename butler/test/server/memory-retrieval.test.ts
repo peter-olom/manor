@@ -151,6 +151,7 @@ test("pending memory outcomes survive without live thread context and promote in
     }
   });
 
+  assert.equal(store.getThread("job-alpha"), undefined);
   assert.deepEqual(store.listPendingPromotionCandidates("alpha").map((candidate) => candidate.id), ["candidate-alpha"]);
 
   const resolved = store.resolvePromotionCandidate("candidate-alpha", true);

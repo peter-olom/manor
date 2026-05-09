@@ -15,6 +15,19 @@ import type {
   ProjectMemoryView
 } from "./types.js";
 
+type JobMemoryWriteContext = {
+  projectId?: string | null;
+  projectLabel?: string | null;
+  operatorGoal?: string | null;
+  requestedTask?: string | null;
+  proofRequirements?: string[];
+};
+
+function normalizeOptionalText(value: string | null | undefined): string | null {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized || null;
+}
+
 export function syncStateStoreThreadJobMemory(access: StateStoreInternalAccess, thread: CodexThreadRecord): JobMemoryView {
   const fallbackProjectId =
     thread.executionContract?.projectId ??
@@ -47,6 +60,38 @@ export function syncStateStoreThreadJobMemory(access: StateStoreInternalAccess, 
   thread.jobMemory = nextMemory;
   access.persistedJobMemoriesByThreadId.set(thread.id, cloneJobMemory(nextMemory));
   return nextMemory;
+}
+
+function resolveStateStoreJobMemoryForWrite(
+  access: StateStoreInternalAccess,
+  threadId: string,
+  context?: JobMemoryWriteContext
+): { thread: CodexThreadRecord | null; jobMemory: JobMemoryView } {
+  const thread = access.threads.get(threadId) ?? null;
+  const current = thread ? syncStateStoreThreadJobMemory(access, thread) : access.persistedJobMemoriesByThreadId.get(threadId);
+  const projectId = normalizeOptionalText(context?.projectId) ?? current?.projectId ?? "unknown";
+  const projectLabel = normalizeOptionalText(context?.projectLabel) ?? current?.projectLabel ?? projectId;
+  const jobMemory =
+    current ??
+    buildEmptyJobMemory({
+      threadId,
+      projectId,
+      projectLabel,
+      contract: null
+    });
+  return {
+    thread,
+    jobMemory: {
+      ...jobMemory,
+      threadId,
+      projectId,
+      projectLabel,
+      operatorGoal: normalizeOptionalText(context?.operatorGoal) ?? jobMemory.operatorGoal,
+      requestedTask: normalizeOptionalText(context?.requestedTask) ?? jobMemory.requestedTask,
+      proofRequirements:
+        context?.proofRequirements && context.proofRequirements.length > 0 ? normalizeStringList(context.proofRequirements) : jobMemory.proofRequirements
+    }
+  };
 }
 
 export function getStateStoreJobMemory(access: StateStoreInternalAccess, threadId: string): JobMemoryView | null {
@@ -140,11 +185,11 @@ function submitStateStoreJobMemoryPromotionCandidate(
     summary: string;
     details?: string | null;
     sourceEntryId: string;
+    context?: JobMemoryWriteContext;
   },
   options?: { save?: boolean }
 ): JobMemoryPromotionCandidateView {
-  const thread = access.getOrCreateThread(threadId);
-  const jobMemory = syncStateStoreThreadJobMemory(access, thread);
+  const { thread, jobMemory } = resolveStateStoreJobMemoryForWrite(access, threadId, candidate.context);
   const now = Date.now();
   const nextCandidate: JobMemoryPromotionCandidateView = {
     id: crypto.randomUUID(),
@@ -165,9 +210,11 @@ function submitStateStoreJobMemoryPromotionCandidate(
     promotionCandidates: [...jobMemory.promotionCandidates, nextCandidate].slice(-20),
     updatedAt: now
   };
-  thread.jobMemory = nextMemory;
+  if (thread) {
+    thread.jobMemory = nextMemory;
+    access.refreshDerivedThreadState(thread, now);
+  }
   access.persistedJobMemoriesByThreadId.set(threadId, { ...nextMemory });
-  access.refreshDerivedThreadState(thread, now);
   if (options?.save !== false) {
     queueStateStoreSave(access);
     emitStateStoreChange(access);
@@ -188,12 +235,13 @@ function appendStateStoreJobMemoryEntry(
     assumptions?: string[];
     proofRequirements?: string[];
     promote?: boolean;
+    sourceEntryId?: string;
+    context?: JobMemoryWriteContext;
   }
 ): JobMemoryView {
-  const thread = access.getOrCreateThread(threadId);
   const now = Date.now();
-  const jobMemory = syncStateStoreThreadJobMemory(access, thread);
-  const entryId = crypto.randomUUID();
+  const { thread, jobMemory } = resolveStateStoreJobMemoryForWrite(access, threadId, input.context);
+  const entryId = typeof input.sourceEntryId === "string" && input.sourceEntryId.trim() ? input.sourceEntryId.trim() : crypto.randomUUID();
   const entry = {
     id: entryId,
     kind: input.kind,
@@ -218,7 +266,9 @@ function appendStateStoreJobMemoryEntry(
     assumptions: [...new Set([...jobMemory.assumptions, ...entry.assumptions])].slice(-20),
     proofRequirements: [...new Set([...jobMemory.proofRequirements, ...entry.proofRequirements])].slice(-20),
     notes:
-      input.kind === "note" ? [...jobMemory.notes, [entry.summary, entry.details].filter(Boolean).join(" | ")].slice(-20) : jobMemory.notes,
+      input.kind === "note" && !input.sourceEntryId
+        ? [...jobMemory.notes, [entry.summary, entry.details].filter(Boolean).join(" | ")].slice(-20)
+        : jobMemory.notes,
     decisions:
       input.kind === "decision"
         ? [...jobMemory.decisions, { id: entry.id, summary: entry.summary, details: entry.details, at: now }].slice(-20)
@@ -227,9 +277,11 @@ function appendStateStoreJobMemoryEntry(
     updatedAt: now
   };
 
-  thread.jobMemory = nextMemory;
+  if (thread) {
+    thread.jobMemory = nextMemory;
+    thread.updatedAt = Math.max(thread.updatedAt, now);
+  }
   access.persistedJobMemoriesByThreadId.set(threadId, { ...nextMemory });
-  thread.updatedAt = Math.max(thread.updatedAt, now);
 
   if (entry.promote) {
     const candidate = submitStateStoreJobMemoryPromotionCandidate(
@@ -239,21 +291,26 @@ function appendStateStoreJobMemoryEntry(
         kind: entry.kind,
         summary: entry.summary,
         details: entry.details,
-        sourceEntryId: entry.id
+        sourceEntryId: entry.id,
+        context: input.context
       },
       { save: false }
     );
     const persisted = access.persistedJobMemoriesByThreadId.get(threadId);
     if (persisted) {
       persisted.entries = persisted.entries.map((item) => (item.id === entry.id ? { ...item, promotionCandidateId: candidate.id } : item));
-      thread.jobMemory = { ...persisted };
+      if (thread) {
+        thread.jobMemory = { ...persisted };
+      }
     }
   }
 
-  access.refreshDerivedThreadState(thread, now);
+  if (thread) {
+    access.refreshDerivedThreadState(thread, now);
+  }
   queueStateStoreSave(access);
   emitStateStoreChange(access);
-  return thread.jobMemory ?? nextMemory;
+  return thread?.jobMemory ?? nextMemory;
 }
 
 export function recordStateStoreJobCheckpoint(
@@ -292,6 +349,8 @@ export function recordStateStoreJobNote(
     summary: string;
     details?: string | null;
     promote?: boolean;
+    sourceEntryId?: string;
+    context?: JobMemoryWriteContext;
   }
 ): JobMemoryView {
   return appendStateStoreJobMemoryEntry(access, threadId, { kind: "note", ...note });
@@ -305,6 +364,7 @@ export function submitStateStorePromotionCandidate(
     summary: string;
     details?: string | null;
     sourceEntryId: string;
+    context?: JobMemoryWriteContext;
   }
 ): JobMemoryPromotionCandidateView {
   return submitStateStoreJobMemoryPromotionCandidate(access, threadId, candidate);

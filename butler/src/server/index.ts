@@ -11,6 +11,7 @@ import { CodexAppServerClient } from "./codex-client.js";
 import { CodexHarnessService } from "./codex-harness.js";
 import { FileReferenceStore, MAX_FILE_BYTES } from "./file-store.js";
 import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
+import { CodexExecMemoryReviewService } from "./memory-review.js";
 import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-routes.js";
 import { buildCodexInputWithReferences, buildComposerInputItemsPrompt, buildReferencePromptText } from "./reference-inputs.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
@@ -82,14 +83,22 @@ await fileStore.load();
 const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerToken);
 let runtimeAccess!: RuntimeServerAccess;
 let sseHub!: ButlerSseHub;
+const memoryReview = new CodexExecMemoryReviewService({
+  store,
+  stateDir,
+  codexHomeDir,
+  enabled: process.env.MANOR_MEMORY_REVIEW_ENABLED !== "0"
+});
 const codexHarness = new CodexHarnessService({
   codexHomeDir,
   stateDir,
   artifactsDir,
   store,
   runtimeBroker,
-  serviceTemplateRegistry
+  serviceTemplateRegistry,
+  memoryReview
 });
+memoryReview.reviewPendingReportsAsync();
 await codexHarness.load();
 await codexHarness.reconcileThreadCapabilities();
 const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, {
