@@ -92,6 +92,42 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "refreshThreads", description: "Refreshes proof state after browser session finalization." }]
   },
   {
+    name: "desktop_proof_status",
+    label: "Desktop proof status",
+    description: "Check whether headed desktop proof is available.",
+    uiEffects: [{ kind: "refreshThreads", description: "Refreshes desktop sidecar availability." }]
+  },
+  {
+    name: "list_desktop_sessions",
+    label: "List desktop sessions",
+    description: "List active headed desktop sessions, attached threads, and workspace labels visible in noVNC.",
+    uiEffects: [{ kind: "refreshThreads", description: "Keeps desktop session state current." }]
+  },
+  {
+    name: "start_desktop_session",
+    label: "Start desktop session",
+    description: "Start a headed desktop session for Electron or native app proof, attached to a thread workspace.",
+    uiEffects: [{ kind: "refreshThreads", description: "Shows the new desktop session in runtime controls." }]
+  },
+  {
+    name: "desktop_current_screen",
+    label: "Current desktop screen",
+    description: "Capture screenshot, windows, pointer, and display geometry for a headed desktop session.",
+    uiEffects: [{ kind: "refreshThreads", description: "Refreshes desktop session proof state." }]
+  },
+  {
+    name: "desktop_session_action",
+    label: "Desktop session action",
+    description: "Run explicit clicks, keys, OCR targeting, locks, CDP inspection, or clipboard actions in a desktop session.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while driving a desktop session." }]
+  },
+  {
+    name: "stop_desktop_session",
+    label: "Stop desktop session",
+    description: "Stop a headed desktop session and persist screenshots, logs, and action history.",
+    uiEffects: [{ kind: "refreshThreads", description: "Refreshes proof state after desktop session finalization." }]
+  },
+  {
     name: "review_preview_proof",
     label: "Review proof",
     description: "Inspect the latest browser, desktop, or file proof for one preview or job and decide whether it is convincing.",

@@ -370,7 +370,8 @@ export function getButlerSnapshot(access: ButlerAgentSessionAccess): AppSnapshot
     stacks: access.store.listStackLeases(),
     previews: access.store.listPreviewLeases(),
     serviceTemplates: access.listServiceTemplates(),
-    services: access.store.listServiceLeases()
+    services: access.store.listServiceLeases(),
+    desktopSessions: access.store.listDesktopSessions()
   };
 }
 

@@ -159,6 +159,7 @@ const {
   normalizeStringArray,
   overwriteManagedStackVolume,
   parseAliases,
+  persistArtifactFiles,
   persistVerificationArtifacts,
   allocatePreviewHostPort,
   buildExternalPreviewUrl,
@@ -381,6 +382,7 @@ const desktopController = createBrokerDesktopController({
   normalizeString,
   normalizePositiveInteger,
   normalizeEnv,
+  persistArtifactFiles,
   persistVerificationArtifacts
 });
 desktopController.registerRoutes(app);

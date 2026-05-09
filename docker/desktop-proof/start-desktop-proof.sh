@@ -20,7 +20,14 @@ if [ ! -f "$HOME/.fluxbox/init" ]; then
 session.screen0.rootCommand: fbsetroot -solid "#1f2933"
 session.screen0.toolbar.visible: true
 session.screen0.toolbar.autoHide: false
+session.screen0.allowRemoteActions: true
 EOF
+fi
+
+if grep -q '^session.screen0.allowRemoteActions:' "$HOME/.fluxbox/init"; then
+  sed -i 's/^session.screen0.allowRemoteActions:.*/session.screen0.allowRemoteActions: true/' "$HOME/.fluxbox/init"
+else
+  printf '\nsession.screen0.allowRemoteActions: true\n' >>"$HOME/.fluxbox/init"
 fi
 
 if command -v dbus-launch >/dev/null 2>&1 && [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then

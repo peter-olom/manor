@@ -139,6 +139,22 @@ Then use the harness desktop commands to start a headed session, capture screens
 
 The sidecar runs a virtual display, window manager, x11vnc, noVNC, screenshot capture, simple desktop input tooling, and a persistent desktop home under the sidecar state volume. Browser proof remains on the lighter Playwright sidecar.
 
+Desktop interaction checklist:
+
+- [x] Keep headed Electron/native apps on the noVNC-visible desktop instead of private Xvfb displays.
+- [x] Support long-lived interactive desktop sessions that do not auto-expire.
+- [x] Show active desktop sessions in Butler runtime controls with attach, screenshot, and stop actions.
+- [x] Provide a current-screen action that returns a screenshot, window list, pointer location, and display geometry.
+- [x] Support icon-first Butler controls for attaching, capturing, and stopping desktop sessions.
+- [x] Add OCR text targeting for visible desktop text clicks.
+- [x] Record desktop actions and persist the action log with the proof bundle.
+- [x] Add pointer and viewport calibration output.
+- [x] Add session ownership and lock/unlock controls to avoid user/agent input fights.
+- [x] Add persistent desktop profiles per project or job.
+- [x] Add CDP target and accessibility-tree hooks for Electron apps launched with remote debugging enabled.
+- [x] Keep one shared desktop sidecar and attach sessions to every relevant thread id.
+- [x] Rename the visible desktop workspace label from the attached Codex thread id.
+
 ## Stacks
 
 Stacks are the unit of multi-container runtime isolation.
@@ -202,6 +218,7 @@ That surface currently supports:
 - job context and runtime inventory
 - stack start, inspect, promote, and stop
 - preview start, inspect, logs, processes, exec, verify, and stop
+- desktop status, list, start, current-screen, action, and stop
 - service template listing and registration
 - service start, inspect, logs, processes, exec, and stop
 - supervisor reporting back to Butler

@@ -777,26 +777,44 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       label: "Start desktop session",
       description: "Start a headed desktop proof session for an Electron or native desktop command.",
       promptSnippet:
-        "start_desktop_session: launch Electron/native desktop commands in the opt-in headed desktop sidecar so they are visible in noVNC. Stop the session to persist screenshots and logs.",
+        "start_desktop_session: launch Electron/native desktop commands in the shared headed desktop sidecar so they are visible in noVNC. For delegated Codex work, pass that threadId so the runtime anchors to the job and gets a per-thread workspace. Use interactive=true when the operator should keep using it; stop the session to persist screenshots and logs.",
       parameters: Type.Object({
         threadId: Type.Optional(Type.String()),
+        attachedThreadIds: Type.Optional(Type.Array(Type.String())),
+        workspaceKey: Type.Optional(Type.String()),
+        workspaceName: Type.Optional(Type.String()),
         command: Type.String({ minLength: 1 }),
         title: Type.Optional(Type.String()),
         cwd: Type.Optional(Type.String()),
         env: Type.Optional(Type.Record(Type.String(), Type.String())),
+        interactive: Type.Optional(Type.Boolean()),
+        owner: Type.Optional(Type.String()),
+        profileKey: Type.Optional(Type.String()),
         waitMs: Type.Optional(Type.Number({ minimum: 0 }))
       }),
       uiEffects: access.getToolUiEffects("start_desktop_session"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as {
           threadId?: string;
+          attachedThreadIds?: string[];
+          workspaceKey?: string;
+          workspaceName?: string;
           command: string;
           title?: string;
           cwd?: string;
           env?: Record<string, string>;
+          interactive?: boolean;
+          owner?: string;
+          profileKey?: string;
           waitMs?: number;
         };
         const threadId = typedParams.threadId?.trim() || null;
+        const attachedThreadIds = access.normalizeStringArray(typedParams.attachedThreadIds);
+        if (threadId && !attachedThreadIds.includes(threadId)) {
+          attachedThreadIds.unshift(threadId);
+        }
+        const workspaceKey = typedParams.workspaceKey?.trim() || threadId || attachedThreadIds[0] || "desktop";
+        const workspaceName = typedParams.workspaceName?.trim() || workspaceKey;
         const thread = threadId ? access.store.getThread(threadId) ?? null : null;
         const cwd = typedParams.cwd?.trim() || thread?.cwd || "";
         const project = access.resolveWorkspaceProject(
@@ -812,6 +830,12 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           command: typedParams.command.trim(),
           cwd: cwd || undefined,
           env: typedParams.env && Object.keys(typedParams.env).length > 0 ? typedParams.env : undefined,
+          interactive: Boolean(typedParams.interactive),
+          owner: typedParams.owner?.trim() || "agent",
+          profileKey: typedParams.profileKey?.trim() || undefined,
+          attachedThreadIds,
+          workspaceKey,
+          workspaceName,
           waitMs:
             typeof typedParams.waitMs === "number" && Number.isFinite(typedParams.waitMs)
               ? Math.max(0, Math.trunc(typedParams.waitMs))
@@ -821,10 +845,41 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           content: [
             {
               type: "text",
-              text: `Started desktop session ${session.sessionId}. Stop it to persist proof.`
+              text: `Started desktop session ${session.sessionId}. Workspace=${session.workspaceName ?? workspaceName}. Stop it to persist proof.`
             }
           ],
           details: { session }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "list_desktop_sessions",
+      label: "List desktop sessions",
+      description: "List active headed desktop sessions visible in noVNC.",
+      promptSnippet: "list_desktop_sessions: use this before launching another native desktop app or when the operator asks what desktop session is active. Reuse the shared sidecar and attach the relevant thread instead of creating another sidecar.",
+      parameters: Type.Object({
+        threadId: Type.Optional(Type.String())
+      }),
+      uiEffects: access.getToolUiEffects("list_desktop_sessions"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as { threadId?: string };
+        const sessions = await access.runtimeBroker.listDesktopSessions(typedParams.threadId?.trim() || null);
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                sessions.length === 0
+                  ? "No desktop sessions are active."
+                  : sessions
+                      .map(
+                        (session, index) =>
+                          `${index + 1}. ${session.title} | session=${session.sessionId} | ${session.running ? "running" : "stopped"} | workspace=${session.workspaceName ?? "(none)"} | attached=${session.attachedThreadIds?.join(",") || "(none)"} | actions=${session.actionCount} | vnc=${session.vncUrl}`
+                      )
+                      .join("\n")
+            }
+          ],
+          details: { sessions }
         };
       }
     }),
@@ -852,6 +907,41 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       }
     }),
     access.defineButlerTool({
+      name: "desktop_current_screen",
+      label: "Current desktop screen",
+      description: "Capture the current headed desktop screen and return screenshot, window list, pointer, and display geometry.",
+      promptSnippet:
+        "desktop_current_screen: use this before clicking in a headed desktop session and whenever the operator asks what is visible.",
+      parameters: Type.Object({
+        sessionId: Type.String({ minLength: 1 }),
+        label: Type.Optional(Type.String()),
+        fileName: Type.Optional(Type.String())
+      }),
+      uiEffects: access.getToolUiEffects("desktop_current_screen"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as { sessionId: string; label?: string; fileName?: string };
+        const result = await access.runtimeBroker.runDesktopSessionAction(typedParams.sessionId.trim(), {
+          type: "current_screen",
+          actor: "agent",
+          label: typedParams.label?.trim() || undefined,
+          fileName: typedParams.fileName?.trim() || undefined
+        });
+        const windowCount =
+          result.action.output && typeof result.action.output === "object" && Array.isArray((result.action.output as { windows?: unknown }).windows)
+            ? ((result.action.output as { windows: unknown[] }).windows.length)
+            : 0;
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Captured current desktop screen. Windows=${windowCount}. Actions=${result.state.actionCount}.`
+            }
+          ],
+          details: result
+        };
+      }
+    }),
+    access.defineButlerTool({
       name: "desktop_session_action",
       label: "Desktop session action",
       description: "Run one action in a headed desktop session, such as screenshot, wait, click, drag, key, type, window control, or clipboard control.",
@@ -860,9 +950,12 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       parameters: Type.Object({
         sessionId: Type.String({ minLength: 1 }),
         actionType: Type.String({ minLength: 1 }),
+        actor: Type.Optional(Type.String()),
+        force: Type.Optional(Type.Boolean()),
         label: Type.Optional(Type.String()),
         fileName: Type.Optional(Type.String()),
         ms: Type.Optional(Type.Number({ minimum: 0 })),
+        ttlMs: Type.Optional(Type.Number({ minimum: 0 })),
         x: Type.Optional(Type.Number()),
         y: Type.Optional(Type.Number()),
         toX: Type.Optional(Type.Number()),
@@ -871,6 +964,10 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         windowId: Type.Optional(Type.String()),
         key: Type.Optional(Type.String()),
         text: Type.Optional(Type.String()),
+        targetText: Type.Optional(Type.String()),
+        matchMode: Type.Optional(Type.Union([Type.Literal("contains"), Type.Literal("exact")])),
+        cdpUrl: Type.Optional(Type.String()),
+        cdpPort: Type.Optional(Type.Number({ minimum: 1, maximum: 65535 })),
         delayMs: Type.Optional(Type.Number({ minimum: 0 }))
       }),
       uiEffects: access.getToolUiEffects("desktop_session_action"),
@@ -878,9 +975,12 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         const typedParams = params as {
           sessionId: string;
           actionType: string;
+          actor?: string;
+          force?: boolean;
           label?: string;
           fileName?: string;
           ms?: number;
+          ttlMs?: number;
           x?: number;
           y?: number;
           toX?: number;
@@ -889,15 +989,25 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           windowId?: string;
           key?: string;
           text?: string;
+          targetText?: string;
+          matchMode?: "contains" | "exact";
+          cdpUrl?: string;
+          cdpPort?: number;
           delayMs?: number;
         };
         const result = await access.runtimeBroker.runDesktopSessionAction(typedParams.sessionId.trim(), {
           type: typedParams.actionType.trim(),
+          actor: typedParams.actor?.trim() || "agent",
+          force: Boolean(typedParams.force),
           label: typedParams.label?.trim() || undefined,
           fileName: typedParams.fileName?.trim() || undefined,
           ms:
             typeof typedParams.ms === "number" && Number.isFinite(typedParams.ms)
               ? Math.max(0, Math.trunc(typedParams.ms))
+              : undefined,
+          ttlMs:
+            typeof typedParams.ttlMs === "number" && Number.isFinite(typedParams.ttlMs)
+              ? Math.max(0, Math.trunc(typedParams.ttlMs))
               : undefined,
           x: typeof typedParams.x === "number" && Number.isFinite(typedParams.x) ? typedParams.x : undefined,
           y: typeof typedParams.y === "number" && Number.isFinite(typedParams.y) ? typedParams.y : undefined,
@@ -910,6 +1020,13 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           windowId: typedParams.windowId?.trim() || undefined,
           key: typedParams.key?.trim() || undefined,
           text: typedParams.text || undefined,
+          targetText: typedParams.targetText?.trim() || undefined,
+          matchMode: typedParams.matchMode,
+          cdpUrl: typedParams.cdpUrl?.trim() || undefined,
+          cdpPort:
+            typeof typedParams.cdpPort === "number" && Number.isFinite(typedParams.cdpPort)
+              ? Math.max(1, Math.trunc(typedParams.cdpPort))
+              : undefined,
           delayMs:
             typeof typedParams.delayMs === "number" && Number.isFinite(typedParams.delayMs)
               ? Math.max(0, Math.trunc(typedParams.delayMs))

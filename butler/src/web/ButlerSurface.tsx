@@ -16,6 +16,7 @@ import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
 import { RuntimePanel } from "./RuntimePanel";
 import { SandSpinner } from "./SandSpinner";
 import { mergeKnownImages, useButlerLiveSnapshot, useKnownImages, useRuntimeSnapshot, useShellSnapshot } from "./live-state";
+import { useDesktopSessionControls } from "./useDesktopSessionControls";
 import type {
   ButlerHistoryPageResponse,
   ButlerHistoryState,
@@ -300,6 +301,11 @@ export function ButlerSurface({
   const [busyStackId, setBusyStackId] = useState<string | null>(null);
   const [busyServiceId, setBusyServiceId] = useState<string | null>(null);
   const [savingMemoryMessageId, setSavingMemoryMessageId] = useState<string | null>(null);
+  const { busyDesktopSessionId, captureDesktopScreen, stopDesktopSession } = useDesktopSessionControls(
+    showToast,
+    showErrorToast,
+    onPreviewMedia
+  );
   const butlerScrollRef = useRef<HTMLDivElement | null>(null);
   const butlerTimelineScrollRef = useRef<HTMLDivElement | null>(null);
   const butlerScrollTopRef = useRef(0);
@@ -851,7 +857,8 @@ export function ButlerSurface({
 
   const activeRuntimeLeaseCount = (runtime?.stacks.filter((stack) => stack.status !== "stopped").length ?? 0) +
     (runtime?.previews.filter((lease) => lease.status !== "stopped").length ?? 0) +
-    (runtime?.services.filter((service) => service.status !== "stopped").length ?? 0);
+    (runtime?.services.filter((service) => service.status !== "stopped").length ?? 0) +
+    (runtime?.desktopSessions?.filter((session) => session.running).length ?? 0);
   if (!shell) {
     return <div className="workspace-panel"><div className="shell loading">Loading Butler…</div></div>;
   }
@@ -887,8 +894,10 @@ export function ButlerSurface({
                         stacks={runtime.stacks.filter((stack) => stack.status !== "stopped")}
                         previews={runtime.previews.filter((preview) => preview.status !== "stopped")}
                         services={runtime.services.filter((service) => service.status !== "stopped")}
+                        desktopSessions={(runtime.desktopSessions ?? []).filter((session) => session.running)}
                         busyStackId={busyStackId}
                         busyServiceId={busyServiceId}
+                        busyDesktopSessionId={busyDesktopSessionId}
                         onFocusThread={(threadId) => {
                           if (threadId) {
                             onOpenThread(threadId);
@@ -900,6 +909,8 @@ export function ButlerSurface({
                         onStopPreview={(leaseId) => void stopPreviewLease(leaseId)}
                         onPinService={(serviceId, pinned) => void pinServiceLease(serviceId, pinned)}
                         onStopService={(serviceId) => void stopServiceLease(serviceId)}
+                        onStopDesktopSession={(sessionId) => void stopDesktopSession(sessionId)}
+                        onCaptureDesktopScreen={(sessionId) => void captureDesktopScreen(sessionId)}
                         onPreviewArtifact={onPreviewMedia}
                         onResourceUnavailable={(message) => showToast(message, "error", 5000)}
                       />

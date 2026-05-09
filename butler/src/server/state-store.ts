@@ -58,42 +58,11 @@ import {
   reviewChecklistAcceptancePoint,
   updateChecklistHeartbeat
 } from "./supervision-checklist.js";
-import {
-  getStateStoreJobMemory,
-  getStateStoreProjectMemory,
-  listStateStoreJobMemories, listStateStorePendingPromotionCandidates,
-  listStateStoreProjectMemories,
-  recordStateStoreJobCheckpoint,
-  recordStateStoreJobDecision,
-  recordStateStoreJobNote,
-  resolveStateStorePromotionCandidate,
-  submitStateStorePromotionCandidate,
-  syncStateStoreThreadJobMemory
-} from "./state-store-memory.js";
-import {
-  completeStateStoreRuntimeCleanupTask,
-  enqueueStateStoreRuntimeCleanupTask,
-  failStateStoreRuntimeCleanupTask,
-  listStateStoreDueRuntimeCleanupTasks,
-  listStateStoreExpiredLeaseIds,
-  noteStateStorePreviewLeaseActivity,
-  noteStateStoreServiceLeaseActivity,
-  noteStateStoreStackLeaseActivity,
-  noteStateStoreThreadLeaseActivity,
-  setStateStorePreviewLeasePinned,
-  setStateStoreServiceLeasePinned,
-  setStateStoreStackLeasePinned
-} from "./state-store-runtime.js";
-import {
-  findStateStoreProjectArtifactById,
-  getStateStoreProjectArtifact,
-  getStateStoreProjectPolicy,
-  listStateStoreProjectArtifacts,
-  listStateStoreProjectPolicies,
-  upsertStateStoreProjectArtifact,
-  upsertStateStoreProjectPolicy
-} from "./state-store-project-assets.js";
+import { getStateStoreJobMemory, getStateStoreProjectMemory, listStateStoreJobMemories, listStateStorePendingPromotionCandidates, listStateStoreProjectMemories, recordStateStoreJobCheckpoint, recordStateStoreJobDecision, recordStateStoreJobNote, resolveStateStorePromotionCandidate, submitStateStorePromotionCandidate, syncStateStoreThreadJobMemory } from "./state-store-memory.js";
+import { completeStateStoreRuntimeCleanupTask, enqueueStateStoreRuntimeCleanupTask, failStateStoreRuntimeCleanupTask, listStateStoreDueRuntimeCleanupTasks, listStateStoreExpiredLeaseIds, noteStateStorePreviewLeaseActivity, noteStateStoreServiceLeaseActivity, noteStateStoreStackLeaseActivity, noteStateStoreThreadLeaseActivity, setStateStorePreviewLeasePinned, setStateStoreServiceLeasePinned, setStateStoreStackLeasePinned } from "./state-store-runtime.js";
+import { findStateStoreProjectArtifactById, getStateStoreProjectArtifact, getStateStoreProjectPolicy, listStateStoreProjectArtifacts, listStateStoreProjectPolicies, upsertStateStoreProjectArtifact, upsertStateStoreProjectPolicy } from "./state-store-project-assets.js";
 import { recordStateStoreButlerMemory } from "./state-store-butler-memory.js";
+import { listStateStoreDesktopSessions, removeStateStoreDesktopSession, replaceStateStoreDesktopSessions, upsertStateStoreDesktopSession } from "./state-store-desktop.js";
 import { buildStateStoreRuntimeSnapshot, buildStateStoreShellSnapshot, buildStateStoreSnapshot } from "./state-store-snapshot.js";
 import { parseThreadExecutionContract } from "./thread-contract.js";
 import type {
@@ -120,6 +89,7 @@ import type {
   CodexTurnRecord,
   CodexTurnView,
   CodexWorkerReportView,
+  DesktopSessionView,
   JobMemoryEntryKind,
   JobMemoryPromotionCandidateView,
   JobMemoryView,
@@ -147,6 +117,7 @@ export class ButlerStateStore extends EventEmitter {
   private readonly stackLeases = new Map<string, StackLeaseView>();
   private readonly previewLeases = new Map<string, PreviewLeaseView>();
   private readonly serviceLeases = new Map<string, ServiceLeaseView>();
+  private readonly desktopSessions = new Map<string, DesktopSessionView>();
   private readonly runtimeCleanupTasks = new Map<string, RuntimeCleanupTaskView>();
   private readonly previewProofs = new Map<string, PreviewProofRecordView>();
   private readonly persistedSupervisionByThreadId = new Map<string, { butlerTurnsUsed: number; maxButlerTurns: number | null }>();
@@ -1467,6 +1438,22 @@ export class ButlerStateStore extends EventEmitter {
     return [...this.serviceLeases.values()]
       .map((lease) => this.normalizeServiceLease(lease, now))
       .sort((left, right) => right.updatedAt - left.updatedAt);
+  }
+
+  upsertDesktopSession(session: DesktopSessionView): void {
+    upsertStateStoreDesktopSession(this as unknown as Parameters<typeof upsertStateStoreDesktopSession>[0], session);
+  }
+
+  removeDesktopSession(sessionId: string): void {
+    removeStateStoreDesktopSession(this as unknown as Parameters<typeof removeStateStoreDesktopSession>[0], sessionId);
+  }
+
+  replaceDesktopSessions(sessions: DesktopSessionView[]): void {
+    replaceStateStoreDesktopSessions(this as unknown as Parameters<typeof replaceStateStoreDesktopSessions>[0], sessions);
+  }
+
+  listDesktopSessions(): DesktopSessionView[] {
+    return listStateStoreDesktopSessions(this as unknown as Parameters<typeof listStateStoreDesktopSessions>[0]);
   }
 
   getSnapshot(butler: {

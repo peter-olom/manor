@@ -14,6 +14,11 @@ type HarnessActionResult = {
   data: Record<string, unknown>;
 };
 
+function normalizeStringArray(value: unknown): string[] {
+  const entries = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+  return [...new Set(entries.map((entry) => normalizeString(entry)).filter(Boolean))];
+}
+
 export async function handleHarnessDesktopAction(input: {
   action: string;
   params: Record<string, unknown>;
@@ -41,6 +46,12 @@ export async function handleHarnessDesktopAction(input: {
     const cwd = normalizeString(params.cwd) || capability.cwd;
     const env = normalizeEnv(params.env);
     const waitMs = normalizePositiveInteger(params.waitMs) ?? undefined;
+    const interactive = params.interactive === true;
+    const owner = normalizeString(params.owner) || "agent";
+    const profileKey = normalizeString(params.profileKey) || undefined;
+    const attachedThreadIds = [...new Set([capability.threadId, ...normalizeStringArray(params.attachedThreadIds)])];
+    const workspaceKey = normalizeString(params.workspaceKey) || capability.threadId;
+    const workspaceName = normalizeString(params.workspaceName) || workspaceKey;
     if (!command) {
       throw new Error("desktop.use.start requires command");
     }
@@ -54,11 +65,33 @@ export async function handleHarnessDesktopAction(input: {
       command,
       cwd,
       env: Object.keys(env).length > 0 ? env : undefined,
+      interactive,
+      owner,
+      profileKey,
+      attachedThreadIds,
+      workspaceKey,
+      workspaceName,
       waitMs
     });
     return {
-      text: `Desktop proof session started. Session=${session.sessionId}.`,
+      text: `Desktop proof session started. Session=${session.sessionId}. Workspace=${session.workspaceName ?? workspaceName}.`,
       data: { session }
+    };
+  }
+
+  if (action === "desktop.use.list") {
+    const sessions = await runtimeBroker.listDesktopSessions(capability.threadId);
+    return {
+      text:
+        sessions.length === 0
+          ? "No desktop sessions are active for this job."
+          : sessions
+              .map(
+                (session, index) =>
+                  `${index + 1}. ${session.title} | session=${session.sessionId} | ${session.running ? "running" : "stopped"} | workspace=${session.workspaceName ?? "(none)"} | attached=${session.attachedThreadIds?.join(",") || "(none)"} | actions=${session.actionCount} | vnc=${session.vncUrl}`
+              )
+              .join("\n"),
+      data: { sessions }
     };
   }
 
@@ -89,6 +122,7 @@ export async function handleHarnessDesktopAction(input: {
       label: normalizeString(params.label) || undefined,
       fileName: normalizeString(params.fileName) || undefined,
       ms: normalizePositiveInteger(params.ms) ?? undefined,
+      ttlMs: normalizePositiveInteger(params.ttlMs) ?? undefined,
       x: typeof params.x === "number" && Number.isFinite(params.x) ? params.x : undefined,
       y: typeof params.y === "number" && Number.isFinite(params.y) ? params.y : undefined,
       toX: typeof params.toX === "number" && Number.isFinite(params.toX) ? params.toX : undefined,
@@ -97,7 +131,13 @@ export async function handleHarnessDesktopAction(input: {
       windowId: normalizeString(params.windowId) || undefined,
       key: normalizeString(params.key) || undefined,
       text: typeof params.text === "string" ? params.text : undefined,
-      delayMs: normalizePositiveInteger(params.delayMs) ?? undefined
+      targetText: normalizeString(params.targetText) || undefined,
+      matchMode: normalizeString(params.matchMode) || undefined,
+      delayMs: normalizePositiveInteger(params.delayMs) ?? undefined,
+      actor: normalizeString(params.actor) || "agent",
+      force: params.force === true,
+      cdpUrl: normalizeString(params.cdpUrl) || undefined,
+      cdpPort: normalizePositiveInteger(params.cdpPort) ?? undefined
     });
     return {
       text: `Desktop action ${result.action.type} completed. Actions=${result.state.actionCount}.`,

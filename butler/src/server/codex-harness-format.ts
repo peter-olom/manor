@@ -23,6 +23,7 @@ export function formatHarnessRuntimeModel(): string[] {
     "Previews run app code. Services provide supporting infrastructure such as databases, queues, object storage, or mail capture.",
     "Browser-use sessions already capture tracing, video, a ready screenshot, a final screenshot, and per-action screenshots unless you disable auto-capture.",
     "Native Electron or VNC-visible desktop proof must use the desktop proof commands. Do not create a private Xvfb display when the operator needs to see the app in noVNC.",
+    "For headed desktop work, list existing sessions first, attach the job thread id as the visible desktop workspace label, use current-screen before pointer actions, and use interactive/profile options when the operator needs a persistent desktop.",
     "If the desktop proof sidecar is unavailable, check desktop status and report that the desktop profile must be started before native headed proof can proceed.",
     "Keep startup explicit. If the project needs install or run commands, choose and run them directly instead of waiting for Manor to infer them.",
     "If the repo has its own AGENTS guidance for install or runtime shape, follow that guidance over these generic defaults."

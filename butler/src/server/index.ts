@@ -16,6 +16,7 @@ import { buildCodexInputWithReferences, buildComposerInputItemsPrompt, buildRefe
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { registerServerAssetRoutes } from "./server-asset-routes.js";
 import { retrieveButlerMemory } from "./memory-retrieval.js";
+import { reconcileDesktopSessions, registerDesktopSessionRoutes } from "./server-desktop-routes.js";
 import {
   ButlerSseHub,
   cleanupThreadRuntimeResources,
@@ -1065,6 +1066,8 @@ app.post("/api/services/pin", (request, response) => {
   response.json({ ok: true, service: lease });
 });
 
+registerDesktopSessionRoutes(app, runtimeAccess);
+
 app.use(/^\/preview\/([^/]+)(\/.*)?$/, (request, response) => {
   const originalPath = request.originalUrl.split("?")[0] ?? request.originalUrl;
   const match = originalPath.match(/^\/preview\/([^/]+)(\/.*)?$/);
@@ -1105,6 +1108,7 @@ async function syncRuntimeInventory(): Promise<void> {
     await reconcileStackLeases();
     await reconcilePreviewLeases();
     await reconcileServiceLeases();
+    await reconcileDesktopSessions(runtimeAccess);
   })();
 
   try {

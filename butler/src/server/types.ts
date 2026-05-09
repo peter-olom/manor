@@ -449,6 +449,36 @@ export interface RuntimeCleanupTaskView {
   }>;
 }
 
+export interface DesktopSessionView {
+  sessionId: string;
+  runId: string;
+  mode: "headful";
+  title: string;
+  command: string;
+  cwd: string;
+  outputDir: string;
+  interactive: boolean;
+  owner: string | null;
+  lockOwner: string | null;
+  lockExpiresAt: number | null;
+  profileKey: string | null;
+  profileHome: string | null;
+  attachedThreadIds: string[];
+  workspaceKey: string | null;
+  workspaceName: string | null;
+  workspaceIndex: number | null;
+  startedAt: number;
+  lastActivityAt: number;
+  pid: number | null;
+  running: boolean;
+  exitCode: number | null;
+  actionCount: number;
+  vncUrl: string;
+  threadId: string | null;
+  projectId: string;
+  projectLabel: string;
+}
+
 export type CodexMilestoneType = "started" | "completed" | "blocked";
 
 export interface CodexMilestoneEntry {
@@ -844,6 +874,7 @@ export interface AppSnapshot {
     previews: PreviewLeaseView[];
     serviceTemplates: ServiceTemplateView[];
     services: ServiceLeaseView[];
+    desktopSessions: DesktopSessionView[];
     lastError: string | null;
     compose: {
       provider: string | null;
@@ -871,8 +902,9 @@ export interface AppShellSnapshot {
         previews: unknown;
         serviceTemplates: unknown;
         services: unknown;
+        desktopSessions: unknown;
       }
-      ? Omit<TButler, "messages" | "messageCount" | "latestPreviewProofsByThreadId" | "previewProofsByThreadId" | "stacks" | "previews" | "serviceTemplates" | "services">
+      ? Omit<TButler, "messages" | "messageCount" | "latestPreviewProofsByThreadId" | "previewProofsByThreadId" | "stacks" | "previews" | "serviceTemplates" | "services" | "desktopSessions">
       : never
     : never;
 }
@@ -890,6 +922,7 @@ export interface RuntimeSnapshot {
   previews: PreviewLeaseView[];
   serviceTemplates: ServiceTemplateView[];
   services: ServiceLeaseView[];
+  desktopSessions: DesktopSessionView[];
 }
 
 export interface AppBootstrapSnapshot {

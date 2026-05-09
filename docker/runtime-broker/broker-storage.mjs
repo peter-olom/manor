@@ -491,14 +491,13 @@ function resolveVerificationArtifactTargetDir(outputLocation) {
   return path.posix.join(butlerArtifactsRootDir, "previews", outputLocation.leaseId, outputLocation.runId);
 }
 
-async function persistVerificationArtifacts(containerRef, verification, remoteOutputDir, outputLocation) {
-  const archiveStartedAt = Date.now();
+async function persistArtifactFiles(containerRef, artifacts, outputLocation) {
   const butlerContainer = docker.getContainer(butlerContainerName);
   await butlerContainer.inspect();
   const targetDir = resolveVerificationArtifactTargetDir(outputLocation);
 
   const persistedArtifacts = [];
-  for (const artifact of Array.isArray(verification.artifacts) ? verification.artifacts : []) {
+  for (const artifact of Array.isArray(artifacts) ? artifacts : []) {
     if (!artifact || typeof artifact !== "object") {
       continue;
     }
@@ -521,6 +520,15 @@ async function persistVerificationArtifacts(containerRef, verification, remoteOu
     });
   }
 
+  return persistedArtifacts;
+}
+
+async function persistVerificationArtifacts(containerRef, verification, remoteOutputDir, outputLocation) {
+  const archiveStartedAt = Date.now();
+  const butlerContainer = docker.getContainer(butlerContainerName);
+  await butlerContainer.inspect();
+  const targetDir = resolveVerificationArtifactTargetDir(outputLocation);
+  const persistedArtifacts = await persistArtifactFiles(containerRef, verification.artifacts, outputLocation);
   const manifestPath = path.posix.join(targetDir, "manifest.json");
   const manifestArtifact = {
     kind: "manifest",
@@ -577,6 +585,7 @@ async function persistVerificationArtifacts(containerRef, verification, remoteOu
     readContainerFile,
     removeContainerPath,
     writeContainerFile,
+    persistArtifactFiles,
     persistVerificationArtifacts
   };
 }

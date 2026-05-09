@@ -12,6 +12,7 @@ RUN apt-get update \
     novnc \
     procps \
     scrot \
+    tesseract-ocr \
     websockify \
     wmctrl \
     xclip \

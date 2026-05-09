@@ -20,6 +20,7 @@ type SnapshotAccess = {
   listStackLeases(): AppSnapshot["butler"]["stacks"];
   listPreviewLeases(): AppSnapshot["butler"]["previews"];
   listServiceLeases(): AppSnapshot["butler"]["services"];
+  listDesktopSessions(): AppSnapshot["butler"]["desktopSessions"];
   listProjectSummaries(): AppSnapshot["butler"]["supervision"]["projects"];
   getSupervisorSummary(): AppSnapshot["butler"]["supervision"]["supervisor"];
 };
@@ -35,7 +36,8 @@ export function buildStateStoreRuntimeSnapshot(
     stacks: access.listStackLeases(),
     previews: access.listPreviewLeases(),
     serviceTemplates,
-    services: access.listServiceLeases()
+    services: access.listServiceLeases(),
+    desktopSessions: access.listDesktopSessions()
   };
 }
 
@@ -134,7 +136,8 @@ export function buildStateStoreSnapshot(
       stacks: access.listStackLeases(),
       previews: access.listPreviewLeases(),
       serviceTemplates: butler.serviceTemplates,
-      services: access.listServiceLeases()
+      services: access.listServiceLeases(),
+      desktopSessions: access.listDesktopSessions()
     }
   };
 }

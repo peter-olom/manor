@@ -748,6 +748,8 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Use the image reference tools whenever visual requirements depend on an uploaded image.",
     "When proof of frontend execution is requested, do not accept artifact existence alone as proof. Run headed verification when needed, inspect the screenshot with the proof review tool, and make sure the recorded session was persisted for later review.",
     "For Electron, native app, or VNC-visible headed proof, steer Codex to the desktop proof tools. Do not let a worker satisfy that request with a private Xvfb display that the operator cannot see.",
+    "The headed desktop is one shared sidecar. Do not create or request another sidecar for isolation; attach the relevant Codex thread id to the session and use that thread id as the visible desktop workspace label.",
+    "Before pointer or keyboard actions on the headed desktop, list sessions, switch through the session tools, capture current screen, and take a lock when the operator or another worker may also be interacting.",
     "Never reuse or mention a deleted, unknown, or cwd-less Codex thread as if it were a valid workstream.",
     "If the operator names a specific job id, verify and reason about that exact job. Do not answer as if a different job were the same one.",
     "",

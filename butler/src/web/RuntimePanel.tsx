@@ -1,5 +1,5 @@
 import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
-import { OpenIcon, PinIcon, StopIcon } from "./icons";
+import { ImageIcon, OpenIcon, PinIcon, StopIcon } from "./icons";
 import type { PreviewMedia, RuntimeSnapshot } from "./types";
 import { formatLeaseState, formatPreviewBootstrap, formatStackStorage } from "./utils";
 
@@ -7,8 +7,10 @@ export function RuntimePanel({
   stacks,
   previews,
   services,
+  desktopSessions,
   busyStackId,
   busyServiceId,
+  busyDesktopSessionId,
   onFocusThread,
   onPinStack,
   onStopStack,
@@ -16,14 +18,18 @@ export function RuntimePanel({
   onStopPreview,
   onPinService,
   onStopService,
+  onStopDesktopSession,
+  onCaptureDesktopScreen,
   onPreviewArtifact,
   onResourceUnavailable
 }: {
   stacks: RuntimeSnapshot["stacks"];
   previews: RuntimeSnapshot["previews"];
   services: RuntimeSnapshot["services"];
+  desktopSessions: RuntimeSnapshot["desktopSessions"];
   busyStackId: string | null;
   busyServiceId: string | null;
+  busyDesktopSessionId: string | null;
   onFocusThread: (threadId: string | null) => void;
   onPinStack: (stackId: string, pinned: boolean) => void;
   onStopStack: (stackId: string) => void;
@@ -31,11 +37,49 @@ export function RuntimePanel({
   onStopPreview: (leaseId: string) => void;
   onPinService: (serviceId: string, pinned: boolean) => void;
   onStopService: (serviceId: string) => void;
+  onStopDesktopSession: (sessionId: string) => void;
+  onCaptureDesktopScreen: (sessionId: string) => void;
   onPreviewArtifact: (media: PreviewMedia) => void;
   onResourceUnavailable: (message: string) => void;
 }) {
   return (
     <>
+      {desktopSessions.length > 0 ? (
+        <section className="runtime-group">
+          <div className="runtime-group-head">
+            <span className="eyebrow">Desktop</span>
+            <span className="runtime-group-count">{desktopSessions.length}</span>
+          </div>
+          <div className="runtime-list">
+            {desktopSessions.map((session) => (
+              <article key={session.sessionId} className="runtime-item">
+                <button className="runtime-item-main" onClick={() => onFocusThread(session.threadId ?? session.attachedThreadIds[0] ?? null)}>
+                  <span className="runtime-item-title">{session.title}</span>
+                  <span className="runtime-item-meta">
+                    {session.projectLabel} • {session.running ? "running" : "stopped"} • {session.interactive ? "interactive" : "proof"} • actions=
+                    {session.actionCount}
+                    {session.workspaceName ? ` • workspace=${session.workspaceName}${session.workspaceIndex !== null ? `#${session.workspaceIndex}` : ""}` : ""}
+                    {session.attachedThreadIds.length > 1 ? ` • threads=${session.attachedThreadIds.length}` : ""}
+                    {session.lockOwner ? ` • locked by ${session.lockOwner}` : ""}
+                    {session.profileKey ? ` • profile=${session.profileKey}` : ""}
+                  </span>
+                </button>
+                <div className="runtime-item-actions">
+                  <a className="panel-action panel-action-link panel-action-icon" href={session.vncUrl} target="_blank" rel="noreferrer" aria-label="Attach to desktop" title="Attach">
+                    <OpenIcon />
+                  </a>
+                  <button className="panel-action panel-action-icon" onClick={() => onCaptureDesktopScreen(session.sessionId)} disabled={busyDesktopSessionId === session.sessionId} aria-label="Capture desktop screen" title="Screenshot">
+                    <ImageIcon />
+                  </button>
+                  <button className="panel-action panel-action-icon panel-action-icon-danger" onClick={() => onStopDesktopSession(session.sessionId)} disabled={busyDesktopSessionId === session.sessionId} aria-label={busyDesktopSessionId === session.sessionId ? "Stopping desktop session" : "Stop desktop session"} title={busyDesktopSessionId === session.sessionId ? "Stopping" : "Stop"}>
+                    <StopIcon />
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
       {stacks.length > 0 ? (
         <section className="runtime-group">
           <div className="runtime-group-head">

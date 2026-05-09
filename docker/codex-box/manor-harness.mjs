@@ -56,9 +56,11 @@ Preview defaults:
   manor-harness browser use action <sessionId> --type click|fill|type|press|hover|select|check|uncheck|wait_for|scroll|navigate|evaluate|screenshot [--selector <css>] [--value <text>] [--values <text> ...] [--text <text>] [--key <key>] [--url <url>] [--url-includes <text>] [--script "<js>"] [--script-file <path>] [--ms <n>] [--x <n>] [--y <n>] [--delay-ms <n>] [--timeout-ms <n>] [--label <text>] [--file-name <name>] [--no-capture]
   manor-harness browser use stop <sessionId> [--reason <text>] [--lease <previewSelector>]
   manor-harness desktop status
-  manor-harness desktop use start --command "<cmd>" [--title <text>] [--cwd <path>] [--env KEY=VALUE ...] [--wait-ms <n>]
+  manor-harness desktop use list
+  manor-harness desktop use start --command "<cmd>" [--title <text>] [--cwd <path>] [--env KEY=VALUE ...] [--interactive] [--owner <name>] [--profile-key <key>] [--workspace-key <key>] [--workspace-name <name>] [--attach-thread <jobId> ...] [--wait-ms <n>]
   manor-harness desktop use state <sessionId>
-  manor-harness desktop use action <sessionId> --type screenshot|wait|click|drag|key|type|window_list|focus_window|close_window|clipboard_set|clipboard_get [--label <text>] [--file-name <name>] [--ms <n>] [--x <n>] [--y <n>] [--to-x <n>] [--to-y <n>] [--button <n>] [--window-id <id>] [--key <key>] [--text <text>] [--delay-ms <n>]
+  manor-harness desktop use current-screen <sessionId>
+  manor-harness desktop use action <sessionId> --type screenshot|current_screen|calibrate|wait|click|click_text|drag|key|type|window_list|focus_window|close_window|clipboard_set|clipboard_get|lock|unlock|cdp_targets|cdp_accessibility [--actor <name>] [--force] [--label <text>] [--file-name <name>] [--ms <n>] [--ttl-ms <n>] [--x <n>] [--y <n>] [--to-x <n>] [--to-y <n>] [--button <n>] [--window-id <id>] [--key <key>] [--text <text>] [--target-text <text>] [--match-mode contains|exact] [--delay-ms <n>] [--cdp-url <url>] [--cdp-port <n>]
   manor-harness desktop use stop <sessionId> [--reason <text>]
   manor-harness preview stop <previewSelector>
   manor-harness service templates
@@ -77,7 +79,7 @@ Proof tips:
   Use --session-cookie <token> as shorthand for better-auth.session_token=<token>.
   Cookies are injected into the browser context directly; headers remain separate.
   Proof is session-driven: start browser sidecar, run actions, optionally capture screenshots, then stop session.
-  Native Electron or VNC-visible proof is desktop-driven: check desktop status, start a desktop session, capture screenshots/actions there, then stop it.
+  Native Electron or VNC-visible proof is desktop-driven: check desktop status, start a desktop session attached to this job workspace, capture screenshots/actions there, then stop it.
   File proof is for cases where the durable evidence is a generated file, PDF, Office file, archive, report, export, log, or saved artifact.
   Do not create a private Xvfb display when the operator asked for a VNC-visible desktop app.
   Do not use direct curl or fetch from the shared Codex shell to judge live-site browser reachability. That shell is behind restricted egress by design.
@@ -245,6 +247,10 @@ function readFlag(args, name, fallback = "") {
     return fallback;
   }
   return args[index + 1] ?? fallback;
+}
+
+function hasFlag(args, name) {
+  return args.includes(name);
 }
 
 function readRepeatedFlag(args, name) {
@@ -681,19 +687,39 @@ async function main() {
           command: readFlag(args, "--command"),
           cwd: readFlag(args, "--cwd"),
           env: Object.fromEntries(parseRepeatedKeyValueFlags(args, "--env")),
+          interactive: hasFlag(args, "--interactive"),
+          owner: readFlag(args, "--owner"),
+          profileKey: readFlag(args, "--profile-key"),
+          workspaceKey: readFlag(args, "--workspace-key"),
+          workspaceName: readFlag(args, "--workspace-name"),
+          attachedThreadIds: readRepeatedFlag(args, "--attach-thread"),
           waitMs: readPositiveIntFlag(args, "--wait-ms")
         };
+      } else if (useSubcommand === "list") {
+        action = "desktop.use.list";
       } else if (useSubcommand === "state" && args[3]) {
         action = "desktop.use.state";
         params = { sessionId: args[3] };
+      } else if (useSubcommand === "current-screen" && args[3]) {
+        action = "desktop.use.action";
+        params = {
+          sessionId: args[3],
+          actionType: "current_screen",
+          label: readFlag(args, "--label"),
+          fileName: readFlag(args, "--file-name"),
+          actor: readFlag(args, "--actor")
+        };
       } else if (useSubcommand === "action" && args[3]) {
         action = "desktop.use.action";
         params = {
           sessionId: args[3],
           actionType: readFlag(args, "--type"),
+          actor: readFlag(args, "--actor"),
+          force: hasFlag(args, "--force"),
           label: readFlag(args, "--label"),
           fileName: readFlag(args, "--file-name"),
           ms: readPositiveIntFlag(args, "--ms"),
+          ttlMs: readPositiveIntFlag(args, "--ttl-ms"),
           x: readNumberFlag(args, "--x"),
           y: readNumberFlag(args, "--y"),
           toX: readNumberFlag(args, "--to-x"),
@@ -702,7 +728,11 @@ async function main() {
           windowId: readFlag(args, "--window-id"),
           key: readFlag(args, "--key"),
           text: readFlag(args, "--text"),
-          delayMs: readPositiveIntFlag(args, "--delay-ms")
+          targetText: readFlag(args, "--target-text"),
+          matchMode: readFlag(args, "--match-mode"),
+          delayMs: readPositiveIntFlag(args, "--delay-ms"),
+          cdpUrl: readFlag(args, "--cdp-url"),
+          cdpPort: readPositiveIntFlag(args, "--cdp-port")
         };
       } else if (useSubcommand === "stop" && args[3]) {
         action = "desktop.use.stop";

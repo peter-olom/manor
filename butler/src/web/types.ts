@@ -590,6 +590,35 @@ export type RuntimeSnapshot = {
     storageKind: string;
     volumeName: string | null;
   }>;
+  desktopSessions: Array<{
+    sessionId: string;
+    runId: string;
+    mode: "headful";
+    title: string;
+    command: string;
+    cwd: string;
+    outputDir: string;
+    interactive: boolean;
+    owner: string | null;
+    lockOwner: string | null;
+    lockExpiresAt: number | null;
+    profileKey: string | null;
+    profileHome: string | null;
+    attachedThreadIds: string[];
+    workspaceKey: string | null;
+    workspaceName: string | null;
+    workspaceIndex: number | null;
+    startedAt: number;
+    lastActivityAt: number;
+    pid: number | null;
+    running: boolean;
+    exitCode: number | null;
+    actionCount: number;
+    vncUrl: string;
+    threadId: string | null;
+    projectId: string;
+    projectLabel: string;
+  }>;
 };
 
 export type ShellSnapshot = {

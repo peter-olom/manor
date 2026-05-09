@@ -18,16 +18,9 @@ import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
 import { RuntimePanel } from "./RuntimePanel";
 import { SandSpinner } from "./SandSpinner";
 import { mergeKnownImages, useKnownImages, useRuntimeSnapshot, useShellSnapshot, useThreadDetail } from "./live-state";
+import { useDesktopSessionControls } from "./useDesktopSessionControls";
 import { useThreadArtifacts } from "./useThreadArtifacts";
-import type {
-  CodexThreadDetail,
-  ComposerInputItem,
-  ComposerPrefill,
-  FileReference,
-  GeneratedImage,
-  PreviewMedia,
-  ReasoningEffort
-} from "./types";
+import type { CodexThreadDetail, ComposerInputItem, ComposerPrefill, FileReference, GeneratedImage, PreviewMedia, ReasoningEffort } from "./types";
 import {
   THREAD_DRAFT_STORAGE_KEY_PREFIX,
   buildMessageImageLookup,
@@ -162,6 +155,7 @@ export function ThreadSurface({
   const [busyStackId, setBusyStackId] = useState<string | null>(null);
   const [busyServiceId, setBusyServiceId] = useState<string | null>(null);
   const [activeJumpId, setActiveJumpId] = useState<string | null>(null);
+  const { busyDesktopSessionId, captureDesktopScreen, stopDesktopSession } = useDesktopSessionControls(showToast, showErrorToast, onPreviewMedia);
   const runScrollRef = useRef<HTMLDivElement | null>(null);
   const runTimelineScrollRef = useRef<HTMLDivElement | null>(null);
   const runScrollTopRef = useRef(0);
@@ -755,6 +749,8 @@ export function ThreadSurface({
     activeThread && runtime ? runtime.previews.filter((lease) => lease.threadId === activeThread.id && lease.status !== "stopped") : [];
   const activeThreadServices =
     activeThread && runtime ? runtime.services.filter((service) => service.threadId === activeThread.id && service.status !== "stopped") : [];
+  const activeThreadDesktopSessions =
+    activeThread && runtime ? (runtime.desktopSessions ?? []).filter((session) => session.running && (session.threadId === activeThread.id || session.attachedThreadIds.includes(activeThread.id))) : [];
   const activeThreadPreviewProofs =
     activeThread && runtime
       ? runtime.previewProofsByThreadId[activeThread.id] ??
@@ -764,7 +760,8 @@ export function ThreadSurface({
     activeThreadPreviewProofs[0]?.verification ??
     activeThreadPreviews.find((lease) => Boolean(lease.lastVerification))?.lastVerification ??
     null;
-  const activeThreadRuntimeLeaseCount = activeThreadStacks.length + activeThreadPreviews.length + activeThreadServices.length;
+  const activeThreadRuntimeLeaseCount =
+    activeThreadStacks.length + activeThreadPreviews.length + activeThreadServices.length + activeThreadDesktopSessions.length;
   const activeChecklist = activeThread?.supervisionChecklist ?? null;
   const activeChecklistProgress = activeChecklist ? getThreadChecklistProgress(activeChecklist) : null;
   const activeChecklistProgressLabel = activeChecklistProgress ? `${activeChecklistProgress.completed}/${activeChecklistProgress.total}` : null;
@@ -1058,8 +1055,10 @@ export function ThreadSurface({
                     stacks={activeThreadStacks}
                     previews={activeThreadPreviews}
                     services={activeThreadServices}
+                    desktopSessions={activeThreadDesktopSessions}
                     busyStackId={busyStackId}
                     busyServiceId={busyServiceId}
+                    busyDesktopSessionId={busyDesktopSessionId}
                     onFocusThread={(nextThreadId) => {
                       if (nextThreadId) {
                         onOpenThread(nextThreadId);
@@ -1071,6 +1070,8 @@ export function ThreadSurface({
                     onStopPreview={(leaseId) => void stopPreviewLease(leaseId)}
                     onPinService={(serviceId, pinned) => void pinServiceLease(serviceId, pinned)}
                     onStopService={(serviceId) => void stopServiceLease(serviceId)}
+                    onStopDesktopSession={(sessionId) => void stopDesktopSession(sessionId)}
+                    onCaptureDesktopScreen={(sessionId) => void captureDesktopScreen(sessionId)}
                     onPreviewArtifact={onPreviewMedia}
                     onResourceUnavailable={(message) => showToast(message, "error", 5000)}
                   />

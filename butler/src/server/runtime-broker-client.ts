@@ -234,6 +234,7 @@ type DesktopProofStatusPayload = {
     display: string;
     desktopHome?: string;
     xdgConfigHome?: string;
+    desktopProfilesDir?: string;
     vncUrl: string;
     activeSessionCount: number;
   } | null;
@@ -247,6 +248,16 @@ type DesktopSessionSummaryPayload = {
   command: string;
   cwd: string;
   outputDir: string;
+  interactive?: boolean;
+  owner?: string;
+  lockOwner?: string | null;
+  lockExpiresAt?: number | null;
+  profileKey?: string | null;
+  profileHome?: string | null;
+  attachedThreadIds?: string[];
+  workspaceKey?: string | null;
+  workspaceName?: string | null;
+  workspaceIndex?: number | null;
   startedAt: number;
   lastActivityAt: number;
   pid: number | null;
@@ -256,17 +267,28 @@ type DesktopSessionSummaryPayload = {
   vncUrl: string;
 };
 
+type DesktopTrackedSessionPayload = {
+  threadId: string;
+  attachedThreadIds?: string[];
+  projectId: string;
+  projectLabel: string;
+  title: string;
+  runId: string;
+  outputDir: string;
+  interactive?: boolean;
+  owner?: string;
+  profileKey?: string | null;
+  workspaceKey?: string | null;
+  workspaceName?: string | null;
+  workspaceIndex?: number | null;
+};
+
+type DesktopSessionListPayload = Array<DesktopSessionSummaryPayload & { tracked: DesktopTrackedSessionPayload | null }>;
+
 type DesktopSessionStatePayload = {
   ok: true;
   session: DesktopSessionSummaryPayload;
-  tracked: {
-    threadId: string;
-    projectId: string;
-    projectLabel: string;
-    title: string;
-    runId: string;
-    outputDir: string;
-  } | null;
+  tracked: DesktopTrackedSessionPayload | null;
 };
 
 type DesktopSessionActionPayload = {
@@ -289,6 +311,10 @@ type DesktopSessionStopPayload = {
     title: string;
     runId: string;
     outputDir: string;
+    attachedThreadIds?: string[];
+    workspaceKey?: string | null;
+    workspaceName?: string | null;
+    workspaceIndex?: number | null;
   } | null;
   desktopProof?: {
     threadId: string;
@@ -591,6 +617,12 @@ export class RuntimeBrokerClient {
     command: string;
     cwd?: string;
     env?: Record<string, string>;
+    interactive?: boolean;
+    owner?: string;
+    profileKey?: string;
+    attachedThreadIds?: string[];
+    workspaceKey?: string;
+    workspaceName?: string;
     waitMs?: number;
   }): Promise<DesktopSessionSummaryPayload> {
     const payload = await this.request<{ ok: true; session: DesktopSessionSummaryPayload }>("/desktop/sessions", {
@@ -604,6 +636,11 @@ export class RuntimeBrokerClient {
     return this.request<DesktopSessionStatePayload>(`/desktop/sessions/${encodeURIComponent(sessionId)}`, {
       method: "GET"
     });
+  }
+
+  async listDesktopSessions(threadId?: string | null): Promise<DesktopSessionListPayload> {
+    const query = threadId ? `?threadId=${encodeURIComponent(threadId)}` : "";
+    return this.request<DesktopSessionListPayload>(`/desktop/sessions${query}`);
   }
 
   async runDesktopSessionAction(
@@ -621,7 +658,14 @@ export class RuntimeBrokerClient {
       windowId?: string;
       key?: string;
       text?: string;
+      targetText?: string;
+      matchMode?: string;
       delayMs?: number;
+      ttlMs?: number;
+      actor?: string;
+      force?: boolean;
+      cdpUrl?: string;
+      cdpPort?: number;
     }
   ): Promise<DesktopSessionActionPayload> {
     return this.request<DesktopSessionActionPayload>(`/desktop/sessions/${encodeURIComponent(sessionId)}/actions`, {
