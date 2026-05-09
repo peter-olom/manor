@@ -57,6 +57,10 @@ function isClosedPlaceholderThread(thread: CodexThreadSummary, callback: ButlerT
   );
 }
 
+function getThreadProjectPath(thread: CodexThreadSummary | undefined): string | null {
+  return thread?.cwd ?? thread?.executionContract?.workspaceCwd ?? null;
+}
+
 function syncTerminalFrameTheme(frame: HTMLIFrameElement | null, lightTheme: boolean) {
   const doc = frame?.contentDocument;
   if (!doc) {
@@ -657,17 +661,20 @@ export function App() {
             <div className="workspace-tabs-scroll">
               {shell.codex.windows.map((window) => {
                 const threadSummary = threadSummaryById.get(window.threadId);
+                const projectPath = getThreadProjectPath(threadSummary);
                 return (
                   <div key={window.threadId} className={`workspace-tab workspace-tab-window ${activeTabId === window.threadId ? "is-active" : ""} ${threadSummary?.status === "active" ? "has-active-work" : ""}`}>
                     {threadSummary?.status === "active" ? <span className="workspace-tab-activity-dot" aria-hidden="true" /> : null}
-                    <button className="workspace-tab-main" onClick={() => openThread(window.threadId)}>
-                      <span className="workspace-tab-label">{window.title}</span>
-                      <span className="workspace-tab-meta">
-                        {threadSummary?.compaction.active
-                          ? "Compacting"
-                          : threadSummary?.contextUsage.percent !== null && threadSummary?.contextUsage.percent !== undefined
-                            ? `${Math.round(threadSummary.contextUsage.percent)}%`
-                            : ""}
+                    <button className="workspace-tab-main" onClick={() => openThread(window.threadId)} title={projectPath ? `${window.title}\n${projectPath}` : window.title}>
+                      <span className="workspace-tab-title-line">
+                        <span className="workspace-tab-label">{window.title}</span>
+                        <span className="workspace-tab-meta">
+                          {threadSummary?.compaction.active
+                            ? "Compacting"
+                            : threadSummary?.contextUsage.percent !== null && threadSummary?.contextUsage.percent !== undefined
+                              ? `${Math.round(threadSummary.contextUsage.percent)}%`
+                              : ""}
+                        </span>
                       </span>
                     </button>
                     <button className="workspace-tab-copy" onClick={() => void copyText(window.threadId, "Job ID copied")} aria-label="Copy job ID" title="Copy job ID">
@@ -676,6 +683,11 @@ export function App() {
                     <button className="workspace-tab-close" onClick={() => void closeThreadWindow(window.threadId)}>
                       ×
                     </button>
+                    {projectPath ? (
+                      <button className="workspace-tab-path-button" onClick={() => openThread(window.threadId)} title={projectPath}>
+                        <span className="workspace-tab-path">{projectPath}</span>
+                      </button>
+                    ) : null}
                   </div>
                 );
               })}

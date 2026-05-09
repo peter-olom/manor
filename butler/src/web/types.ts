@@ -667,6 +667,7 @@ export type ShellSnapshot = {
       projects: Array<{
         id: string;
         label: string;
+        kind: "project" | "workspace";
         threadCount: number;
         activeCount: number;
         blockedCount: number;
@@ -680,7 +681,9 @@ export type ShellSnapshot = {
         activeThreads: number;
         blockedThreads: number;
         completedThreads: number;
+        groupCount: number;
         projectCount: number;
+        workspaceCount: number;
         updatedAt: number;
         summary: string;
       };

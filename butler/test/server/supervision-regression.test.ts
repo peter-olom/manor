@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,9 +9,11 @@ import {
   buildChatCallbackText,
   buildFallbackChatCallbackText,
   buildOperatorThreadGuard,
+  buildProjectInventorySummary,
   buildSystemPrompt,
   isCallbackOutstanding
 } from "../../src/server/butler-agent-helpers.js";
+import { listWorkspaceProjectDirectories, resolveWorkspaceProjectInfo } from "../../src/server/repo-worktree.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
 import type { ButlerThreadCallbackView, CodexThreadExecutionContractView } from "../../src/server/types.js";
@@ -147,6 +149,93 @@ test("operator thread guard only treats tracked ids as authoritative jobs", asyn
   assert.equal(contextGuard.lockedThreadId, trackedThreadId);
 });
 
+test("bookkeeping-only thread placeholders stay out of visible supervision", async () => {
+  const store = await createStore();
+  store.upsertThreadSummary({ id: "placeholder-thread" });
+  store.addEvent("missing-thread", "thread/status/changed", "{\"type\":\"notLoaded\"}");
+  store.setThreadStatus("missing-thread", "idle");
+  store.upsertThreadSummary({
+    id: "real-thread",
+    status: "idle",
+    cwd: "/workspace",
+    turns: [{ id: "turn-1", status: "completed", items: [] }]
+  });
+
+  assert.equal(store.getThread("missing-thread"), undefined);
+  assert.deepEqual(store.listThreads().map((thread) => thread.id), ["real-thread"]);
+  assert.deepEqual(store.listProjectSummaries().map((project) => project.id), ["/workspace"]);
+  assert.equal(store.getSupervisorSummary().totalThreads, 1);
+});
+
+test("shared root work is grouped as a workspace, not a project", async () => {
+  const store = await createStore();
+  store.upsertThreadSummary({
+    id: "shared-thread",
+    status: "idle",
+    cwd: "/repos",
+    turns: [{ id: "turn-1", status: "completed", items: [] }]
+  });
+  store.upsertThreadSummary({
+    id: "repo-thread",
+    status: "idle",
+    cwd: "/repos/sample-app",
+    turns: [{ id: "turn-1", status: "completed", items: [] }]
+  });
+
+  assert.deepEqual(resolveWorkspaceProjectInfo("/repos"), {
+    id: "workspace:shared",
+    label: "Shared workspace",
+    kind: "workspace"
+  });
+
+  const summaries = store.listProjectSummaries().sort((left, right) => left.label.localeCompare(right.label));
+  assert.deepEqual(
+    summaries.map((summary) => [summary.id, summary.label, summary.kind]),
+    [
+      ["sample-app", "sample-app", "project"],
+      ["workspace:shared", "Shared workspace", "workspace"]
+    ]
+  );
+  assert.equal(store.getSupervisorSummary().projectCount, 1);
+  assert.equal(store.getSupervisorSummary().workspaceCount, 1);
+  assert.match(store.getSupervisorSummary().summary, /1 project, 1 workspace/);
+});
+
+test("project inventory lists workspace projects separately from tracked work", async () => {
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), "manor-workspace-projects-"));
+  await mkdir(path.join(workspaceRoot, "beta"));
+  await mkdir(path.join(workspaceRoot, "alpha"));
+  await mkdir(path.join(workspaceRoot, ".manor-worktrees"));
+
+  const projects = await listWorkspaceProjectDirectories(workspaceRoot);
+  assert.deepEqual(
+    projects.map((project) => [project.id, project.label, project.kind]),
+    [
+      ["alpha", "alpha", "project"],
+      ["beta", "beta", "project"]
+    ]
+  );
+
+  const store = await createStore();
+  store.upsertThreadSummary({
+    id: "shared-thread",
+    status: { type: "active" },
+    cwd: "/repos",
+    turns: [{ id: "turn-1", status: "completed", items: [] }]
+  });
+  store.upsertThreadSummary({
+    id: "repo-thread",
+    status: "idle",
+    cwd: "/repos/alpha",
+    turns: [{ id: "turn-1", status: "completed", items: [] }]
+  });
+
+  const summary = buildProjectInventorySummary(projects, store.listProjectSummaries(), 10);
+  assert.match(summary, /Known projects: 2/);
+  assert.match(summary, /Tracked workstream groups: 2/);
+  assert.match(summary, /Active now: 0 project group\(s\), 1 workspace bucket\(s\)/);
+});
+
 test("completed checklists can refresh for new follow-up work", async () => {
   const store = await createStore();
   const contract = makeContract();
@@ -192,6 +281,7 @@ test("system prompt advises focused checklist refresh for new work", async () =>
   assert.match(prompt, /genuine new slice of work/);
   assert.match(prompt, /hold_job_context/);
   assert.match(prompt, /newer context for an active job/);
+  assert.match(prompt, /Do not answer project inventory questions from supervisor state alone/);
 });
 
 test("callback helper only treats owed non-closed callbacks as outstanding", () => {

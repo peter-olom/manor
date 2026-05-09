@@ -244,19 +244,19 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "list_projects",
     label: "List projects",
-    description: "List repo-level Codex supervision summaries so Butler can stay on top of many threads.",
-    uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while checking project activity." }]
+    description: "List known project directories and current tracked work separately.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while checking project inventory and workstream activity." }]
   },
   {
     name: "read_project",
-    label: "Read project",
-    description: "Read the current summary for one project and its tracked Codex threads.",
-    uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while inspecting one project." }]
+    label: "Read group",
+    description: "Read the current summary for one workstream group and its tracked Codex threads.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while inspecting one workstream group." }]
   },
   {
     name: "supervisor_overview",
     label: "Supervisor overview",
-    description: "Return the top-level supervisor summary across all tracked Codex projects and threads.",
+    description: "Return the top-level supervisor summary across all tracked Codex workstream groups and threads.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler anchored in the main supervisor thread." }]
   },
   {

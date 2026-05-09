@@ -1,5 +1,6 @@
 export type CodexThreadStatus = "active" | "idle" | "unknown";
 export type CodexProofExpectation = "none" | "requested";
+export type WorkstreamGroupKind = "project" | "workspace";
 export type ButlerCallbackState =
   | "waiting"
   | "received_worker_callback"
@@ -718,6 +719,7 @@ export interface ButlerMessagePageView {
 export interface CodexProjectSummaryView {
   id: string;
   label: string;
+  kind: WorkstreamGroupKind;
   threadCount: number;
   activeCount: number;
   blockedCount: number;
@@ -734,7 +736,9 @@ export interface ButlerSupervisorSummaryView {
   activeThreads: number;
   blockedThreads: number;
   completedThreads: number;
+  groupCount: number;
   projectCount: number;
+  workspaceCount: number;
   updatedAt: number;
   summary: string;
 }

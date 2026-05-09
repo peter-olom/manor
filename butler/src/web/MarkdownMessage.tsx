@@ -24,7 +24,7 @@ type ParsedContractMessage = {
 };
 
 const CONTRACT_FIELD_LABELS: Record<string, string> = {
-  project_label: "Project",
+  project_label: "Scope",
   branch: "Branch",
   workspace_cwd: "Workspace",
   proof_expectation: "Proof",

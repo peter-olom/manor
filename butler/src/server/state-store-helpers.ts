@@ -29,6 +29,18 @@ import type {
   StackLeaseView
 } from "./types.js";
 
+function inferWorkstreamGroupKind(id: string): "project" | "workspace" {
+  return id.startsWith("workspace:") || id.startsWith("/") || id === "unknown" ? "workspace" : "project";
+}
+
+function formatWorkstreamGroupCounts(projectCount: number, workspaceCount: number): string {
+  const parts = [
+    projectCount > 0 ? `${projectCount} project${projectCount === 1 ? "" : "s"}` : null,
+    workspaceCount > 0 ? `${workspaceCount} workspace${workspaceCount === 1 ? "" : "s"}` : null
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(", ") : "0 groups";
+}
+
 export const MAX_EVENT_LOG = 80;
 export const DEFAULT_BUTLER_THREAD_LIMIT = 20;
 export const DEFAULT_PREVIEW_LEASE_TTL_MS = 30 * 60 * 1000;
@@ -72,6 +84,23 @@ export function emptyThreadSupervisor(): CodexThreadSupervisorView {
     summary: "No supervisor summary yet.",
     blocked: false
   };
+}
+
+export function isVisibleCodexWorkstream(thread: CodexThreadRecord): boolean {
+  return Boolean(
+    thread.cwd ||
+      thread.source !== "unknown" ||
+      thread.turnCount > 0 ||
+      thread.loaded ||
+      thread.executionContract ||
+      thread.supervisionChecklist ||
+      thread.workerReport ||
+      thread.supervisor.latestUserPrompt ||
+      thread.supervisor.latestAgentReply ||
+      thread.jobMemory?.operatorGoal ||
+      thread.jobMemory?.requestedTask ||
+      (thread.jobMemory?.entries.length ?? 0) > 0
+  );
 }
 
 export function deriveProofRequirements(contract: CodexThreadExecutionContractView | null): string[] {
@@ -313,7 +342,7 @@ export function buildProjectSummary(
 ): CodexProjectSummaryView[] {
   const grouped = new Map<string, CodexThreadRecord[]>();
 
-  for (const thread of threads) {
+  for (const thread of threads.filter(isVisibleCodexWorkstream)) {
     const group = grouped.get(thread.supervisor.projectId) ?? [];
     group.push(thread);
     grouped.set(thread.supervisor.projectId, group);
@@ -340,6 +369,7 @@ export function buildProjectSummary(
       return {
         id,
         label: lead?.supervisor.projectLabel ?? id,
+        kind: inferWorkstreamGroupKind(id),
         threadCount: sorted.length,
         activeCount,
         blockedCount,
@@ -364,6 +394,8 @@ export function buildSupervisorSummary(projects: CodexProjectSummaryView[], thre
   const activeThreads = threads.filter((thread) => thread.status === "active").length;
   const blockedThreads = threads.filter((thread) => thread.supervisor.blocked).length;
   const completedThreads = threads.filter((thread) => thread.status === "idle" && !thread.supervisor.blocked).length;
+  const projectCount = projects.filter((project) => project.kind === "project").length;
+  const workspaceCount = projects.filter((project) => project.kind === "workspace").length;
   const leadProject = projects[0];
 
   return {
@@ -371,12 +403,14 @@ export function buildSupervisorSummary(projects: CodexProjectSummaryView[], thre
     activeThreads,
     blockedThreads,
     completedThreads,
-    projectCount: projects.length,
+    groupCount: projects.length,
+    projectCount,
+    workspaceCount,
     updatedAt: leadProject?.updatedAt ?? Date.now(),
     summary:
       threads.length === 0
         ? "No Codex workstreams are active yet."
-        : `${activeThreads} active, ${blockedThreads} blocked, ${completedThreads} idle across ${projects.length} project${projects.length === 1 ? "" : "s"}. ${leadProject ? `Most recent project: ${leadProject.label}.` : ""}`.trim()
+        : `${activeThreads} active, ${blockedThreads} blocked, ${completedThreads} idle across ${formatWorkstreamGroupCounts(projectCount, workspaceCount)}. ${leadProject ? `Most recent group: ${leadProject.label}.` : ""}`.trim()
   };
 }
 

@@ -1,22 +1,37 @@
 import { execFile } from "node:child_process";
+import type { Dirent } from "node:fs";
 import { promisify } from "node:util";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 
 const execFileAsync = promisify(execFile);
 const MANAGED_WORKTREE_ROOT = "/repos/.manor-worktrees";
+const SHARED_WORKSPACE_ROOT = "/repos";
 
-export function resolveWorkspaceProjectInfo(cwd: string | null | undefined): { id: string; label: string } {
+export type WorkstreamGroupKind = "project" | "workspace";
+
+export interface WorkspaceProjectDirectory {
+  id: string;
+  label: string;
+  cwd: string;
+  kind: "project";
+}
+
+export function resolveWorkspaceProjectInfo(cwd: string | null | undefined): { id: string; label: string; kind: WorkstreamGroupKind } {
   const normalized = typeof cwd === "string" ? cwd.replace(/\\/g, "/").replace(/\/+$/, "") : "";
   if (!normalized) {
-    return { id: "unknown", label: "Unknown" };
+    return { id: "unknown", label: "Unknown", kind: "workspace" };
+  }
+
+  if (normalized === SHARED_WORKSPACE_ROOT) {
+    return { id: "workspace:shared", label: "Shared workspace", kind: "workspace" };
   }
 
   if (normalized.startsWith(`${MANAGED_WORKTREE_ROOT}/`)) {
     const relative = normalized.slice(MANAGED_WORKTREE_ROOT.length + 1);
     const [repoName] = relative.split("/").filter(Boolean);
     if (repoName) {
-      return { id: repoName, label: repoName };
+      return { id: repoName, label: repoName, kind: "project" };
     }
   }
 
@@ -24,11 +39,11 @@ export function resolveWorkspaceProjectInfo(cwd: string | null | undefined): { i
     const relative = normalized.replace(/^\/repos\/?/, "");
     const [repoName] = relative.split("/").filter(Boolean);
     if (repoName) {
-      return { id: repoName, label: repoName };
+      return { id: repoName, label: repoName, kind: "project" };
     }
   }
 
-  return { id: normalized, label: normalized };
+  return { id: normalized, label: `Workspace: ${normalized}`, kind: "workspace" };
 }
 
 function slugifyTask(value: string): string {
@@ -90,6 +105,26 @@ export async function resolveExistingWorkspaceCwd(cwd: string): Promise<string> 
   }
 
   return normalized;
+}
+
+export async function listWorkspaceProjectDirectories(root: string = SHARED_WORKSPACE_ROOT): Promise<WorkspaceProjectDirectory[]> {
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .filter((entry) => !entry.name.startsWith("."))
+    .map((entry) => ({
+      id: entry.name,
+      label: entry.name,
+      cwd: path.join(root, entry.name),
+      kind: "project" as const
+    }))
+    .sort((left, right) => left.label.localeCompare(right.label));
 }
 
 export async function cleanupManagedWorktree(cwd: string): Promise<number> {

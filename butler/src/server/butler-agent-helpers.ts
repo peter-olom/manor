@@ -2,10 +2,12 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
 
 import { ButlerStateStore } from "./state-store.js";
+import type { WorkspaceProjectDirectory } from "./repo-worktree.js";
 import type {
   ButlerThreadCallbackView,
   ButlerMessagePageView,
   ButlerMessageView,
+  CodexProjectSummaryView,
   CodexThreadExecutionContractView,
   PreviewLeaseView,
   PreviewProofRecordView,
@@ -384,24 +386,63 @@ export function buildJobDetail(store: ButlerStateStore, threadId: string): strin
 export function buildProjectsSummary(store: ButlerStateStore, limit: number): string {
   const projects = store.listProjectSummaries().slice(0, limit);
   if (projects.length === 0) {
-    return "No projects are active yet.";
+    return "No workstream groups are active yet.";
   }
 
   return projects
     .map(
       (project, index) =>
-        `${index + 1}. ${project.label} | threads=${project.threadCount} | active=${project.activeCount} | blocked=${project.blockedCount} | updated=${new Date(project.updatedAt).toISOString()} | summary=${project.summary}`
+        `${index + 1}. ${project.label} | kind=${project.kind} | threads=${project.threadCount} | active=${project.activeCount} | blocked=${project.blockedCount} | updated=${new Date(project.updatedAt).toISOString()} | summary=${project.summary}`
     )
+    .join("\n");
+}
+
+export function buildProjectInventorySummary(
+  projects: WorkspaceProjectDirectory[],
+  workstreamGroups: CodexProjectSummaryView[],
+  limit: number
+): string {
+  const limitedProjects = projects.slice(0, limit);
+  const limitedGroups = workstreamGroups.slice(0, limit);
+  const activeGroups = workstreamGroups.filter((project) => project.activeCount > 0);
+  const activeProjectGroups = activeGroups.filter((project) => project.kind === "project");
+  const activeWorkspaceGroups = activeGroups.filter((project) => project.kind === "workspace");
+
+  const projectLines =
+    limitedProjects.length === 0
+      ? ["No known project directories were found."]
+      : limitedProjects.map((project, index) => `${index + 1}. ${project.label}`);
+
+  const groupLines =
+    limitedGroups.length === 0
+      ? ["No tracked workstream groups right now."]
+      : limitedGroups.map(
+          (project, index) =>
+            `${index + 1}. ${project.label} | kind=${project.kind} | threads=${project.threadCount} | active=${project.activeCount} | blocked=${project.blockedCount} | idle=${project.completedCount}`
+        );
+
+  return [
+    `Known projects: ${projects.length}`,
+    ...projectLines,
+    projects.length > limitedProjects.length ? `... ${projects.length - limitedProjects.length} more known project(s).` : null,
+    "",
+    `Tracked workstream groups: ${workstreamGroups.length}`,
+    `Active now: ${activeProjectGroups.length} project group(s), ${activeWorkspaceGroups.length} workspace bucket(s).`,
+    ...groupLines,
+    workstreamGroups.length > limitedGroups.length ? `... ${workstreamGroups.length - limitedGroups.length} more tracked group(s).` : null
+  ]
+    .filter((line): line is string => line !== null)
     .join("\n");
 }
 
 export function buildProjectDetail(store: ButlerStateStore, projectId: string): string {
   const project = store.getProjectSummary(projectId);
   if (!project) {
-    return `Project ${projectId} was not found.`;
+    return `Workstream group ${projectId} was not found.`;
   }
   const projectMemory = store.getProjectMemory(projectId);
   const pendingPromotions = store.listPendingPromotionCandidates(projectId);
+  const groupLabel = project.kind === "project" ? "Project" : "Workspace";
 
   const threadLines = project.threadIds
     .map((threadId, index) => {
@@ -416,7 +457,8 @@ export function buildProjectDetail(store: ButlerStateStore, projectId: string): 
     .join("\n");
 
   return [
-    `Project ${project.label}`,
+    `${groupLabel} ${project.label}`,
+    `kind=${project.kind}`,
     `threads=${project.threadCount}`,
     `active=${project.activeCount}`,
     `blocked=${project.blockedCount}`,
@@ -646,7 +688,7 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
   return [
     "You are Butler, the supervisor inside Manor.",
     "Keep the main Butler chat operator-facing and concise.",
-    "Use Codex project and thread summaries as your background memory.",
+    "Use Codex workstream group and thread summaries as your background memory.",
     butlerMemory.length > 0
       ? `Butler durable memory:\n${butlerMemory.map((entry, index) => `${index + 1}. ${entry.summary}${entry.details ? ` - ${entry.details}` : ""}`).join("\n")}`
       : "Butler durable memory: none.",
@@ -655,7 +697,9 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Treat retrieve_memory output as a scoped working brief. Do not merge broad memory directly into the conversation, and surface pending outcomes or missing rollups when they affect correctness.",
     "You have real callable tools. A tool is used only when you emit a structured tool call to the harness; writing a tool name, JSON, or function-call-looking text in chat is not tool use.",
     "Use your judgment to decide whether to answer directly, inspect Butler state with tools, message an existing Codex job, or delegate a new Codex workstream.",
-    "Tool selection guide: use list_jobs for broad Codex job/thread checks, counts, status summaries, or project filtering; use read_job only when inspecting one specific job by id.",
+    "Tool selection guide: use list_projects for project inventory questions; use list_jobs for broad Codex job/thread checks, counts, status summaries, or project filtering; use read_job only when inspecting one specific job by id.",
+    "Project count means known project directories. Active project work means currently tracked Codex workstream groups or active Codex jobs. If the operator asks how many projects we have, answer the known project count first; if they ask what we are actively working on, answer tracked active work separately.",
+    "Do not answer project inventory questions from supervisor state alone. Supervisor state only covers tracked workstream groups; call list_projects first for project counts or project lists unless the operator explicitly asks only about active, idle, blocked, or tracked work.",
     "Use read_supervision_checklist to inspect a delegated job's structured acceptance points and evidence; use review_acceptance_point when you have reviewed evidence and are accepting, rejecting, or waiving one point; use flush_rejected_acceptance_points after marking all rejected points.",
     "After delegate_to_codex returns, use its real result to acknowledge the real job id. Never invent or predict a job id.",
     "When using delegate_to_codex, set thinkingBudget deliberately: low is the default for most execution and coding; medium is for jobs needing extra agency, planning, ambiguity handling, or product judgment; high is for tough issues, usually after medium has not produced the right outcome or for clearly hard incidents; xhigh is exceptional and should be used for fewer than 1% of jobs.",
@@ -709,8 +753,8 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "",
     `Supervisor state: ${supervisor.summary}`,
     callbackSummary,
-    projects.length > 0 ? "Project summaries:" : "Project summaries: none yet.",
-    ...projects.map((project) => `- ${project.label}: ${project.summary}`)
+    projects.length > 0 ? "Workstream group summaries:" : "Workstream group summaries: none yet.",
+    ...projects.map((project) => `- ${project.label} (${project.kind}): ${project.summary}`)
   ].join("\n");
 }
 

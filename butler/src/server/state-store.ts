@@ -20,7 +20,7 @@ import {
   emptyThreadSupervisor,
   formatFallbackJobLabel,
   formatWindowTitle,
-  inferPersistedThreadExecutionContract,
+  inferPersistedThreadExecutionContract, isVisibleCodexWorkstream,
   MAX_EVENT_LOG,
   normalizeItem,
   normalizePreviewVerification,
@@ -520,7 +520,7 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   setThreadStatus(threadId: string, status: unknown): void {
-    const record = this.getOrCreateThread(threadId);
+    const record = this.threads.get(threadId); if (!record) return;
     record.status = normalizeStatus(status);
     record.updatedAt = Date.now();
     this.refreshDerivedThreadState(record);
@@ -821,7 +821,7 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   addEvent(threadId: string, method: string, summary: string): void {
-    const thread = this.getOrCreateThread(threadId);
+    const thread = this.threads.get(threadId); if (!thread) return;
     const entry: CodexEventEntry = {
       at: Date.now(),
       method,
@@ -940,7 +940,7 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   listThreads(): CodexThreadSummary[] {
-    return [...this.threads.values()]
+    return [...this.threads.values()].filter(isVisibleCodexWorkstream)
       .map((thread) => ({
         id: thread.id,
         name: thread.name,
@@ -1149,7 +1149,7 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   getSupervisorSummary(): ButlerSupervisorSummaryView {
-    const threads = [...this.threads.values()];
+    const threads = [...this.threads.values()].filter(isVisibleCodexWorkstream);
     return buildSupervisorSummary(buildProjectSummary(threads, this.persistedProjectMemoriesByProjectId), threads);
   }
 

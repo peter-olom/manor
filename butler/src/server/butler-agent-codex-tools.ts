@@ -4,12 +4,13 @@ import {
   buildJobDetail,
   buildJobsSummary,
   buildProjectDetail,
-  buildProjectsSummary,
+  buildProjectInventorySummary,
   buildSupervisorOverview,
   shouldAllowLocalThreadFallback
 } from "./butler-agent-helpers.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
 import { buildCodexInputWithReferences } from "./reference-inputs.js";
+import { listWorkspaceProjectDirectories } from "./repo-worktree.js";
 
 export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
   return [
@@ -67,8 +68,9 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
     access.defineButlerTool({
       name: "list_projects",
       label: "List projects",
-      description: "List repo-level Codex supervision summaries.",
-      promptSnippet: "list_projects: inspect repo-level workload summaries before drilling into one project.",
+      description: "List known project directories and current tracked work separately.",
+      promptSnippet:
+        "list_projects: use for project inventory questions. It returns known project directories first, then tracked workstream groups and active-work counts separately.",
       parameters: Type.Object({
         limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 }))
       }),
@@ -76,17 +78,22 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       execute: async (_toolCallId, params) => {
         const typedParams = params as { limit?: number };
         const limit = typeof typedParams.limit === "number" && Number.isFinite(typedParams.limit) ? Math.trunc(typedParams.limit) : 20;
+        const projects = await listWorkspaceProjectDirectories();
+        const workstreamGroups = access.store.listProjectSummaries();
         return {
-          content: [{ type: "text", text: buildProjectsSummary(access.store, limit) }],
-          details: { projects: access.store.listProjectSummaries().slice(0, limit) }
+          content: [{ type: "text", text: buildProjectInventorySummary(projects, workstreamGroups, limit) }],
+          details: {
+            projects: projects.slice(0, limit),
+            workstreamGroups: workstreamGroups.slice(0, limit)
+          }
         };
       }
     }),
     access.defineButlerTool({
       name: "read_project",
-      label: "Read project",
-      description: "Read the tracked summary and thread list for one project.",
-      promptSnippet: "read_project: inspect one repo-level summary and its jobs before delegating or following up.",
+      label: "Read group",
+      description: "Read the tracked summary and thread list for one workstream group.",
+      promptSnippet: "read_project: inspect one project or workspace bucket and its jobs before delegating or following up.",
       parameters: Type.Object({
         projectId: Type.String()
       }),
@@ -107,7 +114,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       name: "supervisor_overview",
       label: "Supervisor overview",
       description: "Return the top-level supervisor summary across all tracked work.",
-      promptSnippet: "supervisor_overview: get the top-level Butler summary across all projects and threads.",
+      promptSnippet: "supervisor_overview: get the top-level Butler summary across all workstream groups and threads.",
       parameters: Type.Object({}),
       uiEffects: access.getToolUiEffects("supervisor_overview"),
       execute: async () => {
