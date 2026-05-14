@@ -1,8 +1,12 @@
 .git
 .DS_Store
+.env
+.env.*
+!.env.example
 node_modules
 **/node_modules
 butler/dist
 state
 artifacts
 repos
+test-results

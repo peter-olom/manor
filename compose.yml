@@ -52,7 +52,7 @@ services:
       NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright,desktop-proof
       no_proxy: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright,desktop-proof
       RUNTIME_BROKER_URL: http://runtime-broker:8090
-      RUNTIME_BROKER_TOKEN: ${RUNTIME_BROKER_TOKEN:-manor-local-runtime-broker-token}
+      RUNTIME_BROKER_TOKEN: "${RUNTIME_BROKER_TOKEN:?Run ./install.sh or set RUNTIME_BROKER_TOKEN in .env.}"
     volumes:
       - butler-state:/state
       - butler-home:/home/butler/.codex
@@ -224,7 +224,7 @@ services:
       RUNTIME_PLAYWRIGHT_CONTAINER: manor-playwright
       RUNTIME_DESKTOP_PROOF_CONTAINER: manor-desktop-proof
       RUNTIME_DESKTOP_PROOF_CONTROL_URL: http://desktop-proof:3888
-      RUNTIME_BROKER_TOKEN: ${RUNTIME_BROKER_TOKEN:-manor-local-runtime-broker-token}
+      RUNTIME_BROKER_TOKEN: "${RUNTIME_BROKER_TOKEN:?Run ./install.sh or set RUNTIME_BROKER_TOKEN in .env.}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config/preview-egress-profiles.json:/opt/manor/config/preview-egress-profiles.json:ro

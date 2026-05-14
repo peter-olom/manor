@@ -4,40 +4,75 @@ Manor is a Docker-first personal agent harness.
 
 It keeps Codex on a warm worker, puts Butler in charge of supervision, and gives each job private previews, disposable services, and stack-scoped runtime state without exposing raw app ports on the host.
 
-## What Ships Today
+## Contents
 
-Manor currently runs as one Docker Compose project with these services:
+- [Public Preview](#public-preview)
+- [Opinionated by Design](#opinionated-by-design)
+- [Quick Start](#quick-start)
+- [Core Model](#core-model)
+- [Execution Rule](#execution-rule)
+- [Runtime Surfaces](#runtime-surfaces)
+- [Auth](#auth)
+- [Trust and Security Model](#trust-and-security-model)
+- [Development](#development)
+- [License](#license)
 
-- `butler`: the always-on supervisor and web app
-- `butler-gateway`: the host-facing reverse proxy for the Butler UI
-- `codex-box`: the trusted worker container that owns repos, tools, and long-running work
-- `runtime-broker`: the Docker control plane for previews, stack leases, and disposable services
-- `egress`: the restricted outbound proxy for Butler and Codex
-- `preview-egress`: the separate outbound path for preview runtimes
-- `playwright`: the browser automation sidecar
-- `desktop-proof`: optional headed desktop proof sidecar for Electron/native app smoke checks
+## Public Preview
 
-## Install
+Manor is usable, but early. Expect rough edges around setup, upgrades, and advanced runtime workflows.
 
-Run `./install.sh` from the project root for a guided setup.
+The current goal is a dependable single-operator appliance: clear Docker setup, honest trust boundaries, durable worker state, and practical runtime isolation for agent-led development work.
 
-The installer checks Docker and Compose, writes local Compose settings, and can start Manor. Use `./install.sh -y` for the default non-interactive install.
+## Opinionated by Design
 
-For daily control after install:
+Manor's patterns are heavily shaped by my operating opinions.
+
+The project optimizes for a specific way of working:
+
+- Docker-first development and verification
+- one trusted operator, not a hosted multi-tenant product
+- warm long-running agents instead of throwaway prompt sessions
+- explicit supervision through Butler
+- isolated previews for installs, builds, and app runtime
+- evidence over status-only reporting
+- private ingress and narrow host exposure
+- simple primitives before broad orchestration layers
+
+That bias is intentional. Manor is not trying to be neutral infrastructure for every team shape, but with it you can build and run most things.
+
+## Quick Start
+
+Prerequisites:
+
+- Docker with Compose support
+- OpenAI API-key auth or ChatGPT device-code login
+- GitHub auth in the Codex box if repo cloning or fresh project setup is needed
+
+Run the guided installer:
+
+```bash
+./install.sh
+```
+
+The installer checks Docker and Compose, writes local Compose settings, generates a local runtime broker token, and can start Manor.
+
+For the default non-interactive setup:
+
+```bash
+./install.sh -y
+```
+
+Then open:
+
+- `http://127.0.0.1:8180`
+
+Daily control:
 
 ```bash
 ./manor.sh start
 ./manor.sh stop
 ./manor.sh status
 ./manor.sh logs
-```
-
-For the optional headed desktop proof sidecar:
-
-```bash
-./manor.sh desktop start
-./manor.sh desktop stop
-./manor.sh desktop status
 ```
 
 Interactive defaults:
@@ -47,6 +82,19 @@ Interactive defaults:
 - Codex auto-update target: `latest`
 - require Codex auto-update before startup: off
 - start Manor after install: yes
+
+## What Ships Today
+
+Manor runs as one Docker Compose project with these services:
+
+- `butler`: the always-on supervisor and web app
+- `butler-gateway`: the host-facing reverse proxy for the Butler UI
+- `codex-box`: the trusted worker container that owns repos, tools, and long-running work
+- `runtime-broker`: the Docker control plane for previews, stack leases, and disposable services
+- `egress`: the restricted outbound proxy for Butler and Codex
+- `preview-egress`: the separate outbound path for preview runtimes
+- `playwright`: the browser automation sidecar
+- `desktop-proof`: optional headed desktop proof sidecar for Electron/native app smoke checks
 
 ## Core Model
 
@@ -58,29 +106,31 @@ The working model is:
 - one Docker host
 - many jobs
 
-The isolation model is:
+The default job shape is:
 
 - one job maps to one Codex thread
 - one repo task should use one dedicated worktree
 - one job may own one isolated stack lease
 - previews and disposable services attach to that stack when needed
 
-That gives Manor a practical default:
+Practical shorthand:
 
 - `one job -> one worktree -> one isolated stack -> zero or more previews/services`
 
 ## Execution Rule
 
-Manor keeps repo work and runtime work separate on purpose.
+Manor keeps repository work and runtime work separate on purpose.
 
 - do repository, git, and edit work in the warm Codex worker
 - do package installs, app startup, builds, and browser checks in previews
-- use the optional desktop proof sidecar only when native headed app verification is needed
 - use shared previews when runtime changes should persist in the mounted worktree
 - use snapshot previews for disposable smoke runs that should not mutate the source worktree
+- use the optional desktop proof sidecar only when native headed app verification is needed
 - treat worker-side package installation as an exception, not the default path
 
-## Butler
+## Runtime Surfaces
+
+### Butler
 
 Butler is the operator-facing control plane.
 
@@ -96,7 +146,7 @@ Today it provides:
 
 Butler is built on the Pi agent framework and supervises Codex through the Codex app server.
 
-## Codex Box
+### Codex Box
 
 The Codex box is the trusted worker.
 
@@ -104,14 +154,14 @@ Today it provides:
 
 - the official Codex CLI
 - Codex app-server mode
-- a direct shell via `ttyd`
+- a direct shell through `ttyd`
 - repo and worktree access through a dedicated Docker volume mounted at `/repos`
 - shared runtime state through dedicated Docker volumes
 - local helper access through `manor-harness`
 
 Codex owns repository work. Butler and the broker own runtime lifecycle and policy.
 
-## Previews
+### Previews
 
 Preview runtimes are disposable containers started by the runtime broker.
 
@@ -125,37 +175,7 @@ Current preview behavior:
 - previews are the default place for installs, builds, app startup, and runtime verification
 - `none`, named profiles, and custom domain policies remain available when a preview needs stricter outbound control
 
-## Headed Desktop Proof
-
-Electron and native desktop checks use a separate opt-in sidecar instead of the browser automation sidecar.
-
-Start it only when needed:
-
-```bash
-./manor.sh desktop start --build
-```
-
-Then use the harness desktop commands to start a headed session, capture screenshots, list/focus windows, use clipboard or pointer input, and stop the session so Manor persists screenshots and logs.
-
-The sidecar runs a virtual display, window manager, x11vnc, noVNC, screenshot capture, simple desktop input tooling, and a persistent desktop home under the sidecar state volume. Browser proof remains on the lighter Playwright sidecar.
-
-Desktop interaction checklist:
-
-- [x] Keep headed Electron/native apps on the noVNC-visible desktop instead of private Xvfb displays.
-- [x] Support long-lived interactive desktop sessions that do not auto-expire.
-- [x] Show active desktop sessions in Butler runtime controls with attach, screenshot, and stop actions.
-- [x] Provide a current-screen action that returns a screenshot, window list, pointer location, and display geometry.
-- [x] Support icon-first Butler controls for attaching, capturing, and stopping desktop sessions.
-- [x] Add OCR text targeting for visible desktop text clicks.
-- [x] Record desktop actions and persist the action log with the proof bundle.
-- [x] Add pointer and viewport calibration output.
-- [x] Add session ownership and lock/unlock controls to avoid user/agent input fights.
-- [x] Add persistent desktop profiles per project or job.
-- [x] Add CDP target and accessibility-tree hooks for Electron apps launched with remote debugging enabled.
-- [x] Keep one shared desktop sidecar and attach sessions to every relevant thread id.
-- [x] Rename the visible desktop workspace label from the attached Codex thread id.
-
-## Stacks
+### Stacks
 
 Stacks are the unit of multi-container runtime isolation.
 
@@ -168,9 +188,9 @@ Each stack gives a job:
 
 This is the path Manor uses for Docker-heavy projects that need multiple cooperating app and infra containers.
 
-## Stateful Stacks
+### Stateful Services
 
-Stateful stacks are now the default answer for mutable service state.
+Stateful stacks are the default answer for mutable service state.
 
 `manor-harness stack start --stateful` creates a job-scoped retained storage namespace and applies an opinionated policy:
 
@@ -188,9 +208,7 @@ The intended rule is simple:
 - fork for job work
 - promote only after validation
 
-## Service Templates
-
-Manor ships built-in dependency templates for:
+Built-in dependency templates:
 
 - Postgres
 - Redis
@@ -201,15 +219,31 @@ Manor ships built-in dependency templates for:
 - Mailpit
 - SQLite
 
-Container-backed templates run as disposable private-network services.
-
-SQLite is provisioned directly in the selected worktree as an embedded file.
+Container-backed templates run as disposable private-network services. SQLite is provisioned directly in the selected worktree as an embedded file.
 
 If a dependency is missing, Butler or Codex can register a new template on first use and persist it for later jobs.
 
-When a stack retains volumes and a template declares a data path, Manor binds that service identity to one managed Docker volume.
+### Headed Desktop Proof
 
-## Worker Harness
+Electron and native desktop checks use a separate opt-in sidecar instead of the browser automation sidecar.
+
+Start it only when needed:
+
+```bash
+./manor.sh desktop start --build
+```
+
+Daily desktop proof control:
+
+```bash
+./manor.sh desktop start
+./manor.sh desktop stop
+./manor.sh desktop status
+```
+
+The sidecar runs a virtual display, window manager, x11vnc, noVNC, screenshot capture, simple desktop input tooling, and a persistent desktop home under the sidecar state volume. Browser proof remains on the lighter Playwright sidecar.
+
+### Worker Harness
 
 Workers interact with attached runtimes through `manor-harness`.
 
@@ -227,23 +261,6 @@ The important constraint is unchanged:
 
 - workers use `manor-harness`
 - Butler and the broker own runtime policy
-
-## Trust and Security Model
-
-Manor is a trusted personal worker appliance, not a multi-tenant sandbox.
-
-Current trust boundaries:
-
-- Butler and Codex are separated into different services
-- Codex does not get direct internet access
-- Butler and Codex go out through the restricted `egress` proxy
-- preview runtimes keep private runtime networking and get direct outbound internet by default
-- optional preview egress profiles remain available for stricter outbound control
-- the runtime broker is the only service that talks to the Docker socket
-- preview and service traffic stays on private Docker networks
-- Butler routes previews instead of publishing arbitrary app ports on the host
-
-This is an architecture-first containment model, not a claim of full internal sandboxing.
 
 ## Auth
 
@@ -267,23 +284,24 @@ docker compose exec codex-box gh auth status
 docker compose exec -it codex-box gh-auth-headless
 ```
 
-## Running Manor
+## Trust and Security Model
 
-Prerequisites:
+Manor is a trusted personal worker appliance, not a multi-tenant sandbox.
 
-- Docker with Compose support
-- either OpenAI API-key auth or ChatGPT login
-- GitHub auth in the Codex box if repo cloning or fresh project setup is needed
+Current trust boundaries:
 
-Start the stack:
+- Butler and Codex are separated into different services
+- Codex does not get direct internet access
+- Butler and Codex go out through the restricted `egress` proxy
+- preview runtimes keep private runtime networking and get direct outbound internet by default
+- optional preview egress profiles remain available for stricter outbound control
+- the runtime broker is the only service that talks to the Docker socket
+- preview and service traffic stays on private Docker networks
+- Butler routes previews instead of publishing arbitrary app ports on the host
 
-```bash
-docker compose up -d --build
-```
+This is an architecture-first containment model, not a claim of full internal sandboxing.
 
-Then open:
-
-- `http://127.0.0.1:8180`
+For vulnerability reporting and remote-use hardening, see the [security policy](SECURITY.md).
 
 ## Codex Personalization
 
@@ -292,7 +310,7 @@ Then open:
 - `CODEX_PERSONALITY` remains available for Codex's built-in preset personalities (`none`, `friendly`, `pragmatic`)
 - edit the markdown if you want to change default worker tone or reporting behavior without teaching Butler a new prompt rule
 
-## Development Notes
+## Development
 
 Current local development assumptions:
 
@@ -302,12 +320,14 @@ Current local development assumptions:
 - older host-side `state`, `artifacts`, and `repos` directories are not mounted by default anymore
 - runtime broker operations affect live Docker resources on the host
 
+For contribution workflow and validation expectations, see the [contributing guide](CONTRIBUTING.md).
+
 ## Repo Layout
 
 - `compose.yml`: deployment-safe Manor stack with named Docker volumes
 - `compose.dev.yml`: optional local Butler hot-reload overlay
 - `butler/`: Butler backend and web app
-- `config/`: optional preview egress profiles
+- `config/`: optional preview egress profiles and Codex model instructions
 - `docker/butler/`: Butler image and auth helpers
 - `docker/butler-gateway/`: Butler reverse proxy
 - `docker/codex-box/`: Codex worker image and harness CLI
@@ -317,7 +337,7 @@ Current local development assumptions:
 - `docker/playwright/`: browser automation image
 - `docker/desktop-proof/`: optional headed desktop proof image
 
-## Verification
+## Verification Status
 
 The current stack has been verified recently for:
 
@@ -327,3 +347,7 @@ The current stack has been verified recently for:
 - retained volume restart persistence
 - retained volume fork and promote flow for Postgres
 - cleanup back to zero active stacks and services after smoke runs
+
+## License
+
+Manor is licensed under the MIT License.

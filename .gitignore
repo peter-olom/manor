@@ -2,8 +2,10 @@
 ._*
 .env
 .env.*
+!.env.example
 repos/
 state/
 node_modules/
 artifacts/
 butler/dist/
+test-results/

@@ -132,6 +132,33 @@ validate_port() {
   fi
 }
 
+generate_secret() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32
+    return
+  fi
+
+  if [[ -r /dev/urandom ]] && command -v od >/dev/null 2>&1; then
+    od -An -N32 -tx1 /dev/urandom | tr -d ' \n'
+    printf '\n'
+    return
+  fi
+
+  echo "Could not generate a local secret. Install openssl or set RUNTIME_BROKER_TOKEN manually." >&2
+  exit 1
+}
+
+is_placeholder_secret() {
+  case "$1" in
+    ""|change-me|change-me-*|replace-me|replace-me-*|REPLACE_ME|REPLACE_ME_*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 write_env() {
   local temp_file=""
 
@@ -147,6 +174,7 @@ write_env() {
         skip["MANOR_PI_AUTO_UPDATE"] = 1
         skip["MANOR_PI_AUTO_UPDATE_VERSION"] = 1
         skip["MANOR_PI_AUTO_UPDATE_REQUIRED"] = 1
+        skip["RUNTIME_BROKER_TOKEN"] = 1
       }
       {
         split($0, parts, "=")
@@ -165,6 +193,7 @@ write_env() {
     printf 'MANOR_PI_AUTO_UPDATE=%s\n' "${pi_auto_update}"
     printf 'MANOR_PI_AUTO_UPDATE_VERSION=%s\n' "${pi_auto_update_version}"
     printf 'MANOR_PI_AUTO_UPDATE_REQUIRED=%s\n' "${pi_auto_update_required}"
+    printf 'RUNTIME_BROKER_TOKEN=%s\n' "${runtime_broker_token}"
   } >> "${temp_file}"
 
   mv "${temp_file}" "${env_file}"
@@ -211,6 +240,13 @@ fi
 
 if [[ "${start_after}" -eq 1 ]]; then
   start_after="$(prompt_bool "Start Manor after install" "1")"
+fi
+
+runtime_broker_token_default="${RUNTIME_BROKER_TOKEN:-$(env_value RUNTIME_BROKER_TOKEN || true)}"
+if is_placeholder_secret "${runtime_broker_token_default}"; then
+  runtime_broker_token="$(generate_secret)"
+else
+  runtime_broker_token="${runtime_broker_token_default}"
 fi
 
 write_env
