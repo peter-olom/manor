@@ -113,10 +113,6 @@ The default job shape is:
 - one job may own one isolated stack lease
 - previews and disposable services attach to that stack when needed
 
-Practical shorthand:
-
-- `one job -> one worktree -> one isolated stack -> zero or more previews/services`
-
 ## Execution Rule
 
 Manor keeps repository work and runtime work separate on purpose.

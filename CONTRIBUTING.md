@@ -1,6 +1,6 @@
 # Contributing to Manor
 
-Manor is in public-preview shape. Contributions are welcome, but the project should stay small, explicit, and Docker-first.
+Manor is in public preview. Contributions are welcome, but the project should stay small, explicit, and Docker-first.
 
 ## Before You Start
 
@@ -26,7 +26,7 @@ For local Butler hot reload:
 docker compose -f compose.yml -f compose.dev.yml up -d --build
 ```
 
-Do package installs, app startup, builds, and browser checks inside Manor previews when working through the agent workflow. Keep repository edits in the Codex worker.
+When working through Manor itself, do package installs, app startup, builds, and browser checks inside previews. Keep repository edits in the Codex worker.
 
 ## Validation
 

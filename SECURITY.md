@@ -1,6 +1,6 @@
 # Security Policy
 
-Manor is a trusted personal worker appliance. It is designed for one operator on infrastructure they control, not for hostile multi-tenant use.
+Manor is a trusted personal worker appliance. It is designed for one operator on infrastructure they control, not for multi-tenant hostile-code execution.
 
 ## Supported Versions
 
@@ -14,7 +14,7 @@ Manor assumes:
 - Butler is not exposed directly to the public internet
 - Codex and Butler run inside the same trusted appliance boundary
 - the runtime broker is trusted to manage Docker resources
-- previews and disposable services are isolated for operational hygiene, not as a complete hostile-code sandbox
+- previews and disposable services are isolated for operational hygiene, not as a complete security sandbox
 
 Manor does not currently claim:
 
