@@ -1,0 +1,47 @@
+services:
+  butler:
+    build:
+      context: .
+      dockerfile: docker/butler/Dockerfile
+      args:
+        CODEX_VERSION: ${CODEX_VERSION:-0.124.0}
+        PI_VERSION: ${PI_VERSION:-0.73.0}
+    image: manor-butler:local
+
+  codex-box:
+    build:
+      context: .
+      dockerfile: docker/codex-box/Dockerfile
+      args:
+        CODEX_VERSION: ${CODEX_VERSION:-0.124.0}
+    image: manor-codex-box:local
+
+  egress:
+    build:
+      context: .
+      dockerfile: docker/egress/Dockerfile
+    image: manor-egress:local
+
+  preview-egress:
+    build:
+      context: .
+      dockerfile: docker/preview-egress/Dockerfile
+    image: manor-preview-egress:local
+
+  runtime-broker:
+    build:
+      context: .
+      dockerfile: docker/runtime-broker/Dockerfile
+    image: manor-runtime-broker:local
+
+  playwright:
+    build:
+      context: .
+      dockerfile: docker/playwright/Dockerfile
+    image: manor-playwright:local
+
+  desktop-proof:
+    build:
+      context: .
+      dockerfile: docker/desktop-proof/Dockerfile
+    image: manor-desktop-proof:local

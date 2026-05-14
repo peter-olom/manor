@@ -9,6 +9,7 @@ It keeps Codex on a warm worker, puts Butler in charge of supervision, and gives
 - [Public Preview](#public-preview)
 - [Opinionated by Design](#opinionated-by-design)
 - [Quick Start](#quick-start)
+- [Image Distribution](#image-distribution)
 - [Core Model](#core-model)
 - [Execution Rule](#execution-rule)
 - [Runtime Surfaces](#runtime-surfaces)
@@ -56,6 +57,18 @@ Run the guided installer:
 
 The installer checks Docker and Compose, writes local Compose settings, generates a local runtime broker token, and can start Manor.
 
+By default, the installer pulls published Manor images from GHCR. To build images locally instead:
+
+```bash
+./install.sh --build-from-source
+```
+
+To pin a published image tag:
+
+```bash
+./install.sh --image-tag sha-<commit>
+```
+
 For the default non-interactive setup:
 
 ```bash
@@ -78,6 +91,9 @@ Daily control:
 Interactive defaults:
 
 - host port: `8180`
+- image registry: `ghcr.io/peter-olom`
+- image tag: `latest`
+- build from source: off
 - Codex auto-update on reboot: off
 - Codex auto-update target: `latest`
 - require Codex auto-update before startup: off
@@ -95,6 +111,26 @@ Manor runs as one Docker Compose project with these services:
 - `preview-egress`: the separate outbound path for preview runtimes
 - `playwright`: the browser automation sidecar
 - `desktop-proof`: optional headed desktop proof sidecar for Electron/native app smoke checks
+
+## Image Distribution
+
+Pushes to `main` and version tags publish these images to GHCR:
+
+- `ghcr.io/peter-olom/manor-butler`
+- `ghcr.io/peter-olom/manor-codex-box`
+- `ghcr.io/peter-olom/manor-egress`
+- `ghcr.io/peter-olom/manor-preview-egress`
+- `ghcr.io/peter-olom/manor-runtime-broker`
+- `ghcr.io/peter-olom/manor-playwright`
+- `ghcr.io/peter-olom/manor-desktop-proof`
+
+Published tags include `latest` for the default branch, release tags, branch tags, and commit SHA tags.
+
+The default Compose file uses published images. Local source builds use the source-build overlay:
+
+```bash
+./manor.sh start --build
+```
 
 ## Core Model
 
@@ -311,8 +347,9 @@ For vulnerability reporting and remote-use hardening, see the [security policy](
 Current local development assumptions:
 
 - the default stack is deployment-safe and persists core state in named Docker volumes
+- the default stack pulls published images
 - Butler source hot reload is opt-in through the development overlay
-- local hot-reload runs use `docker compose -f compose.yml -f compose.dev.yml up -d --build`
+- local hot-reload with source images runs use `docker compose -f compose.yml -f compose.build.yml -f compose.dev.yml up -d --build`
 - older host-side `state`, `artifacts`, and `repos` directories are not mounted by default anymore
 - runtime broker operations affect live Docker resources on the host
 
@@ -321,6 +358,7 @@ For contribution workflow and validation expectations, see the [contributing gui
 ## Repo Layout
 
 - `compose.yml`: deployment-safe Manor stack with named Docker volumes
+- `compose.build.yml`: optional local source-build overlay
 - `compose.dev.yml`: optional local Butler hot-reload overlay
 - `butler/`: Butler backend and web app
 - `config/`: optional preview egress profiles and Codex model instructions

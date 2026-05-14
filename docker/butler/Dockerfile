@@ -1,9 +1,32 @@
-FROM node:22-bookworm
+ARG NODE_BUILD_IMAGE=node:24-trixie
+ARG NODE_RUNTIME_IMAGE=node:24-trixie-slim
+
+FROM ${NODE_BUILD_IMAGE} AS build
+
+ARG PI_VERSION=0.73.0
+
+WORKDIR /opt/manor/butler
+
+COPY butler/package.json butler/package-lock.json* ./
+
+RUN npm ci \
+  && npm install "@mariozechner/pi-ai@${PI_VERSION}" "@mariozechner/pi-coding-agent@${PI_VERSION}" \
+  && npm cache clean --force
+
+COPY butler/ ./
+
+RUN npm run build:web \
+  && npm run build:server \
+  && npm prune --omit=dev \
+  && npm cache clean --force
+
+FROM ${NODE_RUNTIME_IMAGE}
 
 ARG CODEX_VERSION=0.124.0
-ARG PI_VERSION=0.73.0
-ARG BUTLER_INSTALL_MODE=development
 ARG TTYD_VERSION=1.7.7
+
+ENV NODE_ENV=production
+ENV PATH="${PATH}:/opt/manor/npm-global/bin"
 
 WORKDIR /opt/manor/butler
 
@@ -29,11 +52,16 @@ RUN apt-get update \
   && chmod +x /usr/local/bin/ttyd \
   && mkdir -p /home/butler \
   && mkdir -p /home/butler/.oh-my-zsh/custom \
-  && npm install -g "@openai/codex@${CODEX_VERSION}" \
-  && npm install \
-  && npm install "@mariozechner/pi-ai@${PI_VERSION}" "@mariozechner/pi-coding-agent@${PI_VERSION}"
+  && npm install --global --prefix /opt/manor/npm-global "@openai/codex@${CODEX_VERSION}" \
+  && npm cache clean --force
 
-COPY butler/ ./
+COPY --from=build /opt/manor/butler/node_modules ./node_modules
+COPY --from=build /opt/manor/butler/dist ./dist
+COPY butler/index.html ./index.html
+COPY butler/public ./public
+COPY butler/tsconfig.json ./tsconfig.json
+COPY butler/tsconfig.server.json ./tsconfig.server.json
+COPY butler/vite.config.ts ./vite.config.ts
 COPY docker/butler/start.sh /usr/local/bin/start-butler
 COPY docker/butler/auth.sh /usr/local/bin/butler-auth
 COPY docker/butler/chatgpt-login.mjs /usr/local/bin/butler-chatgpt-login.mjs
@@ -44,9 +72,7 @@ COPY docker/butler/zshrc /home/butler/.zshrc
 COPY docker/butler/zprofile /home/butler/.zprofile
 
 RUN chmod +x /usr/local/bin/start-butler /usr/local/bin/butler-auth /usr/local/bin/butler-chatgpt-login.mjs /usr/local/bin/start-butler-shell /usr/local/bin/manor-codex-auto-update /usr/local/bin/manor-pi-auto-update \
-  && npm run build:web \
-  && npm run build:server \
-  && if [ "$BUTLER_INSTALL_MODE" = "production" ]; then npm prune --omit=dev; fi
+  && rm -rf /tmp/* /var/tmp/*
 
 EXPOSE 8080 7682
 

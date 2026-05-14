@@ -1,4 +1,6 @@
-FROM alpine:3.21
+ARG ALPINE_IMAGE=alpine:3.23
+
+FROM ${ALPINE_IMAGE}
 
 RUN apk add --no-cache squid
 

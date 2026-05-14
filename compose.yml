@@ -1,13 +1,6 @@
 services:
   butler:
-    build:
-      context: .
-      dockerfile: docker/butler/Dockerfile
-      args:
-        CODEX_VERSION: ${CODEX_VERSION:-0.124.0}
-        PI_VERSION: ${PI_VERSION:-0.73.0}
-        BUTLER_INSTALL_MODE: ${BUTLER_INSTALL_MODE:-production}
-    image: manor-butler:local
+    image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-butler:${MANOR_IMAGE_TAG:-latest}"
     container_name: manor-butler
     hostname: manor-butler
     command: ["/usr/local/bin/start-butler"]
@@ -81,7 +74,7 @@ services:
       - work
 
   butler-gateway:
-    image: nginx:1.27-alpine
+    image: nginx:stable-alpine3.23
     container_name: manor-butler-gateway
     depends_on:
       butler:
@@ -96,12 +89,7 @@ services:
       - internet
 
   codex-box:
-    build:
-      context: .
-      dockerfile: docker/codex-box/Dockerfile
-      args:
-        CODEX_VERSION: ${CODEX_VERSION:-0.124.0}
-    image: manor-codex-box:local
+    image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-codex-box:${MANOR_IMAGE_TAG:-latest}"
     container_name: manor-codex-box
     hostname: manor-codex
     command: ["/usr/local/bin/start-codex-app-server"]
@@ -152,10 +140,7 @@ services:
       - work
 
   egress:
-    build:
-      context: .
-      dockerfile: docker/egress/Dockerfile
-    image: manor-egress:local
+    image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-egress:${MANOR_IMAGE_TAG:-latest}"
     container_name: manor-egress
     command: ["sh", "-lc", "rm -f /tmp/squid.pid && exec squid -N -f /etc/squid/squid.conf"]
     environment:
@@ -173,10 +158,7 @@ services:
       - internet
 
   preview-egress:
-    build:
-      context: .
-      dockerfile: docker/preview-egress/Dockerfile
-    image: manor-preview-egress:local
+    image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-preview-egress:${MANOR_IMAGE_TAG:-latest}"
     container_name: manor-preview-egress
     environment:
       MANOR_ROLE: preview-egress
@@ -198,10 +180,7 @@ services:
       - internet
 
   runtime-broker:
-    build:
-      context: .
-      dockerfile: docker/runtime-broker/Dockerfile
-    image: manor-runtime-broker:local
+    image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-runtime-broker:${MANOR_IMAGE_TAG:-latest}"
     container_name: manor-runtime-broker
     environment:
       MANOR_ROLE: runtime-broker
@@ -211,7 +190,7 @@ services:
       RUNTIME_PREVIEW_NETWORK: manor_preview
       RUNTIME_PREVIEW_EGRESS_CONFIG: /opt/manor/config/preview-egress-profiles.json
       RUNTIME_PREVIEW_EGRESS_ADMIN_URL: http://preview-egress:8091
-      RUNTIME_PREVIEW_IMAGE: node:22-bookworm
+      RUNTIME_PREVIEW_IMAGE: node:24-trixie
       RUNTIME_PREVIEW_EXPOSE_HOST: ${RUNTIME_PREVIEW_EXPOSE_HOST:-0.0.0.0}
       RUNTIME_PREVIEW_PORT_START: ${RUNTIME_PREVIEW_PORT_START:-43000}
       RUNTIME_PREVIEW_PORT_END: ${RUNTIME_PREVIEW_PORT_END:-43999}
@@ -253,10 +232,7 @@ services:
       - preview
 
   playwright:
-    build:
-      context: .
-      dockerfile: docker/playwright/Dockerfile
-    image: manor-playwright:local
+    image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-playwright:${MANOR_IMAGE_TAG:-latest}"
     container_name: manor-playwright
     environment:
       MANOR_ROLE: playwright
@@ -270,10 +246,7 @@ services:
 
   desktop-proof:
     profiles: ["desktop"]
-    build:
-      context: .
-      dockerfile: docker/desktop-proof/Dockerfile
-    image: manor-desktop-proof:local
+    image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-desktop-proof:${MANOR_IMAGE_TAG:-latest}"
     container_name: manor-desktop-proof
     environment:
       MANOR_ROLE: desktop-proof

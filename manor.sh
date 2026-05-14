@@ -7,18 +7,19 @@ cd "$(dirname "$0")"
 usage() {
   cat <<'EOF'
 Usage:
-  ./manor.sh start [--build] [--dev] [--desktop]
+  ./manor.sh start [--build|--source] [--dev] [--desktop]
   ./manor.sh stop [--dev] [--desktop]
-  ./manor.sh restart [--build] [--dev] [--desktop]
+  ./manor.sh restart [--build|--source] [--dev] [--desktop]
   ./manor.sh status [--dev] [--desktop]
   ./manor.sh logs [--dev] [--desktop] [--follow] [--tail <n>] [service ...]
-  ./manor.sh desktop start [--build]
+  ./manor.sh desktop start [--build|--source]
   ./manor.sh desktop stop
-  ./manor.sh desktop restart [--build]
+  ./manor.sh desktop restart [--build|--source]
   ./manor.sh desktop status
 
 Options:
-  --build     Build images while starting.
+  --build     Build local source images while starting.
+  --source    Use local source images without forcing a rebuild.
   --dev       Include the local hot-reload overlay.
   --desktop   Include the headed desktop proof profile.
   --follow    Follow logs.
@@ -75,13 +76,18 @@ shift || true
 
 add_dev=0
 add_desktop=0
+add_source_build=0
 follow_logs=0
 
 parse_common_options() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --build)
+        add_source_build=1
         build_args=("--build")
+        ;;
+      --source|--build-from-source)
+        add_source_build=1
         ;;
       --dev)
         add_dev=1
@@ -123,6 +129,18 @@ parse_common_options() {
 }
 
 apply_options() {
+  local build_from_source="${MANOR_BUILD_FROM_SOURCE:-$(env_value MANOR_BUILD_FROM_SOURCE || true)}"
+  build_from_source="${build_from_source:-0}"
+
+  case "${build_from_source}" in
+    1|true|TRUE|yes|YES|on|ON)
+      add_source_build=1
+      ;;
+  esac
+
+  if [[ "${add_source_build}" -eq 1 ]]; then
+    compose_args+=("-f" "compose.build.yml")
+  fi
   if [[ "${add_dev}" -eq 1 ]]; then
     compose_args+=("-f" "compose.dev.yml")
   fi

@@ -1,8 +1,5 @@
 services:
   butler:
-    build:
-      args:
-        BUTLER_INSTALL_MODE: development
     environment:
       BUTLER_HOT_RELOAD: 1
     volumes:

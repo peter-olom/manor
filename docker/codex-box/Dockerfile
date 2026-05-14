@@ -1,8 +1,30 @@
-FROM node:22-bookworm
+ARG NODE_RUNTIME_IMAGE=node:24-trixie-slim
+
+FROM ${NODE_RUNTIME_IMAGE} AS tools
 
 ARG CODEX_VERSION=0.124.0
 ARG MISE_VERSION=2026.4.3
 ARG TTYD_VERSION=1.7.7
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+      ca-certificates \
+      curl \
+      git \
+    && rm -rf /var/lib/apt/lists/* \
+    && arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+      arm64) ttyd_arch="aarch64" ;; \
+      amd64) ttyd_arch="x86_64" ;; \
+      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.${ttyd_arch}" -o /usr/local/bin/ttyd \
+    && chmod +x /usr/local/bin/ttyd \
+    && npm install --global --prefix /opt/manor/npm-global "@jdxcode/mise@${MISE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
+    && npm cache clean --force \
+    && git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git /opt/manor/ohmyzsh
+
+FROM ${NODE_RUNTIME_IMAGE}
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
@@ -26,22 +48,14 @@ RUN apt-get update \
       zsh-syntax-highlighting \
       zip \
     && rm -rf /var/lib/apt/lists/* \
-    && arch="$(dpkg --print-architecture)" \
-    && case "$arch" in \
-      arm64) ttyd_arch="aarch64" ;; \
-      amd64) ttyd_arch="x86_64" ;; \
-      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
-    esac \
-    && curl -fsSL "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.${ttyd_arch}" -o /usr/local/bin/ttyd \
-    && chmod +x /usr/local/bin/ttyd \
-    && npm install -g "@jdxcode/mise@${MISE_VERSION}" \
-    && npm install -g "@openai/codex@${CODEX_VERSION}" \
     && useradd --create-home --shell /bin/bash codex \
     && mkdir -p /state /repos /artifacts /home/codex/.codex /opt/manor/codex-box \
-    && git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git /home/codex/.oh-my-zsh \
     && mkdir -p /home/codex/.oh-my-zsh/custom \
     && chown -R codex:codex /state /repos /artifacts /home/codex /opt/manor
 
+COPY --from=tools /usr/local/bin/ttyd /usr/local/bin/ttyd
+COPY --from=tools /opt/manor/npm-global /opt/manor/npm-global
+COPY --from=tools /opt/manor/ohmyzsh /home/codex/.oh-my-zsh
 COPY docker/codex-box/start.sh /usr/local/bin/start-codex-app-server
 COPY docker/codex-box/auth.sh /usr/local/bin/codex-auth
 COPY docker/codex-box/gh-auth-headless.sh /usr/local/bin/gh-auth-headless
@@ -56,7 +70,7 @@ COPY docker/codex-box/healthcheck.mjs /opt/manor/codex-box/healthcheck.mjs
 COPY docker/codex-box/zshrc /home/codex/.zshrc
 COPY docker/codex-box/zprofile /home/codex/.zprofile
 
-ENV MANOR_REAL_PATH="/home/codex/.local/bin:/home/codex/.local/share/mise/shims:/home/codex/.local/share/mise/bin:${PATH}"
+ENV MANOR_REAL_PATH="/home/codex/.local/bin:/home/codex/.local/share/mise/shims:/home/codex/.local/share/mise/bin:/opt/manor/npm-global/bin:${PATH}"
 ENV PATH="/opt/manor/codex-box/install-guard-bin:${MANOR_REAL_PATH}"
 
 RUN mkdir -p /opt/manor/codex-box/install-guard-bin \
@@ -90,7 +104,8 @@ RUN mkdir -p /opt/manor/codex-box/install-guard-bin \
     && ln -sf /opt/manor/codex-box/python-guard.sh /opt/manor/codex-box/install-guard-bin/python \
     && ln -sf /opt/manor/codex-box/python-guard.sh /opt/manor/codex-box/install-guard-bin/python3 \
     && chmod +x /usr/local/bin/start-codex-app-server /usr/local/bin/codex-auth /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/codex-bootstrap-tools /usr/local/bin/manor-harness /usr/local/bin/manor-codex-auto-update /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/python-guard.sh /etc/profile.d/manor-shell-env.sh \
-    && chown codex:codex /home/codex/.zshrc /home/codex/.zprofile
+    && chown -R codex:codex /home/codex/.oh-my-zsh /home/codex/.zshrc /home/codex/.zprofile \
+    && rm -rf /tmp/* /var/tmp/*
 
 USER codex
 WORKDIR /repos

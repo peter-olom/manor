@@ -36,7 +36,7 @@ const DEFAULT_TEMPLATE_INPUTS: ServiceTemplateInput[] = [
     description: "Disposable PostgreSQL database for app previews and local development workflows.",
     runtimeKind: "container",
     engine: "postgres",
-    image: "postgres:16-bookworm",
+    image: "postgres:18-trixie",
     port: 5432,
     stackVolumePath: "/var/lib/postgresql/data",
     envDefaults: {
@@ -57,7 +57,7 @@ const DEFAULT_TEMPLATE_INPUTS: ServiceTemplateInput[] = [
     description: "Disposable Redis cache for queues, sessions, and local app state.",
     runtimeKind: "container",
     engine: "redis",
-    image: "redis:7-bookworm",
+    image: "redis:8-alpine3.23",
     port: 6379,
     command: "redis-server --dir /data --appendonly yes",
     workingDir: "/data",

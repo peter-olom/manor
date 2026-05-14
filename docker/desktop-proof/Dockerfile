@@ -1,4 +1,8 @@
-FROM mcr.microsoft.com/playwright:v1.59.1-noble
+ARG PLAYWRIGHT_IMAGE=mcr.microsoft.com/playwright:v1.60.0-noble
+
+FROM ${PLAYWRIGHT_IMAGE}
+
+ENV NODE_ENV=production
 
 WORKDIR /opt/manor/desktop-proof
 

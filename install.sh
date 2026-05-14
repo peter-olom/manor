@@ -4,6 +4,9 @@ set -euo pipefail
 
 yes_mode=0
 start_after=1
+build_from_source_forced=0
+image_registry_arg=""
+image_tag_arg=""
 
 usage() {
   cat <<'EOF'
@@ -11,9 +14,12 @@ Usage:
   ./install.sh [options]
 
 Options:
-  -y, --yes     Use defaults and do not prompt.
-  --no-start    Write configuration and validate Docker, but do not start Manor.
-  -h, --help    Show this help.
+  -y, --yes             Use defaults and do not prompt.
+  --no-start            Write configuration and validate Docker, but do not start Manor.
+  --build-from-source   Build local images instead of pulling published images.
+  --image-registry <r>  Image registry namespace. Default: ghcr.io/peter-olom.
+  --image-tag <tag>     Image tag to pull. Default: latest.
+  -h, --help            Show this help.
 EOF
 }
 
@@ -24,6 +30,25 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-start)
       start_after=0
+      ;;
+    --build-from-source|--source)
+      build_from_source_forced=1
+      ;;
+    --image-registry)
+      if [[ -z "${2:-}" ]]; then
+        echo "--image-registry requires a value." >&2
+        exit 64
+      fi
+      image_registry_arg="$2"
+      shift
+      ;;
+    --image-tag)
+      if [[ -z "${2:-}" ]]; then
+        echo "--image-tag requires a value." >&2
+        exit 64
+      fi
+      image_tag_arg="$2"
+      shift
       ;;
     -h|--help)
       usage
@@ -83,8 +108,16 @@ prompt_bool() {
   fi
 
   if [[ "${yes_mode}" -eq 1 ]]; then
-    printf '%s\n' "${default}"
-    return
+    case "${default}" in
+      1|true|TRUE|yes|YES|y|Y|on|ON)
+        printf '1\n'
+        return
+        ;;
+      0|false|FALSE|no|NO|n|N|off|OFF|"")
+        printf '0\n'
+        return
+        ;;
+    esac
   fi
 
   while true; do
@@ -168,6 +201,9 @@ write_env() {
     awk '
       BEGIN {
         skip["BUTLER_HOST_PORT"] = 1
+        skip["MANOR_BUILD_FROM_SOURCE"] = 1
+        skip["MANOR_IMAGE_REGISTRY"] = 1
+        skip["MANOR_IMAGE_TAG"] = 1
         skip["MANOR_CODEX_AUTO_UPDATE"] = 1
         skip["MANOR_CODEX_AUTO_UPDATE_VERSION"] = 1
         skip["MANOR_CODEX_AUTO_UPDATE_REQUIRED"] = 1
@@ -187,6 +223,9 @@ write_env() {
 
   {
     printf 'BUTLER_HOST_PORT=%s\n' "${butler_host_port}"
+    printf 'MANOR_BUILD_FROM_SOURCE=%s\n' "${build_from_source}"
+    printf 'MANOR_IMAGE_REGISTRY=%s\n' "${image_registry}"
+    printf 'MANOR_IMAGE_TAG=%s\n' "${image_tag}"
     printf 'MANOR_CODEX_AUTO_UPDATE=%s\n' "${codex_auto_update}"
     printf 'MANOR_CODEX_AUTO_UPDATE_VERSION=%s\n' "${codex_auto_update_version}"
     printf 'MANOR_CODEX_AUTO_UPDATE_REQUIRED=%s\n' "${codex_auto_update_required}"
@@ -205,6 +244,32 @@ butler_host_port_default="${BUTLER_HOST_PORT:-$(env_value BUTLER_HOST_PORT || tr
 butler_host_port_default="${butler_host_port_default:-8180}"
 butler_host_port="$(prompt_value "Host port for Manor" "${butler_host_port_default}")"
 validate_port "${butler_host_port}"
+
+build_from_source_default="${MANOR_BUILD_FROM_SOURCE:-$(env_value MANOR_BUILD_FROM_SOURCE || true)}"
+build_from_source_default="${build_from_source_default:-0}"
+if [[ "${build_from_source_forced}" -eq 1 ]]; then
+  build_from_source="1"
+else
+  build_from_source="$(prompt_bool "Build images from source instead of pulling published images" "${build_from_source_default}")"
+fi
+
+image_registry_default="${MANOR_IMAGE_REGISTRY:-$(env_value MANOR_IMAGE_REGISTRY || true)}"
+image_registry_default="${image_registry_arg:-${image_registry_default:-ghcr.io/peter-olom}}"
+image_tag_default="${MANOR_IMAGE_TAG:-$(env_value MANOR_IMAGE_TAG || true)}"
+image_tag_default="${image_tag_arg:-${image_tag_default:-latest}}"
+
+if [[ "${build_from_source}" = "1" ]]; then
+  image_registry="${image_registry_default}"
+  image_tag="${image_tag_default}"
+else
+  image_registry="$(prompt_value "Image registry namespace" "${image_registry_default}")"
+  image_tag="$(prompt_value "Image tag" "${image_tag_default}")"
+fi
+
+if [[ -z "${image_registry}" || -z "${image_tag}" ]]; then
+  echo "Image registry and tag must not be empty." >&2
+  exit 1
+fi
 
 codex_auto_update_default="${MANOR_CODEX_AUTO_UPDATE:-$(env_value MANOR_CODEX_AUTO_UPDATE || true)}"
 codex_auto_update_default="${codex_auto_update_default:-0}"
@@ -251,11 +316,29 @@ fi
 
 write_env
 
-docker compose config >/dev/null
+compose_args=(-f compose.yml)
+if [[ "${build_from_source}" = "1" ]]; then
+  compose_args+=(-f compose.build.yml)
+fi
+
+run_compose() {
+  docker compose "${compose_args[@]}" "$@"
+}
+
+run_compose config >/dev/null
 
 if [[ "${start_after}" -eq 1 ]]; then
-  docker compose up -d --build
+  if [[ "${build_from_source}" = "1" ]]; then
+    run_compose up -d --build
+  else
+    run_compose pull
+    run_compose up -d
+  fi
   echo "Manor is running on http://127.0.0.1:${butler_host_port}"
 else
-  echo "Configuration written. Start Manor with: docker compose up -d --build"
+  if [[ "${build_from_source}" = "1" ]]; then
+    echo "Configuration written. Start Manor with: ./manor.sh start --build"
+  else
+    echo "Configuration written. Start Manor with: ./manor.sh start"
+  fi
 fi

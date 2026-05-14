@@ -1,4 +1,8 @@
-FROM node:22-alpine
+ARG NODE_RUNTIME_IMAGE=node:24-alpine3.23
+
+FROM ${NODE_RUNTIME_IMAGE}
+
+ENV NODE_ENV=production
 
 WORKDIR /opt/manor/preview-egress
 

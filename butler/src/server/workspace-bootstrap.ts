@@ -347,7 +347,7 @@ export async function inspectWorkspaceBootstrap(cwd: string | null | undefined):
     installState,
     needsPackageManagerDownload,
     suggestedPreview: {
-      image: "node:22-bookworm",
+      image: "node:24-trixie",
       bootstrapHint,
       egressDomains: [],
       suggestedInstallCommand: buildSuggestedInstallCommand(packageManager)
