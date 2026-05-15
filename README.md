@@ -7,6 +7,7 @@ It keeps Codex on a warm worker, puts Butler in charge of supervision, and gives
 ## Contents
 
 - [Public Preview](#public-preview)
+- [Screenshots](#screenshots)
 - [Opinionated by Design](#opinionated-by-design)
 - [Quick Start](#quick-start)
 - [Image Distribution](#image-distribution)
@@ -23,6 +24,21 @@ It keeps Codex on a warm worker, puts Butler in charge of supervision, and gives
 Manor is usable, but early. Expect rough edges around setup, upgrades, and advanced runtime workflows.
 
 The current goal is a dependable single-operator appliance: clear Docker setup, honest trust boundaries, durable worker state, and practical runtime isolation for agent-led development work.
+
+## Screenshots
+
+The example project Butler was given to build in the screenshots below is [peter-olom/vaultfolio-drive](https://github.com/peter-olom/vaultfolio-drive).
+
+<p align="center">
+  <a href="docs/assets/readme/manor-butler-summary.jpg"><img src="docs/assets/readme/manor-butler-summary.jpg" alt="Manor Butler completion summary" width="840"></a>
+</p>
+
+<p align="center">
+  <a href="docs/assets/readme/manor-delegation-contract.jpg"><img src="docs/assets/readme/manor-delegation-contract.jpg" alt="Manor job contract view" width="205"></a>
+  <a href="docs/assets/readme/manor-checklist-timeline.jpg"><img src="docs/assets/readme/manor-checklist-timeline.jpg" alt="Manor checklist and timeline panels" width="205"></a>
+  <a href="docs/assets/readme/manor-codex-workstream.jpg"><img src="docs/assets/readme/manor-codex-workstream.jpg" alt="Manor Codex workstream with generated design artifact" width="205"></a>
+  <a href="docs/assets/readme/manor-proof-review.jpg"><img src="docs/assets/readme/manor-proof-review.jpg" alt="Manor proof review list" width="205"></a>
+</p>
 
 ## Opinionated by Design
 

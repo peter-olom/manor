@@ -323,7 +323,7 @@ export function formatAuthStatus(auth: {
   if (auth.mode === "api") {
     return "API key";
   }
-  return "Not connected";
+  return "Not signed in";
 }
 
 export function describeStatus(status: ThreadStatus): string {

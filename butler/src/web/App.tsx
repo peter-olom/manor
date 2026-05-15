@@ -622,11 +622,16 @@ export function App() {
               <option value="dark">Dark</option>
             </select>
           </label>
-          <StatusItem kind="codex" tone={shell.codex.connected ? "accent" : "neutral"} label="Codex" value={shell.codex.connected ? "Connected" : "Offline"} />
+          <StatusItem
+            kind="codex"
+            tone={shell.codex.connected ? "accent" : "neutral"}
+            label="Codex worker"
+            value={shell.codex.connected ? "Online" : "Offline"}
+          />
           <StatusItem
             kind="auth"
             tone={shell.codex.auth.loggedIn ? "success" : shell.codex.auth.mode === "none" ? "neutral" : "danger"}
-            label="Auth"
+            label="Codex auth"
             value={formatAuthStatus(shell.codex.auth)}
           />
           <StatusItem kind="context" tone="neutral" label="Context" value={topbarContextValue} />
