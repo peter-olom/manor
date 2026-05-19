@@ -45,6 +45,20 @@ trap cleanup EXIT INT TERM
 
 listen_url="${CODEX_APP_SERVER_LISTEN:-ws://0.0.0.0:8080}"
 
+ensure_capability_token_file() {
+  local token_file="${CODEX_APP_SERVER_WS_TOKEN_FILE:-}"
+
+  if [[ "${CODEX_APP_SERVER_WS_AUTH:-}" != "capability-token" || -z "${token_file}" ]]; then
+    return
+  fi
+
+  mkdir -p "$(dirname "${token_file}")"
+  if [[ ! -s "${token_file}" ]]; then
+    node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64") + "\n")' >"${token_file}"
+  fi
+  chmod 600 "${token_file}" 2>/dev/null || true
+}
+
 append_toml_string_config() {
   local key="$1"
   local value="$2"
@@ -130,6 +144,7 @@ ttyd \
 ttyd_pid=$!
 
 /usr/local/bin/codex-auth bootstrap
+ensure_capability_token_file
 
 codex "${args[@]}" &
 codex_pid=$!

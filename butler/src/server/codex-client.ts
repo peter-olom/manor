@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
@@ -230,6 +231,7 @@ export class CodexAppServerClient extends EventEmitter {
   private readonly onThreadCapabilityRemoved: ((threadId: string) => Promise<void>) | null;
   private readonly onThreadDeleting: ((context: ThreadDeleteContext) => Promise<void>) | null;
   private readonly onRuntimeCleanupError: ((threadId: string, message: string) => void) | null;
+  private readonly authTokenFile: string | null;
   private cleanupQueueRunning = false;
 
   constructor(
@@ -242,6 +244,7 @@ export class CodexAppServerClient extends EventEmitter {
       onThreadDeleting?: (context: ThreadDeleteContext) => Promise<void>;
       onRuntimeCleanupError?: (threadId: string, message: string) => void;
       artifactsDir?: string | null;
+      authTokenFile?: string | null;
     }
   ) {
     super();
@@ -253,6 +256,7 @@ export class CodexAppServerClient extends EventEmitter {
     this.onThreadCapabilityRemoved = options?.onThreadCapabilityRemoved ?? null;
     this.onThreadDeleting = options?.onThreadDeleting ?? null;
     this.onRuntimeCleanupError = options?.onRuntimeCleanupError ?? null;
+    this.authTokenFile = options?.authTokenFile ? path.resolve(options.authTokenFile) : null;
   }
 
   start(): void {
@@ -360,8 +364,33 @@ export class CodexAppServerClient extends EventEmitter {
     }
   }
 
+  private readAuthHeaders(): Record<string, string> | undefined {
+    if (!this.authTokenFile) {
+      return undefined;
+    }
+
+    const token = readFileSync(this.authTokenFile, "utf8").trim();
+    if (!token) {
+      throw new Error("Codex app-server auth token is empty");
+    }
+
+    return {
+      Authorization: `Bearer ${token}`
+    };
+  }
+
   private connect(): void {
-    const socket = new WebSocket(this.baseUrl);
+    let headers: Record<string, string> | undefined;
+    try {
+      headers = this.readAuthHeaders();
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.emit("change");
+      this.scheduleReconnect();
+      return;
+    }
+
+    const socket = new WebSocket(this.baseUrl, { headers });
     this.socket = socket;
     this.clearConnectTimeout();
     this.connectTimeoutTimer = setTimeout(() => {

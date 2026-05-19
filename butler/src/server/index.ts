@@ -39,6 +39,7 @@ import { applyWorkspacePreviewDefaults, inspectWorkspaceBootstrap } from "./work
 
 const port = Number(process.env.BUTLER_PORT ?? "8080");
 const codexBaseUrl = process.env.CODEX_BASE_URL ?? "ws://codex-box:8080";
+const codexAppServerAuthTokenFile = process.env.CODEX_APP_SERVER_AUTH_TOKEN_FILE ?? null;
 const piAgentDir = process.env.PI_AGENT_DIR ?? "/home/butler/.pi/agent";
 const stateDir = process.env.MANOR_STATE_DIR ?? "/state";
 const codexHomeDir = process.env.CODEX_SHARED_HOME_DIR ?? "/codex-home";
@@ -114,7 +115,8 @@ const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, 
   onThreadCapabilityRemoved: async (threadId) => {
     await codexHarness.revokeThreadCapability(threadId);
   },
-  artifactsDir
+  artifactsDir,
+  authTokenFile: codexAppServerAuthTokenFile
 });
 const butlerAgent = new ButlerAgentService({
   store,
