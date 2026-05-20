@@ -535,6 +535,8 @@ export interface JobMemoryView {
   threadId: string;
   projectId: string;
   projectLabel: string;
+  source: string | null;
+  createdAt: number;
   operatorGoal: string | null;
   requestedTask: string | null;
   currentPlan: string[];
@@ -571,6 +573,7 @@ export interface ButlerMemoryRetrievalView {
   query: string | null;
   projectId: string | null;
   threadId: string | null;
+  includeProvenance: boolean;
   projectRollups: ProjectMemoryView[];
   jobMemories: JobMemoryView[];
   butlerMemories: ButlerMemoryEntryView[];

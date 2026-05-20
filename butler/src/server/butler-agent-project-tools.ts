@@ -54,13 +54,14 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
       label: "Retrieve memory",
       description: "Retrieve a scoped durable memory brief for a project, job, or stateful operator question without mutating memory.",
       promptSnippet:
-        "retrieve_memory: use for stateful project questions, cross-thread follow-ups, prior decisions, unresolved outcomes, or when the operator expects Butler to remember work; skip it for casual chat.",
+        "retrieve_memory: use for stateful project questions, cross-thread follow-ups, prior decisions, unresolved outcomes, or when the operator expects Butler to remember work; skip it for casual chat. Set includeProvenance only for source, trigger, who, when, timestamp, provenance, or attribution questions.",
       parameters: Type.Object({
         projectId: Type.Optional(Type.String()),
         threadId: Type.Optional(Type.String()),
         query: Type.Optional(Type.String()),
         limit: Type.Optional(Type.Number({ minimum: 1, maximum: 20 })),
-        includeGlobal: Type.Optional(Type.Boolean())
+        includeGlobal: Type.Optional(Type.Boolean()),
+        includeProvenance: Type.Optional(Type.Boolean())
       }),
       uiEffects: access.getToolUiEffects("retrieve_memory"),
       execute: async (_toolCallId, params) => {
@@ -69,7 +70,8 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
           threadId: typeof params.threadId === "string" ? params.threadId : null,
           query: typeof params.query === "string" ? params.query : null,
           limit: typeof params.limit === "number" ? params.limit : null,
-          includeGlobal: typeof params.includeGlobal === "boolean" ? params.includeGlobal : false
+          includeGlobal: typeof params.includeGlobal === "boolean" ? params.includeGlobal : false,
+          includeProvenance: params.includeProvenance === true
         });
         return {
           content: [{ type: "text", text: formatButlerMemoryRetrieval(retrieval) }],

@@ -1,7 +1,8 @@
 import { normalizeString } from "./codex-harness-helpers.js";
+import { formatButlerMemoryRetrieval, retrieveButlerMemory } from "./memory-retrieval.js";
 import type { ButlerStateStore } from "./state-store.js";
 
-export function formatHarnessJobMemory(store: ButlerStateStore, threadId: string): string[] {
+export function formatHarnessJobMemory(store: ButlerStateStore, threadId: string, options: { includeProvenance?: boolean } = {}): string[] {
   const jobMemory = store.getJobMemory(threadId);
   if (!jobMemory) {
     return ["Job memory: none"];
@@ -14,6 +15,12 @@ export function formatHarnessJobMemory(store: ButlerStateStore, threadId: string
     `Job memory blockers: ${jobMemory.blockers.length > 0 ? jobMemory.blockers.join(" | ") : "(none)"}`,
     `Job memory pending promotions: ${jobMemory.promotionCandidates.filter((candidate) => candidate.status === "pending").length}`
   ];
+
+  if (options.includeProvenance === true) {
+    lines.unshift(
+      `Job memory provenance: source=${jobMemory.source ?? "unknown"} | created=${new Date(jobMemory.createdAt).toISOString()} | updated=${new Date(jobMemory.updatedAt).toISOString()}`
+    );
+  }
 
   if (jobMemory.currentPlan.length > 0) {
     lines.push(`Job memory plan:\n${jobMemory.currentPlan.map((step, index) => `${index + 1}. ${step}`).join("\n")}`);
@@ -69,13 +76,30 @@ export function handleHarnessMemoryAction(input: {
   const { action, threadId, projectId, store, params } = input;
 
   if (action === "memory.context") {
+    const includeProvenance = params.includeProvenance === true;
     return {
-      text: [...formatHarnessJobMemory(store, threadId), ...formatHarnessProjectMemory(store, projectId)].join("\n"),
+      text: [...formatHarnessJobMemory(store, threadId, { includeProvenance }), ...formatHarnessProjectMemory(store, projectId)].join("\n"),
       data: {
         jobMemory: store.getJobMemory(threadId),
         projectMemory: store.getProjectMemory(projectId),
         pendingPromotionCandidates: store.listPendingPromotionCandidates(projectId)
       }
+    };
+  }
+
+  if (action === "memory.retrieve") {
+    const scope = normalizeString(params.scope) === "job" ? "job" : "project";
+    const retrieval = retrieveButlerMemory(store, {
+      projectId,
+      threadId: scope === "job" ? threadId : null,
+      query: normalizeString(params.query) || null,
+      limit: typeof params.limit === "number" && Number.isFinite(params.limit) ? params.limit : null,
+      includeGlobal: params.includeGlobal === true,
+      includeProvenance: params.includeProvenance === true
+    });
+    return {
+      text: formatButlerMemoryRetrieval(retrieval),
+      data: { retrieval }
     };
   }
 

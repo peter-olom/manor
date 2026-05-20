@@ -12,6 +12,7 @@ type RetrievalInput = {
   query?: string | null;
   limit?: number | null;
   includeGlobal?: boolean | null;
+  includeProvenance?: boolean | null;
 };
 
 function normalizeText(value: string | null | undefined): string {
@@ -42,6 +43,8 @@ function scoreText(text: string, query: string | null, tokens: string[]): number
 
 function jobMemoryText(memory: JobMemoryView): string {
   return [
+    memory.source,
+    String(memory.createdAt),
     memory.operatorGoal,
     memory.requestedTask,
     memory.latestCheckpoint,
@@ -67,6 +70,16 @@ function jobMemoryText(memory: JobMemoryView): string {
     .join("\n");
 }
 
+function jobMemoryActivityAt(memory: JobMemoryView): number {
+  const timestamps = [
+    memory.createdAt,
+    ...memory.decisions.map((entry) => entry.at),
+    ...memory.entries.map((entry) => entry.at),
+    ...memory.promotionCandidates.flatMap((entry) => [entry.createdAt, entry.updatedAt, entry.resolvedAt].filter((value): value is number => typeof value === "number"))
+  ].filter((value) => Number.isFinite(value));
+  return timestamps.length > 0 ? Math.max(...timestamps) : memory.updatedAt;
+}
+
 function projectMemoryText(memory: ProjectMemoryView): string {
   return [
     memory.summary,
@@ -78,6 +91,14 @@ function projectMemoryText(memory: ProjectMemoryView): string {
 
 function butlerMemoryText(memory: ButlerMemoryEntryView): string {
   return [memory.summary, memory.details, ...memory.tags].filter((entry): entry is string => typeof entry === "string" && Boolean(entry.trim())).join("\n");
+}
+
+function formatTime(value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value) ? new Date(value).toISOString() : "unknown";
+}
+
+function formatSource(value: string | null | undefined): string {
+  return value && value.trim() && value !== "unknown" ? value.trim() : "unknown";
 }
 
 function rankByQuery<T>(items: T[], query: string | null, textFor: (item: T) => string, timeFor: (item: T) => number): T[] {
@@ -97,6 +118,7 @@ export function retrieveButlerMemory(store: ButlerStateStore, input: RetrievalIn
   const projectId = normalizeText(input.projectId) || null;
   const threadId = normalizeText(input.threadId) || null;
   const query = normalizeText(input.query) || null;
+  const includeProvenance = input.includeProvenance === true;
   const warnings: string[] = [];
 
   const projectRollups = rankByQuery(
@@ -109,7 +131,7 @@ export function retrieveButlerMemory(store: ButlerStateStore, input: RetrievalIn
   const jobCandidates = threadId
     ? [store.getJobMemory(threadId)].filter((entry): entry is JobMemoryView => Boolean(entry))
     : store.listJobMemories(projectId);
-  const jobMemories = rankByQuery(jobCandidates, query, jobMemoryText, (memory) => memory.updatedAt).slice(0, limit);
+  const jobMemories = rankByQuery(jobCandidates, query, jobMemoryText, jobMemoryActivityAt).slice(0, limit);
 
   const butlerMemories = input.includeGlobal
     ? rankByQuery(store.listButlerMemory(), query, butlerMemoryText, (memory) => memory.createdAt).slice(0, limit)
@@ -130,6 +152,7 @@ export function retrieveButlerMemory(store: ButlerStateStore, input: RetrievalIn
     query,
     projectId,
     threadId,
+    includeProvenance,
     projectRollups,
     jobMemories,
     butlerMemories,
@@ -140,33 +163,49 @@ export function retrieveButlerMemory(store: ButlerStateStore, input: RetrievalIn
 }
 
 export function formatButlerMemoryRetrieval(view: ButlerMemoryRetrievalView): string {
-  const lines = [
-    `Memory retrieval | project=${view.projectId ?? "any"} | job=${view.threadId ?? "any"} | query=${view.query ?? "none"}`
-  ];
+  const includeProvenance = view.includeProvenance === true;
+  const header = `Memory retrieval | project=${view.projectId ?? "any"} | job=${view.threadId ?? "any"} | query=${view.query ?? "none"}`;
+  const lines = [includeProvenance ? `${header} | retrieved=${formatTime(view.retrievedAt)}` : header];
   if (view.projectRollups.length > 0) {
     lines.push(
       "Project rollups:",
       ...view.projectRollups.map((memory, index) => {
-        const recentEntries = memory.entries.slice(-3).map((entry) => `${entry.kind}: ${entry.summary}`).join(" | ");
-        return `${index + 1}. ${memory.projectLabel} | ${memory.summary ?? "No summary"}${recentEntries ? ` | recent=${recentEntries}` : ""}`;
+        const recentEntries = memory.entries.slice(-3).map((entry) => {
+          const kind = includeProvenance ? `${entry.kind}@${formatTime(entry.acceptedAt)}` : entry.kind;
+          return `${kind}: ${entry.summary}`;
+        }).join(" | ");
+        const provenance = includeProvenance ? ` | updated=${formatTime(memory.updatedAt)}` : "";
+        return `${index + 1}. ${memory.projectLabel}${provenance} | ${memory.summary ?? "No summary"}${recentEntries ? ` | recent=${recentEntries}` : ""}`;
       })
     );
   }
   if (view.jobMemories.length > 0) {
     lines.push(
       "Job memories:",
-      ...view.jobMemories.map((memory, index) =>
-        `${index + 1}. ${memory.projectLabel} | job=${memory.threadId} | checkpoint=${memory.latestCheckpoint ?? "none"} | next=${memory.nextAction ?? "none"} | blockers=${memory.blockers.join(" | ") || "none"}`
-      )
+      ...view.jobMemories.map((memory, index) => {
+        const provenance = includeProvenance
+          ? ` | source=${formatSource(memory.source)} | created=${formatTime(memory.createdAt)} | activity=${formatTime(jobMemoryActivityAt(memory))} | recordUpdated=${formatTime(memory.updatedAt)}`
+          : "";
+        return `${index + 1}. ${memory.projectLabel} | job=${memory.threadId}${provenance} | checkpoint=${memory.latestCheckpoint ?? "none"} | next=${memory.nextAction ?? "none"} | blockers=${memory.blockers.join(" | ") || "none"}`;
+      })
     );
   }
   if (view.butlerMemories.length > 0) {
-    lines.push("Global Butler memories:", ...view.butlerMemories.map((memory, index) => `${index + 1}. ${memory.summary}${memory.details ? ` | ${memory.details}` : ""}`));
+    lines.push(
+      "Global Butler memories:",
+      ...view.butlerMemories.map((memory, index) => {
+        const provenance = includeProvenance ? `created=${formatTime(memory.createdAt)} | source=${memory.source} | ` : "";
+        return `${index + 1}. ${provenance}${memory.summary}${memory.details ? ` | ${memory.details}` : ""}`;
+      })
+    );
   }
   if (view.pendingPromotionCandidates.length > 0) {
     lines.push(
       "Pending memory outcomes:",
-      ...view.pendingPromotionCandidates.map((candidate, index) => `${index + 1}. ${candidate.projectLabel} | ${candidate.kind} | ${candidate.summary}`)
+      ...view.pendingPromotionCandidates.map((candidate, index) => {
+        const provenance = includeProvenance ? ` | created=${formatTime(candidate.createdAt)} | updated=${formatTime(candidate.updatedAt)}` : "";
+        return `${index + 1}. ${candidate.projectLabel} | ${candidate.kind}${provenance} | ${candidate.summary}`;
+      })
     );
   }
   if (view.warnings.length > 0) {

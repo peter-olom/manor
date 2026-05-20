@@ -77,3 +77,26 @@ test("direct Codex messages register Butler supervision callback", async () => {
   assert.equal(callbacks[0]?.nextWorkerReportAction, "review");
   assert.equal(store.getThread(threadId)?.eventLog[0]?.method, "butler.direct_message.pinged");
 });
+
+test("delegated Codex instructions define memory read and write boundaries", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-session-"));
+  const agent = createButlerAgent(store, sessionDir) as unknown as {
+    buildDelegationDeveloperInstructions(
+      workspace: { cwd: string; branchName: string | null },
+      task: string
+    ): Promise<string>;
+  };
+
+  const instructions = await agent.buildDelegationDeveloperInstructions(
+    { cwd: "/workspace", branchName: null },
+    "Continue the prior follow-up."
+  );
+
+  assert.match(instructions, /Read memory with `manor-harness memory search/);
+  assert.match(instructions, /follow-up/);
+  assert.match(instructions, /requires attribution before saying who did what/);
+  assert.match(instructions, /Skip memory reads for clearly self-contained mechanical work/);
+  assert.match(instructions, /Write memory only when it will help a future worker/);
+  assert.match(instructions, /Do not write routine progress/);
+});

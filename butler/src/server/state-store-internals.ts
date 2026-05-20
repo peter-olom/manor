@@ -707,6 +707,8 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
             : typeof memory.projectId === "string" && memory.projectId.trim()
               ? memory.projectId.trim()
               : "Unknown",
+        source: typeof memory.source === "string" && memory.source.trim() ? memory.source.trim() : null,
+        createdAt: typeof memory.createdAt === "number" && Number.isFinite(memory.createdAt) ? memory.createdAt : Date.now(),
         operatorGoal: typeof memory.operatorGoal === "string" && memory.operatorGoal.trim() ? memory.operatorGoal.trim() : null,
         requestedTask: typeof memory.requestedTask === "string" && memory.requestedTask.trim() ? memory.requestedTask.trim() : null,
         currentPlan: normalizeStringList(memory.currentPlan),
@@ -1164,6 +1166,8 @@ export function getOrCreateStateStoreThread(access: StateStoreInternalAccess, id
       threadId: id,
       projectId: "unknown",
       projectLabel: "Unknown",
+      source: "unknown",
+      createdAt: Date.now(),
       contract: null
     }),
     turns: [],
@@ -1224,6 +1228,8 @@ export function getOrCreateStateStoreThread(access: StateStoreInternalAccess, id
       threadId: id,
       projectId: created.supervisor.projectId,
       projectLabel: created.supervisor.projectLabel,
+      source: created.source,
+      createdAt: created.createdAt,
       contract: created.executionContract
     });
   }

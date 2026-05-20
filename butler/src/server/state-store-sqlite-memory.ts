@@ -62,7 +62,7 @@ async function saveDb(dbPath: string, db: SqlJsDatabase): Promise<void> {
 
 function ensureSchema(db: SqlJsDatabase): void {
   db.run([
-    "CREATE TABLE IF NOT EXISTS job_memories (thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, project_label TEXT NOT NULL, operator_goal TEXT, requested_task TEXT, current_plan_json TEXT NOT NULL, latest_checkpoint TEXT, next_action TEXT, blockers_json TEXT NOT NULL, assumptions_json TEXT NOT NULL, proof_requirements_json TEXT NOT NULL, notes_json TEXT NOT NULL, decisions_json TEXT NOT NULL, entries_json TEXT NOT NULL, promotion_candidates_json TEXT NOT NULL, updated_at INTEGER NOT NULL);",
+    "CREATE TABLE IF NOT EXISTS job_memories (thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, project_label TEXT NOT NULL, source TEXT, created_at INTEGER, operator_goal TEXT, requested_task TEXT, current_plan_json TEXT NOT NULL, latest_checkpoint TEXT, next_action TEXT, blockers_json TEXT NOT NULL, assumptions_json TEXT NOT NULL, proof_requirements_json TEXT NOT NULL, notes_json TEXT NOT NULL, decisions_json TEXT NOT NULL, entries_json TEXT NOT NULL, promotion_candidates_json TEXT NOT NULL, updated_at INTEGER NOT NULL);",
     "CREATE INDEX IF NOT EXISTS idx_job_memories_project_updated ON job_memories(project_id, updated_at DESC);",
     "CREATE TABLE IF NOT EXISTS project_memories (project_id TEXT PRIMARY KEY, project_label TEXT NOT NULL, summary TEXT, updated_at INTEGER NOT NULL);",
     "CREATE TABLE IF NOT EXISTS project_memory_entries (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_thread_id TEXT NOT NULL, kind TEXT NOT NULL, summary TEXT NOT NULL, details TEXT, accepted_at INTEGER NOT NULL);",
@@ -77,6 +77,16 @@ function ensureSchema(db: SqlJsDatabase): void {
     "CREATE INDEX IF NOT EXISTS idx_project_artifact_terms_project_term ON project_artifact_terms(project_id, term);",
     "CREATE INDEX IF NOT EXISTS idx_project_artifact_terms_artifact ON project_artifact_terms(artifact_id);"
   ].join("\n"));
+  ensureColumn(db, "job_memories", "source", "TEXT");
+  ensureColumn(db, "job_memories", "created_at", "INTEGER");
+}
+
+function ensureColumn(db: SqlJsDatabase, tableName: string, columnName: string, definition: string): void {
+  const columns = queryRows<{ name: string }>(db, `PRAGMA table_info(${tableName});`);
+  if (columns.some((column) => column.name === columnName)) {
+    return;
+  }
+  db.run(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition};`);
 }
 
 function queryRows<T extends Record<string, unknown>>(db: SqlJsDatabase, sql: string, params: unknown[] = []): T[] {
@@ -295,6 +305,8 @@ export async function loadStateStoreSqliteMemory(access: StateStoreInternalAcces
           threadId,
           projectId,
           projectLabel,
+          source: nullableString(row.source),
+          createdAt: typeof row.created_at === "number" ? row.created_at : Date.now(),
           operatorGoal: typeof row.operator_goal === "string" && row.operator_goal ? row.operator_goal : null,
           requestedTask: typeof row.requested_task === "string" && row.requested_task ? row.requested_task : null,
           currentPlan: jsonList(row.current_plan_json),
@@ -384,10 +396,12 @@ export async function persistStateStoreSqliteMemory(access: StateStoreInternalAc
     db.run("DELETE FROM project_artifact_terms;");
     db.run("DELETE FROM project_artifacts;");
     for (const memory of access.persistedJobMemoriesByThreadId.values()) {
-      db.run("INSERT INTO job_memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);", [
+      db.run("INSERT INTO job_memories (thread_id, project_id, project_label, source, created_at, operator_goal, requested_task, current_plan_json, latest_checkpoint, next_action, blockers_json, assumptions_json, proof_requirements_json, notes_json, decisions_json, entries_json, promotion_candidates_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);", [
         memory.threadId,
         memory.projectId,
         memory.projectLabel,
+        memory.source,
+        memory.createdAt,
         memory.operatorGoal,
         memory.requestedTask,
         JSON.stringify(memory.currentPlan),

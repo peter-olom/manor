@@ -297,6 +297,7 @@ app.get("/api/memory/retrieve", (request, response) => {
   const query = typeof request.query.query === "string" ? request.query.query : null;
   const limitRaw = typeof request.query.limit === "string" ? Number(request.query.limit) : null;
   const includeGlobal = request.query.includeGlobal === "1" || request.query.includeGlobal === "true";
+  const includeProvenance = request.query.includeProvenance === "1" || request.query.includeProvenance === "true";
 
   response.json({
     retrieval: retrieveButlerMemory(store, {
@@ -304,7 +305,8 @@ app.get("/api/memory/retrieve", (request, response) => {
       threadId,
       query,
       limit: Number.isFinite(limitRaw) ? limitRaw : null,
-      includeGlobal
+      includeGlobal,
+      includeProvenance
     })
   });
 });

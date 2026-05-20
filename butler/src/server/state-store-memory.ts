@@ -28,6 +28,14 @@ function normalizeOptionalText(value: string | null | undefined): string | null 
   return normalized || null;
 }
 
+function normalizeTimestamp(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function normalizeSource(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 export function syncStateStoreThreadJobMemory(access: StateStoreInternalAccess, thread: CodexThreadRecord): JobMemoryView {
   const fallbackProjectId =
     thread.executionContract?.projectId ??
@@ -51,6 +59,8 @@ export function syncStateStoreThreadJobMemory(access: StateStoreInternalAccess, 
     threadId: thread.id,
     projectId,
     projectLabel,
+    source: normalizeSource(thread.source) ?? current.source ?? null,
+    createdAt: Math.min(current.createdAt ?? thread.createdAt, normalizeTimestamp(thread.createdAt) ?? current.createdAt ?? Date.now()),
     operatorGoal: thread.executionContract?.operatorGoal ?? current.operatorGoal ?? null,
     requestedTask: thread.executionContract?.requestedTask ?? current.requestedTask ?? thread.supervisor.latestUserPrompt ?? null,
     proofRequirements:

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { formatHarnessJobMemory, handleHarnessMemoryAction } from "../../src/server/codex-harness-memory.js";
 import { formatButlerMemoryRetrieval, retrieveButlerMemory } from "../../src/server/memory-retrieval.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import type { JobMemoryView, PersistedUiState } from "../../src/server/types.js";
@@ -29,6 +30,8 @@ function makeJobMemory(overrides: Partial<JobMemoryView>): JobMemoryView {
     threadId: "job-alpha",
     projectId: "alpha",
     projectLabel: "Alpha",
+    source: "appServer",
+    createdAt: 9,
     operatorGoal: "Keep checkout memory durable.",
     requestedTask: "Complete checkout follow-up.",
     currentPlan: ["Review checkout callback"],
@@ -121,7 +124,139 @@ test("memory retrieval scopes project rollups and query-matched job memory", asy
   assert.deepEqual(retrieval.jobMemories.map((memory) => memory.threadId), ["job-alpha"]);
   assert.deepEqual(retrieval.butlerMemories.map((memory) => memory.id), ["global-1"]);
   assert.equal(retrieval.pendingPromotionCandidates.length, 0);
-  assert.match(formatButlerMemoryRetrieval(retrieval), /Checkout API seeded/);
+  assert.equal(retrieval.includeProvenance, false);
+  const formatted = formatButlerMemoryRetrieval(retrieval);
+  assert.match(formatted, /Checkout API seeded/);
+  assert.doesNotMatch(formatted, /source=appServer/);
+  assert.doesNotMatch(formatted, /created=1970-01-01T00:00:00.009Z/);
+  assert.doesNotMatch(formatted, /retrieved=/);
+  assert.match(formatted, /Global Butler memories:/);
+  assert.doesNotMatch(formatted, /created=1970-01-01T00:00:00.012Z/);
+
+  const withProvenance = retrieveButlerMemory(store, { projectId: "alpha", query: "checkout", includeGlobal: true, includeProvenance: true });
+  assert.equal(withProvenance.includeProvenance, true);
+  const formattedWithProvenance = formatButlerMemoryRetrieval(withProvenance);
+  assert.match(formattedWithProvenance, /source=appServer/);
+  assert.match(formattedWithProvenance, /created=1970-01-01T00:00:00.009Z/);
+  assert.match(formattedWithProvenance, /created=1970-01-01T00:00:00.012Z/);
+  assert.match(formattedWithProvenance, /retrieved=/);
+});
+
+test("memory retrieval ranks jobs by durable activity instead of record refresh time", async () => {
+  const store = await createStoreWithState({
+    windows: [],
+    focusedWindowId: null,
+    jobMemoriesByThreadId: {
+      "job-old-refreshed": makeJobMemory({
+        threadId: "job-old-refreshed",
+        latestCheckpoint: "Slidev old checkpoint",
+        requestedTask: "Inspect old Slidev work.",
+        entries: [
+          {
+            id: "entry-old",
+            kind: "checkpoint",
+            summary: "Slidev old checkpoint",
+            details: null,
+            nextAction: null,
+            blockers: [],
+            plan: [],
+            assumptions: [],
+            proofRequirements: [],
+            promote: false,
+            promotionCandidateId: null,
+            at: 10
+          }
+        ],
+        updatedAt: 10_000
+      }),
+      "job-recent-memory": makeJobMemory({
+        threadId: "job-recent-memory",
+        latestCheckpoint: "Slidev recent checkpoint",
+        requestedTask: "Inspect recent Slidev work.",
+        entries: [
+          {
+            id: "entry-recent",
+            kind: "checkpoint",
+            summary: "Slidev recent checkpoint",
+            details: null,
+            nextAction: null,
+            blockers: [],
+            plan: [],
+            assumptions: [],
+            proofRequirements: [],
+            promote: false,
+            promotionCandidateId: null,
+            at: 80
+          }
+        ],
+        updatedAt: 90
+      })
+    }
+  });
+
+  const retrieval = retrieveButlerMemory(store, { projectId: "alpha", query: "slidev", limit: 2 });
+
+  assert.deepEqual(retrieval.jobMemories.map((memory) => memory.threadId), ["job-recent-memory", "job-old-refreshed"]);
+  const formatted = formatButlerMemoryRetrieval(retrieval);
+  assert.doesNotMatch(formatted, /activity=/);
+  assert.doesNotMatch(formatted, /recordUpdated=/);
+
+  const withProvenance = retrieveButlerMemory(store, { projectId: "alpha", query: "slidev", limit: 2, includeProvenance: true });
+  const formattedWithProvenance = formatButlerMemoryRetrieval(withProvenance);
+  assert.match(formattedWithProvenance, /activity=1970-01-01T00:00:00.080Z/);
+  assert.match(formattedWithProvenance, /recordUpdated=1970-01-01T00:00:00.090Z/);
+  assert.match(formattedWithProvenance, /recordUpdated=1970-01-01T00:00:10.000Z/);
+});
+
+test("Codex harness memory retrieval shares default and provenance formatting", async () => {
+  const store = await createStoreWithState({
+    windows: [],
+    focusedWindowId: null,
+    jobMemoriesByThreadId: {
+      "job-alpha": makeJobMemory({
+        latestCheckpoint: "Slidev checkpoint",
+        requestedTask: "Inspect Slidev follow-up.",
+        updatedAt: 20
+      })
+    },
+    projectMemoriesByProjectId: {
+      alpha: {
+        projectId: "alpha",
+        projectLabel: "Alpha",
+        summary: "Slidev project memory exists.",
+        entries: [],
+        updatedAt: 21
+      }
+    }
+  });
+
+  const defaultContext = formatHarnessJobMemory(store, "job-alpha").join("\n");
+  assert.doesNotMatch(defaultContext, /Job memory provenance:/);
+  assert.match(formatHarnessJobMemory(store, "job-alpha", { includeProvenance: true }).join("\n"), /Job memory provenance:/);
+
+  const defaultRetrieval = handleHarnessMemoryAction({
+    action: "memory.retrieve",
+    threadId: "job-alpha",
+    projectId: "alpha",
+    store,
+    params: { query: "slidev", scope: "project" }
+  });
+  assert.ok(defaultRetrieval);
+  assert.doesNotMatch(defaultRetrieval.text, /source=appServer/);
+  assert.doesNotMatch(defaultRetrieval.text, /created=/);
+  assert.equal(defaultRetrieval.data?.retrieval?.includeProvenance, false);
+
+  const provenanceRetrieval = handleHarnessMemoryAction({
+    action: "memory.retrieve",
+    threadId: "job-alpha",
+    projectId: "alpha",
+    store,
+    params: { query: "slidev", scope: "project", includeProvenance: true }
+  });
+  assert.ok(provenanceRetrieval);
+  assert.match(provenanceRetrieval.text, /source=appServer/);
+  assert.match(provenanceRetrieval.text, /created=1970-01-01T00:00:00.009Z/);
+  assert.equal(provenanceRetrieval.data?.retrieval?.includeProvenance, true);
 });
 
 test("pending memory outcomes survive without live thread context and promote into project memory", async () => {

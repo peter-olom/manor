@@ -124,11 +124,16 @@ export function buildEmptyJobMemory(input: {
   projectId: string;
   projectLabel: string;
   contract?: CodexThreadExecutionContractView | null;
+  source?: string | null;
+  createdAt?: number | null;
 }): JobMemoryView {
+  const now = Date.now();
   return {
     threadId: input.threadId,
     projectId: input.projectId,
     projectLabel: input.projectLabel,
+    source: typeof input.source === "string" && input.source.trim() ? input.source.trim() : null,
+    createdAt: typeof input.createdAt === "number" && Number.isFinite(input.createdAt) ? input.createdAt : now,
     operatorGoal: input.contract?.operatorGoal ?? null,
     requestedTask: input.contract?.requestedTask ?? null,
     currentPlan: [],
@@ -141,7 +146,7 @@ export function buildEmptyJobMemory(input: {
     decisions: [],
     entries: [],
     promotionCandidates: [],
-    updatedAt: Date.now()
+    updatedAt: now
   };
 }
 

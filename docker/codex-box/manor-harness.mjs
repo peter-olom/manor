@@ -14,8 +14,9 @@ function printHelp() {
   manor-harness [--thread <jobId>] status
   manor-harness [--thread <jobId>] report --status completed|blocked --summary "<text>" [--details "<text>"] [--turn-id <id>]
   manor-harness [--thread <jobId>] assist --summary "<text>" [--details "<text>"] [--question "<text>"]
-  manor-harness [--thread <jobId>] memory
-  manor-harness [--thread <jobId>] memory project
+  manor-harness [--thread <jobId>] memory [--provenance]
+  manor-harness [--thread <jobId>] memory project [--provenance]
+  manor-harness [--thread <jobId>] memory search --query "<text>" [--limit <n>] [--job] [--global] [--provenance]
   manor-harness [--thread <jobId>] memory checkpoint --summary "<text>" [--details "<text>"] [--next-action "<text>"] [--blocker "<text>" ...] [--plan "<text>" ...] [--assumption "<text>" ...] [--proof "<text>" ...] [--promote]
   manor-harness [--thread <jobId>] memory decision --summary "<text>" [--details "<text>"] [--promote]
   manor-harness [--thread <jobId>] memory note --summary "<text>" [--details "<text>"] [--promote]
@@ -430,11 +431,26 @@ async function main() {
       question: readFlag(args, "--question")
     };
   } else if (args[0] === "memory") {
-    const subcommand = args[1];
+    const subcommand = args[1]?.startsWith("--") ? "" : args[1];
     if (!subcommand) {
       action = "memory.context";
+      params = {
+        includeProvenance: hasFlag(args, "--provenance")
+      };
     } else if (subcommand === "project") {
       action = "memory.context";
+      params = {
+        includeProvenance: hasFlag(args, "--provenance")
+      };
+    } else if (subcommand === "search" || subcommand === "retrieve") {
+      action = "memory.retrieve";
+      params = {
+        query: readFlag(args, "--query"),
+        limit: readPositiveIntFlag(args, "--limit"),
+        scope: hasFlag(args, "--job") ? "job" : "project",
+        includeGlobal: hasFlag(args, "--global"),
+        includeProvenance: hasFlag(args, "--provenance")
+      };
     } else if (subcommand === "checkpoint") {
       action = "memory.checkpoint";
       params = {
