@@ -49,7 +49,7 @@ RUN apt-get update \
       zip \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --shell /bin/bash codex \
-    && mkdir -p /state /repos /artifacts /home/codex/.codex /opt/manor/codex-box \
+    && mkdir -p /state /repos /artifacts /home/codex/.codex /home/codex/.config/gh /home/codex/.config/manor /opt/manor/codex-box \
     && mkdir -p /home/codex/.oh-my-zsh/custom \
     && chown -R codex:codex /state /repos /artifacts /home/codex /opt/manor
 

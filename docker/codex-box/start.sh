@@ -2,7 +2,22 @@
 
 set -euo pipefail
 
+ensure_writable_dir() {
+  local dir="$1"
+
+  if ! mkdir -p "${dir}" 2>/dev/null || [[ ! -w "${dir}" ]]; then
+    echo "Required directory is not writable by the codex user: ${dir}" >&2
+    echo "Recreate or fix the mounted codex config volume, then restart Manor." >&2
+    exit 70
+  fi
+}
+
+config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+
 mkdir -p "${CODEX_HOME:-$HOME/.codex}" /state /repos /artifacts
+ensure_writable_dir "${config_home}"
+ensure_writable_dir "${config_home}/gh"
+ensure_writable_dir "${config_home}/manor"
 
 /usr/local/bin/codex-bootstrap-tools
 /usr/local/bin/manor-codex-auto-update
