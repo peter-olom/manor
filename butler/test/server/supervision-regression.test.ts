@@ -290,6 +290,17 @@ test("system prompt advises focused checklist refresh for new work", async () =>
   assert.match(prompt, /Do not answer project inventory questions from supervisor state alone/);
 });
 
+test("system prompt biases autonomous domain resolution before job inventory", async () => {
+  const store = await createStore();
+  const prompt = buildSystemPrompt(store, "No callbacks.");
+
+  assert.match(prompt, /Default to agency/);
+  assert.match(prompt, /Be eager but bounded/);
+  assert.match(prompt, /Resolve domain terms before job terms/);
+  assert.match(prompt, /call retrieve_memory for prior naming\/context first, then list_projects/);
+  assert.match(prompt, /Do not collapse real people or folders into job labels/);
+});
+
 test("callback helper only treats owed non-closed callbacks as outstanding", () => {
   const base: ButlerThreadCallbackView = {
     threadId: "thread-1",
@@ -381,6 +392,28 @@ test("contract derivation preserves many explicit acceptance points for checklis
   assert.equal(contract.acceptancePoints.length, 12);
   assert.equal(contract.acceptancePoints[0], "Acceptance point 1");
   assert.equal(contract.acceptancePoints[11], "Acceptance point 12");
+});
+
+test("contract derivation does not turn task audience prose into checklist items", () => {
+  const taskText =
+    "Create a polished, non-cringey PDF project brief for Joke, an early-stage frontend developer, challenging her to build a React chatbot. Research and include accurate links for: React docs, OpenRouter docs, OpenRouter account/API key docs.";
+
+  const contract = buildThreadExecutionContract({
+    threadId: "thread-brief",
+    workspaceCwd: "/workspace",
+    projectId: "project-1",
+    projectLabel: "Project One",
+    branch: null,
+    taskText,
+    requestedTask: taskText,
+    notes: []
+  });
+
+  assert.deepEqual(contract.acceptancePoints, [
+    "Include accurate links for React docs",
+    "Include accurate links for OpenRouter docs",
+    "Include accurate links for OpenRouter account/API key docs"
+  ]);
 });
 
 test("callback review prompt keeps proof-required jobs behind evidence review", async () => {

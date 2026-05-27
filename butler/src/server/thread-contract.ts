@@ -27,6 +27,21 @@ function normalizeAcceptancePoint(value: string): string | null {
   return normalized.replace(/[.;]\s*$/, "");
 }
 
+function addListParts(listText: string, addPoint: (value: string) => void, prefix: string | null = null): void {
+  for (const part of listText.split(/\s*,\s*|\s+and\s+/)) {
+    addPoint(prefix ? `${prefix} ${part}` : part);
+  }
+}
+
+function deriveColonListPrefix(beforeColon: string): string | null {
+  const clause = beforeColon.split(/[.;]\s*/).at(-1)?.trim() ?? "";
+  const includeForMatch = clause.match(/\b(?:research\s+and\s+)?include\s+(.+?)\s+for$/i);
+  if (includeForMatch) {
+    return `Include ${includeForMatch[1].trim()} for`;
+  }
+  return null;
+}
+
 export function deriveAcceptancePoints(taskText: string, requestedTask?: string | null): string[] {
   const source = [requestedTask ?? "", taskText].filter(Boolean).join("\n");
   const points: string[] = [];
@@ -59,14 +74,17 @@ export function deriveAcceptancePoints(taskText: string, requestedTask?: string 
   }
 
   const sentence = normalizeContractText(requestedTask ?? taskText) ?? "";
-  const listMatch = sentence.match(/\b(?:with|including|include|covering|for)\s+([^.;:]+,[^.;:]+)/i);
+  const colonListMatch = sentence.match(/(^|[.;]\s*|.*?\b(?:with|including|include|covering|for)\b[^.;]*):\s*([^.;]+,[^.;]+)/i);
+  if (colonListMatch) {
+    addListParts(colonListMatch[2], addPoint, deriveColonListPrefix(colonListMatch[1]));
+  }
+
+  const listMatch = points.length === 0 ? sentence.match(/\b(?:with|including|include|covering)\s+([^.;:]+,[^.;:]+)/i) : null;
   if (listMatch) {
     const listText = listMatch[1].replace(/^.*\be\.g\.\s*/i, "");
-    for (const part of listText.split(/\s*,\s*|\s+and\s+/)) {
-      addPoint(part);
-      if (points.length >= MAX_ACCEPTANCE_POINTS) {
-        return points;
-      }
+    addListParts(listText, addPoint);
+    if (points.length >= MAX_ACCEPTANCE_POINTS) {
+      return points;
     }
   }
 

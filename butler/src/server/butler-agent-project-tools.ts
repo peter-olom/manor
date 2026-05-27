@@ -54,7 +54,7 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
       label: "Retrieve memory",
       description: "Retrieve a scoped durable memory brief for a project, job, or stateful operator question without mutating memory.",
       promptSnippet:
-        "retrieve_memory: use for stateful project questions, cross-thread follow-ups, prior decisions, unresolved outcomes, or when the operator expects Butler to remember work; skip it for casual chat. Set includeProvenance only for source, trigger, who, when, timestamp, provenance, or attribution questions.",
+        "retrieve_memory: use for stateful project questions, cross-thread follow-ups, prior decisions, unresolved outcomes, people/team/folder naming context, or when the operator expects Butler to remember work; skip it for casual chat. Set includeProvenance only for source, trigger, who, when, timestamp, provenance, or attribution questions.",
       parameters: Type.Object({
         projectId: Type.Optional(Type.String()),
         threadId: Type.Optional(Type.String()),

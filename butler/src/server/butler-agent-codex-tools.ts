@@ -18,7 +18,8 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       name: "list_jobs",
       label: "List jobs",
       description: "List tracked Codex jobs/threads across statuses, including active and inactive jobs, with current summaries.",
-      promptSnippet: "list_jobs: use for broad Codex job/thread checks, counts, active/idle/blocked status summaries, or finding jobs by project before choosing one to inspect.",
+      promptSnippet:
+        "list_jobs: use for broad Codex job/thread checks, counts, active/idle/blocked status summaries, or finding jobs by project before choosing one to inspect. Do not use it as the first tool for people, team, intern, mentee, or folder inventory questions unless the operator explicitly asks about jobs/threads/workers.",
       parameters: Type.Object({
         limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
         status: Type.Optional(Type.String())
@@ -70,7 +71,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       label: "List projects",
       description: "List known project directories, nested Git repositories, and current tracked work separately.",
       promptSnippet:
-        "list_projects: use for project inventory questions. It returns top-level project directories plus nested Git repositories first, then tracked workstream groups and active-work counts separately.",
+        "list_projects: use for project, folder, intern, mentee, or team inventory questions. It returns top-level project directories plus nested Git repositories first, then tracked workstream groups and active-work counts separately.",
       parameters: Type.Object({
         limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 }))
       }),
