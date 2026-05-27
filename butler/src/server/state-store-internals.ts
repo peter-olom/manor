@@ -19,6 +19,7 @@ import {
   restorePersistedTurn
 } from "./state-store-helpers.js";
 import { loadStateStoreSqliteMemory, persistStateStoreSqliteMemory } from "./state-store-sqlite-memory.js";
+import { decoratePreviewVerification } from "./preview-verification.js";
 import type {
   ButlerWindow,
   CodexEventEntry,
@@ -428,7 +429,7 @@ export function normalizeStateStorePreviewProofRecord(
   access: StateStoreInternalAccess,
   record: PreviewProofRecordView
 ): PreviewProofRecordView {
-  const verification = normalizePreviewVerification(record.verification, access.artifactRetentionMs);
+  const verification = decoratePreviewVerification(normalizePreviewVerification(record.verification, access.artifactRetentionMs));
   const createdAt =
     typeof record.createdAt === "number" && Number.isFinite(record.createdAt) ? record.createdAt : verification.checkedAt;
   const updatedAt =

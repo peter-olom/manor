@@ -843,6 +843,39 @@ select {
   color: var(--accent);
 }
 
+.preview-verification-kind {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.preview-verification-kind.is-evidence {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 42%, var(--line));
+  background: color-mix(in srgb, var(--green) 10%, transparent);
+}
+
+.preview-verification-kind.is-deliverable {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.preview-verification-kind.is-signal {
+  color: var(--danger-ink);
+  border-color: color-mix(in srgb, var(--danger-ink) 42%, var(--line));
+  background: color-mix(in srgb, var(--danger-ink) 10%, transparent);
+}
+
 .preview-verification-meta {
   font-size: 0.8rem;
   color: var(--muted);
@@ -926,6 +959,24 @@ select {
   word-break: break-word;
 }
 
+.preview-verification-artifact-sections {
+  display: grid;
+  gap: 10px;
+}
+
+.preview-verification-artifact-section {
+  display: grid;
+  gap: 6px;
+}
+
+.preview-verification-section-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
 .preview-verification-links {
   display: flex;
   flex-wrap: wrap;
@@ -933,10 +984,29 @@ select {
 }
 
 .preview-verification-links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--accent);
+  text-decoration: none;
   font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.preview-verification-links a:hover {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
 }
 
 .preview-verification-link-disabled {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
   font-size: 0.78rem;
   color: var(--muted);
   opacity: 0.82;

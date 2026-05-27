@@ -169,6 +169,53 @@ export function findVerificationArtifacts(
   });
 }
 
+function isUsableProofArtifact(artifact: PreviewVerificationArtifact): boolean {
+  return Boolean(artifact.filePath && artifact.availability === "available");
+}
+
+function isGenericBrowserScreenshot(artifact: PreviewVerificationArtifact): boolean {
+  return /^(final|ready) screenshot$/i.test(artifact.label.trim());
+}
+
+function isDiagnosticProofArtifact(artifact: PreviewVerificationArtifact): boolean {
+  return artifact.kind === "manifest" || artifact.kind === "trace" || artifact.kind === "html";
+}
+
+function compareDiagnosticProofArtifacts(left: PreviewVerificationArtifact, right: PreviewVerificationArtifact): number {
+  const rank = (artifact: PreviewVerificationArtifact) => {
+    if (artifact.kind === "trace") return 0;
+    if (artifact.kind === "html") return 1;
+    return 2;
+  };
+  return rank(left) - rank(right);
+}
+
+function uniqueArtifacts(artifacts: PreviewVerificationArtifact[]): PreviewVerificationArtifact[] {
+  const seen = new Set<string>();
+  const result: PreviewVerificationArtifact[] = [];
+  for (const artifact of artifacts) {
+    const key = `${artifact.kind}:${artifact.filePath || artifact.fileName}:${artifact.label}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(artifact);
+  }
+  return result;
+}
+
+export function selectReviewableProofArtifacts(verification: PreviewVerification): PreviewVerificationArtifact[] {
+  const availableArtifacts = verification.artifacts.filter(isUsableProofArtifact);
+  const screenshots = findVerificationArtifacts(verification, "screenshot").filter(isUsableProofArtifact);
+  const namedScreenshots = screenshots.filter((artifact) => !isGenericBrowserScreenshot(artifact));
+  const selectedScreenshots = (namedScreenshots.length > 0 ? namedScreenshots : screenshots).slice(0, 2);
+  const videos = availableArtifacts.filter((artifact) => artifact.kind === "video").slice(0, 1);
+  const files = availableArtifacts.filter((artifact) => artifact.kind === "file");
+  const diagnostics = availableArtifacts.filter(isDiagnosticProofArtifact).sort(compareDiagnosticProofArtifacts);
+
+  return uniqueArtifacts([...selectedScreenshots, ...videos, ...files, ...diagnostics]);
+}
+
 export function describeArtifactAvailability(artifact: PreviewVerificationArtifact): {
   available: boolean;
   label: string;

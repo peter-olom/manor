@@ -961,7 +961,7 @@ export function buildProofsByThreadMap(proofs: PreviewProofRecordView[]): Record
   );
 }
 
-function getVisibleThreadProofs(proofs: PreviewProofRecordView[]): PreviewProofRecordView[] {
+export function getVisibleThreadProofs(proofs: PreviewProofRecordView[]): PreviewProofRecordView[] {
   const byThread = proofs
     .filter((proof) => Boolean(proof.threadId))
     .reduce((accumulator, proof) => {
@@ -974,7 +974,9 @@ function getVisibleThreadProofs(proofs: PreviewProofRecordView[]): PreviewProofR
       return accumulator;
     }, new Map<string, PreviewProofRecordView[]>());
 
-  return [...byThread.values()].flatMap((threadProofs) => collapseSupersededThreadProofs(threadProofs));
+  return [...byThread.values()]
+    .flatMap((threadProofs) => collapseSupersededThreadProofs(threadProofs))
+    .sort(compareProofDisplayOrder);
 }
 
 function collapseSupersededThreadProofs(threadProofs: PreviewProofRecordView[]): PreviewProofRecordView[] {
@@ -988,6 +990,10 @@ function collapseSupersededThreadProofs(threadProofs: PreviewProofRecordView[]):
   const seenKeys = new Set<string>();
 
   for (const proof of sorted) {
+    if (!hasReviewableProofEvidence(proof)) {
+      continue;
+    }
+
     const key = getProofTargetKey(proof);
     if (key) {
       if (seenKeys.has(key)) {
@@ -1005,6 +1011,12 @@ function collapseSupersededThreadProofs(threadProofs: PreviewProofRecordView[]):
 }
 
 function getProofTargetKey(proof: PreviewProofRecordView): string | null {
+  const reviewableArtifacts = selectReviewableProofArtifacts(proof.verification);
+  const artifactKey = getReviewableArtifactKey(reviewableArtifacts);
+  if (artifactKey && reviewableArtifacts.every((artifact) => artifact.kind === "file")) {
+    return `artifact:${artifactKey}`;
+  }
+
   const fromError = parseCheckedUrlFromProofError(proof.verification.error);
   const candidates = [
     fromError,
@@ -1019,11 +1031,117 @@ function getProofTargetKey(proof: PreviewProofRecordView): string | null {
     }
   }
 
+  if (artifactKey) {
+    return `artifact:${artifactKey}`;
+  }
+
   return null;
 }
 
 export function resolveProofBundleKey(proof: PreviewProofRecordView): string | null {
   return getProofTargetKey(proof);
+}
+
+function hasReviewableProofEvidence(proof: PreviewProofRecordView): boolean {
+  return selectReviewableProofArtifacts(proof.verification).length > 0 || proof.verification.failureKind !== "none";
+}
+
+function compareProofDisplayOrder(left: PreviewProofRecordView, right: PreviewProofRecordView): number {
+  const leftRank = proofEvidenceRank(left);
+  const rightRank = proofEvidenceRank(right);
+  if (leftRank !== rightRank) {
+    return leftRank - rightRank;
+  }
+  const leftSubtypeRank = proofEvidenceSubtypeRank(left);
+  const rightSubtypeRank = proofEvidenceSubtypeRank(right);
+  if (leftSubtypeRank !== rightSubtypeRank) {
+    return leftSubtypeRank - rightSubtypeRank;
+  }
+  const leftAt = left.verification.checkedAt || left.updatedAt || left.createdAt;
+  const rightAt = right.verification.checkedAt || right.updatedAt || right.createdAt;
+  return rightAt - leftAt;
+}
+
+function proofEvidenceRank(proof: PreviewProofRecordView): number {
+  const artifacts = selectReviewableProofArtifacts(proof.verification);
+  if (artifacts.some((artifact) => artifact.kind === "screenshot")) {
+    return 0;
+  }
+  if (artifacts.some((artifact) => artifact.kind === "file")) {
+    return 1;
+  }
+  if (artifacts.some((artifact) => artifact.kind === "video")) {
+    return 2;
+  }
+  return 3;
+}
+
+function proofEvidenceSubtypeRank(proof: PreviewProofRecordView): number {
+  const artifacts = selectReviewableProofArtifacts(proof.verification);
+  if (artifacts.some((artifact) => artifact.kind === "screenshot")) {
+    return 0;
+  }
+  if (artifacts.some((artifact) => artifact.kind === "file" && /\.pdf$/i.test(artifact.fileName))) {
+    return 0;
+  }
+  if (artifacts.some((artifact) => artifact.kind === "file" && /\.md$/i.test(artifact.fileName))) {
+    return 1;
+  }
+  return 2;
+}
+
+function getReviewableArtifactKey(artifacts: PreviewVerificationArtifactView[]): string {
+  return artifacts
+    .map((artifact) => `${artifact.kind}:${artifact.fileName.toLowerCase()}`)
+    .sort()
+    .join("|");
+}
+
+function isUsableProofArtifact(artifact: PreviewVerificationArtifactView): boolean {
+  return Boolean(artifact.filePath && artifact.availability === "available");
+}
+
+function isGenericBrowserScreenshot(artifact: PreviewVerificationArtifactView): boolean {
+  return /^(final|ready) screenshot$/i.test(artifact.label.trim());
+}
+
+function isDiagnosticProofArtifact(artifact: PreviewVerificationArtifactView): boolean {
+  return artifact.kind === "manifest" || artifact.kind === "trace" || artifact.kind === "html";
+}
+
+function compareDiagnosticProofArtifacts(left: PreviewVerificationArtifactView, right: PreviewVerificationArtifactView): number {
+  const rank = (artifact: PreviewVerificationArtifactView) => {
+    if (artifact.kind === "trace") return 0;
+    if (artifact.kind === "html") return 1;
+    return 2;
+  };
+  return rank(left) - rank(right);
+}
+
+function uniqueArtifacts(artifacts: PreviewVerificationArtifactView[]): PreviewVerificationArtifactView[] {
+  const seen = new Set<string>();
+  const result: PreviewVerificationArtifactView[] = [];
+  for (const artifact of artifacts) {
+    const key = `${artifact.kind}:${artifact.filePath || artifact.fileName}:${artifact.label}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(artifact);
+  }
+  return result;
+}
+
+export function selectReviewableProofArtifacts(verification: PreviewVerificationView): PreviewVerificationArtifactView[] {
+  const availableArtifacts = verification.artifacts.filter(isUsableProofArtifact);
+  const screenshots = findVerificationArtifacts(verification, "screenshot").filter(isUsableProofArtifact);
+  const namedScreenshots = screenshots.filter((artifact) => !isGenericBrowserScreenshot(artifact));
+  const selectedScreenshots = (namedScreenshots.length > 0 ? namedScreenshots : screenshots).slice(0, 2);
+  const videos = availableArtifacts.filter((artifact) => artifact.kind === "video").slice(0, 1);
+  const files = availableArtifacts.filter((artifact) => artifact.kind === "file");
+  const diagnostics = availableArtifacts.filter(isDiagnosticProofArtifact).sort(compareDiagnosticProofArtifacts);
+
+  return uniqueArtifacts([...selectedScreenshots, ...videos, ...files, ...diagnostics]);
 }
 
 function parseCheckedUrlFromProofError(errorText: string | null): string | null {

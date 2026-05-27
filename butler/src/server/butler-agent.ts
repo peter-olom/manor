@@ -22,8 +22,8 @@ import {
   extractLatestNoticeTexts,
   extractWorkspaceMentions,
   findVerificationArtifact,
-  findVerificationArtifacts,
   getFallbackTurnId,
+  getVisibleThreadProofs,
   isAssistantFailureMessage,
   isCallbackOutstanding,
   MAX_HISTORY_PAGE_SIZE,
@@ -32,6 +32,7 @@ import {
   parseProofScreenshotReview,
   sanitizeHistoryMessage,
   sanitizeHistoryMessages,
+  selectReviewableProofArtifacts,
   serializeMessages,
   SNAPSHOT_MESSAGE_TAIL_LIMIT,
   summarizeNoticeResult,
@@ -1333,9 +1334,9 @@ export class ButlerAgentService extends EventEmitter {
       throw new Error(`Preview ${subject.id} does not have verification run ${runId.trim()}.`);
     }
 
-    const artifacts = decoratedVerification.artifacts.filter((artifact) => artifact.filePath && artifact.availability === "available");
+    const artifacts = selectReviewableProofArtifacts(decoratedVerification);
     if (artifacts.length === 0) throw new Error(`Preview ${subject.id} has no available proof artifact to review.`);
-    const availableScreenshots = findVerificationArtifacts(decoratedVerification, "screenshot").filter((artifact) => artifact.filePath && artifact.availability === "available");
+    const availableScreenshots = artifacts.filter((artifact) => artifact.kind === "screenshot");
 
     return {
       preview: subject,
@@ -1344,7 +1345,7 @@ export class ButlerAgentService extends EventEmitter {
       primaryScreenshot: availableScreenshots[0] ?? null,
       artifacts,
       screenshots: availableScreenshots,
-      video: findVerificationArtifact(decoratedVerification, "video"),
+      video: artifacts.find((artifact) => artifact.kind === "video") ?? null,
       manifest: findVerificationArtifact(decoratedVerification, "manifest"),
       trace: findVerificationArtifact(decoratedVerification, "trace")
     };
@@ -1361,7 +1362,7 @@ export class ButlerAgentService extends EventEmitter {
       preview
         ? this.store.getLatestPreviewProofForPreview(preview.id)
         : params.threadId
-          ? this.store.getLatestPreviewProofForThread(params.threadId.trim())
+          ? getVisibleThreadProofs(this.store.listPreviewProofs()).find((proof) => proof.threadId === params.threadId?.trim()) ?? null
           : null;
 
     if (previewProof) {

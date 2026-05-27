@@ -9,14 +9,16 @@ import {
   buildChatCallbackText,
   buildFallbackChatCallbackText,
   buildOperatorThreadGuard,
+  buildProofsByThreadMap,
   buildProjectInventorySummary,
   buildSystemPrompt,
-  isCallbackOutstanding
+  isCallbackOutstanding,
+  selectReviewableProofArtifacts
 } from "../../src/server/butler-agent-helpers.js";
 import { listWorkspaceProjectDirectories, resolveWorkspaceProjectInfo } from "../../src/server/repo-worktree.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
-import type { ButlerThreadCallbackView, CodexThreadExecutionContractView } from "../../src/server/types.js";
+import type { ButlerThreadCallbackView, CodexThreadExecutionContractView, PreviewProofRecordView } from "../../src/server/types.js";
 
 async function createStore(): Promise<ButlerStateStore> {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-butler-test-"));
@@ -39,6 +41,151 @@ function makeContract(overrides: Partial<CodexThreadExecutionContractView> = {})
     ...overrides
   };
 }
+
+function makeProof(
+  id: string,
+  checkedAt: number,
+  artifacts: PreviewProofRecordView["verification"]["artifacts"],
+  overrides: Partial<PreviewProofRecordView> = {}
+): PreviewProofRecordView {
+  return {
+    id,
+    previewId: "preview-1",
+    threadId: "thread-1",
+    projectId: "project-1",
+    projectLabel: "Project One",
+    previewTitle: "Proof",
+    stackId: null,
+    verification: {
+      runId: id,
+      mode: "headless",
+      checkedAt,
+      durationMs: 1000,
+      ok: true,
+      status: 200,
+      title: "Proof",
+      url: "http://localhost/proof",
+      error: null,
+      failureKind: "none",
+      summary: {
+        consoleMessageCount: 0,
+        pageErrorCount: 0,
+        failedRequestCount: 0,
+        responseErrorCount: 0,
+        assetFailureCount: 0,
+        phaseCount: 1
+      },
+      phases: [],
+      readiness: {
+        initialUrl: "http://localhost/proof",
+        finalUrl: "http://localhost/proof",
+        expectedPath: null,
+        selector: null,
+        selectorSatisfied: null,
+        routeStatus: 200,
+        routeOk: true,
+        loginRedirectDetected: false,
+        htmlErrorSignals: [],
+        sameOriginAssetFailureCount: 0,
+        websocketFailureCount: 0,
+        notes: []
+      },
+      auth: {
+        headerCount: 0,
+        cookieCount: 0,
+        cookieNames: [],
+        usedSessionCookie: false
+      },
+      diagnostics: undefined,
+      artifacts,
+      consoleMessages: [],
+      pageErrors: [],
+      failedRequests: []
+    },
+    createdAt: checkedAt,
+    updatedAt: checkedAt,
+    ...overrides
+  };
+}
+
+function proofArtifact(
+  kind: PreviewProofRecordView["verification"]["artifacts"][number]["kind"],
+  label: string,
+  fileName: string
+): PreviewProofRecordView["verification"]["artifacts"][number] {
+  return {
+    kind,
+    label,
+    fileName,
+    filePath: `/tmp/${fileName}`,
+    contentType: kind === "screenshot" ? "image/png" : fileName.endsWith(".pdf") ? "application/pdf" : "text/plain",
+    sizeBytes: 100,
+    url: `/api/artifacts/${fileName}`,
+    downloadUrl: `/api/artifacts/${fileName}?download=1`,
+    availability: "available",
+    retainedUntilAt: null,
+    expiredAt: null
+  };
+}
+
+test("thread proof maps keep concise reviewable evidence in useful order", () => {
+  const oldPdf = makeProof("old-pdf", 1000, [proofArtifact("file", "old pdf", "brief.pdf")], {
+    previewTitle: "Old PDF"
+  });
+  const newPdf = makeProof("new-pdf", 3000, [proofArtifact("file", "new pdf", "brief.pdf")], {
+    previewTitle: "New PDF"
+  });
+  const markdown = makeProof("markdown", 4000, [proofArtifact("file", "source markdown", "brief.md")], {
+    previewTitle: "Markdown"
+  });
+  const visual = makeProof(
+    "visual",
+    2000,
+    [
+      proofArtifact("manifest", "Download manifest", "manifest.json"),
+      proofArtifact("screenshot", "Final screenshot", "final.png"),
+      proofArtifact("screenshot", "Ready screenshot", "ready.png"),
+      proofArtifact("screenshot", "updated first page", "updated.png"),
+      proofArtifact("html", "Download rendered html", "page.html"),
+      proofArtifact("trace", "Download trace", "trace.zip"),
+      proofArtifact("video", "Open video", "video.webm")
+    ],
+    { previewId: "preview-visual", previewTitle: "Visual proof" }
+  );
+
+  const mapped = buildProofsByThreadMap([oldPdf, newPdf, markdown, visual]);
+
+  assert.deepEqual(mapped["thread-1"]?.map((proof) => proof.id), ["visual", "new-pdf", "markdown"]);
+  assert.deepEqual(selectReviewableProofArtifacts(visual.verification).map((artifact) => artifact.label), [
+    "updated first page",
+    "Open video",
+    "Download trace",
+    "Download rendered html",
+    "Download manifest"
+  ]);
+});
+
+test("file proof artifacts expose download links when listed", async () => {
+  const store = await createStore();
+  const fileArtifact = proofArtifact("file", "brief pdf", "brief.pdf");
+  fileArtifact.filePath = "/artifacts/files/thread-1/file-proof/brief.pdf";
+  fileArtifact.url = null;
+  fileArtifact.downloadUrl = null;
+  const proof = makeProof("file-proof", 1000, [fileArtifact]);
+
+  store.recordBrowserVerification({
+    threadId: proof.threadId ?? "thread-1",
+    projectId: proof.projectId,
+    projectLabel: proof.projectLabel,
+    title: proof.previewTitle,
+    verification: proof.verification
+  });
+
+  const listed = store.listPreviewProofs()[0]?.verification.artifacts[0];
+
+  assert.equal(listed?.url, "/api/artifacts/files/thread-1/file-proof/brief.pdf");
+  assert.equal(listed?.downloadUrl, "/api/artifacts/files/thread-1/file-proof/brief.pdf?download=1");
+});
 
 test("execution contracts create a pending checklist with every acceptance point", async () => {
   const store = await createStore();
