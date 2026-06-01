@@ -360,8 +360,8 @@ function serializeLease(lease, options = {}) {
   const targetPort = Number(options.targetPort ?? lease.targetPort ?? 3000);
   const labels = options.labels ?? {};
   const publicPort = Number(lease.publicPort ?? labels["manor.public-port"] ?? 0) || null;
-  const publicUrl = lease.publicUrl ?? labels["manor.public-url"] ?? buildExternalPreviewUrl(previewPublicHost, publicPort);
-  const tailnetUrl = lease.tailnetUrl ?? labels["manor.tailnet-url"] ?? buildExternalPreviewUrl(previewTailnetHost, publicPort);
+  const publicUrl = (lease.publicUrl ?? labels["manor.public-url"]) || buildExternalPreviewUrl(previewPublicHost, publicPort);
+  const tailnetUrl = (lease.tailnetUrl ?? labels["manor.tailnet-url"]) || buildExternalPreviewUrl(previewTailnetHost, publicPort);
   const status = resolveLeaseStatus(options.containerState ?? lease.status ?? "stopped", lease.id);
   const bootstrap = getLeaseBootstrapState(
     lease.id,
@@ -413,7 +413,7 @@ async function serializeLiveLeaseFromSummary(containerSummary) {
       publicUrl: labels["manor.public-url"] || null,
       tailnetUrl: labels["manor.tailnet-url"] || null,
       routePrefix: `${routeBase}/${labels["manor.lease-id"] || ""}/`,
-      operatorUrl: `${routeBase}/${labels["manor.lease-id"] || ""}/`,
+      operatorUrl: labels["manor.operator-url"] || `${routeBase}/${labels["manor.lease-id"] || ""}/`,
       command: Array.isArray(containerSummary.Command) ? containerSummary.Command.join(" ") : containerSummary.Command || "",
       workspaceMode: labels["manor.workspace-mode"] === "snapshot" ? "snapshot" : "shared",
       image: containerSummary.Image || previewImage,
@@ -466,7 +466,7 @@ async function serializeInspectedLease(containerName, container) {
         publicUrl: labels["manor.public-url"] || null,
         tailnetUrl: labels["manor.tailnet-url"] || null,
         routePrefix: `${routeBase}/${labels["manor.lease-id"] || ""}/`,
-        operatorUrl: `${routeBase}/${labels["manor.lease-id"] || ""}/`,
+        operatorUrl: labels["manor.operator-url"] || `${routeBase}/${labels["manor.lease-id"] || ""}/`,
         command: Array.isArray(container.Config?.Cmd) ? container.Config.Cmd.join(" ") : "",
         workspaceMode: labels["manor.workspace-mode"] === "snapshot" ? "snapshot" : "shared",
         image: container.Config?.Image || previewImage,

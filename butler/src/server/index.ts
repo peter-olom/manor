@@ -167,6 +167,23 @@ const fileUploadBinaryParser = express.raw({
   limit: fileUploadBinaryLimit
 });
 
+function resolvePreviewRouteUrl(rawUrl: string | undefined) {
+  const url = rawUrl || "";
+  const originalPath = url.split("?")[0] ?? url;
+  const match = originalPath.match(/^\/preview\/([^/]+)(\/.*)?$/);
+  const leaseId = match?.[1] || "";
+  if (!leaseId) {
+    return null;
+  }
+
+  const suffix = match?.[2] ?? "/";
+  const search = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+  return {
+    leaseId,
+    brokerUrl: `/routes/preview/${leaseId}${suffix}${search}`
+  };
+}
+
 const { applyServiceStartedPoliciesForServer } = registerProjectArtifactPolicyRoutes({
   app,
   artifactsDir,
@@ -1082,23 +1099,19 @@ app.post("/api/services/pin", (request, response) => {
 registerDesktopSessionRoutes(app, runtimeAccess);
 
 app.use(/^\/preview\/([^/]+)(\/.*)?$/, (request, response) => {
-  const originalPath = request.originalUrl.split("?")[0] ?? request.originalUrl;
-  const match = originalPath.match(/^\/preview\/([^/]+)(\/.*)?$/);
-  const leaseId = match?.[1];
-  if (!leaseId) {
+  const previewRoute = resolvePreviewRouteUrl(request.originalUrl);
+  if (!previewRoute) {
     response.status(404).end();
     return;
   }
 
-  const target = resolvePreviewProxyTarget(runtimeAccess, leaseId);
+  const target = resolvePreviewProxyTarget(runtimeAccess, previewRoute.leaseId);
   if (!target) {
     response.status(404).json({ error: "Preview lease not found" });
     return;
   }
 
-  const suffix = match?.[2] ?? "/";
-  const search = request.url.includes("?") ? request.url.slice(request.url.indexOf("?")) : "";
-  request.url = `/routes/preview/${leaseId}${suffix}${search}`;
+  request.url = previewRoute.brokerUrl;
   previewProxy.web(request, response, { target }, (error: Error) => {
     response.status(502).json({ error: error instanceof Error ? error.message : "Preview proxy failed" });
   });
@@ -1392,6 +1405,25 @@ if (viteDevServer) {
 
 server.listen(port, "0.0.0.0", () => {
   console.log(`Butler listening on ${port} (${hotReloadEnabled ? "hot reload" : "static"})`);
+});
+
+server.on("upgrade", (request, socket, head) => {
+  const previewRoute = resolvePreviewRouteUrl(request.url);
+  if (!previewRoute) {
+    socket.destroy();
+    return;
+  }
+
+  const target = resolvePreviewProxyTarget(runtimeAccess, previewRoute.leaseId);
+  if (!target) {
+    socket.destroy();
+    return;
+  }
+
+  request.url = previewRoute.brokerUrl;
+  previewProxy.ws(request, socket, head, { target }, () => {
+    socket.destroy();
+  });
 });
 
 server.on("close", () => {

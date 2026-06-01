@@ -1,5 +1,7 @@
 import express from "express";
 import crypto from "node:crypto";
+import http from "node:http";
+import net from "node:net";
 import path from "node:path";
 import { Readable } from "node:stream";
 import Docker from "dockerode";
@@ -14,12 +16,14 @@ const previewNetwork = process.env.RUNTIME_PREVIEW_NETWORK ?? "manor_work";
 const previewOutboundNetwork = process.env.RUNTIME_PREVIEW_OUTBOUND_NETWORK ?? "manor_preview_outbound";
 const sharedWorkNetwork = process.env.RUNTIME_SERVICE_SHARED_NETWORK ?? "manor_work";
 const previewImage = process.env.RUNTIME_PREVIEW_IMAGE ?? "node:24-trixie";
+const previewHostPortsEnabled = process.env.RUNTIME_PREVIEW_HOST_PORTS === "1";
 const previewExposeHost = process.env.RUNTIME_PREVIEW_EXPOSE_HOST ?? "0.0.0.0";
 const previewPortStart = Number(process.env.RUNTIME_PREVIEW_PORT_START ?? "43000");
 const previewPortEnd = Number(process.env.RUNTIME_PREVIEW_PORT_END ?? "43999");
 const previewPublicHost = process.env.RUNTIME_PREVIEW_PUBLIC_HOST ?? "127.0.0.1";
 const previewTailnetHost = process.env.RUNTIME_PREVIEW_TAILNET_HOST ?? "";
 const routeBase = process.env.RUNTIME_ROUTE_BASE ?? "/preview";
+const operatorBaseUrl = process.env.RUNTIME_OPERATOR_BASE_URL ?? "";
 const previewEgressConfigPath = process.env.RUNTIME_PREVIEW_EGRESS_CONFIG ?? "/opt/manor/config/preview-egress-profiles.json";
 const previewEgressAdminUrl = process.env.RUNTIME_PREVIEW_EGRESS_ADMIN_URL ?? "http://preview-egress:8091";
 const brokerToken = process.env.RUNTIME_BROKER_TOKEN ?? null;
@@ -58,17 +62,20 @@ const runtimeReconcileState = {
   consecutiveFailures: 0
 };
 const app = express(); app.use(express.json());
+const server = http.createServer(app);
 const brokerContext = {
   previewNetwork,
   previewOutboundNetwork,
   sharedWorkNetwork,
   previewImage,
+  previewHostPortsEnabled,
   previewExposeHost,
   previewPortStart,
   previewPortEnd,
   previewPublicHost,
   previewTailnetHost,
   routeBase,
+  operatorBaseUrl,
   previewEgressConfigPath,
   previewEgressAdminUrl,
   brokerToken,
@@ -196,6 +203,10 @@ const {
   ...storageHelpers
 };
 
+function buildOperatorPreviewUrl(lease) {
+  return appendPreviewRoutePath(operatorBaseUrl, lease.routePrefix);
+}
+
 app.use((request, response, next) => {
   if (request.path === "/health" || request.path.startsWith("/routes/preview/")) {
     next();
@@ -223,6 +234,40 @@ function normalizeEnv(value) {
       .map(([key, envValue]) => [key.trim(), envValue.trim()])
       .filter(([key, envValue]) => key.length > 0 && envValue.length > 0)
   );
+}
+
+function resolvePreviewRouteUrl(rawUrl) {
+  const url = rawUrl || "";
+  const originalPath = url.split("?")[0] ?? url;
+  const match = originalPath.match(/^\/routes\/preview\/([^/]+)(\/.*)?$/);
+  const leaseId = match?.[1] || "";
+  if (!leaseId) {
+    return null;
+  }
+
+  const suffix = match?.[2] ?? "/";
+  const search = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+  return {
+    leaseId,
+    upstreamUrl: `${suffix}${search}`
+  };
+}
+
+function writeUpgradeRequest(upstream, request, upstreamUrl, targetPort) {
+  upstream.write(`${request.method || "GET"} ${upstreamUrl} HTTP/${request.httpVersion || "1.1"}\r\n`);
+  for (const [key, value] of Object.entries(request.headers)) {
+    if (!value || key.toLowerCase() === "host") {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        upstream.write(`${key}: ${entry}\r\n`);
+      }
+    } else {
+      upstream.write(`${key}: ${value}\r\n`);
+    }
+  }
+  upstream.write(`host: localhost:${targetPort}\r\n\r\n`);
 }
 
 function sleep(ms) {
@@ -753,18 +798,23 @@ app.post("/leases", async (request, response) => {
   let tailnetUrl = null;
 
   try {
-    publicPort = await allocatePreviewHostPort();
-    publicUrl = buildExternalPreviewUrl(previewPublicHost, publicPort);
-    tailnetUrl = buildExternalPreviewUrl(previewTailnetHost, publicPort);
-    lease.publicPort = publicPort;
-    lease.publicUrl = publicUrl;
-    lease.tailnetUrl = tailnetUrl;
-    lease.operatorUrl = publicUrl || lease.operatorUrl;
-    if (publicUrl) {
-      envVars.push(`MANOR_PREVIEW_PUBLIC_URL=${publicUrl}`);
-    }
-    if (tailnetUrl) {
-      envVars.push(`MANOR_PREVIEW_TAILNET_URL=${tailnetUrl}`);
+    lease.operatorUrl = buildOperatorPreviewUrl(lease);
+    envVars.push(`MANOR_PREVIEW_ROUTE_URL=${lease.operatorUrl}`);
+
+    if (previewHostPortsEnabled) {
+      publicPort = await allocatePreviewHostPort();
+      publicUrl = buildExternalPreviewUrl(previewPublicHost, publicPort);
+      tailnetUrl = buildExternalPreviewUrl(previewTailnetHost, publicPort);
+      lease.publicPort = publicPort;
+      lease.publicUrl = publicUrl;
+      lease.tailnetUrl = tailnetUrl;
+      lease.operatorUrl = publicUrl || tailnetUrl || lease.operatorUrl;
+      if (publicUrl) {
+        envVars.push(`MANOR_PREVIEW_PUBLIC_URL=${publicUrl}`);
+      }
+      if (tailnetUrl) {
+        envVars.push(`MANOR_PREVIEW_TAILNET_URL=${tailnetUrl}`);
+      }
     }
 
     if (stack?.Name) {
@@ -870,9 +920,10 @@ app.post("/leases", async (request, response) => {
         "manor.workspace-mode": lease.workspaceMode === "snapshot" ? "snapshot" : "shared",
         "manor.workspace-user": sharedWorkspaceUser ?? "",
         "manor.target-port": String(lease.targetPort),
-        "manor.public-port": String(publicPort),
+        "manor.public-port": publicPort ? String(publicPort) : "",
         "manor.public-url": publicUrl ?? "",
         "manor.tailnet-url": tailnetUrl ?? "",
+        "manor.operator-url": lease.operatorUrl,
         "manor.egress-profile": lease.egressProfile,
         "manor.egress-policy-name": dynamicPolicyName ?? "",
         "manor.egress-domains": lease.egressDomains.join(","),
@@ -886,14 +937,18 @@ app.post("/leases", async (request, response) => {
         AutoRemove: true,
         NetworkMode: networkName,
         Mounts: workspaceMounts,
-        PortBindings: {
-          [`${lease.targetPort}/tcp`]: [
-            {
-              HostIp: previewExposeHost || "0.0.0.0",
-              HostPort: String(publicPort)
+        ...(previewHostPortsEnabled
+          ? {
+              PortBindings: {
+                [`${lease.targetPort}/tcp`]: [
+                  {
+                    HostIp: previewExposeHost || "0.0.0.0",
+                    HostPort: String(publicPort)
+                  }
+                ]
+              }
             }
-          ]
-        }
+          : {})
       },
       ExposedPorts: {
         [`${lease.targetPort}/tcp`]: {}
@@ -1344,7 +1399,41 @@ process.on("unhandledRejection", (error) => {
   process.exit(1);
 });
 
-app.listen(port, "0.0.0.0", () => {
+server.on("upgrade", async (request, socket, head) => {
+  const previewRoute = resolvePreviewRouteUrl(request.url);
+  if (!previewRoute) {
+    socket.destroy();
+    return;
+  }
+
+  const containerName = toContainerName(previewRoute.leaseId);
+  const container = await inspectContainer(containerName).catch(() => null);
+  if (!container?.State?.Running) {
+    socket.destroy();
+    return;
+  }
+
+  const targetPort = Number(container.Config?.Env?.find((entry) => entry.startsWith("PORT="))?.slice(5) || "3000");
+  const upstream = net.createConnection({ host: containerName, port: targetPort });
+  const closeBoth = () => {
+    upstream.destroy();
+    socket.destroy();
+  };
+
+  upstream.once("connect", () => {
+    writeUpgradeRequest(upstream, request, previewRoute.upstreamUrl, targetPort);
+    if (head.length > 0) {
+      upstream.write(head);
+    }
+    upstream.pipe(socket);
+    socket.pipe(upstream);
+  });
+  upstream.once("error", closeBoth);
+  socket.once("error", closeBoth);
+  socket.once("close", () => upstream.destroy());
+});
+
+server.listen(port, "0.0.0.0", () => {
   console.log(`Runtime broker listening on ${port}`);
   void runManagedRuntimeReconcile("startup");
   if (stackInfraReconnectIntervalMs > 0) {
