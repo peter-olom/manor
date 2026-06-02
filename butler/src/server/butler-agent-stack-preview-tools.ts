@@ -241,7 +241,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         port: Type.Number({ minimum: 1, maximum: 65535 }),
         workspaceMode: Type.Optional(
           Type.Union([Type.Literal("shared"), Type.Literal("snapshot")], {
-            description: "shared keeps the preview on the source worktree; snapshot copies into an isolated disposable workspace."
+            description: "Previews always copy into an isolated disposable workspace. The shared value is accepted only for compatibility."
           })
         ),
         stackId: Type.Optional(Type.String()),
@@ -352,7 +352,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           branchName: thread?.cwd === typedParams.cwd ? null : null,
           targetPort: typedParams.port,
           command: typedParams.command,
-          workspaceMode: typedParams.workspaceMode === "snapshot" ? "snapshot" : "shared",
+          workspaceMode: "snapshot",
           image: previewDefaults.image,
           egressProfile: previewDefaults.egressProfile ?? "internet",
           egressDomains: previewDefaults.egressDomains ?? [],

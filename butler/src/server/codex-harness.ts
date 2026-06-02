@@ -11,8 +11,7 @@ import {
   normalizeEnv,
   normalizeHeartbeatKind,
   normalizePositiveInteger,
-  normalizeStringArray,
-  normalizeWorkspaceMode
+  normalizeStringArray
 } from "./codex-harness-helpers.js";
 import { formatHarnessExecutionContract, formatHarnessRuntimeModel } from "./codex-harness-format.js";
 import { handleHarnessDesktopAction } from "./codex-harness-desktop.js";
@@ -594,7 +593,7 @@ export class CodexHarnessService {
       if (previewDefaults.bootstrapHint) {
         responseLines.push(`Preview bootstrap hint: ${previewDefaults.bootstrapHint}.`);
       }
-      responseLines.push("For smoke checks that should not modify the source workspace, start previews with workspaceMode=snapshot.");
+      responseLines.push("Previews use isolated disposable workspaces so smoke checks do not modify the source workspace.");
       if (workspaceBootstrap?.suggestedPreview?.suggestedInstallCommand) {
         responseLines.push(`Suggested install step inside the preview: ${workspaceBootstrap.suggestedPreview.suggestedInstallCommand}.`);
       }
@@ -757,7 +756,7 @@ export class CodexHarnessService {
       const heartbeatKind = normalizeHeartbeatKind(params.heartbeatKind) ?? undefined;
       const heartbeatTarget = normalizeString(params.heartbeatTarget) || undefined;
       const heartbeatIntervalSeconds = normalizePositiveInteger(params.heartbeatIntervalSeconds) ?? undefined;
-      const workspaceMode = normalizeWorkspaceMode(params.workspaceMode) ?? "shared";
+      const workspaceMode = "snapshot";
 
       if (!command || !Number.isFinite(port) || port <= 0) {
         throw new Error("preview.start requires command and port");

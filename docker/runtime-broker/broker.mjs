@@ -220,7 +220,7 @@ app.use((request, response, next) => {
 });
 
 function shellQuote(value) {
-  return JSON.stringify(String(value));
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
 function normalizeEnv(value) {
@@ -886,7 +886,7 @@ app.post("/leases", async (request, response) => {
     }
 
     const networkName = stack?.Name || previewNetwork;
-    const workspaceMounts = await resolveCodexWorkspaceMounts();
+    const workspaceMounts = await resolveCodexWorkspaceMounts({ readOnly: true });
     const sharedWorkspaceUser = lease.workspaceMode === "shared" ? await resolveCodexWorkspaceUser() : null;
     if (sharedWorkspaceUser && !envVars.some((entry) => /^HOME=/.test(entry))) {
       envVars.push("HOME=/tmp/manor-preview-home");

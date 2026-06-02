@@ -859,10 +859,7 @@ app.post("/api/previews/start", async (request, response) => {
     typeof request.body?.heartbeatIntervalSeconds === "number"
       ? request.body.heartbeatIntervalSeconds
       : Number(request.body?.heartbeatIntervalSeconds ?? 0);
-  const workspaceMode =
-    request.body?.workspaceMode === "snapshot" || request.body?.workspaceMode === "shared"
-      ? request.body.workspaceMode
-      : "shared";
+  const workspaceMode = "snapshot";
 
   try {
     const thread = threadId ? store.getThread(threadId) ?? null : null;

@@ -267,14 +267,6 @@ function normalizeBoolean(value) {
   return value === true || value === "true" || value === "1" || value === 1;
 }
 
-function normalizeWorkspaceMode(value) {
-  const normalized = normalizeString(value).toLowerCase();
-  if (normalized === "shared" || normalized === "snapshot") {
-    return normalized;
-  }
-  return "";
-}
-
 function parseAliases(rawValue) {
   return [...new Set(String(rawValue ?? "").split(",").map((value) => value.trim()).filter(Boolean))];
 }
@@ -294,7 +286,7 @@ function resolveTargetHost(containerName, aliases = []) {
 }
 
 function shellQuote(value) {
-  return JSON.stringify(String(value));
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
 function buildShellSnippet(command, cwd = "") {
@@ -662,7 +654,7 @@ function buildLease(payload) {
   const targetPort = Number(payload.targetPort || 3000);
   const bootstrap = buildBootstrapConfig(payload, targetPort);
   const stackId = normalizeString(payload.stackId) || null;
-  const workspaceMode = normalizeWorkspaceMode(payload.workspaceMode) || "shared";
+  const workspaceMode = "snapshot";
 
   return {
     id,

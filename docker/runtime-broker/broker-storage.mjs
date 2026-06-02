@@ -20,7 +20,8 @@ export function createBrokerStorage(context, deps = {}) {
     toManagedVolumeName
   } = deps;
 
-async function resolveCodexWorkspaceMounts() {
+async function resolveCodexWorkspaceMounts(options = {}) {
+  const readOnly = options.readOnly === true;
   const codexContainer = docker.getContainer(codexWorkspaceContainerName);
   const inspection = await codexContainer.inspect();
   const mounts = Array.isArray(inspection.Mounts) ? inspection.Mounts : [];
@@ -32,7 +33,7 @@ async function resolveCodexWorkspaceMounts() {
           Type: "volume",
           Source: mount.Name,
           Target: mount.Destination,
-          ReadOnly: mount.RW === false
+          ReadOnly: readOnly || mount.RW === false
         };
       }
       if (mount.Source) {
@@ -40,7 +41,7 @@ async function resolveCodexWorkspaceMounts() {
           Type: mount.Type || "bind",
           Source: mount.Source,
           Target: mount.Destination,
-          ReadOnly: mount.RW === false
+          ReadOnly: readOnly || mount.RW === false
         };
       }
       return null;
