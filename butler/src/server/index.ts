@@ -17,6 +17,12 @@ import { buildCodexInputWithReferences, buildComposerInputItemsPrompt, buildRefe
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { registerServerAssetRoutes } from "./server-asset-routes.js";
 import { retrieveButlerMemory } from "./memory-retrieval.js";
+import {
+  proxyPreviewRoute,
+  registerPreviewProxyResponseRewriter,
+  resolvePreviewRefererRouteUrl,
+  resolvePreviewRouteUrl
+} from "./preview-gateway.js";
 import { reconcileDesktopSessions, registerDesktopSessionRoutes } from "./server-desktop-routes.js";
 import {
   ButlerSseHub,
@@ -150,12 +156,13 @@ await butlerAgent.start();
 codexClient.start();
 
 const app = express();
-app.use(express.json({ limit: jsonBodyLimit }));
 const server = http.createServer(app);
 const previewProxy = httpProxy.createProxyServer({
   changeOrigin: false,
+  selfHandleResponse: true,
   ws: true
 });
+registerPreviewProxyResponseRewriter(previewProxy);
 
 let viteDevServer: import("vite").ViteDevServer | null = null;
 const imageUploadBinaryParser = express.raw({
@@ -167,22 +174,30 @@ const fileUploadBinaryParser = express.raw({
   limit: fileUploadBinaryLimit
 });
 
-function resolvePreviewRouteUrl(rawUrl: string | undefined) {
-  const url = rawUrl || "";
-  const originalPath = url.split("?")[0] ?? url;
-  const match = originalPath.match(/^\/preview\/([^/]+)(\/.*)?$/);
-  const leaseId = match?.[1] || "";
-  if (!leaseId) {
-    return null;
+app.use(/^\/preview\/([^/]+)(\/.*)?$/, (request, response) => {
+  const previewRoute = resolvePreviewRouteUrl(request.originalUrl);
+  if (!previewRoute) {
+    response.status(404).end();
+    return;
   }
 
-  const suffix = match?.[2] ?? "/";
-  const search = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-  return {
-    leaseId,
-    brokerUrl: `/routes/preview/${leaseId}${suffix}${search}`
-  };
-}
+  proxyPreviewRoute(runtimeAccess, previewProxy, previewRoute, request, response);
+});
+
+app.use((request, response, next) => {
+  const previewRoute = resolvePreviewRefererRouteUrl(
+    request.originalUrl,
+    request.headers.referer ?? request.headers.referrer
+  );
+  if (!previewRoute) {
+    next();
+    return;
+  }
+
+  proxyPreviewRoute(runtimeAccess, previewProxy, previewRoute, request, response);
+});
+
+app.use(express.json({ limit: jsonBodyLimit }));
 
 const { applyServiceStartedPoliciesForServer } = registerProjectArtifactPolicyRoutes({
   app,
@@ -1098,25 +1113,6 @@ app.post("/api/services/pin", (request, response) => {
 
 registerDesktopSessionRoutes(app, runtimeAccess);
 
-app.use(/^\/preview\/([^/]+)(\/.*)?$/, (request, response) => {
-  const previewRoute = resolvePreviewRouteUrl(request.originalUrl);
-  if (!previewRoute) {
-    response.status(404).end();
-    return;
-  }
-
-  const target = resolvePreviewProxyTarget(runtimeAccess, previewRoute.leaseId);
-  if (!target) {
-    response.status(404).json({ error: "Preview lease not found" });
-    return;
-  }
-
-  request.url = previewRoute.brokerUrl;
-  previewProxy.web(request, response, { target }, (error: Error) => {
-    response.status(502).json({ error: error instanceof Error ? error.message : "Preview proxy failed" });
-  });
-});
-
 let leaseSweepInFlight = false;
 let artifactSweepInFlight = false;
 let previewReconcileInFlight = false;
@@ -1408,7 +1404,9 @@ server.listen(port, "0.0.0.0", () => {
 });
 
 server.on("upgrade", (request, socket, head) => {
-  const previewRoute = resolvePreviewRouteUrl(request.url);
+  const previewRoute =
+    resolvePreviewRouteUrl(request.url) ??
+    resolvePreviewRefererRouteUrl(request.url, request.headers.referer ?? request.headers.referrer);
   if (!previewRoute) {
     socket.destroy();
     return;
