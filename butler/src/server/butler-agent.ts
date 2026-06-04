@@ -1463,6 +1463,12 @@ export class ButlerAgentService extends EventEmitter {
 
   getCodexAuthStatus(): ButlerAuthStatus { return this.codexAuth; }
 
+  trackScratchPadDelegation(threadId: string): void {
+    this.queueDelegationAcknowledgement(threadId, `Added to the scratch pad. I started a deeper async pass in job ${threadId} and will return here with the result.`);
+    this.registerPendingChatCallback(threadId);
+    this.store.noteButlerSteer(threadId);
+  }
+
   private async promptOperatorTurn(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer" } = {}): Promise<void> {
     const guard = buildOperatorThreadGuard(this.store, text, this.getRecentFocusedThreadId());
     this.activeOperatorThreadGuard = guard;

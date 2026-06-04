@@ -15,6 +15,8 @@ import { CodexExecMemoryReviewService } from "./memory-review.js";
 import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-routes.js";
 import { buildCodexInputWithReferences, buildComposerInputItemsPrompt, buildReferencePromptText } from "./reference-inputs.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
+import { registerScratchPadRoutes } from "./scratch-pad-routes.js";
+import { ScratchPadStore } from "./scratch-pad-store.js";
 import { registerServerAssetRoutes } from "./server-asset-routes.js";
 import { retrieveButlerMemory } from "./memory-retrieval.js";
 import {
@@ -69,6 +71,7 @@ const imageUploadBinaryLimit = process.env.MANOR_IMAGE_UPLOAD_BINARY_LIMIT ?? `$
 const fileUploadBinaryLimit = process.env.MANOR_FILE_UPLOAD_BINARY_LIMIT ?? `${Math.ceil(MAX_FILE_BYTES / (1024 * 1024))}mb`;
 
 const uiStatePath = path.join(stateDir, "butler-ui.json");
+const scratchPadStatePath = path.join(stateDir, "scratch-pad.json");
 const sessionDir = path.join(stateDir, "pi-sessions");
 const staticDir = path.resolve(process.cwd(), "dist/web");
 const indexTemplatePath = path.resolve(process.cwd(), "index.html");
@@ -81,6 +84,8 @@ const store = new ButlerStateStore(uiStatePath, {
   artifactRetentionMs
 });
 await store.load();
+const scratchPadStore = new ScratchPadStore(scratchPadStatePath);
+await scratchPadStore.load();
 const serviceTemplateRegistry = new ServiceTemplateRegistry(path.join(stateDir, "service-templates.json"));
 await serviceTemplateRegistry.load();
 const imageStore = new ImageReferenceStore(imageReferenceDir);
@@ -144,6 +149,7 @@ runtimeAccess = {
   codexClient,
   runtimeBroker,
   runtimeBrokerUrl,
+  scratchPadStore,
   serviceTemplateRegistry,
   store
 };
@@ -235,6 +241,7 @@ if (hotReloadEnabled) {
 }
 
 store.on("change", () => sseHub.schedule());
+scratchPadStore.on("change", () => sseHub.schedule());
 codexClient.on("change", () => sseHub.schedule());
 butlerAgent.on("change", () => sseHub.schedule());
 
@@ -292,6 +299,15 @@ registerThreadArtifactRoutes({
   artifactsDir,
   codexHomeDir,
   store
+});
+registerScratchPadRoutes({
+  app,
+  scratchPadStore,
+  store,
+  codexClient,
+  butlerAgent,
+  imageStore,
+  fileStore
 });
 
 app.get("/api/memory/jobs/:threadId", (request, response) => {

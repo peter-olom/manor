@@ -98,6 +98,66 @@ export function ThemeIcon() {
   );
 }
 
+export function ButlerTabIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d="M3 3.5h10v7H8l-3 2v-2H3zM5.5 6h5M5.5 8.2h3"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="square"
+        strokeLinejoin="miter"
+      />
+    </svg>
+  );
+}
+
+export function ScratchPadTabIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d="M4 2.5h7.5l1.5 1.5v11H4zM11.5 2.5V4H13M6 6.2h5M6 8.5h5M6 10.8h3"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="square"
+        strokeLinejoin="miter"
+      />
+    </svg>
+  );
+}
+
+export function SetupTabIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d="M8 2.5v2M8 11.5v2M3.5 8h2M10.5 8h2M4.8 4.8l1.4 1.4M9.8 9.8l1.4 1.4M11.2 4.8 9.8 6.2M6.2 9.8l-1.4 1.4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="square"
+      />
+      <circle cx="8" cy="8" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
+export function TerminalTabIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d="M2.5 3.5h11v9h-11zM5 6.2 7.2 8 5 9.8M8.5 9.8h3"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="square"
+        strokeLinejoin="miter"
+      />
+    </svg>
+  );
+}
+
 export function SendIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true">

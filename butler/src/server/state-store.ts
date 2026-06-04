@@ -1479,6 +1479,7 @@ export class ButlerStateStore extends EventEmitter {
     previews: AppSnapshot["butler"]["previews"];
     serviceTemplates: AppSnapshot["butler"]["serviceTemplates"];
     services: AppSnapshot["butler"]["services"];
+    scratchPad: AppSnapshot["butler"]["scratchPad"];
     lastError: string | null;
     compose: AppSnapshot["butler"]["compose"];
   }, codexConnection: {

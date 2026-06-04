@@ -11,7 +11,7 @@ export type ThemePreference = "system" | "light" | "dark";
 export type OnboardingCommandTarget = "localShell" | "butlerTerminal" | "codexTerminal";
 export type SetupCommandMode = "localShell" | "builtInTerminal";
 export type TerminalTarget = "butlerTerminal" | "codexTerminal";
-export type WorkspaceSurface = "setup" | "butler" | "terminal" | "thread";
+export type WorkspaceSurface = "setup" | "butler" | "scratchPad" | "terminal" | "thread";
 export type ToastTone = "success" | "error" | "info";
 
 export type ButlerMessageRecord = {
@@ -176,6 +176,31 @@ export type ProjectArtifact = {
     publicUrl: string | null;
     publicDownloadUrl: string | null;
   };
+};
+
+export type ScratchPadItemStatus = "captured" | "exploring" | "ready_for_review" | "accepted" | "parked" | "dismissed";
+export type ScratchPadDepth = "quick" | "deep" | "prototype" | "plan";
+export type ScratchPadResultKind = "research" | "prototype" | "plan" | "recommendation";
+
+export type ScratchPadItem = {
+  id: string;
+  title: string;
+  text: string;
+  status: ScratchPadItemStatus;
+  depth: ScratchPadDepth;
+  resultKind: ScratchPadResultKind;
+  cwd: string | null;
+  threadId: string | null;
+  reviewNote: string | null;
+  createdAt: number;
+  updatedAt: number;
+  startedAt: number | null;
+  reviewedAt: number | null;
+};
+
+export type ScratchPad = {
+  items: ScratchPadItem[];
+  counts: Record<ScratchPadItemStatus, number>;
 };
 
 export type ComposerPrefillTarget =
@@ -720,6 +745,7 @@ export type ShellSnapshot = {
       };
       callbacks: ButlerThreadCallback[];
     };
+    scratchPad: ScratchPad;
     lastError: string | null;
     compose: {
       provider: string | null;

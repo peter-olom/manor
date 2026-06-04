@@ -5,7 +5,7 @@ import manorLogoDarkUrl from "./assets/manor-logo-dark.svg";
 import { postJson } from "./api";
 import { ButlerSurface } from "./ButlerSurface";
 import { ImagePreviewModal } from "./ImagePreviewModal";
-import { CloseIcon, CopyIcon, ThemeIcon, ThreadsIcon, TrashIcon } from "./icons";
+import { ButlerTabIcon, CloseIcon, CopyIcon, ScratchPadTabIcon, SetupTabIcon, TerminalTabIcon, ThemeIcon, ThreadsIcon, TrashIcon } from "./icons";
 import {
   mergeKnownImages,
   useShellSnapshot,
@@ -13,6 +13,7 @@ import {
   useTransportState
 } from "./live-state";
 import { StatusItem } from "./StatusItem";
+import { ScratchPadPanel } from "./ScratchPadPanel";
 import { ThreadSurface } from "./ThreadSurface";
 import type {
   AppToast,
@@ -590,11 +591,17 @@ export function App() {
       ? "setup"
       : selectedSurface === "terminal"
         ? "terminal"
-        : selectedSurface === "thread"
-          ? selectedThreadId ?? shell?.codex.focusedWindowId ?? (showSetupGuide ? "setup" : "butler")
-          : selectedSurface === "butler"
-            ? "butler"
-            : shell?.codex.focusedWindowId ?? (showSetupGuide ? "setup" : "butler");
+        : selectedSurface === "scratchPad"
+          ? "scratchPad"
+          : selectedSurface === "thread"
+            ? selectedThreadId ?? shell?.codex.focusedWindowId ?? (showSetupGuide ? "setup" : "butler")
+            : selectedSurface === "butler"
+              ? "butler"
+              : shell?.codex.focusedWindowId ?? (showSetupGuide ? "setup" : "butler");
+  const activeScratchCount =
+    (shell?.butler.scratchPad.counts.captured ?? 0) +
+    (shell?.butler.scratchPad.counts.exploring ?? 0) +
+    (shell?.butler.scratchPad.counts.ready_for_review ?? 0);
   const nextTerminalTarget =
     shell?.butler.onboarding.steps.find((step) => step.status === "pending")?.id === "butlerAuth" ? "butlerTerminal" : "codexTerminal";
   const terminalUrl = terminalTarget === "butlerTerminal" ? "/butler-terminal/" : "/terminal/";
@@ -682,25 +689,32 @@ export function App() {
         <section className="workspace">
           <div className="workspace-tabs-shell">
             {showSetupGuide ? (
-              <button className={`workspace-tab workspace-tab-fixed ${activeTabId === "setup" ? "is-active" : ""}`} onClick={() => {
+              <button className={`workspace-tab workspace-tab-fixed workspace-tab-icon-button ${activeTabId === "setup" ? "is-active" : ""}`} aria-label="Setup" title="Setup" onClick={() => {
                 setSelectedSurface("setup");
                 setSelectedThreadId(null);
               }}>
-                Setup
+                <SetupTabIcon />
               </button>
             ) : null}
-            <button className={`workspace-tab workspace-tab-fixed ${activeTabId === "butler" ? "is-active" : ""}`} onClick={() => {
+            <button className={`workspace-tab workspace-tab-fixed workspace-tab-icon-button ${activeTabId === "butler" ? "is-active" : ""}`} aria-label="Butler" title="Butler" onClick={() => {
               setSelectedSurface("butler");
               setSelectedThreadId(null);
               postJson("/api/workspace/focus", {}).catch((error) => showErrorToast(error));
             }}>
-              Butler
+              <ButlerTabIcon />
             </button>
-            <button className={`workspace-tab workspace-tab-fixed ${activeTabId === "terminal" ? "is-active" : ""}`} onClick={() => {
+            <button className={`workspace-tab workspace-tab-fixed workspace-tab-icon-button ${activeTabId === "scratchPad" ? "is-active" : ""}`} aria-label="Scratch pad" title="Scratch pad" onClick={() => {
+              setSelectedSurface("scratchPad");
+              setSelectedThreadId(null);
+            }}>
+              <ScratchPadTabIcon />
+              {activeScratchCount > 0 ? <span className="workspace-tab-count">{activeScratchCount}</span> : null}
+            </button>
+            <button className={`workspace-tab workspace-tab-fixed workspace-tab-icon-button ${activeTabId === "terminal" ? "is-active" : ""}`} aria-label="Terminal" title="Terminal" onClick={() => {
               setSelectedSurface("terminal");
               setSelectedThreadId(null);
             }}>
-              Terminal
+              <TerminalTabIcon />
             </button>
             <div className="workspace-tabs-scroll">
               {shell.codex.windows.map((window) => {
@@ -852,6 +866,16 @@ export function App() {
               showErrorToast={showErrorToast}
               copyText={copyText}
             />
+          ) : activeTabId === "scratchPad" ? (
+            <div className="workspace-panel workspace-panel-scratch-pad">
+              <ScratchPadPanel
+                variant="window"
+                scratchPad={shell.butler.scratchPad}
+                onOpenThread={openThread}
+                showToast={showToast}
+                showErrorToast={showErrorToast}
+              />
+            </div>
           ) : (
             <ThreadSurface
               threadId={activeThreadId}

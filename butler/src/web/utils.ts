@@ -728,7 +728,7 @@ export function readWorkspaceQuery(): {
   const threadId = params.get("thread");
 
   return {
-    surface: view === "setup" || view === "butler" || view === "terminal" || view === "thread" ? view : null,
+    surface: view === "setup" || view === "butler" || view === "scratchPad" || view === "terminal" || view === "thread" ? view : null,
     threadId: threadId ? threadId : null,
     terminalTarget: terminal === "butler" ? "butlerTerminal" : "codexTerminal"
   };

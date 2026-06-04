@@ -409,10 +409,38 @@ select {
 }
 
 .workspace-tab-fixed {
+  position: relative;
   display: inline-flex;
   align-items: center;
+  gap: 8px;
   padding: 0 18px;
   border-right: 1px solid var(--line);
+}
+
+.workspace-tab-icon-button {
+  width: 64px;
+  justify-content: center;
+  padding: 0;
+}
+
+.workspace-tab-icon-button svg {
+  width: 19px;
+  height: 19px;
+}
+
+.workspace-tab-count {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-raised);
+  color: var(--muted);
+  font-size: 0.64rem;
+  line-height: 12px;
+  text-align: center;
 }
 
 .workspace-tabs-scroll {
@@ -1409,6 +1437,221 @@ select {
 
 .checklist-job.is-pending {
   border-left-color: var(--accent);
+}
+
+.scratch-pad-panel {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  gap: 0;
+}
+
+.workspace-panel-scratch-pad {
+  background: color-mix(in srgb, var(--bg) 78%, var(--panel) 22%);
+}
+
+.scratch-pad-panel.is-window {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.scratch-pad-window-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 15px 24px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.scratch-pad-window-title {
+  min-width: 0;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.scratch-pad-counts {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.scratch-pad-body {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.scratch-pad-panel.is-window .scratch-pad-body {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 0;
+  padding: 0;
+}
+
+.scratch-pad-composer {
+  min-height: 136px;
+  background: var(--surface);
+}
+
+.scratch-pad-action,
+.scratch-pad-icon-action {
+  min-height: 34px;
+  border: 1px solid var(--line-strong);
+  background: color-mix(in srgb, var(--bg) 18%, var(--surface) 82%);
+  color: var(--ink);
+}
+
+.scratch-pad-action,
+.scratch-pad-icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.scratch-pad-action svg,
+.scratch-pad-icon-action svg {
+  width: 14px;
+  height: 14px;
+}
+
+.scratch-pad-action:disabled,
+.scratch-pad-icon-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.54;
+}
+
+.scratch-pad-list-shell {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  border: 0;
+  background: var(--bg);
+  border-radius: 0;
+}
+
+.scratch-pad-panel.is-compact .scratch-pad-list-shell {
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+
+.scratch-pad-list-shell.is-empty {
+  min-height: 0;
+}
+
+.scratch-pad-list {
+  display: grid;
+  gap: 10px;
+  padding: 18px;
+}
+
+.scratch-pad-empty {
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  min-height: 236px;
+  padding: 18px;
+  color: var(--muted);
+  font-size: 0.92rem;
+  text-align: center;
+}
+
+.scratch-pad-empty svg {
+  width: 24px;
+  height: 24px;
+  color: color-mix(in srgb, var(--muted) 72%, transparent);
+}
+
+.scratch-pad-item {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-left: 3px solid var(--line-strong);
+  border-top: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border-radius: 6px;
+}
+
+.scratch-pad-item.is-ready {
+  border-left-color: var(--green);
+}
+
+.scratch-pad-item.is-exploring {
+  border-left-color: var(--accent);
+}
+
+.scratch-pad-item.is-dismissed {
+  border-left-color: var(--danger-ink);
+}
+
+.scratch-pad-item-head,
+.scratch-pad-meta,
+.scratch-pad-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.scratch-pad-item-head {
+  justify-content: space-between;
+}
+
+.scratch-pad-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.scratch-pad-status {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.scratch-pad-text {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.9rem;
+  line-height: 1.38;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.scratch-pad-meta {
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.scratch-pad-actions {
+  flex-wrap: wrap;
+}
+
+.scratch-pad-action {
+  min-width: 0;
+  font-size: 0.82rem;
+}
+
+.scratch-pad-icon-action {
+  width: 32px;
+  padding: 0;
+  color: var(--danger-ink);
 }
 
 .checklist-job-top,
@@ -4064,6 +4307,40 @@ select {
 
   .workspace-tab-fixed {
     padding: 0 14px;
+  }
+
+  .workspace-tab-icon-button {
+    width: 54px;
+    padding: 0;
+  }
+
+  .workspace-tab-count {
+    top: 8px;
+    right: 7px;
+  }
+
+  .scratch-pad-window-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px 16px;
+  }
+
+  .scratch-pad-counts {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    white-space: normal;
+  }
+
+  .scratch-pad-panel.is-window .scratch-pad-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 0;
+    padding: 0;
+  }
+
+  .scratch-pad-composer {
+    min-height: 138px;
   }
 
   .workspace-mobile-timeline {

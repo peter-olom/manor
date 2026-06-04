@@ -593,6 +593,31 @@ export interface ButlerMemoryEntryView {
   createdAt: number;
 }
 
+export type ScratchPadItemStatus = "captured" | "exploring" | "ready_for_review" | "accepted" | "parked" | "dismissed";
+export type ScratchPadDepth = "quick" | "deep" | "prototype" | "plan";
+export type ScratchPadResultKind = "research" | "prototype" | "plan" | "recommendation";
+
+export interface ScratchPadItemView {
+  id: string;
+  title: string;
+  text: string;
+  status: ScratchPadItemStatus;
+  depth: ScratchPadDepth;
+  resultKind: ScratchPadResultKind;
+  cwd: string | null;
+  threadId: string | null;
+  reviewNote: string | null;
+  createdAt: number;
+  updatedAt: number;
+  startedAt: number | null;
+  reviewedAt: number | null;
+}
+
+export interface ScratchPadView {
+  items: ScratchPadItemView[];
+  counts: Record<ScratchPadItemStatus, number>;
+}
+
 export type ProjectArtifactKind = "seed" | "reference" | "download" | "research" | "report" | "other";
 export type ProjectArtifactSourceKind = "inline" | "url" | "generated";
 
@@ -874,6 +899,7 @@ export interface AppSnapshot {
       supervisor: ButlerSupervisorSummaryView;
       callbacks: ButlerThreadCallbackView[];
     };
+    scratchPad: ScratchPadView;
     latestPreviewProofsByThreadId: Record<string, PreviewProofRecordView>;
     previewProofsByThreadId: Record<string, PreviewProofRecordView[]>;
     stacks: StackLeaseView[];

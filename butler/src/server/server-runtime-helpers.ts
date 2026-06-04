@@ -7,17 +7,19 @@ import type { Response } from "express";
 import type { ButlerAgentService } from "./butler-agent.js";
 import type { CodexAppServerClient } from "./codex-client.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
+import type { ScratchPadStore } from "./scratch-pad-store.js";
 import type { ServiceTemplateRegistry } from "./service-templates.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { StackStorageMode } from "./types.js";
 import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 
-type RuntimeServerAccess = {
+export type RuntimeServerAccess = {
   artifactsDir: string;
   butlerAgent: ButlerAgentService;
   codexClient: CodexAppServerClient;
   runtimeBroker: RuntimeBrokerClient;
   runtimeBrokerUrl: string;
+  scratchPadStore: ScratchPadStore;
   serviceTemplateRegistry: ServiceTemplateRegistry;
   store: ButlerStateStore;
 };
@@ -32,10 +34,17 @@ export function resolvePreviewProxyTarget(access: RuntimeServerAccess, leaseId: 
 }
 
 function currentShellSnapshot(access: RuntimeServerAccess) {
-  return access.store.getShellSnapshot(access.butlerAgent.getShellSnapshot(), {
+  const shell = access.store.getShellSnapshot(access.butlerAgent.getShellSnapshot(), {
     ...access.codexClient.getConnectionState(),
     auth: access.butlerAgent.getCodexAuthStatus()
   });
+  return {
+    ...shell,
+    butler: {
+      ...shell.butler,
+      scratchPad: access.scratchPadStore.getSnapshot((threadId) => access.store.getThread(threadId))
+    }
+  };
 }
 
 function currentButlerLiveSnapshot(access: RuntimeServerAccess) {
@@ -421,5 +430,3 @@ export function sendUnavailableArtifactResponse(
     expiredAt: artifact.expiredAt
   });
 }
-
-export type { RuntimeServerAccess };
