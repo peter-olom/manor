@@ -9,6 +9,14 @@ import type {
 } from "./types.js";
 import { buildThreadExecutionContract } from "./thread-contract.js";
 
+export type OperatorCloseoutGate =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: string;
+      openItems: Array<{ id: string; status: SupervisionChecklistItemStatus; text: string }>;
+    };
+
 export function buildSupervisionChecklist(
   thread: CodexThreadRecord,
   contract: CodexThreadExecutionContractView
@@ -115,6 +123,36 @@ export function clearQueuedRejectionInstructions(checklist: SupervisionChecklist
   }
   checklist.updatedAt = Date.now();
   return checklist;
+}
+
+export function evaluateOperatorCloseoutGate(
+  checklist: SupervisionChecklistView | null | undefined,
+  workerReport: CodexWorkerReportView | null | undefined
+): OperatorCloseoutGate {
+  if (workerReport?.status === "blocked") {
+    return { ok: true };
+  }
+
+  if (!checklist || checklist.items.length === 0) {
+    return { ok: true };
+  }
+
+  const openItems = checklist.items
+    .filter((item) => item.status !== "accepted" && item.status !== "waived")
+    .map((item) => ({ id: item.id, status: item.status, text: item.text }));
+
+  if (checklist.reviewState === "reviewed" && openItems.length === 0) {
+    return { ok: true };
+  }
+
+  const openSummary = openItems.length > 0
+    ? openItems.map((item) => `${item.id}:${item.status}:${item.text}`).join(" | ")
+    : "checklist review state is not reviewed";
+  return {
+    ok: false,
+    reason: `Completed worker reports are evidence only. Butler must accept or waive every checklist point before posting a completed closeout. Open items: ${openSummary}`,
+    openItems
+  };
 }
 
 export function recordChecklistWorkerEvidence(

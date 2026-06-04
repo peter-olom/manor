@@ -493,6 +493,17 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       uiEffects: access.getToolUiEffects("reply_to_operator"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as { threadId: string; text: string };
+        const closeoutBlocker = access.getOperatorCloseoutBlocker(typedParams.threadId);
+        if (closeoutBlocker) {
+          return {
+            content: [{ type: "text", text: `Closeout blocked: ${closeoutBlocker}` }],
+            details: {
+              closeoutBlocked: true,
+              thread: access.store.getThread(typedParams.threadId) ?? null,
+              supervision: access.store.getThreadSupervision(typedParams.threadId)
+            }
+          };
+        }
         await access.postOperatorJobReply(typedParams.threadId, typedParams.text);
         return {
           content: [{ type: "text", text: `Posted the operator-facing update for job ${typedParams.threadId}.` }],

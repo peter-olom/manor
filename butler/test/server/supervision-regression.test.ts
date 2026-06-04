@@ -17,6 +17,7 @@ import {
 } from "../../src/server/butler-agent-helpers.js";
 import { listWorkspaceProjectDirectories, resolveWorkspaceProjectInfo } from "../../src/server/repo-worktree.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
+import { evaluateOperatorCloseoutGate } from "../../src/server/supervision-checklist.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
 import type { ButlerThreadCallbackView, CodexThreadExecutionContractView, PreviewProofRecordView } from "../../src/server/types.js";
 
@@ -224,6 +225,40 @@ test("worker reports attach evidence without accepting checklist points", async 
   assert.equal(checklist.reviewState, "needs_review");
   assert.deepEqual(checklist.items.map((item) => item.status), ["pending", "pending", "pending"]);
   assert.ok(checklist.items.every((item) => item.evidence.at(-1)?.summary === "All acceptance points are done."));
+});
+
+test("completed worker reports cannot close out until Butler accepts the checklist", async () => {
+  const store = await createStore();
+  const contract = makeContract();
+  store.upsertThreadSummary({
+    id: contract.threadId,
+    status: "idle",
+    cwd: contract.workspaceCwd,
+    turns: [{ id: "turn-1", status: "completed", items: [] }]
+  });
+  store.setThreadExecutionContract(contract.threadId, contract);
+
+  const completedReport = store.recordWorkerReport(contract.threadId, {
+    turnId: "turn-1",
+    status: "completed",
+    summary: "All acceptance points are done.",
+    details: "Trust me."
+  });
+  const blockedReport = store.recordWorkerReport(contract.threadId, {
+    turnId: "turn-1-blocked",
+    status: "blocked",
+    summary: "Needs a credential.",
+    details: "Cannot verify login without access."
+  });
+
+  assert.equal(evaluateOperatorCloseoutGate(store.getSupervisionChecklist(contract.threadId), completedReport).ok, false);
+  assert.equal(evaluateOperatorCloseoutGate(store.getSupervisionChecklist(contract.threadId), blockedReport).ok, true);
+
+  for (const item of store.getSupervisionChecklist(contract.threadId)?.items ?? []) {
+    store.reviewAcceptancePoint({ threadId: contract.threadId, pointId: item.id, status: "accepted" });
+  }
+
+  assert.equal(evaluateOperatorCloseoutGate(store.getSupervisionChecklist(contract.threadId), completedReport).ok, true);
 });
 
 test("rejected checklist points require an instruction before worker follow-up", async () => {

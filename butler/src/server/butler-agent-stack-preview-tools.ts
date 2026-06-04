@@ -1208,17 +1208,42 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
     access.defineButlerTool({
       name: "exec_preview",
       label: "Exec in preview",
-      description: "Run one shell command inside a preview isolate through the runtime broker.",
-      promptSnippet: "exec_preview: use this when Butler needs to inspect or patch a preview isolate directly without opening the shared terminal.",
+      description: "Run one command or argv-style process inside a preview isolate through the runtime broker, with optional stdin.",
+      promptSnippet:
+        "exec_preview: use this when Butler needs to inspect, smoke test, run code, or patch a preview isolate directly. Prefer commandArgs for exact argv execution; use command for shell snippets; set stdinProvided when sending stdin.",
       parameters: Type.Object({
         leaseId: Type.String(),
-        command: Type.String({ minLength: 1 }),
-        cwd: Type.Optional(Type.String())
+        command: Type.Optional(Type.String({ minLength: 1 })),
+        commandArgs: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+        cwd: Type.Optional(Type.String()),
+        stdin: Type.Optional(Type.String()),
+        stdinProvided: Type.Optional(Type.Boolean())
       }),
       uiEffects: access.getToolUiEffects("exec_preview"),
       execute: async (_toolCallId, params) => {
-        const typedParams = params as { leaseId: string; command: string; cwd?: string };
-        const result = await access.runtimeBroker.execInLease(typedParams);
+        const typedParams = params as {
+          leaseId: string;
+          command?: string;
+          commandArgs?: string[];
+          cwd?: string;
+          stdin?: string;
+          stdinProvided?: boolean;
+        };
+        const command = typedParams.command?.trim() ?? "";
+        const commandArgs = Array.isArray(typedParams.commandArgs)
+          ? typedParams.commandArgs.map((entry) => entry.trim()).filter(Boolean)
+          : [];
+        if (!command && commandArgs.length === 0) {
+          throw new Error("exec_preview requires command or commandArgs");
+        }
+        const result = await access.runtimeBroker.execInLease({
+          leaseId: typedParams.leaseId,
+          command,
+          commandArgs,
+          cwd: typedParams.cwd?.trim() || undefined,
+          stdin: typedParams.stdin,
+          stdinProvided: typedParams.stdinProvided === true || typeof typedParams.stdin === "string"
+        });
         access.store.notePreviewLeaseActivity(typedParams.leaseId);
         const stdout = result.stdout.trim();
         const stderr = result.stderr.trim();

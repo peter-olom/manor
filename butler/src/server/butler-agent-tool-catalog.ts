@@ -148,7 +148,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "exec_preview",
     label: "Exec in preview",
-    description: "Run one shell command inside a preview isolate through the runtime broker.",
+    description: "Run one shell command or argv-style process inside a preview isolate through the runtime broker.",
     uiEffects: [{ kind: "refreshThreads", description: "Lets Butler actively diagnose or fix one preview isolate." }]
   },
   {

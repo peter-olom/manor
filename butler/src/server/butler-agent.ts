@@ -65,6 +65,8 @@ import { reviewButlerProofScreenshot } from "./butler-agent-proof-review.js";
 import type { ButlerAgentSessionAccess, ButlerAgentToolAccess } from "./butler-agent-tool-access.js";
 import { BUTLER_TOOL_CATALOG } from "./butler-agent-tool-catalog.js";
 import { keepButlerActivityBefore, normalizeButlerActivitySummaryTurns } from "./butler-activity.js";
+import { applyPostedCloseout, getOperatorCloseoutBlocker as getCloseoutBlocker, idleCloseoutReview, queueCloseoutReview, recordGatedCloseout, recordPostedCloseoutEvents } from "./butler-closeout-gate.js";
+import { upsertOperatorMessage } from "./butler-operator-messages.js";
 import { readButlerAuthStatus, readCodexAuthStatus } from "./auth-status.js";
 import { notifyDirectCodexMessage, type DirectCodexMessageAccess, type DirectCodexMessagePingInput } from "./direct-codex-message.js";
 import { type FileReferenceStore } from "./file-store.js";
@@ -469,31 +471,11 @@ export class ButlerAgentService extends EventEmitter {
   private queueDelegationAcknowledgement(threadId: string, text: string): void {
     const at = Date.now();
     const messageId = `delegation-ack-${threadId}`;
-    this.upsertOperatorMessage(messageId, text, at);
+    upsertOperatorMessage(this.operatorMessages, messageId, text, at);
     this.noteThreadFocus(threadId, "delegation");
     this.store.addEvent(threadId, "butler.acknowledgement.posted", "Butler posted the operator-facing delegation acknowledgement.");
     void this.saveOperatorMessageState();
     this.emit("change");
-  }
-
-  private upsertOperatorMessage(id: string, text: string, at: number): void {
-    const existingMessage = this.operatorMessages.find((entry) => entry.id === id);
-    if (existingMessage) {
-      existingMessage.text = text;
-      existingMessage.at = at;
-    } else {
-      this.operatorMessages.push({
-        id,
-        role: "assistant",
-        text,
-        at,
-        kind: "message"
-      });
-    }
-    this.operatorMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
-    if (this.operatorMessages.length > 40) {
-      this.operatorMessages.splice(0, this.operatorMessages.length - 40);
-    }
   }
 
   private async postOperatorJobReply(threadId: string, text: string): Promise<void> {
@@ -515,31 +497,21 @@ export class ButlerAgentService extends EventEmitter {
     const messageId = relevantWorkerReport ? `callback-${closeoutId}` : `callback-fallback-${closeoutId}`;
     const at = relevantWorkerReport?.updatedAt ?? thread.updatedAt;
     const resolutionState = relevantWorkerReport ? "received_worker_callback" : "recovered_from_thread_state";
-    this.upsertOperatorMessage(messageId, text.trim(), at);
+    const closeoutBlocker = getCloseoutBlocker(this.store, threadId, { thread, workerReport: relevantWorkerReport });
+    if (closeoutBlocker) {
+      recordGatedCloseout(this.store, threadId, closeoutBlocker);
+      throw new Error(closeoutBlocker);
+    }
+    upsertOperatorMessage(this.operatorMessages, messageId, text.trim(), at);
     this.noteThreadFocus(threadId, "closeout");
     this.deliveredCloseoutIds.add(closeoutId);
-    callback.callbackState = "closed";
-    callback.resolutionState = resolutionState;
-    callback.lastWorkerStatusSeen = thread.status;
-    callback.lastEventAt = at;
-    callback.lastTerminalReportAt = relevantWorkerReport?.updatedAt ?? callback.lastTerminalReportAt;
-    callback.lastPrivateSteerText = callback.lastPrivateSteerText ?? null;
-    callback.lastPrivateSteerAt = callback.lastPrivateSteerAt ?? null;
-    callback.nextWorkerReportAction = "review";
-    callback.operatorCloseoutStatus = "posted";
-    callback.owesOperatorReply = false;
-    callback.closeoutChannel = "main_chat";
-    callback.reviewState = "idle";
-    callback.reviewReason = null;
-    callback.closedAt = at;
-    callback.updatedAt = Date.now();
-
-    this.store.addEvent(threadId, resolutionState === "received_worker_callback" ? "butler.job.closed" : "butler.recovery.invoked", resolutionState === "received_worker_callback"
-      ? "Butler posted the operator-facing closeout after reviewing the worker callback."
-      : "Butler posted the operator-facing closeout after recovering from thread state.");
-    if (resolutionState === "recovered_from_thread_state") {
-      this.store.addEvent(threadId, "butler.job.closed", "Butler closed the delegated job after thread-state recovery.");
-    }
+    applyPostedCloseout(callback, {
+      resolutionState,
+      threadStatus: thread.status,
+      postedAt: at,
+      workerReportUpdatedAt: relevantWorkerReport?.updatedAt ?? null
+    });
+    recordPostedCloseoutEvents(this.store, threadId, resolutionState);
 
     await this.saveOperatorMessageState();
     await this.saveCallbackState();
@@ -635,6 +607,13 @@ export class ButlerAgentService extends EventEmitter {
         if (callback.nextWorkerReportAction === "reply_to_operator") {
           const text = buildChatCallbackText(thread, relevantWorkerReport);
           if (text) {
+            const closeoutBlocker = getCloseoutBlocker(this.store, callback.threadId, { thread, workerReport: relevantWorkerReport });
+            if (closeoutBlocker) {
+              queueCloseoutReview(callback, "worker_callback");
+              recordGatedCloseout(this.store, callback.threadId, closeoutBlocker);
+              changed = true;
+              continue;
+            }
             await this.postOperatorJobReply(callback.threadId, text);
             changed = true;
             continue;
@@ -824,6 +803,10 @@ export class ButlerAgentService extends EventEmitter {
     return `Butler has reached the supervision limit for job ${threadId}. Used ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns} Butler turns. Raise the limit on that thread before asking Butler to steer it again.`;
   }
 
+  private getOperatorCloseoutBlocker(threadId: string): string | null {
+    return getCloseoutBlocker(this.store, threadId);
+  }
+
   private async buildDelegationDeveloperInstructions(
     workspace: { cwd: string; branchName: string | null },
     task: string
@@ -990,6 +973,14 @@ export class ButlerAgentService extends EventEmitter {
               ? buildFallbackChatCallbackText(thread)
               : null;
         if (safeCloseoutText) {
+          const closeoutBlocker = getCloseoutBlocker(this.store, callback.threadId, { thread, workerReport: relevantWorkerReport });
+          if (closeoutBlocker) {
+            recordGatedCloseout(this.store, callback.threadId, closeoutBlocker);
+            idleCloseoutReview(nextCallback);
+            await this.saveCallbackState();
+            this.emit("change");
+            continue;
+          }
           await this.postOperatorJobReply(callback.threadId, safeCloseoutText);
           continue;
         }

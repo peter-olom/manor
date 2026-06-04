@@ -132,6 +132,7 @@ export type ButlerAgentToolAccess = {
     }
   ): Promise<ProofScreenshotReview>;
   getThreadBudgetLimitMessage(threadId: string): string | null;
+  getOperatorCloseoutBlocker(threadId: string): string | null;
   buildSupervisionSmokeTask(totalFollowUps: number): string;
   buildDelegationDeveloperInstructions(workspace: { cwd: string; branchName: string | null }, task: string): Promise<string>;
   getActiveOperatorThreadGuard(): ButlerOperatorThreadGuard | null;
