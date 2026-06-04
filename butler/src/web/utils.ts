@@ -336,10 +336,6 @@ export function formatThreadBudget(supervision: { butlerTurnsUsed: number; maxBu
   return supervision.maxButlerTurns === null ? `${supervision.butlerTurnsUsed} turns` : `${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns} turns`;
 }
 
-export function formatRequestedReasoningEffort(effort: string | null | undefined): string | null {
-  return effort ? `Delegated reasoning: ${effort}` : null;
-}
-
 export function formatJobIdLabel(threadId: string | null | undefined): string {
   const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
   if (!normalizedThreadId) {

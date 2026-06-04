@@ -18,6 +18,7 @@ import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
 import { RuntimePanel } from "./RuntimePanel";
 import { SandSpinner } from "./SandSpinner";
 import { mergeKnownImages, useKnownImages, useRuntimeSnapshot, useShellSnapshot, useThreadDetail } from "./live-state";
+import { appendComposerText, useDelegatedThreadEffortSync } from "./thread-compose";
 import { useDesktopSessionControls } from "./useDesktopSessionControls";
 import { useThreadArtifacts } from "./useThreadArtifacts";
 import type { CodexThreadDetail, ComposerInputItem, ComposerPrefill, FileReference, GeneratedImage, PreviewMedia, ReasoningEffort } from "./types";
@@ -27,7 +28,6 @@ import {
   formatAttachmentSummary,
   formatContextUsage,
   formatJumpLabel,
-  formatRequestedReasoningEffort,
   formatThreadBudget,
   groupGeneratedImagesByTimeline,
   groupTimelineItems,
@@ -93,16 +93,6 @@ type ThreadSurfaceProps = {
   showErrorToast: (error: unknown, key?: string, duration?: number) => void;
   copyText: (value: string, successMessage: string) => Promise<void>;
 };
-
-function appendComposerText(current: string, addition: string): string {
-  const trimmedAddition = addition.trim();
-  if (!trimmedAddition) {
-    return current;
-  }
-
-  const trimmedCurrent = current.trim();
-  return trimmedCurrent ? `${trimmedCurrent}\n\n${trimmedAddition}` : trimmedAddition;
-}
 
 function saveThreadScrollPosition(threadId: string | null, element: HTMLDivElement, setFollowRun: (updater: (current: boolean) => boolean) => void) {
   const remaining = element.scrollHeight - element.scrollTop - element.clientHeight;
@@ -268,6 +258,13 @@ export function ThreadSurface({
   useEffect(() => {
     resizeComposerTextarea(threadTextareaRef.current);
   }, [threadDraft]);
+
+  useDelegatedThreadEffortSync({
+    requestedEffort: activeThread?.requestedReasoningEffort,
+    shell,
+    threadId: activeThread?.id,
+    updateCodexCompose
+  });
 
   useEffect(() => {
     const scroller = runScrollRef.current;
@@ -766,7 +763,6 @@ export function ThreadSurface({
   const activeChecklist = activeThread?.supervisionChecklist ?? null;
   const activeChecklistProgress = activeChecklist ? getThreadChecklistProgress(activeChecklist) : null;
   const activeChecklistProgressLabel = activeChecklistProgress ? `${activeChecklistProgress.completed}/${activeChecklistProgress.total}` : null;
-  const requestedReasoningLabel = formatRequestedReasoningEffort(activeThread?.requestedReasoningEffort);
 
   if (!shell || !runtime || !activeThread) {
     return <div className="workspace-panel"><div className="empty">This run is open, but its turn history has not loaded yet.</div></div>;
@@ -871,7 +867,6 @@ export function ThreadSurface({
     <div className="workspace-panel">
       <div className="thread-toolbar">
         <div className="thread-toolbar-group">
-          {requestedReasoningLabel ? <span className="thread-effort-badge thread-effort-badge-detail" title={requestedReasoningLabel}>{requestedReasoningLabel}</span> : null}
           {activeChecklist && activeChecklist.items.length > 0 ? (
             <div className="conversation-disclosure thread-toolbar-disclosure">
               <button

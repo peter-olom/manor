@@ -1031,6 +1031,17 @@ export class CodexAppServerClient extends EventEmitter {
     this.emit("change");
   }
 
+  private syncComposeEffort(effort: ReasoningEffort | null): void {
+    if (!effort) {
+      return;
+    }
+
+    const model = this.availableModels.find((entry) => entry.id === this.selectedModel);
+    if (!model || model.supportedReasoningEfforts.includes(effort)) {
+      this.selectedEffort = effort;
+    }
+  }
+
   async startThread(options: {
     task: string;
     input?: CodexInputItem[] | ((threadId: string) => CodexInputItem[] | Promise<CodexInputItem[]>);
@@ -1080,6 +1091,7 @@ export class CodexAppServerClient extends EventEmitter {
       params.model = this.selectedModel;
     }
 
+    this.syncComposeEffort(options.effort ?? null);
     const requestedEffort = options.effort ?? this.selectedEffort;
     if (requestedEffort) {
       params.effort = requestedEffort;

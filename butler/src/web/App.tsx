@@ -38,7 +38,6 @@ import {
   formatContextUsage,
   formatCompactionState,
   formatJobIdLabel,
-  formatRequestedReasoningEffort,
   formatThreadTitle,
   onboardingStatusLabel,
   readStoredValue,
@@ -892,7 +891,6 @@ export function App() {
             visibleCodexThreads.map((thread) => {
               const callback = callbackByThreadId.get(thread.id) ?? null;
               const callbackState = describeCallbackState(callback);
-              const requestedReasoningLabel = formatRequestedReasoningEffort(thread.requestedReasoningEffort);
               return (
                 <div key={thread.id} className={`thread-row ${shell.codex.focusedWindowId === thread.id ? "is-active" : ""}`}>
                   <button
@@ -906,7 +904,6 @@ export function App() {
                       <div className="thread-row-statuses">
                         <span className={`job-status is-${thread.status}`}>{describeStatus(thread.status)}</span>
                         {callbackState ? <span className={`thread-callback-status is-${callbackState.tone}`}>{callbackState.label}</span> : null}
-                        {requestedReasoningLabel ? <span className="thread-effort-badge" title={requestedReasoningLabel}>{requestedReasoningLabel}</span> : null}
                       </div>
                       <span className="job-time">{new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(thread.updatedAt)}</span>
                     </div>

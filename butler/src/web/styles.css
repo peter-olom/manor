@@ -4625,23 +4625,3 @@ select {
     padding: 9px;
   }
 }
-
-.thread-effort-badge {
-  display: inline-flex;
-  align-items: center;
-  min-height: 20px;
-  padding: 2px 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
-  border-radius: 999px;
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-}
-
-.thread-effort-badge-detail {
-  min-height: 32px;
-  padding-inline: 10px;
-}
