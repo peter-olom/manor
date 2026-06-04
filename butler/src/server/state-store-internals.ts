@@ -15,6 +15,7 @@ import {
   normalizeStringList,
   normalizePreviewVerification,
   normalizeStatus,
+  normalizeReasoningEffort,
   normalizeWindow,
   restorePersistedTurn
 } from "./state-store-helpers.js";
@@ -1065,6 +1066,7 @@ export function restorePersistedStateStoreThread(access: StateStoreInternalAcces
 
   const record = access.getOrCreateThread(threadId);
   record.name = typeof thread.name === "string" && thread.name.trim() ? thread.name.trim() : null;
+  record.requestedReasoningEffort = normalizeReasoningEffort(thread.requestedReasoningEffort) ?? record.requestedReasoningEffort;
   record.preview = typeof thread.preview === "string" ? thread.preview : record.preview;
   record.source = typeof thread.source === "string" ? thread.source : record.source;
   record.cwd = typeof thread.cwd === "string" ? thread.cwd : record.cwd;
@@ -1148,6 +1150,7 @@ export function getOrCreateStateStoreThread(access: StateStoreInternalAccess, id
   const created: CodexThreadRecord = {
     id,
     name: null,
+    requestedReasoningEffort: null,
     preview: "",
     source: "unknown",
     cwd: null,

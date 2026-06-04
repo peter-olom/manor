@@ -1083,6 +1083,7 @@ export class CodexAppServerClient extends EventEmitter {
     const requestedEffort = options.effort ?? this.selectedEffort;
     if (requestedEffort) {
       params.effort = requestedEffort;
+      this.store.setThreadRequestedReasoningEffort(threadId, requestedEffort);
     }
 
     const turnResult = await this.call("turn/start", params);
@@ -1090,6 +1091,9 @@ export class CodexAppServerClient extends EventEmitter {
       const turn = turnResult.turn as Record<string, unknown>;
       if (typeof turn.id === "string") {
         this.activeTurnIds.set(threadId, turn.id);
+        if (requestedEffort) {
+          this.store.setThreadRequestedReasoningEffort(threadId, requestedEffort, turn.id);
+        }
       }
       this.store.updateTurn(threadId, turn);
     }

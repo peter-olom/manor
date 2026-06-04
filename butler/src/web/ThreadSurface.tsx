@@ -27,6 +27,7 @@ import {
   formatAttachmentSummary,
   formatContextUsage,
   formatJumpLabel,
+  formatRequestedReasoningEffort,
   formatThreadBudget,
   groupGeneratedImagesByTimeline,
   groupTimelineItems,
@@ -765,6 +766,7 @@ export function ThreadSurface({
   const activeChecklist = activeThread?.supervisionChecklist ?? null;
   const activeChecklistProgress = activeChecklist ? getThreadChecklistProgress(activeChecklist) : null;
   const activeChecklistProgressLabel = activeChecklistProgress ? `${activeChecklistProgress.completed}/${activeChecklistProgress.total}` : null;
+  const requestedReasoningLabel = formatRequestedReasoningEffort(activeThread?.requestedReasoningEffort);
 
   if (!shell || !runtime || !activeThread) {
     return <div className="workspace-panel"><div className="empty">This run is open, but its turn history has not loaded yet.</div></div>;
@@ -869,6 +871,7 @@ export function ThreadSurface({
     <div className="workspace-panel">
       <div className="thread-toolbar">
         <div className="thread-toolbar-group">
+          {requestedReasoningLabel ? <span className="thread-effort-badge thread-effort-badge-detail" title={requestedReasoningLabel}>{requestedReasoningLabel}</span> : null}
           {activeChecklist && activeChecklist.items.length > 0 ? (
             <div className="conversation-disclosure thread-toolbar-disclosure">
               <button

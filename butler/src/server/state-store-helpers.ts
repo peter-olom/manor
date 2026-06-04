@@ -14,6 +14,7 @@ import type {
   CodexThreadRecord,
   CodexThreadStatus,
   CodexThreadSupervisorView,
+  ReasoningEffort,
   CodexTurnRecord,
   CodexWorkerReportView,
   JobMemoryEntryKind,
@@ -815,10 +816,16 @@ export function shouldExposeCodexItem(item: CodexItemRecord): boolean {
   return item.type === "commandExecution";
 }
 
+
+export function normalizeReasoningEffort(value: unknown): ReasoningEffort | null {
+  return value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" ? value : null;
+}
+
 export function normalizeTurn(turn: Record<string, unknown>): CodexTurnRecord {
   const rawItems = Array.isArray(turn.items) ? (turn.items as Record<string, unknown>[]) : [];
   return {
     id: typeof turn.id === "string" ? turn.id : crypto.randomUUID(),
+    requestedReasoningEffort: normalizeReasoningEffort(turn.requestedReasoningEffort),
     status: typeof turn.status === "string" ? turn.status : "unknown",
     error: typeof turn.error === "string" ? turn.error : null,
     startedAt: Date.now(),
@@ -850,10 +857,12 @@ export function restorePersistedTurn(turn: {
   error?: unknown;
   startedAt?: unknown;
   completedAt?: unknown;
+  requestedReasoningEffort?: unknown;
   items?: unknown;
 }): CodexTurnRecord {
   return {
     id: typeof turn.id === "string" ? turn.id : crypto.randomUUID(),
+    requestedReasoningEffort: normalizeReasoningEffort(turn.requestedReasoningEffort),
     status: typeof turn.status === "string" ? turn.status : "unknown",
     error: typeof turn.error === "string" ? turn.error : null,
     startedAt: typeof turn.startedAt === "number" && Number.isFinite(turn.startedAt) ? turn.startedAt : Date.now(),
