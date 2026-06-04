@@ -1506,10 +1506,10 @@ select {
 .thread-checklist-item {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
-  min-height: 34px;
-  padding: 8px 16px;
+  min-height: 38px;
+  padding: 10px 16px;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
 }
 
@@ -1520,6 +1520,7 @@ select {
 .thread-checklist-marker {
   width: 11px;
   height: 11px;
+  margin-top: 3px;
   border: 1px solid var(--line-strong);
   border-radius: 2px;
   background: var(--surface);
@@ -1551,6 +1552,7 @@ select {
   color: var(--ink);
   font-size: 0.82rem;
   line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .thread-checklist-item.is-complete .thread-checklist-text {
@@ -1560,8 +1562,11 @@ select {
 }
 
 .thread-checklist-status {
+  align-self: flex-start;
+  padding-top: 1px;
   color: var(--muted);
   font-size: 0.74rem;
+  line-height: 1.35;
   white-space: nowrap;
 }
 

@@ -190,9 +190,48 @@ export function App() {
       : `composer-prefill-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
+  async function writeClipboardText(value: string): Promise<void> {
+    const clipboard = navigator.clipboard;
+    let clipboardError: unknown = null;
+
+    if (clipboard && typeof clipboard.writeText === "function") {
+      try {
+        await clipboard.writeText(value);
+        return;
+      } catch (error) {
+        clipboardError = error;
+      }
+    }
+
+    const previousActiveElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.top = "-1000px";
+    textarea.style.left = "-1000px";
+    textarea.style.width = "1px";
+    textarea.style.height = "1px";
+
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+
+    try {
+      if (!document.execCommand("copy")) {
+        throw new Error("Copy is unavailable in this browser context.");
+      }
+    } catch (error) {
+      throw clipboardError ?? error;
+    } finally {
+      textarea.remove();
+      previousActiveElement?.focus();
+    }
+  }
+
   async function copyText(value: string, successMessage: string) {
     try {
-      await navigator.clipboard.writeText(value);
+      await writeClipboardText(value);
       showToast(successMessage, "success", 1200);
     } catch (error) {
       showErrorToast(error);
@@ -531,7 +570,7 @@ export function App() {
 
   async function copySetupCommand(command: string, key: string) {
     try {
-      await navigator.clipboard.writeText(command);
+      await writeClipboardText(command);
       setCopiedCommandKey(key);
       showToast("Command copied", "success", 1200, "command-copied");
       if (copiedCommandTimerRef.current !== null) {
