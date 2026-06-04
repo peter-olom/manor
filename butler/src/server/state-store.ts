@@ -24,6 +24,7 @@ import {
   MAX_EVENT_LOG,
   normalizeItem,
   normalizePreviewVerification,
+  normalizeReasoningEffort,
   normalizeStatus,
   normalizeTurn,
   restorePersistedTurn,
@@ -77,39 +78,14 @@ import type {
   CodexContextUsageView,
   CodexEventEntry,
   CodexThreadExecutionContractView,
-  CodexItemRecord,
-  CodexItemView,
-  CodexMilestoneEntry,
-  CodexProjectSummaryView,
-  CodexSupervisionView,
-  CodexThreadDetailView,
-  CodexThreadRecord,
-  CodexThreadStatus,
-  CodexThreadSummary,
-  CodexThreadSupervisorView,
-  CodexTurnRecord,
-  CodexTurnView,
-  CodexWorkerReportView,
+  CodexItemRecord, CodexItemView, CodexMilestoneEntry, CodexProjectSummaryView, CodexSupervisionView,
+  CodexThreadDetailView, CodexThreadRecord, CodexThreadStatus, CodexThreadSummary, CodexThreadSupervisorView,
+  CodexTurnRecord, CodexTurnView, CodexWorkerReportView,
   DesktopSessionView,
-  JobMemoryEntryKind,
-  JobMemoryPromotionCandidateView,
-  JobMemoryView,
-  PreviewProofRecordView,
-  PreviewVerificationArtifactView,
-  PreviewVerificationConsoleMessageView,
-  PreviewVerificationFailedRequestView,
-  PreviewVerificationView,
-  PreviewLeaseView,
-  ProjectMemoryView,
-  ProjectArtifactView,
-  ProjectPolicyView,
-  RuntimeCleanupTaskView,
-  RuntimeSnapshot,
-  StackLeaseView,
-  ServiceLeaseView,
-  SupervisionChecklistItemStatus,
-  SupervisionChecklistView,
-  PersistedUiState
+  JobMemoryEntryKind, JobMemoryPromotionCandidateView, JobMemoryView, PreviewProofRecordView, PreviewVerificationArtifactView,
+  PreviewVerificationConsoleMessageView, PreviewVerificationFailedRequestView, PreviewVerificationView, PreviewLeaseView,
+  ProjectMemoryView, ProjectArtifactView, ProjectPolicyView, ReasoningEffort, RuntimeCleanupTaskView, RuntimeSnapshot,
+  StackLeaseView, ServiceLeaseView, SupervisionChecklistItemStatus, SupervisionChecklistView, PersistedUiState
 } from "./types.js";
 
 type JobMemoryWriteContext = { projectId?: string | null; projectLabel?: string | null; operatorGoal?: string | null; requestedTask?: string | null; proofRequirements?: string[] };
@@ -262,6 +238,7 @@ export class ButlerStateStore extends EventEmitter {
       ...incomingTurn,
       status: incomingTurn.status === "unknown" ? existingTurn.status : incomingTurn.status,
       error: incomingTurn.error ?? existingTurn.error,
+      requestedReasoningEffort: incomingTurn.requestedReasoningEffort ?? existingTurn.requestedReasoningEffort,
       startedAt: Math.min(existingTurn.startedAt, incomingTurn.startedAt),
       completedAt: incomingTurn.completedAt ?? existingTurn.completedAt,
       items: this.mergeTurnItems(existingTurn.items, incomingTurn.items)
@@ -516,6 +493,7 @@ export class ButlerStateStore extends EventEmitter {
     if (!turn) {
       turn = {
         id: turnId,
+        requestedReasoningEffort: null,
         status: "unknown",
         error: null,
         startedAt: Date.now(),
@@ -528,6 +506,12 @@ export class ButlerStateStore extends EventEmitter {
     return turn;
   }
 
+  setThreadRequestedReasoningEffort(threadId: string, effort: ReasoningEffort | null, turnId?: string | null): void {
+    const normalized = normalizeReasoningEffort(effort); const thread = this.getOrCreateThread(threadId); thread.requestedReasoningEffort = normalized; thread.updatedAt = Date.now();
+    if (turnId) this.getOrCreateTurn(threadId, turnId).requestedReasoningEffort = normalized;
+    this.refreshDerivedThreadState(thread); this.queueSave(); this.emitChange();
+  }
+
   updateTurn(threadId: string, turn: Record<string, unknown>): void {
     const turnId = typeof turn.id === "string" ? turn.id : undefined;
     if (!turnId) {
@@ -538,6 +522,11 @@ export class ButlerStateStore extends EventEmitter {
     const target = this.getOrCreateTurn(threadId, turnId);
     target.status = typeof turn.status === "string" ? turn.status : target.status;
     target.error = typeof turn.error === "string" ? turn.error : null;
+    const requestedReasoningEffort = normalizeReasoningEffort(turn.requestedReasoningEffort);
+    if (requestedReasoningEffort) {
+      target.requestedReasoningEffort = requestedReasoningEffort;
+      record.requestedReasoningEffort = requestedReasoningEffort;
+    }
     if (target.status === "completed" || target.status === "failed" || target.status === "interrupted") {
       target.completedAt = Date.now();
     } else if (!target.startedAt) {
@@ -927,6 +916,7 @@ export class ButlerStateStore extends EventEmitter {
       .map((thread) => ({
         id: thread.id,
         name: thread.name,
+        requestedReasoningEffort: thread.requestedReasoningEffort,
         preview: thread.preview,
         source: thread.source,
         cwd: thread.cwd,
@@ -964,6 +954,7 @@ export class ButlerStateStore extends EventEmitter {
   private toTurnView(turn: CodexTurnRecord): CodexTurnView {
     return {
       id: turn.id,
+      requestedReasoningEffort: turn.requestedReasoningEffort,
       status: turn.status,
       error: turn.error,
       startedAt: turn.startedAt,
@@ -976,6 +967,7 @@ export class ButlerStateStore extends EventEmitter {
     return {
       id: thread.id,
       name: thread.name,
+      requestedReasoningEffort: thread.requestedReasoningEffort,
       preview: thread.preview,
       source: thread.source,
       cwd: thread.cwd,

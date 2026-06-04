@@ -65,6 +65,7 @@ export interface CodexItemRecord {
 
 export interface CodexTurnRecord {
   id: string;
+  requestedReasoningEffort: ReasoningEffort | null;
   status: string;
   error: string | null;
   startedAt: number;
@@ -643,6 +644,7 @@ export interface CodexThreadSupervisorView {
 export interface CodexThreadSummary {
   id: string;
   name: string | null;
+  requestedReasoningEffort: ReasoningEffort | null;
   preview: string;
   source: string;
   cwd: string | null;
@@ -678,6 +680,7 @@ export interface CodexItemView {
 
 export interface CodexTurnView {
   id: string;
+  requestedReasoningEffort: ReasoningEffort | null;
   status: string;
   error: string | null;
   startedAt: number;

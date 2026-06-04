@@ -344,6 +344,7 @@ export type ModelOption = {
 export type CodexThreadSummary = {
   id: string;
   name: string | null;
+  requestedReasoningEffort: ReasoningEffort | null;
   preview: string;
   source: string;
   cwd: string | null;
@@ -425,6 +426,7 @@ export type CodexThreadSummary = {
 export type CodexThreadDetail = CodexThreadSummary & {
   turns: Array<{
     id: string;
+    requestedReasoningEffort: ReasoningEffort | null;
     status: string;
     error: string | null;
     startedAt: number;
