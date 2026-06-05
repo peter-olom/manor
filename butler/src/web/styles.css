@@ -4254,19 +4254,32 @@ select {
   }
 
   .topbar {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    align-items: stretch;
-    gap: 10px;
-    padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+  }
+
+  .brand {
+    flex: 0 0 auto;
   }
 
   .statusline {
-    width: 100%;
-    flex-wrap: wrap;
-    align-items: stretch;
+    flex: 1 1 auto;
+    width: auto;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: flex-start;
     gap: 8px;
-    overflow: visible;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .statusline::-webkit-scrollbar {
+    display: none;
   }
 
   .status-item,
@@ -4561,12 +4574,19 @@ select {
 
   .composer-main {
     position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
     max-width: 100%;
   }
 
   .composer textarea {
+    flex: 1 1 auto;
+    min-width: 0;
     min-height: 84px;
-    padding: 14px 142px 10px 14px;
+    max-height: min(30dvh, 180px);
+    padding: 14px 14px 10px;
+    overflow-y: auto;
   }
 
   .composer-footer {
@@ -4607,12 +4627,12 @@ select {
   }
 
   .composer-mobile-actions {
-    position: absolute;
-    right: 10px;
-    bottom: 10px;
     display: inline-flex;
     align-items: center;
+    justify-content: flex-end;
     gap: 8px;
+    width: 100%;
+    padding: 0 12px 10px;
   }
 
   .composer-add-image-mobile {
@@ -4667,27 +4687,32 @@ select {
 }
 
 @media (max-width: 640px) {
+  .app-shell {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
   .topbar {
-    padding: 8px 10px;
+    gap: 8px;
+    padding: 6px 8px;
   }
 
   .brand-logo {
-    height: 24px;
+    height: 22px;
   }
 
   .statusline {
     gap: 6px;
-    font-size: 0.8rem;
+    font-size: 0.78rem;
   }
 
   .status-item {
     min-height: 26px;
-    padding-right: 8px;
+    padding: 0 8px 0 7px;
   }
 
   .theme-control,
   .status-item {
-    flex: 1 1 calc(50% - 6px);
+    flex: 0 0 auto;
   }
 
   .status-item-copy {
@@ -4786,12 +4811,13 @@ select {
   }
 
   .composer {
-    min-height: 136px;
+    min-height: 0;
   }
 
   .composer textarea {
     min-height: 76px;
-    padding-right: 136px;
+    max-height: min(28dvh, 160px);
+    padding: 12px 12px 8px;
   }
 
   .composer-footer {
@@ -4868,14 +4894,26 @@ select {
 }
 
 @media (max-width: 480px) {
+  .topbar {
+    min-height: 40px;
+  }
+
   .statusline {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    display: flex;
+  }
+
+  .statusline .status-item:nth-of-type(n + 3) {
+    display: none;
   }
 
   .theme-control,
   .status-item {
-    width: 100%;
+    width: auto;
+  }
+
+  .status-item-icon,
+  .theme-control-icon {
+    display: none;
   }
 
   .conversation-toolbar-group {
@@ -4894,8 +4932,18 @@ select {
     align-items: flex-start;
   }
 
-  .composer textarea {
-    padding-right: 126px;
+  .composer-mobile-actions {
+    padding: 0 10px 8px;
+  }
+
+  .composer-send-label {
+    display: none;
+  }
+
+  .composer-send-mobile {
+    min-width: 42px;
+    width: 42px;
+    padding: 0;
   }
 
   .proof-annotation-item {
