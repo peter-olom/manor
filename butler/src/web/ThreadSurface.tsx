@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import { getJson, postJson, uploadAttachment } from "./api";
+import { CodexComposerSettings } from "./CodexComposerSettings";
 import { ComposerMentions } from "./ComposerMentions";
 import { ArrowDownIcon, AttachmentIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon, SendIcon, StopIcon, TrashIcon } from "./icons";
 import { MarkdownMessage } from "./MarkdownMessage";
@@ -770,6 +771,11 @@ export function ThreadSurface({
 
   const codexEffortOptions =
     shell.codex.compose.availableModels.find((model) => model.id === shell.codex.compose.model)?.supportedReasoningEfforts ?? [];
+  const selectedCodexModelLabel =
+    shell.codex.compose.availableModels.find((model) => model.id === shell.codex.compose.model)?.label ?? "Model";
+  const selectedCodexEffortLabel =
+    codexEffortOptions.length === 0 ? "Standard" : shell.codex.compose.effort ?? "Reasoning";
+  const threadBudgetLabel = formatThreadBudget(activeThread.supervision);
 
   function renderGeneratedImageStrip(images: GeneratedImage[]) {
     if (images.length === 0) {
@@ -1256,7 +1262,7 @@ export function ThreadSurface({
             )}
           </div>
           {!followRun ? (
-            <button className="conversation-jump-latest" onClick={() => {
+            <button className="conversation-jump-latest conversation-jump-latest-desktop" onClick={() => {
               setFollowRun(true);
               requestAnimationFrame(() => {
                 scrollElementToLatest(runScrollRef.current);
@@ -1365,7 +1371,35 @@ export function ThreadSurface({
                 spellCheck={true}
                 rows={3}
               />
-              <div className="composer-mobile-actions">
+            </div>
+            <div className="composer-footer composer-footer-thread">
+              <div className="composer-mobile-control-row">
+                <CodexComposerSettings
+                  availableModels={shell.codex.compose.availableModels}
+                  selectedModel={shell.codex.compose.model}
+                  selectedModelLabel={selectedCodexModelLabel}
+                  selectedEffort={shell.codex.compose.effort}
+                  selectedEffortLabel={selectedCodexEffortLabel}
+                  effortOptions={codexEffortOptions}
+                  budgetLabel={threadBudgetLabel}
+                  capReached={activeThread.supervision.capReached}
+                  maxButlerTurns={activeThread.supervision.maxButlerTurns}
+                  onComposeChange={(model, effort) => void updateCodexCompose(model, effort)}
+                  onThreadLimitChange={(maxTurns) => void updateThreadSupervision(activeThread.id, maxTurns)}
+                />
+                {!followRun ? (
+                  <button className="conversation-jump-latest conversation-jump-latest-mobile" onClick={() => {
+                    setFollowRun(true);
+                    requestAnimationFrame(() => {
+                      scrollElementToLatest(runScrollRef.current);
+                    });
+                  }} type="button" aria-label="Jump to latest Codex message" title="Latest">
+                    <span className="conversation-jump-latest-icon" aria-hidden="true">
+                      <ArrowDownIcon />
+                    </span>
+                    <span className="conversation-jump-latest-label">Latest</span>
+                  </button>
+                ) : null}
                 <button className="composer-add-image composer-add-image-mobile" type="button" onClick={() => threadFileInputRef.current?.click()} aria-label="Add file" title="Add file">
                   <AttachmentIcon />
                 </button>
@@ -1375,54 +1409,6 @@ export function ThreadSurface({
                     {showThreadWorkingIndicator ? <StopIcon /> : <SendIcon />}
                   </span>
                 </button>
-              </div>
-            </div>
-            <div className="composer-footer">
-              <div className="composer-inline-controls">
-                <select
-                  value={shell.codex.compose.model ?? ""}
-                  onChange={(event) => {
-                    const nextModel = event.target.value;
-                    const model = shell.codex.compose.availableModels.find((entry) => entry.id === nextModel);
-                    void updateCodexCompose(nextModel, model?.defaultReasoningEffort ?? null);
-                  }}
-                  aria-label="Codex model"
-                >
-                  {shell.codex.compose.availableModels.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.label}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  value={shell.codex.compose.effort ?? ""}
-                  onChange={(event) => void updateCodexCompose(shell.codex.compose.model ?? "", (event.target.value || null) as ReasoningEffort | null)}
-                  disabled={!shell.codex.compose.model || codexEffortOptions.length === 0}
-                  aria-label="Codex reasoning"
-                >
-                  {codexEffortOptions.length === 0 ? (
-                    <option value="">Standard</option>
-                  ) : (
-                    codexEffortOptions.map((effort) => (
-                      <option key={effort} value={effort}>
-                        {effort}
-                      </option>
-                    ))
-                  )}
-                </select>
-                <div className={`composer-thread-budget${activeThread.supervision.capReached ? " is-capped" : ""}`}>
-                  <span className="composer-thread-budget-value">{formatThreadBudget(activeThread.supervision)}</span>
-                  <select
-                    value={activeThread.supervision.maxButlerTurns === null ? "null" : String(activeThread.supervision.maxButlerTurns)}
-                    onChange={(event) => void updateThreadSupervision(activeThread.id, event.target.value === "null" ? null : Number(event.target.value))}
-                    aria-label="Butler thread turn limit"
-                  >
-                    <option value="20">20 turns</option>
-                    <option value="40">40 turns</option>
-                    <option value="100">100 turns</option>
-                    <option value="null">No limit</option>
-                  </select>
-                </div>
               </div>
               <div className="composer-note">Cmd/Ctrl + Enter sends</div>
               <div className="composer-actions composer-actions-desktop">

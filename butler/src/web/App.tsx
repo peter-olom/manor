@@ -689,11 +689,12 @@ export function App() {
         <section className="workspace">
           <div className="workspace-tabs-shell">
             {showSetupGuide ? (
-              <button className={`workspace-tab workspace-tab-fixed workspace-tab-icon-button ${activeTabId === "setup" ? "is-active" : ""}`} aria-label="Setup" title="Setup" onClick={() => {
+              <button className={`workspace-tab workspace-tab-fixed workspace-tab-icon-button workspace-tab-setup ${activeTabId === "setup" ? "is-active" : ""}`} aria-label="Setup" title="Setup" onClick={() => {
                 setSelectedSurface("setup");
                 setSelectedThreadId(null);
               }}>
                 <SetupTabIcon />
+                <span className="workspace-tab-mobile-label">Setup</span>
               </button>
             ) : null}
             <button className={`workspace-tab workspace-tab-fixed workspace-tab-icon-button ${activeTabId === "butler" ? "is-active" : ""}`} aria-label="Butler" title="Butler" onClick={() => {

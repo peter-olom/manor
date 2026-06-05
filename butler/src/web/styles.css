@@ -428,6 +428,10 @@ select {
   height: 19px;
 }
 
+.workspace-tab-mobile-label {
+  display: none;
+}
+
 .workspace-tab-count {
   position: absolute;
   top: 10px;
@@ -1923,18 +1927,19 @@ select {
 }
 
 .conversation-jump-latest {
-  position: absolute;
-  right: 22px;
-  bottom: 88px;
+  position: static;
+  justify-self: end;
+  align-self: center;
   display: inline-flex;
   align-items: center;
   gap: 8px;
   height: 38px;
+  margin: 0 22px 10px auto;
   padding: 0 14px;
   border: 1px solid var(--line-strong);
   background: color-mix(in srgb, var(--surface) 90%, transparent);
   color: var(--ink);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.16);
+  box-shadow: none;
   cursor: pointer;
   z-index: 2;
   backdrop-filter: blur(8px);
@@ -1942,6 +1947,10 @@ select {
 
 .conversation-jump-latest:hover {
   background: var(--surface);
+}
+
+.conversation-jump-latest.conversation-jump-latest-mobile {
+  display: none;
 }
 
 .conversation-jump-latest-icon {
@@ -3349,6 +3358,65 @@ select {
   color: var(--danger);
 }
 
+.composer-mobile-control-row {
+  display: contents;
+}
+
+.composer-settings-trigger {
+  display: none;
+}
+
+.composer-settings-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 14px;
+  background: rgba(4, 12, 24, 0.54);
+}
+
+.composer-settings-dialog {
+  width: min(420px, calc(100vw - 28px));
+  max-height: min(72dvh, 440px);
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.34);
+  overflow: auto;
+  outline: none;
+}
+
+.composer-settings-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.composer-settings-dialog-head h2 {
+  margin: 0;
+  font-size: 0.9rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.composer-settings-dialog-head button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
 .composer-actions {
   display: flex;
   align-items: center;
@@ -4327,6 +4395,17 @@ select {
     padding: 0;
   }
 
+  .workspace-tab-setup svg {
+    display: none;
+  }
+
+  .workspace-tab-setup .workspace-tab-mobile-label {
+    display: inline;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+
   .workspace-tab-count {
     top: 8px;
     right: 7px;
@@ -4791,9 +4870,25 @@ select {
       0 18px 44px rgba(6, 16, 31, 0.42);
   }
 
-  .conversation-jump-latest {
-    right: 14px;
-    bottom: 108px;
+  .conversation-jump-latest-desktop {
+    display: none;
+  }
+
+  .conversation-jump-latest.conversation-jump-latest-mobile {
+    position: static;
+    display: inline-flex;
+    flex: 0 0 38px;
+    width: 38px;
+    height: 34px;
+    margin: 0;
+    padding: 0;
+    justify-content: center;
+    box-shadow: none;
+    background: var(--surface);
+  }
+
+  .conversation-jump-latest-label {
+    display: none;
   }
 
   .entry {
@@ -4825,6 +4920,101 @@ select {
     align-items: stretch;
     gap: 8px;
     padding: 8px 10px 10px;
+  }
+
+  .composer-footer-thread .composer-inline-controls-thread {
+    display: none;
+  }
+
+  .composer-mobile-control-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .composer-settings-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 34px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink);
+    cursor: pointer;
+  }
+
+  .composer-settings-trigger svg {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    color: var(--muted);
+  }
+
+  .composer-settings-trigger-copy {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    color: var(--muted);
+    font-size: 0.78rem;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .composer-settings-trigger-copy span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .composer-settings-trigger-copy span:not(:last-child)::after {
+    content: "·";
+    margin-left: 6px;
+    color: var(--muted);
+  }
+
+  .composer-settings-panel {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    padding: 8px 0 0;
+  }
+
+  .composer-settings-panel select {
+    width: 100%;
+    min-width: 0;
+    height: 34px;
+    padding: 0 9px;
+    border: 0;
+    background: var(--surface);
+    color: var(--ink);
+  }
+
+  .composer-settings-budget {
+    display: grid;
+    grid-template-columns: minmax(0, 0.42fr) minmax(0, 0.58fr);
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .composer-settings-budget > span {
+    min-width: 0;
+    color: var(--muted);
+    font-size: 0.72rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .composer-settings-budget.is-capped > span {
+    color: var(--danger);
   }
 
   .composer-inline-controls {
