@@ -1428,8 +1428,32 @@ export class CodexAppServerClient extends EventEmitter {
     }
   }
 
-  async deleteThread(threadId: string): Promise<{ deletedArtifacts: number }> {
+  async deleteThread(
+    threadId: string,
+    options: { waitForCleanup?: boolean } = {}
+  ): Promise<{ deletedArtifacts: number; cleanupFailed?: boolean; cleanupError?: string | null }> {
     const context = this.buildThreadDeleteContext(threadId);
+    if (options.waitForCleanup) {
+      try {
+        await this.onThreadDeleting?.({
+          threadId: context.threadId,
+          cwd: context.cwd,
+          stacks: context.stacks,
+          previews: context.previews,
+          services: context.services
+        });
+        const deletedArtifacts = await this.deleteThreadArtifacts(context.threadId, context.cwd);
+        this.deletedThreadIds.add(threadId);
+        this.store.removeThread(threadId);
+        await this.onThreadCapabilityRemoved?.(threadId);
+        this.emit("change");
+        await this.unsubscribeThread(threadId);
+        return { deletedArtifacts, cleanupFailed: false, cleanupError: null };
+      } catch (error) {
+        return { deletedArtifacts: 0, cleanupFailed: true, cleanupError: error instanceof Error ? error.message : String(error) };
+      }
+    }
+
     this.store.enqueueRuntimeCleanupTask({
       threadId: context.threadId,
       cwd: context.cwd,
@@ -1443,7 +1467,7 @@ export class CodexAppServerClient extends EventEmitter {
     this.emit("change");
     await this.unsubscribeThread(threadId);
     this.scheduleCleanupQueue();
-    return { deletedArtifacts: 0 };
+    return { deletedArtifacts: 0, cleanupFailed: false, cleanupError: null };
   }
 
   async deleteAllThreads(): Promise<{ deletedThreadIds: string[]; deletedArtifacts: number }> {

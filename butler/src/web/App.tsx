@@ -24,6 +24,7 @@ import type {
   ConfirmDialogState,
   FileReference,
   PreviewMedia,
+  ScratchPadItem,
   SetupCommandMode,
   TerminalTarget,
   ThemePreference,
@@ -525,6 +526,18 @@ export function App() {
     });
   }
 
+  function confirmCleanupScratchItem(item: ScratchPadItem, cleanup: () => Promise<void>) {
+    setConfirmDialog({
+      title: item.threadId ? "Cleanup scratch item and thread?" : "Cleanup scratch item?",
+      message: item.threadId
+        ? "This removes the scratchpad item, linked Codex thread, and local artifacts."
+        : "This removes the scratchpad item permanently.",
+      confirmLabel: "Cleanup",
+      tone: "danger",
+      onConfirm: cleanup
+    });
+  }
+
   function confirmDeleteProof(proofId: string) {
     setConfirmDialog({
       title: "Delete proof?",
@@ -873,6 +886,7 @@ export function App() {
                 variant="window"
                 scratchPad={shell.butler.scratchPad}
                 onOpenThread={openThread}
+                onConfirmCleanup={confirmCleanupScratchItem}
                 showToast={showToast}
                 showErrorToast={showErrorToast}
               />

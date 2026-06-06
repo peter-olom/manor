@@ -20,12 +20,14 @@ export function ScratchPadPanel({
   variant = "compact",
   scratchPad,
   onOpenThread,
+  onConfirmCleanup,
   showToast,
   showErrorToast
 }: {
   variant?: "compact" | "window";
   scratchPad: ScratchPad;
   onOpenThread: (threadId: string) => void;
+  onConfirmCleanup: (item: ScratchPadItem, cleanup: () => Promise<void>) => void;
   showToast: (message: string, tone?: "success" | "error" | "info", duration?: number, key?: string) => void;
   showErrorToast: (error: unknown, key?: string, duration?: number) => void;
 }) {
@@ -74,15 +76,15 @@ export function ScratchPadPanel({
     }
   }
 
-  async function deleteItem(item: ScratchPadItem) {
-    setBusyKey(`delete:${item.id}`);
+  async function cleanupItem(item: ScratchPadItem) {
+    setBusyKey(`cleanup:${item.id}`);
     try {
-      await postJson(`/api/scratch-pad/items/${encodeURIComponent(item.id)}/delete`, {});
-      showToast("Scratch item deleted");
+      const result = await postJson<{ threadDeleted?: boolean }>(`/api/scratch-pad/items/${encodeURIComponent(item.id)}/delete`, {});
+      showToast(result.threadDeleted ? "Scratch item, thread, and artifacts cleaned up" : "Scratch item cleaned up");
     } catch (error) {
       showErrorToast(error, "scratch-delete");
     } finally {
-      setBusyKey((current) => (current === `delete:${item.id}` ? null : current));
+      setBusyKey((current) => (current === `cleanup:${item.id}` ? null : current));
     }
   }
 
@@ -142,11 +144,16 @@ export function ScratchPadPanel({
                         </button>
                       ))
                     ) : null}
-                    {item.status === "captured" || item.status === "dismissed" ? (
-                      <button type="button" className="scratch-pad-icon-action" disabled={Boolean(busyKey)} onClick={() => void deleteItem(item)} aria-label="Delete scratch item" title="Delete">
-                        <TrashIcon />
-                      </button>
-                    ) : null}
+                    <button
+                      type="button"
+                      className="scratch-pad-icon-action"
+                      disabled={Boolean(busyKey)}
+                      onClick={() => onConfirmCleanup(item, () => cleanupItem(item))}
+                      aria-label="Cleanup scratch item"
+                      title="Cleanup"
+                    >
+                      <TrashIcon />
+                    </button>
                   </div>
                 </article>
               ))

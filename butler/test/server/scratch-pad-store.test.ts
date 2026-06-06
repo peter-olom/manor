@@ -7,7 +7,7 @@ import test from "node:test";
 import { ScratchPadStore } from "../../src/server/scratch-pad-store.js";
 import type { CodexThreadRecord } from "../../src/server/types.js";
 
-test("scratch pad items persist, launch, derive ready state, and review", async () => {
+test("scratch pad items persist, launch, derive ready state, review, and cleanup", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "manor-scratch-pad-"));
   try {
     const statePath = path.join(dir, "scratch-pad.json");
@@ -51,6 +51,15 @@ test("scratch pad items persist, launch, derive ready state, and review", async 
     const restored = new ScratchPadStore(statePath);
     await restored.load();
     assert.equal(restored.getSnapshot().items[0]?.status, "accepted");
+
+    const removed = restored.remove(created.id);
+    assert.equal(removed?.status, "accepted");
+    await restored.flushSave();
+
+    const cleaned = new ScratchPadStore(statePath);
+    await cleaned.load();
+    assert.deepEqual(cleaned.getSnapshot().items, []);
+    assert.equal(cleaned.getSnapshot().counts.accepted, 0);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

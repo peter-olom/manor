@@ -169,13 +169,31 @@ export function registerScratchPadRoutes(access: ScratchPadRoutesAccess): void {
     }
   });
 
-  access.app.post("/api/scratch-pad/items/:itemId/delete", (request, response) => {
+  access.app.post("/api/scratch-pad/items/:itemId/delete", async (request, response) => {
     const itemId = typeof request.params.itemId === "string" ? request.params.itemId : "";
-    const item = access.scratchPadStore.remove(itemId);
+    const item = access.scratchPadStore.get(itemId);
     if (!item) {
       response.status(404).json({ error: "Scratch item not found" });
       return;
     }
-    response.json({ ok: true, item });
+
+    try {
+      const cleanup = item.threadId
+        ? await access.codexClient.deleteThread(item.threadId, { waitForCleanup: true })
+        : { deletedArtifacts: 0, cleanupFailed: false, cleanupError: null };
+      if (cleanup.cleanupFailed) {
+        response.status(500).json({ error: cleanup.cleanupError ?? "Thread cleanup failed" });
+        return;
+      }
+
+      const removed = access.scratchPadStore.remove(itemId);
+      if (!removed) {
+        response.status(404).json({ error: "Scratch item not found" });
+        return;
+      }
+      response.json({ ok: true, item: removed, threadDeleted: Boolean(item.threadId), deletedArtifacts: cleanup.deletedArtifacts });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 }
