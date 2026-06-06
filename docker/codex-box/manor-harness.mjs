@@ -82,6 +82,7 @@ Proof tips:
   Proof is session-driven: start browser sidecar, run actions, optionally capture screenshots, then stop session.
   Native Electron or VNC-visible proof is desktop-driven: check desktop status, start a desktop session attached to this job workspace, capture screenshots/actions there, then stop it.
   File proof is for cases where the durable evidence is a generated file, PDF, Office file, archive, report, export, log, or saved artifact.
+  UI-impacting work must surface screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are insufficient.
   Do not create a private Xvfb display when the operator asked for a VNC-visible desktop app.
   Do not use direct curl or fetch from the shared Codex shell to judge live-site browser reachability. That shell is behind restricted egress by design.
   Example:
@@ -90,6 +91,7 @@ Proof tips:
     manor-harness browser use stop <sessionId> --reason "proof complete" --json
 
 Add --json to print the Butler response payload as JSON.
+Blocked reports require --details that explain what failed, what was tried, and the next sensible action.
 Set MANOR_THREAD_ID or pass --thread <jobId> to bind the harness explicitly when you are outside the job workspace.`);
 }
 

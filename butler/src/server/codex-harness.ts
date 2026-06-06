@@ -28,6 +28,7 @@ import {
   resolveHarnessThreadStack
 } from "./codex-harness-runtime.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
+import { hasVisualProof, threadRequiresVisualProof } from "./proof-policy.js";
 import {
   applyServiceStartedPolicies,
   formatProjectPolicyContextLines
@@ -270,7 +271,15 @@ export class CodexHarnessService {
           "This job asked for proof. Gather persisted proof before reporting completed."
         );
       }
+      if (threadRequiresVisualProof(thread) && !hasVisualProof(threadProofs)) {
+        throw new Error(
+          "This job affects operator-visible UI. Capture persisted screenshot or video proof before reporting completed; text or file proof alone is insufficient."
+        );
+      }
       return;
+    }
+    if (!report.details?.trim()) {
+      throw new Error("Blocked reports require details that document what failed, what was tried, and the next sensible action.");
     }
     if (looksLikeHarnessLookupFailure(combined)) {
       throw new Error(
@@ -603,6 +612,11 @@ export class CodexHarnessService {
           mentionsNativeDesktopTarget(thread)
             ? "This job asked for native headed proof. Use desktop status/start/action/stop so the app appears in the noVNC-visible desktop."
             : "This job asked for proof. Browser-use sessions are the simplest way to capture durable browser artifacts."
+        );
+      }
+      if (threadRequiresVisualProof(thread)) {
+        responseLines.push(
+          "This job has UI implications. Persist and surface screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are not enough."
         );
       }
       responseLines.push("Do not use `corepack enable` in Codex-shell for preview-oriented runtime setup. If repo-local instructions explicitly require a root-level install step, follow the repo guidance instead.");

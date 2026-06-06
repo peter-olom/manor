@@ -130,7 +130,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "review_preview_proof",
     label: "Review proof",
-    description: "Inspect the latest browser, desktop, or file proof for one preview or job and decide whether it is convincing.",
+    description: "Inspect the latest browser, desktop, or file proof for one preview or job. UI-impacting work needs screenshot or video proof.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while reviewing proof artifacts." }]
   },
   {
@@ -302,6 +302,15 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [
       { kind: "openWindow", description: "Opens the delegated Codex workstream as a tab." },
       { kind: "focusWindow", description: "Moves focus into the new Codex workstream." }
+    ]
+  },
+  {
+    name: "start_self_improvement",
+    label: "Start self-improvement",
+    description: "Start a dedicated Manor self-improvement workstream that implements, verifies, pushes a branch, and opens a draft PR.",
+    uiEffects: [
+      { kind: "openWindow", description: "Opens the Manor self-improvement workstream as a tab." },
+      { kind: "focusWindow", description: "Moves focus into the new self-improvement workstream." }
     ]
   },
   {

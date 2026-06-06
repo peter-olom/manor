@@ -1095,7 +1095,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       label: "Review proof",
       description: "Inspect the latest proof bundle for one preview or job and decide whether the recorded artifacts are convincing.",
       promptSnippet:
-        "review_preview_proof: use this when proof is demanded. It can review browser, desktop, and file proof bundles. Do not sign off until the recorded proof is clearly convincing.",
+        "review_preview_proof: use this when proof is demanded. It can review browser, desktop, and file proof bundles. For UI-impacting work, screenshot or video proof must show the relevant state.",
       parameters: Type.Object({
         leaseId: Type.Optional(Type.String()),
         threadId: Type.Optional(Type.String()),
