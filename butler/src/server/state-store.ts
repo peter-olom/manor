@@ -941,17 +941,20 @@ export class ButlerStateStore extends EventEmitter {
     return this.threads.get(threadId);
   }
 
-  private toItemView(item: CodexItemRecord): CodexItemView {
+  private toItemView(item: CodexItemRecord, taskDurationMs: number | null = null): CodexItemView {
     return {
       id: item.id,
       type: item.type,
       status: item.status,
       text: item.text,
-      at: item.at
+      at: item.at,
+      taskDurationMs
     };
   }
 
   private toTurnView(turn: CodexTurnRecord): CodexTurnView {
+    const visibleItems = dedupeCodexChatItems(turn.items).filter(shouldExposeCodexItem);
+    const finalAgentItemId = turn.completedAt ? [...visibleItems].reverse().find((item) => item.type === "agentMessage")?.id : null;
     return {
       id: turn.id,
       requestedReasoningEffort: turn.requestedReasoningEffort,
@@ -959,7 +962,9 @@ export class ButlerStateStore extends EventEmitter {
       error: turn.error,
       startedAt: turn.startedAt,
       completedAt: turn.completedAt,
-      items: dedupeCodexChatItems(turn.items).filter(shouldExposeCodexItem).map((item) => this.toItemView(item))
+      items: visibleItems.map((item) =>
+        this.toItemView(item, item.id === finalAgentItemId && turn.completedAt ? turn.completedAt - turn.startedAt : null)
+      )
     };
   }
 

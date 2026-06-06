@@ -15,6 +15,7 @@ import { MarkdownMessage } from "./MarkdownMessage";
 import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
 import { RuntimePanel } from "./RuntimePanel";
 import { SandSpinner } from "./SandSpinner";
+import { formatElapsedTaskTime } from "../server/task-timing";
 import { mergeKnownImages, useButlerLiveSnapshot, useKnownImages, useRuntimeSnapshot, useShellSnapshot } from "./live-state";
 import { useDesktopSessionControls } from "./useDesktopSessionControls";
 import type {
@@ -1045,7 +1046,7 @@ export function ButlerSurface({
                         <div className="entry-head">
                           <span>{message.role.startsWith("assistant") ? "Butler" : "You"}</span>
                           <span className="entry-head-meta">
-                            <span>{formatJumpLabel(message.at)}</span>
+                            <span>{formatJumpLabel(message.at)}{message.taskDurationMs !== null ? ` (${formatElapsedTaskTime(message.taskDurationMs)})` : ""}</span>
                           </span>
                         </div>
                         <div className="entry-text">

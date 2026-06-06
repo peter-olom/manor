@@ -8,6 +8,7 @@ import {
 } from "./butler-self-improvement.js";
 import { contractRequiresVisualProof } from "./proof-policy.js";
 import { ButlerStateStore } from "./state-store.js";
+import { elapsedTaskDurationMs, stripElapsedTaskTimeFooter } from "./task-timing.js";
 import type { WorkspaceProjectDirectory } from "./repo-worktree.js";
 import type {
   ButlerThreadCallbackView,
@@ -197,23 +198,30 @@ export function buildOperatorThreadGuard(
 export function serializeMessages(session: AgentSession): ButlerMessageView[] {
   const serialized: ButlerMessageView[] = [];
   let hideAssistantReply = false;
+  let latestUserMessageAt: number | null = null;
 
   for (let index = 0; index < session.messages.length; index += 1) {
     const message = session.messages[index];
-    const role = "role" in message && typeof message.role === "string" ? message.role : "unknown";
     const record = message as unknown as Record<string, unknown>;
-    const text =
+    const role = typeof record.role === "string" ? record.role : "unknown";
+    const at = extractMessageTimestamp(record);
+    const rawText =
       "content" in message && contentToText(message.content).trim()
         ? contentToText(message.content)
         : typeof record.errorMessage === "string"
           ? record.errorMessage
           : "";
+    const text = stripElapsedTaskTimeFooter(rawText);
+    const taskDurationMs = role === "assistant" ? elapsedTaskDurationMs(latestUserMessageAt, at) : null;
 
     if (role === "user") {
+      latestUserMessageAt = at;
       hideAssistantReply = isButlerBackgroundPromptText(text);
       if (hideAssistantReply) {
         continue;
       }
+    } else if (role === "user-with-attachments") {
+      latestUserMessageAt = at;
     } else if (hideAssistantReply && role === "assistant") {
       continue;
     }
@@ -222,7 +230,8 @@ export function serializeMessages(session: AgentSession): ButlerMessageView[] {
       id: `message-${index}`,
       role,
       text,
-      at: extractMessageTimestamp(record),
+      at,
+      taskDurationMs,
       kind: "message" as const
     };
 

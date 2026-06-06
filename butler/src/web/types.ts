@@ -19,6 +19,7 @@ export type ButlerMessageRecord = {
   role: string;
   text: string;
   at: number | null;
+  taskDurationMs: number | null;
   kind: "message";
 };
 
@@ -463,6 +464,7 @@ export type CodexThreadDetail = CodexThreadSummary & {
       status: string;
       text: string;
       at: number;
+      taskDurationMs: number | null;
     }>;
   }>;
   eventLog: Array<{
