@@ -53,6 +53,7 @@ export type ConfirmDialogState = {
   title: string;
   message: string;
   confirmLabel: string;
+  busyLabel?: string;
   tone: "danger";
   onConfirm: () => Promise<void>;
 };

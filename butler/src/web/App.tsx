@@ -533,6 +533,7 @@ export function App() {
         ? "This removes the scratchpad item, linked Codex thread, and local artifacts."
         : "This removes the scratchpad item permanently.",
       confirmLabel: "Cleanup",
+      busyLabel: "Cleaning…",
       tone: "danger",
       onConfirm: cleanup
     });
@@ -978,7 +979,7 @@ export function App() {
                 Cancel
               </button>
               <button className="panel-action panel-action-danger" onClick={() => void handleConfirmAction()} disabled={confirmBusy}>
-                {confirmBusy ? "Deleting…" : confirmDialog.confirmLabel}
+                {confirmBusy ? (confirmDialog.busyLabel ?? "Deleting…") : confirmDialog.confirmLabel}
               </button>
             </div>
           </div>
