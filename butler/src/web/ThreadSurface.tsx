@@ -15,7 +15,7 @@ import { ArrowDownIcon, AttachmentIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ProjectArtifactsPanel } from "./ProjectArtifactsPanel";
 import { ThreadArtifactsPanel } from "./ThreadArtifactsPanel";
-import { appendElapsedTaskTime } from "../server/task-timing";
+import { formatElapsedTaskTime } from "../server/task-timing";
 import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
 import { RuntimePanel } from "./RuntimePanel";
 import { SandSpinner } from "./SandSpinner";
@@ -548,20 +548,13 @@ export function ThreadSurface({
   const activeRunItems = useMemo(
     () =>
       activeThread
-        ? activeThread.turns.flatMap((turn) => {
-            const visibleItems = turn.items.filter(shouldRenderItem);
-            const firstUserAt = visibleItems.find((item) => item.type === "userMessage")?.at ?? turn.startedAt;
-            const finalAgentItemId = turn.completedAt ? visibleItems.findLast((item) => item.type === "agentMessage")?.id : null;
-            return visibleItems.map((item) => ({
+        ? activeThread.turns.flatMap((turn) =>
+            turn.items.filter(shouldRenderItem).map((item) => ({
               ...item,
-              text:
-                item.id === finalAgentItemId
-                  ? appendElapsedTaskTime(item.text, firstUserAt, turn.completedAt, "Codex")
-                  : item.text,
               turnId: turn.id,
               turnStartedAt: turn.startedAt
-            }));
-          })
+            }))
+          )
         : [],
     [activeThread]
   );
@@ -1234,7 +1227,7 @@ export function ThreadSurface({
                         <div className="entry-head">
                           <span>{itemLabel(row.item.type)}</span>
                           <span className="entry-head-meta">
-                            <span>{formatJumpLabel(row.item.at)}</span>
+                            <span>{formatJumpLabel(row.item.at)}{row.item.taskDurationMs !== null ? ` (${formatElapsedTaskTime(row.item.taskDurationMs)})` : ""}</span>
                             <button className="entry-copy" onClick={() => void copyText(row.item.text || "", "Message copied")} aria-label="Copy message" title="Copy message">
                               <CopyIcon />
                             </button>

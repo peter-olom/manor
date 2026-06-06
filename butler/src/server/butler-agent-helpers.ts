@@ -2,7 +2,7 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
 
 import { ButlerStateStore } from "./state-store.js";
-import { appendElapsedTaskTime } from "./task-timing.js";
+import { elapsedTaskDurationMs, stripElapsedTaskTimeFooter } from "./task-timing.js";
 import type { WorkspaceProjectDirectory } from "./repo-worktree.js";
 import type {
   ButlerThreadCallbackView,
@@ -205,7 +205,8 @@ export function serializeMessages(session: AgentSession): ButlerMessageView[] {
         : typeof record.errorMessage === "string"
           ? record.errorMessage
           : "";
-    const text = role === "assistant" ? appendElapsedTaskTime(rawText, latestUserMessageAt, at, "Butler") : rawText;
+    const text = stripElapsedTaskTimeFooter(rawText);
+    const taskDurationMs = role === "assistant" ? elapsedTaskDurationMs(latestUserMessageAt, at) : null;
 
     if (role === "user") {
       latestUserMessageAt = at;
@@ -224,6 +225,7 @@ export function serializeMessages(session: AgentSession): ButlerMessageView[] {
       role,
       text,
       at,
+      taskDurationMs,
       kind: "message" as const
     };
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { appendElapsedTaskTime, formatElapsedTaskTime } from "../src/server/task-timing.js";
+import { elapsedTaskDurationMs, formatElapsedTaskTime, stripElapsedTaskTimeFooter } from "../src/server/task-timing.js";
 
 test("formatElapsedTaskTime keeps elapsed task time operator friendly", () => {
   assert.equal(formatElapsedTaskTime(0), "0s");
@@ -11,16 +11,14 @@ test("formatElapsedTaskTime keeps elapsed task time operator friendly", () => {
   assert.equal(formatElapsedTaskTime(7_260_000), "2h 1m");
 });
 
-test("appendElapsedTaskTime appends an idempotent final response footer", () => {
-  const once = appendElapsedTaskTime("Done.", 1_000, 66_000, "Butler");
-  assert.equal(once, "Done.\n\n_Task time (Butler): 1m 5s_");
-
-  const twice = appendElapsedTaskTime(once, 1_000, 2_000, "Butler");
-  assert.equal(twice, "Done.\n\n_Task time (Butler): 1s_");
+test("elapsedTaskDurationMs returns duration only for complete timing inputs", () => {
+  assert.equal(elapsedTaskDurationMs(1_000, 66_000), 65_000);
+  assert.equal(elapsedTaskDurationMs(null, 66_000), null);
+  assert.equal(elapsedTaskDurationMs(66_000, 1_000), null);
 });
 
-test("appendElapsedTaskTime skips incomplete timing inputs", () => {
-  assert.equal(appendElapsedTaskTime("Done.", null, 66_000, "Codex"), "Done.");
-  assert.equal(appendElapsedTaskTime("Done.", 66_000, 1_000, "Codex"), "Done.");
-  assert.equal(appendElapsedTaskTime("   ", 1_000, 66_000, "Codex"), "   ");
+test("stripElapsedTaskTimeFooter removes legacy body footers without changing message text", () => {
+  assert.equal(stripElapsedTaskTimeFooter("Done.\n\n_Task time (Butler): 1m 5s_"), "Done.");
+  assert.equal(stripElapsedTaskTimeFooter("Done.\n\n_Task time (Codex): 1s_"), "Done.");
+  assert.equal(stripElapsedTaskTimeFooter("Done."), "Done.");
 });

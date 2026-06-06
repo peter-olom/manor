@@ -89,7 +89,7 @@ import {
   describeProofExpectation,
   isSharedShellRepoBootstrapTask,
 } from "./thread-contract.js";
-import { appendElapsedTaskTime } from "./task-timing.js";
+import { elapsedTaskDurationMs, stripElapsedTaskTimeFooter } from "./task-timing.js";
 import {
   applyWorkspacePreviewDefaults,
   formatWorkspaceBootstrapLines,
@@ -236,15 +236,16 @@ export class ButlerAgentService extends EventEmitter {
 
         const id = typeof item.id === "string" ? item.id : null;
         const role = typeof item.role === "string" ? item.role : null;
-        const text = typeof item.text === "string" ? item.text : null;
+        const text = typeof item.text === "string" ? stripElapsedTaskTimeFooter(item.text) : null;
         const at = typeof item.at === "number" && Number.isFinite(item.at) ? item.at : null;
+        const taskDurationMs = typeof item.taskDurationMs === "number" && Number.isFinite(item.taskDurationMs) ? item.taskDurationMs : null;
         const kind = item.kind === "message" || typeof item.kind !== "string" ? "message" : null;
 
         if (!id || !role || !text || !kind) {
           continue;
         }
 
-        this.operatorMessages.push({ id, role, text, at, kind });
+        this.operatorMessages.push({ id, role, text, at, taskDurationMs, kind });
       }
 
       this.operatorMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
@@ -276,14 +277,15 @@ export class ButlerAgentService extends EventEmitter {
 
         const id = typeof item.id === "string" ? item.id : null;
         const role = typeof item.role === "string" ? item.role : null;
-        const text = typeof item.text === "string" ? item.text : null;
+        const text = typeof item.text === "string" ? stripElapsedTaskTimeFooter(item.text) : null;
         const at = typeof item.at === "number" && Number.isFinite(item.at) ? item.at : null;
+        const taskDurationMs = typeof item.taskDurationMs === "number" && Number.isFinite(item.taskDurationMs) ? item.taskDurationMs : null;
 
         if (!id || !role || !text) {
           continue;
         }
 
-        this.operatorMessages.push({ id, role, text, at, kind: "message" });
+        this.operatorMessages.push({ id, role, text, at, taskDurationMs, kind: "message" });
       }
 
       this.operatorMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
@@ -503,8 +505,8 @@ export class ButlerAgentService extends EventEmitter {
       recordGatedCloseout(this.store, threadId, closeoutBlocker);
       throw new Error(closeoutBlocker);
     }
-    const timedText = appendElapsedTaskTime(text.trim(), callback.requestedAt, at, "Butler");
-    upsertOperatorMessage(this.operatorMessages, messageId, timedText, at);
+    const taskDurationMs = elapsedTaskDurationMs(callback.requestedAt, at);
+    upsertOperatorMessage(this.operatorMessages, messageId, text.trim(), at, taskDurationMs);
     this.noteThreadFocus(threadId, "closeout");
     this.deliveredCloseoutIds.add(closeoutId);
     applyPostedCloseout(callback, {

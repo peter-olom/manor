@@ -1,6 +1,8 @@
-export type TaskTimeLabel = "Butler" | "Codex";
-
 const TIMING_FOOTER_PATTERN = /\n\n_Task time \((Butler|Codex)\): [^_]+_$/;
+
+export function stripElapsedTaskTimeFooter(text: string): string {
+  return text.replace(TIMING_FOOTER_PATTERN, "");
+}
 
 export function formatElapsedTaskTime(durationMs: number): string {
   const safeDurationMs = Math.max(0, Math.floor(durationMs));
@@ -20,11 +22,10 @@ export function formatElapsedTaskTime(durationMs: number): string {
   return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
 }
 
-export function appendElapsedTaskTime(text: string, startedAt: number | null, completedAt: number | null, label: TaskTimeLabel): string {
-  if (!text.trim() || typeof startedAt !== "number" || typeof completedAt !== "number" || completedAt < startedAt) {
-    return text;
+export function elapsedTaskDurationMs(startedAt: number | null, completedAt: number | null): number | null {
+  if (typeof startedAt !== "number" || typeof completedAt !== "number" || completedAt < startedAt) {
+    return null;
   }
 
-  const stripped = text.replace(TIMING_FOOTER_PATTERN, "");
-  return `${stripped}\n\n_Task time (${label}): ${formatElapsedTaskTime(completedAt - startedAt)}_`;
+  return completedAt - startedAt;
 }

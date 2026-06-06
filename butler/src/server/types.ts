@@ -701,6 +701,7 @@ export interface CodexItemView {
   status: "started" | "completed";
   text: string;
   at: number;
+  taskDurationMs: number | null;
 }
 
 export interface CodexTurnView {
@@ -742,6 +743,7 @@ export interface ButlerMessageView {
   role: string;
   text: string;
   at: number | null;
+  taskDurationMs: number | null;
   kind: "message";
 }
 
