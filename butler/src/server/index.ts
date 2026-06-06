@@ -447,7 +447,7 @@ app.get("/api/events", (request, response) => {
   sseHub.addClient(response);
   sseHub.sendInitialEvents(response);
   const heartbeat = setInterval(() => {
-    response.write(`event: heartbeat\ndata: ${Date.now()}\n\n`);
+    sseHub.writeHeartbeat(response);
   }, sseHub.heartbeatMs);
 
   const cleanup = () => {
