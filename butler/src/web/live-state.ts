@@ -172,6 +172,10 @@ export function selectOutdatedBootstrapChannels(
   return BOOTSTRAP_CHANNELS.filter((channel) => serverVersions[channel] > appliedVersions[channel]);
 }
 
+export function shouldApplyChannelEvent(appliedVersion: number, eventVersion: number | null): boolean {
+  return eventVersion === null || eventVersion >= appliedVersion;
+}
+
 export function shouldRefreshLiveStateOnPageEvent(input: {
   now: number;
   lastRefreshAt: number;
@@ -265,15 +269,20 @@ async function refreshBootstrap(
 
 function applyBootstrapSnapshotIfCurrent(
   payload: { bootstrap: BootstrapSnapshot; images: ImageReference[] | null },
-  requestedAt: number
+  requestedAt: number,
+  forcedChannels: readonly BootstrapChannel[] = []
 ): void {
   if (payload.images) {
     mergeBootstrapImages(payload.images);
   }
 
   const appliedAt = Date.now();
+  const channelsToApply = new Set<BootstrapChannel>([
+    ...selectBootstrapChannelsToApply(lastStateEventAtByChannel, requestedAt),
+    ...forcedChannels
+  ]);
   lastBootstrapRefreshAt = appliedAt;
-  for (const channel of selectBootstrapChannelsToApply(lastStateEventAtByChannel, requestedAt)) {
+  for (const channel of channelsToApply) {
     lastStateEventAtByChannel[channel] = appliedAt;
     lastAppliedChannelVersion[channel] = Math.max(
       lastAppliedChannelVersion[channel],
@@ -291,8 +300,12 @@ function applyBootstrapSnapshotIfCurrent(
   }
 }
 
-function refreshLiveStateFromServer(includeImages = false, shouldApply?: () => boolean): Promise<void> {
-  if (!includeImages && !shouldApply && bootstrapRefreshInFlight) {
+function refreshLiveStateFromServer(
+  includeImages = false,
+  shouldApply?: () => boolean,
+  forcedChannels: readonly BootstrapChannel[] = []
+): Promise<void> {
+  if (!includeImages && !shouldApply && forcedChannels.length === 0 && bootstrapRefreshInFlight) {
     return bootstrapRefreshInFlight;
   }
 
@@ -303,14 +316,14 @@ function refreshLiveStateFromServer(includeImages = false, shouldApply?: () => b
       return;
     }
 
-    applyBootstrapSnapshotIfCurrent(payload, requestedAt);
+    applyBootstrapSnapshotIfCurrent(payload, requestedAt, forcedChannels);
   }).finally(() => {
     if (bootstrapRefreshInFlight === refresh) {
       bootstrapRefreshInFlight = null;
     }
   });
 
-  if (!includeImages && !shouldApply) {
+  if (!includeImages && !shouldApply && forcedChannels.length === 0) {
     bootstrapRefreshInFlight = refresh;
   }
   return refresh;
@@ -323,13 +336,18 @@ function getCurrentVisibilityState(): DocumentVisibilityState | "unknown" {
   return document.visibilityState;
 }
 
-function requestVisiblePageResync(minIntervalMs: number): void {
+function requestVisiblePageResync(
+  minIntervalMs: number,
+  forcedChannels: readonly BootstrapChannel[] = []
+): void {
   if (typeof window === "undefined") {
     return;
   }
 
   const now = Date.now();
+  const shouldForceStaleChannels = forcedChannels.length > 0;
   if (
+    !shouldForceStaleChannels &&
     !shouldRefreshLiveStateOnPageEvent({
       now,
       lastRefreshAt: lastBootstrapRefreshAt,
@@ -341,7 +359,11 @@ function requestVisiblePageResync(minIntervalMs: number): void {
     return;
   }
 
-  void refreshLiveStateFromServer(false).catch((error) => {
+  if (shouldForceStaleChannels && getCurrentVisibilityState() === "hidden") {
+    return;
+  }
+
+  void refreshLiveStateFromServer(false, undefined, forcedChannels).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     setTransportState({
       connected: false,
@@ -354,11 +376,12 @@ function requestVisiblePageResync(minIntervalMs: number): void {
 }
 
 function requestVersionGapResync(): void {
-  if (selectOutdatedBootstrapChannels(lastAppliedChannelVersion, lastServerChannelVersion).length === 0) {
+  const outdatedChannels = selectOutdatedBootstrapChannels(lastAppliedChannelVersion, lastServerChannelVersion);
+  if (outdatedChannels.length === 0) {
     return;
   }
 
-  requestVisiblePageResync(VERSION_GAP_RESYNC_MIN_INTERVAL_MS);
+  requestVisiblePageResync(VERSION_GAP_RESYNC_MIN_INTERVAL_MS, outdatedChannels);
 }
 
 function installPageResyncHandlers(): void {
@@ -439,9 +462,14 @@ function openEventSource(): void {
       return;
     }
 
+    const version = parseEventChannelVersion(event, channel);
+    if (!shouldApplyChannelEvent(lastAppliedChannelVersion[channel], version)) {
+      markTransportAlive();
+      return;
+    }
+
     markTransportAlive();
     lastStateEventAtByChannel[channel] = Date.now();
-    const version = parseEventChannelVersion(event, channel);
     if (version !== null) {
       applyChannelVersion(channel, version);
     }

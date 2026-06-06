@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   selectBootstrapChannelsToApply,
   selectOutdatedBootstrapChannels,
+  shouldApplyChannelEvent,
   shouldRefreshLiveStateOnPageEvent
 } from "../../src/web/live-state.js";
 
@@ -83,4 +84,31 @@ test("page activity refreshes stale visible live state without polling hidden ta
     }),
     false
   );
+});
+
+test("version-gap repair selects stale channels independent of page refresh throttle", () => {
+  assert.deepEqual(
+    selectOutdatedBootstrapChannels(
+      {
+        shell: 10,
+        butlerLive: 10,
+        runtime: 10,
+        threads: 10
+      },
+      {
+        shell: 11,
+        butlerLive: 10,
+        runtime: 10,
+        threads: 11
+      }
+    ),
+    ["shell", "threads"]
+  );
+});
+
+test("older versioned state events cannot overwrite a newer bootstrap correction", () => {
+  assert.equal(shouldApplyChannelEvent(2, 1), false);
+  assert.equal(shouldApplyChannelEvent(2, 2), true);
+  assert.equal(shouldApplyChannelEvent(2, 3), true);
+  assert.equal(shouldApplyChannelEvent(2, null), true);
 });
