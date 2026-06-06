@@ -40,6 +40,7 @@ import {
   formatJumpLabel,
   formatVerificationSummary,
   groupTimelineItems,
+  hasCommittedPendingButlerPrompt,
   readStoredValue,
   scrollElementToCenteredTarget,
   scrollElementToLatest,
@@ -429,15 +430,14 @@ export function ButlerSurface({
   }, [history.messages]);
 
   useEffect(() => {
-    if (!pendingButlerText || !shell) {
+    if (!pendingButlerText) {
       return;
     }
 
-    const hasCommittedPrompt = history.messages.some((message) => message.role.startsWith("user") && message.text === pendingButlerText);
-    if (hasCommittedPrompt || (!shell.butler.pending && !shell.butler.isStreaming)) {
+    if (hasCommittedPendingButlerPrompt(history.messages, pendingButlerText)) {
       setPendingButlerText(null);
     }
-  }, [history.messages, pendingButlerText, shell]);
+  }, [history.messages, pendingButlerText]);
 
   useEffect(() => {
     return () => {
