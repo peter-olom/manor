@@ -200,6 +200,8 @@ export async function runButlerPrompt(
   let promptError: unknown = null;
 
   try {
+    dropTrailingFailedButlerTurns(access);
+    sanitizeButlerSessionMessages(access);
     await access.session.prompt(text, {
       ...(access.session.isStreaming ? { streamingBehavior: "followUp" as const } : {}),
       images: await access.imageStore.loadPiImages(imageReferenceIds)
@@ -207,6 +209,9 @@ export async function runButlerPrompt(
   } catch (error) {
     promptError = error;
   } finally {
+    if (promptError) {
+      dropTrailingFailedButlerTurns(access);
+    }
     sanitizeButlerSessionMessages(access);
   }
 

@@ -303,15 +303,88 @@ export function sanitizeHistoryMessage(message: unknown): { message: unknown; ch
   };
 }
 
+function getToolCallIdAliases(value: string): string[] {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  const pipeIndex = trimmed.indexOf("|");
+  return pipeIndex >= 0 ? [trimmed, trimmed.slice(0, pipeIndex)] : [trimmed];
+}
+
+function collectAssistantToolCallIds(message: unknown): string[] {
+  if (!message || typeof message !== "object") {
+    return [];
+  }
+
+  const record = message as Record<string, unknown>;
+  if (record.role !== "assistant" || !Array.isArray(record.content)) {
+    return [];
+  }
+
+  return record.content.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+
+    const part = entry as Record<string, unknown>;
+    if (part.type !== "toolCall" && part.type !== "function_call") {
+      return [];
+    }
+
+    if (typeof part.id === "string") {
+      return getToolCallIdAliases(part.id);
+    }
+    if (typeof part.call_id === "string") {
+      return getToolCallIdAliases(part.call_id);
+    }
+    return [];
+  });
+}
+
+function getToolResultCallIds(message: unknown): string[] {
+  if (!message || typeof message !== "object") {
+    return [];
+  }
+
+  const record = message as Record<string, unknown>;
+  if (record.role !== "toolResult" && record.type !== "function_call_output") {
+    return [];
+  }
+
+  if (typeof record.toolCallId === "string") {
+    return getToolCallIdAliases(record.toolCallId);
+  }
+  if (typeof record.call_id === "string") {
+    return getToolCallIdAliases(record.call_id);
+  }
+  return [];
+}
+
 export function sanitizeHistoryMessages(messages: AgentMessage[]): { messages: AgentMessage[]; changed: boolean } {
   let changed = false;
-  const nextMessages = messages.map((message) => {
+  const knownToolCallIds = new Set<string>();
+  const nextMessages: AgentMessage[] = [];
+
+  for (const message of messages) {
     const sanitized = sanitizeHistoryMessage(message);
     if (sanitized.changed) {
       changed = true;
     }
-    return sanitized.message as AgentMessage;
-  });
+
+    const nextMessage = sanitized.message as AgentMessage;
+    const resultCallIds = getToolResultCallIds(nextMessage);
+    if (resultCallIds.length > 0 && !resultCallIds.some((id) => knownToolCallIds.has(id))) {
+      changed = true;
+      continue;
+    }
+
+    nextMessages.push(nextMessage);
+    for (const id of collectAssistantToolCallIds(nextMessage)) {
+      knownToolCallIds.add(id);
+    }
+  }
 
   return { messages: changed ? nextMessages : messages, changed };
 }
