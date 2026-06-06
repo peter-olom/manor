@@ -89,6 +89,7 @@ import {
   describeProofExpectation,
   isSharedShellRepoBootstrapTask,
 } from "./thread-contract.js";
+import { appendElapsedTaskTime } from "./task-timing.js";
 import {
   applyWorkspacePreviewDefaults,
   formatWorkspaceBootstrapLines,
@@ -502,7 +503,8 @@ export class ButlerAgentService extends EventEmitter {
       recordGatedCloseout(this.store, threadId, closeoutBlocker);
       throw new Error(closeoutBlocker);
     }
-    upsertOperatorMessage(this.operatorMessages, messageId, text.trim(), at);
+    const timedText = appendElapsedTaskTime(text.trim(), callback.requestedAt, at, "Butler");
+    upsertOperatorMessage(this.operatorMessages, messageId, timedText, at);
     this.noteThreadFocus(threadId, "closeout");
     this.deliveredCloseoutIds.add(closeoutId);
     applyPostedCloseout(callback, {

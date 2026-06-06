@@ -15,6 +15,7 @@ import { ArrowDownIcon, AttachmentIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ProjectArtifactsPanel } from "./ProjectArtifactsPanel";
 import { ThreadArtifactsPanel } from "./ThreadArtifactsPanel";
+import { appendElapsedTaskTime } from "../server/task-timing";
 import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
 import { RuntimePanel } from "./RuntimePanel";
 import { SandSpinner } from "./SandSpinner";
@@ -547,7 +548,20 @@ export function ThreadSurface({
   const activeRunItems = useMemo(
     () =>
       activeThread
-        ? activeThread.turns.flatMap((turn) => turn.items.filter(shouldRenderItem).map((item) => ({ ...item, turnId: turn.id, turnStartedAt: turn.startedAt })))
+        ? activeThread.turns.flatMap((turn) => {
+            const visibleItems = turn.items.filter(shouldRenderItem);
+            const firstUserAt = visibleItems.find((item) => item.type === "userMessage")?.at ?? turn.startedAt;
+            const finalAgentItemId = turn.completedAt ? visibleItems.findLast((item) => item.type === "agentMessage")?.id : null;
+            return visibleItems.map((item) => ({
+              ...item,
+              text:
+                item.id === finalAgentItemId
+                  ? appendElapsedTaskTime(item.text, firstUserAt, turn.completedAt, "Codex")
+                  : item.text,
+              turnId: turn.id,
+              turnStartedAt: turn.startedAt
+            }));
+          })
         : [],
     [activeThread]
   );
