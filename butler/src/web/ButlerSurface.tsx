@@ -50,6 +50,12 @@ type ChecklistThread = CodexThreadSummary & {
   supervisionChecklist: NonNullable<CodexThreadSummary["supervisionChecklist"]>;
 };
 
+type PendingButlerMessage = {
+  id: string;
+  text: string;
+  at: number;
+};
+
 function getActivitySummary(turn: ButlerActivityTurn): string {
   const thinkingCount = turn.items.filter((item) => item.kind === "thinking").length;
   const toolCount = turn.items.filter((item) => item.kind === "tool").length;
@@ -293,7 +299,7 @@ export function ButlerSurface({
   const [showRuntime, setShowRuntime] = useState(() => readStoredValue(BUTLER_RUNTIME_VISIBILITY_STORAGE_KEY) === "true");
   const [showChecklists, setShowChecklists] = useState(false);
   const [activeJumpId, setActiveJumpId] = useState<string | null>(null);
-  const [pendingButlerText, setPendingButlerText] = useState<string | null>(null);
+  const [pendingButlerMessage, setPendingButlerMessage] = useState<PendingButlerMessage | null>(null);
   const [hideButlerActivityFrom, setHideButlerActivityFrom] = useState<number | null>(null);
   const [butlerDraftPrefill, setButlerDraftPrefill] = useState<{ id: string; text: string } | null>(null);
   const [butlerAttachments, setButlerAttachments] = useState<FileReference[]>([]);
@@ -429,15 +435,17 @@ export function ButlerSurface({
   }, [history.messages]);
 
   useEffect(() => {
-    if (!pendingButlerText || !shell) {
+    if (!pendingButlerMessage || !shell) {
       return;
     }
 
-    const hasCommittedPrompt = history.messages.some((message) => message.role.startsWith("user") && message.text === pendingButlerText);
+    const hasCommittedPrompt = history.messages.some(
+      (message) => message.role.startsWith("user") && message.text === pendingButlerMessage.text && (message.at ?? pendingButlerMessage.at) >= pendingButlerMessage.at - 1000
+    );
     if (hasCommittedPrompt || (!shell.butler.pending && !shell.butler.isStreaming)) {
-      setPendingButlerText(null);
+      setPendingButlerMessage(null);
     }
-  }, [history.messages, pendingButlerText, shell]);
+  }, [history.messages, pendingButlerMessage, shell]);
 
   useEffect(() => {
     return () => {
@@ -458,7 +466,7 @@ export function ButlerSurface({
     if (composerPrefill.attachment.mimeType.startsWith("image/")) {
       mergeKnownImages([composerPrefill.attachment]);
     }
-    setPendingButlerText(null);
+    setPendingButlerMessage(null);
     setButlerDraftPrefill({ id: composerPrefill.id, text: composerPrefill.text });
   }, [composerPrefill]);
 
@@ -529,9 +537,10 @@ export function ButlerSurface({
 
     const attachmentCount = composerAttachments.length;
     const messageSummary = text || formatAttachmentSummary(attachmentCount);
+    const sentAt = Date.now();
     setButlerAttachments([]);
     setFollowButler(true);
-    setPendingButlerText(messageSummary);
+    setPendingButlerMessage({ id: `pending-${sentAt}`, text: messageSummary, at: sentAt });
     setHideButlerActivityFrom(null);
 
     try {
@@ -545,7 +554,7 @@ export function ButlerSurface({
         ...(inputItems.length > 0 ? { inputItems } : {})
       });
     } catch (error) {
-      setPendingButlerText(null);
+      setPendingButlerMessage(null);
       setButlerAttachments((current) => (current.length === 0 ? composerAttachments : current));
       throw error;
     }
@@ -783,16 +792,17 @@ export function ButlerSurface({
 
       return [
         ...timestampedRows,
-        ...(pendingButlerText ? [{ id: `pending-${pendingButlerText}`, kind: "pending" as const, text: pendingButlerText }] : []),
+        ...(pendingButlerMessage ? [{ id: pendingButlerMessage.id, kind: "pending" as const, text: pendingButlerMessage.text, at: pendingButlerMessage.at }] : []),
         ...((shell?.butler.pending || shell?.butler.isStreaming) ? [{ id: "butler-working", kind: "working" as const }] : []),
         ...(activeButlerActivityTurn ? [{ id: `${activeButlerActivityTurn.id}-live`, kind: "activity" as const, turn: activeButlerActivityTurn, active: true }] : [])
       ];
     },
-    [activeButlerActivityTurn, butlerMessagesWithTimes, pendingButlerText, shell?.butler.isStreaming, shell?.butler.pending, visibleButlerActivityTurns]
+    [activeButlerActivityTurn, butlerMessagesWithTimes, pendingButlerMessage, shell?.butler.isStreaming, shell?.butler.pending, visibleButlerActivityTurns]
   );
   const deferredRows = useDeferredValue(butlerConversationRows);
+  const renderedRows = pendingButlerMessage ? butlerConversationRows : deferredRows;
   const latestButlerActivityKey =
-    deferredRows.length > 0 ? `${deferredRows[deferredRows.length - 1].id}:${deferredRows.length}` : "empty";
+    renderedRows.length > 0 ? `${renderedRows[renderedRows.length - 1].id}:${renderedRows.length}` : "empty";
 
   useLayoutEffect(() => {
     if (!followButler || butlerPrependAnchorRef.current) {
@@ -807,12 +817,12 @@ export function ButlerSurface({
       return;
     }
     const scroller = butlerScrollRef.current;
-    if (!scroller || deferredRows.length === 0) {
+    if (!scroller || renderedRows.length === 0) {
       return;
     }
     scroller.scrollTop = Math.min(butlerViewState.scrollTop, Math.max(0, scroller.scrollHeight - scroller.clientHeight));
     butlerScrollTopRef.current = scroller.scrollTop;
-  }, [deferredRows.length, followButler]);
+  }, [renderedRows.length, followButler]);
 
   useEffect(() => {
     if (!followButler || butlerPrependAnchorRef.current || typeof ResizeObserver === "undefined") {
@@ -838,13 +848,13 @@ export function ButlerSurface({
     }
 
     return () => observer.disconnect();
-  }, [followButler, latestButlerActivityKey, showRuntime, deferredRows.length]);
+  }, [followButler, latestButlerActivityKey, showRuntime, renderedRows.length]);
 
   const messageImages = useMemo(
     () =>
       buildMessageImageLookup(
-        deferredRows
-          .filter((row): row is Extract<(typeof deferredRows)[number], { kind: "message" }> => row.kind === "message")
+        renderedRows
+          .filter((row): row is Extract<(typeof renderedRows)[number], { kind: "message" }> => row.kind === "message")
           .map((row) => ({
             id: row.id,
             text: row.message.text || "",
@@ -852,7 +862,7 @@ export function ButlerSurface({
           })),
         knownImages
       ),
-    [deferredRows, knownImages]
+    [renderedRows, knownImages]
   );
 
   const activeRuntimeLeaseCount = (runtime?.stacks.filter((stack) => stack.status !== "stopped").length ?? 0) +
@@ -959,7 +969,7 @@ export function ButlerSurface({
               }
             }}
           >
-            {deferredRows.length === 0 ? (
+            {renderedRows.length === 0 ? (
               live ? (
                 <div className="empty">Ask Butler about run status, next steps, or which run you should open.</div>
               ) : (
@@ -974,7 +984,7 @@ export function ButlerSurface({
               )
             ) : (
               <div className="conversation-list">
-                {deferredRows.map((row) => {
+                {renderedRows.map((row) => {
                   if (row.kind === "working") {
                     return (
                       <div key={row.id} className="conversation-row is-assistant">

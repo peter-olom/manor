@@ -324,7 +324,11 @@ export function getButlerLiveSnapshot(access: ButlerAgentSessionAccess): ButlerL
   return {
     messages: visibleMessages.slice(Math.max(0, messageCount - SNAPSHOT_MESSAGE_TAIL_LIMIT)),
     messageCount,
-    activityTurns: getButlerActivityTurns(access)
+    activityTurns: getButlerActivityTurns(access, {
+      maxCompletedTurns: 4,
+      maxItemsPerTurn: 10,
+      maxItemText: 700
+    })
   };
 }
 
