@@ -498,7 +498,9 @@ test("system prompt routes direct Manor improvement requests to self-improvement
   });
 
   assert.match(prompt, /start_self_improvement/);
-  assert.match(prompt, /direct Manor, Butler, Codex worker, preview, runtime broker, supervision, restart, or dogfooding improvements/);
+  assert.match(prompt, /request_manor_restart/);
+  assert.match(prompt, /read_manor_restart_status/);
+  assert.match(prompt, /direct Manor, Butler, Codex worker, preview, runtime broker, supervision, restart-controller, or dogfooding improvements/);
   assert.match(prompt, /missing credentials, operator approval, external outages, or app-specific bugs outside Manor/);
   assert.match(task, /If the change has any UI implication/);
   assert.match(task, /screenshot or video proof/);

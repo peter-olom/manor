@@ -314,6 +314,18 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     ]
   },
   {
+    name: "request_manor_restart",
+    label: "Restart Manor",
+    description: "Ask the host controller to restart or update Manor after exact operator confirmation.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while the restart is scheduled." }]
+  },
+  {
+    name: "read_manor_restart_status",
+    label: "Restart status",
+    description: "Read the active or latest host-controller restart/update run.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while reading restart outcome." }]
+  },
+  {
     name: "run_supervision_smoke_test",
     label: "Run supervision smoke test",
     description: "Start a synthetic Codex job to verify Butler can privately steer worker callbacks.",

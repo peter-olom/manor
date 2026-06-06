@@ -37,6 +37,8 @@ jobs:
             dockerfile: docker/preview-egress/Dockerfile
           - image: runtime-broker
             dockerfile: docker/runtime-broker/Dockerfile
+          - image: host-controller
+            dockerfile: docker/host-controller/Dockerfile
           - image: playwright
             dockerfile: docker/playwright/Dockerfile
           - image: desktop-proof

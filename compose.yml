@@ -43,10 +43,12 @@ services:
       http_proxy: http://egress:3128
       https_proxy: http://egress:3128
       all_proxy: http://egress:3128
-      NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright,desktop-proof
-      no_proxy: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright,desktop-proof
+      NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
+      no_proxy: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
       RUNTIME_BROKER_URL: http://runtime-broker:8090
       RUNTIME_BROKER_TOKEN: "${RUNTIME_BROKER_TOKEN:?Run ./install.sh or set RUNTIME_BROKER_TOKEN in .env.}"
+      MANOR_HOST_CONTROLLER_URL: http://host-controller:8092
+      MANOR_HOST_CONTROLLER_TOKEN: "${MANOR_HOST_CONTROLLER_TOKEN:?Run ./install.sh or set MANOR_HOST_CONTROLLER_TOKEN in .env.}"
     volumes:
       - butler-state:/state
       - butler-home:/home/butler/.codex
@@ -61,6 +63,8 @@ services:
       egress:
         condition: service_healthy
       runtime-broker:
+        condition: service_started
+      host-controller:
         condition: service_started
     restart: unless-stopped
     healthcheck:
@@ -120,8 +124,8 @@ services:
       http_proxy: http://egress:3128
       https_proxy: http://egress:3128
       all_proxy: http://egress:3128
-      NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright,desktop-proof
-      no_proxy: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,playwright,desktop-proof
+      NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
+      no_proxy: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
     depends_on:
       egress:
         condition: service_healthy
@@ -235,6 +239,32 @@ services:
       - control
       - preview
 
+  host-controller:
+    image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-host-controller:${MANOR_IMAGE_TAG:-latest}"
+    container_name: manor-host-controller
+    hostname: manor-host-controller
+    environment:
+      MANOR_ROLE: host-controller
+      MANOR_HOST_CONTROLLER_PORT: 8092
+      MANOR_HOST_PROJECT_DIR: ${MANOR_HOST_PROJECT_DIR:-${PWD:-/opt/manor}}
+      MANOR_HOST_CONTROLLER_STATE_DIR: /state
+      MANOR_HOST_BUTLER_HEALTH_URL: http://butler:8080/livez
+      MANOR_HOST_CONTROLLER_TOKEN: "${MANOR_HOST_CONTROLLER_TOKEN:?Run ./install.sh or set MANOR_HOST_CONTROLLER_TOKEN in .env.}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${MANOR_HOST_PROJECT_DIR:-${PWD:-.}}:${MANOR_HOST_PROJECT_DIR:-${PWD:-/opt/manor}}
+      - host-controller-state:/state
+    working_dir: ${MANOR_HOST_PROJECT_DIR:-${PWD:-/opt/manor}}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--silent", "--fail", "http://127.0.0.1:8092/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - control
+
   playwright:
     image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-playwright:${MANOR_IMAGE_TAG:-latest}"
     container_name: manor-playwright
@@ -292,4 +322,5 @@ volumes:
   playwright-state:
   preview-egress-state:
   repos:
+  host-controller-state:
   runtime-broker-state:

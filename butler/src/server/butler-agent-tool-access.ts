@@ -3,6 +3,7 @@ import { defineTool } from "@mariozechner/pi-coding-agent";
 import type { TSchema } from "@sinclair/typebox";
 
 import type { FileReferenceStore } from "./file-store.js";
+import type { HostControllerClient } from "./host-controller-client.js";
 import type { ImageReferenceStore } from "./image-store.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-templates.js";
@@ -43,6 +44,7 @@ export type ButlerToolDefiner = <TParams extends Record<string, unknown>>(defini
 export type ButlerAgentToolAccess = {
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;
+  hostController: HostControllerClient;
   runtimeBroker: RuntimeBrokerClient;
   serviceTemplateRegistry: ServiceTemplateRegistry;
   imageStore: ImageReferenceStore;

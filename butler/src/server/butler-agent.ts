@@ -70,17 +70,12 @@ import { upsertOperatorMessage } from "./butler-operator-messages.js";
 import { readButlerAuthStatus, readCodexAuthStatus } from "./auth-status.js";
 import { notifyDirectCodexMessage, type DirectCodexMessageAccess, type DirectCodexMessagePingInput } from "./direct-codex-message.js";
 import { type FileReferenceStore } from "./file-store.js";
+import { HostControllerClient } from "./host-controller-client.js";
 import { buildOnboardingView } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
 import { formatProjectPolicyContextLines } from "./project-artifacts-policies.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
-import {
-  ensureTaskWorktree,
-  resolveExistingWorkspaceCwd,
-  resolveWorkspaceBranchName,
-  resolveWorkspaceProjectInfo,
-  taskRequiresManagedWorktree
-} from "./repo-worktree.js";
+import { ensureTaskWorktree, resolveExistingWorkspaceCwd, resolveWorkspaceBranchName, resolveWorkspaceProjectInfo, taskRequiresManagedWorktree } from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
@@ -90,11 +85,7 @@ import {
   isSharedShellRepoBootstrapTask,
 } from "./thread-contract.js";
 import { elapsedTaskDurationMs, stripElapsedTaskTimeFooter } from "./task-timing.js";
-import {
-  applyWorkspacePreviewDefaults,
-  formatWorkspaceBootstrapLines,
-  inspectWorkspaceBootstrap
-} from "./workspace-bootstrap.js";
+import { applyWorkspacePreviewDefaults, formatWorkspaceBootstrapLines, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 import type {
   AppSnapshot,
   AppShellSnapshot,
@@ -121,6 +112,7 @@ const CALLBACK_RECOVERY_TIMEOUT_MS = 30_000;
 export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
   private readonly codexClient: CodexAppServerClient;
+  private readonly hostController: HostControllerClient;
   private readonly runtimeBroker: RuntimeBrokerClient;
   private readonly serviceTemplateRegistry: ServiceTemplateRegistry;
   private readonly imageStore: ImageReferenceStore;
@@ -179,6 +171,7 @@ export class ButlerAgentService extends EventEmitter {
   constructor(options: {
     store: ButlerStateStore;
     codexClient: CodexAppServerClient;
+    hostController: HostControllerClient;
     runtimeBroker: RuntimeBrokerClient;
     serviceTemplateRegistry: ServiceTemplateRegistry;
     imageStore: ImageReferenceStore;
@@ -193,6 +186,7 @@ export class ButlerAgentService extends EventEmitter {
     super();
     this.store = options.store;
     this.codexClient = options.codexClient;
+    this.hostController = options.hostController;
     this.runtimeBroker = options.runtimeBroker;
     this.serviceTemplateRegistry = options.serviceTemplateRegistry;
     this.imageStore = options.imageStore;
