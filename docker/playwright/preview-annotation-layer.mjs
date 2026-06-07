@@ -94,7 +94,7 @@ function installPreviewAnnotationLayerInPage() {
         white-space: nowrap;
       }
       .brand-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--manor-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--manor-accent) 18%, transparent); }
-      select, button {
+      select, button, input {
         appearance: none;
         min-height: 32px;
         border: 1px solid var(--manor-line);
@@ -106,12 +106,17 @@ function installPreviewAnnotationLayerInPage() {
       }
       button { cursor: pointer; }
       select { max-width: 150px; padding-right: 22px; }
-      button:hover, select:hover { border-color: var(--manor-line-strong); background: color-mix(in srgb, var(--manor-panel) 84%, var(--manor-accent) 16%); }
-      button:focus-visible, select:focus-visible { outline: 2px solid var(--manor-accent); outline-offset: 2px; }
+      input { min-width: 210px; background: var(--manor-surface); user-select: text; }
+      input::placeholder { color: var(--manor-muted); opacity: 1; }
+      input:disabled { color: var(--manor-muted); opacity: 0.72; }
+      button:hover, select:hover, input:hover { border-color: var(--manor-line-strong); background: color-mix(in srgb, var(--manor-panel) 84%, var(--manor-accent) 16%); }
+      button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--manor-accent); outline-offset: 2px; }
       button[aria-pressed="true"] { border-color: var(--manor-accent); background: var(--manor-accent); color: #fff; }
       .swatch { width: 28px; min-width: 28px; padding: 0; border: 2px solid transparent; background: var(--swatch); }
       .swatch[aria-pressed="true"] { border-color: var(--manor-ink); box-shadow: inset 0 0 0 2px var(--manor-surface); }
       .divider { width: 1px; height: 24px; background: var(--manor-line); margin: 0 2px; }
+      .mark-select { width: 76px; }
+      .note-input { width: min(260px, 26vw); }
       .status { max-width: 180px; color: var(--manor-muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .tab {
         position: fixed;
@@ -132,6 +137,7 @@ function installPreviewAnnotationLayerInPage() {
       @media (max-width: 720px) {
         .toolbar { left: 8px; right: 8px; top: 8px; transform: none; flex-wrap: wrap; justify-content: center; }
         .brand { flex: 1 1 100%; justify-content: center; cursor: grab; }
+        .note-input { flex: 1 1 100%; width: auto; }
       }
     </style>
     <div class="stage" aria-label="Manor preview annotation layer">
@@ -145,6 +151,8 @@ function installPreviewAnnotationLayerInPage() {
         <span class="divider" aria-hidden="true"></span>
         <button type="button" data-action="undo">Undo</button>
         <button type="button" data-action="clear">Clear</button>
+        <select class="mark-select" aria-label="Selected annotation"></select>
+        <input class="note-input" type="text" maxlength="280" placeholder="Draw a mark to add comment" aria-label="Comment for selected annotation" disabled>
         <select class="target" aria-label="Annotation target"></select>
         <button type="button" data-action="batch">Queue batch</button>
         <button type="button" data-action="insert">Insert batch</button>
@@ -159,6 +167,8 @@ function installPreviewAnnotationLayerInPage() {
   const svg = root.querySelector(".overlay");
   const toolbar = root.querySelector(".toolbar");
   const targetSelect = root.querySelector(".target");
+  const markSelect = root.querySelector(".mark-select");
+  const noteInput = root.querySelector(".note-input");
   const status = root.querySelector(".status");
 
   function updateTheme() {
@@ -199,6 +209,28 @@ function installPreviewAnnotationLayerInPage() {
     targetSelect.innerHTML = readTargets()
       .map((target) => `<option value="${escapeAttribute(target.id)}">${escapeText(target.label)}</option>`)
       .join("");
+  }
+
+  function activeMark() {
+    return state.marks.find((mark) => mark.id === state.activeId) ?? null;
+  }
+
+  function syncCommentControls() {
+    const selected = activeMark();
+    markSelect.disabled = state.marks.length === 0;
+    markSelect.innerHTML = state.marks.length === 0
+      ? `<option value="">No marks</option>`
+      : state.marks.map((mark) => `<option value="${escapeAttribute(mark.id)}">#${mark.number}</option>`).join("");
+    markSelect.value = selected?.id ?? "";
+    noteInput.disabled = !selected;
+    noteInput.value = selected?.note ?? "";
+    noteInput.placeholder = selected ? `Comment for #${selected.number}` : "Draw a mark to add comment";
+  }
+
+  function setActiveMark(id) {
+    state.activeId = state.marks.some((mark) => mark.id === id) ? id : state.marks.at(-1)?.id ?? null;
+    render();
+    syncCommentControls();
   }
 
   function clamp(value, min, max) {
@@ -269,9 +301,8 @@ function installPreviewAnnotationLayerInPage() {
     }
     const id = `annotation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     state.marks.push({ ...rect, id, color: state.color, number: state.nextNumber++, note: "" });
-    state.activeId = id;
     showStatus(`${state.marks.length} annotation${state.marks.length === 1 ? "" : "s"} ready`);
-    render();
+    setActiveMark(id);
   }
 
   function interactiveTarget(target) {
@@ -376,6 +407,19 @@ function installPreviewAnnotationLayerInPage() {
   toolbar.addEventListener("pointerup", endToolbarDrag);
   toolbar.addEventListener("pointercancel", endToolbarDrag);
 
+  markSelect.addEventListener("change", () => {
+    setActiveMark(markSelect.value);
+  });
+
+  noteInput.addEventListener("input", () => {
+    const selected = activeMark();
+    if (!selected) {
+      return;
+    }
+    selected.note = noteInput.value.slice(0, 280);
+    showStatus(`Comment saved for #${selected.number}`);
+  });
+
   async function commitBatch(intent) {
     const annotations = state.marks.map(({ id, x, y, width, height, color, number, note }) => ({
       id, x, y, width, height, color, number, note: note || ""
@@ -423,12 +467,14 @@ function installPreviewAnnotationLayerInPage() {
       state.nextNumber = Math.max(1, state.nextNumber - 1);
       showStatus(`${state.marks.length} annotation${state.marks.length === 1 ? "" : "s"} ready`);
       render();
+      syncCommentControls();
     } else if (action === "clear") {
       state.marks = [];
       state.nextNumber = 1;
       state.activeId = null;
       showStatus("Cleared annotations");
       render();
+      syncCommentControls();
     } else if (action === "batch") {
       void commitBatch("batch");
     } else if (action === "insert") {
@@ -443,6 +489,7 @@ function installPreviewAnnotationLayerInPage() {
   document.documentElement.appendChild(host);
   updateTheme();
   renderTargets();
+  syncCommentControls();
   setMode("select");
   render();
 
