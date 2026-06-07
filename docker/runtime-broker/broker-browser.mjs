@@ -508,7 +508,6 @@ export function createBrokerBrowserController(options) {
           headers,
           cookies,
           preflightStages,
-          previewAnnotationLayer: true,
           scope: {
             kind: "preview",
             leaseId: request.params.leaseId,

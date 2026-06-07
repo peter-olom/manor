@@ -21,6 +21,7 @@ export type RuntimeServerAccess = {
   codexClient: CodexAppServerClient;
   runtimeBroker: RuntimeBrokerClient;
   runtimeBrokerUrl: string;
+  previewAnnotationSecret: string;
   scratchPadStore: ScratchPadStore;
   serviceTemplateRegistry: ServiceTemplateRegistry;
   store: ButlerStateStore;

@@ -27,6 +27,7 @@ import {
   resolvePreviewRefererRouteUrl,
   resolvePreviewRouteUrl
 } from "./preview-gateway.js";
+import { registerPreviewAnnotationRoutes } from "./preview-annotation-routes.js";
 import { reconcileDesktopSessions, registerDesktopSessionRoutes } from "./server-desktop-routes.js";
 import {
   ButlerSseHub,
@@ -73,6 +74,7 @@ const fileReferenceDir = process.env.MANOR_FILE_REFERENCE_DIR ?? path.join(artif
 const jsonBodyLimit = process.env.MANOR_UPLOAD_JSON_LIMIT ?? "64mb";
 const imageUploadBinaryLimit = process.env.MANOR_IMAGE_UPLOAD_BINARY_LIMIT ?? `${Math.ceil(MAX_IMAGE_BYTES / (1024 * 1024))}mb`;
 const fileUploadBinaryLimit = process.env.MANOR_FILE_UPLOAD_BINARY_LIMIT ?? `${Math.ceil(MAX_FILE_BYTES / (1024 * 1024))}mb`;
+const previewAnnotationSecret = crypto.randomBytes(32).toString("hex");
 
 const uiStatePath = path.join(stateDir, "butler-ui.json");
 const scratchPadStatePath = path.join(stateDir, "scratch-pad.json");
@@ -155,6 +157,7 @@ runtimeAccess = {
   codexClient,
   runtimeBroker,
   runtimeBrokerUrl,
+  previewAnnotationSecret,
   scratchPadStore,
   serviceTemplateRegistry,
   store
@@ -174,7 +177,7 @@ const previewProxy = httpProxy.createProxyServer({
   selfHandleResponse: true,
   ws: true
 });
-registerPreviewProxyResponseRewriter(previewProxy);
+registerPreviewProxyResponseRewriter(previewProxy, runtimeAccess);
 
 let viteDevServer: import("vite").ViteDevServer | null = null;
 const imageUploadBinaryParser = express.raw({
@@ -316,6 +319,13 @@ registerScratchPadRoutes({
   butlerAgent,
   imageStore,
   fileStore
+});
+registerPreviewAnnotationRoutes({
+  app,
+  previewAnnotationSecret,
+  runtimeBrokerToken,
+  sseHub,
+  store
 });
 
 app.get("/api/memory/jobs/:threadId", (request, response) => {
@@ -470,44 +480,6 @@ app.get("/api/events", (request, response) => {
 });
 
 
-function normalizeInternalAnnotationPrefillTarget(input: unknown): { kind: "butler" } | { kind: "thread"; threadId: string } | null {
-  if (!input || typeof input !== "object") {
-    return null;
-  }
-  const id = typeof (input as { id?: unknown }).id === "string" ? (input as { id: string }).id.trim() : "";
-  if (id === "butler") {
-    return { kind: "butler" };
-  }
-  if (id.startsWith("thread:")) {
-    const threadId = id.slice("thread:".length).trim();
-    return threadId ? { kind: "thread", threadId } : null;
-  }
-  return null;
-}
-
-app.post("/api/internal/browser-annotations/insert", (request, response) => {
-  if (!runtimeBrokerToken || request.header("x-manor-broker-token") !== runtimeBrokerToken) {
-    response.status(403).json({ error: "Forbidden" });
-    return;
-  }
-  const target = normalizeInternalAnnotationPrefillTarget(request.body?.target);
-  const text = typeof request.body?.text === "string" ? request.body.text.trim() : "";
-  if (!target || !text) {
-    response.status(400).json({ error: "target and text are required" });
-    return;
-  }
-  if (target.kind === "thread" && !store.getThread(target.threadId)) {
-    response.status(404).json({ error: "Thread not found" });
-    return;
-  }
-  sseHub.broadcastComposerPrefill({
-    id: crypto.randomUUID(),
-    target,
-    text
-  });
-  sseHub.broadcastToast("Preview annotations inserted into the composer.", "success", 2200);
-  response.json({ ok: true });
-});
 
 app.post("/api/chat/messages", async (request, response) => {
   const text = typeof request.body?.text === "string" ? request.body.text : "";

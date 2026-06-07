@@ -11,7 +11,9 @@ function installPreviewAnnotationLayerInPage() {
   host.style.zIndex = "2147483647";
   host.style.pointerEvents = "none";
   host.dataset.manorPreviewAnnotationLayer = "true";
-  const root = host.attachShadow({ mode: "open" });
+  const root = host.attachShadow({ mode: "closed" });
+  const config = window.__manorPreviewAnnotationConfig && typeof window.__manorPreviewAnnotationConfig === "object" ? window.__manorPreviewAnnotationConfig : {};
+  const commitAnnotations = typeof config.commit === "function" ? config.commit : typeof window.manorPreviewAnnotationCommit === "function" ? window.manorPreviewAnnotationCommit : null;
 
   const state = {
     mode: "select",
@@ -20,18 +22,39 @@ function installPreviewAnnotationLayerInPage() {
     draft: null,
     nextNumber: 1,
     hidden: false,
-    activeId: null
+    activeId: null,
+    toolbar: { dragging: null }
   };
-  const colors = ["#ff6b2c", "#2563eb", "#16a34a", "#dc2626"];
+  const colors = ["#ff6b2c", "#1f5eff", "#0f7a65", "#c2410c"];
 
   root.innerHTML = `
     <style>
       :host { all: initial; }
       .stage {
+        --manor-bg: #eef2f7;
+        --manor-panel: #f5f7fb;
+        --manor-surface: #ffffff;
+        --manor-ink: #10233f;
+        --manor-muted: #5f6f84;
+        --manor-line: #d6dde8;
+        --manor-line-strong: #b7c4d4;
+        --manor-accent: #1f5eff;
+        --manor-shadow: rgba(15, 23, 42, 0.18);
         position: fixed;
         inset: 0;
         pointer-events: none;
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-family: "IBM Plex Sans", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .stage.is-dark {
+        --manor-bg: #0b1422;
+        --manor-panel: #101b2d;
+        --manor-surface: #152238;
+        --manor-ink: #f2f7ff;
+        --manor-muted: #97adc8;
+        --manor-line: #263852;
+        --manor-line-strong: #355072;
+        --manor-accent: #6ea8ff;
+        --manor-shadow: rgba(0, 0, 0, 0.35);
       }
       .stage.is-drawing { cursor: crosshair; pointer-events: auto; }
       svg { position: absolute; inset: 0; width: 100vw; height: 100vh; pointer-events: none; }
@@ -44,57 +67,77 @@ function installPreviewAnnotationLayerInPage() {
         display: flex;
         align-items: center;
         gap: 6px;
+        max-width: calc(100vw - 24px);
         padding: 8px;
+        border: 1px solid var(--manor-line);
         border-radius: 14px;
-        background: rgba(18, 24, 38, 0.94);
-        color: #fff;
-        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.22);
+        background: color-mix(in srgb, var(--manor-surface) 94%, transparent);
+        color: var(--manor-ink);
+        box-shadow: 0 8px 24px var(--manor-shadow);
         pointer-events: auto;
         user-select: none;
+        touch-action: none;
+        backdrop-filter: saturate(120%);
       }
-      .brand { font-size: 12px; font-weight: 700; letter-spacing: 0.01em; margin: 0 6px 0 2px; white-space: nowrap; }
+      .toolbar.is-dragging { cursor: grabbing; }
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 32px;
+        padding: 0 8px 0 4px;
+        color: var(--manor-ink);
+        cursor: grab;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+        white-space: nowrap;
+      }
+      .brand-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--manor-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--manor-accent) 18%, transparent); }
       select, button {
         appearance: none;
-        border: 0;
-        border-radius: 10px;
         min-height: 32px;
+        border: 1px solid var(--manor-line);
+        border-radius: 10px;
         padding: 0 10px;
-        background: rgba(255,255,255,0.1);
-        color: #fff;
+        background: var(--manor-panel);
+        color: var(--manor-ink);
         font: 600 12px/1 system-ui, sans-serif;
-        cursor: pointer;
       }
-      select { max-width: 150px; }
-      button:hover { background: rgba(255,255,255,0.18); }
-      button:focus-visible, select:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
-      button[aria-pressed="true"] { background: #fff; color: #111827; }
+      button { cursor: pointer; }
+      select { max-width: 150px; padding-right: 22px; }
+      button:hover, select:hover { border-color: var(--manor-line-strong); background: color-mix(in srgb, var(--manor-panel) 84%, var(--manor-accent) 16%); }
+      button:focus-visible, select:focus-visible { outline: 2px solid var(--manor-accent); outline-offset: 2px; }
+      button[aria-pressed="true"] { border-color: var(--manor-accent); background: var(--manor-accent); color: #fff; }
       .swatch { width: 28px; min-width: 28px; padding: 0; border: 2px solid transparent; background: var(--swatch); }
-      .swatch[aria-pressed="true"] { border-color: #fff; box-shadow: inset 0 0 0 2px rgba(17, 24, 39, 0.32); }
-      .divider { width: 1px; height: 24px; background: rgba(255,255,255,0.18); margin: 0 2px; }
+      .swatch[aria-pressed="true"] { border-color: var(--manor-ink); box-shadow: inset 0 0 0 2px var(--manor-surface); }
+      .divider { width: 1px; height: 24px; background: var(--manor-line); margin: 0 2px; }
+      .status { max-width: 180px; color: var(--manor-muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .tab {
         position: fixed;
         right: 16px;
         top: 16px;
         min-height: 34px;
         border-radius: 999px;
-        background: rgba(18, 24, 38, 0.94);
-        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.22);
+        border-color: var(--manor-line);
+        background: var(--manor-surface);
+        box-shadow: 0 8px 24px var(--manor-shadow);
         pointer-events: auto;
       }
       .hidden .toolbar, .hidden svg { display: none; }
-      .hidden .tab { display: inline-flex; }
+      .hidden .tab { display: inline-flex; align-items: center; }
       .tab { display: none; }
       .mark rect, .draft { vector-effect: non-scaling-stroke; }
       .badge-text { font: 700 12px system-ui, sans-serif; fill: #fff; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
-      @media (max-width: 640px) {
+      @media (max-width: 720px) {
         .toolbar { left: 8px; right: 8px; top: 8px; transform: none; flex-wrap: wrap; justify-content: center; }
-        .brand { width: 100%; text-align: center; margin: 0 0 2px; }
+        .brand { flex: 1 1 100%; justify-content: center; cursor: grab; }
       }
     </style>
     <div class="stage" aria-label="Manor preview annotation layer">
       <svg class="overlay" aria-hidden="true"></svg>
       <div class="toolbar" role="toolbar" aria-label="Manor preview annotation tools">
-        <span class="brand">Annotate preview</span>
+        <span class="brand" data-drag-handle title="Drag annotation toolbar"><span class="brand-dot" aria-hidden="true"></span>Annotate preview</span>
         <button type="button" data-mode="select" aria-pressed="true" title="Select lets the page receive clicks">Select</button>
         <button type="button" data-mode="draw" aria-pressed="false" title="Draw numbered rectangles on the preview">Draw</button>
         <span class="divider" aria-hidden="true"></span>
@@ -106,6 +149,7 @@ function installPreviewAnnotationLayerInPage() {
         <button type="button" data-action="batch">Queue batch</button>
         <button type="button" data-action="insert">Insert batch</button>
         <button type="button" data-action="hide" title="Hide annotation toolbar">Hide</button>
+        <span class="status" aria-live="polite"></span>
       </div>
       <button type="button" class="tab" data-action="show">Show annotations</button>
     </div>
@@ -113,10 +157,29 @@ function installPreviewAnnotationLayerInPage() {
 
   const stage = root.querySelector(".stage");
   const svg = root.querySelector(".overlay");
+  const toolbar = root.querySelector(".toolbar");
   const targetSelect = root.querySelector(".target");
+  const status = root.querySelector(".status");
+
+  function updateTheme() {
+    let preference = null;
+    try {
+      preference = window.localStorage?.getItem("manor.butler.themePreference") ?? null;
+    } catch {
+      preference = null;
+    }
+    const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches === true;
+    stage.classList.toggle("is-dark", preference === "dark" || (preference !== "light" && prefersDark));
+  }
+
+  function showStatus(message, tone = "info") {
+    status.textContent = message;
+    status.style.color = tone === "error" ? "#ef4444" : "var(--manor-muted)";
+  }
 
   function readTargets() {
-    const provided = Array.isArray(window.__manorPreviewAnnotationTargets) ? window.__manorPreviewAnnotationTargets : [];
+    const configuredTargets = Array.isArray(config.targets) ? config.targets : null;
+    const provided = configuredTargets ?? (Array.isArray(window.__manorPreviewAnnotationTargets) ? window.__manorPreviewAnnotationTargets : []);
     const normalized = provided
       .filter((target) => target && typeof target.id === "string" && typeof target.label === "string")
       .map((target) => ({ id: target.id, label: target.label }))
@@ -124,9 +187,17 @@ function installPreviewAnnotationLayerInPage() {
     return normalized.length > 0 ? normalized : [{ id: "butler", label: "Butler" }];
   }
 
+  function escapeAttribute(value) {
+    return String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+  }
+
+  function escapeText(value) {
+    return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  }
+
   function renderTargets() {
     targetSelect.innerHTML = readTargets()
-      .map((target) => `<option value="${target.id.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}">${target.label.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</option>`)
+      .map((target) => `<option value="${escapeAttribute(target.id)}">${escapeText(target.label)}</option>`)
       .join("");
   }
 
@@ -199,11 +270,16 @@ function installPreviewAnnotationLayerInPage() {
     const id = `annotation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     state.marks.push({ ...rect, id, color: state.color, number: state.nextNumber++, note: "" });
     state.activeId = id;
+    showStatus(`${state.marks.length} annotation${state.marks.length === 1 ? "" : "s"} ready`);
     render();
   }
 
+  function interactiveTarget(target) {
+    return target instanceof Element && target.closest("button,select,input,textarea,a");
+  }
+
   stage.addEventListener("pointerdown", (event) => {
-    if (state.mode !== "draw" || state.hidden || event.target.closest("button")) {
+    if (state.mode !== "draw" || state.hidden || interactiveTarget(event.target)) {
       return;
     }
     event.preventDefault();
@@ -237,7 +313,7 @@ function installPreviewAnnotationLayerInPage() {
     const draft = state.draft;
     state.draft = null;
     if (commit) {
-      const rect = {
+      addMark({
         x: draft.x,
         y: draft.y,
         width: draft.width,
@@ -245,8 +321,7 @@ function installPreviewAnnotationLayerInPage() {
         color: draft.color,
         number: draft.number,
         note: ""
-      };
-      addMark(rect);
+      });
     } else {
       render();
     }
@@ -255,21 +330,76 @@ function installPreviewAnnotationLayerInPage() {
   stage.addEventListener("pointerup", (event) => finishDraft(event, true), true);
   stage.addEventListener("pointercancel", (event) => finishDraft(event, false), true);
 
+  toolbar.addEventListener("pointerdown", (event) => {
+    if (interactiveTarget(event.target) && !event.target.closest("[data-drag-handle]")) {
+      return;
+    }
+    if (!event.target.closest("[data-drag-handle]")) {
+      return;
+    }
+    const rect = toolbar.getBoundingClientRect();
+    state.toolbar.dragging = {
+      pointerId: event.pointerId,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top
+    };
+    toolbar.classList.add("is-dragging");
+    toolbar.style.transform = "none";
+    toolbar.style.left = `${rect.left}px`;
+    toolbar.style.top = `${rect.top}px`;
+    try {
+      toolbar.setPointerCapture(event.pointerId);
+    } catch {}
+    event.preventDefault();
+  });
+
+  toolbar.addEventListener("pointermove", (event) => {
+    const drag = state.toolbar.dragging;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    const width = toolbar.offsetWidth || 1;
+    const height = toolbar.offsetHeight || 1;
+    toolbar.style.left = `${clamp(event.clientX - drag.offsetX, 8, Math.max(8, window.innerWidth - width - 8))}px`;
+    toolbar.style.top = `${clamp(event.clientY - drag.offsetY, 8, Math.max(8, window.innerHeight - height - 8))}px`;
+  });
+
+  function endToolbarDrag(event) {
+    const drag = state.toolbar.dragging;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    state.toolbar.dragging = null;
+    toolbar.classList.remove("is-dragging");
+  }
+
+  toolbar.addEventListener("pointerup", endToolbarDrag);
+  toolbar.addEventListener("pointercancel", endToolbarDrag);
+
   async function commitBatch(intent) {
     const annotations = state.marks.map(({ id, x, y, width, height, color, number, note }) => ({
       id, x, y, width, height, color, number, note: note || ""
     }));
     if (annotations.length === 0) {
+      showStatus("Draw an annotation first", "error");
       return;
     }
     const payload = {
       intent,
+      leaseId: typeof config.leaseId === "string" ? config.leaseId : typeof window.__manorPreviewAnnotationLeaseId === "string" ? window.__manorPreviewAnnotationLeaseId : "",
       targetId: targetSelect.value || "butler",
       annotations,
       page: { title: document.title || "", url: location.href }
     };
-    if (typeof window.manorPreviewAnnotationCommit === "function") {
-      await window.manorPreviewAnnotationCommit(payload);
+    if (!commitAnnotations) {
+      showStatus("Annotation capture is unavailable", "error");
+      return;
+    }
+    try {
+      await commitAnnotations(payload);
+      showStatus(`${intent === "insert" ? "Inserted" : "Queued"} ${annotations.length} annotation${annotations.length === 1 ? "" : "s"}`);
+    } catch (error) {
+      showStatus(error instanceof Error ? error.message : "Annotation capture failed", "error");
     }
   }
 
@@ -291,11 +421,13 @@ function installPreviewAnnotationLayerInPage() {
         state.activeId = state.marks.at(-1)?.id ?? null;
       }
       state.nextNumber = Math.max(1, state.nextNumber - 1);
+      showStatus(`${state.marks.length} annotation${state.marks.length === 1 ? "" : "s"} ready`);
       render();
     } else if (action === "clear") {
       state.marks = [];
       state.nextNumber = 1;
       state.activeId = null;
+      showStatus("Cleared annotations");
       render();
     } else if (action === "batch") {
       void commitBatch("batch");
@@ -309,9 +441,13 @@ function installPreviewAnnotationLayerInPage() {
   });
 
   document.documentElement.appendChild(host);
+  updateTheme();
   renderTargets();
   setMode("select");
   render();
+
+  window.addEventListener("storage", updateTheme);
+  window.matchMedia?.("(prefers-color-scheme: dark)").addEventListener?.("change", updateTheme);
 
   window.__manorPreviewAnnotationLayer = {
     installed: true,
@@ -324,7 +460,7 @@ function installPreviewAnnotationLayerInPage() {
       state.activeId = null;
       render();
     },
-    getMarks: () => state.marks.map(({ x, y, width, height, color, number }) => ({ x, y, width, height, color, number }))
+    getMarks: () => state.marks.map(({ id, x, y, width, height, color, number, note }) => ({ id, x, y, width, height, color, number, note: note || "" }))
   };
 }
 

@@ -4,8 +4,9 @@ import { test } from "node:test";
 
 const source = await readFile(new URL("./broker-browser.mjs", import.meta.url), "utf8");
 
-test("preview browser sessions request the in-page annotation layer", () => {
-  assert.match(source, /previewAnnotationLayer:\s*true/);
+test("preview browser proof sessions do not request the annotation layer by default", () => {
+  const previewSessionBlock = source.slice(source.indexOf('app.post("/leases/:leaseId/browser-sessions"'), source.indexOf('app.post("/browser/sessions"'));
+  assert.doesNotMatch(previewSessionBlock, /previewAnnotationLayer:\s*true/);
 });
 
 test("generic browser sessions do not enable annotations by default", () => {
