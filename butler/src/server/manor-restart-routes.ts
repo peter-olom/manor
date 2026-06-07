@@ -1,16 +1,25 @@
 import type { Express } from "express";
 
 import { isRestartAuthorizeAction } from "./manor-restart-authorization.js";
+import type { ManorRestartRun } from "./host-controller-client.js";
 import type { ManorRestartRequestView } from "./types.js";
 
 type ManorRestartRouteAgent = {
   requestManorRestartAuthorization(input: {
+    mode?: unknown;
+    target?: unknown;
+    gitRef?: unknown;
+    imageTag?: unknown;
     targetCommit?: unknown;
     targetTag?: unknown;
+    includeDesktop?: unknown;
+    build?: unknown;
+    update?: unknown;
     reason?: unknown;
     details?: unknown;
   }): ManorRestartRequestView;
   authorizeManorRestartRequest(requestId: string): ManorRestartRequestView;
+  startAuthorizedManorRestart(requestId: string): Promise<{ restartRequest: ManorRestartRequestView; run: ManorRestartRun }>;
   dismissManorRestartRequest(requestId: string): void;
 };
 
@@ -24,10 +33,12 @@ export function registerManorRestartRoutes(app: Express, butlerAgent: ManorResta
     }
   });
 
-  app.post("/api/manor/restart-requests/:requestId/authorize", (request, response) => {
+  app.post("/api/manor/restart-requests/:requestId/authorize", async (request, response) => {
     try {
       requireAuthorizeAction(request.body?.operatorAction);
-      response.json({ ok: true, restartRequest: butlerAgent.authorizeManorRestartRequest(readRequestId(request.params.requestId)) });
+      const restartRequest = butlerAgent.authorizeManorRestartRequest(readRequestId(request.params.requestId));
+      const result = await butlerAgent.startAuthorizedManorRestart(restartRequest.id);
+      response.status(202).json({ ok: true, restartRequest: result.restartRequest, run: result.run });
     } catch (error) {
       response.status(409).json({ error: error instanceof Error ? error.message : String(error) });
     }

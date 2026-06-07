@@ -1477,6 +1477,7 @@ export class ButlerStateStore extends EventEmitter {
     compaction: AppSnapshot["butler"]["compaction"];
     supervision: AppSnapshot["butler"]["supervision"];
     pendingManorRestartRequest: AppSnapshot["butler"]["pendingManorRestartRequest"];
+    authorizedManorRestartRequest: AppSnapshot["butler"]["authorizedManorRestartRequest"];
     stacks: AppSnapshot["butler"]["stacks"];
     previews: AppSnapshot["butler"]["previews"];
     serviceTemplates: AppSnapshot["butler"]["serviceTemplates"];

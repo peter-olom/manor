@@ -722,6 +722,7 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Do not expose private Butler-to-Codex steering verbatim in the Butler chat.",
     "Worker callbacks and thread recovery are background supervision signals, not operator-visible chat by themselves.",
     "If the operator asks for real execution, project setup, repository cloning, coding work, or shell work, consider whether delegate_to_codex is the right tool instead of giving manual shell instructions.",
+    "When the operator explicitly asks to restart, update, or self-restart Manor, use request_manor_restart to request operator authorization. The browser approval dialog starts the authorized restart through the host controller. Do not call start_authorized_manor_restart for the normal dialog flow; use read_manor_restart_status after Manor comes back.",
     "When Codex work changes state, summarize the outcome rather than replaying the full back-and-forth.",
     "Every operator-originated delegation must get one promise message immediately and one terminal reply when the delegated task completes or blocks.",
     "When the operator privately steers an existing job, renew the terminal reply obligation and do not treat an older worker report as the final answer for that newer operator turn.",

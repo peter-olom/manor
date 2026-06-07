@@ -123,6 +123,7 @@ Manor runs as one Docker Compose project with these services:
 - `butler-gateway`: the host-facing reverse proxy for the Butler UI
 - `codex-box`: the trusted worker container that owns repos, tools, and long-running work
 - `runtime-broker`: the Docker control plane for previews, stack leases, and disposable services
+- `host-controller`: the narrow restart/update sidecar that survives Manor appliance restarts
 - `egress`: the restricted outbound proxy for Butler and Codex
 - `preview-egress`: the separate outbound path for preview runtimes
 - `playwright`: the browser automation sidecar
@@ -137,6 +138,7 @@ Pushes to `main` and version tags publish these images to GHCR:
 - `ghcr.io/peter-olom/manor-egress`
 - `ghcr.io/peter-olom/manor-preview-egress`
 - `ghcr.io/peter-olom/manor-runtime-broker`
+- `ghcr.io/peter-olom/manor-host-controller`
 - `ghcr.io/peter-olom/manor-playwright`
 - `ghcr.io/peter-olom/manor-desktop-proof`
 
@@ -343,7 +345,9 @@ Current trust boundaries:
 - Butler and Codex go out through the restricted `egress` proxy
 - preview runtimes keep private runtime networking and get direct outbound internet by default
 - optional preview egress profiles remain available for stricter outbound control
-- the runtime broker is the only service that talks to the Docker socket
+- the runtime broker talks to the Docker socket for scoped preview, stack, service, browser, and proof capabilities
+- the host controller talks to the Docker socket only for the fixed Manor restart/update capability
+- the host controller uses its own token, separate from the runtime broker token
 - preview and service traffic stays on private Docker networks
 - Butler routes previews instead of publishing arbitrary app ports on the host
 
@@ -382,6 +386,7 @@ For contribution workflow and validation expectations, see the [contributing gui
 - `docker/butler-gateway/`: Butler reverse proxy
 - `docker/codex-box/`: Codex worker image and harness CLI
 - `docker/egress/`: restricted outbound proxy
+- `docker/host-controller/`: restart/update controller with its own scoped token
 - `docker/preview-egress/`: optional restrictive preview egress control plane
 - `docker/runtime-broker/`: preview, service, and stack runtime broker
 - `docker/playwright/`: browser automation image

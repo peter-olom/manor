@@ -59,8 +59,15 @@ export type ConfirmDialogState = {
 
 export type ManorRestartRequest = {
   id: string;
+  mode: "auto" | "source" | "image" | null;
+  target: "current" | "latest" | null;
+  gitRef: string | null;
+  imageTag: string | null;
   targetCommit: string | null;
   targetTag: string | null;
+  includeDesktop: boolean;
+  build: boolean | null;
+  update: boolean | null;
   reason: string | null;
   details: string | null;
   requestedAt: number;
@@ -757,6 +764,7 @@ export type ShellSnapshot = {
       callbacks: ButlerThreadCallback[];
     };
     pendingManorRestartRequest: ManorRestartRequest | null;
+    authorizedManorRestartRequest: ManorRestartRequest | null;
     scratchPad: ScratchPad;
     lastError: string | null;
     compose: {

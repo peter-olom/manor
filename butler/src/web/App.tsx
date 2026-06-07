@@ -7,6 +7,7 @@ import { ButlerSurface } from "./ButlerSurface";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { ButlerTabIcon, CloseIcon, CopyIcon, ScratchPadTabIcon, SetupTabIcon, TerminalTabIcon, ThemeIcon, ThreadsIcon, TrashIcon } from "./icons";
 import {
+  clearPendingManorRestartRequest,
   mergeKnownImages,
   useShellSnapshot,
   useServerToastEvent,
@@ -579,7 +580,8 @@ export function App() {
     setRestartAuthorizeBusy(true);
     try {
       await postJson(`/api/manor/restart-requests/${request.id}/authorize`, { operatorAction: "authorize_restart" });
-      showToast("Manor restart authorized", "success");
+      clearPendingManorRestartRequest(request.id);
+      showToast("Manor restart started", "success");
     } catch (error) {
       showErrorToast(error);
     } finally {
@@ -595,6 +597,7 @@ export function App() {
     setRestartAuthorizeBusy(true);
     try {
       await postJson(`/api/manor/restart-requests/${request.id}/dismiss`, {});
+      clearPendingManorRestartRequest(request.id);
       showToast("Restart request dismissed", "info");
     } catch (error) {
       showErrorToast(error);
@@ -1021,11 +1024,11 @@ export function App() {
             <dl className="manor-restart-details">
               <div>
                 <dt>Target tag</dt>
-                <dd>{pendingRestartRequest.targetTag ?? "Not specified"}</dd>
+                <dd>{pendingRestartRequest.imageTag ?? pendingRestartRequest.targetTag ?? "Not specified"}</dd>
               </div>
               <div>
                 <dt>Target commit</dt>
-                <dd>{pendingRestartRequest.targetCommit ?? "Not specified"}</dd>
+                <dd>{pendingRestartRequest.gitRef ?? pendingRestartRequest.targetCommit ?? "Not specified"}</dd>
               </div>
               <div>
                 <dt>Reason</dt>
@@ -1039,7 +1042,7 @@ export function App() {
               ) : null}
             </dl>
             <p className="manor-restart-note">
-              This click records your explicit authorization. Butler does not restart, deploy, or mutate the live stack from this dialog.
+              This click records your explicit authorization and starts the approved restart through the host controller.
             </p>
             <div className="modal-actions">
               <button className="panel-action" onClick={() => void dismissManorRestart(pendingRestartRequest)} disabled={restartAuthorizeBusy}>

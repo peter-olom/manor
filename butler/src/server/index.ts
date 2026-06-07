@@ -10,6 +10,7 @@ import { ButlerAgentService } from "./butler-agent.js";
 import { CodexAppServerClient } from "./codex-client.js";
 import { CodexHarnessService } from "./codex-harness.js";
 import { FileReferenceStore, MAX_FILE_BYTES } from "./file-store.js";
+import { HostControllerClient } from "./host-controller-client.js";
 import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
 import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-routes.js";
@@ -55,6 +56,8 @@ const codexHomeDir = process.env.CODEX_SHARED_HOME_DIR ?? "/codex-home";
 const codexConfigDir = process.env.CODEX_SHARED_CONFIG_DIR ?? "/codex-config";
 const runtimeBrokerUrl = process.env.RUNTIME_BROKER_URL ?? "http://runtime-broker:8090";
 const runtimeBrokerToken = process.env.RUNTIME_BROKER_TOKEN ?? null;
+const hostControllerUrl = process.env.MANOR_HOST_CONTROLLER_URL ?? null;
+const hostControllerToken = process.env.MANOR_HOST_CONTROLLER_TOKEN ?? null;
 const hotReloadEnabled = process.env.BUTLER_HOT_RELOAD === "1";
 const publicPort = Number(process.env.BUTLER_PUBLIC_PORT ?? port);
 const previewLeaseTtlMs = Number(process.env.MANOR_PREVIEW_LEASE_TTL_MS ?? `${30 * 60 * 1000}`);
@@ -94,6 +97,7 @@ await imageStore.load();
 const fileStore = new FileReferenceStore(fileReferenceDir);
 await fileStore.load();
 const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerToken);
+const hostController = new HostControllerClient(hostControllerUrl, hostControllerToken);
 let runtimeAccess!: RuntimeServerAccess;
 let sseHub!: ButlerSseHub;
 const memoryReview = new CodexExecMemoryReviewService({
@@ -133,6 +137,7 @@ const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, 
 const butlerAgent = new ButlerAgentService({
   store,
   codexClient,
+  hostController,
   runtimeBroker,
   serviceTemplateRegistry,
   piAuthPath: path.join(piAgentDir, "auth.json"),

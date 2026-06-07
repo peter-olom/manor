@@ -869,8 +869,15 @@ export interface ButlerOnboardingView {
 
 export interface ManorRestartRequestView {
   id: string;
+  mode: "auto" | "source" | "image" | null;
+  target: "current" | "latest" | null;
+  gitRef: string | null;
+  imageTag: string | null;
   targetCommit: string | null;
   targetTag: string | null;
+  includeDesktop: boolean;
+  build: boolean | null;
+  update: boolean | null;
   reason: string | null;
   details: string | null;
   requestedAt: number;
@@ -912,6 +919,7 @@ export interface AppSnapshot {
       callbacks: ButlerThreadCallbackView[];
     };
     pendingManorRestartRequest: ManorRestartRequestView | null;
+    authorizedManorRestartRequest: ManorRestartRequestView | null;
     scratchPad: ScratchPadView;
     latestPreviewProofsByThreadId: Record<string, PreviewProofRecordView>;
     previewProofsByThreadId: Record<string, PreviewProofRecordView[]>;

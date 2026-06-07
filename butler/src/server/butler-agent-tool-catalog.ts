@@ -152,12 +152,6 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "refreshThreads", description: "Lets Butler actively diagnose or fix one preview isolate." }]
   },
   {
-    name: "request_manor_restart",
-    label: "Request Manor restart",
-    description: "Open an operator-facing Manor restart or update authorization dialog without directly mutating the live stack.",
-    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while handling high-risk Manor restart authorization." }]
-  },
-  {
     name: "list_service_templates",
     label: "List service templates",
     description: "List the registered Manor service templates Butler can provision for app stacks.",
@@ -309,6 +303,24 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
       { kind: "openWindow", description: "Opens the delegated Codex workstream as a tab." },
       { kind: "focusWindow", description: "Moves focus into the new Codex workstream." }
     ]
+  },
+  {
+    name: "request_manor_restart",
+    label: "Request Manor restart",
+    description: "Open an operator-facing Manor restart/update authorization dialog without mutating the live stack.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while requesting restart authorization." }]
+  },
+  {
+    name: "start_authorized_manor_restart",
+    label: "Start authorized restart",
+    description: "Consume an operator-authorized Manor restart request and ask the host controller to run it.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while the restart is scheduled." }]
+  },
+  {
+    name: "read_manor_restart_status",
+    label: "Restart status",
+    description: "Read the active or latest host-controller restart/update run.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while reading restart outcome." }]
   },
   {
     name: "run_supervision_smoke_test",

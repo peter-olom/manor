@@ -177,7 +177,7 @@ generate_secret() {
     return
   fi
 
-  echo "Could not generate a local secret. Install openssl or set RUNTIME_BROKER_TOKEN manually." >&2
+  echo "Could not generate a local secret. Install openssl or set the required tokens manually." >&2
   exit 1
 }
 
@@ -211,6 +211,7 @@ write_env() {
         skip["MANOR_PI_AUTO_UPDATE_VERSION"] = 1
         skip["MANOR_PI_AUTO_UPDATE_REQUIRED"] = 1
         skip["RUNTIME_BROKER_TOKEN"] = 1
+        skip["MANOR_HOST_CONTROLLER_TOKEN"] = 1
       }
       {
         split($0, parts, "=")
@@ -233,6 +234,7 @@ write_env() {
     printf 'MANOR_PI_AUTO_UPDATE_VERSION=%s\n' "${pi_auto_update_version}"
     printf 'MANOR_PI_AUTO_UPDATE_REQUIRED=%s\n' "${pi_auto_update_required}"
     printf 'RUNTIME_BROKER_TOKEN=%s\n' "${runtime_broker_token}"
+    printf 'MANOR_HOST_CONTROLLER_TOKEN=%s\n' "${host_controller_token}"
   } >> "${temp_file}"
 
   mv "${temp_file}" "${env_file}"
@@ -312,6 +314,13 @@ if is_placeholder_secret "${runtime_broker_token_default}"; then
   runtime_broker_token="$(generate_secret)"
 else
   runtime_broker_token="${runtime_broker_token_default}"
+fi
+
+host_controller_token_default="${MANOR_HOST_CONTROLLER_TOKEN:-$(env_value MANOR_HOST_CONTROLLER_TOKEN || true)}"
+if is_placeholder_secret "${host_controller_token_default}"; then
+  host_controller_token="$(generate_secret)"
+else
+  host_controller_token="${host_controller_token_default}"
 fi
 
 write_env

@@ -203,7 +203,7 @@ case "${command}" in
   restart)
     parse_common_options "$@"
     apply_options
-    run_up
+    run_up --force-recreate
     print_url
     ;;
   status)
@@ -237,7 +237,7 @@ case "${command}" in
         parse_common_options "$@"
         add_desktop=1
         apply_options
-        run_up desktop-proof runtime-broker
+        run_up --force-recreate desktop-proof runtime-broker
         echo "Desktop proof is available at http://127.0.0.1:${DESKTOP_PROOF_NOVNC_PORT:-6080}/vnc.html"
         ;;
       status)

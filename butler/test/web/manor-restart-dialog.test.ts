@@ -14,8 +14,12 @@ test("Manor restart dialog requires an explicit operator authorization button", 
   assert.match(appSource, /Authorize Manor restart\\?/);
   assert.match(appSource, /Authorize restart/);
   assert.match(appSource, /Keep running/);
+  assert.match(appSource, /Manor restart started/);
+  assert.match(appSource, /starts the approved restart through the host controller/);
   assert.match(appSource, /authorize_restart/);
   assert.match(appSource, /pendingManorRestartRequest/);
+  assert.match(appSource, /pendingRestartRequest\.imageTag/);
+  assert.match(appSource, /pendingRestartRequest\.gitRef/);
   assert.doesNotMatch(appSource, /RESTART MANOR/);
   assert.match(styleSource, /manor-restart-dialog/);
 });

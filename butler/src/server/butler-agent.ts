@@ -70,32 +70,19 @@ import { applyPostedCloseout, getOperatorCloseoutBlocker as getCloseoutBlocker, 
 import { upsertOperatorMessage } from "./butler-operator-messages.js";
 import { readButlerAuthStatus, readCodexAuthStatus } from "./auth-status.js";
 import { notifyDirectCodexMessage, type DirectCodexMessageAccess, type DirectCodexMessagePingInput } from "./direct-codex-message.js";
-import { authorizeManorRestartRequest as authorizePendingManorRestartRequest, createManorRestartRequest, requirePendingManorRestartRequest } from "./manor-restart-authorization.js";
 import { type FileReferenceStore } from "./file-store.js";
+import { HostControllerClient } from "./host-controller-client.js";
+import { ManorRestartRequestState } from "./manor-restart-state.js";
 import { buildOnboardingView } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
 import { formatProjectPolicyContextLines } from "./project-artifacts-policies.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
-import {
-  ensureTaskWorktree,
-  resolveExistingWorkspaceCwd,
-  resolveWorkspaceBranchName,
-  resolveWorkspaceProjectInfo,
-  taskRequiresManagedWorktree
-} from "./repo-worktree.js";
+import { ensureTaskWorktree, resolveExistingWorkspaceCwd, resolveWorkspaceBranchName, resolveWorkspaceProjectInfo, taskRequiresManagedWorktree } from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
-import {
-  buildThreadExecutionContract,
-  describeProofExpectation,
-  isSharedShellRepoBootstrapTask,
-} from "./thread-contract.js";
-import {
-  applyWorkspacePreviewDefaults,
-  formatWorkspaceBootstrapLines,
-  inspectWorkspaceBootstrap
-} from "./workspace-bootstrap.js";
+import { buildThreadExecutionContract, describeProofExpectation, isSharedShellRepoBootstrapTask } from "./thread-contract.js";
+import { applyWorkspacePreviewDefaults, formatWorkspaceBootstrapLines, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 import type {
   AppSnapshot,
   AppShellSnapshot,
@@ -122,6 +109,7 @@ const CALLBACK_RECOVERY_TIMEOUT_MS = 30_000;
 export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
   private readonly codexClient: CodexAppServerClient;
+  private readonly hostController: HostControllerClient;
   private readonly runtimeBroker: RuntimeBrokerClient;
   private readonly serviceTemplateRegistry: ServiceTemplateRegistry;
   private readonly imageStore: ImageReferenceStore;
@@ -136,6 +124,7 @@ export class ButlerAgentService extends EventEmitter {
   private readonly legacyNoticeStatePath: string;
   private readonly callbackStatePath: string;
   private readonly refreshRuntimeInventory: (() => Promise<void>) | null;
+  private readonly manorRestartRequests: ManorRestartRequestState;
   private modelRegistry: ModelRegistry | null = null;
   private session: AgentSession | null = null;
   private auth: ButlerAuthStatus = { mode: "none", loggedIn: false, validationError: null, lastValidatedAt: null };
@@ -158,7 +147,6 @@ export class ButlerAgentService extends EventEmitter {
   private statusRefreshTimer: NodeJS.Timeout | null = null;
   private readonly operatorMessages: ButlerMessageView[] = [];
   private readonly pendingChatCallbacks = new Map<string, PendingChatCallback>();
-  private pendingManorRestartRequest: AppSnapshot["butler"]["pendingManorRestartRequest"] = null;
   private readonly deliveredCloseoutIds = new Set<string>();
   private readonly supervisionSmokePlans = new Map<string, SupervisionSmokePlan>();
   private readonly actedSmokeMilestoneIds = new Set<string>();
@@ -181,6 +169,7 @@ export class ButlerAgentService extends EventEmitter {
   constructor(options: {
     store: ButlerStateStore;
     codexClient: CodexAppServerClient;
+    hostController: HostControllerClient;
     runtimeBroker: RuntimeBrokerClient;
     serviceTemplateRegistry: ServiceTemplateRegistry;
     imageStore: ImageReferenceStore;
@@ -195,6 +184,7 @@ export class ButlerAgentService extends EventEmitter {
     super();
     this.store = options.store;
     this.codexClient = options.codexClient;
+    this.hostController = options.hostController;
     this.runtimeBroker = options.runtimeBroker;
     this.serviceTemplateRegistry = options.serviceTemplateRegistry;
     this.imageStore = options.imageStore;
@@ -209,6 +199,10 @@ export class ButlerAgentService extends EventEmitter {
     this.activitySummaryStatePath = path.join(this.sessionDir, "activity-summaries.json");
     this.legacyNoticeStatePath = path.join(this.sessionDir, "notices.json");
     this.callbackStatePath = path.join(this.sessionDir, "chat-callbacks.json");
+    this.manorRestartRequests = new ManorRestartRequestState(path.join(this.sessionDir, "manor-restart-requests.json"), this.hostController, (error) => {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.emit("change");
+    }, () => this.emit("change"));
     this.toolCatalog = this.buildToolCatalog();
   }
 
@@ -677,6 +671,7 @@ export class ButlerAgentService extends EventEmitter {
     await this.loadOperatorMessageState();
     await this.loadActivitySummaryState();
     await this.loadCallbackState();
+    await this.manorRestartRequests.load();
     this.auth = await readButlerAuthStatus(this.piAuthPath);
     this.codexAuth = await readCodexAuthStatus(this.codexAuthPath);
     this.modelRegistry = ModelRegistry.inMemory(AuthStorage.create(this.piAuthPath));
@@ -808,9 +803,12 @@ export class ButlerAgentService extends EventEmitter {
 
   private getOperatorCloseoutBlocker(threadId: string): string | null { return getCloseoutBlocker(this.store, threadId); }
 
-  requestManorRestartAuthorization(input: { targetCommit?: unknown; targetTag?: unknown; reason?: unknown; details?: unknown }): NonNullable<AppSnapshot["butler"]["pendingManorRestartRequest"]> { this.pendingManorRestartRequest = createManorRestartRequest(input); this.emit("change"); return this.pendingManorRestartRequest; }
-  authorizeManorRestartRequest(requestId: string): NonNullable<AppSnapshot["butler"]["pendingManorRestartRequest"]> { const authorizedRequest = authorizePendingManorRestartRequest(this.pendingManorRestartRequest, requestId); this.pendingManorRestartRequest = null; this.emit("change"); return authorizedRequest; }
-  dismissManorRestartRequest(requestId: string): void { requirePendingManorRestartRequest(this.pendingManorRestartRequest, requestId, "dismissal"); this.pendingManorRestartRequest = null; this.emit("change"); }
+  get pendingManorRestartRequest(): AppSnapshot["butler"]["pendingManorRestartRequest"] { return this.manorRestartRequests.pendingRequest; }
+  get authorizedManorRestartRequest(): AppSnapshot["butler"]["authorizedManorRestartRequest"] { return this.manorRestartRequests.authorizedRequest; }
+  requestManorRestartAuthorization(input: Parameters<ManorRestartRequestState["request"]>[0]): NonNullable<AppSnapshot["butler"]["pendingManorRestartRequest"]> { return this.manorRestartRequests.request(input); }
+  authorizeManorRestartRequest(requestId: string): NonNullable<AppSnapshot["butler"]["authorizedManorRestartRequest"]> { return this.manorRestartRequests.authorize(requestId); }
+  dismissManorRestartRequest(requestId: string): void { this.manorRestartRequests.dismiss(requestId); }
+  async startAuthorizedManorRestart(requestId: string) { return this.manorRestartRequests.start(requestId); }
 
   private async buildDelegationDeveloperInstructions(
     workspace: { cwd: string; branchName: string | null },
