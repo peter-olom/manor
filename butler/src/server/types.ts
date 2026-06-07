@@ -608,6 +608,7 @@ export interface ButlerMemoryEntryView {
 export type ScratchPadItemStatus = "captured" | "exploring" | "ready_for_review" | "accepted" | "parked" | "dismissed";
 export type ScratchPadDepth = "quick" | "deep" | "prototype" | "plan";
 export type ScratchPadResultKind = "research" | "prototype" | "plan" | "recommendation";
+export type ScratchPadWorkspaceMode = "managed_worktree" | "existing";
 
 export interface ScratchPadItemView {
   id: string;
@@ -617,6 +618,8 @@ export interface ScratchPadItemView {
   depth: ScratchPadDepth;
   resultKind: ScratchPadResultKind;
   cwd: string | null;
+  workspaceMode: ScratchPadWorkspaceMode;
+  branchName: string | null;
   threadId: string | null;
   reviewNote: string | null;
   createdAt: number;

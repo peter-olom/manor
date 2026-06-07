@@ -5,11 +5,25 @@ import type { CodexAppServerClient } from "./codex-client.js";
 import { type FileReferenceStore } from "./file-store.js";
 import { type ImageReferenceStore } from "./image-store.js";
 import { buildCodexInputWithReferences } from "./reference-inputs.js";
-import { resolveExistingWorkspaceCwd, resolveWorkspaceProjectInfo } from "./repo-worktree.js";
+import {
+  cleanupManagedWorktree,
+  ensureTaskWorktree,
+  isManagedWorktree,
+  resolveExistingWorkspaceCwd,
+  resolveWorkspaceBranchName,
+  resolveWorkspaceProjectInfo
+} from "./repo-worktree.js";
 import { ScratchPadStore } from "./scratch-pad-store.js";
 import { ButlerStateStore } from "./state-store.js";
 import { buildThreadExecutionContract, describeProofExpectation } from "./thread-contract.js";
-import type { ScratchPadItemView } from "./types.js";
+import type { ScratchPadItemView, ScratchPadWorkspaceMode } from "./types.js";
+
+type ScratchWorkspace = {
+  cwd: string;
+  workspaceMode: ScratchPadWorkspaceMode;
+  branchName: string | null;
+  created: boolean;
+};
 
 type ScratchPadRoutesAccess = {
   app: express.Express;
@@ -19,6 +33,8 @@ type ScratchPadRoutesAccess = {
   butlerAgent: ButlerAgentService;
   imageStore: ImageReferenceStore;
   fileStore: FileReferenceStore;
+  prepareScratchWorkspace?: (item: ScratchPadItemView, task: string, baseCwd: string) => Promise<ScratchWorkspace>;
+  cleanupScratchWorkspace?: (cwd: string) => Promise<number>;
 };
 
 function buildScratchTask(item: ScratchPadItemView): string {
@@ -45,14 +61,21 @@ function buildScratchTask(item: ScratchPadItemView): string {
   ].join("\n");
 }
 
-async function buildScratchInput(access: ScratchPadRoutesAccess, item: ScratchPadItemView, threadId: string, task: string, cwd: string) {
+async function buildScratchInput(
+  access: ScratchPadRoutesAccess,
+  item: ScratchPadItemView,
+  threadId: string,
+  task: string,
+  workspace: ScratchWorkspace
+) {
+  const cwd = workspace.cwd;
   const project = resolveWorkspaceProjectInfo(cwd);
   const contract = buildThreadExecutionContract({
     threadId,
     workspaceCwd: cwd,
     projectId: project.id,
     projectLabel: project.label,
-    branch: null,
+    branch: workspace.branchName,
     taskText: task,
     requestedTask: task,
     operatorGoal: "Explore this scratch pad item deeply and return a reviewable async result.",
@@ -67,7 +90,7 @@ async function buildScratchInput(access: ScratchPadRoutesAccess, item: ScratchPa
     `workspace_cwd: ${cwd}`,
     `project_id: ${project.id}`,
     `project_label: ${project.label}`,
-    "branch: (existing workspace)",
+    `branch: ${workspace.branchName ?? (workspace.workspaceMode === "managed_worktree" ? "(managed worktree)" : "(existing workspace)")}`,
     `harness_binding: manor-harness --thread ${threadId}`,
     `proof_expectation: ${describeProofExpectation(contract.proofExpectation)}`
   ];
@@ -84,11 +107,13 @@ async function buildScratchInput(access: ScratchPadRoutesAccess, item: ScratchPa
   });
 }
 
-function buildDeveloperInstructions(cwd: string): string {
+function buildDeveloperInstructions(workspace: ScratchWorkspace): string {
   return [
     "This thread was started from Butler's scratch pad.",
     "Work asynchronously and go deeper than a normal chat answer.",
-    `Work inside ${cwd} unless the scratch idea clearly requires finding or creating another workspace under /repos.`,
+    workspace.workspaceMode === "managed_worktree"
+      ? `Work inside the isolated scratch-pad worktree at ${workspace.cwd}.`
+      : `Work inside ${workspace.cwd} unless the scratch idea clearly requires finding or creating another workspace under /repos.`,
     "Use Codex-shell for repository, git, and code-editing work.",
     "Read memory before acting when the idea depends on prior work, project conventions, unresolved outcomes, or attribution.",
     "Use previews, command checks, or file artifacts when they materially improve the review result.",
@@ -96,6 +121,32 @@ function buildDeveloperInstructions(cwd: string): string {
     "Do not commit or push.",
     "When complete, record a supervisor report with manor-harness report. Include the result type, evidence, risks, and the next operator action."
   ].join("\n");
+}
+
+async function prepareScratchWorkspace(item: ScratchPadItemView, task: string, baseCwd: string): Promise<ScratchWorkspace> {
+  if (item.workspaceMode === "existing") {
+    return {
+      cwd: baseCwd,
+      workspaceMode: "existing",
+      branchName: await resolveWorkspaceBranchName(baseCwd),
+      created: false
+    };
+  }
+
+  const worktree = await ensureTaskWorktree({ cwd: baseCwd, task: `scratchpad ${item.title}` });
+  const managed = isManagedWorktree(worktree.cwd);
+  return {
+    cwd: worktree.cwd,
+    workspaceMode: managed ? "managed_worktree" : "existing",
+    branchName: worktree.branchName,
+    created: worktree.created
+  };
+}
+
+function resolveDefaultScratchCwd(access: ScratchPadRoutesAccess): string {
+  const threadId = access.store.getOpenWindowIds()[0] ?? null;
+  const thread = threadId ? access.store.getThread(threadId) : null;
+  return thread?.cwd ?? thread?.executionContract?.workspaceCwd ?? "/repos";
 }
 
 async function startScratchItem(access: ScratchPadRoutesAccess, itemId: string) {
@@ -107,17 +158,31 @@ async function startScratchItem(access: ScratchPadRoutesAccess, itemId: string) 
     return item;
   }
 
-  const cwd = await resolveExistingWorkspaceCwd(item.cwd ?? "/repos");
   const task = buildScratchTask(item);
-  const result = await access.codexClient.startThread({
-    task,
-    input: (threadId) => buildScratchInput(access, item, threadId, task, cwd),
-    cwd,
-    developerInstructions: buildDeveloperInstructions(cwd),
-    effort: "high",
-    openWindow: true
+  const baseCwd = await resolveExistingWorkspaceCwd(item.cwd ?? resolveDefaultScratchCwd(access));
+  const workspace = await (access.prepareScratchWorkspace ?? prepareScratchWorkspace)(item, task, baseCwd);
+  let result: Awaited<ReturnType<CodexAppServerClient["startThread"]>>;
+  try {
+    result = await access.codexClient.startThread({
+      task,
+      input: (threadId) => buildScratchInput(access, item, threadId, task, workspace),
+      cwd: workspace.cwd,
+      developerInstructions: buildDeveloperInstructions(workspace),
+      effort: "high",
+      openWindow: true
+    });
+  } catch (error) {
+    if (workspace.created && workspace.workspaceMode === "managed_worktree") {
+      await (access.cleanupScratchWorkspace ?? cleanupManagedWorktree)(workspace.cwd).catch(() => undefined);
+    }
+    throw error;
+  }
+  const updated = access.scratchPadStore.start(item.id, {
+    threadId: result.threadId,
+    cwd: workspace.cwd,
+    workspaceMode: workspace.workspaceMode,
+    branchName: workspace.branchName
   });
-  const updated = access.scratchPadStore.start(item.id, { threadId: result.threadId });
   access.store.addEvent(result.threadId, "butler.scratch_pad.started", "Butler started this job from a scratch pad item.");
   access.butlerAgent.trackScratchPadDelegation(result.threadId);
   return updated;
@@ -134,9 +199,10 @@ export function registerScratchPadRoutes(access: ScratchPadRoutesAccess): void {
     const text = typeof request.body?.text === "string" ? request.body.text : "";
     const title = typeof request.body?.title === "string" ? request.body.title : null;
     const cwd = typeof request.body?.cwd === "string" ? request.body.cwd : null;
+    const workspaceMode = request.body?.workspaceMode === "existing" ? "existing" : "managed_worktree";
     const autoStart = request.body?.autoStart !== false;
     try {
-      const item = access.scratchPadStore.create({ title, text, cwd });
+      const item = access.scratchPadStore.create({ title, text, cwd, workspaceMode });
       const started = autoStart ? await startScratchItem(access, item.id) : item;
       response.status(201).json({ ok: true, item: started });
     } catch (error) {
@@ -185,13 +251,17 @@ export function registerScratchPadRoutes(access: ScratchPadRoutesAccess): void {
         response.status(500).json({ error: cleanup.cleanupError ?? "Thread cleanup failed" });
         return;
       }
+      const workspaceArtifacts =
+        item.workspaceMode === "managed_worktree" && item.cwd
+          ? await (access.cleanupScratchWorkspace ?? cleanupManagedWorktree)(item.cwd)
+          : 0;
 
       const removed = access.scratchPadStore.remove(itemId);
       if (!removed) {
         response.status(404).json({ error: "Scratch item not found" });
         return;
       }
-      response.json({ ok: true, item: removed, threadDeleted: Boolean(item.threadId), deletedArtifacts: cleanup.deletedArtifacts });
+      response.json({ ok: true, item: removed, threadDeleted: Boolean(item.threadId), deletedArtifacts: cleanup.deletedArtifacts + workspaceArtifacts });
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }

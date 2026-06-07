@@ -21,10 +21,19 @@ test("scratch pad items persist, launch, derive ready state, review, and cleanup
     });
     assert.equal(created.status, "captured");
     assert.equal(created.title, "Explore async scratch items deeply.");
+    assert.equal(created.workspaceMode, "managed_worktree");
 
-    const started = store.start(created.id, { threadId: "thread-1" });
+    const started = store.start(created.id, {
+      threadId: "thread-1",
+      cwd: "/repos/.manor-worktrees/manor/butler--scratch",
+      workspaceMode: "managed_worktree",
+      branchName: "butler/scratch"
+    });
     assert.equal(started.status, "exploring");
     assert.equal(started.threadId, "thread-1");
+    assert.equal(started.cwd, "/repos/.manor-worktrees/manor/butler--scratch");
+    assert.equal(started.workspaceMode, "managed_worktree");
+    assert.equal(started.branchName, "butler/scratch");
 
     const ready = store.getSnapshot((threadId) =>
       threadId === "thread-1"
@@ -51,6 +60,8 @@ test("scratch pad items persist, launch, derive ready state, review, and cleanup
     const restored = new ScratchPadStore(statePath);
     await restored.load();
     assert.equal(restored.getSnapshot().items[0]?.status, "accepted");
+    assert.equal(restored.getSnapshot().items[0]?.workspaceMode, "managed_worktree");
+    assert.equal(restored.getSnapshot().items[0]?.branchName, "butler/scratch");
 
     const removed = restored.remove(created.id);
     assert.equal(removed?.status, "accepted");
@@ -73,7 +84,8 @@ test("scratch pad removal drops the item from snapshots and persisted state", as
     await store.load();
 
     const keep = store.create({ text: "Keep this scratch item." });
-    const remove = store.create({ text: "Delete this scratch item." });
+    const remove = store.create({ text: "Delete this scratch item.", workspaceMode: "existing", cwd: "/repos/manor" });
+    assert.equal(remove.workspaceMode, "existing");
 
     const removed = store.remove(remove.id);
     assert.equal(removed?.id, remove.id);

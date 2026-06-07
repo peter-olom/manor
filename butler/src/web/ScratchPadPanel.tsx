@@ -19,6 +19,7 @@ function itemTone(status: ScratchPadItemStatus): string {
 export function ScratchPadPanel({
   variant = "compact",
   scratchPad,
+  defaultCwd,
   onOpenThread,
   onConfirmCleanup,
   showToast,
@@ -26,6 +27,7 @@ export function ScratchPadPanel({
 }: {
   variant?: "compact" | "window";
   scratchPad: ScratchPad;
+  defaultCwd: string | null;
   onOpenThread: (threadId: string) => void;
   onConfirmCleanup: (item: ScratchPadItem, cleanup: () => Promise<void>) => void;
   showToast: (message: string, tone?: "success" | "error" | "info", duration?: number, key?: string) => void;
@@ -42,7 +44,7 @@ export function ScratchPadPanel({
     if (!body) return;
     setBusyKey("create");
     try {
-      await postJson("/api/scratch-pad/items", { text: body, autoStart: true });
+      await postJson("/api/scratch-pad/items", { text: body, autoStart: true, cwd: defaultCwd ?? undefined, workspaceMode: "managed_worktree" });
       setText("");
       showToast("Scratch item started");
     } catch (error) {

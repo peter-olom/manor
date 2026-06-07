@@ -58,7 +58,7 @@ function slugifyTask(value: string): string {
 }
 
 async function git(args: string[], cwd: string): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, { cwd });
+  const { stdout } = await execFileAsync("git", ["-c", "safe.directory=*", ...args], { cwd });
   return stdout.trim();
 }
 
@@ -180,6 +180,9 @@ export async function cleanupManagedWorktree(cwd: string): Promise<number> {
 
   const worktreePath = cwd.trim();
   if (!worktreePath) {
+    return 0;
+  }
+  if (!await pathExists(worktreePath)) {
     return 0;
   }
 

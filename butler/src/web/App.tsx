@@ -167,6 +167,10 @@ export function App() {
     [callbackByThreadId, shell?.codex.threads]
   );
   const activeThreadSummary = activeThreadId ? threadSummaryById.get(activeThreadId) ?? null : null;
+  const scratchPadContextThread =
+    (selectedThreadId ? threadSummaryById.get(selectedThreadId) : undefined) ??
+    (shell?.codex.focusedWindowId ? threadSummaryById.get(shell.codex.focusedWindowId) : undefined);
+  const scratchPadDefaultCwd = getThreadProjectPath(scratchPadContextThread);
   const pendingRestartRequest = shell?.butler.pendingManorRestartRequest ?? null;
 
   function showToast(message: string, tone: "success" | "error" | "info" = "success", duration = 2600, key?: string) {
@@ -758,7 +762,6 @@ export function App() {
             </button>
             <button className={`workspace-tab workspace-tab-fixed workspace-tab-icon-button ${activeTabId === "scratchPad" ? "is-active" : ""}`} aria-label="Scratch pad" title="Scratch pad" onClick={() => {
               setSelectedSurface("scratchPad");
-              setSelectedThreadId(null);
             }}>
               <ScratchPadTabIcon />
               {activeScratchCount > 0 ? <span className="workspace-tab-count">{activeScratchCount}</span> : null}
@@ -924,6 +927,7 @@ export function App() {
               <ScratchPadPanel
                 variant="window"
                 scratchPad={shell.butler.scratchPad}
+                defaultCwd={scratchPadDefaultCwd}
                 onOpenThread={openThread}
                 onConfirmCleanup={confirmCleanupScratchItem}
                 showToast={showToast}
