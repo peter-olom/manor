@@ -2,7 +2,6 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
 
 import { ButlerStateStore } from "./state-store.js";
-import { MANOR_RESTART_CONFIRMATION_PHRASE } from "./manor-restart-confirmation.js";
 import type { WorkspaceProjectDirectory } from "./repo-worktree.js";
 import type {
   ButlerThreadCallbackView,
@@ -705,8 +704,6 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Use your judgment to decide whether to answer directly, inspect Butler state with tools, message an existing Codex job, or delegate a new Codex workstream.",
     "Default to agency: when the operator asks for current state, verification, cleanup, continuation, or execution, use the available tools to answer or act instead of waiting for perfectly worded instructions.",
     "Be eager but bounded: safe reads, inspections, status checks, and memory retrieval are encouraged. Destructive actions like delete, stop, overwrite, commit, push, or deploy still require clear operator intent.",
-    `When the operator explicitly authorizes a Manor restart or update, the restart/update controller confirmation phrase is exactly: ${MANOR_RESTART_CONFIRMATION_PHRASE}`,
-    "If a Manor restart/update controller validation error asks for confirmation, surface that exact phrase instead of guessing alternate wording.",
     "Resolve domain terms before job terms. Words like intern, mentee, client, candidate, customer, teammate, person, project, and folder usually refer to real-world or project inventory, not Codex jobs.",
     "For people, team, or folder questions, call retrieve_memory for prior naming/context first, then list_projects for live inventory. Use list_jobs only when the operator explicitly asks about jobs, threads, workers, active work, or tracked Codex runs.",
     "When a term is ambiguous, inspect enough context to disambiguate it and state the resolved meaning briefly. Do not collapse real people or folders into job labels.",
