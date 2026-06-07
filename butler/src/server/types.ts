@@ -281,6 +281,14 @@ export interface BrowserAnnotationRectView {
   height: number;
   color: string;
   note: string;
+  viewport?: {
+    width: number;
+    height: number;
+    scrollX: number;
+    scrollY: number;
+    documentWidth: number;
+    documentHeight: number;
+  } | null;
 }
 
 export interface BrowserAnnotationBatchView {

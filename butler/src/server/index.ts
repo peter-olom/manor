@@ -322,7 +322,9 @@ registerScratchPadRoutes({
 });
 registerPreviewAnnotationRoutes({
   app,
+  imageStore,
   previewAnnotationSecret,
+  runtimeBroker,
   runtimeBrokerToken,
   sseHub,
   store

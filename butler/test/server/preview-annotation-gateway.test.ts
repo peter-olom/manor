@@ -23,3 +23,8 @@ test("operator preview annotation commits use a transient per-preview token", ()
   assert.match(routesSource, /app\.post\("\/api\/preview-annotations\/batches"[\s\S]*hasPreviewAnnotationAccess/);
   assert.match(routesSource, /app\.get\("\/api\/preview-annotations\/:leaseId\/batches"[\s\S]*hasPreviewAnnotationAccess/);
 });
+
+test("preview annotation insert captures an annotated screenshot attachment", () => {
+  assert.match(routesSource, /captureAnnotatedPreviewScreenshot/);
+  assert.match(routesSource, /broadcastComposerPrefill\(\{[\s\S]*attachment/);
+});

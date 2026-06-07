@@ -19,6 +19,9 @@ test("preview annotation layer source includes expected toolbar controls and API
   assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /Comment for selected annotation/);
   assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /Comment saved for/);
   assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /note: note \|\|/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /viewport: viewport \|\| readViewport\(\)/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /setScrollLocked/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /documentElement\.style\.overflow = "hidden"/);
 });
 
 test("preview annotation layer source is self-contained for page evaluation", () => {

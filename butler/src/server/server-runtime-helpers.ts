@@ -154,7 +154,12 @@ export class ButlerSseHub {
     }
   }
 
-  broadcastComposerPrefill(payload: { id: string; target: { kind: "butler" } | { kind: "thread"; threadId: string }; text: string }): void {
+  broadcastComposerPrefill(payload: {
+    id: string;
+    target: { kind: "butler" } | { kind: "thread"; threadId: string };
+    text: string;
+    attachment?: { id: string; name: string; mimeType: string; sizeBytes: number; createdAt: number; url: string };
+  }): void {
     for (const client of this.clients) {
       this.writeEvent(client, "composerPrefill", payload);
     }

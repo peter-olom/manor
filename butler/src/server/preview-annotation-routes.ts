@@ -2,35 +2,20 @@ import crypto from "node:crypto";
 
 import type express from "express";
 
+import type { ImageReferenceStore } from "./image-store.js";
+import { captureAnnotatedPreviewScreenshot, formatAnnotationBatchText } from "./preview-annotation-capture.js";
+import type { OperatorPreviewAnnotationBatch, OperatorPreviewAnnotationViewport } from "./preview-annotation-types.js";
+import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { ButlerSseHub } from "./server-runtime-helpers.js";
 import type { ButlerStateStore } from "./state-store.js";
-
-type OperatorPreviewAnnotation = {
-  id: string;
-  number: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  color: string;
-  note: string;
-};
-
-type OperatorPreviewAnnotationBatch = {
-  id: string;
-  at: number;
-  intent: "batch" | "insert";
-  leaseId: string;
-  targetId: string;
-  page: { title: string; url: string };
-  annotations: OperatorPreviewAnnotation[];
-};
 
 type AnnotationPrefillTarget = { kind: "butler" } | { kind: "thread"; threadId: string };
 
 export type PreviewAnnotationRoutesAccess = {
   app: express.Express;
+  imageStore: ImageReferenceStore;
   previewAnnotationSecret: string;
+  runtimeBroker: RuntimeBrokerClient;
   runtimeBrokerToken: string | null;
   sseHub: ButlerSseHub;
   store: ButlerStateStore;
@@ -41,6 +26,31 @@ const MAX_PREVIEW_ANNOTATION_BATCHES = 40;
 function clampUnit(value: unknown): number {
   const number = typeof value === "number" && Number.isFinite(value) ? value : 0;
   return Math.min(1, Math.max(0, number));
+}
+
+function clampPositiveInteger(value: unknown, max: number): number {
+  const number = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : 0;
+  return Math.min(max, Math.max(0, number));
+}
+
+function normalizeAnnotationViewport(input: unknown): OperatorPreviewAnnotationViewport | null {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+  const record = input as Record<string, unknown>;
+  const width = clampPositiveInteger(record.width, 4096);
+  const height = clampPositiveInteger(record.height, 4096);
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+  return {
+    width,
+    height,
+    scrollX: clampPositiveInteger(record.scrollX, 1_000_000),
+    scrollY: clampPositiveInteger(record.scrollY, 1_000_000),
+    documentWidth: Math.max(width, clampPositiveInteger(record.documentWidth, 1_000_000)),
+    documentHeight: Math.max(height, clampPositiveInteger(record.documentHeight, 1_000_000))
+  };
 }
 
 function normalizeOperatorPreviewAnnotationBatch(input: unknown): OperatorPreviewAnnotationBatch | null {
@@ -60,7 +70,8 @@ function normalizeOperatorPreviewAnnotationBatch(input: unknown): OperatorPrevie
       width: clampUnit(entry.width),
       height: clampUnit(entry.height),
       color: typeof entry.color === "string" && entry.color.trim() ? entry.color.trim().slice(0, 32) : "#ff6b2c",
-      note: typeof entry.note === "string" ? entry.note.slice(0, 1000) : ""
+      note: typeof entry.note === "string" ? entry.note.slice(0, 1000) : "",
+      viewport: normalizeAnnotationViewport(entry.viewport)
     }))
     .filter((entry) => entry.width > 0 && entry.height > 0)
     .slice(0, 100);
@@ -99,20 +110,6 @@ function normalizeInternalAnnotationPrefillTarget(input: unknown): AnnotationPre
   return null;
 }
 
-function formatAnnotationBatchText(batch: OperatorPreviewAnnotationBatch): string {
-  const pageLine = batch.page.url ? `Page: ${batch.page.title || "Untitled"} (${batch.page.url})` : `Page: ${batch.page.title || "Untitled"}`;
-  const pct = (value: number) => `${Math.round(value * 1000) / 10}%`;
-  return [
-    "Preview annotation batch",
-    pageLine,
-    "",
-    ...batch.annotations.map((annotation) => {
-      const rect = `x=${pct(annotation.x)}, y=${pct(annotation.y)}, w=${pct(annotation.width)}, h=${pct(annotation.height)}`;
-      return `${annotation.number}. ${annotation.note || "Review this marked region."} (${rect})`;
-    })
-  ].join("\n");
-}
-
 export function registerPreviewAnnotationRoutes(access: PreviewAnnotationRoutesAccess): void {
   const previewAnnotationBatches = new Map<string, OperatorPreviewAnnotationBatch[]>();
 
@@ -149,7 +146,7 @@ export function registerPreviewAnnotationRoutes(access: PreviewAnnotationRoutesA
     access.store.notePreviewLeaseActivity(batch.leaseId, batch.at);
   }
 
-  access.app.post("/api/preview-annotations/batches", (request, response) => {
+  access.app.post("/api/preview-annotations/batches", async (request, response) => {
     const batch = normalizeOperatorPreviewAnnotationBatch(request.body);
     if (!batch) {
       response.status(400).json({ error: "leaseId and annotations are required" });
@@ -172,10 +169,24 @@ export function registerPreviewAnnotationRoutes(access: PreviewAnnotationRoutesA
 
     recordPreviewAnnotationBatch(batch);
     if (batch.intent === "insert" && target) {
+      let attachment;
+      try {
+        attachment = await captureAnnotatedPreviewScreenshot({
+          batch,
+          runtimeBroker: access.runtimeBroker,
+          imageStore: access.imageStore
+        });
+      } catch (error) {
+        response.status(500).json({
+          error: `Annotated screenshot capture failed: ${error instanceof Error ? error.message : String(error)}`
+        });
+        return;
+      }
       access.sseHub.broadcastComposerPrefill({
         id: crypto.randomUUID(),
         target,
-        text: formatAnnotationBatchText(batch)
+        text: formatAnnotationBatchText(batch),
+        attachment
       });
       access.sseHub.broadcastToast("Preview annotations inserted into the composer.", "success", 2200);
     }

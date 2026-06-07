@@ -23,7 +23,8 @@ function installPreviewAnnotationLayerInPage() {
     nextNumber: 1,
     hidden: false,
     activeId: null,
-    toolbar: { dragging: null }
+    toolbar: { dragging: null },
+    scrollLock: null
   };
   const colors = ["#ff6b2c", "#1f5eff", "#0f7a65", "#c2410c"];
 
@@ -237,6 +238,63 @@ function installPreviewAnnotationLayerInPage() {
     return Math.min(max, Math.max(min, value));
   }
 
+  function readViewport() {
+    const documentElement = document.documentElement;
+    const body = document.body;
+    return {
+      width: Math.max(1, Math.round(window.innerWidth || documentElement.clientWidth || 1)),
+      height: Math.max(1, Math.round(window.innerHeight || documentElement.clientHeight || 1)),
+      scrollX: Math.max(0, Math.round(window.scrollX || window.pageXOffset || documentElement.scrollLeft || body?.scrollLeft || 0)),
+      scrollY: Math.max(0, Math.round(window.scrollY || window.pageYOffset || documentElement.scrollTop || body?.scrollTop || 0)),
+      documentWidth: Math.max(1, Math.round(documentElement.scrollWidth || body?.scrollWidth || window.innerWidth || 1)),
+      documentHeight: Math.max(1, Math.round(documentElement.scrollHeight || body?.scrollHeight || window.innerHeight || 1))
+    };
+  }
+
+  function enforceScrollLock() {
+    const lock = state.scrollLock;
+    if (!lock) {
+      return;
+    }
+    if (Math.round(window.scrollX || 0) !== lock.x || Math.round(window.scrollY || 0) !== lock.y) {
+      window.scrollTo(lock.x, lock.y);
+    }
+  }
+
+  function setScrollLocked(locked) {
+    const documentElement = document.documentElement;
+    const body = document.body;
+    if (locked && !state.scrollLock) {
+      state.scrollLock = {
+        x: Math.round(window.scrollX || window.pageXOffset || 0),
+        y: Math.round(window.scrollY || window.pageYOffset || 0),
+        documentOverflow: documentElement.style.overflow,
+        bodyOverflow: body?.style.overflow ?? "",
+        bodyOverscrollBehavior: body?.style.overscrollBehavior ?? ""
+      };
+      documentElement.style.overflow = "hidden";
+      if (body) {
+        body.style.overflow = "hidden";
+        body.style.overscrollBehavior = "contain";
+      }
+      window.addEventListener("scroll", enforceScrollLock, { passive: true });
+      enforceScrollLock();
+    } else if (!locked && state.scrollLock) {
+      const lock = state.scrollLock;
+      state.scrollLock = null;
+      documentElement.style.overflow = lock.documentOverflow;
+      if (body) {
+        body.style.overflow = lock.bodyOverflow;
+        body.style.overscrollBehavior = lock.bodyOverscrollBehavior;
+      }
+      window.removeEventListener("scroll", enforceScrollLock);
+    }
+  }
+
+  function updateScrollLock() {
+    setScrollLocked((state.mode === "draw" && !state.hidden) || state.marks.length > 0);
+  }
+
   function point(event) {
     return {
       x: clamp(event.clientX / Math.max(1, window.innerWidth), 0, 1),
@@ -261,6 +319,7 @@ function installPreviewAnnotationLayerInPage() {
     root.querySelectorAll("[data-mode]").forEach((button) => {
       button.setAttribute("aria-pressed", button.dataset.mode === state.mode ? "true" : "false");
     });
+    updateScrollLock();
   }
 
   function setHidden(hidden) {
@@ -271,6 +330,7 @@ function installPreviewAnnotationLayerInPage() {
     } else {
       setMode(state.mode);
     }
+    updateScrollLock();
   }
 
   function render() {
@@ -300,9 +360,10 @@ function installPreviewAnnotationLayerInPage() {
       return;
     }
     const id = `annotation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    state.marks.push({ ...rect, id, color: state.color, number: state.nextNumber++, note: "" });
+    state.marks.push({ ...rect, id, color: state.color, number: state.nextNumber++, note: "", viewport: readViewport() });
     showStatus(`${state.marks.length} annotation${state.marks.length === 1 ? "" : "s"} ready`);
     setActiveMark(id);
+    updateScrollLock();
   }
 
   function interactiveTarget(target) {
@@ -421,8 +482,8 @@ function installPreviewAnnotationLayerInPage() {
   });
 
   async function commitBatch(intent) {
-    const annotations = state.marks.map(({ id, x, y, width, height, color, number, note }) => ({
-      id, x, y, width, height, color, number, note: note || ""
+    const annotations = state.marks.map(({ id, x, y, width, height, color, number, note, viewport }) => ({
+      id, x, y, width, height, color, number, note: note || "", viewport: viewport || readViewport()
     }));
     if (annotations.length === 0) {
       showStatus("Draw an annotation first", "error");
@@ -468,6 +529,7 @@ function installPreviewAnnotationLayerInPage() {
       showStatus(`${state.marks.length} annotation${state.marks.length === 1 ? "" : "s"} ready`);
       render();
       syncCommentControls();
+      updateScrollLock();
     } else if (action === "clear") {
       state.marks = [];
       state.nextNumber = 1;
@@ -475,6 +537,7 @@ function installPreviewAnnotationLayerInPage() {
       showStatus("Cleared annotations");
       render();
       syncCommentControls();
+      updateScrollLock();
     } else if (action === "batch") {
       void commitBatch("batch");
     } else if (action === "insert") {
@@ -506,8 +569,10 @@ function installPreviewAnnotationLayerInPage() {
       state.nextNumber = 1;
       state.activeId = null;
       render();
+      syncCommentControls();
+      updateScrollLock();
     },
-    getMarks: () => state.marks.map(({ id, x, y, width, height, color, number, note }) => ({ id, x, y, width, height, color, number, note: note || "" }))
+    getMarks: () => state.marks.map(({ id, x, y, width, height, color, number, note, viewport }) => ({ id, x, y, width, height, color, number, note: note || "", viewport: viewport || readViewport() }))
   };
 }
 
