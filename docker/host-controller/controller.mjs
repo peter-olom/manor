@@ -227,11 +227,10 @@ async function runStep(run, label, command, args, options = {}) {
   });
 }
 
-async function checkCleanGitWorktree(run) {
-  const result = await runStep(run, "Check source worktree", "git", ["status", "--porcelain"]);
-  if (result.stdout.trim()) {
-    throw new Error("Source update refused because the Manor checkout has uncommitted changes.");
-  }
+async function clearGitWorktree(run) {
+  await runStep(run, "Inspect source worktree before cleanup", "git", ["status", "--porcelain"]);
+  await runStep(run, "Reset source worktree", "git", ["reset", "--hard"]);
+  await runStep(run, "Clean source worktree", "git", ["clean", "-fd"]);
 }
 
 async function currentBranch(run) {
@@ -245,8 +244,6 @@ async function updateSource(run) {
     return;
   }
 
-  await runStep(run, "Verify source checkout", "git", ["rev-parse", "--is-inside-work-tree"]);
-  await checkCleanGitWorktree(run);
   if (run.gitRef) {
     await runStep(run, "Fetch source refs", "git", ["fetch", "--all", "--tags", "--prune"]);
     await runStep(run, "Checkout target ref", "git", ["checkout", run.gitRef]);
@@ -366,6 +363,8 @@ async function executeRun(run) {
       await new Promise((resolve) => setTimeout(resolve, run.delayMs));
     }
     if (run.mode === "source") {
+      await runStep(run, "Verify source checkout", "git", ["rev-parse", "--is-inside-work-tree"]);
+      await clearGitWorktree(run);
       await updateSource(run);
       await buildSourceImages(run);
     } else {
