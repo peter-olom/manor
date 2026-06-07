@@ -64,3 +64,26 @@ test("scratch pad items persist, launch, derive ready state, review, and cleanup
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("scratch pad removal drops the item from snapshots and persisted state", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-scratch-pad-remove-"));
+  try {
+    const statePath = path.join(dir, "scratch-pad.json");
+    const store = new ScratchPadStore(statePath);
+    await store.load();
+
+    const keep = store.create({ text: "Keep this scratch item." });
+    const remove = store.create({ text: "Delete this scratch item." });
+
+    const removed = store.remove(remove.id);
+    assert.equal(removed?.id, remove.id);
+    assert.deepEqual(store.getSnapshot().items.map((item) => item.id), [keep.id]);
+
+    await store.flushSave();
+    const restored = new ScratchPadStore(statePath);
+    await restored.load();
+    assert.deepEqual(restored.getSnapshot().items.map((item) => item.id), [keep.id]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

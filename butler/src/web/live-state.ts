@@ -13,6 +13,14 @@ import type {
 } from "./types";
 
 type Listener = () => void;
+type BootstrapChannel = "shell" | "butlerLive" | "runtime" | "threads";
+type BootstrapChannelVersions = Record<BootstrapChannel, number>;
+type HeartbeatPayload =
+  | number
+  | {
+      at?: number;
+      channelVersions?: Partial<BootstrapChannelVersions>;
+    };
 
 function createStore<T>(initialValue: T) {
   let value = initialValue;
@@ -55,16 +63,43 @@ const transportStore = createStore<TransportState>({
 let started = false;
 let eventSource: EventSource | null = null;
 let bootstrapPromise: Promise<void> | null = null;
+let bootstrapRefreshInFlight: Promise<void> | null = null;
 let reconnectTimer: number | null = null;
 let heartbeatTimer: number | null = null;
 let connectionAttempt = 0;
 let reconnectAttempt = 0;
-let lastStateEventAt = 0;
+let lastBootstrapRefreshAt = 0;
+let pageResyncHandlersInstalled = false;
+const lastStateEventAtByChannel: Record<BootstrapChannel, number> = {
+  shell: 0,
+  butlerLive: 0,
+  runtime: 0,
+  threads: 0
+};
+const lastAppliedChannelVersion: BootstrapChannelVersions = {
+  shell: 0,
+  butlerLive: 0,
+  runtime: 0,
+  threads: 0
+};
+const lastServerChannelVersion: BootstrapChannelVersions = {
+  shell: 0,
+  butlerLive: 0,
+  runtime: 0,
+  threads: 0
+};
 const inflightThreadLoads = new Map<string, Promise<void>>();
 const EVENT_STREAM_PATH = "/api/events";
+const EVENT_SOURCE_CONNECT_TIMEOUT_MS = 10_000;
+const BOOTSTRAP_REFRESH_TIMEOUT_MS = 12_000;
 const HEARTBEAT_TIMEOUT_MS = 45_000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 15_000;
+const FOREGROUND_RESYNC_MIN_INTERVAL_MS = 3_000;
+const VISIBLE_RESYNC_MIN_INTERVAL_MS = 30_000;
+const VISIBLE_RESYNC_CHECK_INTERVAL_MS = 10_000;
+const VERSION_GAP_RESYNC_MIN_INTERVAL_MS = 1_000;
+const BOOTSTRAP_CHANNELS: readonly BootstrapChannel[] = ["shell", "butlerLive", "runtime", "threads"];
 
 function setTransportState(nextValue: Partial<TransportState>): void {
   const current = transportStore.getSnapshot();
@@ -120,10 +155,92 @@ function markTransportAlive(): void {
   heartbeatTimer = window.setTimeout(() => {
     scheduleReconnect("Live updates stalled");
   }, HEARTBEAT_TIMEOUT_MS);
+  requestVisiblePageResync(VISIBLE_RESYNC_MIN_INTERVAL_MS);
+}
+
+export function selectBootstrapChannelsToApply(
+  lastEventAtByChannel: Record<BootstrapChannel, number>,
+  requestedAt: number
+): BootstrapChannel[] {
+  return BOOTSTRAP_CHANNELS.filter((channel) => lastEventAtByChannel[channel] <= requestedAt);
+}
+
+export function selectOutdatedBootstrapChannels(
+  appliedVersions: BootstrapChannelVersions,
+  serverVersions: BootstrapChannelVersions
+): BootstrapChannel[] {
+  return BOOTSTRAP_CHANNELS.filter((channel) => serverVersions[channel] > appliedVersions[channel]);
+}
+
+export function shouldApplyChannelEvent(appliedVersion: number, eventVersion: number | null): boolean {
+  return eventVersion === null || eventVersion >= appliedVersion;
+}
+
+export function shouldRefreshLiveStateOnPageEvent(input: {
+  now: number;
+  lastRefreshAt: number;
+  minIntervalMs: number;
+  hasSnapshot: boolean;
+  visibilityState: DocumentVisibilityState | "unknown";
+}): boolean {
+  if (input.visibilityState === "hidden") {
+    return false;
+  }
+  return !input.hasSnapshot || input.now - input.lastRefreshAt >= input.minIntervalMs;
 }
 
 function parseEventData<T>(event: Event): T {
   return JSON.parse((event as MessageEvent<string>).data) as T;
+}
+
+function parseEventChannelVersion(event: Event, channel: BootstrapChannel): number | null {
+  const eventId = (event as MessageEvent<string>).lastEventId;
+  const prefix = `${channel}:`;
+  if (!eventId.startsWith(prefix)) {
+    return null;
+  }
+
+  const version = Number(eventId.slice(prefix.length));
+  return Number.isSafeInteger(version) && version >= 0 ? version : null;
+}
+
+function applyChannelVersion(channel: BootstrapChannel, version: number): void {
+  lastAppliedChannelVersion[channel] = Math.max(lastAppliedChannelVersion[channel], version);
+  lastServerChannelVersion[channel] = Math.max(lastServerChannelVersion[channel], version);
+}
+
+function updateServerChannelVersions(versions: Partial<BootstrapChannelVersions> | undefined): void {
+  if (!versions) {
+    return;
+  }
+
+  for (const channel of BOOTSTRAP_CHANNELS) {
+    const version = versions[channel];
+    if (typeof version === "number" && Number.isSafeInteger(version) && version >= 0) {
+      lastServerChannelVersion[channel] = Math.max(lastServerChannelVersion[channel], version);
+    }
+  }
+}
+
+function parseHeartbeatChannelVersions(event: Event): Partial<BootstrapChannelVersions> | undefined {
+  const payload = parseEventData<HeartbeatPayload>(event);
+  if (payload && typeof payload === "object") {
+    return payload.channelVersions;
+  }
+  return undefined;
+}
+
+async function getJsonWithTimeout<T>(url: string): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), BOOTSTRAP_REFRESH_TIMEOUT_MS);
+  try {
+    return await getJson<T>(url, {
+      cache: "no-store",
+      signal: controller.signal
+    });
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 function mergeBootstrapImages(images: ImageReference[]): void {
@@ -141,36 +258,156 @@ async function refreshBootstrap(
   includeImages = false
 ): Promise<{ bootstrap: BootstrapSnapshot; images: ImageReference[] | null }> {
   const [bootstrap, images] = await Promise.all([
-    getJson<BootstrapSnapshot>("/api/bootstrap"),
+    getJsonWithTimeout<BootstrapSnapshot>("/api/bootstrap"),
     includeImages || imagesStore.getSnapshot().length === 0
-      ? getJson<{ images: ImageReference[] }>("/api/images?limit=200").then((payload) => payload.images)
+      ? getJsonWithTimeout<{ images: ImageReference[] }>("/api/images?limit=200").then((payload) => payload.images)
       : Promise.resolve(null)
   ]);
 
   return { bootstrap, images };
 }
 
-function applyBootstrapSnapshot(payload: { bootstrap: BootstrapSnapshot; images: ImageReference[] | null }): void {
+function applyBootstrapSnapshotIfCurrent(
+  payload: { bootstrap: BootstrapSnapshot; images: ImageReference[] | null },
+  requestedAt: number,
+  forcedChannels: readonly BootstrapChannel[] = []
+): void {
   if (payload.images) {
     mergeBootstrapImages(payload.images);
   }
 
-  lastStateEventAt = Date.now();
-  handleBootstrap(payload.bootstrap);
+  const appliedAt = Date.now();
+  const channelsToApply = new Set<BootstrapChannel>([
+    ...selectBootstrapChannelsToApply(lastStateEventAtByChannel, requestedAt),
+    ...forcedChannels
+  ]);
+  lastBootstrapRefreshAt = appliedAt;
+  for (const channel of channelsToApply) {
+    lastStateEventAtByChannel[channel] = appliedAt;
+    lastAppliedChannelVersion[channel] = Math.max(
+      lastAppliedChannelVersion[channel],
+      lastServerChannelVersion[channel]
+    );
+    if (channel === "shell") {
+      shellStore.setSnapshot(payload.bootstrap.shell);
+    } else if (channel === "butlerLive") {
+      butlerLiveStore.setSnapshot(payload.bootstrap.butlerLive);
+    } else if (channel === "runtime") {
+      runtimeStore.setSnapshot(payload.bootstrap.runtime);
+    } else {
+      openThreadsStore.setSnapshot(payload.bootstrap.openThreads);
+    }
+  }
 }
 
-function applyBootstrapSnapshotIfCurrent(
-  payload: { bootstrap: BootstrapSnapshot; images: ImageReference[] | null },
-  requestedAt: number
-): void {
-  if (lastStateEventAt > requestedAt) {
-    if (payload.images) {
-      mergeBootstrapImages(payload.images);
+function refreshLiveStateFromServer(
+  includeImages = false,
+  shouldApply?: () => boolean,
+  forcedChannels: readonly BootstrapChannel[] = []
+): Promise<void> {
+  if (!includeImages && !shouldApply && forcedChannels.length === 0 && bootstrapRefreshInFlight) {
+    return bootstrapRefreshInFlight;
+  }
+
+  const requestedAt = Date.now();
+  lastBootstrapRefreshAt = requestedAt;
+  const refresh = refreshBootstrap(includeImages).then((payload) => {
+    if (shouldApply && !shouldApply()) {
+      return;
     }
+
+    applyBootstrapSnapshotIfCurrent(payload, requestedAt, forcedChannels);
+  }).finally(() => {
+    if (bootstrapRefreshInFlight === refresh) {
+      bootstrapRefreshInFlight = null;
+    }
+  });
+
+  if (!includeImages && !shouldApply && forcedChannels.length === 0) {
+    bootstrapRefreshInFlight = refresh;
+  }
+  return refresh;
+}
+
+function getCurrentVisibilityState(): DocumentVisibilityState | "unknown" {
+  if (typeof document === "undefined") {
+    return "unknown";
+  }
+  return document.visibilityState;
+}
+
+function requestVisiblePageResync(
+  minIntervalMs: number,
+  forcedChannels: readonly BootstrapChannel[] = []
+): void {
+  if (typeof window === "undefined") {
     return;
   }
 
-  applyBootstrapSnapshot(payload);
+  const now = Date.now();
+  const shouldForceStaleChannels = forcedChannels.length > 0;
+  if (
+    !shouldForceStaleChannels &&
+    !shouldRefreshLiveStateOnPageEvent({
+      now,
+      lastRefreshAt: lastBootstrapRefreshAt,
+      minIntervalMs,
+      hasSnapshot: Boolean(shellStore.getSnapshot()),
+      visibilityState: getCurrentVisibilityState()
+    })
+  ) {
+    return;
+  }
+
+  if (shouldForceStaleChannels && getCurrentVisibilityState() === "hidden") {
+    return;
+  }
+
+  void refreshLiveStateFromServer(false, undefined, forcedChannels).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    setTransportState({
+      connected: false,
+      disconnected: true,
+      reconnecting: true,
+      lastError: message
+    });
+    scheduleReconnect(message);
+  });
+}
+
+function requestVersionGapResync(): void {
+  const outdatedChannels = selectOutdatedBootstrapChannels(lastAppliedChannelVersion, lastServerChannelVersion);
+  if (outdatedChannels.length === 0) {
+    return;
+  }
+
+  requestVisiblePageResync(VERSION_GAP_RESYNC_MIN_INTERVAL_MS, outdatedChannels);
+}
+
+function installPageResyncHandlers(): void {
+  if (pageResyncHandlersInstalled || typeof window === "undefined") {
+    return;
+  }
+
+  pageResyncHandlersInstalled = true;
+  const resyncSoon = () => requestVisiblePageResync(FOREGROUND_RESYNC_MIN_INTERVAL_MS);
+  window.addEventListener("focus", resyncSoon);
+  window.addEventListener("pageshow", resyncSoon);
+  window.addEventListener("online", resyncSoon);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "hidden") {
+      resyncSoon();
+    }
+  });
+  window.setInterval(
+    () => {
+      const minIntervalMs = transportStore.getSnapshot().connected
+        ? VISIBLE_RESYNC_MIN_INTERVAL_MS
+        : FOREGROUND_RESYNC_MIN_INTERVAL_MS;
+      requestVisiblePageResync(minIntervalMs);
+    },
+    VISIBLE_RESYNC_CHECK_INTERVAL_MS
+  );
 }
 
 function scheduleReconnect(reason: string): void {
@@ -213,15 +450,29 @@ function openEventSource(): void {
     reconnecting: true,
     lastError: null
   });
+  heartbeatTimer = window.setTimeout(() => {
+    if (eventSource === source && attemptId === connectionAttempt) {
+      scheduleReconnect("Live updates stalled");
+    }
+  }, EVENT_SOURCE_CONNECT_TIMEOUT_MS);
 
   const isCurrentAttempt = () => eventSource === source && attemptId === connectionAttempt;
-  const onEvent = <T>(storeSetter: (payload: T) => void) => (event: Event) => {
+  const onEvent = <T>(channel: BootstrapChannel, storeSetter: (payload: T) => void) => (event: Event) => {
     if (!isCurrentAttempt()) {
       return;
     }
 
+    const version = parseEventChannelVersion(event, channel);
+    if (!shouldApplyChannelEvent(lastAppliedChannelVersion[channel], version)) {
+      markTransportAlive();
+      return;
+    }
+
     markTransportAlive();
-    lastStateEventAt = Date.now();
+    lastStateEventAtByChannel[channel] = Date.now();
+    if (version !== null) {
+      applyChannelVersion(channel, version);
+    }
     storeSetter(parseEventData<T>(event));
   };
 
@@ -231,15 +482,7 @@ function openEventSource(): void {
     }
 
     markTransportAlive();
-    const requestedAt = Date.now();
-    bootstrapPromise = refreshBootstrap(false)
-      .then((payload) => {
-        if (!isCurrentAttempt()) {
-          return;
-        }
-
-        applyBootstrapSnapshotIfCurrent(payload, requestedAt);
-      })
+    bootstrapPromise = refreshLiveStateFromServer(false, isCurrentAttempt)
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         if (!isCurrentAttempt()) {
@@ -249,16 +492,25 @@ function openEventSource(): void {
       });
   };
 
-  source.addEventListener("shell", onEvent<ShellSnapshot>((payload) => shellStore.setSnapshot(payload)));
-  source.addEventListener("butlerLive", onEvent<ButlerLiveSnapshot>((payload) => butlerLiveStore.setSnapshot(payload)));
-  source.addEventListener("runtime", onEvent<RuntimeSnapshot>((payload) => runtimeStore.setSnapshot(payload)));
-  source.addEventListener("threads", onEvent<Record<string, CodexThreadDetail>>((payload) => openThreadsStore.setSnapshot(payload)));
-  source.addEventListener("toast", onEvent<ServerToastEvent>((payload) => serverToastStore.setSnapshot(payload)));
-  source.addEventListener("heartbeat", () => {
+  source.addEventListener("shell", onEvent<ShellSnapshot>("shell", (payload) => shellStore.setSnapshot(payload)));
+  source.addEventListener("butlerLive", onEvent<ButlerLiveSnapshot>("butlerLive", (payload) => butlerLiveStore.setSnapshot(payload)));
+  source.addEventListener("runtime", onEvent<RuntimeSnapshot>("runtime", (payload) => runtimeStore.setSnapshot(payload)));
+  source.addEventListener("threads", onEvent<Record<string, CodexThreadDetail>>("threads", (payload) => openThreadsStore.setSnapshot(payload)));
+  source.addEventListener("toast", (event) => {
+    if (!isCurrentAttempt()) {
+      return;
+    }
+
+    markTransportAlive();
+    serverToastStore.setSnapshot(parseEventData<ServerToastEvent>(event));
+  });
+  source.addEventListener("heartbeat", (event) => {
     if (!isCurrentAttempt()) {
       return;
     }
     markTransportAlive();
+    updateServerChannelVersions(parseHeartbeatChannelVersions(event));
+    requestVersionGapResync();
   });
   source.onerror = () => {
     if (!isCurrentAttempt()) {
@@ -269,25 +521,14 @@ function openEventSource(): void {
   };
 }
 
-function handleBootstrap(data: BootstrapSnapshot): void {
-  shellStore.setSnapshot(data.shell);
-  butlerLiveStore.setSnapshot(data.butlerLive);
-  runtimeStore.setSnapshot(data.runtime);
-  openThreadsStore.setSnapshot(data.openThreads);
-  markTransportAlive();
-}
-
 function ensureStarted(): void {
   if (started) {
     return;
   }
 
   started = true;
-  const requestedAt = Date.now();
-  bootstrapPromise = refreshBootstrap(true)
-    .then((payload) => {
-      applyBootstrapSnapshotIfCurrent(payload, requestedAt);
-    })
+  installPageResyncHandlers();
+  bootstrapPromise = refreshLiveStateFromServer(true)
     .catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       setTransportState({

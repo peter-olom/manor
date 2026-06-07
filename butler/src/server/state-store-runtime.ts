@@ -220,6 +220,7 @@ export function enqueueStateStoreRuntimeCleanupTask(
   input: {
     threadId: string;
     cwd: string | null;
+    threadCreatedAt?: number | null;
     notifyOnError?: boolean;
     stacks: RuntimeCleanupTaskView["stacks"];
     previews: RuntimeCleanupTaskView["previews"];
@@ -231,6 +232,7 @@ export function enqueueStateStoreRuntimeCleanupTask(
     id: input.threadId,
     threadId: input.threadId,
     cwd: input.cwd,
+    threadCreatedAt: typeof input.threadCreatedAt === "number" && Number.isFinite(input.threadCreatedAt) ? input.threadCreatedAt : null,
     createdAt: now,
     updatedAt: now,
     nextAttemptAt: now,

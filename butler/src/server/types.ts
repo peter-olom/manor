@@ -426,6 +426,7 @@ export interface RuntimeCleanupTaskView {
   id: string;
   threadId: string;
   cwd: string | null;
+  threadCreatedAt?: number | null;
   createdAt: number;
   updatedAt: number;
   nextAttemptAt: number;
