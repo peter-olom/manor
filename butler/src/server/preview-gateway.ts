@@ -51,11 +51,17 @@ function resolveBrokerPreviewRouteUrl(rawUrl: string | undefined): PreviewRouteU
   };
 }
 
+export function isReservedPreviewAnnotationApiPath(rawUrl: string | undefined) {
+  const url = rawUrl || "";
+  const originalPath = url.split("?")[0] ?? url;
+  return originalPath === "/api/preview-annotations/batches" || originalPath.startsWith("/api/preview-annotations/batches/");
+}
+
 export function resolvePreviewRefererRouteUrl(
   rawUrl: string | undefined,
   refererHeader: string | string[] | undefined
 ): PreviewRouteUrl | null {
-  if (resolvePreviewRouteUrl(rawUrl)) {
+  if (resolvePreviewRouteUrl(rawUrl) || isReservedPreviewAnnotationApiPath(rawUrl)) {
     return null;
   }
 

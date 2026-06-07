@@ -12,6 +12,7 @@ import { CodexHarnessService } from "./codex-harness.js";
 import { FileReferenceStore, MAX_FILE_BYTES } from "./file-store.js";
 import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
+import { registerPreviewAnnotationRoutes } from "./preview-annotation-routes.js";
 import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-routes.js";
 import { buildCodexInputWithReferences, buildComposerInputItemsPrompt, buildReferencePromptText } from "./reference-inputs.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
@@ -211,6 +212,8 @@ const { applyServiceStartedPoliciesForServer } = registerProjectArtifactPolicyRo
   store,
   runtimeBroker
 });
+registerPreviewAnnotationRoutes(app);
+
 registerServerAssetRoutes({
   app,
   artifactsDir,
