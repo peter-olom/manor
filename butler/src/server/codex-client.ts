@@ -1417,11 +1417,12 @@ export class CodexAppServerClient extends EventEmitter {
         await this.onThreadDeleting?.({
           threadId: context.threadId,
           cwd: context.cwd,
+          threadCreatedAt: context.threadCreatedAt,
           stacks: context.stacks,
           previews: context.previews,
           services: context.services
         });
-        const deletedArtifacts = await this.deleteThreadArtifacts(context.threadId, context.cwd);
+        const deletedArtifacts = await this.deleteThreadArtifacts(context.threadId, context.cwd, context.threadCreatedAt);
         this.deletedThreadIds.add(threadId);
         this.store.removeThread(threadId);
         await this.onThreadCapabilityRemoved?.(threadId);

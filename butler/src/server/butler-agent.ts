@@ -43,20 +43,7 @@ import {
   type SupervisionSmokePlan
 } from "./butler-agent-helpers.js";
 import { buildButlerCodexTools } from "./butler-agent-codex-tools.js";
-import {
-  createOrRefreshButlerSession,
-  getButlerLiveSnapshot,
-  getButlerMessagePage,
-  getButlerShellSnapshot,
-  getButlerSnapshot,
-  promptButler,
-  promptButlerInternal,
-  stopButlerPrompt,
-  restoreButlerCompactionState,
-  sanitizeButlerSessionMessages,
-  sanitizePersistedButlerSessions,
-  updateButlerComposeSettings
-} from "./butler-agent-session.js";
+import { createOrRefreshButlerSession, getButlerLiveSnapshot, getButlerMessagePage, getButlerShellSnapshot, getButlerSnapshot, promptButler, promptButlerInternal, stopButlerPrompt, restoreButlerCompactionState, sanitizeButlerSessionMessages, sanitizePersistedButlerSessions, updateButlerComposeSettings } from "./butler-agent-session.js";
 import { clearButlerSessionChat, deleteButlerSessionChatFrom, keepOperatorMessagesBefore } from "./butler-agent-chat-hygiene.js";
 import { buildButlerServiceTools } from "./butler-agent-service-tools.js";
 import { buildButlerManorTools } from "./butler-agent-manor-tools.js";
