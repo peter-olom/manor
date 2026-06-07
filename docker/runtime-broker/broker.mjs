@@ -413,7 +413,9 @@ const browserController = createBrokerBrowserController({
   normalizeHeaderMap,
   resolveTargetHost,
   appendPreviewRoutePath,
-  persistVerificationArtifacts
+  persistVerificationArtifacts,
+  internalOperatorBaseUrl,
+  brokerToken
 });
 browserController.registerRoutes(app);
 
@@ -428,7 +430,9 @@ const desktopController = createBrokerDesktopController({
   normalizePositiveInteger,
   normalizeEnv,
   persistArtifactFiles,
-  persistVerificationArtifacts
+  persistVerificationArtifacts,
+  internalOperatorBaseUrl,
+  brokerToken
 });
 desktopController.registerRoutes(app);
 

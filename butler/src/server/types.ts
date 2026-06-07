@@ -104,6 +104,17 @@ export interface CodexWorkerReportView {
   updatedAt: number;
 }
 
+export interface CodexThreadPatchView {
+  kind: "item-delta";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  itemType: string;
+  delta: string;
+  itemTextLength: number;
+  at: number;
+}
+
 export type SupervisionChecklistItemStatus = "pending" | "accepted" | "rejected" | "waived";
 export type SupervisionChecklistEvidenceSource = "worker_report" | "butler_review";
 
@@ -261,6 +272,34 @@ export interface PreviewVerificationDiagnosticsView {
   remediationHints: string[];
 }
 
+export interface BrowserAnnotationRectView {
+  id: string;
+  number: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  note: string;
+  viewport?: {
+    width: number;
+    height: number;
+    scrollX: number;
+    scrollY: number;
+    documentWidth: number;
+    documentHeight: number;
+  } | null;
+}
+
+export interface BrowserAnnotationBatchView {
+  id: string;
+  at: number;
+  intent: "batch" | "insert";
+  targetId: string;
+  page: { title: string; url: string };
+  annotations: BrowserAnnotationRectView[];
+}
+
 export interface PreviewVerificationView {
   runId: string;
   mode: PreviewBrowserMode;
@@ -275,6 +314,12 @@ export interface PreviewVerificationView {
   summary: PreviewVerificationSummaryView;
   phases: PreviewVerificationPhaseView[];
   readiness: PreviewVerificationReadinessView;
+  annotationBatchCount?: number;
+  annotations?: {
+    targets: Array<{ id: string; label: string }>;
+    batches: BrowserAnnotationBatchView[];
+    insertions: Array<{ batchId: string; at: number; ok: boolean; error?: string; target?: { id: string; label: string } }>;
+  };
   auth: PreviewVerificationAuthView;
   diagnostics?: PreviewVerificationDiagnosticsView;
   artifacts: PreviewVerificationArtifactView[];
@@ -426,6 +471,7 @@ export interface RuntimeCleanupTaskView {
   id: string;
   threadId: string;
   cwd: string | null;
+  threadCreatedAt?: number | null;
   createdAt: number;
   updatedAt: number;
   nextAttemptAt: number;
@@ -448,6 +494,7 @@ export interface RuntimeCleanupTaskView {
     runtimeKind: "container" | "embedded";
     status: ServiceLeaseStatus;
   }>;
+  proofArtifactPaths?: string[];
 }
 
 export interface DesktopSessionView {
@@ -596,6 +643,7 @@ export interface ButlerMemoryEntryView {
 export type ScratchPadItemStatus = "captured" | "exploring" | "ready_for_review" | "accepted" | "parked" | "dismissed";
 export type ScratchPadDepth = "quick" | "deep" | "prototype" | "plan";
 export type ScratchPadResultKind = "research" | "prototype" | "plan" | "recommendation";
+export type ScratchPadWorkspaceMode = "managed_worktree" | "existing";
 
 export interface ScratchPadItemView {
   id: string;
@@ -605,6 +653,8 @@ export interface ScratchPadItemView {
   depth: ScratchPadDepth;
   resultKind: ScratchPadResultKind;
   cwd: string | null;
+  workspaceMode: ScratchPadWorkspaceMode;
+  branchName: string | null;
   threadId: string | null;
   reviewNote: string | null;
   createdAt: number;
@@ -701,6 +751,7 @@ export interface CodexItemView {
   status: "started" | "completed";
   text: string;
   at: number;
+  taskDurationMs: number | null;
 }
 
 export interface CodexTurnView {
@@ -742,6 +793,7 @@ export interface ButlerMessageView {
   role: string;
   text: string;
   at: number | null;
+  taskDurationMs: number | null;
   kind: "message";
 }
 
@@ -775,6 +827,12 @@ export interface ButlerMessagePageView {
   endIndex: number;
   totalCount: number;
   hasMore: boolean;
+}
+
+export interface ButlerLivePatchView {
+  messages?: ButlerMessageView[];
+  messageCount: number;
+  activityTurns?: ButlerActivityTurnView[];
 }
 
 export interface CodexProjectSummaryView {
@@ -866,6 +924,24 @@ export interface ButlerOnboardingView {
   steps: OnboardingStepView[];
 }
 
+export interface ManorRestartRequestView {
+  id: string;
+  mode: "auto" | "source" | "image" | null;
+  target: "current" | "latest" | null;
+  gitRef: string | null;
+  imageTag: string | null;
+  targetCommit: string | null;
+  targetTag: string | null;
+  includeDesktop: boolean;
+  build: boolean | null;
+  update: boolean | null;
+  reason: string | null;
+  details: string | null;
+  requestedAt: number;
+  status: "pending" | "authorized" | "dismissed";
+  authorizedAt: number | null;
+}
+
 export interface AppSnapshot {
   codex: {
     connected: boolean;
@@ -899,6 +975,8 @@ export interface AppSnapshot {
       supervisor: ButlerSupervisorSummaryView;
       callbacks: ButlerThreadCallbackView[];
     };
+    pendingManorRestartRequest: ManorRestartRequestView | null;
+    authorizedManorRestartRequest: ManorRestartRequestView | null;
     scratchPad: ScratchPadView;
     latestPreviewProofsByThreadId: Record<string, PreviewProofRecordView>;
     previewProofsByThreadId: Record<string, PreviewProofRecordView[]>;

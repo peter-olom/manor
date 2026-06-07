@@ -26,6 +26,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "refreshThreads", description: "Refreshes one stack lease before Butler acts on it." }]
   },
   {
+    name: "set_stack_lease",
+    label: "Set stack lease",
+    description: "Update stack lease lifecycle, including sticky reuse and cleanup TTL.",
+    uiEffects: [{ kind: "refreshThreads", description: "Refreshes stack lease retention state." }]
+  },
+  {
     name: "promote_stack",
     label: "Promote stack",
     description: "Copy a stack's retained volumes into another storage namespace.",
@@ -60,6 +66,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     label: "Inspect preview",
     description: "Inspect one preview runtime, including its current runtime state and egress configuration.",
     uiEffects: [{ kind: "refreshThreads", description: "Refreshes one preview lease before Butler acts on it." }]
+  },
+  {
+    name: "set_preview_lease",
+    label: "Set preview lease",
+    description: "Update preview lease lifecycle, including sticky reuse and cleanup TTL.",
+    uiEffects: [{ kind: "refreshThreads", description: "Refreshes preview lease retention state." }]
   },
   {
     name: "start_preview_browser_session",
@@ -130,7 +142,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "review_preview_proof",
     label: "Review proof",
-    description: "Inspect the latest browser, desktop, or file proof for one preview or job and decide whether it is convincing.",
+    description: "Inspect the latest browser, desktop, or file proof for one preview or job. UI-impacting work needs screenshot or video proof.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while reviewing proof artifacts." }]
   },
   {
@@ -303,6 +315,33 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
       { kind: "openWindow", description: "Opens the delegated Codex workstream as a tab." },
       { kind: "focusWindow", description: "Moves focus into the new Codex workstream." }
     ]
+  },
+  {
+    name: "start_self_improvement",
+    label: "Start self-improvement",
+    description: "Start a dedicated Manor self-improvement workstream that implements, verifies, pushes a branch, and opens a draft PR.",
+    uiEffects: [
+      { kind: "openWindow", description: "Opens the Manor self-improvement workstream as a tab." },
+      { kind: "focusWindow", description: "Moves focus into the new self-improvement workstream." }
+    ]
+  },
+  {
+    name: "request_manor_restart",
+    label: "Request Manor restart",
+    description: "Open an operator-facing Manor restart/update authorization dialog without mutating the live stack.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while requesting restart authorization." }]
+  },
+  {
+    name: "start_authorized_manor_restart",
+    label: "Start authorized restart",
+    description: "Consume an operator-authorized Manor restart request and ask the host controller to run it.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while the restart is scheduled." }]
+  },
+  {
+    name: "read_manor_restart_status",
+    label: "Restart status",
+    description: "Read the active or latest host-controller restart/update run.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while reading restart outcome." }]
   },
   {
     name: "run_supervision_smoke_test",

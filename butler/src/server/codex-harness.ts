@@ -28,6 +28,7 @@ import {
   resolveHarnessThreadStack
 } from "./codex-harness-runtime.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
+import { hasVisualProof, threadRequiresVisualProof } from "./proof-policy.js";
 import {
   applyServiceStartedPolicies,
   formatProjectPolicyContextLines
@@ -239,6 +240,24 @@ export class CodexHarnessService {
     const statusPart = verification.status ? ` status=${verification.status}` : "";
     return verification.failureKind === "none" ? `signal=none${statusPart}` : `signal=${verification.failureKind}${statusPart}`;
   }
+  private formatLeaseLifecycle(lease: { pinned?: boolean; lifecycleState?: string; leaseTtlMs?: number | null } & object): string {
+    const state = lease.pinned ? "sticky" : lease.lifecycleState ?? "active";
+    const ttlMinutes =
+      typeof lease.leaseTtlMs === "number" && Number.isFinite(lease.leaseTtlMs)
+        ? Math.max(1, Math.round(lease.leaseTtlMs / 60_000))
+        : null;
+    return `lease=${state}${ttlMinutes ? ` ttl=${ttlMinutes}m` : ""}`;
+  }
+  private isStackVisibleToThread(threadId: string, lease: { threadId: string | null; pinned?: boolean }): boolean {
+    return lease.threadId === threadId || !lease.threadId || lease.pinned === true;
+  }
+  private isRuntimeLeaseVisibleToThread(threadId: string, lease: { threadId: string | null; stackId: string | null; pinned?: boolean }): boolean {
+    if (lease.threadId === threadId || !lease.threadId || lease.pinned === true) {
+      return true;
+    }
+    const stack = lease.stackId ? this.store.getStackLease(lease.stackId) : null;
+    return Boolean(stack && this.isStackVisibleToThread(threadId, stack));
+  }
   private formatPreviewVisibility(threadId: string, lease: PreviewLeaseView): string {
     const proofs = this.listThreadProofs(threadId).filter((proof) => proof.previewId === lease.id).slice(0, 2);
     const verification = lease.lastVerification;
@@ -250,7 +269,7 @@ export class CodexHarnessService {
       proofs.length === 0
         ? "proofs=none"
         : `proofs=${proofs.map((proof) => `${proof.verification.runId}@${new Date(proof.verification.checkedAt).toISOString()}`).join(", ")}`;
-    return `${lease.id} | ${lease.title} | ${lease.status}/${lease.bootstrap.phase} | route=${lease.operatorUrl} | aliases=${lease.aliases.join(",") || "(none)"} | target=${lease.targetHost}:${lease.targetPort} | ${heartbeatLine} | ${verificationLine} | ${proofLine}`;
+    return `${lease.id} | ${lease.title} | ${lease.status}/${lease.bootstrap.phase} | ${this.formatLeaseLifecycle(lease)} | route=${lease.operatorUrl} | aliases=${lease.aliases.join(",") || "(none)"} | target=${lease.targetHost}:${lease.targetPort} | ${heartbeatLine} | ${verificationLine} | ${proofLine}`;
   }
 
   private async validateWorkerReport(
@@ -270,7 +289,15 @@ export class CodexHarnessService {
           "This job asked for proof. Gather persisted proof before reporting completed."
         );
       }
+      if (threadRequiresVisualProof(thread) && !hasVisualProof(threadProofs)) {
+        throw new Error(
+          "This job affects operator-visible UI. Capture persisted screenshot or video proof before reporting completed; text or file proof alone is insufficient."
+        );
+      }
       return;
+    }
+    if (!report.details?.trim()) {
+      throw new Error("Blocked reports require details that document what failed, what was tried, and the next sensible action.");
     }
     if (looksLikeHarnessLookupFailure(combined)) {
       throw new Error(
@@ -389,15 +416,21 @@ export class CodexHarnessService {
   private describeCapability(capability: HarnessCapability): string {
     const thread = this.getThreadContext(capability);
     const project = this.resolveWorkspaceProject(capability.cwd, thread);
-    const stacks = this.store.listStackLeases().filter((lease) => lease.threadId === capability.threadId && lease.status !== "stopped");
-    const previews = this.store.listPreviewLeases().filter((lease) => lease.threadId === capability.threadId && lease.status !== "stopped");
-    const services = this.store.listServiceLeases().filter((lease) => lease.threadId === capability.threadId && lease.status !== "stopped");
+    const stacks = this.store
+      .listStackLeases()
+      .filter((lease) => lease.status !== "stopped" && this.isStackVisibleToThread(capability.threadId, lease));
+    const previews = this.store
+      .listPreviewLeases()
+      .filter((lease) => lease.status !== "stopped" && this.isRuntimeLeaseVisibleToThread(capability.threadId, lease));
+    const services = this.store
+      .listServiceLeases()
+      .filter((lease) => lease.status !== "stopped" && this.isRuntimeLeaseVisibleToThread(capability.threadId, lease));
     const proofs = this.listThreadProofs(capability.threadId).slice(0, 3);
 
     const stackLines =
       stacks.length === 0
         ? "Stacks: none"
-        : `Stacks:\n${stacks.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | network=${lease.networkName} | ${formatStackStorageSummary(lease)} | previews=${lease.previewIds.length} | services=${lease.serviceIds.length}`).join("\n")}`;
+        : `Stacks:\n${stacks.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | ${this.formatLeaseLifecycle(lease)} | network=${lease.networkName} | ${formatStackStorageSummary(lease)} | previews=${lease.previewIds.length} | services=${lease.serviceIds.length}`).join("\n")}`;
     const previewLines =
       previews.length === 0
         ? "Previews: none"
@@ -467,7 +500,7 @@ export class CodexHarnessService {
           ...formatHarnessRuntimeModel(),
           stacks.length === 0
             ? "Stacks: none"
-            : `Stacks:\n${stacks.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | network=${lease.networkName} | ${formatStackStorageSummary(lease)} | previews=${lease.previewIds.length} | services=${lease.serviceIds.length}`).join("\n")}`,
+            : `Stacks:\n${stacks.map((lease, index) => `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status} | ${this.formatLeaseLifecycle(lease)} | network=${lease.networkName} | ${formatStackStorageSummary(lease)} | previews=${lease.previewIds.length} | services=${lease.serviceIds.length}`).join("\n")}`,
           previews.length === 0
             ? "Previews: none"
             : `Previews:\n${previews.map((lease, index) => `${index + 1}. ${this.formatPreviewVisibility(capability.threadId, lease)}`).join("\n")}`,
@@ -605,6 +638,11 @@ export class CodexHarnessService {
             : "This job asked for proof. Browser-use sessions are the simplest way to capture durable browser artifacts."
         );
       }
+      if (threadRequiresVisualProof(thread)) {
+        responseLines.push(
+          "This job has UI implications. Persist and surface screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are not enough."
+        );
+      }
       responseLines.push("Do not use `corepack enable` in Codex-shell for preview-oriented runtime setup. If repo-local instructions explicitly require a root-level install step, follow the repo guidance instead.");
       responseLines.push("Only report the job blocked when you can say what you tried and why the next sensible step still cannot proceed.");
       if (question) {
@@ -635,7 +673,7 @@ export class CodexHarnessService {
             : previews
                 .map(
                   (lease, index) =>
-                    `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status}/${lease.bootstrap.phase} | ${lease.operatorUrl}`
+                    `${index + 1}. ${lease.id} | ${lease.title} | ${lease.status}/${lease.bootstrap.phase} | ${this.formatLeaseLifecycle(lease)} | ${lease.operatorUrl}`
                 )
                 .join("\n"),
         data: { previews }
@@ -650,7 +688,7 @@ export class CodexHarnessService {
             : stacks
                 .map(
                   (stack, index) =>
-                    `${index + 1}. ${stack.id} | ${stack.title} | ${stack.status} | network=${stack.networkName} | ${formatStackStorageSummary(stack)} | previews=${stack.previewIds.length} | services=${stack.serviceIds.length}`
+                    `${index + 1}. ${stack.id} | ${stack.title} | ${stack.status} | ${this.formatLeaseLifecycle(stack)} | network=${stack.networkName} | ${formatStackStorageSummary(stack)} | previews=${stack.previewIds.length} | services=${stack.serviceIds.length}`
                 )
                 .join("\n"),
         data: { stacks }
@@ -667,6 +705,7 @@ export class CodexHarnessService {
       const retainsVolumes = params.retainsVolumes === true;
       const storageKey = normalizeString(params.storageKey) || null;
       const cloneFromStorageKey = normalizeString(params.cloneFromStorageKey) || null;
+      const leaseTtlMinutes = normalizePositiveInteger(params.leaseTtlMinutes);
       const stack = await this.runtimeBroker.createStack({
         stackId: crypto.randomUUID(),
         threadId: capability.threadId,
@@ -679,11 +718,16 @@ export class CodexHarnessService {
         storageKey,
         cloneFromStorageKey
       });
-      this.store.upsertStackLease(stack);
-      this.store.addEvent(capability.threadId, "harness/stack/start", `Started stack ${stack.id}`);
+      const retainedStack = {
+        ...stack,
+        ...(typeof params.sticky === "boolean" ? { pinned: params.sticky } : {}),
+        ...(leaseTtlMinutes ? { leaseTtlMs: leaseTtlMinutes * 60_000 } : {})
+      };
+      this.store.upsertStackLease(retainedStack);
+      this.store.addEvent(capability.threadId, "harness/stack/start", `Started stack ${retainedStack.id}`);
       return {
-        text: `Started stack ${stack.title}. Network=${stack.networkName}. ${formatStackStorageSummary(stack)}.`,
-        data: { stack }
+        text: `Started stack ${retainedStack.title}. Network=${retainedStack.networkName}. ${formatStackStorageSummary(retainedStack)}. ${this.formatLeaseLifecycle(retainedStack)}.`,
+        data: { stack: retainedStack }
       };
     }
 
@@ -691,10 +735,27 @@ export class CodexHarnessService {
       const stack = await this.resolveThreadStack(capability, normalizeString(params.stackId));
       const inspected = await this.runtimeBroker.inspectStack(stack.id);
       this.store.upsertStackLease(inspected);
-      this.store.noteStackLeaseActivity(inspected.id);
+      const retainedStack = this.store.noteStackLeaseActivity(inspected.id) ?? this.store.getStackLease(inspected.id) ?? inspected;
       return {
-        text: `${inspected.title} is ${inspected.status}. Network=${inspected.networkName}. ${formatStackStorageSummary(inspected)}. Previews=${inspected.previewIds.length}. Services=${inspected.serviceIds.length}.`,
-        data: { stack: inspected }
+        text: `${retainedStack.title} is ${retainedStack.status}. Network=${retainedStack.networkName}. ${formatStackStorageSummary(retainedStack)}. ${this.formatLeaseLifecycle(retainedStack)}. Previews=${retainedStack.previewIds.length}. Services=${retainedStack.serviceIds.length}.`,
+        data: { stack: retainedStack }
+      };
+    }
+    if (action === "stack.lease") {
+      const stack = await this.resolveThreadStack(capability, normalizeString(params.stackId));
+      const leaseTtlMinutes = normalizePositiveInteger(params.leaseTtlMinutes);
+      const updated = this.store.setStackLeaseLifecycle(stack.id, {
+        pinned: typeof params.sticky === "boolean" ? params.sticky : undefined,
+        leaseTtlMs: leaseTtlMinutes ? leaseTtlMinutes * 60_000 : undefined,
+        refresh: params.refresh !== false
+      });
+      if (!updated) {
+        throw new Error(`Stack ${stack.id} is no longer available`);
+      }
+      this.store.addEvent(capability.threadId, "harness/stack/lease", `Updated stack lease ${updated.id}`);
+      return {
+        text: `Updated stack ${updated.title}. ${this.formatLeaseLifecycle(updated)}.`,
+        data: { stack: updated }
       };
     }
     if (action === "stack.promote") {
@@ -757,6 +818,7 @@ export class CodexHarnessService {
       const heartbeatTarget = normalizeString(params.heartbeatTarget) || undefined;
       const heartbeatIntervalSeconds = normalizePositiveInteger(params.heartbeatIntervalSeconds) ?? undefined;
       const workspaceMode = "snapshot";
+      const leaseTtlMinutes = normalizePositiveInteger(params.leaseTtlMinutes);
 
       if (!command || !Number.isFinite(port) || port <= 0) {
         throw new Error("preview.start requires command and port");
@@ -785,11 +847,16 @@ export class CodexHarnessService {
         heartbeatIntervalSeconds,
         env
       });
-      this.store.upsertPreviewLease(lease);
-      this.store.addEvent(capability.threadId, "harness/preview/start", `Started preview ${lease.id}`);
+      const retainedLease = {
+        ...lease,
+        ...(typeof params.sticky === "boolean" ? { pinned: params.sticky } : {}),
+        ...(leaseTtlMinutes ? { leaseTtlMs: leaseTtlMinutes * 60_000 } : {})
+      };
+      this.store.upsertPreviewLease(retainedLease);
+      this.store.addEvent(capability.threadId, "harness/preview/start", `Started preview ${retainedLease.id}`);
       return {
-        text: `Started preview ${lease.title} at ${lease.operatorUrl}. Workspace=${lease.workspaceMode}.${previewDefaults.autofilled.length > 0 ? ` Auto-filled ${previewDefaults.autofilled.join(", ")} from workspace bootstrap.` : ""}`,
-        data: { lease, workspaceBootstrap, previewDefaults }
+        text: `Started preview ${retainedLease.title} at ${retainedLease.operatorUrl}. Workspace=${retainedLease.workspaceMode}. ${this.formatLeaseLifecycle(retainedLease)}.${previewDefaults.autofilled.length > 0 ? ` Auto-filled ${previewDefaults.autofilled.join(", ")} from workspace bootstrap.` : ""}`,
+        data: { lease: retainedLease, workspaceBootstrap, previewDefaults }
       };
     }
     if (action === "preview.inspect") {
@@ -801,7 +868,7 @@ export class CodexHarnessService {
       const proofs = this.listThreadProofs(capability.threadId).filter((proof) => proof.previewId === lease.id).slice(0, 3);
       return {
         text: [
-          `${lease.title} is ${inspected.runtime.status}. Bootstrap=${lease.bootstrap.phase}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}.`,
+          `${lease.title} is ${inspected.runtime.status}. Bootstrap=${lease.bootstrap.phase}. ${this.formatLeaseLifecycle(lease)}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}.`,
           `Workspace mode: ${lease.workspaceMode}`,
           `Aliases: ${lease.aliases.join(", ") || "(none)"}`,
           `Target: ${lease.targetHost}:${lease.targetPort}`,
@@ -817,6 +884,24 @@ export class CodexHarnessService {
           .filter(Boolean)
           .join("\n"),
         data: { lease, proofs }
+      };
+    }
+
+    if (action === "preview.lease") {
+      const preview = await this.resolveThreadPreview(capability, normalizeString(params.leaseId));
+      const leaseTtlMinutes = normalizePositiveInteger(params.leaseTtlMinutes);
+      const updated = this.store.setPreviewLeaseLifecycle(preview.id, {
+        pinned: typeof params.sticky === "boolean" ? params.sticky : undefined,
+        leaseTtlMs: leaseTtlMinutes ? leaseTtlMinutes * 60_000 : undefined,
+        refresh: params.refresh !== false
+      });
+      if (!updated) {
+        throw new Error(`Preview ${preview.id} is no longer available`);
+      }
+      this.store.addEvent(capability.threadId, "harness/preview/lease", `Updated preview lease ${updated.id}`);
+      return {
+        text: `Updated preview ${updated.title}. ${this.formatLeaseLifecycle(updated)}.`,
+        data: { lease: updated }
       };
     }
 

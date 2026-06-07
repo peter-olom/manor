@@ -7,8 +7,9 @@ import WebSocket, { type RawData } from "ws";
 
 import type { CodexInputItem } from "./image-store.js";
 import { cleanupManagedWorktree, resolveExistingWorkspaceCwd } from "./repo-worktree.js";
+import { listFilesRecursive, listThreadSessionFiles, listThreadSnapshotFiles, normalizeTimestampMs } from "./codex-session-artifacts.js";
 import { ButlerStateStore } from "./state-store.js";
-import type { ModelOption, ReasoningEffort, RuntimeCleanupTaskView } from "./types.js";
+import type { CodexThreadPatchView, ModelOption, ReasoningEffort, RuntimeCleanupTaskView } from "./types.js";
 
 type JsonRpcMessage = {
   id?: number;
@@ -24,9 +25,11 @@ type JsonRpcMessage = {
 type ThreadDeleteContext = {
   threadId: string;
   cwd: string | null;
+  threadCreatedAt: number | null;
   stacks: RuntimeCleanupTaskView["stacks"];
   previews: RuntimeCleanupTaskView["previews"];
   services: RuntimeCleanupTaskView["services"];
+  proofArtifactPaths?: string[];
 };
 
 export type ComposerSuggestionInputItem =
@@ -534,6 +537,19 @@ export class CodexAppServerClient extends EventEmitter {
         delta,
         streamingCommandExecMatch ? "commandExecution" : (streamingItemMatch?.[1] ?? "unknown")
       );
+      const item = this.store.getThread(params.threadId)?.turns.find((turn) => turn.id === params.turnId)?.items.find((entry) => entry.id === params.itemId);
+      if (item) {
+        this.emit("threadPatch", {
+          kind: "item-delta",
+          threadId: params.threadId,
+          turnId: params.turnId,
+          itemId: params.itemId,
+          itemType: item.type,
+          delta,
+          itemTextLength: item.text.length,
+          at: item.at
+        } satisfies CodexThreadPatchView);
+      }
       this.emit("change");
       return;
     }
@@ -1184,25 +1200,8 @@ export class CodexAppServerClient extends EventEmitter {
     return true;
   }
 
-  private async listFilesRecursive(root: string): Promise<string[]> {
-    const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
-    const files: string[] = [];
-
-    for (const entry of entries) {
-      const entryPath = path.join(root, entry.name);
-      if (entry.isDirectory()) {
-        files.push(...(await this.listFilesRecursive(entryPath)));
-      } else if (entry.isFile()) {
-        files.push(entryPath);
-      }
-    }
-
-    return files;
-  }
-
   private async restoreThreadUsage(threadId: string): Promise<void> {
-    const sessionsDir = path.join(this.codexHomeDir, "sessions");
-    const sessionFiles = (await this.listFilesRecursive(sessionsDir)).filter((filePath) => filePath.includes(threadId));
+    const sessionFiles = await listThreadSessionFiles(this.codexHomeDir, threadId, this.store.getThread(threadId)?.createdAt ?? null);
 
     if (sessionFiles.length === 0) {
       return;
@@ -1283,51 +1282,54 @@ export class CodexAppServerClient extends EventEmitter {
     return null;
   }
 
-  private async deleteThreadArtifacts(threadId: string, cwd: string | null): Promise<number> {
+  private listThreadProofArtifactPaths(threadId: string): string[] {
+    const paths = this.store.listPreviewProofs().filter((proof) => proof.threadId === threadId).flatMap((proof) =>
+      proof.verification.artifacts.map((artifact) => artifact.filePath).filter((filePath): filePath is string => Boolean(filePath))
+    );
+    return [...new Set(paths)];
+  }
+
+  private async deleteThreadArtifacts(threadId: string, cwd: string | null, threadCreatedAt: number | null, queuedProofArtifactPaths: string[] = []): Promise<number> {
     const removed = new Set<string>();
-    const sessionsDir = path.join(this.codexHomeDir, "sessions");
-    const snapshotsDir = path.join(this.codexHomeDir, "shell_snapshots");
     const generatedImagesDir = path.join(this.codexHomeDir, "generated_images", threadId);
 
-    const sessionFiles = await this.listFilesRecursive(sessionsDir);
+    // Codex session history is date-sharded. Scanning the whole tree for every
+    // deletion becomes expensive on long-lived hosts, so use thread metadata to
+    // touch only the likely daily folders.
+    const sessionFiles = await listThreadSessionFiles(this.codexHomeDir, threadId, threadCreatedAt);
     for (const filePath of sessionFiles) {
-      if (!filePath.includes(threadId)) {
-        continue;
-      }
-
       await fs.rm(filePath, { force: true });
       removed.add(filePath);
     }
 
-    const snapshotFiles = await this.listFilesRecursive(snapshotsDir);
+    const snapshotFiles = await listThreadSnapshotFiles(this.codexHomeDir, threadId);
     for (const filePath of snapshotFiles) {
-      const name = path.basename(filePath);
-      if (!name.startsWith(`${threadId}.`)) {
-        continue;
-      }
-
       await fs.rm(filePath, { force: true });
       removed.add(filePath);
     }
 
-    const generatedImages = await this.listFilesRecursive(generatedImagesDir);
+    const generatedImages = await listFilesRecursive(generatedImagesDir);
     await fs.rm(generatedImagesDir, { recursive: true, force: true });
     for (const filePath of generatedImages) {
       removed.add(filePath);
     }
 
     const previewProofs = this.store.listPreviewProofs().filter((proof) => proof.threadId === threadId);
+    const proofArtifactPaths = new Set(queuedProofArtifactPaths.filter(Boolean));
     for (const proof of previewProofs) {
       for (const artifact of proof.verification.artifacts) {
         if (!artifact.filePath || artifact.availability !== "available") {
           continue;
         }
-        const filePath = path.resolve(artifact.filePath);
-        await fs.rm(filePath, { force: true }).catch(() => undefined);
-        removed.add(filePath);
-        await this.pruneArtifactParents(filePath);
+        proofArtifactPaths.add(artifact.filePath);
       }
       this.store.removePreviewProof(proof.id);
+    }
+    for (const proofArtifactPath of proofArtifactPaths) {
+      const filePath = path.resolve(proofArtifactPath);
+      await fs.rm(filePath, { force: true }).catch(() => undefined);
+      removed.add(filePath);
+      await this.pruneArtifactParents(filePath);
     }
 
     if (cwd) {
@@ -1361,6 +1363,7 @@ export class CodexAppServerClient extends EventEmitter {
     return {
       threadId,
       cwd: thread?.cwd ?? null,
+      threadCreatedAt: normalizeTimestampMs(thread?.createdAt),
       stacks: this.store.listStackLeases().filter((lease) => lease.threadId === threadId).map((lease) => ({
         id: lease.id,
         retainsVolumes: Boolean(lease.retainsVolumes),
@@ -1376,7 +1379,8 @@ export class CodexAppServerClient extends EventEmitter {
         stackId: lease.stackId,
         runtimeKind: lease.runtimeKind,
         status: lease.status
-      }))
+      })),
+      proofArtifactPaths: this.listThreadProofArtifactPaths(threadId)
     };
   }
 
@@ -1408,11 +1412,12 @@ export class CodexAppServerClient extends EventEmitter {
           await this.onThreadDeleting?.({
             threadId: task.threadId,
             cwd: task.cwd,
+            threadCreatedAt: task.threadCreatedAt ?? null,
             stacks: task.stacks,
             previews: task.previews,
             services: task.services
           });
-          await this.deleteThreadArtifacts(task.threadId, task.cwd);
+          await this.deleteThreadArtifacts(task.threadId, task.cwd, task.threadCreatedAt ?? null, task.proofArtifactPaths ?? []);
           this.store.completeRuntimeCleanupTask(task.id);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -1428,22 +1433,50 @@ export class CodexAppServerClient extends EventEmitter {
     }
   }
 
-  async deleteThread(threadId: string): Promise<{ deletedArtifacts: number }> {
+  async deleteThread(
+    threadId: string,
+    options: { waitForCleanup?: boolean } = {}
+  ): Promise<{ deletedArtifacts: number; cleanupFailed?: boolean; cleanupError?: string | null }> {
     const context = this.buildThreadDeleteContext(threadId);
+    if (options.waitForCleanup) {
+      try {
+        await this.onThreadDeleting?.({
+          threadId: context.threadId,
+          cwd: context.cwd,
+          threadCreatedAt: context.threadCreatedAt,
+          stacks: context.stacks,
+          previews: context.previews,
+          services: context.services
+        });
+        const deletedArtifacts = await this.deleteThreadArtifacts(context.threadId, context.cwd, context.threadCreatedAt);
+        this.deletedThreadIds.add(threadId);
+        this.store.removeThread(threadId);
+        await this.onThreadCapabilityRemoved?.(threadId);
+        this.emit("change");
+        await this.unsubscribeThread(threadId);
+        return { deletedArtifacts, cleanupFailed: false, cleanupError: null };
+      } catch (error) {
+        return { deletedArtifacts: 0, cleanupFailed: true, cleanupError: error instanceof Error ? error.message : String(error) };
+      }
+    }
+
     this.store.enqueueRuntimeCleanupTask({
       threadId: context.threadId,
       cwd: context.cwd,
+      threadCreatedAt: context.threadCreatedAt,
       stacks: context.stacks,
       previews: context.previews,
-      services: context.services
+      services: context.services,
+      proofArtifactPaths: context.proofArtifactPaths
     });
     this.deletedThreadIds.add(threadId);
     this.store.removeThread(threadId);
+    this.scheduleCleanupQueue();
     await this.onThreadCapabilityRemoved?.(threadId);
     this.emit("change");
     await this.unsubscribeThread(threadId);
     this.scheduleCleanupQueue();
-    return { deletedArtifacts: 0 };
+    return { deletedArtifacts: 0, cleanupFailed: false, cleanupError: null };
   }
 
   async deleteAllThreads(): Promise<{ deletedThreadIds: string[]; deletedArtifacts: number }> {
@@ -1453,15 +1486,18 @@ export class CodexAppServerClient extends EventEmitter {
       this.store.enqueueRuntimeCleanupTask({
         threadId: context.threadId,
         cwd: context.cwd,
+        threadCreatedAt: context.threadCreatedAt,
         stacks: context.stacks,
         previews: context.previews,
-        services: context.services
+        services: context.services,
+        proofArtifactPaths: context.proofArtifactPaths
       });
     }
     for (const threadId of threadIds) {
       this.deletedThreadIds.add(threadId);
     }
     this.store.removeThreads(threadIds);
+    this.scheduleCleanupQueue();
     for (const threadId of threadIds) {
       await this.onThreadCapabilityRemoved?.(threadId);
     }
@@ -1469,7 +1505,6 @@ export class CodexAppServerClient extends EventEmitter {
     for (const threadId of threadIds) {
       await this.unsubscribeThread(threadId);
     }
-    this.scheduleCleanupQueue();
     return { deletedThreadIds: threadIds, deletedArtifacts: 0 };
   }
 }

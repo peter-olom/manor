@@ -10,6 +10,52 @@ import type { ReasoningEffort } from "./types.js";
 import { isSharedShellRepoBootstrapTask } from "./thread-contract.js";
 import { applyWorkspacePreviewDefaults, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 
+function normalizeLeaseTtlMs(leaseTtlMinutes: unknown): number | null {
+  const numeric = typeof leaseTtlMinutes === "number" ? leaseTtlMinutes : Number(leaseTtlMinutes);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+  return Math.max(60_000, Math.trunc(numeric * 60_000));
+}
+
+function resolveStickyFlag(input: { sticky?: boolean; pinned?: boolean }): boolean | undefined {
+  if (typeof input.sticky === "boolean") {
+    return input.sticky;
+  }
+  if (typeof input.pinned === "boolean") {
+    return input.pinned;
+  }
+  return undefined;
+}
+
+function withRequestedLeaseLifecycle<T extends object>(
+  lease: T,
+  input: { sticky?: boolean; pinned?: boolean; leaseTtlMinutes?: number }
+): T & { pinned?: boolean; leaseTtlMs?: number | null } {
+  const pinned = resolveStickyFlag(input);
+  const leaseTtlMs = normalizeLeaseTtlMs(input.leaseTtlMinutes);
+  return {
+    ...lease,
+    ...(typeof pinned === "boolean" ? { pinned } : {}),
+    ...(leaseTtlMs !== null ? { leaseTtlMs } : {})
+  };
+}
+
+function formatLeaseLifecycle(lease: {
+  pinned?: boolean;
+  lifecycleState?: string;
+  leaseTtlMs?: number | null;
+  expiresAt?: number | null;
+} & object): string {
+  const state = lease.pinned ? "sticky" : lease.lifecycleState ?? "active";
+  const ttlMinutes =
+    typeof lease.leaseTtlMs === "number" && Number.isFinite(lease.leaseTtlMs)
+      ? Math.max(1, Math.round(lease.leaseTtlMs / 60_000))
+      : null;
+  const expiry = typeof lease.expiresAt === "number" && Number.isFinite(lease.expiresAt) ? ` expires=${new Date(lease.expiresAt).toISOString()}` : "";
+  return `lease=${state}${ttlMinutes ? ` ttl=${ttlMinutes}m` : ""}${expiry}`;
+}
+
 export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
   return [
     access.defineButlerTool({
@@ -53,7 +99,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
             : stacks
                 .map(
                   (stack, index) =>
-                    `${index + 1}. ${stack.title} | thread=${stack.threadId ?? "(none)"} | status=${stack.status} | network=${stack.networkName} | ${access.describeStackStorage(stack)} | previews=${stack.previewIds.length} | services=${stack.serviceIds.length}`
+                    `${index + 1}. ${stack.title} | thread=${stack.threadId ?? "(none)"} | status=${stack.status} | ${formatLeaseLifecycle(stack)} | network=${stack.networkName} | ${access.describeStackStorage(stack)} | previews=${stack.previewIds.length} | services=${stack.serviceIds.length}`
                 )
                 .join("\n");
         return {
@@ -77,7 +123,18 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         ),
         retainsVolumes: Type.Optional(Type.Boolean()),
         storageKey: Type.Optional(Type.String()),
-        cloneFromStorageKey: Type.Optional(Type.String())
+        cloneFromStorageKey: Type.Optional(Type.String()),
+        sticky: Type.Optional(
+          Type.Boolean({
+            description: "Keep this stack lease across automatic cleanup so later jobs can reuse it."
+          })
+        ),
+        leaseTtlMinutes: Type.Optional(
+          Type.Number({
+            minimum: 1,
+            description: "Override the cleanup TTL for this stack lease when sticky is false."
+          })
+        )
       }),
       uiEffects: access.getToolUiEffects("start_stack"),
       execute: async (_toolCallId, params) => {
@@ -89,6 +146,8 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           retainsVolumes?: boolean;
           storageKey?: string;
           cloneFromStorageKey?: string;
+          sticky?: boolean;
+          leaseTtlMinutes?: number;
         };
         const thread = typedParams.threadId ? access.store.getThread(typedParams.threadId) ?? null : null;
         const worktreePath = typedParams.cwd?.trim() || thread?.cwd || null;
@@ -97,7 +156,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           thread?.supervisor.projectId ?? "stack",
           thread?.supervisor.projectLabel ?? "stack"
         );
-        const stack = await access.runtimeBroker.createStack({
+        const stack = withRequestedLeaseLifecycle(await access.runtimeBroker.createStack({
           stackId: crypto.randomUUID(),
           threadId: typedParams.threadId ?? null,
           projectId: project.id,
@@ -108,13 +167,13 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           retainsVolumes: Boolean(typedParams.retainsVolumes),
           storageKey: typedParams.storageKey?.trim() || null,
           cloneFromStorageKey: typedParams.cloneFromStorageKey?.trim() || null
-        });
+        }), typedParams);
         access.store.upsertStackLease(stack);
         return {
           content: [
             {
               type: "text",
-              text: `Started stack ${stack.title}. Network=${stack.networkName}. ${access.describeStackStorage(stack)}.`
+              text: `Started stack ${stack.title}. Network=${stack.networkName}. ${access.describeStackStorage(stack)}. ${formatLeaseLifecycle(stack)}.`
             }
           ],
           details: { stack }
@@ -132,16 +191,49 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       uiEffects: access.getToolUiEffects("inspect_stack"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as { stackId: string };
-        const stack = await access.runtimeBroker.inspectStack(typedParams.stackId);
-        access.store.upsertStackLease(stack);
-        access.store.noteStackLeaseActivity(typedParams.stackId);
+        const inspected = await access.runtimeBroker.inspectStack(typedParams.stackId);
+        access.store.upsertStackLease(inspected);
+        const stack = access.store.noteStackLeaseActivity(inspected.id) ?? access.store.getStackLease(inspected.id) ?? inspected;
         return {
           content: [
             {
               type: "text",
-              text: `${stack.title} is ${stack.status}. Network=${stack.networkName}. ${access.describeStackStorage(stack)}. Previews=${stack.previewIds.length}. Services=${stack.serviceIds.length}.`
+              text: `${stack.title} is ${stack.status}. Network=${stack.networkName}. ${access.describeStackStorage(stack)}. ${formatLeaseLifecycle(stack)}. Previews=${stack.previewIds.length}. Services=${stack.serviceIds.length}.`
             }
           ],
+          details: { stack }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "set_stack_lease",
+      label: "Set stack lease",
+      description: "Update a stack lease lifecycle, including sticky reuse and cleanup TTL.",
+      promptSnippet:
+        "set_stack_lease: use sticky=true when a stack should remain available for later jobs; use sticky=false or leaseTtlMinutes to return it to normal cleanup.",
+      parameters: Type.Object({
+        stackId: Type.String(),
+        sticky: Type.Optional(Type.Boolean()),
+        leaseTtlMinutes: Type.Optional(Type.Number({ minimum: 1 })),
+        refresh: Type.Optional(Type.Boolean())
+      }),
+      uiEffects: access.getToolUiEffects("set_stack_lease"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as { stackId: string; sticky?: boolean; leaseTtlMinutes?: number; refresh?: boolean };
+        const current = access.getValidatedStack(typedParams.stackId?.trim() || null, null);
+        if (!current) {
+          throw new Error("Stack selector is required");
+        }
+        const stack = access.store.setStackLeaseLifecycle(current.id, {
+          pinned: resolveStickyFlag(typedParams),
+          leaseTtlMs: typedParams.leaseTtlMinutes === undefined ? undefined : normalizeLeaseTtlMs(typedParams.leaseTtlMinutes),
+          refresh: typedParams.refresh !== false
+        });
+        if (!stack) {
+          throw new Error(`Unknown stack: ${typedParams.stackId}`);
+        }
+        return {
+          content: [{ type: "text", text: `Updated stack ${stack.title}. ${formatLeaseLifecycle(stack)}.` }],
           details: { stack }
         };
       }
@@ -218,7 +310,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
             : leases
                 .map(
                   (lease, index) =>
-                    `${index + 1}. ${lease.title} | thread=${lease.threadId ?? "(none)"} | status=${lease.status}/${lease.bootstrap.phase} | route=${lease.operatorUrl}`
+                    `${index + 1}. ${lease.title} | thread=${lease.threadId ?? "(none)"} | status=${lease.status}/${lease.bootstrap.phase} | ${formatLeaseLifecycle(lease)} | route=${lease.operatorUrl}`
                 )
                 .join("\n");
         const text = syncError ? `Live runtime sync failed; showing cached state. ${syncError}\n${summary}` : summary;
@@ -291,6 +383,17 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
             minimum: 1,
             description: "How often Manor should retry the heartbeat during bootstrap."
           })
+        ),
+        sticky: Type.Optional(
+          Type.Boolean({
+            description: "Keep this preview lease across automatic cleanup so later jobs can reuse it."
+          })
+        ),
+        leaseTtlMinutes: Type.Optional(
+          Type.Number({
+            minimum: 1,
+            description: "Override the cleanup TTL for this preview lease when sticky is false."
+          })
         )
       }),
       uiEffects: access.getToolUiEffects("start_preview"),
@@ -313,6 +416,8 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           heartbeatKind?: string;
           heartbeatTarget?: string;
           heartbeatIntervalSeconds?: number;
+          sticky?: boolean;
+          leaseTtlMinutes?: number;
         };
 
         const thread = typedParams.threadId ? access.store.getThread(typedParams.threadId) ?? null : null;
@@ -340,7 +445,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           workspaceBootstrap
         );
 
-        const lease = await access.runtimeBroker.createLease({
+        const lease = withRequestedLeaseLifecycle(await access.runtimeBroker.createLease({
           leaseId,
           threadId: typedParams.threadId ?? null,
           projectId: project.id,
@@ -362,14 +467,14 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           heartbeatTarget: typedParams.heartbeatTarget,
           heartbeatIntervalSeconds: typedParams.heartbeatIntervalSeconds,
           env: access.normalizeServiceEnv(typedParams.env)
-        });
+        }), typedParams);
         access.store.upsertPreviewLease(lease);
 
         return {
           content: [
             {
               type: "text",
-              text: `Started preview ${lease.title} at ${lease.operatorUrl}. Workspace=${lease.workspaceMode}. Bootstrap=${lease.bootstrap.phase}${lease.bootstrap.hint ? ` (${lease.bootstrap.hint})` : ""}.${previewDefaults.autofilled.length > 0 ? ` Auto-filled ${previewDefaults.autofilled.join(", ")} from workspace bootstrap.` : ""}`
+              text: `Started preview ${lease.title} at ${lease.operatorUrl}. Workspace=${lease.workspaceMode}. Bootstrap=${lease.bootstrap.phase}${lease.bootstrap.hint ? ` (${lease.bootstrap.hint})` : ""}. ${formatLeaseLifecycle(lease)}.${previewDefaults.autofilled.length > 0 ? ` Auto-filled ${previewDefaults.autofilled.join(", ")} from workspace bootstrap.` : ""}`
             }
           ],
           details: { lease, workspaceBootstrap, previewDefaults }
@@ -397,6 +502,36 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       }
     }),
     access.defineButlerTool({
+      name: "set_preview_lease",
+      label: "Set preview lease",
+      description: "Update a preview lease lifecycle, including sticky reuse and cleanup TTL.",
+      promptSnippet:
+        "set_preview_lease: use sticky=true when a preview should stay warm for later jobs; use sticky=false or leaseTtlMinutes to return it to normal cleanup.",
+      parameters: Type.Object({
+        leaseId: Type.String(),
+        sticky: Type.Optional(Type.Boolean()),
+        leaseTtlMinutes: Type.Optional(Type.Number({ minimum: 1 })),
+        refresh: Type.Optional(Type.Boolean())
+      }),
+      uiEffects: access.getToolUiEffects("set_preview_lease"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as { leaseId: string; sticky?: boolean; leaseTtlMinutes?: number; refresh?: boolean };
+        const current = access.requireValidatedPreview(typedParams.leaseId, null);
+        const lease = access.store.setPreviewLeaseLifecycle(current.id, {
+          pinned: resolveStickyFlag(typedParams),
+          leaseTtlMs: typedParams.leaseTtlMinutes === undefined ? undefined : normalizeLeaseTtlMs(typedParams.leaseTtlMinutes),
+          refresh: typedParams.refresh !== false
+        });
+        if (!lease) {
+          throw new Error(`Unknown preview: ${typedParams.leaseId}`);
+        }
+        return {
+          content: [{ type: "text", text: `Updated preview ${lease.title}. ${formatLeaseLifecycle(lease)}.` }],
+          details: { lease }
+        };
+      }
+    }),
+    access.defineButlerTool({
       name: "inspect_preview",
       label: "Inspect preview",
       description: "Inspect one preview isolate and summarize its current runtime state.",
@@ -407,18 +542,18 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       uiEffects: access.getToolUiEffects("inspect_preview"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as { leaseId: string };
-        const lease = await access.runtimeBroker.inspectLease(typedParams.leaseId);
-        access.store.upsertPreviewLease(lease);
-        access.store.notePreviewLeaseActivity(typedParams.leaseId);
+        const inspected = await access.runtimeBroker.inspectLease(typedParams.leaseId);
+        access.store.upsertPreviewLease(inspected);
+        const lease = access.store.notePreviewLeaseActivity(inspected.id) ?? access.store.getPreviewLease(inspected.id) ?? inspected;
         const domains = lease.egressDomains.length > 0 ? lease.egressDomains.join(", ") : "(none)";
         return {
           content: [
             {
               type: "text",
-              text: `${lease.title} is ${lease.runtime.status}. Bootstrap=${lease.bootstrap.phase}. Workspace=${lease.workspaceMode}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}. Domains=${domains}.`
+              text: `${lease.title} is ${inspected.runtime.status}. Bootstrap=${lease.bootstrap.phase}. Workspace=${lease.workspaceMode}. ${formatLeaseLifecycle(lease)}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}. Domains=${domains}.`
             }
           ],
-          details: { lease }
+          details: { lease, runtime: inspected.runtime }
         };
       }
     }),
@@ -1095,7 +1230,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       label: "Review proof",
       description: "Inspect the latest proof bundle for one preview or job and decide whether the recorded artifacts are convincing.",
       promptSnippet:
-        "review_preview_proof: use this when proof is demanded. It can review browser, desktop, and file proof bundles. Do not sign off until the recorded proof is clearly convincing.",
+        "review_preview_proof: use this when proof is demanded. It can review browser, desktop, and file proof bundles. For UI-impacting work, screenshot or video proof must show the relevant state.",
       parameters: Type.Object({
         leaseId: Type.Optional(Type.String()),
         threadId: Type.Optional(Type.String()),

@@ -10,6 +10,7 @@ import { ButlerAgentService } from "./butler-agent.js";
 import { CodexAppServerClient } from "./codex-client.js";
 import { CodexHarnessService } from "./codex-harness.js";
 import { FileReferenceStore, MAX_FILE_BYTES } from "./file-store.js";
+import { HostControllerClient } from "./host-controller-client.js";
 import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
 import { registerPreviewAnnotationRoutes } from "./preview-annotation-routes.js";
@@ -20,6 +21,7 @@ import { registerScratchPadRoutes } from "./scratch-pad-routes.js";
 import { ScratchPadStore } from "./scratch-pad-store.js";
 import { registerServerAssetRoutes } from "./server-asset-routes.js";
 import { retrieveButlerMemory } from "./memory-retrieval.js";
+import { registerManorRestartRoutes } from "./manor-restart-routes.js";
 import {
   proxyPreviewRoute,
   registerPreviewProxyResponseRewriter,
@@ -55,6 +57,8 @@ const codexHomeDir = process.env.CODEX_SHARED_HOME_DIR ?? "/codex-home";
 const codexConfigDir = process.env.CODEX_SHARED_CONFIG_DIR ?? "/codex-config";
 const runtimeBrokerUrl = process.env.RUNTIME_BROKER_URL ?? "http://runtime-broker:8090";
 const runtimeBrokerToken = process.env.RUNTIME_BROKER_TOKEN ?? null;
+const hostControllerUrl = process.env.MANOR_HOST_CONTROLLER_URL ?? null;
+const hostControllerToken = process.env.MANOR_HOST_CONTROLLER_TOKEN ?? null;
 const hotReloadEnabled = process.env.BUTLER_HOT_RELOAD === "1";
 const publicPort = Number(process.env.BUTLER_PUBLIC_PORT ?? port);
 const previewLeaseTtlMs = Number(process.env.MANOR_PREVIEW_LEASE_TTL_MS ?? `${30 * 60 * 1000}`);
@@ -70,12 +74,34 @@ const fileReferenceDir = process.env.MANOR_FILE_REFERENCE_DIR ?? path.join(artif
 const jsonBodyLimit = process.env.MANOR_UPLOAD_JSON_LIMIT ?? "64mb";
 const imageUploadBinaryLimit = process.env.MANOR_IMAGE_UPLOAD_BINARY_LIMIT ?? `${Math.ceil(MAX_IMAGE_BYTES / (1024 * 1024))}mb`;
 const fileUploadBinaryLimit = process.env.MANOR_FILE_UPLOAD_BINARY_LIMIT ?? `${Math.ceil(MAX_FILE_BYTES / (1024 * 1024))}mb`;
+const previewAnnotationSecret = crypto.randomBytes(32).toString("hex");
 
 const uiStatePath = path.join(stateDir, "butler-ui.json");
 const scratchPadStatePath = path.join(stateDir, "scratch-pad.json");
 const sessionDir = path.join(stateDir, "pi-sessions");
 const staticDir = path.resolve(process.cwd(), "dist/web");
 const indexTemplatePath = path.resolve(process.cwd(), "index.html");
+
+function normalizeLeaseTtlMs(leaseTtlMinutes: unknown): number | null {
+  const numeric = typeof leaseTtlMinutes === "number" ? leaseTtlMinutes : Number(leaseTtlMinutes);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+  return Math.max(60_000, Math.trunc(numeric * 60_000));
+}
+
+function applyRequestedLeaseLifecycle<T extends object>(
+  lease: T,
+  requestBody: { sticky?: unknown; leaseTtlMinutes?: unknown }
+): T & { pinned?: boolean; leaseTtlMs?: number | null } {
+  const sticky = typeof requestBody.sticky === "boolean" ? requestBody.sticky : undefined;
+  const leaseTtlMs = normalizeLeaseTtlMs(requestBody.leaseTtlMinutes);
+  return {
+    ...lease,
+    ...(typeof sticky === "boolean" ? { pinned: sticky } : {}),
+    ...(leaseTtlMs !== null ? { leaseTtlMs } : {})
+  };
+}
 
 const store = new ButlerStateStore(uiStatePath, {
   previewLeaseTtlMs,
@@ -94,6 +120,7 @@ await imageStore.load();
 const fileStore = new FileReferenceStore(fileReferenceDir);
 await fileStore.load();
 const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerToken);
+const hostController = new HostControllerClient(hostControllerUrl, hostControllerToken);
 let runtimeAccess!: RuntimeServerAccess;
 let sseHub!: ButlerSseHub;
 const memoryReview = new CodexExecMemoryReviewService({
@@ -133,6 +160,7 @@ const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, 
 const butlerAgent = new ButlerAgentService({
   store,
   codexClient,
+  hostController,
   runtimeBroker,
   serviceTemplateRegistry,
   piAuthPath: path.join(piAgentDir, "auth.json"),
@@ -150,6 +178,7 @@ runtimeAccess = {
   codexClient,
   runtimeBroker,
   runtimeBrokerUrl,
+  previewAnnotationSecret,
   scratchPadStore,
   serviceTemplateRegistry,
   store
@@ -169,7 +198,7 @@ const previewProxy = httpProxy.createProxyServer({
   selfHandleResponse: true,
   ws: true
 });
-registerPreviewProxyResponseRewriter(previewProxy);
+registerPreviewProxyResponseRewriter(previewProxy, runtimeAccess);
 
 let viteDevServer: import("vite").ViteDevServer | null = null;
 const imageUploadBinaryParser = express.raw({
@@ -212,8 +241,6 @@ const { applyServiceStartedPoliciesForServer } = registerProjectArtifactPolicyRo
   store,
   runtimeBroker
 });
-registerPreviewAnnotationRoutes(app);
-
 registerServerAssetRoutes({
   app,
   artifactsDir,
@@ -246,7 +273,9 @@ if (hotReloadEnabled) {
 store.on("change", () => sseHub.schedule());
 scratchPadStore.on("change", () => sseHub.schedule());
 codexClient.on("change", () => sseHub.schedule());
+codexClient.on("threadPatch", (payload) => sseHub.broadcastThreadPatch(payload));
 butlerAgent.on("change", () => sseHub.schedule());
+butlerAgent.on("butlerPatch", (payload) => sseHub.broadcastButlerPatch(payload));
 
 app.get("/api/health", (_request, response) => {
   response.json({
@@ -311,6 +340,15 @@ registerScratchPadRoutes({
   butlerAgent,
   imageStore,
   fileStore
+});
+registerPreviewAnnotationRoutes({
+  app,
+  imageStore,
+  previewAnnotationSecret,
+  runtimeBroker,
+  runtimeBrokerToken,
+  sseHub,
+  store
 });
 
 app.get("/api/memory/jobs/:threadId", (request, response) => {
@@ -450,7 +488,7 @@ app.get("/api/events", (request, response) => {
   sseHub.addClient(response);
   sseHub.sendInitialEvents(response);
   const heartbeat = setInterval(() => {
-    response.write(`event: heartbeat\ndata: ${Date.now()}\n\n`);
+    sseHub.writeHeartbeat(response);
   }, sseHub.heartbeatMs);
 
   const cleanup = () => {
@@ -463,6 +501,8 @@ app.get("/api/events", (request, response) => {
   response.on("close", cleanup);
   response.on("error", cleanup);
 });
+
+
 
 app.post("/api/chat/messages", async (request, response) => {
   const text = typeof request.body?.text === "string" ? request.body.text : "";
@@ -519,6 +559,8 @@ app.post("/api/chat/settings", async (request, response) => {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
 });
+
+registerManorRestartRoutes(app, butlerAgent);
 
 app.post("/api/chat/clear", async (_request, response) => {
   try {
@@ -758,7 +800,7 @@ app.post("/api/stacks/start", async (request, response) => {
     const thread = threadId ? store.getThread(threadId) ?? null : null;
     const worktreePath = cwd || thread?.cwd || null;
     const project = resolveProjectMetadata(worktreePath, thread?.supervisor.projectId ?? "stack", thread?.supervisor.projectLabel ?? "stack");
-    const stack = await runtimeBroker.createStack({
+    const stack = applyRequestedLeaseLifecycle(await runtimeBroker.createStack({
       stackId: crypto.randomUUID(),
       threadId,
       projectId: project.id,
@@ -769,7 +811,7 @@ app.post("/api/stacks/start", async (request, response) => {
       retainsVolumes,
       storageKey: storageKey || null,
       cloneFromStorageKey: cloneFromStorageKey || null
-    });
+    }), request.body ?? {});
     store.upsertStackLease(stack);
     response.json({ ok: true, stack });
   } catch (error) {
@@ -825,6 +867,29 @@ app.post("/api/stacks/pin", (request, response) => {
   }
 
   const stack = store.setStackLeasePinned(stackId, pinned);
+  if (!stack) {
+    response.status(404).json({ error: "Stack lease not found" });
+    return;
+  }
+
+  response.json({ ok: true, stack });
+});
+
+app.post("/api/stacks/lease", (request, response) => {
+  const stackId = typeof request.body?.stackId === "string" ? request.body.stackId : "";
+  const sticky = typeof request.body?.sticky === "boolean" ? request.body.sticky : undefined;
+  const leaseTtlMs = request.body?.leaseTtlMinutes === undefined ? undefined : normalizeLeaseTtlMs(request.body?.leaseTtlMinutes);
+  const refresh = request.body?.refresh !== false;
+  if (!stackId) {
+    response.status(400).json({ error: "stackId is required" });
+    return;
+  }
+
+  const stack = store.setStackLeaseLifecycle(stackId, {
+    pinned: sticky,
+    leaseTtlMs,
+    refresh
+  });
   if (!stack) {
     response.status(404).json({ error: "Stack lease not found" });
     return;
@@ -902,7 +967,7 @@ app.post("/api/previews/start", async (request, response) => {
       workspaceBootstrap
     );
 
-    const lease = await runtimeBroker.createLease({
+    const lease = applyRequestedLeaseLifecycle(await runtimeBroker.createLease({
       leaseId: crypto.randomUUID(),
       threadId,
       projectId: project.id,
@@ -925,7 +990,7 @@ app.post("/api/previews/start", async (request, response) => {
       heartbeatIntervalSeconds:
         Number.isFinite(heartbeatIntervalSeconds) && heartbeatIntervalSeconds > 0 ? heartbeatIntervalSeconds : undefined,
       env
-    });
+    }), request.body ?? {});
     store.upsertPreviewLease(lease);
     response.json({ ok: true, lease, workspaceBootstrap, previewDefaults });
   } catch (error) {
@@ -959,6 +1024,29 @@ app.post("/api/previews/pin", (request, response) => {
   }
 
   const lease = store.setPreviewLeasePinned(leaseId, pinned);
+  if (!lease) {
+    response.status(404).json({ error: "Preview lease not found" });
+    return;
+  }
+
+  response.json({ ok: true, lease });
+});
+
+app.post("/api/previews/lease", (request, response) => {
+  const leaseId = typeof request.body?.leaseId === "string" ? request.body.leaseId : "";
+  const sticky = typeof request.body?.sticky === "boolean" ? request.body.sticky : undefined;
+  const leaseTtlMs = request.body?.leaseTtlMinutes === undefined ? undefined : normalizeLeaseTtlMs(request.body?.leaseTtlMinutes);
+  const refresh = request.body?.refresh !== false;
+  if (!leaseId) {
+    response.status(400).json({ error: "leaseId is required" });
+    return;
+  }
+
+  const lease = store.setPreviewLeaseLifecycle(leaseId, {
+    pinned: sticky,
+    leaseTtlMs,
+    refresh
+  });
   if (!lease) {
     response.status(404).json({ error: "Preview lease not found" });
     return;

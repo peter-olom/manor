@@ -1,8 +1,10 @@
+import crypto from "node:crypto";
 import http from "node:http";
 
 import type express from "express";
 import type httpProxy from "http-proxy";
 
+import { PREVIEW_ANNOTATION_LAYER_SCRIPT } from "./preview-annotation-layer.js";
 import { resolvePreviewProxyTarget, type RuntimeServerAccess } from "./server-runtime-helpers.js";
 
 export type PreviewRouteUrl = {
@@ -125,10 +127,89 @@ function shouldRewritePreviewResponse(contentType: string) {
   );
 }
 
-function rewritePreviewResponseBody(body: string, leaseId: string) {
+function buildPreviewAnnotationTargets(access: RuntimeServerAccess, leaseId: string) {
+  const targets = [{ id: "butler", label: "Butler" }];
+  const lease = access.store.getPreviewLease(leaseId);
+  if (lease?.threadId) {
+    targets.push({ id: `thread:${lease.threadId}`, label: "Codex job" });
+  }
+  return targets;
+}
+
+function escapeInlineScriptJson(value: unknown) {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
+function buildPreviewAnnotationToken(access: RuntimeServerAccess, leaseId: string) {
+  return crypto.createHmac("sha256", access.previewAnnotationSecret).update(leaseId).digest("hex");
+}
+
+function buildPreviewAnnotationInjection(access: RuntimeServerAccess, leaseId: string) {
+  const targets = buildPreviewAnnotationTargets(access, leaseId);
+  const token = buildPreviewAnnotationToken(access, leaseId);
+  const script = `(() => {
+` +
+    `const annotationConfig = {
+` +
+    `  leaseId: ${escapeInlineScriptJson(leaseId)},
+` +
+    `  targets: ${escapeInlineScriptJson(targets)},
+` +
+    `  commit: async (payload) => {
+` +
+    `    const response = await fetch("/api/preview-annotations/batches", {
+` +
+    `      method: "POST",
+` +
+    `      headers: { "content-type": "application/json", "x-manor-preview-annotation-token": ${escapeInlineScriptJson(token)} },
+` +
+    `      body: JSON.stringify({ ...payload, leaseId: ${escapeInlineScriptJson(leaseId)} })
+` +
+    `    });
+` +
+    `    const result = await response.json().catch(() => ({}));
+` +
+    `    if (!response.ok) throw new Error(result.error || "Annotation capture failed");
+` +
+    `    return result;
+` +
+    `  }
+` +
+    `};
+` +
+    `try {
+` +
+    `  window.__manorPreviewAnnotationConfig = annotationConfig;
+` +
+    `${PREVIEW_ANNOTATION_LAYER_SCRIPT}
+` +
+    `} finally {
+` +
+    `  delete window.__manorPreviewAnnotationConfig;
+` +
+    `  document.currentScript?.remove();
+` +
+    `}
+` +
+    `})();`;
+  return `<script data-manor-preview-annotations>${script.replace(/<\/script/gi, "<\\/script")}</script>`;
+}
+
+function injectPreviewAnnotations(body: string, access: RuntimeServerAccess, leaseId: string) {
+  if (body.includes("data-manor-preview-annotations") || body.includes("manor-preview-annotation-layer")) {
+    return body;
+  }
+  const injection = buildPreviewAnnotationInjection(access, leaseId);
+  if (/<\/body>/i.test(body)) {
+    return body.replace(/<\/body>/i, `${injection}</body>`);
+  }
+  return `${body}${injection}`;
+}
+
+function rewritePreviewResponseBody(body: string, leaseId: string, options?: { access?: RuntimeServerAccess; injectAnnotations?: boolean }) {
   const prefix = previewRoutePrefix(leaseId);
   const escapedPrefix = escapeRegExp(prefix);
-  return body
+  const rewritten = body
     .replace(/((?:src|href|action|poster)=["'])\/(?!\/|preview\/)/gi, `$1${prefix}/`)
     .replace(/(\bfrom\s*["'])\/(?!\/|preview\/)/g, `$1${prefix}/`)
     .replace(/(\bimport\s*["'])\/(?!\/|preview\/)/g, `$1${prefix}/`)
@@ -140,9 +221,10 @@ function rewritePreviewResponseBody(body: string, leaseId: string) {
       `new WebSocket(\`\${socketProtocol}://\${socketHost.replace(/\\/$/, "")}${prefix}/?`
     )
     .replace(/(url\(\s*["']?)\/(?!\/|preview\/)/gi, `$1${prefix}/`);
+  return options?.injectAnnotations && options.access ? injectPreviewAnnotations(rewritten, options.access, leaseId) : rewritten;
 }
 
-export function registerPreviewProxyResponseRewriter(previewProxy: httpProxy) {
+export function registerPreviewProxyResponseRewriter(previewProxy: httpProxy, access: RuntimeServerAccess) {
   previewProxy.on("proxyRes", (proxyResponse, request, response) => {
     const serverResponse = response as http.ServerResponse;
     const previewRoute = resolveBrokerPreviewRouteUrl(request.url);
@@ -161,7 +243,10 @@ export function registerPreviewProxyResponseRewriter(previewProxy: httpProxy) {
     });
     proxyResponse.on("end", () => {
       const body = Buffer.concat(chunks).toString("utf8");
-      const rewrittenBody = rewritePreviewResponseBody(body, previewRoute.leaseId);
+      const rewrittenBody = rewritePreviewResponseBody(body, previewRoute.leaseId, {
+        access,
+        injectAnnotations: contentType.toLowerCase().includes("text/html")
+      });
       const headers = { ...proxyResponse.headers };
       delete headers["content-length"];
       delete headers["content-encoding"];

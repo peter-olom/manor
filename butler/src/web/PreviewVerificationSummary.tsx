@@ -7,6 +7,7 @@ import {
   describeArtifactAvailability,
   formatVerificationSummary,
   formatVerificationTimestamp,
+  isBrowserOpenableProofArtifact,
   selectReviewableProofArtifacts
 } from "./utils";
 
@@ -17,6 +18,16 @@ function extensionLabel(fileName: string): string {
       return "Markdown";
     case "pdf":
       return "PDF";
+    case "csv":
+      return "CSV";
+    case "html":
+    case "htm":
+      return "HTML";
+    case "json":
+    case "jsonl":
+      return "JSON";
+    case "log":
+      return "log";
     case "png":
     case "jpg":
     case "jpeg":
@@ -59,14 +70,6 @@ function proofKindLabel(verification: PreviewVerification, artifacts: PreviewVer
 
 function artifactHref(artifact: PreviewVerificationArtifact, downloadKind: boolean): string | null {
   return downloadKind ? artifact.downloadUrl ?? artifact.url : artifact.url ?? artifact.downloadUrl;
-}
-
-function isOpenableFileArtifact(artifact: PreviewVerificationArtifact): boolean {
-  if (artifact.kind !== "file") {
-    return false;
-  }
-  const extension = artifact.fileName.split(".").pop()?.toLowerCase() ?? "";
-  return extension === "pdf" || extension === "md" || artifact.contentType.includes("application/pdf") || artifact.contentType.includes("text/markdown");
 }
 
 function formatOpenFileLabel(artifact: PreviewVerificationArtifact): string {
@@ -220,7 +223,7 @@ export function PreviewVerificationSummary({
                       const downloadKind =
                         artifact.kind === "manifest" || artifact.kind === "trace" || artifact.kind === "html" || artifact.kind === "file" || artifact.kind === "other";
                       const href = artifactHref(artifact, downloadKind);
-                      const openFileHref = isOpenableFileArtifact(artifact) ? artifact.url : null;
+                      const openFileHref = isBrowserOpenableProofArtifact(artifact) ? artifact.url : null;
                       const previewKind = artifact.kind === "screenshot" ? "image" : artifact.kind === "video" ? "video" : null;
                       const availability = describeArtifactAvailability(artifact);
                       if (!availability.available || (!href && !openFileHref)) {

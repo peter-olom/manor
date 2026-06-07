@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
 import { uploadAttachment } from "./api";
-import { CloseIcon, DownloadIcon, ImageIcon, PencilIcon, TrashIcon } from "./icons";
+import { CloseIcon, DownloadIcon, ImageIcon, PencilIcon, TrashIcon, ZoomInIcon, ZoomOutIcon } from "./icons";
 import type { FileReference, PreviewMedia } from "./types";
 
 type AnnotationRect = {
@@ -27,6 +27,7 @@ type DraftAnnotation = {
 const TAG_COLOR = "#ff6b2c";
 const TAG_FILL = "rgba(255, 107, 44, 0.14)";
 const TAG_ACTIVE_FILL = "rgba(255, 107, 44, 0.22)";
+const IMAGE_ZOOM_LEVELS = [1, 1.5, 2, 3, 4] as const;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -175,6 +176,7 @@ export function ImagePreviewModal({
   const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null);
   const [draftAnnotation, setDraftAnnotation] = useState<DraftAnnotation | null>(null);
   const [busy, setBusy] = useState(false);
+  const [imageZoomIndex, setImageZoomIndex] = useState(0);
 
   useEffect(() => {
     setAnnotationMode(false);
@@ -183,6 +185,7 @@ export function ImagePreviewModal({
     setActiveAnnotationId(null);
     setDraftAnnotation(null);
     setBusy(false);
+    setImageZoomIndex(0);
     previousAnnotationCountRef.current = 0;
     pendingNewAnnotationIdRef.current = null;
     annotationItemRefs.current.clear();
@@ -226,6 +229,8 @@ export function ImagePreviewModal({
     [annotations]
   );
   const canAttach = attachTargetLabel !== null && imageReady && annotations.length > 0 && missingNoteCount === 0 && !busy;
+  const imageZoom = IMAGE_ZOOM_LEVELS[imageZoomIndex] ?? 1;
+  const imageZoomLabel = `${Math.round(imageZoom * 100)}%`;
   const draftRect =
     draftAnnotation === null
       ? null
@@ -389,6 +394,31 @@ export function ImagePreviewModal({
                 <PencilIcon />
               </button>
             )}
+            {!annotationMode ? (
+              <div className="modal-zoom-controls" aria-label="Image zoom">
+                <button
+                  className="modal-icon-action"
+                  type="button"
+                  onClick={() => setImageZoomIndex((current) => Math.max(0, current - 1))}
+                  disabled={busy || imageZoomIndex === 0}
+                  aria-label="Zoom out"
+                  title="Zoom out"
+                >
+                  <ZoomOutIcon />
+                </button>
+                <span className="modal-zoom-value">{imageZoomLabel}</span>
+                <button
+                  className="modal-icon-action"
+                  type="button"
+                  onClick={() => setImageZoomIndex((current) => Math.min(IMAGE_ZOOM_LEVELS.length - 1, current + 1))}
+                  disabled={busy || imageZoomIndex === IMAGE_ZOOM_LEVELS.length - 1}
+                  aria-label="Zoom in"
+                  title="Zoom in"
+                >
+                  <ZoomInIcon />
+                </button>
+              </div>
+            ) : null}
             <button className="modal-close" onClick={onClose} aria-label="Close image preview" disabled={busy}>
               <CloseIcon />
             </button>
@@ -547,13 +577,14 @@ export function ImagePreviewModal({
             </aside>
           </div>
         ) : (
-          <div className="modal-image-shell">
+          <div className={`modal-image-shell${imageZoom > 1 ? " is-zoomed" : ""}`}>
             <img
               ref={imageRef}
               src={media.url}
               alt={media.name}
               className="modal-image"
               crossOrigin="anonymous"
+              style={imageZoom > 1 ? { width: `${imageZoom * 100}%` } : undefined}
               onLoad={() => setImageReady(true)}
             />
           </div>

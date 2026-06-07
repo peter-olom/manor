@@ -61,7 +61,7 @@ import {
   updateChecklistHeartbeat
 } from "./supervision-checklist.js";
 import { getStateStoreJobMemory, getStateStoreProjectMemory, listStateStoreJobMemories, listStateStorePendingPromotionCandidates, listStateStoreProjectMemories, recordStateStoreJobCheckpoint, recordStateStoreJobDecision, recordStateStoreJobNote, resolveStateStorePromotionCandidate, submitStateStorePromotionCandidate, syncStateStoreThreadJobMemory } from "./state-store-memory.js";
-import { completeStateStoreRuntimeCleanupTask, enqueueStateStoreRuntimeCleanupTask, failStateStoreRuntimeCleanupTask, listStateStoreDueRuntimeCleanupTasks, listStateStoreExpiredLeaseIds, noteStateStorePreviewLeaseActivity, noteStateStoreServiceLeaseActivity, noteStateStoreStackLeaseActivity, noteStateStoreThreadLeaseActivity, setStateStorePreviewLeasePinned, setStateStoreServiceLeasePinned, setStateStoreStackLeasePinned } from "./state-store-runtime.js";
+import { completeStateStoreRuntimeCleanupTask, enqueueStateStoreRuntimeCleanupTask, failStateStoreRuntimeCleanupTask, listStateStoreDueRuntimeCleanupTasks, listStateStoreExpiredLeaseIds, noteStateStorePreviewLeaseActivity, noteStateStoreServiceLeaseActivity, noteStateStoreStackLeaseActivity, noteStateStoreThreadLeaseActivity, setStateStorePreviewLeaseLifecycle, setStateStorePreviewLeasePinned, setStateStoreServiceLeasePinned, setStateStoreStackLeaseLifecycle, setStateStoreStackLeasePinned } from "./state-store-runtime.js";
 import { findStateStoreProjectArtifactById, getStateStoreProjectArtifact, getStateStoreProjectPolicy, listStateStoreProjectArtifacts, listStateStoreProjectPolicies, pruneMissingStateStoreProjectArtifacts, removeStateStoreProjectArtifact, searchStateStoreProjectArtifacts, upsertStateStoreProjectArtifact, upsertStateStoreProjectPolicy } from "./state-store-project-assets.js";
 import { recordStateStoreButlerMemory } from "./state-store-butler-memory.js";
 import { listStateStoreDesktopSessions, removeStateStoreDesktopSession, replaceStateStoreDesktopSessions, upsertStateStoreDesktopSession } from "./state-store-desktop.js";
@@ -87,7 +87,6 @@ import type {
   ProjectMemoryView, ProjectArtifactView, ProjectPolicyView, ReasoningEffort, RuntimeCleanupTaskView, RuntimeSnapshot,
   StackLeaseView, ServiceLeaseView, SupervisionChecklistItemStatus, SupervisionChecklistView, PersistedUiState
 } from "./types.js";
-
 type JobMemoryWriteContext = { projectId?: string | null; projectLabel?: string | null; operatorGoal?: string | null; requestedTask?: string | null; proofRequirements?: string[] };
 
 export class ButlerStateStore extends EventEmitter {
@@ -699,8 +698,22 @@ export class ButlerStateStore extends EventEmitter {
     return setStateStoreStackLeasePinned(this.getInternalAccess(), leaseId, pinned);
   }
 
+  setStackLeaseLifecycle(
+    leaseId: string,
+    patch: { pinned?: boolean; leaseTtlMs?: number | null; refresh?: boolean }
+  ): StackLeaseView | null {
+    return setStateStoreStackLeaseLifecycle(this.getInternalAccess(), leaseId, patch);
+  }
+
   setPreviewLeasePinned(leaseId: string, pinned: boolean): PreviewLeaseView | null {
     return setStateStorePreviewLeasePinned(this.getInternalAccess(), leaseId, pinned);
+  }
+
+  setPreviewLeaseLifecycle(
+    leaseId: string,
+    patch: { pinned?: boolean; leaseTtlMs?: number | null; refresh?: boolean }
+  ): PreviewLeaseView | null {
+    return setStateStorePreviewLeaseLifecycle(this.getInternalAccess(), leaseId, patch);
   }
 
   setServiceLeasePinned(leaseId: string, pinned: boolean): ServiceLeaseView | null {
@@ -715,14 +728,7 @@ export class ButlerStateStore extends EventEmitter {
     return listStateStoreExpiredLeaseIds(this.getInternalAccess(), now);
   }
 
-  enqueueRuntimeCleanupTask(input: {
-    threadId: string;
-    cwd: string | null;
-    notifyOnError?: boolean;
-    stacks: RuntimeCleanupTaskView["stacks"];
-    previews: RuntimeCleanupTaskView["previews"];
-    services: RuntimeCleanupTaskView["services"];
-  }): RuntimeCleanupTaskView {
+  enqueueRuntimeCleanupTask(input: Parameters<typeof enqueueStateStoreRuntimeCleanupTask>[1]): RuntimeCleanupTaskView {
     return enqueueStateStoreRuntimeCleanupTask(this.getInternalAccess(), input);
   }
 
@@ -941,17 +947,20 @@ export class ButlerStateStore extends EventEmitter {
     return this.threads.get(threadId);
   }
 
-  private toItemView(item: CodexItemRecord): CodexItemView {
+  private toItemView(item: CodexItemRecord, taskDurationMs: number | null = null): CodexItemView {
     return {
       id: item.id,
       type: item.type,
       status: item.status,
       text: item.text,
-      at: item.at
+      at: item.at,
+      taskDurationMs
     };
   }
 
   private toTurnView(turn: CodexTurnRecord): CodexTurnView {
+    const visibleItems = dedupeCodexChatItems(turn.items).filter(shouldExposeCodexItem);
+    const finalAgentItemId = turn.completedAt ? [...visibleItems].reverse().find((item) => item.type === "agentMessage")?.id : null;
     return {
       id: turn.id,
       requestedReasoningEffort: turn.requestedReasoningEffort,
@@ -959,7 +968,9 @@ export class ButlerStateStore extends EventEmitter {
       error: turn.error,
       startedAt: turn.startedAt,
       completedAt: turn.completedAt,
-      items: dedupeCodexChatItems(turn.items).filter(shouldExposeCodexItem).map((item) => this.toItemView(item))
+      items: visibleItems.map((item) =>
+        this.toItemView(item, item.id === finalAgentItemId && turn.completedAt ? turn.completedAt - turn.startedAt : null)
+      )
     };
   }
 
@@ -1475,6 +1486,8 @@ export class ButlerStateStore extends EventEmitter {
     contextUsage: AppSnapshot["butler"]["contextUsage"];
     compaction: AppSnapshot["butler"]["compaction"];
     supervision: AppSnapshot["butler"]["supervision"];
+    pendingManorRestartRequest: AppSnapshot["butler"]["pendingManorRestartRequest"];
+    authorizedManorRestartRequest: AppSnapshot["butler"]["authorizedManorRestartRequest"];
     stacks: AppSnapshot["butler"]["stacks"];
     previews: AppSnapshot["butler"]["previews"];
     serviceTemplates: AppSnapshot["butler"]["serviceTemplates"];

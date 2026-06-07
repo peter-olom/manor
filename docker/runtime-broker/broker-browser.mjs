@@ -24,7 +24,9 @@ export function createBrokerBrowserController(options) {
     normalizeHeaderMap,
     resolveTargetHost,
     appendPreviewRoutePath,
-    persistVerificationArtifacts
+    persistVerificationArtifacts,
+    internalOperatorBaseUrl,
+    brokerToken
   } = options;
 
   async function callPlaywrightControl(pathname, init = {}) {
@@ -326,6 +328,17 @@ export function createBrokerBrowserController(options) {
     return path.posix.join(playwrightArtifactsScratchDir, "browser-use", "browser", scope.threadId, runId);
   }
 
+  function buildAnnotationTargets(scope) {
+    const targets = [{ id: "butler", label: "Butler" }];
+    if (scope.kind === "preview" && scope.threadId) {
+      targets.push({ id: `thread:${scope.threadId}`, label: "Codex job" });
+    }
+    if (scope.kind === "browser" && scope.threadId) {
+      targets.push({ id: `thread:${scope.threadId}`, label: "Codex job" });
+    }
+    return targets;
+  }
+
   async function startPlaywrightBrowserUseSession(input) {
     const runId = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
     const sessionId = crypto.randomUUID();
@@ -343,7 +356,11 @@ export function createBrokerBrowserController(options) {
         postLoadWaitMs: input.postLoadWaitMs,
         headers: input.headers,
         cookies: input.cookies,
-        preflightStages: input.preflightStages || undefined
+        preflightStages: input.preflightStages || undefined,
+        previewAnnotationLayer: input.previewAnnotationLayer === true,
+        annotationTargets: input.annotationTargets || buildAnnotationTargets(input.scope),
+        annotationInsertUrl: input.annotationInsertUrl || (input.previewAnnotationLayer === true && internalOperatorBaseUrl ? `${internalOperatorBaseUrl.replace(/\/$/, "")}/api/internal/browser-annotations/insert` : undefined),
+        annotationInsertToken: input.annotationInsertToken || brokerToken || undefined
       })
     });
 
@@ -355,7 +372,7 @@ export function createBrokerBrowserController(options) {
     browserUseSessions.set(summary.sessionId, {
       kind: input.scope.kind,
       leaseId: input.scope.kind === "preview" ? input.scope.leaseId : null,
-      threadId: input.scope.kind === "browser" ? input.scope.threadId : null,
+      threadId: input.scope.kind === "preview" ? input.scope.threadId : input.scope.kind === "browser" ? input.scope.threadId : null,
       projectId: input.scope.kind === "browser" ? input.scope.projectId : null,
       projectLabel: input.scope.kind === "browser" ? input.scope.projectLabel : null,
       title: input.scope.kind === "browser" ? input.scope.title : null,
@@ -493,7 +510,8 @@ export function createBrokerBrowserController(options) {
           preflightStages,
           scope: {
             kind: "preview",
-            leaseId: request.params.leaseId
+            leaseId: request.params.leaseId,
+            threadId: labels["manor.thread-id"] || null
           }
         });
         response.json({ ok: true, session });

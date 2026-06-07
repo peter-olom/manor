@@ -45,6 +45,14 @@ function clipText(text: string): string {
   return `${normalized.slice(0, MAX_ACTIVITY_TEXT).trimEnd()} ...`;
 }
 
+function clipActivityText(text: string, maxLength: number | null): string {
+  if (maxLength === null || text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, maxLength).trimEnd()} ...`;
+}
+
 function readThinkingText(content: unknown): string {
   if (!Array.isArray(content)) {
     return "";
@@ -393,7 +401,14 @@ export function recordButlerActivityEvent(access: ButlerAgentSessionAccess, even
   }
 }
 
-export function getButlerActivityTurns(access: ButlerAgentSessionAccess): ButlerActivityTurnView[] {
+export function getButlerActivityTurns(
+  access: ButlerAgentSessionAccess,
+  options: {
+    maxCompletedTurns?: number;
+    maxItemsPerTurn?: number;
+    maxItemText?: number;
+  } = {}
+): ButlerActivityTurnView[] {
   const turnsById = new Map<string, ButlerActivityTurnView>();
   const activitySummaryTurns = Array.isArray(access.activitySummaryTurns) ? access.activitySummaryTurns : [];
   for (const turn of activitySummaryTurns) {
@@ -403,13 +418,26 @@ export function getButlerActivityTurns(access: ButlerAgentSessionAccess): Butler
     turnsById.set(turn.id, turn);
   }
 
-  return [...turnsById.values()]
+  const turns = [...turnsById.values()]
     .filter((turn) => turn.status === "active" || turn.items.length > 0)
-    .sort((left, right) => left.startedAt - right.startedAt)
-    .slice(-MAX_ACTIVITY_TURNS)
+    .sort((left, right) => left.startedAt - right.startedAt);
+  const maxCompletedTurns = options.maxCompletedTurns ?? MAX_ACTIVITY_TURNS;
+  const selectedTurns = maxCompletedTurns >= MAX_ACTIVITY_TURNS
+    ? turns.slice(-MAX_ACTIVITY_TURNS)
+    : [
+        ...turns.filter((turn) => turn.status !== "active").slice(-maxCompletedTurns),
+        ...turns.filter((turn) => turn.status === "active")
+      ].sort((left, right) => left.startedAt - right.startedAt);
+  const maxItemsPerTurn = options.maxItemsPerTurn ?? null;
+  const maxItemText = options.maxItemText ?? null;
+
+  return selectedTurns
     .map((turn) => ({
       ...turn,
-      items: turn.items.map((item) => ({ ...item, text: formatPersistedActivityText(item) }))
+      items: (maxItemsPerTurn === null ? turn.items : turn.items.slice(-maxItemsPerTurn)).map((item) => ({
+        ...item,
+        text: clipActivityText(formatPersistedActivityText(item), maxItemText)
+      }))
     }));
 }
 
