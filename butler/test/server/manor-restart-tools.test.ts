@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildButlerCodexTools } from "../../src/server/butler-agent-codex-tools.js";
+import { buildButlerManorTools } from "../../src/server/butler-agent-manor-tools.js";
 import type { ButlerAgentToolAccess } from "../../src/server/butler-agent-tool-access.js";
 import { HostControllerClient } from "../../src/server/host-controller-client.js";
 
@@ -28,12 +28,12 @@ test("Host controller client uses only the scoped restart token header", async (
   }
 });
 
-test("Butler restart tool schedules a host-controller restart", async () => {
+test("Butler authorized restart tool consumes approval before scheduling host-controller restart", async () => {
   const definitions: Array<{
     name: string;
     execute: (toolCallId: string, params: Record<string, unknown>) => Promise<{ content: Array<{ text: string }>; details?: Record<string, unknown> }>;
   }> = [];
-  let restartInput: Record<string, unknown> | null = null;
+  let startedRequestId: string | null = null;
 
   const access = {
     defineButlerTool: (definition: (typeof definitions)[number]) => {
@@ -41,53 +41,105 @@ test("Butler restart tool schedules a host-controller restart", async () => {
       return definition;
     },
     getToolUiEffects: () => [],
-    hostController: {
-      restart: async (input: Record<string, unknown>) => {
-        restartInput = input;
-        return {
-          ok: true,
-          run: {
-            id: "restart-1",
-            status: "running",
-            mode: "source",
-            target: "latest",
-            gitRef: null,
-            imageTag: null,
-            includeDesktop: false,
-            update: true,
-            startedAt: 1,
-            completedAt: null,
-            error: null,
-            steps: []
-          }
-        };
-      }
+    startAuthorizedManorRestart: async (requestId: string) => {
+      startedRequestId = requestId;
+      return {
+        restartRequest: {
+          id: requestId,
+          mode: "source",
+          target: "latest",
+          gitRef: null,
+          imageTag: null,
+          targetCommit: null,
+          targetTag: null,
+          includeDesktop: false,
+          build: null,
+          update: true,
+          reason: "Operator approved update.",
+          details: null,
+          requestedAt: 1,
+          status: "authorized",
+          authorizedAt: 2
+        },
+        run: {
+          id: "restart-1",
+          status: "running",
+          mode: "source",
+          target: "latest",
+          gitRef: null,
+          imageTag: null,
+          includeDesktop: false,
+          update: true,
+          startedAt: 1,
+          completedAt: null,
+          error: null,
+          steps: []
+        }
+      };
     }
   } as unknown as ButlerAgentToolAccess;
 
-  buildButlerCodexTools(access);
-  const restartTool = definitions.find((definition) => definition.name === "request_manor_restart");
+  buildButlerManorTools(access);
+  const restartTool = definitions.find((definition) => definition.name === "start_authorized_manor_restart");
   assert.ok(restartTool);
 
   const result = await restartTool.execute("tool-call-1", {
-    confirmation: "restart Manor",
-    mode: "source",
-    target: "latest",
-    update: true
+    requestId: "restart-request-1"
   });
 
-  assert.deepEqual(restartInput, {
-    confirmation: "restart Manor",
-    mode: "source",
-    target: "latest",
-    gitRef: null,
-    imageTag: null,
-    includeDesktop: false,
-    build: undefined,
-    update: true
-  });
-  assert.match(result.content[0]?.text ?? "", /Host controller accepted Manor restart restart-1/);
+  assert.equal(startedRequestId, "restart-request-1");
+  assert.match(result.content[0]?.text ?? "", /Host controller accepted authorized Manor restart restart-1/);
   assert.match(result.content[0]?.text ?? "", /read restart status after it comes back/);
+});
+
+test("Butler authorized restart tool reports status when dialog already consumed approval", async () => {
+  const definitions: Array<{
+    name: string;
+    execute: (toolCallId: string, params: Record<string, unknown>) => Promise<{ content: Array<{ text: string }>; details?: Record<string, unknown> }>;
+  }> = [];
+
+  const access = {
+    defineButlerTool: (definition: (typeof definitions)[number]) => {
+      definitions.push(definition);
+      return definition;
+    },
+    getToolUiEffects: () => [],
+    startAuthorizedManorRestart: async () => {
+      throw new Error("No authorized Manor restart request matches this start request.");
+    },
+    hostController: {
+      getStatus: async () => ({
+        ok: true,
+        detectedMode: "source",
+        active: null,
+        latestRun: {
+          id: "restart-1",
+          status: "completed",
+          mode: "source",
+          target: "current",
+          gitRef: null,
+          imageTag: null,
+          includeDesktop: false,
+          update: false,
+          startedAt: 1,
+          completedAt: 2,
+          error: null,
+          steps: []
+        }
+      })
+    }
+  } as unknown as ButlerAgentToolAccess;
+
+  buildButlerManorTools(access);
+  const restartTool = definitions.find((definition) => definition.name === "start_authorized_manor_restart");
+  assert.ok(restartTool);
+
+  const result = await restartTool.execute("tool-call-1", {
+    requestId: "restart-request-1"
+  });
+
+  assert.match(result.content[0]?.text ?? "", /approval dialog may already have consumed it/);
+  assert.match(result.content[0]?.text ?? "", /Manor restart restart-1: completed/);
 });
 
 test("Butler restart status tool reports active host-controller runs", async () => {
@@ -135,7 +187,7 @@ test("Butler restart status tool reports active host-controller runs", async () 
     }
   } as unknown as ButlerAgentToolAccess;
 
-  buildButlerCodexTools(access);
+  buildButlerManorTools(access);
   const statusTool = definitions.find((definition) => definition.name === "read_manor_restart_status");
   assert.ok(statusTool);
 

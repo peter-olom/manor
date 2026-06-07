@@ -567,6 +567,27 @@ export function useServerToastEvent(): ServerToastEvent | null {
   return useStoreValue(serverToastStore);
 }
 
+export function clearPendingManorRestartRequestSnapshot(shell: ShellSnapshot | null, requestId: string): ShellSnapshot | null {
+  if (shell?.butler.pendingManorRestartRequest?.id !== requestId) {
+    return shell;
+  }
+  return {
+    ...shell,
+    butler: {
+      ...shell.butler,
+      pendingManorRestartRequest: null
+    }
+  };
+}
+
+export function clearPendingManorRestartRequest(requestId: string): void {
+  const current = shellStore.getSnapshot();
+  const next = clearPendingManorRestartRequestSnapshot(current, requestId);
+  if (next !== current) {
+    shellStore.setSnapshot(next);
+  }
+}
+
 export function mergeKnownImages(images: ImageReference[]): void {
   const next = new Map(imagesStore.getSnapshot().map((image) => [image.id, image]));
   for (const image of images) {

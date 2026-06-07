@@ -15,6 +15,8 @@ const modeValues = new Set(["auto", "source", "image"]);
 const targetValues = new Set(["current", "latest"]);
 const gitRefPattern = /^[A-Za-z0-9][A-Za-z0-9._/@+-]{0,127}$/;
 const imageTagPattern = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
+const sourceModeEnvValues = new Set(["1", "true", "yes", "on"]);
+const localManorImagePattern = /^manor-[a-z0-9-]+:local$/;
 
 export function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -59,6 +61,25 @@ export function normalizeRestartDelayMs(value) {
     return 2500;
   }
   return Math.max(0, Math.min(30_000, Math.trunc(parsed)));
+}
+
+export function detectRuntimeRestartMode(buildFromSource, imageReferences = []) {
+  if (sourceModeEnvValues.has(String(buildFromSource ?? "").trim().toLowerCase())) {
+    return "source";
+  }
+  return imageReferences.some((imageReference) => localManorImagePattern.test(String(imageReference ?? "").trim()))
+    ? "source"
+    : "image";
+}
+
+export function shouldBuildSourceImages(payload) {
+  if (payload.build === true) {
+    return true;
+  }
+  if (payload.build === false) {
+    return false;
+  }
+  return payload.update === true || payload.target === "latest" || Boolean(payload.gitRef);
 }
 
 export function validateGitRef(value) {
@@ -168,8 +189,8 @@ export function validateRestartModeScope(payload, mode) {
   if (payload.imageTag && mode !== "image") {
     return { ok: false, error: "imageTag is only allowed when the detected restart mode is image." };
   }
-  if (payload.build !== undefined && mode !== "source") {
-    return { ok: false, error: "build is only allowed when the detected restart mode is source." };
+  if (payload.build === true && mode !== "source") {
+    return { ok: false, error: "build true is only allowed when the detected restart mode is source." };
   }
   return { ok: true, value: { ...payload, mode } };
 }

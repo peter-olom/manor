@@ -3,7 +3,7 @@ import { defineTool } from "@mariozechner/pi-coding-agent";
 import type { TSchema } from "@sinclair/typebox";
 
 import type { FileReferenceStore } from "./file-store.js";
-import type { HostControllerClient } from "./host-controller-client.js";
+import type { HostControllerClient, ManorRestartRun } from "./host-controller-client.js";
 import type { ImageReferenceStore } from "./image-store.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-templates.js";
@@ -21,6 +21,7 @@ import type {
   ButlerThinkingLevel,
   ButlerToolUiEffect,
   CodexThreadExecutionContractView,
+  ManorRestartRequestView,
   PreviewVerificationView
 } from "./types.js";
 import type { CodexAppServerClient } from "./codex-client.js";
@@ -135,6 +136,20 @@ export type ButlerAgentToolAccess = {
   ): Promise<ProofScreenshotReview>;
   getThreadBudgetLimitMessage(threadId: string): string | null;
   getOperatorCloseoutBlocker(threadId: string): string | null;
+  requestManorRestartAuthorization(input: {
+    mode?: unknown;
+    target?: unknown;
+    gitRef?: unknown;
+    imageTag?: unknown;
+    targetCommit?: unknown;
+    targetTag?: unknown;
+    includeDesktop?: unknown;
+    build?: unknown;
+    update?: unknown;
+    reason?: unknown;
+    details?: unknown;
+  }): ManorRestartRequestView;
+  startAuthorizedManorRestart(requestId: string): Promise<{ restartRequest: ManorRestartRequestView; run: ManorRestartRun }>;
   buildSupervisionSmokeTask(totalFollowUps: number): string;
   buildDelegationDeveloperInstructions(workspace: { cwd: string; branchName: string | null }, task: string): Promise<string>;
   getActiveOperatorThreadGuard(): ButlerOperatorThreadGuard | null;
@@ -181,6 +196,8 @@ export type ButlerAgentSessionAccess = {
   sessionDir: string;
   operatorMessages: ButlerMessageView[];
   pendingChatCallbacks: Map<string, ButlerThreadCallbackView>;
+  pendingManorRestartRequest: ManorRestartRequestView | null;
+  authorizedManorRestartRequest: ManorRestartRequestView | null;
   onboarding: ButlerOnboardingView;
   toolCatalog: ButlerToolView[];
   unsubscribeSession: (() => void) | null;

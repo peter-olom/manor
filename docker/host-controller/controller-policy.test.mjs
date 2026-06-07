@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  detectRuntimeRestartMode,
   normalizeRestartDelayMs,
   safeTokenMatch,
+  shouldBuildSourceImages,
   validateImageTag,
   validateRestartModeScope,
   validateRestartPayload
@@ -44,7 +46,26 @@ test("restart policy scopes source and image inputs to detected mode", () => {
 
   const imageBuild = validateRestartPayload({ confirmation: "restart Manor", mode: "image", build: false });
   assert.equal(imageBuild.ok, true);
-  assert.equal(validateRestartModeScope(imageBuild.value, "image").ok, false);
+  assert.equal(validateRestartModeScope(imageBuild.value, "image").ok, true);
+
+  const imageBuildTrue = validateRestartPayload({ confirmation: "restart Manor", mode: "image", build: true });
+  assert.equal(imageBuildTrue.ok, true);
+  assert.equal(validateRestartModeScope(imageBuildTrue.value, "image").ok, false);
+});
+
+test("runtime mode detection treats local Manor images as source mode", () => {
+  assert.equal(detectRuntimeRestartMode("1", []), "source");
+  assert.equal(detectRuntimeRestartMode("0", ["ghcr.io/peter-olom/manor-butler:latest"]), "image");
+  assert.equal(detectRuntimeRestartMode("0", ["ghcr.io/peter-olom/manor-egress:latest", "manor-butler:local"]), "source");
+});
+
+test("source builds are opt-in for current restart and default on for updates", () => {
+  assert.equal(shouldBuildSourceImages({ target: "current", update: false }), false);
+  assert.equal(shouldBuildSourceImages({ target: "current", update: false, build: true }), true);
+  assert.equal(shouldBuildSourceImages({ target: "current", update: false, build: false, gitRef: "main" }), false);
+  assert.equal(shouldBuildSourceImages({ target: "latest", update: false }), true);
+  assert.equal(shouldBuildSourceImages({ target: "current", update: true }), true);
+  assert.equal(shouldBuildSourceImages({ target: "current", update: false, gitRef: "main" }), true);
 });
 
 test("restart policy only accepts image tags, not image references", () => {

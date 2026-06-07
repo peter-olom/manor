@@ -2,11 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  clearPendingManorRestartRequestSnapshot,
   selectBootstrapChannelsToApply,
   selectOutdatedBootstrapChannels,
   shouldApplyChannelEvent,
   shouldRefreshLiveStateOnPageEvent
 } from "../../src/web/live-state.js";
+import type { ShellSnapshot } from "../../src/web/types.js";
 
 test("bootstrap correction applies stale channels even when another channel received a newer event", () => {
   assert.deepEqual(
@@ -111,4 +113,21 @@ test("older versioned state events cannot overwrite a newer bootstrap correction
   assert.equal(shouldApplyChannelEvent(2, 2), true);
   assert.equal(shouldApplyChannelEvent(2, 3), true);
   assert.equal(shouldApplyChannelEvent(2, null), true);
+});
+
+test("restart approval can hide the pending dialog before the next live update", () => {
+  const shell = {
+    butler: {
+      pendingManorRestartRequest: {
+        id: "restart-request-1"
+      }
+    }
+  } as unknown as ShellSnapshot;
+
+  const unchanged = clearPendingManorRestartRequestSnapshot(shell, "restart-request-2");
+  const cleared = clearPendingManorRestartRequestSnapshot(shell, "restart-request-1");
+
+  assert.equal(unchanged, shell);
+  assert.notEqual(cleared, shell);
+  assert.equal(cleared?.butler.pendingManorRestartRequest, null);
 });

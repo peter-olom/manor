@@ -59,6 +59,24 @@ export type ConfirmDialogState = {
   onConfirm: () => Promise<void>;
 };
 
+export type ManorRestartRequest = {
+  id: string;
+  mode: "auto" | "source" | "image" | null;
+  target: "current" | "latest" | null;
+  gitRef: string | null;
+  imageTag: string | null;
+  targetCommit: string | null;
+  targetTag: string | null;
+  includeDesktop: boolean;
+  build: boolean | null;
+  update: boolean | null;
+  reason: string | null;
+  details: string | null;
+  requestedAt: number;
+  status: "pending" | "authorized" | "dismissed";
+  authorizedAt: number | null;
+};
+
 export type PendingThreadRequest = {
   threadId: string;
   text: string;
@@ -748,6 +766,8 @@ export type ShellSnapshot = {
       };
       callbacks: ButlerThreadCallback[];
     };
+    pendingManorRestartRequest: ManorRestartRequest | null;
+    authorizedManorRestartRequest: ManorRestartRequest | null;
     scratchPad: ScratchPad;
     lastError: string | null;
     compose: {

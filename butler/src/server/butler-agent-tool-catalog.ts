@@ -315,8 +315,14 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   },
   {
     name: "request_manor_restart",
-    label: "Restart Manor",
-    description: "Ask the host controller to restart or update Manor after exact operator confirmation.",
+    label: "Request Manor restart",
+    description: "Open an operator-facing Manor restart/update authorization dialog without mutating the live stack.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while requesting restart authorization." }]
+  },
+  {
+    name: "start_authorized_manor_restart",
+    label: "Start authorized restart",
+    description: "Consume an operator-authorized Manor restart request and ask the host controller to run it.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while the restart is scheduled." }]
   },
   {

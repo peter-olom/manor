@@ -7,6 +7,7 @@ import { ButlerSurface } from "./ButlerSurface";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { ButlerTabIcon, CloseIcon, CopyIcon, ScratchPadTabIcon, SetupTabIcon, TerminalTabIcon, ThemeIcon, ThreadsIcon, TrashIcon } from "./icons";
 import {
+  clearPendingManorRestartRequest,
   mergeKnownImages,
   useShellSnapshot,
   useServerToastEvent,
@@ -23,6 +24,7 @@ import type {
   ComposerPrefillTarget,
   ConfirmDialogState,
   FileReference,
+  ManorRestartRequest,
   PreviewMedia,
   ScratchPadItem,
   SetupCommandMode,
@@ -126,6 +128,7 @@ export function App() {
   const [toast, setToast] = useState<AppToast | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
+  const [restartAuthorizeBusy, setRestartAuthorizeBusy] = useState(false);
   const [copiedCommandKey, setCopiedCommandKey] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const copiedCommandTimerRef = useRef<number | null>(null);
@@ -164,6 +167,7 @@ export function App() {
     [callbackByThreadId, shell?.codex.threads]
   );
   const activeThreadSummary = activeThreadId ? threadSummaryById.get(activeThreadId) ?? null : null;
+  const pendingRestartRequest = shell?.butler.pendingManorRestartRequest ?? null;
 
   function showToast(message: string, tone: "success" | "error" | "info" = "success", duration = 2600, key?: string) {
     const nextKey = key ?? `${tone}:${message}`;
@@ -582,6 +586,40 @@ export function App() {
     }
   }
 
+  async function authorizeManorRestart(request: ManorRestartRequest) {
+    if (restartAuthorizeBusy) {
+      return;
+    }
+
+    setRestartAuthorizeBusy(true);
+    try {
+      await postJson(`/api/manor/restart-requests/${request.id}/authorize`, { operatorAction: "authorize_restart" });
+      clearPendingManorRestartRequest(request.id);
+      showToast("Manor restart started", "success");
+    } catch (error) {
+      showErrorToast(error);
+    } finally {
+      setRestartAuthorizeBusy(false);
+    }
+  }
+
+  async function dismissManorRestart(request: ManorRestartRequest) {
+    if (restartAuthorizeBusy) {
+      return;
+    }
+
+    setRestartAuthorizeBusy(true);
+    try {
+      await postJson(`/api/manor/restart-requests/${request.id}/dismiss`, {});
+      clearPendingManorRestartRequest(request.id);
+      showToast("Restart request dismissed", "info");
+    } catch (error) {
+      showErrorToast(error);
+    } finally {
+      setRestartAuthorizeBusy(false);
+    }
+  }
+
   async function copySetupCommand(command: string, key: string) {
     try {
       await writeClipboardText(command);
@@ -980,6 +1018,53 @@ export function App() {
               </button>
               <button className="panel-action panel-action-danger" onClick={() => void handleConfirmAction()} disabled={confirmBusy}>
                 {confirmBusy ? (confirmDialog.busyLabel ?? "Deleting…") : confirmDialog.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {pendingRestartRequest ? (
+        <div className="modal-backdrop manor-restart-backdrop">
+          <div className="modal-card manor-restart-dialog" role="dialog" aria-modal="true" aria-labelledby="manor-restart-title" aria-describedby="manor-restart-copy">
+            <div className="modal-head manor-restart-head">
+              <div>
+                <p className="manor-restart-kicker">Live Manor stack</p>
+                <h2 id="manor-restart-title">Authorize Manor restart?</h2>
+              </div>
+            </div>
+            <p className="modal-copy manor-restart-copy" id="manor-restart-copy">
+              Butler is asking to authorize a Manor restart or update. Review the target details before continuing.
+            </p>
+            <dl className="manor-restart-details">
+              <div>
+                <dt>Target tag</dt>
+                <dd>{pendingRestartRequest.imageTag ?? pendingRestartRequest.targetTag ?? "Not specified"}</dd>
+              </div>
+              <div>
+                <dt>Target commit</dt>
+                <dd>{pendingRestartRequest.gitRef ?? pendingRestartRequest.targetCommit ?? "Not specified"}</dd>
+              </div>
+              <div>
+                <dt>Reason</dt>
+                <dd>{pendingRestartRequest.reason ?? "No reason provided"}</dd>
+              </div>
+              {pendingRestartRequest.details ? (
+                <div>
+                  <dt>Details</dt>
+                  <dd>{pendingRestartRequest.details}</dd>
+                </div>
+              ) : null}
+            </dl>
+            <p className="manor-restart-note">
+              This click records your explicit authorization and starts the approved restart through the host controller.
+            </p>
+            <div className="modal-actions">
+              <button className="panel-action" onClick={() => void dismissManorRestart(pendingRestartRequest)} disabled={restartAuthorizeBusy}>
+                Keep running
+              </button>
+              <button className="panel-action panel-action-danger manor-restart-authorize" onClick={() => void authorizeManorRestart(pendingRestartRequest)} disabled={restartAuthorizeBusy}>
+                {restartAuthorizeBusy ? "Authorizing..." : "Authorize restart"}
               </button>
             </div>
           </div>

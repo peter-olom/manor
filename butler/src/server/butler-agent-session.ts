@@ -356,6 +356,8 @@ export function getButlerShellSnapshot(access: ButlerAgentSessionAccess): AppShe
       supervisor: access.store.getSupervisorSummary(),
       callbacks: [...access.pendingChatCallbacks.values()].sort((left, right) => right.updatedAt - left.updatedAt)
     },
+    pendingManorRestartRequest: access.pendingManorRestartRequest,
+    authorizedManorRestartRequest: access.authorizedManorRestartRequest,
     scratchPad: {
       items: [],
       counts: { captured: 0, exploring: 0, ready_for_review: 0, accepted: 0, parked: 0, dismissed: 0 }

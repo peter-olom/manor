@@ -4,9 +4,11 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import express from "express";
 import {
+  detectRuntimeRestartMode,
   normalizeRestartDelayMs,
   normalizeString,
   safeTokenMatch,
+  shouldBuildSourceImages,
   validateRestartModeScope,
   validateRestartPayload
 } from "./controller-policy.mjs";
@@ -27,16 +29,13 @@ const applianceServices = [
   "butler",
   "butler-gateway"
 ];
+const applianceContainerNames = new Set(applianceServices.map((service) => `manor-${service}`));
 
 let latestRun = null;
 let activeRun = null;
 
 function now() {
   return Date.now();
-}
-
-function truthy(value) {
-  return ["1", "true", "yes", "on"].includes(String(value ?? "").trim().toLowerCase());
 }
 
 function limitedTail(value, limit = 12_000) {
@@ -128,7 +127,34 @@ async function detectMode(requestedMode) {
   if (requestedMode === "source" || requestedMode === "image") {
     return requestedMode;
   }
-  return truthy(await readEnvValue("MANOR_BUILD_FROM_SOURCE")) ? "source" : "image";
+  return detectRuntimeRestartMode(await readEnvValue("MANOR_BUILD_FROM_SOURCE"), await runningApplianceImages());
+}
+
+async function runningApplianceImages() {
+  return await new Promise((resolve) => {
+    let stdout = "";
+    const child = spawn("docker", ["ps", "-a", "--format", "{{.Names}}\t{{.Image}}"], {
+      cwd: manorDir,
+      env: process.env,
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+    child.stdout.on("data", (chunk) => {
+      stdout = limitedTail(stdout + chunk.toString(), 200_000);
+    });
+    child.on("error", () => resolve([]));
+    child.on("close", (exitCode) => {
+      if (exitCode !== 0) {
+        resolve([]);
+        return;
+      }
+      resolve(stdout
+        .split(/\r?\n/)
+        .map((line) => line.split("\t"))
+        .filter(([name]) => applianceContainerNames.has(name))
+        .map(([, image]) => normalizeString(image))
+        .filter(Boolean));
+    });
+  });
 }
 
 function composeArgs(mode, includeDesktop) {
@@ -257,8 +283,20 @@ async function restartAppliance(run) {
   }
   await cleanupStaleReplacementContainers(run, services);
   for (const service of services) {
-    await runStep(run, `Remove ${service}`, "docker", [...composeArgs(run.mode, run.includeDesktop), "rm", "--stop", "--force", service]);
-    await runStep(run, `Start ${service}`, "docker", [...composeArgs(run.mode, run.includeDesktop), "up", "-d", "--no-deps", "--wait", "--wait-timeout", "90", service]);
+    await runStep(run, `Restart ${service}`, "docker", [
+      ...composeArgs(run.mode, run.includeDesktop),
+      "up",
+      "-d",
+      "--force-recreate",
+      "--no-deps",
+      "--no-build",
+      "--pull",
+      "never",
+      "--wait",
+      "--wait-timeout",
+      "90",
+      service
+    ]);
   }
 }
 
@@ -357,7 +395,7 @@ function createRun(payload) {
     imageTag: payload.imageTag,
     includeDesktop: payload.includeDesktop === true,
     update: payload.update === true || payload.target === "latest" || Boolean(payload.gitRef || payload.imageTag),
-    build: payload.build === false ? false : true,
+    build: shouldBuildSourceImages(payload),
     delayMs: defaultDelayMs,
     startedAt: now(),
     completedAt: null,
