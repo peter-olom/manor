@@ -15,6 +15,7 @@ import {
   isCallbackOutstanding,
   selectReviewableProofArtifacts
 } from "../../src/server/butler-agent-helpers.js";
+import { MANOR_RESTART_CONFIRMATION_PHRASE } from "../../src/server/manor-restart-confirmation.js";
 import { listWorkspaceProjectDirectories, resolveWorkspaceProjectInfo } from "../../src/server/repo-worktree.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { evaluateOperatorCloseoutGate } from "../../src/server/supervision-checklist.js";
@@ -470,6 +471,14 @@ test("system prompt advises focused checklist refresh for new work", async () =>
   assert.match(prompt, /hold_job_context/);
   assert.match(prompt, /newer context for an active job/);
   assert.match(prompt, /Do not answer project inventory questions from supervisor state alone/);
+});
+
+test("system prompt exposes exact Manor restart confirmation phrase", async () => {
+  const store = await createStore();
+  const prompt = buildSystemPrompt(store, "No callbacks.");
+
+  assert.match(prompt, /restart\/update controller confirmation phrase is exactly/);
+  assert.match(prompt, new RegExp(MANOR_RESTART_CONFIRMATION_PHRASE));
 });
 
 test("system prompt biases autonomous domain resolution before job inventory", async () => {
