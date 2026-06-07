@@ -578,7 +578,7 @@ export function ButlerSurface({
   async function stopButlerRequest() {
     try {
       const result = await postJson<{ stopped?: boolean }>("/api/chat/stop", {});
-      setPendingButlerText(null);
+      setPendingButlerMessage(null);
       if (!result?.stopped) {
         showToast("No active Butler request to stop", "error", 2500);
       }
@@ -596,7 +596,7 @@ export function ButlerSurface({
       await postJson("/api/chat/clear", {});
       setHistory({ messages: [], loadedStart: 0, totalCount: 0 });
       setHideButlerActivityFrom(0);
-      setPendingButlerText(null);
+      setPendingButlerMessage(null);
       setFollowButler(true);
       showToast("Butler chat cleared");
     } catch (error) {
@@ -625,7 +625,7 @@ export function ButlerSurface({
           totalCount: Math.max(0, current.loadedStart + index)
         };
       });
-      setPendingButlerText(null);
+      setPendingButlerMessage(null);
       setFollowButler(true);
       showToast("Butler chat trimmed");
     } catch (error) {

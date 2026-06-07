@@ -13,6 +13,14 @@ import {
   useServerToastEvent,
   useTransportState
 } from "./live-state";
+import {
+  buildCompletionSoundSnapshot,
+  flashCompletionBrowserTab,
+  installCompletionSoundUnlock,
+  playCompletionNotificationSound,
+  shouldPlayCompletionNotificationSound,
+  type CompletionSoundSnapshot
+} from "./notification-sound";
 import { StatusItem } from "./StatusItem";
 import { ScratchPadPanel } from "./ScratchPadPanel";
 import { ThreadSurface } from "./ThreadSurface";
@@ -192,6 +200,7 @@ export function App() {
   const [copiedCommandKey, setCopiedCommandKey] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const copiedCommandTimerRef = useRef<number | null>(null);
+  const completionSoundSnapshotRef = useRef<CompletionSoundSnapshot | null>(null);
   const lastFocusedWindowIdRef = useRef<string | null>(null);
   const hasSeenFocusedWindowRef = useRef(false);
   const hasShownDisconnectToastRef = useRef(false);
@@ -370,6 +379,23 @@ export function App() {
       window.clearInterval(interval);
     };
   }, []);
+
+  useEffect(() => {
+    return installCompletionSoundUnlock();
+  }, []);
+
+  useEffect(() => {
+    if (!shell) {
+      return;
+    }
+
+    const nextSnapshot = buildCompletionSoundSnapshot(shell);
+    if (shouldPlayCompletionNotificationSound(completionSoundSnapshotRef.current, nextSnapshot)) {
+      playCompletionNotificationSound();
+      flashCompletionBrowserTab();
+    }
+    completionSoundSnapshotRef.current = nextSnapshot;
+  }, [shell]);
 
   useEffect(() => {
     const root = document.documentElement;

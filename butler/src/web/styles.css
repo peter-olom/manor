@@ -4018,12 +4018,27 @@ select {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  min-width: 0;
 }
 
 .modal-head-actions {
   display: inline-flex;
   align-items: center;
   gap: 10px;
+  flex: 0 0 auto;
+}
+
+.modal-zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.modal-zoom-value {
+  min-width: 46px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-align: center;
 }
 
 .modal-icon-action {
@@ -4050,6 +4065,10 @@ select {
 
 .modal-head h2 {
   margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 1rem;
   font-weight: 600;
 }
@@ -4158,11 +4177,21 @@ select {
   background: color-mix(in srgb, var(--surface) 65%, var(--bg));
 }
 
+.modal-image-shell.is-zoomed {
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
 .modal-image {
   display: block;
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+}
+
+.modal-image-shell.is-zoomed .modal-image {
+  max-width: none;
+  max-height: none;
 }
 
 .modal-video {
@@ -5199,6 +5228,24 @@ select {
   .modal-card-image {
     width: calc(100vw - 32px);
     height: min(86vh, 880px);
+  }
+
+  .modal-head {
+    gap: 10px;
+  }
+
+  .modal-head-actions,
+  .modal-zoom-controls {
+    gap: 6px;
+  }
+
+  .modal-icon-action {
+    width: 32px;
+    height: 32px;
+  }
+
+  .modal-zoom-value {
+    min-width: 40px;
   }
 
   .modal-card-annotation {
