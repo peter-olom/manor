@@ -28,3 +28,9 @@ test("preview annotation insert captures an annotated screenshot attachment", ()
   assert.match(routesSource, /captureAnnotatedPreviewScreenshot/);
   assert.match(routesSource, /broadcastComposerPrefill\(\{[\s\S]*attachment/);
 });
+
+test("operator companion toolbar has batch list and insert endpoints", () => {
+  assert.match(routesSource, /\/api\/preview-annotations\/operator\/batches/);
+  assert.match(routesSource, /\/api\/preview-annotations\/operator\/batches\/:batchId\/insert/);
+  assert.match(routesSource, /insertPreviewAnnotationBatch/);
+});

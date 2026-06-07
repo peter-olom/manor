@@ -26,8 +26,6 @@ function installPreviewAnnotationLayerInPage() {
     toolbar: { dragging: null },
     scrollLock: null
   };
-  const colors = ["#ff6b2c", "#1f5eff", "#0f7a65", "#c2410c"];
-
   root.innerHTML = `
     <style>
       :host { all: initial; }
@@ -69,10 +67,10 @@ function installPreviewAnnotationLayerInPage() {
         align-items: center;
         gap: 6px;
         max-width: calc(100vw - 24px);
-        padding: 8px;
+        padding: 6px;
         border: 1px solid var(--manor-line);
-        border-radius: 14px;
-        background: color-mix(in srgb, var(--manor-surface) 94%, transparent);
+        border-radius: 0;
+        background: color-mix(in srgb, var(--manor-surface) 96%, transparent);
         color: var(--manor-ink);
         box-shadow: 0 8px 24px var(--manor-shadow);
         pointer-events: auto;
@@ -81,25 +79,24 @@ function installPreviewAnnotationLayerInPage() {
         backdrop-filter: saturate(120%);
       }
       .toolbar.is-dragging { cursor: grabbing; }
-      .brand {
+      .drag-handle {
         display: inline-flex;
         align-items: center;
-        gap: 6px;
+        justify-content: center;
+        width: 28px;
+        min-width: 28px;
         min-height: 32px;
-        padding: 0 8px 0 4px;
-        color: var(--manor-ink);
+        color: var(--manor-muted);
         cursor: grab;
-        font-size: 12px;
+        font-size: 16px;
         font-weight: 700;
-        letter-spacing: 0.01em;
-        white-space: nowrap;
+        line-height: 1;
       }
-      .brand-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--manor-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--manor-accent) 18%, transparent); }
       select, button, input {
         appearance: none;
         min-height: 32px;
         border: 1px solid var(--manor-line);
-        border-radius: 10px;
+        border-radius: 0;
         padding: 0 10px;
         background: var(--manor-panel);
         color: var(--manor-ink);
@@ -108,13 +105,15 @@ function installPreviewAnnotationLayerInPage() {
       button { cursor: pointer; }
       select { max-width: 150px; padding-right: 22px; }
       input { min-width: 210px; background: var(--manor-surface); user-select: text; }
+      .color-input { appearance: auto; width: 34px; min-width: 34px; padding: 2px; cursor: pointer; }
+      .color-input::-webkit-color-swatch-wrapper { padding: 0; }
+      .color-input::-webkit-color-swatch { border: 0; border-radius: 0; }
+      .color-input::-moz-color-swatch { border: 0; border-radius: 0; }
       input::placeholder { color: var(--manor-muted); opacity: 1; }
       input:disabled { color: var(--manor-muted); opacity: 0.72; }
       button:hover, select:hover, input:hover { border-color: var(--manor-line-strong); background: color-mix(in srgb, var(--manor-panel) 84%, var(--manor-accent) 16%); }
       button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--manor-accent); outline-offset: 2px; }
       button[aria-pressed="true"] { border-color: var(--manor-accent); background: var(--manor-accent); color: #fff; }
-      .swatch { width: 28px; min-width: 28px; padding: 0; border: 2px solid transparent; background: var(--swatch); }
-      .swatch[aria-pressed="true"] { border-color: var(--manor-ink); box-shadow: inset 0 0 0 2px var(--manor-surface); }
       .divider { width: 1px; height: 24px; background: var(--manor-line); margin: 0 2px; }
       .mark-select { width: 76px; }
       .note-input { width: min(260px, 26vw); }
@@ -124,7 +123,7 @@ function installPreviewAnnotationLayerInPage() {
         right: 16px;
         top: 16px;
         min-height: 34px;
-        border-radius: 999px;
+        border-radius: 0;
         border-color: var(--manor-line);
         background: var(--manor-surface);
         box-shadow: 0 8px 24px var(--manor-shadow);
@@ -137,27 +136,24 @@ function installPreviewAnnotationLayerInPage() {
       .badge-text { font: 700 12px system-ui, sans-serif; fill: #fff; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
       @media (max-width: 720px) {
         .toolbar { left: 8px; right: 8px; top: 8px; transform: none; flex-wrap: wrap; justify-content: center; }
-        .brand { flex: 1 1 100%; justify-content: center; cursor: grab; }
+        .drag-handle { flex: 0 0 32px; cursor: grab; }
         .note-input { flex: 1 1 100%; width: auto; }
       }
     </style>
     <div class="stage" aria-label="Manor preview annotation layer">
       <svg class="overlay" aria-hidden="true"></svg>
       <div class="toolbar" role="toolbar" aria-label="Manor preview annotation tools">
-        <span class="brand" data-drag-handle title="Drag annotation toolbar"><span class="brand-dot" aria-hidden="true"></span>Annotate preview</span>
+        <span class="drag-handle" data-drag-handle aria-label="Drag annotation toolbar" title="Drag annotation toolbar">⋮⋮</span>
         <button type="button" data-mode="select" aria-pressed="true" title="Select lets the page receive clicks">Select</button>
         <button type="button" data-mode="draw" aria-pressed="false" title="Draw numbered rectangles on the preview">Draw</button>
-        <span class="divider" aria-hidden="true"></span>
-        ${colors.map((color) => `<button type="button" class="swatch" data-color="${color}" style="--swatch:${color}" aria-label="Use ${color}" aria-pressed="${color === state.color}"></button>`).join("")}
+        <input class="color-input" type="color" value="${state.color}" aria-label="Annotation color">
         <span class="divider" aria-hidden="true"></span>
         <button type="button" data-action="undo">Undo</button>
         <button type="button" data-action="clear">Clear</button>
         <select class="mark-select" aria-label="Selected annotation"></select>
         <input class="note-input" type="text" maxlength="280" placeholder="Draw a mark to add comment" aria-label="Comment for selected annotation" disabled>
-        <select class="target" aria-label="Annotation target"></select>
-        <button type="button" data-action="batch">Queue batch</button>
-        <button type="button" data-action="insert">Insert batch</button>
-        <button type="button" data-action="hide" title="Hide annotation toolbar">Hide</button>
+        <button type="button" data-action="batch">Queue</button>
+        <button class="icon-button" type="button" data-action="hide" title="Hide annotation toolbar" aria-label="Hide annotation toolbar">×</button>
         <span class="status" aria-live="polite"></span>
       </div>
       <button type="button" class="tab" data-action="show">Show annotations</button>
@@ -167,8 +163,8 @@ function installPreviewAnnotationLayerInPage() {
   const stage = root.querySelector(".stage");
   const svg = root.querySelector(".overlay");
   const toolbar = root.querySelector(".toolbar");
-  const targetSelect = root.querySelector(".target");
   const markSelect = root.querySelector(".mark-select");
+  const colorInput = root.querySelector(".color-input");
   const noteInput = root.querySelector(".note-input");
   const status = root.querySelector(".status");
 
@@ -188,28 +184,8 @@ function installPreviewAnnotationLayerInPage() {
     status.style.color = tone === "error" ? "#ef4444" : "var(--manor-muted)";
   }
 
-  function readTargets() {
-    const configuredTargets = Array.isArray(config.targets) ? config.targets : null;
-    const provided = configuredTargets ?? (Array.isArray(window.__manorPreviewAnnotationTargets) ? window.__manorPreviewAnnotationTargets : []);
-    const normalized = provided
-      .filter((target) => target && typeof target.id === "string" && typeof target.label === "string")
-      .map((target) => ({ id: target.id, label: target.label }))
-      .slice(0, 8);
-    return normalized.length > 0 ? normalized : [{ id: "butler", label: "Butler" }];
-  }
-
   function escapeAttribute(value) {
     return String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-  }
-
-  function escapeText(value) {
-    return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;");
-  }
-
-  function renderTargets() {
-    targetSelect.innerHTML = readTargets()
-      .map((target) => `<option value="${escapeAttribute(target.id)}">${escapeText(target.label)}</option>`)
-      .join("");
   }
 
   function activeMark() {
@@ -472,6 +448,10 @@ function installPreviewAnnotationLayerInPage() {
     setActiveMark(markSelect.value);
   });
 
+  colorInput.addEventListener("input", () => {
+    state.color = colorInput.value || state.color;
+  });
+
   noteInput.addEventListener("input", () => {
     const selected = activeMark();
     if (!selected) {
@@ -492,7 +472,7 @@ function installPreviewAnnotationLayerInPage() {
     const payload = {
       intent,
       leaseId: typeof config.leaseId === "string" ? config.leaseId : typeof window.__manorPreviewAnnotationLeaseId === "string" ? window.__manorPreviewAnnotationLeaseId : "",
-      targetId: targetSelect.value || "butler",
+      targetId: "companion",
       annotations,
       page: { title: document.title || "", url: location.href }
     };
@@ -502,7 +482,7 @@ function installPreviewAnnotationLayerInPage() {
     }
     try {
       await commitAnnotations(payload);
-      showStatus(`${intent === "insert" ? "Inserted" : "Queued"} ${annotations.length} annotation${annotations.length === 1 ? "" : "s"}`);
+      showStatus(`Queued ${annotations.length} annotation${annotations.length === 1 ? "" : "s"} for Manor`);
     } catch (error) {
       showStatus(error instanceof Error ? error.message : "Annotation capture failed", "error");
     }
@@ -512,14 +492,8 @@ function installPreviewAnnotationLayerInPage() {
     const target = event.target;
     const mode = target?.dataset?.mode;
     const action = target?.dataset?.action;
-    const color = target?.dataset?.color;
     if (mode) {
       setMode(mode);
-    } else if (color) {
-      state.color = color;
-      root.querySelectorAll("[data-color]").forEach((button) => {
-        button.setAttribute("aria-pressed", button.dataset.color === color ? "true" : "false");
-      });
     } else if (action === "undo") {
       const removed = state.marks.pop();
       if (removed?.id === state.activeId) {
@@ -540,8 +514,6 @@ function installPreviewAnnotationLayerInPage() {
       updateScrollLock();
     } else if (action === "batch") {
       void commitBatch("batch");
-    } else if (action === "insert") {
-      void commitBatch("insert");
     } else if (action === "hide") {
       setHidden(true);
     } else if (action === "show") {
@@ -551,7 +523,6 @@ function installPreviewAnnotationLayerInPage() {
 
   document.documentElement.appendChild(host);
   updateTheme();
-  renderTargets();
   syncCommentControls();
   setMode("select");
   render();

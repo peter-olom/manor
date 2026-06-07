@@ -262,6 +262,7 @@ export type BrowserAnnotationBatch = {
   id: string;
   at: number;
   intent: "batch" | "insert";
+  leaseId: string;
   targetId: string;
   page: { title: string; url: string };
   annotations: BrowserAnnotationRect[];

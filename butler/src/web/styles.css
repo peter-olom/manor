@@ -191,6 +191,103 @@ select {
   background: var(--panel);
 }
 
+.preview-annotation-companion {
+  position: fixed;
+  left: calc(var(--rail-width) + 16px);
+  right: 16px;
+  bottom: 16px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  padding: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+}
+
+.preview-annotation-companion-main,
+.preview-annotation-companion-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.preview-annotation-companion-main {
+  flex: 1 1 auto;
+}
+
+.preview-annotation-companion-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--ink));
+}
+
+.preview-annotation-companion select,
+.preview-annotation-companion button {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--panel);
+  color: var(--ink);
+  font: 700 12px/1 "IBM Plex Sans", "Avenir Next", sans-serif;
+}
+
+.preview-annotation-companion select {
+  min-width: min(460px, 38vw);
+  max-width: 52vw;
+  padding: 0 28px 0 10px;
+}
+
+.preview-annotation-companion button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.preview-annotation-companion button:disabled {
+  cursor: not-allowed;
+  color: var(--muted);
+  opacity: 0.68;
+}
+
+.preview-annotation-companion button:not(:disabled):hover,
+.preview-annotation-companion select:hover {
+  border-color: var(--line-strong);
+  background: color-mix(in srgb, var(--panel) 84%, var(--accent) 16%);
+}
+
+.preview-annotation-companion button:focus-visible,
+.preview-annotation-companion select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.preview-annotation-companion-meta {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.preview-annotation-companion-dismiss {
+  width: 32px;
+  padding: 0;
+}
+
+.preview-annotation-companion-dismiss svg {
+  width: 14px;
+  height: 14px;
+}
+
 .brand {
   display: flex;
   align-items: center;

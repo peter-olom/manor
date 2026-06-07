@@ -146,6 +146,62 @@ export function registerPreviewAnnotationRoutes(access: PreviewAnnotationRoutesA
     access.store.notePreviewLeaseActivity(batch.leaseId, batch.at);
   }
 
+  function listPreviewAnnotationBatches(): OperatorPreviewAnnotationBatch[] {
+    return [...previewAnnotationBatches.values()].flat().sort((left, right) => right.at - left.at);
+  }
+
+  function findPreviewAnnotationBatch(batchId: string): OperatorPreviewAnnotationBatch | null {
+    for (const batches of previewAnnotationBatches.values()) {
+      const batch = batches.find((entry) => entry.id === batchId);
+      if (batch) {
+        return batch;
+      }
+    }
+    return null;
+  }
+
+  function removePreviewAnnotationBatch(batchId: string): boolean {
+    let removed = false;
+    for (const [leaseId, batches] of previewAnnotationBatches.entries()) {
+      const next = batches.filter((entry) => entry.id !== batchId);
+      if (next.length !== batches.length) {
+        removed = true;
+      }
+      if (next.length === 0) {
+        previewAnnotationBatches.delete(leaseId);
+      } else {
+        previewAnnotationBatches.set(leaseId, next);
+      }
+    }
+    return removed;
+  }
+
+  function targetIdForPrefill(target: AnnotationPrefillTarget): string {
+    return target.kind === "thread" ? `thread:${target.threadId}` : "butler";
+  }
+
+  function validateAnnotationPrefillTarget(target: AnnotationPrefillTarget | null): target is AnnotationPrefillTarget {
+    return Boolean(target && (target.kind === "butler" || access.store.getThread(target.threadId)));
+  }
+
+  async function insertPreviewAnnotationBatch(batch: OperatorPreviewAnnotationBatch, target: AnnotationPrefillTarget) {
+    const insertBatch = { ...batch, intent: "insert" as const, targetId: targetIdForPrefill(target) };
+    const attachment = await captureAnnotatedPreviewScreenshot({
+      batch: insertBatch,
+      runtimeBroker: access.runtimeBroker,
+      imageStore: access.imageStore
+    });
+    access.sseHub.broadcastComposerPrefill({
+      id: crypto.randomUUID(),
+      target,
+      text: formatAnnotationBatchText(insertBatch),
+      attachment
+    });
+    access.sseHub.broadcastToast("Preview annotations inserted into the composer.", "success", 2200);
+    removePreviewAnnotationBatch(batch.id);
+    return { batch: insertBatch, attachment };
+  }
+
   access.app.post("/api/preview-annotations/batches", async (request, response) => {
     const batch = normalizeOperatorPreviewAnnotationBatch(request.body);
     if (!batch) {
@@ -169,29 +225,58 @@ export function registerPreviewAnnotationRoutes(access: PreviewAnnotationRoutesA
 
     recordPreviewAnnotationBatch(batch);
     if (batch.intent === "insert" && target) {
-      let attachment;
       try {
-        attachment = await captureAnnotatedPreviewScreenshot({
-          batch,
-          runtimeBroker: access.runtimeBroker,
-          imageStore: access.imageStore
-        });
+        await insertPreviewAnnotationBatch(batch, target);
       } catch (error) {
         response.status(500).json({
           error: `Annotated screenshot capture failed: ${error instanceof Error ? error.message : String(error)}`
         });
         return;
       }
-      access.sseHub.broadcastComposerPrefill({
-        id: crypto.randomUUID(),
-        target,
-        text: formatAnnotationBatchText(batch),
-        attachment
-      });
-      access.sseHub.broadcastToast("Preview annotations inserted into the composer.", "success", 2200);
     }
 
     response.json({ ok: true, batch });
+  });
+
+  access.app.get("/api/preview-annotations/operator/batches", (_request, response) => {
+    response.json({ batches: listPreviewAnnotationBatches() });
+  });
+
+  access.app.post("/api/preview-annotations/operator/batches/:batchId/insert", async (request, response) => {
+    const batchId = typeof request.params.batchId === "string" ? request.params.batchId.trim() : "";
+    const batch = batchId ? findPreviewAnnotationBatch(batchId) : null;
+    if (!batch) {
+      response.status(404).json({ error: "Preview annotation batch not found" });
+      return;
+    }
+    const lease = access.store.getPreviewLease(batch.leaseId);
+    if (!lease || lease.status === "stopped" || lease.status === "stopping") {
+      response.status(404).json({ error: "Preview lease not found" });
+      return;
+    }
+    const target = normalizeInternalAnnotationPrefillTarget(request.body?.target);
+    if (!validateAnnotationPrefillTarget(target)) {
+      response.status(400).json({ error: "Annotation target is unavailable" });
+      return;
+    }
+
+    try {
+      const result = await insertPreviewAnnotationBatch(batch, target);
+      response.json({ ok: true, ...result });
+    } catch (error) {
+      response.status(500).json({
+        error: `Annotated screenshot capture failed: ${error instanceof Error ? error.message : String(error)}`
+      });
+    }
+  });
+
+  access.app.delete("/api/preview-annotations/operator/batches/:batchId", (request, response) => {
+    const batchId = typeof request.params.batchId === "string" ? request.params.batchId.trim() : "";
+    if (!batchId || !removePreviewAnnotationBatch(batchId)) {
+      response.status(404).json({ error: "Preview annotation batch not found" });
+      return;
+    }
+    response.json({ ok: true });
   });
 
   access.app.get("/api/preview-annotations/:leaseId/batches", (request, response) => {
