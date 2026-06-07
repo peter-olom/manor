@@ -249,7 +249,9 @@ if (hotReloadEnabled) {
 store.on("change", () => sseHub.schedule());
 scratchPadStore.on("change", () => sseHub.schedule());
 codexClient.on("change", () => sseHub.schedule());
+codexClient.on("threadPatch", (payload) => sseHub.broadcastThreadPatch(payload));
 butlerAgent.on("change", () => sseHub.schedule());
+butlerAgent.on("butlerPatch", (payload) => sseHub.broadcastButlerPatch(payload));
 
 app.get("/api/health", (_request, response) => {
   response.json({

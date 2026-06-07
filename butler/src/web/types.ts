@@ -501,6 +501,17 @@ export type CodexThreadDetail = CodexThreadSummary & {
   } | null;
 };
 
+export type CodexThreadPatch = {
+  kind: "item-delta";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  itemType: string;
+  delta: string;
+  itemTextLength: number;
+  at: number;
+};
+
 export type ButlerThreadCallback = {
   threadId: string;
   callbackState: ButlerCallbackState;
@@ -784,6 +795,12 @@ export type ButlerLiveSnapshot = {
   messages: ButlerMessageRecord[];
   messageCount: number;
   activityTurns: ButlerActivityTurn[];
+};
+
+export type ButlerLivePatch = {
+  messages?: ButlerMessageRecord[];
+  messageCount: number;
+  activityTurns?: ButlerActivityTurn[];
 };
 
 export type ButlerActivityItem = {

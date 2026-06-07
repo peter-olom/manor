@@ -26,10 +26,26 @@ import type {
   AppSnapshot,
   ButlerCompactionView,
   ButlerContextUsageView,
+  ButlerLivePatchView,
   ButlerLiveSnapshot,
   ButlerMessagePageView,
   ButlerThinkingLevel
 } from "./types.js";
+
+export function buildButlerLivePatch(previous: ButlerLiveSnapshot, next: ButlerLiveSnapshot): ButlerLivePatchView | null {
+  const previousMessages = new Map(previous.messages.map((message) => [message.id, JSON.stringify(message)]));
+  const messages = next.messages.filter((message) => previousMessages.get(message.id) !== JSON.stringify(message));
+  const previousActivity = new Map(previous.activityTurns.map((turn) => [turn.id, JSON.stringify(turn)]));
+  const activityTurns = next.activityTurns.filter((turn) => previousActivity.get(turn.id) !== JSON.stringify(turn));
+  if (messages.length === 0 && activityTurns.length === 0 && previous.messageCount === next.messageCount) {
+    return null;
+  }
+  return {
+    messageCount: next.messageCount,
+    ...(messages.length > 0 ? { messages } : {}),
+    ...(activityTurns.length > 0 ? { activityTurns } : {})
+  };
+}
 
 export async function createOrRefreshButlerSession(access: ButlerAgentSessionAccess): Promise<void> {
   if (!access.modelRegistry) {
@@ -75,6 +91,7 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
   };
   restoreButlerCompactionState(access);
 
+  let previousLiveSnapshot = getButlerLiveSnapshot(access);
   access.unsubscribeSession = access.session.subscribe((event) => {
     recordButlerActivityEvent(access, event);
 
@@ -95,6 +112,12 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
     }
 
     access.ready = true;
+    const nextLiveSnapshot = getButlerLiveSnapshot(access);
+    const patch = buildButlerLivePatch(previousLiveSnapshot, nextLiveSnapshot);
+    previousLiveSnapshot = nextLiveSnapshot;
+    if (patch) {
+      access.emit("butlerPatch", patch);
+    }
     access.emit("change");
   });
 }

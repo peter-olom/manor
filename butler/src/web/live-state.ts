@@ -3,8 +3,10 @@ import { useEffect, useSyncExternalStore } from "react";
 import { getJson } from "./api";
 import type {
   BootstrapSnapshot,
+  ButlerLivePatch,
   ButlerLiveSnapshot,
   CodexThreadDetail,
+  CodexThreadPatch,
   ImageReference,
   RuntimeSnapshot,
   ServerToastEvent,
@@ -230,6 +232,91 @@ function parseHeartbeatChannelVersions(event: Event): Partial<BootstrapChannelVe
   return undefined;
 }
 
+export function applyButlerLivePatchSnapshot(
+  current: ButlerLiveSnapshot | null,
+  patch: ButlerLivePatch
+): ButlerLiveSnapshot | null {
+  if (!current) {
+    return current;
+  }
+  const messagesById = new Map(current.messages.map((message) => [message.id, message]));
+  for (const message of patch.messages ?? []) {
+    messagesById.set(message.id, message);
+  }
+  const activityById = new Map(current.activityTurns.map((turn) => [turn.id, turn]));
+  for (const turn of patch.activityTurns ?? []) {
+    activityById.set(turn.id, turn);
+  }
+  return {
+    messages: [...messagesById.values()].sort((left, right) => (left.at ?? 0) - (right.at ?? 0) || left.id.localeCompare(right.id)),
+    messageCount: Math.max(current.messageCount, patch.messageCount),
+    activityTurns: [...activityById.values()].sort((left, right) => left.startedAt - right.startedAt)
+  };
+}
+
+function activityUpdatedAt(turn: ButlerLiveSnapshot["activityTurns"][number]): number {
+  return Math.max(turn.completedAt ?? 0, turn.startedAt, ...turn.items.map((item) => item.updatedAt));
+}
+
+export function mergeButlerLiveSnapshots(current: ButlerLiveSnapshot | null, next: ButlerLiveSnapshot): ButlerLiveSnapshot {
+  if (!current || next.messageCount < current.messageCount) {
+    return next;
+  }
+  const currentMessages = new Map(current.messages.map((message) => [message.id, message]));
+  const currentActivity = new Map(current.activityTurns.map((turn) => [turn.id, turn]));
+  return {
+    messages: next.messages.map((message) => {
+      const currentMessage = currentMessages.get(message.id);
+      return currentMessage && currentMessage.text.length > message.text.length ? currentMessage : message;
+    }),
+    messageCount: next.messageCount,
+    activityTurns: next.activityTurns.map((turn) => {
+      const currentTurn = currentActivity.get(turn.id);
+      return currentTurn && activityUpdatedAt(currentTurn) > activityUpdatedAt(turn) ? currentTurn : turn;
+    })
+  };
+}
+
+function threadTextSize(thread: CodexThreadDetail): number {
+  return thread.turns.reduce((sum, turn) => sum + turn.items.reduce((itemSum, item) => itemSum + item.text.length, 0), 0);
+}
+
+export function mergeOpenThreadSnapshots(
+  current: Record<string, CodexThreadDetail>,
+  next: Record<string, CodexThreadDetail>
+): Record<string, CodexThreadDetail> {
+  const merged = { ...next };
+  for (const [threadId, thread] of Object.entries(current)) {
+    const incoming = next[threadId];
+    if (incoming && (thread.updatedAt > incoming.updatedAt || (thread.updatedAt === incoming.updatedAt && threadTextSize(thread) > threadTextSize(incoming)))) {
+      merged[threadId] = thread;
+    }
+  }
+  return merged;
+}
+
+export function applyThreadPatchSnapshot(
+  current: Record<string, CodexThreadDetail>,
+  patch: CodexThreadPatch
+): Record<string, CodexThreadDetail> {
+  const thread = current[patch.threadId];
+  if (!thread || patch.kind !== "item-delta") {
+    return current;
+  }
+  const turnIndex = thread.turns.findIndex((turn) => turn.id === patch.turnId);
+  const turn = turnIndex >= 0 ? thread.turns[turnIndex] : { id: patch.turnId, requestedReasoningEffort: null, status: "unknown", error: null, startedAt: patch.at, completedAt: null, items: [] };
+  const itemIndex = turn.items.findIndex((item) => item.id === patch.itemId);
+  const item = itemIndex >= 0 ? turn.items[itemIndex] : { id: patch.itemId, type: patch.itemType, status: "started", text: "", at: patch.at, taskDurationMs: null };
+  if (item.text.length >= patch.itemTextLength) {
+    return current;
+  }
+  const patchedItem = { ...item, type: item.type || patch.itemType, status: "started", text: item.text + patch.delta, at: patch.at };
+  const items = itemIndex >= 0 ? turn.items.map((entry, index) => index === itemIndex ? patchedItem : entry) : [...turn.items, patchedItem];
+  const patchedTurn = { ...turn, items };
+  const turns = turnIndex >= 0 ? thread.turns.map((entry, index) => index === turnIndex ? patchedTurn : entry) : [...thread.turns, patchedTurn];
+  return { ...current, [patch.threadId]: { ...thread, updatedAt: Math.max(thread.updatedAt, patch.at), status: "active", turns } };
+}
+
 async function getJsonWithTimeout<T>(url: string): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), BOOTSTRAP_REFRESH_TIMEOUT_MS);
@@ -291,11 +378,11 @@ function applyBootstrapSnapshotIfCurrent(
     if (channel === "shell") {
       shellStore.setSnapshot(payload.bootstrap.shell);
     } else if (channel === "butlerLive") {
-      butlerLiveStore.setSnapshot(payload.bootstrap.butlerLive);
+      butlerLiveStore.setSnapshot(mergeButlerLiveSnapshots(butlerLiveStore.getSnapshot(), payload.bootstrap.butlerLive));
     } else if (channel === "runtime") {
       runtimeStore.setSnapshot(payload.bootstrap.runtime);
     } else {
-      openThreadsStore.setSnapshot(payload.bootstrap.openThreads);
+      openThreadsStore.setSnapshot(mergeOpenThreadSnapshots(openThreadsStore.getSnapshot(), payload.bootstrap.openThreads));
     }
   }
 }
@@ -493,9 +580,23 @@ function openEventSource(): void {
   };
 
   source.addEventListener("shell", onEvent<ShellSnapshot>("shell", (payload) => shellStore.setSnapshot(payload)));
-  source.addEventListener("butlerLive", onEvent<ButlerLiveSnapshot>("butlerLive", (payload) => butlerLiveStore.setSnapshot(payload)));
+  source.addEventListener("butlerLive", onEvent<ButlerLiveSnapshot>("butlerLive", (payload) => butlerLiveStore.setSnapshot(mergeButlerLiveSnapshots(butlerLiveStore.getSnapshot(), payload))));
+  source.addEventListener("butlerPatch", (event) => {
+    if (!isCurrentAttempt()) {
+      return;
+    }
+    markTransportAlive();
+    butlerLiveStore.setSnapshot(applyButlerLivePatchSnapshot(butlerLiveStore.getSnapshot(), parseEventData<ButlerLivePatch>(event)));
+  });
   source.addEventListener("runtime", onEvent<RuntimeSnapshot>("runtime", (payload) => runtimeStore.setSnapshot(payload)));
-  source.addEventListener("threads", onEvent<Record<string, CodexThreadDetail>>("threads", (payload) => openThreadsStore.setSnapshot(payload)));
+  source.addEventListener("threads", onEvent<Record<string, CodexThreadDetail>>("threads", (payload) => openThreadsStore.setSnapshot(mergeOpenThreadSnapshots(openThreadsStore.getSnapshot(), payload))));
+  source.addEventListener("threadPatch", (event) => {
+    if (!isCurrentAttempt()) {
+      return;
+    }
+    markTransportAlive();
+    openThreadsStore.setSnapshot(applyThreadPatchSnapshot(openThreadsStore.getSnapshot(), parseEventData<CodexThreadPatch>(event)));
+  });
   source.addEventListener("toast", (event) => {
     if (!isCurrentAttempt()) {
       return;

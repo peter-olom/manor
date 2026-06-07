@@ -209,5 +209,6 @@ export type ButlerAgentSessionAccess = {
   buildCustomTools(): ButlerCustomTool[];
   listServiceTemplates(): LoadedServiceTemplate[];
   emit(event: "change"): boolean;
+  emit(event: "butlerPatch", payload: import("./types.js").ButlerLivePatchView): boolean;
   persistActivitySummaryTurn(turn: ButlerActivityTurnView): void;
 };

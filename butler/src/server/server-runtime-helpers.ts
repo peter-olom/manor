@@ -10,7 +10,7 @@ import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { ScratchPadStore } from "./scratch-pad-store.js";
 import type { ServiceTemplateRegistry } from "./service-templates.js";
 import type { ButlerStateStore } from "./state-store.js";
-import type { StackStorageMode } from "./types.js";
+import type { ButlerLivePatchView, CodexThreadPatchView, StackStorageMode } from "./types.js";
 import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 
 type SseStateChannel = "shell" | "butlerLive" | "runtime" | "threads";
@@ -92,6 +92,8 @@ export class ButlerSseHub {
     threads: 0
   };
   private broadcastTimer: NodeJS.Timeout | null = null;
+  private deferredSnapshotTimer: NodeJS.Timeout | null = null;
+  private snapshotsDeferred = false;
 
   constructor(
     private readonly access: RuntimeServerAccess,
@@ -125,6 +127,32 @@ export class ButlerSseHub {
     });
   }
 
+  private deferSnapshots(): void {
+    this.snapshotsDeferred = true;
+    if (this.deferredSnapshotTimer) {
+      clearTimeout(this.deferredSnapshotTimer);
+    }
+    this.deferredSnapshotTimer = setTimeout(() => {
+      this.deferredSnapshotTimer = null;
+      this.snapshotsDeferred = false;
+      this.flush();
+    }, 750);
+  }
+
+  broadcastThreadPatch(payload: CodexThreadPatchView): void {
+    this.deferSnapshots();
+    for (const client of this.clients) {
+      this.writeEvent(client, "threadPatch", payload);
+    }
+  }
+
+  broadcastButlerPatch(payload: ButlerLivePatchView): void {
+    this.deferSnapshots();
+    for (const client of this.clients) {
+      this.writeEvent(client, "butlerPatch", payload);
+    }
+  }
+
   broadcastToast(message: string, tone: "success" | "error" | "info" = "info", duration = 4000): void {
     const payload = {
       id: crypto.randomUUID(),
@@ -149,6 +177,9 @@ export class ButlerSseHub {
     if (this.broadcastTimer) {
       clearTimeout(this.broadcastTimer);
       this.broadcastTimer = null;
+    }
+    if (!force && this.snapshotsDeferred) {
+      return;
     }
 
     const shell = currentShellSnapshot(this.access);

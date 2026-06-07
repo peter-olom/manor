@@ -9,7 +9,7 @@ import type { CodexInputItem } from "./image-store.js";
 import { cleanupManagedWorktree, resolveExistingWorkspaceCwd } from "./repo-worktree.js";
 import { listFilesRecursive, listThreadSessionFiles, listThreadSnapshotFiles, normalizeTimestampMs } from "./codex-session-artifacts.js";
 import { ButlerStateStore } from "./state-store.js";
-import type { ModelOption, ReasoningEffort, RuntimeCleanupTaskView } from "./types.js";
+import type { CodexThreadPatchView, ModelOption, ReasoningEffort, RuntimeCleanupTaskView } from "./types.js";
 
 type JsonRpcMessage = {
   id?: number;
@@ -536,6 +536,19 @@ export class CodexAppServerClient extends EventEmitter {
         delta,
         streamingCommandExecMatch ? "commandExecution" : (streamingItemMatch?.[1] ?? "unknown")
       );
+      const item = this.store.getThread(params.threadId)?.turns.find((turn) => turn.id === params.turnId)?.items.find((entry) => entry.id === params.itemId);
+      if (item) {
+        this.emit("threadPatch", {
+          kind: "item-delta",
+          threadId: params.threadId,
+          turnId: params.turnId,
+          itemId: params.itemId,
+          itemType: item.type,
+          delta,
+          itemTextLength: item.text.length,
+          at: item.at
+        } satisfies CodexThreadPatchView);
+      }
       this.emit("change");
       return;
     }

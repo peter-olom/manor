@@ -104,6 +104,17 @@ export interface CodexWorkerReportView {
   updatedAt: number;
 }
 
+export interface CodexThreadPatchView {
+  kind: "item-delta";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  itemType: string;
+  delta: string;
+  itemTextLength: number;
+  at: number;
+}
+
 export type SupervisionChecklistItemStatus = "pending" | "accepted" | "rejected" | "waived";
 export type SupervisionChecklistEvidenceSource = "worker_report" | "butler_review";
 
@@ -778,6 +789,12 @@ export interface ButlerMessagePageView {
   endIndex: number;
   totalCount: number;
   hasMore: boolean;
+}
+
+export interface ButlerLivePatchView {
+  messages?: ButlerMessageView[];
+  messageCount: number;
+  activityTurns?: ButlerActivityTurnView[];
 }
 
 export interface CodexProjectSummaryView {
