@@ -15,6 +15,7 @@ test("preview annotation layer source includes expected toolbar controls and API
   assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /manor\.butler\.themePreference/);
   assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /attachShadow\(\{\s*mode:\s*"closed"/);
   assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /localStorage\?\.getItem\("manor\.butler\.themePreference"\)/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /<rect x="\$\{x\}%"/);
 });
 
 test("preview annotation layer source is self-contained for page evaluation", () => {

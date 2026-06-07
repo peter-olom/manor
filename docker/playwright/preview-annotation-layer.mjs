@@ -254,9 +254,9 @@ function installPreviewAnnotationLayerInPage() {
       const active = mark.id === state.activeId;
       nodes.push(`
         <g class="mark" data-id="${mark.id ?? ""}">
-          <rect x="${x}" y="${y}" width="${width}" height="${height}" fill="${mark.color}22" stroke="${mark.color}" stroke-width="${active ? 5 : 3}" rx="0.6" />
-          <circle cx="${badgeX}" cy="${badgeY}" r="12" fill="${mark.color}" vector-effect="non-scaling-stroke" />
-          <text class="badge-text" x="${badgeX}" y="${badgeY + 0.1}">${mark.number ?? ""}</text>
+          <rect x="${x}%" y="${y}%" width="${width}%" height="${height}%" fill="${mark.color}22" stroke="${mark.color}" stroke-width="${active ? 5 : 3}" rx="0.6" />
+          <circle cx="${badgeX}%" cy="${badgeY}%" r="12" fill="${mark.color}" vector-effect="non-scaling-stroke" />
+          <text class="badge-text" x="${badgeX}%" y="${badgeY + 0.1}%">${mark.number ?? ""}</text>
         </g>
       `);
     }
