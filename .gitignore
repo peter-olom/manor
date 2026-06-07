@@ -9,3 +9,5 @@ node_modules/
 artifacts/
 butler/dist/
 test-results/
+
+.worktrees/
