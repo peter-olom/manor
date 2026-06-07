@@ -13,6 +13,7 @@ import { FileReferenceStore, MAX_FILE_BYTES } from "./file-store.js";
 import { HostControllerClient } from "./host-controller-client.js";
 import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
+import { registerPreviewAnnotationRoutes } from "./preview-annotation-routes.js";
 import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-routes.js";
 import { buildCodexInputWithReferences, buildComposerInputItemsPrompt, buildReferencePromptText } from "./reference-inputs.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
@@ -27,7 +28,6 @@ import {
   resolvePreviewRefererRouteUrl,
   resolvePreviewRouteUrl
 } from "./preview-gateway.js";
-import { registerPreviewAnnotationRoutes } from "./preview-annotation-routes.js";
 import { reconcileDesktopSessions, registerDesktopSessionRoutes } from "./server-desktop-routes.js";
 import {
   ButlerSseHub,
