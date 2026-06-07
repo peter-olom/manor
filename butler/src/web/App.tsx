@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import manorLogoUrl from "./assets/manor-logo.svg";
 import manorLogoDarkUrl from "./assets/manor-logo-dark.svg";
-import { postJson } from "./api";
+import { getJson, postJson } from "./api";
 import { ButlerSurface } from "./ButlerSurface";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { ButlerTabIcon, CloseIcon, CopyIcon, ScratchPadTabIcon, SetupTabIcon, TerminalTabIcon, ThemeIcon, ThreadsIcon, TrashIcon } from "./icons";
@@ -13,11 +13,20 @@ import {
   useServerToastEvent,
   useTransportState
 } from "./live-state";
+import {
+  buildCompletionSoundSnapshot,
+  flashCompletionBrowserTab,
+  installCompletionSoundUnlock,
+  playCompletionNotificationSound,
+  shouldPlayCompletionNotificationSound,
+  type CompletionSoundSnapshot
+} from "./notification-sound";
 import { StatusItem } from "./StatusItem";
 import { ScratchPadPanel } from "./ScratchPadPanel";
 import { ThreadSurface } from "./ThreadSurface";
 import type {
   AppToast,
+  BrowserAnnotationBatch,
   ButlerThreadCallback,
   CodexThreadSummary,
   ComposerPrefill,
@@ -48,6 +57,62 @@ import {
   readWorkspaceQuery,
   resolveThemePreference
 } from "./utils";
+
+function formatPreviewAnnotationBatchLabel(batch: BrowserAnnotationBatch): string {
+  const title = batch.page.title.trim() || "Preview";
+  const count = batch.annotations.length;
+  return `${title} · ${count} mark${count === 1 ? "" : "s"}`;
+}
+
+function PreviewAnnotationCompanionToolbar({
+  batches,
+  selectedBatchId,
+  targetLabel,
+  busy,
+  onSelectedBatchChange,
+  onInsert,
+  onDismiss
+}: {
+  batches: BrowserAnnotationBatch[];
+  selectedBatchId: string;
+  targetLabel: string | null;
+  busy: boolean;
+  onSelectedBatchChange: (batchId: string) => void;
+  onInsert: () => void;
+  onDismiss: () => void;
+}) {
+  const selectedBatch = batches.find((batch) => batch.id === selectedBatchId) ?? batches[0] ?? null;
+
+  if (!selectedBatch) {
+    return null;
+  }
+
+  return (
+    <div className="preview-annotation-companion" role="region" aria-label="Queued preview annotations">
+      <div className="preview-annotation-companion-main">
+        <span className="preview-annotation-companion-dot" aria-hidden="true" />
+        <select value={selectedBatch.id} onChange={(event) => onSelectedBatchChange(event.target.value)} aria-label="Queued annotation batch">
+          {batches.map((batch) => (
+            <option key={batch.id} value={batch.id}>
+              {formatPreviewAnnotationBatchLabel(batch)}
+            </option>
+          ))}
+        </select>
+        <span className="preview-annotation-companion-meta">
+          Target: {targetLabel ?? "open Butler or a Codex job"}
+        </span>
+      </div>
+      <div className="preview-annotation-companion-actions">
+        <button type="button" onClick={onInsert} disabled={busy || !targetLabel}>
+          {busy ? "Inserting…" : "Insert here"}
+        </button>
+        <button type="button" className="preview-annotation-companion-dismiss" onClick={onDismiss} disabled={busy} aria-label="Dismiss queued annotation batch">
+          <CloseIcon />
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function isClosedPlaceholderThread(thread: CodexThreadSummary, callback: ButlerThreadCallback | null | undefined): boolean {
   return (
@@ -125,6 +190,9 @@ export function App() {
   const [threadsDrawerOpen, setThreadsDrawerOpen] = useState(false);
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
   const [composerPrefill, setComposerPrefill] = useState<ComposerPrefill | null>(null);
+  const [previewAnnotationBatches, setPreviewAnnotationBatches] = useState<BrowserAnnotationBatch[]>([]);
+  const [selectedPreviewAnnotationBatchId, setSelectedPreviewAnnotationBatchId] = useState<string>("");
+  const [previewAnnotationInsertBusy, setPreviewAnnotationInsertBusy] = useState(false);
   const [toast, setToast] = useState<AppToast | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
@@ -132,6 +200,7 @@ export function App() {
   const [copiedCommandKey, setCopiedCommandKey] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const copiedCommandTimerRef = useRef<number | null>(null);
+  const completionSoundSnapshotRef = useRef<CompletionSoundSnapshot | null>(null);
   const lastFocusedWindowIdRef = useRef<string | null>(null);
   const hasSeenFocusedWindowRef = useRef(false);
   const hasShownDisconnectToastRef = useRef(false);
@@ -151,6 +220,10 @@ export function App() {
         : null;
   const composerPrefillTargetLabel =
     composerPrefillTarget?.kind === "thread" ? "this thread" : composerPrefillTarget?.kind === "butler" ? "Butler" : null;
+  const activePreviewAnnotationBatch =
+    previewAnnotationBatches.find((batch) => batch.id === selectedPreviewAnnotationBatchId) ??
+    previewAnnotationBatches[0] ??
+    null;
   const threadSummaryById = useMemo(
     () => new Map((shell?.codex.threads ?? []).map((thread) => [thread.id, thread])),
     [shell?.codex.threads]
@@ -197,6 +270,59 @@ export function App() {
     return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
       ? crypto.randomUUID()
       : `composer-prefill-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  async function refreshPreviewAnnotationBatches(): Promise<void> {
+    const payload = await getJson<{ batches: BrowserAnnotationBatch[] }>("/api/preview-annotations/operator/batches");
+    setPreviewAnnotationBatches(payload.batches);
+    setSelectedPreviewAnnotationBatchId((current) =>
+      current && payload.batches.some((batch) => batch.id === current)
+        ? current
+        : payload.batches[0]?.id ?? ""
+    );
+  }
+
+  async function insertSelectedPreviewAnnotationBatch(): Promise<void> {
+    if (!activePreviewAnnotationBatch) {
+      return;
+    }
+    if (!composerPrefillTarget) {
+      showToast("Open Butler or a Codex job before inserting preview annotations.", "error", 3600);
+      return;
+    }
+
+    setPreviewAnnotationInsertBusy(true);
+    try {
+      await postJson(`/api/preview-annotations/operator/batches/${encodeURIComponent(activePreviewAnnotationBatch.id)}/insert`, {
+        target: composerPrefillTarget
+      });
+      await refreshPreviewAnnotationBatches();
+    } catch (error) {
+      showErrorToast(error);
+    } finally {
+      setPreviewAnnotationInsertBusy(false);
+    }
+  }
+
+  async function dismissSelectedPreviewAnnotationBatch(): Promise<void> {
+    if (!activePreviewAnnotationBatch) {
+      return;
+    }
+    setPreviewAnnotationInsertBusy(true);
+    try {
+      const response = await fetch(`/api/preview-annotations/operator/batches/${encodeURIComponent(activePreviewAnnotationBatch.id)}`, {
+        method: "DELETE"
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(payload?.error || `Request failed with ${response.status}`);
+      }
+      await refreshPreviewAnnotationBatches();
+    } catch (error) {
+      showErrorToast(error);
+    } finally {
+      setPreviewAnnotationInsertBusy(false);
+    }
   }
 
   async function writeClipboardText(value: string): Promise<void> {
@@ -246,6 +372,34 @@ export function App() {
       showErrorToast(error);
     }
   }
+
+  useEffect(() => {
+    const refresh = () => {
+      refreshPreviewAnnotationBatches().catch(() => undefined);
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 2500);
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
+    return installCompletionSoundUnlock();
+  }, []);
+
+  useEffect(() => {
+    if (!shell) {
+      return;
+    }
+
+    const nextSnapshot = buildCompletionSoundSnapshot(shell);
+    if (shouldPlayCompletionNotificationSound(completionSoundSnapshotRef.current, nextSnapshot)) {
+      playCompletionNotificationSound();
+      flashCompletionBrowserTab();
+    }
+    completionSoundSnapshotRef.current = nextSnapshot;
+  }, [shell]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -672,6 +826,21 @@ export function App() {
     ? activeThreadSummary.compaction.active ? "accent" : "neutral"
     : shell?.butler.compaction.active ? "accent" : "neutral";
 
+
+  useEffect(() => {
+    function handleServerComposerPrefill(event: Event) {
+      const payload = (event as CustomEvent<ComposerPrefill>).detail;
+      if (!payload || !payload.text || !payload.target) {
+        return;
+      }
+      setComposerPrefill(payload);
+      showToast(payload.target.kind === "thread" ? "Preview annotations added to the thread composer" : "Preview annotations added to Butler", "success", 2200);
+    }
+
+    window.addEventListener("manor:composer-prefill", handleServerComposerPrefill);
+    return () => window.removeEventListener("manor:composer-prefill", handleServerComposerPrefill);
+  }, [showToast]);
+
   function handleComposerPrefillConsumed(prefillId: string) {
     setComposerPrefill((current) => (current?.id === prefillId ? null : current));
   }
@@ -950,6 +1119,18 @@ export function App() {
           )}
         </section>
       </main>
+
+      {previewAnnotationBatches.length > 0 ? (
+        <PreviewAnnotationCompanionToolbar
+          batches={previewAnnotationBatches}
+          selectedBatchId={activePreviewAnnotationBatch?.id ?? ""}
+          targetLabel={composerPrefillTargetLabel}
+          busy={previewAnnotationInsertBusy}
+          onSelectedBatchChange={setSelectedPreviewAnnotationBatchId}
+          onInsert={() => void insertSelectedPreviewAnnotationBatch()}
+          onDismiss={() => void dismissSelectedPreviewAnnotationBatch()}
+        />
+      ) : null}
 
       <div className={`threads-backdrop ${threadsDrawerOpen ? "is-open" : ""}`} onClick={() => setThreadsDrawerOpen(false)} aria-hidden={threadsDrawerOpen ? "false" : "true"} />
       <aside className={`threads-drawer ${threadsDrawerOpen ? "is-open" : ""}`}>

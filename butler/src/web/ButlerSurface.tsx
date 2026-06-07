@@ -461,11 +461,13 @@ export function ButlerSurface({
       return;
     }
 
-    setButlerAttachments((current) =>
-      current.some((entry) => entry.id === composerPrefill.attachment.id) ? current : [...current, composerPrefill.attachment]
-    );
-    if (composerPrefill.attachment.mimeType.startsWith("image/")) {
-      mergeKnownImages([composerPrefill.attachment]);
+    if (composerPrefill.attachment) {
+      setButlerAttachments((current) =>
+        current.some((entry) => entry.id === composerPrefill.attachment!.id) ? current : [...current, composerPrefill.attachment!]
+      );
+      if (composerPrefill.attachment.mimeType.startsWith("image/")) {
+        mergeKnownImages([composerPrefill.attachment]);
+      }
     }
     setPendingButlerMessage(null);
     setButlerDraftPrefill({ id: composerPrefill.id, text: composerPrefill.text });
@@ -576,7 +578,7 @@ export function ButlerSurface({
   async function stopButlerRequest() {
     try {
       const result = await postJson<{ stopped?: boolean }>("/api/chat/stop", {});
-      setPendingButlerText(null);
+      setPendingButlerMessage(null);
       if (!result?.stopped) {
         showToast("No active Butler request to stop", "error", 2500);
       }
@@ -594,7 +596,7 @@ export function ButlerSurface({
       await postJson("/api/chat/clear", {});
       setHistory({ messages: [], loadedStart: 0, totalCount: 0 });
       setHideButlerActivityFrom(0);
-      setPendingButlerText(null);
+      setPendingButlerMessage(null);
       setFollowButler(true);
       showToast("Butler chat cleared");
     } catch (error) {
@@ -623,7 +625,7 @@ export function ButlerSurface({
           totalCount: Math.max(0, current.loadedStart + index)
         };
       });
-      setPendingButlerText(null);
+      setPendingButlerMessage(null);
       setFollowButler(true);
       showToast("Butler chat trimmed");
     } catch (error) {

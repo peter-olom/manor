@@ -21,6 +21,7 @@ export type RuntimeServerAccess = {
   codexClient: CodexAppServerClient;
   runtimeBroker: RuntimeBrokerClient;
   runtimeBrokerUrl: string;
+  previewAnnotationSecret: string;
   scratchPadStore: ScratchPadStore;
   serviceTemplateRegistry: ServiceTemplateRegistry;
   store: ButlerStateStore;
@@ -150,6 +151,17 @@ export class ButlerSseHub {
     this.deferSnapshots();
     for (const client of this.clients) {
       this.writeEvent(client, "butlerPatch", payload);
+    }
+  }
+
+  broadcastComposerPrefill(payload: {
+    id: string;
+    target: { kind: "butler" } | { kind: "thread"; threadId: string };
+    text: string;
+    attachment?: { id: string; name: string; mimeType: string; sizeBytes: number; createdAt: number; url: string };
+  }): void {
+    for (const client of this.clients) {
+      this.writeEvent(client, "composerPrefill", payload);
     }
   }
 

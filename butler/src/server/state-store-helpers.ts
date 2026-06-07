@@ -549,6 +549,70 @@ export function normalizePreviewVerification(
     };
   };
 
+
+  const normalizedAnnotations = verification.annotations
+    ? {
+        targets: Array.isArray(verification.annotations.targets)
+          ? verification.annotations.targets
+              .filter((entry) => entry && typeof entry === "object")
+              .map((entry) => ({
+                id: typeof entry.id === "string" ? entry.id.trim().slice(0, 120) : "",
+                label: typeof entry.label === "string" ? entry.label.trim().slice(0, 120) : ""
+              }))
+              .filter((entry) => entry.id && entry.label)
+          : [],
+        batches: Array.isArray(verification.annotations.batches)
+          ? verification.annotations.batches
+              .filter((batch) => batch && typeof batch === "object")
+              .map((batch) => ({
+                id: typeof batch.id === "string" && batch.id.trim() ? batch.id.trim().slice(0, 120) : crypto.randomUUID(),
+                at: typeof batch.at === "number" && Number.isFinite(batch.at) ? batch.at : checkedAt,
+                intent: batch.intent === "insert" ? "insert" as const : "batch" as const,
+                targetId: typeof batch.targetId === "string" ? batch.targetId.trim().slice(0, 160) : "butler",
+                page: {
+                  title: typeof batch.page?.title === "string" ? batch.page.title.slice(0, 200) : "",
+                  url: typeof batch.page?.url === "string" ? batch.page.url.slice(0, 2000) : ""
+                },
+                annotations: Array.isArray(batch.annotations)
+                  ? batch.annotations
+                      .filter((annotation) => annotation && typeof annotation === "object")
+                      .map((annotation, index) => ({
+                        id: typeof annotation.id === "string" && annotation.id.trim() ? annotation.id.trim().slice(0, 120) : `annotation-${index + 1}`,
+                        number: typeof annotation.number === "number" && Number.isFinite(annotation.number) ? Math.max(1, Math.trunc(annotation.number)) : index + 1,
+                        x: typeof annotation.x === "number" && Number.isFinite(annotation.x) ? Math.min(1, Math.max(0, annotation.x)) : 0,
+                        y: typeof annotation.y === "number" && Number.isFinite(annotation.y) ? Math.min(1, Math.max(0, annotation.y)) : 0,
+                        width: typeof annotation.width === "number" && Number.isFinite(annotation.width) ? Math.min(1, Math.max(0, annotation.width)) : 0,
+                        height: typeof annotation.height === "number" && Number.isFinite(annotation.height) ? Math.min(1, Math.max(0, annotation.height)) : 0,
+                        color: typeof annotation.color === "string" ? annotation.color.slice(0, 32) : "#ff6b2c",
+                        note: typeof annotation.note === "string" ? annotation.note.slice(0, 1000) : ""
+                      }))
+                      .filter((annotation) => annotation.width > 0 && annotation.height > 0)
+                  : []
+              }))
+              .filter((batch) => batch.annotations.length > 0)
+          : [],
+        insertions: Array.isArray(verification.annotations.insertions)
+          ? verification.annotations.insertions
+              .filter((entry) => entry && typeof entry === "object")
+              .map((entry) => ({
+                batchId: typeof entry.batchId === "string" ? entry.batchId.trim().slice(0, 120) : "",
+                at: typeof entry.at === "number" && Number.isFinite(entry.at) ? entry.at : checkedAt,
+                ok: entry.ok === true,
+                ...(typeof entry.error === "string" && entry.error.trim() ? { error: entry.error.trim().slice(0, 500) } : {}),
+                ...(entry.target && typeof entry.target === "object"
+                  ? {
+                      target: {
+                        id: typeof entry.target.id === "string" ? entry.target.id.trim().slice(0, 120) : "",
+                        label: typeof entry.target.label === "string" ? entry.target.label.trim().slice(0, 120) : ""
+                      }
+                    }
+                  : {})
+              }))
+              .filter((entry) => entry.batchId)
+          : []
+      }
+    : undefined;
+
   const normalizedDiagnostics = verification.diagnostics
     ? {
         stages: {
@@ -675,6 +739,8 @@ export function normalizePreviewVerification(
         ? verification.readiness.notes.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
         : []
     },
+    annotationBatchCount: normalizedAnnotations?.batches.length,
+    annotations: normalizedAnnotations,
     auth: {
       headerCount:
         typeof verification.auth?.headerCount === "number" && Number.isFinite(verification.auth.headerCount)

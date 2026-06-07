@@ -8,6 +8,7 @@ import type {
   CodexThreadDetail,
   CodexThreadPatch,
   ImageReference,
+  ComposerPrefill,
   RuntimeSnapshot,
   ServerToastEvent,
   ShellSnapshot,
@@ -596,6 +597,13 @@ function openEventSource(): void {
     }
     markTransportAlive();
     openThreadsStore.setSnapshot(applyThreadPatchSnapshot(openThreadsStore.getSnapshot(), parseEventData<CodexThreadPatch>(event)));
+  });
+  source.addEventListener("composerPrefill", (event) => {
+    if (!isCurrentAttempt()) {
+      return;
+    }
+    markTransportAlive();
+    window.dispatchEvent(new CustomEvent<ComposerPrefill>("manor:composer-prefill", { detail: parseEventData<ComposerPrefill>(event) }));
   });
   source.addEventListener("toast", (event) => {
     if (!isCurrentAttempt()) {

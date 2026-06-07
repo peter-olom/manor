@@ -272,6 +272,34 @@ export interface PreviewVerificationDiagnosticsView {
   remediationHints: string[];
 }
 
+export interface BrowserAnnotationRectView {
+  id: string;
+  number: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  note: string;
+  viewport?: {
+    width: number;
+    height: number;
+    scrollX: number;
+    scrollY: number;
+    documentWidth: number;
+    documentHeight: number;
+  } | null;
+}
+
+export interface BrowserAnnotationBatchView {
+  id: string;
+  at: number;
+  intent: "batch" | "insert";
+  targetId: string;
+  page: { title: string; url: string };
+  annotations: BrowserAnnotationRectView[];
+}
+
 export interface PreviewVerificationView {
   runId: string;
   mode: PreviewBrowserMode;
@@ -286,6 +314,12 @@ export interface PreviewVerificationView {
   summary: PreviewVerificationSummaryView;
   phases: PreviewVerificationPhaseView[];
   readiness: PreviewVerificationReadinessView;
+  annotationBatchCount?: number;
+  annotations?: {
+    targets: Array<{ id: string; label: string }>;
+    batches: BrowserAnnotationBatchView[];
+    insertions: Array<{ batchId: string; at: number; ok: boolean; error?: string; target?: { id: string; label: string } }>;
+  };
   auth: PreviewVerificationAuthView;
   diagnostics?: PreviewVerificationDiagnosticsView;
   artifacts: PreviewVerificationArtifactView[];

@@ -302,11 +302,13 @@ export function ThreadSurface({
     }
 
     lastAppliedPrefillIdRef.current = composerPrefill.id;
-    setThreadAttachments((current) =>
-      current.some((entry) => entry.id === composerPrefill.attachment.id) ? current : [...current, composerPrefill.attachment]
-    );
-    if (composerPrefill.attachment.mimeType.startsWith("image/")) {
-      mergeKnownImages([composerPrefill.attachment]);
+    if (composerPrefill.attachment) {
+      setThreadAttachments((current) =>
+        current.some((entry) => entry.id === composerPrefill.attachment!.id) ? current : [...current, composerPrefill.attachment!]
+      );
+      if (composerPrefill.attachment.mimeType.startsWith("image/")) {
+        mergeKnownImages([composerPrefill.attachment]);
+      }
     }
     setThreadDraft((current) => appendComposerText(current, composerPrefill.text));
     setFollowRun(true);

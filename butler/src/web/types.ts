@@ -239,7 +239,36 @@ export type ComposerPrefill = {
   id: string;
   target: ComposerPrefillTarget;
   text: string;
-  attachment: FileReference;
+  attachment?: FileReference;
+};
+
+export type BrowserAnnotationRect = {
+  id: string;
+  number: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  note: string;
+  viewport?: {
+    width: number;
+    height: number;
+    scrollX: number;
+    scrollY: number;
+    documentWidth: number;
+    documentHeight: number;
+  } | null;
+};
+
+export type BrowserAnnotationBatch = {
+  id: string;
+  at: number;
+  intent: "batch" | "insert";
+  leaseId: string;
+  targetId: string;
+  page: { title: string; url: string };
+  annotations: BrowserAnnotationRect[];
 };
 
 export type PreviewVerificationArtifact = {
@@ -309,6 +338,12 @@ export type PreviewVerification = {
     sameOriginAssetFailureCount: number;
     websocketFailureCount: number;
     notes: string[];
+  };
+  annotationBatchCount?: number;
+  annotations?: {
+    targets: Array<{ id: string; label: string }>;
+    batches: BrowserAnnotationBatch[];
+    insertions: Array<{ batchId: string; at: number; ok: boolean; error?: string; target?: { id: string; label: string } }>;
   };
   auth: {
     headerCount: number;

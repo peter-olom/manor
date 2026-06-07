@@ -27,6 +27,7 @@ import {
   resolvePreviewRefererRouteUrl,
   resolvePreviewRouteUrl
 } from "./preview-gateway.js";
+import { registerPreviewAnnotationRoutes } from "./preview-annotation-routes.js";
 import { reconcileDesktopSessions, registerDesktopSessionRoutes } from "./server-desktop-routes.js";
 import {
   ButlerSseHub,
@@ -73,6 +74,7 @@ const fileReferenceDir = process.env.MANOR_FILE_REFERENCE_DIR ?? path.join(artif
 const jsonBodyLimit = process.env.MANOR_UPLOAD_JSON_LIMIT ?? "64mb";
 const imageUploadBinaryLimit = process.env.MANOR_IMAGE_UPLOAD_BINARY_LIMIT ?? `${Math.ceil(MAX_IMAGE_BYTES / (1024 * 1024))}mb`;
 const fileUploadBinaryLimit = process.env.MANOR_FILE_UPLOAD_BINARY_LIMIT ?? `${Math.ceil(MAX_FILE_BYTES / (1024 * 1024))}mb`;
+const previewAnnotationSecret = crypto.randomBytes(32).toString("hex");
 
 const uiStatePath = path.join(stateDir, "butler-ui.json");
 const scratchPadStatePath = path.join(stateDir, "scratch-pad.json");
@@ -155,6 +157,7 @@ runtimeAccess = {
   codexClient,
   runtimeBroker,
   runtimeBrokerUrl,
+  previewAnnotationSecret,
   scratchPadStore,
   serviceTemplateRegistry,
   store
@@ -174,7 +177,7 @@ const previewProxy = httpProxy.createProxyServer({
   selfHandleResponse: true,
   ws: true
 });
-registerPreviewProxyResponseRewriter(previewProxy);
+registerPreviewProxyResponseRewriter(previewProxy, runtimeAccess);
 
 let viteDevServer: import("vite").ViteDevServer | null = null;
 const imageUploadBinaryParser = express.raw({
@@ -316,6 +319,15 @@ registerScratchPadRoutes({
   butlerAgent,
   imageStore,
   fileStore
+});
+registerPreviewAnnotationRoutes({
+  app,
+  imageStore,
+  previewAnnotationSecret,
+  runtimeBroker,
+  runtimeBrokerToken,
+  sseHub,
+  store
 });
 
 app.get("/api/memory/jobs/:threadId", (request, response) => {
@@ -468,6 +480,8 @@ app.get("/api/events", (request, response) => {
   response.on("close", cleanup);
   response.on("error", cleanup);
 });
+
+
 
 app.post("/api/chat/messages", async (request, response) => {
   const text = typeof request.body?.text === "string" ? request.body.text : "";
