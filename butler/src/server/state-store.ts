@@ -718,6 +718,7 @@ export class ButlerStateStore extends EventEmitter {
   enqueueRuntimeCleanupTask(input: {
     threadId: string;
     cwd: string | null;
+    threadCreatedAt?: number | null;
     notifyOnError?: boolean;
     stacks: RuntimeCleanupTaskView["stacks"];
     previews: RuntimeCleanupTaskView["previews"];

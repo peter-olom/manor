@@ -616,7 +616,14 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     access.runtimeCleanupTasks.clear();
     for (const task of Array.isArray(data.runtimeCleanupTasks) ? data.runtimeCleanupTasks : []) {
       if (task && typeof task === "object" && typeof task.id === "string" && typeof task.threadId === "string") {
-        access.runtimeCleanupTasks.set(task.id, task as RuntimeCleanupTaskView);
+        const cleanupTask = task as RuntimeCleanupTaskView;
+        access.runtimeCleanupTasks.set(cleanupTask.id, {
+          ...cleanupTask,
+          threadCreatedAt:
+            typeof cleanupTask.threadCreatedAt === "number" && Number.isFinite(cleanupTask.threadCreatedAt)
+              ? cleanupTask.threadCreatedAt
+              : null
+        });
       }
     }
     access.persistedSupervisionByThreadId.clear();
