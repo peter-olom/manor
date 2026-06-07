@@ -153,6 +153,12 @@ export class ButlerSseHub {
     }
   }
 
+  broadcastComposerPrefill(payload: { id: string; target: { kind: "butler" } | { kind: "thread"; threadId: string }; text: string }): void {
+    for (const client of this.clients) {
+      this.writeEvent(client, "composerPrefill", payload);
+    }
+  }
+
   broadcastToast(message: string, tone: "success" | "error" | "info" = "info", duration = 4000): void {
     const payload = {
       id: crypto.randomUUID(),

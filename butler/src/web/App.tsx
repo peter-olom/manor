@@ -668,6 +668,21 @@ export function App() {
     ? activeThreadSummary.compaction.active ? "accent" : "neutral"
     : shell?.butler.compaction.active ? "accent" : "neutral";
 
+
+  useEffect(() => {
+    function handleServerComposerPrefill(event: Event) {
+      const payload = (event as CustomEvent<ComposerPrefill>).detail;
+      if (!payload || !payload.text || !payload.target) {
+        return;
+      }
+      setComposerPrefill(payload);
+      showToast(payload.target.kind === "thread" ? "Preview annotations added to the thread composer" : "Preview annotations added to Butler", "success", 2200);
+    }
+
+    window.addEventListener("manor:composer-prefill", handleServerComposerPrefill);
+    return () => window.removeEventListener("manor:composer-prefill", handleServerComposerPrefill);
+  }, [showToast]);
+
   function handleComposerPrefillConsumed(prefillId: string) {
     setComposerPrefill((current) => (current?.id === prefillId ? null : current));
   }

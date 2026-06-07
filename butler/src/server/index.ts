@@ -469,6 +469,46 @@ app.get("/api/events", (request, response) => {
   response.on("error", cleanup);
 });
 
+
+function normalizeInternalAnnotationPrefillTarget(input: unknown): { kind: "butler" } | { kind: "thread"; threadId: string } | null {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+  const id = typeof (input as { id?: unknown }).id === "string" ? (input as { id: string }).id.trim() : "";
+  if (id === "butler") {
+    return { kind: "butler" };
+  }
+  if (id.startsWith("thread:")) {
+    const threadId = id.slice("thread:".length).trim();
+    return threadId ? { kind: "thread", threadId } : null;
+  }
+  return null;
+}
+
+app.post("/api/internal/browser-annotations/insert", (request, response) => {
+  if (!runtimeBrokerToken || request.header("x-manor-broker-token") !== runtimeBrokerToken) {
+    response.status(403).json({ error: "Forbidden" });
+    return;
+  }
+  const target = normalizeInternalAnnotationPrefillTarget(request.body?.target);
+  const text = typeof request.body?.text === "string" ? request.body.text.trim() : "";
+  if (!target || !text) {
+    response.status(400).json({ error: "target and text are required" });
+    return;
+  }
+  if (target.kind === "thread" && !store.getThread(target.threadId)) {
+    response.status(404).json({ error: "Thread not found" });
+    return;
+  }
+  sseHub.broadcastComposerPrefill({
+    id: crypto.randomUUID(),
+    target,
+    text
+  });
+  sseHub.broadcastToast("Preview annotations inserted into the composer.", "success", 2200);
+  response.json({ ok: true });
+});
+
 app.post("/api/chat/messages", async (request, response) => {
   const text = typeof request.body?.text === "string" ? request.body.text : "";
   const imageReferenceIds = readImageReferenceIds(request.body);

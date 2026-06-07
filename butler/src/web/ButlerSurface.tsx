@@ -461,11 +461,13 @@ export function ButlerSurface({
       return;
     }
 
-    setButlerAttachments((current) =>
-      current.some((entry) => entry.id === composerPrefill.attachment.id) ? current : [...current, composerPrefill.attachment]
-    );
-    if (composerPrefill.attachment.mimeType.startsWith("image/")) {
-      mergeKnownImages([composerPrefill.attachment]);
+    if (composerPrefill.attachment) {
+      setButlerAttachments((current) =>
+        current.some((entry) => entry.id === composerPrefill.attachment!.id) ? current : [...current, composerPrefill.attachment!]
+      );
+      if (composerPrefill.attachment.mimeType.startsWith("image/")) {
+        mergeKnownImages([composerPrefill.attachment]);
+      }
     }
     setPendingButlerMessage(null);
     setButlerDraftPrefill({ id: composerPrefill.id, text: composerPrefill.text });
