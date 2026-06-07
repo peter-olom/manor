@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -59,6 +59,44 @@ test("harness file proof records a durable file artifact", async () => {
   assert.equal(proof.verification.artifacts[0]?.label, "Result export");
   assert.equal(proof.verification.artifacts[0]?.contentType, "application/json");
   await stat(proof.verification.artifacts[0]!.filePath);
+});
+
+test("harness text proof stores simple notes without writing side files into /repos workspaces", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-text-proof-"));
+  const reposDir = path.join(dir, "repos");
+  const artifactsDir = path.join(dir, "artifacts");
+  await writeFile(path.join(dir, "placeholder"), "", "utf8");
+  await mkdir(reposDir);
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+
+  const result = await handleHarnessProofAction({
+    action: "proof.text",
+    params: {
+      title: "Feature inspection",
+      label: "feature-inspection",
+      text: "Read-only inspection summary."
+    },
+    capability: { threadId: "thread-1", cwd: reposDir } as never,
+    thread: { id: "thread-1" } as never,
+    store,
+    artifactsDir,
+    resolveWorkspaceProject: () => ({ id: "shared", label: "Shared workspace" })
+  });
+
+  assert.ok(result);
+  assert.deepEqual(await readdir(reposDir), []);
+
+  const proof = store.getLatestPreviewProofForThread("thread-1");
+  assert.ok(proof);
+  assert.equal(proof.previewTitle, "Feature inspection");
+  const artifact = proof.verification.artifacts[0];
+  assert.equal(artifact?.kind, "file");
+  assert.equal(artifact?.label, "feature-inspection");
+  assert.equal(artifact?.fileName, "feature-inspection.txt");
+  assert.equal(artifact?.contentType, "text/plain; charset=utf-8");
+  assert.equal(artifact?.sizeBytes, Buffer.byteLength("Read-only inspection summary.", "utf8"));
+  assert.equal(path.dirname(artifact!.filePath).startsWith(path.resolve(artifactsDir)), true);
+  await stat(artifact!.filePath);
 });
 
 test("proof artifact inspector extracts Office text and archive listings", async () => {

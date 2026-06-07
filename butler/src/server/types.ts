@@ -460,6 +460,7 @@ export interface RuntimeCleanupTaskView {
     runtimeKind: "container" | "embedded";
     status: ServiceLeaseStatus;
   }>;
+  proofArtifactPaths?: string[];
 }
 
 export interface DesktopSessionView {
