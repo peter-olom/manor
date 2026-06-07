@@ -867,6 +867,17 @@ export interface ButlerOnboardingView {
   steps: OnboardingStepView[];
 }
 
+export interface ManorRestartRequestView {
+  id: string;
+  targetCommit: string | null;
+  targetTag: string | null;
+  reason: string | null;
+  details: string | null;
+  requestedAt: number;
+  status: "pending" | "authorized" | "dismissed";
+  authorizedAt: number | null;
+}
+
 export interface AppSnapshot {
   codex: {
     connected: boolean;
@@ -900,6 +911,7 @@ export interface AppSnapshot {
       supervisor: ButlerSupervisorSummaryView;
       callbacks: ButlerThreadCallbackView[];
     };
+    pendingManorRestartRequest: ManorRestartRequestView | null;
     scratchPad: ScratchPadView;
     latestPreviewProofsByThreadId: Record<string, PreviewProofRecordView>;
     previewProofsByThreadId: Record<string, PreviewProofRecordView[]>;

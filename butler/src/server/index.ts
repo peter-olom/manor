@@ -19,6 +19,7 @@ import { registerScratchPadRoutes } from "./scratch-pad-routes.js";
 import { ScratchPadStore } from "./scratch-pad-store.js";
 import { registerServerAssetRoutes } from "./server-asset-routes.js";
 import { retrieveButlerMemory } from "./memory-retrieval.js";
+import { registerManorRestartRoutes } from "./manor-restart-routes.js";
 import {
   proxyPreviewRoute,
   registerPreviewProxyResponseRewriter,
@@ -516,6 +517,8 @@ app.post("/api/chat/settings", async (request, response) => {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
 });
+
+registerManorRestartRoutes(app, butlerAgent);
 
 app.post("/api/chat/clear", async (_request, response) => {
   try {

@@ -20,6 +20,7 @@ import type {
   ButlerThinkingLevel,
   ButlerToolUiEffect,
   CodexThreadExecutionContractView,
+  ManorRestartRequestView,
   PreviewVerificationView
 } from "./types.js";
 import type { CodexAppServerClient } from "./codex-client.js";
@@ -133,6 +134,12 @@ export type ButlerAgentToolAccess = {
   ): Promise<ProofScreenshotReview>;
   getThreadBudgetLimitMessage(threadId: string): string | null;
   getOperatorCloseoutBlocker(threadId: string): string | null;
+  requestManorRestartAuthorization(input: {
+    targetCommit?: unknown;
+    targetTag?: unknown;
+    reason?: unknown;
+    details?: unknown;
+  }): ManorRestartRequestView;
   buildSupervisionSmokeTask(totalFollowUps: number): string;
   buildDelegationDeveloperInstructions(workspace: { cwd: string; branchName: string | null }, task: string): Promise<string>;
   getActiveOperatorThreadGuard(): ButlerOperatorThreadGuard | null;
@@ -179,6 +186,7 @@ export type ButlerAgentSessionAccess = {
   sessionDir: string;
   operatorMessages: ButlerMessageView[];
   pendingChatCallbacks: Map<string, ButlerThreadCallbackView>;
+  pendingManorRestartRequest: ManorRestartRequestView | null;
   onboarding: ButlerOnboardingView;
   toolCatalog: ButlerToolView[];
   unsubscribeSession: (() => void) | null;

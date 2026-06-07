@@ -3978,6 +3978,73 @@ select {
   line-height: 1.5;
 }
 
+.manor-restart-backdrop {
+  background: color-mix(in srgb, var(--bg) 68%, transparent);
+}
+
+.manor-restart-dialog {
+  width: min(520px, 100%);
+  gap: 16px;
+}
+
+.manor-restart-head {
+  align-items: flex-start;
+}
+
+.manor-restart-kicker {
+  margin: 0 0 5px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--danger-ink);
+}
+
+.manor-restart-copy {
+  color: var(--ink);
+}
+
+.manor-restart-details {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  border: 1px solid var(--line);
+  background: var(--line);
+}
+
+.manor-restart-details div {
+  display: grid;
+  grid-template-columns: minmax(112px, 0.42fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--surface);
+}
+
+.manor-restart-details dt {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.manor-restart-details dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+.manor-restart-note {
+  margin: 0;
+  padding: 10px 12px;
+  color: var(--danger-ink);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-line);
+  line-height: 1.45;
+}
+
+.manor-restart-authorize {
+  border-color: var(--danger-line);
+  background: var(--danger-bg);
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;

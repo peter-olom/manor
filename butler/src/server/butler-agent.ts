@@ -59,6 +59,7 @@ import {
 } from "./butler-agent-session.js";
 import { clearButlerSessionChat, deleteButlerSessionChatFrom, keepOperatorMessagesBefore } from "./butler-agent-chat-hygiene.js";
 import { buildButlerServiceTools } from "./butler-agent-service-tools.js";
+import { buildButlerManorTools } from "./butler-agent-manor-tools.js";
 import { buildButlerProjectTools } from "./butler-agent-project-tools.js";
 import { buildButlerDelegationTools, buildButlerStackPreviewTools } from "./butler-agent-stack-preview-tools.js";
 import { reviewButlerProofScreenshot } from "./butler-agent-proof-review.js";
@@ -69,6 +70,7 @@ import { applyPostedCloseout, getOperatorCloseoutBlocker as getCloseoutBlocker, 
 import { upsertOperatorMessage } from "./butler-operator-messages.js";
 import { readButlerAuthStatus, readCodexAuthStatus } from "./auth-status.js";
 import { notifyDirectCodexMessage, type DirectCodexMessageAccess, type DirectCodexMessagePingInput } from "./direct-codex-message.js";
+import { authorizeManorRestartRequest as authorizePendingManorRestartRequest, createManorRestartRequest, requirePendingManorRestartRequest } from "./manor-restart-authorization.js";
 import { type FileReferenceStore } from "./file-store.js";
 import { buildOnboardingView } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
@@ -156,6 +158,7 @@ export class ButlerAgentService extends EventEmitter {
   private statusRefreshTimer: NodeJS.Timeout | null = null;
   private readonly operatorMessages: ButlerMessageView[] = [];
   private readonly pendingChatCallbacks = new Map<string, PendingChatCallback>();
+  private pendingManorRestartRequest: AppSnapshot["butler"]["pendingManorRestartRequest"] = null;
   private readonly deliveredCloseoutIds = new Set<string>();
   private readonly supervisionSmokePlans = new Map<string, SupervisionSmokePlan>();
   private readonly actedSmokeMilestoneIds = new Set<string>();
@@ -803,9 +806,11 @@ export class ButlerAgentService extends EventEmitter {
     return `Butler has reached the supervision limit for job ${threadId}. Used ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns} Butler turns. Raise the limit on that thread before asking Butler to steer it again.`;
   }
 
-  private getOperatorCloseoutBlocker(threadId: string): string | null {
-    return getCloseoutBlocker(this.store, threadId);
-  }
+  private getOperatorCloseoutBlocker(threadId: string): string | null { return getCloseoutBlocker(this.store, threadId); }
+
+  requestManorRestartAuthorization(input: { targetCommit?: unknown; targetTag?: unknown; reason?: unknown; details?: unknown }): NonNullable<AppSnapshot["butler"]["pendingManorRestartRequest"]> { this.pendingManorRestartRequest = createManorRestartRequest(input); this.emit("change"); return this.pendingManorRestartRequest; }
+  authorizeManorRestartRequest(requestId: string): NonNullable<AppSnapshot["butler"]["pendingManorRestartRequest"]> { const authorizedRequest = authorizePendingManorRestartRequest(this.pendingManorRestartRequest, requestId); this.pendingManorRestartRequest = null; this.emit("change"); return authorizedRequest; }
+  dismissManorRestartRequest(requestId: string): void { requirePendingManorRestartRequest(this.pendingManorRestartRequest, requestId, "dismissal"); this.pendingManorRestartRequest = null; this.emit("change"); }
 
   private async buildDelegationDeveloperInstructions(
     workspace: { cwd: string; branchName: string | null },
@@ -1442,7 +1447,7 @@ export class ButlerAgentService extends EventEmitter {
 
   private buildCustomTools() {
     const toolAccess = this.getToolAccess();
-    return [...buildButlerStackPreviewTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerCodexTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
+    return [...buildButlerStackPreviewTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerManorTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerCodexTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
   }
 
   private async createOrRefreshSession(): Promise<void> { await createOrRefreshButlerSession(this.getSessionAccess()); }

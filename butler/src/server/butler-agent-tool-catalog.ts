@@ -152,6 +152,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "refreshThreads", description: "Lets Butler actively diagnose or fix one preview isolate." }]
   },
   {
+    name: "request_manor_restart",
+    label: "Request Manor restart",
+    description: "Open an operator-facing Manor restart or update authorization dialog without directly mutating the live stack.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while handling high-risk Manor restart authorization." }]
+  },
+  {
     name: "list_service_templates",
     label: "List service templates",
     description: "List the registered Manor service templates Butler can provision for app stacks.",

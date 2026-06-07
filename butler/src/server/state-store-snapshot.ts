@@ -86,6 +86,7 @@ export function buildStateStoreSnapshot(
     contextUsage: AppSnapshot["butler"]["contextUsage"];
     compaction: AppSnapshot["butler"]["compaction"];
     supervision: AppSnapshot["butler"]["supervision"];
+    pendingManorRestartRequest: AppSnapshot["butler"]["pendingManorRestartRequest"];
     scratchPad: AppSnapshot["butler"]["scratchPad"];
     stacks: AppSnapshot["butler"]["stacks"];
     previews: AppSnapshot["butler"]["previews"];
