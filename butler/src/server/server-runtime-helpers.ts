@@ -292,14 +292,14 @@ async function resolveRequestedStack(
   access: RuntimeServerAccess,
   stackSelector: string | null,
   threadId: string | null
-): Promise<{ id: string; threadId: string | null; worktreePath: string | null; title: string; storageMode: StackStorageMode } | null> {
+): Promise<{ id: string; threadId: string | null; worktreePath: string | null; title: string; storageMode: StackStorageMode; pinned?: boolean } | null> {
   if (!stackSelector) {
     return null;
   }
 
   const visibleStacks = access.store
     .listStackLeases()
-    .filter((stack) => !threadId || stack.threadId === threadId || !stack.threadId);
+    .filter((stack) => !threadId || stack.threadId === threadId || !stack.threadId || stack.pinned);
   const storedMatch = matchStackSelector(visibleStacks, stackSelector);
   if (storedMatch) {
     return storedMatch;
@@ -322,7 +322,7 @@ export async function validateRequestedStack(access: RuntimeServerAccess, stackI
     return null;
   }
 
-  if (threadId && stack.threadId && stack.threadId !== threadId) {
+  if (threadId && stack.threadId && stack.threadId !== threadId && !stack.pinned) {
     throw new Error(`Stack ${stack.id} belongs to a different job`);
   }
 

@@ -1181,7 +1181,7 @@ export class ButlerAgentService extends EventEmitter {
 
     const threadStacks = this.store
       .listStackLeases()
-      .filter((stack) => stack.status !== "stopped" && (!threadId || stack.threadId === threadId || !stack.threadId));
+      .filter((stack) => stack.status !== "stopped" && (!threadId || stack.threadId === threadId || !stack.threadId || stack.pinned));
     const stack =
       threadStacks.find((entry) => entry.id === stackId) ??
       (threadStacks.filter((entry) => entry.title === stackId).length === 1
@@ -1196,7 +1196,7 @@ export class ButlerAgentService extends EventEmitter {
       throw new Error(`Unknown stack: ${stackId}`);
     }
 
-    if (threadId && stack.threadId && stack.threadId !== threadId) {
+    if (threadId && stack.threadId && stack.threadId !== threadId && !stack.pinned) {
       throw new Error(`Stack ${stackId} belongs to a different job`);
     }
 
@@ -1210,7 +1210,7 @@ export class ButlerAgentService extends EventEmitter {
 
     const threadPreviews = this.store
       .listPreviewLeases()
-      .filter((preview) => preview.status !== "stopped" && (!threadId || preview.threadId === threadId || !preview.threadId));
+      .filter((preview) => preview.status !== "stopped" && (!threadId || preview.threadId === threadId || !preview.threadId || preview.pinned));
     const directIdMatch = threadPreviews.find((entry) => entry.id === previewSelector);
     if (directIdMatch) {
       return directIdMatch;

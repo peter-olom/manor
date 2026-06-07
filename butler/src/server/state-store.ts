@@ -61,7 +61,7 @@ import {
   updateChecklistHeartbeat
 } from "./supervision-checklist.js";
 import { getStateStoreJobMemory, getStateStoreProjectMemory, listStateStoreJobMemories, listStateStorePendingPromotionCandidates, listStateStoreProjectMemories, recordStateStoreJobCheckpoint, recordStateStoreJobDecision, recordStateStoreJobNote, resolveStateStorePromotionCandidate, submitStateStorePromotionCandidate, syncStateStoreThreadJobMemory } from "./state-store-memory.js";
-import { completeStateStoreRuntimeCleanupTask, enqueueStateStoreRuntimeCleanupTask, failStateStoreRuntimeCleanupTask, listStateStoreDueRuntimeCleanupTasks, listStateStoreExpiredLeaseIds, noteStateStorePreviewLeaseActivity, noteStateStoreServiceLeaseActivity, noteStateStoreStackLeaseActivity, noteStateStoreThreadLeaseActivity, setStateStorePreviewLeasePinned, setStateStoreServiceLeasePinned, setStateStoreStackLeasePinned } from "./state-store-runtime.js";
+import { completeStateStoreRuntimeCleanupTask, enqueueStateStoreRuntimeCleanupTask, failStateStoreRuntimeCleanupTask, listStateStoreDueRuntimeCleanupTasks, listStateStoreExpiredLeaseIds, noteStateStorePreviewLeaseActivity, noteStateStoreServiceLeaseActivity, noteStateStoreStackLeaseActivity, noteStateStoreThreadLeaseActivity, setStateStorePreviewLeaseLifecycle, setStateStorePreviewLeasePinned, setStateStoreServiceLeasePinned, setStateStoreStackLeaseLifecycle, setStateStoreStackLeasePinned } from "./state-store-runtime.js";
 import { findStateStoreProjectArtifactById, getStateStoreProjectArtifact, getStateStoreProjectPolicy, listStateStoreProjectArtifacts, listStateStoreProjectPolicies, pruneMissingStateStoreProjectArtifacts, removeStateStoreProjectArtifact, searchStateStoreProjectArtifacts, upsertStateStoreProjectArtifact, upsertStateStoreProjectPolicy } from "./state-store-project-assets.js";
 import { recordStateStoreButlerMemory } from "./state-store-butler-memory.js";
 import { listStateStoreDesktopSessions, removeStateStoreDesktopSession, replaceStateStoreDesktopSessions, upsertStateStoreDesktopSession } from "./state-store-desktop.js";
@@ -698,8 +698,22 @@ export class ButlerStateStore extends EventEmitter {
     return setStateStoreStackLeasePinned(this.getInternalAccess(), leaseId, pinned);
   }
 
+  setStackLeaseLifecycle(
+    leaseId: string,
+    patch: { pinned?: boolean; leaseTtlMs?: number | null; refresh?: boolean }
+  ): StackLeaseView | null {
+    return setStateStoreStackLeaseLifecycle(this.getInternalAccess(), leaseId, patch);
+  }
+
   setPreviewLeasePinned(leaseId: string, pinned: boolean): PreviewLeaseView | null {
     return setStateStorePreviewLeasePinned(this.getInternalAccess(), leaseId, pinned);
+  }
+
+  setPreviewLeaseLifecycle(
+    leaseId: string,
+    patch: { pinned?: boolean; leaseTtlMs?: number | null; refresh?: boolean }
+  ): PreviewLeaseView | null {
+    return setStateStorePreviewLeaseLifecycle(this.getInternalAccess(), leaseId, patch);
   }
 
   setServiceLeasePinned(leaseId: string, pinned: boolean): ServiceLeaseView | null {

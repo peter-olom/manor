@@ -26,6 +26,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "refreshThreads", description: "Refreshes one stack lease before Butler acts on it." }]
   },
   {
+    name: "set_stack_lease",
+    label: "Set stack lease",
+    description: "Update stack lease lifecycle, including sticky reuse and cleanup TTL.",
+    uiEffects: [{ kind: "refreshThreads", description: "Refreshes stack lease retention state." }]
+  },
+  {
     name: "promote_stack",
     label: "Promote stack",
     description: "Copy a stack's retained volumes into another storage namespace.",
@@ -60,6 +66,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     label: "Inspect preview",
     description: "Inspect one preview runtime, including its current runtime state and egress configuration.",
     uiEffects: [{ kind: "refreshThreads", description: "Refreshes one preview lease before Butler acts on it." }]
+  },
+  {
+    name: "set_preview_lease",
+    label: "Set preview lease",
+    description: "Update preview lease lifecycle, including sticky reuse and cleanup TTL.",
+    uiEffects: [{ kind: "refreshThreads", description: "Refreshes preview lease retention state." }]
   },
   {
     name: "start_preview_browser_session",

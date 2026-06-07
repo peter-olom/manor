@@ -165,6 +165,7 @@ The default job shape is:
 - one job maps to one Codex thread
 - one repo task should use one dedicated worktree
 - one job may own one isolated stack lease
+- sticky stack and preview leases can be reused by later jobs when warm runtime state is intentional
 - previews and disposable services attach to that stack when needed
 
 ## Execution Rule
@@ -173,8 +174,8 @@ Manor keeps repository work and runtime work separate on purpose.
 
 - do repository, git, and edit work in the warm Codex worker
 - do package installs, app startup, builds, and browser checks in previews
-- use shared previews when runtime changes should persist in the mounted worktree
-- use snapshot previews for disposable smoke runs that should not mutate the source worktree
+- use snapshot previews for app startup, builds, and disposable smoke runs
+- use sticky stack or preview leases when the operator wants a warm reusable runtime across jobs
 - use the optional desktop proof sidecar only when native headed app verification is needed
 - treat worker-side package installation as an exception, not the default path
 
@@ -218,6 +219,7 @@ Preview runtimes are disposable containers started by the runtime broker.
 Current preview behavior:
 
 - every preview gets a lease
+- sticky preview leases can stay warm for later jobs
 - Butler exposes a stable private route for each lease
 - raw host port publishing is not the default path
 - previews are heartbeat-gated during startup
@@ -234,6 +236,7 @@ Each stack gives a job:
 - one private Docker network
 - grouped lifecycle for previews and disposable services
 - stack-level cleanup
+- optional sticky retention for reuse by later jobs
 - optional retained volumes for stateful work
 
 This is the path Manor uses for Docker-heavy projects that need multiple cooperating app and infra containers.
@@ -300,8 +303,8 @@ Workers interact with attached runtimes through `manor-harness`.
 That surface currently supports:
 
 - job context and runtime inventory
-- stack start, inspect, promote, and stop
-- preview start, inspect, logs, processes, exec, verify, and stop
+- stack start, inspect, lease update, promote, and stop
+- preview start, inspect, lease update, logs, processes, exec, verify, and stop
 - desktop status, list, start, current-screen, action, and stop
 - service template listing and registration
 - service start, inspect, logs, processes, exec, and stop
