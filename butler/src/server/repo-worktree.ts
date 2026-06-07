@@ -7,6 +7,14 @@ import { promises as fs } from "node:fs";
 const execFileAsync = promisify(execFile);
 const MANAGED_WORKTREE_ROOT = "/repos/.manor-worktrees";
 const SHARED_WORKSPACE_ROOT = "/repos";
+const DEFAULT_CODEX_WORKER_UID = 1001;
+const DEFAULT_CODEX_WORKER_GID = 1001;
+
+export interface WorkerOwnership {
+  uid: number;
+  gid: number;
+  label: string;
+}
 
 export type WorkstreamGroupKind = "project" | "workspace";
 
@@ -66,12 +74,79 @@ function normalizeTaskText(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+function parseWorkerId(value: string | undefined, fallback: number, name: string): number {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return fallback;
+  }
+
+  const parsed = Number(normalized);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${name} must be a non-negative integer, got ${JSON.stringify(value)}`);
+  }
+  return parsed;
+}
+
+export function resolveCodexWorkerOwnership(env: NodeJS.ProcessEnv = process.env): WorkerOwnership {
+  const uid = parseWorkerId(env.MANOR_CODEX_WORKER_UID, DEFAULT_CODEX_WORKER_UID, "MANOR_CODEX_WORKER_UID");
+  const gid = parseWorkerId(env.MANOR_CODEX_WORKER_GID, DEFAULT_CODEX_WORKER_GID, "MANOR_CODEX_WORKER_GID");
+  const label = (env.MANOR_CODEX_WORKER_USER?.trim() || "codex") + ` (${uid}:${gid})`;
+  return { uid, gid, label };
+}
+
 async function pathExists(targetPath: string): Promise<boolean> {
   try {
     await fs.access(targetPath);
     return true;
   } catch {
     return false;
+  }
+}
+
+async function chownTree(targetPath: string, ownership: WorkerOwnership): Promise<void> {
+  const stat = await fs.lstat(targetPath);
+  if (stat.isDirectory()) {
+    const entries = await fs.readdir(targetPath);
+    await Promise.all(entries.map((entry) => chownTree(path.join(targetPath, entry), ownership)));
+  }
+
+  if (stat.uid === ownership.uid && stat.gid === ownership.gid) {
+    return;
+  }
+
+  if (stat.isSymbolicLink()) {
+    await fs.lchown(targetPath, ownership.uid, ownership.gid);
+    return;
+  }
+  await fs.chown(targetPath, ownership.uid, ownership.gid);
+}
+
+async function assertWritableByCurrentProcess(targetPath: string): Promise<void> {
+  const probePath = path.join(targetPath, `.manor-worktree-write-probe-${process.pid}-${Date.now()}`);
+  await fs.writeFile(probePath, "ok");
+  await fs.rm(probePath, { force: true });
+}
+
+export async function ensureManagedWorktreeWritableForWorker(
+  worktreePath: string,
+  ownership: WorkerOwnership = resolveCodexWorkerOwnership()
+): Promise<void> {
+  try {
+    await chownTree(worktreePath, ownership);
+  } catch (error) {
+    throw new Error(
+      `Managed worktree ${worktreePath} is not ready for the Codex worker ${ownership.label}: ` +
+        `could not repair ownership recursively. ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+
+  try {
+    await assertWritableByCurrentProcess(worktreePath);
+  } catch (error) {
+    throw new Error(
+      `Managed worktree ${worktreePath} is not writable after ownership repair for the Codex worker ${ownership.label}. ` +
+        `${error instanceof Error ? error.message : String(error)}`
+    );
   }
 }
 
@@ -275,6 +350,7 @@ export async function ensureTaskWorktree(options: {
   }
 
   if (isManagedWorktree(requestedCwd)) {
+    await ensureManagedWorktreeWritableForWorker(requestedCwd);
     const branchName = await git(["branch", "--show-current"], requestedCwd).catch(() => "");
     return {
       cwd: requestedCwd,
@@ -291,6 +367,7 @@ export async function ensureTaskWorktree(options: {
 
   await fs.mkdir(path.dirname(worktreePath), { recursive: true });
   await git(["worktree", "add", "-b", branchName, worktreePath, "HEAD"], repoRoot);
+  await ensureManagedWorktreeWritableForWorker(worktreePath);
 
   return {
     cwd: worktreePath,
