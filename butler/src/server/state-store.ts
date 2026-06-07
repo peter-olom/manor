@@ -946,6 +946,9 @@ export class ButlerStateStore extends EventEmitter {
 
   private toTurnView(turn: CodexTurnRecord): CodexTurnView {
     const visibleItems = dedupeCodexChatItems(turn.items).filter(shouldExposeCodexItem);
+    // A completed Codex turn bounds the operator task: `startedAt` is recorded
+    // from the app-server turn start event, and `completedAt` from turn
+    // completion. Attach that elapsed time only to the final assistant item.
     const finalAgentItemId = turn.completedAt ? [...visibleItems].reverse().find((item) => item.type === "agentMessage")?.id : null;
     return {
       id: turn.id,

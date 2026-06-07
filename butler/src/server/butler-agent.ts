@@ -493,6 +493,10 @@ export class ButlerAgentService extends EventEmitter {
       recordGatedCloseout(this.store, threadId, closeoutBlocker);
       throw new Error(closeoutBlocker);
     }
+    // `requestedAt` is captured when the operator asks Butler to wait on the
+    // worker callback; `at` is the persisted closeout message timestamp, so
+    // the duration spans the originating operator request to Butler's final
+    // operator-facing response.
     const taskDurationMs = elapsedTaskDurationMs(callback.requestedAt, at);
     upsertOperatorMessage(this.operatorMessages, messageId, text.trim(), at, taskDurationMs);
     this.noteThreadFocus(threadId, "closeout");
