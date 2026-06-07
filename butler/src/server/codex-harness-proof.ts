@@ -34,6 +34,11 @@ function contentTypeForFile(fileName: string): string {
   return types[extension] ?? "application/octet-stream";
 }
 
+function defaultTextProofFileName(title: string): string {
+  const stem = title.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "proof-note";
+  return `${stem}.txt`;
+}
+
 function emptyVerification(runId: string, now: number, title: string, artifact: PreviewVerificationView["artifacts"][number]): PreviewVerificationView {
   return {
     runId,
@@ -101,28 +106,52 @@ export async function handleHarnessProofAction(input: {
   artifactsDir: string;
   resolveWorkspaceProject: () => { id: string; label: string };
 }): Promise<{ text: string; data?: Record<string, unknown> } | null> {
-  if (input.action !== "proof.file") {
+  if (input.action !== "proof.file" && input.action !== "proof.text") {
     return null;
-  }
-
-  const rawFilePath = normalizeString(input.params.filePath);
-  if (!rawFilePath) {
-    throw new Error("proof.file requires filePath");
-  }
-
-  const sourcePath = path.resolve(input.capability.cwd, rawFilePath);
-  const stat = await fs.stat(sourcePath).catch(() => null);
-  if (!stat?.isFile()) {
-    throw new Error(`Proof file does not exist or is not a regular file: ${rawFilePath}`);
   }
 
   const runId = `file-${crypto.randomUUID()}`;
   const now = Date.now();
-  const fileName = safeFileName(sourcePath);
   const targetDir = path.join(input.artifactsDir, "files", input.capability.threadId, runId);
-  const targetPath = path.join(targetDir, fileName);
   await fs.mkdir(targetDir, { recursive: true });
-  await fs.copyFile(sourcePath, targetPath);
+
+  const requestedTitle = normalizeString(input.params.title);
+  const text = typeof input.params.text === "string" ? input.params.text : "";
+  let fileName = "";
+  let targetPath = "";
+  let sizeBytes = 0;
+  let contentType = "";
+
+  if (input.action === "proof.text") {
+    if (!requestedTitle) {
+      throw new Error("proof.text requires title");
+    }
+    if (!text.trim()) {
+      throw new Error("proof.text requires text");
+    }
+    fileName = safeFileName(normalizeString(input.params.fileName) || defaultTextProofFileName(requestedTitle));
+    targetPath = path.join(targetDir, fileName);
+    await fs.writeFile(targetPath, text, "utf8");
+    sizeBytes = Buffer.byteLength(text, "utf8");
+    contentType = normalizeString(input.params.contentType) || contentTypeForFile(fileName);
+  } else {
+    const rawFilePath = normalizeString(input.params.filePath);
+    if (!rawFilePath) {
+      throw new Error("proof.file requires filePath");
+    }
+
+    const sourcePath = path.resolve(input.capability.cwd, rawFilePath);
+    const stat = await fs.stat(sourcePath).catch(() => null);
+    if (!stat?.isFile()) {
+      throw new Error(`Proof file does not exist or is not a regular file: ${rawFilePath}`);
+    }
+
+    fileName = safeFileName(sourcePath);
+    targetPath = path.join(targetDir, fileName);
+    await fs.copyFile(sourcePath, targetPath);
+    sizeBytes = stat.size;
+    contentType = normalizeString(input.params.contentType) || contentTypeForFile(fileName);
+  }
 
   const label = normalizeString(input.params.label) || fileName;
   const title = normalizeString(input.params.title) || `File proof: ${label}`;
@@ -132,8 +161,8 @@ export async function handleHarnessProofAction(input: {
     label,
     fileName,
     filePath: targetPath,
-    contentType: normalizeString(input.params.contentType) || contentTypeForFile(fileName),
-    sizeBytes: stat.size,
+    contentType,
+    sizeBytes,
     url: null,
     downloadUrl: null,
     availability: "available" as const,
@@ -150,7 +179,7 @@ export async function handleHarnessProofAction(input: {
   });
 
   return {
-    text: `Recorded file proof ${runId}.`,
+    text: `Recorded ${input.action === "proof.text" ? "text" : "file"} proof ${runId}.`,
     data: { proof, verification }
   };
 }

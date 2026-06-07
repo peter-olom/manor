@@ -622,7 +622,10 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
           threadCreatedAt:
             typeof cleanupTask.threadCreatedAt === "number" && Number.isFinite(cleanupTask.threadCreatedAt)
               ? cleanupTask.threadCreatedAt
-              : null
+              : null,
+          proofArtifactPaths: Array.isArray(cleanupTask.proofArtifactPaths)
+            ? [...new Set(cleanupTask.proofArtifactPaths.filter((filePath) => typeof filePath === "string" && filePath.trim()))]
+            : []
         });
       }
     }

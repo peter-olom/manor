@@ -29,6 +29,7 @@ type ThreadDeleteContext = {
   stacks: RuntimeCleanupTaskView["stacks"];
   previews: RuntimeCleanupTaskView["previews"];
   services: RuntimeCleanupTaskView["services"];
+  proofArtifactPaths?: string[];
 };
 
 export type ComposerSuggestionInputItem =
@@ -1268,7 +1269,14 @@ export class CodexAppServerClient extends EventEmitter {
     return null;
   }
 
-  private async deleteThreadArtifacts(threadId: string, cwd: string | null, threadCreatedAt: number | null): Promise<number> {
+  private listThreadProofArtifactPaths(threadId: string): string[] {
+    const paths = this.store.listPreviewProofs().filter((proof) => proof.threadId === threadId).flatMap((proof) =>
+      proof.verification.artifacts.map((artifact) => artifact.filePath).filter((filePath): filePath is string => Boolean(filePath))
+    );
+    return [...new Set(paths)];
+  }
+
+  private async deleteThreadArtifacts(threadId: string, cwd: string | null, threadCreatedAt: number | null, queuedProofArtifactPaths: string[] = []): Promise<number> {
     const removed = new Set<string>();
     const generatedImagesDir = path.join(this.codexHomeDir, "generated_images", threadId);
 
@@ -1294,17 +1302,21 @@ export class CodexAppServerClient extends EventEmitter {
     }
 
     const previewProofs = this.store.listPreviewProofs().filter((proof) => proof.threadId === threadId);
+    const proofArtifactPaths = new Set(queuedProofArtifactPaths.filter(Boolean));
     for (const proof of previewProofs) {
       for (const artifact of proof.verification.artifacts) {
         if (!artifact.filePath || artifact.availability !== "available") {
           continue;
         }
-        const filePath = path.resolve(artifact.filePath);
-        await fs.rm(filePath, { force: true }).catch(() => undefined);
-        removed.add(filePath);
-        await this.pruneArtifactParents(filePath);
+        proofArtifactPaths.add(artifact.filePath);
       }
       this.store.removePreviewProof(proof.id);
+    }
+    for (const proofArtifactPath of proofArtifactPaths) {
+      const filePath = path.resolve(proofArtifactPath);
+      await fs.rm(filePath, { force: true }).catch(() => undefined);
+      removed.add(filePath);
+      await this.pruneArtifactParents(filePath);
     }
 
     if (cwd) {
@@ -1354,7 +1366,8 @@ export class CodexAppServerClient extends EventEmitter {
         stackId: lease.stackId,
         runtimeKind: lease.runtimeKind,
         status: lease.status
-      }))
+      })),
+      proofArtifactPaths: this.listThreadProofArtifactPaths(threadId)
     };
   }
 
@@ -1391,7 +1404,7 @@ export class CodexAppServerClient extends EventEmitter {
             previews: task.previews,
             services: task.services
           });
-          await this.deleteThreadArtifacts(task.threadId, task.cwd, task.threadCreatedAt ?? null);
+          await this.deleteThreadArtifacts(task.threadId, task.cwd, task.threadCreatedAt ?? null, task.proofArtifactPaths ?? []);
           this.store.completeRuntimeCleanupTask(task.id);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -1440,7 +1453,8 @@ export class CodexAppServerClient extends EventEmitter {
       threadCreatedAt: context.threadCreatedAt,
       stacks: context.stacks,
       previews: context.previews,
-      services: context.services
+      services: context.services,
+      proofArtifactPaths: context.proofArtifactPaths
     });
     this.deletedThreadIds.add(threadId);
     this.store.removeThread(threadId);
@@ -1462,7 +1476,8 @@ export class CodexAppServerClient extends EventEmitter {
         threadCreatedAt: context.threadCreatedAt,
         stacks: context.stacks,
         previews: context.previews,
-        services: context.services
+        services: context.services,
+        proofArtifactPaths: context.proofArtifactPaths
       });
     }
     for (const threadId of threadIds) {

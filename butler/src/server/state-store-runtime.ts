@@ -225,6 +225,7 @@ export function enqueueStateStoreRuntimeCleanupTask(
     stacks: RuntimeCleanupTaskView["stacks"];
     previews: RuntimeCleanupTaskView["previews"];
     services: RuntimeCleanupTaskView["services"];
+    proofArtifactPaths?: string[];
   }
 ): RuntimeCleanupTaskView {
   const now = Date.now();
@@ -241,7 +242,8 @@ export function enqueueStateStoreRuntimeCleanupTask(
     notifyOnError: input.notifyOnError !== false,
     stacks: [...input.stacks],
     previews: [...input.previews],
-    services: [...input.services]
+    services: [...input.services],
+    proofArtifactPaths: [...new Set((input.proofArtifactPaths ?? []).filter((filePath) => typeof filePath === "string" && filePath.trim()))]
   };
   access.runtimeCleanupTasks.set(task.id, task);
   queueStateStoreSave(access);

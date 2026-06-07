@@ -714,15 +714,7 @@ export class ButlerStateStore extends EventEmitter {
     return listStateStoreExpiredLeaseIds(this.getInternalAccess(), now);
   }
 
-  enqueueRuntimeCleanupTask(input: {
-    threadId: string;
-    cwd: string | null;
-    threadCreatedAt?: number | null;
-    notifyOnError?: boolean;
-    stacks: RuntimeCleanupTaskView["stacks"];
-    previews: RuntimeCleanupTaskView["previews"];
-    services: RuntimeCleanupTaskView["services"];
-  }): RuntimeCleanupTaskView {
+  enqueueRuntimeCleanupTask(input: Parameters<typeof enqueueStateStoreRuntimeCleanupTask>[1]): RuntimeCleanupTaskView {
     return enqueueStateStoreRuntimeCleanupTask(this.getInternalAccess(), input);
   }
 
