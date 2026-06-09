@@ -98,6 +98,10 @@ import type { PreviewLeaseView, PreviewProofRecordView, PreviewVerificationArtif
 
 const CALLBACK_RECOVERY_TIMEOUT_MS = 30_000;
 
+function isButlerAuthRecoveryError(message: string | null): boolean {
+  return typeof message === "string" && /\b(auth|authentication|token|signing in)\b/i.test(message);
+}
+
 export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
   private readonly codexClient: CodexAppServerClient;
@@ -685,6 +689,7 @@ export class ButlerAgentService extends EventEmitter {
   private async refreshExternalStatus(): Promise<void> {
     const nextAuth = await readButlerAuthStatus(this.piAuthPath);
     const nextCodexAuth = await readCodexAuthStatus(this.codexAuthPath);
+    const clearedStaleAuthError = nextAuth.loggedIn && isButlerAuthRecoveryError(this.lastError);
     const authChanged =
       nextAuth.mode !== this.auth.mode ||
       nextAuth.loggedIn !== this.auth.loggedIn ||
@@ -703,6 +708,9 @@ export class ButlerAgentService extends EventEmitter {
       this.modelRegistry = ModelRegistry.inMemory(AuthStorage.create(this.piAuthPath));
       await this.createOrRefreshSession();
     }
+    if (clearedStaleAuthError) {
+      this.lastError = null;
+    }
     this.codexAuth = nextCodexAuth;
 
     const nextOnboarding = await buildOnboardingView({
@@ -711,7 +719,7 @@ export class ButlerAgentService extends EventEmitter {
       codexConfigDir: this.codexConfigDir
     });
 
-    if (JSON.stringify(nextOnboarding) !== JSON.stringify(this.onboarding) || authChanged) {
+    if (JSON.stringify(nextOnboarding) !== JSON.stringify(this.onboarding) || authChanged || clearedStaleAuthError) {
       this.onboarding = nextOnboarding;
       this.emit("change");
     }

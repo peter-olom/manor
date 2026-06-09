@@ -197,6 +197,7 @@ export function App() {
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [restartAuthorizeBusy, setRestartAuthorizeBusy] = useState(false);
+  const [butlerReauthBusy, setButlerReauthBusy] = useState(false);
   const [copiedCommandKey, setCopiedCommandKey] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const copiedCommandTimerRef = useRef<number | null>(null);
@@ -795,6 +796,23 @@ export function App() {
     }
   }
 
+  async function startButlerReauth() {
+    if (butlerReauthBusy) {
+      return;
+    }
+
+    setButlerReauthBusy(true);
+    try {
+      const payload = await postJson<{ authUrl: string }>("/api/auth/butler/device", {});
+      window.open(payload.authUrl, "_blank", "noreferrer");
+      showToast("Complete Butler sign-in in the browser. Manor will update when the callback finishes.", "info", 5200);
+    } catch (error) {
+      showErrorToast(error);
+    } finally {
+      setButlerReauthBusy(false);
+    }
+  }
+
   const showSetupGuide = !shell?.butler.onboarding.complete;
   const activeTabId =
     selectedSurface === "setup"
@@ -1059,6 +1077,13 @@ export function App() {
                           </div>
                           <p className="setup-step-detail">{step.detail}</p>
                           <p className="setup-step-context">{commandSet.detail}</p>
+                          {step.id === "butlerAuth" && step.status === "pending" ? (
+                            <div className="setup-step-actions">
+                              <button type="button" className="panel-action" onClick={() => void startButlerReauth()} disabled={butlerReauthBusy}>
+                                {butlerReauthBusy ? "Starting sign-in..." : "Re-auth Butler"}
+                              </button>
+                            </div>
+                          ) : null}
                           {commandSet.commands.length > 0 ? (
                             <div className="setup-step-commands">
                               {commandSet.commands.map((command) => {

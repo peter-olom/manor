@@ -246,15 +246,15 @@ services:
     environment:
       MANOR_ROLE: host-controller
       MANOR_HOST_CONTROLLER_PORT: 8092
-      MANOR_HOST_PROJECT_DIR: ${MANOR_HOST_PROJECT_DIR:-${PWD:-/opt/manor}}
+      MANOR_HOST_PROJECT_DIR: ${MANOR_HOST_PROJECT_DIR:-/host-project}
       MANOR_HOST_CONTROLLER_STATE_DIR: /state
       MANOR_HOST_BUTLER_HEALTH_URL: http://butler:8080/livez
       MANOR_HOST_CONTROLLER_TOKEN: "${MANOR_HOST_CONTROLLER_TOKEN:?Run ./install.sh or set MANOR_HOST_CONTROLLER_TOKEN in .env.}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${MANOR_HOST_PROJECT_DIR:-${PWD:-.}}:${MANOR_HOST_PROJECT_DIR:-${PWD:-/opt/manor}}
+      - ${MANOR_HOST_PROJECT_SOURCE_DIR:-${PWD:-.}}:${MANOR_HOST_PROJECT_DIR:-/host-project}
       - host-controller-state:/state
-    working_dir: ${MANOR_HOST_PROJECT_DIR:-${PWD:-/opt/manor}}
+    working_dir: ${MANOR_HOST_PROJECT_DIR:-/host-project}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "--silent", "--fail", "http://127.0.0.1:8092/health"]
