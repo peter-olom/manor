@@ -1484,6 +1484,54 @@ void syncRuntimeInventory().catch((error) => {
   console.error("Initial runtime reconcile failed", error);
 });
 
+app.use(/^\/(?:terminal|butler-terminal)(?:\/.*)?$/, (request, response) => {
+  response
+    .status(503)
+    .type("html")
+    .send(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Terminal unavailable</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #0b1524;
+        color: #e5eefc;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      main {
+        max-width: 34rem;
+        padding: 1.5rem;
+      }
+      h1 {
+        margin: 0 0 0.5rem;
+        font-size: 1rem;
+      }
+      p {
+        margin: 0;
+        color: #9fb6d8;
+        line-height: 1.5;
+      }
+      code {
+        color: #cfe1ff;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Terminal unavailable</h1>
+      <p><code>${request.path}</code> is served by the Manor Docker gateway. Start the full Docker stack to use the embedded terminal.</p>
+    </main>
+  </body>
+</html>`);
+});
+
 if (viteDevServer) {
   app.use(viteDevServer.middlewares);
   app.get(/.*/, async (request, response, next) => {
