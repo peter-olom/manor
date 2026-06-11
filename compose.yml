@@ -110,6 +110,7 @@ services:
       CODEX_APP_SERVER_WS_AUTH: capability-token
       CODEX_APP_SERVER_WS_TOKEN_FILE: /home/codex/.config/manor/codex-app-server-token
       CODEX_PERSONALITY: ${CODEX_PERSONALITY:-pragmatic}
+      CODEX_SERVICE_TIER: ${CODEX_SERVICE_TIER:-auto}
       CODEX_MODEL_INSTRUCTIONS_FILE: ${CODEX_MODEL_INSTRUCTIONS_FILE:-/opt/manor/config/codex-model-instructions.md}
       CODEX_AUTH_BOOTSTRAP: ${CODEX_AUTH_BOOTSTRAP:-auto}
       CODEX_FORCED_LOGIN_METHOD: ${CODEX_FORCED_LOGIN_METHOD:-}
@@ -246,15 +247,15 @@ services:
     environment:
       MANOR_ROLE: host-controller
       MANOR_HOST_CONTROLLER_PORT: 8092
-      MANOR_HOST_PROJECT_DIR: ${MANOR_HOST_PROJECT_DIR:-${PWD:-/opt/manor}}
+      MANOR_HOST_PROJECT_DIR: ${MANOR_HOST_PROJECT_DIR:-/host-project}
       MANOR_HOST_CONTROLLER_STATE_DIR: /state
       MANOR_HOST_BUTLER_HEALTH_URL: http://butler:8080/livez
       MANOR_HOST_CONTROLLER_TOKEN: "${MANOR_HOST_CONTROLLER_TOKEN:?Run ./install.sh or set MANOR_HOST_CONTROLLER_TOKEN in .env.}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${MANOR_HOST_PROJECT_DIR:-${PWD:-.}}:${MANOR_HOST_PROJECT_DIR:-${PWD:-/opt/manor}}
+      - ${MANOR_HOST_PROJECT_SOURCE_DIR:-${PWD:-.}}:${MANOR_HOST_PROJECT_DIR:-/host-project}
       - host-controller-state:/state
-    working_dir: ${MANOR_HOST_PROJECT_DIR:-${PWD:-/opt/manor}}
+    working_dir: ${MANOR_HOST_PROJECT_DIR:-/host-project}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "--silent", "--fail", "http://127.0.0.1:8092/health"]

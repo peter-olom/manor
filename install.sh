@@ -201,9 +201,12 @@ write_env() {
     awk '
       BEGIN {
         skip["BUTLER_HOST_PORT"] = 1
+        skip["MANOR_HOST_PROJECT_DIR"] = 1
+        skip["MANOR_HOST_PROJECT_SOURCE_DIR"] = 1
         skip["MANOR_BUILD_FROM_SOURCE"] = 1
         skip["MANOR_IMAGE_REGISTRY"] = 1
         skip["MANOR_IMAGE_TAG"] = 1
+        skip["CODEX_SERVICE_TIER"] = 1
         skip["MANOR_CODEX_AUTO_UPDATE"] = 1
         skip["MANOR_CODEX_AUTO_UPDATE_VERSION"] = 1
         skip["MANOR_CODEX_AUTO_UPDATE_REQUIRED"] = 1
@@ -224,9 +227,14 @@ write_env() {
 
   {
     printf 'BUTLER_HOST_PORT=%s\n' "${butler_host_port}"
+    printf 'MANOR_HOST_PROJECT_DIR=%s\n' "${host_project_dir}"
+    if [[ -n "${host_project_source_dir}" ]]; then
+      printf 'MANOR_HOST_PROJECT_SOURCE_DIR=%s\n' "${host_project_source_dir}"
+    fi
     printf 'MANOR_BUILD_FROM_SOURCE=%s\n' "${build_from_source}"
     printf 'MANOR_IMAGE_REGISTRY=%s\n' "${image_registry}"
     printf 'MANOR_IMAGE_TAG=%s\n' "${image_tag}"
+    printf 'CODEX_SERVICE_TIER=%s\n' "${codex_service_tier}"
     printf 'MANOR_CODEX_AUTO_UPDATE=%s\n' "${codex_auto_update}"
     printf 'MANOR_CODEX_AUTO_UPDATE_VERSION=%s\n' "${codex_auto_update_version}"
     printf 'MANOR_CODEX_AUTO_UPDATE_REQUIRED=%s\n' "${codex_auto_update_required}"
@@ -246,6 +254,12 @@ butler_host_port_default="${BUTLER_HOST_PORT:-$(env_value BUTLER_HOST_PORT || tr
 butler_host_port_default="${butler_host_port_default:-8180}"
 butler_host_port="$(prompt_value "Host port for Manor" "${butler_host_port_default}")"
 validate_port "${butler_host_port}"
+
+host_project_dir_default="${MANOR_HOST_PROJECT_DIR:-$(env_value MANOR_HOST_PROJECT_DIR || true)}"
+host_project_dir="${host_project_dir_default:-/host-project}"
+
+host_project_source_dir_default="${MANOR_HOST_PROJECT_SOURCE_DIR:-$(env_value MANOR_HOST_PROJECT_SOURCE_DIR || true)}"
+host_project_source_dir="${host_project_source_dir_default:-}"
 
 build_from_source_default="${MANOR_BUILD_FROM_SOURCE:-$(env_value MANOR_BUILD_FROM_SOURCE || true)}"
 build_from_source_default="${build_from_source_default:-0}"
@@ -276,6 +290,9 @@ fi
 codex_auto_update_default="${MANOR_CODEX_AUTO_UPDATE:-$(env_value MANOR_CODEX_AUTO_UPDATE || true)}"
 codex_auto_update_default="${codex_auto_update_default:-0}"
 codex_auto_update="$(prompt_bool "Auto-update Codex on Manor reboot" "${codex_auto_update_default}")"
+
+codex_service_tier="${CODEX_SERVICE_TIER:-$(env_value CODEX_SERVICE_TIER || true)}"
+codex_service_tier="${codex_service_tier:-auto}"
 
 codex_auto_update_version="${MANOR_CODEX_AUTO_UPDATE_VERSION:-$(env_value MANOR_CODEX_AUTO_UPDATE_VERSION || true)}"
 codex_auto_update_version="${codex_auto_update_version:-latest}"

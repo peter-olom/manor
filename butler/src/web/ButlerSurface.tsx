@@ -293,6 +293,10 @@ export function ButlerSurface({
   const live = useButlerLiveSnapshot();
   const runtime = useRuntimeSnapshot();
   const knownImages = useKnownImages();
+  const butlerAuthNeedsRecovery =
+    !shell.butler.auth.loggedIn ||
+    Boolean(shell.butler.auth.validationError) ||
+    /auth|token|signing in/i.test(shell.butler.lastError ?? "");
   const [history, setHistory] = useState<ButlerHistoryState>({ messages: [], loadedStart: 0, totalCount: 0 });
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [followButler, setFollowButler] = useState(true);
@@ -308,6 +312,7 @@ export function ButlerSurface({
   const [busyStackId, setBusyStackId] = useState<string | null>(null);
   const [busyServiceId, setBusyServiceId] = useState<string | null>(null);
   const [savingMemoryMessageId, setSavingMemoryMessageId] = useState<string | null>(null);
+  const [butlerReauthBusy, setButlerReauthBusy] = useState(false);
   const { busyDesktopSessionId, captureDesktopScreen, stopDesktopSession } = useDesktopSessionControls(
     showToast,
     showErrorToast,
@@ -601,6 +606,23 @@ export function ButlerSurface({
       showToast("Butler chat cleared");
     } catch (error) {
       showErrorToast(error);
+    }
+  }
+
+  async function startButlerReauth() {
+    if (butlerReauthBusy) {
+      return;
+    }
+
+    setButlerReauthBusy(true);
+    try {
+      const payload = await postJson<{ authUrl: string }>("/api/auth/butler/device", {});
+      window.open(payload.authUrl, "_blank", "noreferrer");
+      showToast("Complete Butler sign-in in the browser. Manor will update when the callback finishes.", "info", 5200);
+    } catch (error) {
+      showErrorToast(error);
+    } finally {
+      setButlerReauthBusy(false);
     }
   }
 
@@ -1118,6 +1140,19 @@ export function ButlerSurface({
               </span>
               <span>Latest</span>
             </button>
+          ) : null}
+          {butlerAuthNeedsRecovery ? (
+            <div className="butler-auth-recovery" role="status">
+              <div>
+                <span className="butler-auth-recovery-title">Butler sign-in required</span>
+                <span className="butler-auth-recovery-detail">
+                  {shell.butler.auth.validationError ?? shell.butler.lastError ?? "Connect Butler before sending chat requests."}
+                </span>
+              </div>
+              <button type="button" className="panel-action" onClick={() => void startButlerReauth()} disabled={butlerReauthBusy}>
+                {butlerReauthBusy ? "Starting..." : "Re-auth Butler"}
+              </button>
+            </div>
           ) : null}
           <ButlerComposer
             draftStorageKey={BUTLER_DRAFT_STORAGE_KEY}

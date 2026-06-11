@@ -2159,6 +2159,36 @@ select {
   line-height: 1.5;
 }
 
+.setup-step-actions {
+  margin-top: 10px;
+}
+
+.butler-auth-recovery {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.butler-auth-recovery-title,
+.butler-auth-recovery-detail {
+  display: block;
+}
+
+.butler-auth-recovery-title {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.butler-auth-recovery-detail {
+  color: var(--muted);
+  margin-top: 3px;
+  font-size: 0.9rem;
+}
+
 .setup-step-commands {
   display: grid;
   gap: 8px;
