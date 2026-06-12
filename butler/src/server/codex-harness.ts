@@ -18,6 +18,8 @@ import { handleHarnessDesktopAction } from "./codex-harness-desktop.js";
 import { formatHarnessJobMemory, formatHarnessProjectMemory, handleHarnessMemoryAction } from "./codex-harness-memory.js";
 import { handleHarnessProofAction } from "./codex-harness-proof.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
+import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
+import { observeHarnessArtifactPolicyAction, observeHarnessMemoryAction } from "./memory-update-harness-hooks.js";
 import {
   reconcileHarnessThreadPreviews,
   reconcileHarnessThreadServices,
@@ -29,10 +31,7 @@ import {
 } from "./codex-harness-runtime.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
 import { hasVisualProof, threadRequiresVisualProof } from "./proof-policy.js";
-import {
-  applyServiceStartedPolicies,
-  formatProjectPolicyContextLines
-} from "./project-artifacts-policies.js";
+import { applyServiceStartedPolicies, formatProjectPolicyContextLines } from "./project-artifacts-policies.js";
 import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import { ButlerStateStore } from "./state-store.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
@@ -69,6 +68,7 @@ export class CodexHarnessService {
   private readonly runtimeBroker: RuntimeBrokerClient;
   private readonly serviceTemplateRegistry: ServiceTemplateRegistry;
   private readonly memoryReview: CodexExecMemoryReviewService | null;
+  private readonly memoryScheduler: MemoryUpdateScheduler | null;
   private readonly capabilities = new Map<string, HarnessCapability>();
 
   constructor(options: {
@@ -79,6 +79,7 @@ export class CodexHarnessService {
     runtimeBroker: RuntimeBrokerClient;
     serviceTemplateRegistry: ServiceTemplateRegistry;
     memoryReview?: CodexExecMemoryReviewService | null;
+    memoryScheduler?: MemoryUpdateScheduler | null;
   }) {
     this.registryPath = path.join(options.codexHomeDir, "manor", "harness-capabilities.json");
     this.brokerAccessPath = path.join(options.stateDir, "codex-broker-access.json");
@@ -87,6 +88,7 @@ export class CodexHarnessService {
     this.runtimeBroker = options.runtimeBroker;
     this.serviceTemplateRegistry = options.serviceTemplateRegistry;
     this.memoryReview = options.memoryReview ?? null;
+    this.memoryScheduler = options.memoryScheduler ?? null;
   }
 
   private getRuntimeAccess() {
@@ -539,6 +541,7 @@ export class CodexHarnessService {
         turnId
       });
       this.store.addEvent(capability.threadId, `harness/report/${status}`, summary);
+      this.memoryScheduler?.observeWorkerReport(report);
       this.memoryReview?.reviewWorkerReportAsync(report);
       return {
         text: `Recorded ${status} supervisor report for job ${capability.threadId}.`,
@@ -553,6 +556,7 @@ export class CodexHarnessService {
       params
     });
     if (memoryAction) {
+      observeHarnessMemoryAction(this.memoryScheduler, { action, threadId: capability.threadId, params });
       return memoryAction;
     }
     const artifactOrPolicyAction = await handleHarnessArtifactPolicyAction({
@@ -567,6 +571,8 @@ export class CodexHarnessService {
       resolveWorkspaceProject: (workspaceCwd, targetThread) => this.resolveWorkspaceProject(workspaceCwd, targetThread)
     });
     if (artifactOrPolicyAction) {
+      const project = this.resolveWorkspaceProject(capability.cwd, thread);
+      observeHarnessArtifactPolicyAction(this.memoryScheduler, { action, threadId: capability.threadId, projectId: project.id, projectLabel: project.label, params });
       return artifactOrPolicyAction;
     }
     if (action === "assist.request") {

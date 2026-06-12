@@ -9,6 +9,7 @@ import type { CodexInputItem } from "./image-store.js";
 import { cleanupManagedWorktree, resolveExistingWorkspaceCwd } from "./repo-worktree.js";
 import { listFilesRecursive, listThreadSessionFiles, listThreadSnapshotFiles, normalizeTimestampMs } from "./codex-session-artifacts.js";
 import { ButlerStateStore } from "./state-store.js";
+import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import type { CodexThreadPatchView, ModelOption, ReasoningEffort, RuntimeCleanupTaskView } from "./types.js";
 
 type JsonRpcMessage = {
@@ -233,6 +234,7 @@ export class CodexAppServerClient extends EventEmitter {
   private readonly onThreadCapabilityReady: ((threadId: string, cwd: string | null | undefined) => Promise<void>) | null;
   private readonly onThreadCapabilityRemoved: ((threadId: string) => Promise<void>) | null;
   private readonly onThreadDeleting: ((context: ThreadDeleteContext) => Promise<void>) | null;
+  private readonly memoryScheduler: MemoryUpdateScheduler | null;
   private readonly onRuntimeCleanupError: ((threadId: string, message: string) => void) | null;
   private readonly authTokenFile: string | null;
   private cleanupQueueRunning = false;
@@ -245,6 +247,7 @@ export class CodexAppServerClient extends EventEmitter {
       onThreadCapabilityReady?: (threadId: string, cwd: string | null | undefined) => Promise<void>;
       onThreadCapabilityRemoved?: (threadId: string) => Promise<void>;
       onThreadDeleting?: (context: ThreadDeleteContext) => Promise<void>;
+      memoryScheduler?: MemoryUpdateScheduler | null;
       onRuntimeCleanupError?: (threadId: string, message: string) => void;
       artifactsDir?: string | null;
       authTokenFile?: string | null;
@@ -258,6 +261,7 @@ export class CodexAppServerClient extends EventEmitter {
     this.onThreadCapabilityReady = options?.onThreadCapabilityReady ?? null;
     this.onThreadCapabilityRemoved = options?.onThreadCapabilityRemoved ?? null;
     this.onThreadDeleting = options?.onThreadDeleting ?? null;
+    this.memoryScheduler = options?.memoryScheduler ?? null;
     this.onRuntimeCleanupError = options?.onRuntimeCleanupError ?? null;
     this.authTokenFile = options?.authTokenFile ? path.resolve(options.authTokenFile) : null;
   }
@@ -1433,21 +1437,12 @@ export class CodexAppServerClient extends EventEmitter {
     }
   }
 
-  async deleteThread(
-    threadId: string,
-    options: { waitForCleanup?: boolean } = {}
-  ): Promise<{ deletedArtifacts: number; cleanupFailed?: boolean; cleanupError?: string | null }> {
+  async deleteThread(threadId: string, options: { waitForCleanup?: boolean } = {}): Promise<{ deletedArtifacts: number; cleanupFailed?: boolean; cleanupError?: string | null }> {
     const context = this.buildThreadDeleteContext(threadId);
+    await this.memoryScheduler?.beforeThreadDelete(context);
     if (options.waitForCleanup) {
       try {
-        await this.onThreadDeleting?.({
-          threadId: context.threadId,
-          cwd: context.cwd,
-          threadCreatedAt: context.threadCreatedAt,
-          stacks: context.stacks,
-          previews: context.previews,
-          services: context.services
-        });
+        await this.onThreadDeleting?.({ threadId: context.threadId, cwd: context.cwd, threadCreatedAt: context.threadCreatedAt, stacks: context.stacks, previews: context.previews, services: context.services });
         const deletedArtifacts = await this.deleteThreadArtifacts(context.threadId, context.cwd, context.threadCreatedAt);
         this.deletedThreadIds.add(threadId);
         this.store.removeThread(threadId);
@@ -1460,15 +1455,7 @@ export class CodexAppServerClient extends EventEmitter {
       }
     }
 
-    this.store.enqueueRuntimeCleanupTask({
-      threadId: context.threadId,
-      cwd: context.cwd,
-      threadCreatedAt: context.threadCreatedAt,
-      stacks: context.stacks,
-      previews: context.previews,
-      services: context.services,
-      proofArtifactPaths: context.proofArtifactPaths
-    });
+    this.store.enqueueRuntimeCleanupTask({ threadId: context.threadId, cwd: context.cwd, threadCreatedAt: context.threadCreatedAt, stacks: context.stacks, previews: context.previews, services: context.services, proofArtifactPaths: context.proofArtifactPaths });
     this.deletedThreadIds.add(threadId);
     this.store.removeThread(threadId);
     this.scheduleCleanupQueue();
@@ -1482,16 +1469,9 @@ export class CodexAppServerClient extends EventEmitter {
   async deleteAllThreads(): Promise<{ deletedThreadIds: string[]; deletedArtifacts: number }> {
     const threadIds = this.store.listThreads().map((thread) => thread.id);
     const deleteContexts = threadIds.map((threadId) => this.buildThreadDeleteContext(threadId));
+    await this.memoryScheduler?.beforeThreadsDelete(deleteContexts);
     for (const context of deleteContexts) {
-      this.store.enqueueRuntimeCleanupTask({
-        threadId: context.threadId,
-        cwd: context.cwd,
-        threadCreatedAt: context.threadCreatedAt,
-        stacks: context.stacks,
-        previews: context.previews,
-        services: context.services,
-        proofArtifactPaths: context.proofArtifactPaths
-      });
+      this.store.enqueueRuntimeCleanupTask({ threadId: context.threadId, cwd: context.cwd, threadCreatedAt: context.threadCreatedAt, stacks: context.stacks, previews: context.previews, services: context.services, proofArtifactPaths: context.proofArtifactPaths });
     }
     for (const threadId of threadIds) {
       this.deletedThreadIds.add(threadId);

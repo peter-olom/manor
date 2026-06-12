@@ -152,6 +152,7 @@ export class CodexExecMemoryReviewService {
   private readonly codexHomeDir: string;
   private readonly enabled: boolean;
   private readonly timeoutMs: number;
+  private readonly model: string;
   private readonly runner: MemoryReviewRunner;
   private readonly inFlightReports = new Set<string>();
   private readonly queuedReports = new Map<string, CodexWorkerReportView>();
@@ -162,6 +163,7 @@ export class CodexExecMemoryReviewService {
     codexHomeDir: string;
     enabled?: boolean;
     timeoutMs?: number;
+    model?: string;
     runner?: MemoryReviewRunner;
   }) {
     this.store = options.store;
@@ -169,6 +171,7 @@ export class CodexExecMemoryReviewService {
     this.codexHomeDir = options.codexHomeDir;
     this.enabled = options.enabled ?? true;
     this.timeoutMs = options.timeoutMs ?? 90_000;
+    this.model = options.model?.trim() || process.env.MANOR_MEMORY_SYNTHESIS_MODEL?.trim() || process.env.MANOR_MEMORY_REVIEW_MODEL?.trim() || "5.4 mini";
     this.runner = options.runner ?? ((input) => this.runCodexExec(input));
   }
 
@@ -381,7 +384,7 @@ export class CodexExecMemoryReviewService {
     const outputPath = path.join(scratchDir, `${runId}.output.json`);
     await fs.writeFile(schemaPath, JSON.stringify(OUTPUT_SCHEMA, null, 2), "utf8");
 
-    const modelArgs = process.env.MANOR_MEMORY_REVIEW_MODEL ? ["--model", process.env.MANOR_MEMORY_REVIEW_MODEL] : [];
+    const modelArgs = this.model ? ["--model", this.model] : [];
     const args = [
       "exec",
       "--ephemeral",

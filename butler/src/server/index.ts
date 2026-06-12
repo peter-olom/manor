@@ -13,6 +13,8 @@ import { FileReferenceStore, MAX_FILE_BYTES } from "./file-store.js";
 import { HostControllerClient } from "./host-controller-client.js";
 import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
+import { readMemorySynthesisConfig } from "./memory-synthesis-config.js";
+import { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-routes.js";
 import { buildCodexInputWithReferences, buildComposerInputItemsPrompt, buildReferencePromptText } from "./reference-inputs.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
@@ -102,12 +104,10 @@ const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerTok
 const hostController = new HostControllerClient(hostControllerUrl, hostControllerToken);
 let runtimeAccess!: RuntimeServerAccess;
 let sseHub!: ButlerSseHub;
-const memoryReview = new CodexExecMemoryReviewService({
-  store,
-  stateDir,
-  codexHomeDir,
-  enabled: process.env.MANOR_MEMORY_REVIEW_ENABLED !== "0"
-});
+const memorySynthesisConfig = readMemorySynthesisConfig();
+const memoryReview = new CodexExecMemoryReviewService({ store, stateDir, codexHomeDir, enabled: memorySynthesisConfig.enabled, model: memorySynthesisConfig.model, timeoutMs: memorySynthesisConfig.timeoutMs });
+const memoryScheduler = new MemoryUpdateScheduler({ store, config: memorySynthesisConfig, stateDir, codexHomeDir });
+store.setMemoryUpdateObserver(memoryScheduler);
 const codexHarness = new CodexHarnessService({
   codexHomeDir,
   stateDir,
@@ -115,9 +115,11 @@ const codexHarness = new CodexHarnessService({
   store,
   runtimeBroker,
   serviceTemplateRegistry,
-  memoryReview
+  memoryReview,
+  memoryScheduler
 });
 memoryReview.reviewPendingReportsAsync();
+memoryScheduler.start();
 await codexHarness.load();
 await codexHarness.reconcileThreadCapabilities();
 const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, {
@@ -130,6 +132,7 @@ const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, 
   onRuntimeCleanupError: (threadId, message) => {
     sseHub.broadcastToast(`Thread cleanup failed for ${threadId.slice(0, 8)}: ${message}`, "error", 6000);
   },
+  memoryScheduler,
   onThreadCapabilityRemoved: async (threadId) => {
     await codexHarness.revokeThreadCapability(threadId);
   },
@@ -138,6 +141,7 @@ const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, 
 });
 const butlerAgent = new ButlerAgentService({
   store,
+  memoryScheduler,
   codexClient,
   hostController,
   runtimeBroker,
@@ -379,6 +383,8 @@ app.get("/api/memory/retrieve", (request, response) => {
   });
 });
 
+app.get("/api/memory/graph/search", (request, response) => { const projectId = typeof request.query.projectId === "string" ? request.query.projectId : null; const threadId = typeof request.query.threadId === "string" ? request.query.threadId : null; const query = typeof request.query.query === "string" ? request.query.query : null; const limitRaw = typeof request.query.limit === "string" ? Number(request.query.limit) : null; response.json({ retrieval: store.searchMemoryGraph({ projectId, threadId, query, limit: Number.isFinite(limitRaw) ? limitRaw : null }) }); });
+
 app.post("/api/memory/promotions/resolve", (request, response) => {
   const candidateId = typeof request.body?.candidateId === "string" ? request.body.candidateId.trim() : "";
   const accepted = typeof request.body?.accepted === "boolean" ? request.body.accepted : null;
@@ -392,6 +398,15 @@ app.post("/api/memory/promotions/resolve", (request, response) => {
     response.status(404).json({ error: "Promotion candidate not found" });
     return;
   }
+  memoryScheduler.observePromotionResolved({
+    candidateId: candidate.id,
+    accepted,
+    projectId: candidate.projectId,
+    projectLabel: candidate.projectLabel,
+    threadId: candidate.threadId,
+    summary: candidate.summary,
+    details: candidate.details
+  });
 
   response.json({
     ok: true,

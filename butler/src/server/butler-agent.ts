@@ -44,7 +44,7 @@ import {
 } from "./butler-agent-helpers.js";
 import { buildButlerCodexTools } from "./butler-agent-codex-tools.js";
 import { createOrRefreshButlerSession, getButlerLiveSnapshot, getButlerMessagePage, getButlerShellSnapshot, getButlerSnapshot, promptButler, promptButlerInternal, stopButlerPrompt, restoreButlerCompactionState, sanitizeButlerSessionMessages, sanitizePersistedButlerSessions, updateButlerComposeSettings } from "./butler-agent-session.js";
-import { clearButlerSessionChat, deleteButlerSessionChatFrom, keepOperatorMessagesBefore } from "./butler-agent-chat-hygiene.js";
+import { clearButlerSessionChat, deleteButlerSessionChatFromLocated, keepOperatorMessagesBefore, locateButlerSessionDeletePoint } from "./butler-agent-chat-hygiene.js";
 import { buildButlerServiceTools } from "./butler-agent-service-tools.js";
 import { buildButlerManorTools } from "./butler-agent-manor-tools.js";
 import { buildButlerProjectTools } from "./butler-agent-project-tools.js";
@@ -62,6 +62,7 @@ import { HostControllerClient } from "./host-controller-client.js";
 import { ManorRestartRequestState } from "./manor-restart-state.js";
 import { buildOnboardingView } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
+import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import { formatProjectPolicyContextLines } from "./project-artifacts-policies.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
 import { ensureTaskWorktree, resolveExistingWorkspaceCwd, resolveWorkspaceBranchName, resolveWorkspaceProjectInfo, taskRequiresManagedWorktree } from "./repo-worktree.js";
@@ -117,6 +118,7 @@ export class ButlerAgentService extends EventEmitter {
   private readonly callbackStatePath: string;
   private readonly refreshRuntimeInventory: (() => Promise<void>) | null;
   private readonly manorRestartRequests: ManorRestartRequestState;
+  private readonly memoryScheduler: MemoryUpdateScheduler | null;
   private modelRegistry: ModelRegistry | null = null;
   private session: AgentSession | null = null;
   private auth: ButlerAuthStatus = { mode: "none", loggedIn: false, validationError: null, lastValidatedAt: null };
@@ -172,6 +174,7 @@ export class ButlerAgentService extends EventEmitter {
     sessionDir: string;
     artifactsDir: string;
     refreshRuntimeInventory?: () => Promise<void>;
+    memoryScheduler?: MemoryUpdateScheduler | null;
   }) {
     super();
     this.store = options.store;
@@ -187,6 +190,7 @@ export class ButlerAgentService extends EventEmitter {
     this.sessionDir = options.sessionDir;
     this.artifactsDir = options.artifactsDir;
     this.refreshRuntimeInventory = options.refreshRuntimeInventory ?? null;
+    this.memoryScheduler = options.memoryScheduler ?? null;
     this.operatorMessageStatePath = path.join(this.sessionDir, "operator-messages.json");
     this.activitySummaryStatePath = path.join(this.sessionDir, "activity-summaries.json");
     this.legacyNoticeStatePath = path.join(this.sessionDir, "notices.json");
@@ -423,9 +427,9 @@ export class ButlerAgentService extends EventEmitter {
     );
   }
 
-  async clearChat(): Promise<void> { this.operatorMessages.splice(0, this.operatorMessages.length); this.activityTurns.splice(0, this.activityTurns.length); this.activitySummaryTurns.splice(0, this.activitySummaryTurns.length); this.activeActivityTurnId = null; await Promise.all([this.saveOperatorMessageState(), this.saveActivitySummaryState()]); clearButlerSessionChat(this.session); this.lastError = null; this.emit("change"); }
+  async clearChat(): Promise<void> { await this.memoryScheduler?.beforeButlerChatClear([...this.operatorMessages]); this.operatorMessages.splice(0, this.operatorMessages.length); this.activityTurns.splice(0, this.activityTurns.length); this.activitySummaryTurns.splice(0, this.activitySummaryTurns.length); this.activeActivityTurnId = null; await Promise.all([this.saveOperatorMessageState(), this.saveActivitySummaryState()]); clearButlerSessionChat(this.session); this.lastError = null; this.emit("change"); }
 
-  async deleteChatFromMessage(messageId: string): Promise<void> { const deleteFrom = deleteButlerSessionChatFrom(this.session, messageId); keepOperatorMessagesBefore(this.operatorMessages, deleteFrom); const prunedActivity = keepButlerActivityBefore(this as unknown as ButlerAgentSessionAccess, deleteFrom); await Promise.all([this.saveOperatorMessageState(), ...(prunedActivity ? [this.saveActivitySummaryState()] : [])]); this.lastError = null; this.emit("change"); }
+  async deleteChatFromMessage(messageId: string): Promise<void> { const deletePoint = locateButlerSessionDeletePoint(this.session, messageId); await this.memoryScheduler?.beforeButlerChatDeleteFrom({ messageId, deleteFromTimestamp: deletePoint.targetAt, messages: [...this.operatorMessages] }); const deleteFrom = deleteButlerSessionChatFromLocated(this.session, deletePoint); keepOperatorMessagesBefore(this.operatorMessages, deleteFrom); const prunedActivity = keepButlerActivityBefore(this as unknown as ButlerAgentSessionAccess, deleteFrom); await Promise.all([this.saveOperatorMessageState(), ...(prunedActivity ? [this.saveActivitySummaryState()] : [])]); this.lastError = null; this.emit("change"); }
 
   async notifyDirectCodexMessage(input: DirectCodexMessagePingInput & { threadId: string }): Promise<void> { await notifyDirectCodexMessage(this as unknown as DirectCodexMessageAccess, input); }
 
@@ -1475,6 +1479,8 @@ export class ButlerAgentService extends EventEmitter {
     if (guard.lockedThreadId && this.store.getThread(guard.lockedThreadId)) {
       this.noteThreadFocus(guard.lockedThreadId, guard.explicitThreadIds.length > 0 ? "operator_reference" : "operator_follow_up");
     }
+    const thread = guard.lockedThreadId ? this.store.getThread(guard.lockedThreadId) : undefined;
+    this.memoryScheduler?.observeOperatorMessage({ text, threadId: guard.lockedThreadId, projectId: thread?.supervisor.projectId ?? thread?.executionContract?.projectId ?? null, projectLabel: thread?.supervisor.projectLabel ?? thread?.executionContract?.projectLabel ?? null, at: Date.now() });
 
     try {
       if (guard.contextPrompt) {
