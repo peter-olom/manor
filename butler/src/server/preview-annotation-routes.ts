@@ -82,9 +82,10 @@ function normalizeOperatorPreviewAnnotationBatch(input: unknown): OperatorPrevie
 
   const page = record.page && typeof record.page === "object" ? record.page as Record<string, unknown> : {};
   return {
-    id: crypto.randomUUID(),
+    id: typeof record.id === "string" && record.id.trim() ? record.id.trim().slice(0, 120) : crypto.randomUUID(),
     at: Date.now(),
     intent: record.intent === "insert" ? "insert" : "batch",
+    ready: normalizedAnnotations.every((entry) => entry.note.trim().length > 0) && record.ready !== false,
     leaseId,
     targetId: typeof record.targetId === "string" && record.targetId.trim() ? record.targetId.trim().slice(0, 160) : "butler",
     page: {
@@ -95,11 +96,39 @@ function normalizeOperatorPreviewAnnotationBatch(input: unknown): OperatorPrevie
   };
 }
 
-function normalizeInternalAnnotationPrefillTarget(input: unknown): AnnotationPrefillTarget | null {
+function normalizePreviewAnnotationBatchClear(input: unknown): { leaseId: string; batchId: string; pageUrl: string } | null {
   if (!input || typeof input !== "object") {
     return null;
   }
-  const id = typeof (input as { id?: unknown }).id === "string" ? (input as { id: string }).id.trim() : "";
+  const record = input as Record<string, unknown>;
+  if (!Array.isArray(record.annotations) || record.annotations.length !== 0) {
+    return null;
+  }
+  const leaseId = typeof record.leaseId === "string" ? record.leaseId.trim() : "";
+  const batchId = typeof record.id === "string" ? record.id.trim().slice(0, 120) : "";
+  const page = record.page && typeof record.page === "object" ? record.page as Record<string, unknown> : {};
+  const pageUrl = typeof page.url === "string" ? page.url.slice(0, 2000) : "";
+  if (!leaseId || (!batchId && !pageUrl)) {
+    return null;
+  }
+  return { leaseId, batchId, pageUrl };
+}
+
+export function normalizeInternalAnnotationPrefillTarget(input: unknown): AnnotationPrefillTarget | null {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+  const record = input as Record<string, unknown>;
+  const kind = typeof record.kind === "string" ? record.kind.trim() : "";
+  if (kind === "butler") {
+    return { kind: "butler" };
+  }
+  if (kind === "thread") {
+    const threadId = typeof record.threadId === "string" ? record.threadId.trim() : "";
+    return threadId ? { kind: "thread", threadId } : null;
+  }
+
+  const id = typeof record.id === "string" ? record.id.trim() : "";
   if (id === "butler") {
     return { kind: "butler" };
   }
@@ -138,7 +167,14 @@ export function registerPreviewAnnotationRoutes(access: PreviewAnnotationRoutesA
 
   function recordPreviewAnnotationBatch(batch: OperatorPreviewAnnotationBatch): void {
     const current = previewAnnotationBatches.get(batch.leaseId) ?? [];
-    current.push(batch);
+    const existingIndex = current.findIndex((entry) =>
+      entry.id === batch.id || (Boolean(batch.page.url) && entry.page.url === batch.page.url)
+    );
+    if (existingIndex >= 0) {
+      current[existingIndex] = batch;
+    } else {
+      current.push(batch);
+    }
     if (current.length > MAX_PREVIEW_ANNOTATION_BATCHES) {
       current.splice(0, current.length - MAX_PREVIEW_ANNOTATION_BATCHES);
     }
@@ -176,6 +212,31 @@ export function registerPreviewAnnotationRoutes(access: PreviewAnnotationRoutesA
     return removed;
   }
 
+  function removePreviewAnnotationBatchByIdentity(leaseId: string, batchId: string, pageUrl: string): boolean {
+    const batches = previewAnnotationBatches.get(leaseId);
+    if (!batches) {
+      return false;
+    }
+    const next = batches.filter((entry) => {
+      if (batchId && entry.id === batchId) {
+        return false;
+      }
+      if (pageUrl && entry.page.url === pageUrl) {
+        return false;
+      }
+      return true;
+    });
+    if (next.length === batches.length) {
+      return false;
+    }
+    if (next.length === 0) {
+      previewAnnotationBatches.delete(leaseId);
+    } else {
+      previewAnnotationBatches.set(leaseId, next);
+    }
+    return true;
+  }
+
   function targetIdForPrefill(target: AnnotationPrefillTarget): string {
     return target.kind === "thread" ? `thread:${target.threadId}` : "butler";
   }
@@ -185,6 +246,9 @@ export function registerPreviewAnnotationRoutes(access: PreviewAnnotationRoutesA
   }
 
   async function insertPreviewAnnotationBatch(batch: OperatorPreviewAnnotationBatch, target: AnnotationPrefillTarget) {
+    if (!batch.ready) {
+      throw new Error("Preview annotation is not ready.");
+    }
     const insertBatch = { ...batch, intent: "insert" as const, targetId: targetIdForPrefill(target) };
     const attachment = await captureAnnotatedPreviewScreenshot({
       batch: insertBatch,
@@ -203,6 +267,23 @@ export function registerPreviewAnnotationRoutes(access: PreviewAnnotationRoutesA
   }
 
   access.app.post("/api/preview-annotations/batches", async (request, response) => {
+    const clearRequest = normalizePreviewAnnotationBatchClear(request.body);
+    if (clearRequest) {
+      const lease = access.store.getPreviewLease(clearRequest.leaseId);
+      if (!lease || lease.status === "stopped" || lease.status === "stopping") {
+        response.status(404).json({ error: "Preview lease not found" });
+        return;
+      }
+      if (!hasPreviewAnnotationAccess(request, clearRequest.leaseId)) {
+        response.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      const removed = removePreviewAnnotationBatchByIdentity(clearRequest.leaseId, clearRequest.batchId, clearRequest.pageUrl);
+      access.store.notePreviewLeaseActivity(clearRequest.leaseId, Date.now());
+      response.json({ ok: true, removed, batch: null });
+      return;
+    }
+
     const batch = normalizeOperatorPreviewAnnotationBatch(request.body);
     if (!batch) {
       response.status(400).json({ error: "leaseId and annotations are required" });
@@ -220,6 +301,10 @@ export function registerPreviewAnnotationRoutes(access: PreviewAnnotationRoutesA
     const target = resolveAnnotationPrefillTarget(batch);
     if (batch.intent === "insert" && !target) {
       response.status(400).json({ error: "Annotation target is unavailable" });
+      return;
+    }
+    if (batch.intent === "insert" && !batch.ready) {
+      response.status(400).json({ error: "Add comments to every mark before inserting preview annotations." });
       return;
     }
 
@@ -246,7 +331,7 @@ export function registerPreviewAnnotationRoutes(access: PreviewAnnotationRoutesA
     const batchId = typeof request.params.batchId === "string" ? request.params.batchId.trim() : "";
     const batch = batchId ? findPreviewAnnotationBatch(batchId) : null;
     if (!batch) {
-      response.status(404).json({ error: "Preview annotation batch not found" });
+      response.status(404).json({ error: "Preview annotation not found" });
       return;
     }
     const lease = access.store.getPreviewLease(batch.leaseId);
@@ -257,6 +342,10 @@ export function registerPreviewAnnotationRoutes(access: PreviewAnnotationRoutesA
     const target = normalizeInternalAnnotationPrefillTarget(request.body?.target);
     if (!validateAnnotationPrefillTarget(target)) {
       response.status(400).json({ error: "Annotation target is unavailable" });
+      return;
+    }
+    if (!batch.ready) {
+      response.status(400).json({ error: "Add comments to every mark before inserting preview annotations." });
       return;
     }
 
@@ -273,7 +362,7 @@ export function registerPreviewAnnotationRoutes(access: PreviewAnnotationRoutesA
   access.app.delete("/api/preview-annotations/operator/batches/:batchId", (request, response) => {
     const batchId = typeof request.params.batchId === "string" ? request.params.batchId.trim() : "";
     if (!batchId || !removePreviewAnnotationBatch(batchId)) {
-      response.status(404).json({ error: "Preview annotation batch not found" });
+      response.status(404).json({ error: "Preview annotation not found" });
       return;
     }
     response.json({ ok: true });

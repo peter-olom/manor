@@ -23,7 +23,13 @@ function installPreviewAnnotationLayerInPage() {
     nextNumber: 1,
     hidden: false,
     activeId: null,
-    toolbar: { dragging: null },
+    batchId: `annotation-batch-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    selectionDrag: null,
+    textSelection: null,
+    publishTimer: null,
+    publishing: false,
+    lastPublishedSignature: "",
+    toolbar: { dragging: null, lastPointerCommand: null },
     scrollLock: null
   };
   root.innerHTML = `
@@ -134,6 +140,7 @@ function installPreviewAnnotationLayerInPage() {
       .tab { display: none; }
       .mark rect, .draft { vector-effect: non-scaling-stroke; }
       .badge-text { font: 700 12px system-ui, sans-serif; fill: #fff; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+      .stage.is-selecting .mark, .stage.is-selecting .mark * { cursor: move; pointer-events: auto; }
       @media (max-width: 720px) {
         .toolbar { left: 8px; right: 8px; top: 8px; transform: none; flex-wrap: wrap; justify-content: center; }
         .drag-handle { flex: 0 0 32px; cursor: grab; }
@@ -144,15 +151,14 @@ function installPreviewAnnotationLayerInPage() {
       <svg class="overlay" aria-hidden="true"></svg>
       <div class="toolbar" role="toolbar" aria-label="Manor preview annotation tools">
         <span class="drag-handle" data-drag-handle aria-label="Drag annotation toolbar" title="Drag annotation toolbar">⋮⋮</span>
-        <button type="button" data-mode="select" aria-pressed="true" title="Select lets the page receive clicks">Select</button>
+        <button type="button" data-mode="select" aria-pressed="true" title="Select text to add a mark, or move existing marks">Select</button>
         <button type="button" data-mode="draw" aria-pressed="false" title="Draw numbered rectangles on the preview">Draw</button>
         <input class="color-input" type="color" value="${state.color}" aria-label="Annotation color">
         <span class="divider" aria-hidden="true"></span>
         <button type="button" data-action="undo">Undo</button>
         <button type="button" data-action="clear">Clear</button>
-        <select class="mark-select" aria-label="Selected annotation"></select>
+        <select class="mark-select" aria-label="Current mark"></select>
         <input class="note-input" type="text" maxlength="280" placeholder="Draw a mark to add comment" aria-label="Comment for selected annotation" disabled>
-        <button type="button" data-action="batch">Queue</button>
         <button class="icon-button" type="button" data-action="hide" title="Hide annotation toolbar" aria-label="Hide annotation toolbar">×</button>
         <span class="status" aria-live="polite"></span>
       </div>
@@ -192,6 +198,10 @@ function installPreviewAnnotationLayerInPage() {
     return state.marks.find((mark) => mark.id === state.activeId) ?? null;
   }
 
+  function markById(id) {
+    return state.marks.find((mark) => mark.id === id) ?? null;
+  }
+
   function syncCommentControls() {
     const selected = activeMark();
     markSelect.disabled = state.marks.length === 0;
@@ -208,6 +218,41 @@ function installPreviewAnnotationLayerInPage() {
     state.activeId = state.marks.some((mark) => mark.id === id) ? id : state.marks.at(-1)?.id ?? null;
     render();
     syncCommentControls();
+  }
+
+  function markHasComment(mark) {
+    return mark.note.trim().length > 0;
+  }
+
+  function pendingCommentMark() {
+    return state.marks.find((mark) => !markHasComment(mark)) ?? null;
+  }
+
+  function batchReady() {
+    return state.marks.length > 0 && state.marks.every(markHasComment);
+  }
+
+  function showBatchStatus() {
+    const pending = pendingCommentMark();
+    if (pending) {
+      showStatus(`Add comment for #${pending.number}`);
+      return;
+    }
+    if (state.marks.length > 0) {
+      showStatus(`${state.marks.length} mark${state.marks.length === 1 ? "" : "s"} ready`);
+      return;
+    }
+    showStatus("No marks");
+  }
+
+  function ensureCanCreateMark() {
+    const pending = pendingCommentMark();
+    if (!pending) {
+      return true;
+    }
+    setActiveMark(pending.id);
+    showStatus(`Add comment for #${pending.number} before adding another mark`, "error");
+    return false;
   }
 
   function clamp(value, min, max) {
@@ -237,6 +282,31 @@ function installPreviewAnnotationLayerInPage() {
     }
   }
 
+  function blockViewportWheel(event) {
+    if (state.hidden) {
+      return;
+    }
+    event.preventDefault();
+    enforceScrollLock();
+  }
+
+  function blockViewportGesture(event) {
+    if (state.hidden) {
+      return;
+    }
+    event.preventDefault();
+  }
+
+  function blockViewportZoomKey(event) {
+    if (state.hidden || !(event.metaKey || event.ctrlKey)) {
+      return;
+    }
+    if (event.key === "+" || event.key === "=" || event.key === "-" || event.key === "_" || event.key === "0") {
+      event.preventDefault();
+      enforceScrollLock();
+    }
+  }
+
   function setScrollLocked(locked) {
     const documentElement = document.documentElement;
     const body = document.body;
@@ -254,6 +324,11 @@ function installPreviewAnnotationLayerInPage() {
         body.style.overscrollBehavior = "contain";
       }
       window.addEventListener("scroll", enforceScrollLock, { passive: true });
+      window.addEventListener("wheel", blockViewportWheel, { passive: false, capture: true });
+      window.addEventListener("touchmove", blockViewportWheel, { passive: false, capture: true });
+      window.addEventListener("gesturestart", blockViewportGesture, { passive: false, capture: true });
+      window.addEventListener("gesturechange", blockViewportGesture, { passive: false, capture: true });
+      window.addEventListener("keydown", blockViewportZoomKey, true);
       enforceScrollLock();
     } else if (!locked && state.scrollLock) {
       const lock = state.scrollLock;
@@ -264,11 +339,16 @@ function installPreviewAnnotationLayerInPage() {
         body.style.overscrollBehavior = lock.bodyOverscrollBehavior;
       }
       window.removeEventListener("scroll", enforceScrollLock);
+      window.removeEventListener("wheel", blockViewportWheel, true);
+      window.removeEventListener("touchmove", blockViewportWheel, true);
+      window.removeEventListener("gesturestart", blockViewportGesture, true);
+      window.removeEventListener("gesturechange", blockViewportGesture, true);
+      window.removeEventListener("keydown", blockViewportZoomKey, true);
     }
   }
 
   function updateScrollLock() {
-    setScrollLocked((state.mode === "draw" && !state.hidden) || state.marks.length > 0);
+    setScrollLocked(!state.hidden);
   }
 
   function point(event) {
@@ -289,9 +369,68 @@ function installPreviewAnnotationLayerInPage() {
     };
   }
 
+  function normalizedRectFromClientRect(clientRect, padding = 4) {
+    const viewportWidth = Math.max(1, window.innerWidth);
+    const viewportHeight = Math.max(1, window.innerHeight);
+    const left = clamp(clientRect.left - padding, 0, viewportWidth);
+    const top = clamp(clientRect.top - padding, 0, viewportHeight);
+    const right = clamp(clientRect.right + padding, 0, viewportWidth);
+    const bottom = clamp(clientRect.bottom + padding, 0, viewportHeight);
+    return {
+      x: left / viewportWidth,
+      y: top / viewportHeight,
+      width: Math.max(0, right - left) / viewportWidth,
+      height: Math.max(0, bottom - top) / viewportHeight
+    };
+  }
+
+  function unionClientRects(rects) {
+    const visibleRects = rects.filter((rect) =>
+      rect.width > 0 && rect.height > 0 && rect.right >= 0 && rect.bottom >= 0 && rect.left <= window.innerWidth && rect.top <= window.innerHeight
+    );
+    if (visibleRects.length === 0) {
+      return null;
+    }
+    return visibleRects.reduce((combined, rect) => ({
+      left: Math.min(combined.left, rect.left),
+      top: Math.min(combined.top, rect.top),
+      right: Math.max(combined.right, rect.right),
+      bottom: Math.max(combined.bottom, rect.bottom),
+      width: Math.max(combined.right, rect.right) - Math.min(combined.left, rect.left),
+      height: Math.max(combined.bottom, rect.bottom) - Math.min(combined.top, rect.top)
+    }));
+  }
+
+  function selectedTextRect() {
+    const selection = window.getSelection?.();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0 || selection.toString().trim().length === 0) {
+      return null;
+    }
+    const rects = [];
+    for (let index = 0; index < selection.rangeCount; index += 1) {
+      const range = selection.getRangeAt(index);
+      rects.push(...Array.from(range.getClientRects()));
+      const fallbackRect = range.getBoundingClientRect();
+      if (fallbackRect.width > 0 && fallbackRect.height > 0) {
+        rects.push(fallbackRect);
+      }
+    }
+    return unionClientRects(rects);
+  }
+
+  function clearNativeSelection() {
+    const selection = window.getSelection?.();
+    if (selection && selection.rangeCount > 0) {
+      selection.removeAllRanges();
+    }
+  }
+
   function setMode(mode) {
     state.mode = mode === "draw" ? "draw" : "select";
+    state.selectionDrag = null;
+    state.textSelection = null;
     stage.classList.toggle("is-drawing", state.mode === "draw" && !state.hidden);
+    stage.classList.toggle("is-selecting", state.mode === "select" && !state.hidden);
     root.querySelectorAll("[data-mode]").forEach((button) => {
       button.setAttribute("aria-pressed", button.dataset.mode === state.mode ? "true" : "false");
     });
@@ -303,6 +442,9 @@ function installPreviewAnnotationLayerInPage() {
     stage.classList.toggle("hidden", state.hidden);
     if (state.hidden) {
       stage.classList.remove("is-drawing");
+      stage.classList.remove("is-selecting");
+      state.selectionDrag = null;
+      state.textSelection = null;
     } else {
       setMode(state.mode);
     }
@@ -332,22 +474,181 @@ function installPreviewAnnotationLayerInPage() {
   }
 
   function addMark(rect) {
+    if (!ensureCanCreateMark()) {
+      return;
+    }
     if (rect.width < 0.008 || rect.height < 0.008) {
       return;
     }
     const id = `annotation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    state.marks.push({ ...rect, id, color: state.color, number: state.nextNumber++, note: "", viewport: readViewport() });
-    showStatus(`${state.marks.length} annotation${state.marks.length === 1 ? "" : "s"} ready`);
+    state.marks.push({ ...rect, id, color: state.color, number: state.nextNumber++, note: rect.note ?? "", viewport: readViewport() });
     setActiveMark(id);
+    showBatchStatus();
+    publishBatchSoon();
     updateScrollLock();
   }
 
+  function closestElement(target, selector) {
+    if (target instanceof Element) {
+      return target.closest(selector);
+    }
+    if (target instanceof Node && target.parentElement) {
+      return target.parentElement.closest(selector);
+    }
+    return null;
+  }
+
   function interactiveTarget(target) {
-    return target instanceof Element && target.closest("button,select,input,textarea,a");
+    return Boolean(closestElement(target, "button,select,input,textarea,a"));
+  }
+
+  function editableTextTarget(target) {
+    const element = closestElement(target, "input,textarea,[contenteditable=''],[contenteditable='true']");
+    return Boolean(element);
+  }
+
+  function eventTouchesAnnotationLayer(event) {
+    return event.composedPath?.().includes(host) === true;
+  }
+
+  function serializedAnnotations() {
+    return state.marks.map(({ id, x, y, width, height, color, number, note, viewport }) => ({
+      id, x, y, width, height, color, number, note: note || "", viewport: viewport || readViewport()
+    }));
+  }
+
+  function buildBatchPayload(annotations = serializedAnnotations()) {
+    const ready = annotations.length > 0 && annotations.every((annotation) => String(annotation.note || "").trim().length > 0);
+    return {
+      id: state.batchId,
+      intent: "batch",
+      ready,
+      leaseId: typeof config.leaseId === "string" ? config.leaseId : typeof window.__manorPreviewAnnotationLeaseId === "string" ? window.__manorPreviewAnnotationLeaseId : "",
+      targetId: "companion",
+      annotations,
+      page: { title: document.title || "", url: location.href }
+    };
+  }
+
+  async function publishBatch(annotations = serializedAnnotations()) {
+    const payload = buildBatchPayload(annotations);
+    const signature = JSON.stringify(payload);
+    if (signature === state.lastPublishedSignature) {
+      return;
+    }
+    if (!commitAnnotations) {
+      showStatus("Annotation capture is unavailable", "error");
+      return;
+    }
+    state.lastPublishedSignature = signature;
+    state.publishing = true;
+    try {
+      await commitAnnotations(payload);
+      showBatchStatus();
+    } catch (error) {
+      state.lastPublishedSignature = "";
+      showStatus(error instanceof Error ? error.message : "Annotation capture failed", "error");
+    } finally {
+      state.publishing = false;
+    }
+  }
+
+  function publishBatchSoon() {
+    if (state.publishTimer !== null) {
+      window.clearTimeout(state.publishTimer);
+    }
+    state.publishTimer = window.setTimeout(() => {
+      state.publishTimer = null;
+      void publishBatch();
+    }, 180);
+  }
+
+  function clearPublishedBatch() {
+    if (state.publishTimer !== null) {
+      window.clearTimeout(state.publishTimer);
+      state.publishTimer = null;
+    }
+    void publishBatch([]);
+  }
+
+  function runControlCommand(target) {
+    const mode = target?.dataset.mode;
+    const action = target?.dataset.action;
+    if (mode) {
+      setMode(mode);
+    } else if (action === "undo") {
+      const removed = state.marks.pop();
+      if (removed?.id === state.selectionDrag?.markId) {
+        state.selectionDrag = null;
+      }
+      if (removed?.id === state.activeId) {
+        state.activeId = state.marks.at(-1)?.id ?? null;
+      }
+      state.nextNumber = Math.max(1, state.nextNumber - 1);
+      render();
+      syncCommentControls();
+      showBatchStatus();
+      publishBatchSoon();
+      updateScrollLock();
+    } else if (action === "clear") {
+      state.marks = [];
+      state.nextNumber = 1;
+      state.activeId = null;
+      state.selectionDrag = null;
+      state.textSelection = null;
+      showStatus("Cleared annotations");
+      render();
+      syncCommentControls();
+      clearPublishedBatch();
+      updateScrollLock();
+    } else if (action === "hide") {
+      setHidden(true);
+    } else if (action === "show") {
+      setHidden(false);
+    }
+  }
+
+  function runPointerCommand(event) {
+    const target = closestElement(event.target, "button[data-mode],button[data-action]");
+    if (!target) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const command = { target, expiresAt: Date.now() + 800 };
+    state.toolbar.lastPointerCommand = command;
+    window.setTimeout(() => {
+      if (state.toolbar.lastPointerCommand === command) {
+        state.toolbar.lastPointerCommand = null;
+      }
+    }, 900);
+    runControlCommand(target);
+  }
+
+  function runClickCommand(event) {
+    const target = closestElement(event.target, "button[data-mode],button[data-action]");
+    if (!target) {
+      return;
+    }
+    const pointerCommand = state.toolbar.lastPointerCommand;
+    if (pointerCommand?.target === target && pointerCommand.expiresAt >= Date.now()) {
+      state.toolbar.lastPointerCommand = null;
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    runControlCommand(target);
   }
 
   stage.addEventListener("pointerdown", (event) => {
     if (state.mode !== "draw" || state.hidden || interactiveTarget(event.target)) {
+      return;
+    }
+    if (!ensureCanCreateMark()) {
+      event.preventDefault();
+      event.stopPropagation();
       return;
     }
     event.preventDefault();
@@ -398,11 +699,139 @@ function installPreviewAnnotationLayerInPage() {
   stage.addEventListener("pointerup", (event) => finishDraft(event, true), true);
   stage.addEventListener("pointercancel", (event) => finishDraft(event, false), true);
 
-  toolbar.addEventListener("pointerdown", (event) => {
-    if (interactiveTarget(event.target) && !event.target.closest("[data-drag-handle]")) {
+  stage.addEventListener("pointerdown", (event) => {
+    if (state.mode !== "select" || state.hidden || interactiveTarget(event.target)) {
       return;
     }
-    if (!event.target.closest("[data-drag-handle]")) {
+    const markNode = closestElement(event.target, ".mark[data-id]");
+    const mark = markNode ? markById(markNode.dataset.id) : null;
+    if (!mark) {
+      return;
+    }
+    const pending = pendingCommentMark();
+    if (pending && pending.id !== mark.id) {
+      event.preventDefault();
+      event.stopPropagation();
+      setActiveMark(pending.id);
+      showStatus(`Add comment for #${pending.number} before selecting another mark`, "error");
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setActiveMark(mark.id);
+    state.selectionDrag = {
+      pointerId: event.pointerId,
+      markId: mark.id,
+      startPoint: point(event),
+      original: { x: mark.x, y: mark.y, width: mark.width, height: mark.height }
+    };
+    try {
+      stage.setPointerCapture(event.pointerId);
+    } catch {}
+    showStatus(`#${mark.number} selected`);
+  }, true);
+
+  stage.addEventListener("pointermove", (event) => {
+    const drag = state.selectionDrag;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    const mark = markById(drag.markId);
+    if (!mark) {
+      state.selectionDrag = null;
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const currentPoint = point(event);
+    const deltaX = currentPoint.x - drag.startPoint.x;
+    const deltaY = currentPoint.y - drag.startPoint.y;
+    mark.x = clamp(drag.original.x + deltaX, 0, Math.max(0, 1 - drag.original.width));
+    mark.y = clamp(drag.original.y + deltaY, 0, Math.max(0, 1 - drag.original.height));
+    mark.viewport = readViewport();
+    render();
+  }, true);
+
+  function finishSelectionDrag(event) {
+    const drag = state.selectionDrag;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    state.selectionDrag = null;
+    const mark = markById(drag.markId);
+    if (mark) {
+      showStatus(`#${mark.number} selected`);
+      publishBatchSoon();
+    }
+  }
+
+  stage.addEventListener("pointerup", finishSelectionDrag, true);
+  stage.addEventListener("pointercancel", finishSelectionDrag, true);
+
+  document.addEventListener("pointerdown", (event) => {
+    if (
+      state.mode !== "select" ||
+      state.hidden ||
+      event.button !== 0 ||
+      eventTouchesAnnotationLayer(event) ||
+      editableTextTarget(event.target)
+    ) {
+      return;
+    }
+    if (!ensureCanCreateMark()) {
+      event.preventDefault();
+      event.stopPropagation();
+      clearNativeSelection();
+      return;
+    }
+    state.textSelection = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY
+    };
+  }, true);
+
+  document.addEventListener("pointerup", (event) => {
+    const capture = state.textSelection;
+    state.textSelection = null;
+    if (!capture || capture.pointerId !== event.pointerId || state.mode !== "select" || state.hidden || eventTouchesAnnotationLayer(event)) {
+      return;
+    }
+    window.setTimeout(() => {
+      if (state.mode !== "select" || state.hidden) {
+        return;
+      }
+      if (!ensureCanCreateMark()) {
+        clearNativeSelection();
+        return;
+      }
+      const clientRect = selectedTextRect();
+      if (!clientRect) {
+        return;
+      }
+      const rect = normalizedRectFromClientRect(clientRect);
+      if (rect.width < 0.008 || rect.height < 0.008) {
+        return;
+      }
+      addMark(rect);
+      clearNativeSelection();
+    }, 0);
+  }, true);
+
+  document.addEventListener("pointercancel", (event) => {
+    if (state.textSelection?.pointerId === event.pointerId) {
+      state.textSelection = null;
+    }
+  }, true);
+
+  toolbar.addEventListener("pointerdown", (event) => {
+    const dragHandle = closestElement(event.target, "[data-drag-handle]");
+    if (interactiveTarget(event.target) && !dragHandle) {
+      return;
+    }
+    if (!dragHandle) {
       return;
     }
     const rect = toolbar.getBoundingClientRect();
@@ -443,8 +872,18 @@ function installPreviewAnnotationLayerInPage() {
 
   toolbar.addEventListener("pointerup", endToolbarDrag);
   toolbar.addEventListener("pointercancel", endToolbarDrag);
+  root.querySelectorAll("button[data-mode],button[data-action]").forEach((button) => {
+    button.addEventListener("pointerup", runPointerCommand);
+    button.addEventListener("click", runClickCommand);
+  });
 
   markSelect.addEventListener("change", () => {
+    const pending = pendingCommentMark();
+    if (pending && markSelect.value !== pending.id) {
+      setActiveMark(pending.id);
+      showStatus(`Add comment for #${pending.number} before selecting another mark`, "error");
+      return;
+    }
     setActiveMark(markSelect.value);
   });
 
@@ -458,67 +897,16 @@ function installPreviewAnnotationLayerInPage() {
       return;
     }
     selected.note = noteInput.value.slice(0, 280);
-    showStatus(`Comment saved for #${selected.number}`);
+    showBatchStatus();
+    publishBatchSoon();
   });
 
   async function commitBatch(intent) {
-    const annotations = state.marks.map(({ id, x, y, width, height, color, number, note, viewport }) => ({
-      id, x, y, width, height, color, number, note: note || "", viewport: viewport || readViewport()
-    }));
-    if (annotations.length === 0) {
-      showStatus("Draw an annotation first", "error");
-      return;
-    }
-    const payload = {
-      intent,
-      leaseId: typeof config.leaseId === "string" ? config.leaseId : typeof window.__manorPreviewAnnotationLeaseId === "string" ? window.__manorPreviewAnnotationLeaseId : "",
-      targetId: "companion",
-      annotations,
-      page: { title: document.title || "", url: location.href }
-    };
-    if (!commitAnnotations) {
-      showStatus("Annotation capture is unavailable", "error");
-      return;
-    }
-    try {
-      await commitAnnotations(payload);
-      showStatus(`Queued ${annotations.length} annotation${annotations.length === 1 ? "" : "s"} for Manor`);
-    } catch (error) {
-      showStatus(error instanceof Error ? error.message : "Annotation capture failed", "error");
-    }
+    await publishBatch(serializedAnnotations().map((annotation) => ({ ...annotation })));
   }
 
   root.addEventListener("click", (event) => {
-    const target = event.target;
-    const mode = target?.dataset?.mode;
-    const action = target?.dataset?.action;
-    if (mode) {
-      setMode(mode);
-    } else if (action === "undo") {
-      const removed = state.marks.pop();
-      if (removed?.id === state.activeId) {
-        state.activeId = state.marks.at(-1)?.id ?? null;
-      }
-      state.nextNumber = Math.max(1, state.nextNumber - 1);
-      showStatus(`${state.marks.length} annotation${state.marks.length === 1 ? "" : "s"} ready`);
-      render();
-      syncCommentControls();
-      updateScrollLock();
-    } else if (action === "clear") {
-      state.marks = [];
-      state.nextNumber = 1;
-      state.activeId = null;
-      showStatus("Cleared annotations");
-      render();
-      syncCommentControls();
-      updateScrollLock();
-    } else if (action === "batch") {
-      void commitBatch("batch");
-    } else if (action === "hide") {
-      setHidden(true);
-    } else if (action === "show") {
-      setHidden(false);
-    }
+    runClickCommand(event);
   });
 
   document.documentElement.appendChild(host);
@@ -535,15 +923,45 @@ function installPreviewAnnotationLayerInPage() {
     show: () => setHidden(false),
     hide: () => setHidden(true),
     setMode,
+    addRect: (rect) => {
+      if (!rect || typeof rect !== "object") {
+        return buildBatchPayload();
+      }
+      addMark({
+        x: clamp(typeof rect.x === "number" && Number.isFinite(rect.x) ? rect.x : 0, 0, 1),
+        y: clamp(typeof rect.y === "number" && Number.isFinite(rect.y) ? rect.y : 0, 0, 1),
+        width: clamp(typeof rect.width === "number" && Number.isFinite(rect.width) ? rect.width : 0, 0, 1),
+        height: clamp(typeof rect.height === "number" && Number.isFinite(rect.height) ? rect.height : 0, 0, 1),
+        color: typeof rect.color === "string" && rect.color ? rect.color : state.color,
+        note: typeof rect.note === "string" ? rect.note.slice(0, 280) : ""
+      });
+      return buildBatchPayload();
+    },
+    setNote: (idOrNumber, note) => {
+      const mark = typeof idOrNumber === "number"
+        ? state.marks.find((entry) => entry.number === idOrNumber)
+        : state.marks.find((entry) => entry.id === idOrNumber);
+      if (mark) {
+        mark.note = typeof note === "string" ? note.slice(0, 280) : "";
+        setActiveMark(mark.id);
+        showBatchStatus();
+        publishBatchSoon();
+      }
+      return buildBatchPayload();
+    },
     clear: () => {
       state.marks = [];
       state.nextNumber = 1;
       state.activeId = null;
+      state.selectionDrag = null;
+      state.textSelection = null;
       render();
       syncCommentControls();
+      clearPublishedBatch();
       updateScrollLock();
     },
-    getMarks: () => state.marks.map(({ id, x, y, width, height, color, number, note, viewport }) => ({ id, x, y, width, height, color, number, note: note || "", viewport: viewport || readViewport() }))
+    getMarks: () => serializedAnnotations(),
+    getBatch: () => buildBatchPayload()
   };
 }
 

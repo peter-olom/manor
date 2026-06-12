@@ -564,16 +564,8 @@ export function normalizePreviewVerification(
         batches: Array.isArray(verification.annotations.batches)
           ? verification.annotations.batches
               .filter((batch) => batch && typeof batch === "object")
-              .map((batch) => ({
-                id: typeof batch.id === "string" && batch.id.trim() ? batch.id.trim().slice(0, 120) : crypto.randomUUID(),
-                at: typeof batch.at === "number" && Number.isFinite(batch.at) ? batch.at : checkedAt,
-                intent: batch.intent === "insert" ? "insert" as const : "batch" as const,
-                targetId: typeof batch.targetId === "string" ? batch.targetId.trim().slice(0, 160) : "butler",
-                page: {
-                  title: typeof batch.page?.title === "string" ? batch.page.title.slice(0, 200) : "",
-                  url: typeof batch.page?.url === "string" ? batch.page.url.slice(0, 2000) : ""
-                },
-                annotations: Array.isArray(batch.annotations)
+              .map((batch) => {
+                const annotations = Array.isArray(batch.annotations)
                   ? batch.annotations
                       .filter((annotation) => annotation && typeof annotation === "object")
                       .map((annotation, index) => ({
@@ -587,8 +579,20 @@ export function normalizePreviewVerification(
                         note: typeof annotation.note === "string" ? annotation.note.slice(0, 1000) : ""
                       }))
                       .filter((annotation) => annotation.width > 0 && annotation.height > 0)
-                  : []
-              }))
+                  : [];
+                return {
+                  id: typeof batch.id === "string" && batch.id.trim() ? batch.id.trim().slice(0, 120) : crypto.randomUUID(),
+                  at: typeof batch.at === "number" && Number.isFinite(batch.at) ? batch.at : checkedAt,
+                  intent: batch.intent === "insert" ? "insert" as const : "batch" as const,
+                  ready: batch.ready === true || annotations.every((annotation) => annotation.note.trim().length > 0),
+                  targetId: typeof batch.targetId === "string" ? batch.targetId.trim().slice(0, 160) : "butler",
+                  page: {
+                    title: typeof batch.page?.title === "string" ? batch.page.title.slice(0, 200) : "",
+                    url: typeof batch.page?.url === "string" ? batch.page.url.slice(0, 2000) : ""
+                  },
+                  annotations
+                };
+              })
               .filter((batch) => batch.annotations.length > 0)
           : [],
         insertions: Array.isArray(verification.annotations.insertions)

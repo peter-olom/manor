@@ -457,7 +457,7 @@ function clampUnit(value) {
 }
 
 function formatAnnotationBatchText(batch) {
-  const heading = batch.intent === "insert" ? "Preview annotation batch" : "Queued preview annotation batch";
+  const heading = batch.intent === "insert" ? "Preview annotation" : "Preview annotation draft";
   const pageLine = batch.page.url ? `Page: ${batch.page.title || "Untitled"} (${batch.page.url})` : `Page: ${batch.page.title || "Untitled"}`;
   const lines = batch.annotations.map((annotation) => {
     const pct = (value) => `${Math.round(value * 1000) / 10}%`;

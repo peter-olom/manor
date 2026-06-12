@@ -295,6 +295,7 @@ export interface BrowserAnnotationBatchView {
   id: string;
   at: number;
   intent: "batch" | "insert";
+  ready: boolean;
   targetId: string;
   page: { title: string; url: string };
   annotations: BrowserAnnotationRectView[];

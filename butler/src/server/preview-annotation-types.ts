@@ -23,6 +23,7 @@ export type OperatorPreviewAnnotationBatch = {
   id: string;
   at: number;
   intent: "batch" | "insert";
+  ready: boolean;
   leaseId: string;
   targetId: string;
   page: { title: string; url: string };

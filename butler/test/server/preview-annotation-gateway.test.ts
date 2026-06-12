@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { normalizeInternalAnnotationPrefillTarget } from "../../src/server/preview-annotation-routes";
+
 const source = await readFile(new URL("../../src/server/preview-gateway.ts", import.meta.url), "utf8");
 const routesSource = await readFile(new URL("../../src/server/preview-annotation-routes.ts", import.meta.url), "utf8");
 
@@ -33,4 +35,21 @@ test("operator companion toolbar has batch list and insert endpoints", () => {
   assert.match(routesSource, /\/api\/preview-annotations\/operator\/batches/);
   assert.match(routesSource, /\/api\/preview-annotations\/operator\/batches\/:batchId\/insert/);
   assert.match(routesSource, /insertPreviewAnnotationBatch/);
+  assert.match(routesSource, /ready:/);
+  assert.match(routesSource, /existingIndex/);
+  assert.match(routesSource, /removePreviewAnnotationBatchByIdentity/);
+  assert.match(routesSource, /Add comments to every mark before inserting preview annotations/);
+});
+
+test("operator annotation insert accepts composer target payloads", () => {
+  assert.deepEqual(normalizeInternalAnnotationPrefillTarget({ kind: "butler" }), { kind: "butler" });
+  assert.deepEqual(normalizeInternalAnnotationPrefillTarget({ kind: "thread", threadId: "thread-1" }), {
+    kind: "thread",
+    threadId: "thread-1"
+  });
+  assert.deepEqual(normalizeInternalAnnotationPrefillTarget({ id: "butler" }), { kind: "butler" });
+  assert.deepEqual(normalizeInternalAnnotationPrefillTarget({ id: "thread:thread-1" }), {
+    kind: "thread",
+    threadId: "thread-1"
+  });
 });
