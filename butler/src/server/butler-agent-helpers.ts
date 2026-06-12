@@ -51,7 +51,7 @@ export type ButlerOperatorThreadGuard = {
   contextPrompt: string | null;
 };
 
-export const SNAPSHOT_MESSAGE_TAIL_LIMIT = 200;
+export const SNAPSHOT_MESSAGE_TAIL_LIMIT = 80;
 export const MAX_HISTORY_PAGE_SIZE = 1000;
 export const BUTLER_BACKGROUND_PROMPT_PREFIX = "[[BUTLER_BACKGROUND]]";
 const THREAD_ID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;

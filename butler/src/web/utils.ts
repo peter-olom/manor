@@ -27,7 +27,7 @@ export const BUTLER_DRAFT_STORAGE_KEY = "manor.butler.draft";
 export const THREAD_DRAFT_STORAGE_KEY_PREFIX = "manor.butler.threadDraft.";
 export const BUTLER_RUNTIME_VISIBILITY_STORAGE_KEY = "manor.butler.showRuntime";
 export const DRAFT_PERSIST_DELAY_MS = 180;
-export const BUTLER_HISTORY_PAGE_SIZE = 250;
+export const BUTLER_HISTORY_PAGE_SIZE = 100;
 export const BUTLER_HISTORY_AUTOLOAD_THRESHOLD_PX = 240;
 
 export function formatTime(value: number | null | undefined): string {

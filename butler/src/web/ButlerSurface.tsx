@@ -311,6 +311,7 @@ export function ButlerSurface({
   const butlerScrollTopRef = useRef(0);
   const butlerPrependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
   const butlerMessageTimesRef = useRef<Record<string, number>>({});
+  const liveMessageSignatureRef = useRef<string | null>(null);
   const jumpFlashTimerRef = useRef<number | null>(null);
   const butlerViewRestoredRef = useRef(false);
   const checklistThreads = useMemo(
@@ -371,12 +372,30 @@ export function ButlerSurface({
     }
 
     const tailMessages = live.messages;
+    const lastMessage = tailMessages.at(-1);
+    const firstMessage = tailMessages[0];
+    const signature = [
+      live.messageCount,
+      tailMessages.length,
+      firstMessage?.id ?? "none",
+      lastMessage?.id ?? "none",
+      lastMessage?.role ?? "none",
+      lastMessage?.text ?? ""
+    ].join(":");
+
+    if (liveMessageSignatureRef.current === signature) {
+      return;
+    }
+    liveMessageSignatureRef.current = signature;
+
     const tailStart = Math.max(0, live.messageCount - tailMessages.length);
 
     startTransition(() => {
       setHistory((current) => {
         if (live.messageCount === 0) {
-          return { messages: [], loadedStart: 0, totalCount: 0 };
+          return current.messages.length === 0 && current.totalCount === 0
+            ? current
+            : { messages: [], loadedStart: 0, totalCount: 0 };
         }
 
         if (current.messages.length === 0 || current.loadedStart > tailStart || current.totalCount > live.messageCount) {
@@ -389,11 +408,21 @@ export function ButlerSurface({
 
         const prefixCount = Math.max(0, Math.min(current.messages.length, tailStart - current.loadedStart));
         const prefix = current.messages.slice(0, prefixCount);
+        const messages = dedupeMessages([
+          ...prefix,
+          ...tailMessages
+        ]);
+        if (
+          current.totalCount === live.messageCount &&
+          current.loadedStart === (prefix.length > 0 ? current.loadedStart : tailStart) &&
+          current.messages.length === messages.length &&
+          current.messages.at(-1)?.id === messages.at(-1)?.id &&
+          current.messages.at(-1)?.text === messages.at(-1)?.text
+        ) {
+          return current;
+        }
         return {
-          messages: dedupeMessages([
-            ...prefix,
-            ...tailMessages
-          ]),
+          messages,
           loadedStart: prefix.length > 0 ? current.loadedStart : tailStart,
           totalCount: live.messageCount
         };
@@ -767,32 +796,32 @@ export function ButlerSurface({
     [visibleButlerActivityTurns]
   );
   const butlerConversationRows = useMemo(
-    () => {
-      const timestampedRows = [
-        ...butlerMessagesWithTimes.map((message) => ({ id: message.id, kind: "message" as const, message, at: message.at })),
-        ...visibleButlerActivityTurns
-          .filter((turn) => turn.status === "completed" && turn.items.length > 0)
-          .map((turn) => ({
-            id: turn.id,
-            kind: "activity" as const,
-            turn,
-            active: false,
-            at: turn.completedAt ?? turn.startedAt
-          }))
-      ].sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
-
-      return [
-        ...timestampedRows,
-        ...(pendingButlerText ? [{ id: `pending-${pendingButlerText}`, kind: "pending" as const, text: pendingButlerText }] : []),
-        ...((shell?.butler.pending || shell?.butler.isStreaming) ? [{ id: "butler-working", kind: "working" as const }] : []),
-        ...(activeButlerActivityTurn ? [{ id: `${activeButlerActivityTurn.id}-live`, kind: "activity" as const, turn: activeButlerActivityTurn, active: true }] : [])
-      ];
-    },
-    [activeButlerActivityTurn, butlerMessagesWithTimes, pendingButlerText, shell?.butler.isStreaming, shell?.butler.pending, visibleButlerActivityTurns]
+    () => [
+      ...butlerMessagesWithTimes.map((message) => ({ id: message.id, kind: "message" as const, message, at: message.at })),
+      ...visibleButlerActivityTurns
+        .filter((turn) => turn.status === "completed" && turn.items.length > 0)
+        .map((turn) => ({
+          id: turn.id,
+          kind: "activity" as const,
+          turn,
+          active: false,
+          at: turn.completedAt ?? turn.startedAt
+        }))
+    ].sort((left, right) => (left.at ?? 0) - (right.at ?? 0)),
+    [butlerMessagesWithTimes, visibleButlerActivityTurns]
   );
   const deferredRows = useDeferredValue(butlerConversationRows);
+  const immediateRows = useMemo(
+    () => [
+      ...(pendingButlerText ? [{ id: `pending-${pendingButlerText}`, kind: "pending" as const, text: pendingButlerText }] : []),
+      ...((shell?.butler.pending || shell?.butler.isStreaming) ? [{ id: "butler-working", kind: "working" as const }] : []),
+      ...(activeButlerActivityTurn ? [{ id: `${activeButlerActivityTurn.id}-live`, kind: "activity" as const, turn: activeButlerActivityTurn, active: true }] : [])
+    ],
+    [activeButlerActivityTurn, pendingButlerText, shell?.butler.isStreaming, shell?.butler.pending]
+  );
+  const renderRows = useMemo(() => [...deferredRows, ...immediateRows], [deferredRows, immediateRows]);
   const latestButlerActivityKey =
-    deferredRows.length > 0 ? `${deferredRows[deferredRows.length - 1].id}:${deferredRows.length}` : "empty";
+    renderRows.length > 0 ? `${renderRows[renderRows.length - 1].id}:${renderRows.length}` : "empty";
 
   useLayoutEffect(() => {
     if (!followButler || butlerPrependAnchorRef.current) {
@@ -959,7 +988,7 @@ export function ButlerSurface({
               }
             }}
           >
-            {deferredRows.length === 0 ? (
+            {renderRows.length === 0 ? (
               live ? (
                 <div className="empty">Ask Butler about run status, next steps, or which run you should open.</div>
               ) : (
@@ -974,7 +1003,7 @@ export function ButlerSurface({
               )
             ) : (
               <div className="conversation-list">
-                {deferredRows.map((row) => {
+                {renderRows.map((row) => {
                   if (row.kind === "working") {
                     return (
                       <div key={row.id} className="conversation-row is-assistant">
