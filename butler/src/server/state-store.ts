@@ -1,7 +1,6 @@
 import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-
 import {
   buildProjectSummary,
   buildSupervisorSummary,
@@ -64,6 +63,7 @@ import { getStateStoreJobMemory, getStateStoreProjectMemory, listStateStoreJobMe
 import { completeStateStoreRuntimeCleanupTask, enqueueStateStoreRuntimeCleanupTask, failStateStoreRuntimeCleanupTask, listStateStoreDueRuntimeCleanupTasks, listStateStoreExpiredLeaseIds, noteStateStorePreviewLeaseActivity, noteStateStoreServiceLeaseActivity, noteStateStoreStackLeaseActivity, noteStateStoreThreadLeaseActivity, setStateStorePreviewLeaseLifecycle, setStateStorePreviewLeasePinned, setStateStoreServiceLeasePinned, setStateStoreStackLeaseLifecycle, setStateStoreStackLeasePinned } from "./state-store-runtime.js";
 import { findStateStoreProjectArtifactById, getStateStoreProjectArtifact, getStateStoreProjectPolicy, listStateStoreProjectArtifacts, listStateStoreProjectPolicies, pruneMissingStateStoreProjectArtifacts, removeStateStoreProjectArtifact, searchStateStoreProjectArtifacts, upsertStateStoreProjectArtifact, upsertStateStoreProjectPolicy } from "./state-store-project-assets.js";
 import { recordStateStoreButlerMemory } from "./state-store-butler-memory.js";
+import { enqueueStateStoreMemorySynthesis, listDueStateStoreMemorySynthesis, listStateStoreMemoryGraph, recordStateStoreMemoryObservation, searchStateStoreMemoryGraph, updateStateStoreMemorySynthesisQueueEntry, upsertStateStoreMemoryEntity, upsertStateStoreMemoryRelationship } from "./state-store-memory-graph.js";
 import { listStateStoreDesktopSessions, removeStateStoreDesktopSession, replaceStateStoreDesktopSessions, upsertStateStoreDesktopSession } from "./state-store-desktop.js";
 import { buildStateStoreRuntimeSnapshot, buildStateStoreShellSnapshot, buildStateStoreSnapshot } from "./state-store-snapshot.js";
 import { parseThreadExecutionContract } from "./thread-contract.js";
@@ -84,11 +84,18 @@ import type {
   DesktopSessionView,
   JobMemoryEntryKind, JobMemoryPromotionCandidateView, JobMemoryView, PreviewProofRecordView, PreviewVerificationArtifactView,
   PreviewVerificationConsoleMessageView, PreviewVerificationFailedRequestView, PreviewVerificationView, PreviewLeaseView,
+  MemoryEntityType, MemoryGraphRetrievalView, MemoryGraphView, MemoryObservationSourceKind, MemoryObservationView,
+  MemoryRelationshipView, MemorySynthesisPriority, MemorySynthesisQueueEntryView, MemoryTaskStatus,
   ProjectMemoryView, ProjectArtifactView, ProjectPolicyView, ReasoningEffort, RuntimeCleanupTaskView, RuntimeSnapshot,
   StackLeaseView, ServiceLeaseView, SupervisionChecklistItemStatus, SupervisionChecklistView, PersistedUiState
 } from "./types.js";
 type JobMemoryWriteContext = { projectId?: string | null; projectLabel?: string | null; operatorGoal?: string | null; requestedTask?: string | null; proofRequirements?: string[] };
-
+type MemoryObservationInput = { idempotencyKey: string; projectId?: string | null; projectLabel?: string | null; threadId?: string | null; sourceKind: MemoryObservationSourceKind; sourceId: string; summary: string; details?: string | null; payload?: Record<string, unknown>; observedAt?: number | null; durable?: boolean };
+type MemoryTaskProjectionInput = { status?: MemoryTaskStatus | null; title?: string | null; currentStep?: string | null; blocker?: string | null; eventType?: string | null };
+type MemoryEntityInput = { projectId: string; type: MemoryEntityType; name: string; canonicalKey?: string | null; aliases?: string[]; summary?: string | null; sourceObservationId: string };
+type MemoryRelationshipInput = { projectId: string; sourceEntityId: string; predicate: string; targetEntityId: string; sourceObservationId: string; confidence?: number; validFrom?: number | null; validTo?: number | null };
+type MemorySynthesisInput = { idempotencyKey: string; projectId: string; threadId?: string | null; sourceObservationId: string; reason: string; priority?: MemorySynthesisPriority; runAfter?: number | null };
+type StoreMemoryUpdateObserver = { observeThreadCreated(threadId: string): unknown; observeThreadContract(threadId: string, contract: CodexThreadExecutionContractView): unknown };
 export class ButlerStateStore extends EventEmitter {
   private readonly uiStatePath: string;
   private readonly threads = new Map<string, CodexThreadRecord>();
@@ -118,21 +125,22 @@ export class ButlerStateStore extends EventEmitter {
   private readonly persistedJobMemoriesByThreadId = new Map<string, JobMemoryView>();
   private readonly persistedProjectMemoriesByProjectId = new Map<string, ProjectMemoryView>();
   private readonly persistedButlerMemoryEntries: ButlerMemoryEntryView[] = [];
+  private readonly persistedMemoryObservations: MemoryObservationView[] = []; private readonly persistedMemoryObservationIdsByKey = new Map<string, string>();
+  private readonly persistedMemoryEntitiesById = new Map<string, MemoryGraphView["entities"][number]>(); private readonly persistedMemoryEntityIdsByKey = new Map<string, string>();
+  private readonly persistedMemoryRelationshipsById = new Map<string, MemoryRelationshipView>(); private readonly persistedMemoryTasksById = new Map<string, MemoryGraphView["tasks"][number]>();
+  private readonly persistedMemoryTaskEvents: MemoryGraphView["taskEvents"] = []; private readonly persistedMemorySynthesisQueueById = new Map<string, MemorySynthesisQueueEntryView>(); private readonly persistedMemorySynthesisQueueIdsByKey = new Map<string, string>();
   private readonly persistedProjectArtifactsByProjectId = new Map<string, ProjectArtifactView[]>();
   private readonly persistedProjectPoliciesByProjectId = new Map<string, ProjectPolicyView[]>();
-
+  private memoryUpdateObserver: StoreMemoryUpdateObserver | null = null;
   private getInternalAccess(): StateStoreInternalAccess {
     return this as unknown as StateStoreInternalAccess;
   }
-
   private reconcileThreadWindows(): boolean {
     return reconcileStateStoreThreadWindows(this.getInternalAccess());
   }
-
   private refreshStackMembership(stackId: string, now = Date.now()): void {
     refreshStateStoreStackMembership(this.getInternalAccess(), stackId, now);
   }
-
   constructor(
     uiStatePath: string,
     options?: {
@@ -151,14 +159,12 @@ export class ButlerStateStore extends EventEmitter {
     this.leaseReapGraceMs = options?.leaseReapGraceMs ?? DEFAULT_LEASE_REAP_GRACE_MS;
     this.artifactRetentionMs = options?.artifactRetentionMs ?? DEFAULT_ARTIFACT_RETENTION_MS;
   }
-
   private applyLeaseLifecycle<T extends PreviewLeaseView | StackLeaseView | ServiceLeaseView>(
     lease: T,
     defaults: { leaseTtlMs: number; now?: number }
   ): T {
     return applyStateStoreLeaseLifecycle(this.getInternalAccess(), lease, defaults);
   }
-
   private normalizePreviewLease(lease: PreviewLeaseView, now = Date.now()): PreviewLeaseView {
     return normalizeStateStorePreviewLease(this.getInternalAccess(), lease, now);
   }
@@ -186,6 +192,8 @@ export class ButlerStateStore extends EventEmitter {
   private queueSave(): void { queueStateStoreSave(this.getInternalAccess()); }
 
   private emitChange(): void { emitStateStoreChange(this.getInternalAccess()); }
+
+  setMemoryUpdateObserver(observer: StoreMemoryUpdateObserver | null): void { this.memoryUpdateObserver = observer; }
 
   private restorePersistedThread(thread: CodexThreadDetailView): void { restorePersistedStateStoreThread(this.getInternalAccess(), thread); }
 
@@ -259,15 +267,17 @@ export class ButlerStateStore extends EventEmitter {
 
   listButlerMemory(): ButlerMemoryEntryView[] { return [...this.persistedButlerMemoryEntries]; }
 
-  recordButlerMemory(input: {
-    summary: string;
-    details?: string | null;
-    source?: ButlerMemoryEntryView["source"];
-    sourceMessageId?: string | null;
-    tags?: unknown;
-  }): ButlerMemoryEntryView {
-    return recordStateStoreButlerMemory(this.getInternalAccess(), input);
-  }
+  recordButlerMemory(input: { summary: string; details?: string | null; source?: ButlerMemoryEntryView["source"]; sourceMessageId?: string | null; tags?: unknown }): ButlerMemoryEntryView { return recordStateStoreButlerMemory(this.getInternalAccess(), input); }
+
+  listMemoryGraph(): MemoryGraphView { return listStateStoreMemoryGraph(this.getInternalAccess()); }
+
+  searchMemoryGraph(input: { projectId?: string | null; threadId?: string | null; query?: string | null; limit?: number | null }): MemoryGraphRetrievalView { return searchStateStoreMemoryGraph(this.getInternalAccess(), input); }
+  recordMemoryObservation(input: MemoryObservationInput, taskProjection?: MemoryTaskProjectionInput | null): MemoryObservationView { return recordStateStoreMemoryObservation(this.getInternalAccess(), input, taskProjection); }
+  upsertMemoryEntity(input: MemoryEntityInput): MemoryGraphView["entities"][number] { return upsertStateStoreMemoryEntity(this.getInternalAccess(), input); }
+  upsertMemoryRelationship(input: MemoryRelationshipInput): MemoryRelationshipView { return upsertStateStoreMemoryRelationship(this.getInternalAccess(), input); }
+  enqueueMemorySynthesis(input: MemorySynthesisInput): MemorySynthesisQueueEntryView { return enqueueStateStoreMemorySynthesis(this.getInternalAccess(), input); }
+  listDueMemorySynthesis(limit?: number, at?: number): MemorySynthesisQueueEntryView[] { return listDueStateStoreMemorySynthesis(this.getInternalAccess(), limit, at); }
+  updateMemorySynthesisQueueEntry(id: string, patch: Parameters<typeof updateStateStoreMemorySynthesisQueueEntry>[2]): MemorySynthesisQueueEntryView | null { return updateStateStoreMemorySynthesisQueueEntry(this.getInternalAccess(), id, patch); }
 
   listProjectArtifacts(projectId?: string | null): ProjectArtifactView[] { return listStateStoreProjectArtifacts(this.getInternalAccess(), projectId); }
 
@@ -354,6 +364,7 @@ export class ButlerStateStore extends EventEmitter {
       return;
     }
 
+    const wasKnown = this.threads.has(id);
     const record = this.getOrCreateThread(id);
     if (Object.prototype.hasOwnProperty.call(thread, "name")) {
       record.name = typeof thread.name === "string" && thread.name.trim() ? thread.name.trim() : null;
@@ -366,7 +377,7 @@ export class ButlerStateStore extends EventEmitter {
     record.status = normalizeStatus(thread.status);
     record.modelProvider = typeof thread.modelProvider === "string" ? thread.modelProvider : record.modelProvider;
     const parsedExecutionContract = parseThreadExecutionContract(record.preview);
-    if (parsedExecutionContract) { record.executionContract = parsedExecutionContract; record.supervisionChecklist = buildSupervisionChecklist(record, parsedExecutionContract); this.persistedExecutionContractsByThreadId.set(id, parsedExecutionContract); this.persistedSupervisionChecklistsByThreadId.set(id, { ...record.supervisionChecklist }); }
+    if (parsedExecutionContract) { record.executionContract = parsedExecutionContract; record.supervisionChecklist = buildSupervisionChecklist(record, parsedExecutionContract); this.persistedExecutionContractsByThreadId.set(id, parsedExecutionContract); this.persistedSupervisionChecklistsByThreadId.set(id, { ...record.supervisionChecklist }); this.memoryUpdateObserver?.observeThreadContract(id, parsedExecutionContract); }
 
     if (Array.isArray(thread.turns)) {
       const existingTurnsById = new Map(record.turns.map((turn) => [turn.id, turn]));
@@ -386,42 +397,23 @@ export class ButlerStateStore extends EventEmitter {
     this.refreshDerivedThreadState(record);
     if (!record.executionContract) {
       const inferredContract = inferPersistedThreadExecutionContract(record);
-      if (inferredContract) {
-        record.executionContract = inferredContract;
-        record.supervisionChecklist = buildSupervisionChecklist(record, inferredContract);
-        this.persistedExecutionContractsByThreadId.set(id, inferredContract);
-        this.persistedSupervisionChecklistsByThreadId.set(id, { ...record.supervisionChecklist });
-        this.refreshDerivedThreadState(record);
-      }
+      if (inferredContract) { record.executionContract = inferredContract; record.supervisionChecklist = buildSupervisionChecklist(record, inferredContract); this.persistedExecutionContractsByThreadId.set(id, inferredContract); this.persistedSupervisionChecklistsByThreadId.set(id, { ...record.supervisionChecklist }); this.refreshDerivedThreadState(record); this.memoryUpdateObserver?.observeThreadContract(id, inferredContract); }
     }
+    if (!wasKnown) this.memoryUpdateObserver?.observeThreadCreated(id);
     this.emitChange();
   }
 
-  setThreadExecutionContract(threadId: string, contract: CodexThreadExecutionContractView): void {
-    const record = this.getOrCreateThread(threadId); record.executionContract = { ...contract };
-    record.supervisionChecklist = buildSupervisionChecklist(record, contract); record.updatedAt = Date.now();
-    this.persistedExecutionContractsByThreadId.set(threadId, { ...record.executionContract }); this.persistedSupervisionChecklistsByThreadId.set(threadId, { ...record.supervisionChecklist });
-    this.refreshDerivedThreadState(record); this.queueSave(); this.emitChange();
-  }
+  setThreadExecutionContract(threadId: string, contract: CodexThreadExecutionContractView): void { const record = this.getOrCreateThread(threadId); record.executionContract = { ...contract }; record.supervisionChecklist = buildSupervisionChecklist(record, contract); record.updatedAt = Date.now(); this.persistedExecutionContractsByThreadId.set(threadId, { ...record.executionContract }); this.persistedSupervisionChecklistsByThreadId.set(threadId, { ...record.supervisionChecklist }); this.refreshDerivedThreadState(record); this.memoryUpdateObserver?.observeThreadContract(threadId, contract); this.queueSave(); this.emitChange(); }
 
   getSupervisionChecklist(threadId: string): SupervisionChecklistView | null { return this.getOrCreateThread(threadId).supervisionChecklist; }
 
   refreshCompletedSupervisionChecklistForFollowup(threadId: string, taskText: string): SupervisionChecklistView | null { const record = this.getOrCreateThread(threadId); const refreshed = refreshCompletedChecklistForFollowup(record, taskText); if (!refreshed) return null; record.executionContract = { ...refreshed.contract }; record.supervisionChecklist = refreshed.checklist; record.updatedAt = Date.now(); this.persistedExecutionContractsByThreadId.set(threadId, { ...record.executionContract }); this.persistedSupervisionChecklistsByThreadId.set(threadId, { ...record.supervisionChecklist }); this.refreshDerivedThreadState(record); this.queueSave(); this.emitChange(); return record.supervisionChecklist; }
 
-  reviewAcceptancePoint(input: { threadId: string; pointId: string; status: SupervisionChecklistItemStatus; note?: string | null; nextInstruction?: string | null }): SupervisionChecklistView {
-    const thread = this.getOrCreateThread(input.threadId); const checklist = thread.supervisionChecklist;
-    if (!checklist) throw new Error(`No supervision checklist exists for job ${input.threadId}.`);
-    reviewChecklistAcceptancePoint(checklist, input); thread.updatedAt = checklist.updatedAt;
-    this.persistedSupervisionChecklistsByThreadId.set(input.threadId, { ...checklist }); this.queueSave(); this.emitChange(); return checklist;
-  }
+  reviewAcceptancePoint(input: { threadId: string; pointId: string; status: SupervisionChecklistItemStatus; note?: string | null; nextInstruction?: string | null }): SupervisionChecklistView { const thread = this.getOrCreateThread(input.threadId); const checklist = thread.supervisionChecklist; if (!checklist) throw new Error(`No supervision checklist exists for job ${input.threadId}.`); reviewChecklistAcceptancePoint(checklist, input); thread.updatedAt = checklist.updatedAt; this.persistedSupervisionChecklistsByThreadId.set(input.threadId, { ...checklist }); this.queueSave(); this.emitChange(); return checklist; }
 
   buildQueuedRejectionInstruction(threadId: string): string | null { const checklist = this.getOrCreateThread(threadId).supervisionChecklist; return checklist ? buildQueuedRejectionInstruction(checklist) : null; }
 
-  clearQueuedRejectionInstructions(threadId: string): SupervisionChecklistView | null {
-    const thread = this.getOrCreateThread(threadId); if (!thread.supervisionChecklist) return null;
-    clearQueuedRejectionInstructions(thread.supervisionChecklist); this.persistedSupervisionChecklistsByThreadId.set(threadId, { ...thread.supervisionChecklist });
-    this.queueSave(); this.emitChange(); return thread.supervisionChecklist;
-  }
+  clearQueuedRejectionInstructions(threadId: string): SupervisionChecklistView | null { const thread = this.getOrCreateThread(threadId); if (!thread.supervisionChecklist) return null; clearQueuedRejectionInstructions(thread.supervisionChecklist); this.persistedSupervisionChecklistsByThreadId.set(threadId, { ...thread.supervisionChecklist }); this.queueSave(); this.emitChange(); return thread.supervisionChecklist; }
 
   markLoadedThreads(threadIds: string[]): void { const loaded = new Set(threadIds); for (const record of this.threads.values()) record.loaded = loaded.has(record.id); this.emitChange(); }
 

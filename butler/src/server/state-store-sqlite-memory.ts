@@ -13,6 +13,12 @@ import type {
   JobMemoryEntryView,
   JobMemoryPromotionCandidateView,
   JobMemoryView,
+  MemoryEntityView,
+  MemoryObservationView,
+  MemoryRelationshipView,
+  MemorySynthesisQueueEntryView,
+  MemoryTaskEventView,
+  MemoryTaskView,
   ProjectArtifactKind,
   ProjectArtifactSourceKind,
   ProjectArtifactView,
@@ -69,6 +75,19 @@ function ensureSchema(db: SqlJsDatabase): void {
     "CREATE INDEX IF NOT EXISTS idx_project_memory_entries_project ON project_memory_entries(project_id, accepted_at DESC);",
     "CREATE TABLE IF NOT EXISTS butler_memory_entries (id TEXT PRIMARY KEY, summary TEXT NOT NULL, details TEXT, source TEXT NOT NULL, source_message_id TEXT, tags_json TEXT NOT NULL, created_at INTEGER NOT NULL);",
     "CREATE INDEX IF NOT EXISTS idx_butler_memory_created ON butler_memory_entries(created_at DESC);",
+    "CREATE TABLE IF NOT EXISTS memory_observations (id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, project_label TEXT NOT NULL, thread_id TEXT, source_kind TEXT NOT NULL, source_id TEXT NOT NULL, summary TEXT NOT NULL, details TEXT, payload_json TEXT NOT NULL, observed_at INTEGER NOT NULL, created_at INTEGER NOT NULL, durable INTEGER NOT NULL);",
+    "CREATE INDEX IF NOT EXISTS idx_memory_observations_project_observed ON memory_observations(project_id, observed_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_memory_observations_thread_observed ON memory_observations(thread_id, observed_at DESC);",
+    "CREATE TABLE IF NOT EXISTS memory_entities (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, type TEXT NOT NULL, name TEXT NOT NULL, canonical_key TEXT NOT NULL, aliases_json TEXT NOT NULL, summary TEXT, source_observation_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE(project_id, canonical_key));",
+    "CREATE INDEX IF NOT EXISTS idx_memory_entities_project_type ON memory_entities(project_id, type);",
+    "CREATE TABLE IF NOT EXISTS memory_relationships (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_entity_id TEXT NOT NULL, predicate TEXT NOT NULL, target_entity_id TEXT NOT NULL, source_observation_id TEXT NOT NULL, confidence REAL NOT NULL, valid_from INTEGER, valid_to INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);",
+    "CREATE INDEX IF NOT EXISTS idx_memory_relationships_project_predicate ON memory_relationships(project_id, predicate);",
+    "CREATE TABLE IF NOT EXISTS memory_tasks (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, project_label TEXT NOT NULL, thread_id TEXT, title TEXT NOT NULL, status TEXT NOT NULL, current_step TEXT, blocker TEXT, source_observation_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);",
+    "CREATE INDEX IF NOT EXISTS idx_memory_tasks_project_status ON memory_tasks(project_id, status, updated_at DESC);",
+    "CREATE TABLE IF NOT EXISTS memory_task_events (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, event_type TEXT NOT NULL, summary TEXT NOT NULL, observation_id TEXT NOT NULL, at INTEGER NOT NULL);",
+    "CREATE INDEX IF NOT EXISTS idx_memory_task_events_task_at ON memory_task_events(task_id, at DESC);",
+    "CREATE TABLE IF NOT EXISTS memory_synthesis_queue (id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, thread_id TEXT, source_observation_id TEXT NOT NULL, reason TEXT NOT NULL, priority TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL, last_error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, run_after INTEGER NOT NULL, completed_at INTEGER);",
+    "CREATE INDEX IF NOT EXISTS idx_memory_synthesis_due ON memory_synthesis_queue(status, run_after, priority);",
     "CREATE TABLE IF NOT EXISTS project_artifacts (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, project_label TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, description TEXT, file_name TEXT NOT NULL, file_path TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes INTEGER NOT NULL, tags_json TEXT NOT NULL, metadata_json TEXT NOT NULL, source_kind TEXT NOT NULL, source_url TEXT, source_thread_id TEXT, checksum_sha256 TEXT, text_preview TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);",
     "CREATE INDEX IF NOT EXISTS idx_project_artifacts_project_updated ON project_artifacts(project_id, updated_at DESC);",
     "CREATE INDEX IF NOT EXISTS idx_project_artifacts_kind_updated ON project_artifacts(kind, updated_at DESC);",
@@ -123,6 +142,18 @@ function jsonRecord(value: unknown): Record<string, string> {
         .map(([key, entryValue]) => [key.trim(), entryValue.trim()])
         .filter(([key]) => key.length > 0)
     );
+  } catch {
+    return {};
+  }
+}
+
+function jsonObject(value: unknown): Record<string, unknown> {
+  if (typeof value !== "string" || !value.trim()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
   } catch {
     return {};
   }
@@ -277,6 +308,63 @@ function normalizeCandidate(entry: JobMemoryPromotionCandidateView, memory: { th
   };
 }
 
+function normalizeObservationSourceKind(value: unknown): MemoryObservationView["sourceKind"] {
+  return value === "operator_message" ||
+    value === "thread_created" ||
+    value === "thread_contract" ||
+    value === "harness_checkpoint" ||
+    value === "harness_decision" ||
+    value === "harness_note" ||
+    value === "harness_report" ||
+    value === "promotion_resolved" ||
+    value === "pre_delete_thread" ||
+    value === "pre_delete_threads" ||
+    value === "pre_clear_chat" ||
+    value === "pre_delete_chat_suffix" ||
+    value === "artifact_saved" ||
+    value === "proof_saved" ||
+    value === "policy_saved" ||
+    value === "synthesis_result"
+    ? value
+    : "system";
+}
+
+function normalizeMemoryEntityType(value: unknown): MemoryEntityView["type"] {
+  return value === "agent" ||
+    value === "artifact" ||
+    value === "branch" ||
+    value === "component" ||
+    value === "decision" ||
+    value === "environment" ||
+    value === "feature" ||
+    value === "person" ||
+    value === "policy" ||
+    value === "project" ||
+    value === "repo" ||
+    value === "service" ||
+    value === "task" ||
+    value === "thread"
+    ? value
+    : "unknown";
+}
+
+function normalizeMemoryTaskStatus(value: unknown): MemoryTaskView["status"] {
+  return value === "queued" ||
+    value === "in_progress" ||
+    value === "blocked" ||
+    value === "completed_pending_review" ||
+    value === "completed" ||
+    value === "archived" ||
+    value === "deleted" ||
+    value === "stale"
+    ? value
+    : "unknown";
+}
+
+function normalizeMemoryQueueStatus(value: unknown): MemorySynthesisQueueEntryView["status"] {
+  return value === "running" || value === "completed" || value === "failed" || value === "skipped" ? value : "pending";
+}
+
 export async function loadStateStoreSqliteMemory(access: StateStoreInternalAccess): Promise<boolean> {
   const dbPath = sqlitePath(access);
   const db = await openDb(dbPath);
@@ -286,8 +374,15 @@ export async function loadStateStoreSqliteMemory(access: StateStoreInternalAcces
     const projectRows = queryRows(db, "SELECT * FROM project_memories;");
     const projectEntryRows = queryRows(db, "SELECT * FROM project_memory_entries;");
     const butlerRows = queryRows(db, "SELECT * FROM butler_memory_entries;");
+    const observationRows = queryRows(db, "SELECT * FROM memory_observations;");
+    const entityRows = queryRows(db, "SELECT * FROM memory_entities;");
+    const relationshipRows = queryRows(db, "SELECT * FROM memory_relationships;");
+    const taskRows = queryRows(db, "SELECT * FROM memory_tasks;");
+    const taskEventRows = queryRows(db, "SELECT * FROM memory_task_events;");
+    const synthesisQueueRows = queryRows(db, "SELECT * FROM memory_synthesis_queue;");
     const artifactRows = queryRows(db, "SELECT * FROM project_artifacts;");
-    const hasMemoryRows = jobRows.length > 0 || projectRows.length > 0 || projectEntryRows.length > 0 || butlerRows.length > 0;
+    const hasGraphRows = observationRows.length > 0 || entityRows.length > 0 || relationshipRows.length > 0 || taskRows.length > 0 || taskEventRows.length > 0 || synthesisQueueRows.length > 0;
+    const hasMemoryRows = jobRows.length > 0 || projectRows.length > 0 || projectEntryRows.length > 0 || butlerRows.length > 0 || hasGraphRows;
     const hasArtifactRows = artifactRows.length > 0;
     if (!hasMemoryRows && !hasArtifactRows) {
       await saveDb(dbPath, db);
@@ -358,6 +453,110 @@ export async function loadStateStoreSqliteMemory(access: StateStoreInternalAcces
         tags: jsonList(row.tags_json),
         createdAt: typeof row.created_at === "number" ? row.created_at : Date.now()
       })).sort((left, right) => left.createdAt - right.createdAt).slice(-100));
+
+      access.persistedMemoryObservations.splice(0, access.persistedMemoryObservations.length);
+      access.persistedMemoryObservationIdsByKey.clear();
+      for (const row of observationRows) {
+        const observation: MemoryObservationView = {
+          id: String(row.id ?? crypto.randomUUID()),
+          idempotencyKey: String(row.idempotency_key ?? row.id ?? crypto.randomUUID()),
+          projectId: String(row.project_id ?? "unknown"),
+          projectLabel: String(row.project_label ?? row.project_id ?? "Unknown"),
+          threadId: nullableString(row.thread_id),
+          sourceKind: normalizeObservationSourceKind(row.source_kind),
+          sourceId: String(row.source_id ?? ""),
+          summary: String(row.summary ?? ""),
+          details: nullableString(row.details),
+          payload: jsonObject(row.payload_json),
+          observedAt: typeof row.observed_at === "number" ? row.observed_at : Date.now(),
+          createdAt: typeof row.created_at === "number" ? row.created_at : Date.now(),
+          durable: row.durable !== 0
+        };
+        access.persistedMemoryObservations.push(observation);
+        access.persistedMemoryObservationIdsByKey.set(observation.idempotencyKey, observation.id);
+      }
+      access.persistedMemoryEntitiesById.clear();
+      access.persistedMemoryEntityIdsByKey.clear();
+      for (const row of entityRows) {
+        const entity: MemoryEntityView = {
+          id: String(row.id ?? crypto.randomUUID()),
+          projectId: String(row.project_id ?? "unknown"),
+          type: normalizeMemoryEntityType(row.type),
+          name: String(row.name ?? ""),
+          canonicalKey: String(row.canonical_key ?? ""),
+          aliases: jsonList(row.aliases_json),
+          summary: nullableString(row.summary),
+          sourceObservationId: String(row.source_observation_id ?? ""),
+          createdAt: typeof row.created_at === "number" ? row.created_at : Date.now(),
+          updatedAt: typeof row.updated_at === "number" ? row.updated_at : Date.now()
+        };
+        access.persistedMemoryEntitiesById.set(entity.id, entity);
+        access.persistedMemoryEntityIdsByKey.set(`${entity.projectId}:${entity.canonicalKey}`, entity.id);
+      }
+      access.persistedMemoryRelationshipsById.clear();
+      for (const row of relationshipRows) {
+        const relationship: MemoryRelationshipView = {
+          id: String(row.id ?? crypto.randomUUID()),
+          projectId: String(row.project_id ?? "unknown"),
+          sourceEntityId: String(row.source_entity_id ?? ""),
+          predicate: String(row.predicate ?? ""),
+          targetEntityId: String(row.target_entity_id ?? ""),
+          sourceObservationId: String(row.source_observation_id ?? ""),
+          confidence: typeof row.confidence === "number" ? row.confidence : 1,
+          validFrom: typeof row.valid_from === "number" ? row.valid_from : null,
+          validTo: typeof row.valid_to === "number" ? row.valid_to : null,
+          createdAt: typeof row.created_at === "number" ? row.created_at : Date.now(),
+          updatedAt: typeof row.updated_at === "number" ? row.updated_at : Date.now()
+        };
+        access.persistedMemoryRelationshipsById.set(relationship.id, relationship);
+      }
+      access.persistedMemoryTasksById.clear();
+      for (const row of taskRows) {
+        const task: MemoryTaskView = {
+          id: String(row.id ?? crypto.randomUUID()),
+          projectId: String(row.project_id ?? "unknown"),
+          projectLabel: String(row.project_label ?? row.project_id ?? "Unknown"),
+          threadId: nullableString(row.thread_id),
+          title: String(row.title ?? ""),
+          status: normalizeMemoryTaskStatus(row.status),
+          currentStep: nullableString(row.current_step),
+          blocker: nullableString(row.blocker),
+          sourceObservationId: String(row.source_observation_id ?? ""),
+          createdAt: typeof row.created_at === "number" ? row.created_at : Date.now(),
+          updatedAt: typeof row.updated_at === "number" ? row.updated_at : Date.now()
+        };
+        access.persistedMemoryTasksById.set(task.id, task);
+      }
+      access.persistedMemoryTaskEvents.splice(0, access.persistedMemoryTaskEvents.length, ...taskEventRows.map((row): MemoryTaskEventView => ({
+        id: String(row.id ?? crypto.randomUUID()),
+        taskId: String(row.task_id ?? ""),
+        eventType: String(row.event_type ?? "event"),
+        summary: String(row.summary ?? ""),
+        observationId: String(row.observation_id ?? ""),
+        at: typeof row.at === "number" ? row.at : Date.now()
+      })));
+      access.persistedMemorySynthesisQueueById.clear();
+      access.persistedMemorySynthesisQueueIdsByKey.clear();
+      for (const row of synthesisQueueRows) {
+        const entry: MemorySynthesisQueueEntryView = {
+          id: String(row.id ?? crypto.randomUUID()),
+          idempotencyKey: String(row.idempotency_key ?? row.id ?? crypto.randomUUID()),
+          projectId: String(row.project_id ?? "unknown"),
+          threadId: nullableString(row.thread_id),
+          sourceObservationId: String(row.source_observation_id ?? ""),
+          reason: String(row.reason ?? "memory synthesis"),
+          priority: row.priority === "high" || row.priority === "low" ? row.priority : "normal",
+          status: normalizeMemoryQueueStatus(row.status),
+          attempts: typeof row.attempts === "number" ? row.attempts : 0,
+          lastError: nullableString(row.last_error),
+          createdAt: typeof row.created_at === "number" ? row.created_at : Date.now(),
+          updatedAt: typeof row.updated_at === "number" ? row.updated_at : Date.now(),
+          runAfter: typeof row.run_after === "number" ? row.run_after : Date.now(),
+          completedAt: typeof row.completed_at === "number" ? row.completed_at : null
+        };
+        access.persistedMemorySynthesisQueueById.set(entry.id, entry);
+        access.persistedMemorySynthesisQueueIdsByKey.set(entry.idempotencyKey, entry.id);
+      }
     }
 
     if (hasArtifactRows && access.persistedProjectArtifactsByProjectId.size === 0) {
@@ -393,6 +592,12 @@ export async function persistStateStoreSqliteMemory(access: StateStoreInternalAc
     db.run("DELETE FROM project_memories;");
     db.run("DELETE FROM job_memories;");
     db.run("DELETE FROM butler_memory_entries;");
+    db.run("DELETE FROM memory_synthesis_queue;");
+    db.run("DELETE FROM memory_task_events;");
+    db.run("DELETE FROM memory_tasks;");
+    db.run("DELETE FROM memory_relationships;");
+    db.run("DELETE FROM memory_entities;");
+    db.run("DELETE FROM memory_observations;");
     db.run("DELETE FROM project_artifact_terms;");
     db.run("DELETE FROM project_artifacts;");
     for (const memory of access.persistedJobMemoriesByThreadId.values()) {
@@ -440,6 +645,95 @@ export async function persistStateStoreSqliteMemory(access: StateStoreInternalAc
         entry.sourceMessageId,
         JSON.stringify(entry.tags),
         entry.createdAt
+      ]);
+    }
+    for (const observation of access.persistedMemoryObservations) {
+      db.run("INSERT INTO memory_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);", [
+        observation.id,
+        observation.idempotencyKey,
+        observation.projectId,
+        observation.projectLabel,
+        observation.threadId,
+        observation.sourceKind,
+        observation.sourceId,
+        observation.summary,
+        observation.details,
+        JSON.stringify(observation.payload),
+        observation.observedAt,
+        observation.createdAt,
+        observation.durable ? 1 : 0
+      ]);
+    }
+    for (const entity of access.persistedMemoryEntitiesById.values()) {
+      db.run("INSERT INTO memory_entities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);", [
+        entity.id,
+        entity.projectId,
+        entity.type,
+        entity.name,
+        entity.canonicalKey,
+        JSON.stringify(entity.aliases),
+        entity.summary,
+        entity.sourceObservationId,
+        entity.createdAt,
+        entity.updatedAt
+      ]);
+    }
+    for (const relationship of access.persistedMemoryRelationshipsById.values()) {
+      db.run("INSERT INTO memory_relationships VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);", [
+        relationship.id,
+        relationship.projectId,
+        relationship.sourceEntityId,
+        relationship.predicate,
+        relationship.targetEntityId,
+        relationship.sourceObservationId,
+        relationship.confidence,
+        relationship.validFrom,
+        relationship.validTo,
+        relationship.createdAt,
+        relationship.updatedAt
+      ]);
+    }
+    for (const task of access.persistedMemoryTasksById.values()) {
+      db.run("INSERT INTO memory_tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);", [
+        task.id,
+        task.projectId,
+        task.projectLabel,
+        task.threadId,
+        task.title,
+        task.status,
+        task.currentStep,
+        task.blocker,
+        task.sourceObservationId,
+        task.createdAt,
+        task.updatedAt
+      ]);
+    }
+    for (const event of access.persistedMemoryTaskEvents) {
+      db.run("INSERT INTO memory_task_events VALUES (?, ?, ?, ?, ?, ?);", [
+        event.id,
+        event.taskId,
+        event.eventType,
+        event.summary,
+        event.observationId,
+        event.at
+      ]);
+    }
+    for (const entry of access.persistedMemorySynthesisQueueById.values()) {
+      db.run("INSERT INTO memory_synthesis_queue VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);", [
+        entry.id,
+        entry.idempotencyKey,
+        entry.projectId,
+        entry.threadId,
+        entry.sourceObservationId,
+        entry.reason,
+        entry.priority,
+        entry.status,
+        entry.attempts,
+        entry.lastError,
+        entry.createdAt,
+        entry.updatedAt,
+        entry.runAfter,
+        entry.completedAt
       ]);
     }
     for (const artifact of [...access.persistedProjectArtifactsByProjectId.values()].flat()) {

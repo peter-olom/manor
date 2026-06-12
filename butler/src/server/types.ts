@@ -640,6 +640,172 @@ export interface ButlerMemoryEntryView {
   createdAt: number;
 }
 
+export type MemoryObservationSourceKind =
+  | "operator_message"
+  | "thread_created"
+  | "thread_contract"
+  | "harness_checkpoint"
+  | "harness_decision"
+  | "harness_note"
+  | "harness_report"
+  | "promotion_resolved"
+  | "pre_delete_thread"
+  | "pre_delete_threads"
+  | "pre_clear_chat"
+  | "pre_delete_chat_suffix"
+  | "artifact_saved"
+  | "proof_saved"
+  | "policy_saved"
+  | "synthesis_result"
+  | "system";
+
+export type MemoryEntityType =
+  | "agent"
+  | "artifact"
+  | "branch"
+  | "component"
+  | "decision"
+  | "environment"
+  | "feature"
+  | "person"
+  | "policy"
+  | "project"
+  | "repo"
+  | "service"
+  | "task"
+  | "thread"
+  | "unknown";
+
+export type MemoryTaskStatus =
+  | "queued"
+  | "in_progress"
+  | "blocked"
+  | "completed_pending_review"
+  | "completed"
+  | "archived"
+  | "deleted"
+  | "stale"
+  | "unknown";
+
+export type MemorySynthesisQueueStatus = "pending" | "running" | "completed" | "failed" | "skipped";
+export type MemorySynthesisPriority = "low" | "normal" | "high";
+
+export interface MemoryObservationView {
+  id: string;
+  idempotencyKey: string;
+  projectId: string;
+  projectLabel: string;
+  threadId: string | null;
+  sourceKind: MemoryObservationSourceKind;
+  sourceId: string;
+  summary: string;
+  details: string | null;
+  payload: Record<string, unknown>;
+  observedAt: number;
+  createdAt: number;
+  durable: boolean;
+}
+
+export interface MemoryEntityView {
+  id: string;
+  projectId: string;
+  type: MemoryEntityType;
+  name: string;
+  canonicalKey: string;
+  aliases: string[];
+  summary: string | null;
+  sourceObservationId: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface MemoryRelationshipView {
+  id: string;
+  projectId: string;
+  sourceEntityId: string;
+  predicate: string;
+  targetEntityId: string;
+  sourceObservationId: string;
+  confidence: number;
+  validFrom: number | null;
+  validTo: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface MemoryTaskView {
+  id: string;
+  projectId: string;
+  projectLabel: string;
+  threadId: string | null;
+  title: string;
+  status: MemoryTaskStatus;
+  currentStep: string | null;
+  blocker: string | null;
+  sourceObservationId: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface MemoryTaskEventView {
+  id: string;
+  taskId: string;
+  eventType: string;
+  summary: string;
+  observationId: string;
+  at: number;
+}
+
+export interface MemorySynthesisQueueEntryView {
+  id: string;
+  idempotencyKey: string;
+  projectId: string;
+  threadId: string | null;
+  sourceObservationId: string;
+  reason: string;
+  priority: MemorySynthesisPriority;
+  status: MemorySynthesisQueueStatus;
+  attempts: number;
+  lastError: string | null;
+  createdAt: number;
+  updatedAt: number;
+  runAfter: number;
+  completedAt: number | null;
+}
+
+export interface MemoryGraphView {
+  observations: MemoryObservationView[];
+  entities: MemoryEntityView[];
+  relationships: MemoryRelationshipView[];
+  tasks: MemoryTaskView[];
+  taskEvents: MemoryTaskEventView[];
+  synthesisQueue: MemorySynthesisQueueEntryView[];
+}
+
+export interface MemoryGraphRetrievalView {
+  query: string | null;
+  projectId: string | null;
+  threadId: string | null;
+  observations: MemoryObservationView[];
+  entities: MemoryEntityView[];
+  relationships: MemoryRelationshipView[];
+  tasks: MemoryTaskView[];
+  taskEvents: MemoryTaskEventView[];
+  warnings: string[];
+  retrievedAt: number;
+}
+
+export interface MemorySynthesisConfig {
+  enabled: boolean;
+  provider: "codex_exec";
+  model: string;
+  effort: "low" | "medium" | "high" | null;
+  timeoutMs: number;
+  maxInputChars: number;
+  maxCandidatesPerRun: number;
+  autoPromoteHighConfidence: boolean;
+}
+
 export type ScratchPadItemStatus = "captured" | "exploring" | "ready_for_review" | "accepted" | "parked" | "dismissed";
 export type ScratchPadDepth = "quick" | "deep" | "prototype" | "plan";
 export type ScratchPadResultKind = "research" | "prototype" | "plan" | "recommendation";
@@ -1064,6 +1230,7 @@ export interface PersistedUiState {
   supervisionChecklistsByThreadId?: Record<string, SupervisionChecklistView>;
   projectMemoriesByProjectId?: Record<string, ProjectMemoryView>;
   butlerMemoryEntries?: ButlerMemoryEntryView[];
+  memoryGraph?: Partial<MemoryGraphView>;
   projectArtifactsByProjectId?: Record<string, ProjectArtifactView[]>;
   projectPoliciesByProjectId?: Record<string, ProjectPolicyView[]>;
 }
