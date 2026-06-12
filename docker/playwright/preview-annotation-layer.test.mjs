@@ -1,0 +1,60 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import { PREVIEW_ANNOTATION_LAYER_SCRIPT } from "./preview-annotation-layer.mjs";
+
+test("preview annotation layer source includes expected toolbar controls and API", () => {
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /data-mode="draw"/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /data-action="hide"/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /Show annotations/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /getMarks/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /addRect/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /setNote/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /manorPreviewAnnotationCommit/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /type="color"/);
+  assert.doesNotMatch(PREVIEW_ANNOTATION_LAYER_SCRIPT, /data-action="batch"/);
+  assert.doesNotMatch(PREVIEW_ANNOTATION_LAYER_SCRIPT, />Queue</);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /data-drag-handle/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /manor\.butler\.themePreference/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /attachShadow\(\{\s*mode:\s*"closed"/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /localStorage\?\.getItem\("manor\.butler\.themePreference"\)/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /<rect x="\$\{x\}%"/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /Comment for selected annotation/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /mark\$\{state\.marks\.length === 1/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /note: note \|\|/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /viewport: viewport \|\| readViewport\(\)/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /setScrollLocked/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /setScrollLocked\(!state\.hidden\)/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /documentElement\.style\.overflow = "hidden"/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /blockViewportWheel/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /blockViewportZoomKey/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /selectionDrag/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /textSelection/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /is-selecting/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /Select text to add a mark/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /selectedTextRect/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /getSelection/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /removeAllRanges/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /getClientRects/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /Add comment for #/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /before adding another mark/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /buildBatchPayload/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /lastPublishedSignature/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /ready/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /\.mark\[data-id\]/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /mark\.x = clamp/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /mark\.y = clamp/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /closestElement/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /runPointerCommand/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /runClickCommand/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /lastPointerCommand/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /button\.addEventListener\("click", runClickCommand\)/);
+  assert.match(PREVIEW_ANNOTATION_LAYER_SCRIPT, /button\[data-mode\],button\[data-action\]/);
+  assert.doesNotMatch(PREVIEW_ANNOTATION_LAYER_SCRIPT, /Annotate preview/);
+});
+
+test("preview annotation layer source is self-contained for page evaluation", () => {
+  assert.doesNotThrow(() => new Function(PREVIEW_ANNOTATION_LAYER_SCRIPT));
+  assert.equal(PREVIEW_ANNOTATION_LAYER_SCRIPT.includes("document.createElement"), true);
+  assert.equal(PREVIEW_ANNOTATION_LAYER_SCRIPT.includes("window.__manorPreviewAnnotationLayer"), true);
+});

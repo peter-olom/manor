@@ -5,6 +5,7 @@ import http from "node:http";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { chromium } from "playwright";
+import { PREVIEW_ANNOTATION_LAYER_SCRIPT } from "./preview-annotation-layer.mjs";
 
 const port = Number(process.env.MANOR_PLAYWRIGHT_PORT ?? "3777");
 const sessionTtlMs = Number(process.env.MANOR_PLAYWRIGHT_SESSION_TTL_MS ?? `${30 * 60 * 1000}`);
@@ -406,6 +407,93 @@ async function waitForVisualReadiness(page, timeoutMs) {
   return { ready: false, signals: lastSignals };
 }
 
+
+function normalizeAnnotationTargets(input) {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  return input
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry) => ({
+      id: typeof entry.id === "string" ? entry.id.trim() : "",
+      label: typeof entry.label === "string" ? entry.label.trim() : ""
+    }))
+    .filter((entry) => entry.id && entry.label)
+    .slice(0, 8);
+}
+
+function normalizeAnnotationPayload(input) {
+  const payload = input && typeof input === "object" ? input : {};
+  const annotations = Array.isArray(payload.annotations) ? payload.annotations : [];
+  return {
+    id: randomUUID(),
+    at: now(),
+    intent: payload.intent === "insert" ? "insert" : "batch",
+    targetId: typeof payload.targetId === "string" && payload.targetId.trim() ? payload.targetId.trim() : "butler",
+    page: {
+      title: typeof payload.page?.title === "string" ? payload.page.title.slice(0, 200) : "",
+      url: typeof payload.page?.url === "string" ? payload.page.url.slice(0, 2000) : ""
+    },
+    annotations: annotations
+      .filter((entry) => entry && typeof entry === "object")
+      .map((entry, index) => ({
+        id: typeof entry.id === "string" && entry.id.trim() ? entry.id.trim().slice(0, 80) : `annotation-${index + 1}`,
+        number: typeof entry.number === "number" && Number.isFinite(entry.number) ? Math.max(1, Math.trunc(entry.number)) : index + 1,
+        x: clampUnit(entry.x),
+        y: clampUnit(entry.y),
+        width: clampUnit(entry.width),
+        height: clampUnit(entry.height),
+        color: typeof entry.color === "string" ? entry.color.slice(0, 32) : "#ff6b2c",
+        note: typeof entry.note === "string" ? entry.note.slice(0, 1000) : ""
+      }))
+      .filter((entry) => entry.width > 0 && entry.height > 0)
+      .slice(0, 100)
+  };
+}
+
+function clampUnit(value) {
+  const number = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  return Math.min(1, Math.max(0, number));
+}
+
+function formatAnnotationBatchText(batch) {
+  const heading = batch.intent === "insert" ? "Preview annotation" : "Preview annotation draft";
+  const pageLine = batch.page.url ? `Page: ${batch.page.title || "Untitled"} (${batch.page.url})` : `Page: ${batch.page.title || "Untitled"}`;
+  const lines = batch.annotations.map((annotation) => {
+    const pct = (value) => `${Math.round(value * 1000) / 10}%`;
+    const rect = `x=${pct(annotation.x)}, y=${pct(annotation.y)}, w=${pct(annotation.width)}, h=${pct(annotation.height)}`;
+    return `${annotation.number}. ${annotation.note || "Review this marked region."} (${rect})`;
+  });
+  return [heading, pageLine, "", ...lines].join("\n");
+}
+
+async function maybeInsertAnnotationBatch(session, batch) {
+  if (batch.intent !== "insert" || !session.annotationInsertUrl) {
+    return null;
+  }
+  const target = session.annotationTargets.find((entry) => entry.id === batch.targetId) ?? session.annotationTargets[0] ?? null;
+  if (!target) {
+    return { ok: false, error: "No annotation insertion target is available." };
+  }
+  const response = await fetch(session.annotationInsertUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(session.annotationInsertToken ? { "x-manor-broker-token": session.annotationInsertToken } : {})
+    },
+    body: JSON.stringify({
+      target,
+      text: formatAnnotationBatchText(batch),
+      batch
+    })
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    return { ok: false, error: result?.error || `Annotation insert failed with HTTP ${response.status}` };
+  }
+  return { ok: true, target };
+}
+
 function normalizeHeaders(input) {
   if (!input || typeof input !== "object") {
     return {};
@@ -458,6 +546,30 @@ function writeJson(response, statusCode, payload) {
   response.end(JSON.stringify(payload));
 }
 
+
+async function installPreviewAnnotationLayer(session) {
+  if (!session.previewAnnotationLayer || !session.page || session.page.isClosed()) {
+    return;
+  }
+
+  const phase = session.phaseTracker.start("install_annotation_layer", "Install annotation layer");
+  try {
+    await session.page.evaluate(
+      ({ script, targets }) => {
+        window.__manorPreviewAnnotationTargets = targets;
+        return window.eval(script);
+      },
+      { script: PREVIEW_ANNOTATION_LAYER_SCRIPT, targets: session.annotationTargets }
+    );
+    session.annotationLayerInstalled = true;
+    session.phaseTracker.finish(phase, "completed", "Preview annotation toolbar installed.");
+  } catch (error) {
+    session.annotationLayerInstalled = false;
+    session.phaseTracker.finish(phase, "failed", toErrorMessage(error));
+    throw error;
+  }
+}
+
 const sessions = new Map();
 
 function normalizeResolution(value) {
@@ -481,6 +593,14 @@ function sessionSummary(session) {
     resolution: session.resolution,
     viewport: session.viewport,
     actionCount: session.actions.length,
+    previewAnnotationLayer: Boolean(session.previewAnnotationLayer),
+    annotationLayerInstalled: Boolean(session.annotationLayerInstalled),
+    annotationBatchCount: session.annotationBatches.length,
+    annotations: {
+      targets: session.annotationTargets,
+      batches: session.annotationBatches,
+      insertions: session.annotationInsertions
+    },
     auth: {
       headerCount: Object.keys(session.headers).length,
       cookieCount: session.cookies.length,
@@ -641,6 +761,10 @@ async function startSession(input) {
   const headers = normalizeHeaders(input.headers);
   const cookies = normalizeCookies(input.cookies);
   const preflightStages = normalizePreflightStages(input.preflightStages);
+  const previewAnnotationLayer = input.previewAnnotationLayer === true;
+  const annotationTargets = normalizeAnnotationTargets(input.annotationTargets);
+  const annotationInsertUrl = typeof input.annotationInsertUrl === "string" ? input.annotationInsertUrl.trim() : "";
+  const annotationInsertToken = typeof input.annotationInsertToken === "string" ? input.annotationInsertToken : "";
 
   const startedAt = now();
   await fs.mkdir(outputDir, { recursive: true });
@@ -716,8 +840,31 @@ async function startSession(input) {
     sameOriginAssetFailureCount: 0,
     preflightStages,
     visualContentDetected: null,
-    visualSignals: null
+    visualSignals: null,
+    previewAnnotationLayer,
+    annotationLayerInstalled: false,
+    annotationTargets: annotationTargets.length > 0 ? annotationTargets : [{ id: "butler", label: "Butler" }],
+    annotationInsertUrl,
+    annotationInsertToken,
+    annotationBatches: [],
+    annotationInsertions: []
   };
+
+  if (previewAnnotationLayer) {
+    await context.exposeBinding("manorPreviewAnnotationCommit", async (_source, payload) => {
+      const batch = normalizeAnnotationPayload(payload);
+      if (batch.annotations.length === 0) {
+        return { ok: false, error: "No annotations were selected." };
+      }
+      session.annotationBatches.push(batch);
+      session.lastActivityAt = now();
+      const insertion = await maybeInsertAnnotationBatch(session, batch);
+      if (insertion) {
+        session.annotationInsertions.push({ batchId: batch.id, at: now(), ...insertion });
+      }
+      return { ok: true, batchId: batch.id, insertion };
+    });
+  }
 
   try {
     sessions.set(sessionId, session);
@@ -779,6 +926,7 @@ async function startSession(input) {
     session.title = await page.title().catch(() => "");
     session.url = page.url() || targetUrl;
 
+    await installPreviewAnnotationLayer(session);
     await captureScreenshot(session, "ready.png", "Ready screenshot");
   } catch (error) {
     await cleanupFailedSession(session, error);
@@ -900,6 +1048,7 @@ async function runAction(session, input) {
       }
       const response = await session.page.goto(url, { waitUntil: "load", timeout: timeoutMs ?? 45_000 });
       session.status = response?.status() ?? session.status;
+      await installPreviewAnnotationLayer(session);
     } else if (type === "evaluate") {
       const script = String(input.script || "").trim();
       if (!script) {
@@ -1169,11 +1318,19 @@ async function stopSession(session, reason = "completed") {
         session.failedPhase ? `Failed phase: ${session.failedPhase}.` : ""
       ].filter(Boolean)
     },
+    previewAnnotationLayer: Boolean(session.previewAnnotationLayer),
+    annotationLayerInstalled: Boolean(session.annotationLayerInstalled),
+    annotationBatchCount: session.annotationBatches.length,
     auth: {
       headerCount: Object.keys(session.headers).length,
       cookieCount: session.cookies.length,
       cookieNames: session.cookies.map((entry) => entry.name),
       usedSessionCookie: session.cookies.some((entry) => entry.name === "better-auth.session_token")
+    },
+    annotations: {
+      targets: session.annotationTargets,
+      batches: session.annotationBatches,
+      insertions: session.annotationInsertions
     },
     diagnostics: {
       stages: {

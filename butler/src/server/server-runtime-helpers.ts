@@ -10,8 +10,10 @@ import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { ScratchPadStore } from "./scratch-pad-store.js";
 import type { ServiceTemplateRegistry } from "./service-templates.js";
 import type { ButlerStateStore } from "./state-store.js";
-import type { StackStorageMode } from "./types.js";
+import type { ButlerLivePatchView, CodexThreadPatchView, StackStorageMode } from "./types.js";
 import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
+
+type SseStateChannel = "shell" | "butlerLive" | "runtime" | "threads";
 
 export type RuntimeServerAccess = {
   artifactsDir: string;
@@ -19,6 +21,7 @@ export type RuntimeServerAccess = {
   codexClient: CodexAppServerClient;
   runtimeBroker: RuntimeBrokerClient;
   runtimeBrokerUrl: string;
+  previewAnnotationSecret: string;
   scratchPadStore: ScratchPadStore;
   serviceTemplateRegistry: ServiceTemplateRegistry;
   store: ButlerStateStore;
@@ -83,7 +86,15 @@ export class ButlerSseHub {
     runtime: "",
     threads: ""
   };
+  private readonly channelVersions: Record<SseStateChannel, number> = {
+    shell: 0,
+    butlerLive: 0,
+    runtime: 0,
+    threads: 0
+  };
   private broadcastTimer: NodeJS.Timeout | null = null;
+  private deferredSnapshotTimer: NodeJS.Timeout | null = null;
+  private snapshotsDeferred = false;
 
   constructor(
     private readonly access: RuntimeServerAccess,
@@ -106,8 +117,52 @@ export class ButlerSseHub {
     this.clients.delete(response);
   }
 
-  writeEvent(response: Response, eventName: string, payload: unknown): void {
-    response.write(`event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`);
+  writeEvent(response: Response, eventName: string, payload: unknown, eventId?: string): void {
+    response.write(`${eventId ? `id: ${eventId}\n` : ""}event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`);
+  }
+
+  writeHeartbeat(response: Response): void {
+    this.writeEvent(response, "heartbeat", {
+      at: Date.now(),
+      channelVersions: this.channelVersions
+    });
+  }
+
+  private deferSnapshots(): void {
+    this.snapshotsDeferred = true;
+    if (this.deferredSnapshotTimer) {
+      clearTimeout(this.deferredSnapshotTimer);
+    }
+    this.deferredSnapshotTimer = setTimeout(() => {
+      this.deferredSnapshotTimer = null;
+      this.snapshotsDeferred = false;
+      this.flush();
+    }, 750);
+  }
+
+  broadcastThreadPatch(payload: CodexThreadPatchView): void {
+    this.deferSnapshots();
+    for (const client of this.clients) {
+      this.writeEvent(client, "threadPatch", payload);
+    }
+  }
+
+  broadcastButlerPatch(payload: ButlerLivePatchView): void {
+    this.deferSnapshots();
+    for (const client of this.clients) {
+      this.writeEvent(client, "butlerPatch", payload);
+    }
+  }
+
+  broadcastComposerPrefill(payload: {
+    id: string;
+    target: { kind: "butler" } | { kind: "thread"; threadId: string };
+    text: string;
+    attachment?: { id: string; name: string; mimeType: string; sizeBytes: number; createdAt: number; url: string };
+  }): void {
+    for (const client of this.clients) {
+      this.writeEvent(client, "composerPrefill", payload);
+    }
   }
 
   broadcastToast(message: string, tone: "success" | "error" | "info" = "info", duration = 4000): void {
@@ -124,16 +179,19 @@ export class ButlerSseHub {
   }
 
   sendInitialEvents(response: Response): void {
-    this.writeEvent(response, "shell", currentShellSnapshot(this.access));
-    this.writeEvent(response, "butlerLive", currentButlerLiveSnapshot(this.access));
-    this.writeEvent(response, "runtime", currentRuntimeSnapshot(this.access));
-    this.writeEvent(response, "threads", currentOpenThreadsSnapshot(this.access));
+    this.writeEvent(response, "shell", currentShellSnapshot(this.access), `shell:${this.channelVersions.shell}`);
+    this.writeEvent(response, "butlerLive", currentButlerLiveSnapshot(this.access), `butlerLive:${this.channelVersions.butlerLive}`);
+    this.writeEvent(response, "runtime", currentRuntimeSnapshot(this.access), `runtime:${this.channelVersions.runtime}`);
+    this.writeEvent(response, "threads", currentOpenThreadsSnapshot(this.access), `threads:${this.channelVersions.threads}`);
   }
 
   flush(force = false): void {
     if (this.broadcastTimer) {
       clearTimeout(this.broadcastTimer);
       this.broadcastTimer = null;
+    }
+    if (!force && this.snapshotsDeferred) {
+      return;
     }
 
     const shell = currentShellSnapshot(this.access);
@@ -148,18 +206,31 @@ export class ButlerSseHub {
       threads: JSON.stringify(threads)
     };
 
+    const changed: Record<SseStateChannel, boolean> = {
+      shell: nextPayloads.shell !== this.broadcastCache.shell,
+      butlerLive: nextPayloads.butlerLive !== this.broadcastCache.butlerLive,
+      runtime: nextPayloads.runtime !== this.broadcastCache.runtime,
+      threads: nextPayloads.threads !== this.broadcastCache.threads
+    };
+
+    for (const channel of Object.keys(changed) as SseStateChannel[]) {
+      if (changed[channel]) {
+        this.channelVersions[channel] += 1;
+      }
+    }
+
     for (const client of this.clients) {
-      if (force || nextPayloads.shell !== this.broadcastCache.shell) {
-        this.writeEvent(client, "shell", shell);
+      if (force || changed.shell) {
+        this.writeEvent(client, "shell", shell, `shell:${this.channelVersions.shell}`);
       }
-      if (force || nextPayloads.butlerLive !== this.broadcastCache.butlerLive) {
-        this.writeEvent(client, "butlerLive", butlerLive);
+      if (force || changed.butlerLive) {
+        this.writeEvent(client, "butlerLive", butlerLive, `butlerLive:${this.channelVersions.butlerLive}`);
       }
-      if (force || nextPayloads.runtime !== this.broadcastCache.runtime) {
-        this.writeEvent(client, "runtime", runtime);
+      if (force || changed.runtime) {
+        this.writeEvent(client, "runtime", runtime, `runtime:${this.channelVersions.runtime}`);
       }
-      if (force || nextPayloads.threads !== this.broadcastCache.threads) {
-        this.writeEvent(client, "threads", threads);
+      if (force || changed.threads) {
+        this.writeEvent(client, "threads", threads, `threads:${this.channelVersions.threads}`);
       }
     }
 
@@ -221,14 +292,14 @@ async function resolveRequestedStack(
   access: RuntimeServerAccess,
   stackSelector: string | null,
   threadId: string | null
-): Promise<{ id: string; threadId: string | null; worktreePath: string | null; title: string; storageMode: StackStorageMode } | null> {
+): Promise<{ id: string; threadId: string | null; worktreePath: string | null; title: string; storageMode: StackStorageMode; pinned?: boolean } | null> {
   if (!stackSelector) {
     return null;
   }
 
   const visibleStacks = access.store
     .listStackLeases()
-    .filter((stack) => !threadId || stack.threadId === threadId || !stack.threadId);
+    .filter((stack) => !threadId || stack.threadId === threadId || !stack.threadId || stack.pinned);
   const storedMatch = matchStackSelector(visibleStacks, stackSelector);
   if (storedMatch) {
     return storedMatch;
@@ -251,7 +322,7 @@ export async function validateRequestedStack(access: RuntimeServerAccess, stackI
     return null;
   }
 
-  if (threadId && stack.threadId && stack.threadId !== threadId) {
+  if (threadId && stack.threadId && stack.threadId !== threadId && !stack.pinned) {
     throw new Error(`Stack ${stack.id} belongs to a different job`);
   }
 

@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import crypto from "node:crypto";
 import http from "node:http";
 import path from "node:path";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import express from "express";
 import httpProxy from "http-proxy";
@@ -10,15 +11,21 @@ import { ButlerAgentService } from "./butler-agent.js";
 import { CodexAppServerClient } from "./codex-client.js";
 import { CodexHarnessService } from "./codex-harness.js";
 import { FileReferenceStore, MAX_FILE_BYTES } from "./file-store.js";
+import { HostControllerClient } from "./host-controller-client.js";
 import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
+import { readMemorySynthesisConfig } from "./memory-synthesis-config.js";
+import { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
+import { registerPreviewAnnotationRoutes } from "./preview-annotation-routes.js";
 import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-routes.js";
 import { buildCodexInputWithReferences, buildComposerInputItemsPrompt, buildReferencePromptText } from "./reference-inputs.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { registerScratchPadRoutes } from "./scratch-pad-routes.js";
+import { registerRuntimeResourceRoutes } from "./runtime-resource-routes.js";
 import { ScratchPadStore } from "./scratch-pad-store.js";
 import { registerServerAssetRoutes } from "./server-asset-routes.js";
 import { retrieveButlerMemory } from "./memory-retrieval.js";
+import { registerManorRestartRoutes } from "./manor-restart-routes.js";
 import {
   proxyPreviewRoute,
   registerPreviewProxyResponseRewriter,
@@ -35,15 +42,12 @@ import {
   readFileReferenceIds,
   removeStackArtifactsFromStore,
   resolvePreviewProxyTarget,
-  resolveProjectMetadata,
   shouldAllowLocalThreadWindow,
-  type RuntimeServerAccess,
-  validateRequestedStack
+  type RuntimeServerAccess
 } from "./server-runtime-helpers.js";
 import { ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { ButlerStateStore } from "./state-store.js";
 import { registerThreadArtifactRoutes } from "./thread-artifact-routes.js";
-import { applyWorkspacePreviewDefaults, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 
 const port = Number(process.env.BUTLER_PORT ?? "8080");
 const codexBaseUrl = process.env.CODEX_BASE_URL ?? "ws://codex-box:8080";
@@ -54,6 +58,8 @@ const codexHomeDir = process.env.CODEX_SHARED_HOME_DIR ?? "/codex-home";
 const codexConfigDir = process.env.CODEX_SHARED_CONFIG_DIR ?? "/codex-config";
 const runtimeBrokerUrl = process.env.RUNTIME_BROKER_URL ?? "http://runtime-broker:8090";
 const runtimeBrokerToken = process.env.RUNTIME_BROKER_TOKEN ?? null;
+const hostControllerUrl = process.env.MANOR_HOST_CONTROLLER_URL ?? null;
+const hostControllerToken = process.env.MANOR_HOST_CONTROLLER_TOKEN ?? null;
 const hotReloadEnabled = process.env.BUTLER_HOT_RELOAD === "1";
 const publicPort = Number(process.env.BUTLER_PUBLIC_PORT ?? port);
 const previewLeaseTtlMs = Number(process.env.MANOR_PREVIEW_LEASE_TTL_MS ?? `${30 * 60 * 1000}`);
@@ -69,12 +75,95 @@ const fileReferenceDir = process.env.MANOR_FILE_REFERENCE_DIR ?? path.join(artif
 const jsonBodyLimit = process.env.MANOR_UPLOAD_JSON_LIMIT ?? "64mb";
 const imageUploadBinaryLimit = process.env.MANOR_IMAGE_UPLOAD_BINARY_LIMIT ?? `${Math.ceil(MAX_IMAGE_BYTES / (1024 * 1024))}mb`;
 const fileUploadBinaryLimit = process.env.MANOR_FILE_UPLOAD_BINARY_LIMIT ?? `${Math.ceil(MAX_FILE_BYTES / (1024 * 1024))}mb`;
+const previewAnnotationSecret = crypto.randomBytes(32).toString("hex");
+const butlerAuthLoginTimeoutMs = 15_000;
 
 const uiStatePath = path.join(stateDir, "butler-ui.json");
 const scratchPadStatePath = path.join(stateDir, "scratch-pad.json");
 const sessionDir = path.join(stateDir, "pi-sessions");
 const staticDir = path.resolve(process.cwd(), "dist/web");
 const indexTemplatePath = path.resolve(process.cwd(), "index.html");
+let butlerAuthLoginSession: {
+  child: ChildProcessWithoutNullStreams;
+  authUrl: string | null;
+  startedAt: number;
+  output: string;
+} | null = null;
+
+function extractAuthUrl(output: string): string | null {
+  const match = output.match(/https:\/\/auth\.openai\.com\/oauth\/authorize\?\S+/);
+  return match ? match[0] : null;
+}
+
+function clearButlerAuthLoginSession(child: ChildProcessWithoutNullStreams): void {
+  if (butlerAuthLoginSession?.child === child) {
+    butlerAuthLoginSession = null;
+  }
+}
+
+function startButlerAuthLogin(): Promise<string> {
+  if (butlerAuthLoginSession?.authUrl) {
+    return Promise.resolve(butlerAuthLoginSession.authUrl);
+  }
+
+  if (butlerAuthLoginSession) {
+    butlerAuthLoginSession.child.kill();
+    butlerAuthLoginSession = null;
+  }
+
+  const child = spawn("butler-auth", ["device"], {
+    env: {
+      ...process.env,
+      PI_AGENT_DIR: piAgentDir,
+      CODEX_HOME: process.env.CODEX_HOME ?? path.join(path.dirname(piAgentDir), ".codex")
+    }
+  });
+
+  butlerAuthLoginSession = {
+    child,
+    authUrl: null,
+    startedAt: Date.now(),
+    output: ""
+  };
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error("Timed out waiting for Butler auth URL. Open the Butler terminal and run butler-auth device."));
+    }, butlerAuthLoginTimeoutMs);
+
+    const finishWithUrl = (chunk: Buffer) => {
+      const session = butlerAuthLoginSession;
+      if (!session || session.child !== child) {
+        return;
+      }
+
+      session.output += chunk.toString("utf8");
+      const authUrl = extractAuthUrl(session.output);
+      if (!authUrl) {
+        return;
+      }
+
+      session.authUrl = authUrl;
+      clearTimeout(timeout);
+      resolve(authUrl);
+    };
+
+    child.stdout.on("data", finishWithUrl);
+    child.stderr.on("data", finishWithUrl);
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      clearButlerAuthLoginSession(child);
+      reject(error);
+    });
+    child.on("exit", (code) => {
+      clearTimeout(timeout);
+      clearButlerAuthLoginSession(child);
+      if (code !== 0) {
+        reject(new Error(`Butler auth exited with code ${code ?? "unknown"}. Open the Butler terminal and run butler-auth device.`));
+      }
+    });
+  });
+}
 
 const store = new ButlerStateStore(uiStatePath, {
   previewLeaseTtlMs,
@@ -93,14 +182,13 @@ await imageStore.load();
 const fileStore = new FileReferenceStore(fileReferenceDir);
 await fileStore.load();
 const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerToken);
+const hostController = new HostControllerClient(hostControllerUrl, hostControllerToken);
 let runtimeAccess!: RuntimeServerAccess;
 let sseHub!: ButlerSseHub;
-const memoryReview = new CodexExecMemoryReviewService({
-  store,
-  stateDir,
-  codexHomeDir,
-  enabled: process.env.MANOR_MEMORY_REVIEW_ENABLED !== "0"
-});
+const memorySynthesisConfig = readMemorySynthesisConfig();
+const memoryReview = new CodexExecMemoryReviewService({ store, stateDir, codexHomeDir, enabled: memorySynthesisConfig.enabled, model: memorySynthesisConfig.model, timeoutMs: memorySynthesisConfig.timeoutMs });
+const memoryScheduler = new MemoryUpdateScheduler({ store, config: memorySynthesisConfig, stateDir, codexHomeDir });
+store.setMemoryUpdateObserver(memoryScheduler);
 const codexHarness = new CodexHarnessService({
   codexHomeDir,
   stateDir,
@@ -108,9 +196,11 @@ const codexHarness = new CodexHarnessService({
   store,
   runtimeBroker,
   serviceTemplateRegistry,
-  memoryReview
+  memoryReview,
+  memoryScheduler
 });
 memoryReview.reviewPendingReportsAsync();
+memoryScheduler.start();
 await codexHarness.load();
 await codexHarness.reconcileThreadCapabilities();
 const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, {
@@ -123,6 +213,7 @@ const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, 
   onRuntimeCleanupError: (threadId, message) => {
     sseHub.broadcastToast(`Thread cleanup failed for ${threadId.slice(0, 8)}: ${message}`, "error", 6000);
   },
+  memoryScheduler,
   onThreadCapabilityRemoved: async (threadId) => {
     await codexHarness.revokeThreadCapability(threadId);
   },
@@ -131,7 +222,9 @@ const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, 
 });
 const butlerAgent = new ButlerAgentService({
   store,
+  memoryScheduler,
   codexClient,
+  hostController,
   runtimeBroker,
   serviceTemplateRegistry,
   piAuthPath: path.join(piAgentDir, "auth.json"),
@@ -149,6 +242,7 @@ runtimeAccess = {
   codexClient,
   runtimeBroker,
   runtimeBrokerUrl,
+  previewAnnotationSecret,
   scratchPadStore,
   serviceTemplateRegistry,
   store
@@ -168,7 +262,7 @@ const previewProxy = httpProxy.createProxyServer({
   selfHandleResponse: true,
   ws: true
 });
-registerPreviewProxyResponseRewriter(previewProxy);
+registerPreviewProxyResponseRewriter(previewProxy, runtimeAccess);
 
 let viteDevServer: import("vite").ViteDevServer | null = null;
 const imageUploadBinaryParser = express.raw({
@@ -243,7 +337,9 @@ if (hotReloadEnabled) {
 store.on("change", () => sseHub.schedule());
 scratchPadStore.on("change", () => sseHub.schedule());
 codexClient.on("change", () => sseHub.schedule());
+codexClient.on("threadPatch", (payload) => sseHub.broadcastThreadPatch(payload));
 butlerAgent.on("change", () => sseHub.schedule());
+butlerAgent.on("butlerPatch", (payload) => sseHub.broadcastButlerPatch(payload));
 
 app.get("/api/health", (_request, response) => {
   response.json({
@@ -266,6 +362,20 @@ app.get("/api/shell", (_request, response) => {
     ...codexClient.getConnectionState(),
     auth: butlerAgent.getCodexAuthStatus()
   }));
+});
+
+app.post("/api/auth/butler/device", async (_request, response) => {
+  try {
+    const authUrl = await startButlerAuthLogin();
+    response.json({
+      authUrl,
+      startedAt: butlerAuthLoginSession?.startedAt ?? Date.now()
+    });
+  } catch (error) {
+    response.status(500).json({
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
 });
 
 app.get("/api/runtime", async (_request, response) => {
@@ -308,6 +418,15 @@ registerScratchPadRoutes({
   butlerAgent,
   imageStore,
   fileStore
+});
+registerPreviewAnnotationRoutes({
+  app,
+  imageStore,
+  previewAnnotationSecret,
+  runtimeBroker,
+  runtimeBrokerToken,
+  sseHub,
+  store
 });
 
 app.get("/api/memory/jobs/:threadId", (request, response) => {
@@ -359,6 +478,8 @@ app.get("/api/memory/retrieve", (request, response) => {
   });
 });
 
+app.get("/api/memory/graph/search", (request, response) => { const projectId = typeof request.query.projectId === "string" ? request.query.projectId : null; const threadId = typeof request.query.threadId === "string" ? request.query.threadId : null; const query = typeof request.query.query === "string" ? request.query.query : null; const limitRaw = typeof request.query.limit === "string" ? Number(request.query.limit) : null; response.json({ retrieval: store.searchMemoryGraph({ projectId, threadId, query, limit: Number.isFinite(limitRaw) ? limitRaw : null }) }); });
+
 app.post("/api/memory/promotions/resolve", (request, response) => {
   const candidateId = typeof request.body?.candidateId === "string" ? request.body.candidateId.trim() : "";
   const accepted = typeof request.body?.accepted === "boolean" ? request.body.accepted : null;
@@ -372,6 +493,15 @@ app.post("/api/memory/promotions/resolve", (request, response) => {
     response.status(404).json({ error: "Promotion candidate not found" });
     return;
   }
+  memoryScheduler.observePromotionResolved({
+    candidateId: candidate.id,
+    accepted,
+    projectId: candidate.projectId,
+    projectLabel: candidate.projectLabel,
+    threadId: candidate.threadId,
+    summary: candidate.summary,
+    details: candidate.details
+  });
 
   response.json({
     ok: true,
@@ -447,7 +577,7 @@ app.get("/api/events", (request, response) => {
   sseHub.addClient(response);
   sseHub.sendInitialEvents(response);
   const heartbeat = setInterval(() => {
-    response.write(`event: heartbeat\ndata: ${Date.now()}\n\n`);
+    sseHub.writeHeartbeat(response);
   }, sseHub.heartbeatMs);
 
   const cleanup = () => {
@@ -460,6 +590,8 @@ app.get("/api/events", (request, response) => {
   response.on("close", cleanup);
   response.on("error", cleanup);
 });
+
+
 
 app.post("/api/chat/messages", async (request, response) => {
   const text = typeof request.body?.text === "string" ? request.body.text : "";
@@ -516,6 +648,8 @@ app.post("/api/chat/settings", async (request, response) => {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
 });
+
+registerManorRestartRoutes(app, butlerAgent);
 
 app.post("/api/chat/clear", async (_request, response) => {
   try {
@@ -737,391 +871,13 @@ app.post("/api/windows/close", (request, response) => {
   response.json({ ok: true });
 });
 
-app.post("/api/stacks/start", async (request, response) => {
-  const title = typeof request.body?.title === "string" ? request.body.title.trim() : "";
-  const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : null;
-  const cwd = typeof request.body?.cwd === "string" ? request.body.cwd.trim() : "";
-  const storageMode = typeof request.body?.storageMode === "string" ? request.body.storageMode.trim() : "";
-  const retainsVolumes = Boolean(request.body?.retainsVolumes);
-  const storageKey = typeof request.body?.storageKey === "string" ? request.body.storageKey.trim() : "";
-  const cloneFromStorageKey =
-    typeof request.body?.cloneFromStorageKey === "string" ? request.body.cloneFromStorageKey.trim() : "";
-  if (!title) {
-    response.status(400).json({ error: "title is required" });
-    return;
-  }
-
-  try {
-    const thread = threadId ? store.getThread(threadId) ?? null : null;
-    const worktreePath = cwd || thread?.cwd || null;
-    const project = resolveProjectMetadata(worktreePath, thread?.supervisor.projectId ?? "stack", thread?.supervisor.projectLabel ?? "stack");
-    const stack = await runtimeBroker.createStack({
-      stackId: crypto.randomUUID(),
-      threadId,
-      projectId: project.id,
-      projectLabel: project.label,
-      title,
-      worktreePath,
-      storageMode: storageMode || null,
-      retainsVolumes,
-      storageKey: storageKey || null,
-      cloneFromStorageKey: cloneFromStorageKey || null
-    });
-    store.upsertStackLease(stack);
-    response.json({ ok: true, stack });
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post("/api/stacks/stop", async (request, response) => {
-  const stackId = typeof request.body?.stackId === "string" ? request.body.stackId : "";
-  const dropVolumes = typeof request.body?.dropVolumes === "boolean" ? request.body.dropVolumes : true;
-  if (!stackId) {
-    response.status(400).json({ error: "stackId is required" });
-    return;
-  }
-
-  try {
-    await runtimeBroker.stopStack(stackId, { dropVolumes });
-    removeStackArtifactsFromStore(runtimeAccess, stackId);
-    response.json({ ok: true });
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post("/api/stacks/promote", async (request, response) => {
-  const stackId = typeof request.body?.stackId === "string" ? request.body.stackId.trim() : "";
-  const targetStorageKey =
-    typeof request.body?.targetStorageKey === "string" ? request.body.targetStorageKey.trim() : "";
-  if (!stackId) {
-    response.status(400).json({ error: "stackId is required" });
-    return;
-  }
-
-  try {
-    const result = await runtimeBroker.promoteStack({
-      stackId,
-      targetStorageKey: targetStorageKey || null
-    });
-    const stack = await runtimeBroker.inspectStack(stackId);
-    store.upsertStackLease(stack);
-    response.json({ ok: true, promotion: result, stack });
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post("/api/stacks/pin", (request, response) => {
-  const stackId = typeof request.body?.stackId === "string" ? request.body.stackId : "";
-  const pinned = Boolean(request.body?.pinned);
-  if (!stackId) {
-    response.status(400).json({ error: "stackId is required" });
-    return;
-  }
-
-  const stack = store.setStackLeasePinned(stackId, pinned);
-  if (!stack) {
-    response.status(404).json({ error: "Stack lease not found" });
-    return;
-  }
-
-  response.json({ ok: true, stack });
-});
-
-app.post("/api/previews/start", async (request, response) => {
-  const title = typeof request.body?.title === "string" ? request.body.title.trim() : "";
-  const cwd = typeof request.body?.cwd === "string" ? request.body.cwd.trim() : "";
-  const command = typeof request.body?.command === "string" ? request.body.command.trim() : "";
-  const portValue = typeof request.body?.port === "number" ? request.body.port : Number(request.body?.port ?? 0);
-  const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : null;
-  const stackId = typeof request.body?.stackId === "string" ? request.body.stackId.trim() : "";
-  const aliases = Array.isArray(request.body?.aliases)
-    ? request.body.aliases
-        .map((value: unknown) => (typeof value === "string" ? value.trim() : ""))
-        .filter((value: string) => value.length > 0)
-    : [];
-  const env =
-    request.body?.env && typeof request.body.env === "object"
-      ? Object.fromEntries(
-          Object.entries(request.body.env as Record<string, unknown>)
-            .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
-            .map(([key, value]) => [key.trim(), value.trim()])
-            .filter(([key, value]) => key && value)
-        )
-      : {};
-  const image = typeof request.body?.image === "string" ? request.body.image.trim() : undefined;
-  const egressDomains = Array.isArray(request.body?.egressDomains)
-    ? request.body.egressDomains
-        .map((value: unknown) => (typeof value === "string" ? value.trim() : ""))
-        .filter((value: string) => value.length > 0)
-    : [];
-  const egressProfile =
-    typeof request.body?.egressProfile === "string" && request.body.egressProfile.trim()
-      ? request.body.egressProfile.trim()
-      : "internet";
-  const bootstrapWaitSeconds =
-    typeof request.body?.bootstrapWaitSeconds === "number"
-      ? request.body.bootstrapWaitSeconds
-      : Number(request.body?.bootstrapWaitSeconds ?? 0);
-  const bootstrapHint = typeof request.body?.bootstrapHint === "string" ? request.body.bootstrapHint.trim() : "";
-  const heartbeatKind =
-    typeof request.body?.heartbeatKind === "string" && request.body.heartbeatKind.trim()
-      ? request.body.heartbeatKind.trim()
-      : "";
-  const heartbeatTarget = typeof request.body?.heartbeatTarget === "string" ? request.body.heartbeatTarget.trim() : "";
-  const heartbeatIntervalSeconds =
-    typeof request.body?.heartbeatIntervalSeconds === "number"
-      ? request.body.heartbeatIntervalSeconds
-      : Number(request.body?.heartbeatIntervalSeconds ?? 0);
-  const workspaceMode = "snapshot";
-
-  try {
-    const thread = threadId ? store.getThread(threadId) ?? null : null;
-    const requestedStack = await validateRequestedStack(runtimeAccess, stackId || null, threadId);
-    const worktreePath = cwd || requestedStack?.worktreePath || thread?.cwd || "";
-    const project = resolveProjectMetadata(worktreePath, thread?.supervisor.projectId ?? "preview", thread?.supervisor.projectLabel ?? "preview");
-    const workspaceBootstrap = await inspectWorkspaceBootstrap(worktreePath);
-
-    if (!title || !worktreePath || !command || !Number.isFinite(portValue) || portValue <= 0) {
-      response.status(400).json({ error: "title, cwd, command, and port are required" });
-      return;
-    }
-
-    const previewDefaults = applyWorkspacePreviewDefaults(
-      {
-        image,
-        egressProfile,
-        egressDomains,
-        bootstrapHint: bootstrapHint || undefined
-      },
-      workspaceBootstrap
-    );
-
-    const lease = await runtimeBroker.createLease({
-      leaseId: crypto.randomUUID(),
-      threadId,
-      projectId: project.id,
-      projectLabel: project.label,
-      title,
-      stackId: requestedStack?.id ?? null,
-      aliases,
-      worktreePath,
-      branchName: null,
-      targetPort: portValue,
-      command,
-      workspaceMode,
-      image: previewDefaults.image,
-      egressProfile: previewDefaults.egressProfile ?? "internet",
-      egressDomains: previewDefaults.egressDomains ?? [],
-      bootstrapWaitSeconds: Number.isFinite(bootstrapWaitSeconds) && bootstrapWaitSeconds > 0 ? bootstrapWaitSeconds : undefined,
-      bootstrapHint: previewDefaults.bootstrapHint,
-      heartbeatKind: heartbeatKind || undefined,
-      heartbeatTarget: heartbeatTarget || undefined,
-      heartbeatIntervalSeconds:
-        Number.isFinite(heartbeatIntervalSeconds) && heartbeatIntervalSeconds > 0 ? heartbeatIntervalSeconds : undefined,
-      env
-    });
-    store.upsertPreviewLease(lease);
-    response.json({ ok: true, lease, workspaceBootstrap, previewDefaults });
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post("/api/previews/stop", async (request, response) => {
-  const leaseId = typeof request.body?.leaseId === "string" ? request.body.leaseId : "";
-  if (!leaseId) {
-    response.status(400).json({ error: "leaseId is required" });
-    return;
-  }
-
-  try {
-    store.markPreviewLeaseStopping(leaseId);
-    await runtimeBroker.stopLease(leaseId);
-    store.removePreviewLease(leaseId);
-    response.json({ ok: true });
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post("/api/previews/pin", (request, response) => {
-  const leaseId = typeof request.body?.leaseId === "string" ? request.body.leaseId : "";
-  const pinned = Boolean(request.body?.pinned);
-  if (!leaseId) {
-    response.status(400).json({ error: "leaseId is required" });
-    return;
-  }
-
-  const lease = store.setPreviewLeasePinned(leaseId, pinned);
-  if (!lease) {
-    response.status(404).json({ error: "Preview lease not found" });
-    return;
-  }
-
-  response.json({ ok: true, lease });
-});
-
-app.post("/api/services/start", async (request, response) => {
-  const templateId = typeof request.body?.templateId === "string" ? request.body.templateId.trim() : "";
-  const title = typeof request.body?.title === "string" ? request.body.title.trim() : "";
-  const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : null;
-  const cwd = typeof request.body?.cwd === "string" ? request.body.cwd.trim() : "";
-  const stackId = typeof request.body?.stackId === "string" ? request.body.stackId.trim() : "";
-  const aliases = Array.isArray(request.body?.aliases)
-    ? request.body.aliases
-        .map((value: unknown) => (typeof value === "string" ? value.trim() : ""))
-        .filter((value: string) => value.length > 0)
-    : [];
-  const env =
-    request.body?.env && typeof request.body.env === "object"
-      ? Object.fromEntries(
-          Object.entries(request.body.env as Record<string, unknown>)
-            .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
-            .map(([key, value]) => [key.trim(), value.trim()])
-            .filter(([key, value]) => key && value)
-        )
-      : {};
-
-  const template = serviceTemplateRegistry.get(templateId);
-  if (!template) {
-    response.status(400).json({ error: `Unknown service template: ${templateId}` });
-    return;
-  }
-
-  try {
-    const thread = threadId ? store.getThread(threadId) ?? null : null;
-    const requestedStack = await validateRequestedStack(runtimeAccess, stackId || null, threadId);
-    const serviceId = crypto.randomUUID();
-    const mergedEnv = { ...template.envDefaults, ...env };
-    const effectiveTitle = title || `${template.label} ${serviceId.slice(0, 8)}`;
-    const worktreePath = cwd || requestedStack?.worktreePath || thread?.cwd || "/repos";
-    const project = resolveProjectMetadata(worktreePath, thread?.supervisor.projectId ?? "service", thread?.supervisor.projectLabel ?? "service");
-
-    if (template.runtimeKind === "embedded") {
-      const relativePath = template.fileName ?? ".manor/sqlite/app.db";
-      const absolutePath = path.join(worktreePath, relativePath);
-      await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-      const handle = await fs.open(absolutePath, "a");
-      await handle.close();
-
-      const now = Date.now();
-      const lease = toServiceLeaseView({
-        id: serviceId,
-        threadId,
-        projectId: project.id,
-        projectLabel: project.label,
-        title: effectiveTitle,
-        stackId: requestedStack?.id ?? null,
-        aliases,
-        template,
-        containerName: `embedded-${serviceId}`,
-        targetHost: "local-file",
-        targetPort: 0,
-        worktreePath: absolutePath,
-        status: "running",
-        createdAt: now,
-        updatedAt: now,
-        lastError: null,
-        env: mergedEnv
-      });
-      store.upsertServiceLease(lease);
-      const policyApplications = await applyServiceStartedPoliciesForServer(lease, requestedStack);
-      response.json({ ok: true, service: lease, policyApplications });
-      return;
-    }
-
-    const service = await runtimeBroker.createService({
-      serviceId,
-      threadId,
-      projectId: project.id,
-      projectLabel: project.label,
-      title: effectiveTitle,
-      stackId: requestedStack?.id ?? null,
-      aliases,
-      templateId: template.id,
-      templateLabel: template.label,
-      runtimeKind: template.runtimeKind,
-      worktreePath,
-      targetPort: template.defaultPort,
-      image: template.image,
-      command: template.command,
-      workingDir: template.workingDir,
-      stackVolumePath: template.stackVolumePath,
-      env: mergedEnv
-    });
-    const lease = toServiceLeaseView({
-      id: service.id,
-      threadId: service.threadId,
-      projectId: service.projectId,
-      projectLabel: service.projectLabel,
-      title: service.title,
-      stackId: service.stackId,
-      aliases: service.aliases,
-      template,
-      containerName: service.containerName,
-      targetHost: service.targetHost,
-      targetPort: service.targetPort,
-      worktreePath: service.worktreePath,
-      status: service.status,
-      storageKind: service.storageKind,
-      sticky: service.sticky,
-      volumeName: service.volumeName,
-      volumeMountPath: service.volumeMountPath,
-      createdAt: service.createdAt,
-      updatedAt: service.updatedAt,
-      lastError: service.lastError,
-      env: service.env
-    });
-    store.upsertServiceLease(lease);
-    const policyApplications = await applyServiceStartedPoliciesForServer(lease, requestedStack);
-    response.json({ ok: true, service: lease, policyApplications });
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post("/api/services/stop", async (request, response) => {
-  const serviceId = typeof request.body?.serviceId === "string" ? request.body.serviceId : "";
-  if (!serviceId) {
-    response.status(400).json({ error: "serviceId is required" });
-    return;
-  }
-
-  const lease = store.getServiceLease(serviceId);
-  if (!lease) {
-    response.status(404).json({ error: "Service not found" });
-    return;
-  }
-
-  try {
-    if (lease.runtimeKind === "container") {
-      await runtimeBroker.stopService(serviceId);
-    }
-    store.removeServiceLease(serviceId);
-    response.json({ ok: true });
-  } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post("/api/services/pin", (request, response) => {
-  const serviceId = typeof request.body?.serviceId === "string" ? request.body.serviceId : "";
-  const pinned = Boolean(request.body?.pinned);
-  if (!serviceId) {
-    response.status(400).json({ error: "serviceId is required" });
-    return;
-  }
-
-  const lease = store.setServiceLeasePinned(serviceId, pinned);
-  if (!lease) {
-    response.status(404).json({ error: "Service not found" });
-    return;
-  }
-
-  response.json({ ok: true, service: lease });
+registerRuntimeResourceRoutes({
+  app,
+  runtimeAccess,
+  runtimeBroker,
+  serviceTemplateRegistry,
+  store,
+  applyServiceStartedPoliciesForServer
 });
 
 registerDesktopSessionRoutes(app, runtimeAccess);
@@ -1391,6 +1147,54 @@ const runtimeReconciler = setInterval(() => {
 
 void syncRuntimeInventory().catch((error) => {
   console.error("Initial runtime reconcile failed", error);
+});
+
+app.use(/^\/(?:terminal|butler-terminal)(?:\/.*)?$/, (request, response) => {
+  response
+    .status(503)
+    .type("html")
+    .send(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Terminal unavailable</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #0b1524;
+        color: #e5eefc;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      main {
+        max-width: 34rem;
+        padding: 1.5rem;
+      }
+      h1 {
+        margin: 0 0 0.5rem;
+        font-size: 1rem;
+      }
+      p {
+        margin: 0;
+        color: #9fb6d8;
+        line-height: 1.5;
+      }
+      code {
+        color: #cfe1ff;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Terminal unavailable</h1>
+      <p><code>${request.path}</code> is served by the Manor Docker gateway. Start the full Docker stack to use the embedded terminal.</p>
+    </main>
+  </body>
+</html>`);
 });
 
 if (viteDevServer) {

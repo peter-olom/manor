@@ -2,11 +2,9 @@ import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-
 import { getModel } from "@mariozechner/pi-ai";
 import { AuthStorage, defineTool, ModelRegistry, type AgentSession } from "@mariozechner/pi-coding-agent";
 import type { TSchema } from "@sinclair/typebox";
-
 import {
   buildCallbackReviewPrompt,
   buildCloseoutId,
@@ -43,22 +41,10 @@ import {
   type SupervisionSmokePlan
 } from "./butler-agent-helpers.js";
 import { buildButlerCodexTools } from "./butler-agent-codex-tools.js";
-import {
-  createOrRefreshButlerSession,
-  getButlerLiveSnapshot,
-  getButlerMessagePage,
-  getButlerShellSnapshot,
-  getButlerSnapshot,
-  promptButler,
-  promptButlerInternal,
-  stopButlerPrompt,
-  restoreButlerCompactionState,
-  sanitizeButlerSessionMessages,
-  sanitizePersistedButlerSessions,
-  updateButlerComposeSettings
-} from "./butler-agent-session.js";
-import { clearButlerSessionChat, deleteButlerSessionChatFrom, keepOperatorMessagesBefore } from "./butler-agent-chat-hygiene.js";
+import { createOrRefreshButlerSession, getButlerLiveSnapshot, getButlerMessagePage, getButlerShellSnapshot, getButlerSnapshot, promptButler, promptButlerInternal, stopButlerPrompt, restoreButlerCompactionState, sanitizeButlerSessionMessages, sanitizePersistedButlerSessions, updateButlerComposeSettings } from "./butler-agent-session.js";
+import { clearButlerSessionChat, deleteButlerSessionChatFromLocated, keepOperatorMessagesBefore, locateButlerSessionDeletePoint } from "./butler-agent-chat-hygiene.js";
 import { buildButlerServiceTools } from "./butler-agent-service-tools.js";
+import { buildButlerManorTools } from "./butler-agent-manor-tools.js";
 import { buildButlerProjectTools } from "./butler-agent-project-tools.js";
 import { buildButlerDelegationTools, buildButlerStackPreviewTools } from "./butler-agent-stack-preview-tools.js";
 import { reviewButlerProofScreenshot } from "./butler-agent-proof-review.js";
@@ -70,17 +56,14 @@ import { upsertOperatorMessage } from "./butler-operator-messages.js";
 import { readButlerAuthStatus, readCodexAuthStatus } from "./auth-status.js";
 import { notifyDirectCodexMessage, type DirectCodexMessageAccess, type DirectCodexMessagePingInput } from "./direct-codex-message.js";
 import { type FileReferenceStore } from "./file-store.js";
+import { HostControllerClient } from "./host-controller-client.js";
+import { ManorRestartRequestState } from "./manor-restart-state.js";
 import { buildOnboardingView } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
+import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import { formatProjectPolicyContextLines } from "./project-artifacts-policies.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
-import {
-  ensureTaskWorktree,
-  resolveExistingWorkspaceCwd,
-  resolveWorkspaceBranchName,
-  resolveWorkspaceProjectInfo,
-  taskRequiresManagedWorktree
-} from "./repo-worktree.js";
+import { ensureTaskWorktree, resolveExistingWorkspaceCwd, resolveWorkspaceBranchName, resolveWorkspaceProjectInfo, taskRequiresManagedWorktree } from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
@@ -89,11 +72,8 @@ import {
   describeProofExpectation,
   isSharedShellRepoBootstrapTask,
 } from "./thread-contract.js";
-import {
-  applyWorkspacePreviewDefaults,
-  formatWorkspaceBootstrapLines,
-  inspectWorkspaceBootstrap
-} from "./workspace-bootstrap.js";
+import { elapsedTaskDurationMs, stripElapsedTaskTimeFooter } from "./task-timing.js";
+import { applyWorkspacePreviewDefaults, formatWorkspaceBootstrapLines, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 import type {
   AppSnapshot,
   AppShellSnapshot,
@@ -114,12 +94,14 @@ import type {
 import { ButlerStateStore } from "./state-store.js";
 import { CodexAppServerClient } from "./codex-client.js";
 import type { PreviewLeaseView, PreviewProofRecordView, PreviewVerificationArtifactView, PreviewVerificationView } from "./types.js";
-
 const CALLBACK_RECOVERY_TIMEOUT_MS = 30_000;
-
+function isButlerAuthRecoveryError(message: string | null): boolean {
+  return typeof message === "string" && /\b(auth|authentication|token|signing in)\b/i.test(message);
+}
 export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
   private readonly codexClient: CodexAppServerClient;
+  private readonly hostController: HostControllerClient;
   private readonly runtimeBroker: RuntimeBrokerClient;
   private readonly serviceTemplateRegistry: ServiceTemplateRegistry;
   private readonly imageStore: ImageReferenceStore;
@@ -134,6 +116,8 @@ export class ButlerAgentService extends EventEmitter {
   private readonly legacyNoticeStatePath: string;
   private readonly callbackStatePath: string;
   private readonly refreshRuntimeInventory: (() => Promise<void>) | null;
+  private readonly manorRestartRequests: ManorRestartRequestState;
+  private readonly memoryScheduler: MemoryUpdateScheduler | null;
   private modelRegistry: ModelRegistry | null = null;
   private session: AgentSession | null = null;
   private auth: ButlerAuthStatus = { mode: "none", loggedIn: false, validationError: null, lastValidatedAt: null };
@@ -174,10 +158,10 @@ export class ButlerAgentService extends EventEmitter {
     lastAborted: false,
     lastError: null
   };
-
   constructor(options: {
     store: ButlerStateStore;
     codexClient: CodexAppServerClient;
+    hostController: HostControllerClient;
     runtimeBroker: RuntimeBrokerClient;
     serviceTemplateRegistry: ServiceTemplateRegistry;
     imageStore: ImageReferenceStore;
@@ -188,10 +172,12 @@ export class ButlerAgentService extends EventEmitter {
     sessionDir: string;
     artifactsDir: string;
     refreshRuntimeInventory?: () => Promise<void>;
+    memoryScheduler?: MemoryUpdateScheduler | null;
   }) {
     super();
     this.store = options.store;
     this.codexClient = options.codexClient;
+    this.hostController = options.hostController;
     this.runtimeBroker = options.runtimeBroker;
     this.serviceTemplateRegistry = options.serviceTemplateRegistry;
     this.imageStore = options.imageStore;
@@ -202,13 +188,17 @@ export class ButlerAgentService extends EventEmitter {
     this.sessionDir = options.sessionDir;
     this.artifactsDir = options.artifactsDir;
     this.refreshRuntimeInventory = options.refreshRuntimeInventory ?? null;
+    this.memoryScheduler = options.memoryScheduler ?? null;
     this.operatorMessageStatePath = path.join(this.sessionDir, "operator-messages.json");
     this.activitySummaryStatePath = path.join(this.sessionDir, "activity-summaries.json");
     this.legacyNoticeStatePath = path.join(this.sessionDir, "notices.json");
     this.callbackStatePath = path.join(this.sessionDir, "chat-callbacks.json");
+    this.manorRestartRequests = new ManorRestartRequestState(path.join(this.sessionDir, "manor-restart-requests.json"), this.hostController, (error) => {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.emit("change");
+    }, () => this.emit("change"));
     this.toolCatalog = this.buildToolCatalog();
   }
-
   private async refreshRuntimeInventoryIfAvailable(): Promise<string | null> {
     if (!this.refreshRuntimeInventory) return null;
     try {
@@ -218,7 +208,6 @@ export class ButlerAgentService extends EventEmitter {
       return error instanceof Error ? error.message : String(error);
     }
   }
-
   private async loadOperatorMessageState(): Promise<void> {
     try {
       const raw = await fs.readFile(this.operatorMessageStatePath, "utf8");
@@ -226,24 +215,23 @@ export class ButlerAgentService extends EventEmitter {
       if (!Array.isArray(parsed)) {
         return;
       }
-
       this.operatorMessages.splice(0, this.operatorMessages.length);
       for (const item of parsed) {
         if (!item || typeof item !== "object") {
           continue;
         }
-
         const id = typeof item.id === "string" ? item.id : null;
         const role = typeof item.role === "string" ? item.role : null;
-        const text = typeof item.text === "string" ? item.text : null;
+        const text = typeof item.text === "string" ? stripElapsedTaskTimeFooter(item.text) : null;
         const at = typeof item.at === "number" && Number.isFinite(item.at) ? item.at : null;
+        const taskDurationMs = typeof item.taskDurationMs === "number" && Number.isFinite(item.taskDurationMs) ? item.taskDurationMs : null;
         const kind = item.kind === "message" || typeof item.kind !== "string" ? "message" : null;
 
         if (!id || !role || !text || !kind) {
           continue;
         }
 
-        this.operatorMessages.push({ id, role, text, at, kind });
+        this.operatorMessages.push({ id, role, text, at, taskDurationMs, kind });
       }
 
       this.operatorMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
@@ -275,14 +263,15 @@ export class ButlerAgentService extends EventEmitter {
 
         const id = typeof item.id === "string" ? item.id : null;
         const role = typeof item.role === "string" ? item.role : null;
-        const text = typeof item.text === "string" ? item.text : null;
+        const text = typeof item.text === "string" ? stripElapsedTaskTimeFooter(item.text) : null;
         const at = typeof item.at === "number" && Number.isFinite(item.at) ? item.at : null;
+        const taskDurationMs = typeof item.taskDurationMs === "number" && Number.isFinite(item.taskDurationMs) ? item.taskDurationMs : null;
 
         if (!id || !role || !text) {
           continue;
         }
 
-        this.operatorMessages.push({ id, role, text, at, kind: "message" });
+        this.operatorMessages.push({ id, role, text, at, taskDurationMs, kind: "message" });
       }
 
       this.operatorMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
@@ -432,9 +421,9 @@ export class ButlerAgentService extends EventEmitter {
     );
   }
 
-  async clearChat(): Promise<void> { this.operatorMessages.splice(0, this.operatorMessages.length); this.activityTurns.splice(0, this.activityTurns.length); this.activitySummaryTurns.splice(0, this.activitySummaryTurns.length); this.activeActivityTurnId = null; await Promise.all([this.saveOperatorMessageState(), this.saveActivitySummaryState()]); clearButlerSessionChat(this.session); this.lastError = null; this.emit("change"); }
+  async clearChat(): Promise<void> { await this.memoryScheduler?.beforeButlerChatClear([...this.operatorMessages]); this.operatorMessages.splice(0, this.operatorMessages.length); this.activityTurns.splice(0, this.activityTurns.length); this.activitySummaryTurns.splice(0, this.activitySummaryTurns.length); this.activeActivityTurnId = null; await Promise.all([this.saveOperatorMessageState(), this.saveActivitySummaryState()]); clearButlerSessionChat(this.session); this.lastError = null; this.emit("change"); }
 
-  async deleteChatFromMessage(messageId: string): Promise<void> { const deleteFrom = deleteButlerSessionChatFrom(this.session, messageId); keepOperatorMessagesBefore(this.operatorMessages, deleteFrom); const prunedActivity = keepButlerActivityBefore(this as unknown as ButlerAgentSessionAccess, deleteFrom); await Promise.all([this.saveOperatorMessageState(), ...(prunedActivity ? [this.saveActivitySummaryState()] : [])]); this.lastError = null; this.emit("change"); }
+  async deleteChatFromMessage(messageId: string): Promise<void> { const deletePoint = locateButlerSessionDeletePoint(this.session, messageId); await this.memoryScheduler?.beforeButlerChatDeleteFrom({ messageId, deleteFromTimestamp: deletePoint.targetAt, messages: [...this.operatorMessages] }); const deleteFrom = deleteButlerSessionChatFromLocated(this.session, deletePoint); keepOperatorMessagesBefore(this.operatorMessages, deleteFrom); const prunedActivity = keepButlerActivityBefore(this as unknown as ButlerAgentSessionAccess, deleteFrom); await Promise.all([this.saveOperatorMessageState(), ...(prunedActivity ? [this.saveActivitySummaryState()] : [])]); this.lastError = null; this.emit("change"); }
 
   async notifyDirectCodexMessage(input: DirectCodexMessagePingInput & { threadId: string }): Promise<void> { await notifyDirectCodexMessage(this as unknown as DirectCodexMessageAccess, input); }
 
@@ -502,7 +491,8 @@ export class ButlerAgentService extends EventEmitter {
       recordGatedCloseout(this.store, threadId, closeoutBlocker);
       throw new Error(closeoutBlocker);
     }
-    upsertOperatorMessage(this.operatorMessages, messageId, text.trim(), at);
+    const taskDurationMs = elapsedTaskDurationMs(callback.requestedAt, at);
+    upsertOperatorMessage(this.operatorMessages, messageId, text.trim(), at, taskDurationMs);
     this.noteThreadFocus(threadId, "closeout");
     this.deliveredCloseoutIds.add(closeoutId);
     applyPostedCloseout(callback, {
@@ -674,6 +664,7 @@ export class ButlerAgentService extends EventEmitter {
     await this.loadOperatorMessageState();
     await this.loadActivitySummaryState();
     await this.loadCallbackState();
+    await this.manorRestartRequests.load();
     this.auth = await readButlerAuthStatus(this.piAuthPath);
     this.codexAuth = await readCodexAuthStatus(this.codexAuthPath);
     this.modelRegistry = ModelRegistry.inMemory(AuthStorage.create(this.piAuthPath));
@@ -692,6 +683,7 @@ export class ButlerAgentService extends EventEmitter {
   private async refreshExternalStatus(): Promise<void> {
     const nextAuth = await readButlerAuthStatus(this.piAuthPath);
     const nextCodexAuth = await readCodexAuthStatus(this.codexAuthPath);
+    const clearedStaleAuthError = nextAuth.loggedIn && isButlerAuthRecoveryError(this.lastError);
     const authChanged =
       nextAuth.mode !== this.auth.mode ||
       nextAuth.loggedIn !== this.auth.loggedIn ||
@@ -710,6 +702,9 @@ export class ButlerAgentService extends EventEmitter {
       this.modelRegistry = ModelRegistry.inMemory(AuthStorage.create(this.piAuthPath));
       await this.createOrRefreshSession();
     }
+    if (clearedStaleAuthError) {
+      this.lastError = null;
+    }
     this.codexAuth = nextCodexAuth;
 
     const nextOnboarding = await buildOnboardingView({
@@ -718,7 +713,7 @@ export class ButlerAgentService extends EventEmitter {
       codexConfigDir: this.codexConfigDir
     });
 
-    if (JSON.stringify(nextOnboarding) !== JSON.stringify(this.onboarding) || authChanged) {
+    if (JSON.stringify(nextOnboarding) !== JSON.stringify(this.onboarding) || authChanged || clearedStaleAuthError) {
       this.onboarding = nextOnboarding;
       this.emit("change");
     }
@@ -803,9 +798,14 @@ export class ButlerAgentService extends EventEmitter {
     return `Butler has reached the supervision limit for job ${threadId}. Used ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns} Butler turns. Raise the limit on that thread before asking Butler to steer it again.`;
   }
 
-  private getOperatorCloseoutBlocker(threadId: string): string | null {
-    return getCloseoutBlocker(this.store, threadId);
-  }
+  private getOperatorCloseoutBlocker(threadId: string): string | null { return getCloseoutBlocker(this.store, threadId); }
+
+  get pendingManorRestartRequest(): AppSnapshot["butler"]["pendingManorRestartRequest"] { return this.manorRestartRequests.pendingRequest; }
+  get authorizedManorRestartRequest(): AppSnapshot["butler"]["authorizedManorRestartRequest"] { return this.manorRestartRequests.authorizedRequest; }
+  requestManorRestartAuthorization(input: Parameters<ManorRestartRequestState["request"]>[0]): NonNullable<AppSnapshot["butler"]["pendingManorRestartRequest"]> { return this.manorRestartRequests.request(input); }
+  authorizeManorRestartRequest(requestId: string): NonNullable<AppSnapshot["butler"]["authorizedManorRestartRequest"]> { return this.manorRestartRequests.authorize(requestId); }
+  dismissManorRestartRequest(requestId: string): void { this.manorRestartRequests.dismiss(requestId); }
+  async startAuthorizedManorRestart(requestId: string) { return this.manorRestartRequests.start(requestId); }
 
   private async buildDelegationDeveloperInstructions(
     workspace: { cwd: string; branchName: string | null },
@@ -830,7 +830,8 @@ export class ButlerAgentService extends EventEmitter {
             : "Stay on the existing checkout. Do not create a branch or managed worktree unless the operator explicitly asked for one.",
       "Use Codex-shell for repository, git, and code-editing work.",
       "When the task needs a running app, disposable dependency, browser interaction, or durable proof, use manor-harness and choose the simplest working path.",
-      "Browser-use sessions already record video, tracing, a ready screenshot, a final screenshot, and per-action screenshots by default. Use them when the task asks for browser proof. Use file proof when a durable file, PDF, Office file, archive, report, export, or log is the simplest evidence.",
+      "Browser-use sessions already record video, tracing, a ready screenshot, a final screenshot, and per-action screenshots by default. Use them when the task asks for browser proof. Use `manor-harness proof text` for simple read-only notes or inspection summaries so no proof side files are created under /repos. Use file proof only when a durable existing file, PDF, Office file, archive, report, export, or log is the simplest evidence.",
+      "For any task with UI implications, capture and surface screenshot or video proof of the relevant UI state. Text logs or TXT/file proof alone are insufficient.",
       "Do not wait for Manor to infer project commands. If the project needs install, run, test, or bootstrap commands, choose and run them explicitly.",
       "Keep visible Codex chatter useful: post brief progress notes before major phases, after meaningful findings, and before long-running verification.",
       "Do not bury the thread in tool calls only. If you are about to run several commands or inspect several files, say what you are doing and what you learned afterward.",
@@ -845,6 +846,7 @@ export class ButlerAgentService extends EventEmitter {
       "If the job produced reusable decisions, gotchas, PR verdicts, repo state changes, or project facts, include them plainly in the supervisor report details so Butler's separate memory-review pass can propose durable candidates.",
       "When you complete meaningful work, record a supervisor report before your final reply with `manor-harness report --status completed --summary \"<concise outcome>\" --details \"<brief oversight note with the key fact, risk, or next step>\"`.",
       "If you are blocked or need operator attention, record it before your reply with `manor-harness report --status blocked --summary \"<what is blocked>\" --details \"<what you need, what failed, or the next recommended action>\"`.",
+      "For blocked reports, clearly classify the blocker in details as operator/project/external/Manor-platform when you can. If Manor, Butler, Codex worker, preview runtime, harness, broker, supervision, proof, desktop, restart, or dogfooding behavior is the blocker, include the exact failed behavior and the smallest improvement that would prevent recurrence.",
       "Supervisor reports should help Butler oversee the job. Keep `summary` short and outcome-first, and use `details` for the extra context Butler should surface without dumping the whole conversation.",
       "Keep the thread focused on the delegated task and report concise progress and outcome."
     ].join("\n");
@@ -1181,7 +1183,7 @@ export class ButlerAgentService extends EventEmitter {
 
     const threadStacks = this.store
       .listStackLeases()
-      .filter((stack) => stack.status !== "stopped" && (!threadId || stack.threadId === threadId || !stack.threadId));
+      .filter((stack) => stack.status !== "stopped" && (!threadId || stack.threadId === threadId || !stack.threadId || stack.pinned));
     const stack =
       threadStacks.find((entry) => entry.id === stackId) ??
       (threadStacks.filter((entry) => entry.title === stackId).length === 1
@@ -1196,7 +1198,7 @@ export class ButlerAgentService extends EventEmitter {
       throw new Error(`Unknown stack: ${stackId}`);
     }
 
-    if (threadId && stack.threadId && stack.threadId !== threadId) {
+    if (threadId && stack.threadId && stack.threadId !== threadId && !stack.pinned) {
       throw new Error(`Stack ${stackId} belongs to a different job`);
     }
 
@@ -1210,7 +1212,7 @@ export class ButlerAgentService extends EventEmitter {
 
     const threadPreviews = this.store
       .listPreviewLeases()
-      .filter((preview) => preview.status !== "stopped" && (!threadId || preview.threadId === threadId || !preview.threadId));
+      .filter((preview) => preview.status !== "stopped" && (!threadId || preview.threadId === threadId || !preview.threadId || preview.pinned));
     const directIdMatch = threadPreviews.find((entry) => entry.id === previewSelector);
     if (directIdMatch) {
       return directIdMatch;
@@ -1442,7 +1444,7 @@ export class ButlerAgentService extends EventEmitter {
 
   private buildCustomTools() {
     const toolAccess = this.getToolAccess();
-    return [...buildButlerStackPreviewTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerCodexTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
+    return [...buildButlerStackPreviewTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerManorTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerCodexTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
   }
 
   private async createOrRefreshSession(): Promise<void> { await createOrRefreshButlerSession(this.getSessionAccess()); }
@@ -1475,6 +1477,8 @@ export class ButlerAgentService extends EventEmitter {
     if (guard.lockedThreadId && this.store.getThread(guard.lockedThreadId)) {
       this.noteThreadFocus(guard.lockedThreadId, guard.explicitThreadIds.length > 0 ? "operator_reference" : "operator_follow_up");
     }
+    const thread = guard.lockedThreadId ? this.store.getThread(guard.lockedThreadId) : undefined;
+    this.memoryScheduler?.observeOperatorMessage({ text, threadId: guard.lockedThreadId, projectId: thread?.supervisor.projectId ?? thread?.executionContract?.projectId ?? null, projectLabel: thread?.supervisor.projectLabel ?? thread?.executionContract?.projectLabel ?? null, at: Date.now() });
 
     try {
       if (guard.contextPrompt) {

@@ -15,6 +15,12 @@ import {
   isCallbackOutstanding,
   selectReviewableProofArtifacts
 } from "../../src/server/butler-agent-helpers.js";
+import {
+  buildSelfImprovementTask,
+  classifyManorBlocker,
+  hasStartedSelfImprovement
+} from "../../src/server/butler-self-improvement.js";
+import { contractRequiresVisualProof, hasVisualProof, taskHasUiImplication } from "../../src/server/proof-policy.js";
 import { listWorkspaceProjectDirectories, resolveWorkspaceProjectInfo } from "../../src/server/repo-worktree.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { evaluateOperatorCloseoutGate } from "../../src/server/supervision-checklist.js";
@@ -483,6 +489,23 @@ test("system prompt biases autonomous domain resolution before job inventory", a
   assert.match(prompt, /Do not collapse real people or folders into job labels/);
 });
 
+test("system prompt routes direct Manor improvement requests to self-improvement", async () => {
+  const store = await createStore();
+  const prompt = buildSystemPrompt(store, "No callbacks.");
+  const task = buildSelfImprovementTask({
+    problem: "Improve the Butler final response UI.",
+    desiredOutcome: "The operator sees timing feedback."
+  });
+
+  assert.match(prompt, /start_self_improvement/);
+  assert.match(prompt, /request_manor_restart/);
+  assert.match(prompt, /read_manor_restart_status/);
+  assert.match(prompt, /direct Manor, Butler, Codex worker, preview, runtime broker, supervision, restart-controller, or dogfooding improvements/);
+  assert.match(prompt, /missing credentials, operator approval, external outages, or app-specific bugs outside Manor/);
+  assert.match(task, /If the change has any UI implication/);
+  assert.match(task, /screenshot or video proof/);
+});
+
 test("callback helper only treats owed non-closed callbacks as outstanding", () => {
   const base: ButlerThreadCallbackView = {
     threadId: "thread-1",
@@ -645,6 +668,86 @@ test("callback review prompt keeps proof-required jobs behind evidence review", 
   assert.match(prompt, /Use reply_to_operator only when all acceptance points are accepted/);
 });
 
+test("UI-impacting contracts require visual proof", () => {
+  const contract = buildThreadExecutionContract({
+    threadId: "thread-ui",
+    workspaceCwd: "/workspace",
+    projectId: "project-1",
+    projectLabel: "Project One",
+    branch: "main",
+    taskText: "Add task time for Butler and Codex final responses.",
+    requestedTask: "Add task time for Butler and Codex final responses.",
+    operatorGoal: "Final responses should include total time taken in the Butler chat.",
+    notes: []
+  });
+
+  assert.equal(taskHasUiImplication(contract.requestedTask), true);
+  assert.equal(contract.proofExpectation, "requested");
+  assert.equal(contractRequiresVisualProof(contract), true);
+  assert.match(contract.acceptancePoints.join("\n"), /Capture and surface visual proof/);
+  assert.match(contract.notes.join("\n"), /UI-impacting work requires visual proof/);
+});
+
+test("visual proof policy rejects text-only file evidence", () => {
+  const textOnlyProof = makeProof("text-proof", 1000, [proofArtifact("file", "verification txt", "verification.txt")]);
+  const screenshotProof = makeProof("screenshot-proof", 2000, [proofArtifact("screenshot", "Final screenshot", "final.png")]);
+
+  assert.equal(hasVisualProof([textOnlyProof]), false);
+  assert.equal(hasVisualProof([textOnlyProof, screenshotProof]), true);
+});
+
+test("callback review prompt requires visual feedback for UI work", async () => {
+  const store = await createStore();
+  const contract = buildThreadExecutionContract({
+    threadId: "thread-ui-review",
+    workspaceCwd: "/workspace",
+    projectId: "project-1",
+    projectLabel: "Project One",
+    branch: "main",
+    taskText: "Polish the dashboard layout and final response footer.",
+    requestedTask: "Polish the dashboard layout and final response footer.",
+    operatorGoal: "The operator can see the updated UI.",
+    notes: []
+  });
+  store.upsertThreadSummary({
+    id: contract.threadId,
+    status: "idle",
+    cwd: contract.workspaceCwd,
+    turns: [{ id: "turn-1", status: "completed", items: [] }]
+  });
+  store.setThreadExecutionContract(contract.threadId, contract);
+  store.recordWorkerReport(contract.threadId, {
+    turnId: "turn-1",
+    status: "completed",
+    summary: "Done.",
+    details: "Saved a text verification transcript."
+  });
+
+  const prompt = buildCallbackReviewPrompt(store, {
+    threadId: contract.threadId,
+    callbackState: "received_worker_callback",
+    resolutionState: null,
+    requestedAt: 1,
+    lastEventAt: Date.now(),
+    lastWorkerStatusSeen: "idle",
+    lastTerminalReportAt: Date.now(),
+    lastPrivateSteerText: null,
+    lastPrivateSteerAt: null,
+    nextWorkerReportAction: "review",
+    operatorCloseoutStatus: "owed",
+    owesOperatorReply: true,
+    closeoutChannel: "none",
+    reviewState: "queued",
+    reviewReason: "worker_callback",
+    closedAt: null,
+    updatedAt: Date.now()
+  });
+
+  assert.match(prompt, /Visual proof requirement: this job has UI implications/);
+  assert.match(prompt, /screenshot or video proof/);
+  assert.match(prompt, /Text-only proof can support the report, but cannot replace visual proof/);
+});
+
 test("callback review prompt includes held operator context", async () => {
   const store = await createStore();
   const contract = makeContract();
@@ -679,6 +782,116 @@ test("callback review prompt includes held operator context", async () => {
 
   assert.match(prompt, /Held operator context/);
   assert.match(prompt, /newly supplied staging account/);
+});
+
+test("callback review prompt starts self-improvement for Manor platform blockers", async () => {
+  const store = await createStore();
+  const contract = makeContract({
+    requestedTask: "Run app preview proof through Manor.",
+    acceptancePoints: ["Start a preview", "Capture proof"]
+  });
+  store.upsertThreadSummary({
+    id: contract.threadId,
+    status: "idle",
+    cwd: contract.workspaceCwd,
+    turns: [{ id: "turn-1", status: "completed", items: [] }]
+  });
+  store.setThreadExecutionContract(contract.threadId, contract);
+  const report = store.recordWorkerReport(contract.threadId, {
+    turnId: "turn-1",
+    status: "blocked",
+    summary: "Preview cannot start.",
+    details: "Manor platform blocker: runtime broker cleanup leaves the preview network unavailable. Need a broker retry around stale network removal."
+  });
+  const thread = store.getThread(contract.threadId);
+
+  assert.equal(classifyManorBlocker({ thread, workerReport: report }).shouldInvestigate, true);
+
+  const prompt = buildCallbackReviewPrompt(store, {
+    threadId: contract.threadId,
+    callbackState: "received_worker_callback",
+    resolutionState: null,
+    requestedAt: report.updatedAt - 1,
+    lastEventAt: report.updatedAt,
+    lastWorkerStatusSeen: "idle",
+    lastTerminalReportAt: report.updatedAt,
+    lastPrivateSteerText: null,
+    lastPrivateSteerAt: null,
+    nextWorkerReportAction: "review",
+    operatorCloseoutStatus: "owed",
+    owesOperatorReply: true,
+    closeoutChannel: "none",
+    reviewState: "queued",
+    reviewReason: "worker_callback",
+    closedAt: null,
+    updatedAt: report.updatedAt
+  });
+
+  assert.match(prompt, /Manor blocker classifier: high confidence/);
+  assert.match(prompt, /use start_self_improvement/);
+  assert.match(prompt, /source job id and blocker summary/);
+});
+
+test("callback review prompt avoids self-improvement for operator-only blockers", async () => {
+  const store = await createStore();
+  const contract = makeContract({
+    requestedTask: "Verify the external production dashboard through a Manor preview.",
+    acceptancePoints: ["Log in", "Check dashboard"]
+  });
+  store.upsertThreadSummary({
+    id: contract.threadId,
+    status: "idle",
+    cwd: contract.workspaceCwd,
+    turns: [{ id: "turn-1", status: "completed", items: [] }]
+  });
+  store.setThreadExecutionContract(contract.threadId, contract);
+  const report = store.recordWorkerReport(contract.threadId, {
+    turnId: "turn-1",
+    status: "blocked",
+    summary: "Login is blocked.",
+    details: "Need operator input: the production account requires a missing password and MFA code."
+  });
+
+  assert.equal(classifyManorBlocker({ thread: store.getThread(contract.threadId), workerReport: report }).shouldInvestigate, false);
+
+  const prompt = buildCallbackReviewPrompt(store, {
+    threadId: contract.threadId,
+    callbackState: "received_worker_callback",
+    resolutionState: null,
+    requestedAt: report.updatedAt - 1,
+    lastEventAt: report.updatedAt,
+    lastWorkerStatusSeen: "idle",
+    lastTerminalReportAt: report.updatedAt,
+    lastPrivateSteerText: null,
+    lastPrivateSteerAt: null,
+    nextWorkerReportAction: "review",
+    operatorCloseoutStatus: "owed",
+    owesOperatorReply: true,
+    closeoutChannel: "none",
+    reviewState: "queued",
+    reviewReason: "worker_callback",
+    closedAt: null,
+    updatedAt: report.updatedAt
+  });
+
+  assert.match(prompt, /Manor blocker classifier: do not start self-improvement/);
+  assert.doesNotMatch(prompt, /use start_self_improvement with the source job id/);
+});
+
+test("self-improvement duplicate guard notices source blocker events", async () => {
+  const store = await createStore();
+  const contract = makeContract();
+  store.upsertThreadSummary({
+    id: contract.threadId,
+    status: "idle",
+    cwd: contract.workspaceCwd,
+    turns: [{ id: "turn-1", status: "completed", items: [] }]
+  });
+  store.setThreadExecutionContract(contract.threadId, contract);
+
+  assert.equal(hasStartedSelfImprovement(store.getThread(contract.threadId)), false);
+  store.addEvent(contract.threadId, "butler.self_improvement.started", "Started Manor self-improvement job thread-2.");
+  assert.equal(hasStartedSelfImprovement(store.getThread(contract.threadId)), true);
 });
 
 test("thread snapshot merge removes synthetic duplicate chat messages", async () => {

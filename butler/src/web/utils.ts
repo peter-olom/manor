@@ -240,6 +240,100 @@ export function describeArtifactAvailability(artifact: PreviewVerificationArtifa
   };
 }
 
+const OPENABLE_TEXT_PROOF_EXTENSIONS = new Set([
+  ".c",
+  ".cc",
+  ".cjs",
+  ".cpp",
+  ".cs",
+  ".css",
+  ".csv",
+  ".env",
+  ".go",
+  ".h",
+  ".hpp",
+  ".htm",
+  ".html",
+  ".ini",
+  ".java",
+  ".js",
+  ".json",
+  ".jsonl",
+  ".jsx",
+  ".kt",
+  ".lock",
+  ".log",
+  ".md",
+  ".mjs",
+  ".php",
+  ".pl",
+  ".py",
+  ".r",
+  ".rb",
+  ".rs",
+  ".sh",
+  ".sql",
+  ".svg",
+  ".swift",
+  ".toml",
+  ".ts",
+  ".tsx",
+  ".txt",
+  ".xml",
+  ".yaml",
+  ".yml"
+]);
+
+const OPENABLE_TEXT_PROOF_CONTENT_TYPES = new Set([
+  "application/ecmascript",
+  "application/javascript",
+  "application/json",
+  "application/sql",
+  "application/toml",
+  "application/x-ndjson",
+  "application/x-yaml",
+  "application/yaml",
+  "image/svg+xml"
+]);
+
+function proofFileExtension(fileName: string): string {
+  const lower = fileName.trim().toLowerCase();
+  if (lower === ".env" || lower.endsWith("/.env")) {
+    return ".env";
+  }
+  const dotIndex = lower.lastIndexOf(".");
+  return dotIndex >= 0 ? lower.slice(dotIndex) : "";
+}
+
+function normalizedContentType(contentType: string): string {
+  return contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+}
+
+export function isTextLikeProofArtifact(artifact: PreviewVerificationArtifact): boolean {
+  const contentType = normalizedContentType(artifact.contentType);
+  if (artifact.kind === "html") {
+    return true;
+  }
+  if (contentType.startsWith("text/") || OPENABLE_TEXT_PROOF_CONTENT_TYPES.has(contentType)) {
+    return true;
+  }
+  if (contentType.endsWith("+json") || contentType.endsWith("+xml")) {
+    return true;
+  }
+  return OPENABLE_TEXT_PROOF_EXTENSIONS.has(proofFileExtension(artifact.fileName));
+}
+
+export function isBrowserOpenableProofArtifact(artifact: PreviewVerificationArtifact): boolean {
+  if (artifact.kind === "screenshot" || artifact.kind === "video") {
+    return false;
+  }
+  const contentType = normalizedContentType(artifact.contentType);
+  if (contentType === "application/pdf" || proofFileExtension(artifact.fileName) === ".pdf") {
+    return true;
+  }
+  return isTextLikeProofArtifact(artifact);
+}
+
 export function formatTimelineDayLabel(value: number | null | undefined): string {
   if (!value) {
     return "Today";
@@ -291,6 +385,14 @@ export function dedupeMessages(messages: ButlerMessageRecord[]): ButlerHistorySt
     seen.add(message.id);
     return true;
   });
+}
+
+export function hasCommittedPendingButlerPrompt(messages: ButlerMessageRecord[], pendingText: string | null): boolean {
+  if (!pendingText) {
+    return false;
+  }
+
+  return messages.some((message) => message.role.startsWith("user") && message.text === pendingText);
 }
 
 export function formatCompactCount(value: number | null): string {

@@ -1,29 +1,42 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 
 import manorLogoUrl from "./assets/manor-logo.svg";
 import manorLogoDarkUrl from "./assets/manor-logo-dark.svg";
-import { postJson } from "./api";
+import { getJson, postJson } from "./api";
 import { ButlerSurface } from "./ButlerSurface";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { ButlerTabIcon, CloseIcon, CopyIcon, ScratchPadTabIcon, SetupTabIcon, TerminalTabIcon, ThemeIcon, ThreadsIcon, TrashIcon } from "./icons";
 import {
+  clearPendingManorRestartRequest,
   mergeKnownImages,
   useShellSnapshot,
   useServerToastEvent,
   useTransportState
 } from "./live-state";
+import {
+  buildCompletionSoundSnapshot,
+  flashCompletionBrowserTab,
+  installCompletionSoundUnlock,
+  playCompletionNotificationSound,
+  shouldPlayCompletionNotificationSound,
+  type CompletionSoundSnapshot
+} from "./notification-sound";
 import { StatusItem } from "./StatusItem";
 import { ScratchPadPanel } from "./ScratchPadPanel";
 import { ThreadSurface } from "./ThreadSurface";
 import type {
   AppToast,
+  BrowserAnnotationBatch,
   ButlerThreadCallback,
   CodexThreadSummary,
   ComposerPrefill,
   ComposerPrefillTarget,
   ConfirmDialogState,
   FileReference,
+  ManorRestartRequest,
   PreviewMedia,
+  ScratchPadItem,
   SetupCommandMode,
   TerminalTarget,
   ThemePreference,
@@ -45,6 +58,238 @@ import {
   readWorkspaceQuery,
   resolveThemePreference
 } from "./utils";
+
+function formatPreviewAnnotationBatchLabel(batch: BrowserAnnotationBatch): string {
+  const title = batch.page.title.trim() || "Preview";
+  const count = batch.annotations.length;
+  const state = batch.ready ? "Ready" : "Needs comments";
+  return `${state} · ${title} · ${count} mark${count === 1 ? "" : "s"}`;
+}
+
+type CompanionToolbarDragEvent = {
+  pointerId: number;
+  clientX: number;
+  clientY: number;
+};
+
+type CompanionToolbarStyle = CSSProperties & {
+  "--preview-annotation-companion-bottom"?: string;
+};
+
+function PreviewAnnotationCompanionToolbar({
+  batches,
+  selectedBatchId,
+  targetLabel,
+  busy,
+  onSelectedBatchChange,
+  onInsert,
+  onDismiss
+}: {
+  batches: BrowserAnnotationBatch[];
+  selectedBatchId: string;
+  targetLabel: string | null;
+  busy: boolean;
+  onSelectedBatchChange: (batchId: string) => void;
+  onInsert: () => void;
+  onDismiss: () => void;
+}) {
+  const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{ pointerId: number; offsetX: number; offsetY: number } | null>(null);
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+  const [defaultBottom, setDefaultBottom] = useState<number | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const selectedBatch = batches.find((batch) => batch.id === selectedBatchId) ?? batches[0] ?? null;
+  const toolbarStyle: CompanionToolbarStyle | undefined = position
+    ? { left: position.left, top: position.top, right: "auto", bottom: "auto" }
+    : defaultBottom !== null
+      ? { "--preview-annotation-companion-bottom": `${defaultBottom}px` }
+    : undefined;
+
+  function clampPosition(left: number, top: number): { left: number; top: number } {
+    const toolbar = toolbarRef.current;
+    const width = toolbar?.offsetWidth ?? 1;
+    const height = toolbar?.offsetHeight ?? 1;
+    return {
+      left: Math.min(Math.max(8, left), Math.max(8, window.innerWidth - width - 8)),
+      top: Math.min(Math.max(8, top), Math.max(8, window.innerHeight - height - 8))
+    };
+  }
+
+  function measureDefaultBottom(): number | null {
+    const toolbarHeight = toolbarRef.current?.offsetHeight ?? 54;
+    const fallbackBottom = window.innerWidth <= 860 ? 132 : 136;
+    const composer = Array.from(document.querySelectorAll<HTMLElement>(".composer"))
+      .map((element) => {
+        const style = window.getComputedStyle(element);
+        return { element, rect: element.getBoundingClientRect(), style };
+      })
+      .filter(({ rect, style }) =>
+        rect.width > 240 &&
+        rect.height > 40 &&
+        rect.bottom > 0 &&
+        rect.top < window.innerHeight &&
+        style.display !== "none" &&
+        style.visibility !== "hidden"
+      )
+      .sort((left, right) => right.rect.bottom - left.rect.bottom)[0];
+
+    if (!composer) {
+      return null;
+    }
+
+    const aboveComposerBottom = Math.round(window.innerHeight - composer.rect.top + 12);
+    const maxBottom = Math.max(fallbackBottom, window.innerHeight - toolbarHeight - 8);
+    return Math.min(Math.max(fallbackBottom, aboveComposerBottom), maxBottom);
+  }
+
+  function startDrag(event: ReactPointerEvent<HTMLButtonElement>): void {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) {
+      return;
+    }
+    const rect = toolbar.getBoundingClientRect();
+    dragRef.current = {
+      pointerId: event.pointerId,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top
+    };
+    setPosition({ left: rect.left, top: rect.top });
+    setDragging(true);
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {}
+    event.preventDefault();
+  }
+
+  function moveDrag(event: CompanionToolbarDragEvent): void {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    setPosition(clampPosition(event.clientX - drag.offsetX, event.clientY - drag.offsetY));
+  }
+
+  function endDrag(event: { pointerId: number }): void {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    dragRef.current = null;
+    setDragging(false);
+  }
+
+  useEffect(() => {
+    function handleResize(): void {
+      setPosition((current) => current ? clampPosition(current.left, current.top) : current);
+    }
+
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  useEffect(() => {
+    if (position) {
+      return;
+    }
+
+    let frame = 0;
+    let observer: ResizeObserver | null = null;
+
+    function syncDefaultBottom(): void {
+      frame = 0;
+      setDefaultBottom(measureDefaultBottom());
+    }
+
+    function scheduleSync(): void {
+      if (frame) {
+        window.cancelAnimationFrame(frame);
+      }
+      frame = window.requestAnimationFrame(syncDefaultBottom);
+    }
+
+    scheduleSync();
+    window.addEventListener("resize", scheduleSync);
+    window.addEventListener("orientationchange", scheduleSync);
+
+    if ("ResizeObserver" in window) {
+      observer = new ResizeObserver(scheduleSync);
+      document.querySelectorAll<HTMLElement>(".composer").forEach((composer) => observer?.observe(composer));
+    }
+
+    return () => {
+      if (frame) {
+        window.cancelAnimationFrame(frame);
+      }
+      observer?.disconnect();
+      window.removeEventListener("resize", scheduleSync);
+      window.removeEventListener("orientationchange", scheduleSync);
+    };
+  }, [batches.length, position, selectedBatch?.id, targetLabel]);
+
+  useEffect(() => {
+    if (!dragging) {
+      return;
+    }
+
+    window.addEventListener("pointermove", moveDrag);
+    window.addEventListener("pointerup", endDrag);
+    window.addEventListener("pointercancel", endDrag);
+    return () => {
+      window.removeEventListener("pointermove", moveDrag);
+      window.removeEventListener("pointerup", endDrag);
+      window.removeEventListener("pointercancel", endDrag);
+    };
+  }, [dragging]);
+
+  if (!selectedBatch) {
+    return null;
+  }
+
+  return (
+    <div
+      className={`preview-annotation-companion${dragging ? " is-dragging" : ""}`}
+      ref={toolbarRef}
+      role="region"
+      aria-label="Preview annotations"
+      style={toolbarStyle}
+    >
+      <button
+        type="button"
+        className="preview-annotation-companion-handle"
+        onPointerDown={startDrag}
+        onPointerMove={moveDrag}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        aria-label="Drag annotation toolbar"
+        title="Drag annotation toolbar"
+      >
+        ⋮⋮
+      </button>
+      <div className="preview-annotation-companion-main">
+        <span className={`preview-annotation-companion-dot${selectedBatch.ready ? "" : " is-pending"}`} aria-hidden="true" />
+        <span className="preview-annotation-companion-label">Preview annotations</span>
+        <select value={selectedBatch.id} onChange={(event) => onSelectedBatchChange(event.target.value)} aria-label="Preview annotation">
+          {batches.map((batch) => (
+            <option key={batch.id} value={batch.id}>
+              {formatPreviewAnnotationBatchLabel(batch)}
+            </option>
+          ))}
+        </select>
+        <span className="preview-annotation-companion-meta">
+          {selectedBatch.ready ? `Target: ${targetLabel ?? "open Butler or a Codex job"}` : "Add comments to every mark"}
+        </span>
+      </div>
+      <div className="preview-annotation-companion-actions">
+        <button type="button" className="preview-annotation-companion-insert" onClick={onInsert} disabled={busy || !targetLabel || !selectedBatch.ready}>
+          {busy ? "Inserting…" : "Insert"}
+        </button>
+        <button type="button" className="preview-annotation-companion-dismiss" onClick={onDismiss} disabled={busy} aria-label="Dismiss annotation">
+          <CloseIcon />
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function isClosedPlaceholderThread(thread: CodexThreadSummary, callback: ButlerThreadCallback | null | undefined): boolean {
   return (
@@ -122,12 +367,18 @@ export function App() {
   const [threadsDrawerOpen, setThreadsDrawerOpen] = useState(false);
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
   const [composerPrefill, setComposerPrefill] = useState<ComposerPrefill | null>(null);
+  const [previewAnnotationBatches, setPreviewAnnotationBatches] = useState<BrowserAnnotationBatch[]>([]);
+  const [selectedPreviewAnnotationBatchId, setSelectedPreviewAnnotationBatchId] = useState<string>("");
+  const [previewAnnotationInsertBusy, setPreviewAnnotationInsertBusy] = useState(false);
   const [toast, setToast] = useState<AppToast | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
+  const [restartAuthorizeBusy, setRestartAuthorizeBusy] = useState(false);
+  const [butlerReauthBusy, setButlerReauthBusy] = useState(false);
   const [copiedCommandKey, setCopiedCommandKey] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const copiedCommandTimerRef = useRef<number | null>(null);
+  const completionSoundSnapshotRef = useRef<CompletionSoundSnapshot | null>(null);
   const lastFocusedWindowIdRef = useRef<string | null>(null);
   const hasSeenFocusedWindowRef = useRef(false);
   const hasShownDisconnectToastRef = useRef(false);
@@ -147,6 +398,10 @@ export function App() {
         : null;
   const composerPrefillTargetLabel =
     composerPrefillTarget?.kind === "thread" ? "this thread" : composerPrefillTarget?.kind === "butler" ? "Butler" : null;
+  const activePreviewAnnotationBatch =
+    previewAnnotationBatches.find((batch) => batch.id === selectedPreviewAnnotationBatchId) ??
+    previewAnnotationBatches[0] ??
+    null;
   const threadSummaryById = useMemo(
     () => new Map((shell?.codex.threads ?? []).map((thread) => [thread.id, thread])),
     [shell?.codex.threads]
@@ -163,6 +418,11 @@ export function App() {
     [callbackByThreadId, shell?.codex.threads]
   );
   const activeThreadSummary = activeThreadId ? threadSummaryById.get(activeThreadId) ?? null : null;
+  const scratchPadContextThread =
+    (selectedThreadId ? threadSummaryById.get(selectedThreadId) : undefined) ??
+    (shell?.codex.focusedWindowId ? threadSummaryById.get(shell.codex.focusedWindowId) : undefined);
+  const scratchPadDefaultCwd = getThreadProjectPath(scratchPadContextThread);
+  const pendingRestartRequest = shell?.butler.pendingManorRestartRequest ?? null;
 
   function showToast(message: string, tone: "success" | "error" | "info" = "success", duration = 2600, key?: string) {
     const nextKey = key ?? `${tone}:${message}`;
@@ -188,6 +448,63 @@ export function App() {
     return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
       ? crypto.randomUUID()
       : `composer-prefill-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  async function refreshPreviewAnnotationBatches(): Promise<void> {
+    const payload = await getJson<{ batches: BrowserAnnotationBatch[] }>("/api/preview-annotations/operator/batches");
+    setPreviewAnnotationBatches(payload.batches);
+    setSelectedPreviewAnnotationBatchId((current) =>
+      current && payload.batches.some((batch) => batch.id === current)
+        ? current
+        : payload.batches[0]?.id ?? ""
+    );
+  }
+
+  async function insertSelectedPreviewAnnotationBatch(): Promise<void> {
+    if (!activePreviewAnnotationBatch) {
+      return;
+    }
+    if (!activePreviewAnnotationBatch.ready) {
+      showToast("Add comments to every mark before inserting preview annotations.", "error", 3600);
+      return;
+    }
+    if (!composerPrefillTarget) {
+      showToast("Open Butler or a Codex job before inserting preview annotations.", "error", 3600);
+      return;
+    }
+
+    setPreviewAnnotationInsertBusy(true);
+    try {
+      await postJson(`/api/preview-annotations/operator/batches/${encodeURIComponent(activePreviewAnnotationBatch.id)}/insert`, {
+        target: composerPrefillTarget
+      });
+      await refreshPreviewAnnotationBatches();
+    } catch (error) {
+      showErrorToast(error);
+    } finally {
+      setPreviewAnnotationInsertBusy(false);
+    }
+  }
+
+  async function dismissSelectedPreviewAnnotationBatch(): Promise<void> {
+    if (!activePreviewAnnotationBatch) {
+      return;
+    }
+    setPreviewAnnotationInsertBusy(true);
+    try {
+      const response = await fetch(`/api/preview-annotations/operator/batches/${encodeURIComponent(activePreviewAnnotationBatch.id)}`, {
+        method: "DELETE"
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(payload?.error || `Request failed with ${response.status}`);
+      }
+      await refreshPreviewAnnotationBatches();
+    } catch (error) {
+      showErrorToast(error);
+    } finally {
+      setPreviewAnnotationInsertBusy(false);
+    }
   }
 
   async function writeClipboardText(value: string): Promise<void> {
@@ -237,6 +554,34 @@ export function App() {
       showErrorToast(error);
     }
   }
+
+  useEffect(() => {
+    const refresh = () => {
+      refreshPreviewAnnotationBatches().catch(() => undefined);
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 2500);
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
+    return installCompletionSoundUnlock();
+  }, []);
+
+  useEffect(() => {
+    if (!shell) {
+      return;
+    }
+
+    const nextSnapshot = buildCompletionSoundSnapshot(shell);
+    if (shouldPlayCompletionNotificationSound(completionSoundSnapshotRef.current, nextSnapshot)) {
+      playCompletionNotificationSound();
+      flashCompletionBrowserTab();
+    }
+    completionSoundSnapshotRef.current = nextSnapshot;
+  }, [shell]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -525,6 +870,19 @@ export function App() {
     });
   }
 
+  function confirmCleanupScratchItem(item: ScratchPadItem, cleanup: () => Promise<void>) {
+    setConfirmDialog({
+      title: item.threadId ? "Cleanup scratch item and thread?" : "Cleanup scratch item?",
+      message: item.threadId
+        ? "This removes the scratchpad item, linked Codex thread, and local artifacts."
+        : "This removes the scratchpad item permanently.",
+      confirmLabel: "Cleanup",
+      busyLabel: "Cleaning…",
+      tone: "danger",
+      onConfirm: cleanup
+    });
+  }
+
   function confirmDeleteProof(proofId: string) {
     setConfirmDialog({
       title: "Delete proof?",
@@ -568,6 +926,40 @@ export function App() {
     }
   }
 
+  async function authorizeManorRestart(request: ManorRestartRequest) {
+    if (restartAuthorizeBusy) {
+      return;
+    }
+
+    setRestartAuthorizeBusy(true);
+    try {
+      await postJson(`/api/manor/restart-requests/${request.id}/authorize`, { operatorAction: "authorize_restart" });
+      clearPendingManorRestartRequest(request.id);
+      showToast("Manor restart started", "success");
+    } catch (error) {
+      showErrorToast(error);
+    } finally {
+      setRestartAuthorizeBusy(false);
+    }
+  }
+
+  async function dismissManorRestart(request: ManorRestartRequest) {
+    if (restartAuthorizeBusy) {
+      return;
+    }
+
+    setRestartAuthorizeBusy(true);
+    try {
+      await postJson(`/api/manor/restart-requests/${request.id}/dismiss`, {});
+      clearPendingManorRestartRequest(request.id);
+      showToast("Restart request dismissed", "info");
+    } catch (error) {
+      showErrorToast(error);
+    } finally {
+      setRestartAuthorizeBusy(false);
+    }
+  }
+
   async function copySetupCommand(command: string, key: string) {
     try {
       await writeClipboardText(command);
@@ -582,6 +974,23 @@ export function App() {
       }, 1200);
     } catch (error) {
       showErrorToast(error);
+    }
+  }
+
+  async function startButlerReauth() {
+    if (butlerReauthBusy) {
+      return;
+    }
+
+    setButlerReauthBusy(true);
+    try {
+      const payload = await postJson<{ authUrl: string }>("/api/auth/butler/device", {});
+      window.open(payload.authUrl, "_blank", "noreferrer");
+      showToast("Complete Butler sign-in in the browser. Manor will update when the callback finishes.", "info", 5200);
+    } catch (error) {
+      showErrorToast(error);
+    } finally {
+      setButlerReauthBusy(false);
     }
   }
 
@@ -615,6 +1024,21 @@ export function App() {
   const topbarCompactionTone = activeThreadSummary
     ? activeThreadSummary.compaction.active ? "accent" : "neutral"
     : shell?.butler.compaction.active ? "accent" : "neutral";
+
+
+  useEffect(() => {
+    function handleServerComposerPrefill(event: Event) {
+      const payload = (event as CustomEvent<ComposerPrefill>).detail;
+      if (!payload || !payload.text || !payload.target) {
+        return;
+      }
+      setComposerPrefill(payload);
+      showToast(payload.target.kind === "thread" ? "Preview annotations added to the thread composer" : "Preview annotations added to Butler", "success", 2200);
+    }
+
+    window.addEventListener("manor:composer-prefill", handleServerComposerPrefill);
+    return () => window.removeEventListener("manor:composer-prefill", handleServerComposerPrefill);
+  }, [showToast]);
 
   function handleComposerPrefillConsumed(prefillId: string) {
     setComposerPrefill((current) => (current?.id === prefillId ? null : current));
@@ -706,7 +1130,6 @@ export function App() {
             </button>
             <button className={`workspace-tab workspace-tab-fixed workspace-tab-icon-button ${activeTabId === "scratchPad" ? "is-active" : ""}`} aria-label="Scratch pad" title="Scratch pad" onClick={() => {
               setSelectedSurface("scratchPad");
-              setSelectedThreadId(null);
             }}>
               <ScratchPadTabIcon />
               {activeScratchCount > 0 ? <span className="workspace-tab-count">{activeScratchCount}</span> : null}
@@ -835,6 +1258,13 @@ export function App() {
                           </div>
                           <p className="setup-step-detail">{step.detail}</p>
                           <p className="setup-step-context">{commandSet.detail}</p>
+                          {step.id === "butlerAuth" && step.status === "pending" ? (
+                            <div className="setup-step-actions">
+                              <button type="button" className="panel-action" onClick={() => void startButlerReauth()} disabled={butlerReauthBusy}>
+                                {butlerReauthBusy ? "Starting sign-in..." : "Re-auth Butler"}
+                              </button>
+                            </div>
+                          ) : null}
                           {commandSet.commands.length > 0 ? (
                             <div className="setup-step-commands">
                               {commandSet.commands.map((command) => {
@@ -872,7 +1302,9 @@ export function App() {
               <ScratchPadPanel
                 variant="window"
                 scratchPad={shell.butler.scratchPad}
+                defaultCwd={scratchPadDefaultCwd}
                 onOpenThread={openThread}
+                onConfirmCleanup={confirmCleanupScratchItem}
                 showToast={showToast}
                 showErrorToast={showErrorToast}
               />
@@ -893,6 +1325,18 @@ export function App() {
           )}
         </section>
       </main>
+
+      {previewAnnotationBatches.length > 0 ? (
+        <PreviewAnnotationCompanionToolbar
+          batches={previewAnnotationBatches}
+          selectedBatchId={activePreviewAnnotationBatch?.id ?? ""}
+          targetLabel={composerPrefillTargetLabel}
+          busy={previewAnnotationInsertBusy}
+          onSelectedBatchChange={setSelectedPreviewAnnotationBatchId}
+          onInsert={() => void insertSelectedPreviewAnnotationBatch()}
+          onDismiss={() => void dismissSelectedPreviewAnnotationBatch()}
+        />
+      ) : null}
 
       <div className={`threads-backdrop ${threadsDrawerOpen ? "is-open" : ""}`} onClick={() => setThreadsDrawerOpen(false)} aria-hidden={threadsDrawerOpen ? "false" : "true"} />
       <aside className={`threads-drawer ${threadsDrawerOpen ? "is-open" : ""}`}>
@@ -964,7 +1408,54 @@ export function App() {
                 Cancel
               </button>
               <button className="panel-action panel-action-danger" onClick={() => void handleConfirmAction()} disabled={confirmBusy}>
-                {confirmBusy ? "Deleting…" : confirmDialog.confirmLabel}
+                {confirmBusy ? (confirmDialog.busyLabel ?? "Deleting…") : confirmDialog.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {pendingRestartRequest ? (
+        <div className="modal-backdrop manor-restart-backdrop">
+          <div className="modal-card manor-restart-dialog" role="dialog" aria-modal="true" aria-labelledby="manor-restart-title" aria-describedby="manor-restart-copy">
+            <div className="modal-head manor-restart-head">
+              <div>
+                <p className="manor-restart-kicker">Live Manor stack</p>
+                <h2 id="manor-restart-title">Authorize Manor restart?</h2>
+              </div>
+            </div>
+            <p className="modal-copy manor-restart-copy" id="manor-restart-copy">
+              Butler is asking to authorize a Manor restart or update. Review the target details before continuing.
+            </p>
+            <dl className="manor-restart-details">
+              <div>
+                <dt>Target tag</dt>
+                <dd>{pendingRestartRequest.imageTag ?? pendingRestartRequest.targetTag ?? "Not specified"}</dd>
+              </div>
+              <div>
+                <dt>Target commit</dt>
+                <dd>{pendingRestartRequest.gitRef ?? pendingRestartRequest.targetCommit ?? "Not specified"}</dd>
+              </div>
+              <div>
+                <dt>Reason</dt>
+                <dd>{pendingRestartRequest.reason ?? "No reason provided"}</dd>
+              </div>
+              {pendingRestartRequest.details ? (
+                <div>
+                  <dt>Details</dt>
+                  <dd>{pendingRestartRequest.details}</dd>
+                </div>
+              ) : null}
+            </dl>
+            <p className="manor-restart-note">
+              This click records your explicit authorization and starts the approved restart through the host controller.
+            </p>
+            <div className="modal-actions">
+              <button className="panel-action" onClick={() => void dismissManorRestart(pendingRestartRequest)} disabled={restartAuthorizeBusy}>
+                Keep running
+              </button>
+              <button className="panel-action panel-action-danger manor-restart-authorize" onClick={() => void authorizeManorRestart(pendingRestartRequest)} disabled={restartAuthorizeBusy}>
+                {restartAuthorizeBusy ? "Authorizing..." : "Authorize restart"}
               </button>
             </div>
           </div>

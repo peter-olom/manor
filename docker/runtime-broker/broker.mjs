@@ -413,7 +413,9 @@ const browserController = createBrokerBrowserController({
   normalizeHeaderMap,
   resolveTargetHost,
   appendPreviewRoutePath,
-  persistVerificationArtifacts
+  persistVerificationArtifacts,
+  internalOperatorBaseUrl,
+  brokerToken
 });
 browserController.registerRoutes(app);
 
@@ -428,7 +430,9 @@ const desktopController = createBrokerDesktopController({
   normalizePositiveInteger,
   normalizeEnv,
   persistArtifactFiles,
-  persistVerificationArtifacts
+  persistVerificationArtifacts,
+  internalOperatorBaseUrl,
+  brokerToken
 });
 desktopController.registerRoutes(app);
 
@@ -963,12 +967,11 @@ app.post("/leases", async (request, response) => {
       }
     });
 
+    await runtimeContainer.start();
     if (isDirectPreviewInternet(lease.egressProfile, lease.egressDomains)) {
       await ensurePreviewOutboundNetwork();
       await ensureNetworkConnection(previewOutboundNetwork, lease.containerName);
     }
-
-    await runtimeContainer.start();
     await ensureNetworkConnection(sharedWorkNetwork, lease.containerName, aliases);
     const container = await inspectContainer(lease.containerName);
     if (!container) {

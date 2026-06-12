@@ -233,6 +233,36 @@ export function ImageIcon() {
   );
 }
 
+export function ZoomInIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d="M6.8 2.5a4.3 4.3 0 1 0 0 8.6 4.3 4.3 0 0 0 0-8.6ZM5 6.8h3.6M6.8 5v3.6M10 10l3.5 3.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="square"
+        strokeLinejoin="miter"
+      />
+    </svg>
+  );
+}
+
+export function ZoomOutIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d="M6.8 2.5a4.3 4.3 0 1 0 0 8.6 4.3 4.3 0 0 0 0-8.6ZM5 6.8h3.6M10 10l3.5 3.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="square"
+        strokeLinejoin="miter"
+      />
+    </svg>
+  );
+}
+
 export function CopyIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">

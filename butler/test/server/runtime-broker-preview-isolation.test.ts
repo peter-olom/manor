@@ -54,6 +54,16 @@ test("runtime broker shell quoting preserves command variables for nested snapsh
   assert.equal(evaluated.stdout, command);
 });
 
+test("runtime broker starts preview containers before attaching outbound network", () => {
+  const source = fs.readFileSync(path.resolve(import.meta.dirname, "../../../docker/runtime-broker/broker.mjs"), "utf8");
+  const startIndex = source.indexOf("await runtimeContainer.start();");
+  const outboundIndex = source.indexOf("await ensureNetworkConnection(previewOutboundNetwork, lease.containerName);");
+
+  assert.notEqual(startIndex, -1);
+  assert.notEqual(outboundIndex, -1);
+  assert.ok(startIndex < outboundIndex);
+});
+
 test("runtime broker can resolve source workspace mounts as read-only", async () => {
   const docker = {
     getContainer(name: string) {

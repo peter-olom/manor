@@ -103,11 +103,59 @@ validate_personality() {
   esac
 }
 
+resolve_codex_service_tier() {
+  local value="${CODEX_SERVICE_TIER:-auto}"
+
+  value="$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')"
+  case "${value}" in
+    ""|auto)
+      printf 'fast'
+      ;;
+    fast|flex)
+      printf '%s' "${value}"
+      ;;
+    *)
+      echo "Unsupported CODEX_SERVICE_TIER=${CODEX_SERVICE_TIER}; using fast." >&2
+      printf 'fast'
+      ;;
+  esac
+}
+
+write_codex_service_tier_config() {
+  local tier="$1"
+  local config_file="${CODEX_HOME:-$HOME/.codex}/config.toml"
+
+  mkdir -p "$(dirname "${config_file}")"
+  python3 - "${config_file}" "${tier}" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+tier = sys.argv[2]
+text = path.read_text(encoding="utf-8") if path.exists() else ""
+line = f'service_tier = "{tier}"'
+
+if re.search(r'(?m)^service_tier\s*=', text):
+    text = re.sub(r'(?m)^service_tier\s*=.*$', line, text, count=1)
+elif text:
+    text = line + "\n" + text
+else:
+    text = line + "\n"
+
+path.write_text(text, encoding="utf-8")
+PY
+}
+
 args=(
   app-server
   --listen "$listen_url"
   -c 'cli_auth_credentials_store="file"'
 )
+
+codex_service_tier="$(resolve_codex_service_tier)"
+write_codex_service_tier_config "${codex_service_tier}"
+append_toml_string_config "service_tier" "${codex_service_tier}"
 
 if [[ -n "${CODEX_FORCED_LOGIN_METHOD:-}" ]]; then
   args+=(-c "forced_login_method=\"${CODEX_FORCED_LOGIN_METHOD}\"")

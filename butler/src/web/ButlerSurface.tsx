@@ -15,6 +15,7 @@ import { MarkdownMessage } from "./MarkdownMessage";
 import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
 import { RuntimePanel } from "./RuntimePanel";
 import { SandSpinner } from "./SandSpinner";
+import { formatElapsedTaskTime } from "../server/task-timing";
 import { mergeKnownImages, useButlerLiveSnapshot, useKnownImages, useRuntimeSnapshot, useShellSnapshot } from "./live-state";
 import { useDesktopSessionControls } from "./useDesktopSessionControls";
 import type {
@@ -48,6 +49,12 @@ import {
 
 type ChecklistThread = CodexThreadSummary & {
   supervisionChecklist: NonNullable<CodexThreadSummary["supervisionChecklist"]>;
+};
+
+type PendingButlerMessage = {
+  id: string;
+  text: string;
+  at: number;
 };
 
 function getActivitySummary(turn: ButlerActivityTurn): string {
@@ -286,6 +293,10 @@ export function ButlerSurface({
   const live = useButlerLiveSnapshot();
   const runtime = useRuntimeSnapshot();
   const knownImages = useKnownImages();
+  const butlerAuthNeedsRecovery =
+    !shell.butler.auth.loggedIn ||
+    Boolean(shell.butler.auth.validationError) ||
+    /auth|token|signing in/i.test(shell.butler.lastError ?? "");
   const [history, setHistory] = useState<ButlerHistoryState>({ messages: [], loadedStart: 0, totalCount: 0 });
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [followButler, setFollowButler] = useState(true);
@@ -293,7 +304,7 @@ export function ButlerSurface({
   const [showRuntime, setShowRuntime] = useState(() => readStoredValue(BUTLER_RUNTIME_VISIBILITY_STORAGE_KEY) === "true");
   const [showChecklists, setShowChecklists] = useState(false);
   const [activeJumpId, setActiveJumpId] = useState<string | null>(null);
-  const [pendingButlerText, setPendingButlerText] = useState<string | null>(null);
+  const [pendingButlerMessage, setPendingButlerMessage] = useState<PendingButlerMessage | null>(null);
   const [hideButlerActivityFrom, setHideButlerActivityFrom] = useState<number | null>(null);
   const [butlerDraftPrefill, setButlerDraftPrefill] = useState<{ id: string; text: string } | null>(null);
   const [butlerAttachments, setButlerAttachments] = useState<FileReference[]>([]);
@@ -301,6 +312,7 @@ export function ButlerSurface({
   const [busyStackId, setBusyStackId] = useState<string | null>(null);
   const [busyServiceId, setBusyServiceId] = useState<string | null>(null);
   const [savingMemoryMessageId, setSavingMemoryMessageId] = useState<string | null>(null);
+  const [butlerReauthBusy, setButlerReauthBusy] = useState(false);
   const { busyDesktopSessionId, captureDesktopScreen, stopDesktopSession } = useDesktopSessionControls(
     showToast,
     showErrorToast,
@@ -458,15 +470,17 @@ export function ButlerSurface({
   }, [history.messages]);
 
   useEffect(() => {
-    if (!pendingButlerText || !shell) {
+    if (!pendingButlerMessage || !shell) {
       return;
     }
 
-    const hasCommittedPrompt = history.messages.some((message) => message.role.startsWith("user") && message.text === pendingButlerText);
+    const hasCommittedPrompt = history.messages.some(
+      (message) => message.role.startsWith("user") && message.text === pendingButlerMessage.text && (message.at ?? pendingButlerMessage.at) >= pendingButlerMessage.at - 1000
+    );
     if (hasCommittedPrompt || (!shell.butler.pending && !shell.butler.isStreaming)) {
-      setPendingButlerText(null);
+      setPendingButlerMessage(null);
     }
-  }, [history.messages, pendingButlerText, shell]);
+  }, [history.messages, pendingButlerMessage, shell]);
 
   useEffect(() => {
     return () => {
@@ -481,13 +495,15 @@ export function ButlerSurface({
       return;
     }
 
-    setButlerAttachments((current) =>
-      current.some((entry) => entry.id === composerPrefill.attachment.id) ? current : [...current, composerPrefill.attachment]
-    );
-    if (composerPrefill.attachment.mimeType.startsWith("image/")) {
-      mergeKnownImages([composerPrefill.attachment]);
+    if (composerPrefill.attachment) {
+      setButlerAttachments((current) =>
+        current.some((entry) => entry.id === composerPrefill.attachment!.id) ? current : [...current, composerPrefill.attachment!]
+      );
+      if (composerPrefill.attachment.mimeType.startsWith("image/")) {
+        mergeKnownImages([composerPrefill.attachment]);
+      }
     }
-    setPendingButlerText(null);
+    setPendingButlerMessage(null);
     setButlerDraftPrefill({ id: composerPrefill.id, text: composerPrefill.text });
   }, [composerPrefill]);
 
@@ -558,9 +574,10 @@ export function ButlerSurface({
 
     const attachmentCount = composerAttachments.length;
     const messageSummary = text || formatAttachmentSummary(attachmentCount);
+    const sentAt = Date.now();
     setButlerAttachments([]);
     setFollowButler(true);
-    setPendingButlerText(messageSummary);
+    setPendingButlerMessage({ id: `pending-${sentAt}`, text: messageSummary, at: sentAt });
     setHideButlerActivityFrom(null);
 
     try {
@@ -574,7 +591,7 @@ export function ButlerSurface({
         ...(inputItems.length > 0 ? { inputItems } : {})
       });
     } catch (error) {
-      setPendingButlerText(null);
+      setPendingButlerMessage(null);
       setButlerAttachments((current) => (current.length === 0 ? composerAttachments : current));
       throw error;
     }
@@ -595,7 +612,7 @@ export function ButlerSurface({
   async function stopButlerRequest() {
     try {
       const result = await postJson<{ stopped?: boolean }>("/api/chat/stop", {});
-      setPendingButlerText(null);
+      setPendingButlerMessage(null);
       if (!result?.stopped) {
         showToast("No active Butler request to stop", "error", 2500);
       }
@@ -613,11 +630,28 @@ export function ButlerSurface({
       await postJson("/api/chat/clear", {});
       setHistory({ messages: [], loadedStart: 0, totalCount: 0 });
       setHideButlerActivityFrom(0);
-      setPendingButlerText(null);
+      setPendingButlerMessage(null);
       setFollowButler(true);
       showToast("Butler chat cleared");
     } catch (error) {
       showErrorToast(error);
+    }
+  }
+
+  async function startButlerReauth() {
+    if (butlerReauthBusy) {
+      return;
+    }
+
+    setButlerReauthBusy(true);
+    try {
+      const payload = await postJson<{ authUrl: string }>("/api/auth/butler/device", {});
+      window.open(payload.authUrl, "_blank", "noreferrer");
+      showToast("Complete Butler sign-in in the browser. Manor will update when the callback finishes.", "info", 5200);
+    } catch (error) {
+      showErrorToast(error);
+    } finally {
+      setButlerReauthBusy(false);
     }
   }
 
@@ -642,7 +676,7 @@ export function ButlerSurface({
           totalCount: Math.max(0, current.loadedStart + index)
         };
       });
-      setPendingButlerText(null);
+      setPendingButlerMessage(null);
       setFollowButler(true);
       showToast("Butler chat trimmed");
     } catch (error) {
@@ -813,15 +847,15 @@ export function ButlerSurface({
   const deferredRows = useDeferredValue(butlerConversationRows);
   const immediateRows = useMemo(
     () => [
-      ...(pendingButlerText ? [{ id: `pending-${pendingButlerText}`, kind: "pending" as const, text: pendingButlerText }] : []),
+      ...(pendingButlerMessage ? [{ id: pendingButlerMessage.id, kind: "pending" as const, text: pendingButlerMessage.text, at: pendingButlerMessage.at }] : []),
       ...((shell?.butler.pending || shell?.butler.isStreaming) ? [{ id: "butler-working", kind: "working" as const }] : []),
       ...(activeButlerActivityTurn ? [{ id: `${activeButlerActivityTurn.id}-live`, kind: "activity" as const, turn: activeButlerActivityTurn, active: true }] : [])
     ],
-    [activeButlerActivityTurn, pendingButlerText, shell?.butler.isStreaming, shell?.butler.pending]
+    [activeButlerActivityTurn, pendingButlerMessage, shell?.butler.isStreaming, shell?.butler.pending]
   );
-  const renderRows = useMemo(() => [...deferredRows, ...immediateRows], [deferredRows, immediateRows]);
+  const renderedRows = useMemo(() => [...deferredRows, ...immediateRows], [deferredRows, immediateRows]);
   const latestButlerActivityKey =
-    renderRows.length > 0 ? `${renderRows[renderRows.length - 1].id}:${renderRows.length}` : "empty";
+    renderedRows.length > 0 ? `${renderedRows[renderedRows.length - 1].id}:${renderedRows.length}` : "empty";
 
   useLayoutEffect(() => {
     if (!followButler || butlerPrependAnchorRef.current) {
@@ -836,12 +870,12 @@ export function ButlerSurface({
       return;
     }
     const scroller = butlerScrollRef.current;
-    if (!scroller || deferredRows.length === 0) {
+    if (!scroller || renderedRows.length === 0) {
       return;
     }
     scroller.scrollTop = Math.min(butlerViewState.scrollTop, Math.max(0, scroller.scrollHeight - scroller.clientHeight));
     butlerScrollTopRef.current = scroller.scrollTop;
-  }, [deferredRows.length, followButler]);
+  }, [renderedRows.length, followButler]);
 
   useEffect(() => {
     if (!followButler || butlerPrependAnchorRef.current || typeof ResizeObserver === "undefined") {
@@ -867,13 +901,13 @@ export function ButlerSurface({
     }
 
     return () => observer.disconnect();
-  }, [followButler, latestButlerActivityKey, showRuntime, deferredRows.length]);
+  }, [followButler, latestButlerActivityKey, showRuntime, renderedRows.length]);
 
   const messageImages = useMemo(
     () =>
       buildMessageImageLookup(
-        deferredRows
-          .filter((row): row is Extract<(typeof deferredRows)[number], { kind: "message" }> => row.kind === "message")
+        renderedRows
+          .filter((row): row is Extract<(typeof renderedRows)[number], { kind: "message" }> => row.kind === "message")
           .map((row) => ({
             id: row.id,
             text: row.message.text || "",
@@ -881,7 +915,7 @@ export function ButlerSurface({
           })),
         knownImages
       ),
-    [deferredRows, knownImages]
+    [renderedRows, knownImages]
   );
 
   const activeRuntimeLeaseCount = (runtime?.stacks.filter((stack) => stack.status !== "stopped").length ?? 0) +
@@ -988,7 +1022,7 @@ export function ButlerSurface({
               }
             }}
           >
-            {renderRows.length === 0 ? (
+            {renderedRows.length === 0 ? (
               live ? (
                 <div className="empty">Ask Butler about run status, next steps, or which run you should open.</div>
               ) : (
@@ -1003,7 +1037,7 @@ export function ButlerSurface({
               )
             ) : (
               <div className="conversation-list">
-                {renderRows.map((row) => {
+                {renderedRows.map((row) => {
                   if (row.kind === "working") {
                     return (
                       <div key={row.id} className="conversation-row is-assistant">
@@ -1064,7 +1098,7 @@ export function ButlerSurface({
                         <div className="entry-head">
                           <span>{message.role.startsWith("assistant") ? "Butler" : "You"}</span>
                           <span className="entry-head-meta">
-                            <span>{formatJumpLabel(message.at)}</span>
+                            <span>{formatJumpLabel(message.at)}{message.taskDurationMs !== null ? ` (${formatElapsedTaskTime(message.taskDurationMs)})` : ""}</span>
                           </span>
                         </div>
                         <div className="entry-text">
@@ -1134,6 +1168,19 @@ export function ButlerSurface({
               </span>
               <span>Latest</span>
             </button>
+          ) : null}
+          {butlerAuthNeedsRecovery ? (
+            <div className="butler-auth-recovery" role="status">
+              <div>
+                <span className="butler-auth-recovery-title">Butler sign-in required</span>
+                <span className="butler-auth-recovery-detail">
+                  {shell.butler.auth.validationError ?? shell.butler.lastError ?? "Connect Butler before sending chat requests."}
+                </span>
+              </div>
+              <button type="button" className="panel-action" onClick={() => void startButlerReauth()} disabled={butlerReauthBusy}>
+                {butlerReauthBusy ? "Starting..." : "Re-auth Butler"}
+              </button>
+            </div>
           ) : null}
           <ButlerComposer
             draftStorageKey={BUTLER_DRAFT_STORAGE_KEY}

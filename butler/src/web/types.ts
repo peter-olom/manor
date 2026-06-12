@@ -19,6 +19,7 @@ export type ButlerMessageRecord = {
   role: string;
   text: string;
   at: number | null;
+  taskDurationMs: number | null;
   kind: "message";
 };
 
@@ -53,8 +54,27 @@ export type ConfirmDialogState = {
   title: string;
   message: string;
   confirmLabel: string;
+  busyLabel?: string;
   tone: "danger";
   onConfirm: () => Promise<void>;
+};
+
+export type ManorRestartRequest = {
+  id: string;
+  mode: "auto" | "source" | "image" | null;
+  target: "current" | "latest" | null;
+  gitRef: string | null;
+  imageTag: string | null;
+  targetCommit: string | null;
+  targetTag: string | null;
+  includeDesktop: boolean;
+  build: boolean | null;
+  update: boolean | null;
+  reason: string | null;
+  details: string | null;
+  requestedAt: number;
+  status: "pending" | "authorized" | "dismissed";
+  authorizedAt: number | null;
 };
 
 export type PendingThreadRequest = {
@@ -181,6 +201,7 @@ export type ProjectArtifact = {
 export type ScratchPadItemStatus = "captured" | "exploring" | "ready_for_review" | "accepted" | "parked" | "dismissed";
 export type ScratchPadDepth = "quick" | "deep" | "prototype" | "plan";
 export type ScratchPadResultKind = "research" | "prototype" | "plan" | "recommendation";
+export type ScratchPadWorkspaceMode = "managed_worktree" | "existing";
 
 export type ScratchPadItem = {
   id: string;
@@ -190,6 +211,8 @@ export type ScratchPadItem = {
   depth: ScratchPadDepth;
   resultKind: ScratchPadResultKind;
   cwd: string | null;
+  workspaceMode: ScratchPadWorkspaceMode;
+  branchName: string | null;
   threadId: string | null;
   reviewNote: string | null;
   createdAt: number;
@@ -216,7 +239,37 @@ export type ComposerPrefill = {
   id: string;
   target: ComposerPrefillTarget;
   text: string;
-  attachment: FileReference;
+  attachment?: FileReference;
+};
+
+export type BrowserAnnotationRect = {
+  id: string;
+  number: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  note: string;
+  viewport?: {
+    width: number;
+    height: number;
+    scrollX: number;
+    scrollY: number;
+    documentWidth: number;
+    documentHeight: number;
+  } | null;
+};
+
+export type BrowserAnnotationBatch = {
+  id: string;
+  at: number;
+  intent: "batch" | "insert";
+  ready: boolean;
+  leaseId: string;
+  targetId: string;
+  page: { title: string; url: string };
+  annotations: BrowserAnnotationRect[];
 };
 
 export type PreviewVerificationArtifact = {
@@ -286,6 +339,12 @@ export type PreviewVerification = {
     sameOriginAssetFailureCount: number;
     websocketFailureCount: number;
     notes: string[];
+  };
+  annotationBatchCount?: number;
+  annotations?: {
+    targets: Array<{ id: string; label: string }>;
+    batches: BrowserAnnotationBatch[];
+    insertions: Array<{ batchId: string; at: number; ok: boolean; error?: string; target?: { id: string; label: string } }>;
   };
   auth: {
     headerCount: number;
@@ -462,6 +521,7 @@ export type CodexThreadDetail = CodexThreadSummary & {
       status: string;
       text: string;
       at: number;
+      taskDurationMs: number | null;
     }>;
   }>;
   eventLog: Array<{
@@ -478,6 +538,17 @@ export type CodexThreadDetail = CodexThreadSummary & {
     createdAt: number;
     updatedAt: number;
   } | null;
+};
+
+export type CodexThreadPatch = {
+  kind: "item-delta";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  itemType: string;
+  delta: string;
+  itemTextLength: number;
+  at: number;
 };
 
 export type ButlerThreadCallback = {
@@ -745,6 +816,8 @@ export type ShellSnapshot = {
       };
       callbacks: ButlerThreadCallback[];
     };
+    pendingManorRestartRequest: ManorRestartRequest | null;
+    authorizedManorRestartRequest: ManorRestartRequest | null;
     scratchPad: ScratchPad;
     lastError: string | null;
     compose: {
@@ -761,6 +834,12 @@ export type ButlerLiveSnapshot = {
   messages: ButlerMessageRecord[];
   messageCount: number;
   activityTurns: ButlerActivityTurn[];
+};
+
+export type ButlerLivePatch = {
+  messages?: ButlerMessageRecord[];
+  messageCount: number;
+  activityTurns?: ButlerActivityTurn[];
 };
 
 export type ButlerActivityItem = {
