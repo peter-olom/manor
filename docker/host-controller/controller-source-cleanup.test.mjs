@@ -38,3 +38,14 @@ test("source restart checks local target refs before fetching", async () => {
   assert.ok(fetchIndex > localCheckoutIndex);
   assert.match(source, /"git", \["rev-parse", "--verify", "--quiet", `\$\{gitRef\}\^\{commit\}`\]/);
 });
+
+test("host controller compose commands use the Manor project name", async () => {
+  const source = await readFile(controllerPath, "utf8");
+  const commandEnvBody = source.slice(
+    source.indexOf("function commandEnv"),
+    source.indexOf("async function runStep")
+  );
+
+  assert.match(source, /const composeProjectName = process\.env\.MANOR_COMPOSE_PROJECT_NAME \?\? process\.env\.COMPOSE_PROJECT_NAME \?\? "manor"/);
+  assert.match(commandEnvBody, /COMPOSE_PROJECT_NAME: composeProjectName/);
+});

@@ -20,6 +20,7 @@ const statePath = path.join(stateDir, "restart-status.json");
 const authToken = process.env.MANOR_HOST_CONTROLLER_TOKEN ?? null;
 const defaultDelayMs = normalizeRestartDelayMs(process.env.MANOR_HOST_RESTART_DELAY_MS);
 const butlerHealthUrl = process.env.MANOR_HOST_BUTLER_HEALTH_URL ?? "http://butler:8080/livez";
+const composeProjectName = process.env.MANOR_COMPOSE_PROJECT_NAME ?? process.env.COMPOSE_PROJECT_NAME ?? "manor";
 const applianceServices = [
   "egress",
   "preview-egress",
@@ -171,6 +172,7 @@ function composeArgs(mode, includeDesktop) {
 function commandEnv(run) {
   return {
     ...process.env,
+    COMPOSE_PROJECT_NAME: composeProjectName,
     ...(run.imageTag ? { MANOR_IMAGE_TAG: run.imageTag } : {})
   };
 }
