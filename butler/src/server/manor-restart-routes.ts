@@ -1,7 +1,7 @@
 import type { Express } from "express";
 
 import { isRestartAuthorizeAction } from "./manor-restart-authorization.js";
-import type { ManorRestartRun } from "./host-controller-client.js";
+import type { ManorRestartRun, ManorRestartStatus } from "./host-controller-client.js";
 import type { ManorRestartRequestView } from "./types.js";
 
 type ManorRestartRouteAgent = {
@@ -21,9 +21,18 @@ type ManorRestartRouteAgent = {
   authorizeManorRestartRequest(requestId: string): ManorRestartRequestView;
   startAuthorizedManorRestart(requestId: string): Promise<{ restartRequest: ManorRestartRequestView; run: ManorRestartRun }>;
   dismissManorRestartRequest(requestId: string): void;
+  getManorRestartStatus(): Promise<ManorRestartStatus>;
 };
 
 export function registerManorRestartRoutes(app: Express, butlerAgent: ManorRestartRouteAgent): void {
+  app.get("/api/manor/restart-status", async (_request, response) => {
+    try {
+      response.json(await butlerAgent.getManorRestartStatus());
+    } catch (error) {
+      response.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.post("/api/manor/restart-requests", (request, response) => {
     try {
       const restartRequest = butlerAgent.requestManorRestartAuthorization(request.body ?? {});

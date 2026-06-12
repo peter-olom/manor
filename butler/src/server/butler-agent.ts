@@ -806,6 +806,7 @@ export class ButlerAgentService extends EventEmitter {
   authorizeManorRestartRequest(requestId: string): NonNullable<AppSnapshot["butler"]["authorizedManorRestartRequest"]> { return this.manorRestartRequests.authorize(requestId); }
   dismissManorRestartRequest(requestId: string): void { this.manorRestartRequests.dismiss(requestId); }
   async startAuthorizedManorRestart(requestId: string) { return this.manorRestartRequests.start(requestId); }
+  async getManorRestartStatus() { return this.hostController.getStatus(); }
 
   private async buildDelegationDeveloperInstructions(
     workspace: { cwd: string; branchName: string | null },

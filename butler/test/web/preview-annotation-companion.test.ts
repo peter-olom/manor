@@ -8,7 +8,7 @@ const testDir = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(testDir, "../../src/web");
 
 test("preview annotation companion toolbar is draggable", () => {
-  const appSource = readFileSync(resolve(webRoot, "App.tsx"), "utf8");
+  const appSource = readFileSync(resolve(webRoot, "PreviewAnnotationCompanionToolbar.tsx"), "utf8");
   const styleSource = readFileSync(resolve(webRoot, "styles.css"), "utf8");
 
   assert.match(appSource, /preview-annotation-companion-handle/);

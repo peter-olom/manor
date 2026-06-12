@@ -27,6 +27,23 @@ function makeAuthorizedRequest(id: string): ManorRestartRequestView {
   };
 }
 
+function makeRestartRun() {
+  return {
+    id: "run-1",
+    status: "running" as const,
+    mode: "image" as const,
+    target: "current",
+    gitRef: null,
+    imageTag: null,
+    includeDesktop: false,
+    update: false,
+    startedAt: 3,
+    completedAt: null,
+    error: null,
+    steps: []
+  };
+}
+
 async function listen(app: express.Express): Promise<{ origin: string; close: () => Promise<void> }> {
   const server = http.createServer(app);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -55,23 +72,16 @@ test("restart authorize route starts the authorized request immediately", async 
       startedId = requestId;
       return {
         restartRequest: authorized,
-        run: {
-          id: "run-1",
-          status: "running",
-          mode: "image",
-          target: "current",
-          gitRef: null,
-          imageTag: null,
-          includeDesktop: false,
-          update: false,
-          startedAt: 3,
-          completedAt: null,
-          error: null,
-          steps: []
-        }
+        run: makeRestartRun()
       };
     },
-    dismissManorRestartRequest: () => undefined
+    dismissManorRestartRequest: () => undefined,
+    getManorRestartStatus: async () => ({
+      ok: true,
+      active: null,
+      latestRun: makeRestartRun(),
+      detectedMode: "image"
+    })
   });
 
   const server = await listen(app);
@@ -88,6 +98,36 @@ test("restart authorize route starts the authorized request immediately", async 
     assert.equal(payload.run.id, "run-1");
     assert.equal(authorizedId, authorized.id);
     assert.equal(startedId, authorized.id);
+  } finally {
+    await server.close();
+  }
+});
+
+test("restart status route returns the host-controller run", async () => {
+  const app = express();
+  app.use(express.json());
+  const run = makeRestartRun();
+
+  registerManorRestartRoutes(app, {
+    requestManorRestartAuthorization: () => makeAuthorizedRequest("restart-request-1"),
+    authorizeManorRestartRequest: () => makeAuthorizedRequest("restart-request-1"),
+    startAuthorizedManorRestart: async () => ({ restartRequest: makeAuthorizedRequest("restart-request-1"), run }),
+    dismissManorRestartRequest: () => undefined,
+    getManorRestartStatus: async () => ({
+      ok: true,
+      active: null,
+      latestRun: run,
+      detectedMode: "image"
+    })
+  });
+
+  const server = await listen(app);
+  try {
+    const response = await fetch(`${server.origin}/api/manor/restart-status`);
+    const payload = await response.json() as { latestRun?: { id?: string } };
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.latestRun?.id, run.id);
   } finally {
     await server.close();
   }

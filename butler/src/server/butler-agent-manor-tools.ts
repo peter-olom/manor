@@ -39,7 +39,7 @@ export function buildButlerManorTools(access: ButlerAgentToolAccess): ButlerCust
       description:
         "Open an operator-facing Manor restart/update authorization dialog. This Butler tool does not directly restart or deploy the live Manor stack.",
       promptSnippet:
-        "request_manor_restart: use when a Manor restart or update needs explicit operator authorization. Provide clear target and reason details; the operator must click the confirmation dialog. The approval route starts the authorized restart through the host controller; after Manor comes back, use read_manor_restart_status. Do not call start_authorized_manor_restart for the normal dialog flow.",
+        "request_manor_restart: use when a Manor restart or update needs explicit operator authorization. Provide clear target and reason details; for source restarts from a local commit, pass the exact commit SHA or local branch as gitRef/targetCommit instead of assuming the ref must be fetched. The operator must click the confirmation dialog. The approval route starts the authorized restart through the host controller; after Manor comes back, use read_manor_restart_status. Do not call start_authorized_manor_restart for the normal dialog flow.",
       parameters: Type.Object({
         reason: Type.String({
           minLength: 1,
@@ -47,12 +47,12 @@ export function buildButlerManorTools(access: ButlerAgentToolAccess): ButlerCust
         }),
         mode: Type.Optional(Type.Union([Type.Literal("auto"), Type.Literal("source"), Type.Literal("image")])),
         target: Type.Optional(Type.Union([Type.Literal("current"), Type.Literal("latest")])),
-        gitRef: Type.Optional(Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._/@+-]*$" })),
+        gitRef: Type.Optional(Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._/@+-]*$", description: "Local or remote source ref. Use the exact local commit SHA when the operator asks to restart from a local commit." })),
         imageTag: Type.Optional(Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9_][A-Za-z0-9_.-]*$" })),
         includeDesktop: Type.Optional(Type.Boolean()),
         build: Type.Optional(Type.Boolean()),
         update: Type.Optional(Type.Boolean()),
-        targetCommit: Type.Optional(Type.String({ minLength: 7, description: "Optional target Manor commit SHA for the authorized update." })),
+        targetCommit: Type.Optional(Type.String({ minLength: 7, description: "Optional target Manor commit SHA for the authorized source restart or update." })),
         targetTag: Type.Optional(Type.String({ minLength: 1, description: "Optional target Manor image tag for the authorized update." })),
         details: Type.Optional(Type.String({ minLength: 1, description: "Optional extra restart/update details shown in the confirmation dialog." }))
       }),

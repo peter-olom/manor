@@ -4258,6 +4258,30 @@ select {
   background: var(--danger-bg);
 }
 
+.manor-restart-result.is-completed .manor-restart-kicker {
+  color: var(--green);
+}
+
+.manor-restart-result.is-failed .manor-restart-kicker {
+  color: var(--danger-ink);
+}
+
+.manor-restart-result.is-running .manor-restart-kicker {
+  color: var(--muted);
+}
+
+.manor-restart-error {
+  max-height: 180px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--danger-line);
+  background: color-mix(in srgb, var(--danger-bg) 62%, var(--surface));
+  color: var(--danger-ink);
+  font: 0.78rem/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: pre-wrap;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;

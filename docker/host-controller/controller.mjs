@@ -238,6 +238,18 @@ async function currentBranch(run) {
   return result.stdout.trim();
 }
 
+async function localGitRefExists(gitRef) {
+  return await new Promise((resolve) => {
+    const child = spawn("git", ["rev-parse", "--verify", "--quiet", `${gitRef}^{commit}`], {
+      cwd: manorDir,
+      env: process.env,
+      stdio: ["ignore", "ignore", "ignore"]
+    });
+    child.on("error", () => resolve(false));
+    child.on("close", (exitCode) => resolve(exitCode === 0));
+  });
+}
+
 async function updateSource(run) {
   const wantsUpdate = run.update || run.gitRef || run.target === "latest";
   if (!wantsUpdate) {
@@ -245,6 +257,10 @@ async function updateSource(run) {
   }
 
   if (run.gitRef) {
+    if (await localGitRefExists(run.gitRef)) {
+      await runStep(run, "Checkout local target ref", "git", ["checkout", run.gitRef]);
+      return;
+    }
     await runStep(run, "Fetch source refs", "git", ["fetch", "--all", "--tags", "--prune"]);
     await runStep(run, "Checkout target ref", "git", ["checkout", run.gitRef]);
     return;

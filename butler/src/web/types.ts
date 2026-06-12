@@ -77,6 +77,38 @@ export type ManorRestartRequest = {
   authorizedAt: number | null;
 };
 
+export type ManorRestartRunStep = {
+  label: string;
+  status: "running" | "completed" | "failed";
+  startedAt: number;
+  completedAt: number | null;
+  exitCode: number | null;
+  stdoutTail: string;
+  stderrTail: string;
+};
+
+export type ManorRestartRun = {
+  id: string;
+  status: "running" | "completed" | "failed";
+  mode: "source" | "image";
+  target: "current" | "latest" | string;
+  gitRef: string | null;
+  imageTag: string | null;
+  includeDesktop: boolean;
+  update: boolean;
+  startedAt: number;
+  completedAt: number | null;
+  error: string | null;
+  steps: ManorRestartRunStep[];
+};
+
+export type ManorRestartStatusResponse = {
+  ok: true;
+  active: ManorRestartRun | null;
+  latestRun: ManorRestartRun | null;
+  detectedMode: "source" | "image";
+};
+
 export type PendingThreadRequest = {
   threadId: string;
   text: string;

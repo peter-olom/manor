@@ -22,3 +22,19 @@ test("source restart clears local worktree changes before updating", async () =>
   assert.match(source, /"git", \["clean", "-fd"\]/);
   assert.doesNotMatch(source, /Source update refused because the Manor checkout has uncommitted changes/);
 });
+
+test("source restart checks local target refs before fetching", async () => {
+  const source = await readFile(controllerPath, "utf8");
+  const updateSourceBody = source.slice(
+    source.indexOf("async function updateSource"),
+    source.indexOf("async function updateImage")
+  );
+  const localCheckIndex = updateSourceBody.indexOf("await localGitRefExists(run.gitRef)");
+  const localCheckoutIndex = updateSourceBody.indexOf("\"Checkout local target ref\"");
+  const fetchIndex = updateSourceBody.indexOf("\"Fetch source refs\"");
+
+  assert.ok(localCheckIndex >= 0);
+  assert.ok(localCheckoutIndex > localCheckIndex);
+  assert.ok(fetchIndex > localCheckoutIndex);
+  assert.match(source, /"git", \["rev-parse", "--verify", "--quiet", `\$\{gitRef\}\^\{commit\}`\]/);
+});
