@@ -255,11 +255,17 @@ butler_host_port_default="${butler_host_port_default:-8180}"
 butler_host_port="$(prompt_value "Host port for Manor" "${butler_host_port_default}")"
 validate_port "${butler_host_port}"
 
-host_project_dir_default="${MANOR_HOST_PROJECT_DIR:-$(env_value MANOR_HOST_PROJECT_DIR || true)}"
-host_project_dir="${host_project_dir_default:-/host-project}"
-
 host_project_source_dir_default="${MANOR_HOST_PROJECT_SOURCE_DIR:-$(env_value MANOR_HOST_PROJECT_SOURCE_DIR || true)}"
-host_project_source_dir="${host_project_source_dir_default:-}"
+host_project_source_dir="${host_project_source_dir_default:-$(pwd -P)}"
+
+host_project_dir_default="${MANOR_HOST_PROJECT_DIR:-$(env_value MANOR_HOST_PROJECT_DIR || true)}"
+if [[ -n "${host_project_dir_default}" ]]; then
+  host_project_dir="${host_project_dir_default}"
+elif [[ "${host_project_source_dir}" = /* ]]; then
+  host_project_dir="${host_project_source_dir}"
+else
+  host_project_dir="/host-project"
+fi
 
 build_from_source_default="${MANOR_BUILD_FROM_SOURCE:-$(env_value MANOR_BUILD_FROM_SOURCE || true)}"
 build_from_source_default="${build_from_source_default:-0}"
