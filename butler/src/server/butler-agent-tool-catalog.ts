@@ -260,6 +260,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "refreshThreads", description: "Removes stale service state from the supervised job." }]
   },
   {
+    name: "inspect_filesystem",
+    label: "Inspect filesystem",
+    description: "Read-only list, stat, or bounded find under approved local roots such as /repos.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while answering safe local filesystem questions." }]
+  },
+  {
     name: "list_jobs",
     label: "List jobs",
     description: "List Codex jobs/threads across statuses, including active and inactive jobs.",

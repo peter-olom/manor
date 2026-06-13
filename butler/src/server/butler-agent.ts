@@ -58,6 +58,7 @@ import {
   updateButlerComposeSettings
 } from "./butler-agent-session.js";
 import { clearButlerSessionChat, deleteButlerSessionChatFrom, keepOperatorMessagesBefore } from "./butler-agent-chat-hygiene.js";
+import { buildButlerFilesystemTools } from "./butler-agent-filesystem-tools.js";
 import { buildButlerServiceTools } from "./butler-agent-service-tools.js";
 import { buildButlerProjectTools } from "./butler-agent-project-tools.js";
 import { buildButlerDelegationTools, buildButlerStackPreviewTools } from "./butler-agent-stack-preview-tools.js";
@@ -1442,7 +1443,7 @@ export class ButlerAgentService extends EventEmitter {
 
   private buildCustomTools() {
     const toolAccess = this.getToolAccess();
-    return [...buildButlerStackPreviewTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerCodexTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
+    return [...buildButlerStackPreviewTools(toolAccess), ...buildButlerFilesystemTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerCodexTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
   }
 
   private async createOrRefreshSession(): Promise<void> { await createOrRefreshButlerSession(this.getSessionAccess()); }
