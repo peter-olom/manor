@@ -20,6 +20,11 @@ type ManorRestartRouteAgent = {
   }): ManorRestartRequestView;
   authorizeManorRestartRequest(requestId: string): ManorRestartRequestView;
   startAuthorizedManorRestart(requestId: string): Promise<{ restartRequest: ManorRestartRequestView; run: ManorRestartRun }>;
+  startManorRestart(input: {
+    target: "current" | "latest";
+    update: boolean;
+    includeDesktop?: boolean;
+  }): Promise<ManorRestartRun>;
   dismissManorRestartRequest(requestId: string): void;
   getManorRestartStatus(): Promise<ManorRestartStatus>;
 };
@@ -53,6 +58,21 @@ export function registerManorRestartRoutes(app: Express, butlerAgent: ManorResta
     }
   });
 
+  app.post("/api/manor/restart", async (request, response) => {
+    try {
+      const update = readOptionalBoolean(request.body?.update, "update") === true;
+      const includeDesktop = readOptionalBoolean(request.body?.includeDesktop, "includeDesktop") === true;
+      const run = await butlerAgent.startManorRestart({
+        target: update ? "latest" : "current",
+        update,
+        ...(includeDesktop ? { includeDesktop } : {})
+      });
+      response.status(202).json({ ok: true, run });
+    } catch (error) {
+      response.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.post("/api/manor/restart-requests/:requestId/dismiss", (request, response) => {
     try {
       butlerAgent.dismissManorRestartRequest(readRequestId(request.params.requestId));
@@ -61,6 +81,16 @@ export function registerManorRestartRoutes(app: Express, butlerAgent: ManorResta
       response.status(409).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
+}
+
+function readOptionalBoolean(value: unknown, label: string): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw new Error(`${label} must be true or false.`);
+  }
+  return value;
 }
 
 function readRequestId(value: unknown): string {

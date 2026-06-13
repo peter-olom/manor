@@ -13,9 +13,19 @@ test("Manor restart dialog requires an explicit operator authorization button", 
   const appSource = readFileSync(resolve(webRoot, "App.tsx"), "utf8");
   const noticeSource = readFileSync(resolve(webRoot, "ManorRestartNotice.tsx"), "utf8");
   const styleSource = readFileSync(resolve(webRoot, "styles.css"), "utf8");
+  const compactionStatusIndex = appSource.indexOf('label="Compact"');
+  const restartControlIndex = appSource.indexOf('className="manor-restart-control"');
 
   assert.match(appSource, /Authorize Manor restart\\?/);
   assert.match(appSource, /Authorize restart/);
+  assert.match(appSource, /RestartIcon/);
+  assert.match(appSource, /type="checkbox"/);
+  assert.match(appSource, /Update to latest before restarting/);
+  assert.match(appSource, /api\/manor\/restart/);
+  assert.match(appSource, /aria-label="Restart Manor"/);
+  assert.ok(compactionStatusIndex >= 0);
+  assert.ok(restartControlIndex > compactionStatusIndex);
+  assert.doesNotMatch(appSource, /manor-restart-latest/);
   assert.match(appSource, /Keep running/);
   assert.match(appSource, /Manor restart started/);
   assert.match(noticeSource, /Manor restart succeeded/);
@@ -34,6 +44,10 @@ test("Manor restart dialog requires an explicit operator authorization button", 
   assert.match(noticeSource, /Waiting\.\.\./);
   assert.doesNotMatch(appSource, /RESTART MANOR/);
   assert.match(styleSource, /manor-restart-dialog/);
+  assert.match(styleSource, /manor-restart-control/);
+  assert.match(styleSource, /manor-restart-button/);
+  assert.match(styleSource, /manor-restart-option/);
+  assert.doesNotMatch(styleSource, /manor-restart-latest/);
   assert.match(styleSource, /manor-restart-result/);
   assert.match(styleSource, /manor-restart-error/);
 });

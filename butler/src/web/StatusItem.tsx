@@ -6,7 +6,7 @@ export function StatusItem({
   label,
   value
 }: {
-  kind: "codex" | "auth" | "model" | "context" | "compaction";
+  kind: "status" | "codex" | "auth" | "model" | "context" | "compaction";
   tone: "accent" | "success" | "danger" | "neutral";
   label: string;
   value: string;

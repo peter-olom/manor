@@ -1,4 +1,19 @@
-export function StatusIcon({ kind }: { kind: "codex" | "auth" | "model" | "context" | "compaction" }) {
+export function StatusIcon({ kind }: { kind: "status" | "codex" | "auth" | "model" | "context" | "compaction" }) {
+  if (kind === "status") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path
+          d="M3 8h2l1.5-3.5 3 7L11 8h2"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.2"
+          strokeLinecap="square"
+          strokeLinejoin="miter"
+        />
+      </svg>
+    );
+  }
+
   if (kind === "auth") {
     return (
       <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -94,6 +109,21 @@ export function ThemeIcon() {
         strokeLinecap="square"
       />
       <circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
+export function RestartIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d="M12.5 5.2A5 5 0 1 0 13 8M12.5 2.8v2.4H10"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="square"
+        strokeLinejoin="miter"
+      />
     </svg>
   );
 }

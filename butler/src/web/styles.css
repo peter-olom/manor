@@ -430,6 +430,11 @@ select {
   color: var(--danger-ink);
 }
 
+.status-item.is-danger .status-item-label,
+.status-item.is-danger .status-item-value {
+  color: var(--danger-ink);
+}
+
 .status-item-icon {
   display: inline-flex;
   align-items: center;
@@ -460,6 +465,107 @@ select {
 .status-item-value {
   font-weight: 600;
   color: var(--ink);
+}
+
+.operator-status {
+  position: relative;
+  outline: none;
+}
+
+.operator-status-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 45;
+  width: min(320px, calc(100vw - 24px));
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+}
+
+.operator-status:hover .operator-status-popover,
+.operator-status:focus-within .operator-status-popover,
+.operator-status:focus .operator-status-popover {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.operator-status-header {
+  margin-bottom: 8px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.operator-status-grid {
+  display: grid;
+  gap: 6px;
+}
+
+.operator-status-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 26px;
+  color: var(--ink);
+}
+
+.operator-status-name {
+  color: var(--muted);
+}
+
+.operator-status-state {
+  font-weight: 650;
+}
+
+.operator-status-mode {
+  color: var(--muted);
+}
+
+.operator-status-row.is-danger .operator-status-state {
+  color: var(--danger-ink);
+}
+
+.manor-restart-control {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+}
+
+.manor-restart-button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.manor-restart-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.manor-restart-button:not(:disabled):hover {
+  border-color: var(--line-strong);
+  background: color-mix(in srgb, var(--surface) 84%, var(--danger-bg));
+  color: var(--danger-ink);
+}
+
+.manor-restart-button:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
 }
 
 .theme-control {
@@ -4253,6 +4359,33 @@ select {
   line-height: 1.45;
 }
 
+.manor-restart-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  line-height: 1.35;
+}
+
+.manor-restart-option input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--danger-ink);
+}
+
+.manor-restart-option span {
+  min-width: 0;
+}
+
+.manor-restart-option:has(input:disabled) {
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+
 .manor-restart-authorize {
   border-color: var(--danger-line);
   background: var(--danger-bg);
@@ -4665,6 +4798,7 @@ select {
   }
 
   .status-item,
+  .manor-restart-control,
   .theme-control {
     flex: 0 1 auto;
     min-width: 0;

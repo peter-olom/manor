@@ -5,7 +5,7 @@ import manorLogoDarkUrl from "./assets/manor-logo-dark.svg";
 import { getJson, postJson } from "./api";
 import { ButlerSurface } from "./ButlerSurface";
 import { ImagePreviewModal } from "./ImagePreviewModal";
-import { ButlerTabIcon, CloseIcon, CopyIcon, ScratchPadTabIcon, SetupTabIcon, TerminalTabIcon, ThemeIcon, ThreadsIcon, TrashIcon } from "./icons";
+import { ButlerTabIcon, CloseIcon, CopyIcon, RestartIcon, ScratchPadTabIcon, SetupTabIcon, TerminalTabIcon, ThemeIcon, ThreadsIcon, TrashIcon } from "./icons";
 import {
   MANOR_RESTART_DISMISSED_RUN_KEY,
   MANOR_RESTART_POLL_MS,
@@ -56,7 +56,6 @@ import {
   buildWorkspaceQuery,
   describeCallbackState,
   describeStatus,
-  formatAuthStatus,
   formatCodexCompactionState,
   formatContextUsage,
   formatCompactionState,
@@ -83,6 +82,26 @@ function isClosedPlaceholderThread(thread: CodexThreadSummary, callback: ButlerT
 
 function getThreadProjectPath(thread: CodexThreadSummary | undefined): string | null {
   return thread?.cwd ?? thread?.executionContract?.workspaceCwd ?? null;
+}
+
+function authHealth(auth: { loggedIn: boolean; validationError: string | null }) {
+  if (auth.validationError) {
+    return "Issue";
+  }
+  return auth.loggedIn ? "Signed in" : "Not signed in";
+}
+
+function authMode(auth: { mode: "chatgpt" | "api" | "none" | "unknown" }) {
+  if (auth.mode === "chatgpt") {
+    return "ChatGPT";
+  }
+  if (auth.mode === "api") {
+    return "API key";
+  }
+  if (auth.mode === "unknown") {
+    return "Unknown";
+  }
+  return "None";
 }
 
 function syncTerminalFrameTheme(frame: HTMLIFrameElement | null, lightTheme: boolean) {
@@ -151,6 +170,9 @@ export function App() {
   const [toast, setToast] = useState<AppToast | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
+  const [operatorRestartDialogOpen, setOperatorRestartDialogOpen] = useState(false);
+  const [operatorRestartUpdateLatest, setOperatorRestartUpdateLatest] = useState(false);
+  const [operatorRestartBusy, setOperatorRestartBusy] = useState(false);
   const [restartAuthorizeBusy, setRestartAuthorizeBusy] = useState(false);
   const [restartNoticeRun, setRestartNoticeRun] = useState<ManorRestartRun | null>(null);
   const [trackedRestartRunId, setTrackedRestartRunId] = useState(() => readStoredValue(MANOR_RESTART_TRACKED_RUN_KEY));
@@ -205,6 +227,7 @@ export function App() {
   const scratchPadDefaultCwd = getThreadProjectPath(scratchPadContextThread);
   const pendingRestartRequest = shell?.butler.pendingManorRestartRequest ?? null;
   const visibleRestartNotice = restartNoticeRun && restartNoticeRun.id !== dismissedRestartRunId ? restartNoticeRun : null;
+  const restartControlDisabled = visibleRestartNotice?.status === "running" || restartAuthorizeBusy || confirmBusy || operatorRestartBusy;
 
   function showToast(message: string, tone: "success" | "error" | "info" = "success", duration = 2600, key?: string) {
     const nextKey = key ?? `${tone}:${message}`;
@@ -651,6 +674,21 @@ export function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [confirmBusy, confirmDialog]);
 
+  useEffect(() => {
+    if (!operatorRestartDialogOpen) {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && !operatorRestartBusy) {
+        setOperatorRestartDialogOpen(false);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [operatorRestartBusy, operatorRestartDialogOpen]);
+
   function openThread(threadId: string) {
     if (closingWindowThreadIdRef.current === threadId) {
       closingWindowThreadIdRef.current = null;
@@ -747,6 +785,29 @@ export function App() {
         showToast("All threads deleted");
       }
     });
+  }
+
+  function openOperatorManorRestartDialog() {
+    setOperatorRestartUpdateLatest(false);
+    setOperatorRestartDialogOpen(true);
+  }
+
+  async function startOperatorManorRestart() {
+    if (operatorRestartBusy) {
+      return;
+    }
+
+    setOperatorRestartBusy(true);
+    try {
+      const result = await postJson<{ run: ManorRestartRun }>("/api/manor/restart", { update: operatorRestartUpdateLatest });
+      trackManorRestartRun(result.run);
+      setOperatorRestartDialogOpen(false);
+      showToast("Manor restart started", "success");
+    } catch (error) {
+      showErrorToast(error);
+    } finally {
+      setOperatorRestartBusy(false);
+    }
   }
 
   async function handleConfirmAction() {
@@ -914,6 +975,29 @@ export function App() {
     return <div className="shell loading">Loading Butler…</div>;
   }
 
+  const operatorStatusRows = [
+    {
+      label: "Codex worker",
+      status: shell.codex.connected ? "Online" : "Offline",
+      mode: "Worker",
+      issue: !shell.codex.connected || Boolean(shell.codex.lastError)
+    },
+    {
+      label: "Codex auth",
+      status: authHealth(shell.codex.auth),
+      mode: authMode(shell.codex.auth),
+      issue: !shell.codex.auth.loggedIn || Boolean(shell.codex.auth.validationError)
+    },
+    {
+      label: "Butler auth",
+      status: authHealth(shell.butler.auth),
+      mode: authMode(shell.butler.auth),
+      issue: !shell.butler.auth.loggedIn || Boolean(shell.butler.auth.validationError)
+    }
+  ];
+  const operatorStatusHasIssue = operatorStatusRows.some((row) => row.issue);
+  const operatorStatusValue = operatorStatusHasIssue ? "Issue" : "OK";
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -932,20 +1016,38 @@ export function App() {
               <option value="dark">Dark</option>
             </select>
           </label>
-          <StatusItem
-            kind="codex"
-            tone={shell.codex.connected ? "accent" : "neutral"}
-            label="Codex worker"
-            value={shell.codex.connected ? "Online" : "Offline"}
-          />
-          <StatusItem
-            kind="auth"
-            tone={shell.codex.auth.loggedIn ? "success" : shell.codex.auth.mode === "none" ? "neutral" : "danger"}
-            label="Codex auth"
-            value={formatAuthStatus(shell.codex.auth)}
-          />
+          <div
+            className="operator-status"
+            tabIndex={0}
+            aria-label={`Status ${operatorStatusValue}`}
+          >
+            <StatusItem kind="status" tone={operatorStatusHasIssue ? "danger" : "neutral"} label="Status" value={operatorStatusValue} />
+            <div className="operator-status-popover" role="tooltip">
+              <div className="operator-status-header">Status</div>
+              <div className="operator-status-grid">
+                {operatorStatusRows.map((row) => (
+                  <div key={row.label} className={`operator-status-row ${row.issue ? "is-danger" : ""}`}>
+                    <span className="operator-status-name">{row.label}</span>
+                    <span className="operator-status-state">{row.status}</span>
+                    <span className="operator-status-mode">{row.mode}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
           <StatusItem kind="context" tone="neutral" label="Context" value={topbarContextValue} />
           <StatusItem kind="compaction" tone={topbarCompactionTone} label="Compact" value={topbarCompactionValue} />
+          <div className="manor-restart-control" aria-label="Manor restart controls">
+            <button
+              className="panel-action panel-action-icon manor-restart-button"
+              onClick={openOperatorManorRestartDialog}
+              disabled={restartControlDisabled}
+              aria-label="Restart Manor"
+              title="Restart Manor"
+            >
+              <RestartIcon />
+            </button>
+          </div>
         </div>
       </header>
 
@@ -1249,6 +1351,42 @@ export function App() {
               </button>
               <button className="panel-action panel-action-danger" onClick={() => void handleConfirmAction()} disabled={confirmBusy}>
                 {confirmBusy ? (confirmDialog.busyLabel ?? "Deleting…") : confirmDialog.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {operatorRestartDialogOpen ? (
+        <div className="modal-backdrop manor-restart-backdrop" onClick={() => (!operatorRestartBusy ? setOperatorRestartDialogOpen(false) : undefined)}>
+          <div className="modal-card manor-restart-dialog" role="dialog" aria-modal="true" aria-labelledby="operator-restart-title" aria-describedby="operator-restart-copy" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head manor-restart-head">
+              <div>
+                <p className="manor-restart-kicker">Live Manor stack</p>
+                <h2 id="operator-restart-title">Restart Manor?</h2>
+              </div>
+              <button className="modal-close" onClick={() => setOperatorRestartDialogOpen(false)} disabled={operatorRestartBusy} aria-label="Close restart confirmation">
+                <CloseIcon />
+              </button>
+            </div>
+            <p className="modal-copy manor-restart-copy" id="operator-restart-copy">
+              The host controller will restart Manor and report the outcome here.
+            </p>
+            <label className="manor-restart-option">
+              <input
+                type="checkbox"
+                checked={operatorRestartUpdateLatest}
+                onChange={(event) => setOperatorRestartUpdateLatest(event.target.checked)}
+                disabled={operatorRestartBusy}
+              />
+              <span>Update to latest before restarting</span>
+            </label>
+            <div className="modal-actions">
+              <button className="panel-action" onClick={() => setOperatorRestartDialogOpen(false)} disabled={operatorRestartBusy}>
+                Cancel
+              </button>
+              <button className="panel-action panel-action-danger manor-restart-authorize" onClick={() => void startOperatorManorRestart()} disabled={operatorRestartBusy}>
+                {operatorRestartBusy ? "Starting..." : operatorRestartUpdateLatest ? "Update and restart" : "Restart"}
               </button>
             </div>
           </div>

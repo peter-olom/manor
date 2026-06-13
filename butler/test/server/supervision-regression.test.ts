@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -476,6 +477,13 @@ test("system prompt advises focused checklist refresh for new work", async () =>
   assert.match(prompt, /hold_job_context/);
   assert.match(prompt, /newer context for an active job/);
   assert.match(prompt, /Do not answer project inventory questions from supervisor state alone/);
+});
+
+test("Butler callback state startup tolerates empty persisted files", () => {
+  const source = readFileSync(path.resolve("src/server/butler-agent.ts"), "utf8");
+
+  assert.match(source, /if \(!raw\.trim\(\)\) return;/);
+  assert.match(source, /!\(error instanceof SyntaxError\)/);
 });
 
 test("system prompt biases autonomous domain resolution before job inventory", async () => {

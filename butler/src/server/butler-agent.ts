@@ -288,6 +288,7 @@ export class ButlerAgentService extends EventEmitter {
   private async loadCallbackState(): Promise<void> {
     try {
       const raw = await fs.readFile(this.callbackStatePath, "utf8");
+      if (!raw.trim()) return;
       const parsed = JSON.parse(raw) as {
         callbackRecords?: PendingChatCallback[];
         pendingCallbacks?: PendingChatCallback[];
@@ -376,9 +377,7 @@ export class ButlerAgentService extends EventEmitter {
         }
       }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
     }
   }
 
@@ -806,6 +805,7 @@ export class ButlerAgentService extends EventEmitter {
   authorizeManorRestartRequest(requestId: string): NonNullable<AppSnapshot["butler"]["authorizedManorRestartRequest"]> { return this.manorRestartRequests.authorize(requestId); }
   dismissManorRestartRequest(requestId: string): void { this.manorRestartRequests.dismiss(requestId); }
   async startAuthorizedManorRestart(requestId: string) { return this.manorRestartRequests.start(requestId); }
+  async startManorRestart(input: { target: "current" | "latest"; update: boolean; includeDesktop?: boolean }) { return (await this.hostController.restart({ confirmation: "restart Manor", target: input.target, update: input.update, ...(input.includeDesktop === true ? { includeDesktop: true } : {}) })).run; }
   async getManorRestartStatus() { return this.hostController.getStatus(); }
 
   private async buildDelegationDeveloperInstructions(

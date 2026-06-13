@@ -104,6 +104,18 @@ Daily control:
 ./manor.sh logs
 ```
 
+Restart the current stack through the host controller:
+
+```bash
+./update.sh
+```
+
+Update to the latest configured image or source target before restarting:
+
+```bash
+./update.sh --latest
+```
+
 Interactive defaults:
 
 - host port: `8180`
