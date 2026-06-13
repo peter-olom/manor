@@ -1,4 +1,5 @@
 import type { CodexProofExpectation, CodexThreadExecutionContractView } from "./types.js";
+import { acceptancePointsNeedVisualProof, taskHasUiImplication, VISUAL_PROOF_REQUIREMENT } from "./proof-policy.js";
 
 const MAX_ACCEPTANCE_POINTS = 24;
 
@@ -97,7 +98,8 @@ export function deriveAcceptancePoints(taskText: string, requestedTask?: string 
 
 export function detectProofExpectation(taskText: string): CodexProofExpectation {
   const normalized = taskText.toLowerCase();
-  return /\b(proof|artifact|artifacts|screenshot|screenshots|video|videos|record|recording|trace|capture)\b/.test(normalized)
+  return /\b(proof|artifact|artifacts|screenshot|screenshots|video|videos|record|recording|trace|capture)\b/.test(normalized) ||
+    taskHasUiImplication(taskText)
     ? "requested"
     : "none";
 }
@@ -134,8 +136,17 @@ export function buildThreadExecutionContract(input: {
 }): CodexThreadExecutionContractView {
   const operatorGoal = normalizeContractText(input.operatorGoal);
   const requestedTask = normalizeContractText(input.requestedTask) ?? deriveRequestedTask(input.taskText);
-  const proofExpectation = detectProofExpectation([requestedTask, operatorGoal].filter(Boolean).join("\n"));
+  const contractText = [requestedTask, operatorGoal, input.taskText].filter(Boolean).join("\n");
+  const needsVisualProof = taskHasUiImplication(contractText);
+  const proofExpectation = detectProofExpectation(contractText);
   const acceptancePoints = deriveAcceptancePoints(input.taskText, requestedTask);
+  if (needsVisualProof && !acceptancePointsNeedVisualProof(acceptancePoints) && acceptancePoints.length < MAX_ACCEPTANCE_POINTS) {
+    acceptancePoints.push("Capture and surface visual proof of the relevant UI state");
+  }
+  const notes = [...new Set(input.notes.map((note) => note.trim()).filter(Boolean))];
+  if (needsVisualProof) {
+    notes.push(VISUAL_PROOF_REQUIREMENT);
+  }
 
   return {
     threadId: input.threadId,
@@ -148,7 +159,7 @@ export function buildThreadExecutionContract(input: {
     acceptancePoints,
     proofExpectation,
     proofExpectationLabel: describeProofExpectation(proofExpectation),
-    notes: [...new Set(input.notes.map((note) => note.trim()).filter(Boolean))]
+    notes: [...new Set(notes)]
   };
 }
 

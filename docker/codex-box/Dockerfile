@@ -103,6 +103,7 @@ RUN mkdir -p /opt/manor/codex-box/install-guard-bin \
     && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/brew \
     && ln -sf /opt/manor/codex-box/python-guard.sh /opt/manor/codex-box/install-guard-bin/python \
     && ln -sf /opt/manor/codex-box/python-guard.sh /opt/manor/codex-box/install-guard-bin/python3 \
+    && sed -i 's/\r$//' /usr/local/bin/start-codex-app-server /usr/local/bin/codex-auth /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/codex-bootstrap-tools /usr/local/bin/manor-harness /usr/local/bin/manor-codex-auto-update /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/python-guard.sh /etc/profile.d/manor-shell-env.sh /home/codex/.zshrc /home/codex/.zprofile \
     && chmod +x /usr/local/bin/start-codex-app-server /usr/local/bin/codex-auth /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/codex-bootstrap-tools /usr/local/bin/manor-harness /usr/local/bin/manor-codex-auto-update /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/python-guard.sh /etc/profile.d/manor-shell-env.sh \
     && chown -R codex:codex /home/codex/.oh-my-zsh /home/codex/.zshrc /home/codex/.zprofile \
     && rm -rf /tmp/* /var/tmp/*

@@ -9,8 +9,10 @@ import type {
   ScratchPadItemStatus,
   ScratchPadItemView,
   ScratchPadResultKind,
+  ScratchPadWorkspaceMode,
   ScratchPadView
 } from "./types.js";
+import { isManagedWorktree } from "./repo-worktree.js";
 
 type ScratchPadPersistedState = {
   items?: ScratchPadItemView[];
@@ -22,6 +24,7 @@ type ScratchPadItemInput = {
   depth?: ScratchPadDepth | null;
   resultKind?: ScratchPadResultKind | null;
   cwd?: string | null;
+  workspaceMode?: ScratchPadWorkspaceMode | null;
 };
 
 const ACTIVE_STATUSES = new Set<ScratchPadItemStatus>(["captured", "exploring", "ready_for_review"]);
@@ -66,6 +69,19 @@ function normalizeStatus(value: unknown): ScratchPadItemStatus {
     return value;
   }
   return "captured";
+}
+
+function normalizeWorkspaceMode(value: unknown, cwd: string | null, threadId: string | null): ScratchPadWorkspaceMode {
+  if (value === "managed_worktree" || value === "existing") {
+    return value;
+  }
+  if (cwd && isManagedWorktree(cwd)) {
+    return "managed_worktree";
+  }
+  if (cwd || threadId) {
+    return "existing";
+  }
+  return "managed_worktree";
 }
 
 function cloneItem(item: ScratchPadItemView): ScratchPadItemView {
@@ -115,6 +131,8 @@ export class ScratchPadStore extends EventEmitter {
       depth: normalizeDepth(input.depth),
       resultKind: normalizeResultKind(input.resultKind),
       cwd: normalizeText(input.cwd) || null,
+      workspaceMode: input.workspaceMode === "existing" ? "existing" : "managed_worktree",
+      branchName: null,
       threadId: null,
       reviewNote: null,
       createdAt: now,
@@ -132,14 +150,28 @@ export class ScratchPadStore extends EventEmitter {
     return item ? cloneItem(item) : null;
   }
 
-  start(itemId: string, input: { threadId: string; depth?: ScratchPadDepth | null; resultKind?: ScratchPadResultKind | null }): ScratchPadItemView {
+  start(
+    itemId: string,
+    input: {
+      threadId: string;
+      cwd?: string | null;
+      workspaceMode?: ScratchPadWorkspaceMode | null;
+      branchName?: string | null;
+      depth?: ScratchPadDepth | null;
+      resultKind?: ScratchPadResultKind | null;
+    }
+  ): ScratchPadItemView {
     const item = this.requireItem(itemId);
     const now = Date.now();
+    const cwd = normalizeText(input.cwd) || item.cwd;
     const next: ScratchPadItemView = {
       ...item,
       status: "exploring",
       depth: normalizeDepth(input.depth ?? item.depth),
       resultKind: normalizeResultKind(input.resultKind ?? item.resultKind),
+      cwd,
+      workspaceMode: normalizeWorkspaceMode(input.workspaceMode ?? item.workspaceMode, cwd, input.threadId),
+      branchName: normalizeText(input.branchName) || item.branchName,
       threadId: input.threadId,
       startedAt: item.startedAt ?? now,
       updatedAt: now
@@ -231,6 +263,8 @@ export class ScratchPadStore extends EventEmitter {
       return null;
     }
     const now = Date.now();
+    const cwd = normalizeText(item.cwd) || null;
+    const threadId = normalizeText(item.threadId) || null;
     return {
       id: item.id.trim() || crypto.randomUUID(),
       title: normalizeText(item.title) || deriveTitle(text),
@@ -238,8 +272,10 @@ export class ScratchPadStore extends EventEmitter {
       status: normalizeStatus(item.status),
       depth: normalizeDepth(item.depth),
       resultKind: normalizeResultKind(item.resultKind),
-      cwd: normalizeText(item.cwd) || null,
-      threadId: normalizeText(item.threadId) || null,
+      cwd,
+      workspaceMode: normalizeWorkspaceMode(item.workspaceMode, cwd, threadId),
+      branchName: normalizeText(item.branchName) || null,
+      threadId,
       reviewNote: normalizeText(item.reviewNote) || null,
       createdAt: typeof item.createdAt === "number" && Number.isFinite(item.createdAt) ? item.createdAt : now,
       updatedAt: typeof item.updatedAt === "number" && Number.isFinite(item.updatedAt) ? item.updatedAt : now,

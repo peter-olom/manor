@@ -34,6 +34,12 @@ services:
       dockerfile: docker/runtime-broker/Dockerfile
     image: manor-runtime-broker:local
 
+  host-controller:
+    build:
+      context: .
+      dockerfile: docker/host-controller/Dockerfile
+    image: manor-host-controller:local
+
   playwright:
     build:
       context: .

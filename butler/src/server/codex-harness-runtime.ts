@@ -55,9 +55,26 @@ function matchByIdTitleAndAliases<T extends { id: string; title: string; aliases
   return null;
 }
 
+function isStackVisibleToThread(stack: StackLeaseView, threadId: string): boolean {
+  return stack.threadId === threadId || !stack.threadId || stack.pinned === true;
+}
+
+function isLeaseVisibleToThread(
+  store: ButlerStateStore,
+  lease: PreviewLeaseView | ServiceLeaseView,
+  threadId: string
+): boolean {
+  if (lease.threadId === threadId || !lease.threadId || lease.pinned === true) {
+    return true;
+  }
+
+  const stack = lease.stackId ? store.getStackLease(lease.stackId) : null;
+  return Boolean(stack && isStackVisibleToThread(stack, threadId));
+}
+
 export function matchHarnessThreadPreview(store: ButlerStateStore, threadId: string, selector: string): PreviewLeaseView | null {
   return matchByIdTitleAndAliases(
-    store.listPreviewLeases().filter((lease) => lease.threadId === threadId && lease.status !== "stopped"),
+    store.listPreviewLeases().filter((lease) => lease.status !== "stopped" && isLeaseVisibleToThread(store, lease, threadId)),
     selector,
     { matchAliases: true }
   );
@@ -65,7 +82,7 @@ export function matchHarnessThreadPreview(store: ButlerStateStore, threadId: str
 
 export function matchHarnessThreadService(store: ButlerStateStore, threadId: string, selector: string): ServiceLeaseView | null {
   return matchByIdTitleAndAliases(
-    store.listServiceLeases().filter((lease) => lease.threadId === threadId && lease.status !== "stopped"),
+    store.listServiceLeases().filter((lease) => lease.status !== "stopped" && isLeaseVisibleToThread(store, lease, threadId)),
     selector,
     { matchAliases: true }
   );
@@ -73,7 +90,7 @@ export function matchHarnessThreadService(store: ButlerStateStore, threadId: str
 
 export function matchHarnessThreadStack(store: ButlerStateStore, threadId: string, selector: string): StackLeaseView | null {
   return matchByIdTitleAndAliases(
-    store.listStackLeases().filter((lease) => lease.threadId === threadId && lease.status !== "stopped"),
+    store.listStackLeases().filter((lease) => lease.status !== "stopped" && isStackVisibleToThread(lease, threadId)),
     selector
   );
 }
@@ -138,9 +155,11 @@ export function removeHarnessStackArtifacts(store: ButlerStateStore, stackId: st
 }
 
 export async function reconcileHarnessThreadPreviews(access: HarnessRuntimeAccess, threadId: string): Promise<PreviewLeaseView[]> {
-  const brokerLeases = await access.runtimeBroker.listLeases(threadId);
+  const brokerLeases = await access.runtimeBroker.listLeases();
   const brokerLeaseMap = new Map(brokerLeases.map((lease) => [lease.id, lease]));
-  const storedLeases = access.store.listPreviewLeases().filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
+  const storedLeases = access.store
+    .listPreviewLeases()
+    .filter((lease) => lease.status !== "stopped" && isLeaseVisibleToThread(access.store, lease, threadId));
 
   for (const lease of storedLeases) {
     if (!brokerLeaseMap.has(lease.id)) {
@@ -152,13 +171,18 @@ export async function reconcileHarnessThreadPreviews(access: HarnessRuntimeAcces
     access.store.upsertPreviewLease(lease);
   }
 
-  return brokerLeases.sort((left, right) => right.updatedAt - left.updatedAt);
+  return access.store
+    .listPreviewLeases()
+    .filter((lease) => lease.status !== "stopped" && isLeaseVisibleToThread(access.store, lease, threadId))
+    .sort((left, right) => right.updatedAt - left.updatedAt);
 }
 
 export async function reconcileHarnessThreadStacks(access: HarnessRuntimeAccess, threadId: string): Promise<StackLeaseView[]> {
-  const brokerStacks = await access.runtimeBroker.listStacks(threadId);
+  const brokerStacks = await access.runtimeBroker.listStacks();
   const brokerStackIds = new Set(brokerStacks.map((stack) => stack.id));
-  const storedStacks = access.store.listStackLeases().filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
+  const storedStacks = access.store
+    .listStackLeases()
+    .filter((lease) => lease.status !== "stopped" && isStackVisibleToThread(lease, threadId));
 
   for (const lease of storedStacks) {
     if (!brokerStackIds.has(lease.id)) {
@@ -170,13 +194,15 @@ export async function reconcileHarnessThreadStacks(access: HarnessRuntimeAccess,
     access.store.upsertStackLease(stack);
   }
 
-  return access.store.listStackLeases().filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
+  return access.store.listStackLeases().filter((lease) => lease.status !== "stopped" && isStackVisibleToThread(lease, threadId));
 }
 
 export async function reconcileHarnessThreadServices(access: HarnessRuntimeAccess, threadId: string): Promise<ServiceLeaseView[]> {
-  const brokerServices = await access.runtimeBroker.listServices(threadId);
+  const brokerServices = await access.runtimeBroker.listServices();
   const brokerServiceIds = new Set(brokerServices.map((service) => service.id));
-  const storedServices = access.store.listServiceLeases().filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
+  const storedServices = access.store
+    .listServiceLeases()
+    .filter((lease) => lease.status !== "stopped" && isLeaseVisibleToThread(access.store, lease, threadId));
 
   for (const lease of storedServices) {
     if (lease.runtimeKind === "container" && !brokerServiceIds.has(lease.id)) {
@@ -217,5 +243,7 @@ export async function reconcileHarnessThreadServices(access: HarnessRuntimeAcces
     );
   }
 
-  return access.store.listServiceLeases().filter((lease) => lease.threadId === threadId && lease.status !== "stopped");
+  return access.store
+    .listServiceLeases()
+    .filter((lease) => lease.status !== "stopped" && isLeaseVisibleToThread(access.store, lease, threadId));
 }

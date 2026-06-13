@@ -299,6 +299,9 @@ export function registerServerAssetRoutes(options: {
           return;
         }
 
+        if (knownArtifact?.artifact.contentType) {
+          response.setHeader("Content-Type", knownArtifact.artifact.contentType);
+        }
         response.sendFile(filePath, handleSendError);
       })
       .catch(() => {

@@ -71,7 +71,8 @@ COPY docker/pi-auto-update.sh /usr/local/bin/manor-pi-auto-update
 COPY docker/butler/zshrc /home/butler/.zshrc
 COPY docker/butler/zprofile /home/butler/.zprofile
 
-RUN chmod +x /usr/local/bin/start-butler /usr/local/bin/butler-auth /usr/local/bin/butler-chatgpt-login.mjs /usr/local/bin/start-butler-shell /usr/local/bin/manor-codex-auto-update /usr/local/bin/manor-pi-auto-update \
+RUN sed -i 's/\r$//' /usr/local/bin/start-butler /usr/local/bin/butler-auth /usr/local/bin/butler-chatgpt-login.mjs /usr/local/bin/start-butler-shell /usr/local/bin/manor-codex-auto-update /usr/local/bin/manor-pi-auto-update /home/butler/.zshrc /home/butler/.zprofile \
+  && chmod +x /usr/local/bin/start-butler /usr/local/bin/butler-auth /usr/local/bin/butler-chatgpt-login.mjs /usr/local/bin/start-butler-shell /usr/local/bin/manor-codex-auto-update /usr/local/bin/manor-pi-auto-update \
   && rm -rf /tmp/* /var/tmp/*
 
 EXPOSE 8080 7682

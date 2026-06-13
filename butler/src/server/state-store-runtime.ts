@@ -9,6 +9,19 @@ import {
 } from "./state-store-internals.js";
 import type { PreviewLeaseView, RuntimeCleanupTaskView, ServiceLeaseView, StackLeaseView } from "./types.js";
 
+type LeaseLifecyclePatch = {
+  pinned?: boolean;
+  leaseTtlMs?: number | null;
+  refresh?: boolean;
+};
+
+function normalizeLeaseTtlMs(value: number | null | undefined, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.max(60_000, Math.trunc(value));
+  }
+  return fallback;
+}
+
 function refreshStackChildLeaseLifecycles(access: StateStoreInternalAccess, stackId: string, now: number): void {
   for (const [leaseId, lease] of access.previewLeases.entries()) {
     if (lease.stackId === stackId && lease.status !== "stopped") {
@@ -168,6 +181,39 @@ export function setStateStoreStackLeasePinned(access: StateStoreInternalAccess, 
   return nextLease;
 }
 
+export function setStateStoreStackLeaseLifecycle(
+  access: StateStoreInternalAccess,
+  leaseId: string,
+  patch: LeaseLifecyclePatch
+): StackLeaseView | null {
+  const lease = access.stackLeases.get(leaseId);
+  if (!lease) {
+    return null;
+  }
+
+  const now = Date.now();
+  const shouldRefresh = patch.refresh !== false;
+  const nextLease = normalizeStateStoreStackLease(
+    access,
+    {
+      ...lease,
+      pinned: typeof patch.pinned === "boolean" ? patch.pinned : lease.pinned,
+      leaseTtlMs: patch.leaseTtlMs === undefined ? lease.leaseTtlMs : normalizeLeaseTtlMs(patch.leaseTtlMs, access.stackLeaseTtlMs),
+      lastActivityAt: shouldRefresh ? now : lease.lastActivityAt,
+      ttlAnchorAt: shouldRefresh ? now : lease.ttlAnchorAt,
+      updatedAt: Math.max(lease.updatedAt, now),
+      expiredAt: null,
+      reapAfterAt: null
+    },
+    now
+  );
+  access.stackLeases.set(leaseId, nextLease);
+  refreshStackChildLeaseLifecycles(access, leaseId, now);
+  queueStateStoreSave(access);
+  emitStateStoreChange(access);
+  return nextLease;
+}
+
 export function setStateStorePreviewLeasePinned(access: StateStoreInternalAccess, leaseId: string, pinned: boolean): PreviewLeaseView | null {
   const lease = access.previewLeases.get(leaseId);
   if (!lease) {
@@ -175,6 +221,39 @@ export function setStateStorePreviewLeasePinned(access: StateStoreInternalAccess
   }
 
   const nextLease = normalizeStateStorePreviewLease(access, { ...lease, pinned }, Date.now());
+  access.previewLeases.set(leaseId, nextLease);
+  queueStateStoreSave(access);
+  emitStateStoreChange(access);
+  return nextLease;
+}
+
+export function setStateStorePreviewLeaseLifecycle(
+  access: StateStoreInternalAccess,
+  leaseId: string,
+  patch: LeaseLifecyclePatch
+): PreviewLeaseView | null {
+  const lease = access.previewLeases.get(leaseId);
+  if (!lease) {
+    return null;
+  }
+
+  const now = Date.now();
+  const shouldRefresh = patch.refresh !== false;
+  const nextLease = normalizeStateStorePreviewLease(
+    access,
+    {
+      ...lease,
+      pinned: typeof patch.pinned === "boolean" ? patch.pinned : lease.pinned,
+      leaseTtlMs:
+        patch.leaseTtlMs === undefined ? lease.leaseTtlMs : normalizeLeaseTtlMs(patch.leaseTtlMs, access.previewLeaseTtlMs),
+      lastActivityAt: shouldRefresh ? now : lease.lastActivityAt,
+      ttlAnchorAt: shouldRefresh ? now : lease.ttlAnchorAt,
+      updatedAt: Math.max(lease.updatedAt, now),
+      expiredAt: null,
+      reapAfterAt: null
+    },
+    now
+  );
   access.previewLeases.set(leaseId, nextLease);
   queueStateStoreSave(access);
   emitStateStoreChange(access);
@@ -220,10 +299,12 @@ export function enqueueStateStoreRuntimeCleanupTask(
   input: {
     threadId: string;
     cwd: string | null;
+    threadCreatedAt?: number | null;
     notifyOnError?: boolean;
     stacks: RuntimeCleanupTaskView["stacks"];
     previews: RuntimeCleanupTaskView["previews"];
     services: RuntimeCleanupTaskView["services"];
+    proofArtifactPaths?: string[];
   }
 ): RuntimeCleanupTaskView {
   const now = Date.now();
@@ -231,6 +312,7 @@ export function enqueueStateStoreRuntimeCleanupTask(
     id: input.threadId,
     threadId: input.threadId,
     cwd: input.cwd,
+    threadCreatedAt: typeof input.threadCreatedAt === "number" && Number.isFinite(input.threadCreatedAt) ? input.threadCreatedAt : null,
     createdAt: now,
     updatedAt: now,
     nextAttemptAt: now,
@@ -239,7 +321,8 @@ export function enqueueStateStoreRuntimeCleanupTask(
     notifyOnError: input.notifyOnError !== false,
     stacks: [...input.stacks],
     previews: [...input.previews],
-    services: [...input.services]
+    services: [...input.services],
+    proofArtifactPaths: [...new Set((input.proofArtifactPaths ?? []).filter((filePath) => typeof filePath === "string" && filePath.trim()))]
   };
   access.runtimeCleanupTasks.set(task.id, task);
   queueStateStoreSave(access);

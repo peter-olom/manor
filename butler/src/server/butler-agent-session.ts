@@ -26,10 +26,26 @@ import type {
   AppSnapshot,
   ButlerCompactionView,
   ButlerContextUsageView,
+  ButlerLivePatchView,
   ButlerLiveSnapshot,
   ButlerMessagePageView,
   ButlerThinkingLevel
 } from "./types.js";
+
+export function buildButlerLivePatch(previous: ButlerLiveSnapshot, next: ButlerLiveSnapshot): ButlerLivePatchView | null {
+  const previousMessages = new Map(previous.messages.map((message) => [message.id, JSON.stringify(message)]));
+  const messages = next.messages.filter((message) => previousMessages.get(message.id) !== JSON.stringify(message));
+  const previousActivity = new Map(previous.activityTurns.map((turn) => [turn.id, JSON.stringify(turn)]));
+  const activityTurns = next.activityTurns.filter((turn) => previousActivity.get(turn.id) !== JSON.stringify(turn));
+  if (messages.length === 0 && activityTurns.length === 0 && previous.messageCount === next.messageCount) {
+    return null;
+  }
+  return {
+    messageCount: next.messageCount,
+    ...(messages.length > 0 ? { messages } : {}),
+    ...(activityTurns.length > 0 ? { activityTurns } : {})
+  };
+}
 
 export async function createOrRefreshButlerSession(access: ButlerAgentSessionAccess): Promise<void> {
   if (!access.modelRegistry) {
@@ -75,6 +91,7 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
   };
   restoreButlerCompactionState(access);
 
+  let previousLiveSnapshot = getButlerLiveSnapshot(access);
   access.unsubscribeSession = access.session.subscribe((event) => {
     recordButlerActivityEvent(access, event);
 
@@ -95,6 +112,12 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
     }
 
     access.ready = true;
+    const nextLiveSnapshot = getButlerLiveSnapshot(access);
+    const patch = buildButlerLivePatch(previousLiveSnapshot, nextLiveSnapshot);
+    previousLiveSnapshot = nextLiveSnapshot;
+    if (patch) {
+      access.emit("butlerPatch", patch);
+    }
     access.emit("change");
   });
 }
@@ -200,6 +223,8 @@ export async function runButlerPrompt(
   let promptError: unknown = null;
 
   try {
+    dropTrailingFailedButlerTurns(access);
+    sanitizeButlerSessionMessages(access);
     await access.session.prompt(text, {
       ...(access.session.isStreaming ? { streamingBehavior: "followUp" as const } : {}),
       images: await access.imageStore.loadPiImages(imageReferenceIds)
@@ -207,6 +232,9 @@ export async function runButlerPrompt(
   } catch (error) {
     promptError = error;
   } finally {
+    if (promptError) {
+      dropTrailingFailedButlerTurns(access);
+    }
     sanitizeButlerSessionMessages(access);
   }
 
@@ -319,7 +347,11 @@ export function getButlerLiveSnapshot(access: ButlerAgentSessionAccess): ButlerL
   return {
     messages: visibleMessages.slice(Math.max(0, messageCount - SNAPSHOT_MESSAGE_TAIL_LIMIT)),
     messageCount,
-    activityTurns: getButlerActivityTurns(access)
+    activityTurns: getButlerActivityTurns(access, {
+      maxCompletedTurns: 4,
+      maxItemsPerTurn: 10,
+      maxItemText: 700
+    })
   };
 }
 
@@ -347,6 +379,8 @@ export function getButlerShellSnapshot(access: ButlerAgentSessionAccess): AppShe
       supervisor: access.store.getSupervisorSummary(),
       callbacks: [...access.pendingChatCallbacks.values()].sort((left, right) => right.updatedAt - left.updatedAt)
     },
+    pendingManorRestartRequest: access.pendingManorRestartRequest,
+    authorizedManorRestartRequest: access.authorizedManorRestartRequest,
     scratchPad: {
       items: [],
       counts: { captured: 0, exploring: 0, ready_for_review: 0, accepted: 0, parked: 0, dismissed: 0 }

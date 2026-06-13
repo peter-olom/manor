@@ -1,4 +1,5 @@
 import type { CodexThreadRecord } from "./types.js";
+import { threadRequiresVisualProof } from "./proof-policy.js";
 
 export function formatHarnessExecutionContract(thread: CodexThreadRecord): string[] {
   const contract = thread.executionContract;
@@ -13,6 +14,9 @@ export function formatHarnessExecutionContract(thread: CodexThreadRecord): strin
     ...(acceptancePoints.length > 0
       ? [`Acceptance points:\n${acceptancePoints.map((point, index) => `${index + 1}. ${point}`).join("\n")}`]
       : []),
+    ...(threadRequiresVisualProof(thread)
+      ? ["Visual proof requirement: capture and surface screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are insufficient."]
+      : []),
     ...(contract.notes.length > 0 ? [`Job notes:\n${contract.notes.map((note, index) => `${index + 1}. ${note}`).join("\n")}`] : [])
   ];
 }
@@ -22,6 +26,7 @@ export function formatHarnessRuntimeModel(): string[] {
     "Runtime model: use Codex-shell for repository and code work; use manor-harness only when the task needs a running app, disposable dependency, browser interaction, or durable proof.",
     "Previews run app code. Services provide supporting infrastructure such as databases, queues, object storage, or mail capture.",
     "Browser-use sessions already capture tracing, video, a ready screenshot, a final screenshot, and per-action screenshots unless you disable auto-capture.",
+    "Any job with UI implications must surface visual feedback. Record screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are not enough.",
     "Native Electron or VNC-visible desktop proof must use the desktop proof commands. Do not create a private Xvfb display when the operator needs to see the app in noVNC.",
     "For headed desktop work, list existing sessions first, attach the job thread id as the visible desktop workspace label, use current-screen before pointer actions, and use interactive/profile options when the operator needs a persistent desktop.",
     "If the desktop proof sidecar is unavailable, check desktop status and report that the desktop profile must be started before native headed proof can proceed.",
