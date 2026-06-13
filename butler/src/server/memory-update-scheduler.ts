@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { recordMemoryDebugTrace, type MemoryDebugTraceDecision } from "./memory-debug-traces.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type {
   ButlerMessageView,
@@ -68,9 +69,15 @@ type SynthesisOutput = {
   }>;
   entities?: Array<{ type?: string; name?: string; canonicalKey?: string; summary?: string | null }>;
   relationships?: Array<{ sourceName?: string; predicate?: string; targetName?: string; confidence?: number }>;
+  rawOutput?: unknown;
+  rawText?: string;
 };
 
 type SynthesisRunner = (input: { prompt: string; cwd: string; timeoutMs: number; config: MemorySynthesisConfig }) => Promise<SynthesisOutput>;
+type SynthesisApplyResult = {
+  decisions: MemoryDebugTraceDecision[];
+  persisted: { observationIds: string[]; candidateIds: string[]; entityIds: string[]; relationshipIds: string[]; jobEntryIds: string[] };
+};
 
 const DEFAULT_INTERVAL_MS = 30_000;
 const RETRY_DELAY_MS = 5 * 60_000;
@@ -408,22 +415,71 @@ export class MemoryUpdateScheduler {
   }
 
   private async processQueueEntry(entry: MemorySynthesisQueueEntryView): Promise<void> {
+    const startedAt = Date.now();
     const running = this.store.updateMemorySynthesisQueueEntry(entry.id, { status: "running", attempts: entry.attempts + 1, lastError: null });
     if (!running) return;
+    let prompt: string | null = null;
+    let output: SynthesisOutput | null = null;
     try {
       const graph = this.store.searchMemoryGraph({ projectId: entry.projectId === "global" ? null : entry.projectId, threadId: entry.threadId, limit: 12 });
-      const prompt = this.buildSynthesisPrompt(entry, graph.observations, graph.tasks);
-      const output = await this.runner({ prompt, cwd: this.store.getThread(entry.threadId ?? "")?.cwd ?? "/repos", timeoutMs: this.config.timeoutMs, config: this.config });
-      this.applySynthesisOutput(entry, output);
-      this.store.updateMemorySynthesisQueueEntry(entry.id, { status: "completed", completedAt: Date.now(), lastError: null });
+      prompt = this.buildSynthesisPrompt(entry, graph.observations, graph.tasks);
+      output = await this.runner({ prompt, cwd: this.store.getThread(entry.threadId ?? "")?.cwd ?? "/repos", timeoutMs: this.config.timeoutMs, config: this.config });
+      const applied = this.applySynthesisOutput(entry, output);
+      const completedAt = Date.now();
+      this.store.updateMemorySynthesisQueueEntry(entry.id, { status: "completed", completedAt, lastError: null });
+      recordMemoryDebugTrace(this.store, {
+        kind: "synthesis",
+        status: "completed",
+        projectId: entry.projectId,
+        projectLabel: entry.projectId,
+        threadId: entry.threadId,
+        sourceId: entry.id,
+        reason: entry.reason,
+        promptVersion: "memory-synthesis-v1",
+        model: this.config.model,
+        createdAt: startedAt,
+        completedAt,
+        durationMs: completedAt - startedAt,
+        prompt,
+        input: { queueEntry: entry, config: this.config },
+        rawOutput: output.rawOutput || output.rawText ? { parsed: output.rawOutput ?? output, text: output.rawText ?? null } : output,
+        normalizedOutput: { output },
+        decisions: applied.decisions,
+        persisted: applied.persisted,
+        error: null,
+        warnings: []
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const attempts = running.attempts;
+      const completedAt = Date.now();
       this.store.updateMemorySynthesisQueueEntry(entry.id, {
         status: attempts >= MAX_ATTEMPTS ? "failed" : "pending",
         attempts,
         lastError: message,
         runAfter: Date.now() + RETRY_DELAY_MS
+      });
+      recordMemoryDebugTrace(this.store, {
+        kind: "synthesis",
+        status: "failed",
+        projectId: entry.projectId,
+        projectLabel: entry.projectId,
+        threadId: entry.threadId,
+        sourceId: entry.id,
+        reason: entry.reason,
+        promptVersion: "memory-synthesis-v1",
+        model: this.config.model,
+        createdAt: startedAt,
+        completedAt,
+        durationMs: completedAt - startedAt,
+        prompt,
+        input: { queueEntry: entry, config: this.config },
+        rawOutput: output,
+        normalizedOutput: null,
+        decisions: [],
+        persisted: { observationIds: [], candidateIds: [], entityIds: [], relationshipIds: [], jobEntryIds: [] },
+        error: message,
+        warnings: []
       });
     }
   }
@@ -447,7 +503,9 @@ export class MemoryUpdateScheduler {
     ].join("\n");
   }
 
-  private applySynthesisOutput(entry: MemorySynthesisQueueEntryView, output: SynthesisOutput): void {
+  private applySynthesisOutput(entry: MemorySynthesisQueueEntryView, output: SynthesisOutput): SynthesisApplyResult {
+    const decisions: MemoryDebugTraceDecision[] = [];
+    const persisted: SynthesisApplyResult["persisted"] = { observationIds: [], candidateIds: [], entityIds: [], relationshipIds: [], jobEntryIds: [] };
     const sourceObservation = this.store.listMemoryGraph().observations.find((item) => item.id === entry.sourceObservationId) ?? null;
     const observation = this.store.recordMemoryObservation({
       idempotencyKey: `synthesis-result:${entry.id}`,
@@ -458,6 +516,7 @@ export class MemoryUpdateScheduler {
       summary: `Memory synthesis completed for ${entry.reason}.`,
       payload: { queueEntryId: entry.id }
     });
+    persisted.observationIds.push(observation.id);
     const entityIdsByName = new Map<string, string>();
     const indexEntity = (entity: { id: string; name: string; canonicalKey?: string | null; aliases?: string[] }): void => {
       for (const value of [entity.name, entity.canonicalKey ?? "", ...(entity.aliases ?? [])]) {
@@ -465,53 +524,96 @@ export class MemoryUpdateScheduler {
         if (key && !entityIdsByName.has(key)) entityIdsByName.set(key, entity.id);
       }
     };
-    for (const entity of output.entities ?? []) {
+    for (const [index, entity] of (output.entities ?? []).entries()) {
       const name = clean(entity.name);
-      if (!name) continue;
+      if (!name) {
+        decisions.push({ stage: "entity", outcome: "dropped", summary: "Dropped entity without a name.", reason: "missing_name", inputIndex: index });
+        continue;
+      }
+      const normalizedType = entity.type === "decision" || entity.type === "task" || entity.type === "repo" || entity.type === "service" || entity.type === "feature" ? entity.type : "unknown";
+      if (normalizedType === "unknown" && clean(entity.type)) {
+        decisions.push({ stage: "entity", outcome: "normalized", summary: `Normalized unsupported entity type ${entity.type}.`, reason: "unsupported_entity_type", inputIndex: index });
+      }
       const saved = this.store.upsertMemoryEntity({
         projectId: entry.projectId,
-        type: entity.type === "decision" || entity.type === "task" || entity.type === "repo" || entity.type === "service" || entity.type === "feature" ? entity.type : "unknown",
+        type: normalizedType,
         name,
         canonicalKey: clean(entity.canonicalKey) || undefined,
         summary: clean(entity.summary) || null,
         sourceObservationId: observation.id
       });
+      persisted.entityIds.push(saved.id);
+      decisions.push({ stage: "entity", outcome: "saved", summary: name, persistedId: saved.id, inputIndex: index });
       indexEntity(saved);
     }
     for (const entity of this.store.listMemoryGraph().entities.filter((item) => item.projectId === entry.projectId)) indexEntity(entity);
-    for (const relationship of output.relationships ?? []) {
+    for (const [index, relationship] of (output.relationships ?? []).entries()) {
       const sourceId = entityIdsByName.get(lookupKey(relationship.sourceName));
       const targetId = entityIdsByName.get(lookupKey(relationship.targetName));
-      if (!sourceId || !targetId || !clean(relationship.predicate)) continue;
-      this.store.upsertMemoryRelationship({ projectId: entry.projectId, sourceEntityId: sourceId, predicate: clean(relationship.predicate), targetEntityId: targetId, sourceObservationId: observation.id, confidence: relationship.confidence });
+      const predicate = clean(relationship.predicate);
+      if (!sourceId || !targetId || !predicate) {
+        decisions.push({ stage: "relationship", outcome: "dropped", summary: "Dropped relationship with unresolved endpoints or predicate.", reason: "unresolved_relationship", inputIndex: index });
+        continue;
+      }
+      const saved = this.store.upsertMemoryRelationship({ projectId: entry.projectId, sourceEntityId: sourceId, predicate, targetEntityId: targetId, sourceObservationId: observation.id, confidence: relationship.confidence });
+      persisted.relationshipIds.push(saved.id);
+      decisions.push({ stage: "relationship", outcome: "saved", summary: predicate, persistedId: saved.id, inputIndex: index });
     }
     let submittedCandidates = 0;
-    for (const candidate of (output.candidates ?? []).slice(0, this.config.maxCandidatesPerRun)) {
+    const candidates = output.candidates ?? [];
+    for (const [index, candidate] of candidates.entries()) {
+      if (index >= this.config.maxCandidatesPerRun) {
+        decisions.push({ stage: "candidate", outcome: "dropped", summary: clean(candidate.summary) || "Candidate beyond max run limit.", reason: "max_candidates_exceeded", inputIndex: index });
+        continue;
+      }
       const summary = clean(candidate.summary);
       const kind = candidate.kind === "checkpoint" || candidate.kind === "decision" || candidate.kind === "note" ? candidate.kind : "note";
-      if (!summary || !entry.threadId) continue;
-      this.store.submitJobMemoryPromotionCandidate(entry.threadId, {
+      if (!summary) {
+        decisions.push({ stage: "candidate", outcome: "dropped", summary: "Dropped candidate without a summary.", reason: "missing_summary", inputIndex: index });
+        continue;
+      }
+      if (!entry.threadId) {
+        decisions.push({ stage: "candidate", outcome: "dropped", summary, reason: "missing_thread", inputIndex: index });
+        continue;
+      }
+      if (kind === "note" && candidate.kind && candidate.kind !== "note") {
+        decisions.push({ stage: "candidate", outcome: "normalized", summary, reason: `unsupported_kind:${candidate.kind}`, inputIndex: index });
+      }
+      const saved = this.store.submitJobMemoryPromotionCandidate(entry.threadId, {
         kind,
         summary,
         details: [clean(candidate.details), clean(candidate.reason), candidate.confidence ? `Synthesis confidence: ${candidate.confidence}.` : null].filter(Boolean).join("\n") || null,
         sourceEntryId: `synthesis:${entry.id}:${hash(`${kind}:${summary}`)}`
       });
+      persisted.candidateIds.push(saved.id);
+      decisions.push({ stage: "candidate", outcome: "submitted", summary, sourceEntryId: saved.sourceEntryId, persistedId: saved.id, inputIndex: index });
       submittedCandidates += 1;
     }
-    if (submittedCandidates === 0) this.submitFallbackCandidate(entry, sourceObservation, output);
+    if (submittedCandidates === 0) {
+      const fallback = this.submitFallbackCandidate(entry, sourceObservation, output);
+      decisions.push(...fallback.decisions);
+      persisted.candidateIds.push(...fallback.candidateIds);
+    }
+    return { decisions, persisted };
   }
 
-  private submitFallbackCandidate(entry: MemorySynthesisQueueEntryView, sourceObservation: MemoryObservationView | null, output: SynthesisOutput): void {
-    if (!entry.threadId || !sourceObservation || ((output.entities ?? []).length === 0 && (output.relationships ?? []).length === 0)) return;
+  private submitFallbackCandidate(entry: MemorySynthesisQueueEntryView, sourceObservation: MemoryObservationView | null, output: SynthesisOutput): { decisions: MemoryDebugTraceDecision[]; candidateIds: string[] } {
+    if (!entry.threadId || !sourceObservation || ((output.entities ?? []).length === 0 && (output.relationships ?? []).length === 0)) {
+      return { decisions: [{ stage: "fallback", outcome: "skipped", summary: "No fallback candidate submitted.", reason: "fallback_requirements_not_met" }], candidateIds: [] };
+    }
     const kind = fallbackCandidateKind(sourceObservation.sourceKind);
     const summary = safePromotionText(sourceObservation.summary, 240);
     const sourceEntryId = `synthesis-fallback:${entry.id}`;
-    if (!kind || !summary || this.store.getJobMemory(entry.threadId)?.promotionCandidates.some((candidate) => candidate.sourceEntryId === sourceEntryId)) return;
+    if (!kind || !summary) return { decisions: [{ stage: "fallback", outcome: "dropped", summary: "Fallback candidate could not be derived.", reason: "missing_kind_or_summary" }], candidateIds: [] };
+    if (this.store.getJobMemory(entry.threadId)?.promotionCandidates.some((candidate) => candidate.sourceEntryId === sourceEntryId)) {
+      return { decisions: [{ stage: "fallback", outcome: "deduped", summary, reason: "existing_source_entry", sourceEntryId }], candidateIds: [] };
+    }
     const details = [
       sourceObservation.sourceKind.startsWith("pre_") ? null : safePromotionText(sourceObservation.details, 1_000),
       `Conservative fallback: synthesis returned entities/relationships but no promotion candidates for ${entry.reason}.`
     ].filter(Boolean).join("\n") || null;
-    this.store.submitJobMemoryPromotionCandidate(entry.threadId, { kind, summary, details, sourceEntryId });
+    const saved = this.store.submitJobMemoryPromotionCandidate(entry.threadId, { kind, summary, details, sourceEntryId });
+    return { decisions: [{ stage: "fallback", outcome: "submitted", summary, sourceEntryId, persistedId: saved.id }], candidateIds: [saved.id] };
   }
 
   private async runCodexExec(input: { prompt: string; cwd: string; timeoutMs: number; config: MemorySynthesisConfig }): Promise<SynthesisOutput> {
@@ -539,8 +641,9 @@ export class MemoryUpdateScheduler {
         });
         child.stdin.end(input.prompt);
       });
-      const parsed = JSON.parse(await fs.readFile(outputPath, "utf8")) as SynthesisOutput;
-      return parsed && typeof parsed === "object" ? parsed : {};
+      const rawText = await fs.readFile(outputPath, "utf8");
+      const parsed = JSON.parse(rawText) as SynthesisOutput;
+      return parsed && typeof parsed === "object" ? { ...parsed, rawOutput: parsed, rawText } : {};
     } finally {
       await Promise.all([schemaPath, outputPath].map((filePath) => fs.rm(filePath, { force: true }).catch(() => {})));
     }

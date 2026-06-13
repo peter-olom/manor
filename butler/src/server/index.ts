@@ -13,6 +13,8 @@ import { CodexHarnessService } from "./codex-harness.js";
 import { FileReferenceStore, MAX_FILE_BYTES } from "./file-store.js";
 import { HostControllerClient } from "./host-controller-client.js";
 import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
+import { getMemoryDebugTrace, listMemoryDebugTraces } from "./memory-debug-traces.js";
+import { buildMemoryDiagnostics } from "./memory-diagnostics.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
 import { readMemorySynthesisConfig } from "./memory-synthesis-config.js";
 import { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
@@ -476,6 +478,46 @@ app.get("/api/memory/retrieve", (request, response) => {
       includeProvenance
     })
   });
+});
+
+app.get("/api/memory/diagnostics", (request, response) => {
+  const projectId = typeof request.query.projectId === "string" ? request.query.projectId : null;
+  const threadId = typeof request.query.threadId === "string" ? request.query.threadId : null;
+  const from = typeof request.query.from === "string" ? request.query.from : null;
+  const to = typeof request.query.to === "string" ? request.query.to : null;
+  const includeSamples = request.query.includeSamples === "1" || request.query.includeSamples === "true";
+  const sampleLimitRaw = typeof request.query.sampleLimit === "string" ? Number(request.query.sampleLimit) : null;
+
+  response.json({
+    diagnostics: buildMemoryDiagnostics(store, {
+      projectId,
+      threadId,
+      from,
+      to,
+      includeSamples,
+      sampleLimit: Number.isFinite(sampleLimitRaw) ? sampleLimitRaw : null
+    })
+  });
+});
+
+app.get("/api/memory/debug/traces", (request, response) => {
+  const kind = request.query.kind === "review" || request.query.kind === "synthesis" ? request.query.kind : null;
+  const status = request.query.status === "completed" || request.query.status === "failed" || request.query.status === "skipped" ? request.query.status : null;
+  const projectId = typeof request.query.projectId === "string" ? request.query.projectId : null;
+  const threadId = typeof request.query.threadId === "string" ? request.query.threadId : null;
+  const from = typeof request.query.from === "string" ? request.query.from : null;
+  const to = typeof request.query.to === "string" ? request.query.to : null;
+  const limitRaw = typeof request.query.limit === "string" ? Number(request.query.limit) : null;
+  response.json({ traces: listMemoryDebugTraces(store, { kind, status, projectId, threadId, from, to, limit: Number.isFinite(limitRaw) ? limitRaw : null }) });
+});
+
+app.get("/api/memory/debug/traces/:traceId", (request, response) => {
+  const trace = getMemoryDebugTrace(store, request.params.traceId);
+  if (!trace) {
+    response.status(404).json({ error: "Memory debug trace not found" });
+    return;
+  }
+  response.json({ trace });
 });
 
 app.get("/api/memory/graph/search", (request, response) => { const projectId = typeof request.query.projectId === "string" ? request.query.projectId : null; const threadId = typeof request.query.threadId === "string" ? request.query.threadId : null; const query = typeof request.query.query === "string" ? request.query.query : null; const limitRaw = typeof request.query.limit === "string" ? Number(request.query.limit) : null; response.json({ retrieval: store.searchMemoryGraph({ projectId, threadId, query, limit: Number.isFinite(limitRaw) ? limitRaw : null }) }); });

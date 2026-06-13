@@ -17,6 +17,8 @@ function printHelp() {
   manor-harness [--thread <jobId>] memory [--provenance]
   manor-harness [--thread <jobId>] memory project [--provenance]
   manor-harness [--thread <jobId>] memory search --query "<text>" [--limit <n>] [--job] [--global] [--provenance]
+  manor-harness [--thread <jobId>] memory diagnostics [--from <date>] [--to <date>] [--job] [--all] [--samples] [--limit <n>]
+  manor-harness [--thread <jobId>] memory debug [traceId] [--kind review|synthesis] [--status completed|failed|skipped] [--from <date>] [--to <date>] [--job] [--all] [--limit <n>]
   manor-harness [--thread <jobId>] memory checkpoint --summary "<text>" [--details "<text>"] [--next-action "<text>"] [--blocker "<text>" ...] [--plan "<text>" ...] [--assumption "<text>" ...] [--proof "<text>" ...] [--promote]
   manor-harness [--thread <jobId>] memory decision --summary "<text>" [--details "<text>"] [--promote]
   manor-harness [--thread <jobId>] memory note --summary "<text>" [--details "<text>"] [--promote]
@@ -465,6 +467,31 @@ async function main() {
         scope: hasFlag(args, "--job") ? "job" : "project",
         includeGlobal: hasFlag(args, "--global"),
         includeProvenance: hasFlag(args, "--provenance")
+      };
+    } else if (subcommand === "diagnostics" || subcommand === "stats") {
+      action = "memory.diagnostics";
+      params = {
+        projectId: readFlag(args, "--project-id"),
+        from: readFlag(args, "--from"),
+        to: readFlag(args, "--to"),
+        scope: hasFlag(args, "--job") ? "job" : "project",
+        allProjects: hasFlag(args, "--all"),
+        includeSamples: hasFlag(args, "--samples"),
+        sampleLimit: readPositiveIntFlag(args, "--limit")
+      };
+    } else if (subcommand === "debug" || subcommand === "trace") {
+      const traceId = args[2]?.startsWith("--") ? "" : args[2] || "";
+      action = "memory.debug_trace";
+      params = {
+        traceId,
+        kind: readFlag(args, "--kind"),
+        status: readFlag(args, "--status"),
+        projectId: readFlag(args, "--project-id"),
+        from: readFlag(args, "--from"),
+        to: readFlag(args, "--to"),
+        scope: hasFlag(args, "--job") ? "job" : "project",
+        allProjects: hasFlag(args, "--all"),
+        limit: readPositiveIntFlag(args, "--limit")
       };
     } else if (subcommand === "checkpoint") {
       action = "memory.checkpoint";

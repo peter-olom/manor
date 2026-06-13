@@ -182,6 +182,18 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "focusButler", description: "Keeps memory retrieval scoped before Butler answers or acts." }]
   },
   {
+    name: "memory_diagnostics",
+    label: "Memory diagnostics",
+    description: "Summarize memory ingestion, synthesis, promotion candidates, accepted entries, and stale or failed memory work.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler in memory troubleshooting mode." }]
+  },
+  {
+    name: "memory_debug_trace",
+    label: "Memory debug trace",
+    description: "List or inspect detailed memory review and synthesis traces.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler in deep memory debugging mode." }]
+  },
+  {
     name: "list_project_artifacts",
     label: "List project artifacts",
     description: "List or search durable project artifacts such as saved seeds, downloads, and reusable analysis files.",
