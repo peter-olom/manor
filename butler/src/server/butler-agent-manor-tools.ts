@@ -2,6 +2,7 @@ import { Type } from "@sinclair/typebox";
 
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
 import type { ManorRestartRun } from "./host-controller-client.js";
+import { formatElapsedTaskTime } from "./task-timing.js";
 
 function formatRestartRequestTarget(request: {
   mode: string | null;
@@ -21,9 +22,18 @@ function formatRestartRequestTarget(request: {
 }
 
 function formatRestartRun(run: ManorRestartRun): string {
+  const completedAt = run.completedAt ?? (run.status === "running" ? Date.now() : null);
+  const fallbackDurationMs = typeof completedAt === "number" && completedAt >= run.startedAt
+    ? completedAt - run.startedAt
+    : null;
+  const durationMs = typeof run.durationMs === "number" && Number.isFinite(run.durationMs)
+    ? run.durationMs
+    : fallbackDurationMs;
+
   return [
     `Manor restart ${run.id}: ${run.status}`,
     `Mode: ${run.mode}. Target: ${run.target}.`,
+    durationMs !== null ? `${run.status === "running" ? "Elapsed" : "Duration"}: ${formatElapsedTaskTime(durationMs)}.` : null,
     run.error ? `Error: ${run.error}` : null,
     ...run.steps.map((step) => `${step.status}: ${step.label}${step.exitCode === null ? "" : ` (${step.exitCode})`}`)
   ]

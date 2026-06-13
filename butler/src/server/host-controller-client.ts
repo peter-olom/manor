@@ -22,6 +22,7 @@ export interface ManorRestartRun {
   update: boolean;
   startedAt: number;
   completedAt: number | null;
+  durationMs?: number | null;
   error: string | null;
   steps: ManorRestartRunStep[];
 }

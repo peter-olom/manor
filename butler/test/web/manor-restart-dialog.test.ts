@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { formatRestartNoticeDuration } from "../../src/web/ManorRestartNotice.tsx";
+
 const testDir = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(testDir, "../../src/web");
 
@@ -18,6 +20,8 @@ test("Manor restart dialog requires an explicit operator authorization button", 
   assert.match(appSource, /Manor restart started/);
   assert.match(noticeSource, /Manor restart succeeded/);
   assert.match(noticeSource, /Manor restart failed/);
+  assert.match(noticeSource, /Duration/);
+  assert.match(noticeSource, /Elapsed/);
   assert.match(appSource, /dismissManorRestartNotice/);
   assert.match(appSource, /MANOR_RESTART_TRACKED_RUN_KEY/);
   assert.match(appSource, /starts the approved restart through the host controller/);
@@ -32,4 +36,43 @@ test("Manor restart dialog requires an explicit operator authorization button", 
   assert.match(styleSource, /manor-restart-dialog/);
   assert.match(styleSource, /manor-restart-result/);
   assert.match(styleSource, /manor-restart-error/);
+});
+
+test("Manor restart notice formats completed and running durations", () => {
+  assert.equal(
+    formatRestartNoticeDuration({
+      id: "run-1",
+      status: "completed",
+      mode: "image",
+      target: "latest",
+      gitRef: null,
+      imageTag: "latest",
+      includeDesktop: false,
+      update: true,
+      startedAt: 1_000,
+      completedAt: 66_000,
+      durationMs: 65_000,
+      error: null,
+      steps: []
+    }),
+    "1m 5s"
+  );
+
+  assert.equal(
+    formatRestartNoticeDuration({
+      id: "run-2",
+      status: "running",
+      mode: "source",
+      target: "current",
+      gitRef: null,
+      imageTag: null,
+      includeDesktop: false,
+      update: false,
+      startedAt: 1_000,
+      completedAt: null,
+      error: null,
+      steps: []
+    }, 11_000),
+    "10s"
+  );
 });

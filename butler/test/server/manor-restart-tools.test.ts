@@ -121,8 +121,9 @@ test("Butler authorized restart tool reports status when dialog already consumed
           imageTag: null,
           includeDesktop: false,
           update: false,
-          startedAt: 1,
-          completedAt: 2,
+          startedAt: 1_000,
+          completedAt: 66_000,
+          durationMs: 65_000,
           error: null,
           steps: []
         }
@@ -140,6 +141,7 @@ test("Butler authorized restart tool reports status when dialog already consumed
 
   assert.match(result.content[0]?.text ?? "", /approval dialog may already have consumed it/);
   assert.match(result.content[0]?.text ?? "", /Manor restart restart-1: completed/);
+  assert.match(result.content[0]?.text ?? "", /Duration: 1m 5s/);
 });
 
 test("Butler restart status tool reports active host-controller runs", async () => {
@@ -168,15 +170,16 @@ test("Butler restart status tool reports active host-controller runs", async () 
           imageTag: null,
           includeDesktop: false,
           update: true,
-          startedAt: 1,
-          completedAt: 2,
+          startedAt: 1_000,
+          completedAt: 66_000,
+          durationMs: 65_000,
           error: null,
           steps: [
             {
               label: "Pull Manor images",
               status: "completed",
-              startedAt: 1,
-              completedAt: 2,
+              startedAt: 1_000,
+              completedAt: 66_000,
               exitCode: 0,
               stdoutTail: "",
               stderrTail: ""
@@ -194,5 +197,6 @@ test("Butler restart status tool reports active host-controller runs", async () 
   const result = await statusTool.execute("tool-call-1", {});
 
   assert.match(result.content[0]?.text ?? "", /Manor restart restart-1: completed/);
+  assert.match(result.content[0]?.text ?? "", /Duration: 1m 5s/);
   assert.match(result.content[0]?.text ?? "", /completed: Pull Manor images/);
 });

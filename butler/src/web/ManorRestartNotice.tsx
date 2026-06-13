@@ -1,4 +1,5 @@
 import type { ManorRestartRun } from "./types";
+import { formatElapsedTaskTime } from "../server/task-timing";
 
 export const MANOR_RESTART_TRACKED_RUN_KEY = "manor.restart.trackedRunId";
 export const MANOR_RESTART_DISMISSED_RUN_KEY = "manor.restart.dismissedRunId";
@@ -40,6 +41,17 @@ export function formatRestartNoticeTarget(run: ManorRestartRun): string {
   return `${run.mode} · ${target}`;
 }
 
+export function formatRestartNoticeDuration(run: ManorRestartRun, now = Date.now()): string | null {
+  const completedAt = run.completedAt ?? (run.status === "running" ? now : null);
+  const fallbackDurationMs = typeof completedAt === "number" && completedAt >= run.startedAt
+    ? completedAt - run.startedAt
+    : null;
+  const durationMs = typeof run.durationMs === "number" && Number.isFinite(run.durationMs)
+    ? run.durationMs
+    : fallbackDurationMs;
+  return durationMs === null ? null : formatElapsedTaskTime(durationMs);
+}
+
 export function selectRestartStatusRun(status: {
   active: ManorRestartRun | null;
   latestRun: ManorRestartRun | null;
@@ -55,6 +67,7 @@ export function ManorRestartNotice({
   onDismiss: (run: ManorRestartRun) => void;
 }) {
   const failedStep = findFailedRestartStep(run);
+  const duration = formatRestartNoticeDuration(run);
 
   return (
     <div className="modal-backdrop manor-restart-backdrop">
@@ -79,6 +92,12 @@ export function ManorRestartNotice({
             <dt>Target</dt>
             <dd>{formatRestartNoticeTarget(run)}</dd>
           </div>
+          {duration ? (
+            <div>
+              <dt>{run.status === "running" ? "Elapsed" : "Duration"}</dt>
+              <dd>{duration}</dd>
+            </div>
+          ) : null}
           <div>
             <dt>Run</dt>
             <dd>{run.id}</dd>

@@ -46,10 +46,18 @@ function limitedTail(value, limit = 12_000) {
   return value.slice(value.length - limit);
 }
 
+function elapsedMs(startedAt, endedAt) {
+  if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt) || endedAt < startedAt) {
+    return null;
+  }
+  return Math.max(0, Math.floor(endedAt - startedAt));
+}
+
 function publicRun(run) {
   if (!run) {
     return null;
   }
+  const snapshotAt = now();
   return {
     id: run.id,
     status: run.status,
@@ -61,6 +69,7 @@ function publicRun(run) {
     update: run.update,
     startedAt: run.startedAt,
     completedAt: run.completedAt,
+    durationMs: elapsedMs(run.startedAt, run.completedAt ?? snapshotAt),
     error: run.error,
     steps: run.steps.map((step) => ({
       label: step.label,
