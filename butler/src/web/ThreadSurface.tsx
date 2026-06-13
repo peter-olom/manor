@@ -15,6 +15,7 @@ import { ArrowDownIcon, AttachmentIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ProjectArtifactsPanel } from "./ProjectArtifactsPanel";
 import { ThreadArtifactsPanel } from "./ThreadArtifactsPanel";
+import { ThreadDossierPanel } from "./ThreadDossierPanel";
 import { formatElapsedTaskTime } from "../server/task-timing";
 import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
 import { RuntimePanel } from "./RuntimePanel";
@@ -23,7 +24,15 @@ import { mergeKnownImages, useKnownImages, useRuntimeSnapshot, useShellSnapshot,
 import { appendComposerText, useDelegatedThreadEffortSync } from "./thread-compose";
 import { useDesktopSessionControls } from "./useDesktopSessionControls";
 import { useThreadArtifacts } from "./useThreadArtifacts";
-import type { CodexThreadDetail, ComposerInputItem, ComposerPrefill, FileReference, GeneratedImage, PreviewMedia, ReasoningEffort } from "./types";
+import type {
+  CodexThreadDetail,
+  ComposerInputItem,
+  ComposerPrefill,
+  FileReference,
+  GeneratedImage,
+  PreviewMedia,
+  ReasoningEffort
+} from "./types";
 import {
   THREAD_DRAFT_STORAGE_KEY_PREFIX,
   buildMessageImageLookup,
@@ -68,19 +77,6 @@ type ThreadChecklist = NonNullable<CodexThreadDetail["supervisionChecklist"]>;
 function getThreadChecklistProgress(checklist: ThreadChecklist): { completed: number; total: number } {
   const completed = checklist.items.filter((item) => item.status === "accepted" || item.status === "waived").length;
   return { completed, total: checklist.items.length };
-}
-
-function formatChecklistItemStatus(status: ThreadChecklist["items"][number]["status"]): string {
-  if (status === "accepted") {
-    return "Done";
-  }
-  if (status === "waived") {
-    return "Waived";
-  }
-  if (status === "rejected") {
-    return "Needs work";
-  }
-  return "Pending";
 }
 
 type ThreadSurfaceProps = {
@@ -773,6 +769,8 @@ export function ThreadSurface({
   const activeChecklist = activeThread?.supervisionChecklist ?? null;
   const activeChecklistProgress = activeChecklist ? getThreadChecklistProgress(activeChecklist) : null;
   const activeChecklistProgressLabel = activeChecklistProgress ? `${activeChecklistProgress.completed}/${activeChecklistProgress.total}` : null;
+  const activeVerificationMatrix = activeThread?.executionContract?.verificationMatrix ?? [];
+  const activeReviewPanel = activeThread?.executionContract?.reviewPanel ?? [];
 
   if (!shell || !runtime || !activeThread) {
     return <div className="workspace-panel"><div className="empty">This run is open, but its turn history has not loaded yet.</div></div>;
@@ -903,31 +901,16 @@ export function ThreadSurface({
                 <span className="conversation-toggle-icon" aria-hidden="true">
                   {showThreadChecklist ? <ChevronUpIcon /> : <ChevronDownIcon />}
                 </span>
-                <span className="conversation-toggle-label">Checklist</span>
+                <span className="conversation-toggle-label">Dossier</span>
                 <span className="conversation-toggle-count">{activeChecklistProgressLabel}</span>
               </button>
               {showThreadChecklist ? (
-                <div className="conversation-disclosure-panel thread-checklist-panel">
-                  <div className="thread-checklist-head">
-                    <div>
-                      <h3>Checklist</h3>
-                      <p>{activeChecklist.requestedTask}</p>
-                    </div>
-                    <span className="thread-checklist-progress">{activeChecklistProgressLabel}</span>
-                  </div>
-                  <ol className="thread-checklist-items">
-                    {activeChecklist.items.map((item) => {
-                      const completed = item.status === "accepted" || item.status === "waived";
-                      return (
-                        <li key={item.id} className={`thread-checklist-item is-${item.status}${completed ? " is-complete" : ""}`}>
-                          <span className="thread-checklist-marker" aria-hidden="true" />
-                          <span className="thread-checklist-text">{item.text}</span>
-                          <span className="thread-checklist-status">{formatChecklistItemStatus(item.status)}</span>
-                        </li>
-                      );
-                    })}
-                  </ol>
-                </div>
+                <ThreadDossierPanel
+                  checklist={activeChecklist}
+                  progressLabel={activeChecklistProgressLabel}
+                  verificationMatrix={activeVerificationMatrix}
+                  reviewPanel={activeReviewPanel}
+                />
               ) : null}
             </div>
           ) : null}

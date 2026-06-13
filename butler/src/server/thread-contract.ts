@@ -1,7 +1,28 @@
-import type { CodexProofExpectation, CodexThreadExecutionContractView } from "./types.js";
+import type {
+  CodexInferredWorkDepth,
+  CodexProofExpectation,
+  CodexTaskCategory,
+  CodexThreadExecutionContractView,
+  VerificationCheckKind,
+  VerificationMatrixRowView
+} from "./types.js";
 import { acceptancePointsNeedVisualProof, taskHasUiImplication, VISUAL_PROOF_REQUIREMENT } from "./proof-policy.js";
+import { buildReviewPanel, summarizeReviewPanel } from "./review-panel.js";
 
 const MAX_ACCEPTANCE_POINTS = 24;
+const API_PATTERN =
+  /\b(api|endpoint|route|graphql|mutation|query|resolver|controller|service|backend|server|request|response|webhook|auth|database|db|schema|migration)\b/i;
+const DEPLOY_PATTERN = /\b(deploy|deployment|restart|release|production|staging|live|rollback|health check|smoke prod|publish)\b/i;
+const DOCS_PATTERN = /\b(doc|docs|documentation|readme|markdown|pdf|deck|slides|spreadsheet|xlsx|csv|report)\b/i;
+const DATA_PATTERN = /\b(data|database|db|sql|migration|seed|analytics|metric|row|table|record|query)\b/i;
+const WRITING_PATTERN = /\b(copy|writing|rewrite|caption|post|article|voice|tone|wording|message)\b/i;
+const CODE_PATTERN = /\b(implement|build|fix|debug|test|refactor|code|component|function|bug|feature|land this|do the work)\b/i;
+const DEEP_INTENT_PATTERN = /\b(investigate|debug|fix|implement|build|test|verify|land this|do the work|thorough|deep|smoke|proof|ship|finish)\b/i;
+const READ_ONLY_PATTERN = /\b(explain|summarize|inspect|read|review|what is|what are|do you understand|can you tell|question)\b/i;
+const RESEARCH_PATTERN = /\b(research|investigate|explore|study|compare|survey|look into)\b/i;
+const PROTOTYPE_PATTERN = /\b(prototype|spike|proof of concept|poc|mock|experiment)\b/i;
+const PLAN_PATTERN = /\b(plan|roadmap|checklist|spec|proposal|phase)\b/i;
+const RECOMMENDATION_PATTERN = /\b(recommend|recommendation|decide|advise|suggest|option)\b/i;
 
 function normalizeContractText(value: string | null | undefined): string | null {
   if (!value) {
@@ -108,6 +129,116 @@ export function describeProofExpectation(expectation: CodexProofExpectation): st
   return expectation === "requested" ? "proof requested" : "no explicit proof request";
 }
 
+export function inferTaskCategory(taskText: string): CodexTaskCategory {
+  const normalized = taskText.replace(/\s+/g, " ").trim();
+  if (!normalized) return "unknown";
+  if (DEPLOY_PATTERN.test(normalized)) return "deploy";
+  if (taskHasUiImplication(normalized)) return "ui";
+  if (API_PATTERN.test(normalized)) return "api";
+  if (PROTOTYPE_PATTERN.test(normalized)) return "prototype";
+  if (PLAN_PATTERN.test(normalized)) return "plan";
+  if (RECOMMENDATION_PATTERN.test(normalized)) return "recommendation";
+  if (RESEARCH_PATTERN.test(normalized)) return "research";
+  if (WRITING_PATTERN.test(normalized)) return "writing";
+  if (DOCS_PATTERN.test(normalized)) return "docs";
+  if (DATA_PATTERN.test(normalized)) return "data";
+  if (CODE_PATTERN.test(normalized)) return "generic_code";
+  if (READ_ONLY_PATTERN.test(normalized)) return "read_only";
+  return "unknown";
+}
+
+export function inferWorkDepth(taskText: string, category: CodexTaskCategory): CodexInferredWorkDepth {
+  const normalized = taskText.replace(/\s+/g, " ").trim();
+  if (!normalized) return "standard";
+  if (category === "deploy") return "incident";
+  if (DEEP_INTENT_PATTERN.test(normalized)) return "deep";
+  if (category === "ui" || category === "api" || category === "generic_code" || category === "prototype") return "deep";
+  if (category === "read_only" && READ_ONLY_PATTERN.test(normalized)) return "standard";
+  return "standard";
+}
+
+function categoryCheckKinds(category: CodexTaskCategory): VerificationCheckKind[] {
+  if (category === "ui") {
+    return ["browser_flow", "visual_review", "responsive_review", "accessibility_review", "taste_review", "intent_review"];
+  }
+  if (category === "api") {
+    return ["api_smoke", "negative_case", "log_review", "intent_review"];
+  }
+  if (category === "deploy") {
+    return ["build", "deploy_health", "log_review", "intent_review"];
+  }
+  if (category === "docs") {
+    return ["manual_waiver", "intent_review", "taste_review"];
+  }
+  if (category === "data") {
+    return ["data_check", "negative_case", "log_review", "intent_review"];
+  }
+  if (category === "writing") {
+    return ["intent_review", "taste_review"];
+  }
+  if (category === "generic_code") {
+    return ["unit_test", "build", "intent_review"];
+  }
+  if (category === "research") {
+    return ["data_check", "intent_review", "manual_waiver"];
+  }
+  if (category === "prototype") {
+    return ["build", "browser_flow", "taste_review", "intent_review"];
+  }
+  if (category === "plan" || category === "recommendation") {
+    return ["intent_review", "taste_review", "manual_waiver"];
+  }
+  return ["intent_review"];
+}
+
+function expectedEvidenceForKinds(kinds: VerificationCheckKind[]): string[] {
+  const evidence = new Set<string>();
+  for (const kind of kinds) {
+    if (kind === "browser_flow") evidence.add("browser proof run or recorded browser session");
+    else if (kind === "visual_review") evidence.add("screenshot or video showing the relevant UI state");
+    else if (kind === "responsive_review") evidence.add("desktop and mobile viewport check");
+    else if (kind === "accessibility_review") evidence.add("accessibility or keyboard/contrast review note");
+    else if (kind === "api_smoke") evidence.add("request-level smoke result");
+    else if (kind === "negative_case") evidence.add("failure-path or edge-case check");
+    else if (kind === "log_review") evidence.add("runtime log review");
+    else if (kind === "data_check") evidence.add("data or persistence check");
+    else if (kind === "build") evidence.add("build, typecheck, or equivalent command result");
+    else if (kind === "deploy_health") evidence.add("live health and route check");
+    else if (kind === "taste_review") evidence.add("taste review note");
+    else if (kind === "intent_review") evidence.add("intent-fit note");
+    else evidence.add("focused verification result");
+  }
+  return [...evidence];
+}
+
+export function buildVerificationMatrix(input: {
+  acceptancePoints: string[];
+  taskCategory: CodexTaskCategory;
+  inferredWorkDepth: CodexInferredWorkDepth;
+  createdAt?: number;
+}): VerificationMatrixRowView[] {
+  const now = input.createdAt ?? Date.now();
+  const baseKinds = categoryCheckKinds(input.taskCategory);
+  return input.acceptancePoints.map((point, index) => {
+    const checkKinds = [...new Set(baseKinds)];
+    return {
+      id: `row-${index + 1}`,
+      acceptancePointId: `point-${index + 1}`,
+      text: point,
+      requiredChecks: checkKinds.map((kind) => kind.replace(/_/g, " ")),
+      checkKinds,
+      expectedEvidence: expectedEvidenceForKinds(checkKinds),
+      owner: input.inferredWorkDepth === "deep" || input.inferredWorkDepth === "incident" ? "both" : "worker",
+      status: "pending",
+      evidenceIds: [],
+      artifactRefs: [],
+      commandRefs: [],
+      reviewerNote: null,
+      updatedAt: now
+    };
+  });
+}
+
 export function isSharedShellRepoBootstrapTask(taskText: string): boolean {
   const normalized = taskText.toLowerCase();
   const mentionsClone = /\b(git clone|clone(?:\s+the)?\s+github\s+repository|clone(?:\s+the)?\s+repository)\b/.test(normalized);
@@ -132,6 +263,9 @@ export function buildThreadExecutionContract(input: {
   taskText: string;
   requestedTask?: string;
   operatorGoal?: string | null;
+  taskCategory?: CodexTaskCategory;
+  inferredWorkDepth?: CodexInferredWorkDepth;
+  attachmentCount?: number;
   notes: string[];
 }): CodexThreadExecutionContractView {
   const operatorGoal = normalizeContractText(input.operatorGoal);
@@ -147,6 +281,10 @@ export function buildThreadExecutionContract(input: {
   if (needsVisualProof) {
     notes.push(VISUAL_PROOF_REQUIREMENT);
   }
+  const taskCategory = input.taskCategory ?? inferTaskCategory(contractText);
+  const inferredWorkDepth = input.inferredWorkDepth ?? inferWorkDepth(contractText, taskCategory);
+  const verificationMatrix = buildVerificationMatrix({ acceptancePoints, taskCategory, inferredWorkDepth });
+  const reviewPanel = buildReviewPanel({ taskCategory, inferredWorkDepth, requestedTask, attachmentCount: input.attachmentCount ?? 0 });
 
   return {
     threadId: input.threadId,
@@ -159,6 +297,11 @@ export function buildThreadExecutionContract(input: {
     acceptancePoints,
     proofExpectation,
     proofExpectationLabel: describeProofExpectation(proofExpectation),
+    inferredWorkDepth,
+    taskCategory,
+    verificationMatrix,
+    reviewPanel,
+    reviewPanelSummary: summarizeReviewPanel(reviewPanel),
     notes: [...new Set(notes)]
   };
 }
@@ -223,6 +366,7 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
   const requestBlock = normalized.slice(requestedTaskStart + requestedTaskMarker.length).trim();
   const notes: string[] = [];
   const acceptancePoints: string[] = [];
+  const verificationRows: string[] = [];
   const values = new Map<string, string>();
 
   for (const line of contractBlock.split(/\r?\n/).slice(1)) {
@@ -244,6 +388,10 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
       if (point) {
         acceptancePoints.push(point);
       }
+      continue;
+    }
+    if (key === "verification_row") {
+      verificationRows.push(value);
       continue;
     }
     values.set(key, value);
@@ -269,6 +417,11 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
   const requestedTask = normalizeContractText(requestedTaskText) ?? "Carry out the delegated task.";
   const proofExpectation =
     parseProofExpectation(values.get("proof_expectation")) ?? detectProofExpectation([requestedTask, operatorGoal].filter(Boolean).join("\n"));
+  const taskCategory = parseTaskCategory(values.get("task_category")) ?? inferTaskCategory([requestedTask, operatorGoal].filter(Boolean).join("\n"));
+  const inferredWorkDepth =
+    parseWorkDepth(values.get("inferred_work_depth")) ?? inferWorkDepth([requestedTask, operatorGoal].filter(Boolean).join("\n"), taskCategory);
+  const verificationMatrix = parseVerificationMatrix(verificationRows, acceptancePoints, taskCategory, inferredWorkDepth);
+  const reviewPanel = buildReviewPanel({ taskCategory, inferredWorkDepth, requestedTask, attachmentCount: 0 });
 
   return {
     threadId,
@@ -281,6 +434,88 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
     acceptancePoints: [...new Set(acceptancePoints)],
     proofExpectation,
     proofExpectationLabel: describeProofExpectation(proofExpectation),
+    inferredWorkDepth,
+    taskCategory,
+    verificationMatrix,
+    reviewPanel,
+    reviewPanelSummary: summarizeReviewPanel(reviewPanel),
     notes
   };
+}
+
+function parseTaskCategory(value: string | null | undefined): CodexTaskCategory | null {
+  const normalized = value?.trim();
+  return normalized === "ui" ||
+    normalized === "api" ||
+    normalized === "deploy" ||
+    normalized === "docs" ||
+    normalized === "data" ||
+    normalized === "writing" ||
+    normalized === "generic_code" ||
+    normalized === "read_only" ||
+    normalized === "research" ||
+    normalized === "prototype" ||
+    normalized === "plan" ||
+    normalized === "recommendation" ||
+    normalized === "unknown"
+    ? normalized
+    : null;
+}
+
+function parseWorkDepth(value: string | null | undefined): CodexInferredWorkDepth | null {
+  const normalized = value?.trim();
+  return normalized === "quick" || normalized === "standard" || normalized === "deep" || normalized === "incident" ? normalized : null;
+}
+
+function parseVerificationMatrix(
+  serializedRows: string[],
+  acceptancePoints: string[],
+  taskCategory: CodexTaskCategory,
+  inferredWorkDepth: CodexInferredWorkDepth
+): VerificationMatrixRowView[] {
+  if (serializedRows.length === 0) {
+    return buildVerificationMatrix({ acceptancePoints, taskCategory, inferredWorkDepth });
+  }
+  return serializedRows.map((row, index) => {
+    const [idPart, pointIdPart, kindPart, textPart] = row.split("|");
+    const checkKinds = kindPart
+      ?.split(",")
+      .map((kind) => kind.trim())
+      .filter(isVerificationCheckKind) ?? categoryCheckKinds(taskCategory);
+    return {
+      id: idPart?.trim() || `row-${index + 1}`,
+      acceptancePointId: pointIdPart?.trim() || `point-${index + 1}`,
+      text: textPart?.trim() || acceptancePoints[index] || "Verify the delegated outcome",
+      requiredChecks: checkKinds.map((kind) => kind.replace(/_/g, " ")),
+      checkKinds,
+      expectedEvidence: expectedEvidenceForKinds(checkKinds),
+      owner: inferredWorkDepth === "deep" || inferredWorkDepth === "incident" ? "both" : "worker",
+      status: "pending",
+      evidenceIds: [],
+      artifactRefs: [],
+      commandRefs: [],
+      reviewerNote: null,
+      updatedAt: null
+    };
+  });
+}
+
+function isVerificationCheckKind(value: string): value is VerificationCheckKind {
+  return [
+    "unit_test",
+    "integration_test",
+    "api_smoke",
+    "browser_flow",
+    "visual_review",
+    "responsive_review",
+    "accessibility_review",
+    "log_review",
+    "data_check",
+    "negative_case",
+    "build",
+    "deploy_health",
+    "taste_review",
+    "intent_review",
+    "manual_waiver"
+  ].includes(value);
 }

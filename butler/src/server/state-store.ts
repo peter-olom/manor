@@ -54,7 +54,6 @@ import {
   buildQueuedRejectionInstruction,
   buildSupervisionChecklist,
   clearQueuedRejectionInstructions,
-  recordChecklistWorkerEvidence,
   refreshCompletedChecklistForFollowup,
   reviewChecklistAcceptancePoint,
   updateChecklistHeartbeat
@@ -66,6 +65,8 @@ import { recordStateStoreButlerMemory } from "./state-store-butler-memory.js";
 import { enqueueStateStoreMemorySynthesis, listDueStateStoreMemorySynthesis, listStateStoreMemoryGraph, recordStateStoreMemoryObservation, searchStateStoreMemoryGraph, updateStateStoreMemorySynthesisQueueEntry, upsertStateStoreMemoryEntity, upsertStateStoreMemoryRelationship } from "./state-store-memory-graph.js";
 import { listStateStoreDesktopSessions, removeStateStoreDesktopSession, replaceStateStoreDesktopSessions, upsertStateStoreDesktopSession } from "./state-store-desktop.js";
 import { buildStateStoreRuntimeSnapshot, buildStateStoreShellSnapshot, buildStateStoreSnapshot } from "./state-store-snapshot.js";
+import { recordStateStoreWorkerReport } from "./state-store-worker-reports.js";
+import { normalizeReviewPanel, recordReviewPanelVerdict as applyReviewPanelVerdict, summarizeReviewPanel } from "./review-panel.js";
 import { parseThreadExecutionContract } from "./thread-contract.js";
 import type {
   AppSnapshot,
@@ -80,14 +81,14 @@ import type {
   CodexThreadExecutionContractView,
   CodexItemRecord, CodexItemView, CodexMilestoneEntry, CodexProjectSummaryView, CodexSupervisionView,
   CodexThreadDetailView, CodexThreadRecord, CodexThreadStatus, CodexThreadSummary, CodexThreadSupervisorView,
-  CodexTurnRecord, CodexTurnView, CodexWorkerReportView,
+  CodexTurnRecord, CodexTurnView, CodexWorkerEvidenceView, CodexWorkerReportView,
   DesktopSessionView,
-  JobMemoryEntryKind, JobMemoryPromotionCandidateView, JobMemoryView, PreviewProofRecordView, PreviewVerificationArtifactView,
+  JobMemoryEntryKind, JobMemoryPromotionCandidateView, JobMemoryView, PreviewProofRecordView, PreviewProofReviewView, PreviewVerificationArtifactView,
   PreviewVerificationConsoleMessageView, PreviewVerificationFailedRequestView, PreviewVerificationView, PreviewLeaseView,
   MemoryEntityType, MemoryGraphRetrievalView, MemoryGraphView, MemoryObservationSourceKind, MemoryObservationView,
   MemoryRelationshipView, MemorySynthesisPriority, MemorySynthesisQueueEntryView, MemoryTaskStatus,
   ProjectMemoryView, ProjectArtifactView, ProjectPolicyView, ReasoningEffort, RuntimeCleanupTaskView, RuntimeSnapshot,
-  StackLeaseView, ServiceLeaseView, SupervisionChecklistItemStatus, SupervisionChecklistView, PersistedUiState
+  StackLeaseView, ServiceLeaseView, SupervisionChecklistItemStatus, SupervisionChecklistView, PersistedUiState, ReviewPanelRole, ReviewPanelVerdict
 } from "./types.js";
 type JobMemoryWriteContext = { projectId?: string | null; projectLabel?: string | null; operatorGoal?: string | null; requestedTask?: string | null; proofRequirements?: string[] };
 type MemoryObservationInput = { idempotencyKey: string; projectId?: string | null; projectLabel?: string | null; threadId?: string | null; sourceKind: MemoryObservationSourceKind; sourceId: string; summary: string; details?: string | null; payload?: Record<string, unknown>; observedAt?: number | null; durable?: boolean };
@@ -377,7 +378,7 @@ export class ButlerStateStore extends EventEmitter {
     record.status = normalizeStatus(thread.status);
     record.modelProvider = typeof thread.modelProvider === "string" ? thread.modelProvider : record.modelProvider;
     const parsedExecutionContract = parseThreadExecutionContract(record.preview);
-    if (parsedExecutionContract) { record.executionContract = parsedExecutionContract; record.supervisionChecklist = buildSupervisionChecklist(record, parsedExecutionContract); this.persistedExecutionContractsByThreadId.set(id, parsedExecutionContract); this.persistedSupervisionChecklistsByThreadId.set(id, { ...record.supervisionChecklist }); this.memoryUpdateObserver?.observeThreadContract(id, parsedExecutionContract); }
+    if (parsedExecutionContract) { const existingPanel = record.executionContract?.reviewPanel ?? this.persistedExecutionContractsByThreadId.get(id)?.reviewPanel ?? parsedExecutionContract.reviewPanel; const mergedContract = { ...parsedExecutionContract, reviewPanel: normalizeReviewPanel(existingPanel, { taskCategory: parsedExecutionContract.taskCategory, inferredWorkDepth: parsedExecutionContract.inferredWorkDepth, requestedTask: parsedExecutionContract.requestedTask }), reviewPanelSummary: parsedExecutionContract.reviewPanelSummary }; mergedContract.reviewPanelSummary = summarizeReviewPanel(mergedContract.reviewPanel); record.executionContract = mergedContract; record.supervisionChecklist = buildSupervisionChecklist(record, mergedContract); this.persistedExecutionContractsByThreadId.set(id, mergedContract); this.persistedSupervisionChecklistsByThreadId.set(id, { ...record.supervisionChecklist }); this.memoryUpdateObserver?.observeThreadContract(id, mergedContract); }
 
     if (Array.isArray(thread.turns)) {
       const existingTurnsById = new Map(record.turns.map((turn) => [turn.id, turn]));
@@ -409,7 +410,9 @@ export class ButlerStateStore extends EventEmitter {
 
   refreshCompletedSupervisionChecklistForFollowup(threadId: string, taskText: string): SupervisionChecklistView | null { const record = this.getOrCreateThread(threadId); const refreshed = refreshCompletedChecklistForFollowup(record, taskText); if (!refreshed) return null; record.executionContract = { ...refreshed.contract }; record.supervisionChecklist = refreshed.checklist; record.updatedAt = Date.now(); this.persistedExecutionContractsByThreadId.set(threadId, { ...record.executionContract }); this.persistedSupervisionChecklistsByThreadId.set(threadId, { ...record.supervisionChecklist }); this.refreshDerivedThreadState(record); this.queueSave(); this.emitChange(); return record.supervisionChecklist; }
 
-  reviewAcceptancePoint(input: { threadId: string; pointId: string; status: SupervisionChecklistItemStatus; note?: string | null; nextInstruction?: string | null }): SupervisionChecklistView { const thread = this.getOrCreateThread(input.threadId); const checklist = thread.supervisionChecklist; if (!checklist) throw new Error(`No supervision checklist exists for job ${input.threadId}.`); reviewChecklistAcceptancePoint(checklist, input); thread.updatedAt = checklist.updatedAt; this.persistedSupervisionChecklistsByThreadId.set(input.threadId, { ...checklist }); this.queueSave(); this.emitChange(); return checklist; }
+  reviewAcceptancePoint(input: { threadId: string; pointId: string; status: SupervisionChecklistItemStatus; note?: string | null; nextInstruction?: string | null }): SupervisionChecklistView { const thread = this.getOrCreateThread(input.threadId); const checklist = thread.supervisionChecklist; if (!checklist) throw new Error(`No supervision checklist exists for job ${input.threadId}.`); reviewChecklistAcceptancePoint(checklist, input); if (thread.executionContract) { const reviewedItem = checklist.items.find((item) => item.id === input.pointId); thread.executionContract.verificationMatrix = thread.executionContract.verificationMatrix.map((row) => row.acceptancePointId === input.pointId ? { ...row, status: input.status === "pending" ? "pending" : input.status, reviewerNote: input.note?.trim() || reviewedItem?.butlerNote || row.reviewerNote, evidenceIds: [...new Set([...row.evidenceIds, ...(reviewedItem?.evidence.map((entry) => entry.id) ?? [])])], updatedAt: Date.now() } : row); this.persistedExecutionContractsByThreadId.set(input.threadId, { ...thread.executionContract }); } thread.updatedAt = checklist.updatedAt; this.persistedSupervisionChecklistsByThreadId.set(input.threadId, { ...checklist }); this.queueSave(); this.emitChange(); return checklist; }
+
+  recordReviewPanelVerdict(input: { threadId: string; role: ReviewPanelRole; verdict: ReviewPanelVerdict; concerns?: string[]; evidenceRefs?: string[]; requiredFollowUp?: string | null; note?: string | null; modelProvider?: string | null; modelId?: string | null }): CodexThreadExecutionContractView { const thread = this.getOrCreateThread(input.threadId); if (!thread.executionContract) throw new Error(`No execution contract exists for job ${input.threadId}.`); thread.executionContract = applyReviewPanelVerdict(thread.executionContract, input); thread.updatedAt = Date.now(); this.persistedExecutionContractsByThreadId.set(input.threadId, { ...thread.executionContract }); this.addEvent(input.threadId, "butler.review_panel.recorded", `${input.role} reviewer marked ${input.verdict}.`); this.queueSave(); this.emitChange(); return thread.executionContract; }
 
   buildQueuedRejectionInstruction(threadId: string): string | null { const checklist = this.getOrCreateThread(threadId).supervisionChecklist; return checklist ? buildQueuedRejectionInstruction(checklist) : null; }
 
@@ -1035,43 +1038,10 @@ export class ButlerStateStore extends EventEmitter {
       summary: string;
       details?: string | null;
       turnId?: string | null;
+      evidence?: CodexWorkerEvidenceView[];
     }
   ): CodexWorkerReportView {
-    const thread = this.getOrCreateThread(threadId);
-    const latestTurn = thread.turns.at(-1);
-    const explicitTurnId = typeof report.turnId === "string" && report.turnId.trim() ? report.turnId.trim() : null;
-    const turnId = explicitTurnId ?? latestTurn?.id ?? null;
-    if (!turnId) {
-      throw new Error("Cannot record a worker report before the thread has an active or completed turn");
-    }
-
-    const existing = thread.workerReport;
-    const timestamp = Date.now();
-    const now = existing?.turnId === turnId && timestamp <= existing.updatedAt ? existing.updatedAt + 1 : timestamp;
-    const nextReport: CodexWorkerReportView = {
-      threadId,
-      turnId,
-      status: report.status,
-      summary: report.summary.trim(),
-      details: typeof report.details === "string" && report.details.trim() ? report.details.trim() : null,
-      createdAt: existing?.turnId === turnId && existing?.status === report.status ? existing.createdAt : now,
-      updatedAt: now
-    };
-
-    thread.workerReport = nextReport;
-    thread.updatedAt = now;
-    const checklist = recordChecklistWorkerEvidence(thread.supervisionChecklist, thread, nextReport, now);
-    if (checklist) {
-      this.persistedSupervisionChecklistsByThreadId.set(thread.id, { ...checklist });
-    }
-    const history = this.persistedWorkerReportsByThreadId.get(threadId) ?? [];
-    const nextHistory = [...history.filter((entry) => entry.turnId !== turnId), nextReport]
-      .sort((left, right) => left.createdAt - right.createdAt)
-      .slice(-20);
-    this.persistedWorkerReportsByThreadId.set(threadId, nextHistory);
-    this.queueSave();
-    this.emitChange();
-    return nextReport;
+    return recordStateStoreWorkerReport(this.getInternalAccess(), threadId, report);
   }
 
   getWorkerReport(threadId: string, turnId?: string | null): CodexWorkerReportView | null {
@@ -1249,6 +1219,7 @@ export class ButlerStateStore extends EventEmitter {
         previewTitle: input.title.trim() || "Browser proof",
         stackId: null,
         verification,
+        proofReviews: [],
         createdAt: checkedAt,
         updatedAt: checkedAt
       },
@@ -1326,6 +1297,24 @@ export class ButlerStateStore extends EventEmitter {
     return (
       this.listPreviewProofs().find((proof) => proof.previewId === previewId) ?? null
     );
+  }
+
+  recordPreviewProofReview(proofId: string, review: PreviewProofReviewView): PreviewProofRecordView | null {
+    const existing = this.previewProofs.get(proofId);
+    if (!existing) {
+      return null;
+    }
+
+    const now = typeof review.reviewedAt === "number" && Number.isFinite(review.reviewedAt) ? review.reviewedAt : Date.now();
+    const next = this.normalizePreviewProofRecord({
+      ...existing,
+      proofReviews: [...(existing.proofReviews ?? []), { ...review, reviewedAt: now }],
+      updatedAt: Math.max(existing.updatedAt, now)
+    });
+    this.previewProofs.set(next.id, next);
+    this.queueSave();
+    this.emitChange();
+    return next;
   }
 
   removePreviewProof(proofId: string): PreviewProofRecordView | null {

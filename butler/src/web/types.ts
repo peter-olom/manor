@@ -235,14 +235,61 @@ export type ScratchPadItemStatus = "captured" | "exploring" | "ready_for_review"
 export type ScratchPadDepth = "quick" | "deep" | "prototype" | "plan";
 export type ScratchPadResultKind = "research" | "prototype" | "plan" | "recommendation";
 export type ScratchPadWorkspaceMode = "managed_worktree" | "existing";
+export type ScratchPadReadinessStatus =
+  | "captured"
+  | "exploring"
+  | "reviewing"
+  | "needs_rework"
+  | "ready"
+  | "accepted"
+  | "parked"
+  | "dismissed"
+  | "blocked";
+
+export type ScratchPadAttachment = {
+  id: string;
+  kind: "image" | "file";
+  referenceId: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number | null;
+  url: string | null;
+  available: boolean;
+  used: boolean;
+  note: string | null;
+  createdAt: number;
+};
+
+export type ScratchPadReadiness = {
+  status: ScratchPadReadinessStatus;
+  label: string;
+  summary: string;
+  updatedAt: number | null;
+};
+
+export type ScratchPadDossierSummary = {
+  status: ScratchPadReadinessStatus;
+  resultSummary: string | null;
+  acceptedEvidence: number;
+  totalEvidence: number;
+  reviewerSummary: string | null;
+  reviewerConcerns: string[];
+  attachmentSummary: string | null;
+  nextAction: string | null;
+  risk: string | null;
+  updatedAt: number | null;
+};
 
 export type ScratchPadItem = {
   id: string;
   title: string;
   text: string;
   status: ScratchPadItemStatus;
+  readiness: ScratchPadReadiness;
   depth: ScratchPadDepth;
   resultKind: ScratchPadResultKind;
+  attachments: ScratchPadAttachment[];
+  dossier: ScratchPadDossierSummary;
   cwd: string | null;
   workspaceMode: ScratchPadWorkspaceMode;
   branchName: string | null;
@@ -257,6 +304,7 @@ export type ScratchPadItem = {
 export type ScratchPad = {
   items: ScratchPadItem[];
   counts: Record<ScratchPadItemStatus, number>;
+  readinessCounts: Record<ScratchPadReadinessStatus, number>;
 };
 
 export type ComposerPrefillTarget =
@@ -436,6 +484,111 @@ export type PreviewVerification = {
   }>;
 };
 
+export type VerificationCheckKind =
+  | "unit_test"
+  | "integration_test"
+  | "api_smoke"
+  | "browser_flow"
+  | "visual_review"
+  | "responsive_review"
+  | "accessibility_review"
+  | "log_review"
+  | "data_check"
+  | "negative_case"
+  | "build"
+  | "deploy_health"
+  | "taste_review"
+  | "intent_review"
+  | "manual_waiver";
+
+export type WorkerEvidenceKind =
+  | VerificationCheckKind
+  | "proof"
+  | "screenshot"
+  | "video"
+  | "trace"
+  | "log"
+  | "command"
+  | "file"
+  | "manual";
+
+export type VerificationMatrixRow = {
+  id: string;
+  acceptancePointId: string | null;
+  text: string;
+  requiredChecks: string[];
+  checkKinds: VerificationCheckKind[];
+  expectedEvidence: string[];
+  owner: "worker" | "butler" | "both";
+  status: "pending" | "evidence_submitted" | "accepted" | "rejected" | "waived";
+  evidenceIds: string[];
+  artifactRefs: string[];
+  commandRefs: string[];
+  reviewerNote: string | null;
+  updatedAt: number | null;
+};
+
+export type ReviewPanelRole = "intent" | "qa" | "ui_taste" | "api" | "ops" | "product";
+export type ReviewPanelVerdict = "pending" | "passed" | "concern" | "failed" | "blocked";
+
+export type ReviewPanelRun = {
+  id: string;
+  role: ReviewPanelRole;
+  label: string;
+  scope: string;
+  trigger: string;
+  prompt: string;
+  verdict: ReviewPanelVerdict;
+  concerns: string[];
+  evidenceRefs: string[];
+  requiredFollowUp: string | null;
+  reviewerNote: string | null;
+  modelProvider: string | null;
+  modelId: string | null;
+  createdAt: number;
+  reviewedAt: number | null;
+  updatedAt: number;
+};
+
+export type ReviewPanelSummary = {
+  status: "pending" | "passed" | "concerns" | "blocked";
+  reviewers: number;
+  passed: number;
+  concerns: number;
+  blocking: number;
+  summary: string | null;
+  updatedAt: number | null;
+};
+
+export type WorkerEvidence = {
+  id: string;
+  pointId: string | null;
+  matrixRowId: string | null;
+  kind: WorkerEvidenceKind;
+  summary: string;
+  details: string | null;
+  command: string | null;
+  exitCode: number | null;
+  proofRunId: string | null;
+  artifactId: string | null;
+  route: string | null;
+  logRef: string | null;
+  dataRef: string | null;
+  createdAt: number;
+};
+
+export type PreviewProofReview = {
+  id: string;
+  verdict: "credible" | "failed" | "unclear";
+  visibleState: string;
+  evidence: string;
+  concern: string;
+  expectedOutcome: string | null;
+  reviewedAt: number;
+  modelId: string;
+  modelProvider: string;
+};
+
 export type PreviewProofRecord = {
   id: string;
   previewId: string;
@@ -445,6 +598,7 @@ export type PreviewProofRecord = {
   previewTitle: string;
   stackId: string | null;
   verification: PreviewVerification;
+  proofReviews: PreviewProofReview[];
   createdAt: number;
   updatedAt: number;
 };
@@ -505,6 +659,24 @@ export type CodexThreadSummary = {
     acceptancePoints: string[];
     proofExpectation: "none" | "requested";
     proofExpectationLabel: string;
+    inferredWorkDepth: "quick" | "standard" | "deep" | "incident";
+    taskCategory:
+      | "ui"
+      | "api"
+      | "deploy"
+      | "docs"
+      | "data"
+      | "writing"
+      | "generic_code"
+      | "read_only"
+      | "research"
+      | "prototype"
+      | "plan"
+      | "recommendation"
+      | "unknown";
+    verificationMatrix: VerificationMatrixRow[];
+    reviewPanel: ReviewPanelRun[];
+    reviewPanelSummary: ReviewPanelSummary;
     notes: string[];
   } | null;
   supervisionChecklist: {
@@ -522,9 +694,16 @@ export type CodexThreadSummary = {
       evidence: Array<{
         id: string;
         source: "worker_report" | "butler_review";
+        kind: WorkerEvidenceKind | "butler_review";
+        pointId: string | null;
+        matrixRowId: string | null;
         summary: string;
         details: string | null;
         reportTurnId: string | null;
+        proofRunId: string | null;
+        artifactId: string | null;
+        command: string | null;
+        route: string | null;
         createdAt: number;
       }>;
     }>;
@@ -568,6 +747,7 @@ export type CodexThreadDetail = CodexThreadSummary & {
     status: "completed" | "blocked";
     summary: string;
     details: string | null;
+    evidence: WorkerEvidence[];
     createdAt: number;
     updatedAt: number;
   } | null;

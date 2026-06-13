@@ -49,17 +49,24 @@ function isInsideRoot(candidate: string, root: string): boolean {
 
 async function resolveApprovedPath(requestedPath: string, approvedRoots: string[]): Promise<{ requested: string; root: string }> {
   const requested = path.resolve(requestedPath);
-  const root = approvedRoots.map(normalizeRoot).find((approvedRoot) => isInsideRoot(requested, approvedRoot));
-  if (!root) {
-    throw new Error(`Path ${requested} is outside approved read-only roots: ${approvedRoots.map(normalizeRoot).join(", ")}`);
+  const roots = await Promise.all(
+    approvedRoots.map(async (rawRoot) => {
+      const root = normalizeRoot(rawRoot);
+      const realRoot = await fs.realpath(root).catch(() => root);
+      return { root, realRoot };
+    })
+  );
+  const approved = roots.find((entry) => isInsideRoot(requested, entry.root) || isInsideRoot(requested, entry.realRoot));
+  if (!approved) {
+    throw new Error(`Path ${requested} is outside approved read-only roots: ${roots.map((entry) => entry.root).join(", ")}`);
   }
 
   const realRequested = await fs.realpath(requested).catch(() => requested);
-  if (!isInsideRoot(realRequested, root)) {
-    throw new Error(`Path ${requested} resolves outside approved read-only root ${root}`);
+  if (!isInsideRoot(realRequested, approved.realRoot)) {
+    throw new Error(`Path ${requested} resolves outside approved read-only root ${approved.root}`);
   }
 
-  return { requested, root };
+  return { requested, root: approved.root };
 }
 
 function entryType(stats: Awaited<ReturnType<typeof fs.lstat>>): FilesystemInspectionEntry["type"] {

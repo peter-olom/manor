@@ -14,6 +14,7 @@ import {
   normalizeStringArray
 } from "./codex-harness-helpers.js";
 import { formatHarnessExecutionContract, formatHarnessRuntimeModel } from "./codex-harness-format.js";
+import { normalizeReportEvidence, validateCompletedWorkerEvidence } from "./codex-harness-report-validation.js";
 import { handleHarnessDesktopAction } from "./codex-harness-desktop.js";
 import { formatHarnessJobMemory, formatHarnessProjectMemory, handleHarnessMemoryAction } from "./codex-harness-memory.js";
 import { handleHarnessProofAction } from "./codex-harness-proof.js";
@@ -30,7 +31,7 @@ import {
   resolveHarnessThreadStack
 } from "./codex-harness-runtime.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
-import { hasVisualProof, threadRequiresVisualProof } from "./proof-policy.js";
+import { threadRequiresVisualProof } from "./proof-policy.js";
 import { applyServiceStartedPolicies, formatProjectPolicyContextLines } from "./project-artifacts-policies.js";
 import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import { ButlerStateStore } from "./state-store.js";
@@ -42,7 +43,7 @@ import {
   formatWorkspaceBootstrapLines,
   inspectWorkspaceBootstrap
 } from "./workspace-bootstrap.js";
-import type { CodexThreadRecord, PreviewLeaseView, PreviewVerificationView } from "./types.js";
+import type { CodexThreadRecord, CodexWorkerEvidenceView, PreviewLeaseView, PreviewVerificationView } from "./types.js";
 function mentionsNativeDesktopTarget(thread: CodexThreadRecord): boolean {
   const contract = thread.executionContract;
   const text = [
@@ -58,6 +59,7 @@ function mentionsNativeDesktopTarget(thread: CodexThreadRecord): boolean {
     .toLowerCase();
   return /\b(electron|native|desktop|headed|vnc|novnc)\b/.test(text);
 }
+
 export class CodexHarnessService {
   private readonly registryPath: string;
   private readonly brokerAccessPath: string;
@@ -263,22 +265,15 @@ export class CodexHarnessService {
       status: "completed" | "blocked";
       summary: string;
       details?: string | null;
+      evidence?: CodexWorkerEvidenceView[];
     }
   ): Promise<void> {
     const thread = this.getThreadContext(capability);
     const combined = [report.summary, report.details].filter(Boolean).join("\n");
     const threadProofs = this.listThreadProofs(capability.threadId);
     if (report.status === "completed") {
-      if (thread.executionContract?.proofExpectation === "requested" && threadProofs.length === 0) {
-        throw new Error(
-          "This job asked for proof. Gather persisted proof before reporting completed."
-        );
-      }
-      if (threadRequiresVisualProof(thread) && !hasVisualProof(threadProofs)) {
-        throw new Error(
-          "This job affects operator-visible UI. Capture persisted screenshot or video proof before reporting completed; text or file proof alone is insufficient."
-        );
-      }
+      const evidence = report.evidence ?? [];
+      validateCompletedWorkerEvidence({ thread, evidence, threadProofs });
       return;
     }
     if (!report.details?.trim()) {
@@ -509,19 +504,22 @@ export class CodexHarnessService {
       const summary = normalizeString(params.summary);
       const details = normalizeString(params.details) || null;
       const turnId = normalizeString(params.turnId) || null;
+      const evidence = normalizeReportEvidence(params.evidence);
       if ((status !== "completed" && status !== "blocked") || !summary) {
         throw new Error("report requires status=completed|blocked and a non-empty summary");
       }
       await this.validateWorkerReport(capability, {
         status,
         summary,
-        details
+        details,
+        evidence
       });
       const report = this.store.recordWorkerReport(capability.threadId, {
         status,
         summary,
         details,
-        turnId
+        turnId,
+        evidence
       });
       this.store.addEvent(capability.threadId, `harness/report/${status}`, summary);
       this.memoryScheduler?.observeWorkerReport(report);

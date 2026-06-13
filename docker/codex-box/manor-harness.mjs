@@ -12,7 +12,7 @@ const runtimeBrokerBaseUrl = process.env.MANOR_RUNTIME_BROKER_URL || "http://run
 function printHelp() {
   console.log(`Usage:
   manor-harness [--thread <jobId>] status
-  manor-harness [--thread <jobId>] report --status completed|blocked --summary "<text>" [--details "<text>"] [--turn-id <id>]
+  manor-harness [--thread <jobId>] report --status completed|blocked --summary "<text>" [--details "<text>"] [--turn-id <id>] [--evidence-json '<json>' ...] [--evidence "<pointId>|<kind>|<summary>" ...]
   manor-harness [--thread <jobId>] assist --summary "<text>" [--details "<text>"] [--question "<text>"]
   manor-harness [--thread <jobId>] memory [--provenance]
   manor-harness [--thread <jobId>] memory project [--provenance]
@@ -98,6 +98,9 @@ Proof tips:
 
 Add --json to print the Butler response payload as JSON.
 Blocked reports require --details that explain what failed, what was tried, and the next sensible action.
+Deep work reports should include point-specific evidence, for example:
+  --evidence "point-1|build|npm test passed"
+  --evidence-json '{"pointId":"point-2","kind":"browser_flow","summary":"Recorded browser proof","proofRunId":"run-id"}'
 Set MANOR_THREAD_ID or pass --thread <jobId> to bind the harness explicitly when you are outside the job workspace.`);
 }
 
@@ -282,6 +285,32 @@ function parseRepeatedKeyValueFlags(args, name) {
     .filter(Boolean);
 }
 
+function parseReportEvidence(args) {
+  const entries = [];
+  for (const rawJson of readRepeatedFlag(args, "--evidence-json")) {
+    try {
+      const parsed = JSON.parse(rawJson);
+      if (Array.isArray(parsed)) entries.push(...parsed);
+      else entries.push(parsed);
+    } catch (error) {
+      throw new Error(`Invalid --evidence-json: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  for (const raw of readRepeatedFlag(args, "--evidence")) {
+    const [pointId, kind, summary, details] = raw.split("|");
+    if (!summary) {
+      throw new Error("--evidence must use pointId|kind|summary");
+    }
+    entries.push({
+      pointId: pointId || null,
+      kind: kind || "manual",
+      summary,
+      details: details || null
+    });
+  }
+  return entries;
+}
+
 function mergeCookieHeader(headers, cookieEntries) {
   if (cookieEntries.length === 0) {
     return headers;
@@ -438,7 +467,8 @@ async function main() {
       status: readFlag(args, "--status"),
       summary: readFlag(args, "--summary"),
       details: readFlag(args, "--details"),
-      turnId: readFlag(args, "--turn-id")
+      turnId: readFlag(args, "--turn-id"),
+      evidence: parseReportEvidence(args)
     };
   } else if (args[0] === "assist") {
     action = "assist.request";

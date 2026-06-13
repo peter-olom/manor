@@ -398,6 +398,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "refreshThread", description: "Refreshes the target run after Butler updates checklist state." }]
   },
   {
+    name: "record_review_panel_verdict",
+    label: "Record reviewer",
+    description: "Record a hidden specialist reviewer verdict for one delegated job.",
+    uiEffects: [{ kind: "refreshThread", description: "Refreshes the target run after Butler updates reviewer state." }]
+  },
+  {
     name: "flush_rejected_acceptance_points",
     label: "Send rejected points",
     description: "Send one batched private worker follow-up for all queued rejected acceptance points.",

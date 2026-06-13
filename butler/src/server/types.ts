@@ -1,5 +1,48 @@
 export type CodexThreadStatus = "active" | "idle" | "unknown";
 export type CodexProofExpectation = "none" | "requested";
+export type CodexInferredWorkDepth = "quick" | "standard" | "deep" | "incident";
+export type CodexTaskCategory =
+  | "ui"
+  | "api"
+  | "deploy"
+  | "docs"
+  | "data"
+  | "writing"
+  | "generic_code"
+  | "read_only"
+  | "research"
+  | "prototype"
+  | "plan"
+  | "recommendation"
+  | "unknown";
+export type VerificationCheckKind =
+  | "unit_test"
+  | "integration_test"
+  | "api_smoke"
+  | "browser_flow"
+  | "visual_review"
+  | "responsive_review"
+  | "accessibility_review"
+  | "log_review"
+  | "data_check"
+  | "negative_case"
+  | "build"
+  | "deploy_health"
+  | "taste_review"
+  | "intent_review"
+  | "manual_waiver";
+export type VerificationMatrixOwner = "worker" | "butler" | "both";
+export type VerificationMatrixStatus = "pending" | "evidence_submitted" | "accepted" | "rejected" | "waived";
+export type WorkerEvidenceKind =
+  | VerificationCheckKind
+  | "proof"
+  | "screenshot"
+  | "video"
+  | "trace"
+  | "log"
+  | "command"
+  | "file"
+  | "manual";
 export type WorkstreamGroupKind = "project" | "workspace";
 export type ButlerCallbackState =
   | "waiting"
@@ -13,6 +56,38 @@ export type ButlerCloseoutChannel = "none" | "main_chat";
 export type ButlerNextWorkerReportAction = "review" | "reply_to_operator";
 export type ButlerCallbackReviewState = "idle" | "queued" | "running";
 export type ButlerCallbackReviewReason = "worker_callback" | "thread_recovery" | null;
+export type ReviewPanelRole = "intent" | "qa" | "ui_taste" | "api" | "ops" | "product";
+export type ReviewPanelVerdict = "pending" | "passed" | "concern" | "failed" | "blocked";
+export type ReviewPanelSummaryStatus = "pending" | "passed" | "concerns" | "blocked";
+
+export interface ReviewPanelRunView {
+  id: string;
+  role: ReviewPanelRole;
+  label: string;
+  scope: string;
+  trigger: string;
+  prompt: string;
+  verdict: ReviewPanelVerdict;
+  concerns: string[];
+  evidenceRefs: string[];
+  requiredFollowUp: string | null;
+  reviewerNote: string | null;
+  modelProvider: string | null;
+  modelId: string | null;
+  createdAt: number;
+  reviewedAt: number | null;
+  updatedAt: number;
+}
+
+export interface ReviewPanelSummaryView {
+  status: ReviewPanelSummaryStatus;
+  reviewers: number;
+  passed: number;
+  concerns: number;
+  blocking: number;
+  summary: string | null;
+  updatedAt: number | null;
+}
 
 export interface CodexThreadExecutionContractView {
   threadId: string;
@@ -25,7 +100,28 @@ export interface CodexThreadExecutionContractView {
   acceptancePoints: string[];
   proofExpectation: CodexProofExpectation;
   proofExpectationLabel: string;
+  inferredWorkDepth: CodexInferredWorkDepth;
+  taskCategory: CodexTaskCategory;
+  verificationMatrix: VerificationMatrixRowView[];
+  reviewPanel: ReviewPanelRunView[];
+  reviewPanelSummary: ReviewPanelSummaryView;
   notes: string[];
+}
+
+export interface VerificationMatrixRowView {
+  id: string;
+  acceptancePointId: string | null;
+  text: string;
+  requiredChecks: string[];
+  checkKinds: VerificationCheckKind[];
+  expectedEvidence: string[];
+  owner: VerificationMatrixOwner;
+  status: VerificationMatrixStatus;
+  evidenceIds: string[];
+  artifactRefs: string[];
+  commandRefs: string[];
+  reviewerNote: string | null;
+  updatedAt: number | null;
 }
 
 export interface ButlerThreadCallbackView {
@@ -100,8 +196,26 @@ export interface CodexWorkerReportView {
   status: CodexWorkerReportStatus;
   summary: string;
   details: string | null;
+  evidence: CodexWorkerEvidenceView[];
   createdAt: number;
   updatedAt: number;
+}
+
+export interface CodexWorkerEvidenceView {
+  id: string;
+  pointId: string | null;
+  matrixRowId: string | null;
+  kind: WorkerEvidenceKind;
+  summary: string;
+  details: string | null;
+  command: string | null;
+  exitCode: number | null;
+  proofRunId: string | null;
+  artifactId: string | null;
+  route: string | null;
+  logRef: string | null;
+  dataRef: string | null;
+  createdAt: number;
 }
 
 export interface CodexThreadPatchView {
@@ -121,9 +235,16 @@ export type SupervisionChecklistEvidenceSource = "worker_report" | "butler_revie
 export interface SupervisionChecklistEvidenceView {
   id: string;
   source: SupervisionChecklistEvidenceSource;
+  kind: WorkerEvidenceKind | "butler_review";
+  pointId: string | null;
+  matrixRowId: string | null;
   summary: string;
   details: string | null;
   reportTurnId: string | null;
+  proofRunId: string | null;
+  artifactId: string | null;
+  command: string | null;
+  route: string | null;
   createdAt: number;
 }
 
@@ -338,8 +459,21 @@ export interface PreviewProofRecordView {
   previewTitle: string;
   stackId: string | null;
   verification: PreviewVerificationView;
+  proofReviews: PreviewProofReviewView[];
   createdAt: number;
   updatedAt: number;
+}
+
+export interface PreviewProofReviewView {
+  id: string;
+  verdict: "credible" | "unclear" | "failed";
+  visibleState: string;
+  evidence: string;
+  concern: string;
+  expectedOutcome: string | null;
+  reviewedAt: number;
+  modelId: string;
+  modelProvider: string;
 }
 
 export interface LeaseLifecycleView {
@@ -811,14 +945,61 @@ export type ScratchPadItemStatus = "captured" | "exploring" | "ready_for_review"
 export type ScratchPadDepth = "quick" | "deep" | "prototype" | "plan";
 export type ScratchPadResultKind = "research" | "prototype" | "plan" | "recommendation";
 export type ScratchPadWorkspaceMode = "managed_worktree" | "existing";
+export type ScratchPadReadinessStatus =
+  | "captured"
+  | "exploring"
+  | "reviewing"
+  | "needs_rework"
+  | "ready"
+  | "accepted"
+  | "parked"
+  | "dismissed"
+  | "blocked";
+
+export interface ScratchPadAttachmentView {
+  id: string;
+  kind: "image" | "file";
+  referenceId: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number | null;
+  url: string | null;
+  available: boolean;
+  used: boolean;
+  note: string | null;
+  createdAt: number;
+}
+
+export interface ScratchPadReadinessView {
+  status: ScratchPadReadinessStatus;
+  label: string;
+  summary: string;
+  updatedAt: number | null;
+}
+
+export interface ScratchPadDossierSummaryView {
+  status: ScratchPadReadinessStatus;
+  resultSummary: string | null;
+  acceptedEvidence: number;
+  totalEvidence: number;
+  reviewerSummary: string | null;
+  reviewerConcerns: string[];
+  attachmentSummary: string | null;
+  nextAction: string | null;
+  risk: string | null;
+  updatedAt: number | null;
+}
 
 export interface ScratchPadItemView {
   id: string;
   title: string;
   text: string;
   status: ScratchPadItemStatus;
+  readiness: ScratchPadReadinessView;
   depth: ScratchPadDepth;
   resultKind: ScratchPadResultKind;
+  attachments: ScratchPadAttachmentView[];
+  dossier: ScratchPadDossierSummaryView;
   cwd: string | null;
   workspaceMode: ScratchPadWorkspaceMode;
   branchName: string | null;
@@ -833,6 +1014,7 @@ export interface ScratchPadItemView {
 export interface ScratchPadView {
   items: ScratchPadItemView[];
   counts: Record<ScratchPadItemStatus, number>;
+  readinessCounts: Record<ScratchPadReadinessStatus, number>;
 }
 
 export type ProjectArtifactKind = "seed" | "reference" | "download" | "research" | "report" | "other";

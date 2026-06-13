@@ -21,12 +21,14 @@ import {
   classifyManorBlocker,
   hasStartedSelfImprovement
 } from "../../src/server/butler-self-improvement.js";
+import { validateCompletedWorkerEvidence } from "../../src/server/codex-harness-report-validation.js";
 import { contractRequiresVisualProof, hasVisualProof, taskHasUiImplication } from "../../src/server/proof-policy.js";
 import { listWorkspaceProjectDirectories, resolveWorkspaceProjectInfo } from "../../src/server/repo-worktree.js";
+import { buildReviewPanel, summarizeReviewPanel } from "../../src/server/review-panel.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { evaluateOperatorCloseoutGate } from "../../src/server/supervision-checklist.js";
-import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
-import type { ButlerThreadCallbackView, CodexThreadExecutionContractView, PreviewProofRecordView } from "../../src/server/types.js";
+import { buildThreadExecutionContract, buildVerificationMatrix } from "../../src/server/thread-contract.js";
+import type { ButlerThreadCallbackView, CodexThreadExecutionContractView, CodexWorkerEvidenceView, PreviewProofRecordView } from "../../src/server/types.js";
 
 async function createStore(): Promise<ButlerStateStore> {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-butler-test-"));
@@ -34,6 +36,10 @@ async function createStore(): Promise<ButlerStateStore> {
 }
 
 function makeContract(overrides: Partial<CodexThreadExecutionContractView> = {}): CodexThreadExecutionContractView {
+  const acceptancePoints = overrides.acceptancePoints ?? ["Acknowledge delegation", "Record callback", "Post closeout"];
+  const taskCategory = overrides.taskCategory ?? "generic_code";
+  const inferredWorkDepth = overrides.inferredWorkDepth ?? "deep";
+  const reviewPanel = overrides.reviewPanel ?? buildReviewPanel({ taskCategory, inferredWorkDepth, requestedTask: "Verify the delegated flow with proof." });
   return {
     threadId: "thread-1",
     workspaceCwd: "/workspace",
@@ -42,9 +48,14 @@ function makeContract(overrides: Partial<CodexThreadExecutionContractView> = {})
     branch: "main",
     requestedTask: "Verify the delegated flow with proof.",
     operatorGoal: "The operator gets one reliable closeout.",
-    acceptancePoints: ["Acknowledge delegation", "Record callback", "Post closeout"],
+    acceptancePoints,
     proofExpectation: "requested",
     proofExpectationLabel: "proof requested",
+    inferredWorkDepth,
+    taskCategory,
+    verificationMatrix: buildVerificationMatrix({ acceptancePoints, taskCategory, inferredWorkDepth }),
+    reviewPanel,
+    reviewPanelSummary: overrides.reviewPanelSummary ?? summarizeReviewPanel(reviewPanel),
     notes: [],
     ...overrides
   };
@@ -110,6 +121,7 @@ function makeProof(
       pageErrors: [],
       failedRequests: []
     },
+    proofReviews: [],
     createdAt: checkedAt,
     updatedAt: checkedAt,
     ...overrides
@@ -133,6 +145,29 @@ function proofArtifact(
     availability: "available",
     retainedUntilAt: null,
     expiredAt: null
+  };
+}
+
+function workerEvidence(
+  kind: CodexWorkerEvidenceView["kind"],
+  overrides: Partial<CodexWorkerEvidenceView> = {}
+): CodexWorkerEvidenceView {
+  return {
+    id: `${kind}-${overrides.pointId ?? "point-1"}-${overrides.matrixRowId ?? "row-1"}`,
+    pointId: "point-1",
+    matrixRowId: "row-1",
+    kind,
+    summary: `${kind} evidence`,
+    details: null,
+    command: kind === "build" || kind === "api_smoke" || kind === "negative_case" ? `${kind} command` : null,
+    exitCode: null,
+    proofRunId: kind === "browser_flow" || kind === "visual_review" || kind === "screenshot" ? "proof-1" : null,
+    artifactId: null,
+    route: null,
+    logRef: kind === "log_review" ? "runtime logs" : null,
+    dataRef: null,
+    createdAt: Date.now(),
+    ...overrides
   };
 }
 
@@ -208,6 +243,25 @@ test("execution contracts create a pending checklist with every acceptance point
   assert.deepEqual(checklist.items.map((item) => item.status), ["pending", "pending", "pending"]);
 });
 
+test("implementation contracts infer internal depth and category verification rows", () => {
+  const contract = buildThreadExecutionContract({
+    threadId: "thread-ui",
+    workspaceCwd: "/workspace",
+    projectId: "project-1",
+    projectLabel: "Project One",
+    branch: "main",
+    taskText: "Implement the new settings UI, verify responsive behavior, and capture proof.",
+    notes: []
+  });
+
+  assert.equal(contract.taskCategory, "ui");
+  assert.equal(contract.inferredWorkDepth, "deep");
+  assert.equal(contract.proofExpectation, "requested");
+  assert.ok(contract.verificationMatrix.length >= contract.acceptancePoints.length);
+  assert.ok(contract.verificationMatrix.some((row) => row.checkKinds.includes("responsive_review")));
+  assert.ok(contract.verificationMatrix.some((row) => row.checkKinds.includes("taste_review")));
+});
+
 test("worker reports attach evidence without accepting checklist points", async () => {
   const store = await createStore();
   const contract = makeContract();
@@ -232,6 +286,186 @@ test("worker reports attach evidence without accepting checklist points", async 
   assert.equal(checklist.reviewState, "needs_review");
   assert.deepEqual(checklist.items.map((item) => item.status), ["pending", "pending", "pending"]);
   assert.ok(checklist.items.every((item) => item.evidence.at(-1)?.summary === "All acceptance points are done."));
+});
+
+test("structured worker evidence maps only to the claimed acceptance point and matrix row", async () => {
+  const store = await createStore();
+  const contract = makeContract();
+  store.upsertThreadSummary({
+    id: contract.threadId,
+    status: "idle",
+    cwd: contract.workspaceCwd,
+    turns: [{ id: "turn-1", status: "completed", items: [] }]
+  });
+  store.setThreadExecutionContract(contract.threadId, contract);
+
+  store.recordWorkerReport(contract.threadId, {
+    turnId: "turn-1",
+    status: "completed",
+    summary: "Recorded one point of evidence.",
+    evidence: [
+      {
+        id: "evidence-1",
+        pointId: "point-1",
+        matrixRowId: "row-1",
+        kind: "build",
+        summary: "Build passed.",
+        details: null,
+        command: "npm run build",
+        exitCode: 0,
+        proofRunId: null,
+        artifactId: null,
+        route: null,
+        logRef: null,
+        dataRef: null,
+        createdAt: Date.now()
+      }
+    ]
+  });
+
+  const checklist = store.getSupervisionChecklist(contract.threadId);
+  assert.equal(checklist?.items[0]?.evidence.length, 1);
+  assert.equal(checklist?.items[1]?.evidence.length, 0);
+  assert.equal(store.getThread(contract.threadId)?.executionContract?.verificationMatrix[0]?.status, "evidence_submitted");
+  assert.deepEqual(store.getThread(contract.threadId)?.executionContract?.verificationMatrix[0]?.commandRefs, ["npm run build"]);
+});
+
+test("proof review verdicts persist on proof records", async () => {
+  const store = await createStore();
+  const proof = makeProof("proof-review", 1000, [proofArtifact("screenshot", "Final screenshot", "final.png")]);
+  const recorded = store.recordBrowserVerification({
+    threadId: proof.threadId ?? "thread-1",
+    projectId: proof.projectId,
+    projectLabel: proof.projectLabel,
+    title: proof.previewTitle,
+    verification: proof.verification
+  });
+
+  const updated = store.recordPreviewProofReview(recorded.id, {
+    id: "review-1",
+    verdict: "credible",
+    visibleState: "The final screen is visible.",
+    evidence: "Screenshot shows the accepted state.",
+    concern: "",
+    expectedOutcome: "Show the accepted state",
+    reviewedAt: 2000,
+    modelId: "test-model",
+    modelProvider: "test"
+  });
+
+  assert.equal(updated?.proofReviews.length, 1);
+  assert.equal(updated?.proofReviews[0]?.verdict, "credible");
+  assert.equal(store.getPreviewProofById(recorded.id)?.proofReviews[0]?.visibleState, "The final screen is visible.");
+});
+
+test("completed deep reports require evidence for every worker-owned matrix row", async () => {
+  const store = await createStore();
+  const contract = makeContract({
+    proofExpectation: "none",
+    proofExpectationLabel: "no explicit proof request"
+  });
+  store.setThreadExecutionContract(contract.threadId, contract);
+  const thread = store.getThread(contract.threadId);
+  assert.ok(thread);
+
+  assert.throws(
+    () => validateCompletedWorkerEvidence({ thread, evidence: [], threadProofs: [] }),
+    /point-specific evidence/
+  );
+  assert.throws(
+    () =>
+      validateCompletedWorkerEvidence({
+        thread,
+        evidence: [workerEvidence("build", { pointId: "point-1", matrixRowId: "row-1" })],
+        threadProofs: []
+      }),
+    /missing evidence for point-2/
+  );
+});
+
+test("completed API reports require smoke, failure-path, and runtime evidence", async () => {
+  const store = await createStore();
+  const contract = makeContract({
+    acceptancePoints: ["Add endpoint"],
+    taskCategory: "api",
+    proofExpectation: "none",
+    proofExpectationLabel: "no explicit proof request"
+  });
+  store.setThreadExecutionContract(contract.threadId, contract);
+  const thread = store.getThread(contract.threadId);
+  assert.ok(thread);
+
+  assert.throws(
+    () =>
+      validateCompletedWorkerEvidence({
+        thread,
+        evidence: [workerEvidence("api_smoke")],
+        threadProofs: []
+      }),
+    /failure-path evidence/
+  );
+  assert.throws(
+    () =>
+      validateCompletedWorkerEvidence({
+        thread,
+        evidence: [workerEvidence("api_smoke"), workerEvidence("negative_case")],
+        threadProofs: []
+      }),
+    /log or runtime review evidence/
+  );
+  assert.doesNotThrow(() =>
+    validateCompletedWorkerEvidence({
+      thread,
+      evidence: [workerEvidence("api_smoke"), workerEvidence("negative_case"), workerEvidence("log_review")],
+      threadProofs: []
+    })
+  );
+});
+
+test("completed UI reports require visual proof plus responsive accessibility and taste evidence", async () => {
+  const store = await createStore();
+  const contract = buildThreadExecutionContract({
+    threadId: "thread-ui-validation",
+    workspaceCwd: "/workspace",
+    projectId: "project-1",
+    projectLabel: "Project One",
+    branch: "main",
+    taskText: "Implement the settings UI and capture browser proof.",
+    requestedTask: "Implement the settings UI and capture browser proof.",
+    notes: []
+  });
+  store.setThreadExecutionContract(contract.threadId, contract);
+  const thread = store.getThread(contract.threadId);
+  assert.ok(thread);
+  const evidence = contract.verificationMatrix.flatMap((row, index) => [
+    workerEvidence(index === 0 ? "responsive_review" : "screenshot", {
+      id: `evidence-${index}-primary`,
+      pointId: row.acceptancePointId,
+      matrixRowId: row.id
+    }),
+    ...(index === 0
+      ? [
+          workerEvidence("accessibility_review", { id: "evidence-accessibility", pointId: row.acceptancePointId, matrixRowId: row.id }),
+          workerEvidence("taste_review", { id: "evidence-taste", pointId: row.acceptancePointId, matrixRowId: row.id })
+        ]
+      : [])
+  ]);
+  const proof = makeProof("proof-1", 1000, [proofArtifact("screenshot", "Final screenshot", "final.png")], {
+    threadId: contract.threadId
+  });
+  const textProof = makeProof("text-proof", 1000, [proofArtifact("file", "Text proof", "proof.txt")], {
+    threadId: contract.threadId
+  });
+
+  assert.throws(
+    () => validateCompletedWorkerEvidence({ thread, evidence, threadProofs: [] }),
+    /This job asked for proof/
+  );
+  assert.throws(
+    () => validateCompletedWorkerEvidence({ thread, evidence, threadProofs: [textProof] }),
+    /Capture persisted screenshot or video proof/
+  );
+  assert.doesNotThrow(() => validateCompletedWorkerEvidence({ thread, evidence, threadProofs: [proof] }));
 });
 
 test("completed worker reports cannot close out until Butler accepts the checklist", async () => {

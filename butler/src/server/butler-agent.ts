@@ -43,6 +43,8 @@ import {
 import { buildButlerCodexTools } from "./butler-agent-codex-tools.js";
 import { createOrRefreshButlerSession, getButlerLiveSnapshot, getButlerMessagePage, getButlerShellSnapshot, getButlerSnapshot, promptButler, promptButlerInternal, stopButlerPrompt, restoreButlerCompactionState, sanitizeButlerSessionMessages, sanitizePersistedButlerSessions, updateButlerComposeSettings } from "./butler-agent-session.js";
 import { clearButlerSessionChat, deleteButlerSessionChatFromLocated, keepOperatorMessagesBefore, locateButlerSessionDeletePoint } from "./butler-agent-chat-hygiene.js";
+import { buildOperatorCloseoutText } from "./butler-agent-closeout-text.js";
+import { buildDelegationDeveloperInstructions } from "./butler-agent-delegation-instructions.js";
 import { buildButlerFilesystemTools } from "./butler-agent-filesystem-tools.js";
 import { buildButlerServiceTools } from "./butler-agent-service-tools.js";
 import { buildButlerManorTools } from "./butler-agent-manor-tools.js";
@@ -492,7 +494,13 @@ export class ButlerAgentService extends EventEmitter {
       throw new Error(closeoutBlocker);
     }
     const taskDurationMs = elapsedTaskDurationMs(callback.requestedAt, at);
-    upsertOperatorMessage(this.operatorMessages, messageId, text.trim(), at, taskDurationMs);
+    upsertOperatorMessage(
+      this.operatorMessages,
+      messageId,
+      buildOperatorCloseoutText({ store: this.store, thread, workerReport: relevantWorkerReport, text }),
+      at,
+      taskDurationMs
+    );
     this.noteThreadFocus(threadId, "closeout");
     this.deliveredCloseoutIds.add(closeoutId);
     applyPostedCloseout(callback, {
@@ -809,50 +817,7 @@ export class ButlerAgentService extends EventEmitter {
   async startManorRestart(input: { target: "current" | "latest"; update: boolean; includeDesktop?: boolean }) { return (await this.hostController.restart({ confirmation: "restart Manor", target: input.target, update: input.update, ...(input.includeDesktop === true ? { includeDesktop: true } : {}) })).run; }
   async getManorRestartStatus() { return this.hostController.getStatus(); }
 
-  private async buildDelegationDeveloperInstructions(
-    workspace: { cwd: string; branchName: string | null },
-    task: string
-  ): Promise<string> {
-    const repoBootstrapTask = isSharedShellRepoBootstrapTask(task);
-    const managedWorktreeTask = taskRequiresManagedWorktree(task);
-
-    return [
-      "This thread was started by Butler.",
-      "You are the worker inside Manor. Butler is the supervisor.",
-      "Execute the requested task directly instead of explaining how the operator could do it manually.",
-      "The task prompt includes a MANOR JOB BRIEF with the thread id, workspace, branch, and harness binding. Use that brief if any older path or branch hint conflicts with it.",
-      "Once you are inside a repository with its own AGENTS guidance, follow that repo-specific guidance over generic Manor defaults.",
-      `Work inside ${workspace.cwd} unless the task explicitly requires a deeper subdirectory.`,
-      workspace.branchName
-        ? `Stay on branch ${workspace.branchName}. Do not switch back to main or share this branch with another task.`
-        : repoBootstrapTask
-          ? "For repository bootstrap work in /repos, clone first in Codex-shell. After the repo exists, create the requested butler/ branch inside that repo."
-          : managedWorktreeTask
-            ? "Create or reuse the explicitly requested isolated branch or worktree before you make changes."
-            : "Stay on the existing checkout. Do not create a branch or managed worktree unless the operator explicitly asked for one.",
-      "Use Codex-shell for repository, git, and code-editing work.",
-      "When the task needs a running app, disposable dependency, browser interaction, or durable proof, use manor-harness and choose the simplest working path.",
-      "Browser-use sessions already record video, tracing, a ready screenshot, a final screenshot, and per-action screenshots by default. Use them when the task asks for browser proof. Use `manor-harness proof text` for simple read-only notes or inspection summaries so no proof side files are created under /repos. Use file proof only when a durable existing file, PDF, Office file, archive, report, export, or log is the simplest evidence.",
-      "For any task with UI implications, capture and surface screenshot or video proof of the relevant UI state. Text logs or TXT/file proof alone are insufficient.",
-      "Do not wait for Manor to infer project commands. If the project needs install, run, test, or bootstrap commands, choose and run them explicitly.",
-      "Keep visible Codex chatter useful: post brief progress notes before major phases, after meaningful findings, and before long-running verification.",
-      "Do not bury the thread in tool calls only. If you are about to run several commands or inspect several files, say what you are doing and what you learned afterward.",
-      "Prefer simple execution over ceremony. Keep progress notes concise and avoid restating obvious plans.",
-      "Use only the harness actions exposed through `manor-harness`.",
-      "Read memory with `manor-harness memory search --query \"<text>\"` before acting when the task is a follow-up, references prior work, asks what happened before, depends on project conventions, needs unresolved outcomes, repeats a known project pattern, or requires attribution before saying who did what. Use `manor-harness memory diagnostics` for memory pipeline health and `manor-harness memory debug` for prompt/output/drop/dedupe/persistence traces.",
-      "Skip memory reads for clearly self-contained mechanical work where current files and the job brief are enough. Add `--provenance` only for source, trigger, who, when, timestamp, provenance, or attribution questions.",
-      "Treat the job brief acceptance points as the supervisor contract. Complete and verify each point before reporting completed.",
-      "When reporting completion, include brief evidence for each acceptance point in the supervisor report details. Reference the relevant screenshot, video, trace, browser proof, desktop proof, log, or file proof when available.",
-      "Do not claim an acceptance point is complete unless you have checked it. If evidence is missing or a point is incomplete, report blocked or continue the work.",
-      "Write memory only when it will help a future worker continue or avoid repeating investigation. Use `manor-harness memory checkpoint` for durable progress, `memory decision` for accepted choices, and `memory note` for reusable gotchas, constraints, or facts. Do not write routine progress, temporary observations, command transcripts, or facts already obvious from committed code.",
-      "If the job produced reusable decisions, gotchas, PR verdicts, repo state changes, or project facts, include them plainly in the supervisor report details so Butler's separate memory-review pass can propose durable candidates.",
-      "When you complete meaningful work, record a supervisor report before your final reply with `manor-harness report --status completed --summary \"<concise outcome>\" --details \"<brief oversight note with the key fact, risk, or next step>\"`.",
-      "If you are blocked or need operator attention, record it before your reply with `manor-harness report --status blocked --summary \"<what is blocked>\" --details \"<what you need, what failed, or the next recommended action>\"`.",
-      "For blocked reports, clearly classify the blocker in details as operator/project/external/Manor-platform when you can. If Manor, Butler, Codex worker, preview runtime, harness, broker, supervision, proof, desktop, restart, or dogfooding behavior is the blocker, include the exact failed behavior and the smallest improvement that would prevent recurrence.",
-      "Supervisor reports should help Butler oversee the job. Keep `summary` short and outcome-first, and use `details` for the extra context Butler should surface without dumping the whole conversation.",
-      "Keep the thread focused on the delegated task and report concise progress and outcome."
-    ].join("\n");
-  }
+  private async buildDelegationDeveloperInstructions(workspace: { cwd: string; branchName: string | null }, task: string): Promise<string> { return buildDelegationDeveloperInstructions(workspace, task); }
 
   private buildSupervisionSmokeTask(totalFollowUps: number): string {
     return [
@@ -1146,10 +1111,16 @@ export class ButlerAgentService extends EventEmitter {
       `branch: ${options.workspace.branchName ?? "(existing workspace)"}`,
       `harness_binding: manor-harness --thread ${options.threadId}`,
       `proof_expectation: ${describeProofExpectation(contract.proofExpectation)}`,
+      `task_category: ${contract.taskCategory}`,
+      `inferred_work_depth: ${contract.inferredWorkDepth}`,
     ];
 
     for (const point of contract.acceptancePoints) {
       lines.push(`acceptance_point: ${point}`);
+    }
+
+    for (const row of contract.verificationMatrix) {
+      lines.push(`verification_row: ${row.id}|${row.acceptancePointId ?? ""}|${row.checkKinds.join(",")}|${row.text}`);
     }
 
     if (contract.operatorGoal) {
@@ -1322,7 +1293,8 @@ export class ButlerAgentService extends EventEmitter {
   private toResolvedProof(
     subject: Pick<PreviewLeaseView, "id" | "threadId" | "projectId" | "projectLabel" | "title" | "stackId">,
     verification: PreviewVerificationView,
-    runId?: string
+    runId?: string,
+    proofRecordId?: string | null
   ): ResolvedPreviewProof {
     const decoratedVerification = decoratePreviewVerification(verification);
     if (runId && decoratedVerification.runId !== runId.trim()) {
@@ -1334,6 +1306,7 @@ export class ButlerAgentService extends EventEmitter {
     const availableScreenshots = artifacts.filter((artifact) => artifact.kind === "screenshot");
 
     return {
+      proofRecordId: proofRecordId ?? null,
       preview: subject,
       verification: decoratedVerification,
       primaryArtifact: availableScreenshots[0] ?? artifacts[0]!,
@@ -1350,7 +1323,9 @@ export class ButlerAgentService extends EventEmitter {
     const preview = params.leaseId ? this.requireValidatedPreview(params.leaseId, params.threadId?.trim() || null) : null;
 
     if (preview?.lastVerification) {
-      return this.toResolvedProof(preview, preview.lastVerification, params.runId);
+      const latestProof = this.store.getLatestPreviewProofForPreview(preview.id);
+      const proofRecordId = latestProof?.verification.runId === preview.lastVerification.runId ? latestProof.id : null;
+      return this.toResolvedProof(preview, preview.lastVerification, params.runId, proofRecordId);
     }
 
     const previewProof =
@@ -1371,14 +1346,17 @@ export class ButlerAgentService extends EventEmitter {
           stackId: previewProof.stackId
         },
         previewProof.verification,
-        params.runId
+        params.runId,
+        previewProof.id
       );
     }
 
     if (!preview && params.threadId) {
       const latestPreview = this.getLatestThreadVerificationPreview(params.threadId.trim());
       if (latestPreview.lastVerification) {
-        return this.toResolvedProof(latestPreview, latestPreview.lastVerification, params.runId);
+        const latestProof = this.store.getLatestPreviewProofForPreview(latestPreview.id);
+        const proofRecordId = latestProof?.verification.runId === latestPreview.lastVerification.runId ? latestProof.id : null;
+        return this.toResolvedProof(latestPreview, latestPreview.lastVerification, params.runId, proofRecordId);
       }
     }
 

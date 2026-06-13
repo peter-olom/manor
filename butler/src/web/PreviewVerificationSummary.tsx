@@ -119,6 +119,16 @@ function formatProofArtifactLinkLabel(artifact: PreviewVerificationArtifact): st
   return artifact.label;
 }
 
+function formatProofReviewVerdict(verdict: PreviewProofRecord["proofReviews"][number]["verdict"]): string {
+  if (verdict === "credible") {
+    return "Accepted";
+  }
+  if (verdict === "failed") {
+    return "Rejected";
+  }
+  return "Unclear";
+}
+
 export function PreviewVerificationSummary({
   proof,
   verification,
@@ -155,6 +165,7 @@ export function PreviewVerificationSummary({
   const availableArtifactCount = primaryArtifacts.filter((artifact) => artifact.availability === "available").length;
   const compactSummary = issueLines[0] ?? (availableArtifactCount > 0 ? formatProofArtifactSummary(primaryArtifacts) : "Open proof");
   const proofTimestamp = formatVerificationTimestamp(proof?.createdAt ?? verification.checkedAt);
+  const proofReviews = proof?.proofReviews?.slice(-3) ?? [];
 
   return (
     <div className="preview-verification-summary">
@@ -209,6 +220,21 @@ export function PreviewVerificationSummary({
               {issueLines.map((line, index) => (
                 <div key={`${verification.runId}-issue-${index}`} className="preview-verification-issue">
                   {line}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {proofReviews.length > 0 ? (
+            <div className="preview-verification-reviews">
+              {proofReviews.map((review) => (
+                <div key={review.id} className={`preview-verification-review is-${review.verdict}`}>
+                  <div className="preview-verification-review-head">
+                    <span>{formatProofReviewVerdict(review.verdict)}</span>
+                    <time>{formatVerificationTimestamp(review.reviewedAt)}</time>
+                  </div>
+                  <p>{review.visibleState}</p>
+                  {review.evidence ? <p>Evidence: {review.evidence}</p> : null}
+                  {review.concern ? <p>Concern: {review.concern}</p> : null}
                 </div>
               ))}
             </div>

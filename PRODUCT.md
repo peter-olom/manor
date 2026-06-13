@@ -12,6 +12,8 @@ Manor is used by one trusted operator who supervises Butler and Codex while they
 
 Manor keeps long-running agent work organized, observable, and contained. Success means the operator can delegate work, inspect evidence, and make high-risk runtime decisions without guessing what the agents or containers are doing.
 
+The main product promise is async leverage. The operator should give intent, then Butler and Codex should do the investigation, execution, verification, and proof gathering with very little hand-holding.
+
 ## Brand Personality
 
 Direct, careful, and work-focused. The interface should feel like an honest control room: compact, explicit, and calm under operational pressure.
@@ -27,6 +29,10 @@ Do not make Manor feel like a hosted multi-tenant SaaS dashboard, a decorative A
 - Keep controls familiar and dense enough for repeated supervisory work.
 - Prefer evidence and exact details over optimistic status copy.
 - Make trust boundaries visible when an action affects the live Manor stack.
+- Infer work depth internally from the operator's intent instead of asking the operator to choose it.
+- Treat taste, intent fit, and verification quality as part of completion, especially for UI, API, writing, and operator-facing workflows.
+- Make Butler acceptance adversarial: the worker submits evidence, Butler decides whether it is good enough.
+- Give the operator a compact proof dossier so they can trust the result without reading the full worker transcript.
 
 ## Accessibility & Inclusion
 

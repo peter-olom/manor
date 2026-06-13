@@ -1247,6 +1247,7 @@ export function App() {
                 defaultCwd={scratchPadDefaultCwd}
                 onOpenThread={openThread}
                 onConfirmCleanup={confirmCleanupScratchItem}
+                onPreviewImage={(image) => setPreviewMedia({ name: image.name, url: image.url, kind: "image", downloadUrl: image.url })}
                 showToast={showToast}
                 showErrorToast={showErrorToast}
               />
@@ -1301,7 +1302,7 @@ export function App() {
           ) : (
             visibleCodexThreads.map((thread) => {
               const callback = callbackByThreadId.get(thread.id) ?? null;
-              const callbackState = describeCallbackState(callback);
+              const callbackState = describeCallbackState(callback, thread);
               return (
                 <div key={thread.id} className={`thread-row ${shell.codex.focusedWindowId === thread.id ? "is-active" : ""}`}>
                   <button

@@ -6,7 +6,7 @@ import { decoratePreviewVerification } from "./preview-verification.js";
 import { buildCodexInputWithReferences } from "./reference-inputs.js";
 import { buildButlerStackTools } from "./butler-agent-stack-tools.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
-import type { ReasoningEffort } from "./types.js";
+import type { PreviewProofReviewView, ReasoningEffort } from "./types.js";
 import { isSharedShellRepoBootstrapTask } from "./thread-contract.js";
 import { applyWorkspacePreviewDefaults, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 
@@ -1019,6 +1019,24 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         const review = await access.reviewProofScreenshot(proof, {
           expectedOutcome: typedParams.expectedOutcome
         });
+        let persistedProofReview: PreviewProofReviewView | null = null;
+        if (proof.proofRecordId) {
+          const reviewRecord: PreviewProofReviewView = {
+            id: crypto.randomUUID(),
+            verdict: review.verdict === "credible" || review.verdict === "failed" ? review.verdict : "unclear",
+            visibleState: review.visibleState,
+            evidence: review.evidence,
+            concern: review.concern,
+            expectedOutcome:
+              typeof typedParams.expectedOutcome === "string" && typedParams.expectedOutcome.trim()
+                ? typedParams.expectedOutcome.trim()
+                : null,
+            reviewedAt: review.reviewedAt,
+            modelId: review.modelId,
+            modelProvider: review.modelProvider
+          };
+          persistedProofReview = access.store.recordPreviewProofReview(proof.proofRecordId, reviewRecord)?.proofReviews.at(-1) ?? reviewRecord;
+        }
 
         const availableArtifactCount = proof.artifacts.length;
         const proofVerdict = availableArtifactCount > 0 ? review.verdict : "incomplete";
@@ -1057,6 +1075,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
             manifest: proof.manifest,
             trace: proof.trace,
             review,
+            persistedProofReview,
             proofComplete: availableArtifactCount > 0
           }
         };

@@ -383,7 +383,18 @@ export function getButlerShellSnapshot(access: ButlerAgentSessionAccess): AppShe
     authorizedManorRestartRequest: access.authorizedManorRestartRequest,
     scratchPad: {
       items: [],
-      counts: { captured: 0, exploring: 0, ready_for_review: 0, accepted: 0, parked: 0, dismissed: 0 }
+      counts: { captured: 0, exploring: 0, ready_for_review: 0, accepted: 0, parked: 0, dismissed: 0 },
+      readinessCounts: {
+        captured: 0,
+        exploring: 0,
+        reviewing: 0,
+        needs_rework: 0,
+        ready: 0,
+        accepted: 0,
+        parked: 0,
+        dismissed: 0,
+        blocked: 0
+      }
     },
     lastError: access.lastError,
     compose: {

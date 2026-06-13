@@ -503,8 +503,9 @@ export function formatThreadTitle(thread: Pick<CodexThreadSummary, "preview" | "
 }
 
 export function describeCallbackState(
-  callback: ButlerThreadCallback | null | undefined
-): { label: string; tone: "waiting" | "recovered" | "closed" | "missing" } | null {
+  callback: ButlerThreadCallback | null | undefined,
+  thread?: CodexThreadSummary | null
+): { label: string; tone: "waiting" | "recovered" | "closed" | "missing" | "needs-work" | "accepted" | "blocked" } | null {
   if (!callback) {
     return null;
   }
@@ -513,8 +514,22 @@ export function describeCallbackState(
     return { label: "Recovering", tone: "missing" };
   }
 
+  const hasRejectedPoint = thread?.supervisionChecklist?.items.some((item) => item.status === "rejected") === true;
+  const hasQueuedRework = thread?.supervisionChecklist?.items.some((item) => item.status === "rejected" && item.queuedInstruction) === true;
+  if (callback.lastPrivateSteerText || hasQueuedRework || (hasRejectedPoint && callback.nextWorkerReportAction === "review")) {
+    return { label: "Needs rework", tone: "needs-work" };
+  }
+
   if (callback.reviewState === "running" || callback.reviewState === "queued") {
     return { label: "Butler reviewing", tone: "waiting" };
+  }
+
+  if (thread?.supervisor.blocked && callback.owesOperatorReply) {
+    return { label: "Blocked review", tone: "blocked" };
+  }
+
+  if (thread?.supervisionChecklist?.reviewState === "reviewed" && callback.operatorCloseoutStatus === "owed") {
+    return { label: "Accepted", tone: "accepted" };
   }
 
   if (callback.owesOperatorReply) {

@@ -13,6 +13,7 @@ It keeps Codex on a warm worker, puts Butler in charge of supervision, and gives
 - [Image Distribution](#image-distribution)
 - [Core Model](#core-model)
 - [Execution Rule](#execution-rule)
+- [Async Verification Model](#async-verification-model)
 - [Runtime Surfaces](#runtime-surfaces)
 - [Auth](#auth)
 - [Trust and Security Model](#trust-and-security-model)
@@ -191,6 +192,24 @@ Manor keeps repository work and runtime work separate on purpose.
 - use the optional desktop proof sidecar only when native headed app verification is needed
 - treat worker-side package installation as an exception, not the default path
 
+## Async Verification Model
+
+Manor is built for async work. The operator should be able to state intent, step back, and get a reviewed outcome instead of supervising every command.
+
+For delegated implementation, investigation, debugging, UI, API, deploy, and verification work, Butler now turns the request into an internal execution contract:
+
+- an inferred work standard, kept out of the UI
+- a task category, such as UI, API, deploy, docs, data, writing, or generic code
+- a verification matrix mapped to the acceptance points
+- expected evidence for each row
+- Butler-owned acceptance after the worker reports back
+
+Codex submits evidence. Butler accepts, rejects, or waives it.
+
+Weak reports are expected to be pushed back privately. UI work needs screenshot or video proof plus responsive, accessibility, and taste review. API work needs request-level smoke evidence, failure-path evidence, and log or runtime review. Final operator closeout should read like a compact proof dossier: what changed, what Butler accepted, what proof was reviewed, and what risk remains.
+
+The operator should see better outcomes and better proof. They should not have to pick a depth setting or read the whole worker transcript to trust the result.
+
 ## Runtime Surfaces
 
 ### Butler
@@ -320,7 +339,7 @@ That surface currently supports:
 - desktop status, list, start, current-screen, action, and stop
 - service template listing and registration
 - service start, inspect, logs, processes, exec, and stop
-- supervisor reporting back to Butler
+- supervisor reporting back to Butler with point-specific evidence
 
 The important constraint is unchanged:
 

@@ -21,6 +21,11 @@ import {
 } from "./state-store-helpers.js";
 import { loadStateStoreSqliteMemory, persistStateStoreSqliteMemory } from "./state-store-sqlite-memory.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
+import {
+  normalizeExecutionContract,
+  normalizeSupervisionChecklist,
+  normalizeWorkerEvidence
+} from "./state-store-contract-normalizers.js";
 import type {
   ButlerWindow,
   CodexEventEntry,
@@ -28,6 +33,7 @@ import type {
   CodexThreadExecutionContractView,
   CodexThreadRecord,
   CodexThreadSummary,
+  CodexWorkerEvidenceView,
   CodexWorkerReportView,
   ButlerMemoryEntryView,
   JobMemoryDecisionView,
@@ -43,6 +49,7 @@ import type {
   PersistedUiState,
   PreviewLeaseView,
   PreviewProofRecordView,
+  PreviewProofReviewView,
   PreviewVerificationArtifactView,
   ProjectArtifactView,
   ProjectMemoryEntryView,
@@ -96,63 +103,6 @@ export type StateStoreInternalAccess = {
   primeThreadMilestones(threadId: string): void;
   emit(event: "change"): boolean;
 };
-
-function normalizeSupervisionChecklist(raw: SupervisionChecklistView): SupervisionChecklistView {
-  const now = Date.now();
-  const items = raw.items
-    .filter((item) => item && typeof item === "object" && typeof item.text === "string" && item.text.trim())
-    .map((item, index) => {
-      const status: SupervisionChecklistView["items"][number]["status"] =
-        item.status === "accepted" || item.status === "rejected" || item.status === "waived" ? item.status : "pending";
-      return {
-        id: typeof item.id === "string" && item.id.trim() ? item.id.trim() : `point-${index + 1}`,
-        text: item.text.trim(),
-        status,
-        butlerNote: typeof item.butlerNote === "string" && item.butlerNote.trim() ? item.butlerNote.trim() : null,
-        queuedInstruction:
-          typeof item.queuedInstruction === "string" && item.queuedInstruction.trim() ? item.queuedInstruction.trim() : null,
-        decidedAt: typeof item.decidedAt === "number" && Number.isFinite(item.decidedAt) ? item.decidedAt : null,
-        evidence: Array.isArray(item.evidence)
-          ? item.evidence
-              .filter((entry) => entry && typeof entry === "object" && typeof entry.summary === "string")
-              .map((entry) => ({
-                id: typeof entry.id === "string" && entry.id.trim() ? entry.id.trim() : crypto.randomUUID(),
-                source: entry.source === "butler_review" ? ("butler_review" as const) : ("worker_report" as const),
-                summary: entry.summary.trim(),
-                details: typeof entry.details === "string" && entry.details.trim() ? entry.details.trim() : null,
-                reportTurnId: typeof entry.reportTurnId === "string" && entry.reportTurnId.trim() ? entry.reportTurnId.trim() : null,
-                createdAt: typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : now
-              }))
-          : []
-      };
-    });
-
-  return {
-    threadId: raw.threadId,
-    projectId: typeof raw.projectId === "string" && raw.projectId.trim() ? raw.projectId.trim() : "unknown",
-    projectLabel: typeof raw.projectLabel === "string" && raw.projectLabel.trim() ? raw.projectLabel.trim() : "Unknown",
-    requestedTask: typeof raw.requestedTask === "string" && raw.requestedTask.trim() ? raw.requestedTask.trim() : "Carry out the delegated task.",
-    items,
-    heartbeat: {
-      lastThreadEventAt:
-        typeof raw.heartbeat?.lastThreadEventAt === "number" && Number.isFinite(raw.heartbeat.lastThreadEventAt)
-          ? raw.heartbeat.lastThreadEventAt
-          : null,
-      lastWorkerReportAt:
-        typeof raw.heartbeat?.lastWorkerReportAt === "number" && Number.isFinite(raw.heartbeat.lastWorkerReportAt)
-          ? raw.heartbeat.lastWorkerReportAt
-          : null,
-      lastKnownThreadStatus:
-        raw.heartbeat?.lastKnownThreadStatus === "active" || raw.heartbeat?.lastKnownThreadStatus === "idle"
-          ? raw.heartbeat.lastKnownThreadStatus
-          : "unknown",
-      stale: Boolean(raw.heartbeat?.stale)
-    },
-    reviewState: raw.reviewState === "reviewed" ? "reviewed" : "needs_review",
-    createdAt: typeof raw.createdAt === "number" && Number.isFinite(raw.createdAt) ? raw.createdAt : now,
-    updatedAt: typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : now
-  };
-}
 
 function normalizeMemoryObservationSourceKind(value: unknown): MemoryObservationView["sourceKind"] {
   return value === "operator_message" ||
@@ -520,6 +470,27 @@ export function normalizeStateStorePreviewProofRecord(
     previewTitle: typeof record.previewTitle === "string" && record.previewTitle.trim() ? record.previewTitle.trim() : "Preview",
     stackId: typeof record.stackId === "string" && record.stackId.trim() ? record.stackId.trim() : null,
     verification,
+    proofReviews: Array.isArray(record.proofReviews)
+      ? record.proofReviews
+          .filter((review) => review && typeof review === "object" && typeof review.visibleState === "string")
+          .map((review) => {
+            const verdict: PreviewProofReviewView["verdict"] =
+              review.verdict === "credible" || review.verdict === "failed" ? review.verdict : "unclear";
+            return {
+              id: typeof review.id === "string" && review.id.trim() ? review.id.trim() : crypto.randomUUID(),
+              verdict,
+              visibleState: review.visibleState.trim(),
+              evidence: typeof review.evidence === "string" ? review.evidence.trim() : "",
+              concern: typeof review.concern === "string" ? review.concern.trim() : "",
+              expectedOutcome:
+                typeof review.expectedOutcome === "string" && review.expectedOutcome.trim() ? review.expectedOutcome.trim() : null,
+              reviewedAt: typeof review.reviewedAt === "number" && Number.isFinite(review.reviewedAt) ? review.reviewedAt : Date.now(),
+              modelId: typeof review.modelId === "string" ? review.modelId : "",
+              modelProvider: typeof review.modelProvider === "string" ? review.modelProvider : ""
+            };
+          })
+          .slice(-8)
+      : [],
     createdAt,
     updatedAt: Math.max(updatedAt, createdAt)
   };
@@ -560,6 +531,7 @@ export function recordStateStorePreviewProofFromLease(
       previewTitle: lease.title,
       stackId: lease.stackId,
       verification,
+      proofReviews: [],
       createdAt: verification.checkedAt,
       updatedAt: verification.checkedAt
     },
@@ -743,6 +715,11 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
           status: report.status,
           summary: report.summary.trim(),
           details: typeof report.details === "string" && report.details.trim() ? report.details.trim() : null,
+          evidence: Array.isArray(report.evidence)
+            ? report.evidence
+                .map((entry) => normalizeWorkerEvidence(entry, { createdAt: typeof report.createdAt === "number" ? report.createdAt : Date.now() }))
+                .filter((entry): entry is CodexWorkerEvidenceView => Boolean(entry))
+            : [],
           createdAt: typeof report.createdAt === "number" ? report.createdAt : Date.now(),
           updatedAt: typeof report.updatedAt === "number" ? report.updatedAt : Date.now()
         }))
@@ -760,21 +737,7 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
         typeof contract.threadId === "string" &&
         typeof contract.requestedTask === "string"
       ) {
-        access.persistedExecutionContractsByThreadId.set(threadId, {
-          ...contract,
-          requestedTask:
-            typeof contract.requestedTask === "string" && contract.requestedTask.trim()
-              ? contract.requestedTask.trim()
-              : "Carry out the delegated task.",
-          operatorGoal: typeof contract.operatorGoal === "string" && contract.operatorGoal.trim() ? contract.operatorGoal.trim() : null,
-          acceptancePoints: Array.isArray(contract.acceptancePoints)
-            ? contract.acceptancePoints.filter((point): point is string => typeof point === "string" && Boolean(point.trim()))
-            : [],
-          proofExpectation: contract.proofExpectation === "requested" ? "requested" : "none",
-          proofExpectationLabel:
-            contract.proofExpectation === "requested" ? "proof requested" : "no explicit proof request",
-          notes: Array.isArray(contract.notes) ? contract.notes.filter((note): note is string => typeof note === "string") : []
-        });
+        access.persistedExecutionContractsByThreadId.set(threadId, normalizeExecutionContract(contract));
       }
     }
     for (const [threadId, checklist] of Object.entries(data.supervisionChecklistsByThreadId ?? {})) {
@@ -1315,7 +1278,7 @@ export function restorePersistedStateStoreThread(access: StateStoreInternalAcces
           capReached: Boolean(thread.supervision.capReached)
         }
       : record.supervision;
-  record.executionContract = thread.executionContract ? { ...thread.executionContract } : record.executionContract;
+  record.executionContract = thread.executionContract ? normalizeExecutionContract(thread.executionContract) : record.executionContract;
   record.supervisionChecklist = thread.supervisionChecklist
     ? normalizeSupervisionChecklist(thread.supervisionChecklist)
     : record.supervisionChecklist;
@@ -1347,6 +1310,11 @@ export function restorePersistedStateStoreThread(access: StateStoreInternalAcces
           status: thread.workerReport.status,
           summary: thread.workerReport.summary,
           details: typeof thread.workerReport.details === "string" ? thread.workerReport.details : null,
+          evidence: Array.isArray(thread.workerReport.evidence)
+            ? thread.workerReport.evidence
+                .map((entry) => normalizeWorkerEvidence(entry, { createdAt: thread.workerReport?.createdAt ?? record.updatedAt }))
+                .filter((entry): entry is CodexWorkerEvidenceView => Boolean(entry))
+            : [],
           createdAt: typeof thread.workerReport.createdAt === "number" ? thread.workerReport.createdAt : record.updatedAt,
           updatedAt: typeof thread.workerReport.updatedAt === "number" ? thread.workerReport.updatedAt : record.updatedAt
         }
