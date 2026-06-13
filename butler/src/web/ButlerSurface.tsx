@@ -42,19 +42,15 @@ import {
   formatVerificationSummary,
   groupTimelineItems,
   readStoredValue,
+  reconcilePendingButlerPrompts,
   scrollElementToCenteredTarget,
   scrollElementToLatest,
+  type PendingButlerPrompt,
   writeStoredValue
 } from "./utils";
 
 type ChecklistThread = CodexThreadSummary & {
   supervisionChecklist: NonNullable<CodexThreadSummary["supervisionChecklist"]>;
-};
-
-type PendingButlerMessage = {
-  id: string;
-  text: string;
-  at: number;
 };
 
 function getActivitySummary(turn: ButlerActivityTurn): string {
@@ -304,7 +300,7 @@ export function ButlerSurface({
   const [showRuntime, setShowRuntime] = useState(() => readStoredValue(BUTLER_RUNTIME_VISIBILITY_STORAGE_KEY) === "true");
   const [showChecklists, setShowChecklists] = useState(false);
   const [activeJumpId, setActiveJumpId] = useState<string | null>(null);
-  const [pendingButlerMessage, setPendingButlerMessage] = useState<PendingButlerMessage | null>(null);
+  const [pendingButlerPrompts, setPendingButlerPrompts] = useState<PendingButlerPrompt[]>([]);
   const [hideButlerActivityFrom, setHideButlerActivityFrom] = useState<number | null>(null);
   const [butlerDraftPrefill, setButlerDraftPrefill] = useState<{ id: string; text: string } | null>(null);
   const [butlerAttachments, setButlerAttachments] = useState<FileReference[]>([]);
@@ -325,6 +321,7 @@ export function ButlerSurface({
   const butlerMessageTimesRef = useRef<Record<string, number>>({});
   const liveMessageSignatureRef = useRef<string | null>(null);
   const jumpFlashTimerRef = useRef<number | null>(null);
+  const pendingButlerPromptCounterRef = useRef(0);
   const butlerViewRestoredRef = useRef(false);
   const checklistThreads = useMemo(
     () =>
@@ -470,17 +467,14 @@ export function ButlerSurface({
   }, [history.messages]);
 
   useEffect(() => {
-    if (!pendingButlerMessage || !shell) {
-      return;
-    }
-
-    const hasCommittedPrompt = history.messages.some(
-      (message) => message.role.startsWith("user") && message.text === pendingButlerMessage.text && (message.at ?? pendingButlerMessage.at) >= pendingButlerMessage.at - 1000
-    );
-    if (hasCommittedPrompt || (!shell.butler.pending && !shell.butler.isStreaming)) {
-      setPendingButlerMessage(null);
-    }
-  }, [history.messages, pendingButlerMessage, shell]);
+    setPendingButlerPrompts((current) => {
+      const next = reconcilePendingButlerPrompts(history.messages, current);
+      if (next.length === current.length && next.every((prompt, index) => prompt.id === current[index]?.id)) {
+        return current;
+      }
+      return next;
+    });
+  }, [history.messages]);
 
   useEffect(() => {
     return () => {
@@ -503,7 +497,7 @@ export function ButlerSurface({
         mergeKnownImages([composerPrefill.attachment]);
       }
     }
-    setPendingButlerMessage(null);
+    setPendingButlerPrompts([]);
     setButlerDraftPrefill({ id: composerPrefill.id, text: composerPrefill.text });
   }, [composerPrefill]);
 
@@ -575,9 +569,10 @@ export function ButlerSurface({
     const attachmentCount = composerAttachments.length;
     const messageSummary = text || formatAttachmentSummary(attachmentCount);
     const sentAt = Date.now();
+    const pendingPromptId = `pending-${sentAt}-${pendingButlerPromptCounterRef.current++}`;
     setButlerAttachments([]);
     setFollowButler(true);
-    setPendingButlerMessage({ id: `pending-${sentAt}`, text: messageSummary, at: sentAt });
+    setPendingButlerPrompts((current) => [...current, { id: pendingPromptId, text: messageSummary, at: sentAt }]);
     setHideButlerActivityFrom(null);
 
     try {
@@ -591,7 +586,7 @@ export function ButlerSurface({
         ...(inputItems.length > 0 ? { inputItems } : {})
       });
     } catch (error) {
-      setPendingButlerMessage(null);
+      setPendingButlerPrompts((current) => current.filter((prompt) => prompt.id !== pendingPromptId));
       setButlerAttachments((current) => (current.length === 0 ? composerAttachments : current));
       throw error;
     }
@@ -612,7 +607,7 @@ export function ButlerSurface({
   async function stopButlerRequest() {
     try {
       const result = await postJson<{ stopped?: boolean }>("/api/chat/stop", {});
-      setPendingButlerMessage(null);
+      setPendingButlerPrompts([]);
       if (!result?.stopped) {
         showToast("No active Butler request to stop", "error", 2500);
       }
@@ -630,7 +625,7 @@ export function ButlerSurface({
       await postJson("/api/chat/clear", {});
       setHistory({ messages: [], loadedStart: 0, totalCount: 0 });
       setHideButlerActivityFrom(0);
-      setPendingButlerMessage(null);
+      setPendingButlerPrompts([]);
       setFollowButler(true);
       showToast("Butler chat cleared");
     } catch (error) {
@@ -676,7 +671,7 @@ export function ButlerSurface({
           totalCount: Math.max(0, current.loadedStart + index)
         };
       });
-      setPendingButlerMessage(null);
+      setPendingButlerPrompts([]);
       setFollowButler(true);
       showToast("Butler chat trimmed");
     } catch (error) {
@@ -847,11 +842,11 @@ export function ButlerSurface({
   const deferredRows = useDeferredValue(butlerConversationRows);
   const immediateRows = useMemo(
     () => [
-      ...(pendingButlerMessage ? [{ id: pendingButlerMessage.id, kind: "pending" as const, text: pendingButlerMessage.text, at: pendingButlerMessage.at }] : []),
+      ...pendingButlerPrompts.map((prompt) => ({ id: prompt.id, kind: "pending" as const, text: prompt.text, at: prompt.at })),
       ...((shell?.butler.pending || shell?.butler.isStreaming) ? [{ id: "butler-working", kind: "working" as const }] : []),
       ...(activeButlerActivityTurn ? [{ id: `${activeButlerActivityTurn.id}-live`, kind: "activity" as const, turn: activeButlerActivityTurn, active: true }] : [])
     ],
-    [activeButlerActivityTurn, pendingButlerMessage, shell?.butler.isStreaming, shell?.butler.pending]
+    [activeButlerActivityTurn, pendingButlerPrompts, shell?.butler.isStreaming, shell?.butler.pending]
   );
   const renderedRows = useMemo(() => [...deferredRows, ...immediateRows], [deferredRows, immediateRows]);
   const latestButlerActivityKey =

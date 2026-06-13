@@ -387,12 +387,42 @@ export function dedupeMessages(messages: ButlerMessageRecord[]): ButlerHistorySt
   });
 }
 
+export type PendingButlerPrompt = {
+  id: string;
+  text: string;
+  at: number;
+};
+
 export function hasCommittedPendingButlerPrompt(messages: ButlerMessageRecord[], pendingText: string | null): boolean {
   if (!pendingText) {
     return false;
   }
 
   return messages.some((message) => message.role.startsWith("user") && message.text === pendingText);
+}
+
+export function shouldShowPendingButlerPrompt(pendingText: string | null, messages: ButlerMessageRecord[]): boolean {
+  return !hasCommittedPendingButlerPrompt(messages, pendingText);
+}
+
+export function reconcilePendingButlerPrompts(
+  messages: ButlerMessageRecord[],
+  pendingPrompts: PendingButlerPrompt[]
+): PendingButlerPrompt[] {
+  const committedUsers = messages
+    .filter((message) => message.role.startsWith("user"))
+    .map((message) => ({ text: message.text, at: message.at }));
+
+  return pendingPrompts.filter((prompt) => {
+    const committedIndex = committedUsers.findIndex(
+      (message) => message.text === prompt.text && (message.at ?? prompt.at) >= prompt.at - 1000
+    );
+    if (committedIndex < 0) {
+      return true;
+    }
+    committedUsers.splice(committedIndex, 1);
+    return false;
+  });
 }
 
 export function formatCompactCount(value: number | null): string {
