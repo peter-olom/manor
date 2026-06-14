@@ -69,6 +69,7 @@ let bootstrapPromise: Promise<void> | null = null;
 let bootstrapRefreshInFlight: Promise<void> | null = null;
 let reconnectTimer: number | null = null;
 let heartbeatTimer: number | null = null;
+let disconnectNoticeTimer: number | null = null;
 let connectionAttempt = 0;
 let reconnectAttempt = 0;
 let lastBootstrapRefreshAt = 0;
@@ -98,6 +99,7 @@ const BOOTSTRAP_REFRESH_TIMEOUT_MS = 12_000;
 const HEARTBEAT_TIMEOUT_MS = 45_000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 15_000;
+const DISCONNECT_NOTICE_DELAY_MS = 20_000;
 const FOREGROUND_RESYNC_MIN_INTERVAL_MS = 3_000;
 const VISIBLE_RESYNC_MIN_INTERVAL_MS = 30_000;
 const VISIBLE_RESYNC_CHECK_INTERVAL_MS = 10_000;
@@ -133,6 +135,13 @@ function clearHeartbeatTimer(): void {
   }
 }
 
+function clearDisconnectNoticeTimer(): void {
+  if (disconnectNoticeTimer !== null) {
+    window.clearTimeout(disconnectNoticeTimer);
+    disconnectNoticeTimer = null;
+  }
+}
+
 function closeEventSource(): void {
   if (!eventSource) {
     return;
@@ -146,6 +155,7 @@ function closeEventSource(): void {
 
 function markTransportAlive(): void {
   reconnectAttempt = 0;
+  clearDisconnectNoticeTimer();
   const now = Date.now();
   setTransportState({
     connected: true,
@@ -498,6 +508,26 @@ function installPageResyncHandlers(): void {
   );
 }
 
+function scheduleDisconnectNotice(reason: string, lastEventAt: number | null): void {
+  if (disconnectNoticeTimer !== null || transportStore.getSnapshot().disconnected) {
+    return;
+  }
+
+  disconnectNoticeTimer = window.setTimeout(() => {
+    disconnectNoticeTimer = null;
+    const current = transportStore.getSnapshot();
+    if (!current.connected && current.reconnecting) {
+      setTransportState({
+        connected: false,
+        disconnected: true,
+        reconnecting: true,
+        lastError: current.lastError ?? reason,
+        lastEventAt
+      });
+    }
+  }, DISCONNECT_NOTICE_DELAY_MS);
+}
+
 function scheduleReconnect(reason: string): void {
   closeEventSource();
   clearHeartbeatTimer();
@@ -505,11 +535,12 @@ function scheduleReconnect(reason: string): void {
   const current = transportStore.getSnapshot();
   setTransportState({
     connected: false,
-    disconnected: true,
+    disconnected: current.disconnected,
     reconnecting: true,
     lastError: reason,
     lastEventAt: current.lastEventAt
   });
+  scheduleDisconnectNotice(reason, current.lastEventAt);
 
   if (reconnectTimer !== null) {
     return;
@@ -532,11 +563,12 @@ function openEventSource(): void {
   const attemptId = ++connectionAttempt;
   const source = new EventSource(EVENT_STREAM_PATH);
   eventSource = source;
+  const currentTransport = transportStore.getSnapshot();
   setTransportState({
     connected: false,
-    disconnected: false,
+    disconnected: currentTransport.disconnected,
     reconnecting: true,
-    lastError: null
+    lastError: currentTransport.disconnected ? currentTransport.lastError : null
   });
   heartbeatTimer = window.setTimeout(() => {
     if (eventSource === source && attemptId === connectionAttempt) {
@@ -742,3 +774,43 @@ export async function waitForBootstrap(): Promise<void> {
   ensureStarted();
   await bootstrapPromise;
 }
+
+
+export const __liveStateTestHooks = {
+  disconnectNoticeDelayMs: DISCONNECT_NOTICE_DELAY_MS,
+  getTransportSnapshot: () => transportStore.getSnapshot(),
+  markTransportAliveForTest: markTransportAlive,
+  scheduleReconnectForTest: scheduleReconnect,
+  resetForTest: () => {
+    closeEventSource();
+    clearReconnectTimer();
+    clearHeartbeatTimer();
+    clearDisconnectNoticeTimer();
+    started = false;
+    bootstrapPromise = null;
+    bootstrapRefreshInFlight = null;
+    connectionAttempt = 0;
+    reconnectAttempt = 0;
+    lastBootstrapRefreshAt = 0;
+    pageResyncHandlersInstalled = false;
+    for (const channel of BOOTSTRAP_CHANNELS) {
+      lastStateEventAtByChannel[channel] = 0;
+      lastAppliedChannelVersion[channel] = 0;
+      lastServerChannelVersion[channel] = 0;
+    }
+    inflightThreadLoads.clear();
+    shellStore.setSnapshot(null);
+    butlerLiveStore.setSnapshot(null);
+    runtimeStore.setSnapshot(null);
+    openThreadsStore.setSnapshot({});
+    imagesStore.setSnapshot([]);
+    serverToastStore.setSnapshot(null);
+    transportStore.setSnapshot({
+      connected: false,
+      disconnected: false,
+      reconnecting: false,
+      lastEventAt: null,
+      lastError: null
+    });
+  }
+};
