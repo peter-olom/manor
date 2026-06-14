@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { isUnsupportedCodexModelError, memoryCodexModelArgs } from "./memory-codex-model.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { CodexWorkerReportView, JobMemoryEntryKind } from "./types.js";
 
@@ -144,11 +145,6 @@ function parseReviewOutput(text: string): MemoryReviewOutput {
         .filter((candidate): candidate is MemoryReviewCandidate => Boolean(candidate))
     : [];
   return { candidates };
-}
-
-function isUnsupportedCodexModelError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /model[^\n]*(not supported|unsupported|unknown|not found|invalid)/i.test(message);
 }
 
 export class CodexExecMemoryReviewService {
@@ -386,7 +382,7 @@ export class CodexExecMemoryReviewService {
     const outputPath = path.join(scratchDir, `${runId}.output.json`);
     await fs.writeFile(schemaPath, JSON.stringify(OUTPUT_SCHEMA, null, 2), "utf8");
 
-    const configuredModel = process.env.MANOR_MEMORY_REVIEW_MODEL?.trim();
+    const configuredModel = process.env.MANOR_MEMORY_REVIEW_MODEL;
     const baseArgs = [
       "exec",
       "--ephemeral",
@@ -404,7 +400,7 @@ export class CodexExecMemoryReviewService {
 
     try {
       const run = async (model: string | null): Promise<void> => {
-        const args = [...baseArgs, ...(model ? ["--model", model] : []), "-"];
+        const args = [...baseArgs, ...memoryCodexModelArgs(model), "-"];
         await new Promise<void>((resolve, reject) => {
           const child = spawn("codex", args, {
             env: {

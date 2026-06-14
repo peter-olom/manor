@@ -11,6 +11,7 @@ import { CodexAppServerClient } from "./codex-client.js";
 import { CodexHarnessService } from "./codex-harness.js";
 import { FileReferenceStore, MAX_FILE_BYTES } from "./file-store.js";
 import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
+import { normalizeMemoryCodexModelEnv } from "./memory-codex-model.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
 import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-routes.js";
 import { buildCodexInputWithReferences, buildComposerInputItemsPrompt, buildReferencePromptText } from "./reference-inputs.js";
@@ -44,6 +45,8 @@ import { ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates
 import { ButlerStateStore } from "./state-store.js";
 import { registerThreadArtifactRoutes } from "./thread-artifact-routes.js";
 import { applyWorkspacePreviewDefaults, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
+
+normalizeMemoryCodexModelEnv(process.env);
 
 const port = Number(process.env.BUTLER_PORT ?? "8080");
 const codexBaseUrl = process.env.CODEX_BASE_URL ?? "ws://codex-box:8080";

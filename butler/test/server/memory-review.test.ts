@@ -353,7 +353,7 @@ test("memory review removes codex exec scratch files after completion", async ()
 });
 
 
-test("memory review falls back to default Codex model when configured model is unsupported", async () => {
+test("memory review normalizes display model labels before invoking Codex", async () => {
   const { store, stateDir } = await createStore();
   const report = seedReportedThread(store);
   const binDir = await mkdtemp(path.join(tmpdir(), "manor-memory-review-model-bin-"));
@@ -369,7 +369,7 @@ test("memory review falls back to default Codex model when configured model is u
       'const outputIndex = args.indexOf("--output-last-message");',
       'const modelIndex = args.indexOf("--model");',
       'if (modelIndex !== -1 && args[modelIndex + 1] === "5.4 mini") {',
-      '  console.error("400: The \'5.4 mini\' model is not supported when using Codex with a ChatGPT account.");',
+      '  console.error("raw display model label was passed to Codex");',
       "  process.exit(1);",
       "}",
       "if (outputIndex === -1 || !args[outputIndex + 1]) process.exit(2);",
@@ -406,14 +406,66 @@ test("memory review falls back to default Codex model when configured model is u
 
     assert.equal(submitted.length, 1);
     assert.equal(store.listPendingPromotionCandidates("/workspace")[0]?.summary, "Fallback model completed review.");
-    assert.equal(invocations.length, 2);
+    assert.equal(invocations.length, 1);
     const firstModelIndex = invocations[0]?.indexOf("--model") ?? -1;
-    assert.deepEqual(invocations[0]?.slice(firstModelIndex, firstModelIndex + 2), ["--model", "5.4 mini"]);
-    assert.equal(invocations[1]?.includes("--model"), false);
+    assert.deepEqual(invocations[0]?.slice(firstModelIndex, firstModelIndex + 2), ["--model", "gpt-5.4-mini"]);
     assert.equal(
       store.getJobMemory(report.threadId)?.entries.some((entry) => entry.id === `${reviewSourcePrefix(report)}review-state`),
       true
     );
+  } finally {
+    process.env.PATH = originalPath;
+    if (originalModel === undefined) {
+      delete process.env.MANOR_MEMORY_REVIEW_MODEL;
+    } else {
+      process.env.MANOR_MEMORY_REVIEW_MODEL = originalModel;
+    }
+  }
+});
+
+
+test("memory review falls back to default Codex model when normalized slug is unsupported", async () => {
+  const { store, stateDir } = await createStore();
+  const report = seedReportedThread(store);
+  const binDir = await mkdtemp(path.join(tmpdir(), "manor-memory-review-model-fallback-bin-"));
+  const fakeCodexPath = path.join(binDir, "codex");
+  const invocationsPath = path.join(binDir, "invocations.jsonl");
+  await writeFile(
+    fakeCodexPath,
+    [
+      "#!/usr/bin/env node",
+      'const fs = require("node:fs");',
+      "const args = process.argv.slice(2);",
+      `fs.appendFileSync(${JSON.stringify(invocationsPath)}, JSON.stringify(args) + "\\n");`,
+      'const outputIndex = args.indexOf("--output-last-message");',
+      'const modelIndex = args.indexOf("--model");',
+      'if (modelIndex !== -1 && args[modelIndex + 1] === "gpt-5.4-mini") {',
+      '  console.error("400: The gpt-5.4-mini model is not supported when using Codex with this account.");',
+      "  process.exit(1);",
+      "}",
+      "if (outputIndex === -1 || !args[outputIndex + 1]) process.exit(2);",
+      "fs.writeFileSync(args[outputIndex + 1], JSON.stringify({ candidates: [] }));"
+    ].join("\n"),
+    "utf8"
+  );
+  await chmod(fakeCodexPath, 0o755);
+  const originalPath = process.env.PATH;
+  const originalModel = process.env.MANOR_MEMORY_REVIEW_MODEL;
+  process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+  process.env.MANOR_MEMORY_REVIEW_MODEL = "5.4 mini";
+  try {
+    const service = new CodexExecMemoryReviewService({ store, stateDir, codexHomeDir: stateDir });
+
+    await service.reviewWorkerReport(report);
+    const invocations = (await readFile(invocationsPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[]);
+
+    assert.equal(invocations.length, 2);
+    const firstModelIndex = invocations[0]?.indexOf("--model") ?? -1;
+    assert.deepEqual(invocations[0]?.slice(firstModelIndex, firstModelIndex + 2), ["--model", "gpt-5.4-mini"]);
+    assert.equal(invocations[1]?.includes("--model"), false);
   } finally {
     process.env.PATH = originalPath;
     if (originalModel === undefined) {
