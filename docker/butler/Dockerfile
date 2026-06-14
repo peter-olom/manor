@@ -1,24 +1,31 @@
+# syntax=docker/dockerfile:1.7
+
 ARG NODE_BUILD_IMAGE=node:24-trixie
 ARG NODE_RUNTIME_IMAGE=node:24-trixie-slim
 
-FROM ${NODE_BUILD_IMAGE} AS build
-
-ARG PI_VERSION=0.73.0
+FROM --platform=$BUILDPLATFORM ${NODE_BUILD_IMAGE} AS build
 
 WORKDIR /opt/manor/butler
 
 COPY butler/package.json butler/package-lock.json* ./
 
-RUN npm ci \
-  && npm install "@mariozechner/pi-ai@${PI_VERSION}" "@mariozechner/pi-coding-agent@${PI_VERSION}" \
-  && npm cache clean --force
+RUN --mount=type=cache,target=/root/.npm \
+  npm ci
 
 COPY butler/ ./
 
-RUN npm run build:web \
-  && npm run build:server \
-  && npm prune --omit=dev \
-  && npm cache clean --force
+RUN --mount=type=cache,target=/root/.npm \
+  npm run build:web \
+  && npm run build:server
+
+FROM ${NODE_BUILD_IMAGE} AS production-deps
+
+WORKDIR /opt/manor/butler
+
+COPY butler/package.json butler/package-lock.json* ./
+
+RUN --mount=type=cache,target=/root/.npm \
+  npm ci --omit=dev
 
 FROM ${NODE_RUNTIME_IMAGE}
 
@@ -51,11 +58,12 @@ RUN apt-get update \
   && curl -fsSL "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.${ttyd_arch}" -o /usr/local/bin/ttyd \
   && chmod +x /usr/local/bin/ttyd \
   && mkdir -p /home/butler \
-  && mkdir -p /home/butler/.oh-my-zsh/custom \
-  && npm install --global --prefix /opt/manor/npm-global "@openai/codex@${CODEX_VERSION}" \
-  && npm cache clean --force
+  && mkdir -p /home/butler/.oh-my-zsh/custom
 
-COPY --from=build /opt/manor/butler/node_modules ./node_modules
+RUN --mount=type=cache,target=/root/.npm \
+  npm install --global --prefix /opt/manor/npm-global "@openai/codex@${CODEX_VERSION}"
+
+COPY --from=production-deps /opt/manor/butler/node_modules ./node_modules
 COPY --from=build /opt/manor/butler/dist ./dist
 COPY butler/index.html ./index.html
 COPY butler/public ./public
