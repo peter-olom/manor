@@ -187,6 +187,10 @@ function getOrCreateProjectMemory(access: StateStoreInternalAccess, projectId: s
   return created;
 }
 
+function projectMemoryEntryKey(entry: Pick<ProjectMemoryEntryView, "kind" | "summary">): string {
+  return `${entry.kind}:${entry.summary.replace(/\s+/g, " ").trim().toLowerCase()}`;
+}
+
 function submitStateStoreJobMemoryPromotionCandidate(
   access: StateStoreInternalAccess,
   threadId: string,
@@ -415,6 +419,7 @@ export function resolveStateStorePromotionCandidate(
 
     if (accepted) {
       const projectMemory = getOrCreateProjectMemory(access, updatedCandidate.projectId, updatedCandidate.projectLabel);
+      const candidateKey = projectMemoryEntryKey(updatedCandidate);
       const nextProjectEntry: ProjectMemoryEntryView = {
         id: crypto.randomUUID(),
         sourceThreadId: jobMemory.threadId,
@@ -423,10 +428,13 @@ export function resolveStateStorePromotionCandidate(
         details: updatedCandidate.details,
         acceptedAt: now
       };
+      const entries = projectMemory.entries.some((entry) => projectMemoryEntryKey(entry) === candidateKey)
+        ? projectMemory.entries
+        : [...projectMemory.entries, nextProjectEntry].slice(-60);
       const nextProjectMemory: ProjectMemoryView = {
         ...projectMemory,
         summary: updatedCandidate.summary,
-        entries: [...projectMemory.entries, nextProjectEntry].slice(-60),
+        entries,
         updatedAt: now
       };
       access.persistedProjectMemoriesByProjectId.set(updatedCandidate.projectId, nextProjectMemory);

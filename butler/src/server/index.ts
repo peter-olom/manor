@@ -16,6 +16,7 @@ import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
 import { normalizeMemoryCodexModelEnv } from "./memory-codex-model.js";
 import { getMemoryDebugTrace, listMemoryDebugTraces } from "./memory-debug-traces.js";
 import { buildMemoryDiagnostics } from "./memory-diagnostics.js";
+import { CodexExecMemoryPromotionService } from "./memory-promotion.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
 import { readMemorySynthesisConfig } from "./memory-synthesis-config.js";
 import { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
@@ -193,6 +194,7 @@ let sseHub!: ButlerSseHub;
 const memorySynthesisConfig = readMemorySynthesisConfig();
 const memoryReview = new CodexExecMemoryReviewService({ store, stateDir, codexHomeDir, enabled: memorySynthesisConfig.enabled, model: memorySynthesisConfig.model ?? undefined, timeoutMs: memorySynthesisConfig.timeoutMs });
 const memoryScheduler = new MemoryUpdateScheduler({ store, config: memorySynthesisConfig, stateDir, codexHomeDir });
+const memoryPromotion = new CodexExecMemoryPromotionService({ store, memoryScheduler, config: memorySynthesisConfig, stateDir, codexHomeDir });
 store.setMemoryUpdateObserver(memoryScheduler);
 const codexHarness = new CodexHarnessService({
   codexHomeDir,
@@ -206,6 +208,7 @@ const codexHarness = new CodexHarnessService({
 });
 memoryReview.reviewPendingReportsAsync();
 memoryScheduler.start();
+memoryPromotion.start();
 await codexHarness.load();
 await codexHarness.reconcileThreadCapabilities();
 const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, {

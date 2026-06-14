@@ -82,6 +82,32 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
       }
     }),
     access.defineButlerTool({
+      name: "resolve_memory_promotion",
+      label: "Resolve memory promotion",
+      description: "Accept or reject one pending memory promotion candidate after explicit operator instruction.",
+      promptSnippet:
+        "resolve_memory_promotion: use only when the operator explicitly asks to accept or reject a memory promotion candidate. Use retrieve_memory with includeProvenance first if you need the candidate id.",
+      parameters: Type.Object({
+        candidateId: Type.String({ minLength: 1 }),
+        accepted: Type.Boolean()
+      }),
+      uiEffects: access.getToolUiEffects("resolve_memory_promotion"),
+      execute: async (_toolCallId, params) => {
+        const candidateId = typeof params.candidateId === "string" ? params.candidateId.trim() : "";
+        const result = access.resolveMemoryPromotion(candidateId, params.accepted === true);
+        if (!result) {
+          return {
+            content: [{ type: "text", text: "No pending memory promotion matched." }],
+            details: { candidate: null, projectMemory: null }
+          };
+        }
+        return {
+          content: [{ type: "text", text: `${result.candidate.status === "accepted" ? "Accepted" : "Rejected"} memory promotion: ${result.candidate.summary}` }],
+          details: result
+        };
+      }
+    }),
+    access.defineButlerTool({
       name: "memory_diagnostics",
       label: "Memory diagnostics",
       description: "Summarize Butler and Codex memory ingestion, synthesis, promotion candidates, accepted entries, and stale or failed memory work.",

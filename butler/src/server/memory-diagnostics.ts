@@ -219,7 +219,7 @@ export function buildMemoryDiagnostics(store: ButlerStateStore, input: MemoryDia
     synthesis: {
       total: synthesisQueue.length,
       byStatus: synthesisStatus,
-      due: synthesisQueue.filter((entry) => (entry.status === "pending" || entry.status === "failed") && entry.runAfter <= now).length,
+      due: synthesisQueue.filter((entry) => entry.status === "pending" && entry.runAfter <= now).length,
       completedResults: observations.filter((entry) => entry.sourceKind === "synthesis_result").length,
       failedWithError: synthesisQueue.filter((entry) => entry.status === "failed" && Boolean(entry.lastError)).length,
       oldestPendingAgeMs: oldestAge(pendingSynthesisAges, now)

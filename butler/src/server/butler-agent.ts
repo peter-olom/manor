@@ -92,11 +92,12 @@ import type {
   ButlerToolUiEffect,
   ButlerToolView,
   CodexThreadExecutionContractView,
+  JobMemoryPromotionCandidateView,
   ModelOption
 } from "./types.js";
 import { ButlerStateStore } from "./state-store.js";
 import { CodexAppServerClient } from "./codex-client.js";
-import type { PreviewLeaseView, PreviewProofRecordView, PreviewVerificationArtifactView, PreviewVerificationView } from "./types.js";
+import type { PreviewLeaseView, PreviewProofRecordView, PreviewVerificationArtifactView, PreviewVerificationView, ProjectMemoryView } from "./types.js";
 const CALLBACK_RECOVERY_TIMEOUT_MS = 30_000;
 function isButlerAuthRecoveryError(message: string | null): boolean {
   return typeof message === "string" && /\b(auth|authentication|token|signing in)\b/i.test(message);
@@ -743,6 +744,21 @@ export class ButlerAgentService extends EventEmitter {
   private getToolAccess(): ButlerAgentToolAccess { return this as unknown as ButlerAgentToolAccess; }
 
   private getSessionAccess(): ButlerAgentSessionAccess { return this as unknown as ButlerAgentSessionAccess; }
+
+  resolveMemoryPromotion(candidateId: string, accepted: boolean): { candidate: JobMemoryPromotionCandidateView; projectMemory: ProjectMemoryView | null } | null {
+    const candidate = this.store.resolvePromotionCandidate(candidateId, accepted);
+    if (!candidate) return null;
+    this.memoryScheduler?.observePromotionResolved({
+      candidateId: candidate.id,
+      accepted,
+      projectId: candidate.projectId,
+      projectLabel: candidate.projectLabel,
+      threadId: candidate.threadId,
+      summary: candidate.summary,
+      details: candidate.details
+    });
+    return { candidate, projectMemory: this.store.getProjectMemory(candidate.projectId) };
+  }
 
   private noteThreadFocus(threadId: string, reason?: string): void {
     const thread = this.store.getThread(threadId);

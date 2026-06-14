@@ -939,6 +939,10 @@ export interface MemorySynthesisConfig {
   maxInputChars: number;
   maxCandidatesPerRun: number;
   autoPromoteHighConfidence: boolean;
+  promotionAutoResolve: boolean;
+  promotionBatchSize: number;
+  promotionMaxBatchesPerRun: number;
+  promotionIntervalMs: number;
 }
 
 export type ScratchPadItemStatus = "captured" | "exploring" | "ready_for_review" | "accepted" | "parked" | "dismissed";

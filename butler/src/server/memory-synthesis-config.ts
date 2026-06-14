@@ -21,6 +21,7 @@ export function resolveMemorySynthesisModel(env: NodeJS.ProcessEnv = process.env
 }
 
 export function readMemorySynthesisConfig(env: NodeJS.ProcessEnv = process.env): MemorySynthesisConfig {
+  const legacyAutoPromote = boolFromEnv(env.MANOR_MEMORY_SYNTHESIS_AUTO_PROMOTE_HIGH_CONFIDENCE, false);
   return {
     enabled: boolFromEnv(env.MANOR_MEMORY_SYNTHESIS_ENABLED ?? env.MANOR_MEMORY_REVIEW_ENABLED, true),
     provider: "codex_exec",
@@ -29,6 +30,10 @@ export function readMemorySynthesisConfig(env: NodeJS.ProcessEnv = process.env):
     timeoutMs: intFromEnv(env.MANOR_MEMORY_SYNTHESIS_TIMEOUT_MS, 90_000, 5_000, 10 * 60_000),
     maxInputChars: intFromEnv(env.MANOR_MEMORY_SYNTHESIS_MAX_INPUT_CHARS, 16_000, 2_000, 200_000),
     maxCandidatesPerRun: intFromEnv(env.MANOR_MEMORY_SYNTHESIS_MAX_CANDIDATES, 6, 1, 50),
-    autoPromoteHighConfidence: boolFromEnv(env.MANOR_MEMORY_SYNTHESIS_AUTO_PROMOTE_HIGH_CONFIDENCE, false)
+    autoPromoteHighConfidence: legacyAutoPromote,
+    promotionAutoResolve: boolFromEnv(env.MANOR_MEMORY_PROMOTION_AUTO_RESOLVE, true),
+    promotionBatchSize: intFromEnv(env.MANOR_MEMORY_PROMOTION_BATCH_SIZE, 20, 1, 50),
+    promotionMaxBatchesPerRun: intFromEnv(env.MANOR_MEMORY_PROMOTION_MAX_BATCHES_PER_RUN, 10, 1, 25),
+    promotionIntervalMs: intFromEnv(env.MANOR_MEMORY_PROMOTION_INTERVAL_MS, 10_000, 1_000, 5 * 60_000)
   };
 }

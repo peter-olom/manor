@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { readMemorySynthesisConfig } from "../../src/server/memory-synthesis-config.js";
+import { recordMemoryDebugTrace } from "../../src/server/memory-debug-traces.js";
 import { MemoryUpdateScheduler } from "../../src/server/memory-update-scheduler.js";
 import { retrieveButlerMemory } from "../../src/server/memory-retrieval.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
@@ -25,6 +26,10 @@ function testConfig(overrides: Partial<MemorySynthesisConfig> = {}): MemorySynth
     maxInputChars: 16_000,
     maxCandidatesPerRun: 6,
     autoPromoteHighConfidence: false,
+    promotionAutoResolve: true,
+    promotionBatchSize: 20,
+    promotionMaxBatchesPerRun: 10,
+    promotionIntervalMs: 10_000,
     ...overrides
   };
 }
@@ -53,10 +58,12 @@ test("memory synthesis config normalizes model labels and honors env overrides",
   assert.equal(readMemorySynthesisConfig({}).model, null);
   assert.equal(readMemorySynthesisConfig({ MANOR_MEMORY_REVIEW_MODEL: "5.4 mini" }).model, "gpt-5.4-mini");
   assert.equal(readMemorySynthesisConfig({ MANOR_MEMORY_REVIEW_MODEL: "legacy model" }).model, null);
-  const config = readMemorySynthesisConfig({ MANOR_MEMORY_SYNTHESIS_MODEL: "gpt-5.4-mini", MANOR_MEMORY_SYNTHESIS_ENABLED: "0", MANOR_MEMORY_SYNTHESIS_MAX_CANDIDATES: "12" });
+  assert.equal(readMemorySynthesisConfig({}).promotionAutoResolve, true);
+  const config = readMemorySynthesisConfig({ MANOR_MEMORY_SYNTHESIS_MODEL: "gpt-5.4-mini", MANOR_MEMORY_SYNTHESIS_ENABLED: "0", MANOR_MEMORY_SYNTHESIS_MAX_CANDIDATES: "12", MANOR_MEMORY_PROMOTION_BATCH_SIZE: "7" });
   assert.equal(config.model, "gpt-5.4-mini");
   assert.equal(config.enabled, false);
   assert.equal(config.maxCandidatesPerRun, 12);
+  assert.equal(config.promotionBatchSize, 7);
 });
 
 test("scheduler writes observations, task projection, queue entries, and dedupes by idempotency key", async () => {
@@ -138,6 +145,85 @@ test("legacy memory retrieval remains compatible while graph search adds relatio
   const graph = store.searchMemoryGraph({ projectId: "project-1", query: "Campaign.billingSummary" });
   assert.equal(graph.observations.some((entry) => entry.summary.includes("Campaign.billingSummary")), true);
   assert.equal(graph.tasks.some((entry) => entry.threadId === "thread-legacy"), true);
+});
+
+test("graph search excludes memory debug trace observations", async () => {
+  const { store } = await createStore();
+  store.recordMemoryObservation({
+    idempotencyKey: "real-observation",
+    projectId: "project-1",
+    projectLabel: "Project One",
+    threadId: "thread-real",
+    sourceKind: "harness_note",
+    sourceId: "note",
+    summary: "Real project memory mentions checkout callback verification."
+  });
+  recordMemoryDebugTrace(store, {
+    kind: "synthesis",
+    status: "completed",
+    projectId: "project-1",
+    projectLabel: "Project One",
+    threadId: "thread-debug",
+    sourceId: "debug-source",
+    reason: "debug-only marker",
+    promptVersion: "test",
+    model: null,
+    createdAt: 1,
+    completedAt: 2,
+    durationMs: 1,
+    prompt: "debug-only marker",
+    input: { marker: "debug-only marker" },
+    rawOutput: null,
+    normalizedOutput: null,
+    decisions: [],
+    persisted: { observationIds: [], candidateIds: [], entityIds: [], relationshipIds: [], jobEntryIds: [] },
+    error: null,
+    warnings: []
+  });
+
+  assert.equal(store.searchMemoryGraph({ projectId: "project-1", query: "debug-only marker" }).observations.length, 0);
+  assert.equal(store.searchMemoryGraph({ projectId: "project-1", query: "checkout callback" }).observations[0]?.summary, "Real project memory mentions checkout callback verification.");
+});
+
+test("accepted promotion resolution persists project memory without creating another synthesis candidate", async () => {
+  const { store, stateDir } = await createStore();
+  let synthesisRuns = 0;
+  const scheduler = new MemoryUpdateScheduler({
+    store,
+    stateDir,
+    codexHomeDir: stateDir,
+    config: testConfig(),
+    runner: async () => {
+      synthesisRuns += 1;
+      return { candidates: [{ kind: "decision", summary: "Loop candidate", details: null, confidence: "high", reason: "Should not run for promotion resolution." }], entities: [], relationships: [] };
+    }
+  });
+  store.upsertThreadSummary({ id: "thread-promotion", cwd: "/workspace", createdAt: 1, status: "running" });
+  store.setThreadExecutionContract("thread-promotion", contract("thread-promotion"));
+  const candidate = store.submitJobMemoryPromotionCandidate("thread-promotion", {
+    kind: "decision",
+    summary: "PR 17 fixed memory synthesis schema handling.",
+    sourceEntryId: "synthesis:syn-test:candidate:0",
+    context: { projectId: "project-1", projectLabel: "Project One" }
+  });
+  const resolved = store.resolvePromotionCandidate(candidate.id, true);
+  assert.equal(resolved?.status, "accepted");
+
+  scheduler.observePromotionResolved({
+    candidateId: candidate.id,
+    accepted: true,
+    projectId: "project-1",
+    projectLabel: "Project One",
+    threadId: "thread-promotion",
+    summary: candidate.summary,
+    details: candidate.details
+  });
+  await scheduler.processDueQueue();
+
+  assert.equal(synthesisRuns, 0);
+  assert.equal(store.getProjectMemory("project-1")?.entries[0]?.summary, "PR 17 fixed memory synthesis schema handling.");
+  assert.equal(store.listMemoryGraph().synthesisQueue.some((entry) => entry.reason === "promotion resolved"), false);
+  assert.equal(store.getJobMemory("thread-promotion")?.promotionCandidates.filter((entry) => entry.status === "pending").length, 0);
 });
 
 test("memory synthesis exec normalizes display model labels before invoking Codex", async () => {

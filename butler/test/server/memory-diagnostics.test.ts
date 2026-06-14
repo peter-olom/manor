@@ -63,6 +63,22 @@ async function seedDiagnosticStore(): Promise<{ store: ButlerStateStore; from: n
     reason: "checkpoint synthesis"
   });
   store.updateMemorySynthesisQueueEntry(synthesis.id, { status: "completed", completedAt: Date.now() });
+  const failedSynthesis = store.enqueueMemorySynthesis({
+    idempotencyKey: "synthesis-failed-observation",
+    projectId: "project-1",
+    threadId: "thread-1",
+    sourceObservationId: observation.id,
+    reason: "failed synthesis"
+  });
+  store.updateMemorySynthesisQueueEntry(failedSynthesis.id, { status: "failed", lastError: "schema error", runAfter: from + 2 });
+  store.enqueueMemorySynthesis({
+    idempotencyKey: "synthesis-pending-observation",
+    projectId: "project-1",
+    threadId: "thread-1",
+    sourceObservationId: observation.id,
+    reason: "pending synthesis",
+    runAfter: from + 3
+  });
   store.recordMemoryObservation({
     idempotencyKey: "synthesis-result",
     projectId: "project-1",
@@ -105,7 +121,11 @@ test("memory diagnostics summarizes pipeline counts and date filtering", async (
   assert.equal(diagnostics.observations.total, 2);
   assert.equal(diagnostics.observations.bySourceKind.harness_checkpoint, 1);
   assert.equal(diagnostics.synthesis.byStatus.completed, 1);
+  assert.equal(diagnostics.synthesis.byStatus.failed, 1);
+  assert.equal(diagnostics.synthesis.byStatus.pending, 1);
+  assert.equal(diagnostics.synthesis.due, 1);
   assert.equal(diagnostics.synthesis.completedResults, 1);
+  assert.equal(diagnostics.synthesis.failedWithError, 1);
   assert.equal(diagnostics.candidates.total, 2);
   assert.equal(diagnostics.candidates.byStatus.pending, 1);
   assert.equal(diagnostics.candidates.byStatus.accepted, 1);

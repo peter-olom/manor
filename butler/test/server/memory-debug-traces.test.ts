@@ -24,7 +24,11 @@ function testConfig(): MemorySynthesisConfig {
     timeoutMs: 90_000,
     maxInputChars: 16_000,
     maxCandidatesPerRun: 1,
-    autoPromoteHighConfidence: false
+    autoPromoteHighConfidence: false,
+    promotionAutoResolve: true,
+    promotionBatchSize: 20,
+    promotionMaxBatchesPerRun: 10,
+    promotionIntervalMs: 10_000
   };
 }
 

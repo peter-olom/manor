@@ -182,6 +182,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "focusButler", description: "Keeps memory retrieval scoped before Butler answers or acts." }]
   },
   {
+    name: "resolve_memory_promotion",
+    label: "Resolve memory promotion",
+    description: "Accept or reject one pending memory promotion candidate after explicit operator instruction.",
+    uiEffects: [{ kind: "refreshThreads", description: "Refreshes memory state after a promotion decision." }]
+  },
+  {
     name: "memory_diagnostics",
     label: "Memory diagnostics",
     description: "Summarize memory ingestion, synthesis, promotion candidates, accepted entries, and stale or failed memory work.",

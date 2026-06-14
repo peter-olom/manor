@@ -337,7 +337,7 @@ export class MemoryUpdateScheduler {
       summary: `${input.accepted ? "Accepted" : "Rejected"} memory promotion: ${input.summary}`,
       details: input.details,
       payload: { accepted: input.accepted, candidateId: input.candidateId }
-    }, { semanticReview: input.accepted ? "high" : "none", reason: "promotion resolved" });
+    }, { semanticReview: "none", reason: "promotion resolved" });
   }
 
   async beforeThreadDelete(context: ThreadDeleteContext, reason = "operator_delete"): Promise<MemoryObservationView> {

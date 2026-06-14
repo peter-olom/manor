@@ -203,7 +203,7 @@ export function formatButlerMemoryRetrieval(view: ButlerMemoryRetrievalView): st
     lines.push(
       "Pending memory outcomes:",
       ...view.pendingPromotionCandidates.map((candidate, index) => {
-        const provenance = includeProvenance ? ` | created=${formatTime(candidate.createdAt)} | updated=${formatTime(candidate.updatedAt)}` : "";
+        const provenance = includeProvenance ? ` | id=${candidate.id} | created=${formatTime(candidate.createdAt)} | updated=${formatTime(candidate.updatedAt)}` : "";
         return `${index + 1}. ${candidate.projectLabel} | ${candidate.kind}${provenance} | ${candidate.summary}`;
       })
     );

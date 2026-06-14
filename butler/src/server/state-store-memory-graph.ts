@@ -109,6 +109,10 @@ function observationText(observation: MemoryObservationView): string {
     .join("\n");
 }
 
+function isDebugTraceObservation(observation: MemoryObservationView): boolean {
+  return (observation.payload as { kind?: unknown }).kind === "memory_debug_trace";
+}
+
 function entityText(entity: MemoryEntityView): string {
   return [entity.type, entity.name, entity.canonicalKey, entity.summary, ...entity.aliases].filter(Boolean).join("\n");
 }
@@ -359,7 +363,7 @@ export function searchStateStoreMemoryGraph(
   const tokens = tokenize(query);
   const warnings: string[] = [];
 
-  const scopedObservations = current.observations.filter((entry) => (!projectId || entry.projectId === projectId) && (!threadId || entry.threadId === threadId));
+  const scopedObservations = current.observations.filter((entry) => !isDebugTraceObservation(entry) && (!projectId || entry.projectId === projectId) && (!threadId || entry.threadId === threadId));
   const scopedEntities = current.entities.filter((entry) => !projectId || entry.projectId === projectId);
   const scopedRelationships = current.relationships.filter((entry) => !projectId || entry.projectId === projectId);
   const scopedTasks = current.tasks.filter((entry) => (!projectId || entry.projectId === projectId) && (!threadId || entry.threadId === threadId));

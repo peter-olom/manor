@@ -31,6 +31,7 @@ export function memoryCodexModelArgs(value: string | null | undefined): string[]
 export const MEMORY_CODEX_MODEL_ENV_KEYS = [
   "MANOR_MEMORY_REVIEW_MODEL",
   "MANOR_MEMORY_SYNTHESIS_MODEL",
+  "MANOR_MEMORY_PROMOTION_MODEL",
   "MANOR_MEMORY_EXEC_MODEL"
 ] as const;
 

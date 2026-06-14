@@ -21,8 +21,10 @@ import type {
   ButlerThinkingLevel,
   ButlerToolUiEffect,
   CodexThreadExecutionContractView,
+  JobMemoryPromotionCandidateView,
   ManorRestartRequestView,
-  PreviewVerificationView
+  PreviewVerificationView,
+  ProjectMemoryView
 } from "./types.js";
 import type { CodexAppServerClient } from "./codex-client.js";
 import type { ButlerOperatorThreadGuard, ProofScreenshotReview, ResolvedPreviewProof, SupervisionSmokePlan } from "./butler-agent-helpers.js";
@@ -150,6 +152,7 @@ export type ButlerAgentToolAccess = {
     details?: unknown;
   }): ManorRestartRequestView;
   startAuthorizedManorRestart(requestId: string): Promise<{ restartRequest: ManorRestartRequestView; run: ManorRestartRun }>;
+  resolveMemoryPromotion(candidateId: string, accepted: boolean): { candidate: JobMemoryPromotionCandidateView; projectMemory: ProjectMemoryView | null } | null;
   buildSupervisionSmokeTask(totalFollowUps: number): string;
   buildDelegationDeveloperInstructions(workspace: { cwd: string; branchName: string | null }, task: string): Promise<string>;
   getActiveOperatorThreadGuard(): ButlerOperatorThreadGuard | null;
