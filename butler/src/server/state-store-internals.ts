@@ -21,6 +21,11 @@ import {
 } from "./state-store-helpers.js";
 import { loadStateStoreSqliteMemory, persistStateStoreSqliteMemory } from "./state-store-sqlite-memory.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
+import {
+  normalizeExecutionContract,
+  normalizeSupervisionChecklist,
+  normalizeWorkerEvidence
+} from "./state-store-contract-normalizers.js";
 import type {
   ButlerWindow,
   CodexEventEntry,
@@ -28,15 +33,23 @@ import type {
   CodexThreadExecutionContractView,
   CodexThreadRecord,
   CodexThreadSummary,
+  CodexWorkerEvidenceView,
   CodexWorkerReportView,
   ButlerMemoryEntryView,
   JobMemoryDecisionView,
   JobMemoryEntryView,
   JobMemoryPromotionCandidateView,
   JobMemoryView,
+  MemoryEntityView,
+  MemoryObservationView,
+  MemoryRelationshipView,
+  MemorySynthesisQueueEntryView,
+  MemoryTaskEventView,
+  MemoryTaskView,
   PersistedUiState,
   PreviewLeaseView,
   PreviewProofRecordView,
+  PreviewProofReviewView,
   PreviewVerificationArtifactView,
   ProjectArtifactView,
   ProjectMemoryEntryView,
@@ -63,6 +76,15 @@ export type StateStoreInternalAccess = {
   persistedJobMemoriesByThreadId: Map<string, JobMemoryView>;
   persistedProjectMemoriesByProjectId: Map<string, ProjectMemoryView>;
   persistedButlerMemoryEntries: ButlerMemoryEntryView[];
+  persistedMemoryObservations: MemoryObservationView[];
+  persistedMemoryObservationIdsByKey: Map<string, string>;
+  persistedMemoryEntitiesById: Map<string, MemoryEntityView>;
+  persistedMemoryEntityIdsByKey: Map<string, string>;
+  persistedMemoryRelationshipsById: Map<string, MemoryRelationshipView>;
+  persistedMemoryTasksById: Map<string, MemoryTaskView>;
+  persistedMemoryTaskEvents: MemoryTaskEventView[];
+  persistedMemorySynthesisQueueById: Map<string, MemorySynthesisQueueEntryView>;
+  persistedMemorySynthesisQueueIdsByKey: Map<string, string>;
   persistedProjectArtifactsByProjectId: Map<string, ProjectArtifactView[]>;
   persistedProjectPoliciesByProjectId: Map<string, ProjectPolicyView[]>;
   windows: ButlerWindow[];
@@ -82,61 +104,61 @@ export type StateStoreInternalAccess = {
   emit(event: "change"): boolean;
 };
 
-function normalizeSupervisionChecklist(raw: SupervisionChecklistView): SupervisionChecklistView {
-  const now = Date.now();
-  const items = raw.items
-    .filter((item) => item && typeof item === "object" && typeof item.text === "string" && item.text.trim())
-    .map((item, index) => {
-      const status: SupervisionChecklistView["items"][number]["status"] =
-        item.status === "accepted" || item.status === "rejected" || item.status === "waived" ? item.status : "pending";
-      return {
-        id: typeof item.id === "string" && item.id.trim() ? item.id.trim() : `point-${index + 1}`,
-        text: item.text.trim(),
-        status,
-        butlerNote: typeof item.butlerNote === "string" && item.butlerNote.trim() ? item.butlerNote.trim() : null,
-        queuedInstruction:
-          typeof item.queuedInstruction === "string" && item.queuedInstruction.trim() ? item.queuedInstruction.trim() : null,
-        decidedAt: typeof item.decidedAt === "number" && Number.isFinite(item.decidedAt) ? item.decidedAt : null,
-        evidence: Array.isArray(item.evidence)
-          ? item.evidence
-              .filter((entry) => entry && typeof entry === "object" && typeof entry.summary === "string")
-              .map((entry) => ({
-                id: typeof entry.id === "string" && entry.id.trim() ? entry.id.trim() : crypto.randomUUID(),
-                source: entry.source === "butler_review" ? ("butler_review" as const) : ("worker_report" as const),
-                summary: entry.summary.trim(),
-                details: typeof entry.details === "string" && entry.details.trim() ? entry.details.trim() : null,
-                reportTurnId: typeof entry.reportTurnId === "string" && entry.reportTurnId.trim() ? entry.reportTurnId.trim() : null,
-                createdAt: typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : now
-              }))
-          : []
-      };
-    });
+function normalizeMemoryObservationSourceKind(value: unknown): MemoryObservationView["sourceKind"] {
+  return value === "operator_message" ||
+    value === "thread_created" ||
+    value === "thread_contract" ||
+    value === "harness_checkpoint" ||
+    value === "harness_decision" ||
+    value === "harness_note" ||
+    value === "harness_report" ||
+    value === "promotion_resolved" ||
+    value === "pre_delete_thread" ||
+    value === "pre_delete_threads" ||
+    value === "pre_clear_chat" ||
+    value === "pre_delete_chat_suffix" ||
+    value === "artifact_saved" ||
+    value === "proof_saved" ||
+    value === "policy_saved" ||
+    value === "synthesis_result"
+    ? value
+    : "system";
+}
 
-  return {
-    threadId: raw.threadId,
-    projectId: typeof raw.projectId === "string" && raw.projectId.trim() ? raw.projectId.trim() : "unknown",
-    projectLabel: typeof raw.projectLabel === "string" && raw.projectLabel.trim() ? raw.projectLabel.trim() : "Unknown",
-    requestedTask: typeof raw.requestedTask === "string" && raw.requestedTask.trim() ? raw.requestedTask.trim() : "Carry out the delegated task.",
-    items,
-    heartbeat: {
-      lastThreadEventAt:
-        typeof raw.heartbeat?.lastThreadEventAt === "number" && Number.isFinite(raw.heartbeat.lastThreadEventAt)
-          ? raw.heartbeat.lastThreadEventAt
-          : null,
-      lastWorkerReportAt:
-        typeof raw.heartbeat?.lastWorkerReportAt === "number" && Number.isFinite(raw.heartbeat.lastWorkerReportAt)
-          ? raw.heartbeat.lastWorkerReportAt
-          : null,
-      lastKnownThreadStatus:
-        raw.heartbeat?.lastKnownThreadStatus === "active" || raw.heartbeat?.lastKnownThreadStatus === "idle"
-          ? raw.heartbeat.lastKnownThreadStatus
-          : "unknown",
-      stale: Boolean(raw.heartbeat?.stale)
-    },
-    reviewState: raw.reviewState === "reviewed" ? "reviewed" : "needs_review",
-    createdAt: typeof raw.createdAt === "number" && Number.isFinite(raw.createdAt) ? raw.createdAt : now,
-    updatedAt: typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : now
-  };
+function normalizeMemoryEntityType(value: unknown): MemoryEntityView["type"] {
+  return value === "agent" ||
+    value === "artifact" ||
+    value === "branch" ||
+    value === "component" ||
+    value === "decision" ||
+    value === "environment" ||
+    value === "feature" ||
+    value === "person" ||
+    value === "policy" ||
+    value === "project" ||
+    value === "repo" ||
+    value === "service" ||
+    value === "task" ||
+    value === "thread"
+    ? value
+    : "unknown";
+}
+
+function normalizeMemoryTaskStatus(value: unknown): MemoryTaskView["status"] {
+  return value === "queued" ||
+    value === "in_progress" ||
+    value === "blocked" ||
+    value === "completed_pending_review" ||
+    value === "completed" ||
+    value === "archived" ||
+    value === "deleted" ||
+    value === "stale"
+    ? value
+    : "unknown";
+}
+
+function normalizeMemorySynthesisQueueStatus(value: unknown): MemorySynthesisQueueEntryView["status"] {
+  return value === "running" || value === "completed" || value === "failed" || value === "skipped" ? value : "pending";
 }
 
 export function reconcileStateStoreThreadWindows(access: StateStoreInternalAccess): boolean {
@@ -448,6 +470,27 @@ export function normalizeStateStorePreviewProofRecord(
     previewTitle: typeof record.previewTitle === "string" && record.previewTitle.trim() ? record.previewTitle.trim() : "Preview",
     stackId: typeof record.stackId === "string" && record.stackId.trim() ? record.stackId.trim() : null,
     verification,
+    proofReviews: Array.isArray(record.proofReviews)
+      ? record.proofReviews
+          .filter((review) => review && typeof review === "object" && typeof review.visibleState === "string")
+          .map((review) => {
+            const verdict: PreviewProofReviewView["verdict"] =
+              review.verdict === "credible" || review.verdict === "failed" ? review.verdict : "unclear";
+            return {
+              id: typeof review.id === "string" && review.id.trim() ? review.id.trim() : crypto.randomUUID(),
+              verdict,
+              visibleState: review.visibleState.trim(),
+              evidence: typeof review.evidence === "string" ? review.evidence.trim() : "",
+              concern: typeof review.concern === "string" ? review.concern.trim() : "",
+              expectedOutcome:
+                typeof review.expectedOutcome === "string" && review.expectedOutcome.trim() ? review.expectedOutcome.trim() : null,
+              reviewedAt: typeof review.reviewedAt === "number" && Number.isFinite(review.reviewedAt) ? review.reviewedAt : Date.now(),
+              modelId: typeof review.modelId === "string" ? review.modelId : "",
+              modelProvider: typeof review.modelProvider === "string" ? review.modelProvider : ""
+            };
+          })
+          .slice(-8)
+      : [],
     createdAt,
     updatedAt: Math.max(updatedAt, createdAt)
   };
@@ -488,6 +531,7 @@ export function recordStateStorePreviewProofFromLease(
       previewTitle: lease.title,
       stackId: lease.stackId,
       verification,
+      proofReviews: [],
       createdAt: verification.checkedAt,
       updatedAt: verification.checkedAt
     },
@@ -616,7 +660,17 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     access.runtimeCleanupTasks.clear();
     for (const task of Array.isArray(data.runtimeCleanupTasks) ? data.runtimeCleanupTasks : []) {
       if (task && typeof task === "object" && typeof task.id === "string" && typeof task.threadId === "string") {
-        access.runtimeCleanupTasks.set(task.id, task as RuntimeCleanupTaskView);
+        const cleanupTask = task as RuntimeCleanupTaskView;
+        access.runtimeCleanupTasks.set(cleanupTask.id, {
+          ...cleanupTask,
+          threadCreatedAt:
+            typeof cleanupTask.threadCreatedAt === "number" && Number.isFinite(cleanupTask.threadCreatedAt)
+              ? cleanupTask.threadCreatedAt
+              : null,
+          proofArtifactPaths: Array.isArray(cleanupTask.proofArtifactPaths)
+            ? [...new Set(cleanupTask.proofArtifactPaths.filter((filePath) => typeof filePath === "string" && filePath.trim()))]
+            : []
+        });
       }
     }
     access.persistedSupervisionByThreadId.clear();
@@ -626,6 +680,15 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     access.persistedJobMemoriesByThreadId.clear();
     access.persistedProjectMemoriesByProjectId.clear();
     access.persistedButlerMemoryEntries.splice(0, access.persistedButlerMemoryEntries.length);
+    access.persistedMemoryObservations.splice(0, access.persistedMemoryObservations.length);
+    access.persistedMemoryObservationIdsByKey.clear();
+    access.persistedMemoryEntitiesById.clear();
+    access.persistedMemoryEntityIdsByKey.clear();
+    access.persistedMemoryRelationshipsById.clear();
+    access.persistedMemoryTasksById.clear();
+    access.persistedMemoryTaskEvents.splice(0, access.persistedMemoryTaskEvents.length);
+    access.persistedMemorySynthesisQueueById.clear();
+    access.persistedMemorySynthesisQueueIdsByKey.clear();
     access.persistedProjectArtifactsByProjectId.clear();
     access.persistedProjectPoliciesByProjectId.clear();
     for (const [threadId, policy] of Object.entries(data.supervisionByThreadId ?? {})) {
@@ -652,6 +715,11 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
           status: report.status,
           summary: report.summary.trim(),
           details: typeof report.details === "string" && report.details.trim() ? report.details.trim() : null,
+          evidence: Array.isArray(report.evidence)
+            ? report.evidence
+                .map((entry) => normalizeWorkerEvidence(entry, { createdAt: typeof report.createdAt === "number" ? report.createdAt : Date.now() }))
+                .filter((entry): entry is CodexWorkerEvidenceView => Boolean(entry))
+            : [],
           createdAt: typeof report.createdAt === "number" ? report.createdAt : Date.now(),
           updatedAt: typeof report.updatedAt === "number" ? report.updatedAt : Date.now()
         }))
@@ -669,21 +737,7 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
         typeof contract.threadId === "string" &&
         typeof contract.requestedTask === "string"
       ) {
-        access.persistedExecutionContractsByThreadId.set(threadId, {
-          ...contract,
-          requestedTask:
-            typeof contract.requestedTask === "string" && contract.requestedTask.trim()
-              ? contract.requestedTask.trim()
-              : "Carry out the delegated task.",
-          operatorGoal: typeof contract.operatorGoal === "string" && contract.operatorGoal.trim() ? contract.operatorGoal.trim() : null,
-          acceptancePoints: Array.isArray(contract.acceptancePoints)
-            ? contract.acceptancePoints.filter((point): point is string => typeof point === "string" && Boolean(point.trim()))
-            : [],
-          proofExpectation: contract.proofExpectation === "requested" ? "requested" : "none",
-          proofExpectationLabel:
-            contract.proofExpectation === "requested" ? "proof requested" : "no explicit proof request",
-          notes: Array.isArray(contract.notes) ? contract.notes.filter((note): note is string => typeof note === "string") : []
-        });
+        access.persistedExecutionContractsByThreadId.set(threadId, normalizeExecutionContract(contract));
       }
     }
     for (const [threadId, checklist] of Object.entries(data.supervisionChecklistsByThreadId ?? {})) {
@@ -845,6 +899,112 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
         })
         .slice(-100)
     );
+    const memoryGraph = data.memoryGraph ?? {};
+    for (const raw of Array.isArray(memoryGraph.observations) ? memoryGraph.observations : []) {
+      if (!raw || typeof raw !== "object" || typeof raw.id !== "string" || typeof raw.idempotencyKey !== "string" || typeof raw.summary !== "string") {
+        continue;
+      }
+      const observation: MemoryObservationView = {
+        id: raw.id,
+        idempotencyKey: raw.idempotencyKey,
+        projectId: typeof raw.projectId === "string" && raw.projectId.trim() ? raw.projectId.trim() : "unknown",
+        projectLabel: typeof raw.projectLabel === "string" && raw.projectLabel.trim() ? raw.projectLabel.trim() : "Unknown",
+        threadId: typeof raw.threadId === "string" && raw.threadId.trim() ? raw.threadId.trim() : null,
+        sourceKind: normalizeMemoryObservationSourceKind(raw.sourceKind),
+        sourceId: typeof raw.sourceId === "string" && raw.sourceId.trim() ? raw.sourceId.trim() : raw.id,
+        summary: raw.summary.trim(),
+        details: typeof raw.details === "string" && raw.details.trim() ? raw.details.trim() : null,
+        payload: raw.payload && typeof raw.payload === "object" && !Array.isArray(raw.payload) ? raw.payload as Record<string, unknown> : {},
+        observedAt: typeof raw.observedAt === "number" && Number.isFinite(raw.observedAt) ? raw.observedAt : Date.now(),
+        createdAt: typeof raw.createdAt === "number" && Number.isFinite(raw.createdAt) ? raw.createdAt : Date.now(),
+        durable: raw.durable !== false
+      };
+      access.persistedMemoryObservations.push(observation);
+      access.persistedMemoryObservationIdsByKey.set(observation.idempotencyKey, observation.id);
+    }
+    for (const raw of Array.isArray(memoryGraph.entities) ? memoryGraph.entities : []) {
+      if (!raw || typeof raw !== "object" || typeof raw.id !== "string" || typeof raw.name !== "string" || typeof raw.canonicalKey !== "string") continue;
+      const entity: MemoryEntityView = {
+        id: raw.id,
+        projectId: typeof raw.projectId === "string" && raw.projectId.trim() ? raw.projectId.trim() : "unknown",
+        type: normalizeMemoryEntityType(raw.type),
+        name: raw.name.trim(),
+        canonicalKey: raw.canonicalKey.trim(),
+        aliases: normalizeStringList(raw.aliases, 20),
+        summary: typeof raw.summary === "string" && raw.summary.trim() ? raw.summary.trim() : null,
+        sourceObservationId: typeof raw.sourceObservationId === "string" && raw.sourceObservationId.trim() ? raw.sourceObservationId.trim() : "",
+        createdAt: typeof raw.createdAt === "number" ? raw.createdAt : Date.now(),
+        updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now()
+      };
+      access.persistedMemoryEntitiesById.set(entity.id, entity);
+      access.persistedMemoryEntityIdsByKey.set(`${entity.projectId}:${entity.canonicalKey}`, entity.id);
+    }
+    for (const raw of Array.isArray(memoryGraph.relationships) ? memoryGraph.relationships : []) {
+      if (!raw || typeof raw !== "object" || typeof raw.id !== "string" || typeof raw.predicate !== "string") continue;
+      const relationship: MemoryRelationshipView = {
+        id: raw.id,
+        projectId: typeof raw.projectId === "string" && raw.projectId.trim() ? raw.projectId.trim() : "unknown",
+        sourceEntityId: typeof raw.sourceEntityId === "string" ? raw.sourceEntityId : "",
+        predicate: raw.predicate.trim(),
+        targetEntityId: typeof raw.targetEntityId === "string" ? raw.targetEntityId : "",
+        sourceObservationId: typeof raw.sourceObservationId === "string" ? raw.sourceObservationId : "",
+        confidence: typeof raw.confidence === "number" && Number.isFinite(raw.confidence) ? Math.max(0, Math.min(1, raw.confidence)) : 1,
+        validFrom: typeof raw.validFrom === "number" ? raw.validFrom : null,
+        validTo: typeof raw.validTo === "number" ? raw.validTo : null,
+        createdAt: typeof raw.createdAt === "number" ? raw.createdAt : Date.now(),
+        updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now()
+      };
+      access.persistedMemoryRelationshipsById.set(relationship.id, relationship);
+    }
+    for (const raw of Array.isArray(memoryGraph.tasks) ? memoryGraph.tasks : []) {
+      if (!raw || typeof raw !== "object" || typeof raw.id !== "string" || typeof raw.title !== "string") continue;
+      const task: MemoryTaskView = {
+        id: raw.id,
+        projectId: typeof raw.projectId === "string" && raw.projectId.trim() ? raw.projectId.trim() : "unknown",
+        projectLabel: typeof raw.projectLabel === "string" && raw.projectLabel.trim() ? raw.projectLabel.trim() : "Unknown",
+        threadId: typeof raw.threadId === "string" && raw.threadId.trim() ? raw.threadId.trim() : null,
+        title: raw.title.trim(),
+        status: normalizeMemoryTaskStatus(raw.status),
+        currentStep: typeof raw.currentStep === "string" && raw.currentStep.trim() ? raw.currentStep.trim() : null,
+        blocker: typeof raw.blocker === "string" && raw.blocker.trim() ? raw.blocker.trim() : null,
+        sourceObservationId: typeof raw.sourceObservationId === "string" ? raw.sourceObservationId : "",
+        createdAt: typeof raw.createdAt === "number" ? raw.createdAt : Date.now(),
+        updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now()
+      };
+      access.persistedMemoryTasksById.set(task.id, task);
+    }
+    for (const raw of Array.isArray(memoryGraph.taskEvents) ? memoryGraph.taskEvents : []) {
+      if (!raw || typeof raw !== "object" || typeof raw.id !== "string" || typeof raw.taskId !== "string" || typeof raw.summary !== "string") continue;
+      access.persistedMemoryTaskEvents.push({
+        id: raw.id,
+        taskId: raw.taskId,
+        eventType: typeof raw.eventType === "string" && raw.eventType.trim() ? raw.eventType.trim() : "event",
+        summary: raw.summary.trim(),
+        observationId: typeof raw.observationId === "string" ? raw.observationId : "",
+        at: typeof raw.at === "number" ? raw.at : Date.now()
+      });
+    }
+    for (const raw of Array.isArray(memoryGraph.synthesisQueue) ? memoryGraph.synthesisQueue : []) {
+      if (!raw || typeof raw !== "object" || typeof raw.id !== "string" || typeof raw.idempotencyKey !== "string") continue;
+      const queueEntry: MemorySynthesisQueueEntryView = {
+        id: raw.id,
+        idempotencyKey: raw.idempotencyKey,
+        projectId: typeof raw.projectId === "string" && raw.projectId.trim() ? raw.projectId.trim() : "unknown",
+        threadId: typeof raw.threadId === "string" && raw.threadId.trim() ? raw.threadId.trim() : null,
+        sourceObservationId: typeof raw.sourceObservationId === "string" ? raw.sourceObservationId : "",
+        reason: typeof raw.reason === "string" && raw.reason.trim() ? raw.reason.trim() : "memory synthesis",
+        priority: raw.priority === "high" || raw.priority === "low" ? raw.priority : "normal",
+        status: normalizeMemorySynthesisQueueStatus(raw.status),
+        attempts: typeof raw.attempts === "number" ? Math.max(0, Math.trunc(raw.attempts)) : 0,
+        lastError: typeof raw.lastError === "string" && raw.lastError.trim() ? raw.lastError.trim() : null,
+        createdAt: typeof raw.createdAt === "number" ? raw.createdAt : Date.now(),
+        updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now(),
+        runAfter: typeof raw.runAfter === "number" ? raw.runAfter : Date.now(),
+        completedAt: typeof raw.completedAt === "number" ? raw.completedAt : null
+      };
+      access.persistedMemorySynthesisQueueById.set(queueEntry.id, queueEntry);
+      access.persistedMemorySynthesisQueueIdsByKey.set(queueEntry.idempotencyKey, queueEntry.id);
+    }
     for (const [projectId, artifacts] of Object.entries(data.projectArtifactsByProjectId ?? {})) {
       const entries = (Array.isArray(artifacts) ? artifacts : [])
         .filter(
@@ -1003,6 +1163,15 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     access.persistedJobMemoriesByThreadId.clear();
     access.persistedProjectMemoriesByProjectId.clear();
     access.persistedButlerMemoryEntries.splice(0, access.persistedButlerMemoryEntries.length);
+    access.persistedMemoryObservations.splice(0, access.persistedMemoryObservations.length);
+    access.persistedMemoryObservationIdsByKey.clear();
+    access.persistedMemoryEntitiesById.clear();
+    access.persistedMemoryEntityIdsByKey.clear();
+    access.persistedMemoryRelationshipsById.clear();
+    access.persistedMemoryTasksById.clear();
+    access.persistedMemoryTaskEvents.splice(0, access.persistedMemoryTaskEvents.length);
+    access.persistedMemorySynthesisQueueById.clear();
+    access.persistedMemorySynthesisQueueIdsByKey.clear();
     access.persistedProjectArtifactsByProjectId.clear();
     access.persistedProjectPoliciesByProjectId.clear();
     access.threadInventoryReady = false;
@@ -1027,12 +1196,20 @@ export async function persistStateStoreNow(access: StateStoreInternalAccess): Pr
     jobMemoriesByThreadId: Object.fromEntries([...access.persistedJobMemoriesByThreadId.entries()].map(([threadId, memory]) => [threadId, memory])),
     projectMemoriesByProjectId: Object.fromEntries([...access.persistedProjectMemoriesByProjectId.entries()].map(([projectId, memory]) => [projectId, memory])),
     butlerMemoryEntries: access.persistedButlerMemoryEntries,
+    memoryGraph: {
+      observations: access.persistedMemoryObservations,
+      entities: [...access.persistedMemoryEntitiesById.values()],
+      relationships: [...access.persistedMemoryRelationshipsById.values()],
+      tasks: [...access.persistedMemoryTasksById.values()],
+      taskEvents: access.persistedMemoryTaskEvents,
+      synthesisQueue: [...access.persistedMemorySynthesisQueueById.values()]
+    },
     projectArtifactsByProjectId: Object.fromEntries([...access.persistedProjectArtifactsByProjectId.entries()].map(([projectId, artifacts]) => [projectId, artifacts])),
     projectPoliciesByProjectId: Object.fromEntries([...access.persistedProjectPoliciesByProjectId.entries()].map(([projectId, policies]) => [projectId, policies]))
   };
   await fs.mkdir(path.dirname(access.uiStatePath), { recursive: true });
-  await persistStateStoreSqliteMemory(access);
   await fs.writeFile(access.uiStatePath, JSON.stringify(payload, null, 2));
+  await persistStateStoreSqliteMemory(access);
 }
 
 export async function flushStateStoreSave(access: StateStoreInternalAccess): Promise<void> {
@@ -1101,7 +1278,7 @@ export function restorePersistedStateStoreThread(access: StateStoreInternalAcces
           capReached: Boolean(thread.supervision.capReached)
         }
       : record.supervision;
-  record.executionContract = thread.executionContract ? { ...thread.executionContract } : record.executionContract;
+  record.executionContract = thread.executionContract ? normalizeExecutionContract(thread.executionContract) : record.executionContract;
   record.supervisionChecklist = thread.supervisionChecklist
     ? normalizeSupervisionChecklist(thread.supervisionChecklist)
     : record.supervisionChecklist;
@@ -1133,6 +1310,11 @@ export function restorePersistedStateStoreThread(access: StateStoreInternalAcces
           status: thread.workerReport.status,
           summary: thread.workerReport.summary,
           details: typeof thread.workerReport.details === "string" ? thread.workerReport.details : null,
+          evidence: Array.isArray(thread.workerReport.evidence)
+            ? thread.workerReport.evidence
+                .map((entry) => normalizeWorkerEvidence(entry, { createdAt: thread.workerReport?.createdAt ?? record.updatedAt }))
+                .filter((entry): entry is CodexWorkerEvidenceView => Boolean(entry))
+            : [],
           createdAt: typeof thread.workerReport.createdAt === "number" ? thread.workerReport.createdAt : record.updatedAt,
           updatedAt: typeof thread.workerReport.updatedAt === "number" ? thread.workerReport.updatedAt : record.updatedAt
         }

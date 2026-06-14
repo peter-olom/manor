@@ -5,11 +5,25 @@ import type { CodexAppServerClient } from "./codex-client.js";
 import { type FileReferenceStore } from "./file-store.js";
 import { type ImageReferenceStore } from "./image-store.js";
 import { buildCodexInputWithReferences } from "./reference-inputs.js";
-import { resolveExistingWorkspaceCwd, resolveWorkspaceProjectInfo } from "./repo-worktree.js";
+import {
+  cleanupManagedWorktree,
+  ensureTaskWorktree,
+  isManagedWorktree,
+  resolveExistingWorkspaceCwd,
+  resolveWorkspaceBranchName,
+  resolveWorkspaceProjectInfo
+} from "./repo-worktree.js";
 import { ScratchPadStore } from "./scratch-pad-store.js";
 import { ButlerStateStore } from "./state-store.js";
-import { buildThreadExecutionContract, describeProofExpectation } from "./thread-contract.js";
-import type { ScratchPadItemView } from "./types.js";
+import { buildThreadExecutionContract, describeProofExpectation, inferTaskCategory } from "./thread-contract.js";
+import type { CodexTaskCategory, ScratchPadAttachmentView, ScratchPadItemView, ScratchPadResultKind, ScratchPadWorkspaceMode } from "./types.js";
+
+type ScratchWorkspace = {
+  cwd: string;
+  workspaceMode: ScratchPadWorkspaceMode;
+  branchName: string | null;
+  created: boolean;
+};
 
 type ScratchPadRoutesAccess = {
   app: express.Express;
@@ -19,9 +33,15 @@ type ScratchPadRoutesAccess = {
   butlerAgent: ButlerAgentService;
   imageStore: ImageReferenceStore;
   fileStore: FileReferenceStore;
+  prepareScratchWorkspace?: (item: ScratchPadItemView, task: string, baseCwd: string) => Promise<ScratchWorkspace>;
+  cleanupScratchWorkspace?: (cwd: string) => Promise<number>;
 };
 
 function buildScratchTask(item: ScratchPadItemView): string {
+  const attachmentLines =
+    item.attachments.length > 0
+      ? ["", "Attached context:", ...item.attachments.map((attachment) => `- ${attachment.name} (${attachment.mimeType}, ${attachment.kind})`)]
+      : [];
   return [
     "Scratch pad async investigation.",
     "",
@@ -29,6 +49,7 @@ function buildScratchTask(item: ScratchPadItemView): string {
     "",
     "Idea:",
     item.text,
+    ...attachmentLines,
     "",
     "Choose the right investigation shape yourself. Research, prototype, plan, or recommend based on what best advances the idea.",
     "Work longer and deeper than a chat reply: inspect relevant context, use memory when useful, run focused research or experiments, and come back with evidence.",
@@ -45,19 +66,100 @@ function buildScratchTask(item: ScratchPadItemView): string {
   ].join("\n");
 }
 
-async function buildScratchInput(access: ScratchPadRoutesAccess, item: ScratchPadItemView, threadId: string, task: string, cwd: string) {
+function taskCategoryFromResultKind(resultKind: ScratchPadResultKind): CodexTaskCategory {
+  if (resultKind === "prototype") return "prototype";
+  if (resultKind === "plan") return "plan";
+  if (resultKind === "recommendation") return "recommendation";
+  return "research";
+}
+
+function taskCategoryForScratchItem(item: ScratchPadItemView): CodexTaskCategory {
+  const inferred = inferTaskCategory(item.text);
+  return inferred === "unknown" || inferred === "read_only" ? taskCategoryFromResultKind(item.resultKind) : inferred;
+}
+
+function inferScratchResultKind(text: string): ScratchPadResultKind {
+  if (/\b(prototype|spike|proof of concept|poc|mock|experiment|build a small|try a small)\b/i.test(text)) {
+    return "prototype";
+  }
+  if (/\b(plan|roadmap|checklist|spec|proposal|phases?|implementation path)\b/i.test(text)) {
+    return "plan";
+  }
+  if (/\b(recommend|recommendation|decide|advise|which option|pick an option|what should we do)\b/i.test(text)) {
+    return "recommendation";
+  }
+  return "research";
+}
+
+function readReferenceIds(body: unknown, key: string): string[] {
+  if (!body || typeof body !== "object") {
+    return [];
+  }
+  const value = (body as Record<string, unknown>)[key];
+  return Array.isArray(value)
+    ? [...new Set(value.filter((entry): entry is string => typeof entry === "string" && Boolean(entry.trim())).map((entry) => entry.trim()))]
+    : [];
+}
+
+function buildScratchAttachments(
+  access: ScratchPadRoutesAccess,
+  imageReferenceIds: string[],
+  fileReferenceIds: string[]
+): ScratchPadAttachmentView[] {
+  const now = Date.now();
+  const images = access.imageStore.resolveViews(imageReferenceIds).map((image) => ({
+    id: `image-${image.id}`,
+    kind: "image" as const,
+    referenceId: image.id,
+    name: image.name,
+    mimeType: image.mimeType,
+    sizeBytes: image.sizeBytes,
+    url: image.url,
+    available: true,
+    used: false,
+    note: null,
+    createdAt: image.createdAt || now
+  }));
+  const files = access.fileStore.resolveViews(fileReferenceIds).map((file) => ({
+    id: `file-${file.id}`,
+    kind: "file" as const,
+    referenceId: file.id,
+    name: file.name,
+    mimeType: file.mimeType,
+    sizeBytes: file.sizeBytes,
+    url: file.url,
+    available: true,
+    used: false,
+    note: null,
+    createdAt: file.createdAt || now
+  }));
+  return [...images, ...files];
+}
+
+async function buildScratchInput(
+  access: ScratchPadRoutesAccess,
+  item: ScratchPadItemView,
+  threadId: string,
+  task: string,
+  workspace: ScratchWorkspace
+) {
+  const cwd = workspace.cwd;
   const project = resolveWorkspaceProjectInfo(cwd);
   const contract = buildThreadExecutionContract({
     threadId,
     workspaceCwd: cwd,
     projectId: project.id,
     projectLabel: project.label,
-    branch: null,
-    taskText: task,
-    requestedTask: task,
+    branch: workspace.branchName,
+    taskText: item.text,
+    requestedTask: `${item.resultKind} scratch-pad result: ${item.text}`,
     operatorGoal: "Explore this scratch pad item deeply and return a reviewable async result.",
+    taskCategory: taskCategoryForScratchItem(item),
+    inferredWorkDepth: "deep",
+    attachmentCount: item.attachments.length,
     notes: [
       "This job came from the scratch pad.",
+      item.attachments.length > 0 ? "Scratch pad attachments are first-class task context; inspect the relevant files or images directly." : "",
       "Prefer safe reads, research, and disposable prototypes until the operator accepts the idea."
     ]
   });
@@ -67,35 +169,74 @@ async function buildScratchInput(access: ScratchPadRoutesAccess, item: ScratchPa
     `workspace_cwd: ${cwd}`,
     `project_id: ${project.id}`,
     `project_label: ${project.label}`,
-    "branch: (existing workspace)",
+    `branch: ${workspace.branchName ?? (workspace.workspaceMode === "managed_worktree" ? "(managed worktree)" : "(existing workspace)")}`,
     `harness_binding: manor-harness --thread ${threadId}`,
-    `proof_expectation: ${describeProofExpectation(contract.proofExpectation)}`
+    `proof_expectation: ${describeProofExpectation(contract.proofExpectation)}`,
+    `task_category: ${contract.taskCategory}`,
+    `inferred_work_depth: ${contract.inferredWorkDepth}`
   ];
   for (const point of contract.acceptancePoints) lines.push(`acceptance_point: ${point}`);
+  for (const row of contract.verificationMatrix) {
+    lines.push(`verification_row: ${row.id}|${row.acceptancePointId ?? ""}|${row.checkKinds.join(",")}|${row.text}`);
+  }
   if (contract.operatorGoal) lines.push(`operator_goal: ${contract.operatorGoal}`);
   for (const note of contract.notes) lines.push(`note: ${note}`);
   access.store.setThreadExecutionContract(threadId, contract);
+  const imageReferenceIds = item.attachments.filter((attachment) => attachment.kind === "image" && attachment.available).map((attachment) => attachment.referenceId);
+  const fileReferenceIds = item.attachments.filter((attachment) => attachment.kind === "file" && attachment.available).map((attachment) => attachment.referenceId);
   return buildCodexInputWithReferences({
     text: `${lines.join("\n")}\n\nREQUESTED TASK\n${task}`,
     imageStore: access.imageStore,
-    imageReferenceIds: [],
+    imageReferenceIds,
     fileStore: access.fileStore,
-    fileReferenceIds: []
+    fileReferenceIds
   });
 }
 
-function buildDeveloperInstructions(cwd: string): string {
+function buildDeveloperInstructions(workspace: ScratchWorkspace): string {
   return [
     "This thread was started from Butler's scratch pad.",
     "Work asynchronously and go deeper than a normal chat answer.",
-    `Work inside ${cwd} unless the scratch idea clearly requires finding or creating another workspace under /repos.`,
+    workspace.workspaceMode === "managed_worktree"
+      ? `Work inside the isolated scratch-pad worktree at ${workspace.cwd}.`
+      : `Work inside ${workspace.cwd} unless the scratch idea clearly requires finding or creating another workspace under /repos.`,
     "Use Codex-shell for repository, git, and code-editing work.",
+    "Inspect scratch-pad attachments directly when they matter; do not depend on Butler transcript context for attached files.",
     "Read memory before acting when the idea depends on prior work, project conventions, unresolved outcomes, or attribution.",
+    "Preserve the operator's intent from the scratch idea and attached context. Do not shrink a broad idea into the easiest literal subtask.",
+    "Be industrious inside the job boundary: inspect current state, run focused checks, use previews or logs when behavior matters, and follow weak evidence before reporting done.",
+    "Taste is part of completion for UI, product, writing, and operator-facing workflow work. Check hierarchy, spacing, density, copy, states, accessibility, responsiveness, and workflow coherence.",
     "Use previews, command checks, or file artifacts when they materially improve the review result.",
     "Keep visible progress brief and useful.",
     "Do not commit or push.",
     "When complete, record a supervisor report with manor-harness report. Include the result type, evidence, risks, and the next operator action."
   ].join("\n");
+}
+
+async function prepareScratchWorkspace(item: ScratchPadItemView, task: string, baseCwd: string): Promise<ScratchWorkspace> {
+  if (item.workspaceMode === "existing") {
+    return {
+      cwd: baseCwd,
+      workspaceMode: "existing",
+      branchName: await resolveWorkspaceBranchName(baseCwd),
+      created: false
+    };
+  }
+
+  const worktree = await ensureTaskWorktree({ cwd: baseCwd, task: `scratchpad ${item.title}` });
+  const managed = isManagedWorktree(worktree.cwd);
+  return {
+    cwd: worktree.cwd,
+    workspaceMode: managed ? "managed_worktree" : "existing",
+    branchName: worktree.branchName,
+    created: worktree.created
+  };
+}
+
+function resolveDefaultScratchCwd(access: ScratchPadRoutesAccess): string {
+  const threadId = access.store.getOpenWindowIds()[0] ?? null;
+  const thread = threadId ? access.store.getThread(threadId) : null;
+  return thread?.cwd ?? thread?.executionContract?.workspaceCwd ?? "/repos";
 }
 
 async function startScratchItem(access: ScratchPadRoutesAccess, itemId: string) {
@@ -107,17 +248,31 @@ async function startScratchItem(access: ScratchPadRoutesAccess, itemId: string) 
     return item;
   }
 
-  const cwd = await resolveExistingWorkspaceCwd(item.cwd ?? "/repos");
   const task = buildScratchTask(item);
-  const result = await access.codexClient.startThread({
-    task,
-    input: (threadId) => buildScratchInput(access, item, threadId, task, cwd),
-    cwd,
-    developerInstructions: buildDeveloperInstructions(cwd),
-    effort: "high",
-    openWindow: true
+  const baseCwd = await resolveExistingWorkspaceCwd(item.cwd ?? resolveDefaultScratchCwd(access));
+  const workspace = await (access.prepareScratchWorkspace ?? prepareScratchWorkspace)(item, task, baseCwd);
+  let result: Awaited<ReturnType<CodexAppServerClient["startThread"]>>;
+  try {
+    result = await access.codexClient.startThread({
+      task,
+      input: (threadId) => buildScratchInput(access, item, threadId, task, workspace),
+      cwd: workspace.cwd,
+      developerInstructions: buildDeveloperInstructions(workspace),
+      effort: "high",
+      openWindow: true
+    });
+  } catch (error) {
+    if (workspace.created && workspace.workspaceMode === "managed_worktree") {
+      await (access.cleanupScratchWorkspace ?? cleanupManagedWorktree)(workspace.cwd).catch(() => undefined);
+    }
+    throw error;
+  }
+  const updated = access.scratchPadStore.start(item.id, {
+    threadId: result.threadId,
+    cwd: workspace.cwd,
+    workspaceMode: workspace.workspaceMode,
+    branchName: workspace.branchName
   });
-  const updated = access.scratchPadStore.start(item.id, { threadId: result.threadId });
   access.store.addEvent(result.threadId, "butler.scratch_pad.started", "Butler started this job from a scratch pad item.");
   access.butlerAgent.trackScratchPadDelegation(result.threadId);
   return updated;
@@ -134,13 +289,29 @@ export function registerScratchPadRoutes(access: ScratchPadRoutesAccess): void {
     const text = typeof request.body?.text === "string" ? request.body.text : "";
     const title = typeof request.body?.title === "string" ? request.body.title : null;
     const cwd = typeof request.body?.cwd === "string" ? request.body.cwd : null;
+    const workspaceMode = request.body?.workspaceMode === "existing" ? "existing" : "managed_worktree";
     const autoStart = request.body?.autoStart !== false;
     try {
-      const item = access.scratchPadStore.create({ title, text, cwd });
+      const attachments = buildScratchAttachments(
+        access,
+        readReferenceIds(request.body, "imageReferenceIds"),
+        readReferenceIds(request.body, "fileReferenceIds")
+      );
+      const item = access.scratchPadStore.create({ title, text, cwd, workspaceMode, attachments, resultKind: inferScratchResultKind(text) });
       const started = autoStart ? await startScratchItem(access, item.id) : item;
       response.status(201).json({ ok: true, item: started });
     } catch (error) {
       response.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  access.app.post("/api/scratch-pad/items/:itemId/attachments/:attachmentId/remove", (request, response) => {
+    const itemId = typeof request.params.itemId === "string" ? request.params.itemId : "";
+    const attachmentId = typeof request.params.attachmentId === "string" ? request.params.attachmentId : "";
+    try {
+      response.json({ ok: true, item: access.scratchPadStore.removeAttachment(itemId, attachmentId) });
+    } catch (error) {
+      response.status(404).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
 
@@ -169,13 +340,35 @@ export function registerScratchPadRoutes(access: ScratchPadRoutesAccess): void {
     }
   });
 
-  access.app.post("/api/scratch-pad/items/:itemId/delete", (request, response) => {
+  access.app.post("/api/scratch-pad/items/:itemId/delete", async (request, response) => {
     const itemId = typeof request.params.itemId === "string" ? request.params.itemId : "";
-    const item = access.scratchPadStore.remove(itemId);
+    const item = access.scratchPadStore.get(itemId);
     if (!item) {
       response.status(404).json({ error: "Scratch item not found" });
       return;
     }
-    response.json({ ok: true, item });
+
+    try {
+      const cleanup = item.threadId
+        ? await access.codexClient.deleteThread(item.threadId, { waitForCleanup: true })
+        : { deletedArtifacts: 0, cleanupFailed: false, cleanupError: null };
+      if (cleanup.cleanupFailed) {
+        response.status(500).json({ error: cleanup.cleanupError ?? "Thread cleanup failed" });
+        return;
+      }
+      const workspaceArtifacts =
+        item.workspaceMode === "managed_worktree" && item.cwd
+          ? await (access.cleanupScratchWorkspace ?? cleanupManagedWorktree)(item.cwd)
+          : 0;
+
+      const removed = access.scratchPadStore.remove(itemId);
+      if (!removed) {
+        response.status(404).json({ error: "Scratch item not found" });
+        return;
+      }
+      response.json({ ok: true, item: removed, threadDeleted: Boolean(item.threadId), deletedArtifacts: cleanup.deletedArtifacts + workspaceArtifacts });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 }

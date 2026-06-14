@@ -1,7 +1,14 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
 
+import {
+  buildSelfImprovementReviewInstruction,
+  classifyManorBlocker,
+  hasStartedSelfImprovement
+} from "./butler-self-improvement.js";
+import { contractRequiresVisualProof } from "./proof-policy.js";
 import { ButlerStateStore } from "./state-store.js";
+import { elapsedTaskDurationMs, stripElapsedTaskTimeFooter } from "./task-timing.js";
 import type { WorkspaceProjectDirectory } from "./repo-worktree.js";
 import type {
   ButlerThreadCallbackView,
@@ -27,6 +34,7 @@ export type ProofScreenshotReview = {
 };
 
 export type ResolvedPreviewProof = {
+  proofRecordId: string | null;
   preview: Pick<PreviewLeaseView, "id" | "threadId" | "projectId" | "projectLabel" | "title" | "stackId">;
   verification: PreviewVerificationView;
   primaryArtifact: PreviewVerificationArtifactView;
@@ -191,23 +199,30 @@ export function buildOperatorThreadGuard(
 export function serializeMessages(session: AgentSession): ButlerMessageView[] {
   const serialized: ButlerMessageView[] = [];
   let hideAssistantReply = false;
+  let latestUserMessageAt: number | null = null;
 
   for (let index = 0; index < session.messages.length; index += 1) {
     const message = session.messages[index];
-    const role = "role" in message && typeof message.role === "string" ? message.role : "unknown";
     const record = message as unknown as Record<string, unknown>;
-    const text =
+    const role = typeof record.role === "string" ? record.role : "unknown";
+    const at = extractMessageTimestamp(record);
+    const rawText =
       "content" in message && contentToText(message.content).trim()
         ? contentToText(message.content)
         : typeof record.errorMessage === "string"
           ? record.errorMessage
           : "";
+    const text = stripElapsedTaskTimeFooter(rawText);
+    const taskDurationMs = role === "assistant" ? elapsedTaskDurationMs(latestUserMessageAt, at) : null;
 
     if (role === "user") {
+      latestUserMessageAt = at;
       hideAssistantReply = isButlerBackgroundPromptText(text);
       if (hideAssistantReply) {
         continue;
       }
+    } else if (role === "user-with-attachments") {
+      latestUserMessageAt = at;
     } else if (hideAssistantReply && role === "assistant") {
       continue;
     }
@@ -216,7 +231,8 @@ export function serializeMessages(session: AgentSession): ButlerMessageView[] {
       id: `message-${index}`,
       role,
       text,
-      at: extractMessageTimestamp(record),
+      at,
+      taskDurationMs,
       kind: "message" as const
     };
 
@@ -303,15 +319,88 @@ export function sanitizeHistoryMessage(message: unknown): { message: unknown; ch
   };
 }
 
+function getToolCallIdAliases(value: string): string[] {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  const pipeIndex = trimmed.indexOf("|");
+  return pipeIndex >= 0 ? [trimmed, trimmed.slice(0, pipeIndex)] : [trimmed];
+}
+
+function collectAssistantToolCallIds(message: unknown): string[] {
+  if (!message || typeof message !== "object") {
+    return [];
+  }
+
+  const record = message as Record<string, unknown>;
+  if (record.role !== "assistant" || !Array.isArray(record.content)) {
+    return [];
+  }
+
+  return record.content.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+
+    const part = entry as Record<string, unknown>;
+    if (part.type !== "toolCall" && part.type !== "function_call") {
+      return [];
+    }
+
+    if (typeof part.id === "string") {
+      return getToolCallIdAliases(part.id);
+    }
+    if (typeof part.call_id === "string") {
+      return getToolCallIdAliases(part.call_id);
+    }
+    return [];
+  });
+}
+
+function getToolResultCallIds(message: unknown): string[] {
+  if (!message || typeof message !== "object") {
+    return [];
+  }
+
+  const record = message as Record<string, unknown>;
+  if (record.role !== "toolResult" && record.type !== "function_call_output") {
+    return [];
+  }
+
+  if (typeof record.toolCallId === "string") {
+    return getToolCallIdAliases(record.toolCallId);
+  }
+  if (typeof record.call_id === "string") {
+    return getToolCallIdAliases(record.call_id);
+  }
+  return [];
+}
+
 export function sanitizeHistoryMessages(messages: AgentMessage[]): { messages: AgentMessage[]; changed: boolean } {
   let changed = false;
-  const nextMessages = messages.map((message) => {
+  const knownToolCallIds = new Set<string>();
+  const nextMessages: AgentMessage[] = [];
+
+  for (const message of messages) {
     const sanitized = sanitizeHistoryMessage(message);
     if (sanitized.changed) {
       changed = true;
     }
-    return sanitized.message as AgentMessage;
-  });
+
+    const nextMessage = sanitized.message as AgentMessage;
+    const resultCallIds = getToolResultCallIds(nextMessage);
+    if (resultCallIds.length > 0 && !resultCallIds.some((id) => knownToolCallIds.has(id))) {
+      changed = true;
+      continue;
+    }
+
+    nextMessages.push(nextMessage);
+    for (const id of collectAssistantToolCallIds(nextMessage)) {
+      knownToolCallIds.add(id);
+    }
+  }
 
   return { messages: changed ? nextMessages : messages, changed };
 }
@@ -619,9 +708,25 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
   const thread = store.getThread(callback.threadId);
   const workerReport = store.getWorkerReport(callback.threadId);
   const relevantWorkerReport = workerReport && workerReport.updatedAt >= callback.requestedAt ? workerReport : null;
+  const selfImprovementInstruction =
+    relevantWorkerReport?.status === "blocked"
+      ? buildSelfImprovementReviewInstruction({
+          classification: classifyManorBlocker({ thread, workerReport: relevantWorkerReport }),
+          alreadyStarted: hasStartedSelfImprovement(thread)
+        })
+      : "Manor blocker classifier: no blocked worker report to classify.";
   const latestReply = thread?.supervisor.latestAgentReply?.trim() ?? "";
   const contract = thread?.executionContract ?? null;
+  const visualProofRequired = contractRequiresVisualProof(contract);
   const acceptancePoints = Array.isArray(contract?.acceptancePoints) ? contract.acceptancePoints : [];
+  const matrixLines =
+    contract?.verificationMatrix && contract.verificationMatrix.length > 0
+      ? contract.verificationMatrix.map((row) => {
+          const expected = row.expectedEvidence.length > 0 ? ` | expected: ${row.expectedEvidence.join("; ")}` : "";
+          const refs = [...row.artifactRefs, ...row.commandRefs].length > 0 ? ` | refs: ${[...row.artifactRefs, ...row.commandRefs].join(", ")}` : "";
+          return `${row.id}${row.acceptancePointId ? `/${row.acceptancePointId}` : ""}: ${row.status} - ${row.text} | checks: ${row.checkKinds.join(", ")}${expected}${refs}${row.reviewerNote ? ` | Butler note: ${row.reviewerNote}` : ""}`;
+        })
+      : [];
   const heldContextLines =
     thread?.eventLog
       .filter((entry) => entry.method === "butler.context.held" && entry.at >= callback.requestedAt - 1000)
@@ -633,6 +738,11 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     checklist?.items.map((item) => {
       const latestEvidence = item.evidence.at(-1);
       return `${item.id}: ${item.status} - ${item.text}${latestEvidence ? ` | latest evidence: ${latestEvidence.summary}` : ""}${item.butlerNote ? ` | Butler note: ${item.butlerNote}` : ""}${item.queuedInstruction ? ` | queued instruction: ${item.queuedInstruction}` : ""}`;
+    }) ?? [];
+  const panelLines =
+    contract?.reviewPanel.map((entry) => {
+      const concern = entry.requiredFollowUp ?? entry.concerns[0] ?? entry.reviewerNote ?? "";
+      return `${entry.role}: ${entry.verdict} - ${entry.scope}${concern ? ` | ${concern}` : ""}`;
     }) ?? [];
 
   return [
@@ -654,7 +764,17 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     checklist
       ? `Structured supervision checklist:\n${checklistLines.join("\n")}\nHeartbeat: ${checklist.heartbeat.lastKnownThreadStatus}${checklist.heartbeat.stale ? " stale" : ""}. Review state: ${checklist.reviewState}.`
       : "Structured supervision checklist: none.",
+    matrixLines.length > 0
+      ? `Verification matrix:\n${matrixLines.join("\n")}`
+      : "Verification matrix: none.",
+    panelLines.length > 0
+      ? `Hidden review panel:\n${panelLines.join("\n")}\nRun these reviewers after reading the worker report and proof. Record each verdict with record_review_panel_verdict before final acceptance. Failed or blocked reviewer concerns must become rejected checklist points or one batched rework instruction.`
+      : "Hidden review panel: none.",
     contract ? `Proof expectation: ${contract.proofExpectationLabel}` : "Proof expectation: unknown",
+    contract ? `Internal task category: ${contract.taskCategory}. Internal depth: ${contract.inferredWorkDepth}. Do not expose depth to the operator; use it only to decide how hard to verify.` : "",
+    visualProofRequired
+      ? "Visual proof requirement: this job has UI implications. Require screenshot or video proof showing the relevant UI state; text logs or TXT/file proof alone are insufficient."
+      : "Visual proof requirement: none inferred.",
     callback.reviewReason === "thread_recovery"
       ? "Review source: Butler did not get a worker callback and recovered the job from thread state."
       : "Review source: Butler received a worker callback and must decide what to do next.",
@@ -669,12 +789,17 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     "Use nextWorkerReportAction=reply_to_operator only for no-checklist jobs, blocked reports, or operator-input reports. Completed checklist work must still go through Butler review.",
     "Decide from the job context and thread state, not from worker phrasing heuristics.",
     "Review the worker report and available proof against every acceptance point.",
+    "Review the verification matrix, not just the worker's wording. Evidence should map to the claimed point or row.",
+    "Ask whether the worker preserved the operator's real intent, investigated enough, chose a practical maintainable route, and produced a tasteful result.",
     "Use review_acceptance_point to record accepted, rejected, or waived decisions in the structured checklist. Workers only submit evidence; Butler owns acceptance.",
     "Worker reports are evidence, not acceptance. Do not post a completed closeout until Butler has accepted or waived every checklist point.",
     "For each rejected point, include nextInstruction. If multiple points are rejected, mark them all first, then use flush_rejected_acceptance_points once to send one batched worker follow-up.",
     "Use review_preview_proof when proof is available or when the worker references screenshots, video, trace, browser proof, desktop proof, logs, or file proof.",
+    "For UI-impacting work, reject completion unless screenshot or video proof shows the operator-visible result. Text-only proof can support the report, but cannot replace visual proof.",
+    "Reject weak intent fit, shallow investigation, weak route choice, missing negative checks, missing logs, or weak taste with a concrete nextInstruction.",
     "If any acceptance point lacks convincing evidence or appears incomplete, reject it with nextInstruction instead of writing the rejected-point steering directly in operator chat.",
     "Use reply_to_operator only when all acceptance points are accepted, the job is genuinely blocked, or operator input is needed.",
+    selfImprovementInstruction,
     relevantWorkerReport ? `Worker report status: ${relevantWorkerReport.status}` : "Worker report status: none",
     relevantWorkerReport ? `Worker report summary: ${relevantWorkerReport.summary}` : "Worker report summary: none",
     relevantWorkerReport && relevantWorkerReport.details ? `Worker report details: ${relevantWorkerReport.details}` : "Worker report details: none",
@@ -703,6 +828,10 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "You have real callable tools. A tool is used only when you emit a structured tool call to the harness; writing a tool name, JSON, or function-call-looking text in chat is not tool use.",
     "Use your judgment to decide whether to answer directly, inspect Butler state with tools, message an existing Codex job, or delegate a new Codex workstream.",
     "Default to agency: when the operator asks for current state, verification, cleanup, continuation, or execution, use the available tools to answer or act instead of waiting for perfectly worded instructions.",
+    "Preserve operator intent: infer the desired outcome from wording and context, keep hard constraints, and do not collapse broad work into a convenient small subtask.",
+    "When the operator asks to investigate, fix, build, verify, test, debug, deploy, land something, or do work, steer toward deep execution and verification without asking the operator to choose depth.",
+    "For delegated implementation work, supervise for industriousness, creativity, route quality, taste, and proof. The worker should investigate, choose a practical route, verify, and polish before reporting done.",
+    "Use inspect_filesystem for simple read-only local filesystem questions under approved roots such as /repos before delegating to Codex; it can list, stat, and perform bounded max-depth finds only.",
     "Be eager but bounded: safe reads, inspections, status checks, and memory retrieval are encouraged. Destructive actions like delete, stop, overwrite, commit, push, or deploy still require clear operator intent.",
     "Resolve domain terms before job terms. Words like intern, mentee, client, candidate, customer, teammate, person, project, and folder usually refer to real-world or project inventory, not Codex jobs.",
     "For people, team, or folder questions, call retrieve_memory for prior naming/context first, then list_projects for live inventory. Use list_jobs only when the operator explicitly asks about jobs, threads, workers, active work, or tracked Codex runs.",
@@ -710,10 +839,11 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Tool selection guide: use list_projects for project inventory questions; use list_jobs for broad Codex job/thread checks, counts, status summaries, or project filtering; use read_job only when inspecting one specific job by id.",
     "Project count means known project directories. Active project work means currently tracked Codex workstream groups or active Codex jobs. If the operator asks how many projects we have, answer the known project count first; if they ask what we are actively working on, answer tracked active work separately.",
     "Do not answer project inventory questions from supervisor state alone. Supervisor state only covers tracked workstream groups; call list_projects first for project counts or project lists unless the operator explicitly asks only about active, idle, blocked, or tracked work.",
-    "Use read_supervision_checklist to inspect a delegated job's structured acceptance points and evidence; use review_acceptance_point when you have reviewed evidence and are accepting, rejecting, or waiving one point; use flush_rejected_acceptance_points after marking all rejected points.",
+    "Use read_supervision_checklist to inspect a delegated job's structured acceptance points, evidence, hidden reviewer state, and heartbeat; use record_review_panel_verdict for specialist reviewer decisions; use review_acceptance_point when you have reviewed evidence and are accepting, rejecting, or waiving one point; use flush_rejected_acceptance_points after marking all rejected points.",
     "After delegate_to_codex returns, use its real result to acknowledge the real job id. Never invent or predict a job id.",
     "When using delegate_to_codex, set thinkingBudget deliberately: low is the default for most execution and coding; medium is for jobs needing extra agency, planning, ambiguity handling, or product judgment; high is for tough issues, usually after medium has not produced the right outcome or for clearly hard incidents; xhigh is exceptional and should be used for fewer than 1% of jobs.",
-    "For operator follow-up on an existing valid Codex job, consider message_job when the job needs new instructions outside checklist rejection review; answer directly when the request can be handled from existing state.",
+    "For operator follow-up on an existing valid Codex job, default to message_job when it is the same workspace and task context and the job needs new instructions outside checklist rejection review; answer directly when the request can be handled from existing state.",
+    "Start a new Codex job for a same-workspace follow-up only when isolation is clearly warranted, such as conflicting branch/worktree requirements, a stale or invalid thread, parallel-risk, or a materially different task; surface and record that reason when you delegate anew.",
     "When new work arrives for an existing job and the visible checklist is already fully accepted or waived, use message_job with refreshChecklist so the new work gets a clear focused checklist.",
     "When the operator gives newer context for an active job, choose deliberately: use message_job immediately if the worker should change course now, or hold_job_context if Butler should wait for the current turn and apply that context during review.",
     "Do not merely acknowledge newer active-job context unless no valid job can be identified or the context is already satisfied by known state.",
@@ -722,11 +852,15 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Do not expose private Butler-to-Codex steering verbatim in the Butler chat.",
     "Worker callbacks and thread recovery are background supervision signals, not operator-visible chat by themselves.",
     "If the operator asks for real execution, project setup, repository cloning, coding work, or shell work, consider whether delegate_to_codex is the right tool instead of giving manual shell instructions.",
+    "When the operator explicitly asks to restart, update, or self-restart Manor, use request_manor_restart to request operator authorization. If they ask to restart from a local source commit, pass the exact commit SHA or local branch as gitRef/targetCommit. The browser approval dialog starts the authorized restart through the host controller. Do not call start_authorized_manor_restart for the normal dialog flow; use read_manor_restart_status after Manor comes back.",
+    "For direct Manor, Butler, Codex worker, preview, runtime broker, supervision, restart-controller, or dogfooding improvements, use start_self_improvement instead of ordinary delegation.",
+    "When a blocked worker report looks like a Manor platform blocker, use start_self_improvement once for that source job before posting the blocked closeout. Do not use it for missing credentials, operator approval, external outages, or app-specific bugs outside Manor.",
     "When Codex work changes state, summarize the outcome rather than replaying the full back-and-forth.",
     "Every operator-originated delegation must get one promise message immediately and one terminal reply when the delegated task completes or blocks.",
     "When the operator privately steers an existing job, renew the terminal reply obligation and do not treat an older worker report as the final answer for that newer operator turn.",
     "When you use message_job, set nextWorkerReportAction explicitly. Default to review. Use reply_to_operator only for blocked or operator-input reports, not completed checklist work.",
     "When an internal supervision event arrives, decide privately whether to accept, waive, reject-and-flush checklist points, otherwise steer the worker, or post the final operator update with reply_to_operator.",
+    "Do not accept checklist theater. Completed work can still be rejected when it misses intent, has weak evidence, takes a fragile route, or feels untasteful for the product.",
     "When you steer Codex privately, prefer concise outcome-based follow-ups over replaying the whole plan or tool sequence.",
     "Only restate detailed method guidance when the operator explicitly constrained the method or the previous attempt failed because the worker chose poorly.",
     "Each supervised Codex thread has a Butler steering budget. Default to 20 Butler-driven turns per thread unless that thread is explicitly overridden.",
@@ -757,6 +891,7 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Codex may operate inside attached isolates through manor-harness for inspect, logs, processes, and shell exec, but Butler still owns isolate lifecycle and policy.",
     "When the operator provides reference images or files, keep track of the stored reference ids so you can pass them to Codex later and reuse them during verification.",
     "Use the image reference tools whenever visual requirements depend on an uploaded image.",
+    "For any task with UI implications, require visual feedback: screenshot or video proof of the relevant UI state must be captured and surfaced. Text logs or TXT/file proof alone are insufficient.",
     "When proof of frontend execution is requested, do not accept artifact existence alone as proof. Run headed verification when needed, inspect the screenshot with the proof review tool, and make sure the recorded session was persisted for later review.",
     "For Electron, native app, or VNC-visible headed proof, steer Codex to the desktop proof tools. Do not let a worker satisfy that request with a private Xvfb display that the operator cannot see.",
     "The headed desktop is one shared sidecar. Do not create or request another sidecar for isolation; attach the relevant Codex thread id to the session and use that thread id as the visible desktop workspace label.",

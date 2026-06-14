@@ -19,6 +19,7 @@ export type ButlerMessageRecord = {
   role: string;
   text: string;
   at: number | null;
+  taskDurationMs: number | null;
   kind: "message";
 };
 
@@ -53,8 +54,60 @@ export type ConfirmDialogState = {
   title: string;
   message: string;
   confirmLabel: string;
+  busyLabel?: string;
   tone: "danger";
   onConfirm: () => Promise<void>;
+};
+
+export type ManorRestartRequest = {
+  id: string;
+  mode: "auto" | "source" | "image" | null;
+  target: "current" | "latest" | null;
+  gitRef: string | null;
+  imageTag: string | null;
+  targetCommit: string | null;
+  targetTag: string | null;
+  includeDesktop: boolean;
+  build: boolean | null;
+  update: boolean | null;
+  reason: string | null;
+  details: string | null;
+  requestedAt: number;
+  status: "pending" | "authorized" | "dismissed";
+  authorizedAt: number | null;
+};
+
+export type ManorRestartRunStep = {
+  label: string;
+  status: "running" | "completed" | "failed";
+  startedAt: number;
+  completedAt: number | null;
+  exitCode: number | null;
+  stdoutTail: string;
+  stderrTail: string;
+};
+
+export type ManorRestartRun = {
+  id: string;
+  status: "running" | "completed" | "failed";
+  mode: "source" | "image";
+  target: "current" | "latest" | string;
+  gitRef: string | null;
+  imageTag: string | null;
+  includeDesktop: boolean;
+  update: boolean;
+  startedAt: number;
+  completedAt: number | null;
+  durationMs?: number | null;
+  error: string | null;
+  steps: ManorRestartRunStep[];
+};
+
+export type ManorRestartStatusResponse = {
+  ok: true;
+  active: ManorRestartRun | null;
+  latestRun: ManorRestartRun | null;
+  detectedMode: "source" | "image";
 };
 
 export type PendingThreadRequest = {
@@ -181,15 +234,65 @@ export type ProjectArtifact = {
 export type ScratchPadItemStatus = "captured" | "exploring" | "ready_for_review" | "accepted" | "parked" | "dismissed";
 export type ScratchPadDepth = "quick" | "deep" | "prototype" | "plan";
 export type ScratchPadResultKind = "research" | "prototype" | "plan" | "recommendation";
+export type ScratchPadWorkspaceMode = "managed_worktree" | "existing";
+export type ScratchPadReadinessStatus =
+  | "captured"
+  | "exploring"
+  | "reviewing"
+  | "needs_rework"
+  | "ready"
+  | "accepted"
+  | "parked"
+  | "dismissed"
+  | "blocked";
+
+export type ScratchPadAttachment = {
+  id: string;
+  kind: "image" | "file";
+  referenceId: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number | null;
+  url: string | null;
+  available: boolean;
+  used: boolean;
+  note: string | null;
+  createdAt: number;
+};
+
+export type ScratchPadReadiness = {
+  status: ScratchPadReadinessStatus;
+  label: string;
+  summary: string;
+  updatedAt: number | null;
+};
+
+export type ScratchPadDossierSummary = {
+  status: ScratchPadReadinessStatus;
+  resultSummary: string | null;
+  acceptedEvidence: number;
+  totalEvidence: number;
+  reviewerSummary: string | null;
+  reviewerConcerns: string[];
+  attachmentSummary: string | null;
+  nextAction: string | null;
+  risk: string | null;
+  updatedAt: number | null;
+};
 
 export type ScratchPadItem = {
   id: string;
   title: string;
   text: string;
   status: ScratchPadItemStatus;
+  readiness: ScratchPadReadiness;
   depth: ScratchPadDepth;
   resultKind: ScratchPadResultKind;
+  attachments: ScratchPadAttachment[];
+  dossier: ScratchPadDossierSummary;
   cwd: string | null;
+  workspaceMode: ScratchPadWorkspaceMode;
+  branchName: string | null;
   threadId: string | null;
   reviewNote: string | null;
   createdAt: number;
@@ -201,6 +304,7 @@ export type ScratchPadItem = {
 export type ScratchPad = {
   items: ScratchPadItem[];
   counts: Record<ScratchPadItemStatus, number>;
+  readinessCounts: Record<ScratchPadReadinessStatus, number>;
 };
 
 export type ComposerPrefillTarget =
@@ -216,7 +320,37 @@ export type ComposerPrefill = {
   id: string;
   target: ComposerPrefillTarget;
   text: string;
-  attachment: FileReference;
+  attachment?: FileReference;
+};
+
+export type BrowserAnnotationRect = {
+  id: string;
+  number: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  note: string;
+  viewport?: {
+    width: number;
+    height: number;
+    scrollX: number;
+    scrollY: number;
+    documentWidth: number;
+    documentHeight: number;
+  } | null;
+};
+
+export type BrowserAnnotationBatch = {
+  id: string;
+  at: number;
+  intent: "batch" | "insert";
+  ready: boolean;
+  leaseId: string;
+  targetId: string;
+  page: { title: string; url: string };
+  annotations: BrowserAnnotationRect[];
 };
 
 export type PreviewVerificationArtifact = {
@@ -287,6 +421,12 @@ export type PreviewVerification = {
     websocketFailureCount: number;
     notes: string[];
   };
+  annotationBatchCount?: number;
+  annotations?: {
+    targets: Array<{ id: string; label: string }>;
+    batches: BrowserAnnotationBatch[];
+    insertions: Array<{ batchId: string; at: number; ok: boolean; error?: string; target?: { id: string; label: string } }>;
+  };
   auth: {
     headerCount: number;
     cookieCount: number;
@@ -344,6 +484,111 @@ export type PreviewVerification = {
   }>;
 };
 
+export type VerificationCheckKind =
+  | "unit_test"
+  | "integration_test"
+  | "api_smoke"
+  | "browser_flow"
+  | "visual_review"
+  | "responsive_review"
+  | "accessibility_review"
+  | "log_review"
+  | "data_check"
+  | "negative_case"
+  | "build"
+  | "deploy_health"
+  | "taste_review"
+  | "intent_review"
+  | "manual_waiver";
+
+export type WorkerEvidenceKind =
+  | VerificationCheckKind
+  | "proof"
+  | "screenshot"
+  | "video"
+  | "trace"
+  | "log"
+  | "command"
+  | "file"
+  | "manual";
+
+export type VerificationMatrixRow = {
+  id: string;
+  acceptancePointId: string | null;
+  text: string;
+  requiredChecks: string[];
+  checkKinds: VerificationCheckKind[];
+  expectedEvidence: string[];
+  owner: "worker" | "butler" | "both";
+  status: "pending" | "evidence_submitted" | "accepted" | "rejected" | "waived";
+  evidenceIds: string[];
+  artifactRefs: string[];
+  commandRefs: string[];
+  reviewerNote: string | null;
+  updatedAt: number | null;
+};
+
+export type ReviewPanelRole = "intent" | "qa" | "ui_taste" | "api" | "ops" | "product";
+export type ReviewPanelVerdict = "pending" | "passed" | "concern" | "failed" | "blocked";
+
+export type ReviewPanelRun = {
+  id: string;
+  role: ReviewPanelRole;
+  label: string;
+  scope: string;
+  trigger: string;
+  prompt: string;
+  verdict: ReviewPanelVerdict;
+  concerns: string[];
+  evidenceRefs: string[];
+  requiredFollowUp: string | null;
+  reviewerNote: string | null;
+  modelProvider: string | null;
+  modelId: string | null;
+  createdAt: number;
+  reviewedAt: number | null;
+  updatedAt: number;
+};
+
+export type ReviewPanelSummary = {
+  status: "pending" | "passed" | "concerns" | "blocked";
+  reviewers: number;
+  passed: number;
+  concerns: number;
+  blocking: number;
+  summary: string | null;
+  updatedAt: number | null;
+};
+
+export type WorkerEvidence = {
+  id: string;
+  pointId: string | null;
+  matrixRowId: string | null;
+  kind: WorkerEvidenceKind;
+  summary: string;
+  details: string | null;
+  command: string | null;
+  exitCode: number | null;
+  proofRunId: string | null;
+  artifactId: string | null;
+  route: string | null;
+  logRef: string | null;
+  dataRef: string | null;
+  createdAt: number;
+};
+
+export type PreviewProofReview = {
+  id: string;
+  verdict: "credible" | "failed" | "unclear";
+  visibleState: string;
+  evidence: string;
+  concern: string;
+  expectedOutcome: string | null;
+  reviewedAt: number;
+  modelId: string;
+  modelProvider: string;
+};
+
 export type PreviewProofRecord = {
   id: string;
   previewId: string;
@@ -353,6 +598,7 @@ export type PreviewProofRecord = {
   previewTitle: string;
   stackId: string | null;
   verification: PreviewVerification;
+  proofReviews: PreviewProofReview[];
   createdAt: number;
   updatedAt: number;
 };
@@ -413,6 +659,24 @@ export type CodexThreadSummary = {
     acceptancePoints: string[];
     proofExpectation: "none" | "requested";
     proofExpectationLabel: string;
+    inferredWorkDepth: "quick" | "standard" | "deep" | "incident";
+    taskCategory:
+      | "ui"
+      | "api"
+      | "deploy"
+      | "docs"
+      | "data"
+      | "writing"
+      | "generic_code"
+      | "read_only"
+      | "research"
+      | "prototype"
+      | "plan"
+      | "recommendation"
+      | "unknown";
+    verificationMatrix: VerificationMatrixRow[];
+    reviewPanel: ReviewPanelRun[];
+    reviewPanelSummary: ReviewPanelSummary;
     notes: string[];
   } | null;
   supervisionChecklist: {
@@ -430,9 +694,16 @@ export type CodexThreadSummary = {
       evidence: Array<{
         id: string;
         source: "worker_report" | "butler_review";
+        kind: WorkerEvidenceKind | "butler_review";
+        pointId: string | null;
+        matrixRowId: string | null;
         summary: string;
         details: string | null;
         reportTurnId: string | null;
+        proofRunId: string | null;
+        artifactId: string | null;
+        command: string | null;
+        route: string | null;
         createdAt: number;
       }>;
     }>;
@@ -462,6 +733,7 @@ export type CodexThreadDetail = CodexThreadSummary & {
       status: string;
       text: string;
       at: number;
+      taskDurationMs: number | null;
     }>;
   }>;
   eventLog: Array<{
@@ -475,9 +747,21 @@ export type CodexThreadDetail = CodexThreadSummary & {
     status: "completed" | "blocked";
     summary: string;
     details: string | null;
+    evidence: WorkerEvidence[];
     createdAt: number;
     updatedAt: number;
   } | null;
+};
+
+export type CodexThreadPatch = {
+  kind: "item-delta";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  itemType: string;
+  delta: string;
+  itemTextLength: number;
+  at: number;
 };
 
 export type ButlerThreadCallback = {
@@ -745,6 +1029,8 @@ export type ShellSnapshot = {
       };
       callbacks: ButlerThreadCallback[];
     };
+    pendingManorRestartRequest: ManorRestartRequest | null;
+    authorizedManorRestartRequest: ManorRestartRequest | null;
     scratchPad: ScratchPad;
     lastError: string | null;
     compose: {
@@ -761,6 +1047,12 @@ export type ButlerLiveSnapshot = {
   messages: ButlerMessageRecord[];
   messageCount: number;
   activityTurns: ButlerActivityTurn[];
+};
+
+export type ButlerLivePatch = {
+  messages?: ButlerMessageRecord[];
+  messageCount: number;
+  activityTurns?: ButlerActivityTurn[];
 };
 
 export type ButlerActivityItem = {

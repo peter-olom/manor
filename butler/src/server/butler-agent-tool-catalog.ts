@@ -26,6 +26,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "refreshThreads", description: "Refreshes one stack lease before Butler acts on it." }]
   },
   {
+    name: "set_stack_lease",
+    label: "Set stack lease",
+    description: "Update stack lease lifecycle, including sticky reuse and cleanup TTL.",
+    uiEffects: [{ kind: "refreshThreads", description: "Refreshes stack lease retention state." }]
+  },
+  {
     name: "promote_stack",
     label: "Promote stack",
     description: "Copy a stack's retained volumes into another storage namespace.",
@@ -60,6 +66,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     label: "Inspect preview",
     description: "Inspect one preview runtime, including its current runtime state and egress configuration.",
     uiEffects: [{ kind: "refreshThreads", description: "Refreshes one preview lease before Butler acts on it." }]
+  },
+  {
+    name: "set_preview_lease",
+    label: "Set preview lease",
+    description: "Update preview lease lifecycle, including sticky reuse and cleanup TTL.",
+    uiEffects: [{ kind: "refreshThreads", description: "Refreshes preview lease retention state." }]
   },
   {
     name: "start_preview_browser_session",
@@ -130,7 +142,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "review_preview_proof",
     label: "Review proof",
-    description: "Inspect the latest browser, desktop, or file proof for one preview or job and decide whether it is convincing.",
+    description: "Inspect the latest browser, desktop, or file proof for one preview or job. UI-impacting work needs screenshot or video proof.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while reviewing proof artifacts." }]
   },
   {
@@ -168,6 +180,18 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     label: "Retrieve memory",
     description: "Retrieve a scoped durable memory brief for project work, job follow-ups, and prior decisions.",
     uiEffects: [{ kind: "focusButler", description: "Keeps memory retrieval scoped before Butler answers or acts." }]
+  },
+  {
+    name: "memory_diagnostics",
+    label: "Memory diagnostics",
+    description: "Summarize memory ingestion, synthesis, promotion candidates, accepted entries, and stale or failed memory work.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler in memory troubleshooting mode." }]
+  },
+  {
+    name: "memory_debug_trace",
+    label: "Memory debug trace",
+    description: "List or inspect detailed memory review and synthesis traces.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler in deep memory debugging mode." }]
   },
   {
     name: "list_project_artifacts",
@@ -260,6 +284,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "refreshThreads", description: "Removes stale service state from the supervised job." }]
   },
   {
+    name: "inspect_filesystem",
+    label: "Inspect filesystem",
+    description: "Read-only list, stat, or bounded find under approved local roots such as /repos.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while answering safe local filesystem questions." }]
+  },
+  {
     name: "list_jobs",
     label: "List jobs",
     description: "List Codex jobs/threads across statuses, including active and inactive jobs.",
@@ -305,6 +335,33 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     ]
   },
   {
+    name: "start_self_improvement",
+    label: "Start self-improvement",
+    description: "Start a dedicated Manor self-improvement workstream that implements, verifies, pushes a branch, and opens a draft PR.",
+    uiEffects: [
+      { kind: "openWindow", description: "Opens the Manor self-improvement workstream as a tab." },
+      { kind: "focusWindow", description: "Moves focus into the new self-improvement workstream." }
+    ]
+  },
+  {
+    name: "request_manor_restart",
+    label: "Request Manor restart",
+    description: "Open an operator-facing Manor restart/update authorization dialog without mutating the live stack.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while requesting restart authorization." }]
+  },
+  {
+    name: "start_authorized_manor_restart",
+    label: "Start authorized restart",
+    description: "Consume an operator-authorized Manor restart request and ask the host controller to run it.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while the restart is scheduled." }]
+  },
+  {
+    name: "read_manor_restart_status",
+    label: "Restart status",
+    description: "Read the active or latest host-controller restart/update run.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while reading restart outcome." }]
+  },
+  {
     name: "run_supervision_smoke_test",
     label: "Run supervision smoke test",
     description: "Start a synthetic Codex job to verify Butler can privately steer worker callbacks.",
@@ -339,6 +396,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     label: "Review point",
     description: "Record Butler's accept, reject, or waive decision for one acceptance point.",
     uiEffects: [{ kind: "refreshThread", description: "Refreshes the target run after Butler updates checklist state." }]
+  },
+  {
+    name: "record_review_panel_verdict",
+    label: "Record reviewer",
+    description: "Record a hidden specialist reviewer verdict for one delegated job.",
+    uiEffects: [{ kind: "refreshThread", description: "Refreshes the target run after Butler updates reviewer state." }]
   },
   {
     name: "flush_rejected_acceptance_points",
