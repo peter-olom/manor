@@ -11,6 +11,7 @@ import type { ScratchPadStore } from "./scratch-pad-store.js";
 import type { ServiceTemplateRegistry } from "./service-templates.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { ButlerLivePatchView, CodexThreadPatchView, StackStorageMode } from "./types.js";
+import { LiveStreamTelemetryStore } from "./live-stream-telemetry.js";
 import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 
 type SseStateChannel = "shell" | "butlerLive" | "runtime" | "threads";
@@ -95,6 +96,7 @@ export class ButlerSseHub {
   private broadcastTimer: NodeJS.Timeout | null = null;
   private deferredSnapshotTimer: NodeJS.Timeout | null = null;
   private snapshotsDeferred = false;
+  private readonly liveStreamTelemetry = new LiveStreamTelemetryStore();
 
   constructor(
     private readonly access: RuntimeServerAccess,
@@ -149,9 +151,18 @@ export class ButlerSseHub {
 
   broadcastButlerPatch(payload: ButlerLivePatchView): void {
     this.deferSnapshots();
+    const timedPayload = this.liveStreamTelemetry.attachServerTiming("butlerPatch", payload);
     for (const client of this.clients) {
-      this.writeEvent(client, "butlerPatch", payload);
+      this.writeEvent(client, "butlerPatch", timedPayload);
     }
+  }
+
+  recordLiveStreamTelemetryAcks(payload: unknown): number {
+    return this.liveStreamTelemetry.recordBrowserAcks(payload);
+  }
+
+  getLiveStreamTelemetrySnapshot() {
+    return this.liveStreamTelemetry.getSnapshot();
   }
 
   broadcastComposerPrefill(payload: {

@@ -365,6 +365,15 @@ app.get("/api/bootstrap", (_request, response) => {
   response.json(currentBootstrapSnapshot(runtimeAccess));
 });
 
+app.get("/api/telemetry/live-stream", (_request, response) => {
+  response.json(sseHub.getLiveStreamTelemetrySnapshot());
+});
+
+app.post("/api/telemetry/live-stream", (request, response) => {
+  const accepted = sseHub.recordLiveStreamTelemetryAcks(request.body?.acks ?? request.body);
+  response.json({ ok: true, accepted });
+});
+
 app.get("/api/shell", (_request, response) => {
   response.json(store.getShellSnapshot(butlerAgent.getShellSnapshot(), {
     ...codexClient.getConnectionState(),

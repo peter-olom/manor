@@ -5,6 +5,7 @@ import type {
   ProviderRuntimeContentStreamKind,
   ProviderRuntimeItemStatus,
   ProviderRuntimeItemType,
+  ProviderRuntimePatchTelemetry,
   ProviderRuntimeThreadState,
   ProviderRuntimeTurnState
 } from "../shared/provider-runtime";
@@ -113,6 +114,22 @@ const VISIBLE_RESYNC_MIN_INTERVAL_MS = 30_000;
 const VISIBLE_RESYNC_CHECK_INTERVAL_MS = 10_000;
 const VERSION_GAP_RESYNC_MIN_INTERVAL_MS = 1_000;
 const BOOTSTRAP_CHANNELS: readonly BootstrapChannel[] = ["shell", "butlerLive", "runtime", "threads"];
+const LIVE_STREAM_TELEMETRY_ENDPOINT = "/api/telemetry/live-stream";
+const LIVE_STREAM_TELEMETRY_FLUSH_MS = 750;
+const LIVE_STREAM_TELEMETRY_MAX_BATCH = 100;
+const LIVE_STREAM_TELEMETRY_MAX_QUEUE = 500;
+
+type LiveStreamTelemetryAck = {
+  id: string;
+  eventName: "butlerPatch";
+  browserReceivedAt: number;
+  browserStateAppliedAt: number;
+  browserRenderedAt: number;
+};
+
+const liveStreamTelemetryQueue: LiveStreamTelemetryAck[] = [];
+let liveStreamTelemetryFlushTimer: number | null = null;
+let liveStreamTelemetryInFlight = false;
 
 function setTransportState(nextValue: Partial<TransportState>): void {
   const current = transportStore.getSnapshot();
@@ -212,6 +229,67 @@ export function shouldRefreshLiveStateOnPageEvent(input: {
 
 function parseEventData<T>(event: Event): T {
   return JSON.parse((event as MessageEvent<string>).data) as T;
+}
+
+function scheduleLiveStreamTelemetryFlush(): void {
+  if (liveStreamTelemetryFlushTimer !== null || liveStreamTelemetryInFlight || liveStreamTelemetryQueue.length === 0) {
+    return;
+  }
+  liveStreamTelemetryFlushTimer = window.setTimeout(() => {
+    liveStreamTelemetryFlushTimer = null;
+    flushLiveStreamTelemetry();
+  }, LIVE_STREAM_TELEMETRY_FLUSH_MS);
+}
+
+function flushLiveStreamTelemetry(): void {
+  if (liveStreamTelemetryInFlight || liveStreamTelemetryQueue.length === 0) {
+    return;
+  }
+
+  liveStreamTelemetryInFlight = true;
+  const batch = liveStreamTelemetryQueue.splice(0, LIVE_STREAM_TELEMETRY_MAX_BATCH);
+  void window.fetch(LIVE_STREAM_TELEMETRY_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ acks: batch }),
+    keepalive: true
+  })
+    .catch(() => {
+      liveStreamTelemetryQueue.unshift(...batch);
+      if (liveStreamTelemetryQueue.length > LIVE_STREAM_TELEMETRY_MAX_QUEUE) {
+        liveStreamTelemetryQueue.splice(0, liveStreamTelemetryQueue.length - LIVE_STREAM_TELEMETRY_MAX_QUEUE);
+      }
+    })
+    .finally(() => {
+      liveStreamTelemetryInFlight = false;
+      scheduleLiveStreamTelemetryFlush();
+    });
+}
+
+function queueButlerPatchTelemetry(
+  telemetry: ProviderRuntimePatchTelemetry | undefined,
+  browserReceivedAt: number,
+  browserStateAppliedAt: number
+): void {
+  if (!telemetry?.id) {
+    return;
+  }
+
+  const enqueue = () => {
+    liveStreamTelemetryQueue.push({
+      id: telemetry.id,
+      eventName: "butlerPatch",
+      browserReceivedAt,
+      browserStateAppliedAt,
+      browserRenderedAt: Date.now()
+    });
+    if (liveStreamTelemetryQueue.length > LIVE_STREAM_TELEMETRY_MAX_QUEUE) {
+      liveStreamTelemetryQueue.splice(0, liveStreamTelemetryQueue.length - LIVE_STREAM_TELEMETRY_MAX_QUEUE);
+    }
+    scheduleLiveStreamTelemetryFlush();
+  };
+
+  window.requestAnimationFrame(enqueue);
 }
 
 function parseEventChannelVersion(event: Event, channel: BootstrapChannel): number | null {
@@ -982,8 +1060,11 @@ function openEventSource(): void {
     if (!isCurrentAttempt()) {
       return;
     }
+    const browserReceivedAt = Date.now();
     markTransportAlive();
-    butlerLiveStore.setSnapshot(applyButlerLivePatchSnapshot(butlerLiveStore.getSnapshot(), parseEventData<ButlerLivePatch>(event)));
+    const patch = parseEventData<ButlerLivePatch>(event);
+    butlerLiveStore.setSnapshot(applyButlerLivePatchSnapshot(butlerLiveStore.getSnapshot(), patch));
+    queueButlerPatchTelemetry(patch.telemetry, browserReceivedAt, Date.now());
   });
   source.addEventListener("runtime", onEvent<RuntimeSnapshot>("runtime", (payload) => runtimeStore.setSnapshot(payload)));
   source.addEventListener("threads", onEvent<Record<string, CodexThreadDetail>>("threads", (payload) => openThreadsStore.setSnapshot(mergeOpenThreadSnapshots(openThreadsStore.getSnapshot(), payload))));

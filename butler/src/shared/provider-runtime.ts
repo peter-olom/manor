@@ -153,8 +153,20 @@ export type ProviderRuntimeEvent =
       payload: { message: string; detail?: unknown };
     });
 
+export type ProviderRuntimePatchTelemetry = {
+  id: string;
+  provider: string;
+  providerEventAt: number;
+  serverReceivedAt: number;
+  serverSentAt?: number;
+};
+
+type ProviderRuntimeLivePatchTelemetry = {
+  telemetry?: ProviderRuntimePatchTelemetry;
+};
+
 export type ProviderRuntimeLivePatch =
-  | {
+  | ({
       kind: "content-delta";
       threadId: string;
       turnId: string;
@@ -164,8 +176,8 @@ export type ProviderRuntimeLivePatch =
       delta: string;
       itemTextLength: number;
       at: number;
-    }
-  | {
+    } & ProviderRuntimeLivePatchTelemetry)
+  | ({
       kind: "item-lifecycle";
       threadId: string;
       turnId: string;
@@ -175,35 +187,35 @@ export type ProviderRuntimeLivePatch =
       title?: string;
       text: string;
       at: number;
-    }
-  | {
+    } & ProviderRuntimeLivePatchTelemetry)
+  | ({
       kind: "turn-lifecycle";
       threadId: string;
       turnId: string;
       status: "started" | ProviderRuntimeTurnState;
       at: number;
-    }
-  | {
+    } & ProviderRuntimeLivePatchTelemetry)
+  | ({
       kind: "thread-state";
       threadId: string;
       state: ProviderRuntimeThreadState;
       at: number;
-    }
-  | {
+    } & ProviderRuntimeLivePatchTelemetry)
+  | ({
       kind: "token-usage";
       threadId: string;
       tokens: number;
       contextWindow: number | null;
       percent: number | null;
       at: number;
-    }
-  | {
+    } & ProviderRuntimeLivePatchTelemetry)
+  | ({
       kind: "runtime-message";
       threadId: string;
       tone: "warning" | "error";
       message: string;
       at: number;
-    };
+    } & ProviderRuntimeLivePatchTelemetry);
 
 export type ProviderRuntimeThreadSnapshot = {
   threadId: string;
