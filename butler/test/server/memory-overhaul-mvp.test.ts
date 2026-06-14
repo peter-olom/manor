@@ -186,6 +186,97 @@ test("memory synthesis exec normalizes display model labels before invoking Code
   }
 });
 
+
+test("memory synthesis output schema is strict-required for Codex response_format", async () => {
+  const { store, stateDir } = await createStore();
+  const binDir = await mkdtemp(path.join(tmpdir(), "manor-memory-synthesis-schema-bin-"));
+  const fakeCodexPath = path.join(binDir, "codex");
+  const schemaCopyPath = path.join(binDir, "schema.json");
+  await import("node:fs/promises").then(async ({ chmod, writeFile }) => {
+    await writeFile(
+      fakeCodexPath,
+      [
+        "#!/usr/bin/env node",
+        'const fs = require("node:fs");',
+        "const args = process.argv.slice(2);",
+        'const schemaIndex = args.indexOf("--output-schema");',
+        'const outputIndex = args.indexOf("--output-last-message");',
+        "if (schemaIndex === -1 || outputIndex === -1) process.exit(2);",
+        `fs.copyFileSync(args[schemaIndex + 1], ${JSON.stringify(schemaCopyPath)});`,
+        'fs.writeFileSync(args[outputIndex + 1], JSON.stringify({ candidates: [], entities: [], relationships: [] }));'
+      ].join("\n"),
+      "utf8"
+    );
+    await chmod(fakeCodexPath, 0o755);
+  });
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+  try {
+    const scheduler = new MemoryUpdateScheduler({ store, stateDir, codexHomeDir: stateDir, config: testConfig() });
+    await (scheduler as unknown as { runCodexExec(input: { prompt: string; cwd: string; timeoutMs: number; config: MemorySynthesisConfig }): Promise<unknown> }).runCodexExec({
+      prompt: "Return empty synthesis output.",
+      cwd: "/workspace",
+      timeoutMs: 5_000,
+      config: testConfig()
+    });
+    const schema = JSON.parse(await import("node:fs/promises").then(({ readFile }) => readFile(schemaCopyPath, "utf8"))) as { required?: string[]; properties?: Record<string, unknown> };
+    const assertStrictRequired = (node: unknown): void => {
+      if (!node || typeof node !== "object") return;
+      const objectNode = node as { type?: unknown; properties?: Record<string, unknown>; required?: unknown; items?: unknown };
+      if (objectNode.type === "object" && objectNode.properties) {
+        const keys = Object.keys(objectNode.properties).sort();
+        assert.deepEqual(Array.isArray(objectNode.required) ? [...objectNode.required].sort() : objectNode.required, keys);
+      }
+      for (const child of Object.values(objectNode.properties ?? {})) assertStrictRequired(child);
+      assertStrictRequired(objectNode.items);
+    };
+
+    assertStrictRequired(schema);
+    assert.deepEqual(schema.required, ["candidates", "entities", "relationships"]);
+  } finally {
+    process.env.PATH = originalPath;
+  }
+});
+
+test("memory synthesis completion persists Codex candidates without forcing a model", async () => {
+  const { store, stateDir } = await createStore();
+  let invokedModel: string | null = "not-invoked";
+  const scheduler = new MemoryUpdateScheduler({
+    store,
+    stateDir,
+    codexHomeDir: stateDir,
+    config: testConfig({ model: null }),
+    runner: async ({ config }) => {
+      invokedModel = config.model;
+      return {
+        candidates: [{ kind: "decision", summary: "Keep strict memory synthesis schemas.", details: null, confidence: "high", reason: "Prevents Codex response_format 400s." }],
+        entities: [],
+        relationships: []
+      };
+    }
+  });
+  store.upsertThreadSummary({ id: "thread-synthesis", cwd: "/workspace", createdAt: 1, status: "running" });
+  store.setThreadExecutionContract("thread-synthesis", contract("thread-synthesis"));
+  scheduler.recordMemoryEvent({
+    idempotencyKey: "strict-schema-checkpoint",
+    projectId: "project-1",
+    projectLabel: "Project One",
+    threadId: "thread-synthesis",
+    sourceKind: "harness_checkpoint",
+    sourceId: "checkpoint",
+    summary: "Strict schema checkpoint"
+  }, { semanticReview: "high", reason: "strict schema regression" });
+
+  await scheduler.processDueQueue();
+
+  const graph = store.listMemoryGraph();
+  const completed = graph.synthesisQueue.find((entry) => entry.idempotencyKey === "synthesis:strict-schema-checkpoint:high");
+  assert.equal(completed?.status, "completed");
+  assert.equal(invokedModel, null);
+  assert.equal(store.getJobMemory("thread-synthesis")?.promotionCandidates.some((entry) => entry.summary === "Keep strict memory synthesis schemas."), true);
+  assert.equal(graph.observations.some((entry) => entry.sourceKind === "synthesis_result" && entry.sourceId === completed?.id), true);
+});
+
 test("memory synthesis exec falls back on unsupported models but surfaces unrelated failures", async () => {
   const { store, stateDir } = await createStore();
   const binDir = await mkdtemp(path.join(tmpdir(), "manor-memory-synthesis-fallback-bin-"));

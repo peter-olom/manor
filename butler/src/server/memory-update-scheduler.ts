@@ -87,6 +87,7 @@ const SENSITIVE_MEMORY_PATTERN = /\b(sk-[A-Za-z0-9_-]{8,}|bearer\s+[A-Za-z0-9._-
 const OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
+  required: ["candidates", "entities", "relationships"],
   properties: {
     candidates: {
       type: "array",
@@ -94,6 +95,7 @@ const OUTPUT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
+        required: ["kind", "summary", "details", "confidence", "reason"],
         properties: {
           kind: { type: "string", enum: ["checkpoint", "decision", "note"] },
           summary: { type: "string" },
@@ -109,6 +111,7 @@ const OUTPUT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
+        required: ["type", "name", "canonicalKey", "summary"],
         properties: {
           type: { type: "string" },
           name: { type: "string" },
@@ -123,6 +126,7 @@ const OUTPUT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
+        required: ["sourceName", "predicate", "targetName", "confidence"],
         properties: {
           sourceName: { type: "string" },
           predicate: { type: "string" },
