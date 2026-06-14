@@ -1370,19 +1370,21 @@ export function App() {
                 <CloseIcon />
               </button>
             </div>
-            <p className="modal-copy manor-restart-copy" id="operator-restart-copy">
-              The host controller will restart Manor and report the outcome here.
-            </p>
-            <label className="manor-restart-option">
-              <input
-                type="checkbox"
-                checked={operatorRestartUpdateLatest}
-                onChange={(event) => setOperatorRestartUpdateLatest(event.target.checked)}
-                disabled={operatorRestartBusy}
-              />
-              <span>Update to latest before restarting</span>
-            </label>
-            <div className="modal-actions">
+            <div className="manor-restart-body">
+              <p className="modal-copy manor-restart-copy" id="operator-restart-copy">
+                The host controller will restart Manor and report the outcome here.
+              </p>
+              <label className="manor-restart-option">
+                <input
+                  type="checkbox"
+                  checked={operatorRestartUpdateLatest}
+                  onChange={(event) => setOperatorRestartUpdateLatest(event.target.checked)}
+                  disabled={operatorRestartBusy}
+                />
+                <span>Update to latest before restarting</span>
+              </label>
+            </div>
+            <div className="modal-actions manor-restart-actions">
               <button className="panel-action" onClick={() => setOperatorRestartDialogOpen(false)} disabled={operatorRestartBusy}>
                 Cancel
               </button>
@@ -1403,33 +1405,35 @@ export function App() {
                 <h2 id="manor-restart-title">Authorize Manor restart?</h2>
               </div>
             </div>
-            <p className="modal-copy manor-restart-copy" id="manor-restart-copy">
-              Butler is asking to authorize a Manor restart or update. Review the target details before continuing.
-            </p>
-            <dl className="manor-restart-details">
-              <div>
-                <dt>Target tag</dt>
-                <dd>{pendingRestartRequest.imageTag ?? pendingRestartRequest.targetTag ?? "Not specified"}</dd>
-              </div>
-              <div>
-                <dt>Target commit</dt>
-                <dd>{pendingRestartRequest.gitRef ?? pendingRestartRequest.targetCommit ?? "Not specified"}</dd>
-              </div>
-              <div>
-                <dt>Reason</dt>
-                <dd>{pendingRestartRequest.reason ?? "No reason provided"}</dd>
-              </div>
-              {pendingRestartRequest.details ? (
+            <div className="manor-restart-body">
+              <p className="modal-copy manor-restart-copy" id="manor-restart-copy">
+                Butler is asking to authorize a Manor restart or update. Review the target details before continuing.
+              </p>
+              <dl className="manor-restart-details">
                 <div>
-                  <dt>Details</dt>
-                  <dd>{pendingRestartRequest.details}</dd>
+                  <dt>Target tag</dt>
+                  <dd>{pendingRestartRequest.imageTag ?? pendingRestartRequest.targetTag ?? "Not specified"}</dd>
                 </div>
-              ) : null}
-            </dl>
-            <p className="manor-restart-note">
-              This click records your explicit authorization and starts the approved restart through the host controller.
-            </p>
-            <div className="modal-actions">
+                <div>
+                  <dt>Target commit</dt>
+                  <dd>{pendingRestartRequest.gitRef ?? pendingRestartRequest.targetCommit ?? "Not specified"}</dd>
+                </div>
+                <div>
+                  <dt>Reason</dt>
+                  <dd>{pendingRestartRequest.reason ?? "No reason provided"}</dd>
+                </div>
+                {pendingRestartRequest.details ? (
+                  <div>
+                    <dt>Details</dt>
+                    <dd>{pendingRestartRequest.details}</dd>
+                  </div>
+                ) : null}
+              </dl>
+              <p className="manor-restart-note">
+                This click records your explicit authorization and starts the approved restart through the host controller.
+              </p>
+            </div>
+            <div className="modal-actions manor-restart-actions">
               <button className="panel-action" onClick={() => void dismissManorRestart(pendingRestartRequest)} disabled={restartAuthorizeBusy}>
                 Keep running
               </button>

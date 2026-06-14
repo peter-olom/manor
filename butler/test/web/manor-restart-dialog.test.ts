@@ -47,6 +47,13 @@ test("Manor restart dialog requires an explicit operator authorization button", 
   assert.match(styleSource, /manor-restart-control/);
   assert.match(styleSource, /manor-restart-button/);
   assert.match(styleSource, /manor-restart-option/);
+  assert.match(appSource, /className="manor-restart-body"/);
+  assert.match(appSource, /className="modal-actions manor-restart-actions"/);
+  assert.match(styleSource, /grid-template-rows: auto minmax\(0, 1fr\) auto/);
+  assert.match(styleSource, /100dvh/);
+  assert.match(styleSource, /env\(safe-area-inset-bottom/);
+  assert.match(styleSource, /-webkit-overflow-scrolling: touch/);
+  assert.match(styleSource, /\.manor-restart-actions \.panel-action/);
   assert.doesNotMatch(styleSource, /manor-restart-latest/);
   assert.match(styleSource, /manor-restart-result/);
   assert.match(styleSource, /manor-restart-error/);

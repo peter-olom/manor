@@ -4625,12 +4625,18 @@ select {
 }
 
 .manor-restart-backdrop {
+  align-items: stretch;
   background: color-mix(in srgb, var(--bg) 68%, transparent);
+  overflow: hidden;
 }
 
 .manor-restart-dialog {
+  align-self: center;
   width: min(520px, 100%);
-  gap: 16px;
+  max-height: min(760px, calc(100dvh - 48px - env(safe-area-inset-bottom, 0px)));
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 0;
+  overflow: hidden;
 }
 
 .manor-restart-head {
@@ -4646,6 +4652,16 @@ select {
 
 .manor-restart-copy {
   color: var(--ink);
+}
+
+.manor-restart-body {
+  display: grid;
+  min-height: 0;
+  gap: 16px;
+  overflow: auto;
+  padding: 16px 0;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .manor-restart-details {
@@ -4711,6 +4727,13 @@ select {
 .manor-restart-option:has(input:disabled) {
   opacity: 0.62;
   cursor: not-allowed;
+}
+
+.manor-restart-actions {
+  flex: 0 0 auto;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
 }
 
 .manor-restart-authorize {
@@ -5820,6 +5843,26 @@ select {
 
   .modal-backdrop {
     padding: 16px;
+  }
+
+  .manor-restart-backdrop {
+    align-items: stretch;
+    padding: 12px 12px calc(72px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .manor-restart-dialog {
+    align-self: stretch;
+    max-height: calc(100dvh - 84px - env(safe-area-inset-bottom, 0px));
+  }
+
+  .manor-restart-actions {
+    flex-wrap: wrap;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .manor-restart-actions .panel-action {
+    flex: 1 1 148px;
+    justify-content: center;
   }
 
   .modal-card-image {
