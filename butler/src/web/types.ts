@@ -1,3 +1,5 @@
+import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
+
 export type ThreadStatus = "active" | "idle" | "unknown";
 export type ButlerCallbackState =
   | "waiting"
@@ -753,16 +755,7 @@ export type CodexThreadDetail = CodexThreadSummary & {
   } | null;
 };
 
-export type CodexThreadPatch = {
-  kind: "item-delta";
-  threadId: string;
-  turnId: string;
-  itemId: string;
-  itemType: string;
-  delta: string;
-  itemTextLength: number;
-  at: number;
-};
+export type CodexThreadPatch = ProviderRuntimeLivePatch;
 
 export type ButlerThreadCallback = {
   threadId: string;

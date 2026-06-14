@@ -578,7 +578,8 @@ export class ButlerStateStore extends EventEmitter {
     turnId: string,
     itemId: string,
     delta: string,
-    itemType = "agentMessage"
+    itemType = "agentMessage",
+    options?: { emitChange?: boolean }
   ): void {
     const turn = this.getOrCreateTurn(threadId, turnId);
     const activityAt = Date.now();
@@ -606,7 +607,9 @@ export class ButlerStateStore extends EventEmitter {
     thread.turnCount = thread.turns.length;
     this.refreshDerivedThreadState(thread, activityAt);
     this.noteThreadLeaseActivity(threadId, activityAt);
-    this.emitChange();
+    if (options?.emitChange !== false) {
+      this.emitChange();
+    }
   }
 
   updateThreadTokenUsage(

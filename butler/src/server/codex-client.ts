@@ -1,27 +1,17 @@
 import { EventEmitter } from "node:events";
-import { readFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-
-import WebSocket, { type RawData } from "ws";
 
 import type { CodexInputItem } from "./image-store.js";
 import { cleanupManagedWorktree, resolveExistingWorkspaceCwd } from "./repo-worktree.js";
 import { listFilesRecursive, listThreadSessionFiles, listThreadSnapshotFiles, normalizeTimestampMs } from "./codex-session-artifacts.js";
 import { ButlerStateStore } from "./state-store.js";
+import { CodexAppServerTransport, type JsonRpcMessage } from "./codex-app-server-transport.js";
+import { CodexProviderAdapter } from "./codex-provider-adapter.js";
+import { ProviderRuntimeIngestion } from "./provider-runtime-ingestion.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import type { CodexThreadPatchView, ModelOption, ReasoningEffort, RuntimeCleanupTaskView } from "./types.js";
-
-type JsonRpcMessage = {
-  id?: number;
-  method?: string;
-  params?: Record<string, unknown>;
-  result?: Record<string, unknown>;
-  error?: {
-    code: number;
-    message: string;
-  };
-};
+import type { ProviderRuntimeEvent, ProviderRuntimeLivePatch } from "../shared/provider-runtime.js";
 
 type ThreadDeleteContext = {
   threadId: string;
@@ -186,44 +176,14 @@ function normalizeInputItems(input: string | CodexInputItem[]): CodexInputItem[]
   return normalized;
 }
 
-function decodeDelta(params: Record<string, unknown>): string | null {
-  if (typeof params.delta === "string") {
-    return params.delta;
-  }
-
-  if (typeof params.deltaBase64 !== "string") {
-    return null;
-  }
-
-  try {
-    return Buffer.from(params.deltaBase64, "base64").toString("utf8");
-  } catch {
-    return null;
-  }
-}
-
 export class CodexAppServerClient extends EventEmitter {
-  private static readonly CONNECT_TIMEOUT_MS = 15_000;
-  private static readonly HEARTBEAT_INTERVAL_MS = 15_000;
-  private static readonly HEARTBEAT_TIMEOUT_MS = 10_000;
-  private static readonly RECONNECT_BASE_DELAY_MS = 1_500;
-  private static readonly RECONNECT_MAX_DELAY_MS = 15_000;
-
-  private readonly baseUrl: string;
   private readonly store: ButlerStateStore;
-  private socket: WebSocket | null = null;
-  private nextId = 1;
-  private readonly pending = new Map<number, { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void }>();
-  private reconnectTimer: NodeJS.Timeout | null = null;
-  private connectTimeoutTimer: NodeJS.Timeout | null = null;
-  private heartbeatIntervalTimer: NodeJS.Timeout | null = null;
-  private heartbeatTimeoutTimer: NodeJS.Timeout | null = null;
-  private reconnectAttempt = 0;
+  private readonly transport: CodexAppServerTransport;
+  private readonly codexProviderAdapter: CodexProviderAdapter;
   private readonly resumedThreadIds = new Set<string>();
   private readonly directControlThreadIds = new Set<string>();
   private readonly activeTurnIds = new Map<string, string>();
   private readonly deletedThreadIds = new Set<string>();
-  private connected = false;
   private lastError: string | null = null;
   private availableModels: ModelOption[] = [];
   private selectedModel: string | null = null;
@@ -236,7 +196,7 @@ export class CodexAppServerClient extends EventEmitter {
   private readonly onThreadDeleting: ((context: ThreadDeleteContext) => Promise<void>) | null;
   private readonly memoryScheduler: MemoryUpdateScheduler | null;
   private readonly onRuntimeCleanupError: ((threadId: string, message: string) => void) | null;
-  private readonly authTokenFile: string | null;
+  private readonly providerRuntimeIngestion: ProviderRuntimeIngestion;
   private cleanupQueueRunning = false;
 
   constructor(
@@ -251,10 +211,10 @@ export class CodexAppServerClient extends EventEmitter {
       onRuntimeCleanupError?: (threadId: string, message: string) => void;
       artifactsDir?: string | null;
       authTokenFile?: string | null;
+      providerRuntimeIngestion?: ProviderRuntimeIngestion | null;
     }
   ) {
     super();
-    this.baseUrl = baseUrl;
     this.store = store;
     this.codexHomeDir = codexHomeDir;
     this.artifactsDir = options?.artifactsDir ? path.resolve(options.artifactsDir) : null;
@@ -263,11 +223,38 @@ export class CodexAppServerClient extends EventEmitter {
     this.onThreadDeleting = options?.onThreadDeleting ?? null;
     this.memoryScheduler = options?.memoryScheduler ?? null;
     this.onRuntimeCleanupError = options?.onRuntimeCleanupError ?? null;
-    this.authTokenFile = options?.authTokenFile ? path.resolve(options.authTokenFile) : null;
+    this.providerRuntimeIngestion = options?.providerRuntimeIngestion ?? new ProviderRuntimeIngestion(store);
+    this.providerRuntimeIngestion.on("runtimePatch", (patch) => this.handleRuntimePatch(patch));
+    this.transport = new CodexAppServerTransport(baseUrl, {
+      authTokenFile: options?.authTokenFile ? path.resolve(options.authTokenFile) : null,
+      onReady: async () => {
+        this.lastError = null;
+        this.emit("change");
+        await this.loadModels();
+        await this.seedThreads();
+        this.store.enableMilestones();
+      },
+      onClosed: () => {
+        this.resumedThreadIds.clear();
+        this.directControlThreadIds.clear();
+        this.activeTurnIds.clear();
+      }
+    });
+    this.codexProviderAdapter = new CodexProviderAdapter(this.transport);
+    this.transport.on("notification", (message) => this.handleMessage(message as JsonRpcMessage));
+    this.transport.on("change", () => {
+      this.emit("change");
+    });
+    this.codexProviderAdapter.on("runtimeEvent", (event) => {
+      if (!this.deletedThreadIds.has(event.threadId)) {
+        this.ingestRuntimeEvent(event);
+      }
+    });
+    this.codexProviderAdapter.on("unmappedNotification", (message) => this.handleUnmappedNotification(message));
   }
 
   start(): void {
-    this.connect();
+    this.transport.start();
   }
 
   private async requireExistingWorkspace(cwd: string | null | undefined): Promise<string | null> {
@@ -285,10 +272,34 @@ export class CodexAppServerClient extends EventEmitter {
     }
   }
 
+  private handleRuntimePatch(patch: ProviderRuntimeLivePatch): void {
+    this.emit("threadPatch", patch satisfies CodexThreadPatchView);
+  }
+
+  private noteRuntimeEvent(event: ProviderRuntimeEvent): void {
+    if (event.type === "turn.started" && event.turnId) {
+      this.activeTurnIds.set(event.threadId, event.turnId);
+      return;
+    }
+
+    if (event.type === "turn.completed" || event.type === "turn.aborted" || event.type === "session.exited") {
+      this.activeTurnIds.delete(event.threadId);
+    }
+  }
+
+  private ingestRuntimeEvent(event: ProviderRuntimeEvent): void {
+    this.noteRuntimeEvent(event);
+    void this.providerRuntimeIngestion.ingest(event).catch((error) => {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.emit("change");
+    });
+  }
+
   getConnectionState(): { connected: boolean; lastError: string | null; compose: { model: string | null; effort: ReasoningEffort | null; availableModels: ModelOption[] } } {
+    const transportState = this.transport.getState();
     return {
-      connected: this.connected,
-      lastError: this.lastError,
+      connected: transportState.connected,
+      lastError: this.lastError ?? transportState.lastError,
       compose: {
         model: this.selectedModel,
         effort: this.selectedEffort,
@@ -297,377 +308,53 @@ export class CodexAppServerClient extends EventEmitter {
     };
   }
 
-  private clearConnectTimeout(): void {
-    if (this.connectTimeoutTimer) {
-      clearTimeout(this.connectTimeoutTimer);
-      this.connectTimeoutTimer = null;
-    }
-  }
-
-  private clearHeartbeatTimers(): void {
-    if (this.heartbeatIntervalTimer) {
-      clearInterval(this.heartbeatIntervalTimer);
-      this.heartbeatIntervalTimer = null;
-    }
-    if (this.heartbeatTimeoutTimer) {
-      clearTimeout(this.heartbeatTimeoutTimer);
-      this.heartbeatTimeoutTimer = null;
-    }
-  }
-
-  private scheduleReconnect(): void {
-    if (this.reconnectTimer) {
-      return;
-    }
-
-    const retryIndex = this.reconnectAttempt++;
-    const baseDelay = Math.min(
-      CodexAppServerClient.RECONNECT_MAX_DELAY_MS,
-      CodexAppServerClient.RECONNECT_BASE_DELAY_MS * 2 ** retryIndex
-    );
-    const jitter = Math.min(750, Math.round(baseDelay * 0.2 * Math.random()));
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      this.connect();
-    }, baseDelay + jitter);
-  }
-
-  private armHeartbeat(socket: WebSocket): void {
-    this.clearHeartbeatTimers();
-    this.heartbeatIntervalTimer = setInterval(() => {
-      if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) {
-        this.clearHeartbeatTimers();
-        return;
-      }
-
-      try {
-        socket.ping();
-      } catch {
-        socket.terminate();
-        return;
-      }
-
-      if (this.heartbeatTimeoutTimer) {
-        clearTimeout(this.heartbeatTimeoutTimer);
-      }
-      this.heartbeatTimeoutTimer = setTimeout(() => {
-        if (this.socket === socket) {
-          this.lastError = "Codex app-server heartbeat timed out";
-          this.emit("change");
-        }
-        socket.terminate();
-      }, CodexAppServerClient.HEARTBEAT_TIMEOUT_MS);
-    }, CodexAppServerClient.HEARTBEAT_INTERVAL_MS);
-  }
-
-  private markHeartbeatHealthy(socket: WebSocket): void {
-    if (this.socket !== socket) {
-      return;
-    }
-
-    if (this.heartbeatTimeoutTimer) {
-      clearTimeout(this.heartbeatTimeoutTimer);
-      this.heartbeatTimeoutTimer = null;
-    }
-  }
-
-  private readAuthHeaders(): Record<string, string> | undefined {
-    if (!this.authTokenFile) {
-      return undefined;
-    }
-
-    const token = readFileSync(this.authTokenFile, "utf8").trim();
-    if (!token) {
-      throw new Error("Codex app-server auth token is empty");
-    }
-
-    return {
-      Authorization: `Bearer ${token}`
-    };
-  }
-
-  private connect(): void {
-    let headers: Record<string, string> | undefined;
-    try {
-      headers = this.readAuthHeaders();
-    } catch (error) {
-      this.lastError = error instanceof Error ? error.message : String(error);
-      this.emit("change");
-      this.scheduleReconnect();
-      return;
-    }
-
-    const socket = new WebSocket(this.baseUrl, { headers });
-    this.socket = socket;
-    this.clearConnectTimeout();
-    this.connectTimeoutTimer = setTimeout(() => {
-      if (this.socket !== socket || this.connected) {
-        return;
-      }
-
-      this.lastError = "Timed out connecting to Codex app-server";
-      this.emit("change");
-      socket.terminate();
-    }, CodexAppServerClient.CONNECT_TIMEOUT_MS);
-
-    socket.on("open", async () => {
-      if (this.socket !== socket) {
-        socket.close();
-        return;
-      }
-
-      try {
-        await this.call("initialize", {
-          clientInfo: {
-            name: "manor-butler",
-            title: "Manor Butler",
-            version: "0.1.0"
-          },
-          capabilities: {
-            experimentalApi: true
-          }
-        });
-
-        socket.send(JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} }));
-        this.clearConnectTimeout();
-        this.connected = true;
-        this.lastError = null;
-        this.reconnectAttempt = 0;
-        this.armHeartbeat(socket);
-        this.emit("change");
-        await this.loadModels();
-        await this.seedThreads();
-        this.store.enableMilestones();
-      } catch (error) {
-        this.lastError = error instanceof Error ? error.message : String(error);
-        this.emit("change");
-        socket.close();
-      }
-    });
-
-    socket.on("message", (buffer: RawData) => {
-      if (this.socket !== socket) {
-        return;
-      }
-
-      this.markHeartbeatHealthy(socket);
-      try {
-        const message = JSON.parse(buffer.toString()) as JsonRpcMessage;
-        this.handleMessage(message);
-      } catch (error) {
-        this.lastError = error instanceof Error ? error.message : String(error);
-        this.emit("change");
-      }
-    });
-
-    socket.on("pong", () => {
-      this.markHeartbeatHealthy(socket);
-    });
-
-    socket.on("close", () => {
-      if (this.socket !== socket) {
-        return;
-      }
-
-      this.clearConnectTimeout();
-      this.clearHeartbeatTimers();
-      this.connected = false;
-      this.socket = null;
-      this.resumedThreadIds.clear();
-      this.directControlThreadIds.clear();
-      this.activeTurnIds.clear();
-
-      for (const pending of this.pending.values()) {
-        pending.reject(new Error("Codex app-server connection closed"));
-      }
-      this.pending.clear();
-
-      if (!this.lastError) {
-        this.lastError = "Codex app-server connection closed";
-      }
-      this.scheduleReconnect();
-
-      this.emit("change");
-    });
-
-    socket.on("error", (error: Error) => {
-      if (this.socket !== socket) {
-        return;
-      }
-
-      this.lastError = error.message;
-      this.emit("change");
-    });
-  }
-
   private handleMessage(message: JsonRpcMessage): void {
-    if (typeof message.id === "number") {
-      const pending = this.pending.get(message.id);
-      if (!pending) {
-        return;
-      }
-      this.pending.delete(message.id);
-      if (message.error) {
-        pending.reject(new Error(message.error.message));
-      } else {
-        pending.resolve(message.result ?? {});
-      }
+    if (!message.method) {
       return;
     }
 
+    this.codexProviderAdapter.handleNotification(message);
+  }
+
+  private handleUnmappedNotification(message: JsonRpcMessage): void {
     if (!message.method) {
       return;
     }
 
     const params = message.params ?? {};
     const threadId = typeof params.threadId === "string" ? params.threadId : null;
-    const streamingItemMatch = message.method.match(/^item\/([^/]+)\/(delta|outputDelta|summaryTextDelta|textDelta)$/);
-    const streamingCommandExecMatch = message.method === "command/exec/outputDelta";
 
     if (threadId && this.deletedThreadIds.has(threadId)) {
       return;
     }
 
-    if ((streamingItemMatch || streamingCommandExecMatch) && typeof params.threadId === "string" && typeof params.turnId === "string" && typeof params.itemId === "string") {
-      const delta = decodeDelta(params);
-      if (delta === null) {
-        return;
-      }
-
-      this.store.appendItemDelta(
-        params.threadId,
-        params.turnId,
-        params.itemId,
-        delta,
-        streamingCommandExecMatch ? "commandExecution" : (streamingItemMatch?.[1] ?? "unknown")
-      );
-      const item = this.store.getThread(params.threadId)?.turns.find((turn) => turn.id === params.turnId)?.items.find((entry) => entry.id === params.itemId);
-      if (item) {
-        this.emit("threadPatch", {
-          kind: "item-delta",
-          threadId: params.threadId,
-          turnId: params.turnId,
-          itemId: params.itemId,
-          itemType: item.type,
-          delta,
-          itemTextLength: item.text.length,
-          at: item.at
-        } satisfies CodexThreadPatchView);
-      }
+    if (threadId) {
+      this.store.addEvent(threadId, message.method, JSON.stringify(params).slice(0, 240));
       this.emit("change");
-      return;
     }
-
-    switch (message.method) {
-      case "thread/started":
-        if (params.thread && typeof params.thread === "object") {
-          const thread = params.thread as Record<string, unknown>;
-          if (typeof thread.id === "string") {
-            if (this.deletedThreadIds.has(thread.id)) {
-              return;
-            }
-            this.store.upsertThreadSummary(thread);
-            this.store.addEvent(thread.id, message.method, "Thread started");
-          }
-        }
-        break;
-      case "thread/name/updated":
-        if (params.thread && typeof params.thread === "object") {
-          const thread = params.thread as Record<string, unknown>;
-          if (typeof thread.id === "string") {
-            this.store.upsertThreadSummary(thread);
-            this.store.addEvent(thread.id, message.method, "Thread name updated");
-          }
-        } else if (typeof params.threadId === "string" && typeof params.name === "string") {
-          this.store.upsertThreadSummary({ id: params.threadId, name: params.name });
-          this.store.addEvent(params.threadId, message.method, "Thread name updated");
-        }
-        break;
-      case "thread/status/changed":
-        if (typeof params.threadId === "string") {
-          this.store.setThreadStatus(params.threadId, params.status);
-          this.store.addEvent(params.threadId, message.method, JSON.stringify(params.status ?? {}));
-        }
-        break;
-      case "turn/started":
-        if (typeof params.threadId === "string" && params.turn && typeof params.turn === "object") {
-          const turn = params.turn as Record<string, unknown>;
-          if (typeof turn.id === "string") {
-            this.activeTurnIds.set(params.threadId, turn.id);
-          }
-          this.store.updateTurn(params.threadId, turn);
-          this.store.addEvent(params.threadId, message.method, "Turn started");
-        }
-        break;
-      case "turn/completed":
-        if (typeof params.threadId === "string" && params.turn && typeof params.turn === "object") {
-          this.activeTurnIds.delete(params.threadId);
-          this.store.updateTurn(params.threadId, params.turn as Record<string, unknown>);
-          this.store.addEvent(params.threadId, message.method, "Turn completed");
-        }
-        break;
-      case "item/started":
-      case "item/completed":
-        if (typeof params.threadId === "string" && typeof params.turnId === "string" && params.item && typeof params.item === "object") {
-          this.store.updateItem(
-            params.threadId,
-            params.turnId,
-            params.item as Record<string, unknown>,
-            message.method.endsWith("completed") ? "completed" : "started"
-          );
-        }
-        break;
-      case "thread/tokenUsage/updated":
-        if (typeof params.threadId === "string" && params.tokenUsage && typeof params.tokenUsage === "object") {
-          const tokenUsage = params.tokenUsage as Record<string, unknown>;
-          const total =
-            tokenUsage.total && typeof tokenUsage.total === "object" ? (tokenUsage.total as Record<string, unknown>) : null;
-          const last =
-            tokenUsage.last && typeof tokenUsage.last === "object" ? (tokenUsage.last as Record<string, unknown>) : null;
-          this.store.updateThreadTokenUsage(params.threadId, {
-            totalTokens:
-              typeof last?.totalTokens === "number"
-                ? last.totalTokens
-                : typeof total?.totalTokens === "number"
-                  ? total.totalTokens
-                  : null,
-            modelContextWindow: typeof tokenUsage.modelContextWindow === "number" ? tokenUsage.modelContextWindow : null
-          });
-        }
-        break;
-      default:
-        if (typeof params.threadId === "string") {
-          this.store.addEvent(params.threadId, message.method, JSON.stringify(params).slice(0, 240));
-        }
-        break;
-    }
-
-    this.emit("change");
   }
 
   private async seedThreads(): Promise<void> {
     let cursor: string | null = null;
 
     do {
-      const result = await this.call("thread/list", {
+      const result = await this.codexProviderAdapter.listThreads({
         cursor,
         limit: 100,
         sourceKinds: ["appServer", "cli", "vscode"]
       });
 
-      const threads = Array.isArray(result.data) ? (result.data as Record<string, unknown>[]) : [];
-      for (const thread of threads) {
+      for (const thread of result.data) {
         if (typeof thread.id === "string" && this.deletedThreadIds.has(thread.id)) {
           continue;
         }
         this.store.upsertThreadSummary(thread);
       }
 
-      cursor = typeof result.nextCursor === "string" ? result.nextCursor : null;
+      cursor = result.nextCursor;
     } while (cursor);
 
-    const loaded = await this.call("thread/loaded/list", {});
-    const loadedIds = Array.isArray(loaded.data) ? loaded.data.filter((value): value is string => typeof value === "string") : [];
+    const loadedIds = await this.codexProviderAdapter.listLoadedThreads();
     this.store.markLoadedThreads(loadedIds);
     this.store.markThreadInventoryReady();
 
@@ -685,14 +372,13 @@ export class CodexAppServerClient extends EventEmitter {
     const models: ModelOption[] = [];
 
     do {
-      const result = await this.call("model/list", {
+      const result = await this.codexProviderAdapter.listModels({
         cursor,
         limit: 100,
         includeHidden: false
       });
 
-      const entries = Array.isArray(result.data) ? (result.data as Record<string, unknown>[]) : [];
-      for (const entry of entries) {
+      for (const entry of result.data) {
         const id = typeof entry.id === "string" ? entry.id : typeof entry.model === "string" ? entry.model : null;
         if (!id) {
           continue;
@@ -719,7 +405,7 @@ export class CodexAppServerClient extends EventEmitter {
         });
       }
 
-      cursor = typeof result.nextCursor === "string" ? result.nextCursor : null;
+      cursor = result.nextCursor;
     } while (cursor);
 
     this.availableModels = [...models].sort(compareModelsByNewest);
@@ -741,7 +427,7 @@ export class CodexAppServerClient extends EventEmitter {
 
     while (queue.length > 0 && suggestions.length < COMPOSER_SUGGESTION_LIMIT) {
       const current = queue.shift()!;
-      const result = await this.call("fs/readDirectory", { path: current.dir }).catch(() => null);
+      const result = await this.codexProviderAdapter.readDirectory(current.dir);
       const entries = Array.isArray(result?.entries) ? (result.entries as FsDirectoryEntry[]) : [];
 
       for (const entry of entries) {
@@ -778,12 +464,11 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   private async listComposerSkills(cwd: string, query: string): Promise<ComposerSuggestion[]> {
-    const result = await this.call("skills/list", {
+    const groups = await this.codexProviderAdapter.listSkills({
       cwds: [cwd],
       forceReload: false
     });
 
-    const groups = Array.isArray(result.data) ? (result.data as Record<string, unknown>[]) : [];
     const skills = groups.flatMap((group) => (Array.isArray(group.skills) ? (group.skills as Record<string, unknown>[]) : []));
 
     return skills
@@ -819,11 +504,10 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   private async listComposerApps(query: string, threadId?: string | null): Promise<ComposerSuggestion[]> {
-    const result = await this.call("app/list", {
+    const apps = await this.codexProviderAdapter.listApps({
       limit: 100,
       ...(threadId ? { threadId } : {})
     });
-    const apps = Array.isArray(result.data) ? (result.data as Record<string, unknown>[]) : [];
 
     return apps
       .filter((app) => typeof app.id === "string" && typeof app.name === "string")
@@ -849,8 +533,7 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   private async listComposerPlugins(query: string): Promise<ComposerSuggestion[]> {
-    const result = await this.call("plugin/list", { limit: 100 });
-    const marketplaces = Array.isArray(result.marketplaces) ? (result.marketplaces as Record<string, unknown>[]) : [];
+    const marketplaces = await this.codexProviderAdapter.listPluginMarketplaces({ limit: 100 });
     const plugins = marketplaces.flatMap((marketplace) =>
       Array.isArray(marketplace.plugins) ? (marketplace.plugins as Record<string, unknown>[]) : []
     );
@@ -881,8 +564,7 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   private async listComposerAgents(query: string): Promise<ComposerSuggestion[]> {
-    const result = await this.call("collaborationMode/list", {}).catch(() => null);
-    const modes = Array.isArray(result?.data) ? (result.data as Record<string, unknown>[]) : [];
+    const modes = await this.codexProviderAdapter.listCollaborationModes();
 
     return modes
       .filter((mode) => typeof mode.name === "string" && typeof mode.mode === "string")
@@ -992,24 +674,9 @@ export class CodexAppServerClient extends EventEmitter {
     return threadId;
   }
 
-  private call(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error("Codex app-server is not connected"));
-    }
-
-    const id = this.nextId++;
-    this.socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-    });
-  }
-
   async loadThread(threadId: string): Promise<void> {
     this.deletedThreadIds.delete(threadId);
-    const result = await this.call("thread/read", {
-      threadId,
-      includeTurns: true
-    });
+    const result = await this.codexProviderAdapter.loadThread(threadId);
 
     if (result.thread && typeof result.thread === "object") {
       this.store.setThreadDetail(result.thread as Record<string, unknown>);
@@ -1030,10 +697,7 @@ export class CodexAppServerClient extends EventEmitter {
       return;
     }
 
-    const result = await this.call("thread/resume", {
-      threadId,
-      ...this.buildResumeConfig()
-    });
+    const result = await this.codexProviderAdapter.resumeThread(threadId, this.buildResumeConfig());
     if (result.thread && typeof result.thread === "object") {
       this.store.upsertThreadSummary(result.thread as Record<string, unknown>);
     }
@@ -1077,16 +741,13 @@ export class CodexAppServerClient extends EventEmitter {
 
     const threadCwd = await this.requireExistingWorkspace(options.cwd);
 
-    const started = await this.call("thread/start", this.buildThreadStartConfig({
+    const started = await this.codexProviderAdapter.startThread(this.buildThreadStartConfig({
       cwd: threadCwd ?? this.defaultCwd,
       developerInstructions: options.developerInstructions ?? null
     }));
 
     const thread = started.thread && typeof started.thread === "object" ? (started.thread as Record<string, unknown>) : null;
-    const threadId = typeof thread?.id === "string" ? thread.id : null;
-    if (!threadId) {
-      throw new Error("Codex did not return a thread id");
-    }
+    const threadId = started.threadId;
 
     this.deletedThreadIds.delete(threadId);
     if (thread) {
@@ -1118,7 +779,7 @@ export class CodexAppServerClient extends EventEmitter {
       this.store.setThreadRequestedReasoningEffort(threadId, requestedEffort);
     }
 
-    const turnResult = await this.call("turn/start", params);
+    const turnResult = await this.codexProviderAdapter.sendTurn(threadId, params);
     if (turnResult.turn && typeof turnResult.turn === "object") {
       const turn = turnResult.turn as Record<string, unknown>;
       if (typeof turn.id === "string") {
@@ -1152,11 +813,7 @@ export class CodexAppServerClient extends EventEmitter {
       if (threadWorkspace) {
         this.store.upsertThreadSummary({ id: targetThreadId, cwd: threadWorkspace });
       }
-      await this.call("turn/steer", {
-        threadId: targetThreadId,
-        expectedTurnId: activeTurnId,
-        input: inputItems
-      });
+      await this.codexProviderAdapter.steerTurn(targetThreadId, activeTurnId, inputItems);
       return;
     }
 
@@ -1178,7 +835,7 @@ export class CodexAppServerClient extends EventEmitter {
       params.effort = this.selectedEffort;
     }
 
-    const result = await this.call("turn/start", params);
+    const result = await this.codexProviderAdapter.sendTurn(targetThreadId, params);
     if (threadWorkspace) {
       this.store.upsertThreadSummary({ id: targetThreadId, cwd: threadWorkspace });
     }
@@ -1193,10 +850,7 @@ export class CodexAppServerClient extends EventEmitter {
       return false;
     }
 
-    await this.call("turn/interrupt", {
-      threadId,
-      expectedTurnId: activeTurnId
-    });
+    await this.codexProviderAdapter.interruptTurn(threadId, activeTurnId);
     this.activeTurnIds.delete(threadId);
     this.store.setThreadStatus(threadId, "idle");
     this.store.addEvent(threadId, "turn/interrupt", "Turn interrupted by operator");
@@ -1389,7 +1043,7 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   private async unsubscribeThread(threadId: string): Promise<void> {
-    await this.call("thread/unsubscribe", { threadId }).catch(() => undefined);
+    await this.codexProviderAdapter.unsubscribeThread(threadId).catch(() => undefined);
     this.resumedThreadIds.delete(threadId);
     this.directControlThreadIds.delete(threadId);
     this.activeTurnIds.delete(threadId);

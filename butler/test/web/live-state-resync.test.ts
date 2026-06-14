@@ -172,11 +172,12 @@ test("restart approval can hide the pending dialog before the next live update",
 test("thread patch appends streamed text without waiting for a full snapshot", () => {
   const current = { "thread-1": threadWithText("The cleanup", 100) };
   const next = applyThreadPatchSnapshot(current, {
-    kind: "item-delta",
+    kind: "content-delta",
     threadId: "thread-1",
     turnId: "turn-1",
     itemId: "item-1",
-    itemType: "agentMessage",
+    itemType: "assistant_message",
+    streamKind: "assistant_text",
     delta: " task",
     itemTextLength: "The cleanup task".length,
     at: 120
@@ -184,6 +185,24 @@ test("thread patch appends streamed text without waiting for a full snapshot", (
 
   assert.equal(next["thread-1"].turns[0].items[0].text, "The cleanup task");
   assert.equal(next["thread-1"].updatedAt, 120);
+});
+
+test("thread lifecycle patch updates an item without waiting for a full snapshot", () => {
+  const current = { "thread-1": threadWithText("", 100) };
+  const next = applyThreadPatchSnapshot(current, {
+    kind: "item-lifecycle",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "item-2",
+    itemType: "command_execution",
+    status: "in_progress",
+    text: "npm test",
+    at: 125
+  });
+
+  assert.equal(next["thread-1"].turns[0].items[1].type, "commandExecution");
+  assert.equal(next["thread-1"].turns[0].items[1].text, "npm test");
+  assert.equal(next["thread-1"].updatedAt, 125);
 });
 
 test("older full snapshots cannot replace a newer streamed patch", () => {

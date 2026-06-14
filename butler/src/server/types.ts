@@ -1,3 +1,5 @@
+import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime.js";
+
 export type CodexThreadStatus = "active" | "idle" | "unknown";
 export type CodexProofExpectation = "none" | "requested";
 export type CodexInferredWorkDepth = "quick" | "standard" | "deep" | "incident";
@@ -218,16 +220,7 @@ export interface CodexWorkerEvidenceView {
   createdAt: number;
 }
 
-export interface CodexThreadPatchView {
-  kind: "item-delta";
-  threadId: string;
-  turnId: string;
-  itemId: string;
-  itemType: string;
-  delta: string;
-  itemTextLength: number;
-  at: number;
-}
+export type CodexThreadPatchView = ProviderRuntimeLivePatch;
 
 export type SupervisionChecklistItemStatus = "pending" | "accepted" | "rejected" | "waived";
 export type SupervisionChecklistEvidenceSource = "worker_report" | "butler_review";

@@ -53,13 +53,15 @@ test("Codex startThread stores delegated xhigh effort locally and sends it in tu
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
   const client = new CodexAppServerClient("ws://127.0.0.1:1", store, dir, {
     onThreadCapabilityReady: async () => undefined
-  }) as unknown as CodexAppServerClient & {
-    call: (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>;
-  };
+  });
   const clientState = client as unknown as {
     availableModels: ModelOption[];
     selectedModel: string | null;
     selectedEffort: ReasoningEffort | null;
+    codexProviderAdapter: {
+      startThread: (params: Record<string, unknown>) => Promise<{ threadId: string; thread: Record<string, unknown> }>;
+      sendTurn: (threadId: string, params: Record<string, unknown>) => Promise<{ threadId: string; turnId: string; turn: Record<string, unknown> }>;
+    };
   };
   clientState.availableModels = [{
     id: "gpt-test",
@@ -72,10 +74,11 @@ test("Codex startThread stores delegated xhigh effort locally and sends it in tu
   clientState.selectedModel = "gpt-test";
   clientState.selectedEffort = "medium";
 
-  client.call = async (method: string, params: Record<string, unknown>) => {
-    calls.push({ method, params });
-    if (method === "thread/start") {
+  clientState.codexProviderAdapter = {
+    startThread: async (params: Record<string, unknown>) => {
+      calls.push({ method: "thread/start", params });
       return {
+        threadId: "thread-xhigh-start",
         thread: {
           id: "thread-xhigh-start",
           status: "active",
@@ -84,11 +87,11 @@ test("Codex startThread stores delegated xhigh effort locally and sends it in tu
           preview: "Delegated xhigh job"
         }
       };
+    },
+    sendTurn: async (threadId: string, params: Record<string, unknown>) => {
+      calls.push({ method: "turn/start", params });
+      return { threadId, turnId: "turn-xhigh-start", turn: { id: "turn-xhigh-start", status: "in_progress", items: [] } };
     }
-    if (method === "turn/start") {
-      return { turn: { id: "turn-xhigh-start", status: "in_progress", items: [] } };
-    }
-    throw new Error(`unexpected call ${method}`);
   };
 
   const result = await client.startThread({

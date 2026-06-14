@@ -2,6 +2,13 @@ import { useEffect, useSyncExternalStore } from "react";
 
 import { getJson } from "./api";
 import type {
+  ProviderRuntimeContentStreamKind,
+  ProviderRuntimeItemStatus,
+  ProviderRuntimeItemType,
+  ProviderRuntimeThreadState,
+  ProviderRuntimeTurnState
+} from "../shared/provider-runtime";
+import type {
   BootstrapSnapshot,
   ButlerLivePatch,
   ButlerLiveSnapshot,
@@ -12,6 +19,7 @@ import type {
   RuntimeSnapshot,
   ServerToastEvent,
   ShellSnapshot,
+  ThreadStatus,
   TransportState
 } from "./types";
 
@@ -306,26 +314,189 @@ export function mergeOpenThreadSnapshots(
   return merged;
 }
 
+type ThreadTurn = CodexThreadDetail["turns"][number];
+type ThreadItem = ThreadTurn["items"][number];
+
+function threadItemType(itemType: ProviderRuntimeItemType, streamKind?: ProviderRuntimeContentStreamKind): string {
+  if (streamKind === "assistant_text") return "agentMessage";
+  if (streamKind === "command_output") return "commandExecution";
+  if (streamKind === "file_change_output") return "fileChange";
+  if (streamKind === "reasoning_text" || streamKind === "reasoning_summary_text") return "reasoning";
+  if (streamKind === "plan_text") return "plan";
+
+  switch (itemType) {
+    case "assistant_message":
+      return "agentMessage";
+    case "user_message":
+      return "userMessage";
+    case "command_execution":
+      return "commandExecution";
+    case "file_change":
+      return "fileChange";
+    case "web_search":
+      return "webSearch";
+    case "context_compaction":
+      return "contextCompaction";
+    default:
+      return itemType;
+  }
+}
+
+function threadItemStatus(status: ProviderRuntimeItemStatus): string {
+  return status === "in_progress" ? "started" : status;
+}
+
+function resolvedThreadItemType(currentType: string, nextType: string): string {
+  return !currentType || currentType === "unknown" ? nextType : currentType;
+}
+
+function threadTurnStatus(status: "started" | ProviderRuntimeTurnState): string {
+  return status === "started" ? "in_progress" : status;
+}
+
+function threadStatus(state: ProviderRuntimeThreadState): ThreadStatus {
+  return state === "idle" ? "idle" : "active";
+}
+
+function createTurn(id: string, at: number): ThreadTurn {
+  return {
+    id,
+    requestedReasoningEffort: null,
+    status: "unknown",
+    error: null,
+    startedAt: at,
+    completedAt: null,
+    items: []
+  };
+}
+
+function createItem(id: string, type: string, at: number): ThreadItem {
+  return {
+    id,
+    type,
+    status: "started",
+    text: "",
+    at,
+    taskDurationMs: null
+  };
+}
+
 export function applyThreadPatchSnapshot(
   current: Record<string, CodexThreadDetail>,
   patch: CodexThreadPatch
 ): Record<string, CodexThreadDetail> {
   const thread = current[patch.threadId];
-  if (!thread || patch.kind !== "item-delta") {
+  if (!thread) {
     return current;
   }
+
+  if (patch.kind === "thread-state") {
+    return {
+      ...current,
+      [patch.threadId]: {
+        ...thread,
+        status: threadStatus(patch.state),
+        updatedAt: Math.max(thread.updatedAt, patch.at)
+      }
+    };
+  }
+
+  if (patch.kind === "token-usage") {
+    return {
+      ...current,
+      [patch.threadId]: {
+        ...thread,
+        updatedAt: Math.max(thread.updatedAt, patch.at),
+        contextUsage: {
+          tokens: patch.tokens,
+          contextWindow: patch.contextWindow,
+          percent: patch.percent
+        }
+      }
+    };
+  }
+
+  if (patch.kind === "runtime-message") {
+    return {
+      ...current,
+      [patch.threadId]: {
+        ...thread,
+        updatedAt: Math.max(thread.updatedAt, patch.at),
+        eventLog: [
+          ...thread.eventLog,
+          {
+            at: patch.at,
+            method: patch.tone === "error" ? "runtime.error" : "runtime.warning",
+            summary: patch.message
+          }
+        ]
+      }
+    };
+  }
+
   const turnIndex = thread.turns.findIndex((turn) => turn.id === patch.turnId);
-  const turn = turnIndex >= 0 ? thread.turns[turnIndex] : { id: patch.turnId, requestedReasoningEffort: null, status: "unknown", error: null, startedAt: patch.at, completedAt: null, items: [] };
+  const turn = turnIndex >= 0 ? thread.turns[turnIndex] : createTurn(patch.turnId, patch.at);
+
+  if (patch.kind === "turn-lifecycle") {
+    const isComplete = patch.status !== "started";
+    const patchedTurn = {
+      ...turn,
+      status: threadTurnStatus(patch.status),
+      startedAt: Math.min(turn.startedAt || patch.at, patch.at),
+      completedAt: isComplete ? patch.at : null
+    };
+    const turns = turnIndex >= 0 ? thread.turns.map((entry, index) => index === turnIndex ? patchedTurn : entry) : [...thread.turns, patchedTurn];
+    return {
+      ...current,
+      [patch.threadId]: {
+        ...thread,
+        updatedAt: Math.max(thread.updatedAt, patch.at),
+        status: isComplete ? thread.status : "active",
+        turnCount: Math.max(thread.turnCount, turns.length),
+        turns
+      }
+    };
+  }
+
+  const itemType = patch.kind === "content-delta"
+    ? threadItemType(patch.itemType, patch.streamKind)
+    : threadItemType(patch.itemType);
   const itemIndex = turn.items.findIndex((item) => item.id === patch.itemId);
-  const item = itemIndex >= 0 ? turn.items[itemIndex] : { id: patch.itemId, type: patch.itemType, status: "started", text: "", at: patch.at, taskDurationMs: null };
-  if (item.text.length >= patch.itemTextLength) {
+  const item = itemIndex >= 0 ? turn.items[itemIndex] : createItem(patch.itemId, itemType, patch.at);
+
+  if (patch.kind === "content-delta" && item.text.length >= patch.itemTextLength) {
     return current;
   }
-  const patchedItem = { ...item, type: item.type || patch.itemType, status: "started", text: item.text + patch.delta, at: patch.at };
+
+  const patchedItem = patch.kind === "content-delta"
+    ? {
+        ...item,
+        type: resolvedThreadItemType(item.type, itemType),
+        status: "started",
+        text: item.text + patch.delta,
+        at: patch.at
+      }
+    : {
+        ...item,
+        type: resolvedThreadItemType(item.type, itemType),
+        status: threadItemStatus(patch.status),
+        text: patch.text || item.text,
+        at: patch.at
+      };
   const items = itemIndex >= 0 ? turn.items.map((entry, index) => index === itemIndex ? patchedItem : entry) : [...turn.items, patchedItem];
-  const patchedTurn = { ...turn, items };
+  const patchedTurn = { ...turn, status: "in_progress", items };
   const turns = turnIndex >= 0 ? thread.turns.map((entry, index) => index === turnIndex ? patchedTurn : entry) : [...thread.turns, patchedTurn];
-  return { ...current, [patch.threadId]: { ...thread, updatedAt: Math.max(thread.updatedAt, patch.at), status: "active", turns } };
+
+  return {
+    ...current,
+    [patch.threadId]: {
+      ...thread,
+      updatedAt: Math.max(thread.updatedAt, patch.at),
+      status: "active",
+      turnCount: Math.max(thread.turnCount, turns.length),
+      turns
+    }
+  };
 }
 
 async function getJsonWithTimeout<T>(url: string): Promise<T> {
