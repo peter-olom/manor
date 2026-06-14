@@ -212,6 +212,7 @@ export class ProviderRuntimeIngestion extends EventEmitter<ProviderRuntimeIngest
       itemId: event.itemId,
       itemType: event.payload.itemType,
       status: itemStatus,
+      ...(event.payload.title ? { title: event.payload.title } : {}),
       text,
       at: event.at
     });

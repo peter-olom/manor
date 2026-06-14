@@ -172,6 +172,7 @@ export type ProviderRuntimeLivePatch =
       itemId: string;
       itemType: ProviderRuntimeItemType;
       status: ProviderRuntimeItemStatus;
+      title?: string;
       text: string;
       at: number;
     }

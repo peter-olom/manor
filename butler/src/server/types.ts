@@ -221,6 +221,7 @@ export interface CodexWorkerEvidenceView {
 }
 
 export type CodexThreadPatchView = ProviderRuntimeLivePatch;
+export type ButlerLivePatchView = ProviderRuntimeLivePatch;
 
 export type SupervisionChecklistItemStatus = "pending" | "accepted" | "rejected" | "waived";
 export type SupervisionChecklistEvidenceSource = "worker_report" | "butler_review";
@@ -1173,12 +1174,6 @@ export interface ButlerMessagePageView {
   endIndex: number;
   totalCount: number;
   hasMore: boolean;
-}
-
-export interface ButlerLivePatchView {
-  messages?: ButlerMessageView[];
-  messageCount: number;
-  activityTurns?: ButlerActivityTurnView[];
 }
 
 export interface CodexProjectSummaryView {

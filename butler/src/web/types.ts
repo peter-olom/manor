@@ -1042,11 +1042,7 @@ export type ButlerLiveSnapshot = {
   activityTurns: ButlerActivityTurn[];
 };
 
-export type ButlerLivePatch = {
-  messages?: ButlerMessageRecord[];
-  messageCount: number;
-  activityTurns?: ButlerActivityTurn[];
-};
+export type ButlerLivePatch = ProviderRuntimeLivePatch;
 
 export type ButlerActivityItem = {
   id: string;

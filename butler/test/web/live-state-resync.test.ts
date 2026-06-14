@@ -215,8 +215,15 @@ test("older full snapshots cannot replace a newer streamed patch", () => {
 
 test("Butler live patch updates assistant text without waiting for a full snapshot", () => {
   const next = applyButlerLivePatchSnapshot(butlerLiveWithText("Working"), {
-    messageCount: 1,
-    messages: [{ id: "message-1", role: "assistant", text: "Working now", at: 100, taskDurationMs: null, kind: "message" }]
+    kind: "content-delta",
+    threadId: "butler",
+    turnId: "turn-1",
+    itemId: "message-1",
+    itemType: "assistant_message",
+    streamKind: "assistant_text",
+    delta: " now",
+    itemTextLength: 11,
+    at: 100
   });
 
   assert.equal(next?.messages[0].text, "Working now");
@@ -224,17 +231,34 @@ test("Butler live patch updates assistant text without waiting for a full snapsh
 
 test("Butler live patch updates active activity turns", () => {
   const next = applyButlerLivePatchSnapshot(butlerLiveWithText("Working"), {
-    messageCount: 1,
-    activityTurns: [{
-      id: "activity-1",
-      status: "active",
-      startedAt: 110,
-      completedAt: null,
-      items: [{ id: "activity-1:thinking:0", kind: "thinking", status: "active", title: "Thinking", text: "Checking", at: 110, updatedAt: 110, contentIndex: null, toolCallId: null }]
-    }]
+    kind: "content-delta",
+    threadId: "butler",
+    turnId: "activity-1",
+    itemId: "activity-1:thinking:0",
+    itemType: "reasoning",
+    streamKind: "reasoning_text",
+    delta: "Checking",
+    itemTextLength: 8,
+    at: 110
   });
 
   assert.equal(next?.activityTurns[0].items[0].text, "Checking");
+});
+
+test("Butler runtime patches keep visible message count independent from Pi transcript indexes", () => {
+  const next = applyButlerLivePatchSnapshot({ messages: [], messageCount: 0, activityTurns: [] }, {
+    kind: "item-lifecycle",
+    threadId: "butler",
+    turnId: "turn-1",
+    itemId: "message-8",
+    itemType: "assistant_message",
+    status: "completed",
+    text: "Visible reply",
+    at: 100
+  });
+
+  assert.equal(next?.messages.length, 1);
+  assert.equal(next?.messageCount, 1);
 });
 
 test("older Butler live snapshots cannot replace a newer streamed message patch", () => {

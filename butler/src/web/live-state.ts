@@ -258,19 +258,212 @@ export function applyButlerLivePatchSnapshot(
   if (!current) {
     return current;
   }
-  const messagesById = new Map(current.messages.map((message) => [message.id, message]));
-  for (const message of patch.messages ?? []) {
-    messagesById.set(message.id, message);
+
+  if (patch.kind === "content-delta" && patch.streamKind === "assistant_text") {
+    return upsertButlerMessage(current, {
+      id: patch.itemId,
+      role: "assistant",
+      text: readButlerMessageText(current, patch.itemId) + patch.delta,
+      at: patch.at,
+      taskDurationMs: null,
+      kind: "message"
+    });
   }
-  const activityById = new Map(current.activityTurns.map((turn) => [turn.id, turn]));
-  for (const turn of patch.activityTurns ?? []) {
-    activityById.set(turn.id, turn);
+
+  if (patch.kind === "item-lifecycle" && (patch.itemType === "assistant_message" || patch.itemType === "user_message")) {
+    if (!patch.text.trim() && patch.itemType === "assistant_message") {
+      return current;
+    }
+    return upsertButlerMessage(current, {
+      id: patch.itemId,
+      role: patch.itemType === "user_message" ? "user" : "assistant",
+      text: patch.text,
+      at: patch.at,
+      taskDurationMs: null,
+      kind: "message"
+    });
   }
+
+  if (patch.kind === "turn-lifecycle") {
+    return patchButlerActivityTurn(current, patch.turnId, patch.at, (turn) => ({
+      ...turn,
+      status: patch.status === "started" ? "active" : "completed",
+      completedAt: patch.status === "started" ? null : patch.at,
+      items: patch.status === "started"
+        ? turn.items
+        : turn.items.map((item) => ({
+            ...item,
+            status: item.status === "active" ? "completed" : item.status,
+            updatedAt: patch.at
+          }))
+    }));
+  }
+
+  if (patch.kind === "content-delta" && patch.streamKind !== "assistant_text") {
+    return patchButlerActivityItem(current, patch.turnId, patch.itemId, patch.at, {
+      kind: patch.streamKind === "reasoning_text" || patch.streamKind === "reasoning_summary_text" ? "thinking" : "tool",
+      title: patch.streamKind === "reasoning_text" || patch.streamKind === "reasoning_summary_text" ? "Thinking" : "Tool",
+      textDelta: patch.delta,
+      contentIndex: butlerContentIndex(patch.itemId),
+      status: "active"
+    });
+  }
+
+  if (patch.kind === "item-lifecycle") {
+    return patchButlerActivityItem(current, patch.turnId, patch.itemId, patch.at, {
+      kind: patch.itemType === "reasoning" ? "thinking" : "tool",
+      title: patch.title ?? butlerActivityTitle(patch.itemType),
+      text: patch.text,
+      contentIndex: butlerContentIndex(patch.itemId),
+      toolCallId: butlerToolCallId(patch.itemId),
+      status: patch.status === "failed" ? "error" : patch.status === "completed" ? "completed" : "active"
+    });
+  }
+
+  return current;
+}
+
+type ButlerMessage = ButlerLiveSnapshot["messages"][number];
+type ButlerActivityTurnSnapshot = ButlerLiveSnapshot["activityTurns"][number];
+type ButlerActivityItemSnapshot = ButlerActivityTurnSnapshot["items"][number];
+
+function readButlerMessageText(current: ButlerLiveSnapshot, messageId: string): string {
+  return current.messages.find((message) => message.id === messageId)?.text ?? "";
+}
+
+function upsertButlerMessage(current: ButlerLiveSnapshot, message: ButlerMessage): ButlerLiveSnapshot {
+  const messagesById = new Map(current.messages.map((entry) => [entry.id, entry]));
+  const existing = messagesById.get(message.id);
+  messagesById.set(message.id, {
+    ...existing,
+    ...message,
+    text: message.text || existing?.text || "",
+    at: existing?.at ?? message.at
+  });
+
   return {
+    ...current,
     messages: [...messagesById.values()].sort((left, right) => (left.at ?? 0) - (right.at ?? 0) || left.id.localeCompare(right.id)),
-    messageCount: Math.max(current.messageCount, patch.messageCount),
-    activityTurns: [...activityById.values()].sort((left, right) => left.startedAt - right.startedAt)
+    messageCount: existing ? current.messageCount : current.messageCount + 1
   };
+}
+
+function createButlerActivityTurn(turnId: string, at: number): ButlerActivityTurnSnapshot {
+  return {
+    id: turnId,
+    status: "active",
+    startedAt: at,
+    completedAt: null,
+    items: []
+  };
+}
+
+function patchButlerActivityTurn(
+  current: ButlerLiveSnapshot,
+  turnId: string,
+  at: number,
+  patchTurn: (turn: ButlerActivityTurnSnapshot) => ButlerActivityTurnSnapshot
+): ButlerLiveSnapshot {
+  const turnIndex = current.activityTurns.findIndex((turn) => turn.id === turnId);
+  const turn = turnIndex >= 0 ? current.activityTurns[turnIndex] : createButlerActivityTurn(turnId, at);
+  const patchedTurn = patchTurn(turn);
+  const activityTurns = turnIndex >= 0
+    ? current.activityTurns.map((entry, index) => index === turnIndex ? patchedTurn : entry)
+    : [...current.activityTurns, patchedTurn];
+  return {
+    ...current,
+    activityTurns: activityTurns.sort((left, right) => left.startedAt - right.startedAt)
+  };
+}
+
+function butlerActivityTitle(itemType: ProviderRuntimeItemType): string {
+  switch (itemType) {
+    case "reasoning":
+      return "Thinking";
+    case "command_execution":
+      return "Command";
+    case "context_compaction":
+      return "Compaction";
+    default:
+      return "Tool";
+  }
+}
+
+function butlerContentIndex(itemId: string): number | null {
+  const match = /:(?:thinking|content):(\d+)(?::|$)/.exec(itemId);
+  if (!match) {
+    return null;
+  }
+  const index = Number(match[1]);
+  return Number.isSafeInteger(index) ? index : null;
+}
+
+function butlerToolCallId(itemId: string): string | null {
+  const match = /:tool:(.+)$/.exec(itemId);
+  return match?.[1] ?? null;
+}
+
+function createButlerActivityItem(
+  itemId: string,
+  at: number,
+  input: {
+    kind: ButlerActivityItemSnapshot["kind"];
+    title: string;
+    contentIndex?: number | null;
+    toolCallId?: string | null;
+    status?: ButlerActivityItemSnapshot["status"];
+  }
+): ButlerActivityItemSnapshot {
+  return {
+    id: itemId,
+    kind: input.kind,
+    status: input.status ?? "active",
+    title: input.title,
+    text: "",
+    at,
+    updatedAt: at,
+    contentIndex: input.contentIndex ?? null,
+    toolCallId: input.toolCallId ?? null
+  };
+}
+
+function patchButlerActivityItem(
+  current: ButlerLiveSnapshot,
+  turnId: string,
+  itemId: string,
+  at: number,
+  input: {
+    kind: ButlerActivityItemSnapshot["kind"];
+    title: string;
+    text?: string;
+    textDelta?: string;
+    contentIndex?: number | null;
+    toolCallId?: string | null;
+    status: ButlerActivityItemSnapshot["status"];
+  }
+): ButlerLiveSnapshot {
+  return patchButlerActivityTurn(current, turnId, at, (turn) => {
+    const itemIndex = turn.items.findIndex((item) => item.id === itemId);
+    const item = itemIndex >= 0 ? turn.items[itemIndex] : createButlerActivityItem(itemId, at, input);
+    const patchedItem: ButlerActivityItemSnapshot = {
+      ...item,
+      kind: item.kind || input.kind,
+      title: input.title || item.title,
+      text: input.text !== undefined ? input.text : `${item.text}${input.textDelta ?? ""}`,
+      status: input.status,
+      updatedAt: at,
+      contentIndex: item.contentIndex ?? input.contentIndex ?? null,
+      toolCallId: item.toolCallId ?? input.toolCallId ?? null
+    };
+    const items = itemIndex >= 0
+      ? turn.items.map((entry, index) => index === itemIndex ? patchedItem : entry)
+      : [...turn.items, patchedItem];
+    return {
+      ...turn,
+      status: turn.status === "completed" ? turn.status : "active",
+      items
+    };
+  });
 }
 
 function activityUpdatedAt(turn: ButlerLiveSnapshot["activityTurns"][number]): number {
