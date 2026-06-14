@@ -146,6 +146,11 @@ function parseReviewOutput(text: string): MemoryReviewOutput {
   return { candidates };
 }
 
+function isUnsupportedCodexModelError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /model[^\n]*(not supported|unsupported|unknown|not found|invalid)/i.test(message);
+}
+
 export class CodexExecMemoryReviewService {
   private readonly store: ButlerStateStore;
   private readonly stateDir: string;
@@ -381,8 +386,8 @@ export class CodexExecMemoryReviewService {
     const outputPath = path.join(scratchDir, `${runId}.output.json`);
     await fs.writeFile(schemaPath, JSON.stringify(OUTPUT_SCHEMA, null, 2), "utf8");
 
-    const modelArgs = process.env.MANOR_MEMORY_REVIEW_MODEL ? ["--model", process.env.MANOR_MEMORY_REVIEW_MODEL] : [];
-    const args = [
+    const configuredModel = process.env.MANOR_MEMORY_REVIEW_MODEL?.trim();
+    const baseArgs = [
       "exec",
       "--ephemeral",
       "--sandbox",
@@ -394,49 +399,64 @@ export class CodexExecMemoryReviewService {
       "--output-last-message",
       outputPath,
       "--cd",
-      input.cwd,
-      ...modelArgs,
-      "-"
+      input.cwd
     ];
 
     try {
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn("codex", args, {
-          env: {
-            ...process.env,
-            CODEX_HOME: this.codexHomeDir,
-            NO_COLOR: "1"
-          },
-          stdio: ["pipe", "pipe", "pipe"]
-        });
-        let stderr = "";
-        let stdout = "";
-        const timeout = setTimeout(() => {
-          child.kill("SIGTERM");
-          reject(new Error("codex exec memory review timed out"));
-        }, input.timeoutMs);
+      const run = async (model: string | null): Promise<void> => {
+        const args = [...baseArgs, ...(model ? ["--model", model] : []), "-"];
+        await new Promise<void>((resolve, reject) => {
+          const child = spawn("codex", args, {
+            env: {
+              ...process.env,
+              CODEX_HOME: this.codexHomeDir,
+              NO_COLOR: "1"
+            },
+            stdio: ["pipe", "pipe", "pipe"]
+          });
+          let stderr = "";
+          let stdout = "";
+          const timeout = setTimeout(() => {
+            child.kill("SIGTERM");
+            reject(new Error("codex exec memory review timed out"));
+          }, input.timeoutMs);
 
-        child.stdout.on("data", (chunk: Buffer) => {
-          stdout = `${stdout}${chunk.toString("utf8")}`.slice(-16_000);
+          child.stdout.on("data", (chunk: Buffer) => {
+            stdout = `${stdout}${chunk.toString("utf8")}`.slice(-16_000);
+          });
+          child.stderr.on("data", (chunk: Buffer) => {
+            stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16_000);
+          });
+          child.on("error", (error) => {
+            clearTimeout(timeout);
+            reject(error);
+          });
+          child.on("close", (code) => {
+            clearTimeout(timeout);
+            if (code === 0) {
+              resolve();
+              return;
+            }
+            reject(new Error(`codex exec exited with ${code}: ${stderr || stdout}`.trim()));
+          });
+
+          child.stdin.end(input.prompt);
         });
-        child.stderr.on("data", (chunk: Buffer) => {
-          stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16_000);
-        });
-        child.on("error", (error) => {
-          clearTimeout(timeout);
-          reject(error);
-        });
-        child.on("close", (code) => {
-          clearTimeout(timeout);
-          if (code === 0) {
-            resolve();
-            return;
+      };
+
+      if (configuredModel) {
+        try {
+          await run(configuredModel);
+        } catch (error) {
+          if (!isUnsupportedCodexModelError(error)) {
+            throw error;
           }
-          reject(new Error(`codex exec exited with ${code}: ${stderr || stdout}`.trim()));
-        });
-
-        child.stdin.end(input.prompt);
-      });
+          await fs.rm(outputPath, { force: true }).catch(() => {});
+          await run(null);
+        }
+      } else {
+        await run(null);
+      }
 
       const output = await fs.readFile(outputPath, "utf8");
       return parseReviewOutput(output);
