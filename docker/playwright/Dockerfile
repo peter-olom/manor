@@ -21,6 +21,7 @@ WORKDIR /opt/manor/playwright
 COPY --from=deps /opt/manor/playwright/package.json /opt/manor/playwright/package-lock.json ./
 COPY --from=deps /opt/manor/playwright/node_modules ./node_modules
 COPY docker/playwright/browser-use-server.mjs /opt/manor/playwright/browser-use-server.mjs
+COPY docker/playwright/preview-annotation-layer.mjs /opt/manor/playwright/preview-annotation-layer.mjs
 COPY docker/playwright/start-browser-use.sh /usr/local/bin/start-browser-use
 
 RUN chmod +x /usr/local/bin/start-browser-use \

@@ -89,9 +89,16 @@ export function reviewChecklistAcceptancePoint(
     {
       id: crypto.randomUUID(),
       source: "butler_review" as const,
+      kind: "butler_review" as const,
+      pointId: item.id,
+      matrixRowId: null,
       summary: `${input.status}: ${item.text}`,
       details: item.butlerNote,
       reportTurnId: null,
+      proofRunId: null,
+      artifactId: null,
+      command: null,
+      route: null,
       createdAt: now
     }
   ].slice(-20);
@@ -176,16 +183,48 @@ export function recordChecklistWorkerEvidence(
     if (item.status === "accepted" || item.status === "waived") {
       continue;
     }
+    const matchingEvidence = report.evidence.filter(
+      (entry) => entry.pointId === item.id || entry.matrixRowId === `row-${item.id.replace(/^point-/, "")}`
+    );
+    const evidenceEntries =
+      matchingEvidence.length > 0
+        ? matchingEvidence.map((entry) => ({
+            id: entry.id,
+            source: "worker_report" as const,
+            kind: entry.kind,
+            pointId: entry.pointId ?? item.id,
+            matrixRowId: entry.matrixRowId,
+            summary: entry.summary,
+            details: entry.details,
+            reportTurnId: report.turnId,
+            proofRunId: entry.proofRunId,
+            artifactId: entry.artifactId,
+            command: entry.command,
+            route: entry.route,
+            createdAt: entry.createdAt
+          }))
+        : report.evidence.length > 0
+          ? []
+        : [
+            {
+              id: crypto.randomUUID(),
+              source: "worker_report" as const,
+              kind: "manual" as const,
+              pointId: item.id,
+              matrixRowId: null,
+              summary: report.summary,
+              details: report.details,
+              reportTurnId: report.turnId,
+              proofRunId: null,
+              artifactId: null,
+              command: null,
+              route: null,
+              createdAt: now
+            }
+          ];
     item.evidence = [
       ...item.evidence,
-      {
-        id: crypto.randomUUID(),
-        source: "worker_report" as const,
-        summary: report.summary,
-        details: report.details,
-        reportTurnId: report.turnId,
-        createdAt: now
-      }
+      ...evidenceEntries
     ].slice(-20);
   }
 

@@ -3,6 +3,8 @@ import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { isUnsupportedCodexModelError, memoryCodexModelArgs, normalizeMemoryCodexModel } from "./memory-codex-model.js";
+import { recordMemoryDebugTrace, type MemoryDebugTraceDecision } from "./memory-debug-traces.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { CodexWorkerReportView, JobMemoryEntryKind } from "./types.js";
 
@@ -18,6 +20,9 @@ type MemoryReviewCandidate = {
 
 type MemoryReviewOutput = {
   candidates: MemoryReviewCandidate[];
+  rawOutput?: unknown;
+  rawText?: string;
+  parseDecisions?: MemoryDebugTraceDecision[];
 };
 
 type MemoryReviewRunner = (input: { cwd: string; prompt: string; timeoutMs: number }) => Promise<MemoryReviewOutput>;
@@ -138,12 +143,17 @@ function shouldSubmitCandidate(candidate: MemoryReviewCandidate): boolean {
 
 function parseReviewOutput(text: string): MemoryReviewOutput {
   const parsed = JSON.parse(text) as Partial<MemoryReviewOutput>;
-  const candidates = Array.isArray(parsed.candidates)
-    ? parsed.candidates
-        .map((candidate) => normalizeCandidate(candidate as MemoryReviewCandidate))
-        .filter((candidate): candidate is MemoryReviewCandidate => Boolean(candidate))
-    : [];
-  return { candidates };
+  const decisions: MemoryDebugTraceDecision[] = [];
+  const candidates: MemoryReviewCandidate[] = [];
+  for (const [index, candidate] of (Array.isArray(parsed.candidates) ? parsed.candidates : []).entries()) {
+    const normalized = normalizeCandidate(candidate as MemoryReviewCandidate);
+    if (!normalized) {
+      decisions.push({ stage: "parse", outcome: "dropped", summary: "Dropped invalid review candidate.", reason: "schema_or_normalization_failed", inputIndex: index });
+      continue;
+    }
+    candidates.push(normalized);
+  }
+  return { candidates, rawOutput: parsed, rawText: text, parseDecisions: decisions };
 }
 
 export class CodexExecMemoryReviewService {
@@ -152,6 +162,7 @@ export class CodexExecMemoryReviewService {
   private readonly codexHomeDir: string;
   private readonly enabled: boolean;
   private readonly timeoutMs: number;
+  private readonly model: string | null;
   private readonly runner: MemoryReviewRunner;
   private readonly inFlightReports = new Set<string>();
   private readonly queuedReports = new Map<string, CodexWorkerReportView>();
@@ -162,6 +173,7 @@ export class CodexExecMemoryReviewService {
     codexHomeDir: string;
     enabled?: boolean;
     timeoutMs?: number;
+    model?: string;
     runner?: MemoryReviewRunner;
   }) {
     this.store = options.store;
@@ -169,6 +181,7 @@ export class CodexExecMemoryReviewService {
     this.codexHomeDir = options.codexHomeDir;
     this.enabled = options.enabled ?? true;
     this.timeoutMs = options.timeoutMs ?? 90_000;
+    this.model = normalizeMemoryCodexModel(options.model ?? process.env.MANOR_MEMORY_SYNTHESIS_MODEL ?? process.env.MANOR_MEMORY_REVIEW_MODEL);
     this.runner = options.runner ?? ((input) => this.runCodexExec(input));
   }
 
@@ -226,72 +239,178 @@ export class CodexExecMemoryReviewService {
       return [];
     }
 
+    const startedAt = Date.now();
     const context = this.buildReviewContext(report);
     if (!context) {
       return [];
     }
 
     if (this.hasCompletedReview(report)) {
+      const completedAt = Date.now();
+      recordMemoryDebugTrace(this.store, {
+        kind: "review",
+        status: "skipped",
+        projectId: context.projectId,
+        projectLabel: context.projectLabel,
+        threadId: report.threadId,
+        sourceId: report.turnId,
+        reason: "worker report already has a completed memory review",
+        promptVersion: "memory-review-v1",
+        model: this.model,
+        createdAt: startedAt,
+        completedAt,
+        durationMs: completedAt - startedAt,
+        prompt: null,
+        input: { context },
+        rawOutput: null,
+        normalizedOutput: null,
+        decisions: [{ stage: "review", outcome: "skipped", summary: "Skipped completed memory review.", reason: "already_completed" }],
+        persisted: { observationIds: [], candidateIds: [], entityIds: [], relationshipIds: [], jobEntryIds: [] },
+        error: null,
+        warnings: []
+      });
       return [];
     }
 
     const prompt = this.buildPrompt(context);
     this.markReviewPending(context);
     this.store.addEvent(report.threadId, "memory/review/started", "Started Codex memory review for worker report.");
-    const output = await this.runner({ cwd: context.cwd, prompt, timeoutMs: this.timeoutMs });
-    if (this.isStaleReview(report)) {
-      this.store.addEvent(report.threadId, "memory/review/stale", "Skipped stale Codex memory review for worker report.");
-      return [];
-    }
-    const submitted: MemoryReviewCandidate[] = [];
-    const durableCandidates = output.candidates.filter(shouldSubmitCandidate);
-    const existingCandidates = this.store.getJobMemory(report.threadId)?.promotionCandidates ?? [];
-    const existingSourceIds = new Set(existingCandidates.map((candidate) => candidate.sourceEntryId));
-    const existingCandidateKeys = new Set(existingCandidates.map((candidate) => reviewCandidateKey(candidate)));
-
-    for (const candidate of durableCandidates) {
-      const candidateKey = reviewCandidateKey(candidate);
-      const sourceEntryId = reviewCandidateSourceId(report, candidate);
-      if (existingSourceIds.has(sourceEntryId) || existingCandidateKeys.has(candidateKey)) {
-        continue;
+    let output: MemoryReviewOutput | null = null;
+    const decisions: MemoryDebugTraceDecision[] = [];
+    const persisted = { observationIds: [] as string[], candidateIds: [] as string[], entityIds: [] as string[], relationshipIds: [] as string[], jobEntryIds: [reviewPendingSourceId(report)] };
+    try {
+      output = await this.runner({ cwd: context.cwd, prompt, timeoutMs: this.timeoutMs });
+      decisions.push(...(output.parseDecisions ?? []));
+      if (this.isStaleReview(report)) {
+        this.store.addEvent(report.threadId, "memory/review/stale", "Skipped stale Codex memory review for worker report.");
+        const completedAt = Date.now();
+        recordMemoryDebugTrace(this.store, {
+          kind: "review",
+          status: "skipped",
+          projectId: context.projectId,
+          projectLabel: context.projectLabel,
+          threadId: report.threadId,
+          sourceId: report.turnId,
+          reason: "stale worker report memory review",
+          promptVersion: "memory-review-v1",
+          model: this.model,
+          createdAt: startedAt,
+          completedAt,
+          durationMs: completedAt - startedAt,
+          prompt,
+          input: { context },
+          rawOutput: output.rawOutput || output.rawText ? { parsed: output.rawOutput ?? output, text: output.rawText ?? null } : output,
+          normalizedOutput: { candidates: output.candidates },
+          decisions: [{ stage: "review", outcome: "skipped", summary: "Skipped stale memory review.", reason: "stale_report" }],
+          persisted,
+          error: null,
+          warnings: []
+        });
+        return [];
       }
-      const details = [
-        candidate.details,
-        `Memory review confidence: ${candidate.confidence}.`,
-        `Reason: ${candidate.reason}`
-      ]
-        .filter((entry): entry is string => Boolean(entry))
-        .join("\n");
+      const submitted: MemoryReviewCandidate[] = [];
+      const durableCandidates = output.candidates.filter(shouldSubmitCandidate);
+      const existingCandidates = this.store.getJobMemory(report.threadId)?.promotionCandidates ?? [];
+      const existingSourceIds = new Set(existingCandidates.map((candidate) => candidate.sourceEntryId));
+      const existingCandidateKeys = new Set(existingCandidates.map((candidate) => reviewCandidateKey(candidate)));
 
-      this.store.submitJobMemoryPromotionCandidate(report.threadId, {
-        kind: candidate.kind,
-        summary: candidate.summary,
-        details,
-        sourceEntryId,
+      for (const [index, candidate] of output.candidates.entries()) {
+        if (!shouldSubmitCandidate(candidate)) {
+          decisions.push({ stage: "candidate", outcome: "dropped", summary: candidate.summary, reason: `low_confidence:${candidate.confidence}`, inputIndex: index });
+          continue;
+        }
+        const candidateKey = reviewCandidateKey(candidate);
+        const sourceEntryId = reviewCandidateSourceId(report, candidate);
+        if (existingSourceIds.has(sourceEntryId) || existingCandidateKeys.has(candidateKey)) {
+          decisions.push({ stage: "candidate", outcome: "deduped", summary: candidate.summary, reason: "existing_candidate", sourceEntryId, inputIndex: index });
+          continue;
+        }
+        const details = [candidate.details, `Memory review confidence: ${candidate.confidence}.`, `Reason: ${candidate.reason}`]
+          .filter((entry): entry is string => Boolean(entry))
+          .join("\n");
+
+        const saved = this.store.submitJobMemoryPromotionCandidate(report.threadId, {
+          kind: candidate.kind,
+          summary: candidate.summary,
+          details,
+          sourceEntryId,
+          context
+        });
+        submitted.push(candidate);
+        persisted.candidateIds.push(saved.id);
+        decisions.push({ stage: "candidate", outcome: "submitted", summary: candidate.summary, sourceEntryId, persistedId: saved.id, inputIndex: index });
+        existingSourceIds.add(sourceEntryId);
+        existingCandidateKeys.add(candidateKey);
+      }
+
+      this.store.addEvent(
+        report.threadId,
+        durableCandidates.length > 0 ? "memory/review/candidates" : "memory/review/none",
+        durableCandidates.length > 0
+          ? `Memory review proposed ${durableCandidates.length} durable candidate${durableCandidates.length === 1 ? "" : "s"}.`
+          : "Memory review found no durable candidates."
+      );
+      this.store.recordJobNote(report.threadId, {
+        summary:
+          durableCandidates.length > 0
+            ? `Memory review completed with ${durableCandidates.length} candidate${durableCandidates.length === 1 ? "" : "s"}.`
+            : "Memory review completed with no durable candidates.",
+        details: `Worker report ${report.turnId} was reviewed by Codex exec.`,
+        sourceEntryId: reviewStateSourceId(report),
         context
       });
-      submitted.push(candidate);
-      existingSourceIds.add(sourceEntryId);
-      existingCandidateKeys.add(candidateKey);
+      persisted.jobEntryIds.push(reviewStateSourceId(report));
+      const completedAt = Date.now();
+      recordMemoryDebugTrace(this.store, {
+        kind: "review",
+        status: "completed",
+        projectId: context.projectId,
+        projectLabel: context.projectLabel,
+        threadId: report.threadId,
+        sourceId: report.turnId,
+        reason: "worker report memory review",
+        promptVersion: "memory-review-v1",
+        model: this.model,
+        createdAt: startedAt,
+        completedAt,
+        durationMs: completedAt - startedAt,
+        prompt,
+        input: { context },
+        rawOutput: output.rawOutput || output.rawText ? { parsed: output.rawOutput ?? output, text: output.rawText ?? null } : output,
+        normalizedOutput: { candidates: output.candidates },
+        decisions,
+        persisted,
+        error: null,
+        warnings: []
+      });
+      return submitted;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const completedAt = Date.now();
+      recordMemoryDebugTrace(this.store, {
+        kind: "review",
+        status: "failed",
+        projectId: context.projectId,
+        projectLabel: context.projectLabel,
+        threadId: report.threadId,
+        sourceId: report.turnId,
+        reason: "worker report memory review",
+        promptVersion: "memory-review-v1",
+        model: this.model,
+        createdAt: startedAt,
+        completedAt,
+        durationMs: completedAt - startedAt,
+        prompt,
+        input: { context },
+        rawOutput: output?.rawOutput || output?.rawText ? { parsed: output.rawOutput ?? output, text: output.rawText ?? null } : output,
+        normalizedOutput: output ? { candidates: output.candidates } : null,
+        decisions,
+        persisted,
+        error: message,
+        warnings: []
+      });
+      throw error;
     }
-
-    this.store.addEvent(
-      report.threadId,
-      durableCandidates.length > 0 ? "memory/review/candidates" : "memory/review/none",
-      durableCandidates.length > 0
-        ? `Memory review proposed ${durableCandidates.length} durable candidate${durableCandidates.length === 1 ? "" : "s"}.`
-        : "Memory review found no durable candidates."
-    );
-    this.store.recordJobNote(report.threadId, {
-      summary:
-        durableCandidates.length > 0
-          ? `Memory review completed with ${durableCandidates.length} candidate${durableCandidates.length === 1 ? "" : "s"}.`
-          : "Memory review completed with no durable candidates.",
-      details: `Worker report ${report.turnId} was reviewed by Codex exec.`,
-      sourceEntryId: reviewStateSourceId(report),
-      context
-    });
-    return submitted;
   }
 
   private hasCompletedReview(report: CodexWorkerReportView): boolean {
@@ -381,8 +500,7 @@ export class CodexExecMemoryReviewService {
     const outputPath = path.join(scratchDir, `${runId}.output.json`);
     await fs.writeFile(schemaPath, JSON.stringify(OUTPUT_SCHEMA, null, 2), "utf8");
 
-    const modelArgs = process.env.MANOR_MEMORY_REVIEW_MODEL ? ["--model", process.env.MANOR_MEMORY_REVIEW_MODEL] : [];
-    const args = [
+    const baseArgs = [
       "exec",
       "--ephemeral",
       "--sandbox",
@@ -394,49 +512,64 @@ export class CodexExecMemoryReviewService {
       "--output-last-message",
       outputPath,
       "--cd",
-      input.cwd,
-      ...modelArgs,
-      "-"
+      input.cwd
     ];
 
     try {
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn("codex", args, {
-          env: {
-            ...process.env,
-            CODEX_HOME: this.codexHomeDir,
-            NO_COLOR: "1"
-          },
-          stdio: ["pipe", "pipe", "pipe"]
-        });
-        let stderr = "";
-        let stdout = "";
-        const timeout = setTimeout(() => {
-          child.kill("SIGTERM");
-          reject(new Error("codex exec memory review timed out"));
-        }, input.timeoutMs);
+      const run = async (model: string | null): Promise<void> => {
+        const args = [...baseArgs, ...memoryCodexModelArgs(model), "-"];
+        await new Promise<void>((resolve, reject) => {
+          const child = spawn("codex", args, {
+            env: {
+              ...process.env,
+              CODEX_HOME: this.codexHomeDir,
+              NO_COLOR: "1"
+            },
+            stdio: ["pipe", "pipe", "pipe"]
+          });
+          let stderr = "";
+          let stdout = "";
+          const timeout = setTimeout(() => {
+            child.kill("SIGTERM");
+            reject(new Error("codex exec memory review timed out"));
+          }, input.timeoutMs);
 
-        child.stdout.on("data", (chunk: Buffer) => {
-          stdout = `${stdout}${chunk.toString("utf8")}`.slice(-16_000);
+          child.stdout.on("data", (chunk: Buffer) => {
+            stdout = `${stdout}${chunk.toString("utf8")}`.slice(-16_000);
+          });
+          child.stderr.on("data", (chunk: Buffer) => {
+            stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16_000);
+          });
+          child.on("error", (error) => {
+            clearTimeout(timeout);
+            reject(error);
+          });
+          child.on("close", (code) => {
+            clearTimeout(timeout);
+            if (code === 0) {
+              resolve();
+              return;
+            }
+            reject(new Error(`codex exec exited with ${code}: ${stderr || stdout}`.trim()));
+          });
+
+          child.stdin.end(input.prompt);
         });
-        child.stderr.on("data", (chunk: Buffer) => {
-          stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16_000);
-        });
-        child.on("error", (error) => {
-          clearTimeout(timeout);
-          reject(error);
-        });
-        child.on("close", (code) => {
-          clearTimeout(timeout);
-          if (code === 0) {
-            resolve();
-            return;
+      };
+
+      if (this.model) {
+        try {
+          await run(this.model);
+        } catch (error) {
+          if (!isUnsupportedCodexModelError(error)) {
+            throw error;
           }
-          reject(new Error(`codex exec exited with ${code}: ${stderr || stdout}`.trim()));
-        });
-
-        child.stdin.end(input.prompt);
-      });
+          await fs.rm(outputPath, { force: true }).catch(() => {});
+          await run(null);
+        }
+      } else {
+        await run(null);
+      }
 
       const output = await fs.readFile(outputPath, "utf8");
       return parseReviewOutput(output);

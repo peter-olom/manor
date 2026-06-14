@@ -33,6 +33,7 @@ function installFakeBrowserTimers() {
   let nextId = 1;
   const timers = new Map<number, TimerTask>();
   const originalWindow = globalThis.window;
+  const originalDocument = globalThis.document;
   const originalEventSource = globalThis.EventSource;
   const originalDateNow = Date.now;
 
@@ -47,6 +48,13 @@ function installFakeBrowserTimers() {
       clearTimeout(id: number) {
         timers.delete(id);
       }
+    }
+  });
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      visibilityState: "hidden",
+      addEventListener() {}
     }
   });
   Object.defineProperty(globalThis, "EventSource", { configurable: true, value: FakeEventSource });
@@ -73,6 +81,7 @@ function installFakeBrowserTimers() {
       __liveStateTestHooks.resetForTest();
       Date.now = originalDateNow;
       Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+      Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument });
       Object.defineProperty(globalThis, "EventSource", { configurable: true, value: originalEventSource });
       FakeEventSource.instances = [];
     }

@@ -1,4 +1,6 @@
 import { normalizeString } from "./codex-harness-helpers.js";
+import { formatMemoryDebugTrace, formatMemoryDebugTraceList, getMemoryDebugTrace, listMemoryDebugTraces } from "./memory-debug-traces.js";
+import { buildMemoryDiagnostics, formatMemoryDiagnostics } from "./memory-diagnostics.js";
 import { formatButlerMemoryRetrieval, retrieveButlerMemory } from "./memory-retrieval.js";
 import type { ButlerStateStore } from "./state-store.js";
 
@@ -101,6 +103,47 @@ export function handleHarnessMemoryAction(input: {
       text: formatButlerMemoryRetrieval(retrieval),
       data: { retrieval }
     };
+  }
+
+  if (action === "memory.diagnostics") {
+    const scope = normalizeString(params.scope) === "job" ? "job" : "project";
+    const allProjects = params.allProjects === true;
+    const diagnostics = buildMemoryDiagnostics(store, {
+      projectId: allProjects || scope === "job" ? null : normalizeString(params.projectId) || projectId,
+      threadId: scope === "job" ? threadId : normalizeString(params.threadId) || null,
+      from: typeof params.from === "string" || typeof params.from === "number" ? params.from : null,
+      to: typeof params.to === "string" || typeof params.to === "number" ? params.to : null,
+      includeSamples: params.includeSamples === true,
+      sampleLimit: typeof params.sampleLimit === "number" && Number.isFinite(params.sampleLimit) ? params.sampleLimit : null
+    });
+    return {
+      text: formatMemoryDiagnostics(diagnostics),
+      data: { diagnostics }
+    };
+  }
+
+  if (action === "memory.debug_trace") {
+    const traceId = normalizeString(params.traceId) || null;
+    if (traceId) {
+      const trace = getMemoryDebugTrace(store, traceId);
+      return trace
+        ? { text: formatMemoryDebugTrace(trace), data: { trace } }
+        : { text: "No memory debug trace matched.", data: { trace: null } };
+    }
+    const scope = normalizeString(params.scope) === "job" ? "job" : "project";
+    const traces = listMemoryDebugTraces(store, {
+      kind: normalizeString(params.kind) === "review" || normalizeString(params.kind) === "synthesis" ? (normalizeString(params.kind) as "review" | "synthesis") : null,
+      status:
+        normalizeString(params.status) === "completed" || normalizeString(params.status) === "failed" || normalizeString(params.status) === "skipped"
+          ? (normalizeString(params.status) as "completed" | "failed" | "skipped")
+          : null,
+      projectId: params.allProjects === true || scope === "job" ? null : normalizeString(params.projectId) || projectId,
+      threadId: scope === "job" ? threadId : normalizeString(params.threadId) || null,
+      from: typeof params.from === "string" || typeof params.from === "number" ? params.from : null,
+      to: typeof params.to === "string" || typeof params.to === "number" ? params.to : null,
+      limit: typeof params.limit === "number" && Number.isFinite(params.limit) ? params.limit : null
+    });
+    return { text: formatMemoryDebugTraceList(traces), data: { traces } };
   }
 
   if (action === "memory.checkpoint") {

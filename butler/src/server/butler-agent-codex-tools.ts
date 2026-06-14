@@ -9,8 +9,15 @@ import {
   shouldAllowLocalThreadFallback
 } from "./butler-agent-helpers.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import {
+  buildSelfImprovementTask,
+  classifyManorBlocker,
+  hasStartedSelfImprovement,
+  resolveManorSelfImprovementCwd
+} from "./butler-self-improvement.js";
 import { buildCodexInputWithReferences } from "./reference-inputs.js";
 import { listWorkspaceProjectDirectories } from "./repo-worktree.js";
+import type { ReasoningEffort, ReviewPanelRole, ReviewPanelVerdict } from "./types.js";
 
 export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
   return [
@@ -124,6 +131,127 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           details: {
             supervisor: access.store.getSupervisorSummary(),
             projects: access.store.listProjectSummaries()
+          }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "start_self_improvement",
+      label: "Start self-improvement",
+      description:
+        "Start a dedicated Manor self-improvement Codex job from a direct operator request or a likely Manor platform blocker. The job should implement, verify, push a branch, and open a draft PR.",
+      promptSnippet:
+        "start_self_improvement: use for direct Manor/Butler/Codex platform improvement requests, or for blocked worker reports that likely indicate a Manor platform issue. Do not use for missing credentials, operator approval, third-party outage, or app-specific bugs outside Manor.",
+      parameters: Type.Object({
+        problem: Type.String({ minLength: 1 }),
+        desiredOutcome: Type.Optional(Type.String({ minLength: 1 })),
+        sourceThreadId: Type.Optional(Type.String({ minLength: 1 })),
+        thinkingBudget: Type.Optional(Type.Union([
+          Type.Literal("low"),
+          Type.Literal("medium"),
+          Type.Literal("high"),
+          Type.Literal("xhigh")
+        ])),
+        force: Type.Optional(Type.Boolean())
+      }),
+      uiEffects: access.getToolUiEffects("start_self_improvement"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as {
+          problem: string;
+          desiredOutcome?: string;
+          sourceThreadId?: string;
+          thinkingBudget?: ReasoningEffort;
+          force?: boolean;
+        };
+        const sourceThreadId = typedParams.sourceThreadId?.trim() || null;
+        const sourceThread = sourceThreadId ? access.store.getThread(sourceThreadId) ?? null : null;
+        if (sourceThreadId && !sourceThread) {
+          throw new Error(`Source job ${sourceThreadId} was not found.`);
+        }
+        if (sourceThread && hasStartedSelfImprovement(sourceThread) && typedParams.force !== true) {
+          return {
+            content: [{ type: "text", text: `A Manor self-improvement job has already been started for job ${sourceThread.id}.` }],
+            details: { sourceThread, duplicate: true }
+          };
+        }
+
+        const workerReport = sourceThread ? access.store.getWorkerReport(sourceThread.id) : null;
+        const classification = sourceThread ? classifyManorBlocker({ thread: sourceThread, workerReport }) : null;
+        const task = buildSelfImprovementTask({
+          problem: typedParams.problem,
+          desiredOutcome: typedParams.desiredOutcome,
+          sourceThread,
+          workerReport,
+          classification
+        });
+        const manorCwd = await resolveManorSelfImprovementCwd();
+        const workspace = await access.prepareDelegationWorkspace(task, manorCwd);
+        const developerInstructions = await access.buildDelegationDeveloperInstructions(workspace, task);
+        const result = await access.codexClient.startThread({
+          task,
+          input: async (threadId: string) =>
+            buildCodexInputWithReferences({
+              text: (
+                await access.buildDelegationContract({
+                  threadId,
+                  task,
+                  goal: "Improve Manor itself, verify the change, push the branch, and open a draft PR.",
+                  workspace,
+                  extraNotes: [
+                    "This is a Manor self-improvement job.",
+                    "Opening a draft PR is explicitly requested by Butler for this job.",
+                    "Live restart, deploy, destructive cleanup, or host mutation still requires explicit operator approval."
+                  ]
+                })
+              ).text,
+              imageStore: access.imageStore,
+              imageReferenceIds: [],
+              fileStore: access.fileStore,
+              fileReferenceIds: []
+            }),
+          cwd: workspace.cwd,
+          developerInstructions,
+          effort: typedParams.thinkingBudget ?? "high",
+          openWindow: true
+        });
+        const delegationContract = await access.buildDelegationContract({
+          threadId: result.threadId,
+          task,
+          goal: "Improve Manor itself, verify the change, push the branch, and open a draft PR.",
+          workspace,
+          extraNotes: [
+            "This is a Manor self-improvement job.",
+            "Opening a draft PR is explicitly requested by Butler for this job.",
+            "Live restart, deploy, destructive cleanup, or host mutation still requires explicit operator approval."
+          ]
+        });
+        access.store.setThreadExecutionContract(result.threadId, delegationContract.contract);
+        access.store.addEvent(result.threadId, "butler.self_improvement.created", "Butler created this Manor self-improvement job.");
+        if (sourceThread) {
+          access.store.addEvent(sourceThread.id, "butler.self_improvement.started", `Started Manor self-improvement job ${result.threadId}.`);
+        }
+        access.noteThreadFocus(result.threadId, "start_self_improvement");
+        access.queueDelegationAcknowledgement(
+          result.threadId,
+          `Accepted. I started a Manor self-improvement job ${result.threadId} and will return here with the result.`
+        );
+        access.registerPendingChatCallback(result.threadId);
+        const supervision = access.store.noteButlerSteer(result.threadId);
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Started Manor self-improvement job ${result.threadId} from ${workspace.cwd}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}.`
+            }
+          ],
+          details: {
+            threadId: result.threadId,
+            sourceThreadId,
+            classification,
+            workspace,
+            supervision,
+            thread: access.store.getThread(result.threadId) ?? null
           }
         };
       }
@@ -245,10 +373,14 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       execute: async (_toolCallId, params) => {
         const typedParams = params as { threadId: string };
         const checklist = access.store.getSupervisionChecklist(typedParams.threadId);
+        const panel = access.store.getThread(typedParams.threadId)?.executionContract?.reviewPanel ?? [];
         const text = checklist
           ? [
               `Supervision checklist for job ${typedParams.threadId}: ${checklist.reviewState}`,
               `Heartbeat: ${checklist.heartbeat.lastKnownThreadStatus}${checklist.heartbeat.stale ? " stale" : ""}`,
+              panel.length > 0
+                ? `Review panel: ${panel.map((entry) => `${entry.role}=${entry.verdict}${entry.requiredFollowUp ? ` (${entry.requiredFollowUp})` : ""}`).join(", ")}`
+                : "Review panel: none",
               ...checklist.items.map((item) => {
                 const latestEvidence = item.evidence.at(-1);
                 return `${item.id}: ${item.status} - ${item.text}${item.butlerNote ? ` | Butler: ${item.butlerNote}` : ""}${latestEvidence ? ` | Evidence: ${latestEvidence.summary}` : ""}`;
@@ -258,6 +390,62 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         return {
           content: [{ type: "text", text }],
           details: { checklist }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "record_review_panel_verdict",
+      label: "Record reviewer",
+      description: "Record a hidden specialist reviewer verdict for one delegated job before Butler accepts or closes it.",
+      promptSnippet:
+        "record_review_panel_verdict: record intent, QA, UI taste, API, ops, or product reviewer verdicts; failed or blocked verdicts require follow-up.",
+      parameters: Type.Object({
+        threadId: Type.String(),
+        role: Type.Union([
+          Type.Literal("intent"),
+          Type.Literal("qa"),
+          Type.Literal("ui_taste"),
+          Type.Literal("api"),
+          Type.Literal("ops"),
+          Type.Literal("product")
+        ]),
+        verdict: Type.Union([
+          Type.Literal("passed"),
+          Type.Literal("concern"),
+          Type.Literal("failed"),
+          Type.Literal("blocked")
+        ]),
+        concerns: Type.Optional(Type.Array(Type.String())),
+        evidenceRefs: Type.Optional(Type.Array(Type.String())),
+        requiredFollowUp: Type.Optional(Type.String()),
+        note: Type.Optional(Type.String())
+      }),
+      uiEffects: access.getToolUiEffects("record_review_panel_verdict"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as {
+          threadId: string;
+          role: ReviewPanelRole;
+          verdict: Exclude<ReviewPanelVerdict, "pending">;
+          concerns?: string[];
+          evidenceRefs?: string[];
+          requiredFollowUp?: string;
+          note?: string;
+        };
+        if ((typedParams.verdict === "failed" || typedParams.verdict === "blocked") && !typedParams.requiredFollowUp?.trim()) {
+          throw new Error("Failed or blocked reviewer verdicts require requiredFollowUp.");
+        }
+        const contract = access.store.recordReviewPanelVerdict({
+          threadId: typedParams.threadId,
+          role: typedParams.role,
+          verdict: typedParams.verdict,
+          concerns: typedParams.concerns,
+          evidenceRefs: typedParams.evidenceRefs,
+          requiredFollowUp: typedParams.requiredFollowUp,
+          note: typedParams.note
+        });
+        return {
+          content: [{ type: "text", text: `${typedParams.role} reviewer marked ${typedParams.verdict}.` }],
+          details: { reviewPanel: contract.reviewPanel, reviewPanelSummary: contract.reviewPanelSummary }
         };
       }
     }),

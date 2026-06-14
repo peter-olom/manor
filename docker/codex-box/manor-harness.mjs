@@ -12,11 +12,13 @@ const runtimeBrokerBaseUrl = process.env.MANOR_RUNTIME_BROKER_URL || "http://run
 function printHelp() {
   console.log(`Usage:
   manor-harness [--thread <jobId>] status
-  manor-harness [--thread <jobId>] report --status completed|blocked --summary "<text>" [--details "<text>"] [--turn-id <id>]
+  manor-harness [--thread <jobId>] report --status completed|blocked --summary "<text>" [--details "<text>"] [--turn-id <id>] [--evidence-json '<json>' ...] [--evidence "<pointId>|<kind>|<summary>" ...]
   manor-harness [--thread <jobId>] assist --summary "<text>" [--details "<text>"] [--question "<text>"]
   manor-harness [--thread <jobId>] memory [--provenance]
   manor-harness [--thread <jobId>] memory project [--provenance]
   manor-harness [--thread <jobId>] memory search --query "<text>" [--limit <n>] [--job] [--global] [--provenance]
+  manor-harness [--thread <jobId>] memory diagnostics [--from <date>] [--to <date>] [--job] [--all] [--samples] [--limit <n>]
+  manor-harness [--thread <jobId>] memory debug [traceId] [--kind review|synthesis] [--status completed|failed|skipped] [--from <date>] [--to <date>] [--job] [--all] [--limit <n>]
   manor-harness [--thread <jobId>] memory checkpoint --summary "<text>" [--details "<text>"] [--next-action "<text>"] [--blocker "<text>" ...] [--plan "<text>" ...] [--assumption "<text>" ...] [--proof "<text>" ...] [--promote]
   manor-harness [--thread <jobId>] memory decision --summary "<text>" [--details "<text>"] [--promote]
   manor-harness [--thread <jobId>] memory note --summary "<text>" [--details "<text>"] [--promote]
@@ -26,16 +28,18 @@ function printHelp() {
   manor-harness [--thread <jobId>] artifact save-text --title "<text>" [--kind seed|reference|download|research|report|other] [--description "<text>"] [--file-name <name>] [--content-type <mime>] [--tag <text> ...] [--metadata KEY=VALUE ...] [--body "<text>"]
   manor-harness [--thread <jobId>] artifact download --title "<text>" --url <url> [--kind seed|reference|download|research|report|other] [--description "<text>"] [--file-name <name>] [--content-type <mime>] [--tag <text> ...] [--metadata KEY=VALUE ...]
   manor-harness [--thread <jobId>] proof file <filePath> [--title <text>] [--label <text>] [--content-type <mime>]
+  manor-harness [--thread <jobId>] proof text --title <text> [--label <text>] [--file-name <name>] [--content-type <mime>] [--body <text>]
   manor-harness [--thread <jobId>] policy list
   manor-harness [--thread <jobId>] policy remember --title "<text>" --instruction "<text>" [--policy-id <id>] [--artifact <artifactId> ...] [--trigger <text> ...]
   manor-harness [--thread <jobId>] policy invoke <policyId|title> [--service <serviceId>]
   manor-harness [--thread <jobId>] stack list
-  manor-harness [--thread <jobId>] stack start [--title <title>] [--cwd <path>] [--stateful] [--storage-mode ephemeral|job|base|custom] [--retain-volumes] [--storage-key <key>] [--clone-from <key>]
+  manor-harness [--thread <jobId>] stack start [--title <title>] [--cwd <path>] [--stateful] [--storage-mode ephemeral|job|base|custom] [--retain-volumes] [--storage-key <key>] [--clone-from <key>] [--sticky] [--lease-ttl-minutes <n>]
   manor-harness [--thread <jobId>] stack inspect <stackSelector>
+  manor-harness [--thread <jobId>] stack lease <stackSelector> [--sticky|--unsticky] [--lease-ttl-minutes <n>] [--no-refresh]
   manor-harness [--thread <jobId>] stack promote <stackSelector> [--to <storageKey>]
   manor-harness [--thread <jobId>] stack stop <stackSelector> [--drop-volumes]
   manor-harness [--thread <jobId>] preview list
-  manor-harness [--thread <jobId>] preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--stack <stackSelector>] [--alias <name> ...] [--env KEY=VALUE ...] [--workspace-mode shared|snapshot] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>]
+  manor-harness [--thread <jobId>] preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--stack <stackSelector>] [--alias <name> ...] [--env KEY=VALUE ...] [--workspace-mode shared|snapshot] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>] [--sticky] [--lease-ttl-minutes <n>]
 
 Preview defaults:
   egress-profile=internet
@@ -50,6 +54,7 @@ Preview defaults:
   manor-harness preview processes <previewSelector>
   manor-harness preview logs <previewSelector> [--tail <n>]
   manor-harness preview exec <previewSelector> -- <command>
+  manor-harness preview lease <previewSelector> [--sticky|--unsticky] [--lease-ttl-minutes <n>] [--no-refresh]
   manor-harness preview use start <previewSelector> [--mode headless|headful] [--resolution 1080p|2k] [--path <route>] [--target-url <url>] [--header KEY=VALUE ...] [--cookie NAME=VALUE ...] [--session-cookie <token>] [--wait-for <selector>] [--wait-ms <n>]
   manor-harness browser proof [--run-id <id>]
   manor-harness browser use start --url <url> [--title <text>] [--mode headless|headful] [--resolution 1080p|2k] [--header KEY=VALUE ...] [--cookie NAME=VALUE ...] [--session-cookie <token>] [--wait-for <selector>] [--wait-ms <n>]
@@ -81,7 +86,9 @@ Proof tips:
   Cookies are injected into the browser context directly; headers remain separate.
   Proof is session-driven: start browser sidecar, run actions, optionally capture screenshots, then stop session.
   Native Electron or VNC-visible proof is desktop-driven: check desktop status, start a desktop session attached to this job workspace, capture screenshots/actions there, then stop it.
-  File proof is for cases where the durable evidence is a generated file, PDF, Office file, archive, report, export, log, or saved artifact.
+  Text proof is for simple read-only notes and inspection summaries; it stores the note directly in Manor artifacts without creating side files under /repos.
+  File proof is for cases where the durable evidence is an existing generated file, PDF, Office file, archive, report, export, log, or saved artifact.
+  UI-impacting work must surface screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are insufficient.
   Do not create a private Xvfb display when the operator asked for a VNC-visible desktop app.
   Do not use direct curl or fetch from the shared Codex shell to judge live-site browser reachability. That shell is behind restricted egress by design.
   Example:
@@ -90,6 +97,10 @@ Proof tips:
     manor-harness browser use stop <sessionId> --reason "proof complete" --json
 
 Add --json to print the Butler response payload as JSON.
+Blocked reports require --details that explain what failed, what was tried, and the next sensible action.
+Deep work reports should include point-specific evidence, for example:
+  --evidence "point-1|build|npm test passed"
+  --evidence-json '{"pointId":"point-2","kind":"browser_flow","summary":"Recorded browser proof","proofRunId":"run-id"}'
 Set MANOR_THREAD_ID or pass --thread <jobId> to bind the harness explicitly when you are outside the job workspace.`);
 }
 
@@ -274,6 +285,32 @@ function parseRepeatedKeyValueFlags(args, name) {
     .filter(Boolean);
 }
 
+function parseReportEvidence(args) {
+  const entries = [];
+  for (const rawJson of readRepeatedFlag(args, "--evidence-json")) {
+    try {
+      const parsed = JSON.parse(rawJson);
+      if (Array.isArray(parsed)) entries.push(...parsed);
+      else entries.push(parsed);
+    } catch (error) {
+      throw new Error(`Invalid --evidence-json: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  for (const raw of readRepeatedFlag(args, "--evidence")) {
+    const [pointId, kind, summary, details] = raw.split("|");
+    if (!summary) {
+      throw new Error("--evidence must use pointId|kind|summary");
+    }
+    entries.push({
+      pointId: pointId || null,
+      kind: kind || "manual",
+      summary,
+      details: details || null
+    });
+  }
+  return entries;
+}
+
 function mergeCookieHeader(headers, cookieEntries) {
   if (cookieEntries.length === 0) {
     return headers;
@@ -306,6 +343,15 @@ function readPositiveIntFlag(args, name) {
   }
   const value = Number(raw);
   return Number.isFinite(value) && value > 0 ? Math.trunc(value) : undefined;
+}
+
+function readLeaseFlagParams(args) {
+  const sticky = args.includes("--sticky") ? true : args.includes("--unsticky") ? false : undefined;
+  return {
+    ...(typeof sticky === "boolean" ? { sticky } : {}),
+    leaseTtlMinutes: readPositiveIntFlag(args, "--lease-ttl-minutes"),
+    refresh: !args.includes("--no-refresh")
+  };
 }
 
 function readNumberFlag(args, name) {
@@ -421,7 +467,8 @@ async function main() {
       status: readFlag(args, "--status"),
       summary: readFlag(args, "--summary"),
       details: readFlag(args, "--details"),
-      turnId: readFlag(args, "--turn-id")
+      turnId: readFlag(args, "--turn-id"),
+      evidence: parseReportEvidence(args)
     };
   } else if (args[0] === "assist") {
     action = "assist.request";
@@ -450,6 +497,31 @@ async function main() {
         scope: hasFlag(args, "--job") ? "job" : "project",
         includeGlobal: hasFlag(args, "--global"),
         includeProvenance: hasFlag(args, "--provenance")
+      };
+    } else if (subcommand === "diagnostics" || subcommand === "stats") {
+      action = "memory.diagnostics";
+      params = {
+        projectId: readFlag(args, "--project-id"),
+        from: readFlag(args, "--from"),
+        to: readFlag(args, "--to"),
+        scope: hasFlag(args, "--job") ? "job" : "project",
+        allProjects: hasFlag(args, "--all"),
+        includeSamples: hasFlag(args, "--samples"),
+        sampleLimit: readPositiveIntFlag(args, "--limit")
+      };
+    } else if (subcommand === "debug" || subcommand === "trace") {
+      const traceId = args[2]?.startsWith("--") ? "" : args[2] || "";
+      action = "memory.debug_trace";
+      params = {
+        traceId,
+        kind: readFlag(args, "--kind"),
+        status: readFlag(args, "--status"),
+        projectId: readFlag(args, "--project-id"),
+        from: readFlag(args, "--from"),
+        to: readFlag(args, "--to"),
+        scope: hasFlag(args, "--job") ? "job" : "project",
+        allProjects: hasFlag(args, "--all"),
+        limit: readPositiveIntFlag(args, "--limit")
       };
     } else if (subcommand === "checkpoint") {
       action = "memory.checkpoint";
@@ -569,7 +641,8 @@ async function main() {
         bootstrapHint: readFlag(args, "--bootstrap-hint"),
         heartbeatKind: readFlag(args, "--heartbeat-kind"),
         heartbeatTarget: readFlag(args, "--heartbeat-target"),
-        heartbeatIntervalSeconds: Number(readFlag(args, "--heartbeat-interval-seconds", "0"))
+        heartbeatIntervalSeconds: Number(readFlag(args, "--heartbeat-interval-seconds", "0")),
+        ...readLeaseFlagParams(args)
       };
     } else if (subcommand === "inspect" && args[2]) {
       action = "preview.inspect";
@@ -597,6 +670,12 @@ async function main() {
         cwd: readFlag(args, "--cwd"),
         stdin: pipedInput.stdin,
         stdinProvided: pipedInput.stdinProvided
+      };
+    } else if (subcommand === "lease" && args[2]) {
+      action = "preview.lease";
+      params = {
+        leaseId: args[2],
+        ...readLeaseFlagParams(args)
       };
     } else if (subcommand === "use" && args[2] === "start" && args[3]) {
       const headers = Object.fromEntries(parseRepeatedKeyValueFlags(args, "--header"));
@@ -688,6 +767,16 @@ async function main() {
         title: readFlag(args, "--title"),
         label: readFlag(args, "--label"),
         contentType: readFlag(args, "--content-type")
+      };
+    } else if (subcommand === "text") {
+      const pipedInput = await readStdinIfPresent();
+      action = "proof.text";
+      params = {
+        title: readFlag(args, "--title"),
+        label: readFlag(args, "--label"),
+        fileName: readFlag(args, "--file-name"),
+        contentType: readFlag(args, "--content-type"),
+        text: readFlag(args, "--body") || pipedInput.stdin || ""
       };
     }
   } else if (args[0] === "desktop") {
@@ -824,11 +913,18 @@ async function main() {
         storageMode: readFlag(args, "--storage-mode"),
         retainsVolumes: args.includes("--retain-volumes"),
         storageKey: readFlag(args, "--storage-key"),
-        cloneFromStorageKey: readFlag(args, "--clone-from")
+        cloneFromStorageKey: readFlag(args, "--clone-from"),
+        ...readLeaseFlagParams(args)
       };
     } else if (subcommand === "inspect" && args[2]) {
       action = "stack.inspect";
       params = { stackId: args[2] };
+    } else if (subcommand === "lease" && args[2]) {
+      action = "stack.lease";
+      params = {
+        stackId: args[2],
+        ...readLeaseFlagParams(args)
+      };
     } else if (subcommand === "promote" && args[2]) {
       action = "stack.promote";
       params = { stackId: args[2], targetStorageKey: readFlag(args, "--to") };

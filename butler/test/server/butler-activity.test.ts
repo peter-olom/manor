@@ -171,6 +171,59 @@ test("Butler activity normalizes persisted item text when read back", () => {
   assert.equal(turns[0]?.items[1]?.text, "Remembered: Agent Slidev desktop app direction");
 });
 
+test("Butler activity can be compacted for live snapshots", () => {
+  const access = makeAccess();
+  for (let turnIndex = 0; turnIndex < 6; turnIndex += 1) {
+    access.activitySummaryTurns.push({
+      id: `turn-${turnIndex}`,
+      status: "completed",
+      startedAt: turnIndex * 100,
+      completedAt: turnIndex * 100 + 50,
+      items: Array.from({ length: 4 }, (_, itemIndex) => ({
+        id: `turn-${turnIndex}:tool-${itemIndex}`,
+        kind: "tool",
+        status: "completed",
+        title: `tool_${itemIndex}`,
+        text: `payload-${turnIndex}-${itemIndex}-${"x".repeat(60)}`,
+        at: turnIndex * 100 + itemIndex,
+        updatedAt: turnIndex * 100 + itemIndex,
+        contentIndex: null,
+        toolCallId: `tool-${itemIndex}`
+      }))
+    });
+  }
+  access.activityTurns.push({
+    id: "active-turn",
+    status: "active",
+    startedAt: 700,
+    completedAt: null,
+    items: [
+      {
+        id: "active-turn:tool",
+        kind: "tool",
+        status: "active",
+        title: "active_tool",
+        text: "running",
+        at: 700,
+        updatedAt: 700,
+        contentIndex: null,
+        toolCallId: "active-tool"
+      }
+    ]
+  });
+
+  const turns = getButlerActivityTurns(access, {
+    maxCompletedTurns: 2,
+    maxItemsPerTurn: 2,
+    maxItemText: 24
+  });
+
+  assert.deepEqual(turns.map((turn) => turn.id), ["turn-4", "turn-5", "active-turn"]);
+  assert.deepEqual(turns[0]?.items.map((item) => item.id), ["turn-4:tool-2", "turn-4:tool-3"]);
+  assert.match(turns[0]?.items[0]?.text ?? "", /\.\.\.$/);
+  assert.equal(turns[2]?.items[0]?.text, "running");
+});
+
 test("Butler activity is pruned when chat is deleted from a prompt", () => {
   const access = makeAccess();
   access.activeActivityTurnId = "active-turn";

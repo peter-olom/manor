@@ -37,8 +37,8 @@ export async function postJson<T = void>(url: string, body: unknown): Promise<T>
   return (await response.json().catch(() => undefined)) as T;
 }
 
-export async function getJson<T>(url: string): Promise<T> {
-  const response = await fetch(url);
+export async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, init);
   if (!response.ok) {
     throw new Error(await readErrorMessage(response));
   }

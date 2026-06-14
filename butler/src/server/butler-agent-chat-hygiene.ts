@@ -15,6 +15,12 @@ type SessionEntryLike = {
   };
 };
 
+export type ButlerChatDeletePoint = {
+  messageId: string;
+  targetAt: number | null;
+  previousEntryId: string | null;
+};
+
 function parseTimestamp(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -83,7 +89,7 @@ export function clearButlerSessionChat(session: AgentSession | null): void {
   session.agent.state.messages = [];
 }
 
-export function deleteButlerSessionChatFrom(session: AgentSession | null, messageId: string): number | null {
+export function locateButlerSessionDeletePoint(session: AgentSession | null, messageId: string): ButlerChatDeletePoint {
   if (!session) {
     throw new Error("Butler agent is not ready");
   }
@@ -107,22 +113,37 @@ export function deleteButlerSessionChatFrom(session: AgentSession | null, messag
 
   const targetEntryIndex = branch.findIndex((entry) => entry.id === targetEntry.id);
   const previousEntry = targetEntryIndex > 0 ? branch[targetEntryIndex - 1] : null;
-  if (previousEntry?.id) {
-    session.sessionManager.createBranchedSession(previousEntry.id);
-  } else {
-    clearButlerSessionChat(session);
-  }
-
-  const nextContext = session.sessionManager.buildSessionContext();
-  session.agent.state.messages = nextContext.messages;
-
   const targetAt =
     parseTimestamp(targetMessage.timestamp) ??
     parseTimestamp(targetMessage.createdAt) ??
     parseTimestamp(targetMessage.at) ??
     parseTimestamp(targetEntry.timestamp);
 
-  return targetAt;
+  return {
+    messageId,
+    targetAt,
+    previousEntryId: previousEntry?.id ?? null
+  };
+}
+
+export function deleteButlerSessionChatFromLocated(session: AgentSession | null, deletePoint: ButlerChatDeletePoint): number | null {
+  if (!session) {
+    throw new Error("Butler agent is not ready");
+  }
+
+  if (deletePoint.previousEntryId) {
+    session.sessionManager.createBranchedSession(deletePoint.previousEntryId);
+  } else {
+    clearButlerSessionChat(session);
+  }
+
+  const nextContext = session.sessionManager.buildSessionContext();
+  session.agent.state.messages = nextContext.messages;
+  return deletePoint.targetAt;
+}
+
+export function deleteButlerSessionChatFrom(session: AgentSession | null, messageId: string): number | null {
+  return deleteButlerSessionChatFromLocated(session, locateButlerSessionDeletePoint(session, messageId));
 }
 
 export function keepOperatorMessagesBefore(messages: ButlerMessageView[], timestamp: number | null): void {

@@ -2,11 +2,9 @@ import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-
 import { getModel } from "@mariozechner/pi-ai";
 import { AuthStorage, defineTool, ModelRegistry, type AgentSession } from "@mariozechner/pi-coding-agent";
 import type { TSchema } from "@sinclair/typebox";
-
 import {
   buildCallbackReviewPrompt,
   buildCloseoutId,
@@ -43,22 +41,13 @@ import {
   type SupervisionSmokePlan
 } from "./butler-agent-helpers.js";
 import { buildButlerCodexTools } from "./butler-agent-codex-tools.js";
-import {
-  createOrRefreshButlerSession,
-  getButlerLiveSnapshot,
-  getButlerMessagePage,
-  getButlerShellSnapshot,
-  getButlerSnapshot,
-  promptButler,
-  promptButlerInternal,
-  stopButlerPrompt,
-  restoreButlerCompactionState,
-  sanitizeButlerSessionMessages,
-  sanitizePersistedButlerSessions,
-  updateButlerComposeSettings
-} from "./butler-agent-session.js";
-import { clearButlerSessionChat, deleteButlerSessionChatFrom, keepOperatorMessagesBefore } from "./butler-agent-chat-hygiene.js";
+import { createOrRefreshButlerSession, getButlerLiveSnapshot, getButlerMessagePage, getButlerShellSnapshot, getButlerSnapshot, promptButler, promptButlerInternal, stopButlerPrompt, restoreButlerCompactionState, sanitizeButlerSessionMessages, sanitizePersistedButlerSessions, updateButlerComposeSettings } from "./butler-agent-session.js";
+import { clearButlerSessionChat, deleteButlerSessionChatFromLocated, keepOperatorMessagesBefore, locateButlerSessionDeletePoint } from "./butler-agent-chat-hygiene.js";
+import { buildOperatorCloseoutText } from "./butler-agent-closeout-text.js";
+import { buildDelegationDeveloperInstructions } from "./butler-agent-delegation-instructions.js";
+import { buildButlerFilesystemTools } from "./butler-agent-filesystem-tools.js";
 import { buildButlerServiceTools } from "./butler-agent-service-tools.js";
+import { buildButlerManorTools } from "./butler-agent-manor-tools.js";
 import { buildButlerProjectTools } from "./butler-agent-project-tools.js";
 import { buildButlerDelegationTools, buildButlerStackPreviewTools } from "./butler-agent-stack-preview-tools.js";
 import { reviewButlerProofScreenshot } from "./butler-agent-proof-review.js";
@@ -70,17 +59,14 @@ import { upsertOperatorMessage } from "./butler-operator-messages.js";
 import { readButlerAuthStatus, readCodexAuthStatus } from "./auth-status.js";
 import { notifyDirectCodexMessage, type DirectCodexMessageAccess, type DirectCodexMessagePingInput } from "./direct-codex-message.js";
 import { type FileReferenceStore } from "./file-store.js";
+import { HostControllerClient } from "./host-controller-client.js";
+import { ManorRestartRequestState } from "./manor-restart-state.js";
 import { buildOnboardingView } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
+import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import { formatProjectPolicyContextLines } from "./project-artifacts-policies.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
-import {
-  ensureTaskWorktree,
-  resolveExistingWorkspaceCwd,
-  resolveWorkspaceBranchName,
-  resolveWorkspaceProjectInfo,
-  taskRequiresManagedWorktree
-} from "./repo-worktree.js";
+import { ensureTaskWorktree, resolveExistingWorkspaceCwd, resolveWorkspaceBranchName, resolveWorkspaceProjectInfo, taskRequiresManagedWorktree } from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
@@ -89,11 +75,8 @@ import {
   describeProofExpectation,
   isSharedShellRepoBootstrapTask,
 } from "./thread-contract.js";
-import {
-  applyWorkspacePreviewDefaults,
-  formatWorkspaceBootstrapLines,
-  inspectWorkspaceBootstrap
-} from "./workspace-bootstrap.js";
+import { elapsedTaskDurationMs, stripElapsedTaskTimeFooter } from "./task-timing.js";
+import { applyWorkspacePreviewDefaults, formatWorkspaceBootstrapLines, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 import type {
   AppSnapshot,
   AppShellSnapshot,
@@ -114,12 +97,14 @@ import type {
 import { ButlerStateStore } from "./state-store.js";
 import { CodexAppServerClient } from "./codex-client.js";
 import type { PreviewLeaseView, PreviewProofRecordView, PreviewVerificationArtifactView, PreviewVerificationView } from "./types.js";
-
 const CALLBACK_RECOVERY_TIMEOUT_MS = 30_000;
-
+function isButlerAuthRecoveryError(message: string | null): boolean {
+  return typeof message === "string" && /\b(auth|authentication|token|signing in)\b/i.test(message);
+}
 export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
   private readonly codexClient: CodexAppServerClient;
+  private readonly hostController: HostControllerClient;
   private readonly runtimeBroker: RuntimeBrokerClient;
   private readonly serviceTemplateRegistry: ServiceTemplateRegistry;
   private readonly imageStore: ImageReferenceStore;
@@ -134,6 +119,8 @@ export class ButlerAgentService extends EventEmitter {
   private readonly legacyNoticeStatePath: string;
   private readonly callbackStatePath: string;
   private readonly refreshRuntimeInventory: (() => Promise<void>) | null;
+  private readonly manorRestartRequests: ManorRestartRequestState;
+  private readonly memoryScheduler: MemoryUpdateScheduler | null;
   private modelRegistry: ModelRegistry | null = null;
   private session: AgentSession | null = null;
   private auth: ButlerAuthStatus = { mode: "none", loggedIn: false, validationError: null, lastValidatedAt: null };
@@ -174,10 +161,10 @@ export class ButlerAgentService extends EventEmitter {
     lastAborted: false,
     lastError: null
   };
-
   constructor(options: {
     store: ButlerStateStore;
     codexClient: CodexAppServerClient;
+    hostController: HostControllerClient;
     runtimeBroker: RuntimeBrokerClient;
     serviceTemplateRegistry: ServiceTemplateRegistry;
     imageStore: ImageReferenceStore;
@@ -188,10 +175,12 @@ export class ButlerAgentService extends EventEmitter {
     sessionDir: string;
     artifactsDir: string;
     refreshRuntimeInventory?: () => Promise<void>;
+    memoryScheduler?: MemoryUpdateScheduler | null;
   }) {
     super();
     this.store = options.store;
     this.codexClient = options.codexClient;
+    this.hostController = options.hostController;
     this.runtimeBroker = options.runtimeBroker;
     this.serviceTemplateRegistry = options.serviceTemplateRegistry;
     this.imageStore = options.imageStore;
@@ -202,13 +191,17 @@ export class ButlerAgentService extends EventEmitter {
     this.sessionDir = options.sessionDir;
     this.artifactsDir = options.artifactsDir;
     this.refreshRuntimeInventory = options.refreshRuntimeInventory ?? null;
+    this.memoryScheduler = options.memoryScheduler ?? null;
     this.operatorMessageStatePath = path.join(this.sessionDir, "operator-messages.json");
     this.activitySummaryStatePath = path.join(this.sessionDir, "activity-summaries.json");
     this.legacyNoticeStatePath = path.join(this.sessionDir, "notices.json");
     this.callbackStatePath = path.join(this.sessionDir, "chat-callbacks.json");
+    this.manorRestartRequests = new ManorRestartRequestState(path.join(this.sessionDir, "manor-restart-requests.json"), this.hostController, (error) => {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.emit("change");
+    }, () => this.emit("change"));
     this.toolCatalog = this.buildToolCatalog();
   }
-
   private async refreshRuntimeInventoryIfAvailable(): Promise<string | null> {
     if (!this.refreshRuntimeInventory) return null;
     try {
@@ -218,7 +211,6 @@ export class ButlerAgentService extends EventEmitter {
       return error instanceof Error ? error.message : String(error);
     }
   }
-
   private async loadOperatorMessageState(): Promise<void> {
     try {
       const raw = await fs.readFile(this.operatorMessageStatePath, "utf8");
@@ -226,24 +218,23 @@ export class ButlerAgentService extends EventEmitter {
       if (!Array.isArray(parsed)) {
         return;
       }
-
       this.operatorMessages.splice(0, this.operatorMessages.length);
       for (const item of parsed) {
         if (!item || typeof item !== "object") {
           continue;
         }
-
         const id = typeof item.id === "string" ? item.id : null;
         const role = typeof item.role === "string" ? item.role : null;
-        const text = typeof item.text === "string" ? item.text : null;
+        const text = typeof item.text === "string" ? stripElapsedTaskTimeFooter(item.text) : null;
         const at = typeof item.at === "number" && Number.isFinite(item.at) ? item.at : null;
+        const taskDurationMs = typeof item.taskDurationMs === "number" && Number.isFinite(item.taskDurationMs) ? item.taskDurationMs : null;
         const kind = item.kind === "message" || typeof item.kind !== "string" ? "message" : null;
 
         if (!id || !role || !text || !kind) {
           continue;
         }
 
-        this.operatorMessages.push({ id, role, text, at, kind });
+        this.operatorMessages.push({ id, role, text, at, taskDurationMs, kind });
       }
 
       this.operatorMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
@@ -275,14 +266,15 @@ export class ButlerAgentService extends EventEmitter {
 
         const id = typeof item.id === "string" ? item.id : null;
         const role = typeof item.role === "string" ? item.role : null;
-        const text = typeof item.text === "string" ? item.text : null;
+        const text = typeof item.text === "string" ? stripElapsedTaskTimeFooter(item.text) : null;
         const at = typeof item.at === "number" && Number.isFinite(item.at) ? item.at : null;
+        const taskDurationMs = typeof item.taskDurationMs === "number" && Number.isFinite(item.taskDurationMs) ? item.taskDurationMs : null;
 
         if (!id || !role || !text) {
           continue;
         }
 
-        this.operatorMessages.push({ id, role, text, at, kind: "message" });
+        this.operatorMessages.push({ id, role, text, at, taskDurationMs, kind: "message" });
       }
 
       this.operatorMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
@@ -299,6 +291,7 @@ export class ButlerAgentService extends EventEmitter {
   private async loadCallbackState(): Promise<void> {
     try {
       const raw = await fs.readFile(this.callbackStatePath, "utf8");
+      if (!raw.trim()) return;
       const parsed = JSON.parse(raw) as {
         callbackRecords?: PendingChatCallback[];
         pendingCallbacks?: PendingChatCallback[];
@@ -387,9 +380,7 @@ export class ButlerAgentService extends EventEmitter {
         }
       }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
     }
   }
 
@@ -432,9 +423,9 @@ export class ButlerAgentService extends EventEmitter {
     );
   }
 
-  async clearChat(): Promise<void> { this.operatorMessages.splice(0, this.operatorMessages.length); this.activityTurns.splice(0, this.activityTurns.length); this.activitySummaryTurns.splice(0, this.activitySummaryTurns.length); this.activeActivityTurnId = null; await Promise.all([this.saveOperatorMessageState(), this.saveActivitySummaryState()]); clearButlerSessionChat(this.session); this.lastError = null; this.emit("change"); }
+  async clearChat(): Promise<void> { await this.memoryScheduler?.beforeButlerChatClear([...this.operatorMessages]); this.operatorMessages.splice(0, this.operatorMessages.length); this.activityTurns.splice(0, this.activityTurns.length); this.activitySummaryTurns.splice(0, this.activitySummaryTurns.length); this.activeActivityTurnId = null; await Promise.all([this.saveOperatorMessageState(), this.saveActivitySummaryState()]); clearButlerSessionChat(this.session); this.lastError = null; this.emit("change"); }
 
-  async deleteChatFromMessage(messageId: string): Promise<void> { const deleteFrom = deleteButlerSessionChatFrom(this.session, messageId); keepOperatorMessagesBefore(this.operatorMessages, deleteFrom); const prunedActivity = keepButlerActivityBefore(this as unknown as ButlerAgentSessionAccess, deleteFrom); await Promise.all([this.saveOperatorMessageState(), ...(prunedActivity ? [this.saveActivitySummaryState()] : [])]); this.lastError = null; this.emit("change"); }
+  async deleteChatFromMessage(messageId: string): Promise<void> { const deletePoint = locateButlerSessionDeletePoint(this.session, messageId); await this.memoryScheduler?.beforeButlerChatDeleteFrom({ messageId, deleteFromTimestamp: deletePoint.targetAt, messages: [...this.operatorMessages] }); const deleteFrom = deleteButlerSessionChatFromLocated(this.session, deletePoint); keepOperatorMessagesBefore(this.operatorMessages, deleteFrom); const prunedActivity = keepButlerActivityBefore(this as unknown as ButlerAgentSessionAccess, deleteFrom); await Promise.all([this.saveOperatorMessageState(), ...(prunedActivity ? [this.saveActivitySummaryState()] : [])]); this.lastError = null; this.emit("change"); }
 
   async notifyDirectCodexMessage(input: DirectCodexMessagePingInput & { threadId: string }): Promise<void> { await notifyDirectCodexMessage(this as unknown as DirectCodexMessageAccess, input); }
 
@@ -502,7 +493,14 @@ export class ButlerAgentService extends EventEmitter {
       recordGatedCloseout(this.store, threadId, closeoutBlocker);
       throw new Error(closeoutBlocker);
     }
-    upsertOperatorMessage(this.operatorMessages, messageId, text.trim(), at);
+    const taskDurationMs = elapsedTaskDurationMs(callback.requestedAt, at);
+    upsertOperatorMessage(
+      this.operatorMessages,
+      messageId,
+      buildOperatorCloseoutText({ store: this.store, thread, workerReport: relevantWorkerReport, text }),
+      at,
+      taskDurationMs
+    );
     this.noteThreadFocus(threadId, "closeout");
     this.deliveredCloseoutIds.add(closeoutId);
     applyPostedCloseout(callback, {
@@ -674,6 +672,7 @@ export class ButlerAgentService extends EventEmitter {
     await this.loadOperatorMessageState();
     await this.loadActivitySummaryState();
     await this.loadCallbackState();
+    await this.manorRestartRequests.load();
     this.auth = await readButlerAuthStatus(this.piAuthPath);
     this.codexAuth = await readCodexAuthStatus(this.codexAuthPath);
     this.modelRegistry = ModelRegistry.inMemory(AuthStorage.create(this.piAuthPath));
@@ -692,6 +691,7 @@ export class ButlerAgentService extends EventEmitter {
   private async refreshExternalStatus(): Promise<void> {
     const nextAuth = await readButlerAuthStatus(this.piAuthPath);
     const nextCodexAuth = await readCodexAuthStatus(this.codexAuthPath);
+    const clearedStaleAuthError = nextAuth.loggedIn && isButlerAuthRecoveryError(this.lastError);
     const authChanged =
       nextAuth.mode !== this.auth.mode ||
       nextAuth.loggedIn !== this.auth.loggedIn ||
@@ -710,6 +710,9 @@ export class ButlerAgentService extends EventEmitter {
       this.modelRegistry = ModelRegistry.inMemory(AuthStorage.create(this.piAuthPath));
       await this.createOrRefreshSession();
     }
+    if (clearedStaleAuthError) {
+      this.lastError = null;
+    }
     this.codexAuth = nextCodexAuth;
 
     const nextOnboarding = await buildOnboardingView({
@@ -718,7 +721,7 @@ export class ButlerAgentService extends EventEmitter {
       codexConfigDir: this.codexConfigDir
     });
 
-    if (JSON.stringify(nextOnboarding) !== JSON.stringify(this.onboarding) || authChanged) {
+    if (JSON.stringify(nextOnboarding) !== JSON.stringify(this.onboarding) || authChanged || clearedStaleAuthError) {
       this.onboarding = nextOnboarding;
       this.emit("change");
     }
@@ -803,52 +806,18 @@ export class ButlerAgentService extends EventEmitter {
     return `Butler has reached the supervision limit for job ${threadId}. Used ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns} Butler turns. Raise the limit on that thread before asking Butler to steer it again.`;
   }
 
-  private getOperatorCloseoutBlocker(threadId: string): string | null {
-    return getCloseoutBlocker(this.store, threadId);
-  }
+  private getOperatorCloseoutBlocker(threadId: string): string | null { return getCloseoutBlocker(this.store, threadId); }
 
-  private async buildDelegationDeveloperInstructions(
-    workspace: { cwd: string; branchName: string | null },
-    task: string
-  ): Promise<string> {
-    const repoBootstrapTask = isSharedShellRepoBootstrapTask(task);
-    const managedWorktreeTask = taskRequiresManagedWorktree(task);
+  get pendingManorRestartRequest(): AppSnapshot["butler"]["pendingManorRestartRequest"] { return this.manorRestartRequests.pendingRequest; }
+  get authorizedManorRestartRequest(): AppSnapshot["butler"]["authorizedManorRestartRequest"] { return this.manorRestartRequests.authorizedRequest; }
+  requestManorRestartAuthorization(input: Parameters<ManorRestartRequestState["request"]>[0]): NonNullable<AppSnapshot["butler"]["pendingManorRestartRequest"]> { return this.manorRestartRequests.request(input); }
+  authorizeManorRestartRequest(requestId: string): NonNullable<AppSnapshot["butler"]["authorizedManorRestartRequest"]> { return this.manorRestartRequests.authorize(requestId); }
+  dismissManorRestartRequest(requestId: string): void { this.manorRestartRequests.dismiss(requestId); }
+  async startAuthorizedManorRestart(requestId: string) { return this.manorRestartRequests.start(requestId); }
+  async startManorRestart(input: { target: "current" | "latest"; update: boolean; includeDesktop?: boolean }) { return (await this.hostController.restart({ confirmation: "restart Manor", target: input.target, update: input.update, ...(input.includeDesktop === true ? { includeDesktop: true } : {}) })).run; }
+  async getManorRestartStatus() { return this.hostController.getStatus(); }
 
-    return [
-      "This thread was started by Butler.",
-      "You are the worker inside Manor. Butler is the supervisor.",
-      "Execute the requested task directly instead of explaining how the operator could do it manually.",
-      "The task prompt includes a MANOR JOB BRIEF with the thread id, workspace, branch, and harness binding. Use that brief if any older path or branch hint conflicts with it.",
-      "Once you are inside a repository with its own AGENTS guidance, follow that repo-specific guidance over generic Manor defaults.",
-      `Work inside ${workspace.cwd} unless the task explicitly requires a deeper subdirectory.`,
-      workspace.branchName
-        ? `Stay on branch ${workspace.branchName}. Do not switch back to main or share this branch with another task.`
-        : repoBootstrapTask
-          ? "For repository bootstrap work in /repos, clone first in Codex-shell. After the repo exists, create the requested butler/ branch inside that repo."
-          : managedWorktreeTask
-            ? "Create or reuse the explicitly requested isolated branch or worktree before you make changes."
-            : "Stay on the existing checkout. Do not create a branch or managed worktree unless the operator explicitly asked for one.",
-      "Use Codex-shell for repository, git, and code-editing work.",
-      "When the task needs a running app, disposable dependency, browser interaction, or durable proof, use manor-harness and choose the simplest working path.",
-      "Browser-use sessions already record video, tracing, a ready screenshot, a final screenshot, and per-action screenshots by default. Use them when the task asks for browser proof. Use file proof when a durable file, PDF, Office file, archive, report, export, or log is the simplest evidence.",
-      "Do not wait for Manor to infer project commands. If the project needs install, run, test, or bootstrap commands, choose and run them explicitly.",
-      "Keep visible Codex chatter useful: post brief progress notes before major phases, after meaningful findings, and before long-running verification.",
-      "Do not bury the thread in tool calls only. If you are about to run several commands or inspect several files, say what you are doing and what you learned afterward.",
-      "Prefer simple execution over ceremony. Keep progress notes concise and avoid restating obvious plans.",
-      "Use only the harness actions exposed through `manor-harness`.",
-      "Read memory with `manor-harness memory search --query \"<text>\"` before acting when the task is a follow-up, references prior work, asks what happened before, depends on project conventions, needs unresolved outcomes, repeats a known project pattern, or requires attribution before saying who did what.",
-      "Skip memory reads for clearly self-contained mechanical work where current files and the job brief are enough. Add `--provenance` only for source, trigger, who, when, timestamp, provenance, or attribution questions.",
-      "Treat the job brief acceptance points as the supervisor contract. Complete and verify each point before reporting completed.",
-      "When reporting completion, include brief evidence for each acceptance point in the supervisor report details. Reference the relevant screenshot, video, trace, browser proof, desktop proof, log, or file proof when available.",
-      "Do not claim an acceptance point is complete unless you have checked it. If evidence is missing or a point is incomplete, report blocked or continue the work.",
-      "Write memory only when it will help a future worker continue or avoid repeating investigation. Use `manor-harness memory checkpoint` for durable progress, `memory decision` for accepted choices, and `memory note` for reusable gotchas, constraints, or facts. Do not write routine progress, temporary observations, command transcripts, or facts already obvious from committed code.",
-      "If the job produced reusable decisions, gotchas, PR verdicts, repo state changes, or project facts, include them plainly in the supervisor report details so Butler's separate memory-review pass can propose durable candidates.",
-      "When you complete meaningful work, record a supervisor report before your final reply with `manor-harness report --status completed --summary \"<concise outcome>\" --details \"<brief oversight note with the key fact, risk, or next step>\"`.",
-      "If you are blocked or need operator attention, record it before your reply with `manor-harness report --status blocked --summary \"<what is blocked>\" --details \"<what you need, what failed, or the next recommended action>\"`.",
-      "Supervisor reports should help Butler oversee the job. Keep `summary` short and outcome-first, and use `details` for the extra context Butler should surface without dumping the whole conversation.",
-      "Keep the thread focused on the delegated task and report concise progress and outcome."
-    ].join("\n");
-  }
+  private async buildDelegationDeveloperInstructions(workspace: { cwd: string; branchName: string | null }, task: string): Promise<string> { return buildDelegationDeveloperInstructions(workspace, task); }
 
   private buildSupervisionSmokeTask(totalFollowUps: number): string {
     return [
@@ -1142,10 +1111,16 @@ export class ButlerAgentService extends EventEmitter {
       `branch: ${options.workspace.branchName ?? "(existing workspace)"}`,
       `harness_binding: manor-harness --thread ${options.threadId}`,
       `proof_expectation: ${describeProofExpectation(contract.proofExpectation)}`,
+      `task_category: ${contract.taskCategory}`,
+      `inferred_work_depth: ${contract.inferredWorkDepth}`,
     ];
 
     for (const point of contract.acceptancePoints) {
       lines.push(`acceptance_point: ${point}`);
+    }
+
+    for (const row of contract.verificationMatrix) {
+      lines.push(`verification_row: ${row.id}|${row.acceptancePointId ?? ""}|${row.checkKinds.join(",")}|${row.text}`);
     }
 
     if (contract.operatorGoal) {
@@ -1181,7 +1156,7 @@ export class ButlerAgentService extends EventEmitter {
 
     const threadStacks = this.store
       .listStackLeases()
-      .filter((stack) => stack.status !== "stopped" && (!threadId || stack.threadId === threadId || !stack.threadId));
+      .filter((stack) => stack.status !== "stopped" && (!threadId || stack.threadId === threadId || !stack.threadId || stack.pinned));
     const stack =
       threadStacks.find((entry) => entry.id === stackId) ??
       (threadStacks.filter((entry) => entry.title === stackId).length === 1
@@ -1196,7 +1171,7 @@ export class ButlerAgentService extends EventEmitter {
       throw new Error(`Unknown stack: ${stackId}`);
     }
 
-    if (threadId && stack.threadId && stack.threadId !== threadId) {
+    if (threadId && stack.threadId && stack.threadId !== threadId && !stack.pinned) {
       throw new Error(`Stack ${stackId} belongs to a different job`);
     }
 
@@ -1210,7 +1185,7 @@ export class ButlerAgentService extends EventEmitter {
 
     const threadPreviews = this.store
       .listPreviewLeases()
-      .filter((preview) => preview.status !== "stopped" && (!threadId || preview.threadId === threadId || !preview.threadId));
+      .filter((preview) => preview.status !== "stopped" && (!threadId || preview.threadId === threadId || !preview.threadId || preview.pinned));
     const directIdMatch = threadPreviews.find((entry) => entry.id === previewSelector);
     if (directIdMatch) {
       return directIdMatch;
@@ -1318,7 +1293,8 @@ export class ButlerAgentService extends EventEmitter {
   private toResolvedProof(
     subject: Pick<PreviewLeaseView, "id" | "threadId" | "projectId" | "projectLabel" | "title" | "stackId">,
     verification: PreviewVerificationView,
-    runId?: string
+    runId?: string,
+    proofRecordId?: string | null
   ): ResolvedPreviewProof {
     const decoratedVerification = decoratePreviewVerification(verification);
     if (runId && decoratedVerification.runId !== runId.trim()) {
@@ -1330,6 +1306,7 @@ export class ButlerAgentService extends EventEmitter {
     const availableScreenshots = artifacts.filter((artifact) => artifact.kind === "screenshot");
 
     return {
+      proofRecordId: proofRecordId ?? null,
       preview: subject,
       verification: decoratedVerification,
       primaryArtifact: availableScreenshots[0] ?? artifacts[0]!,
@@ -1346,7 +1323,9 @@ export class ButlerAgentService extends EventEmitter {
     const preview = params.leaseId ? this.requireValidatedPreview(params.leaseId, params.threadId?.trim() || null) : null;
 
     if (preview?.lastVerification) {
-      return this.toResolvedProof(preview, preview.lastVerification, params.runId);
+      const latestProof = this.store.getLatestPreviewProofForPreview(preview.id);
+      const proofRecordId = latestProof?.verification.runId === preview.lastVerification.runId ? latestProof.id : null;
+      return this.toResolvedProof(preview, preview.lastVerification, params.runId, proofRecordId);
     }
 
     const previewProof =
@@ -1367,14 +1346,17 @@ export class ButlerAgentService extends EventEmitter {
           stackId: previewProof.stackId
         },
         previewProof.verification,
-        params.runId
+        params.runId,
+        previewProof.id
       );
     }
 
     if (!preview && params.threadId) {
       const latestPreview = this.getLatestThreadVerificationPreview(params.threadId.trim());
       if (latestPreview.lastVerification) {
-        return this.toResolvedProof(latestPreview, latestPreview.lastVerification, params.runId);
+        const latestProof = this.store.getLatestPreviewProofForPreview(latestPreview.id);
+        const proofRecordId = latestProof?.verification.runId === latestPreview.lastVerification.runId ? latestProof.id : null;
+        return this.toResolvedProof(latestPreview, latestPreview.lastVerification, params.runId, proofRecordId);
       }
     }
 
@@ -1442,7 +1424,7 @@ export class ButlerAgentService extends EventEmitter {
 
   private buildCustomTools() {
     const toolAccess = this.getToolAccess();
-    return [...buildButlerStackPreviewTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerCodexTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
+    return [...buildButlerStackPreviewTools(toolAccess), ...buildButlerFilesystemTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerManorTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerCodexTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
   }
 
   private async createOrRefreshSession(): Promise<void> { await createOrRefreshButlerSession(this.getSessionAccess()); }
@@ -1475,6 +1457,8 @@ export class ButlerAgentService extends EventEmitter {
     if (guard.lockedThreadId && this.store.getThread(guard.lockedThreadId)) {
       this.noteThreadFocus(guard.lockedThreadId, guard.explicitThreadIds.length > 0 ? "operator_reference" : "operator_follow_up");
     }
+    const thread = guard.lockedThreadId ? this.store.getThread(guard.lockedThreadId) : undefined;
+    this.memoryScheduler?.observeOperatorMessage({ text, threadId: guard.lockedThreadId, projectId: thread?.supervisor.projectId ?? thread?.executionContract?.projectId ?? null, projectLabel: thread?.supervisor.projectLabel ?? thread?.executionContract?.projectLabel ?? null, at: Date.now() });
 
     try {
       if (guard.contextPrompt) {

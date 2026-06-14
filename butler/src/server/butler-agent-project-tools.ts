@@ -17,6 +17,8 @@ import {
   readProjectArtifactContent
 } from "./project-artifacts-policies.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import { formatMemoryDebugTrace, formatMemoryDebugTraceList, getMemoryDebugTrace, listMemoryDebugTraces } from "./memory-debug-traces.js";
+import { buildMemoryDiagnostics, formatMemoryDiagnostics } from "./memory-diagnostics.js";
 import { formatButlerMemoryRetrieval, retrieveButlerMemory } from "./memory-retrieval.js";
 
 function hasOwnField(value: unknown, key: string): boolean {
@@ -76,6 +78,76 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
         return {
           content: [{ type: "text", text: formatButlerMemoryRetrieval(retrieval) }],
           details: { retrieval }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "memory_diagnostics",
+      label: "Memory diagnostics",
+      description: "Summarize Butler and Codex memory ingestion, synthesis, promotion candidates, accepted entries, and stale or failed memory work.",
+      promptSnippet:
+        "memory_diagnostics: use this when memory behavior looks wrong or the operator asks how many memory items were ingested, synthesized, proposed, accepted, rejected, pending, or failed. Use from/to for date-bounded checks and includeSamples for recent records.",
+      parameters: Type.Object({
+        projectId: Type.Optional(Type.String()),
+        threadId: Type.Optional(Type.String()),
+        from: Type.Optional(Type.Union([Type.String(), Type.Number()])),
+        to: Type.Optional(Type.Union([Type.String(), Type.Number()])),
+        includeSamples: Type.Optional(Type.Boolean()),
+        sampleLimit: Type.Optional(Type.Number({ minimum: 1, maximum: 50 }))
+      }),
+      uiEffects: access.getToolUiEffects("memory_diagnostics"),
+      execute: async (_toolCallId, params) => {
+        const diagnostics = buildMemoryDiagnostics(access.store, {
+          projectId: typeof params.projectId === "string" ? params.projectId : null,
+          threadId: typeof params.threadId === "string" ? params.threadId : null,
+          from: typeof params.from === "string" || typeof params.from === "number" ? params.from : null,
+          to: typeof params.to === "string" || typeof params.to === "number" ? params.to : null,
+          includeSamples: params.includeSamples === true,
+          sampleLimit: typeof params.sampleLimit === "number" ? params.sampleLimit : null
+        });
+        return {
+          content: [{ type: "text", text: formatMemoryDiagnostics(diagnostics) }],
+          details: { diagnostics }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "memory_debug_trace",
+      label: "Memory debug trace",
+      description: "List or inspect detailed memory review and synthesis traces, including prompts, raw outputs, dropped candidates, dedupe decisions, persisted IDs, and errors.",
+      promptSnippet:
+        "memory_debug_trace: use this for full memory debugging when counts are not enough. Pass traceId to inspect one run; otherwise filter by kind, status, projectId, threadId, from, or to.",
+      parameters: Type.Object({
+        traceId: Type.Optional(Type.String()),
+        kind: Type.Optional(Type.Union([Type.Literal("review"), Type.Literal("synthesis")])),
+        status: Type.Optional(Type.Union([Type.Literal("completed"), Type.Literal("failed"), Type.Literal("skipped")])),
+        projectId: Type.Optional(Type.String()),
+        threadId: Type.Optional(Type.String()),
+        from: Type.Optional(Type.Union([Type.String(), Type.Number()])),
+        to: Type.Optional(Type.Union([Type.String(), Type.Number()])),
+        limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 }))
+      }),
+      uiEffects: access.getToolUiEffects("memory_debug_trace"),
+      execute: async (_toolCallId, params) => {
+        const traceId = typeof params.traceId === "string" && params.traceId.trim() ? params.traceId.trim() : null;
+        if (traceId) {
+          const trace = getMemoryDebugTrace(access.store, traceId);
+          return trace
+            ? { content: [{ type: "text", text: formatMemoryDebugTrace(trace) }], details: { trace } }
+            : { content: [{ type: "text", text: "No memory debug trace matched." }], details: { trace: null } };
+        }
+        const traces = listMemoryDebugTraces(access.store, {
+          kind: params.kind === "review" || params.kind === "synthesis" ? params.kind : null,
+          status: params.status === "completed" || params.status === "failed" || params.status === "skipped" ? params.status : null,
+          projectId: typeof params.projectId === "string" ? params.projectId : null,
+          threadId: typeof params.threadId === "string" ? params.threadId : null,
+          from: typeof params.from === "string" || typeof params.from === "number" ? params.from : null,
+          to: typeof params.to === "string" || typeof params.to === "number" ? params.to : null,
+          limit: typeof params.limit === "number" ? params.limit : null
+        });
+        return {
+          content: [{ type: "text", text: formatMemoryDebugTraceList(traces) }],
+          details: { traces }
         };
       }
     }),
