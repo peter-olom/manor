@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { recordMemoryDebugTrace, type MemoryDebugTraceDecision } from "./memory-debug-traces.js";
+import { isUnsupportedCodexModelError, memoryCodexModelArgs } from "./memory-codex-model.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type {
   ButlerMessageView,
@@ -624,8 +625,9 @@ export class MemoryUpdateScheduler {
     const outputPath = path.join(scratchDir, `${runId}.output.json`);
     await fs.writeFile(schemaPath, JSON.stringify(OUTPUT_SCHEMA, null, 2), "utf8");
     const effortArgs = input.config.effort ? ["--reasoning-effort", input.config.effort] : [];
-    const args = ["exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--ignore-rules", "--model", input.config.model, "--output-schema", schemaPath, "--output-last-message", outputPath, "--cd", input.cwd || "/repos", ...effortArgs, "-"];
-    try {
+    const baseArgs = ["exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--ignore-rules", "--output-schema", schemaPath, "--output-last-message", outputPath, "--cd", input.cwd || "/repos", ...effortArgs];
+    const run = async (model: string | null): Promise<void> => {
+      const args = [...baseArgs, ...memoryCodexModelArgs(model), "-"];
       await new Promise<void>((resolve, reject) => {
         const child = spawn("codex", args, { env: { ...process.env, CODEX_HOME: this.codexHomeDir, NO_COLOR: "1" }, stdio: ["pipe", "pipe", "pipe"] });
         let stderr = "";
@@ -641,6 +643,19 @@ export class MemoryUpdateScheduler {
         });
         child.stdin.end(input.prompt);
       });
+    };
+    try {
+      if (input.config.model) {
+        try {
+          await run(input.config.model);
+        } catch (error) {
+          if (!isUnsupportedCodexModelError(error)) throw error;
+          await fs.rm(outputPath, { force: true }).catch(() => {});
+          await run(null);
+        }
+      } else {
+        await run(null);
+      }
       const rawText = await fs.readFile(outputPath, "utf8");
       const parsed = JSON.parse(rawText) as SynthesisOutput;
       return parsed && typeof parsed === "object" ? { ...parsed, rawOutput: parsed, rawText } : {};

@@ -933,7 +933,7 @@ export interface MemoryGraphRetrievalView {
 export interface MemorySynthesisConfig {
   enabled: boolean;
   provider: "codex_exec";
-  model: string;
+  model: string | null;
   effort: "low" | "medium" | "high" | null;
   timeoutMs: number;
   maxInputChars: number;

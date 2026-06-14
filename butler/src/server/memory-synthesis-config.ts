@@ -1,3 +1,4 @@
+import { normalizeMemoryCodexModel } from "./memory-codex-model.js";
 import type { MemorySynthesisConfig } from "./types.js";
 
 function boolFromEnv(value: string | undefined, fallback: boolean): boolean {
@@ -15,13 +16,15 @@ function effortFromEnv(value: string | undefined): MemorySynthesisConfig["effort
   return value === "low" || value === "medium" || value === "high" ? value : null;
 }
 
+export function resolveMemorySynthesisModel(env: NodeJS.ProcessEnv = process.env): string | null {
+  return normalizeMemoryCodexModel(env.MANOR_MEMORY_SYNTHESIS_MODEL ?? env.MANOR_MEMORY_EXEC_MODEL ?? env.MANOR_MEMORY_REVIEW_MODEL);
+}
+
 export function readMemorySynthesisConfig(env: NodeJS.ProcessEnv = process.env): MemorySynthesisConfig {
-  const legacyModel = env.MANOR_MEMORY_REVIEW_MODEL?.trim();
-  const configuredModel = env.MANOR_MEMORY_SYNTHESIS_MODEL?.trim();
   return {
     enabled: boolFromEnv(env.MANOR_MEMORY_SYNTHESIS_ENABLED ?? env.MANOR_MEMORY_REVIEW_ENABLED, true),
     provider: "codex_exec",
-    model: configuredModel || legacyModel || "5.4 mini",
+    model: resolveMemorySynthesisModel(env),
     effort: effortFromEnv(env.MANOR_MEMORY_SYNTHESIS_EFFORT),
     timeoutMs: intFromEnv(env.MANOR_MEMORY_SYNTHESIS_TIMEOUT_MS, 90_000, 5_000, 10 * 60_000),
     maxInputChars: intFromEnv(env.MANOR_MEMORY_SYNTHESIS_MAX_INPUT_CHARS, 16_000, 2_000, 200_000),

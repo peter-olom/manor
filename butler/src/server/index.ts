@@ -13,6 +13,7 @@ import { CodexHarnessService } from "./codex-harness.js";
 import { FileReferenceStore, MAX_FILE_BYTES } from "./file-store.js";
 import { HostControllerClient } from "./host-controller-client.js";
 import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
+import { normalizeMemoryCodexModelEnv } from "./memory-codex-model.js";
 import { getMemoryDebugTrace, listMemoryDebugTraces } from "./memory-debug-traces.js";
 import { buildMemoryDiagnostics } from "./memory-diagnostics.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
@@ -50,6 +51,8 @@ import {
 import { ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { ButlerStateStore } from "./state-store.js";
 import { registerThreadArtifactRoutes } from "./thread-artifact-routes.js";
+
+normalizeMemoryCodexModelEnv(process.env);
 
 const port = Number(process.env.BUTLER_PORT ?? "8080");
 const codexBaseUrl = process.env.CODEX_BASE_URL ?? "ws://codex-box:8080";
@@ -188,7 +191,7 @@ const hostController = new HostControllerClient(hostControllerUrl, hostControlle
 let runtimeAccess!: RuntimeServerAccess;
 let sseHub!: ButlerSseHub;
 const memorySynthesisConfig = readMemorySynthesisConfig();
-const memoryReview = new CodexExecMemoryReviewService({ store, stateDir, codexHomeDir, enabled: memorySynthesisConfig.enabled, model: memorySynthesisConfig.model, timeoutMs: memorySynthesisConfig.timeoutMs });
+const memoryReview = new CodexExecMemoryReviewService({ store, stateDir, codexHomeDir, enabled: memorySynthesisConfig.enabled, model: memorySynthesisConfig.model ?? undefined, timeoutMs: memorySynthesisConfig.timeoutMs });
 const memoryScheduler = new MemoryUpdateScheduler({ store, config: memorySynthesisConfig, stateDir, codexHomeDir });
 store.setMemoryUpdateObserver(memoryScheduler);
 const codexHarness = new CodexHarnessService({

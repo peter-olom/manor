@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { isUnsupportedCodexModelError, memoryCodexModelArgs, normalizeMemoryCodexModel } from "./memory-codex-model.js";
 import { recordMemoryDebugTrace, type MemoryDebugTraceDecision } from "./memory-debug-traces.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { CodexWorkerReportView, JobMemoryEntryKind } from "./types.js";
@@ -161,7 +162,7 @@ export class CodexExecMemoryReviewService {
   private readonly codexHomeDir: string;
   private readonly enabled: boolean;
   private readonly timeoutMs: number;
-  private readonly model: string;
+  private readonly model: string | null;
   private readonly runner: MemoryReviewRunner;
   private readonly inFlightReports = new Set<string>();
   private readonly queuedReports = new Map<string, CodexWorkerReportView>();
@@ -180,7 +181,7 @@ export class CodexExecMemoryReviewService {
     this.codexHomeDir = options.codexHomeDir;
     this.enabled = options.enabled ?? true;
     this.timeoutMs = options.timeoutMs ?? 90_000;
-    this.model = options.model?.trim() || process.env.MANOR_MEMORY_SYNTHESIS_MODEL?.trim() || process.env.MANOR_MEMORY_REVIEW_MODEL?.trim() || "5.4 mini";
+    this.model = normalizeMemoryCodexModel(options.model ?? process.env.MANOR_MEMORY_SYNTHESIS_MODEL ?? process.env.MANOR_MEMORY_REVIEW_MODEL);
     this.runner = options.runner ?? ((input) => this.runCodexExec(input));
   }
 
@@ -499,8 +500,7 @@ export class CodexExecMemoryReviewService {
     const outputPath = path.join(scratchDir, `${runId}.output.json`);
     await fs.writeFile(schemaPath, JSON.stringify(OUTPUT_SCHEMA, null, 2), "utf8");
 
-    const modelArgs = this.model ? ["--model", this.model] : [];
-    const args = [
+    const baseArgs = [
       "exec",
       "--ephemeral",
       "--sandbox",
@@ -512,49 +512,64 @@ export class CodexExecMemoryReviewService {
       "--output-last-message",
       outputPath,
       "--cd",
-      input.cwd,
-      ...modelArgs,
-      "-"
+      input.cwd
     ];
 
     try {
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn("codex", args, {
-          env: {
-            ...process.env,
-            CODEX_HOME: this.codexHomeDir,
-            NO_COLOR: "1"
-          },
-          stdio: ["pipe", "pipe", "pipe"]
-        });
-        let stderr = "";
-        let stdout = "";
-        const timeout = setTimeout(() => {
-          child.kill("SIGTERM");
-          reject(new Error("codex exec memory review timed out"));
-        }, input.timeoutMs);
+      const run = async (model: string | null): Promise<void> => {
+        const args = [...baseArgs, ...memoryCodexModelArgs(model), "-"];
+        await new Promise<void>((resolve, reject) => {
+          const child = spawn("codex", args, {
+            env: {
+              ...process.env,
+              CODEX_HOME: this.codexHomeDir,
+              NO_COLOR: "1"
+            },
+            stdio: ["pipe", "pipe", "pipe"]
+          });
+          let stderr = "";
+          let stdout = "";
+          const timeout = setTimeout(() => {
+            child.kill("SIGTERM");
+            reject(new Error("codex exec memory review timed out"));
+          }, input.timeoutMs);
 
-        child.stdout.on("data", (chunk: Buffer) => {
-          stdout = `${stdout}${chunk.toString("utf8")}`.slice(-16_000);
+          child.stdout.on("data", (chunk: Buffer) => {
+            stdout = `${stdout}${chunk.toString("utf8")}`.slice(-16_000);
+          });
+          child.stderr.on("data", (chunk: Buffer) => {
+            stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16_000);
+          });
+          child.on("error", (error) => {
+            clearTimeout(timeout);
+            reject(error);
+          });
+          child.on("close", (code) => {
+            clearTimeout(timeout);
+            if (code === 0) {
+              resolve();
+              return;
+            }
+            reject(new Error(`codex exec exited with ${code}: ${stderr || stdout}`.trim()));
+          });
+
+          child.stdin.end(input.prompt);
         });
-        child.stderr.on("data", (chunk: Buffer) => {
-          stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16_000);
-        });
-        child.on("error", (error) => {
-          clearTimeout(timeout);
-          reject(error);
-        });
-        child.on("close", (code) => {
-          clearTimeout(timeout);
-          if (code === 0) {
-            resolve();
-            return;
+      };
+
+      if (this.model) {
+        try {
+          await run(this.model);
+        } catch (error) {
+          if (!isUnsupportedCodexModelError(error)) {
+            throw error;
           }
-          reject(new Error(`codex exec exited with ${code}: ${stderr || stdout}`.trim()));
-        });
-
-        child.stdin.end(input.prompt);
-      });
+          await fs.rm(outputPath, { force: true }).catch(() => {});
+          await run(null);
+        }
+      } else {
+        await run(null);
+      }
 
       const output = await fs.readFile(outputPath, "utf8");
       return parseReviewOutput(output);
