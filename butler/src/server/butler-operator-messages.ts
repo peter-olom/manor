@@ -14,12 +14,15 @@ import type { ButlerMessageView } from "./types.js";
 type OperatorMessageOptions = {
   role?: string;
   displayText?: string | null;
+  normalize?: boolean;
 };
 
 const MAX_OPERATOR_MESSAGES = SNAPSHOT_MESSAGE_TAIL_LIMIT;
 const RECENT_USER_ONLY_GROUP_MS = 30 * 60 * 1000;
 const PROVIDER_DUPLICATE_WINDOW_MS = 2_000;
 const STORED_REFERENCE_PATTERN = /\n\nStored reference (?:files|images):/i;
+const CALLBACK_THREAD_PATTERN = /^callback(?:-fallback)?-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):/i;
+const DIRECT_OPERATOR_THREAD_PATTERN = /^operator-direct-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-/i;
 
 function isOperatorUserRole(role: string | null | undefined): boolean {
   return role === "user" || role === "user-with-attachments";
@@ -31,6 +34,14 @@ function isOperatorUserMessage(message: ButlerMessageView): boolean {
 
 function isProviderBackedAssistantMessage(message: ButlerMessageView): boolean {
   return message.role === "assistant" && message.id.startsWith("operator-session-");
+}
+
+export function extractOperatorCallbackThreadId(id: string): string | null {
+  return id.match(CALLBACK_THREAD_PATTERN)?.[1]?.toLowerCase() ?? null;
+}
+
+function extractDirectOperatorThreadId(id: string): string | null {
+  return id.match(DIRECT_OPERATOR_THREAD_PATTERN)?.[1]?.toLowerCase() ?? null;
 }
 
 function isPersistableAssistantText(text: string): boolean {
@@ -116,8 +127,57 @@ function capOversizedGroup(group: ButlerMessageView[]): ButlerMessageView[] {
   return group.slice(-MAX_OPERATOR_MESSAGES);
 }
 
+function alignCallbacksToDirectOperatorMessages(messages: ButlerMessageView[]): boolean {
+  const directAnchorsByThreadId = new Map<string, ButlerMessageView[]>();
+  for (const message of messages) {
+    const threadId = extractDirectOperatorThreadId(message.id);
+    if (!threadId || !isOperatorUserMessage(message)) {
+      continue;
+    }
+
+    const anchors = directAnchorsByThreadId.get(threadId) ?? [];
+    anchors.push(message);
+    directAnchorsByThreadId.set(threadId, anchors);
+  }
+
+  for (const anchors of directAnchorsByThreadId.values()) {
+    anchors.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
+  }
+
+  const callbackOffsetsByAnchor = new Map<string, number>();
+  let changed = false;
+  const callbacks = messages
+    .filter((message) => Boolean(extractOperatorCallbackThreadId(message.id)))
+    .sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
+
+  for (const callback of callbacks) {
+    const threadId = extractOperatorCallbackThreadId(callback.id);
+    if (!threadId) {
+      continue;
+    }
+
+    const anchors = directAnchorsByThreadId.get(threadId) ?? [];
+    const callbackAt = callback.at ?? 0;
+    const anchor = anchors.filter((entry) => (entry.at ?? 0) <= callbackAt).at(-1);
+    if (!anchor || anchor.at === null) {
+      continue;
+    }
+
+    const offset = (callbackOffsetsByAnchor.get(anchor.id) ?? 0) + 1;
+    callbackOffsetsByAnchor.set(anchor.id, offset);
+    const nextAt = anchor.at + offset;
+    if (callback.at !== null && callback.at > nextAt) {
+      callback.at = nextAt;
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
 export function normalizeOperatorMessages(messages: ButlerMessageView[]): boolean {
-  const beforeIds = messages.map((message) => message.id).join("\n");
+  const beforeSignature = messages.map((message) => `${message.id}:${message.at ?? ""}`).join("\n");
+  alignCallbacksToDirectOperatorMessages(messages);
   messages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
 
   const groups = groupOperatorMessages(messages);
@@ -154,8 +214,8 @@ export function normalizeOperatorMessages(messages: ButlerMessageView[]): boolea
   const nextMessages = keptGroups.flat();
   messages.splice(0, messages.length, ...nextMessages);
 
-  const afterIds = messages.map((message) => message.id).join("\n");
-  return beforeIds !== afterIds;
+  const afterSignature = messages.map((message) => `${message.id}:${message.at ?? ""}`).join("\n");
+  return beforeSignature !== afterSignature;
 }
 
 export function upsertOperatorMessage(messages: ButlerMessageView[], id: string, text: string, at: number, taskDurationMs: number | null = null, options: OperatorMessageOptions = {}): boolean {
@@ -188,7 +248,7 @@ export function upsertOperatorMessage(messages: ButlerMessageView[], id: string,
       kind: "message"
     });
   }
-  changed = normalizeOperatorMessages(messages) || changed;
+  if (options.normalize !== false) changed = normalizeOperatorMessages(messages) || changed;
   return changed;
 }
 

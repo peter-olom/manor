@@ -57,7 +57,7 @@ import { keepButlerActivityBefore, normalizeButlerActivitySummaryTurns } from ".
 import { applyPostedCloseout, getOperatorCloseoutBlocker as getCloseoutBlocker, idleCloseoutReview, queueCloseoutReview, recordGatedCloseout, recordPostedCloseoutEvents } from "./butler-closeout-gate.js";
 import { backfillOperatorMessagesFromSessionFiles, normalizeOperatorMessages, removeOperatorMessage, upsertOperatorMessage } from "./butler-operator-messages.js";
 import { readButlerAuthStatus, readCodexAuthStatus } from "./auth-status.js";
-import { notifyDirectCodexMessage, type DirectCodexMessageAccess, type DirectCodexMessagePingInput } from "./direct-codex-message.js";
+import { backfillDirectCodexMessagesFromSessionFiles, notifyDirectCodexMessage, type DirectCodexMessageAccess, type DirectCodexMessagePingInput } from "./direct-codex-message.js";
 import { type FileReferenceStore } from "./file-store.js";
 import { HostControllerClient } from "./host-controller-client.js";
 import { ManorRestartRequestState } from "./manor-restart-state.js";
@@ -420,9 +420,9 @@ export class ButlerAgentService extends EventEmitter {
   async deleteChatFromMessage(messageId: string): Promise<void> { const syntheticMessage = this.pendingOperatorMessages.find((message) => message.id === messageId); const deletePoint = syntheticMessage ? locateButlerSessionDeletePointBeforeTimestamp(this.session, messageId, syntheticMessage.at) : locateButlerSessionDeletePoint(this.session, messageId); await this.memoryScheduler?.beforeButlerChatDeleteFrom({ messageId, deleteFromTimestamp: deletePoint.targetAt, messages: [...this.operatorMessages] }); const deleteFrom = deleteButlerSessionChatFromLocated(this.session, deletePoint); keepOperatorMessagesBefore(this.operatorMessages, deleteFrom); keepPendingOperatorPromptsBefore(this.getSessionAccess(), deleteFrom); const prunedActivity = keepButlerActivityBefore(this as unknown as ButlerAgentSessionAccess, deleteFrom); await Promise.all([this.saveOperatorMessageState(), ...(prunedActivity ? [this.saveActivitySummaryState()] : [])]); this.lastError = null; this.emit("change"); }
 
   async notifyDirectCodexMessage(input: DirectCodexMessagePingInput & { threadId: string }): Promise<void> { await notifyDirectCodexMessage(this as unknown as DirectCodexMessageAccess, input); }
-
-  private registerPendingChatCallback(threadId: string, options?: { privateSteerText?: string | null; nextWorkerReportAction?: "review" | "reply_to_operator" }): void {
+  private registerPendingChatCallback(threadId: string, options?: { privateSteerText?: string | null; nextWorkerReportAction?: "review" | "reply_to_operator"; requestedAt?: number | null }): void {
     const now = Date.now();
+    const requestedAt = typeof options?.requestedAt === "number" && Number.isFinite(options.requestedAt) ? options.requestedAt : now;
     const existing = this.pendingChatCallbacks.get(threadId);
     const privateSteerText = typeof options?.privateSteerText === "string" && options.privateSteerText.trim() ? options.privateSteerText.trim() : null;
     const nextWorkerReportAction = options?.nextWorkerReportAction === "reply_to_operator" ? "reply_to_operator" : "review";
@@ -430,12 +430,12 @@ export class ButlerAgentService extends EventEmitter {
       threadId,
       callbackState: "waiting",
       resolutionState: null,
-      requestedAt: now,
-      lastEventAt: now,
+      requestedAt,
+      lastEventAt: requestedAt,
       lastWorkerStatusSeen: this.store.getThread(threadId)?.status ?? null,
       lastTerminalReportAt: null,
       lastPrivateSteerText: privateSteerText,
-      lastPrivateSteerAt: privateSteerText ? now : null,
+      lastPrivateSteerAt: privateSteerText ? requestedAt : null,
       nextWorkerReportAction,
       operatorCloseoutStatus: "owed",
       owesOperatorReply: true,
@@ -449,6 +449,13 @@ export class ButlerAgentService extends EventEmitter {
       ? "Butler renewed the operator closeout obligation after a private steer."
       : "Butler registered an operator closeout obligation.");
     void this.saveCallbackState();
+  }
+
+  private recordDirectCodexOperatorMessage(threadId: string, text: string, at: number = Date.now()): number {
+    if (!upsertOperatorMessage(this.operatorMessages, `operator-direct-${threadId}-${at}`, text, at, null, { role: "user" })) return at;
+    void this.saveOperatorMessageState();
+    this.emit("change");
+    return at;
   }
 
   private queueDelegationAcknowledgement(threadId: string, text: string): void {
@@ -478,14 +485,15 @@ export class ButlerAgentService extends EventEmitter {
     }
     const closeoutId = buildCloseoutId(threadId, closeoutTurnId);
     const messageId = relevantWorkerReport ? `callback-${closeoutId}` : `callback-fallback-${closeoutId}`;
-    const at = relevantWorkerReport?.updatedAt ?? thread.updatedAt;
+    const completedAt = relevantWorkerReport?.updatedAt ?? thread.updatedAt;
+    const at = Math.min(completedAt, callback.requestedAt + 1);
     const resolutionState = relevantWorkerReport ? "received_worker_callback" : "recovered_from_thread_state";
     const closeoutBlocker = getCloseoutBlocker(this.store, threadId, { thread, workerReport: relevantWorkerReport });
     if (closeoutBlocker) {
       recordGatedCloseout(this.store, threadId, closeoutBlocker);
       throw new Error(closeoutBlocker);
     }
-    const taskDurationMs = elapsedTaskDurationMs(callback.requestedAt, at);
+    const taskDurationMs = elapsedTaskDurationMs(callback.requestedAt, completedAt);
     upsertOperatorMessage(
       this.operatorMessages,
       messageId,
@@ -498,7 +506,7 @@ export class ButlerAgentService extends EventEmitter {
     applyPostedCloseout(callback, {
       resolutionState,
       threadStatus: thread.status,
-      postedAt: at,
+      postedAt: completedAt,
       workerReportUpdatedAt: relevantWorkerReport?.updatedAt ?? null
     });
     recordPostedCloseoutEvents(this.store, threadId, resolutionState);
@@ -659,7 +667,9 @@ export class ButlerAgentService extends EventEmitter {
   async start(): Promise<void> {
     await fs.mkdir(this.sessionDir, { recursive: true });
     await this.loadOperatorMessageState();
-    if (await backfillOperatorMessagesFromSessionFiles(this.operatorMessages, this.sessionDir)) await this.saveOperatorMessageState();
+    let operatorStateChanged = await backfillOperatorMessagesFromSessionFiles(this.operatorMessages, this.sessionDir);
+    operatorStateChanged = await backfillDirectCodexMessagesFromSessionFiles(this.operatorMessages, process.env.CODEX_SHARED_HOME_DIR || "/codex-home") || operatorStateChanged;
+    if (operatorStateChanged) await this.saveOperatorMessageState();
     await this.loadActivitySummaryState();
     await this.loadCallbackState();
     await this.manorRestartRequests.load();

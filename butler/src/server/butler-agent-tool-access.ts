@@ -167,7 +167,7 @@ export type ButlerAgentToolAccess = {
   queueDelegationAcknowledgement(threadId: string, text: string): void;
   registerPendingChatCallback(
     threadId: string,
-    options?: { privateSteerText?: string | null; nextWorkerReportAction?: ButlerNextWorkerReportAction }
+    options?: { privateSteerText?: string | null; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null }
   ): void;
   postOperatorJobReply(threadId: string, text: string): Promise<void>;
   getCodexAuthStatus(): ButlerAuthStatus;

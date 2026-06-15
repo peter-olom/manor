@@ -1,11 +1,11 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import { ButlerAgentService } from "../../src/server/butler-agent.js";
-import { buildDirectCodexMessagePingSummary } from "../../src/server/direct-codex-message.js";
+import { backfillDirectCodexMessagesFromSessionFiles, buildDirectCodexMessagePingSummary } from "../../src/server/direct-codex-message.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 
 async function createStore(): Promise<ButlerStateStore> {
@@ -76,6 +76,118 @@ test("direct Codex messages register Butler supervision callback", async () => {
   assert.equal(callbacks[0]?.operatorCloseoutStatus, "owed");
   assert.equal(callbacks[0]?.nextWorkerReportAction, "review");
   assert.equal(store.getThread(threadId)?.eventLog[0]?.method, "butler.direct_message.pinged");
+
+  const messages = agent.getLiveSnapshot().messages;
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]?.role, "user");
+  assert.equal(messages[0]?.text, "Continue with the operator correction.");
+});
+
+test("direct Codex transcript backfill restores visible operator anchors", async () => {
+  const codexHome = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-home-"));
+  const threadId = "019ecad3-eb87-7ea1-ac1e-85351742d80f";
+  const sessionDir = path.join(codexHome, "sessions", "2026", "06", "15");
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(
+    path.join(sessionDir, `rollout-2026-06-15T10-29-06-${threadId}.jsonl`),
+    [
+      JSON.stringify({ timestamp: "2026-06-15T10:29:08.000Z", type: "event_msg", payload: { type: "user_message", message: "MANOR JOB BRIEF hidden" } }),
+      JSON.stringify({ timestamp: "2026-06-15T13:05:43.530Z", type: "event_msg", payload: { type: "user_message", message: "Use this illustration instead" } }),
+      JSON.stringify({ timestamp: "2026-06-15T13:31:42.157Z", type: "event_msg", payload: { type: "user_message", message: "BUTLER CHECKLIST REJECTION FOLLOW-UP hidden" } })
+    ].join("\n"),
+    "utf8"
+  );
+  const messages = [{
+    id: `callback-${threadId}:turn-1`,
+    role: "assistant",
+    text: "Done",
+    at: Date.parse("2026-06-15T13:08:11.713Z"),
+    taskDurationMs: null,
+    kind: "message" as const
+  }];
+
+  const changed = await backfillDirectCodexMessagesFromSessionFiles(messages, codexHome);
+
+  assert.equal(changed, true);
+  assert.deepEqual(messages.map((message) => message.text), ["Use this illustration instead", "Done"]);
+  assert.equal(messages[1]?.at, Date.parse("2026-06-15T13:05:43.530Z") + 1);
+});
+
+test("direct Codex transcript backfill pairs callbacks by worker turn", async () => {
+  const codexHome = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-home-"));
+  const threadId = "019ecad3-eb87-7ea1-ac1e-85351742d80f";
+  const sessionDir = path.join(codexHome, "sessions", "2026", "06", "15");
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(
+    path.join(sessionDir, `rollout-2026-06-15T10-29-06-${threadId}.jsonl`),
+    [
+      JSON.stringify({ timestamp: "2026-06-15T12:00:00.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "turn-one" } }),
+      JSON.stringify({ timestamp: "2026-06-15T12:00:00.500Z", type: "event_msg", payload: { type: "user_message", message: "First direct request" } }),
+      JSON.stringify({ timestamp: "2026-06-15T13:00:00.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "turn-two" } }),
+      JSON.stringify({ timestamp: "2026-06-15T13:00:00.500Z", type: "event_msg", payload: { type: "user_message", message: "Second direct request" } })
+    ].join("\n"),
+    "utf8"
+  );
+  const messages = [
+    {
+      id: `callback-${threadId}:turn-one`,
+      role: "assistant",
+      text: "First response",
+      at: Date.parse("2026-06-15T12:02:00.000Z"),
+      taskDurationMs: null,
+      kind: "message" as const
+    },
+    {
+      id: `callback-${threadId}:turn-two`,
+      role: "assistant",
+      text: "Second response",
+      at: Date.parse("2026-06-15T12:00:00.501Z"),
+      taskDurationMs: null,
+      kind: "message" as const
+    }
+  ];
+
+  const changed = await backfillDirectCodexMessagesFromSessionFiles(messages, codexHome);
+
+  assert.equal(changed, true);
+  assert.deepEqual(messages.map((message) => message.text), [
+    "First direct request",
+    "First response",
+    "Second direct request",
+    "Second response"
+  ]);
+  assert.equal(messages[3]?.at, Date.parse("2026-06-15T13:00:00.500Z") + 1);
+});
+
+test("direct Codex transcript backfill pairs hidden follow-up callbacks to prior visible request", async () => {
+  const codexHome = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-home-"));
+  const threadId = "019ecad3-eb87-7ea1-ac1e-85351742d80f";
+  const sessionDir = path.join(codexHome, "sessions", "2026", "06", "15");
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(
+    path.join(sessionDir, `rollout-2026-06-15T10-29-06-${threadId}.jsonl`),
+    [
+      JSON.stringify({ timestamp: "2026-06-15T13:00:00.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "operator-turn" } }),
+      JSON.stringify({ timestamp: "2026-06-15T13:00:00.500Z", type: "event_msg", payload: { type: "user_message", message: "Fix the visual treatment" } }),
+      JSON.stringify({ timestamp: "2026-06-15T13:05:00.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "hidden-follow-up-turn" } }),
+      JSON.stringify({ timestamp: "2026-06-15T13:05:00.500Z", type: "event_msg", payload: { type: "user_message", message: "BUTLER CHECKLIST REJECTION FOLLOW-UP hidden" } })
+    ].join("\n"),
+    "utf8"
+  );
+  const messages = [{
+    id: `callback-${threadId}:hidden-follow-up-turn`,
+    role: "assistant",
+    text: "Hidden follow-up response",
+    at: Date.parse("2026-06-15T14:00:00.000Z"),
+    taskDurationMs: null,
+    kind: "message" as const
+  }];
+
+  const changed = await backfillDirectCodexMessagesFromSessionFiles(messages, codexHome);
+
+  assert.equal(changed, true);
+  assert.deepEqual(messages.map((message) => message.text), ["Fix the visual treatment", "Hidden follow-up response"]);
+  assert.equal(messages[1]?.at, Date.parse("2026-06-15T13:00:00.500Z") + 1);
 });
 
 test("delegated Codex instructions define memory read and write boundaries", async () => {
