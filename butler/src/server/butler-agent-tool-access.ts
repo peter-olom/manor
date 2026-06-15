@@ -189,6 +189,7 @@ export type ButlerAgentSessionAccess = {
   activitySequence: number;
   lastError: string | null;
   promptQueue: Promise<void>;
+  stopRequestSequence: number;
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;
   imageStore: ImageReferenceStore;
@@ -198,6 +199,9 @@ export type ButlerAgentSessionAccess = {
   codexConfigDir: string;
   sessionDir: string;
   operatorMessages: ButlerMessageView[];
+  pendingOperatorMessages: ButlerMessageView[];
+  pendingOperatorMessageSequence: number;
+  pendingOperatorMessageRevision: number;
   pendingChatCallbacks: Map<string, ButlerThreadCallbackView>;
   pendingManorRestartRequest: ManorRestartRequestView | null;
   authorizedManorRestartRequest: ManorRestartRequestView | null;

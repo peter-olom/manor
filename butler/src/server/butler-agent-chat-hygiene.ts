@@ -78,6 +78,13 @@ function getContextEntryAt(branch: SessionEntryLike[], messageIndex: number): Se
   return entries[messageIndex] ?? null;
 }
 
+function getEntryTimestamp(entry: SessionEntryLike): number | null {
+  return parseTimestamp(entry.message?.timestamp) ??
+    parseTimestamp(entry.message?.createdAt) ??
+    parseTimestamp(entry.message?.at) ??
+    parseTimestamp(entry.timestamp);
+}
+
 export function clearButlerSessionChat(session: AgentSession | null): void {
   if (!session) {
     return;
@@ -118,6 +125,26 @@ export function locateButlerSessionDeletePoint(session: AgentSession | null, mes
     parseTimestamp(targetMessage.createdAt) ??
     parseTimestamp(targetMessage.at) ??
     parseTimestamp(targetEntry.timestamp);
+
+  return {
+    messageId,
+    targetAt,
+    previousEntryId: previousEntry?.id ?? null
+  };
+}
+
+export function locateButlerSessionDeletePointBeforeTimestamp(session: AgentSession | null, messageId: string, targetAt: number | null): ButlerChatDeletePoint {
+  if (!session) {
+    throw new Error("Butler agent is not ready");
+  }
+  if (targetAt === null) {
+    return { messageId, targetAt, previousEntryId: null };
+  }
+
+  const branch = session.sessionManager.getBranch() as SessionEntryLike[];
+  const previousEntry = [...branch]
+    .reverse()
+    .find((entry) => appendsContextMessage(entry) && (getEntryTimestamp(entry) ?? Number.POSITIVE_INFINITY) < targetAt - 1);
 
   return {
     messageId,

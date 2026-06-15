@@ -28,9 +28,12 @@ import type {
   ButlerCompactionView,
   ButlerContextUsageView,
   ButlerLiveSnapshot,
+  ButlerMessageView,
   ButlerMessagePageView,
   ButlerThinkingLevel
 } from "./types.js";
+
+const MAX_PENDING_OPERATOR_MESSAGES = 20;
 
 export async function createOrRefreshButlerSession(access: ButlerAgentSessionAccess): Promise<void> {
   if (!access.modelRegistry) {
@@ -79,7 +82,11 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
   const runtimeMapper = new PiProviderRuntimeMapper();
   access.unsubscribeSession = access.session.subscribe((event) => {
     recordButlerActivityEvent(access, event);
-    for (const patch of runtimeMapper.map(event, access.session!)) {
+    const patches = runtimeMapper.map(event, access.session!);
+    for (const patch of patches) {
+      if (patch.kind === "item-lifecycle" && patch.itemType === "user_message" && patch.text.trim()) {
+        removeCommittedPendingOperatorPrompt(access, patch.text, patch.at);
+      }
       access.emit("butlerPatch", patch);
     }
 
@@ -309,9 +316,135 @@ export function sanitizeButlerSessionMessages(access: ButlerAgentSessionAccess):
   access.session.agent.state.messages = sanitized.messages;
 }
 
+function isUserMessage(message: ButlerMessageView): boolean {
+  return message.role === "user" || message.role === "user-with-attachments";
+}
+
+function matchesProviderBackedUserMessage(sessionMessage: ButlerMessageView, message: ButlerMessageView): boolean {
+  if (!isUserMessage(sessionMessage)) {
+    return false;
+  }
+  const messageAt = message.at ?? 0;
+  const sessionAt = sessionMessage.at ?? 0;
+  return sessionMessage.text === message.text || (sessionAt >= messageAt - 1000 && Math.abs(sessionAt - messageAt) <= 30_000);
+}
+
+function filterProviderBackedServerOperatorMessages(sessionMessages: ButlerMessageView[], messages: ButlerMessageView[]): ButlerMessageView[] {
+  const consumedSessionMessageIds = new Set<string>();
+  return messages.filter((message) => {
+    if (!isUserMessage(message) || message.pending === true) {
+      return true;
+    }
+    const providerMessage = sessionMessages.find((sessionMessage) =>
+      !consumedSessionMessageIds.has(sessionMessage.id) &&
+      matchesProviderBackedUserMessage(sessionMessage, message)
+    );
+    if (!providerMessage) {
+      return true;
+    }
+    consumedSessionMessageIds.add(providerMessage.id);
+    return false;
+  });
+}
+
+export function removeCommittedPendingOperatorPrompt(access: ButlerAgentSessionAccess, text: string, at: number): void {
+  const exactIndex = access.pendingOperatorMessages.findIndex((pending) =>
+    pending.pending === true &&
+    isUserMessage(pending) &&
+    pending.text === text &&
+    at >= (pending.at ?? 0) - 1000
+  );
+  const index = exactIndex >= 0 ? exactIndex : access.pendingOperatorMessages.findIndex((pending) =>
+    pending.pending === true &&
+    isUserMessage(pending) &&
+    at >= (pending.at ?? 0) - 1000
+  );
+  if (index >= 0) {
+    access.pendingOperatorMessages.splice(index, 1);
+    access.pendingOperatorMessageRevision += 1;
+  }
+}
+
+export function commitPendingOperatorPrompt(access: ButlerAgentSessionAccess, id: string | null | undefined): void {
+  if (!id) {
+    return;
+  }
+  const pending = access.pendingOperatorMessages.find((message) => message.id === id && message.pending === true);
+  if (!pending) {
+    return;
+  }
+  delete pending.pending;
+  access.pendingOperatorMessageRevision += 1;
+  access.emit("change");
+}
+
+export function registerPendingOperatorPrompt(access: ButlerAgentSessionAccess, text: string, displayText = text): string {
+  const at = Date.now();
+  const id = `pending-operator-${at}-${access.pendingOperatorMessageSequence++}`;
+  access.pendingOperatorMessages.push({
+    id,
+    role: "user",
+    text,
+    ...(displayText !== text ? { displayText } : {}),
+    at,
+    taskDurationMs: null,
+    kind: "message",
+    pending: true
+  });
+  if (access.pendingOperatorMessages.length > MAX_PENDING_OPERATOR_MESSAGES) {
+    access.pendingOperatorMessages.splice(0, access.pendingOperatorMessages.length - MAX_PENDING_OPERATOR_MESSAGES);
+  }
+  access.pendingOperatorMessageRevision += 1;
+  access.emit("change");
+  return id;
+}
+
+export function removePendingOperatorPrompt(access: ButlerAgentSessionAccess, id: string | null | undefined): void {
+  if (!id) {
+    return;
+  }
+  const index = access.pendingOperatorMessages.findIndex((message) => message.id === id);
+  if (index >= 0) {
+    access.pendingOperatorMessages.splice(index, 1);
+    access.pendingOperatorMessageRevision += 1;
+    access.emit("change");
+  }
+}
+
+export function clearPendingOperatorPrompts(access: ButlerAgentSessionAccess, options: { includeCommitted?: boolean } = {}): void {
+  const before = access.pendingOperatorMessages.length;
+  if (options.includeCommitted === true) {
+    access.pendingOperatorMessages.splice(0, access.pendingOperatorMessages.length);
+  } else {
+    for (let index = access.pendingOperatorMessages.length - 1; index >= 0; index -= 1) {
+      if (access.pendingOperatorMessages[index]?.pending === true) {
+        access.pendingOperatorMessages.splice(index, 1);
+      }
+    }
+  }
+  if (access.pendingOperatorMessages.length !== before) {
+    access.pendingOperatorMessageRevision += 1;
+  }
+}
+
+export function keepPendingOperatorPromptsBefore(access: ButlerAgentSessionAccess, timestamp: number | null): void {
+  if (timestamp === null) {
+    clearPendingOperatorPrompts(access, { includeCommitted: true });
+    return;
+  }
+
+  const before = access.pendingOperatorMessages.length;
+  const deleteAfter = timestamp - 1;
+  access.pendingOperatorMessages.splice(0, access.pendingOperatorMessages.length, ...access.pendingOperatorMessages.filter((entry) => (entry.at ?? 0) < deleteAfter));
+  if (access.pendingOperatorMessages.length !== before) {
+    access.pendingOperatorMessageRevision += 1;
+  }
+}
+
 export function getVisibleButlerMessages(access: ButlerAgentSessionAccess) {
   const sessionMessages = access.session ? serializeMessages(access.session) : [];
-  return collapseCallbackDuplicateMessages(mergeVisibleMessages(sessionMessages, access.operatorMessages as never[]));
+  const serverOperatorMessages = filterProviderBackedServerOperatorMessages(sessionMessages, access.pendingOperatorMessages);
+  return collapseCallbackDuplicateMessages(mergeVisibleMessages(sessionMessages, [...access.operatorMessages, ...serverOperatorMessages] as never[]));
 }
 
 export function getButlerMessagePage(
@@ -329,6 +462,7 @@ export function getButlerLiveSnapshot(access: ButlerAgentSessionAccess): ButlerL
   return {
     messages: visibleMessages.slice(Math.max(0, messageCount - SNAPSHOT_MESSAGE_TAIL_LIMIT)),
     messageCount,
+    pendingRevision: access.pendingOperatorMessageRevision,
     activityTurns: getButlerActivityTurns(access, {
       maxCompletedTurns: 4,
       maxItemsPerTurn: 10,
@@ -347,7 +481,7 @@ export function getButlerShellSnapshot(access: ButlerAgentSessionAccess): AppShe
 
   return {
     ready: access.ready,
-    pending: access.pending,
+    pending: access.pending || access.pendingOperatorMessages.some((message) => message.pending === true),
     isStreaming: access.session?.isStreaming ?? false,
     sessionId: access.session?.sessionId ?? null,
     model: access.session?.model?.id ?? null,
@@ -410,20 +544,30 @@ export async function promptButler(
   access: ButlerAgentSessionAccess,
   text: string,
   imageReferenceIds: string[] = [],
-  options: { mode?: "queue" | "steer" } = {}
+  options: { mode?: "queue" | "steer"; pendingOperatorMessageId?: string | null; displayText?: string | null; ignoreStopRequestSequence?: number | null } = {}
 ): Promise<boolean> {
+  if (options.mode === "steer" && !options.pendingOperatorMessageId) {
+    clearPendingOperatorPrompts(access);
+  }
+  const pendingOperatorMessageId = options.pendingOperatorMessageId ?? registerPendingOperatorPrompt(access, text, options.displayText?.trim() || text);
+  let ignoreStopRequestSequence = options.ignoreStopRequestSequence ?? null;
   if (options.mode === "steer") {
-    await stopButlerPrompt(access);
+    await stopButlerPrompt(access, { clearPendingOperatorMessages: false });
+    ignoreStopRequestSequence = access.stopRequestSequence;
   }
 
-  return queueButlerPrompt(access, text, imageReferenceIds, { background: false });
+  return queueButlerPrompt(access, text, imageReferenceIds, { background: false, pendingOperatorMessageId, ignoreStopRequestSequence });
 }
 
-export async function stopButlerPrompt(access: ButlerAgentSessionAccess): Promise<boolean> {
+export async function stopButlerPrompt(access: ButlerAgentSessionAccess, options: { clearPendingOperatorMessages?: boolean } = {}): Promise<boolean> {
   const active = Boolean(access.pending || access.session?.isStreaming || access.session?.isCompacting);
   access.stopRequestedAt = Date.now();
+  access.stopRequestSequence += 1;
   access.pending = false;
   access.lastError = null;
+  if (options.clearPendingOperatorMessages !== false) {
+    clearPendingOperatorPrompts(access);
+  }
 
   if (access.session && (access.session.isStreaming || access.session.isCompacting)) {
     await access.session.abort();
@@ -451,13 +595,16 @@ async function queueButlerPrompt(
   access: ButlerAgentSessionAccess,
   text: string,
   imageReferenceIds: string[],
-  options: { background: boolean }
+  options: { background: boolean; pendingOperatorMessageId?: string | null; ignoreStopRequestSequence?: number | null }
 ): Promise<boolean> {
   if (!access.session) {
+    if (!options.background) {
+      removePendingOperatorPrompt(access, options.pendingOperatorMessageId);
+    }
     throw new Error("Butler agent is not ready");
   }
 
-  const queuedAt = Date.now();
+  const acceptedStopRequestSequence = options.ignoreStopRequestSequence ?? access.stopRequestSequence;
 
   if (!options.background) {
     access.pending = true;
@@ -477,16 +624,23 @@ async function queueButlerPrompt(
         access.auth = nextAuth;
       }
       await access.reconcilePendingChatCallbacks();
-      if (!options.background && access.stopRequestedAt !== null && access.stopRequestedAt >= queuedAt) {
+      if (!options.background && hasBlockingStopRequest(access, acceptedStopRequestSequence)) {
+        removePendingOperatorPrompt(access, options.pendingOperatorMessageId);
         return false;
       }
       await runButlerPrompt(access, text, imageReferenceIds);
+      if (!options.background) {
+        commitPendingOperatorPrompt(access, options.pendingOperatorMessageId);
+      }
       access.lastError = null;
     } catch (error) {
-      if (!options.background && access.stopRequestedAt !== null && access.stopRequestedAt >= queuedAt) {
+      if (!options.background && hasBlockingStopRequest(access, acceptedStopRequestSequence)) {
         access.lastError = null;
       } else {
         access.lastError = error instanceof Error ? error.message : String(error);
+      }
+      if (!options.background) {
+        removePendingOperatorPrompt(access, options.pendingOperatorMessageId);
       }
       ok = false;
     } finally {
@@ -503,6 +657,10 @@ async function queueButlerPrompt(
   const queued = access.promptQueue.then(execute, execute);
   access.promptQueue = queued.then(() => undefined);
   return queued;
+}
+
+export function hasBlockingStopRequest(access: ButlerAgentSessionAccess, acceptedStopRequestSequence: number): boolean {
+  return access.stopRequestSequence > acceptedStopRequestSequence;
 }
 
 export async function updateButlerComposeSettings(

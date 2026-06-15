@@ -352,7 +352,8 @@ export function applyButlerLivePatchSnapshot(
     if (!patch.text.trim()) {
       return current;
     }
-    return upsertButlerMessage(current, {
+    const base = patch.itemType === "user_message" ? removeCommittedPendingButlerMessage(current, patch.text, patch.at) : current;
+    return upsertButlerMessage(base, {
       id: patch.itemId,
       role: patch.itemType === "user_message" ? "user" : "assistant",
       text: patch.text,
@@ -407,6 +408,29 @@ type ButlerActivityItemSnapshot = ButlerActivityTurnSnapshot["items"][number];
 
 function readButlerMessageText(current: ButlerLiveSnapshot, messageId: string): string {
   return current.messages.find((message) => message.id === messageId)?.text ?? "";
+}
+
+function removeCommittedPendingButlerMessage(current: ButlerLiveSnapshot, text: string, at: number): ButlerLiveSnapshot {
+  const exactIndex = current.messages.findIndex((message) =>
+    message.pending === true &&
+    message.role.startsWith("user") &&
+    message.text === text &&
+    (at ?? message.at ?? 0) >= (message.at ?? 0) - 1000
+  );
+  const index = exactIndex >= 0 ? exactIndex : current.messages.findIndex((message) =>
+    message.pending === true &&
+    message.role.startsWith("user") &&
+    (at ?? message.at ?? 0) >= (message.at ?? 0) - 1000
+  );
+  if (index < 0) {
+    return current;
+  }
+
+  return {
+    ...current,
+    messages: current.messages.filter((_, messageIndex) => messageIndex !== index),
+    messageCount: Math.max(0, current.messageCount - 1)
+  };
 }
 
 function upsertButlerMessage(current: ButlerLiveSnapshot, message: ButlerMessage): ButlerLiveSnapshot {
@@ -549,22 +573,44 @@ function activityUpdatedAt(turn: ButlerLiveSnapshot["activityTurns"][number]): n
 }
 
 export function mergeButlerLiveSnapshots(current: ButlerLiveSnapshot | null, next: ButlerLiveSnapshot): ButlerLiveSnapshot {
-  if (!current || next.messageCount < current.messageCount) {
+  if (!current) {
+    return next;
+  }
+  const currentServerOperatorMessages = current.messages.filter(isServerOperatorMessage);
+  const shouldPreserveServerOperatorMessages = (next.pendingRevision ?? 0) < (current.pendingRevision ?? 0);
+  if (next.messageCount < current.messageCount && next.messageCount + currentServerOperatorMessages.length < current.messageCount) {
     return next;
   }
   const currentMessages = new Map(current.messages.map((message) => [message.id, message]));
   const currentActivity = new Map(current.activityTurns.map((turn) => [turn.id, turn]));
-  return {
-    messages: next.messages.map((message) => {
+  const nextMessageIds = new Set(next.messages.map((message) => message.id));
+  const preservedPendingMessages = shouldPreserveServerOperatorMessages
+    ? currentServerOperatorMessages.filter((message) =>
+        !nextMessageIds.has(message.id) &&
+        !next.messages.some((nextMessage) => nextMessage.role.startsWith("user") && nextMessage.text === message.text && (nextMessage.at ?? message.at ?? 0) >= (message.at ?? 0) - 1000)
+      )
+    : [];
+  const messages = [
+    ...next.messages.map((message) => {
       const currentMessage = currentMessages.get(message.id);
       return currentMessage && currentMessage.text.length > message.text.length ? currentMessage : message;
     }),
-    messageCount: next.messageCount,
+    ...preservedPendingMessages
+  ].sort((left, right) => (left.at ?? 0) - (right.at ?? 0) || left.id.localeCompare(right.id));
+
+  return {
+    messages,
+    messageCount: next.messageCount + preservedPendingMessages.length,
+    pendingRevision: Math.max(current.pendingRevision ?? 0, next.pendingRevision ?? 0),
     activityTurns: next.activityTurns.map((turn) => {
       const currentTurn = currentActivity.get(turn.id);
       return currentTurn && activityUpdatedAt(currentTurn) > activityUpdatedAt(turn) ? currentTurn : turn;
     })
   };
+}
+
+function isServerOperatorMessage(message: ButlerMessage): boolean {
+  return message.pending === true || message.id.startsWith("pending-operator-");
 }
 
 function threadTextSize(thread: CodexThreadDetail): number {

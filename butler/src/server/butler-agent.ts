@@ -41,8 +41,8 @@ import {
   type SupervisionSmokePlan
 } from "./butler-agent-helpers.js";
 import { buildButlerCodexTools } from "./butler-agent-codex-tools.js";
-import { createOrRefreshButlerSession, getButlerLiveSnapshot, getButlerMessagePage, getButlerShellSnapshot, getButlerSnapshot, promptButler, promptButlerInternal, stopButlerPrompt, restoreButlerCompactionState, sanitizeButlerSessionMessages, sanitizePersistedButlerSessions, updateButlerComposeSettings } from "./butler-agent-session.js";
-import { clearButlerSessionChat, deleteButlerSessionChatFromLocated, keepOperatorMessagesBefore, locateButlerSessionDeletePoint } from "./butler-agent-chat-hygiene.js";
+import { clearPendingOperatorPrompts, createOrRefreshButlerSession, getButlerLiveSnapshot, getButlerMessagePage, getButlerShellSnapshot, getButlerSnapshot, keepPendingOperatorPromptsBefore, promptButler, promptButlerInternal, registerPendingOperatorPrompt, removePendingOperatorPrompt, stopButlerPrompt, restoreButlerCompactionState, sanitizeButlerSessionMessages, sanitizePersistedButlerSessions, updateButlerComposeSettings } from "./butler-agent-session.js";
+import { clearButlerSessionChat, deleteButlerSessionChatFromLocated, keepOperatorMessagesBefore, locateButlerSessionDeletePoint, locateButlerSessionDeletePointBeforeTimestamp } from "./butler-agent-chat-hygiene.js";
 import { buildOperatorCloseoutText } from "./butler-agent-closeout-text.js";
 import { buildDelegationDeveloperInstructions } from "./butler-agent-delegation-instructions.js";
 import { buildButlerFilesystemTools } from "./butler-agent-filesystem-tools.js";
@@ -139,10 +139,12 @@ export class ButlerAgentService extends EventEmitter {
   private activitySequence = 0;
   private lastError: string | null = null;
   private promptQueue: Promise<void> = Promise.resolve();
+  private stopRequestSequence = 0;
   private readonly toolCatalog: ButlerToolView[];
   private unsubscribeSession: (() => void) | null = null;
   private statusRefreshTimer: NodeJS.Timeout | null = null;
   private readonly operatorMessages: ButlerMessageView[] = [];
+  private readonly pendingOperatorMessages: ButlerMessageView[] = []; private pendingOperatorMessageSequence = 0; private pendingOperatorMessageRevision = 0;
   private readonly pendingChatCallbacks = new Map<string, PendingChatCallback>();
   private readonly deliveredCloseoutIds = new Set<string>();
   private readonly supervisionSmokePlans = new Map<string, SupervisionSmokePlan>();
@@ -424,9 +426,9 @@ export class ButlerAgentService extends EventEmitter {
     );
   }
 
-  async clearChat(): Promise<void> { await this.memoryScheduler?.beforeButlerChatClear([...this.operatorMessages]); this.operatorMessages.splice(0, this.operatorMessages.length); this.activityTurns.splice(0, this.activityTurns.length); this.activitySummaryTurns.splice(0, this.activitySummaryTurns.length); this.activeActivityTurnId = null; await Promise.all([this.saveOperatorMessageState(), this.saveActivitySummaryState()]); clearButlerSessionChat(this.session); this.lastError = null; this.emit("change"); }
+  async clearChat(): Promise<void> { await this.memoryScheduler?.beforeButlerChatClear([...this.operatorMessages]); this.operatorMessages.splice(0, this.operatorMessages.length); clearPendingOperatorPrompts(this.getSessionAccess(), { includeCommitted: true }); this.activityTurns.splice(0, this.activityTurns.length); this.activitySummaryTurns.splice(0, this.activitySummaryTurns.length); this.activeActivityTurnId = null; await Promise.all([this.saveOperatorMessageState(), this.saveActivitySummaryState()]); clearButlerSessionChat(this.session); this.lastError = null; this.emit("change"); }
 
-  async deleteChatFromMessage(messageId: string): Promise<void> { const deletePoint = locateButlerSessionDeletePoint(this.session, messageId); await this.memoryScheduler?.beforeButlerChatDeleteFrom({ messageId, deleteFromTimestamp: deletePoint.targetAt, messages: [...this.operatorMessages] }); const deleteFrom = deleteButlerSessionChatFromLocated(this.session, deletePoint); keepOperatorMessagesBefore(this.operatorMessages, deleteFrom); const prunedActivity = keepButlerActivityBefore(this as unknown as ButlerAgentSessionAccess, deleteFrom); await Promise.all([this.saveOperatorMessageState(), ...(prunedActivity ? [this.saveActivitySummaryState()] : [])]); this.lastError = null; this.emit("change"); }
+  async deleteChatFromMessage(messageId: string): Promise<void> { const syntheticMessage = this.pendingOperatorMessages.find((message) => message.id === messageId); const deletePoint = syntheticMessage ? locateButlerSessionDeletePointBeforeTimestamp(this.session, messageId, syntheticMessage.at) : locateButlerSessionDeletePoint(this.session, messageId); await this.memoryScheduler?.beforeButlerChatDeleteFrom({ messageId, deleteFromTimestamp: deletePoint.targetAt, messages: [...this.operatorMessages] }); const deleteFrom = deleteButlerSessionChatFromLocated(this.session, deletePoint); keepOperatorMessagesBefore(this.operatorMessages, deleteFrom); keepPendingOperatorPromptsBefore(this.getSessionAccess(), deleteFrom); const prunedActivity = keepButlerActivityBefore(this as unknown as ButlerAgentSessionAccess, deleteFrom); await Promise.all([this.saveOperatorMessageState(), ...(prunedActivity ? [this.saveActivitySummaryState()] : [])]); this.lastError = null; this.emit("change"); }
 
   async notifyDirectCodexMessage(input: DirectCodexMessagePingInput & { threadId: string }): Promise<void> { await notifyDirectCodexMessage(this as unknown as DirectCodexMessageAccess, input); }
 
@@ -1467,7 +1469,7 @@ export class ButlerAgentService extends EventEmitter {
     this.store.noteButlerSteer(threadId);
   }
 
-  private async promptOperatorTurn(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer" } = {}): Promise<void> {
+  private async promptOperatorTurn(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer"; displayText?: string | null } = {}): Promise<void> {
     const guard = buildOperatorThreadGuard(this.store, text, this.getRecentFocusedThreadId());
     this.activeOperatorThreadGuard = guard;
     if (guard.lockedThreadId && this.store.getThread(guard.lockedThreadId)) {
@@ -1475,18 +1477,22 @@ export class ButlerAgentService extends EventEmitter {
     }
     const thread = guard.lockedThreadId ? this.store.getThread(guard.lockedThreadId) : undefined;
     this.memoryScheduler?.observeOperatorMessage({ text, threadId: guard.lockedThreadId, projectId: thread?.supervisor.projectId ?? thread?.executionContract?.projectId ?? null, projectLabel: thread?.supervisor.projectLabel ?? thread?.executionContract?.projectLabel ?? null, at: Date.now() });
+    let ignoreStopRequestSequence: number | null = null;
+    if (options.mode === "steer") clearPendingOperatorPrompts(this.getSessionAccess());
+    const pendingOperatorMessageId = registerPendingOperatorPrompt(this.getSessionAccess(), text, options.displayText?.trim() || text);
 
     try {
+      if (options.mode === "steer") { await stopButlerPrompt(this.getSessionAccess(), { clearPendingOperatorMessages: false }); ignoreStopRequestSequence = this.stopRequestSequence; }
       if (guard.contextPrompt) {
         await promptButlerInternal(this.getSessionAccess(), ["This is hidden grounding for the next operator turn.", "Do not answer it directly.", "Use it to keep job references exact during the next operator turn only.", guard.contextPrompt].join("\n"));
       }
-      await promptButler(this.getSessionAccess(), text, imageReferenceIds, options);
-    } finally {
+      await promptButler(this.getSessionAccess(), text, imageReferenceIds, { mode: options.mode === "steer" ? "queue" : options.mode, pendingOperatorMessageId, ignoreStopRequestSequence });
+    } catch (error) { removePendingOperatorPrompt(this.getSessionAccess(), pendingOperatorMessageId); throw error; } finally {
       this.activeOperatorThreadGuard = null;
     }
   }
 
-  prompt(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer" } = {}): void { void this.promptOperatorTurn(text, imageReferenceIds, options); }
+  prompt(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer"; displayText?: string | null } = {}): void { void this.promptOperatorTurn(text, imageReferenceIds, options); }
 
   async stopPrompt(): Promise<boolean> { return stopButlerPrompt(this.getSessionAccess()); }
 

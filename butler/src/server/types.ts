@@ -1139,9 +1139,11 @@ export interface ButlerMessageView {
   id: string;
   role: string;
   text: string;
+  displayText?: string;
   at: number | null;
   taskDurationMs: number | null;
   kind: "message";
+  pending?: boolean;
 }
 
 export type ButlerActivityItemKind = "thinking" | "tool";
@@ -1363,6 +1365,7 @@ export interface AppShellSnapshot {
 export interface ButlerLiveSnapshot {
   messages: ButlerMessageView[];
   messageCount: number;
+  pendingRevision?: number;
   activityTurns: ButlerActivityTurnView[];
 }
 

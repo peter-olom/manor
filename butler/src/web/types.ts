@@ -20,9 +20,11 @@ export type ButlerMessageRecord = {
   id: string;
   role: string;
   text: string;
+  displayText?: string;
   at: number | null;
   taskDurationMs: number | null;
   kind: "message";
+  pending?: boolean;
 };
 
 export type ButlerHistoryPageResponse = {
@@ -1039,6 +1041,7 @@ export type ShellSnapshot = {
 export type ButlerLiveSnapshot = {
   messages: ButlerMessageRecord[];
   messageCount: number;
+  pendingRevision?: number;
   activityTurns: ButlerActivityTurn[];
 };
 

@@ -387,14 +387,6 @@ export function dedupeMessages(messages: ButlerMessageRecord[]): ButlerHistorySt
   });
 }
 
-export function hasCommittedPendingButlerPrompt(messages: ButlerMessageRecord[], pendingText: string | null): boolean {
-  if (!pendingText) {
-    return false;
-  }
-
-  return messages.some((message) => message.role.startsWith("user") && message.text === pendingText);
-}
-
 export function formatCompactCount(value: number | null): string {
   return value && value > 0 ? `${value}` : "Auto";
 }

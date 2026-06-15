@@ -673,7 +673,11 @@ app.post("/api/chat/messages", async (request, response) => {
     });
     const inputItemsPromptText = buildComposerInputItemsPrompt(inputItems);
     const promptText = [referencePromptText, inputItemsPromptText].filter(Boolean).join("\n\n");
-    butlerAgent.prompt(promptText, imageReferenceIds, { mode });
+    const referenceCount = imageReferenceIds.length + fileReferenceIds.length;
+    const displayText = text.trim() || (referenceCount > 0
+      ? referenceCount === 1 ? "Attached 1 reference file." : `Attached ${referenceCount} reference files.`
+      : inputItemsPromptText.trim() || promptText);
+    butlerAgent.prompt(promptText, imageReferenceIds, { mode, displayText });
     response.status(202).json({ ok: true });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
