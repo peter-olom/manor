@@ -115,6 +115,80 @@ test("provider runtime ingestion projects lifecycle and token usage events", asy
   assert.equal(patches.some((patch) => patch.kind === "turn-lifecycle"), true);
 });
 
+test("provider runtime ingestion keeps generic message titles out of visible text", async () => {
+  const { store, ingestion, patches } = await createHarness();
+
+  await ingestion.ingest(baseEvent({
+    id: "event-user-start",
+    type: "item.started",
+    turnId: "turn-1",
+    itemId: "user-1",
+    payload: {
+      itemType: "user_message",
+      status: "in_progress",
+      title: "User message"
+    }
+  }));
+
+  assert.equal(store.getThreadDetail("thread-1")?.turns[0]?.items.length, 0);
+  assert.equal(patches.at(-1)?.kind, "item-lifecycle");
+  assert.equal(patches.at(-1)?.text, "");
+
+  await ingestion.ingest(baseEvent({
+    id: "event-user-complete",
+    type: "item.completed",
+    turnId: "turn-1",
+    itemId: "user-1",
+    payload: {
+      itemType: "user_message",
+      status: "completed",
+      title: "User message",
+      detail: "Now review the current implementation"
+    }
+  }));
+
+  const item = store.getThreadDetail("thread-1")?.turns[0]?.items[0];
+  assert.equal(item?.type, "userMessage");
+  assert.equal(item?.text, "Now review the current implementation");
+});
+
+test("provider runtime ingestion keeps generic assistant titles out of visible text", async () => {
+  const { store, ingestion, patches } = await createHarness();
+
+  await ingestion.ingest(baseEvent({
+    id: "event-assistant-start",
+    type: "item.started",
+    turnId: "turn-1",
+    itemId: "assistant-1",
+    payload: {
+      itemType: "assistant_message",
+      status: "in_progress",
+      title: "Assistant message"
+    }
+  }));
+
+  assert.equal(store.getThreadDetail("thread-1")?.turns[0]?.items.length, 0);
+  assert.equal(patches.at(-1)?.kind, "item-lifecycle");
+  assert.equal(patches.at(-1)?.text, "");
+
+  await ingestion.ingest(baseEvent({
+    id: "event-assistant-complete",
+    type: "item.completed",
+    turnId: "turn-1",
+    itemId: "assistant-1",
+    payload: {
+      itemType: "assistant_message",
+      status: "completed",
+      title: "Assistant message",
+      detail: "Done"
+    }
+  }));
+
+  const item = store.getThreadDetail("thread-1")?.turns[0]?.items[0];
+  assert.equal(item?.type, "agentMessage");
+  assert.equal(item?.text, "Done");
+});
+
 test("provider runtime ingestion serializes async event application", async () => {
   const { store, ingestion } = await createHarness();
 

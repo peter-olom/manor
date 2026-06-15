@@ -205,6 +205,42 @@ test("thread lifecycle patch updates an item without waiting for a full snapshot
   assert.equal(next["thread-1"].updatedAt, 125);
 });
 
+test("thread lifecycle patch ignores empty user message placeholders", () => {
+  const thread = threadWithText("", 100);
+  thread.turns[0].items = [];
+  const current = { "thread-1": thread };
+  const next = applyThreadPatchSnapshot(current, {
+    kind: "item-lifecycle",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "user-1",
+    itemType: "user_message",
+    status: "in_progress",
+    text: "",
+    at: 125
+  });
+
+  assert.equal(next["thread-1"].turns[0].items.length, 0);
+});
+
+test("thread lifecycle patch ignores empty assistant message placeholders", () => {
+  const thread = threadWithText("", 100);
+  thread.turns[0].items = [];
+  const current = { "thread-1": thread };
+  const next = applyThreadPatchSnapshot(current, {
+    kind: "item-lifecycle",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "assistant-1",
+    itemType: "assistant_message",
+    status: "in_progress",
+    text: "",
+    at: 125
+  });
+
+  assert.equal(next["thread-1"].turns[0].items.length, 0);
+});
+
 test("older full snapshots cannot replace a newer streamed patch", () => {
   const current = { "thread-1": threadWithText("The cleanup task", 120) };
   const stale = { "thread-1": threadWithText("The cleanup", 100) };
@@ -259,6 +295,55 @@ test("Butler runtime patches keep visible message count independent from Pi tran
 
   assert.equal(next?.messages.length, 1);
   assert.equal(next?.messageCount, 1);
+});
+
+test("Butler live patch ignores empty user lifecycle placeholders", () => {
+  const next = applyButlerLivePatchSnapshot({ messages: [], messageCount: 0, activityTurns: [] }, {
+    kind: "item-lifecycle",
+    threadId: "butler",
+    turnId: "turn-1",
+    itemId: "message-0",
+    itemType: "user_message",
+    status: "completed",
+    text: "",
+    at: 100
+  });
+
+  assert.equal(next?.messages.length, 0);
+  assert.equal(next?.messageCount, 0);
+});
+
+test("Butler live patch ignores empty assistant lifecycle placeholders", () => {
+  const next = applyButlerLivePatchSnapshot({ messages: [], messageCount: 0, activityTurns: [] }, {
+    kind: "item-lifecycle",
+    threadId: "butler",
+    turnId: "turn-1",
+    itemId: "message-0",
+    itemType: "assistant_message",
+    status: "in_progress",
+    text: "",
+    at: 100
+  });
+
+  assert.equal(next?.messages.length, 0);
+  assert.equal(next?.messageCount, 0);
+});
+
+test("Butler live patch commits user lifecycle text when present", () => {
+  const next = applyButlerLivePatchSnapshot({ messages: [], messageCount: 0, activityTurns: [] }, {
+    kind: "item-lifecycle",
+    threadId: "butler",
+    turnId: "turn-1",
+    itemId: "message-0",
+    itemType: "user_message",
+    status: "completed",
+    text: "Review the current implementation",
+    at: 100
+  });
+
+  assert.equal(next?.messages.length, 1);
+  assert.equal(next?.messages[0].role, "user");
+  assert.equal(next?.messages[0].text, "Review the current implementation");
 });
 
 test("older Butler live snapshots cannot replace a newer streamed message patch", () => {

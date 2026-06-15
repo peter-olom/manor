@@ -47,6 +47,10 @@ function storeThreadStatus(state: string): { type: "active" | "idle" } {
 }
 
 function eventText(event: Extract<ProviderRuntimeEvent, { type: "item.started" | "item.updated" | "item.completed" }>): string {
+  if (event.payload.itemType === "user_message" || event.payload.itemType === "assistant_message") {
+    return event.payload.detail ?? "";
+  }
+
   return event.payload.detail ?? event.payload.title ?? "";
 }
 

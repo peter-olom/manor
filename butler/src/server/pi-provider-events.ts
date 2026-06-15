@@ -3,6 +3,7 @@ import type { AgentSession, AgentSessionEvent } from "@mariozechner/pi-coding-ag
 
 import {
   BUTLER_BACKGROUND_PROMPT_PREFIX,
+  contentAttachmentSummary,
   contentToText,
   extractMessageTimestamp,
   isButlerBackgroundPromptText
@@ -35,6 +36,11 @@ function messageText(message: unknown): string {
   const text = contentToText(message.content);
   if (text.trim()) {
     return stripElapsedTaskTimeFooter(text);
+  }
+
+  const attachmentSummary = contentAttachmentSummary(message.content);
+  if (attachmentSummary.trim()) {
+    return attachmentSummary;
   }
 
   return typeof message.errorMessage === "string" ? message.errorMessage : "";
@@ -147,6 +153,7 @@ export class PiProviderRuntimeMapper {
   private turnSequence = 0;
   private currentTurnId: string | null = null;
   private currentAssistantItemId: string | null = null;
+  private currentUserItemId: string | null = null;
   private hideNextAssistantReply = false;
 
   constructor(private readonly threadId = BUTLER_RUNTIME_THREAD_ID) {}
@@ -160,6 +167,7 @@ export class PiProviderRuntimeMapper {
       case "agent_end":
         this.currentTurnId = null;
         this.currentAssistantItemId = null;
+        this.currentUserItemId = null;
         return [this.threadState("idle", at)];
       case "turn_start": {
         const turnId = this.startTurn(session, at);
@@ -175,6 +183,7 @@ export class PiProviderRuntimeMapper {
         const turnId = this.ensureTurn(session, at);
         const state = turnState(event.message);
         this.currentTurnId = null;
+        this.currentUserItemId = null;
         return [{
           kind: "turn-lifecycle",
           threadId: this.threadId,
@@ -331,6 +340,11 @@ export class PiProviderRuntimeMapper {
       return [];
     }
 
+    if (role === "user" || role === "user-with-attachments") {
+      this.currentUserItemId = this.messageItemId(session);
+      return [];
+    }
+
     if (role === "assistant") {
       if (this.hideNextAssistantReply) {
         return [];
@@ -346,20 +360,6 @@ export class PiProviderRuntimeMapper {
         text: "",
         at: messageAt(event.message, at),
         title: "Assistant message"
-      })];
-    }
-
-    if (role === "user" || role === "user-with-attachments") {
-      const turnId = this.ensureTurn(session, at);
-      return [this.itemLifecycle({
-        threadId: this.threadId,
-        turnId,
-        itemId: this.messageItemId(session),
-        itemType: "user_message",
-        status: "completed",
-        text,
-        at: messageAt(event.message, at),
-        title: "User message"
       })];
     }
 
@@ -458,6 +458,25 @@ export class PiProviderRuntimeMapper {
       this.hideNextAssistantReply = false;
       this.currentAssistantItemId = null;
       return [];
+    }
+
+    if (role === "user" || role === "user-with-attachments") {
+      if (!text.trim()) {
+        this.currentUserItemId = null;
+        return [];
+      }
+      const itemId = this.currentUserItemId ?? this.messageItemId(session);
+      this.currentUserItemId = null;
+      return [this.itemLifecycle({
+        threadId: this.threadId,
+        turnId: this.ensureTurn(session, at),
+        itemId,
+        itemType: "user_message",
+        status: "completed",
+        text,
+        at: messageAt(event.message, at),
+        title: "User message"
+      })];
     }
 
     if (role !== "assistant") {

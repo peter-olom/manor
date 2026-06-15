@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { sanitizeHistoryMessages } from "../../src/server/butler-agent-helpers.js";
+import { sanitizeHistoryMessages, serializeMessages } from "../../src/server/butler-agent-helpers.js";
 import { dropTrailingFailedButlerTurns } from "../../src/server/butler-agent-session.js";
 
 test("Butler session sanitizer removes orphan tool results", () => {
@@ -30,6 +30,40 @@ test("Butler session sanitizer removes orphan tool results", () => {
     ["user", "assistant", "toolResult"]
   );
   assert.equal((sanitized.messages[2] as { toolCallId?: string }).toolCallId, "call_kept|fc_kept");
+});
+
+test("Butler message serialization skips empty user rows", () => {
+  const messages = serializeMessages({
+    sessionId: "session-1",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "" }], timestamp: 100 },
+      { role: "user", content: [{ type: "text", text: "Review the current implementation" }], timestamp: 110 }
+    ]
+  } as never);
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].role, "user");
+  assert.equal(messages[0].text, "Review the current implementation");
+});
+
+test("Butler message serialization keeps attachment-only user rows visible", () => {
+  const messages = serializeMessages({
+    sessionId: "session-1",
+    messages: [
+      {
+        role: "user-with-attachments",
+        content: [
+          { type: "image", data: "abc", mimeType: "image/png" },
+          { type: "file", name: "notes.txt" }
+        ],
+        timestamp: 100
+      }
+    ]
+  } as never);
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].role, "user-with-attachments");
+  assert.equal(messages[0].text, "Attached 1 image, 1 file");
 });
 
 test("Butler session sanitizer matches tool results by base call id", () => {

@@ -94,6 +94,98 @@ test("Pi background prompts do not leak assistant patches", () => {
   } as never, fakeSession as never), []);
 });
 
+test("Pi user message starts do not render provider placeholders", () => {
+  const mapper = new PiProviderRuntimeMapper();
+  const fakeSession = session();
+
+  mapper.map({ type: "turn_start" } as never, fakeSession as never);
+
+  assert.deepEqual(mapper.map({
+    type: "message_start",
+    message: {
+      role: "user",
+      content: [{ type: "text", text: "User message" }],
+      timestamp: 100
+    }
+  } as never, fakeSession as never), []);
+
+  const [endPatch] = mapper.map({
+    type: "message_end",
+    message: {
+      role: "user",
+      content: [{ type: "text", text: "Review the current implementation" }],
+      timestamp: 110
+    }
+  } as never, fakeSession as never);
+
+  assert.equal(endPatch.kind, "item-lifecycle");
+  assert.equal(endPatch.itemType, "user_message");
+  assert.equal(endPatch.itemId, "message-0");
+  assert.equal(endPatch.text, "Review the current implementation");
+});
+
+test("Pi clears reserved user message ids when a turn ends without a user message end", () => {
+  const mapper = new PiProviderRuntimeMapper();
+
+  mapper.map({ type: "turn_start" } as never, session() as never);
+  mapper.map({
+    type: "message_start",
+    message: {
+      role: "user",
+      content: [{ type: "text", text: "User message" }],
+      timestamp: 100
+    }
+  } as never, session() as never);
+  mapper.map({
+    type: "turn_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "done" }],
+      timestamp: 110
+    }
+  } as never, session() as never);
+
+  mapper.map({ type: "turn_start" } as never, session([{}]) as never);
+  const [endPatch] = mapper.map({
+    type: "message_end",
+    message: {
+      role: "user",
+      content: [{ type: "text", text: "Fresh prompt" }],
+      timestamp: 120
+    }
+  } as never, session([{}]) as never);
+
+  assert.equal(endPatch.kind, "item-lifecycle");
+  assert.equal(endPatch.itemId, "message-1");
+  assert.equal(endPatch.text, "Fresh prompt");
+});
+
+test("Pi maps attachment-only user messages to visible attachment summaries", () => {
+  const mapper = new PiProviderRuntimeMapper();
+  mapper.map({ type: "turn_start" } as never, session() as never);
+  mapper.map({
+    type: "message_start",
+    message: {
+      role: "user-with-attachments",
+      content: [{ type: "image", data: "abc", mimeType: "image/png" }],
+      timestamp: 100
+    }
+  } as never, session() as never);
+
+  const [endPatch] = mapper.map({
+    type: "message_end",
+    message: {
+      role: "user-with-attachments",
+      content: [{ type: "image", data: "abc", mimeType: "image/png" }],
+      timestamp: 110
+    }
+  } as never, session() as never);
+
+  assert.equal(endPatch.kind, "item-lifecycle");
+  assert.equal(endPatch.itemType, "user_message");
+  assert.equal(endPatch.text, "Attached 1 image");
+});
+
 test("Pi tool execution maps to runtime item lifecycle patches", () => {
   const mapper = new PiProviderRuntimeMapper();
   const fakeSession = session();

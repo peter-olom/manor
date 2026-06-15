@@ -88,6 +88,47 @@ export function contentToText(content: unknown): string {
   return "";
 }
 
+function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return count === 1 ? singular : plural;
+}
+
+export function contentAttachmentSummary(content: unknown): string {
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  let imageCount = 0;
+  let fileCount = 0;
+  let attachmentCount = 0;
+
+  for (const entry of content) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
+    const text = typeof record.text === "string" ? record.text.trim() : "";
+    if (text) {
+      continue;
+    }
+    if (type.includes("image")) {
+      imageCount += 1;
+    } else if (type.includes("file") || type.includes("document")) {
+      fileCount += 1;
+    } else if (type && type !== "text") {
+      attachmentCount += 1;
+    }
+  }
+
+  const parts = [
+    imageCount ? `${imageCount} ${pluralize(imageCount, "image")}` : "",
+    fileCount ? `${fileCount} ${pluralize(fileCount, "file")}` : "",
+    attachmentCount ? `${attachmentCount} ${pluralize(attachmentCount, "attachment")}` : ""
+  ].filter(Boolean);
+
+  return parts.length > 0 ? `Attached ${parts.join(", ")}` : "";
+}
+
 export function extractMessageTimestamp(message: Record<string, unknown>): number | null {
   const candidates = [message.timestamp, message.createdAt, message.at];
 
@@ -209,6 +250,8 @@ export function serializeMessages(session: AgentSession): ButlerMessageView[] {
     const rawText =
       "content" in message && contentToText(message.content).trim()
         ? contentToText(message.content)
+        : role === "user-with-attachments" && "content" in message && contentAttachmentSummary(message.content).trim()
+          ? contentAttachmentSummary(message.content)
         : typeof record.errorMessage === "string"
           ? record.errorMessage
           : "";
@@ -240,7 +283,7 @@ export function serializeMessages(session: AgentSession): ButlerMessageView[] {
       continue;
     }
 
-    if (nextMessage.role === "assistant" && !nextMessage.text.trim()) {
+    if (!nextMessage.text.trim()) {
       continue;
     }
 

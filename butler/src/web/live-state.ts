@@ -349,7 +349,7 @@ export function applyButlerLivePatchSnapshot(
   }
 
   if (patch.kind === "item-lifecycle" && (patch.itemType === "assistant_message" || patch.itemType === "user_message")) {
-    if (!patch.text.trim() && patch.itemType === "assistant_message") {
+    if (!patch.text.trim()) {
       return current;
     }
     return upsertButlerMessage(current, {
@@ -736,6 +736,10 @@ export function applyThreadPatchSnapshot(
   const item = itemIndex >= 0 ? turn.items[itemIndex] : createItem(patch.itemId, itemType, patch.at);
 
   if (patch.kind === "content-delta" && item.text.length >= patch.itemTextLength) {
+    return current;
+  }
+
+  if (patch.kind === "item-lifecycle" && (patch.itemType === "assistant_message" || patch.itemType === "user_message") && !patch.text.trim()) {
     return current;
   }
 

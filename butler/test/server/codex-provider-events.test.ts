@@ -95,6 +95,98 @@ test("maps item lifecycle events to canonical item lifecycle", () => {
   assert.equal(events[0]?.payload.detail, "npm run build");
 });
 
+test("does not treat Codex user-message titles as message text", () => {
+  const started = mapCodexProviderEvent({
+    eventId: "event-started",
+    at: 100,
+    method: "item/started",
+    params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      item: {
+        id: "user-1",
+        type: "userMessage",
+        title: "User message"
+      }
+    }
+  });
+  const completed = mapCodexProviderEvent({
+    eventId: "event-completed",
+    at: 110,
+    method: "item/completed",
+    params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      item: {
+        id: "user-1",
+        type: "userMessage",
+        title: "User message",
+        text: "Now review the current implementation"
+      }
+    }
+  });
+
+  assert.equal(started[0]?.payload.title, "User message");
+  assert.equal("detail" in started[0]!.payload, false);
+  assert.equal(completed[0]?.payload.detail, "Now review the current implementation");
+});
+
+test("does not treat Codex assistant-message titles as message text", () => {
+  const events = mapCodexProviderEvent({
+    eventId: "event-started",
+    at: 100,
+    method: "item/started",
+    params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      item: {
+        id: "assistant-1",
+        type: "agentMessage",
+        title: "Assistant message"
+      }
+    }
+  });
+
+  assert.equal(events[0]?.payload.title, "Assistant message");
+  assert.equal("detail" in events[0]!.payload, false);
+});
+
+test("maps Codex message lifecycle content text without using generic titles", () => {
+  const user = mapCodexProviderEvent({
+    eventId: "event-user",
+    at: 100,
+    method: "item/completed",
+    params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      item: {
+        id: "user-1",
+        type: "userMessage",
+        title: "User message",
+        content: [{ type: "text", text: "Review the current implementation" }]
+      }
+    }
+  });
+  const assistant = mapCodexProviderEvent({
+    eventId: "event-assistant",
+    at: 110,
+    method: "item/completed",
+    params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      item: {
+        id: "assistant-1",
+        type: "agentMessage",
+        title: "Assistant message",
+        content: { type: "text", text: "Done" }
+      }
+    }
+  });
+
+  assert.equal(user[0]?.payload.detail, "Review the current implementation");
+  assert.equal(assistant[0]?.payload.detail, "Done");
+});
+
 test("maps thread and turn lifecycle events", () => {
   const thread = mapCodexProviderEvent({
     eventId: "event-thread",

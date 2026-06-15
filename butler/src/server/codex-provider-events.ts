@@ -162,7 +162,43 @@ function itemTitle(type: ProviderRuntimeItemType): string | undefined {
   }
 }
 
-function itemDetail(item: Record<string, unknown>): string | undefined {
+function contentText(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return trimText(value);
+  }
+  const record = asRecord(value);
+  if (record && typeof record.text === "string") {
+    return trimText(record.text);
+  }
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return trimText(
+    value
+      .map((entry) => {
+        const record = asRecord(entry);
+        return record && typeof record.text === "string" ? record.text : "";
+      })
+      .filter(Boolean)
+      .join("\n")
+  );
+}
+
+function messageItemDetail(item: Record<string, unknown>): string | undefined {
+  return (
+    trimText(item.text) ??
+    trimText(item.prompt) ??
+    contentText(item.content) ??
+    trimText(item.summary)
+  );
+}
+
+function itemDetail(item: Record<string, unknown>, itemType: ProviderRuntimeItemType): string | undefined {
+  if (itemType === "user_message" || itemType === "assistant_message") {
+    return messageItemDetail(item);
+  }
+
   return (
     trimText(item.command) ??
     trimText(item.title) ??
@@ -249,6 +285,7 @@ function mapLifecycleEvent(input: CodexProviderEventInput, params: Record<string
   const itemType = normalizeItemType(item.type);
   const lifecycle = input.method === "item/completed" ? "item.completed" : "item.started";
   const status: ProviderRuntimeItemStatus = lifecycle === "item.completed" ? "completed" : "in_progress";
+  const detail = itemDetail(item, itemType);
 
   return [{
     ...baseEvent(input, params, threadId),
@@ -257,7 +294,7 @@ function mapLifecycleEvent(input: CodexProviderEventInput, params: Record<string
       itemType,
       status,
       ...(itemTitle(itemType) ? { title: itemTitle(itemType) } : {}),
-      ...(itemDetail(item) ? { detail: itemDetail(item) } : {}),
+      ...(detail ? { detail } : {}),
       data: params
     }
   } satisfies ProviderRuntimeEvent];
