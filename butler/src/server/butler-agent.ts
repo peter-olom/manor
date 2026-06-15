@@ -63,6 +63,7 @@ import { HostControllerClient } from "./host-controller-client.js";
 import { ManorRestartRequestState } from "./manor-restart-state.js";
 import { buildOnboardingView } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
+import { readJsonStateFile, writeJsonStateFileAtomic } from "./json-state-file.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import { formatProjectPolicyContextLines } from "./project-artifacts-policies.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
@@ -390,17 +391,11 @@ export class ButlerAgentService extends EventEmitter {
   private async saveOperatorMessageState(): Promise<void> { await fs.writeFile(this.operatorMessageStatePath, JSON.stringify(this.operatorMessages, null, 2), "utf8"); }
 
   private async loadActivitySummaryState(): Promise<void> {
-    try {
-      const raw = await fs.readFile(this.activitySummaryStatePath, "utf8");
-      this.activitySummaryTurns.splice(0, this.activitySummaryTurns.length, ...normalizeButlerActivitySummaryTurns(JSON.parse(raw)));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
-    }
+    const parsed = await readJsonStateFile(this.activitySummaryStatePath, []);
+    this.activitySummaryTurns.splice(0, this.activitySummaryTurns.length, ...normalizeButlerActivitySummaryTurns(parsed));
   }
 
-  private async saveActivitySummaryState(): Promise<void> { await fs.writeFile(this.activitySummaryStatePath, JSON.stringify(this.activitySummaryTurns, null, 2), "utf8"); }
+  private async saveActivitySummaryState(): Promise<void> { await writeJsonStateFileAtomic(this.activitySummaryStatePath, this.activitySummaryTurns); }
 
   private persistActivitySummaryTurn(turn: ButlerActivityTurnView): void {
     const nextTurns = normalizeButlerActivitySummaryTurns([
