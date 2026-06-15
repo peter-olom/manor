@@ -215,6 +215,7 @@ export type ButlerAgentSessionAccess = {
   describePendingCallbacks(): string;
   buildCustomTools(): ButlerCustomTool[];
   listServiceTemplates(): LoadedServiceTemplate[];
+  saveOperatorMessageState(): Promise<void>;
   emit(event: "change"): boolean;
   emit(event: "butlerPatch", payload: import("./types.js").ButlerLivePatchView): boolean;
   persistActivitySummaryTurn(turn: ButlerActivityTurnView): void;

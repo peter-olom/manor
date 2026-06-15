@@ -55,7 +55,7 @@ import type { ButlerAgentSessionAccess, ButlerAgentToolAccess } from "./butler-a
 import { BUTLER_TOOL_CATALOG } from "./butler-agent-tool-catalog.js";
 import { keepButlerActivityBefore, normalizeButlerActivitySummaryTurns } from "./butler-activity.js";
 import { applyPostedCloseout, getOperatorCloseoutBlocker as getCloseoutBlocker, idleCloseoutReview, queueCloseoutReview, recordGatedCloseout, recordPostedCloseoutEvents } from "./butler-closeout-gate.js";
-import { upsertOperatorMessage } from "./butler-operator-messages.js";
+import { backfillOperatorMessagesFromSessionFiles, normalizeOperatorMessages, removeOperatorMessage, upsertOperatorMessage } from "./butler-operator-messages.js";
 import { readButlerAuthStatus, readCodexAuthStatus } from "./auth-status.js";
 import { notifyDirectCodexMessage, type DirectCodexMessageAccess, type DirectCodexMessagePingInput } from "./direct-codex-message.js";
 import { type FileReferenceStore } from "./file-store.js";
@@ -241,10 +241,7 @@ export class ButlerAgentService extends EventEmitter {
         this.operatorMessages.push({ id, role, text, at, taskDurationMs, kind });
       }
 
-      this.operatorMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
-      if (this.operatorMessages.length > 40) {
-        this.operatorMessages.splice(0, this.operatorMessages.length - 40);
-      }
+      normalizeOperatorMessages(this.operatorMessages);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
@@ -281,10 +278,7 @@ export class ButlerAgentService extends EventEmitter {
         this.operatorMessages.push({ id, role, text, at, taskDurationMs, kind: "message" });
       }
 
-      this.operatorMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
-      if (this.operatorMessages.length > 40) {
-        this.operatorMessages.splice(0, this.operatorMessages.length - 40);
-      }
+      normalizeOperatorMessages(this.operatorMessages);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
@@ -388,7 +382,7 @@ export class ButlerAgentService extends EventEmitter {
     }
   }
 
-  private async saveOperatorMessageState(): Promise<void> { await fs.writeFile(this.operatorMessageStatePath, JSON.stringify(this.operatorMessages, null, 2), "utf8"); }
+  async saveOperatorMessageState(): Promise<void> { normalizeOperatorMessages(this.operatorMessages); await writeJsonStateFileAtomic(this.operatorMessageStatePath, this.operatorMessages); }
 
   private async loadActivitySummaryState(): Promise<void> {
     const parsed = await readJsonStateFile(this.activitySummaryStatePath, []);
@@ -642,10 +636,7 @@ export class ButlerAgentService extends EventEmitter {
     }
 
     if (changed) {
-      this.operatorMessages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
-      if (this.operatorMessages.length > 40) {
-        this.operatorMessages.splice(0, this.operatorMessages.length - 40);
-      }
+      normalizeOperatorMessages(this.operatorMessages);
       await this.saveOperatorMessageState();
       await this.saveCallbackState();
       this.emit("change");
@@ -668,6 +659,7 @@ export class ButlerAgentService extends EventEmitter {
   async start(): Promise<void> {
     await fs.mkdir(this.sessionDir, { recursive: true });
     await this.loadOperatorMessageState();
+    if (await backfillOperatorMessagesFromSessionFiles(this.operatorMessages, this.sessionDir)) await this.saveOperatorMessageState();
     await this.loadActivitySummaryState();
     await this.loadCallbackState();
     await this.manorRestartRequests.load();
@@ -1474,7 +1466,10 @@ export class ButlerAgentService extends EventEmitter {
     this.memoryScheduler?.observeOperatorMessage({ text, threadId: guard.lockedThreadId, projectId: thread?.supervisor.projectId ?? thread?.executionContract?.projectId ?? null, projectLabel: thread?.supervisor.projectLabel ?? thread?.executionContract?.projectLabel ?? null, at: Date.now() });
     let ignoreStopRequestSequence: number | null = null;
     if (options.mode === "steer") clearPendingOperatorPrompts(this.getSessionAccess());
-    const pendingOperatorMessageId = registerPendingOperatorPrompt(this.getSessionAccess(), text, options.displayText?.trim() || text);
+    const displayText = options.displayText?.trim() || text;
+    const pendingOperatorMessageId = registerPendingOperatorPrompt(this.getSessionAccess(), text, displayText);
+    const pendingOperatorMessageAt = this.pendingOperatorMessages.find((message) => message.id === pendingOperatorMessageId)?.at ?? Date.now();
+    upsertOperatorMessage(this.operatorMessages, pendingOperatorMessageId, text, pendingOperatorMessageAt, null, { role: "user", displayText: displayText !== text ? displayText : null }); void this.saveOperatorMessageState();
 
     try {
       if (options.mode === "steer") { await stopButlerPrompt(this.getSessionAccess(), { clearPendingOperatorMessages: false }); ignoreStopRequestSequence = this.stopRequestSequence; }
@@ -1482,7 +1477,7 @@ export class ButlerAgentService extends EventEmitter {
         await promptButlerInternal(this.getSessionAccess(), ["This is hidden grounding for the next operator turn.", "Do not answer it directly.", "Use it to keep job references exact during the next operator turn only.", guard.contextPrompt].join("\n"));
       }
       await promptButler(this.getSessionAccess(), text, imageReferenceIds, { mode: options.mode === "steer" ? "queue" : options.mode, pendingOperatorMessageId, ignoreStopRequestSequence });
-    } catch (error) { removePendingOperatorPrompt(this.getSessionAccess(), pendingOperatorMessageId); throw error; } finally {
+    } catch (error) { removePendingOperatorPrompt(this.getSessionAccess(), pendingOperatorMessageId); if (removeOperatorMessage(this.operatorMessages, pendingOperatorMessageId)) void this.saveOperatorMessageState(); throw error; } finally {
       this.activeOperatorThreadGuard = null;
     }
   }

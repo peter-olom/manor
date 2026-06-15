@@ -21,6 +21,7 @@ import {
 import type { ButlerAgentSessionAccess } from "./butler-agent-tool-access.js";
 import { readButlerAuthStatus } from "./auth-status.js";
 import { getButlerActivityTurns, recordButlerActivityEvent } from "./butler-activity.js";
+import { isPersistableProviderOperatorMessage, upsertProviderBackedOperatorMessage } from "./butler-operator-messages.js";
 import { PiProviderRuntimeMapper } from "./pi-provider-events.js";
 import type {
   AppShellSnapshot,
@@ -83,11 +84,31 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
   access.unsubscribeSession = access.session.subscribe((event) => {
     recordButlerActivityEvent(access, event);
     const patches = runtimeMapper.map(event, access.session!);
+    let operatorMessageChanged = false;
     for (const patch of patches) {
       if (patch.kind === "item-lifecycle" && patch.itemType === "user_message" && patch.text.trim()) {
         removeCommittedPendingOperatorPrompt(access, patch.text, patch.at);
       }
+      if (
+        patch.kind === "item-lifecycle" &&
+        patch.status === "completed" &&
+        (patch.itemType === "user_message" || patch.itemType === "assistant_message") &&
+        isPersistableProviderOperatorMessage(patch.itemType === "user_message" ? "user" : "assistant", patch.text)
+      ) {
+        operatorMessageChanged =
+          upsertProviderBackedOperatorMessage(
+            access.operatorMessages,
+            `operator-session-${patch.itemId}`,
+            patch.text,
+            patch.at,
+            patch.itemType === "user_message" ? "user" : "assistant"
+          ) || operatorMessageChanged;
+      }
       access.emit("butlerPatch", patch);
+    }
+
+    if (operatorMessageChanged) {
+      void access.saveOperatorMessageState();
     }
 
     if (event.type === "compaction_start") {
@@ -320,7 +341,17 @@ function isUserMessage(message: ButlerMessageView): boolean {
   return message.role === "user" || message.role === "user-with-attachments";
 }
 
-function matchesProviderBackedUserMessage(sessionMessage: ButlerMessageView, message: ButlerMessageView): boolean {
+function matchesProviderBackedMessage(sessionMessage: ButlerMessageView, message: ButlerMessageView): boolean {
+  if (message.role === "assistant") {
+    if (sessionMessage.role !== "assistant") {
+      return false;
+    }
+
+    const messageAt = message.at ?? 0;
+    const sessionAt = sessionMessage.at ?? 0;
+    return sessionMessage.text === message.text || (sessionAt >= messageAt - 1000 && Math.abs(sessionAt - messageAt) <= 30_000);
+  }
+
   if (!isUserMessage(sessionMessage)) {
     return false;
   }
@@ -332,12 +363,15 @@ function matchesProviderBackedUserMessage(sessionMessage: ButlerMessageView, mes
 function filterProviderBackedServerOperatorMessages(sessionMessages: ButlerMessageView[], messages: ButlerMessageView[]): ButlerMessageView[] {
   const consumedSessionMessageIds = new Set<string>();
   return messages.filter((message) => {
-    if (!isUserMessage(message) || message.pending === true) {
+    if (message.pending === true) {
+      return true;
+    }
+    if (!isUserMessage(message) && !(message.role === "assistant" && message.id.startsWith("operator-session-"))) {
       return true;
     }
     const providerMessage = sessionMessages.find((sessionMessage) =>
       !consumedSessionMessageIds.has(sessionMessage.id) &&
-      matchesProviderBackedUserMessage(sessionMessage, message)
+      matchesProviderBackedMessage(sessionMessage, message)
     );
     if (!providerMessage) {
       return true;
@@ -443,8 +477,10 @@ export function keepPendingOperatorPromptsBefore(access: ButlerAgentSessionAcces
 
 export function getVisibleButlerMessages(access: ButlerAgentSessionAccess) {
   const sessionMessages = access.session ? serializeMessages(access.session) : [];
-  const serverOperatorMessages = filterProviderBackedServerOperatorMessages(sessionMessages, access.pendingOperatorMessages);
-  return collapseCallbackDuplicateMessages(mergeVisibleMessages(sessionMessages, [...access.operatorMessages, ...serverOperatorMessages] as never[]));
+  const pendingIds = new Set(access.pendingOperatorMessages.map((message) => message.id));
+  const durableOperatorMessages = access.operatorMessages.filter((message) => !pendingIds.has(message.id));
+  const serverOperatorMessages = filterProviderBackedServerOperatorMessages(sessionMessages, [...durableOperatorMessages, ...access.pendingOperatorMessages]);
+  return collapseCallbackDuplicateMessages(mergeVisibleMessages(sessionMessages, serverOperatorMessages as never[]));
 }
 
 export function getButlerMessagePage(

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { sanitizeHistoryMessages, serializeMessages } from "../../src/server/butler-agent-helpers.js";
@@ -14,6 +17,11 @@ import {
   removePendingOperatorPrompt,
   stopButlerPrompt
 } from "../../src/server/butler-agent-session.js";
+import {
+  backfillOperatorMessagesFromSessionFiles,
+  upsertOperatorMessage,
+  upsertProviderBackedOperatorMessage
+} from "../../src/server/butler-operator-messages.js";
 
 function pendingAccess() {
   return {
@@ -164,6 +172,129 @@ test("server-owned committed prompts defer to provider-stored user history", () 
   assert.equal(messages[0].text, "Normalized prompt");
 });
 
+test("durable operator prompts remain visible after provider compaction drops user rows", () => {
+  const access = pendingAccess();
+  access.operatorMessages.push({
+    id: "operator-user-1",
+    role: "user",
+    text: "Please review the latest preview",
+    at: 100,
+    taskDurationMs: null,
+    kind: "message"
+  });
+  access.session = {
+    sessionId: "session-1",
+    messages: [
+      { role: "assistant", content: [{ type: "text", text: "Review complete." }], timestamp: 120 }
+    ]
+  };
+
+  const messages = getVisibleButlerMessages(access as never);
+
+  assert.deepEqual(messages.map((message) => message.role), ["user", "assistant"]);
+  assert.equal(messages[0].text, "Please review the latest preview");
+});
+
+test("durable provider replies remain visible after provider compaction drops assistant rows", () => {
+  const access = pendingAccess();
+  access.operatorMessages.push(
+    {
+      id: "operator-user-1",
+      role: "user",
+      text: "Are you learning from my feedback?",
+      at: 100,
+      taskDurationMs: null,
+      kind: "message"
+    },
+    {
+      id: "operator-session-reply-1",
+      role: "assistant",
+      text: "Yes. I am carrying that feedback forward.",
+      at: 120,
+      taskDurationMs: null,
+      kind: "message"
+    }
+  );
+
+  const messages = getVisibleButlerMessages(access as never);
+
+  assert.deepEqual(messages.map((message) => message.role), ["user", "assistant"]);
+  assert.deepEqual(messages.map((message) => message.text), ["Are you learning from my feedback?", "Yes. I am carrying that feedback forward."]);
+});
+
+test("provider history suppresses duplicate durable provider replies", () => {
+  const access = pendingAccess();
+  access.operatorMessages.push({
+    id: "operator-session-reply-1",
+    role: "assistant",
+    text: "I am carrying that feedback forward.",
+    at: 120,
+    taskDurationMs: null,
+    kind: "message"
+  });
+  access.session = {
+    sessionId: "session-1",
+    messages: [
+      { role: "assistant", content: [{ type: "text", text: "I am carrying that feedback forward." }], timestamp: 121 }
+    ]
+  };
+
+  const messages = getVisibleButlerMessages(access as never);
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].id, "message-0");
+});
+
+test("provider user history suppresses duplicate durable operator prompts", () => {
+  const access = pendingAccess();
+  access.operatorMessages.push({
+    id: "operator-user-1",
+    role: "user",
+    text: "Original prompt",
+    at: 100,
+    taskDurationMs: null,
+    kind: "message"
+  });
+  access.session = {
+    sessionId: "session-1",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "Normalized prompt" }], timestamp: 110 },
+      { role: "assistant", content: [{ type: "text", text: "Done." }], timestamp: 120 }
+    ]
+  };
+
+  const messages = getVisibleButlerMessages(access as never);
+
+  assert.deepEqual(messages.map((message) => message.id), ["message-0", "message-1"]);
+  assert.deepEqual(messages.map((message) => message.text), ["Normalized prompt", "Done."]);
+});
+
+test("pending operator prompts override durable prompt rows with the same id", () => {
+  const access = pendingAccess();
+  access.operatorMessages.push({
+    id: "pending-operator-1",
+    role: "user",
+    text: "Queued prompt",
+    at: 100,
+    taskDurationMs: null,
+    kind: "message"
+  });
+  access.pendingOperatorMessages.push({
+    id: "pending-operator-1",
+    role: "user",
+    text: "Queued prompt",
+    at: 100,
+    taskDurationMs: null,
+    kind: "message",
+    pending: true
+  });
+
+  const messages = getVisibleButlerMessages(access as never);
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].pending, true);
+});
+
 test("provider-stored user history suppresses only one synthetic prompt", () => {
   const access = pendingAccess();
   const firstId = registerPendingOperatorPrompt(access as never, "first prompt");
@@ -213,6 +344,55 @@ test("server-owned operator prompts trim by timestamp", () => {
   keepPendingOperatorPromptsBefore(access as never, 200);
 
   assert.deepEqual(access.pendingOperatorMessages.map((message) => message.text), ["first prompt"]);
+});
+
+test("startup backfill restores operator user prompts from persisted session logs", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-butler-session-backfill-"));
+  const messages = [];
+  await writeFile(
+    path.join(dir, "session.jsonl"),
+    [
+      JSON.stringify({ type: "message", id: "one", timestamp: "2026-06-15T10:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "Show this prompt" }] } }),
+      JSON.stringify({ type: "message", id: "reply", timestamp: "2026-06-15T10:00:20.000Z", message: { role: "assistant", content: [{ type: "text", text: "Visible reply" }] } }),
+      JSON.stringify({ type: "message", id: "internal", timestamp: "2026-06-15T10:01:00.000Z", message: { role: "user", content: [{ type: "text", text: "[[BUTLER_BACKGROUND]]\nHide this" }] } }),
+      JSON.stringify({ type: "message", id: "assistant", timestamp: "2026-06-15T10:02:00.000Z", message: { role: "assistant", content: [{ type: "text", text: "Hidden reply" }] } })
+    ].join("\n"),
+    "utf8"
+  );
+
+  const changed = await backfillOperatorMessagesFromSessionFiles(messages, dir);
+
+  assert.equal(changed, true);
+  assert.deepEqual(messages.map((message) => message.text), ["Show this prompt", "Visible reply"]);
+  assert.deepEqual(messages.map((message) => message.role), ["user", "assistant"]);
+});
+
+test("operator history normalization drops old prompt-only rows before coherent turns", () => {
+  const messages = [];
+  for (let index = 0; index < 20; index += 1) {
+    upsertProviderBackedOperatorMessage(messages, `operator-user-old-${index}`, `orphan prompt ${index}`, 1000 + index, "user");
+  }
+
+  for (let index = 0; index < 12; index += 1) {
+    const at = 10_000_000 + index * 10_000;
+    upsertProviderBackedOperatorMessage(messages, `operator-user-new-${index}`, `prompt ${index}`, at, "user");
+    upsertOperatorMessage(messages, `reply-${index}`, `reply ${index}`, at + 1000);
+  }
+
+  assert.equal(messages.some((message) => message.text.startsWith("orphan prompt")), false);
+  assert.deepEqual(messages.slice(0, 2).map((message) => message.role), ["user", "assistant"]);
+  assert.equal(messages.at(-1)?.text, "reply 11");
+});
+
+test("operator history normalization drops old provider replies with no recovered prompt", () => {
+  const messages = [];
+  for (let index = 0; index < 8; index += 1) {
+    upsertProviderBackedOperatorMessage(messages, `operator-session-old-${index}`, `old assistant ${index}`, 1000 + index, "assistant");
+  }
+  upsertProviderBackedOperatorMessage(messages, "operator-user-current", "current prompt", 10_000_000, "user");
+  upsertProviderBackedOperatorMessage(messages, "operator-session-current", "current reply", 10_000_100, "assistant");
+
+  assert.deepEqual(messages.map((message) => message.text), ["current prompt", "current reply"]);
 });
 
 test("Butler stop requests advance a sequence for steer handoff checks", async () => {
