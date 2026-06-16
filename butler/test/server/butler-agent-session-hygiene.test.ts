@@ -127,6 +127,20 @@ test("Butler message serialization skips internal assistant tool-only rows", () 
   assert.deepEqual(messages, []);
 });
 
+test("Butler message serialization skips assistant attachment summary text rows", () => {
+  const messages = serializeMessages({
+    sessionId: "session-1",
+    messages: [
+      { role: "assistant", content: [{ type: "text", text: "Attached 2 attachments" }], timestamp: 100 },
+      { role: "assistant", content: [{ type: "text", text: "Attached 1 attachment" }], timestamp: 110 },
+      { role: "assistant", content: [{ type: "text", text: "Reviewed the worker reply." }], timestamp: 120 }
+    ]
+  } as never);
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].text, "Reviewed the worker reply.");
+});
+
 test("Butler message serialization hides background prompts with attachments", () => {
   const messages = serializeMessages({
     sessionId: "session-1",

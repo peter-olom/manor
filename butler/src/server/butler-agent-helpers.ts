@@ -63,6 +63,7 @@ export const SNAPSHOT_MESSAGE_TAIL_LIMIT = 80;
 export const MAX_HISTORY_PAGE_SIZE = 1000;
 export const BUTLER_BACKGROUND_PROMPT_PREFIX = "[[BUTLER_BACKGROUND]]";
 const THREAD_ID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+const ATTACHMENT_SUMMARY_TEXT_PATTERN = /^Attached \d+ (?:image|images|file|files|attachment|attachments)(?:, \d+ (?:image|images|file|files|attachment|attachments))*$/;
 
 export function isButlerBackgroundPromptText(text: string | null | undefined): boolean {
   return typeof text === "string" && text.trimStart().startsWith(BUTLER_BACKGROUND_PROMPT_PREFIX);
@@ -141,6 +142,10 @@ export function contentAttachmentSummary(content: unknown): string {
   ].filter(Boolean);
 
   return parts.length > 0 ? `Attached ${parts.join(", ")}` : "";
+}
+
+function isAttachmentSummaryText(text: string): boolean {
+  return ATTACHMENT_SUMMARY_TEXT_PATTERN.test(text.trim());
 }
 
 export function extractMessageTimestamp(message: Record<string, unknown>): number | null {
@@ -272,7 +277,9 @@ export function serializeMessages(session: AgentSession): ButlerMessageView[] {
     const text = stripElapsedTaskTimeFooter(rawText);
     const taskDurationMs = role === "assistant" ? elapsedTaskDurationMs(latestUserMessageAt, at) : null;
 
-    if (role === "user" || role === "user-with-attachments") {
+    if (role === "assistant" && isAttachmentSummaryText(text)) {
+      continue;
+    } else if (role === "user" || role === "user-with-attachments") {
       latestUserMessageAt = at;
       hideAssistantReply = isButlerBackgroundPromptText(text);
       if (hideAssistantReply) {
