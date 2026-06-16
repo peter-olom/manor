@@ -17,6 +17,10 @@ type OperatorMessageOptions = {
   normalize?: boolean;
 };
 
+type ProviderBackedOperatorMessageOptions = {
+  normalize?: boolean;
+};
+
 const MAX_OPERATOR_MESSAGES = SNAPSHOT_MESSAGE_TAIL_LIMIT;
 const RECENT_USER_ONLY_GROUP_MS = 30 * 60 * 1000;
 const PROVIDER_DUPLICATE_WINDOW_MS = 2_000;
@@ -252,11 +256,20 @@ export function upsertOperatorMessage(messages: ButlerMessageView[], id: string,
   return changed;
 }
 
-export function upsertProviderBackedOperatorMessage(messages: ButlerMessageView[], id: string, text: string, at: number, role: string, displayText: string | null = null): boolean {
+export function upsertProviderBackedOperatorMessage(
+  messages: ButlerMessageView[],
+  id: string,
+  text: string,
+  at: number,
+  role: string,
+  displayText: string | null = null,
+  options: ProviderBackedOperatorMessageOptions = {}
+): boolean {
   const existingId = matchingProviderBackedOperatorMessageId(messages, role, text, at) ?? id;
   return upsertOperatorMessage(messages, existingId, text, at, null, {
     role,
-    displayText
+    displayText,
+    normalize: options.normalize
   });
 }
 
@@ -298,7 +311,7 @@ export async function backfillOperatorMessagesFromSessionFiles(messages: ButlerM
         hideAssistantReply = role === "user" && isButlerBackgroundPromptText(text);
         if (!isPersistableProviderOperatorMessage(role, text)) continue;
         const id = typeof parsed.id === "string" && parsed.id.trim() ? `operator-user-${parsed.id}` : `operator-user-${at}`;
-        changed = upsertProviderBackedOperatorMessage(messages, id, text, at, role, displayTextForPersistedUserText(text)) || changed;
+        changed = upsertProviderBackedOperatorMessage(messages, id, text, at, role, displayTextForPersistedUserText(text), { normalize: false }) || changed;
         continue;
       }
 
@@ -307,7 +320,7 @@ export async function backfillOperatorMessagesFromSessionFiles(messages: ButlerM
         const text = persistedAssistantText(message);
         if (!isPersistableProviderOperatorMessage(role, text)) continue;
         const id = typeof parsed.id === "string" && parsed.id.trim() ? `operator-session-${parsed.id}` : `operator-session-${at}`;
-        changed = upsertProviderBackedOperatorMessage(messages, id, text, at, role) || changed;
+        changed = upsertProviderBackedOperatorMessage(messages, id, text, at, role, null, { normalize: false }) || changed;
       }
     }
   }

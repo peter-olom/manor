@@ -367,6 +367,79 @@ test("startup backfill restores operator user prompts from persisted session log
   assert.deepEqual(messages.map((message) => message.role), ["user", "assistant"]);
 });
 
+test("startup backfill restores older coherent turns before pruning", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-butler-session-backfill-"));
+  const messages = [{
+    id: "operator-session-latest",
+    role: "assistant",
+    text: "Later durable assistant row",
+    at: Date.parse("2026-06-15T14:00:00.000Z"),
+    taskDurationMs: null,
+    kind: "message" as const
+  }];
+  await writeFile(
+    path.join(dir, "session.jsonl"),
+    [
+      JSON.stringify({ type: "message", id: "prompt", timestamp: "2026-06-15T09:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "Recover this older prompt" }] } }),
+      JSON.stringify({ type: "message", id: "reply", timestamp: "2026-06-15T09:00:20.000Z", message: { role: "assistant", content: [{ type: "text", text: "Recover this older reply" }] } })
+    ].join("\n"),
+    "utf8"
+  );
+
+  const changed = await backfillOperatorMessagesFromSessionFiles(messages, dir);
+
+  assert.equal(changed, true);
+  assert.deepEqual(messages.map((message) => message.text), [
+    "Recover this older prompt",
+    "Recover this older reply",
+    "Later durable assistant row"
+  ]);
+  assert.deepEqual(messages.map((message) => message.role), ["user", "assistant", "assistant"]);
+});
+
+test("startup backfill repairs assistant-only durable history from raw session turns", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-butler-session-backfill-"));
+  const messages = [
+    {
+      id: "operator-session-reply-one",
+      role: "assistant",
+      text: "First recovered reply",
+      at: Date.parse("2026-06-15T09:00:20.000Z"),
+      taskDurationMs: null,
+      kind: "message" as const
+    },
+    {
+      id: "operator-session-reply-two",
+      role: "assistant",
+      text: "Second recovered reply",
+      at: Date.parse("2026-06-15T09:01:20.000Z"),
+      taskDurationMs: null,
+      kind: "message" as const
+    }
+  ];
+  await writeFile(
+    path.join(dir, "session.jsonl"),
+    [
+      JSON.stringify({ type: "message", id: "prompt-one", timestamp: "2026-06-15T09:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "First missing prompt" }] } }),
+      JSON.stringify({ type: "message", id: "reply-one", timestamp: "2026-06-15T09:00:20.000Z", message: { role: "assistant", content: [{ type: "text", text: "First recovered reply" }] } }),
+      JSON.stringify({ type: "message", id: "prompt-two", timestamp: "2026-06-15T09:01:00.000Z", message: { role: "user", content: [{ type: "text", text: "Second missing prompt" }] } }),
+      JSON.stringify({ type: "message", id: "reply-two", timestamp: "2026-06-15T09:01:20.000Z", message: { role: "assistant", content: [{ type: "text", text: "Second recovered reply" }] } })
+    ].join("\n"),
+    "utf8"
+  );
+
+  const changed = await backfillOperatorMessagesFromSessionFiles(messages, dir);
+
+  assert.equal(changed, true);
+  assert.deepEqual(messages.map((message) => message.role), ["user", "assistant", "user", "assistant"]);
+  assert.deepEqual(messages.map((message) => message.text), [
+    "First missing prompt",
+    "First recovered reply",
+    "Second missing prompt",
+    "Second recovered reply"
+  ]);
+});
+
 test("operator history normalization drops old prompt-only rows before coherent turns", () => {
   const messages = [];
   for (let index = 0; index < 20; index += 1) {
