@@ -13,16 +13,16 @@ async function createStore(): Promise<ButlerStateStore> {
   return new ButlerStateStore(path.join(dir, "state.json"));
 }
 
-function createButlerAgent(store: ButlerStateStore, sessionDir: string): ButlerAgentService {
+function createButlerAgent(store: ButlerStateStore, sessionDir: string, codexClient: unknown = {
+  getConnectionState: () => ({
+    compose: {
+      availableModels: []
+    }
+  })
+}): ButlerAgentService {
   return new ButlerAgentService({
     store,
-    codexClient: {
-      getConnectionState: () => ({
-        compose: {
-          availableModels: []
-        }
-      })
-    } as never,
+    codexClient: codexClient as never,
     runtimeBroker: {} as never,
     serviceTemplateRegistry: {} as never,
     imageStore: {} as never,
@@ -81,6 +81,87 @@ test("direct Codex messages register Butler supervision callback", async () => {
   assert.equal(messages.length, 1);
   assert.equal(messages[0]?.role, "user");
   assert.equal(messages[0]?.text, "Continue with the operator correction.");
+});
+
+test("direct Codex callback recovery uses worker reply item time instead of refreshed thread update time", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-session-"));
+  const threadId = "thread-direct-fallback";
+  const requestedAt = Date.parse("2026-06-16T18:36:29.743Z");
+  const replyAt = Date.parse("2026-06-16T18:36:51.474Z");
+  const refreshedAt = Date.parse("2026-06-16T18:56:54.852Z");
+  const originalNow = Date.now;
+  Date.now = () => requestedAt;
+
+  try {
+    store.upsertThreadSummary({
+      id: threadId,
+      status: { type: "active" },
+      cwd: "/workspace",
+      turns: [{ id: "turn-0", status: "completed", items: [] }]
+    });
+
+    const refreshedThread = () => ({
+      id: threadId,
+      status: { type: "idle" },
+      cwd: "/workspace",
+      updatedAt: refreshedAt / 1000,
+      turns: [
+        {
+          id: "turn-1",
+          status: "completed",
+          items: [
+            {
+              id: "item-user",
+              type: "userMessage",
+              status: "completed",
+              text: "Run a website preview",
+              at: requestedAt
+            },
+            {
+              id: "item-agent",
+              type: "agentMessage",
+              status: "completed",
+              text: "Preview is running.",
+              at: replyAt
+            }
+          ]
+        }
+      ]
+    });
+
+    const agent = createButlerAgent(store, sessionDir, {
+      getConnectionState: () => ({
+        compose: {
+          availableModels: []
+        }
+      }),
+      loadThread: async () => {
+        store.upsertThreadSummary(refreshedThread());
+      }
+    });
+
+    await agent.notifyDirectCodexMessage({
+      threadId,
+      text: "Run a website preview",
+      imageReferenceIds: [],
+      fileReferenceIds: [],
+      inputItems: []
+    });
+
+    Date.now = () => replyAt;
+    store.upsertThreadSummary(refreshedThread());
+
+    Date.now = () => refreshedAt;
+    await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
+
+    const callback = agent.getShellSnapshot().supervision.callbacks.find((entry) => entry.threadId === threadId);
+    assert.equal(callback?.callbackState, "missing_worker_callback");
+    assert.equal(callback?.reviewState, "queued");
+    assert.equal(callback?.reviewReason, "thread_recovery");
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test("direct Codex transcript backfill restores visible operator anchors", async () => {

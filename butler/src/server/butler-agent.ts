@@ -24,6 +24,7 @@ import {
   getVisibleThreadProofs,
   isAssistantFailureMessage,
   isCallbackOutstanding,
+  latestCompletedAgentMessageAt,
   MAX_HISTORY_PAGE_SIZE,
   mergeVisibleMessages,
   normalizeNoticeText,
@@ -542,21 +543,17 @@ export class ButlerAgentService extends EventEmitter {
       const workerReport = this.store.getWorkerReport(callback.threadId);
       const relevantWorkerReport = workerReport && workerReport.updatedAt >= callback.requestedAt ? workerReport : null;
       const nextStatus = thread?.status ?? "unknown";
-      const fallbackAnchorAt = Math.max(callback.requestedAt, thread?.updatedAt ?? callback.requestedAt);
-      const callbackTimedOut = now - fallbackAnchorAt >= CALLBACK_RECOVERY_TIMEOUT_MS;
+      const latestAgentReplyAt = latestCompletedAgentMessageAt(thread);
+      const hasRecoverableThreadReply = nextStatus === "idle" && Boolean(thread?.supervisor.latestAgentReply?.trim()) && latestAgentReplyAt !== null && latestAgentReplyAt >= callback.requestedAt;
+      const callbackTimedOut = hasRecoverableThreadReply && now - latestAgentReplyAt >= CALLBACK_RECOVERY_TIMEOUT_MS;
       const nextCallbackState =
         relevantWorkerReport
           ? "received_worker_callback"
-          : nextStatus !== "idle" ||
-              !(thread?.supervisor.latestAgentReply?.trim()) ||
-              (thread?.updatedAt ?? 0) < callback.requestedAt ||
-              !callbackTimedOut
-            ? "waiting"
-            : "missing_worker_callback";
+          : hasRecoverableThreadReply && callbackTimedOut ? "missing_worker_callback" : "waiting";
 
       if (callback.lastWorkerStatusSeen !== nextStatus || callback.callbackState !== nextCallbackState) {
         callback.lastWorkerStatusSeen = nextStatus;
-        callback.lastEventAt = thread?.updatedAt ?? now;
+        callback.lastEventAt = relevantWorkerReport?.updatedAt ?? latestAgentReplyAt ?? thread?.updatedAt ?? now;
         callback.lastTerminalReportAt = relevantWorkerReport?.updatedAt ?? callback.lastTerminalReportAt;
         if (callback.callbackState !== "received_worker_callback" && nextCallbackState === "received_worker_callback") {
           callback.reviewState = "queued";

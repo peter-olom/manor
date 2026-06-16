@@ -684,6 +684,16 @@ export function extractLatestNoticeTexts(thread: ReturnType<ButlerStateStore["ge
   return { latestUserPrompt, latestAgentReply };
 }
 
+export function latestCompletedAgentMessageAt(thread: ReturnType<ButlerStateStore["getThread"]>): number | null {
+  let latest: number | null = null;
+  for (const turn of thread?.turns ?? []) {
+    for (const item of turn.items) {
+      if (item.type === "agentMessage" && item.text.trim() && Number.isFinite(item.at)) latest = Math.max(latest ?? 0, item.at);
+    }
+  }
+  return latest;
+}
+
 export function isCallbackClosed(callback: PendingChatCallback): boolean {
   return callback.callbackState === "closed";
 }
