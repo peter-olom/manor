@@ -190,7 +190,7 @@ test("Pi skips assistant tool-only messages instead of attachment summaries", ()
   const mapper = new PiProviderRuntimeMapper();
   mapper.map({ type: "turn_start" } as never, session() as never);
 
-  const [startPatch] = mapper.map({
+  const startPatches = mapper.map({
     type: "message_start",
     message: {
       role: "assistant",
@@ -202,7 +202,7 @@ test("Pi skips assistant tool-only messages instead of attachment summaries", ()
     }
   } as never, session() as never);
 
-  const [endPatch] = mapper.map({
+  const endPatches = mapper.map({
     type: "message_end",
     message: {
       role: "assistant",
@@ -214,8 +214,8 @@ test("Pi skips assistant tool-only messages instead of attachment summaries", ()
     }
   } as never, session() as never);
 
-  assert.equal(startPatch.text, "");
-  assert.equal(endPatch.text, "");
+  assert.deepEqual(startPatches, []);
+  assert.deepEqual(endPatches, []);
 });
 
 test("Pi background prompts with attachments hide assistant replies", () => {
@@ -238,8 +238,26 @@ test("Pi background prompts with attachments hide assistant replies", () => {
     type: "message_start",
     message: {
       role: "assistant",
-      content: [{ type: "text", text: "" }],
+      content: [{ type: "thinking", thinking: "Checking" }, { type: "toolCall", id: "call-1", name: "read_job", arguments: {} }],
       timestamp: 110
+    }
+  } as never, session() as never), []);
+
+  assert.deepEqual(mapper.map({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "Checking" }, { type: "toolCall", id: "call-1", name: "read_job", arguments: {} }],
+      timestamp: 115
+    }
+  } as never, session() as never), []);
+
+  assert.deepEqual(mapper.map({
+    type: "message_start",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "" }],
+      timestamp: 116
     }
   } as never, session() as never), []);
 

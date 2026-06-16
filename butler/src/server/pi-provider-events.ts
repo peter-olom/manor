@@ -28,6 +28,28 @@ function messageRole(message: unknown): string | null {
   return isRecord(message) && typeof message.role === "string" ? message.role : null;
 }
 
+function hasTextContentSlot(message: unknown): boolean {
+  if (!isRecord(message)) {
+    return false;
+  }
+
+  const content = message.content;
+  if (typeof content === "string") {
+    return true;
+  }
+  if (!Array.isArray(content)) {
+    return false;
+  }
+
+  return content.some((entry) => {
+    if (!isRecord(entry)) {
+      return false;
+    }
+    const type = typeof entry.type === "string" ? entry.type.toLowerCase() : "";
+    return type.includes("text") || typeof entry.text === "string";
+  });
+}
+
 function messageText(message: unknown): string {
   if (!isRecord(message)) {
     return "";
@@ -186,6 +208,8 @@ export class PiProviderRuntimeMapper {
         const state = turnState(event.message);
         this.currentTurnId = null;
         this.currentUserItemId = null;
+        this.currentAssistantItemId = null;
+        this.hideNextAssistantReply = false;
         return [{
           kind: "turn-lifecycle",
           threadId: this.threadId,
@@ -351,6 +375,9 @@ export class PiProviderRuntimeMapper {
       if (this.hideNextAssistantReply) {
         return [];
       }
+      if (!text.trim() && !hasTextContentSlot(event.message)) {
+        return [];
+      }
       const turnId = this.ensureTurn(session, at);
       this.currentAssistantItemId = this.messageItemId(session);
       return [this.itemLifecycle({
@@ -457,7 +484,14 @@ export class PiProviderRuntimeMapper {
     }
 
     if (role === "assistant" && this.hideNextAssistantReply) {
-      this.hideNextAssistantReply = false;
+      if (text.trim()) {
+        this.hideNextAssistantReply = false;
+      }
+      this.currentAssistantItemId = null;
+      return [];
+    }
+
+    if (role === "assistant" && !text.trim() && !hasTextContentSlot(event.message)) {
       this.currentAssistantItemId = null;
       return [];
     }
