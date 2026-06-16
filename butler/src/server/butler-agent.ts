@@ -241,7 +241,7 @@ export class ButlerAgentService extends EventEmitter {
         this.operatorMessages.push({ id, role, text, at, taskDurationMs, kind });
       }
 
-      normalizeOperatorMessages(this.operatorMessages);
+      if (normalizeOperatorMessages(this.operatorMessages)) await this.saveOperatorMessageState();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
@@ -278,7 +278,7 @@ export class ButlerAgentService extends EventEmitter {
         this.operatorMessages.push({ id, role, text, at, taskDurationMs, kind: "message" });
       }
 
-      normalizeOperatorMessages(this.operatorMessages);
+      if (normalizeOperatorMessages(this.operatorMessages)) await this.saveOperatorMessageState();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;

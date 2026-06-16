@@ -38,9 +38,11 @@ function messageText(message: unknown): string {
     return stripElapsedTaskTimeFooter(text);
   }
 
-  const attachmentSummary = contentAttachmentSummary(message.content);
-  if (attachmentSummary.trim()) {
-    return attachmentSummary;
+  if (messageRole(message) === "user-with-attachments") {
+    const attachmentSummary = contentAttachmentSummary(message.content);
+    if (attachmentSummary.trim()) {
+      return attachmentSummary;
+    }
   }
 
   return typeof message.errorMessage === "string" ? message.errorMessage : "";
@@ -335,7 +337,7 @@ export class PiProviderRuntimeMapper {
     const role = messageRole(event.message);
     const text = messageText(event.message);
 
-    if (role === "user" && isButlerBackgroundPromptText(text)) {
+    if ((role === "user" || role === "user-with-attachments") && isButlerBackgroundPromptText(text)) {
       this.hideNextAssistantReply = true;
       return [];
     }
@@ -450,7 +452,7 @@ export class PiProviderRuntimeMapper {
     const role = messageRole(event.message);
     const text = messageText(event.message);
 
-    if (role === "user" && text.trimStart().startsWith(BUTLER_BACKGROUND_PROMPT_PREFIX)) {
+    if ((role === "user" || role === "user-with-attachments") && text.trimStart().startsWith(BUTLER_BACKGROUND_PROMPT_PREFIX)) {
       return [];
     }
 

@@ -92,6 +92,19 @@ function pluralize(count: number, singular: string, plural = `${singular}s`): st
   return count === 1 ? singular : plural;
 }
 
+function attachmentKind(type: string): "image" | "file" | "attachment" | null {
+  if (type.includes("image")) {
+    return "image";
+  }
+  if (type.includes("file") || type.includes("document")) {
+    return "file";
+  }
+  if (type === "attachment" || type.endsWith("_attachment") || type.endsWith("-attachment")) {
+    return "attachment";
+  }
+  return null;
+}
+
 export function contentAttachmentSummary(content: unknown): string {
   if (!Array.isArray(content)) {
     return "";
@@ -111,11 +124,12 @@ export function contentAttachmentSummary(content: unknown): string {
     if (text) {
       continue;
     }
-    if (type.includes("image")) {
+    const kind = attachmentKind(type);
+    if (kind === "image") {
       imageCount += 1;
-    } else if (type.includes("file") || type.includes("document")) {
+    } else if (kind === "file") {
       fileCount += 1;
-    } else if (type && type !== "text") {
+    } else if (kind === "attachment") {
       attachmentCount += 1;
     }
   }
@@ -258,14 +272,12 @@ export function serializeMessages(session: AgentSession): ButlerMessageView[] {
     const text = stripElapsedTaskTimeFooter(rawText);
     const taskDurationMs = role === "assistant" ? elapsedTaskDurationMs(latestUserMessageAt, at) : null;
 
-    if (role === "user") {
+    if (role === "user" || role === "user-with-attachments") {
       latestUserMessageAt = at;
       hideAssistantReply = isButlerBackgroundPromptText(text);
       if (hideAssistantReply) {
         continue;
       }
-    } else if (role === "user-with-attachments") {
-      latestUserMessageAt = at;
     } else if (hideAssistantReply && role === "assistant") {
       continue;
     }

@@ -186,6 +186,73 @@ test("Pi maps attachment-only user messages to visible attachment summaries", ()
   assert.equal(endPatch.text, "Attached 1 image");
 });
 
+test("Pi skips assistant tool-only messages instead of attachment summaries", () => {
+  const mapper = new PiProviderRuntimeMapper();
+  mapper.map({ type: "turn_start" } as never, session() as never);
+
+  const [startPatch] = mapper.map({
+    type: "message_start",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "Checking state" },
+        { type: "toolCall", id: "call-1", name: "list_jobs", arguments: {} }
+      ],
+      timestamp: 100
+    }
+  } as never, session() as never);
+
+  const [endPatch] = mapper.map({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "Checking state" },
+        { type: "toolCall", id: "call-1", name: "list_jobs", arguments: {} }
+      ],
+      timestamp: 110
+    }
+  } as never, session() as never);
+
+  assert.equal(startPatch.text, "");
+  assert.equal(endPatch.text, "");
+});
+
+test("Pi background prompts with attachments hide assistant replies", () => {
+  const mapper = new PiProviderRuntimeMapper();
+  mapper.map({ type: "turn_start" } as never, session() as never);
+
+  assert.deepEqual(mapper.map({
+    type: "message_start",
+    message: {
+      role: "user-with-attachments",
+      content: [
+        { type: "text", text: "[[BUTLER_BACKGROUND]]\nprivate review" },
+        { type: "image", data: "abc", mimeType: "image/png" }
+      ],
+      timestamp: 100
+    }
+  } as never, session() as never), []);
+
+  assert.deepEqual(mapper.map({
+    type: "message_start",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "" }],
+      timestamp: 110
+    }
+  } as never, session() as never), []);
+
+  assert.deepEqual(mapper.map({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "Hidden internal reply" }],
+      timestamp: 120
+    }
+  } as never, session() as never), []);
+});
+
 test("Pi tool execution maps to runtime item lifecycle patches", () => {
   const mapper = new PiProviderRuntimeMapper();
   const fakeSession = session();

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { sanitizeHistoryMessages, serializeMessages } from "../../src/server/butler-agent-helpers.js";
+import { contentAttachmentSummary, sanitizeHistoryMessages, serializeMessages } from "../../src/server/butler-agent-helpers.js";
 import {
   clearPendingOperatorPrompts,
   commitPendingOperatorPrompt,
@@ -19,6 +19,7 @@ import {
 } from "../../src/server/butler-agent-session.js";
 import {
   backfillOperatorMessagesFromSessionFiles,
+  normalizeOperatorMessages,
   upsertOperatorMessage,
   upsertProviderBackedOperatorMessage
 } from "../../src/server/butler-operator-messages.js";
@@ -100,6 +101,63 @@ test("Butler message serialization keeps attachment-only user rows visible", () 
   assert.equal(messages.length, 1);
   assert.equal(messages[0].role, "user-with-attachments");
   assert.equal(messages[0].text, "Attached 1 image, 1 file");
+});
+
+test("Butler message serialization skips internal assistant tool-only rows", () => {
+  const messages = serializeMessages({
+    sessionId: "session-1",
+    messages: [
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "Checking state" },
+          { type: "toolCall", id: "call-1", name: "read_job", arguments: {} }
+        ],
+        timestamp: 100
+      },
+      {
+        role: "assistant",
+        content: [{ type: "function_call", name: "list_jobs", arguments: "{}" }],
+        timestamp: 110
+      }
+    ]
+  } as never);
+
+  assert.equal(contentAttachmentSummary([{ type: "thinking" }, { type: "toolCall", name: "read_job" }]), "");
+  assert.deepEqual(messages, []);
+});
+
+test("Butler message serialization hides background prompts with attachments", () => {
+  const messages = serializeMessages({
+    sessionId: "session-1",
+    messages: [
+      {
+        role: "user-with-attachments",
+        content: [
+          { type: "text", text: "[[BUTLER_BACKGROUND]]\nprivate review" },
+          { type: "image", data: "abc", mimeType: "image/png" }
+        ],
+        timestamp: 100
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Hidden internal reply" }],
+        timestamp: 110
+      },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Visible prompt" }],
+        timestamp: 120
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Visible reply" }],
+        timestamp: 130
+      }
+    ]
+  } as never);
+
+  assert.deepEqual(messages.map((message) => message.text), ["Visible prompt", "Visible reply"]);
 });
 
 test("server-owned pending operator prompts are visible before Pi commits them", () => {
@@ -365,6 +423,74 @@ test("startup backfill restores operator user prompts from persisted session log
   assert.equal(changed, true);
   assert.deepEqual(messages.map((message) => message.text), ["Show this prompt", "Visible reply"]);
   assert.deepEqual(messages.map((message) => message.role), ["user", "assistant"]);
+});
+
+test("startup backfill ignores internal tool-only assistant turns", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-butler-session-backfill-"));
+  const messages = [];
+  await writeFile(
+    path.join(dir, "session.jsonl"),
+    [
+      JSON.stringify({
+        type: "message",
+        id: "tool-only",
+        timestamp: "2026-06-15T10:00:00.000Z",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "Inspecting" },
+            { type: "toolCall", id: "call-1", name: "list_jobs", arguments: {} }
+          ]
+        }
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "visible",
+        timestamp: "2026-06-15T10:00:10.000Z",
+        message: { role: "assistant", content: [{ type: "text", text: "Visible reply" }] }
+      })
+    ].join("\n"),
+    "utf8"
+  );
+
+  const changed = await backfillOperatorMessagesFromSessionFiles(messages, dir);
+
+  assert.equal(changed, true);
+  assert.deepEqual(messages.map((message) => message.text), ["Visible reply"]);
+});
+
+test("operator history normalization removes stale leaked attachment summaries", () => {
+  const messages = [
+    {
+      id: "operator-session-message-216",
+      role: "assistant",
+      text: "Attached 2 attachments",
+      at: 100,
+      taskDurationMs: null,
+      kind: "message" as const
+    },
+    {
+      id: "operator-user-visible",
+      role: "user",
+      text: "Visible prompt",
+      at: 200,
+      taskDurationMs: null,
+      kind: "message" as const
+    },
+    {
+      id: "operator-session-visible",
+      role: "assistant",
+      text: "Visible reply",
+      at: 210,
+      taskDurationMs: null,
+      kind: "message" as const
+    }
+  ];
+
+  const changed = normalizeOperatorMessages(messages);
+
+  assert.equal(changed, true);
+  assert.deepEqual(messages.map((message) => message.text), ["Visible prompt", "Visible reply"]);
 });
 
 test("startup backfill restores older coherent turns before pruning", async () => {

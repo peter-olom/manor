@@ -27,6 +27,8 @@ const PROVIDER_DUPLICATE_WINDOW_MS = 2_000;
 const STORED_REFERENCE_PATTERN = /\n\nStored reference (?:files|images):/i;
 const CALLBACK_THREAD_PATTERN = /^callback(?:-fallback)?-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):/i;
 const DIRECT_OPERATOR_THREAD_PATTERN = /^operator-direct-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-/i;
+const ATTACHMENT_SUMMARY_PATTERN =
+  /^Attached \d+ (?:image|images|file|files|attachment|attachments)(?:, \d+ (?:image|images|file|files|attachment|attachments))*$/;
 
 function isOperatorUserRole(role: string | null | undefined): boolean {
   return role === "user" || role === "user-with-attachments";
@@ -38,6 +40,10 @@ function isOperatorUserMessage(message: ButlerMessageView): boolean {
 
 function isProviderBackedAssistantMessage(message: ButlerMessageView): boolean {
   return message.role === "assistant" && message.id.startsWith("operator-session-");
+}
+
+function isLeakedProviderAttachmentSummary(message: ButlerMessageView): boolean {
+  return isProviderBackedAssistantMessage(message) && ATTACHMENT_SUMMARY_PATTERN.test(message.text.trim());
 }
 
 export function extractOperatorCallbackThreadId(id: string): string | null {
@@ -181,6 +187,11 @@ function alignCallbacksToDirectOperatorMessages(messages: ButlerMessageView[]): 
 
 export function normalizeOperatorMessages(messages: ButlerMessageView[]): boolean {
   const beforeSignature = messages.map((message) => `${message.id}:${message.at ?? ""}`).join("\n");
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (isLeakedProviderAttachmentSummary(messages[index]!)) {
+      messages.splice(index, 1);
+    }
+  }
   alignCallbacksToDirectOperatorMessages(messages);
   messages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
 
@@ -308,7 +319,7 @@ export async function backfillOperatorMessagesFromSessionFiles(messages: ButlerM
       const at = extractMessageTimestamp(message) ?? extractMessageTimestamp(parsed) ?? Date.now();
       if (role === "user" || role === "user-with-attachments") {
         const text = persistedUserText(message);
-        hideAssistantReply = role === "user" && isButlerBackgroundPromptText(text);
+        hideAssistantReply = isButlerBackgroundPromptText(text);
         if (!isPersistableProviderOperatorMessage(role, text)) continue;
         const id = typeof parsed.id === "string" && parsed.id.trim() ? `operator-user-${parsed.id}` : `operator-user-${at}`;
         changed = upsertProviderBackedOperatorMessage(messages, id, text, at, role, displayTextForPersistedUserText(text), { normalize: false }) || changed;
