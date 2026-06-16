@@ -127,3 +127,21 @@ test("persistent live update reconnects still surface the disconnect toast state
     browser.restore();
   }
 });
+
+test("failed background resyncs reuse the disconnect notice grace period", () => {
+  const browser = installFakeBrowserTimers();
+  try {
+    __liveStateTestHooks.resetForTest();
+    __liveStateTestHooks.markTransportAliveForTest();
+
+    __liveStateTestHooks.handleVisiblePageResyncFailureForTest(new Error("bootstrap timed out"));
+
+    assert.equal(__liveStateTestHooks.getTransportSnapshot().reconnecting, true);
+    assert.equal(__liveStateTestHooks.getTransportSnapshot().disconnected, false);
+
+    browser.advance(__liveStateTestHooks.disconnectNoticeDelayMs);
+    assert.equal(__liveStateTestHooks.getTransportSnapshot().disconnected, true);
+  } finally {
+    browser.restore();
+  }
+});

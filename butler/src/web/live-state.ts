@@ -953,16 +953,7 @@ function requestVisiblePageResync(
     return;
   }
 
-  void refreshLiveStateFromServer(false, undefined, forcedChannels).catch((error) => {
-    const message = error instanceof Error ? error.message : String(error);
-    setTransportState({
-      connected: false,
-      disconnected: true,
-      reconnecting: true,
-      lastError: message
-    });
-    scheduleReconnect(message);
-  });
+  void refreshLiveStateFromServer(false, undefined, forcedChannels).catch(handleVisiblePageResyncFailure);
 }
 
 function requestVersionGapResync(): void {
@@ -972,6 +963,11 @@ function requestVersionGapResync(): void {
   }
 
   requestVisiblePageResync(VERSION_GAP_RESYNC_MIN_INTERVAL_MS, outdatedChannels);
+}
+
+function handleVisiblePageResyncFailure(error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  scheduleReconnect(message);
 }
 
 function installPageResyncHandlers(): void {
@@ -1274,6 +1270,7 @@ export async function waitForBootstrap(): Promise<void> {
 export const __liveStateTestHooks = {
   disconnectNoticeDelayMs: DISCONNECT_NOTICE_DELAY_MS,
   getTransportSnapshot: () => transportStore.getSnapshot(),
+  handleVisiblePageResyncFailureForTest: handleVisiblePageResyncFailure,
   markTransportAliveForTest: markTransportAlive,
   scheduleReconnectForTest: scheduleReconnect,
   resetForTest: () => {
