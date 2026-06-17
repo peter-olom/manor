@@ -10,6 +10,7 @@ import {
 
 import { getJson, postJson, uploadAttachment } from "./api";
 import { ButlerComposer, type ButlerComposerSendOptions } from "./ButlerComposer";
+import { readButlerComposerAttachments, updateButlerComposerAttachments, type ComposerAttachmentUpdate } from "./composer-attachment-cache";
 import { ArrowDownIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon, MemoryIcon, TrashIcon } from "./icons";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
@@ -332,7 +333,7 @@ export function ButlerSurface({
   const [activeJumpId, setActiveJumpId] = useState<string | null>(null);
   const [hideButlerActivityFrom, setHideButlerActivityFrom] = useState<number | null>(null);
   const [butlerDraftPrefill, setButlerDraftPrefill] = useState<{ id: string; text: string } | null>(null);
-  const [butlerAttachments, setButlerAttachments] = useState<FileReference[]>([]);
+  const [butlerAttachments, setButlerAttachmentsState] = useState<FileReference[]>(readButlerComposerAttachments);
   const [butlerUploadingAttachments, setButlerUploadingAttachments] = useState(0);
   const [busyStackId, setBusyStackId] = useState<string | null>(null);
   const [busyServiceId, setBusyServiceId] = useState<string | null>(null);
@@ -351,6 +352,11 @@ export function ButlerSurface({
   const liveMessageSignatureRef = useRef<string | null>(null);
   const jumpFlashTimerRef = useRef<number | null>(null);
   const butlerViewRestoredRef = useRef(false);
+
+  function setButlerAttachments(update: ComposerAttachmentUpdate): void {
+    setButlerAttachmentsState(updateButlerComposerAttachments(update));
+  }
+
   const checklistThreads = useMemo(
     () =>
       (shell?.codex.threads ?? [])

@@ -42,6 +42,10 @@ function isProviderBackedAssistantMessage(message: ButlerMessageView): boolean {
   return message.role === "assistant" && message.id.startsWith("operator-session-");
 }
 
+function isDirectOperatorMessage(message: ButlerMessageView): boolean {
+  return Boolean(extractDirectOperatorThreadId(message.id)) && isOperatorUserMessage(message);
+}
+
 function isLeakedProviderAttachmentSummary(message: ButlerMessageView): boolean {
   return isProviderBackedAssistantMessage(message) && ATTACHMENT_SUMMARY_PATTERN.test(message.text.trim());
 }
@@ -176,7 +180,7 @@ function alignCallbacksToDirectOperatorMessages(messages: ButlerMessageView[]): 
     const offset = (callbackOffsetsByAnchor.get(anchor.id) ?? 0) + 1;
     callbackOffsetsByAnchor.set(anchor.id, offset);
     const nextAt = anchor.at + offset;
-    if (callback.at !== null && callback.at > nextAt) {
+    if (callback.at !== nextAt) {
       callback.at = nextAt;
       changed = true;
     }
@@ -193,6 +197,11 @@ export function normalizeOperatorMessages(messages: ButlerMessageView[]): boolea
     }
   }
   alignCallbacksToDirectOperatorMessages(messages);
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (isDirectOperatorMessage(messages[index]!)) {
+      messages.splice(index, 1);
+    }
+  }
   messages.sort((left, right) => (left.at ?? 0) - (right.at ?? 0));
 
   const groups = groupOperatorMessages(messages);

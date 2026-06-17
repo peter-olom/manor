@@ -272,6 +272,51 @@ function installPreviewAnnotationLayerInPage() {
     };
   }
 
+  function annotationViewport(mark) {
+    const current = readViewport();
+    const viewport = mark.viewport ?? current;
+    return {
+      width: Math.max(1, Math.round(viewport.width || current.width)),
+      height: Math.max(1, Math.round(viewport.height || current.height)),
+      scrollX: Math.max(0, Math.round(viewport.scrollX || 0)),
+      scrollY: Math.max(0, Math.round(viewport.scrollY || 0)),
+      documentWidth: Math.max(viewport.documentWidth || 0, current.documentWidth, viewport.width || 0),
+      documentHeight: Math.max(viewport.documentHeight || 0, current.documentHeight, viewport.height || 0)
+    };
+  }
+
+  function documentRectForMark(mark) {
+    const viewport = annotationViewport(mark);
+    return {
+      x: viewport.scrollX + mark.x * viewport.width,
+      y: viewport.scrollY + mark.y * viewport.height,
+      width: Math.max(1, mark.width * viewport.width),
+      height: Math.max(1, mark.height * viewport.height)
+    };
+  }
+
+  function viewportRectForMark(mark, currentViewport = readViewport()) {
+    const rect = documentRectForMark(mark);
+    return {
+      x: rect.x - currentViewport.scrollX,
+      y: rect.y - currentViewport.scrollY,
+      width: rect.width,
+      height: rect.height
+    };
+  }
+
+  function setMarkDocumentRect(mark, rect, currentViewport = readViewport()) {
+    const width = Math.max(1, Math.min(rect.width, currentViewport.width));
+    const height = Math.max(1, Math.min(rect.height, currentViewport.height));
+    const x = clamp(rect.x, currentViewport.scrollX, Math.max(currentViewport.scrollX, currentViewport.scrollX + currentViewport.width - width));
+    const y = clamp(rect.y, currentViewport.scrollY, Math.max(currentViewport.scrollY, currentViewport.scrollY + currentViewport.height - height));
+    mark.x = clamp((x - currentViewport.scrollX) / currentViewport.width, 0, 1);
+    mark.y = clamp((y - currentViewport.scrollY) / currentViewport.height, 0, 1);
+    mark.width = clamp(width / currentViewport.width, 0, 1);
+    mark.height = clamp(height / currentViewport.height, 0, 1);
+    mark.viewport = currentViewport;
+  }
+
   function enforceScrollLock() {
     const lock = state.scrollLock;
     if (!lock) {
@@ -347,8 +392,12 @@ function installPreviewAnnotationLayerInPage() {
     }
   }
 
+  function shouldLockScroll() {
+    return !state.hidden && (Boolean(state.draft) || Boolean(state.selectionDrag));
+  }
+
   function updateScrollLock() {
-    setScrollLocked(!state.hidden);
+    setScrollLocked(shouldLockScroll());
   }
 
   function point(event) {
@@ -356,6 +405,10 @@ function installPreviewAnnotationLayerInPage() {
       x: clamp(event.clientX / Math.max(1, window.innerWidth), 0, 1),
       y: clamp(event.clientY / Math.max(1, window.innerHeight), 0, 1)
     };
+  }
+
+  function clientPoint(event) {
+    return { x: event.clientX, y: event.clientY };
   }
 
   function rectFromPoints(startPoint, currentPoint) {
@@ -453,20 +506,22 @@ function installPreviewAnnotationLayerInPage() {
 
   function render() {
     const nodes = [];
+    const viewport = readViewport();
+    svg.setAttribute("width", String(viewport.width));
+    svg.setAttribute("height", String(viewport.height));
+    svg.setAttribute("viewBox", `0 0 ${viewport.width} ${viewport.height}`);
     const allMarks = state.draft ? [...state.marks, state.draft] : state.marks;
     for (const mark of allMarks) {
-      const x = mark.x * 100;
-      const y = mark.y * 100;
-      const width = mark.width * 100;
-      const height = mark.height * 100;
-      const badgeX = x + Math.min(2.8, Math.max(1.6, width * 0.18));
-      const badgeY = y + Math.min(4.8, Math.max(2.8, height * 0.18));
+      const { x, y, width, height } = viewportRectForMark(mark, viewport);
+      const badgeRadius = Math.min(18, Math.max(12, Math.min(width, height) * 0.18));
+      const badgeX = x + badgeRadius + 2;
+      const badgeY = y + badgeRadius + 2;
       const active = mark.id === state.activeId;
       nodes.push(`
-        <g class="mark" data-id="${mark.id ?? ""}">
-          <rect x="${x}%" y="${y}%" width="${width}%" height="${height}%" fill="${mark.color}22" stroke="${mark.color}" stroke-width="${active ? 5 : 3}" rx="0.6" />
-          <circle cx="${badgeX}%" cy="${badgeY}%" r="12" fill="${mark.color}" vector-effect="non-scaling-stroke" />
-          <text class="badge-text" x="${badgeX}%" y="${badgeY + 0.1}%">${mark.number ?? ""}</text>
+        <g class="mark" data-id="${escapeAttribute(mark.id ?? "")}">
+          <rect x="${x}" y="${y}" width="${width}" height="${height}" fill="${mark.color}22" stroke="${mark.color}" stroke-width="${active ? 5 : 3}" rx="4" />
+          <circle cx="${badgeX}" cy="${badgeY}" r="${badgeRadius}" fill="${mark.color}" vector-effect="non-scaling-stroke" />
+          <text class="badge-text" x="${badgeX}" y="${badgeY + 0.5}">${mark.number ?? ""}</text>
         </g>
       `);
     }
@@ -481,7 +536,7 @@ function installPreviewAnnotationLayerInPage() {
       return;
     }
     const id = `annotation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    state.marks.push({ ...rect, id, color: state.color, number: state.nextNumber++, note: rect.note ?? "", viewport: readViewport() });
+    state.marks.push({ ...rect, id, color: rect.color || state.color, number: state.nextNumber++, note: rect.note ?? "", viewport: rect.viewport ?? readViewport() });
     setActiveMark(id);
     showBatchStatus();
     publishBatchSoon();
@@ -512,8 +567,16 @@ function installPreviewAnnotationLayerInPage() {
   }
 
   function serializedAnnotations() {
-    return state.marks.map(({ id, x, y, width, height, color, number, note, viewport }) => ({
-      id, x, y, width, height, color, number, note: note || "", viewport: viewport || readViewport()
+    return state.marks.map((mark) => ({
+      id: mark.id,
+      x: mark.x,
+      y: mark.y,
+      width: mark.width,
+      height: mark.height,
+      color: mark.color,
+      number: mark.number,
+      note: mark.note || "",
+      viewport: annotationViewport(mark)
     }));
   }
 
@@ -654,13 +717,14 @@ function installPreviewAnnotationLayerInPage() {
     event.preventDefault();
     event.stopPropagation();
     const startPoint = point(event);
-    state.draft = { ...rectFromPoints(startPoint, startPoint), color: state.color, number: state.nextNumber, startPoint, pointerId: event.pointerId };
+    state.draft = { ...rectFromPoints(startPoint, startPoint), color: state.color, number: state.nextNumber, startPoint, pointerId: event.pointerId, viewport: readViewport() };
     try {
       stage.setPointerCapture(event.pointerId);
     } catch {
       // Synthetic or unusual pointer sources may not be capturable. Drawing still works.
     }
     render();
+    updateScrollLock();
   }, true);
 
   stage.addEventListener("pointermove", (event) => {
@@ -689,10 +753,12 @@ function installPreviewAnnotationLayerInPage() {
         height: draft.height,
         color: draft.color,
         number: draft.number,
-        note: ""
+        note: "",
+        viewport: draft.viewport
       });
     } else {
       render();
+      updateScrollLock();
     }
   }
 
@@ -722,8 +788,8 @@ function installPreviewAnnotationLayerInPage() {
     state.selectionDrag = {
       pointerId: event.pointerId,
       markId: mark.id,
-      startPoint: point(event),
-      original: { x: mark.x, y: mark.y, width: mark.width, height: mark.height }
+      startClientPoint: clientPoint(event),
+      original: documentRectForMark(mark)
     };
     try {
       stage.setPointerCapture(event.pointerId);
@@ -743,12 +809,12 @@ function installPreviewAnnotationLayerInPage() {
     }
     event.preventDefault();
     event.stopPropagation();
-    const currentPoint = point(event);
-    const deltaX = currentPoint.x - drag.startPoint.x;
-    const deltaY = currentPoint.y - drag.startPoint.y;
-    mark.x = clamp(drag.original.x + deltaX, 0, Math.max(0, 1 - drag.original.width));
-    mark.y = clamp(drag.original.y + deltaY, 0, Math.max(0, 1 - drag.original.height));
-    mark.viewport = readViewport();
+    const currentPoint = clientPoint(event);
+    setMarkDocumentRect(mark, {
+      ...drag.original,
+      x: drag.original.x + currentPoint.x - drag.startClientPoint.x,
+      y: drag.original.y + currentPoint.y - drag.startClientPoint.y
+    });
     render();
   }, true);
 
@@ -916,6 +982,8 @@ function installPreviewAnnotationLayerInPage() {
   render();
 
   window.addEventListener("storage", updateTheme);
+  window.addEventListener("scroll", render, { passive: true });
+  window.addEventListener("resize", render);
   window.matchMedia?.("(prefers-color-scheme: dark)").addEventListener?.("change", updateTheme);
 
   window.__manorPreviewAnnotationLayer = {

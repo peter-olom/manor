@@ -18,7 +18,6 @@ export type DirectCodexMessageAccess = {
     threadId: string,
     options?: { privateSteerText?: string | null; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null }
   ): void;
-  recordDirectCodexOperatorMessage(threadId: string, text: string, at?: number): number;
   noteThreadFocus(threadId: string, reason?: string): void;
   saveCallbackState(): Promise<void>;
   emit(event: "change"): boolean;
@@ -222,7 +221,6 @@ export async function backfillDirectCodexMessagesFromSessionFiles(messages: Butl
       const at = Number.isFinite(timestamp) ? timestamp : Date.now();
       const id = `operator-direct-${threadId}-${at}-${sequence++}`;
       directMessages.push({ id, text, at });
-      changed = upsertOperatorMessage(messages, id, text, at, null, { role: "user", normalize: false }) || changed;
     }
 
     for (const [turnId, directMessage] of mapTaskStartsToDirectMessages(taskStarts, directMessages)) {
@@ -262,7 +260,7 @@ export async function notifyDirectCodexMessage(
   }
 
   const privateSteerText = buildDirectCodexMessagePingSummary(input);
-  const requestedAt = access.recordDirectCodexOperatorMessage(input.threadId, privateSteerText);
+  const requestedAt = Date.now();
   access.store.refreshCompletedSupervisionChecklistForFollowup(input.threadId, privateSteerText);
   access.registerPendingChatCallback(input.threadId, {
     privateSteerText,

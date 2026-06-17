@@ -340,6 +340,7 @@ export function App() {
       await postJson(`/api/preview-annotations/operator/batches/${encodeURIComponent(activePreviewAnnotationBatch.id)}/insert`, {
         target: composerPrefillTarget
       });
+      setPreviewAnnotationBatches((current) => current.filter((batch) => batch.id !== activePreviewAnnotationBatch.id));
       await refreshPreviewAnnotationBatches();
     } catch (error) {
       showErrorToast(error);
@@ -925,7 +926,6 @@ export function App() {
   const topbarCompactionTone = activeThreadSummary
     ? activeThreadSummary.compaction.active ? "accent" : "neutral"
     : shell?.butler.compaction.active ? "accent" : "neutral";
-
 
   useEffect(() => {
     function handleServerComposerPrefill(event: Event) {

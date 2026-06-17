@@ -444,7 +444,8 @@ function normalizeAnnotationPayload(input) {
         width: clampUnit(entry.width),
         height: clampUnit(entry.height),
         color: typeof entry.color === "string" ? entry.color.slice(0, 32) : "#ff6b2c",
-        note: typeof entry.note === "string" ? entry.note.slice(0, 1000) : ""
+        note: typeof entry.note === "string" ? entry.note.slice(0, 1000) : "",
+        viewport: normalizeAnnotationViewport(entry.viewport)
       }))
       .filter((entry) => entry.width > 0 && entry.height > 0)
       .slice(0, 100)
@@ -454,6 +455,30 @@ function normalizeAnnotationPayload(input) {
 function clampUnit(value) {
   const number = typeof value === "number" && Number.isFinite(value) ? value : 0;
   return Math.min(1, Math.max(0, number));
+}
+
+function clampAnnotationInteger(value, fallback, min, max) {
+  const number = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : fallback;
+  return Math.min(max, Math.max(min, number));
+}
+
+function normalizeAnnotationViewport(input) {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+  const width = clampAnnotationInteger(input.width, 0, 0, 4096);
+  const height = clampAnnotationInteger(input.height, 0, 0, 4096);
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+  return {
+    width,
+    height,
+    scrollX: clampAnnotationInteger(input.scrollX, 0, 0, 1_000_000),
+    scrollY: clampAnnotationInteger(input.scrollY, 0, 0, 1_000_000),
+    documentWidth: Math.max(width, clampAnnotationInteger(input.documentWidth, width, 0, 1_000_000)),
+    documentHeight: Math.max(height, clampAnnotationInteger(input.documentHeight, height, 0, 1_000_000))
+  };
 }
 
 function formatAnnotationBatchText(batch) {

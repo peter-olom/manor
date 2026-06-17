@@ -10,6 +10,7 @@ import {
 
 import { getJson, postJson, uploadAttachment } from "./api";
 import { CodexComposerSettings } from "./CodexComposerSettings";
+import { readThreadComposerAttachments, resolveComposerAttachmentUpdate, updateThreadComposerAttachments, type ComposerAttachmentUpdate } from "./composer-attachment-cache";
 import { ComposerMentions } from "./ComposerMentions";
 import { ArrowDownIcon, AttachmentIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon, SendIcon, StopIcon, TrashIcon } from "./icons";
 import { MarkdownMessage } from "./MarkdownMessage";
@@ -119,7 +120,7 @@ export function ThreadSurface({
   const knownImages = useKnownImages();
   const activeThread = useThreadDetail(threadId);
   const [threadDraft, setThreadDraft] = useState("");
-  const [threadAttachments, setThreadAttachments] = useState<FileReference[]>([]);
+  const [threadAttachments, setThreadAttachmentsState] = useState<FileReference[]>(() => threadId ? readThreadComposerAttachments(threadId) : []);
   const [threadUploadingAttachments, setThreadUploadingAttachments] = useState(0);
   const [threadInputItems, setThreadInputItems] = useState<ComposerInputItem[]>([]);
   const [threadDragActive, setThreadDragActive] = useState(false);
@@ -157,11 +158,17 @@ export function ThreadSurface({
   const jumpFlashTimerRef = useRef<number | null>(null);
   const lastAppliedPrefillIdRef = useRef<string | null>(null);
 
+  function setThreadAttachments(update: ComposerAttachmentUpdate): void {
+    const nextThreadId = activeThread?.id ?? threadId;
+    const next = nextThreadId ? updateThreadComposerAttachments(nextThreadId, update) : resolveComposerAttachmentUpdate(threadAttachments, update);
+    setThreadAttachmentsState(next);
+  }
+
   useLayoutEffect(() => {
     const nextThreadId = threadId;
     const panelState = nextThreadId ? threadPanelStates.get(nextThreadId) : null;
     setThreadDraft(nextThreadId ? readStoredValue(`${THREAD_DRAFT_STORAGE_KEY_PREFIX}${nextThreadId}`) : "");
-    setThreadAttachments([]);
+    setThreadAttachmentsState(nextThreadId ? readThreadComposerAttachments(nextThreadId) : []);
     setFollowRun(nextThreadId ? (threadScrollPositions.get(nextThreadId)?.follow ?? true) : true);
     setShowTimeline(panelState?.showTimeline ?? false);
     setShowThreadChecklist(panelState?.showThreadChecklist ?? false);

@@ -452,13 +452,6 @@ export class ButlerAgentService extends EventEmitter {
     void this.saveCallbackState();
   }
 
-  private recordDirectCodexOperatorMessage(threadId: string, text: string, at: number = Date.now()): number {
-    if (!upsertOperatorMessage(this.operatorMessages, `operator-direct-${threadId}-${at}`, text, at, null, { role: "user" })) return at;
-    void this.saveOperatorMessageState();
-    this.emit("change");
-    return at;
-  }
-
   private queueDelegationAcknowledgement(threadId: string, text: string): void {
     const at = Date.now();
     const messageId = `delegation-ack-${threadId}`;
