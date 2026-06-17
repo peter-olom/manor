@@ -112,3 +112,18 @@ test("runtime broker can resolve source workspace mounts as read-only", async ()
     }
   ]);
 });
+
+test("runtime broker leaves preview route bodies unparsed for upstream POST proxying", () => {
+  const source = fs.readFileSync(path.resolve(import.meta.dirname, "../../../docker/runtime-broker/broker.mjs"), "utf8");
+  const parserIndex = source.indexOf("const brokerJsonParser = express.json();");
+  const bypassIndex = source.indexOf("function shouldBypassBrokerJsonParser(request)");
+  const routeIndex = source.indexOf('app.use("/routes/preview/:leaseId"');
+
+  assert.notEqual(parserIndex, -1);
+  assert.notEqual(bypassIndex, -1);
+  assert.notEqual(routeIndex, -1);
+  assert.ok(parserIndex < routeIndex);
+  assert.ok(bypassIndex < routeIndex);
+  assert.match(source, /request\.path\.startsWith\("\/routes\/preview\/"\)/);
+  assert.match(source, /brokerJsonParser\(request, response, next\)/);
+});

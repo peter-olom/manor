@@ -61,7 +61,18 @@ const runtimeReconcileState = {
   lastError: null,
   consecutiveFailures: 0
 };
-const app = express(); app.use(express.json());
+const app = express();
+const brokerJsonParser = express.json();
+function shouldBypassBrokerJsonParser(request) {
+  return request.path.startsWith("/routes/preview/");
+}
+app.use((request, response, next) => {
+  if (shouldBypassBrokerJsonParser(request)) {
+    next();
+    return;
+  }
+  brokerJsonParser(request, response, next);
+});
 const server = http.createServer(app);
 const brokerContext = {
   previewNetwork,

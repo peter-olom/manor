@@ -20,3 +20,10 @@ test("preview browser sessions wire annotation insertion through Butler internal
   assert.match(source, /annotationTargets/);
   assert.match(source, /thread:\$\{scope.threadId\}/);
 });
+
+test("browser proof control retries transient sidecar fetch failures with a readiness hint", () => {
+  assert.match(source, /const retryDelaysMs = \[250, 500, 1000, 2000\]/);
+  assert.match(source, /error\.message === "fetch failed"/);
+  assert.match(source, /Playwright proof sidecar is not ready/);
+  assert.match(source, /Retry shortly or check the playwright service/);
+});
