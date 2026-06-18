@@ -8,6 +8,7 @@ import Docker from "dockerode";
 import { createBrokerBrowserController } from "./broker-browser.mjs";
 import { createBrokerDesktopController } from "./broker-desktop.mjs";
 import { createBrokerCore } from "./broker-core.mjs";
+import { createBrokerJsonParserMiddleware } from "./broker-http.mjs";
 import { createBrokerRuntime } from "./broker-runtime.mjs";
 import { registerBrokerServiceRoutes } from "./broker-services.mjs";
 import { createBrokerStorage } from "./broker-storage.mjs";
@@ -61,7 +62,8 @@ const runtimeReconcileState = {
   lastError: null,
   consecutiveFailures: 0
 };
-const app = express(); app.use(express.json());
+const app = express();
+app.use(createBrokerJsonParserMiddleware(express.json()));
 const server = http.createServer(app);
 const brokerContext = {
   previewNetwork,

@@ -26,28 +26,61 @@ export function createBrokerBrowserController(options) {
     appendPreviewRoutePath,
     persistVerificationArtifacts,
     internalOperatorBaseUrl,
-    brokerToken
+    brokerToken,
+    playwrightControlFetch = fetch,
+    playwrightControlRetryDelaysMs = [250, 500, 1000, 2000]
   } = options;
 
+  function isRetryablePlaywrightControlError(error) {
+    if (!(error instanceof Error)) {
+      return false;
+    }
+    const cause = error.cause && typeof error.cause === "object" ? error.cause : {};
+    const code = typeof cause.code === "string" ? cause.code : "";
+    return error.message === "fetch failed" || ["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN"].includes(code);
+  }
+
+  function formatPlaywrightControlError(error) {
+    if (!(error instanceof Error)) {
+      return new Error(String(error));
+    }
+    const cause = error.cause && typeof error.cause === "object" ? error.cause : {};
+    const code = typeof cause.code === "string" ? cause.code : "unavailable";
+    return new Error(`Playwright proof sidecar is not ready (${code}). Retry shortly or check the playwright service.`);
+  }
+
+  async function sleep(ms) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   async function callPlaywrightControl(pathname, init = {}) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 60_000);
-    try {
-      const response = await fetch(new URL(pathname, playwrightControlUrl), {
-        ...init,
-        headers: {
-          "content-type": "application/json",
-          ...(init.headers ?? {})
-        },
-        signal: controller.signal
-      });
-      const payload = await response.json().catch(() => ({ error: "Playwright control request failed" }));
-      if (!response.ok) {
-        throw new Error(payload?.error || `Playwright control request failed with ${response.status}`);
+    let attempt = 0;
+    while (true) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60_000);
+      try {
+        const response = await playwrightControlFetch(new URL(pathname, playwrightControlUrl), {
+          ...init,
+          headers: {
+            "content-type": "application/json",
+            ...(init.headers ?? {})
+          },
+          signal: controller.signal
+        });
+        const payload = await response.json().catch(() => ({ error: "Playwright control request failed" }));
+        if (!response.ok) {
+          throw new Error(payload?.error || `Playwright control request failed with ${response.status}`);
+        }
+        return payload;
+      } catch (error) {
+        if (!isRetryablePlaywrightControlError(error) || attempt >= playwrightControlRetryDelaysMs.length) {
+          throw isRetryablePlaywrightControlError(error) ? formatPlaywrightControlError(error) : error;
+        }
+        await sleep(playwrightControlRetryDelaysMs[attempt]);
+        attempt += 1;
+      } finally {
+        clearTimeout(timeout);
       }
-      return payload;
-    } finally {
-      clearTimeout(timeout);
     }
   }
 

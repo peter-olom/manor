@@ -21,6 +21,7 @@ COPY docker/runtime-broker/broker.mjs /opt/manor/runtime-broker/broker.mjs
 COPY docker/runtime-broker/broker-browser.mjs /opt/manor/runtime-broker/broker-browser.mjs
 COPY docker/runtime-broker/broker-core.mjs /opt/manor/runtime-broker/broker-core.mjs
 COPY docker/runtime-broker/broker-desktop.mjs /opt/manor/runtime-broker/broker-desktop.mjs
+COPY docker/runtime-broker/broker-http.mjs /opt/manor/runtime-broker/broker-http.mjs
 COPY docker/runtime-broker/broker-runtime.mjs /opt/manor/runtime-broker/broker-runtime.mjs
 COPY docker/runtime-broker/broker-services.mjs /opt/manor/runtime-broker/broker-services.mjs
 COPY docker/runtime-broker/broker-storage.mjs /opt/manor/runtime-broker/broker-storage.mjs
