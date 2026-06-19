@@ -130,6 +130,7 @@ const {
   clearRetainedPreviewLease,
   clearStackThreadBinding,
   cloneManagedStackVolume,
+  collectDockerLogs,
   collectExecOutput,
   disconnectNetworkConnection,
   dropPreviewEgressLeasePolicy,
@@ -1265,15 +1266,7 @@ app.get("/leases/:leaseId/logs", async (request, response) => {
       tail,
       timestamps: false
     });
-    const logs =
-      Buffer.isBuffer(stream)
-        ? stream.toString("utf8")
-        : await new Promise((resolve, reject) => {
-            const chunks = [];
-            stream.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-            stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-            stream.on("error", reject);
-          });
+    const logs = await collectDockerLogs(stream);
 
     response.json({
       leaseId: request.params.leaseId,
@@ -1379,6 +1372,7 @@ registerBrokerServiceRoutes({
   normalizeExecArgs,
   buildShellCommand,
   collectExecOutput,
+  collectDockerLogs,
   ensureImage,
   inspectContainer,
   cloneManagedStackVolume,

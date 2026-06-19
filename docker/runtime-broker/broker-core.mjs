@@ -775,9 +775,7 @@ function buildBootstrapConfig(payload, targetPort) {
   const defaultTarget =
     defaultKind === "http"
       ? "/"
-      : defaultKind === "tcp"
-        ? `127.0.0.1:${targetPort}`
-        : null;
+      : null;
 
   return {
     waitSeconds: normalizePositiveInteger(payload.bootstrapWaitSeconds, 120),
@@ -800,9 +798,7 @@ function bootstrapConfigFromLabels(labels, targetPort) {
   const defaultTarget =
     defaultKind === "http"
       ? "/"
-      : defaultKind === "tcp"
-        ? `127.0.0.1:${targetPort}`
-        : null;
+      : null;
 
   return {
     waitSeconds: normalizePositiveInteger(labels?.["manor.bootstrap-wait-seconds"], 120),
@@ -944,6 +940,57 @@ function setLeaseTransition(leaseId, state) {
 
 function clearLeaseTransition(leaseId) {
   leaseTransitions.delete(leaseId);
+}
+
+function decodeDockerLogPayload(payload) {
+  const buffer = Buffer.isBuffer(payload) ? payload : Buffer.from(payload ?? "");
+  if (buffer.length === 0) {
+    return "";
+  }
+
+  let offset = 0;
+  const chunks = [];
+  while (offset < buffer.length) {
+    if (offset + 8 > buffer.length) {
+      return buffer.toString("utf8");
+    }
+
+    const streamType = buffer[offset];
+    const hasDockerHeader =
+      (streamType === 1 || streamType === 2) &&
+      buffer[offset + 1] === 0 &&
+      buffer[offset + 2] === 0 &&
+      buffer[offset + 3] === 0;
+    if (!hasDockerHeader) {
+      return buffer.toString("utf8");
+    }
+
+    const size = buffer.readUInt32BE(offset + 4);
+    const payloadStart = offset + 8;
+    const payloadEnd = payloadStart + size;
+    if (payloadEnd > buffer.length) {
+      return buffer.toString("utf8");
+    }
+
+    chunks.push(buffer.subarray(payloadStart, payloadEnd));
+    offset = payloadEnd;
+  }
+
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function collectDockerLogs(streamOrBuffer) {
+  if (Buffer.isBuffer(streamOrBuffer)) {
+    return decodeDockerLogPayload(streamOrBuffer);
+  }
+
+  const buffer = await new Promise((resolve, reject) => {
+    const chunks = [];
+    streamOrBuffer.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    streamOrBuffer.on("end", () => resolve(Buffer.concat(chunks)));
+    streamOrBuffer.on("error", reject);
+  });
+  return decodeDockerLogPayload(buffer);
 }
 
 function resolveLeaseStatus(containerState, leaseId) {
@@ -1132,6 +1179,8 @@ async function listManagedContainers(filter) {
     rejectIfLeaseUnavailable,
     rejectIfLeaseRetainedFailed,
     requireServiceContainer,
-    listManagedContainers
+    listManagedContainers,
+    decodeDockerLogPayload,
+    collectDockerLogs
   };
 }

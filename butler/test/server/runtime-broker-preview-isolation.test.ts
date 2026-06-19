@@ -33,6 +33,55 @@ test("runtime broker forces preview leases into snapshot workspace mode", (t) =>
   assert.equal(lease.operatorUrl, "/preview/lease-preview-isolation/");
 });
 
+test("runtime broker TCP heartbeat defaults to the preview container target", (t) => {
+  const egressConfigPath = path.join(os.tmpdir(), `manor-egress-${process.pid}-${Date.now()}.json`);
+  fs.writeFileSync(egressConfigPath, '{"profiles":[]}\n', "utf8");
+  t.after(() => {
+    fs.rmSync(egressConfigPath, { force: true });
+  });
+
+  const broker = createBrokerCore({
+    previewImage: "node:22",
+    previewEgressConfigPath: egressConfigPath,
+    routeBase: "/preview"
+  });
+  const lease = broker.buildLease({
+    leaseId: "lease-tcp-heartbeat",
+    worktreePath: "/repos/example",
+    command: "node tcp-server.js",
+    targetPort: 3101,
+    heartbeatKind: "tcp"
+  });
+
+  assert.equal(lease.bootstrap.heartbeatTarget, null);
+  assert.equal(broker.bootstrapConfigFromLabels({ "manor.bootstrap-heartbeat-kind": "tcp" }, 3101).heartbeatTarget, null);
+});
+
+test("runtime broker decodes Docker multiplexed log frames", (t) => {
+  const egressConfigPath = path.join(os.tmpdir(), `manor-egress-${process.pid}-${Date.now()}.json`);
+  fs.writeFileSync(egressConfigPath, '{"profiles":[]}\n', "utf8");
+  t.after(() => {
+    fs.rmSync(egressConfigPath, { force: true });
+  });
+
+  const broker = createBrokerCore({
+    previewImage: "node:22",
+    previewEgressConfigPath: egressConfigPath,
+    routeBase: "/preview"
+  });
+  const stdout = Buffer.from("ready on 3000\n");
+  const stderr = Buffer.from("warning line\n");
+  const frame = (streamType: number, payload: Buffer) => {
+    const header = Buffer.alloc(8);
+    header[0] = streamType;
+    header.writeUInt32BE(payload.length, 4);
+    return Buffer.concat([header, payload]);
+  };
+
+  assert.equal(broker.decodeDockerLogPayload(Buffer.concat([frame(1, stdout), frame(2, stderr)])), "ready on 3000\nwarning line\n");
+  assert.equal(broker.decodeDockerLogPayload(Buffer.from("plain log\n")), "plain log\n");
+});
+
 test("runtime broker shell quoting preserves command variables for nested snapshot shells", (t) => {
   const egressConfigPath = path.join(os.tmpdir(), `manor-egress-${process.pid}-${Date.now()}.json`);
   fs.writeFileSync(egressConfigPath, '{"profiles":[]}\n', "utf8");

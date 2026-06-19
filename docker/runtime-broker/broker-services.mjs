@@ -16,6 +16,7 @@ export function registerBrokerServiceRoutes(options) {
     normalizeEnv,
     normalizeExecArgs,
     buildShellCommand,
+    collectDockerLogs,
     collectExecOutput,
     ensureImage,
     inspectContainer,
@@ -328,15 +329,7 @@ export function registerBrokerServiceRoutes(options) {
         tail,
         timestamps: false
       });
-      const logs =
-        Buffer.isBuffer(stream)
-          ? stream.toString("utf8")
-          : await new Promise((resolve, reject) => {
-              const chunks = [];
-              stream.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-              stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-              stream.on("error", reject);
-            });
+      const logs = await collectDockerLogs(stream);
 
       response.json({
         leaseId: request.params.serviceId,

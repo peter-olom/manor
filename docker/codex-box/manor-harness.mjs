@@ -261,6 +261,14 @@ function readFlag(args, name, fallback = "") {
   return args[index + 1] ?? fallback;
 }
 
+function readCwdFlag(args, name = "--cwd", fallback = "") {
+  const raw = readFlag(args, name, fallback).trim();
+  if (!raw) {
+    return raw;
+  }
+  return path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw);
+}
+
 function hasFlag(args, name) {
   return args.includes(name);
 }
@@ -627,7 +635,7 @@ async function main() {
       );
       params = {
         title: readFlag(args, "--title"),
-        cwd: readFlag(args, "--cwd"),
+        cwd: readCwdFlag(args, "--cwd"),
         stackId: readFlag(args, "--stack"),
         aliases: readRepeatedFlag(args, "--alias"),
         env,
@@ -667,7 +675,7 @@ async function main() {
         leaseId: args[2],
         command: commandArgs.join(" ").trim(),
         commandArgs,
-        cwd: readFlag(args, "--cwd"),
+        cwd: readCwdFlag(args, "--cwd"),
         stdin: pipedInput.stdin,
         stdinProvided: pipedInput.stdinProvided
       };
@@ -790,7 +798,7 @@ async function main() {
         params = {
           title: readFlag(args, "--title"),
           command: readFlag(args, "--command"),
-          cwd: readFlag(args, "--cwd"),
+          cwd: readCwdFlag(args, "--cwd"),
           env: Object.fromEntries(parseRepeatedKeyValueFlags(args, "--env")),
           interactive: hasFlag(args, "--interactive"),
           owner: readFlag(args, "--owner"),
@@ -871,7 +879,7 @@ async function main() {
       params = {
         templateId: readFlag(args, "--template"),
         title: readFlag(args, "--title"),
-        cwd: readFlag(args, "--cwd"),
+        cwd: readCwdFlag(args, "--cwd"),
         stackId: readFlag(args, "--stack"),
         aliases: readRepeatedFlag(args, "--alias"),
         env
@@ -893,7 +901,7 @@ async function main() {
         serviceId: args[2],
         command: commandArgs.join(" ").trim(),
         commandArgs,
-        cwd: readFlag(args, "--cwd"),
+        cwd: readCwdFlag(args, "--cwd"),
         stdin: pipedInput.stdin,
         stdinProvided: pipedInput.stdinProvided
       };
@@ -909,7 +917,7 @@ async function main() {
       action = args.includes("--stateful") ? "stack.start_stateful" : "stack.start";
       params = {
         title: readFlag(args, "--title"),
-        cwd: readFlag(args, "--cwd"),
+        cwd: readCwdFlag(args, "--cwd"),
         storageMode: readFlag(args, "--storage-mode"),
         retainsVolumes: args.includes("--retain-volumes"),
         storageKey: readFlag(args, "--storage-key"),
