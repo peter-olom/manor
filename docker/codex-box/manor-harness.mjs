@@ -675,7 +675,7 @@ async function main() {
         leaseId: args[2],
         command: commandArgs.join(" ").trim(),
         commandArgs,
-        cwd: readCwdFlag(args, "--cwd"),
+        cwd: readFlag(args, "--cwd"),
         stdin: pipedInput.stdin,
         stdinProvided: pipedInput.stdinProvided
       };
@@ -901,7 +901,7 @@ async function main() {
         serviceId: args[2],
         command: commandArgs.join(" ").trim(),
         commandArgs,
-        cwd: readCwdFlag(args, "--cwd"),
+        cwd: readFlag(args, "--cwd"),
         stdin: pipedInput.stdin,
         stdinProvided: pipedInput.stdinProvided
       };
