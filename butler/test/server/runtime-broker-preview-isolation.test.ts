@@ -82,6 +82,42 @@ test("runtime broker decodes Docker multiplexed log frames", (t) => {
   assert.equal(broker.decodeDockerLogPayload(Buffer.from("plain log\n")), "plain log\n");
 });
 
+test("runtime broker resolves exec cwd inside the container", (t) => {
+  const egressConfigPath = path.join(os.tmpdir(), `manor-egress-${process.pid}-${Date.now()}.json`);
+  fs.writeFileSync(egressConfigPath, '{"profiles":[]}\n', "utf8");
+  t.after(() => {
+    fs.rmSync(egressConfigPath, { force: true });
+  });
+
+  const broker = createBrokerCore({
+    previewImage: "node:22",
+    previewEgressConfigPath: egressConfigPath,
+    routeBase: "/preview"
+  });
+  const previewContainer = {
+    Config: {
+      WorkingDir: "/tmp/manor-preview-workspaces/preview-1"
+    }
+  };
+  const serviceContainer = {
+    Config: {
+      WorkingDir: "/data"
+    }
+  };
+
+  assert.equal(
+    broker.resolveContainerExecWorkingDir(previewContainer, "apps/demo"),
+    "/tmp/manor-preview-workspaces/preview-1/apps/demo"
+  );
+  assert.equal(
+    broker.resolveContainerExecWorkingDir(previewContainer, "/tmp/manor-preview-workspaces/preview-1/apps/demo"),
+    "/tmp/manor-preview-workspaces/preview-1/apps/demo"
+  );
+  assert.equal(broker.resolveContainerExecWorkingDir(serviceContainer, "redis"), "/data/redis");
+  assert.equal(broker.resolveContainerExecWorkingDir({ Config: {} }, "tmp"), "/tmp");
+  assert.equal(broker.resolveContainerExecWorkingDir(previewContainer, ""), "");
+});
+
 test("runtime broker shell quoting preserves command variables for nested snapshot shells", (t) => {
   const egressConfigPath = path.join(os.tmpdir(), `manor-egress-${process.pid}-${Date.now()}.json`);
   fs.writeFileSync(egressConfigPath, '{"profiles":[]}\n', "utf8");

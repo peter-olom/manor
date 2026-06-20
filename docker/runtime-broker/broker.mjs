@@ -182,6 +182,7 @@ const {
   requireServiceContainer,
   requireStackNetwork,
   resolveAttachedThreadId,
+  resolveContainerExecWorkingDir,
   resolveStackThreadId,
   resolveTargetHost,
   resolveWorktreeProjectInfo,
@@ -1307,13 +1308,14 @@ app.post("/leases/:leaseId/exec", async (request, response) => {
   }
 
   try {
-    const execCommand = commandArgs.length > 0 ? commandArgs : buildShellCommand(command, cwd);
+    const workingDir = resolveContainerExecWorkingDir(required.container, cwd);
+    const execCommand = commandArgs.length > 0 ? commandArgs : buildShellCommand(command, workingDir);
     const exec = await required.containerRef.exec({
       AttachStdin: stdinProvided,
       AttachStdout: true,
       AttachStderr: true,
       Cmd: execCommand,
-      WorkingDir: cwd || undefined,
+      WorkingDir: workingDir || undefined,
       Tty: false
     });
     const output = await collectExecOutput(required.containerRef, exec, { stdin, stdinProvided });
@@ -1383,6 +1385,7 @@ registerBrokerServiceRoutes({
   serializeLiveServiceFromSummary,
   serializeInspectedService,
   toServiceContainerName,
+  resolveContainerExecWorkingDir,
   resolveTargetHost
 });
 

@@ -303,6 +303,20 @@ function buildShellCommand(command, cwd = "") {
   return ["sh", "-lc", snippet];
 }
 
+function resolveContainerExecWorkingDir(container, cwd = "") {
+  const normalizedCwd = normalizeString(cwd);
+  if (!normalizedCwd) {
+    return "";
+  }
+  if (path.posix.isAbsolute(normalizedCwd)) {
+    return path.posix.normalize(normalizedCwd);
+  }
+
+  const configuredWorkingDir = normalizeString(container?.Config?.WorkingDir);
+  const baseWorkingDir = path.posix.isAbsolute(configuredWorkingDir) ? configuredWorkingDir : "/";
+  return path.posix.normalize(path.posix.join(baseWorkingDir, normalizedCwd));
+}
+
 async function inspectNetwork(networkName) {
   try {
     return await docker.getNetwork(networkName).inspect();
@@ -1121,6 +1135,7 @@ async function listManagedContainers(filter) {
     shellQuote,
     buildShellSnippet,
     buildShellCommand,
+    resolveContainerExecWorkingDir,
     inspectNetwork,
     ensureBrokerManagedNetwork,
     listManagedNetworks,
