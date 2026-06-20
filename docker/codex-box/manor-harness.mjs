@@ -237,6 +237,31 @@ async function callBroker(token, pathname, init = {}) {
   return payload;
 }
 
+function formatFetchError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = error?.cause?.code || error?.code || "";
+  return code ? `${message} (${code})` : message;
+}
+
+async function probeEndpoint(label, baseUrl, pathName) {
+  try {
+    const response = await fetch(new URL(pathName, baseUrl), {
+      signal: AbortSignal.timeout(2000)
+    });
+    return `${label} ${response.ok ? "ok" : `returned ${response.status}`}`;
+  } catch (error) {
+    return `${label} unavailable: ${formatFetchError(error)}`;
+  }
+}
+
+async function formatControlPlaneHealth() {
+  const [butler, broker] = await Promise.all([
+    probeEndpoint("Butler", butlerBaseUrl, "/livez"),
+    probeEndpoint("runtime broker", runtimeBrokerBaseUrl, "/health")
+  ]);
+  return `Control plane: ${butler}; ${broker}.`;
+}
+
 function formatProcessRows(result) {
   return result.processes.length === 0
     ? "No processes were reported."
@@ -460,7 +485,7 @@ async function main() {
     matchCapability(capabilities, process.cwd(), explicitThreadId) ??
     (capabilities.length === 1 && !explicitThreadId ? capabilities[0] : null);
   if (!capability) {
-    throw new Error(buildCapabilityLookupError(capabilities, process.cwd(), explicitThreadId));
+    throw new Error(`${buildCapabilityLookupError(capabilities, process.cwd(), explicitThreadId)}\n${await formatControlPlaneHealth()}`);
   }
 
   let action = "";
@@ -994,7 +1019,13 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
+main().catch(async (error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|UND_ERR_CONNECT_TIMEOUT/i.test(message)) {
+    console.error(`${message}\n${await formatControlPlaneHealth().catch(() => "Control plane health check failed.")}`);
+    process.exit(1);
+    return;
+  }
+  console.error(message);
   process.exit(1);
 });

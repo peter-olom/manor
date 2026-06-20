@@ -1,3 +1,6 @@
+import { promises as fs } from "node:fs";
+import path from "node:path";
+
 export type HarnessCapability = {
   id: string;
   token: string;
@@ -19,6 +22,18 @@ export type BrokerAccessRegistryPayload = {
     updatedAt: number;
   }>;
 };
+
+export async function atomicWriteJson(filePath: string, payload: unknown): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await fs.writeFile(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    await fs.rename(tmpPath, filePath);
+  } catch (error) {
+    await fs.rm(tmpPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
 
 export function normalizeString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";

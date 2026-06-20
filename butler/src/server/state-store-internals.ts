@@ -61,6 +61,18 @@ import type {
   SupervisionChecklistView
 } from "./types.js";
 
+async function atomicWriteText(filePath: string, content: string): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await fs.writeFile(tmpPath, content, "utf8");
+    await fs.rename(tmpPath, filePath);
+  } catch (error) {
+    await fs.rm(tmpPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
 export type StateStoreInternalAccess = {
   uiStatePath: string;
   threads: Map<string, CodexThreadRecord>;
@@ -1207,8 +1219,7 @@ export async function persistStateStoreNow(access: StateStoreInternalAccess): Pr
     projectArtifactsByProjectId: Object.fromEntries([...access.persistedProjectArtifactsByProjectId.entries()].map(([projectId, artifacts]) => [projectId, artifacts])),
     projectPoliciesByProjectId: Object.fromEntries([...access.persistedProjectPoliciesByProjectId.entries()].map(([projectId, policies]) => [projectId, policies]))
   };
-  await fs.mkdir(path.dirname(access.uiStatePath), { recursive: true });
-  await fs.writeFile(access.uiStatePath, JSON.stringify(payload, null, 2));
+  await atomicWriteText(access.uiStatePath, JSON.stringify(payload, null, 2));
   await persistStateStoreSqliteMemory(access);
 }
 

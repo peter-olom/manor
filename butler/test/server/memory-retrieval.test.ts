@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, writeFile, mkdtemp } from "node:fs/promises";
+import { access, readdir, writeFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -335,4 +335,26 @@ test("sqlite memory store restores durable memory when json memory is missing", 
 
   assert.equal(retrieval.projectRollups[0]?.summary, "SQLite project rollup survived");
   assert.equal(retrieval.jobMemories[0]?.latestCheckpoint, "SQLite checkpoint survived");
+});
+
+test("corrupt sqlite memory index is quarantined and rebuilt from json state", async () => {
+  const statePath = await createStatePath({
+    windows: [],
+    focusedWindowId: null,
+    jobMemoriesByThreadId: {
+      "job-alpha": makeJobMemory({
+        latestCheckpoint: "JSON checkpoint survived corrupt sqlite",
+        updatedAt: 50
+      })
+    }
+  });
+  const stateDir = path.dirname(statePath);
+  await writeFile(path.join(stateDir, "butler-memory.sqlite"), "this is not sqlite", "utf8");
+
+  const store = new ButlerStateStore(statePath);
+  await store.load();
+
+  assert.equal(store.getJobMemory("job-alpha")?.latestCheckpoint, "JSON checkpoint survived corrupt sqlite");
+  await access(path.join(stateDir, "butler-memory.sqlite"));
+  assert.ok((await readdir(stateDir)).some((entry) => entry.startsWith("butler-memory.sqlite.corrupt-")));
 });

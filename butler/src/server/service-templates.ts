@@ -11,6 +11,7 @@ export type ServiceTemplateInput = {
   engine?: string;
   image?: string;
   port?: number;
+  defaultPort?: number;
   notes?: string | null;
   command?: string;
   workingDir?: string;
@@ -37,6 +38,27 @@ const DEFAULT_TEMPLATE_INPUTS: ServiceTemplateInput[] = [
     runtimeKind: "container",
     engine: "postgres",
     image: "postgres:18-trixie",
+    port: 5432,
+    stackVolumePath: "/var/lib/postgresql/data",
+    envDefaults: {
+      POSTGRES_USER: "manor",
+      POSTGRES_PASSWORD: "manor",
+      POSTGRES_DB: "app"
+    },
+    connection: {
+      databaseEnv: "POSTGRES_DB",
+      usernameEnv: "POSTGRES_USER",
+      passwordEnv: "POSTGRES_PASSWORD",
+      uriTemplate: "postgresql://{USERNAME}:{PASSWORD}@{HOST}:{PORT}/{DATABASE}"
+    }
+  },
+  {
+    id: "pgvector-postgres",
+    label: "Pgvector Postgres",
+    description: "Disposable PostgreSQL database with pgvector for AI/search-heavy app previews.",
+    runtimeKind: "container",
+    engine: "postgres",
+    image: "pgvector/pgvector:pg15",
     port: 5432,
     stackVolumePath: "/var/lib/postgresql/data",
     envDefaults: {
@@ -241,9 +263,13 @@ function normalizeTemplateInput(input: ServiceTemplateInput): LoadedServiceTempl
       : input.runtimeKind === "embedded"
         ? `builtin/${engine.toLowerCase()}`
         : "";
-  const defaultPort =
+  const rawPort =
     typeof input.port === "number" && Number.isFinite(input.port)
-      ? Math.max(0, Math.trunc(input.port))
+      ? input.port
+      : input.defaultPort;
+  const defaultPort =
+    typeof rawPort === "number" && Number.isFinite(rawPort)
+      ? Math.max(0, Math.trunc(rawPort))
       : input.runtimeKind === "embedded"
         ? 0
         : NaN;
@@ -356,7 +382,7 @@ export class ServiceTemplateRegistry {
   async upsert(input: ServiceTemplateInput): Promise<LoadedServiceTemplate> {
     const normalized = normalizeTemplateInput(input);
     if (!normalized) {
-      throw new Error("Invalid service template");
+      throw new Error("Invalid service template: id, label, description, runtimeKind, engine, image, and port/defaultPort are required.");
     }
 
     this.persisted.set(normalized.id, normalized);
@@ -371,7 +397,14 @@ export class ServiceTemplateRegistry {
         .sort((left, right) => left.id.localeCompare(right.id))
         .map((template) => serializeTemplate(template))
     };
-    await fs.writeFile(this.statePath, JSON.stringify(payload, null, 2));
+    const tmpPath = `${this.statePath}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      await fs.writeFile(tmpPath, JSON.stringify(payload, null, 2), "utf8");
+      await fs.rename(tmpPath, this.statePath);
+    } catch (error) {
+      await fs.rm(tmpPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 }
 

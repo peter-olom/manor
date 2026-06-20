@@ -166,3 +166,59 @@ test("manor-harness preserves service exec cwd as an in-container path", async (
   assert.equal(serviceAbsoluteExec.action, "service.exec");
   assert.equal(serviceAbsoluteExec.params?.cwd, "/data");
 });
+
+test("manor-harness diagnoses missing bindings with Butler and broker health", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-harness-health-test-"));
+  const codexHome = path.join(root, "codex-home");
+  await mkdir(path.join(codexHome, "manor"), { recursive: true });
+  await writeFile(path.join(codexHome, "manor", "harness-capabilities.json"), JSON.stringify({ capabilities: [] }), "utf8");
+
+  const butler = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/plain" });
+    response.end("ok");
+  });
+  const broker = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: true }));
+  });
+  await new Promise<void>((resolve) => butler.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => broker.listen(0, "127.0.0.1", resolve));
+  const butlerAddress = butler.address();
+  const brokerAddress = broker.address();
+  assert.ok(butlerAddress && typeof butlerAddress === "object");
+  assert.ok(brokerAddress && typeof brokerAddress === "object");
+
+  try {
+    const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, [harnessPath.pathname, "--thread", "thread-1", "status"], {
+        cwd: root,
+        env: {
+          ...process.env,
+          CODEX_HOME: codexHome,
+          MANOR_BUTLER_BASE_URL: `http://127.0.0.1:${butlerAddress.port}`,
+          MANOR_RUNTIME_BROKER_URL: `http://127.0.0.1:${brokerAddress.port}`
+        },
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      const stdout: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
+      child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+      child.on("error", reject);
+      child.on("close", (status) => {
+        resolve({
+          status,
+          stdout: Buffer.concat(stdout).toString("utf8"),
+          stderr: Buffer.concat(stderr).toString("utf8")
+        });
+      });
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /No Manor harness capability was found/);
+    assert.match(result.stderr, /Control plane: Butler ok; runtime broker ok\./);
+  } finally {
+    await new Promise<void>((resolve) => butler.close(() => resolve()));
+    await new Promise<void>((resolve) => broker.close(() => resolve()));
+  }
+});

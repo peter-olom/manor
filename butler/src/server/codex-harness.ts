@@ -6,6 +6,7 @@ import {
   type BrokerAccessRegistryPayload,
   type HarnessCapability,
   type HarnessRegistryPayload,
+  atomicWriteJson,
   normalizeString,
   looksLikeHarnessLookupFailure,
   normalizeEnv,
@@ -129,8 +130,8 @@ export class CodexHarnessService {
   private async save(): Promise<void> {
     const payload: HarnessRegistryPayload = { capabilities: [...this.capabilities.values()].sort((left, right) => left.createdAt - right.createdAt) };
     const brokerAccessPayload: BrokerAccessRegistryPayload = { grants: payload.capabilities.map((capability) => ({ token: capability.token, threadId: capability.threadId, createdAt: capability.createdAt, updatedAt: capability.updatedAt })) };
-    await fs.writeFile(this.registryPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-    await fs.writeFile(this.brokerAccessPath, `${JSON.stringify(brokerAccessPayload, null, 2)}\n`, "utf8");
+    await atomicWriteJson(this.registryPath, payload);
+    await atomicWriteJson(this.brokerAccessPath, brokerAccessPayload);
   }
   async ensureThreadCapability(threadId: string, cwd: string | null | undefined): Promise<HarnessCapability | null> {
     const normalizedCwd = normalizeString(cwd);
@@ -161,6 +162,7 @@ export class CodexHarnessService {
       .listThreads()
       .map((thread) => this.store.getThread(thread.id))
       .filter((thread): thread is NonNullable<ReturnType<ButlerStateStore["getThread"]>> => Boolean(thread));
+    if (activeThreads.length === 0 && this.capabilities.size > 0) { console.warn("Skipping Codex harness capability prune because no threads are currently visible."); return; }
     const activeThreadIds = new Set(activeThreads.map((thread) => thread.id));
     let changed = false;
     for (const threadId of [...this.capabilities.keys()]) {
@@ -1209,6 +1211,7 @@ export class CodexHarnessService {
         engine: normalizeString(params.engine),
         image: normalizeString(params.image) || undefined,
         port: typeof params.port === "number" ? params.port : Number(params.port),
+        defaultPort: typeof params.defaultPort === "number" ? params.defaultPort : Number(params.defaultPort),
         notes: normalizeString(params.notes) || undefined,
         command: normalizeString(params.command) || undefined,
         workingDir: normalizeString(params.workingDir) || undefined,

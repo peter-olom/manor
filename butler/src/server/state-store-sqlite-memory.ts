@@ -55,15 +55,61 @@ async function openDb(dbPath: string): Promise<SqlJsDatabase> {
   const SQL = await getSql();
   try {
     const data = await fs.readFile(dbPath);
-    return new SQL.Database(new Uint8Array(data));
-  } catch {
+    const db = new SQL.Database(new Uint8Array(data));
+    try {
+      db.exec("PRAGMA quick_check;");
+      return db;
+    } catch (error) {
+      safeCloseDb(db);
+      if (isSqliteCorruptionError(error)) {
+        await quarantineCorruptDb(dbPath, error);
+        return new SQL.Database();
+      }
+      throw error;
+    }
+  } catch (error) {
+    if (isSqliteCorruptionError(error)) {
+      await quarantineCorruptDb(dbPath, error);
+    }
     return new SQL.Database();
   }
 }
 
 async function saveDb(dbPath: string, db: SqlJsDatabase): Promise<void> {
   await fs.mkdir(path.dirname(dbPath), { recursive: true });
-  await fs.writeFile(dbPath, Buffer.from(db.export()));
+  const tmpPath = `${dbPath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await fs.writeFile(tmpPath, Buffer.from(db.export()));
+    await fs.rename(tmpPath, dbPath);
+  } catch (error) {
+    await fs.rm(tmpPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+function isSqliteCorruptionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /database disk image is malformed|file is not a database|invalid database|corrupt/i.test(message);
+}
+
+function safeCloseDb(db: SqlJsDatabase): void {
+  try {
+    db.close();
+  } catch {
+    // Ignore close errors while recovering the optional memory index.
+  }
+}
+
+async function quarantineCorruptDb(dbPath: string, error: unknown): Promise<void> {
+  const suffix = new Date().toISOString().replace(/[:.]/g, "-");
+  const quarantinePath = `${dbPath}.corrupt-${suffix}`;
+  try {
+    await fs.rename(dbPath, quarantinePath);
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`Quarantined corrupt Butler memory database: ${message}`);
+  } catch {
+    // If another process already moved or removed it, startup can still rebuild.
+  }
 }
 
 function ensureSchema(db: SqlJsDatabase): void {
@@ -577,12 +623,18 @@ export async function loadStateStoreSqliteMemory(access: StateStoreInternalAcces
       }
     }
     return true;
+  } catch (error) {
+    if (isSqliteCorruptionError(error)) {
+      await quarantineCorruptDb(dbPath, error);
+      return false;
+    }
+    throw error;
   } finally {
-    db.close();
+    safeCloseDb(db);
   }
 }
 
-export async function persistStateStoreSqliteMemory(access: StateStoreInternalAccess): Promise<boolean> {
+export async function persistStateStoreSqliteMemory(access: StateStoreInternalAccess, recoverCorruptDb = true): Promise<boolean> {
   const dbPath = sqlitePath(access);
   const db = await openDb(dbPath);
   try {
@@ -776,9 +828,13 @@ export async function persistStateStoreSqliteMemory(access: StateStoreInternalAc
     } catch {
       // Ignore rollback failures; the original error is more useful.
     }
+    if (recoverCorruptDb && isSqliteCorruptionError(error)) {
+      await quarantineCorruptDb(dbPath, error);
+      return persistStateStoreSqliteMemory(access, false);
+    }
     throw error;
   } finally {
-    db.close();
+    safeCloseDb(db);
   }
 }
 
@@ -843,7 +899,13 @@ export async function searchStateStoreSqliteProjectArtifacts(
       ].join("\n"),
       params
     ).map(rowToProjectArtifact);
+  } catch (error) {
+    if (isSqliteCorruptionError(error)) {
+      await quarantineCorruptDb(dbPath, error);
+      return [];
+    }
+    throw error;
   } finally {
-    db.close();
+    safeCloseDb(db);
   }
 }
