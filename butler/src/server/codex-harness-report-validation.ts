@@ -75,6 +75,22 @@ function hasEvidenceKind(evidence: CodexWorkerEvidenceView[], kinds: WorkerEvide
   return evidence.some((entry) => kinds.some((kind) => evidenceMatchesKind(entry, kind)));
 }
 
+function currentWorkerOwnedVerificationRows(thread: CodexThreadRecord) {
+  const matrix = thread.executionContract?.verificationMatrix ?? [];
+  const workerOwnedRows = matrix.filter((row) => row.owner !== "butler");
+  const rejectedChecklistPointIds = new Set(
+    (thread.supervisionChecklist?.items ?? [])
+      .filter((item) => item.status === "rejected")
+      .map((item) => item.id)
+  );
+  if (rejectedChecklistPointIds.size === 0) {
+    return workerOwnedRows;
+  }
+
+  const rejectedRows = workerOwnedRows.filter((row) => row.acceptancePointId && rejectedChecklistPointIds.has(row.acceptancePointId));
+  return rejectedRows.length > 0 ? rejectedRows : workerOwnedRows;
+}
+
 export function validateCompletedWorkerEvidence(input: {
   thread: CodexThreadRecord;
   evidence: CodexWorkerEvidenceView[];
@@ -84,11 +100,9 @@ export function validateCompletedWorkerEvidence(input: {
   if ((thread.executionContract?.inferredWorkDepth === "deep" || thread.executionContract?.inferredWorkDepth === "incident") && evidence.length === 0) {
     throw new Error("Deep delegated work requires point-specific evidence before reporting completed.");
   }
-  const matrix = thread.executionContract?.verificationMatrix ?? [];
+  const matrix = currentWorkerOwnedVerificationRows(thread);
   const missingRows = matrix.filter(
-    (row) =>
-      row.owner !== "butler" &&
-      !evidence.some((entry) => entry.matrixRowId === row.id || (row.acceptancePointId && entry.pointId === row.acceptancePointId))
+    (row) => !evidence.some((entry) => entry.matrixRowId === row.id || (row.acceptancePointId && entry.pointId === row.acceptancePointId))
   );
   if ((thread.executionContract?.inferredWorkDepth === "deep" || thread.executionContract?.inferredWorkDepth === "incident") && missingRows.length > 0) {
     throw new Error(`Deep delegated work is missing evidence for ${missingRows.slice(0, 4).map((row) => row.acceptancePointId ?? row.id).join(", ")}.`);
