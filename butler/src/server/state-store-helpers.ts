@@ -523,6 +523,7 @@ export function normalizePreviewVerification(
       stageRecord.failureKind === "preview" ||
       stageRecord.failureKind === "http" ||
       stageRecord.failureKind === "auth" ||
+      stageRecord.failureKind === "egress" ||
       stageRecord.failureKind === "readiness" ||
       stageRecord.failureKind === "verifier" ||
       stageRecord.failureKind === "script" ||
@@ -650,6 +651,7 @@ export function normalizePreviewVerification(
       verification.failureKind === "preview" ||
       verification.failureKind === "http" ||
       verification.failureKind === "auth" ||
+      verification.failureKind === "egress" ||
       verification.failureKind === "readiness" ||
       verification.failureKind === "verifier" ||
       verification.failureKind === "script" ||

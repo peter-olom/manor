@@ -79,3 +79,34 @@ test("preview verification normalization preserves structured browser annotation
   assert.equal(normalized.annotations?.batches[0]?.annotations[0]?.note, "Button is clipped");
   assert.equal(normalized.annotations?.insertions[0]?.ok, true);
 });
+
+
+test("preview verification normalization preserves egress failure kind", () => {
+  const verification = baseVerification();
+  verification.ok = false;
+  verification.status = 403;
+  verification.failureKind = "egress";
+  verification.readiness.htmlErrorSignals = ["Cloudflare managed challenge"];
+  verification.diagnostics = {
+    stages: {
+      processUp: null,
+      networkReachable: null,
+      routeAuth: null,
+      uiSelectorVisible: {
+        name: "ui_selector_visible",
+        ok: false,
+        detail: "Cloudflare managed challenge detected.",
+        status: 403,
+        hint: "Use an operator-controlled egress path.",
+        failureKind: "egress"
+      }
+    },
+    remediationHints: ["Use an operator-controlled egress path."]
+  };
+
+  const normalized = normalizePreviewVerification(verification, 60_000);
+
+  assert.equal(normalized.failureKind, "egress");
+  assert.equal(normalized.diagnostics?.stages.uiSelectorVisible?.failureKind, "egress");
+  assert.deepEqual(normalized.readiness.htmlErrorSignals, ["Cloudflare managed challenge"]);
+});

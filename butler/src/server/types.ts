@@ -294,6 +294,7 @@ export type PreviewVerificationFailureKind =
   | "preview"
   | "http"
   | "auth"
+  | "egress"
   | "readiness"
   | "verifier"
   | "script"
