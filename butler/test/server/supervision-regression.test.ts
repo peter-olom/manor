@@ -383,6 +383,41 @@ test("completed deep reports require evidence for every worker-owned matrix row"
   );
 });
 
+test("completed rejected-checklist follow-up reports only require evidence for rejected points", async () => {
+  const store = await createStore();
+  const contract = makeContract({
+    proofExpectation: "none",
+    proofExpectationLabel: "no explicit proof request"
+  });
+  store.setThreadExecutionContract(contract.threadId, contract);
+  store.reviewAcceptancePoint({
+    threadId: contract.threadId,
+    pointId: "point-2",
+    status: "rejected",
+    note: "Callback evidence was missing.",
+    nextInstruction: "Review the callback behavior and report evidence for this point."
+  });
+  const thread = store.getThread(contract.threadId);
+  assert.ok(thread);
+
+  assert.throws(
+    () =>
+      validateCompletedWorkerEvidence({
+        thread,
+        evidence: [workerEvidence("intent_review", { pointId: "point-1", matrixRowId: "row-1" })],
+        threadProofs: []
+      }),
+    /missing evidence for point-2/
+  );
+  assert.doesNotThrow(() =>
+    validateCompletedWorkerEvidence({
+      thread,
+      evidence: [workerEvidence("intent_review", { pointId: "point-2", matrixRowId: "row-2" })],
+      threadProofs: []
+    })
+  );
+});
+
 test("completed API reports require smoke, failure-path, and runtime evidence", async () => {
   const store = await createStore();
   const contract = makeContract({
