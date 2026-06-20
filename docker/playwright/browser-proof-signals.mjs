@@ -46,12 +46,12 @@ export function classifyFailure(input) {
     return "none";
   }
 
-  if (input.failedPhase === "action") {
-    return "script";
-  }
-
   if (input.htmlErrorSignals.includes("Cloudflare managed challenge")) {
     return "egress";
+  }
+
+  if (input.failedPhase === "action") {
+    return "script";
   }
 
   if (input.status !== null && input.status >= 400) {

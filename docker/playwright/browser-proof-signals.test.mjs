@@ -42,6 +42,39 @@ test("classifies Cloudflare challenge proof as egress before auth/http", () => {
   assert.equal(failureKind, "egress");
 });
 
+test("classifies action/navigation timeouts with Cloudflare final HTML as egress", () => {
+  const failureKind = classifyFailure({
+    ok: false,
+    error: "Timeout while running browser action.",
+    status: 403,
+    failedPhase: "action",
+    selectorExpected: false,
+    selectorSatisfied: null,
+    sameOriginAssetFailureCount: 0,
+    htmlErrorSignals: ["Cloudflare managed challenge"],
+    loginRedirectDetected: false,
+    captureMissing: false,
+    noVisualContent: false
+  });
+
+  const hints = buildRemediationHints({
+    preflightStages: null,
+    failureKind,
+    status: 403,
+    selectorExpected: null,
+    selectorSatisfied: null,
+    htmlErrorSignals: ["Cloudflare managed challenge"],
+    noVisualContent: false,
+    consoleMessages: []
+  });
+
+  assert.equal(failureKind, "egress");
+  assert.equal(hints.length, 1);
+  assert.match(hints[0], /allowlisted egress profile\/domain/);
+  assert.match(hints[0], /supported Manor stack\/preview route/);
+});
+
+
 test("egress failures include operator-controlled remediation guidance", () => {
   const hints = buildRemediationHints({
     preflightStages: null,
