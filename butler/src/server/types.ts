@@ -91,6 +91,15 @@ export interface ReviewPanelSummaryView {
   updatedAt: number | null;
 }
 
+export interface MissionContractView {
+  intent: string;
+  tasteNotes: string[];
+  plannerSteps: string[];
+  criticChecks: string[];
+  operatorQuestionPolicy: string;
+  blockedConditions: string[];
+}
+
 export interface CodexThreadExecutionContractView {
   threadId: string;
   workspaceCwd: string | null;
@@ -107,6 +116,7 @@ export interface CodexThreadExecutionContractView {
   verificationMatrix: VerificationMatrixRowView[];
   reviewPanel: ReviewPanelRunView[];
   reviewPanelSummary: ReviewPanelSummaryView;
+  mission?: MissionContractView;
   notes: string[];
 }
 
@@ -1144,6 +1154,28 @@ export interface ButlerMessageView {
   taskDurationMs: number | null;
   kind: "message";
   pending?: boolean;
+  question?: ButlerOperatorQuestionView;
+}
+
+export interface ButlerOperatorQuestionOptionView {
+  id: string;
+  label: string;
+  description: string | null;
+}
+
+export interface ButlerOperatorQuestionItemView {
+  id: string;
+  prompt: string;
+  context: string | null;
+  options: ButlerOperatorQuestionOptionView[];
+  allowFreeform: boolean;
+  createdAt: number;
+  selectedOptionId?: string | null;
+  answeredAt?: number | null;
+}
+
+export interface ButlerOperatorQuestionView extends ButlerOperatorQuestionItemView {
+  questions?: ButlerOperatorQuestionItemView[];
 }
 
 export type ButlerActivityItemKind = "thinking" | "tool";

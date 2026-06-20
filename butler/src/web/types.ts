@@ -25,6 +25,28 @@ export type ButlerMessageRecord = {
   taskDurationMs: number | null;
   kind: "message";
   pending?: boolean;
+  question?: ButlerOperatorQuestion;
+};
+
+export type ButlerOperatorQuestionOption = {
+  id: string;
+  label: string;
+  description: string | null;
+};
+
+export type ButlerOperatorQuestionItem = {
+  id: string;
+  prompt: string;
+  context: string | null;
+  options: ButlerOperatorQuestionOption[];
+  allowFreeform: boolean;
+  createdAt: number;
+  selectedOptionId?: string | null;
+  answeredAt?: number | null;
+};
+
+export type ButlerOperatorQuestion = ButlerOperatorQuestionItem & {
+  questions?: ButlerOperatorQuestionItem[];
 };
 
 export type ButlerHistoryPageResponse = {

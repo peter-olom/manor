@@ -3620,6 +3620,16 @@ select {
   background: color-mix(in srgb, var(--surface) 80%, var(--accent) 20%);
 }
 
+.composer.is-blocked {
+  background: color-mix(in srgb, var(--surface) 92%, var(--accent) 8%);
+}
+
+.composer-blocked-note {
+  padding: 10px 18px 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
 .composer-suggestions {
   position: absolute;
   left: 16px;
@@ -3879,6 +3889,88 @@ select {
   text-decoration: none;
 }
 
+.operator-question-card {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 92%, var(--accent) 8%);
+}
+
+.operator-question-item {
+  display: grid;
+  gap: 8px;
+}
+
+.operator-question-item + .operator-question-item {
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.operator-question-progress,
+.operator-question-prompt {
+  color: var(--ink);
+  font-size: 0.86rem;
+  font-weight: 650;
+}
+
+.operator-question-context,
+.operator-question-selected-label {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.operator-question-options {
+  display: grid;
+  gap: 8px;
+}
+
+.operator-question-option {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.operator-question-option:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--line-strong));
+}
+
+.operator-question-option.is-selected {
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--line-strong));
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+}
+
+.operator-question-option:disabled {
+  cursor: default;
+  opacity: 0.78;
+}
+
+.operator-question-option.is-selected:disabled {
+  opacity: 1;
+}
+
+.operator-question-option-label {
+  font-weight: 650;
+}
+
+.operator-question-option-description {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.operator-question-selected-label {
+  justify-self: start;
+  padding-top: 1px;
+  font-weight: 600;
+}
+
 .composer-main {
   position: relative;
   display: flex;
@@ -3904,6 +3996,11 @@ select {
   overflow-y: hidden;
   outline: none;
   line-height: 1.5;
+}
+
+.composer textarea:disabled {
+  color: var(--muted);
+  cursor: default;
 }
 
 .composer-note {

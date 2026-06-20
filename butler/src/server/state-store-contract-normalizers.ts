@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 
 import { normalizeReviewPanel, summarizeReviewPanel } from "./review-panel.js";
-import { buildVerificationMatrix, inferTaskCategory, inferWorkDepth } from "./thread-contract.js";
+import { buildMissionContract, buildVerificationMatrix, inferTaskCategory, inferWorkDepth } from "./thread-contract.js";
 import type {
   CodexThreadExecutionContractView,
   CodexWorkerEvidenceView,
@@ -229,6 +229,45 @@ export function normalizeExecutionContract(contract: CodexThreadExecutionContrac
     inferredWorkDepth,
     requestedTask
   });
+  const rawMission = contract.mission && typeof contract.mission === "object" ? contract.mission : null;
+  const mission = rawMission
+    ? {
+        ...buildMissionContract({
+          taskText: contractText,
+          requestedTask,
+          operatorGoal,
+          taskCategory,
+          tasteNotes: Array.isArray(rawMission.tasteNotes)
+            ? rawMission.tasteNotes
+                .filter((note): note is string => typeof note === "string" && Boolean(note.trim()))
+                .map((note) => note.trim())
+            : [],
+          plannerSteps: Array.isArray(rawMission.plannerSteps)
+            ? rawMission.plannerSteps
+                .filter((step): step is string => typeof step === "string" && Boolean(step.trim()))
+                .map((step) => step.trim())
+            : [],
+          criticChecks: Array.isArray(rawMission.criticChecks)
+            ? rawMission.criticChecks
+                .filter((check): check is string => typeof check === "string" && Boolean(check.trim()))
+                .map((check) => check.trim())
+            : [],
+          operatorQuestionPolicy:
+            typeof rawMission.operatorQuestionPolicy === "string" && rawMission.operatorQuestionPolicy.trim()
+              ? rawMission.operatorQuestionPolicy.trim()
+              : null,
+          blockedConditions: Array.isArray(rawMission.blockedConditions)
+            ? rawMission.blockedConditions
+                .filter((condition): condition is string => typeof condition === "string" && Boolean(condition.trim()))
+                .map((condition) => condition.trim())
+            : []
+        }),
+        intent:
+          typeof rawMission.intent === "string" && rawMission.intent.trim()
+            ? rawMission.intent.trim()
+            : operatorGoal ?? requestedTask
+      }
+    : undefined;
   return {
     ...contract,
     requestedTask,
@@ -244,6 +283,7 @@ export function normalizeExecutionContract(contract: CodexThreadExecutionContrac
         : buildVerificationMatrix({ acceptancePoints, taskCategory, inferredWorkDepth }),
     reviewPanel,
     reviewPanelSummary: summarizeReviewPanel(reviewPanel),
+    ...(mission ? { mission } : {}),
     notes: Array.isArray(contract.notes) ? contract.notes.filter((note): note is string => typeof note === "string") : []
   };
 }

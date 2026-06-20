@@ -684,6 +684,23 @@ app.post("/api/chat/messages", async (request, response) => {
   }
 });
 
+app.post("/api/chat/operator-question-answer", async (request, response) => {
+  const messageId = typeof request.body?.messageId === "string" ? request.body.messageId.trim() : "";
+  const questionId = typeof request.body?.questionId === "string" ? request.body.questionId.trim() : "";
+  const optionId = typeof request.body?.optionId === "string" ? request.body.optionId.trim() : "";
+  if (!messageId || !questionId || !optionId) {
+    response.status(400).json({ error: "messageId, questionId, and optionId are required" });
+    return;
+  }
+
+  try {
+    const result = await butlerAgent.answerOperatorQuestion({ messageId, questionId, optionId });
+    response.status(202).json({ ok: true, complete: result.complete, queued: result.queued, question: result.message.question });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 app.post("/api/chat/stop", async (_request, response) => {
   try {
     const stopped = await butlerAgent.stopPrompt();

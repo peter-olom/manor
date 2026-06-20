@@ -37,6 +37,7 @@ export const ButlerComposer = memo(function ButlerComposer({
   attachments,
   uploadingAttachments,
   running,
+  blockedReason,
   contextCwd,
   threadId,
   onFilesSelected,
@@ -57,6 +58,7 @@ export const ButlerComposer = memo(function ButlerComposer({
   attachments: FileReference[];
   uploadingAttachments: number;
   running?: boolean;
+  blockedReason?: string | null;
   onFilesSelected: (files: FileList | File[]) => void;
   onRemoveAttachment: (attachmentId: string) => void;
   onPreviewImage: (image: PreviewableImage) => void;
@@ -118,6 +120,9 @@ export const ButlerComposer = memo(function ButlerComposer({
   }, [draftPrefill, draftStorageKey, onDraftPrefillApplied]);
 
   async function handleSend(options: ButlerComposerSendOptions = {}) {
+    if (blockedReason) {
+      return;
+    }
     const text = draft.trim();
     if (!text && attachments.length === 0) {
       return;
@@ -155,6 +160,10 @@ export const ButlerComposer = memo(function ButlerComposer({
   }
 
   function handleFileSelection(event: React.ChangeEvent<HTMLInputElement>) {
+    if (blockedReason) {
+      event.target.value = "";
+      return;
+    }
     const files = event.target.files;
     if (files && files.length > 0) {
       onFilesSelected(files);
@@ -162,12 +171,13 @@ export const ButlerComposer = memo(function ButlerComposer({
     event.target.value = "";
   }
 
-  const canSend = (draft.trim().length > 0 || attachments.length > 0) && uploadingAttachments === 0;
+  const inputBlocked = Boolean(blockedReason);
+  const canSend = !inputBlocked && (draft.trim().length > 0 || attachments.length > 0) && uploadingAttachments === 0;
   const showStop = Boolean(running && !canSend);
 
   return (
     <div
-      className={`composer${dragActive ? " is-drop-target" : ""}`}
+      className={`composer${dragActive ? " is-drop-target" : ""}${inputBlocked ? " is-blocked" : ""}`}
       onDragEnter={(event) => {
         if (isFileDrag(event)) {
           event.preventDefault();
@@ -192,10 +202,13 @@ export const ButlerComposer = memo(function ButlerComposer({
         if (!isFileDrag(event)) {
           return;
         }
-        onFilesSelected(event.dataTransfer.files);
+        if (!inputBlocked) {
+          onFilesSelected(event.dataTransfer.files);
+        }
       }}
     >
-      <input ref={fileInputRef} type="file" accept={FILE_UPLOAD_ACCEPT} multiple hidden onChange={handleFileSelection} />
+      <input ref={fileInputRef} type="file" accept={FILE_UPLOAD_ACCEPT} multiple hidden disabled={inputBlocked} onChange={handleFileSelection} />
+      {blockedReason ? <div className="composer-blocked-note">{blockedReason}</div> : null}
       {attachments.length > 0 || uploadingAttachments > 0 ? (
         <div>
           {attachments.length > 0 ? (
@@ -262,7 +275,8 @@ export const ButlerComposer = memo(function ButlerComposer({
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Ask Butler about any run"
+          placeholder={blockedReason ?? "Ask Butler about any run"}
+          disabled={inputBlocked}
           autoComplete="off"
           autoCorrect="off"
           autoCapitalize="off"
@@ -274,6 +288,7 @@ export const ButlerComposer = memo(function ButlerComposer({
             className="composer-add-image composer-add-image-mobile"
             type="button"
             onClick={() => fileInputRef.current?.click()}
+            disabled={inputBlocked}
             aria-label="Add file"
             title="Add file"
           >
@@ -306,7 +321,7 @@ export const ButlerComposer = memo(function ButlerComposer({
         </div>
         <div className="composer-note">Cmd/Ctrl + Enter queues · Cmd/Ctrl + Shift + Enter sends now</div>
         <div className="composer-actions composer-actions-desktop">
-          <button className="composer-add-image" type="button" onClick={() => fileInputRef.current?.click()} aria-label="Add file" title="Add file">
+          <button className="composer-add-image" type="button" onClick={() => fileInputRef.current?.click()} disabled={inputBlocked} aria-label="Add file" title="Add file">
             <AttachmentIcon />
           </button>
           <button className={`composer-send composer-send-desktop${showStop ? " is-stop" : ""}`} onClick={showStop ? () => onStop?.() : handleSendButtonClick} disabled={!showStop && !canSend} aria-label={showStop ? "Stop request" : running ? "Queue message" : "Send message"}>

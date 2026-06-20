@@ -200,6 +200,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler in deep memory debugging mode." }]
   },
   {
+    name: "ask_operator",
+    label: "Ask operator",
+    description: "Ask one to three Butler-only structured operator questions with selectable options.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while waiting for an operator decision." }]
+  },
+  {
     name: "list_project_artifacts",
     label: "List project artifacts",
     description: "List or search durable project artifacts such as saved seeds, downloads, and reusable analysis files.",

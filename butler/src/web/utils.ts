@@ -377,14 +377,15 @@ export function groupTimelineItems<T extends { id: string; text: string; at: num
 }
 
 export function dedupeMessages(messages: ButlerMessageRecord[]): ButlerHistoryState["messages"] {
-  const seen = new Set<string>();
-  return messages.filter((message) => {
-    if (seen.has(message.id)) {
-      return false;
+  const order: string[] = [];
+  const latestById = new Map<string, ButlerMessageRecord>();
+  for (const message of messages) {
+    if (!latestById.has(message.id)) {
+      order.push(message.id);
     }
-    seen.add(message.id);
-    return true;
-  });
+    latestById.set(message.id, message);
+  }
+  return order.map((id) => latestById.get(id)!).filter(Boolean);
 }
 
 export function formatCompactCount(value: number | null): string {

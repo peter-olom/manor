@@ -1,5 +1,6 @@
 import type {
   CodexInferredWorkDepth,
+  MissionContractView,
   CodexProofExpectation,
   CodexTaskCategory,
   CodexThreadExecutionContractView,
@@ -10,6 +11,11 @@ import { acceptancePointsNeedVisualProof, taskHasUiImplication, VISUAL_PROOF_REQ
 import { buildReviewPanel, summarizeReviewPanel } from "./review-panel.js";
 
 const MAX_ACCEPTANCE_POINTS = 24;
+const DEFAULT_BLOCKED_CONDITIONS = [
+  "Required credentials, secrets, operator approval, or external access are unavailable.",
+  "The local build, runtime, or proof environment cannot run after focused diagnosis.",
+  "A product, taste, permission, or irreversible execution choice would materially change the outcome and no safe default is available."
+];
 const API_PATTERN =
   /\b(api|endpoint|route|graphql|mutation|query|resolver|controller|service|backend|server|request|response|webhook|auth|database|db|schema|migration)\b/i;
 const DEPLOY_PATTERN = /\b(deploy|deployment|restart|release|production|staging|live|rollback|health check|smoke prod|publish)\b/i;
@@ -31,6 +37,114 @@ function normalizeContractText(value: string | null | undefined): string | null 
 
   const normalized = value.replace(/\s+/g, " ").trim();
   return normalized || null;
+}
+
+function normalizeContractList(values: Array<string | null | undefined>, max = 8): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = normalizeContractText(value);
+    if (!normalized) {
+      continue;
+    }
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(normalized);
+    if (result.length >= max) {
+      break;
+    }
+  }
+  return result;
+}
+
+function inferTasteNotes(taskText: string, category: CodexTaskCategory): string[] {
+  const notes: string[] = [
+    "Prefer simple, maintainable, production-friendly work that satisfies the operator's real intent."
+  ];
+  if (category === "ui" || category === "prototype") {
+    notes.push("Operator-visible UI should feel polished, coherent, usable, and visually reviewed before acceptance.");
+  }
+  if (category === "writing" || category === "docs") {
+    notes.push("Writing should preserve the concrete point first and avoid over-polished or generic phrasing.");
+  }
+  if (/\b(taste|style|polish|design|voice|tone|brand|look|feel|ux|ui)\b/i.test(taskText)) {
+    notes.push("Treat taste and intent fit as first-class acceptance concerns, not optional cleanup.");
+  }
+  return notes;
+}
+
+function inferPlannerSteps(category: CodexTaskCategory): string[] {
+  const steps = [
+    "Restate the mission intent, hard constraints, durable taste notes, and available context before choosing work.",
+    "Inspect the current repo, runtime, or source state and reuse existing project patterns before changing behavior.",
+    "Choose a practical route, then execute the smallest complete slice that satisfies the mission."
+  ];
+  if (category === "ui" || category === "prototype") {
+    steps.push("Review the operator-visible flow across the main viewport, responsive state, and fit-and-finish before claiming completion.");
+  } else if (category === "deploy") {
+    steps.push("Check build, release, health, and logs before treating the deployment as complete.");
+  } else if (category === "api" || category === "data") {
+    steps.push("Exercise success and failure paths, persistence, and logs before treating the behavior as complete.");
+  } else if (category === "writing" || category === "docs" || category === "plan" || category === "recommendation") {
+    steps.push("Check that the output preserves the operator's concrete point, priority, and intended audience.");
+  }
+  steps.push("Verify with checks that match the task category and capture the required proof.");
+  steps.push("Run the critic checks, fix gaps, then package a clear decision or closeout.");
+  return steps;
+}
+
+function inferCriticChecks(category: CodexTaskCategory): string[] {
+  const checks = [
+    "Would the operator accept this outcome without more handholding?",
+    "Does the result satisfy the mission intent, not just the literal checklist?",
+    "Were durable taste notes applied before and after execution?",
+    "Is there convincing evidence for every acceptance point and verification row?",
+    "Is the route simple, maintainable, and consistent with existing project patterns?"
+  ];
+  if (category === "ui" || category === "prototype") {
+    checks.push("Does the visible result feel polished, coherent, usable, and visually verified?");
+  } else if (category === "deploy") {
+    checks.push("Do health checks and logs prove the live service is actually running the intended version?");
+  } else if (category === "api" || category === "data") {
+    checks.push("Were negative cases, persistence, and runtime logs checked, not just the happy path?");
+  } else if (category === "writing" || category === "docs" || category === "plan" || category === "recommendation") {
+    checks.push("Is the writing concrete, useful, and in the operator's preferred voice?");
+  }
+  return checks;
+}
+
+function buildOperatorQuestionPolicy(tasteNotes: string[]): string {
+  const base =
+    "Ask only when a product, taste, priority, permission, or irreversible execution choice materially changes the outcome and no safe default exists; otherwise infer from memory and context, inspect state, act, and note the decision.";
+  return tasteNotes.length > 0
+    ? `${base} Apply durable taste notes before asking.`
+    : `${base} If taste is central and no durable note applies, ask 1-3 structured questions before delegation or final acceptance.`;
+}
+
+export function buildMissionContract(input: {
+  taskText: string;
+  requestedTask: string;
+  operatorGoal: string | null;
+  taskCategory: CodexTaskCategory;
+  tasteNotes?: string[];
+  plannerSteps?: string[];
+  criticChecks?: string[];
+  operatorQuestionPolicy?: string | null;
+  blockedConditions?: string[];
+}): MissionContractView {
+  const tasteNotes = normalizeContractList([...(input.tasteNotes ?? []), ...inferTasteNotes(input.taskText, input.taskCategory)], 10);
+  return {
+    intent: normalizeContractText(input.operatorGoal) ?? normalizeContractText(input.requestedTask) ?? "Deliver the delegated outcome.",
+    tasteNotes,
+    plannerSteps: normalizeContractList([...(input.plannerSteps ?? []), ...inferPlannerSteps(input.taskCategory)], 8),
+    criticChecks: normalizeContractList([...(input.criticChecks ?? []), ...inferCriticChecks(input.taskCategory)], 10),
+    operatorQuestionPolicy:
+      normalizeContractText(input.operatorQuestionPolicy) ?? buildOperatorQuestionPolicy(tasteNotes),
+    blockedConditions: normalizeContractList([...(input.blockedConditions ?? []), ...DEFAULT_BLOCKED_CONDITIONS], 10)
+  };
 }
 
 function deriveRequestedTask(taskText: string): string {
@@ -266,6 +380,8 @@ export function buildThreadExecutionContract(input: {
   taskCategory?: CodexTaskCategory;
   inferredWorkDepth?: CodexInferredWorkDepth;
   attachmentCount?: number;
+  tasteNotes?: string[];
+  blockedConditions?: string[];
   notes: string[];
 }): CodexThreadExecutionContractView {
   const operatorGoal = normalizeContractText(input.operatorGoal);
@@ -283,6 +399,14 @@ export function buildThreadExecutionContract(input: {
   }
   const taskCategory = input.taskCategory ?? inferTaskCategory(contractText);
   const inferredWorkDepth = input.inferredWorkDepth ?? inferWorkDepth(contractText, taskCategory);
+  const mission = buildMissionContract({
+    taskText: contractText,
+    requestedTask,
+    operatorGoal,
+    taskCategory,
+    tasteNotes: input.tasteNotes,
+    blockedConditions: input.blockedConditions
+  });
   const verificationMatrix = buildVerificationMatrix({ acceptancePoints, taskCategory, inferredWorkDepth });
   const reviewPanel = buildReviewPanel({ taskCategory, inferredWorkDepth, requestedTask, attachmentCount: input.attachmentCount ?? 0 });
 
@@ -302,6 +426,7 @@ export function buildThreadExecutionContract(input: {
     verificationMatrix,
     reviewPanel,
     reviewPanelSummary: summarizeReviewPanel(reviewPanel),
+    mission,
     notes: [...new Set(notes)]
   };
 }
@@ -367,6 +492,10 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
   const notes: string[] = [];
   const acceptancePoints: string[] = [];
   const verificationRows: string[] = [];
+  const tasteNotes: string[] = [];
+  const plannerSteps: string[] = [];
+  const criticChecks: string[] = [];
+  const blockedConditions: string[] = [];
   const values = new Map<string, string>();
 
   for (const line of contractBlock.split(/\r?\n/).slice(1)) {
@@ -392,6 +521,22 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
     }
     if (key === "verification_row") {
       verificationRows.push(value);
+      continue;
+    }
+    if (key === "taste_note") {
+      tasteNotes.push(value);
+      continue;
+    }
+    if (key === "planner_step") {
+      plannerSteps.push(value);
+      continue;
+    }
+    if (key === "critic_check") {
+      criticChecks.push(value);
+      continue;
+    }
+    if (key === "blocked_condition") {
+      blockedConditions.push(value);
       continue;
     }
     values.set(key, value);
@@ -422,6 +567,18 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
     parseWorkDepth(values.get("inferred_work_depth")) ?? inferWorkDepth([requestedTask, operatorGoal].filter(Boolean).join("\n"), taskCategory);
   const verificationMatrix = parseVerificationMatrix(verificationRows, acceptancePoints, taskCategory, inferredWorkDepth);
   const reviewPanel = buildReviewPanel({ taskCategory, inferredWorkDepth, requestedTask, attachmentCount: 0 });
+  const mission = buildMissionContract({
+    taskText: [requestedTask, operatorGoal].filter(Boolean).join("\n"),
+    requestedTask,
+    operatorGoal,
+    taskCategory,
+    tasteNotes,
+    plannerSteps,
+    criticChecks,
+    operatorQuestionPolicy: values.get("operator_question_policy") ?? null,
+    blockedConditions
+  });
+  const missionIntent = normalizeContractText(values.get("mission_intent"));
 
   return {
     threadId,
@@ -439,6 +596,7 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
     verificationMatrix,
     reviewPanel,
     reviewPanelSummary: summarizeReviewPanel(reviewPanel),
+    mission: missionIntent ? { ...mission, intent: missionIntent } : mission,
     notes
   };
 }

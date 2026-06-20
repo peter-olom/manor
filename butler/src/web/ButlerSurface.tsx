@@ -13,6 +13,7 @@ import { ButlerComposer, type ButlerComposerSendOptions } from "./ButlerComposer
 import { readButlerComposerAttachments, updateButlerComposerAttachments, type ComposerAttachmentUpdate } from "./composer-attachment-cache";
 import { ArrowDownIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon, MemoryIcon, TrashIcon } from "./icons";
 import { MarkdownMessage } from "./MarkdownMessage";
+import { hasUnansweredOperatorQuestion, OperatorQuestionCard, type OperatorQuestionSelection } from "./OperatorQuestionCard";
 import { PreviewVerificationSummary } from "./PreviewVerificationSummary";
 import { RuntimePanel } from "./RuntimePanel";
 import { SandSpinner } from "./SandSpinner";
@@ -24,6 +25,7 @@ import type {
   ButlerHistoryState,
   ButlerActivityTurn,
   ButlerMessageRecord,
+  ButlerOperatorQuestion,
   CodexThreadSummary,
   ComposerInputItem,
   ComposerPrefill,
@@ -72,6 +74,7 @@ export function butlerMessageSyncKey(message: ButlerMessageRecord): string {
     message.role,
     message.text,
     message.displayText ?? "",
+    JSON.stringify(message.question ?? null),
     message.pending === true ? "pending" : "committed",
     message.at ?? "none"
   ].join("\u001f");
@@ -593,6 +596,10 @@ export function ButlerSurface({
   }
 
   async function sendButlerMessage(rawText: string, inputItems: ComposerInputItem[] = [], options: ButlerComposerSendOptions = {}) {
+    if (unansweredOperatorQuestionCount > 0) {
+      showToast("Answer Butler's open questions first", "info", 2500);
+      return;
+    }
     const text = rawText.trim();
     const composerAttachments = [...butlerAttachments];
     if (!text && composerAttachments.length === 0) {
@@ -619,6 +626,26 @@ export function ButlerSurface({
       });
     } catch (error) {
       setButlerAttachments((current) => (current.length === 0 ? composerAttachments : current));
+      throw error;
+    }
+  }
+
+  async function answerButlerOperatorQuestion(messageId: string, selection: OperatorQuestionSelection) {
+    setFollowButler(true);
+    try {
+      const result = await postJson<{ question?: ButlerOperatorQuestion }>("/api/chat/operator-question-answer", {
+        messageId,
+        questionId: selection.questionId,
+        optionId: selection.optionId
+      });
+      if (result?.question) {
+        setHistory((current) => ({
+          ...current,
+          messages: current.messages.map((message) => message.id === messageId ? { ...message, question: result.question } : message)
+        }));
+      }
+    } catch (error) {
+      showErrorToast(error);
       throw error;
     }
   }
@@ -887,6 +914,21 @@ export function ButlerSurface({
     [activeButlerActivityTurn, deferredRowIds, live?.messages, shell?.butler.isStreaming, shell?.butler.pending, suppressedLiveMessageIds, suppressAllLiveMessages]
   );
   const renderedRows = useMemo(() => [...deferredRows, ...immediateRows], [deferredRows, immediateRows]);
+  const unansweredOperatorQuestionCount = useMemo(() => {
+    const seenMessageIds = new Set<string>();
+    return renderedRows.reduce((count, row) => {
+      if (row.kind !== "message" || !row.message.question || seenMessageIds.has(row.message.id)) {
+        return count;
+      }
+      seenMessageIds.add(row.message.id);
+      return count + (hasUnansweredOperatorQuestion(row.message.question) ? 1 : 0);
+    }, 0);
+  }, [renderedRows]);
+  const butlerComposerBlockedReason = unansweredOperatorQuestionCount > 0
+    ? unansweredOperatorQuestionCount === 1
+      ? "Answer Butler's open questions above to continue."
+      : `Answer Butler's ${unansweredOperatorQuestionCount} open question groups above to continue.`
+    : null;
   const latestButlerActivityKey =
     renderedRows.length > 0 ? `${renderedRows[renderedRows.length - 1].id}:${renderedRows.length}` : "empty";
 
@@ -1094,7 +1136,7 @@ export function ButlerSurface({
                   const toneClass = `is-${message.role.startsWith("assistant") ? "assistant" : "user"}`;
                   const rowToneClass = message.role.startsWith("assistant") ? "is-assistant" : "is-user";
                   const imageState = messageImages[row.id] ?? { displayText: message.text || "…", images: [], files: [] };
-                  const displayText = message.displayText ?? imageState.displayText;
+                  const displayText = message.question ? message.question.prompt : message.displayText ?? imageState.displayText;
                   const copyTextValue = displayText || "";
                   const attachedChecklists = message.role.startsWith("assistant")
                     ? findMentionedChecklistThreads(message.text || "", checklistsByThreadId)
@@ -1139,6 +1181,14 @@ export function ButlerSurface({
                                 </a>
                               ))}
                             </div>
+                          ) : null}
+                          {message.question ? (
+                            <OperatorQuestionCard
+                              question={message.question}
+                              onSelect={async (selection) => {
+                                await answerButlerOperatorQuestion(message.id, selection);
+                              }}
+                            />
                           ) : null}
                           <ChecklistSummaryStrip threads={attachedChecklists} onOpenThread={onOpenThread} />
                         </div>
@@ -1200,6 +1250,7 @@ export function ButlerSurface({
             attachments={butlerAttachments}
             uploadingAttachments={butlerUploadingAttachments}
             running={Boolean(shell.butler.pending || shell.butler.isStreaming || shell.butler.compaction.active)}
+            blockedReason={butlerComposerBlockedReason}
             onFilesSelected={(files) => void uploadAttachments(files)}
             onRemoveAttachment={(attachmentId) => setButlerAttachments((current) => current.filter((entry) => entry.id !== attachmentId))}
             onPreviewImage={(image) => onPreviewMedia({ name: image.name, url: image.url, kind: "image", downloadUrl: image.url })}

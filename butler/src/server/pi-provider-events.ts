@@ -6,7 +6,8 @@ import {
   contentAttachmentSummary,
   contentToText,
   extractMessageTimestamp,
-  isButlerBackgroundPromptText
+  isButlerBackgroundPromptText,
+  isTrivialOperatorQuestionConfirmation
 } from "./butler-agent-helpers.js";
 import { stripElapsedTaskTimeFooter } from "./task-timing.js";
 import type {
@@ -179,6 +180,8 @@ export class PiProviderRuntimeMapper {
   private currentAssistantItemId: string | null = null;
   private currentUserItemId: string | null = null;
   private hideNextAssistantReply = false;
+  private pendingOperatorQuestionReply = false;
+  private pendingOperatorQuestionAssistant: { itemId: string; turnId: string; at: number } | null = null;
 
   constructor(private readonly threadId = BUTLER_RUNTIME_THREAD_ID) {}
 
@@ -192,6 +195,8 @@ export class PiProviderRuntimeMapper {
         this.currentTurnId = null;
         this.currentAssistantItemId = null;
         this.currentUserItemId = null;
+        this.pendingOperatorQuestionReply = false;
+        this.pendingOperatorQuestionAssistant = null;
         return [this.threadState("idle", at)];
       case "turn_start": {
         const turnId = this.startTurn(session, at);
@@ -210,6 +215,8 @@ export class PiProviderRuntimeMapper {
         this.currentUserItemId = null;
         this.currentAssistantItemId = null;
         this.hideNextAssistantReply = false;
+        this.pendingOperatorQuestionReply = false;
+        this.pendingOperatorQuestionAssistant = null;
         return [{
           kind: "turn-lifecycle",
           threadId: this.threadId,
@@ -247,6 +254,10 @@ export class PiProviderRuntimeMapper {
           at
         })];
       case "tool_execution_end":
+        if (event.toolName === "ask_operator" && !event.isError) {
+          this.pendingOperatorQuestionReply = true;
+          this.pendingOperatorQuestionAssistant = null;
+        }
         return [this.itemLifecycle({
           threadId: this.threadId,
           turnId: this.ensureTurn(session, at),
@@ -380,6 +391,14 @@ export class PiProviderRuntimeMapper {
       }
       const turnId = this.ensureTurn(session, at);
       this.currentAssistantItemId = this.messageItemId(session);
+      if (this.pendingOperatorQuestionReply) {
+        this.pendingOperatorQuestionAssistant = {
+          itemId: this.currentAssistantItemId,
+          turnId,
+          at: messageAt(event.message, at)
+        };
+        return [];
+      }
       return [this.itemLifecycle({
         threadId: this.threadId,
         turnId,
@@ -413,6 +432,14 @@ export class PiProviderRuntimeMapper {
         : this.thinkingItemId(delta.contentIndex);
       if (delta.streamKind === "assistant_text") {
         this.currentAssistantItemId = itemId;
+        if (this.pendingOperatorQuestionReply) {
+          this.pendingOperatorQuestionAssistant = {
+            itemId,
+            turnId,
+            at
+          };
+          return [];
+        }
       }
       return [{
         kind: "content-delta",
@@ -517,6 +544,28 @@ export class PiProviderRuntimeMapper {
 
     if (role !== "assistant") {
       return [];
+    }
+
+    if (this.pendingOperatorQuestionReply) {
+      const buffered = this.pendingOperatorQuestionAssistant;
+      const itemId = this.currentAssistantItemId ?? buffered?.itemId ?? this.messageItemId(session);
+      const turnId = buffered?.turnId ?? this.ensureTurn(session, at);
+      this.pendingOperatorQuestionReply = false;
+      this.pendingOperatorQuestionAssistant = null;
+      this.currentAssistantItemId = null;
+      if (!text.trim() || isTrivialOperatorQuestionConfirmation(text)) {
+        return [];
+      }
+      return [this.itemLifecycle({
+        threadId: this.threadId,
+        turnId,
+        itemId,
+        itemType: "assistant_message",
+        status: isRecord(event.message) && event.message.stopReason === "error" ? "failed" : "completed",
+        text,
+        at: messageAt(event.message, buffered?.at ?? at),
+        title: "Assistant message"
+      })];
     }
 
     const itemId = this.currentAssistantItemId ?? this.messageItemId(session);

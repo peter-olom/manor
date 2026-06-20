@@ -16,6 +16,7 @@ import type {
   ButlerMessageView,
   ButlerNextWorkerReportAction,
   ButlerOnboardingView,
+  ButlerOperatorQuestionView,
   ButlerThreadCallbackView,
   ButlerToolView,
   ButlerThinkingLevel,
@@ -170,6 +171,18 @@ export type ButlerAgentToolAccess = {
     options?: { privateSteerText?: string | null; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null }
   ): void;
   postOperatorJobReply(threadId: string, text: string): Promise<void>;
+  postOperatorQuestion(input: {
+    prompt?: string;
+    context?: string | null;
+    options?: Array<{ id?: string | null; label: string; description?: string | null }>;
+    allowFreeform?: boolean;
+    questions?: Array<{
+      prompt: string;
+      context?: string | null;
+      options: Array<{ id?: string | null; label: string; description?: string | null }>;
+      allowFreeform?: boolean;
+    }>;
+  }): Promise<ButlerMessageView & { question: ButlerOperatorQuestionView }>;
   getCodexAuthStatus(): ButlerAuthStatus;
   getSnapshot(): AppSnapshot["butler"];
 };

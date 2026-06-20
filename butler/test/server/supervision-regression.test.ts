@@ -16,6 +16,7 @@ import {
   isCallbackOutstanding,
   selectReviewableProofArtifacts
 } from "../../src/server/butler-agent-helpers.js";
+import { formatDelegationContractText } from "../../src/server/butler-agent-delegation-contract.js";
 import {
   buildSelfImprovementTask,
   classifyManorBlocker,
@@ -257,9 +258,42 @@ test("implementation contracts infer internal depth and category verification ro
   assert.equal(contract.taskCategory, "ui");
   assert.equal(contract.inferredWorkDepth, "deep");
   assert.equal(contract.proofExpectation, "requested");
+  assert.equal(contract.mission?.intent, "Implement the new settings UI, verify responsive behavior, and capture proof.");
+  assert.ok(contract.mission?.tasteNotes.some((note) => /polished, coherent, usable/.test(note)));
+  assert.ok(contract.mission?.plannerSteps.some((step) => /mission intent/.test(step)));
+  assert.ok(contract.mission?.plannerSteps.some((step) => /operator-visible flow/.test(step)));
+  assert.ok(contract.mission?.criticChecks.some((check) => /without more handholding/.test(check)));
+  assert.ok(contract.mission?.criticChecks.some((check) => /visually verified/.test(check)));
+  assert.match(contract.mission?.operatorQuestionPolicy ?? "", /Ask only when/);
+  assert.ok(contract.mission?.blockedConditions.some((condition) => /materially change the outcome/.test(condition)));
   assert.ok(contract.verificationMatrix.length >= contract.acceptancePoints.length);
   assert.ok(contract.verificationMatrix.some((row) => row.checkKinds.includes("responsive_review")));
   assert.ok(contract.verificationMatrix.some((row) => row.checkKinds.includes("taste_review")));
+});
+
+test("delegation contract serializes the mission planner and critic loop", () => {
+  const contract = buildThreadExecutionContract({
+    threadId: "thread-loop",
+    workspaceCwd: "/workspace",
+    projectId: "project-1",
+    projectLabel: "Project One",
+    branch: "main",
+    taskText: "Build a polished settings UI and ask fewer questions unless a product choice is required.",
+    notes: []
+  });
+
+  const text = formatDelegationContractText({
+    threadId: contract.threadId,
+    workspace: { cwd: contract.workspaceCwd ?? "/workspace", branchName: contract.branch },
+    project: { id: contract.projectId, label: contract.projectLabel },
+    contract,
+    notes: contract.notes,
+    requestedTask: contract.requestedTask
+  });
+
+  assert.match(text, /planner_step:/);
+  assert.match(text, /critic_check:/);
+  assert.match(text, /operator_question_policy:/);
 });
 
 test("worker reports attach evidence without accepting checklist points", async () => {
@@ -746,6 +780,9 @@ test("system prompt advises focused checklist refresh for new work", async () =>
   assert.match(prompt, /hold_job_context/);
   assert.match(prompt, /newer context for an active job/);
   assert.match(prompt, /Do not answer project inventory questions from supervisor state alone/);
+  assert.match(prompt, /ask_operator: Butler-only tool/);
+  assert.match(prompt, /Ask 1-3 concise structured questions/);
+  assert.match(prompt, /Do not use ask_operator for work-depth selection/);
 });
 
 test("Butler callback state startup tolerates empty persisted files", () => {
@@ -903,7 +940,15 @@ test("callback review prompt keeps proof-required jobs behind evidence review", 
   const contract = makeContract({
     acceptancePoints: ["Capture browser proof", "Confirm closeout"],
     proofExpectation: "requested",
-    proofExpectationLabel: "proof requested"
+    proofExpectationLabel: "proof requested",
+    mission: {
+      intent: "Ship the proof flow without making the operator inspect raw logs.",
+      tasteNotes: ["The result should feel polished enough for repeated daily use."],
+      plannerSteps: ["Inspect the current proof flow before changing behavior."],
+      criticChecks: ["Reject completion if proof is only described in text."],
+      operatorQuestionPolicy: "Ask only if the proof target is ambiguous and no safe default exists.",
+      blockedConditions: ["Ask the operator if the proof target is ambiguous."]
+    }
   });
   store.upsertThreadSummary({
     id: contract.threadId,
@@ -940,6 +985,14 @@ test("callback review prompt keeps proof-required jobs behind evidence review", 
   });
 
   assert.match(prompt, /Proof expectation: proof requested/);
+  assert.match(prompt, /Mission contract/);
+  assert.match(prompt, /Ship the proof flow without making the operator inspect raw logs/);
+  assert.match(prompt, /polished enough for repeated daily use/);
+  assert.match(prompt, /Planner steps/);
+  assert.match(prompt, /Inspect the current proof flow before changing behavior/);
+  assert.match(prompt, /Critic checks/);
+  assert.match(prompt, /Reject completion if proof is only described in text/);
+  assert.match(prompt, /Operator question policy: Ask only if the proof target is ambiguous/);
   assert.match(prompt, /review_preview_proof/);
   assert.match(prompt, /If any acceptance point lacks convincing evidence/);
   assert.match(prompt, /Use reply_to_operator only when all acceptance points are accepted/);

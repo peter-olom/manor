@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildImmediatePendingButlerRows, butlerMessagesAreEquivalent } from "../../src/web/ButlerSurface.js";
+import { dedupeMessages } from "../../src/web/utils.js";
 import type { ButlerMessageRecord } from "../../src/web/types.js";
 
 function message(overrides: Partial<ButlerMessageRecord> = {}): ButlerMessageRecord {
@@ -32,6 +33,86 @@ test("Butler history sync detects display text transitions without text changes"
     butlerMessagesAreEquivalent(
       [message({ displayText: "Visible prompt" })],
       [message({ displayText: "Updated visible prompt" })]
+    ),
+    false
+  );
+});
+
+test("Butler history merge keeps newer question state for duplicate ids", () => {
+  const merged = dedupeMessages([
+    message({
+      id: "question-1",
+      role: "assistant",
+      question: {
+        id: "question-1",
+        prompt: "Choose",
+        context: null,
+        options: [
+          { id: "a", label: "A", description: null },
+          { id: "b", label: "B", description: null }
+        ],
+        allowFreeform: false,
+        createdAt: 1,
+        selectedOptionId: null,
+        answeredAt: null
+      }
+    }),
+    message({
+      id: "question-1",
+      role: "assistant",
+      question: {
+        id: "question-1",
+        prompt: "Choose",
+        context: null,
+        options: [
+          { id: "a", label: "A", description: null },
+          { id: "b", label: "B", description: null }
+        ],
+        allowFreeform: false,
+        createdAt: 1,
+        selectedOptionId: "a",
+        answeredAt: 2
+      }
+    })
+  ]);
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0]!.question?.selectedOptionId, "a");
+});
+
+test("Butler history sync detects question state transitions without text changes", () => {
+  assert.equal(
+    butlerMessagesAreEquivalent(
+      [message({
+        question: {
+          id: "question-1",
+          prompt: "Choose",
+          context: null,
+          options: [
+            { id: "a", label: "A", description: null },
+            { id: "b", label: "B", description: null }
+          ],
+          allowFreeform: false,
+          createdAt: 1,
+          selectedOptionId: null,
+          answeredAt: null
+        }
+      })],
+      [message({
+        question: {
+          id: "question-1",
+          prompt: "Choose",
+          context: null,
+          options: [
+            { id: "a", label: "A", description: null },
+            { id: "b", label: "B", description: null }
+          ],
+          allowFreeform: false,
+          createdAt: 1,
+          selectedOptionId: "a",
+          answeredAt: 2
+        }
+      })]
     ),
     false
   );

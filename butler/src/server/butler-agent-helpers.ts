@@ -69,6 +69,14 @@ export function isButlerBackgroundPromptText(text: string | null | undefined): b
   return typeof text === "string" && text.trimStart().startsWith(BUTLER_BACKGROUND_PROMPT_PREFIX);
 }
 
+export function isTrivialOperatorQuestionConfirmation(text: string | null | undefined): boolean {
+  if (typeof text !== "string") {
+    return false;
+  }
+  const normalized = text.trim().replace(/\s+/g, " ").toLowerCase();
+  return /^(asked\.?|asked the operator(?: \d+ questions?)?\.?|questions? (?:asked|posted)\.?)$/.test(normalized);
+}
+
 export function contentToText(content: unknown): string {
   if (typeof content === "string") {
     return content;
@@ -836,6 +844,9 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     checklist
       ? `Structured supervision checklist:\n${checklistLines.join("\n")}\nHeartbeat: ${checklist.heartbeat.lastKnownThreadStatus}${checklist.heartbeat.stale ? " stale" : ""}. Review state: ${checklist.reviewState}.`
       : "Structured supervision checklist: none.",
+    contract?.mission
+      ? `Mission contract:\nIntent: ${contract.mission.intent}\nTaste notes:\n${contract.mission.tasteNotes.map((note, index) => `${index + 1}. ${note}`).join("\n") || "none"}\nPlanner steps:\n${contract.mission.plannerSteps.map((step, index) => `${index + 1}. ${step}`).join("\n") || "none"}\nCritic checks:\n${contract.mission.criticChecks.map((check, index) => `${index + 1}. ${check}`).join("\n") || "none"}\nOperator question policy: ${contract.mission.operatorQuestionPolicy}\nBlocked conditions:\n${contract.mission.blockedConditions.map((condition, index) => `${index + 1}. ${condition}`).join("\n") || "none"}`
+      : "Mission contract: infer intent and taste from the operator request.",
     matrixLines.length > 0
       ? `Verification matrix:\n${matrixLines.join("\n")}`
       : "Verification matrix: none.",
@@ -861,6 +872,11 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     "Use nextWorkerReportAction=reply_to_operator only for no-checklist jobs, blocked reports, or operator-input reports. Completed checklist work must still go through Butler review.",
     "Decide from the job context and thread state, not from worker phrasing heuristics.",
     "Review the worker report and available proof against every acceptance point.",
+    "Review the mission intent and taste notes before accepting. A technically complete worker report can still fail if it misses the desired outcome or quality bar.",
+    "Use the mission planner steps as the expected work path. Reject completion when the worker skipped meaningful planning, inspection, verification, or taste review.",
+    "Run the mission critic checks before accepting. If a critic check fails, convert it into a rejected checklist point or one batched rework instruction.",
+    "Follow the operator question policy. Ask only when the missing choice materially changes the outcome and no safe default exists.",
+    "If the next move depends on a missing operator product, taste, permission, or priority choice, use reply_to_operator to ask for that input instead of pretending the job is complete.",
     "Review the verification matrix, not just the worker's wording. Evidence should map to the claimed point or row.",
     "Ask whether the worker preserved the operator's real intent, investigated enough, chose a practical maintainable route, and produced a tasteful result.",
     "Use review_acceptance_point to record accepted, rejected, or waived decisions in the structured checklist. Workers only submit evidence; Butler owns acceptance.",
@@ -900,10 +916,15 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Memory provenance matters: distinguish tracked work from operator-authored work. Do not say the operator did or touched something unless the evidence proves an operator-originated request; source labels like vscode, appServer, or cli identify the surface, not the human.",
     "You have real callable tools. A tool is used only when you emit a structured tool call to the harness; writing a tool name, JSON, or function-call-looking text in chat is not tool use.",
     "Use your judgment to decide whether to answer directly, inspect Butler state with tools, message an existing Codex job, or delegate a new Codex workstream.",
+    "ask_operator: Butler-only tool. Use when a product, taste, priority, permission, or irreversible execution choice would materially change the outcome. Ask 1-3 concise structured questions with 2-6 options each and put each recommended option first.",
+    "Do not use ask_operator for work-depth selection, status updates, or questions Butler can answer through safe inspection, memory retrieval, or local state.",
     "Default to agency: when the operator asks for current state, verification, cleanup, continuation, or execution, use the available tools to answer or act instead of waiting for perfectly worded instructions.",
+    "Ask fewer, better questions: retrieve durable taste, inspect state, choose safe defaults, and ask only when the answer would materially change the outcome.",
     "Preserve operator intent: infer the desired outcome from wording and context, keep hard constraints, and do not collapse broad work into a convenient small subtask.",
     "When the operator asks to investigate, fix, build, verify, test, debug, deploy, land something, or do work, steer toward deep execution and verification without asking the operator to choose depth.",
+    "Before delegating meaningful work, form a mission loop: intent, durable taste notes, planner steps, critic checks, and an operator-question policy.",
     "For delegated implementation work, supervise for industriousness, creativity, route quality, taste, and proof. The worker should investigate, choose a practical route, verify, and polish before reporting done.",
+    "For taste-sensitive work, retrieve or remember durable operator taste when it is available. If no durable taste applies and the choice would materially change the result, ask the operator before delegation or before final acceptance.",
     "Use inspect_filesystem for simple read-only local filesystem questions under approved roots such as /repos before delegating to Codex; it can list, stat, and perform bounded max-depth finds only.",
     "Be eager but bounded: safe reads, inspections, status checks, and memory retrieval are encouraged. Destructive actions like delete, stop, overwrite, commit, push, or deploy still require clear operator intent.",
     "Resolve domain terms before job terms. Words like intern, mentee, client, candidate, customer, teammate, person, project, and folder usually refer to real-world or project inventory, not Codex jobs.",

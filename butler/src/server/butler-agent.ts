@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -45,10 +44,13 @@ import { buildButlerCodexTools } from "./butler-agent-codex-tools.js";
 import { clearPendingOperatorPrompts, createOrRefreshButlerSession, getButlerLiveSnapshot, getButlerMessagePage, getButlerShellSnapshot, getButlerSnapshot, keepPendingOperatorPromptsBefore, promptButler, promptButlerInternal, registerPendingOperatorPrompt, removePendingOperatorPrompt, stopButlerPrompt, restoreButlerCompactionState, sanitizeButlerSessionMessages, sanitizePersistedButlerSessions, updateButlerComposeSettings } from "./butler-agent-session.js";
 import { clearButlerSessionChat, deleteButlerSessionChatFromLocated, keepOperatorMessagesBefore, locateButlerSessionDeletePoint, locateButlerSessionDeletePointBeforeTimestamp } from "./butler-agent-chat-hygiene.js";
 import { buildOperatorCloseoutText } from "./butler-agent-closeout-text.js";
+import { formatDelegationContractText } from "./butler-agent-delegation-contract.js";
 import { buildDelegationDeveloperInstructions } from "./butler-agent-delegation-instructions.js";
 import { buildButlerFilesystemTools } from "./butler-agent-filesystem-tools.js";
 import { buildButlerServiceTools } from "./butler-agent-service-tools.js";
 import { buildButlerManorTools } from "./butler-agent-manor-tools.js";
+import { buildButlerOperatorTools } from "./butler-agent-operator-tools.js";
+import { answerOperatorQuestionMessage, findDurableOperatorTasteNotes, postOperatorQuestionMessage, recordOperatorQuestionTasteMemory } from "./butler-agent-operator-question.js";
 import { buildButlerProjectTools } from "./butler-agent-project-tools.js";
 import { buildButlerDelegationTools, buildButlerStackPreviewTools } from "./butler-agent-stack-preview-tools.js";
 import { reviewButlerProofScreenshot } from "./butler-agent-proof-review.js";
@@ -56,7 +58,7 @@ import type { ButlerAgentSessionAccess, ButlerAgentToolAccess } from "./butler-a
 import { BUTLER_TOOL_CATALOG } from "./butler-agent-tool-catalog.js";
 import { keepButlerActivityBefore, normalizeButlerActivitySummaryTurns } from "./butler-activity.js";
 import { applyPostedCloseout, getOperatorCloseoutBlocker as getCloseoutBlocker, idleCloseoutReview, queueCloseoutReview, recordGatedCloseout, recordPostedCloseoutEvents } from "./butler-closeout-gate.js";
-import { backfillOperatorMessagesFromSessionFiles, normalizeOperatorMessages, removeOperatorMessage, upsertOperatorMessage } from "./butler-operator-messages.js";
+import { backfillOperatorMessagesFromSessionFiles, normalizeOperatorMessages, normalizeOperatorQuestion, removeOperatorMessage, upsertOperatorMessage } from "./butler-operator-messages.js";
 import { readButlerAuthStatus, readCodexAuthStatus } from "./auth-status.js";
 import { backfillDirectCodexMessagesFromSessionFiles, notifyDirectCodexMessage, type DirectCodexMessageAccess, type DirectCodexMessagePingInput } from "./direct-codex-message.js";
 import { type FileReferenceStore } from "./file-store.js";
@@ -72,11 +74,7 @@ import { ensureTaskWorktree, resolveExistingWorkspaceCwd, resolveWorkspaceBranch
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
-import {
-  buildThreadExecutionContract,
-  describeProofExpectation,
-  isSharedShellRepoBootstrapTask,
-} from "./thread-contract.js";
+import { buildThreadExecutionContract, isSharedShellRepoBootstrapTask } from "./thread-contract.js";
 import { elapsedTaskDurationMs, stripElapsedTaskTimeFooter } from "./task-timing.js";
 import { applyWorkspacePreviewDefaults, formatWorkspaceBootstrapLines, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 import type {
@@ -90,6 +88,7 @@ import type {
   ButlerMessageView,
   ButlerMessagePageView,
   ButlerOnboardingView,
+  ButlerOperatorQuestionView,
   ButlerThinkingLevel,
   ButlerToolUiEffect,
   ButlerToolView,
@@ -239,7 +238,8 @@ export class ButlerAgentService extends EventEmitter {
           continue;
         }
 
-        this.operatorMessages.push({ id, role, text, at, taskDurationMs, kind });
+        const question = normalizeOperatorQuestion((item as Record<string, unknown>).question);
+        this.operatorMessages.push({ id, role, text, at, taskDurationMs, kind, ...(question ? { question } : {}) });
       }
 
       if (normalizeOperatorMessages(this.operatorMessages)) await this.saveOperatorMessageState();
@@ -460,6 +460,40 @@ export class ButlerAgentService extends EventEmitter {
     this.store.addEvent(threadId, "butler.acknowledgement.posted", "Butler posted the operator-facing delegation acknowledgement.");
     void this.saveOperatorMessageState();
     this.emit("change");
+  }
+
+  private async postOperatorQuestion(input: {
+    prompt?: string;
+    context?: string | null;
+    options?: Array<{ id?: string | null; label: string; description?: string | null }>;
+    allowFreeform?: boolean;
+    questions?: Array<{
+      prompt: string;
+      context?: string | null;
+      options: Array<{ id?: string | null; label: string; description?: string | null }>;
+      allowFreeform?: boolean;
+    }>;
+  }): Promise<ButlerMessageView & { question: ButlerOperatorQuestionView }> {
+    return postOperatorQuestionMessage({
+      messages: this.operatorMessages,
+      save: () => this.saveOperatorMessageState(),
+      emitChange: () => this.emit("change")
+    }, input);
+  }
+
+  async answerOperatorQuestion(input: { messageId: string; questionId: string; optionId: string }): Promise<{ complete: boolean; queued: boolean; message: ButlerMessageView & { question: ButlerOperatorQuestionView } }> {
+    const answer = await answerOperatorQuestionMessage({
+      messages: this.operatorMessages,
+      save: () => this.saveOperatorMessageState(),
+      emitChange: () => this.emit("change")
+    }, input);
+    if (answer.complete) {
+      recordOperatorQuestionTasteMemory(this.store, answer.message);
+    }
+    if (answer.replyText) {
+      this.prompt(answer.replyText, [], { mode: "queue", displayText: answer.replyText });
+    }
+    return { complete: answer.complete, queued: answer.queued, message: answer.message };
   }
 
   private async postOperatorJobReply(threadId: string, text: string): Promise<void> {
@@ -1085,6 +1119,10 @@ export class ButlerAgentService extends EventEmitter {
     if (repoBootstrapTask) {
       notes.push("This job begins in the shared /repos workspace. Create or clone the repo first, then continue inside it.");
     }
+    const durableTasteNotes = findDurableOperatorTasteNotes(this.store.listButlerMemory());
+    if (durableTasteNotes.length > 0) {
+      notes.push(...durableTasteNotes.map((note) => `Durable operator taste: ${note}`));
+    }
     const projectPolicyLines = formatProjectPolicyContextLines({ store: this.store, projectId: project.id });
     if (projectPolicyLines.length > 1) {
       notes.push(...projectPolicyLines.slice(1));
@@ -1099,6 +1137,7 @@ export class ButlerAgentService extends EventEmitter {
       taskText: requestedTask,
       requestedTask: requestedTaskOnly,
       operatorGoal,
+      tasteNotes: durableTasteNotes,
       notes
     });
     const contract: CodexThreadExecutionContractView = {
@@ -1107,37 +1146,8 @@ export class ButlerAgentService extends EventEmitter {
       operatorGoal,
       notes: [...new Set(notes.map((note) => note.trim()).filter(Boolean))]
     };
-    const lines = [
-      "MANOR JOB BRIEF",
-      `thread_id: ${options.threadId}`,
-      `workspace_cwd: ${options.workspace.cwd}`,
-      `project_id: ${project.id}`,
-      `project_label: ${project.label}`,
-      `branch: ${options.workspace.branchName ?? "(existing workspace)"}`,
-      `harness_binding: manor-harness --thread ${options.threadId}`,
-      `proof_expectation: ${describeProofExpectation(contract.proofExpectation)}`,
-      `task_category: ${contract.taskCategory}`,
-      `inferred_work_depth: ${contract.inferredWorkDepth}`,
-    ];
-
-    for (const point of contract.acceptancePoints) {
-      lines.push(`acceptance_point: ${point}`);
-    }
-
-    for (const row of contract.verificationMatrix) {
-      lines.push(`verification_row: ${row.id}|${row.acceptancePointId ?? ""}|${row.checkKinds.join(",")}|${row.text}`);
-    }
-
-    if (contract.operatorGoal) {
-      lines.push(`operator_goal: ${contract.operatorGoal}`);
-    }
-
-    for (const note of notes) {
-      lines.push(`note: ${note}`);
-    }
-
     return {
-      text: `${lines.join("\n")}\n\nREQUESTED TASK\n${requestedTask}`,
+      text: formatDelegationContractText({ threadId: options.threadId, workspace: options.workspace, project, contract, notes, requestedTask }),
       contract
     };
   }
@@ -1429,7 +1439,7 @@ export class ButlerAgentService extends EventEmitter {
 
   private buildCustomTools() {
     const toolAccess = this.getToolAccess();
-    return [...buildButlerStackPreviewTools(toolAccess), ...buildButlerFilesystemTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerManorTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerCodexTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
+    return [...buildButlerStackPreviewTools(toolAccess), ...buildButlerFilesystemTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerManorTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerOperatorTools(toolAccess), ...buildButlerCodexTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
   }
 
   private async createOrRefreshSession(): Promise<void> { await createOrRefreshButlerSession(this.getSessionAccess()); }

@@ -21,7 +21,7 @@ import {
 import type { ButlerAgentSessionAccess } from "./butler-agent-tool-access.js";
 import { readButlerAuthStatus } from "./auth-status.js";
 import { getButlerActivityTurns, recordButlerActivityEvent } from "./butler-activity.js";
-import { isPersistableProviderOperatorMessage, upsertProviderBackedOperatorMessage } from "./butler-operator-messages.js";
+import { isPersistableProviderOperatorMessage, removeTrivialOperatorQuestionConfirmations, upsertProviderBackedOperatorMessage } from "./butler-operator-messages.js";
 import { PiProviderRuntimeMapper } from "./pi-provider-events.js";
 import type {
   AppShellSnapshot,
@@ -480,7 +480,9 @@ export function getVisibleButlerMessages(access: ButlerAgentSessionAccess) {
   const pendingIds = new Set(access.pendingOperatorMessages.map((message) => message.id));
   const durableOperatorMessages = access.operatorMessages.filter((message) => !pendingIds.has(message.id));
   const serverOperatorMessages = filterProviderBackedServerOperatorMessages(sessionMessages, [...durableOperatorMessages, ...access.pendingOperatorMessages]);
-  return collapseCallbackDuplicateMessages(mergeVisibleMessages(sessionMessages, serverOperatorMessages as never[]));
+  const visibleMessages = collapseCallbackDuplicateMessages(mergeVisibleMessages(sessionMessages, serverOperatorMessages as never[]));
+  removeTrivialOperatorQuestionConfirmations(visibleMessages, { providerBackedOnly: false });
+  return visibleMessages;
 }
 
 export function getButlerMessagePage(

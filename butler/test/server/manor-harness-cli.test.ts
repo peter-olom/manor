@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -95,6 +95,8 @@ test("manor-harness resolves lifecycle cwd flags before forwarding broker reques
   const root = await mkdtemp(path.join(tmpdir(), "manor-harness-cwd-test-"));
   const workspace = path.join(root, "workspace");
   const relativeCwd = "apps/demo";
+  await mkdir(workspace, { recursive: true });
+  const expectedCwd = path.join(await realpath(workspace), relativeCwd);
 
   const previewStart = await captureHarnessAction([
     "preview", "start",
@@ -103,7 +105,7 @@ test("manor-harness resolves lifecycle cwd flags before forwarding broker reques
     "--port", "3000"
   ], { cwd: workspace });
   assert.equal(previewStart.action, "preview.start");
-  assert.equal(previewStart.params?.cwd, path.join(workspace, relativeCwd));
+  assert.equal(previewStart.params?.cwd, expectedCwd);
 
   const serviceStart = await captureHarnessAction([
     "service", "start",
@@ -111,14 +113,14 @@ test("manor-harness resolves lifecycle cwd flags before forwarding broker reques
     "--cwd", relativeCwd
   ], { cwd: workspace });
   assert.equal(serviceStart.action, "service.start");
-  assert.equal(serviceStart.params?.cwd, path.join(workspace, relativeCwd));
+  assert.equal(serviceStart.params?.cwd, expectedCwd);
 
   const stackStart = await captureHarnessAction([
     "stack", "start",
     "--cwd", relativeCwd
   ], { cwd: workspace });
   assert.equal(stackStart.action, "stack.start");
-  assert.equal(stackStart.params?.cwd, path.join(workspace, relativeCwd));
+  assert.equal(stackStart.params?.cwd, expectedCwd);
 
   const desktopStart = await captureHarnessAction([
     "desktop", "use", "start",
@@ -126,7 +128,7 @@ test("manor-harness resolves lifecycle cwd flags before forwarding broker reques
     "--cwd", relativeCwd
   ], { cwd: workspace });
   assert.equal(desktopStart.action, "desktop.use.start");
-  assert.equal(desktopStart.params?.cwd, path.join(workspace, relativeCwd));
+  assert.equal(desktopStart.params?.cwd, expectedCwd);
 });
 
 test("manor-harness preserves preview exec cwd as an in-container path", async () => {

@@ -94,6 +94,110 @@ test("Pi background prompts do not leak assistant patches", () => {
   } as never, fakeSession as never), []);
 });
 
+test("Pi ask_operator tool suppresses trivial follow-up assistant confirmation", () => {
+  const mapper = new PiProviderRuntimeMapper();
+  const fakeSession = session();
+
+  mapper.map({ type: "turn_start" } as never, fakeSession as never);
+  const [toolPatch] = mapper.map({
+    type: "tool_execution_end",
+    toolName: "ask_operator",
+    toolCallId: "call-1",
+    isError: false,
+    result: { content: [{ type: "text", text: "Structured operator question card posted." }] }
+  } as never, fakeSession as never);
+  assert.equal(toolPatch.kind, "item-lifecycle");
+
+  assert.deepEqual(mapper.map({
+    type: "message_start",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "" }],
+      timestamp: 110
+    }
+  } as never, fakeSession as never), []);
+
+  assert.deepEqual(mapper.map({
+    type: "message_update",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "Asked." }],
+      timestamp: 110
+    },
+    assistantMessageEvent: {
+      type: "text_delta",
+      contentIndex: 0,
+      delta: "Asked.",
+      partial: {
+        role: "assistant",
+        content: [{ type: "text", text: "Asked." }]
+      }
+    }
+  } as never, fakeSession as never), []);
+
+  assert.deepEqual(mapper.map({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "Asked." }],
+      timestamp: 120
+    }
+  } as never, fakeSession as never), []);
+});
+
+test("Pi ask_operator tool keeps substantive follow-up assistant text", () => {
+  const mapper = new PiProviderRuntimeMapper();
+  const fakeSession = session();
+
+  mapper.map({ type: "turn_start" } as never, fakeSession as never);
+  mapper.map({
+    type: "tool_execution_end",
+    toolName: "ask_operator",
+    toolCallId: "call-1",
+    isError: false,
+    result: { content: [{ type: "text", text: "Structured operator question card posted." }] }
+  } as never, fakeSession as never);
+
+  assert.deepEqual(mapper.map({
+    type: "message_start",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "" }],
+      timestamp: 110
+    }
+  } as never, fakeSession as never), []);
+
+  assert.deepEqual(mapper.map({
+    type: "message_update",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "I need your call before spending budget." }],
+      timestamp: 110
+    },
+    assistantMessageEvent: {
+      type: "text_delta",
+      contentIndex: 0,
+      delta: "I need your call before spending budget.",
+      partial: {
+        role: "assistant",
+        content: [{ type: "text", text: "I need your call before spending budget." }]
+      }
+    }
+  } as never, fakeSession as never), []);
+
+  const [endPatch] = mapper.map({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "I need your call before spending budget." }],
+      timestamp: 120
+    }
+  } as never, fakeSession as never);
+
+  assert.equal(endPatch.kind, "item-lifecycle");
+  assert.equal(endPatch.text, "I need your call before spending budget.");
+});
+
 test("Pi user message starts do not render provider placeholders", () => {
   const mapper = new PiProviderRuntimeMapper();
   const fakeSession = session();
