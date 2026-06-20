@@ -16,9 +16,11 @@ export function registerBrokerServiceRoutes(options) {
     normalizeEnv,
     normalizeExecArgs,
     buildShellCommand,
+    collectDockerLogs,
     collectExecOutput,
     ensureImage,
     inspectContainer,
+    resolveContainerExecWorkingDir,
     cloneManagedStackVolume,
     ensureManagedStackVolume,
     listManagedServiceContainersByVolume,
@@ -328,15 +330,7 @@ export function registerBrokerServiceRoutes(options) {
         tail,
         timestamps: false
       });
-      const logs =
-        Buffer.isBuffer(stream)
-          ? stream.toString("utf8")
-          : await new Promise((resolve, reject) => {
-              const chunks = [];
-              stream.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-              stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-              stream.on("error", reject);
-            });
+      const logs = await collectDockerLogs(stream);
 
       response.json({
         leaseId: request.params.serviceId,
@@ -371,13 +365,14 @@ export function registerBrokerServiceRoutes(options) {
     }
 
     try {
-      const execCommand = commandArgs.length > 0 ? commandArgs : buildShellCommand(command, cwd);
+      const workingDir = resolveContainerExecWorkingDir(required.container, cwd);
+      const execCommand = commandArgs.length > 0 ? commandArgs : buildShellCommand(command, workingDir);
       const exec = await required.containerRef.exec({
         AttachStdin: stdinProvided,
         AttachStdout: true,
         AttachStderr: true,
         Cmd: execCommand,
-        WorkingDir: cwd || undefined,
+        WorkingDir: workingDir || undefined,
         Tty: false
       });
       const output = await collectExecOutput(required.containerRef, exec, { stdin, stdinProvided });

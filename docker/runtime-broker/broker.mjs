@@ -132,6 +132,7 @@ const {
   clearRetainedPreviewLease,
   clearStackThreadBinding,
   cloneManagedStackVolume,
+  collectDockerLogs,
   collectExecOutput,
   disconnectNetworkConnection,
   dropPreviewEgressLeasePolicy,
@@ -183,6 +184,7 @@ const {
   requireServiceContainer,
   requireStackNetwork,
   resolveAttachedThreadId,
+  resolveContainerExecWorkingDir,
   resolveStackThreadId,
   resolveTargetHost,
   resolveWorktreeProjectInfo,
@@ -1267,15 +1269,7 @@ app.get("/leases/:leaseId/logs", async (request, response) => {
       tail,
       timestamps: false
     });
-    const logs =
-      Buffer.isBuffer(stream)
-        ? stream.toString("utf8")
-        : await new Promise((resolve, reject) => {
-            const chunks = [];
-            stream.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-            stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-            stream.on("error", reject);
-          });
+    const logs = await collectDockerLogs(stream);
 
     response.json({
       leaseId: request.params.leaseId,
@@ -1316,13 +1310,14 @@ app.post("/leases/:leaseId/exec", async (request, response) => {
   }
 
   try {
-    const execCommand = commandArgs.length > 0 ? commandArgs : buildShellCommand(command, cwd);
+    const workingDir = resolveContainerExecWorkingDir(required.container, cwd);
+    const execCommand = commandArgs.length > 0 ? commandArgs : buildShellCommand(command, workingDir);
     const exec = await required.containerRef.exec({
       AttachStdin: stdinProvided,
       AttachStdout: true,
       AttachStderr: true,
       Cmd: execCommand,
-      WorkingDir: cwd || undefined,
+      WorkingDir: workingDir || undefined,
       Tty: false
     });
     const output = await collectExecOutput(required.containerRef, exec, { stdin, stdinProvided });
@@ -1381,6 +1376,7 @@ registerBrokerServiceRoutes({
   normalizeExecArgs,
   buildShellCommand,
   collectExecOutput,
+  collectDockerLogs,
   ensureImage,
   inspectContainer,
   cloneManagedStackVolume,
@@ -1391,6 +1387,7 @@ registerBrokerServiceRoutes({
   serializeLiveServiceFromSummary,
   serializeInspectedService,
   toServiceContainerName,
+  resolveContainerExecWorkingDir,
   resolveTargetHost
 });
 
