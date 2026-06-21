@@ -187,6 +187,19 @@ test("direct Codex callback recovery uses worker reply item time instead of refr
     assert.equal(callback?.callbackState, "missing_worker_callback");
     assert.equal(callback?.reviewState, "queued");
     assert.equal(callback?.reviewReason, "thread_recovery");
+
+    const liveCallback = (agent as unknown as {
+      pendingChatCallbacks: Map<string, { reviewState: string; reviewReason: string | null }>;
+    }).pendingChatCallbacks.get(threadId);
+    assert.ok(liveCallback);
+    liveCallback.reviewState = "running";
+    liveCallback.reviewReason = "thread_recovery";
+
+    Date.now = () => refreshedAt + 1000;
+    await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
+
+    assert.equal(liveCallback.reviewState, "running");
+    assert.equal(liveCallback.reviewReason, "thread_recovery");
   } finally {
     Date.now = originalNow;
   }

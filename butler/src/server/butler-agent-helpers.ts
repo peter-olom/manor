@@ -62,6 +62,14 @@ export type ButlerOperatorThreadGuard = {
 export const SNAPSHOT_MESSAGE_TAIL_LIMIT = 80;
 export const MAX_HISTORY_PAGE_SIZE = 1000;
 export const BUTLER_BACKGROUND_PROMPT_PREFIX = "[[BUTLER_BACKGROUND]]";
+const MAX_BACKGROUND_HISTORY_TEXT_CHARS = 20_000;
+const MAX_HISTORY_TEXT_PART_CHARS = 80_000;
+const MAX_TOOL_RESULT_TEXT_CHARS = 40_000;
+const JOB_DETAIL_MAX_TURNS = 12;
+const JOB_DETAIL_MAX_ITEMS_PER_TURN = 30;
+const JOB_DETAIL_ITEM_TEXT_CHARS = 2_000;
+const JOB_DETAIL_MAX_CHARS = 50_000;
+const TOOL_RESULT_DETAIL_KEY_LIMIT = 16;
 const THREAD_ID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const ATTACHMENT_SUMMARY_TEXT_PATTERN = /^Attached \d+ (?:image|images|file|files|attachment|attachments)(?:, \d+ (?:image|images|file|files|attachment|attachments))*$/;
 
@@ -95,6 +103,60 @@ export function contentToText(content: unknown): string {
   }
 
   return "";
+}
+
+function truncateText(text: string, maxChars: number, label: string): { text: string; changed: boolean } {
+  if (text.length <= maxChars) {
+    return { text, changed: false };
+  }
+
+  const omitted = text.length - maxChars;
+  return {
+    text: `${text.slice(0, maxChars)}\n\n[${omitted} characters omitted from ${label}.]`,
+    changed: true
+  };
+}
+
+function jsonLength(value: unknown): number | null {
+  try {
+    return JSON.stringify(value).length;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isSanitizedToolDetails(details: Record<string, unknown>): boolean {
+  return Object.keys(details).every((key) => key === "uiEffects" || key === "omittedDetails");
+}
+
+export function summarizeToolResultDetails(details: Record<string, unknown> | null | undefined): Record<string, unknown> | undefined {
+  if (!details || !isRecord(details)) {
+    return undefined;
+  }
+
+  if (isSanitizedToolDetails(details)) {
+    return details;
+  }
+
+  const uiEffects = Array.isArray(details.uiEffects) ? details.uiEffects : undefined;
+  const keys = Object.keys(details).filter((key) => key !== "uiEffects");
+  if (keys.length === 0) {
+    return uiEffects ? { uiEffects } : undefined;
+  }
+
+  return {
+    ...(uiEffects ? { uiEffects } : {}),
+    omittedDetails: {
+      omitted: true,
+      keys: keys.slice(0, TOOL_RESULT_DETAIL_KEY_LIMIT),
+      omittedKeyCount: Math.max(0, keys.length - TOOL_RESULT_DETAIL_KEY_LIMIT),
+      jsonLength: jsonLength(details)
+    }
+  };
 }
 
 function pluralize(count: number, singular: string, plural = `${singular}s`): string {
@@ -344,49 +406,68 @@ export function sanitizeHistoryMessage(message: unknown): { message: unknown; ch
 
   const record = message as Record<string, unknown>;
   const role = typeof record.role === "string" ? record.role : null;
-  if (role !== "user" && role !== "user-with-attachments") {
+  if (role !== "user" && role !== "user-with-attachments" && role !== "toolResult") {
     return { message, changed: false };
   }
 
   const content = record.content;
-  if (!Array.isArray(content)) {
-    return { message, changed: false };
-  }
-
-  let removedImage = false;
+  let changed = false;
   const nextContent: Record<string, unknown>[] = [];
-  for (const entry of content) {
-    if (!entry || typeof entry !== "object") {
-      nextContent.push({ type: "text", text: String(entry ?? "") });
-      continue;
-    }
+  if (Array.isArray(content)) {
+    for (const entry of content) {
+      if (!entry || typeof entry !== "object") {
+        nextContent.push({ type: "text", text: String(entry ?? "") });
+        changed = true;
+        continue;
+      }
 
-    const part = entry as Record<string, unknown>;
-    if (part.type === "image") {
-      removedImage = true;
-      continue;
-    }
+      const part = entry as Record<string, unknown>;
+      if (part.type === "image" && (role === "user" || role === "user-with-attachments")) {
+        changed = true;
+        continue;
+      }
 
-    nextContent.push({ ...part });
+      if (typeof part.text === "string") {
+        const maxChars = role === "toolResult"
+          ? MAX_TOOL_RESULT_TEXT_CHARS
+          : isButlerBackgroundPromptText(part.text)
+            ? MAX_BACKGROUND_HISTORY_TEXT_CHARS
+            : MAX_HISTORY_TEXT_PART_CHARS;
+        const truncated = truncateText(part.text, maxChars, role === "toolResult" ? "tool result history" : "Butler history");
+        nextContent.push({ ...part, text: truncated.text });
+        changed = changed || truncated.changed;
+        continue;
+      }
+
+      nextContent.push({ ...part });
+    }
   }
 
-  if (!removedImage) {
-    return { message, changed: false };
+  if ((role === "user" || role === "user-with-attachments") && Array.isArray(content) && nextContent.length < content.length) {
+    nextContent.push({
+      type: "text",
+      text: "[Attached image omitted from persisted Butler history.]"
+    });
   }
 
-  nextContent.push({
-    type: "text",
-    text: "[Attached image omitted from persisted Butler history.]"
-  });
-
-  return {
-    changed: true,
-    message: {
-      ...record,
-      role: "user",
-      content: nextContent
-    }
+  const nextRecord: Record<string, unknown> = {
+    ...record,
+    ...(Array.isArray(content) ? { content: nextContent } : {})
   };
+
+  if (role === "toolResult" && "details" in record) {
+    const summarizedDetails = summarizeToolResultDetails(isRecord(record.details) ? record.details : undefined);
+    if (summarizedDetails !== record.details) {
+      changed = true;
+      if (summarizedDetails) {
+        nextRecord.details = summarizedDetails;
+      } else {
+        delete nextRecord.details;
+      }
+    }
+  }
+
+  return { changed, message: changed ? nextRecord : message };
 }
 
 function getToolCallIdAliases(value: string): string[] {
@@ -511,16 +592,26 @@ export function buildJobDetail(store: ButlerStateStore, threadId: string): strin
     ? checklist.items.map((item) => `${item.id}:${item.status}:${item.text}`).join(" | ")
     : "(none)";
 
-  const turns = thread.turns
+  const omittedTurnCount = Math.max(0, thread.turns.length - JOB_DETAIL_MAX_TURNS);
+  const selectedTurns = thread.turns.slice(-JOB_DETAIL_MAX_TURNS);
+  let omittedItemCount = 0;
+  const turns = selectedTurns
     .map((turn, turnIndex) => {
-      const items = turn.items
-        .map((item, itemIndex) => `${turnIndex + 1}.${itemIndex + 1} ${item.type} (${item.status}) ${item.text}`.trim())
+      const selectedItems = turn.items.slice(-JOB_DETAIL_MAX_ITEMS_PER_TURN);
+      const omittedItemsForTurn = Math.max(0, turn.items.length - selectedItems.length);
+      omittedItemCount += omittedItemsForTurn;
+      const items = selectedItems
+        .map((item, itemIndex) => {
+          const text = truncateText(item.text, JOB_DETAIL_ITEM_TEXT_CHARS, "job item text").text;
+          return `${omittedTurnCount + turnIndex + 1}.${omittedItemsForTurn + itemIndex + 1} ${item.type} (${item.status}) ${text}`.trim();
+        })
         .join("\n");
-      return `Turn ${turnIndex + 1} | id=${turn.id} | status=${turn.status}\n${items}`;
+      const omittedItems = omittedItemsForTurn > 0 ? `\n[${omittedItemsForTurn} earlier items omitted from this turn.]` : "";
+      return `Turn ${omittedTurnCount + turnIndex + 1} | id=${turn.id} | status=${turn.status}${omittedItems}\n${items}`;
     })
     .join("\n\n");
 
-  return [
+  const detail = [
     `Job ${thread.id}`,
     `project=${thread.supervisor.projectLabel}`,
     `status=${thread.status}`,
@@ -538,8 +629,12 @@ export function buildJobDetail(store: ButlerStateStore, threadId: string): strin
           .map((candidate) => `${candidate.kind}:${candidate.status}:${candidate.summary}`)
           .join(" | ")}`
       : "promotion_candidates=(none)",
+    omittedTurnCount > 0 ? `omitted_earlier_turns=${omittedTurnCount}` : null,
+    omittedItemCount > 0 ? `omitted_earlier_items=${omittedItemCount}` : null,
     turns || "No turn details loaded yet."
-  ].join("\n");
+  ].filter((entry): entry is string => typeof entry === "string").join("\n");
+
+  return truncateText(detail, JOB_DETAIL_MAX_CHARS, "job detail").text;
 }
 
 export function buildProjectsSummary(store: ButlerStateStore, limit: number): string {

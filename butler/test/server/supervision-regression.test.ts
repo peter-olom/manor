@@ -9,6 +9,7 @@ import {
   buildCallbackReviewPrompt,
   buildChatCallbackText,
   buildFallbackChatCallbackText,
+  buildJobDetail,
   buildOperatorThreadGuard,
   buildProofsByThreadMap,
   buildProjectInventorySummary,
@@ -242,6 +243,33 @@ test("execution contracts create a pending checklist with every acceptance point
   assert.equal(checklist.reviewState, "needs_review");
   assert.deepEqual(checklist.items.map((item) => item.text), contract.acceptancePoints);
   assert.deepEqual(checklist.items.map((item) => item.status), ["pending", "pending", "pending"]);
+});
+
+test("job detail output stays bounded for large loaded transcripts", async () => {
+  const store = await createStore();
+  const bigText = "large transcript chunk ".repeat(500);
+  store.upsertThreadSummary({
+    id: "thread-large",
+    status: "idle",
+    cwd: "/workspace",
+    turns: Array.from({ length: 20 }, (_, turnIndex) => ({
+      id: `turn-${turnIndex + 1}`,
+      status: "completed",
+      items: Array.from({ length: 40 }, (_, itemIndex) => ({
+        id: `item-${turnIndex + 1}-${itemIndex + 1}`,
+        type: "agentMessage",
+        status: "completed",
+        text: bigText
+      }))
+    }))
+  });
+
+  const detail = buildJobDetail(store, "thread-large");
+
+  assert.ok(detail.length <= 51_000);
+  assert.match(detail, /omitted_earlier_turns=8/);
+  assert.match(detail, /omitted_earlier_items=120/);
+  assert.match(detail, /characters omitted from job item text/);
 });
 
 test("implementation contracts infer internal depth and category verification rows", () => {

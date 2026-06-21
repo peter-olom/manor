@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { contentAttachmentSummary, sanitizeHistoryMessages, serializeMessages } from "../../src/server/butler-agent-helpers.js";
+import {
+  BUTLER_BACKGROUND_PROMPT_PREFIX,
+  contentAttachmentSummary,
+  sanitizeHistoryMessages,
+  serializeMessages,
+  summarizeToolResultDetails
+} from "../../src/server/butler-agent-helpers.js";
 import {
   clearPendingOperatorPrompts,
   commitPendingOperatorPrompt,
@@ -67,6 +73,52 @@ test("Butler session sanitizer removes orphan tool results", () => {
     ["user", "assistant", "toolResult"]
   );
   assert.equal((sanitized.messages[2] as { toolCallId?: string }).toolCallId, "call_kept|fc_kept");
+});
+
+test("Butler session sanitizer bounds background prompts and tool results", () => {
+  const messages = [
+    {
+      role: "user",
+      content: [{ type: "text", text: `${BUTLER_BACKGROUND_PROMPT_PREFIX}\n${"background ".repeat(3000)}` }]
+    },
+    {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "call_kept", name: "read_job", arguments: {} }]
+    },
+    {
+      role: "toolResult",
+      toolCallId: "call_kept",
+      content: [{ type: "text", text: "tool output ".repeat(5000) }],
+      details: {
+        thread: { turns: Array.from({ length: 50 }, (_, index) => ({ id: `turn-${index}`, text: "large state".repeat(1000) })) },
+        uiEffects: [{ kind: "refreshThread", description: "Refreshes the target run." }]
+      }
+    }
+  ];
+
+  const sanitized = sanitizeHistoryMessages(messages as never);
+  const background = sanitized.messages[0] as { content: Array<{ text?: string }> };
+  const toolResult = sanitized.messages[2] as { content: Array<{ text?: string }>; details?: Record<string, unknown> };
+
+  assert.equal(sanitized.changed, true);
+  assert.ok((background.content[0]?.text?.length ?? 0) < 21_000);
+  assert.match(background.content[0]?.text ?? "", /characters omitted/);
+  assert.ok((toolResult.content[0]?.text?.length ?? 0) < 41_000);
+  assert.match(toolResult.content[0]?.text ?? "", /characters omitted/);
+  assert.deepEqual(Object.keys(toolResult.details ?? {}).sort(), ["omittedDetails", "uiEffects"]);
+  assert.deepEqual((toolResult.details?.omittedDetails as { keys?: string[] }).keys, ["thread"]);
+});
+
+test("tool result detail summarization preserves only ui effects and metadata", () => {
+  const details = summarizeToolResultDetails({
+    thread: { id: "thread-1", turns: ["large transcript"] },
+    supervision: { butlerTurnsUsed: 1 },
+    uiEffects: [{ kind: "refreshThread", description: "Refreshes the target run." }]
+  });
+
+  assert.deepEqual(Object.keys(details ?? {}).sort(), ["omittedDetails", "uiEffects"]);
+  assert.deepEqual((details?.omittedDetails as { keys?: string[] }).keys, ["thread", "supervision"]);
+  assert.ok(Array.isArray(details?.uiEffects));
 });
 
 test("Butler message serialization skips empty user rows", () => {

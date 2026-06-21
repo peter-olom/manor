@@ -33,6 +33,7 @@ import {
   selectReviewableProofArtifacts,
   serializeMessages,
   SNAPSHOT_MESSAGE_TAIL_LIMIT,
+  summarizeToolResultDetails,
   summarizeNoticeResult,
   type ButlerOperatorThreadGuard,
   type PendingChatCallback,
@@ -659,8 +660,9 @@ export class ButlerAgentService extends EventEmitter {
       if (callback.callbackState !== "missing_worker_callback") {
         continue;
       }
-      if (callback.reviewState !== "queued" || callback.reviewReason !== "thread_recovery") {
-        callback.reviewState = "queued";
+      const recoveryReviewActive = callback.reviewState === "queued" || callback.reviewState === "running";
+      if (!recoveryReviewActive || callback.reviewReason !== "thread_recovery") {
+        if (!recoveryReviewActive) callback.reviewState = "queued";
         callback.reviewReason = "thread_recovery";
         callback.updatedAt = Date.now();
         changed = true;
@@ -825,13 +827,8 @@ export class ButlerAgentService extends EventEmitter {
       parameters: definition.parameters,
       execute: async (toolCallId, params) => {
         const result = await definition.execute(toolCallId, params as TParams);
-        return {
-          ...result,
-          details: {
-            ...(result.details ?? {}),
-            uiEffects: definition.uiEffects
-          }
-        };
+        const details = summarizeToolResultDetails({ ...(result.details ?? {}), uiEffects: definition.uiEffects });
+        return { ...result, details };
       }
     });
   }
