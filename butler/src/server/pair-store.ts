@@ -3,23 +3,23 @@ import { EventEmitter } from "node:events";
 
 import { readJsonStateFile, writeJsonStateFileAtomic } from "./json-state-file.js";
 import type { ButlerStateStore } from "./state-store.js";
-import type { PairChat, PairDetail, PairLane, PairMessage, PairRole, PairStatus, PairSummary } from "../shared/pairing.js";
+import type { PairChat, PairMessage, PairStatus, PairSummary } from "../shared/pairing.js";
 
 type PersistedPairState = {
   pairs: PairChat[];
 };
 
-type AppendMessageInput = {
-  role: PairRole;
-  lane: PairLane;
-  text: string;
-  sourceThreadId?: string | null;
-  memoryObservationId?: string | null;
-  metadata?: Record<string, string>;
-  at?: number;
+type PairSnapshotInput = {
+  butlerSessionId?: string | null;
+  butlerReady?: boolean;
+  butlerPending?: boolean;
+  butlerLastError?: string | null;
+  messageCount?: number;
+  lastMessage?: PairMessage | null;
+  updatedAt?: number;
 };
 
-const MAX_PAIR_MESSAGES = 2000;
+const DEFAULT_TITLE = "New session";
 
 function normalizeText(value: string | null | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
@@ -28,36 +28,76 @@ function normalizeText(value: string | null | undefined): string {
 function titleFromText(text: string): string {
   const normalized = normalizeText(text);
   if (!normalized) {
-    return "Untitled Butler chat";
+    return "Untitled Butler session";
   }
   return normalized.length > 72 ? `${normalized.slice(0, 69)}...` : normalized;
 }
 
-function summarizePair(pair: PairChat): PairSummary {
-  const { messages: _messages, ...summary } = pair;
+function emptyPair(input: { id: string; title?: string | null; defaultCwd?: string | null; now: number }): PairChat {
   return {
-    ...summary,
-    messageCount: pair.messages.length,
-    lastMessage: pair.messages.at(-1) ?? null
+    id: input.id,
+    title: titleFromText(input.title ?? DEFAULT_TITLE),
+    status: "idle",
+    projectId: null,
+    projectLabel: null,
+    createdAt: input.now,
+    updatedAt: input.now,
+    defaultCwd: normalizeText(input.defaultCwd) || null,
+    butlerSessionId: input.id,
+    butlerReady: false,
+    butlerPending: false,
+    butlerLastError: null,
+    worker: null,
+    memoryQuery: null,
+    lastHandoffPrompt: null,
+    messageCount: 0,
+    lastMessage: null
   };
 }
 
-function deriveStatus(pair: PairChat, store: ButlerStateStore): PairStatus {
-  if (!pair.worker) {
-    return pair.messages.some((message) => message.role === "user") ? "ready_to_handoff" : "idle";
+function normalizePair(raw: Partial<PairChat> & { id?: string }, store: ButlerStateStore): PairChat | null {
+  if (!raw.id) {
+    return null;
   }
+  const now = Date.now();
+  const pair = emptyPair({
+    id: raw.id,
+    title: raw.title ?? DEFAULT_TITLE,
+    defaultCwd: raw.defaultCwd,
+    now: typeof raw.createdAt === "number" && Number.isFinite(raw.createdAt) ? raw.createdAt : now
+  });
+  pair.status = raw.status === "butler_running" || raw.status === "worker_running" || raw.status === "needs_butler_review" || raw.status === "blocked" ? raw.status : "idle";
+  pair.projectId = typeof raw.projectId === "string" ? raw.projectId : null;
+  pair.projectLabel = typeof raw.projectLabel === "string" ? raw.projectLabel : null;
+  pair.updatedAt = typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : pair.createdAt;
+  pair.butlerSessionId = typeof raw.butlerSessionId === "string" && raw.butlerSessionId.trim() ? raw.butlerSessionId : pair.id;
+  pair.butlerReady = raw.butlerReady === true;
+  pair.butlerPending = raw.butlerPending === true;
+  pair.butlerLastError = typeof raw.butlerLastError === "string" && raw.butlerLastError.trim() ? raw.butlerLastError : null;
+  pair.worker = raw.worker ?? null;
+  pair.memoryQuery = typeof raw.memoryQuery === "string" && raw.memoryQuery.trim() ? raw.memoryQuery : null;
+  pair.lastHandoffPrompt = typeof raw.lastHandoffPrompt === "string" && raw.lastHandoffPrompt.trim() ? raw.lastHandoffPrompt : null;
+  pair.messageCount = typeof raw.messageCount === "number" && Number.isFinite(raw.messageCount) ? Math.max(0, Math.trunc(raw.messageCount)) : 0;
+  pair.lastMessage = raw.lastMessage ?? null;
+  pair.status = deriveStatus(pair, store);
+  return pair;
+}
 
-  const thread = store.getThread(pair.worker.threadId);
-  if (thread?.status === "active") {
-    return "worker_running";
+function deriveStatus(pair: PairChat, store: ButlerStateStore): PairStatus {
+  if (pair.worker) {
+    const report = store.getWorkerReport(pair.worker.threadId);
+    const thread = store.getThread(pair.worker.threadId);
+    if (report?.status === "blocked") {
+      return "blocked";
+    }
+    if (report && (!pair.worker.lastRevertAt || report.updatedAt > pair.worker.lastRevertAt)) {
+      return "needs_butler_review";
+    }
+    if (thread?.status === "active" || pair.worker.status === "running" || pair.worker.status === "starting") {
+      return "worker_running";
+    }
   }
-  if (pair.worker.lastReportStatus === "blocked") {
-    return "blocked";
-  }
-  if (pair.worker.lastReportAt && (!pair.worker.lastRevertAt || pair.worker.lastReportAt > pair.worker.lastRevertAt)) {
-    return "needs_butler_review";
-  }
-  return "idle";
+  return pair.butlerPending ? "butler_running" : "idle";
 }
 
 export class PairStore extends EventEmitter {
@@ -75,68 +115,28 @@ export class PairStore extends EventEmitter {
   async load(): Promise<void> {
     const loaded = await readJsonStateFile<PersistedPairState>(this.statePath, { pairs: [] });
     this.pairs.clear();
-    for (const pair of loaded.pairs) {
-      if (!pair?.id || !Array.isArray(pair.messages)) {
-        continue;
+    for (const raw of loaded.pairs) {
+      const pair = normalizePair(raw, this.store);
+      if (pair) {
+        this.pairs.set(pair.id, pair);
       }
-      this.pairs.set(pair.id, {
-        ...pair,
-        status: deriveStatus(pair, this.store),
-        messages: pair.messages.slice(-MAX_PAIR_MESSAGES)
-      });
     }
   }
 
   listSummaries(): PairSummary[] {
     return [...this.pairs.values()]
-      .map((pair) => {
-        const nextStatus = deriveStatus(pair, this.store);
-        return summarizePair({ ...pair, status: nextStatus });
-      })
+      .map((pair) => ({ ...pair, status: deriveStatus(pair, this.store) }))
       .sort((left, right) => right.updatedAt - left.updatedAt);
   }
 
   getPair(pairId: string): PairChat | null {
     const pair = this.pairs.get(pairId);
-    return pair ? { ...pair, messages: [...pair.messages], status: deriveStatus(pair, this.store) } : null;
-  }
-
-  getPairDetail(pairId: string, before: number | null, limit: number): PairDetail | null {
-    const pair = this.pairs.get(pairId);
-    if (!pair) {
-      return null;
-    }
-
-    const safeLimit = Math.max(20, Math.min(250, Math.trunc(limit)));
-    const endExclusive = before === null ? pair.messages.length : Math.max(0, Math.min(pair.messages.length, Math.trunc(before)));
-    const start = Math.max(0, endExclusive - safeLimit);
-    return {
-      ...pair,
-      status: deriveStatus(pair, this.store),
-      messages: pair.messages.slice(start, endExclusive),
-      messageCount: pair.messages.length,
-      loadedStart: start,
-      hasMore: start > 0
-    };
+    return pair ? { ...pair, status: deriveStatus(pair, this.store) } : null;
   }
 
   createPair(input: { title?: string | null; defaultCwd?: string | null } = {}): PairChat {
     const now = Date.now();
-    const id = crypto.randomUUID();
-    const pair: PairChat = {
-      id,
-      title: titleFromText(input.title ?? "New session"),
-      status: "idle",
-      projectId: null,
-      projectLabel: null,
-      createdAt: now,
-      updatedAt: now,
-      defaultCwd: normalizeText(input.defaultCwd) || null,
-      worker: null,
-      memoryQuery: null,
-      lastHandoffPrompt: null,
-      messages: []
-    };
+    const pair = emptyPair({ id: crypto.randomUUID(), title: input.title ?? DEFAULT_TITLE, defaultCwd: input.defaultCwd, now });
     this.pairs.set(pair.id, pair);
     this.queueSave();
     this.emit("change");
@@ -145,133 +145,62 @@ export class PairStore extends EventEmitter {
 
   updatePairTitle(pairId: string, rawTitle: string): PairChat | null {
     const pair = this.pairs.get(pairId);
-    if (!pair) {
-      return null;
-    }
-    if (!normalizeText(rawTitle)) {
+    if (!pair || !normalizeText(rawTitle)) {
       return null;
     }
     const next = titleFromText(rawTitle);
-    if (next === pair.title) {
-      return this.getPair(pair.id);
+    if (next !== pair.title) {
+      pair.title = next;
+      pair.updatedAt = Date.now();
+      this.queueSave();
+      this.emit("change");
     }
-    pair.title = next;
-    pair.updatedAt = Date.now();
+    return this.getPair(pair.id);
+  }
+
+  updatePairSnapshot(pairId: string, snapshot: PairSnapshotInput): PairChat | null {
+    const pair = this.pairs.get(pairId);
+    if (!pair) {
+      return null;
+    }
+    if (snapshot.butlerSessionId !== undefined) pair.butlerSessionId = snapshot.butlerSessionId;
+    if (snapshot.butlerReady !== undefined) pair.butlerReady = snapshot.butlerReady;
+    if (snapshot.butlerPending !== undefined) pair.butlerPending = snapshot.butlerPending;
+    if (snapshot.butlerLastError !== undefined) pair.butlerLastError = snapshot.butlerLastError;
+    if (snapshot.messageCount !== undefined) pair.messageCount = Math.max(0, Math.trunc(snapshot.messageCount));
+    if (snapshot.lastMessage !== undefined) pair.lastMessage = snapshot.lastMessage;
+    pair.status = deriveStatus(pair, this.store);
+    pair.updatedAt = Math.max(pair.updatedAt, snapshot.updatedAt ?? pair.lastMessage?.at ?? Date.now());
     this.queueSave();
     this.emit("change");
     return this.getPair(pair.id);
   }
 
-  appendMessage(pairId: string, input: AppendMessageInput): PairMessage {
-    const pair = this.requirePair(pairId);
-    const now = input.at ?? Date.now();
-    const message: PairMessage = {
-      id: crypto.randomUUID(),
-      role: input.role,
-      lane: input.lane,
-      text: input.text.trim(),
-      at: now,
-      sourceThreadId: input.sourceThreadId ?? null,
-      memoryObservationId: input.memoryObservationId ?? null,
-      metadata: input.metadata ?? {}
-    };
-    if (!message.text) {
-      throw new Error("message text is required");
+  attachWorker(pairId: string, input: { threadId: string; task?: string | null; cwd?: string | null; handoffPrompt?: string | null }): PairChat | null {
+    const pair = this.pairs.get(pairId);
+    if (!pair) {
+      return null;
     }
-
-    pair.messages.push(message);
-    if (pair.messages.length > MAX_PAIR_MESSAGES) {
-      pair.messages.splice(0, pair.messages.length - MAX_PAIR_MESSAGES);
-    }
-    if ((pair.title === "New session" || pair.title === "New Butler chat") && input.role === "user") {
-      pair.title = titleFromText(input.text);
-    }
-    pair.memoryQuery = input.role === "user" ? titleFromText(input.text) : pair.memoryQuery;
-    pair.updatedAt = now;
-    pair.status = deriveStatus(pair, this.store);
-    this.queueSave();
-    this.emit("change");
-    return message;
-  }
-
-  attachWorker(pairId: string, input: { threadId: string; task: string; cwd?: string | null; handoffPrompt: string }): PairChat {
-    const pair = this.requirePair(pairId);
-    if (pair.worker) {
-      throw new Error("This Butler chat already has a Codex worker.");
-    }
-
+    const thread = this.store.getThread(input.threadId);
     const now = Date.now();
     pair.worker = {
       threadId: input.threadId,
-      status: "starting",
-      task: input.task.trim(),
-      cwd: normalizeText(input.cwd) || null,
-      handoffPrompt: input.handoffPrompt,
+      status: thread?.status === "active" ? "running" : thread?.status === "idle" ? "idle" : "starting",
+      task: normalizeText(input.task) || thread?.executionContract?.requestedTask || thread?.supervisor.latestUserPrompt || "Delegated Codex job",
+      cwd: normalizeText(input.cwd) || thread?.cwd || null,
+      handoffPrompt: normalizeText(input.handoffPrompt) || thread?.executionContract?.requestedTask || "",
       startedAt: now,
       lastRevertAt: null,
       lastReportAt: null,
       lastReportStatus: null,
       lastReportSummary: null
     };
-    pair.lastHandoffPrompt = input.handoffPrompt;
+    pair.lastHandoffPrompt = pair.worker.handoffPrompt || null;
     pair.updatedAt = now;
-    pair.status = "worker_running";
-    this.appendMessage(pair.id, {
-      role: "butler",
-      lane: "butler",
-      text: `Worker ${input.threadId} is attached to this chat. I will challenge its evidence before accepting the result.`,
-      sourceThreadId: input.threadId,
-      metadata: { event: "worker.attached" },
-      at: now
-    });
-    return this.getPair(pair.id)!;
-  }
-
-  noteWorkerHandoff(pairId: string, text: string): PairChat {
-    const pair = this.requirePair(pairId);
-    if (!pair.worker) {
-      throw new Error("This Butler chat does not have a worker yet.");
-    }
-    pair.lastHandoffPrompt = text;
-    pair.worker.handoffPrompt = text;
-    pair.updatedAt = Date.now();
-    this.appendMessage(pairId, {
-      role: "butler",
-      lane: "worker",
-      text,
-      sourceThreadId: pair.worker.threadId,
-      metadata: { event: "worker.handoff" }
-    });
-    return this.getPair(pairId)!;
-  }
-
-  revertWorker(pairId: string, text?: string | null): PairChat {
-    const pair = this.requirePair(pairId);
-    if (!pair.worker) {
-      throw new Error("This Butler chat does not have a worker yet.");
-    }
-
-    const thread = this.store.getThread(pair.worker.threadId);
-    const report = this.store.getWorkerReport(pair.worker.threadId);
-    const summary = normalizeText(text) ||
-      report?.summary ||
-      thread?.supervisor.latestAgentReply ||
-      "Worker reverted without a structured report yet.";
-    const now = Date.now();
-    pair.worker.lastRevertAt = now;
-    pair.worker.lastReportAt = report?.updatedAt ?? pair.worker.lastReportAt;
-    pair.worker.lastReportStatus = report?.status ?? pair.worker.lastReportStatus;
-    pair.worker.lastReportSummary = report?.summary ?? pair.worker.lastReportSummary;
-    pair.updatedAt = now;
-    this.appendMessage(pairId, {
-      role: "worker",
-      lane: "butler",
-      text: summary,
-      sourceThreadId: pair.worker.threadId,
-      metadata: { event: "worker.reverted", reportStatus: report?.status ?? "unknown" },
-      at: now
-    });
-    return this.getPair(pairId)!;
+    pair.status = deriveStatus(pair, this.store);
+    this.queueSave();
+    this.emit("change");
+    return this.getPair(pair.id);
   }
 
   syncWorkerReports(): boolean {
@@ -280,33 +209,26 @@ export class PairStore extends EventEmitter {
       if (!pair.worker) {
         continue;
       }
-
       const thread = this.store.getThread(pair.worker.threadId);
       const report = this.store.getWorkerReport(pair.worker.threadId);
-      pair.worker.status = thread?.status === "active" ? "running" : thread?.status === "idle" ? "idle" : thread?.status === "unknown" ? "unknown" : pair.worker.status;
-      if (!report || report.updatedAt === pair.worker.lastReportAt) {
-        pair.status = deriveStatus(pair, this.store);
-        continue;
+      const nextStatus = thread?.status === "active" ? "running" : thread?.status === "idle" ? "idle" : thread?.status === "unknown" ? "unknown" : pair.worker.status;
+      if (pair.worker.status !== nextStatus) {
+        pair.worker.status = nextStatus;
+        changed = true;
       }
-
-      pair.worker.lastReportAt = report.updatedAt;
-      pair.worker.lastReportStatus = report.status;
-      pair.worker.lastReportSummary = report.summary;
-      pair.updatedAt = Math.max(pair.updatedAt, report.updatedAt);
-      pair.status = "needs_butler_review";
-      pair.messages.push({
-        id: crypto.randomUUID(),
-        role: "worker",
-        lane: "butler",
-        text: `Worker report: ${report.summary}${report.details ? `\n\n${report.details}` : ""}`,
-        at: report.updatedAt,
-        sourceThreadId: pair.worker.threadId,
-        memoryObservationId: null,
-        metadata: { event: "worker.report", reportStatus: report.status }
-      });
-      changed = true;
+      if (report && report.updatedAt !== pair.worker.lastReportAt) {
+        pair.worker.lastReportAt = report.updatedAt;
+        pair.worker.lastReportStatus = report.status;
+        pair.worker.lastReportSummary = report.summary;
+        pair.updatedAt = Math.max(pair.updatedAt, report.updatedAt);
+        changed = true;
+      }
+      const nextPairStatus = deriveStatus(pair, this.store);
+      if (pair.status !== nextPairStatus) {
+        pair.status = nextPairStatus;
+        changed = true;
+      }
     }
-
     if (changed) {
       this.queueSave();
       this.emit("change");
@@ -321,14 +243,6 @@ export class PairStore extends EventEmitter {
       this.emit("change");
     }
     return deleted;
-  }
-
-  private requirePair(pairId: string): PairChat {
-    const pair = this.pairs.get(pairId);
-    if (!pair) {
-      throw new Error("Butler chat not found");
-    }
-    return pair;
   }
 
   private queueSave(): void {

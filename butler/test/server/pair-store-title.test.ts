@@ -7,34 +7,35 @@ import test from "node:test";
 import { PairStore } from "../../src/server/pair-store.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 
-async function createStore(): Promise<ButlerStateStore> {
+async function createPairStore(): Promise<PairStore> {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-pair-store-test-"));
-  return new ButlerStateStore(path.join(dir, "state.json"));
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  const pairStore = new PairStore(path.join(dir, "pairs.json"), store);
+  await pairStore.load();
+  return pairStore;
 }
 
-test("createPair starts with an empty transcript", async () => {
-  const store = await createStore();
-  const pairStore = new PairStore("/tmp/pair-state.json", store);
-  await pairStore.load();
+test("createPair starts with empty Butler-backed state", async () => {
+  const pairStore = await createPairStore();
   const pair = pairStore.createPair({ title: "Empty session" });
   assert.equal(pair.title, "Empty session");
-  assert.equal(pair.messages.length, 0);
+  assert.equal(pair.butlerSessionId, pair.id);
+  assert.equal(pair.butlerReady, false);
+  assert.equal(pair.butlerPending, false);
+  assert.equal(pair.messageCount, 0);
+  assert.equal(pair.lastMessage, null);
   assert.equal(pair.status, "idle");
 });
 
 test("createPair defaults the title to 'New session'", async () => {
-  const store = await createStore();
-  const pairStore = new PairStore("/tmp/pair-state-default.json", store);
-  await pairStore.load();
+  const pairStore = await createPairStore();
   const pair = pairStore.createPair();
   assert.equal(pair.title, "New session");
-  assert.equal(pair.messages.length, 0);
+  assert.equal(pair.messageCount, 0);
 });
 
 test("updatePairTitle renames the session", async () => {
-  const store = await createStore();
-  const pairStore = new PairStore("/tmp/pair-store-rename.json", store);
-  await pairStore.load();
+  const pairStore = await createPairStore();
   const created = pairStore.createPair();
 
   const updated = pairStore.updatePairTitle(created.id, "Review checkout flow");
@@ -47,9 +48,7 @@ test("updatePairTitle renames the session", async () => {
 });
 
 test("updatePairTitle rejects an empty title and returns null", async () => {
-  const store = await createStore();
-  const pairStore = new PairStore("/tmp/pair-store-empty-title.json", store);
-  await pairStore.load();
+  const pairStore = await createPairStore();
   const created = pairStore.createPair();
   const originalTitle = created.title;
 
@@ -62,9 +61,7 @@ test("updatePairTitle rejects an empty title and returns null", async () => {
 });
 
 test("updatePairTitle truncates long titles to 72 chars", async () => {
-  const store = await createStore();
-  const pairStore = new PairStore("/tmp/pair-store-long-title.json", store);
-  await pairStore.load();
+  const pairStore = await createPairStore();
   const created = pairStore.createPair();
 
   const longTitle = "a".repeat(200);
@@ -75,35 +72,53 @@ test("updatePairTitle truncates long titles to 72 chars", async () => {
 });
 
 test("updatePairTitle returns null for an unknown pair id", async () => {
-  const store = await createStore();
-  const pairStore = new PairStore("/tmp/pair-store-missing.json", store);
-  await pairStore.load();
+  const pairStore = await createPairStore();
   const result = pairStore.updatePairTitle("no-such-pair", "Anything");
   assert.equal(result, null);
 });
 
-test("first user message auto-renames the default title but not an explicit rename", async () => {
-  const store = await createStore();
-  const pairStore = new PairStore("/tmp/pair-store-auto-rename.json", store);
-  await pairStore.load();
+test("updatePairSnapshot stores live Butler status and latest message", async () => {
+  const pairStore = await createPairStore();
   const created = pairStore.createPair();
 
-  pairStore.appendMessage(created.id, {
-    role: "user",
-    lane: "butler",
-    text: "How does the checkout flow handle retries?"
+  const updated = pairStore.updatePairSnapshot(created.id, {
+    butlerSessionId: "provider-session",
+    butlerReady: true,
+    butlerPending: true,
+    messageCount: 1,
+    lastMessage: {
+      id: "message-1",
+      role: "user",
+      lane: "butler",
+      text: "How does the checkout flow handle retries?",
+      at: created.createdAt + 10,
+      sourceThreadId: null,
+      memoryObservationId: null,
+      metadata: {}
+    }
   });
-  let refreshed = pairStore.getPair(created.id);
-  assert.ok(refreshed);
-  assert.equal(refreshed.title, "How does the checkout flow handle retries?");
+  assert.ok(updated);
+  assert.equal(updated.butlerSessionId, "provider-session");
+  assert.equal(updated.butlerReady, true);
+  assert.equal(updated.butlerPending, true);
+  assert.equal(updated.messageCount, 1);
+  assert.equal(updated.lastMessage?.text, "How does the checkout flow handle retries?");
+  assert.equal(updated.status, "butler_running");
+});
 
-  pairStore.updatePairTitle(created.id, "Checkout follow-ups");
-  pairStore.appendMessage(created.id, {
-    role: "user",
-    lane: "butler",
-    text: "Also clarify the proof requirements."
+test("attachWorker records one Butler-managed worker", async () => {
+  const pairStore = await createPairStore();
+  const created = pairStore.createPair();
+
+  const updated = pairStore.attachWorker(created.id, {
+    threadId: "thread-1",
+    task: "Fix the checkout retry bug",
+    cwd: "/workspace",
+    handoffPrompt: "Run the checks and report evidence."
   });
-  refreshed = pairStore.getPair(created.id);
-  assert.ok(refreshed);
-  assert.equal(refreshed.title, "Checkout follow-ups");
+  assert.ok(updated);
+  assert.equal(updated.worker?.threadId, "thread-1");
+  assert.equal(updated.worker?.task, "Fix the checkout retry bug");
+  assert.equal(updated.worker?.handoffPrompt, "Run the checks and report evidence.");
+  assert.equal(updated.status, "worker_running");
 });

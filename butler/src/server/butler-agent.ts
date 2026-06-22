@@ -42,6 +42,7 @@ import {
   type SupervisionSmokePlan
 } from "./butler-agent-helpers.js";
 import { buildButlerCodexTools } from "./butler-agent-codex-tools.js";
+import type { ButlerAgentServiceOptions, ButlerOperatorSink } from "./butler-agent-options.js";
 import { clearPendingOperatorPrompts, createOrRefreshButlerSession, getButlerLiveSnapshot, getButlerMessagePage, getButlerShellSnapshot, getButlerSnapshot, keepPendingOperatorPromptsBefore, promptButler, promptButlerInternal, registerPendingOperatorPrompt, removePendingOperatorPrompt, stopButlerPrompt, restoreButlerCompactionState, sanitizeButlerSessionMessages, sanitizePersistedButlerSessions, updateButlerComposeSettings } from "./butler-agent-session.js";
 import { clearButlerSessionChat, deleteButlerSessionChatFromLocated, keepOperatorMessagesBefore, locateButlerSessionDeletePoint, locateButlerSessionDeletePointBeforeTimestamp } from "./butler-agent-chat-hygiene.js";
 import { buildOperatorCloseoutText } from "./butler-agent-closeout-text.js";
@@ -101,6 +102,7 @@ import { ButlerStateStore } from "./state-store.js";
 import { CodexAppServerClient } from "./codex-client.js";
 import type { PreviewLeaseView, PreviewProofRecordView, PreviewVerificationArtifactView, PreviewVerificationView, ProjectMemoryView } from "./types.js";
 const CALLBACK_RECOVERY_TIMEOUT_MS = 30_000;
+
 function isButlerAuthRecoveryError(message: string | null): boolean {
   return typeof message === "string" && /\b(auth|authentication|token|signing in)\b/i.test(message);
 }
@@ -124,6 +126,8 @@ export class ButlerAgentService extends EventEmitter {
   private readonly refreshRuntimeInventory: (() => Promise<void>) | null;
   private readonly manorRestartRequests: ManorRestartRequestState;
   private readonly memoryScheduler: MemoryUpdateScheduler | null;
+  private readonly systemPromptSuffix: string | null;
+  private readonly operatorSink: ButlerOperatorSink | null;
   private modelRegistry: ModelRegistry | null = null;
   private session: AgentSession | null = null;
   private auth: ButlerAuthStatus = { mode: "none", loggedIn: false, validationError: null, lastValidatedAt: null };
@@ -151,6 +155,7 @@ export class ButlerAgentService extends EventEmitter {
   private readonly deliveredCloseoutIds = new Set<string>();
   private readonly supervisionSmokePlans = new Map<string, SupervisionSmokePlan>();
   private readonly actedSmokeMilestoneIds = new Set<string>();
+  private readonly storeChangeHandler = () => this.handleStoreChange();
   private recentThreadFocus: Array<{ threadId: string; notedAt: number; reason: string | null }> = [];
   private activeOperatorThreadGuard: ButlerOperatorThreadGuard | null = null;
   private smokeReactionInFlight = false;
@@ -166,22 +171,7 @@ export class ButlerAgentService extends EventEmitter {
     lastAborted: false,
     lastError: null
   };
-  constructor(options: {
-    store: ButlerStateStore;
-    codexClient: CodexAppServerClient;
-    hostController: HostControllerClient;
-    runtimeBroker: RuntimeBrokerClient;
-    serviceTemplateRegistry: ServiceTemplateRegistry;
-    imageStore: ImageReferenceStore;
-    fileStore: FileReferenceStore;
-    piAuthPath: string;
-    codexAuthPath: string;
-    codexConfigDir: string;
-    sessionDir: string;
-    artifactsDir: string;
-    refreshRuntimeInventory?: () => Promise<void>;
-    memoryScheduler?: MemoryUpdateScheduler | null;
-  }) {
+  constructor(options: ButlerAgentServiceOptions) {
     super();
     this.store = options.store;
     this.codexClient = options.codexClient;
@@ -197,6 +187,8 @@ export class ButlerAgentService extends EventEmitter {
     this.artifactsDir = options.artifactsDir;
     this.refreshRuntimeInventory = options.refreshRuntimeInventory ?? null;
     this.memoryScheduler = options.memoryScheduler ?? null;
+    this.systemPromptSuffix = options.systemPromptSuffix?.trim() || null;
+    this.operatorSink = options.operatorSink ?? null;
     this.operatorMessageStatePath = path.join(this.sessionDir, "operator-messages.json");
     this.activitySummaryStatePath = path.join(this.sessionDir, "activity-summaries.json");
     this.legacyNoticeStatePath = path.join(this.sessionDir, "notices.json");
@@ -457,6 +449,7 @@ export class ButlerAgentService extends EventEmitter {
     const at = Date.now();
     const messageId = `delegation-ack-${threadId}`;
     upsertOperatorMessage(this.operatorMessages, messageId, text, at);
+    this.operatorSink?.onDelegationAcknowledgement?.({ threadId, text, at });
     this.noteThreadFocus(threadId, "delegation");
     this.store.addEvent(threadId, "butler.acknowledgement.posted", "Butler posted the operator-facing delegation acknowledgement.");
     void this.saveOperatorMessageState();
@@ -523,13 +516,15 @@ export class ButlerAgentService extends EventEmitter {
       throw new Error(closeoutBlocker);
     }
     const taskDurationMs = elapsedTaskDurationMs(callback.requestedAt, completedAt);
+    const closeoutText = buildOperatorCloseoutText({ store: this.store, thread, workerReport: relevantWorkerReport, text });
     upsertOperatorMessage(
       this.operatorMessages,
       messageId,
-      buildOperatorCloseoutText({ store: this.store, thread, workerReport: relevantWorkerReport, text }),
+      closeoutText,
       at,
       taskDurationMs
     );
+    this.operatorSink?.onOperatorReply?.({ threadId, text: closeoutText, at });
     this.noteThreadFocus(threadId, "closeout");
     this.deliveredCloseoutIds.add(closeoutId);
     applyPostedCloseout(callback, {
@@ -704,7 +699,7 @@ export class ButlerAgentService extends EventEmitter {
     this.modelRegistry = ModelRegistry.inMemory(AuthStorage.create(this.piAuthPath));
     await this.createOrRefreshSession();
     await this.refreshExternalStatus();
-    this.store.on("change", () => this.handleStoreChange());
+    this.store.on("change", this.storeChangeHandler);
     this.handleStoreChange();
     this.statusRefreshTimer = setInterval(() => {
       void this.refreshExternalStatus();
@@ -712,6 +707,14 @@ export class ButlerAgentService extends EventEmitter {
 
     this.ready = true;
     this.emit("change");
+  }
+
+  dispose(): void {
+    if (this.statusRefreshTimer) clearInterval(this.statusRefreshTimer);
+    this.statusRefreshTimer = null;
+    this.store.off("change", this.storeChangeHandler);
+    this.unsubscribeSession?.();
+    this.unsubscribeSession = null;
   }
 
   private async refreshExternalStatus(): Promise<void> {

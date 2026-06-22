@@ -190,6 +190,7 @@ export type ButlerAgentToolAccess = {
 export type ButlerAgentSessionAccess = {
   modelRegistry: ModelRegistry | null;
   session: AgentSession | null;
+  systemPromptSuffix: string | null;
   auth: ButlerAuthStatus;
   codexAuth: ButlerAuthStatus;
   compaction: Omit<ButlerCompactionView, "autoEnabled" | "active" | "count">;

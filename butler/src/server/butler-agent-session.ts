@@ -50,7 +50,7 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
   const resourceLoader = new DefaultResourceLoader({
     cwd: "/repos",
     agentDir: path.dirname(access.piAuthPath),
-    systemPromptOverride: () => buildSystemPrompt(access.store, access.describePendingCallbacks())
+    systemPromptOverride: () => [buildSystemPrompt(access.store, access.describePendingCallbacks()), access.systemPromptSuffix].filter(Boolean).join("\n\n")
   });
   await resourceLoader.reload();
 

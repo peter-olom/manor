@@ -383,10 +383,7 @@ a:hover {
   background: var(--text-subtle);
 }
 
-.pair-dot.is-ready_to_handoff {
-  background: var(--accent);
-}
-
+.pair-dot.is-butler_running,
 .pair-dot.is-worker_running {
   background: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
@@ -659,7 +656,7 @@ a:hover {
 }
 
 .status.is-idle .status-dot { background: var(--text-subtle); }
-.status.is-ready_to_handoff .status-dot { background: var(--accent); }
+.status.is-butler_running .status-dot,
 .status.is-worker_running .status-dot {
   background: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
@@ -668,7 +665,7 @@ a:hover {
 .status.is-needs_butler_review .status-dot { background: var(--warning); }
 .status.is-blocked .status-dot { background: var(--danger); }
 
-.status.is-ready_to_handoff,
+.status.is-butler_running,
 .status.is-worker_running {
   color: var(--accent-ink);
   background: var(--accent-soft);
@@ -961,33 +958,45 @@ a:hover {
   margin-bottom: 4px;
 }
 
+.transcript-stack {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .bubble {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-width: 760px;
-  padding: 10px 14px;
-  border-radius: var(--radius-lg);
+  width: fit-content;
+  max-width: min(680px, calc(100% - 56px));
+  padding: 9px 12px;
+  border-radius: 12px;
   border: 1px solid var(--border);
   background: var(--bubble-butler-bg);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.12);
 }
 
 .bubble.is-user {
   align-self: flex-end;
   background: var(--bubble-user-bg);
   border-color: var(--bubble-user-border);
+  border-top-right-radius: var(--radius-sm);
 }
 
 .bubble.is-butler {
   align-self: flex-start;
   background: var(--bubble-butler-bg);
   border-color: var(--bubble-butler-border);
+  border-top-left-radius: var(--radius-sm);
 }
 
 .bubble.is-worker {
   align-self: flex-start;
   background: var(--bubble-worker-bg);
   border-color: var(--bubble-worker-border);
+  border-top-left-radius: var(--radius-sm);
 }
 
 .bubble.is-system {
@@ -1000,11 +1009,16 @@ a:hover {
   max-width: 520px;
 }
 
+.bubble.is-loader {
+  min-width: 86px;
+  padding: 10px 12px;
+}
+
 .bubble-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  justify-content: flex-start;
+  gap: 10px;
   font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -1034,6 +1048,27 @@ a:hover {
 .bubble.is-system .bubble-body {
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.working-indicator {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  color: var(--text-muted);
+}
+
+.working-indicator-label {
+  font-size: 0.78rem;
+}
+
+.sand-spinner {
+  display: inline-block;
+  width: 1.2em;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 1.05rem;
+  line-height: 1;
+  color: var(--text-muted);
 }
 
 .bubble-foot {

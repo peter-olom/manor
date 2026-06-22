@@ -14,23 +14,23 @@ import manorLogoLight from "./assets/manor-logo.svg";
 import manorLogoDark from "./assets/manor-logo-dark.svg";
 import {
   ChevronLeftIcon,
-  ChevronRightIcon,
   MenuIcon,
   PencilIcon,
   PlusIcon,
   SearchIcon,
   SendIcon,
-  SparkleIcon,
   TrashIcon,
   WarningIcon
 } from "./icons";
 import { MemoryDashboard } from "./MemoryDashboard";
+import { SandSpinner } from "./SandSpinner";
 import { useVirtualWindow } from "./useVirtualWindow";
 
 import type {
   PairDetail,
   PairDetailResponse,
   PairListResponse,
+  PairMessage,
   PairStatus,
   PairSummary,
   PairViewMode,
@@ -92,8 +92,8 @@ function shortId(value: string | null | undefined): string {
 
 function statusLabel(status: PairStatus | null | undefined): string {
   switch (status) {
-    case "ready_to_handoff":
-      return "Ready";
+    case "butler_running":
+      return "Thinking";
     case "worker_running":
       return "Working";
     case "needs_butler_review":
@@ -111,6 +111,24 @@ function roleLabel(role: string): string {
   if (role === "butler") return "Butler";
   if (role === "worker") return "Codex";
   return "System";
+}
+
+function shouldShowWorkLoader(pair: PairDetail): boolean {
+  return pair.butlerPending || pair.status === "butler_running" || pair.status === "worker_running";
+}
+
+function workLoaderMessage(pair: PairDetail): PairMessage {
+  return {
+    id: `${pair.id}:work-loader`,
+    role: "butler",
+    lane: "butler",
+    text: "",
+    at: pair.lastMessage?.at ?? pair.updatedAt,
+    sourceThreadId: null,
+    memoryObservationId: null,
+    metadata: { kind: "work-loader" },
+    pending: true
+  };
 }
 
 function flattenWorker(thread: WorkerThread | null): WorkerItem[] {
@@ -285,8 +303,6 @@ function Topbar({
   onTitleDraftChange,
   onCommitTitle,
   onCancelEditTitle,
-  onSpinWorker,
-  onRevert,
   onToggleSidebar,
   isMobileSidebarOpen
 }: {
@@ -302,8 +318,6 @@ function Topbar({
   onTitleDraftChange: (value: string) => void;
   onCommitTitle: () => void;
   onCancelEditTitle: () => void;
-  onSpinWorker: () => void;
-  onRevert: () => void;
   onToggleSidebar: () => void;
   isMobileSidebarOpen: boolean;
 }) {
@@ -381,25 +395,17 @@ function Topbar({
             {statusLabel(pair.status)}
           </span>
         ) : null}
-        {pair && !pair.worker && viewMode !== "worker" && viewMode !== "memory" ? (
-          <button className="button is-primary" type="button" onClick={onSpinWorker} disabled={busy}>
-            <SparkleIcon />
-            <span>Run worker</span>
-          </button>
-        ) : null}
-        {pair?.worker && viewMode !== "butler" && viewMode !== "memory" ? (
-          <button className="button" type="button" onClick={onRevert} disabled={busy}>
-            <ChevronRightIcon />
-            <span>Revert to Butler</span>
-          </button>
-        ) : null}
       </div>
     </header>
   );
 }
 
 function MessageList({ pair, onLoadOlder }: { pair: PairDetail; onLoadOlder: () => void }) {
-  const messages = useDeferredValue(pair.messages);
+  const renderedMessages = useMemo(
+    () => (shouldShowWorkLoader(pair) ? [...pair.messages, workLoaderMessage(pair)] : pair.messages),
+    [pair]
+  );
+  const messages = useDeferredValue(renderedMessages);
   const virtual = useVirtualWindow({ count: messages.length, rowHeight: MESSAGE_ROW, overscan: 8 });
   const visible = messages.slice(virtual.start, virtual.end);
 
@@ -411,7 +417,7 @@ function MessageList({ pair, onLoadOlder }: { pair: PairDetail; onLoadOlder: () 
         </button>
       ) : null}
       <div style={{ height: virtual.totalHeight, position: "relative" }}>
-        <div style={{ transform: `translateY(${virtual.offsetTop}px)` }}>
+        <div className="transcript-stack" style={{ transform: `translateY(${virtual.offsetTop}px)` }}>
           {visible.map((message) => (
             <Bubble key={message.id} message={message} />
           ))}
@@ -423,6 +429,16 @@ function MessageList({ pair, onLoadOlder }: { pair: PairDetail; onLoadOlder: () 
 
 function Bubble({ message }: { message: PairDetail["messages"][number] }) {
   const role = message.role === "user" ? "user" : message.role === "worker" ? "worker" : message.role === "butler" ? "butler" : "system";
+  if (message.metadata.kind === "work-loader") {
+    return (
+      <article className="bubble is-butler is-loader" aria-label="Butler is working">
+        <span className="working-indicator" aria-live="polite">
+          <span className="working-indicator-label">Butler</span>
+          <SandSpinner />
+        </span>
+      </article>
+    );
+  }
   return (
     <article className={`bubble is-${role}`}>
       <header className="bubble-head">
@@ -441,7 +457,7 @@ function WorkerList({ pair, rows }: { pair: PairDetail; rows: WorkerItem[] }) {
   return (
     <div className="transcript" ref={virtual.viewportRef} onScroll={virtual.onScroll} data-virtualized-count={rows.length}>
       <div style={{ height: virtual.totalHeight, position: "relative" }}>
-        <div style={{ transform: `translateY(${virtual.offsetTop}px)` }}>
+        <div className="transcript-stack" style={{ transform: `translateY(${virtual.offsetTop}px)` }}>
           {visible.map((row) => (
             <article key={row.id} className={`worker-item ${row.type === "worker_report" ? "is-report" : ""}`}>
               <header className="head">
@@ -539,12 +555,12 @@ function ButlerPane({
       </div>
       <MessageList pair={pair} onLoadOlder={onLoadOlder} />
       <Composer
-        placeholder={pair.worker ? "Message Butler or hand off to the worker…" : "Message Butler…"}
+        placeholder="Message Butler…"
         value={draft}
         onChange={onDraft}
         onSubmit={onSend}
         busy={busy}
-        sendLabel={pair.worker ? "Send / Handoff" : "Send"}
+        sendLabel="Send"
       />
     </section>
   );
@@ -552,18 +568,10 @@ function ButlerPane({
 
 function WorkerPane({
   pair,
-  rows,
-  draft,
-  busy,
-  onDraft,
-  onSend
+  rows
 }: {
   pair: PairDetail;
   rows: WorkerItem[];
-  draft: string;
-  busy: boolean;
-  onDraft: (value: string) => void;
-  onSend: () => void;
 }) {
   if (!pair.worker) {
     return (
@@ -575,8 +583,8 @@ function WorkerPane({
           </div>
         </div>
         <div className="empty-state">
-          <h2>Spin up a Codex worker</h2>
-          <p>When this session needs implementation work, start one worker. Butler will challenge its evidence before accepting the result.</p>
+          <h2>No worker attached</h2>
+          <p>Butler has not delegated work from this session.</p>
         </div>
       </section>
     );
@@ -591,14 +599,6 @@ function WorkerPane({
         </div>
       </div>
       <WorkerList pair={pair} rows={rows} />
-      <Composer
-        placeholder="Hand off to the worker…"
-        value={draft}
-        onChange={onDraft}
-        onSubmit={onSend}
-        busy={busy}
-        sendLabel="Handoff"
-      />
     </section>
   );
 }
@@ -688,7 +688,22 @@ export function PairShell() {
       setPair(null);
       return;
     }
-    void loadPair(selectedPairId).catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        await loadPair(selectedPairId);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      }
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
   }, [loadPair, selectedPairId]);
 
   useEffect(() => {
@@ -788,65 +803,6 @@ export function PairShell() {
     }
   }
 
-  async function sendWorker() {
-    if (!pair) return;
-    const text = draft.trim();
-    if (!text) return;
-    if (!pair.worker) {
-      await spinWorker(text);
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const payload = await postJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(pair.id)}/messages`, { text, target: "worker" });
-      setPair(payload.pair);
-      setDraft("");
-      await loadPairs();
-      await loadWorker(pair.id).catch(() => undefined);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function spinWorker(taskOverride?: string) {
-    if (!pair) return;
-    const task = (taskOverride ?? draft).trim() || pair.title;
-    setBusy(true);
-    setError(null);
-    try {
-      const payload = await postJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(pair.id)}/worker`, { task, cwd: pair.defaultCwd, effort: "xhigh" });
-      setPair(payload.pair);
-      setDraft("");
-      setViewMode("split");
-      await loadPairs();
-      await loadWorker(pair.id).catch(() => undefined);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function revertWorker() {
-    if (!pair?.worker) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const payload = await postJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(pair.id)}/worker/revert`, {});
-      setPair(payload.pair);
-      setViewMode("butler");
-      await loadPairs();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const onSend = pair?.worker ? sendWorker : sendButler;
   const workerVisible = viewMode !== "butler" && (pair?.worker || viewMode === "worker");
   const butlerVisible = viewMode !== "worker";
 
@@ -881,8 +837,6 @@ export function PairShell() {
           onTitleDraftChange={setTitleDraft}
           onCommitTitle={() => void commitTitle()}
           onCancelEditTitle={cancelEditTitle}
-          onSpinWorker={() => void spinWorker()}
-          onRevert={() => void revertWorker()}
           onToggleSidebar={() => setMobileSidebarOpen((open) => !open)}
           isMobileSidebarOpen={mobileSidebarOpen}
         />
@@ -910,7 +864,7 @@ export function PairShell() {
                   draft={draft}
                   busy={busy}
                   onDraft={setDraft}
-                  onSend={() => void onSend()}
+                  onSend={() => void sendButler()}
                   onLoadOlder={() => void loadOlder()}
                 />
               ) : null}
@@ -919,10 +873,6 @@ export function PairShell() {
                 <WorkerPane
                   pair={pair}
                   rows={workerRows}
-                  draft={draft}
-                  busy={busy}
-                  onDraft={setDraft}
-                  onSend={() => void sendWorker()}
                 />
               ) : null}
             </div>

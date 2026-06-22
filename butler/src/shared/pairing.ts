@@ -1,6 +1,6 @@
 export type PairRole = "user" | "butler" | "worker" | "system";
 export type PairLane = "butler" | "worker";
-export type PairStatus = "idle" | "ready_to_handoff" | "worker_running" | "needs_butler_review" | "blocked";
+export type PairStatus = "idle" | "butler_running" | "worker_running" | "needs_butler_review" | "blocked";
 export type PairViewMode = "butler" | "worker" | "split" | "memory";
 
 export type PairMessage = {
@@ -12,6 +12,7 @@ export type PairMessage = {
   sourceThreadId: string | null;
   memoryObservationId: string | null;
   metadata: Record<string, string>;
+  pending?: boolean;
 };
 
 export type PairWorker = {
@@ -36,20 +37,21 @@ export type PairChat = {
   createdAt: number;
   updatedAt: number;
   defaultCwd: string | null;
+  butlerSessionId: string | null;
+  butlerReady: boolean;
+  butlerPending: boolean;
+  butlerLastError: string | null;
   worker: PairWorker | null;
   memoryQuery: string | null;
   lastHandoffPrompt: string | null;
-  messages: PairMessage[];
-};
-
-export type PairSummary = Omit<PairChat, "messages"> & {
   messageCount: number;
   lastMessage: PairMessage | null;
 };
 
-export type PairDetail = Omit<PairChat, "messages"> & {
+export type PairSummary = PairChat;
+
+export type PairDetail = PairChat & {
   messages: PairMessage[];
-  messageCount: number;
   loadedStart: number;
   hasMore: boolean;
 };

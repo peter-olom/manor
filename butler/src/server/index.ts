@@ -20,6 +20,7 @@ import { CodexExecMemoryPromotionService } from "./memory-promotion.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
 import { readMemorySynthesisConfig } from "./memory-synthesis-config.js";
 import { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
+import { PairSessionManager } from "./pair-session-manager.js";
 import { PairStore } from "./pair-store.js";
 import { registerPairRoutes } from "./pair-routes.js";
 import { registerPreviewAnnotationRoutes } from "./preview-annotation-routes.js";
@@ -88,8 +89,9 @@ const butlerAuthLoginTimeoutMs = 15_000;
 
 const uiStatePath = path.join(stateDir, "butler-ui.json");
 const scratchPadStatePath = path.join(stateDir, "scratch-pad.json");
-const pairStatePath = path.join(stateDir, "butler-pairs.json");
+const pairStatePath = path.join(stateDir, "butler-pairs-v2.json");
 const sessionDir = path.join(stateDir, "pi-sessions");
+const pairSessionDir = path.join(stateDir, "pi-pair-sessions");
 const staticDir = path.resolve(process.cwd(), "dist/web");
 const indexTemplatePath = path.resolve(process.cwd(), "index.html");
 let butlerAuthLoginSession: {
@@ -248,6 +250,23 @@ const butlerAgent = new ButlerAgentService({
   fileStore,
   artifactsDir,
   refreshRuntimeInventory: syncRuntimeInventory
+});
+const pairSessions = new PairSessionManager({
+  pairStore,
+  store,
+  codexClient,
+  hostController,
+  runtimeBroker,
+  serviceTemplateRegistry,
+  imageStore,
+  fileStore,
+  piAuthPath: path.join(piAgentDir, "auth.json"),
+  codexAuthPath: path.join(codexHomeDir, "auth.json"),
+  codexConfigDir,
+  sessionRootDir: pairSessionDir,
+  artifactsDir,
+  refreshRuntimeInventory: syncRuntimeInventory,
+  memoryScheduler
 });
 runtimeAccess = {
   artifactsDir,
@@ -456,11 +475,7 @@ registerPreviewAnnotationRoutes({
 });
 registerPairRoutes({
   app,
-  codexClient,
-  fileStore,
-  imageStore,
-  pairStore,
-  store
+  pairSessions
 });
 
 app.get("/api/memory/jobs/:threadId", (request, response) => {
