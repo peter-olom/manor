@@ -24,6 +24,7 @@ import {
 } from "./icons";
 import { MemoryDashboard } from "./MemoryDashboard";
 import { SandSpinner } from "./SandSpinner";
+import { TerminalPane } from "./TerminalPane";
 import { useVirtualWindow } from "./useVirtualWindow";
 
 import type {
@@ -36,6 +37,12 @@ import type {
   PairViewMode,
   PairWorkerThreadResponse
 } from "../shared/pairing";
+import {
+  TERMINAL_LABELS,
+  TERMINAL_URLS,
+  readInitialTerminalTarget,
+  type TerminalTarget
+} from "../shared/terminal";
 
 type WorkerItem = {
   id: string;
@@ -69,8 +76,33 @@ const VIEW_LABELS: Record<PairViewMode, string> = {
   butler: "Butler",
   worker: "Codex",
   split: "Both",
-  memory: "Memory"
+  memory: "Memory",
+  cli: "CLI"
 };
+
+const VIEW_MODES = new Set<PairViewMode>(["butler", "worker", "split", "memory", "cli"]);
+
+function readInitialViewMode(): PairViewMode {
+  if (typeof window === "undefined") return "butler";
+  const value = new URLSearchParams(window.location.search).get("view");
+  return value && VIEW_MODES.has(value as PairViewMode) ? (value as PairViewMode) : "butler";
+}
+
+function syncUrlState(viewMode: PairViewMode, terminalTarget: TerminalTarget): void {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (viewMode === "butler") {
+    url.searchParams.delete("view");
+  } else {
+    url.searchParams.set("view", viewMode);
+  }
+  if (viewMode === "cli" && terminalTarget !== "butler") {
+    url.searchParams.set("terminal", terminalTarget);
+  } else {
+    url.searchParams.delete("terminal");
+  }
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
 
 function formatTime(value: number | null | undefined): string {
   if (!value) return "—";
@@ -375,7 +407,7 @@ function Topbar({
       <div className="topbar-right">
         {pair ? (
           <div className="segmented" role="tablist" aria-label="View mode">
-            {(["butler", "worker", "split", "memory"] as PairViewMode[]).map((mode) => (
+            {(["butler", "worker", "split", "memory", "cli"] as PairViewMode[]).map((mode) => (
               <button
                 key={mode}
                 type="button"
@@ -608,7 +640,10 @@ export function PairShell() {
   const [selectedPairId, setSelectedPairId] = useState<string | null>(null);
   const [pair, setPair] = useState<PairDetail | null>(null);
   const [workerThread, setWorkerThread] = useState<WorkerThread | null>(null);
-  const [viewMode, setViewMode] = useState<PairViewMode>("split");
+  const [viewMode, setViewMode] = useState<PairViewMode>(() => readInitialViewMode());
+  const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>(
+    () => readInitialTerminalTarget(new URLSearchParams(window.location.search).get("terminal")) ?? "butler"
+  );
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -676,6 +711,10 @@ export function PairShell() {
     const payload = await getJson<PairWorkerThreadResponse>(`/api/pairs/${encodeURIComponent(pairId)}/worker-thread`);
     startTransition(() => setWorkerThread((payload.thread as WorkerThread | null) ?? null));
   }, []);
+
+  useEffect(() => {
+    syncUrlState(viewMode, terminalTarget);
+  }, [terminalTarget, viewMode]);
 
   useEffect(() => {
     void loadPairs().catch((err) => setError(err instanceof Error ? err.message : String(err)));
@@ -746,7 +785,7 @@ export function PairShell() {
       await loadPairs();
       setSelectedPairId(payload.pair.id);
       setPair(payload.pair);
-      setViewMode("split");
+      setViewMode("butler");
       setMobileSidebarOpen(false);
       setEditingTitle(false);
       setTitleDraft("");
@@ -805,6 +844,10 @@ export function PairShell() {
 
   const workerVisible = viewMode !== "butler" && (pair?.worker || viewMode === "worker");
   const butlerVisible = viewMode !== "worker";
+  const cliVisible = viewMode === "cli";
+  const selectTerminalTarget = useCallback((target: TerminalTarget) => {
+    setTerminalTarget(target);
+  }, []);
 
   return (
     <main className={`app ${mobileSidebarOpen ? "is-mobile-sidebar-open" : ""} ${pair ? "" : "is-empty"}`}>
@@ -853,36 +896,46 @@ export function PairShell() {
               <span>New session</span>
             </button>
           </div>
-        ) : viewMode === "memory" ? (
-          <MemoryDashboard />
         ) : (
-          <>
-            <div className={`workspace-body is-${viewMode}`}>
-              {butlerVisible ? (
-                <ButlerPane
-                  pair={pair}
-                  draft={draft}
-                  busy={busy}
-                  onDraft={setDraft}
-                  onSend={() => void sendButler()}
-                  onLoadOlder={() => void loadOlder()}
-                />
-              ) : null}
-              {viewMode === "split" ? <div className="divider" /> : null}
-              {workerVisible ? (
-                <WorkerPane
-                  pair={pair}
-                  rows={workerRows}
-                />
+          <div className="workspace-views">
+            <div className={`workspace-view is-conversation ${viewMode === "butler" || viewMode === "worker" || viewMode === "split" ? "is-active" : ""}`}>
+              <div className={`workspace-body is-${viewMode}`}>
+                {butlerVisible ? (
+                  <ButlerPane
+                    pair={pair}
+                    draft={draft}
+                    busy={busy}
+                    onDraft={setDraft}
+                    onSend={() => void sendButler()}
+                    onLoadOlder={() => void loadOlder()}
+                  />
+                ) : null}
+                {viewMode === "split" ? <div className="divider" /> : null}
+                {workerVisible ? (
+                  <WorkerPane
+                    pair={pair}
+                    rows={workerRows}
+                  />
+                ) : null}
+              </div>
+              {error ? (
+                <div className="error" role="alert">
+                  <WarningIcon />
+                  <span>{error}</span>
+                </div>
               ) : null}
             </div>
-            {error ? (
-              <div className="error" role="alert">
-                <WarningIcon />
-                <span>{error}</span>
-              </div>
-            ) : null}
-          </>
+            <div className={`workspace-view is-memory ${viewMode === "memory" ? "is-active" : ""}`}>
+              <MemoryDashboard />
+            </div>
+            <TerminalPane
+              active={cliVisible}
+              target={terminalTarget}
+              onTarget={selectTerminalTarget}
+              labels={TERMINAL_LABELS}
+              urls={TERMINAL_URLS}
+            />
+          </div>
         )}
       </section>
     </main>
