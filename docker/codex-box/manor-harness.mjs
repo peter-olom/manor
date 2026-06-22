@@ -12,7 +12,7 @@ const runtimeBrokerBaseUrl = process.env.MANOR_RUNTIME_BROKER_URL || "http://run
 function printHelp() {
   console.log(`Usage:
   manor-harness [--thread <jobId>] status
-  manor-harness [--thread <jobId>] report --status completed|blocked --summary "<text>" [--details "<text>"] [--turn-id <id>] [--evidence-json '<json>' ...] [--evidence "<pointId>|<kind>|<summary>" ...]
+  manor-harness [--thread <jobId>] report --status completed|blocked --summary "<text>" [--details "<text>"] [--turn-id <id>] [--claims-json '<json>'] [--claims-file <path>] [--evidence-json '<json>' ...] [--evidence "<pointId>|<kind>|<summary>" ...]
   manor-harness [--thread <jobId>] assist --summary "<text>" [--details "<text>"] [--question "<text>"]
   manor-harness [--thread <jobId>] memory [--provenance]
   manor-harness [--thread <jobId>] memory project [--provenance]
@@ -101,6 +101,8 @@ Blocked reports require --details that explain what failed, what was tried, and 
 Deep work reports should include point-specific evidence, for example:
   --evidence "point-1|build|npm test passed"
   --evidence-json '{"pointId":"point-2","kind":"browser_flow","summary":"Recorded browser proof","proofRunId":"run-id"}'
+Completed orchestrated reports must include strict JSON claims, for example:
+  --claims-json '{"version":1,"changed_work_summary":"Implemented requested behavior","claims":[{"claim_id":"claim-1","status":"completed","summary":"Build passes","evidence_pointer":"npm run build","proof_id":null,"risk_note":null,"reviewer_target":"qa"}],"risks":[],"unresolved_items":[],"sub_agent_summaries":[]}'
 Set MANOR_THREAD_ID or pass --thread <jobId> to bind the harness explicitly when you are outside the job workspace.`);
 }
 
@@ -501,6 +503,7 @@ async function main() {
       summary: readFlag(args, "--summary"),
       details: readFlag(args, "--details"),
       turnId: readFlag(args, "--turn-id"),
+      claims: await readJsonSpec(args, "--claims-file", "--claims-json"),
       evidence: parseReportEvidence(args)
     };
   } else if (args[0] === "assist") {

@@ -14,6 +14,17 @@ export function formatHarnessExecutionContract(thread: CodexThreadRecord): strin
     ...(acceptancePoints.length > 0
       ? [`Acceptance points:\n${acceptancePoints.map((point, index) => `${index + 1}. ${point}`).join("\n")}`]
       : []),
+    ...(contract.orchestration
+      ? [
+          [
+            `Orchestration: class=${contract.orchestration.taskClass} risk=${contract.orchestration.riskLevel}`,
+            `Goal mode: ${contract.orchestration.goalRecommendation.mode}`,
+            `Codex review required: ${contract.orchestration.reviewRecommendation.required ? "yes" : "no"}`,
+            contract.orchestration.subAgentRoles.length > 0 ? `Sub-agent roles: ${contract.orchestration.subAgentRoles.join(", ")}` : null,
+            "Completed reports require strict JSON claims with proof pointers."
+          ].filter(Boolean).join("\n")
+        ]
+      : []),
     ...(threadRequiresVisualProof(thread)
       ? ["Visual proof requirement: capture and surface screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are insufficient."]
       : []),

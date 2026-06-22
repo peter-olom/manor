@@ -17,7 +17,6 @@ import {
   contentToText,
   describePendingCallbacks,
   extractLatestNoticeTexts,
-  extractWorkspaceMentions,
   findVerificationArtifact,
   getFallbackTurnId,
   getVisibleThreadProofs,
@@ -46,13 +45,13 @@ import type { ButlerAgentServiceOptions, ButlerOperatorSink } from "./butler-age
 import { clearPendingOperatorPrompts, createOrRefreshButlerSession, getButlerLiveSnapshot, getButlerMessagePage, getButlerShellSnapshot, getButlerSnapshot, keepPendingOperatorPromptsBefore, promptButler, promptButlerInternal, registerPendingOperatorPrompt, removePendingOperatorPrompt, stopButlerPrompt, restoreButlerCompactionState, sanitizeButlerSessionMessages, sanitizePersistedButlerSessions, updateButlerComposeSettings } from "./butler-agent-session.js";
 import { clearButlerSessionChat, deleteButlerSessionChatFromLocated, keepOperatorMessagesBefore, locateButlerSessionDeletePoint, locateButlerSessionDeletePointBeforeTimestamp } from "./butler-agent-chat-hygiene.js";
 import { buildOperatorCloseoutText } from "./butler-agent-closeout-text.js";
-import { formatDelegationContractText } from "./butler-agent-delegation-contract.js";
+import { buildButlerDelegationContract } from "./butler-agent-delegation-contract-builder.js";
 import { buildDelegationDeveloperInstructions } from "./butler-agent-delegation-instructions.js";
 import { buildButlerFilesystemTools } from "./butler-agent-filesystem-tools.js";
 import { buildButlerServiceTools } from "./butler-agent-service-tools.js";
 import { buildButlerManorTools } from "./butler-agent-manor-tools.js";
 import { buildButlerOperatorTools } from "./butler-agent-operator-tools.js";
-import { answerOperatorQuestionMessage, findDurableOperatorTasteNotes, postOperatorQuestionMessage, recordOperatorQuestionTasteMemory } from "./butler-agent-operator-question.js";
+import { answerOperatorQuestionMessage, postOperatorQuestionMessage, recordOperatorQuestionTasteMemory } from "./butler-agent-operator-question.js";
 import { buildButlerProjectTools } from "./butler-agent-project-tools.js";
 import { buildButlerDelegationTools, buildButlerStackPreviewTools } from "./butler-agent-stack-preview-tools.js";
 import { reviewButlerProofScreenshot } from "./butler-agent-proof-review.js";
@@ -70,13 +69,12 @@ import { buildOnboardingView } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
 import { readJsonStateFile, writeJsonStateFileAtomic } from "./json-state-file.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
-import { formatProjectPolicyContextLines } from "./project-artifacts-policies.js";
+import type { ButlerRoutingClassifier } from "./butler-routing-classifier.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
 import { ensureTaskWorktree, resolveExistingWorkspaceCwd, resolveWorkspaceBranchName, resolveWorkspaceProjectInfo, taskRequiresManagedWorktree } from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
-import { buildThreadExecutionContract, isSharedShellRepoBootstrapTask } from "./thread-contract.js";
 import { elapsedTaskDurationMs, stripElapsedTaskTimeFooter } from "./task-timing.js";
 import { applyWorkspacePreviewDefaults, formatWorkspaceBootstrapLines, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 import type {
@@ -91,6 +89,7 @@ import type {
   ButlerMessagePageView,
   ButlerOnboardingView,
   ButlerOperatorQuestionView,
+  ButlerRoutingDecisionView,
   ButlerThinkingLevel,
   ButlerToolUiEffect,
   ButlerToolView,
@@ -126,6 +125,7 @@ export class ButlerAgentService extends EventEmitter {
   private readonly refreshRuntimeInventory: (() => Promise<void>) | null;
   private readonly manorRestartRequests: ManorRestartRequestState;
   private readonly memoryScheduler: MemoryUpdateScheduler | null;
+  private readonly routingClassifier: ButlerRoutingClassifier | null;
   private readonly systemPromptSuffix: string | null;
   private readonly operatorSink: ButlerOperatorSink | null;
   private modelRegistry: ModelRegistry | null = null;
@@ -154,6 +154,7 @@ export class ButlerAgentService extends EventEmitter {
   private readonly pendingChatCallbacks = new Map<string, PendingChatCallback>();
   private readonly deliveredCloseoutIds = new Set<string>();
   private readonly supervisionSmokePlans = new Map<string, SupervisionSmokePlan>();
+  private readonly delegationQuestionRounds = new Map<string, number>();
   private readonly actedSmokeMilestoneIds = new Set<string>();
   private readonly storeChangeHandler = () => this.handleStoreChange();
   private recentThreadFocus: Array<{ threadId: string; notedAt: number; reason: string | null }> = [];
@@ -187,6 +188,7 @@ export class ButlerAgentService extends EventEmitter {
     this.artifactsDir = options.artifactsDir;
     this.refreshRuntimeInventory = options.refreshRuntimeInventory ?? null;
     this.memoryScheduler = options.memoryScheduler ?? null;
+    this.routingClassifier = options.routingClassifier ?? null;
     this.systemPromptSuffix = options.systemPromptSuffix?.trim() || null;
     this.operatorSink = options.operatorSink ?? null;
     this.operatorMessageStatePath = path.join(this.sessionDir, "operator-messages.json");
@@ -847,6 +849,38 @@ export class ButlerAgentService extends EventEmitter {
 
   private getOperatorCloseoutBlocker(threadId: string): string | null { return getCloseoutBlocker(this.store, threadId); }
 
+  private async classifyDelegationRoute(input: {
+    task: string;
+    goal?: string | null;
+    cwd: string;
+    attachmentCount?: number;
+  }): Promise<ButlerRoutingDecisionView> {
+    if (!this.routingClassifier) {
+      throw new Error("Routing classifier is unavailable.");
+    }
+    return this.routingClassifier.classify({
+      task: input.task,
+      goal: input.goal,
+      cwd: input.cwd,
+      attachmentCount: input.attachmentCount,
+      goalModeAvailable: true
+    });
+  }
+
+  private getDelegationQuestionRoundCount(key: string): number {
+    return this.delegationQuestionRounds.get(key) ?? 0;
+  }
+
+  private noteDelegationQuestionRound(key: string): number {
+    const next = this.getDelegationQuestionRoundCount(key) + 1;
+    this.delegationQuestionRounds.set(key, next);
+    return next;
+  }
+
+  private clearDelegationQuestionRounds(key: string): void {
+    this.delegationQuestionRounds.delete(key);
+  }
+
   get pendingManorRestartRequest(): AppSnapshot["butler"]["pendingManorRestartRequest"] { return this.manorRestartRequests.pendingRequest; }
   get authorizedManorRestartRequest(): AppSnapshot["butler"]["authorizedManorRestartRequest"] { return this.manorRestartRequests.authorizedRequest; }
   requestManorRestartAuthorization(input: Parameters<ManorRestartRequestState["request"]>[0]): NonNullable<AppSnapshot["butler"]["pendingManorRestartRequest"]> { return this.manorRestartRequests.request(input); }
@@ -1093,63 +1127,9 @@ export class ButlerAgentService extends EventEmitter {
     goal?: string;
     workspace: { cwd: string; branchName: string | null };
     extraNotes?: string[];
+    orchestration?: ButlerRoutingDecisionView | null;
   }): Promise<{ text: string; contract: CodexThreadExecutionContractView }> {
-    const requestedTask = options.goal ? `${options.task}\n\nGoal: ${options.goal}` : options.task;
-    const requestedTaskOnly = options.task.trim();
-    const operatorGoal = options.goal?.trim() ? options.goal.trim() : null;
-    const project = resolveWorkspaceProjectInfo(options.workspace.cwd);
-    const repoBootstrapTask = isSharedShellRepoBootstrapTask(requestedTaskOnly);
-    const notes = ["Use this job brief if older task text points at a stale workspace or branch."];
-    const workspaceMentions = extractWorkspaceMentions(requestedTask).filter((entry) => entry !== options.workspace.cwd);
-
-    for (const mention of workspaceMentions) {
-      const resolvedMention = await resolveExistingWorkspaceCwd(mention);
-      const mentionExists = await fs.access(resolvedMention).then(() => true).catch(() => false);
-      if (!mentionExists) {
-        notes.push(`Ignore stale workspace hint ${mention}. Use ${options.workspace.cwd} instead.`);
-        continue;
-      }
-      if (resolvedMention !== mention && resolvedMention === options.workspace.cwd) {
-        notes.push(`The task referenced ${mention}, but the live workspace resolves to ${options.workspace.cwd}.`);
-      }
-    }
-
-    if (options.extraNotes?.length) notes.push(...options.extraNotes);
-
-    if (repoBootstrapTask) {
-      notes.push("This job begins in the shared /repos workspace. Create or clone the repo first, then continue inside it.");
-    }
-    const durableTasteNotes = findDurableOperatorTasteNotes(this.store.listButlerMemory());
-    if (durableTasteNotes.length > 0) {
-      notes.push(...durableTasteNotes.map((note) => `Durable operator taste: ${note}`));
-    }
-    const projectPolicyLines = formatProjectPolicyContextLines({ store: this.store, projectId: project.id });
-    if (projectPolicyLines.length > 1) {
-      notes.push(...projectPolicyLines.slice(1));
-    }
-
-    const baseContract = buildThreadExecutionContract({
-      threadId: options.threadId,
-      workspaceCwd: options.workspace.cwd,
-      projectId: project.id,
-      projectLabel: project.label,
-      branch: options.workspace.branchName,
-      taskText: requestedTask,
-      requestedTask: requestedTaskOnly,
-      operatorGoal,
-      tasteNotes: durableTasteNotes,
-      notes
-    });
-    const contract: CodexThreadExecutionContractView = {
-      ...baseContract,
-      requestedTask: requestedTaskOnly,
-      operatorGoal,
-      notes: [...new Set(notes.map((note) => note.trim()).filter(Boolean))]
-    };
-    return {
-      text: formatDelegationContractText({ threadId: options.threadId, workspace: options.workspace, project, contract, notes, requestedTask }),
-      contract
-    };
+    return buildButlerDelegationContract({ store: this.store, ...options });
   }
 
   private getServiceTemplate(templateId: string): LoadedServiceTemplate {

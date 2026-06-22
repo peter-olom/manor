@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
 
+import { normalizeWorkerClaimsReport } from "./butler-orchestration.js";
 import { recordChecklistWorkerEvidence } from "./supervision-checklist.js";
 import { emitStateStoreChange, queueStateStoreSave, type StateStoreInternalAccess } from "./state-store-internals.js";
-import type { CodexWorkerEvidenceView, CodexWorkerReportView } from "./types.js";
+import type { CodexThreadExecutionContractView, CodexWorkerEvidenceView, CodexWorkerReportView, WorkerClaimsReportView, WorkerReviewResultRecordView } from "./types.js";
 
 function normalizeWorkerReportEvidence(rawEvidence: unknown, fallbackCreatedAt: number): CodexWorkerEvidenceView[] {
   if (!Array.isArray(rawEvidence)) {
@@ -82,6 +83,7 @@ export function recordStateStoreWorkerReport(
     details?: string | null;
     turnId?: string | null;
     evidence?: CodexWorkerEvidenceView[];
+    claims?: WorkerClaimsReportView | null;
   }
 ): CodexWorkerReportView {
   const thread = access.getOrCreateThread(threadId);
@@ -96,6 +98,7 @@ export function recordStateStoreWorkerReport(
   const timestamp = Date.now();
   const now = existing?.turnId === turnId && timestamp <= existing.updatedAt ? existing.updatedAt + 1 : timestamp;
   const evidence = normalizeWorkerReportEvidence(report.evidence, now);
+  const claims = normalizeWorkerClaimsReport(report.claims);
   const nextReport: CodexWorkerReportView = {
     threadId,
     turnId,
@@ -103,6 +106,7 @@ export function recordStateStoreWorkerReport(
     summary: report.summary.trim(),
     details: typeof report.details === "string" && report.details.trim() ? report.details.trim() : null,
     evidence,
+    claims,
     createdAt: existing?.turnId === turnId && existing?.status === report.status ? existing.createdAt : now,
     updatedAt: now
   };
@@ -122,4 +126,22 @@ export function recordStateStoreWorkerReport(
   queueStateStoreSave(access);
   emitStateStoreChange(access);
   return nextReport;
+}
+
+export function recordStateStoreWorkerReviewResults(
+  access: StateStoreInternalAccess,
+  threadId: string,
+  results: WorkerReviewResultRecordView[]
+): CodexThreadExecutionContractView | null {
+  const thread = access.getOrCreateThread(threadId);
+  if (!thread.executionContract) return null;
+  const byId = new Map<string, WorkerReviewResultRecordView>();
+  for (const result of thread.executionContract.reviewResults ?? []) byId.set(result.id, result);
+  for (const result of results) byId.set(result.id, result);
+  thread.executionContract.reviewResults = [...byId.values()].sort((left, right) => left.createdAt - right.createdAt).slice(-80);
+  thread.updatedAt = Date.now();
+  access.persistedExecutionContractsByThreadId.set(threadId, { ...thread.executionContract });
+  queueStateStoreSave(access);
+  emitStateStoreChange(access);
+  return thread.executionContract;
 }

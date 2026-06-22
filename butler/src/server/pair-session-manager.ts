@@ -9,6 +9,7 @@ import type { HostControllerClient } from "./host-controller-client.js";
 import type { ImageReferenceStore } from "./image-store.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import type { PairStore } from "./pair-store.js";
+import type { ButlerRoutingClassifier } from "./butler-routing-classifier.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-templates.js";
 import type { ButlerStateStore } from "./state-store.js";
@@ -31,6 +32,7 @@ type PairSessionManagerOptions = {
   artifactsDir: string;
   refreshRuntimeInventory?: () => Promise<void>;
   memoryScheduler?: MemoryUpdateScheduler | null;
+  routingClassifier?: ButlerRoutingClassifier | null;
 };
 
 function pairSystemPrompt(pairId: string): string {
@@ -188,6 +190,7 @@ export class PairSessionManager {
       artifactsDir: this.options.artifactsDir,
       refreshRuntimeInventory: this.options.refreshRuntimeInventory,
       memoryScheduler: this.options.memoryScheduler,
+      routingClassifier: this.options.routingClassifier,
       systemPromptSuffix: pairSystemPrompt(pair.id),
       operatorSink: {
         onDelegationAcknowledgement: ({ threadId, text }) => {

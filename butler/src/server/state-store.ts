@@ -65,8 +65,9 @@ import { deleteStateStoreButlerMemory, recordStateStoreButlerMemory } from "./st
 import { enqueueStateStoreMemorySynthesis, listDueStateStoreMemorySynthesis, listStateStoreMemoryGraph, recordStateStoreMemoryObservation, searchStateStoreMemoryGraph, updateStateStoreMemorySynthesisQueueEntry, upsertStateStoreMemoryEntity, upsertStateStoreMemoryRelationship } from "./state-store-memory-graph.js";
 import { listStateStoreDesktopSessions, removeStateStoreDesktopSession, replaceStateStoreDesktopSessions, upsertStateStoreDesktopSession } from "./state-store-desktop.js";
 import { buildStateStoreRuntimeSnapshot, buildStateStoreShellSnapshot, buildStateStoreSnapshot } from "./state-store-snapshot.js";
-import { recordStateStoreWorkerReport } from "./state-store-worker-reports.js";
-import { normalizeReviewPanel, recordReviewPanelVerdict as applyReviewPanelVerdict, summarizeReviewPanel } from "./review-panel.js";
+import { recordStateStoreWorkerReport, recordStateStoreWorkerReviewResults } from "./state-store-worker-reports.js";
+import { mergeParsedExecutionContract } from "./state-store-contract-normalizers.js";
+import { recordReviewPanelVerdict as applyReviewPanelVerdict } from "./review-panel.js";
 import { parseThreadExecutionContract } from "./thread-contract.js";
 import type {
   AppSnapshot,
@@ -88,7 +89,8 @@ import type {
   MemoryEntityType, MemoryGraphRetrievalView, MemoryGraphView, MemoryObservationSourceKind, MemoryObservationView,
   MemoryRelationshipView, MemorySynthesisPriority, MemorySynthesisQueueEntryView, MemoryTaskStatus,
   ProjectMemoryView, ProjectArtifactView, ProjectPolicyView, ReasoningEffort, RuntimeCleanupTaskView, RuntimeSnapshot,
-  StackLeaseView, ServiceLeaseView, SupervisionChecklistItemStatus, SupervisionChecklistView, PersistedUiState, ReviewPanelRole, ReviewPanelVerdict
+  StackLeaseView, ServiceLeaseView, SupervisionChecklistItemStatus, SupervisionChecklistView, PersistedUiState, ReviewPanelRole, ReviewPanelVerdict,
+  WorkerClaimsReportView, WorkerReviewResultRecordView
 } from "./types.js";
 type JobMemoryWriteContext = { projectId?: string | null; projectLabel?: string | null; operatorGoal?: string | null; requestedTask?: string | null; proofRequirements?: string[] };
 type MemoryObservationInput = { idempotencyKey: string; projectId?: string | null; projectLabel?: string | null; threadId?: string | null; sourceKind: MemoryObservationSourceKind; sourceId: string; summary: string; details?: string | null; payload?: Record<string, unknown>; observedAt?: number | null; durable?: boolean };
@@ -133,9 +135,7 @@ export class ButlerStateStore extends EventEmitter {
   private readonly persistedProjectArtifactsByProjectId = new Map<string, ProjectArtifactView[]>();
   private readonly persistedProjectPoliciesByProjectId = new Map<string, ProjectPolicyView[]>();
   private memoryUpdateObserver: StoreMemoryUpdateObserver | null = null;
-  private getInternalAccess(): StateStoreInternalAccess {
-    return this as unknown as StateStoreInternalAccess;
-  }
+  private getInternalAccess(): StateStoreInternalAccess { return this as unknown as StateStoreInternalAccess; }
   private reconcileThreadWindows(): boolean {
     return reconcileStateStoreThreadWindows(this.getInternalAccess());
   }
@@ -384,7 +384,7 @@ export class ButlerStateStore extends EventEmitter {
     record.status = normalizeStatus(thread.status);
     record.modelProvider = typeof thread.modelProvider === "string" ? thread.modelProvider : record.modelProvider;
     const parsedExecutionContract = parseThreadExecutionContract(record.preview);
-    if (parsedExecutionContract) { const existingPanel = record.executionContract?.reviewPanel ?? this.persistedExecutionContractsByThreadId.get(id)?.reviewPanel ?? parsedExecutionContract.reviewPanel; const mergedContract = { ...parsedExecutionContract, reviewPanel: normalizeReviewPanel(existingPanel, { taskCategory: parsedExecutionContract.taskCategory, inferredWorkDepth: parsedExecutionContract.inferredWorkDepth, requestedTask: parsedExecutionContract.requestedTask }), reviewPanelSummary: parsedExecutionContract.reviewPanelSummary }; mergedContract.reviewPanelSummary = summarizeReviewPanel(mergedContract.reviewPanel); record.executionContract = mergedContract; record.supervisionChecklist = buildSupervisionChecklist(record, mergedContract); this.persistedExecutionContractsByThreadId.set(id, mergedContract); this.persistedSupervisionChecklistsByThreadId.set(id, { ...record.supervisionChecklist }); this.memoryUpdateObserver?.observeThreadContract(id, mergedContract); }
+    if (parsedExecutionContract) { const existingContract = record.executionContract ?? this.persistedExecutionContractsByThreadId.get(id) ?? null; const mergedContract = mergeParsedExecutionContract(existingContract, parsedExecutionContract); record.executionContract = mergedContract; record.supervisionChecklist = buildSupervisionChecklist(record, mergedContract); this.persistedExecutionContractsByThreadId.set(id, mergedContract); this.persistedSupervisionChecklistsByThreadId.set(id, { ...record.supervisionChecklist }); this.memoryUpdateObserver?.observeThreadContract(id, mergedContract); }
 
     if (Array.isArray(thread.turns)) {
       const existingTurnsById = new Map(record.turns.map((turn) => [turn.id, turn]));
@@ -1048,10 +1048,13 @@ export class ButlerStateStore extends EventEmitter {
       details?: string | null;
       turnId?: string | null;
       evidence?: CodexWorkerEvidenceView[];
+      claims?: WorkerClaimsReportView | null;
     }
   ): CodexWorkerReportView {
     return recordStateStoreWorkerReport(this.getInternalAccess(), threadId, report);
   }
+
+  recordWorkerReviewResults(threadId: string, results: WorkerReviewResultRecordView[]): CodexThreadExecutionContractView | null { const contract = recordStateStoreWorkerReviewResults(this.getInternalAccess(), threadId, results); if (contract) this.addEvent(threadId, "butler.codex_review.recorded", `Recorded ${results.length} Codex review finding${results.length === 1 ? "" : "s"}.`); return contract; }
 
   getWorkerReport(threadId: string, turnId?: string | null): CodexWorkerReportView | null {
     const liveReport = this.threads.get(threadId)?.workerReport ?? null;

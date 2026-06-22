@@ -21,6 +21,7 @@ import {
 } from "./state-store-helpers.js";
 import { loadStateStoreSqliteMemory, persistStateStoreSqliteMemory } from "./state-store-sqlite-memory.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
+import { normalizeWorkerClaimsReport } from "./butler-orchestration.js";
 import {
   normalizeExecutionContract,
   normalizeSupervisionChecklist,
@@ -732,6 +733,7 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
                 .map((entry) => normalizeWorkerEvidence(entry, { createdAt: typeof report.createdAt === "number" ? report.createdAt : Date.now() }))
                 .filter((entry): entry is CodexWorkerEvidenceView => Boolean(entry))
             : [],
+          claims: normalizeWorkerClaimsReport((report as unknown as Record<string, unknown>).claims),
           createdAt: typeof report.createdAt === "number" ? report.createdAt : Date.now(),
           updatedAt: typeof report.updatedAt === "number" ? report.updatedAt : Date.now()
         }))
@@ -1326,6 +1328,7 @@ export function restorePersistedStateStoreThread(access: StateStoreInternalAcces
                 .map((entry) => normalizeWorkerEvidence(entry, { createdAt: thread.workerReport?.createdAt ?? record.updatedAt }))
                 .filter((entry): entry is CodexWorkerEvidenceView => Boolean(entry))
             : [],
+          claims: normalizeWorkerClaimsReport((thread.workerReport as unknown as Record<string, unknown>).claims),
           createdAt: typeof thread.workerReport.createdAt === "number" ? thread.workerReport.createdAt : record.updatedAt,
           updatedAt: typeof thread.workerReport.updatedAt === "number" ? thread.workerReport.updatedAt : record.updatedAt
         }

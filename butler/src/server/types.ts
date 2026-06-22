@@ -1,4 +1,19 @@
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime.js";
+import type { ButlerRoutingDecisionView, WorkerClaimsReportView, WorkerReviewResultRecordView } from "./orchestration-types.js";
+export type {
+  ButlerGoalRoutingMode,
+  ButlerReviewRoutingTarget,
+  ButlerRoutingDecisionView,
+  ButlerRoutingQuestionView,
+  ButlerRoutingRiskLevel,
+  ButlerRoutingTaskClass,
+  WorkerClaimStatus,
+  WorkerClaimsReportView,
+  WorkerClaimView,
+  WorkerReviewResultRecordView,
+  WorkerReviewSeverity,
+  WorkerSubAgentSummaryView
+} from "./orchestration-types.js";
 
 export type CodexThreadStatus = "active" | "idle" | "unknown";
 export type CodexProofExpectation = "none" | "requested";
@@ -116,6 +131,8 @@ export interface CodexThreadExecutionContractView {
   verificationMatrix: VerificationMatrixRowView[];
   reviewPanel: ReviewPanelRunView[];
   reviewPanelSummary: ReviewPanelSummaryView;
+  orchestration?: ButlerRoutingDecisionView;
+  reviewResults?: WorkerReviewResultRecordView[];
   mission?: MissionContractView;
   notes: string[];
 }
@@ -209,6 +226,7 @@ export interface CodexWorkerReportView {
   summary: string;
   details: string | null;
   evidence: CodexWorkerEvidenceView[];
+  claims?: WorkerClaimsReportView | null;
   createdAt: number;
   updatedAt: number;
 }

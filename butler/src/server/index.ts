@@ -10,6 +10,8 @@ import httpProxy from "http-proxy";
 import { ButlerAgentService } from "./butler-agent.js";
 import { CodexAppServerClient } from "./codex-client.js";
 import { CodexHarnessService } from "./codex-harness.js";
+import { ButlerRoutingClassifier } from "./butler-routing-classifier.js";
+import { CodexWorkerReviewService } from "./worker-codex-review.js";
 import { FileReferenceStore, MAX_FILE_BYTES } from "./file-store.js";
 import { HostControllerClient } from "./host-controller-client.js";
 import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
@@ -200,6 +202,8 @@ let runtimeAccess!: RuntimeServerAccess;
 let sseHub!: ButlerSseHub;
 const memorySynthesisConfig = readMemorySynthesisConfig();
 const memoryReview = new CodexExecMemoryReviewService({ store, stateDir, codexHomeDir, enabled: memorySynthesisConfig.enabled, model: memorySynthesisConfig.model ?? undefined, timeoutMs: memorySynthesisConfig.timeoutMs });
+const routingClassifier = new ButlerRoutingClassifier({ stateDir, codexHomeDir, enabled: true, model: memorySynthesisConfig.model ?? undefined, timeoutMs: memorySynthesisConfig.timeoutMs });
+const workerReview = new CodexWorkerReviewService({ store, stateDir, codexHomeDir, enabled: true, model: memorySynthesisConfig.model ?? undefined, timeoutMs: memorySynthesisConfig.timeoutMs });
 const memoryScheduler = new MemoryUpdateScheduler({ store, config: memorySynthesisConfig, stateDir, codexHomeDir });
 const memoryPromotion = new CodexExecMemoryPromotionService({ store, memoryScheduler, config: memorySynthesisConfig, stateDir, codexHomeDir });
 store.setMemoryUpdateObserver(memoryScheduler);
@@ -211,9 +215,11 @@ const codexHarness = new CodexHarnessService({
   runtimeBroker,
   serviceTemplateRegistry,
   memoryReview,
+  workerReview,
   memoryScheduler
 });
 memoryReview.reviewPendingReportsAsync();
+workerReview.reviewPendingReportsAsync();
 memoryScheduler.start();
 memoryPromotion.start();
 await codexHarness.load();
@@ -249,6 +255,7 @@ const butlerAgent = new ButlerAgentService({
   imageStore,
   fileStore,
   artifactsDir,
+  routingClassifier,
   refreshRuntimeInventory: syncRuntimeInventory
 });
 const pairSessions = new PairSessionManager({
@@ -266,7 +273,8 @@ const pairSessions = new PairSessionManager({
   sessionRootDir: pairSessionDir,
   artifactsDir,
   refreshRuntimeInventory: syncRuntimeInventory,
-  memoryScheduler
+  memoryScheduler,
+  routingClassifier
 });
 runtimeAccess = {
   artifactsDir,

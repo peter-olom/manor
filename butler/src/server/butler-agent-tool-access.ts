@@ -17,6 +17,7 @@ import type {
   ButlerNextWorkerReportAction,
   ButlerOnboardingView,
   ButlerOperatorQuestionView,
+  ButlerRoutingDecisionView,
   ButlerThreadCallbackView,
   ButlerToolView,
   ButlerThinkingLevel,
@@ -139,6 +140,15 @@ export type ButlerAgentToolAccess = {
   ): Promise<ProofScreenshotReview>;
   getThreadBudgetLimitMessage(threadId: string): string | null;
   getOperatorCloseoutBlocker(threadId: string): string | null;
+  classifyDelegationRoute(input: {
+    task: string;
+    goal?: string | null;
+    cwd: string;
+    attachmentCount?: number;
+  }): Promise<ButlerRoutingDecisionView>;
+  getDelegationQuestionRoundCount(key: string): number;
+  noteDelegationQuestionRound(key: string): number;
+  clearDelegationQuestionRounds(key: string): void;
   requestManorRestartAuthorization(input: {
     mode?: unknown;
     target?: unknown;
@@ -164,6 +174,7 @@ export type ButlerAgentToolAccess = {
     goal?: string;
     workspace: { cwd: string; branchName: string | null };
     extraNotes?: string[];
+    orchestration?: ButlerRoutingDecisionView | null;
   }): Promise<{ text: string; contract: CodexThreadExecutionContractView }>;
   queueDelegationAcknowledgement(threadId: string, text: string): void;
   registerPendingChatCallback(

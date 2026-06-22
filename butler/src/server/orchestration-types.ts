@@ -1,0 +1,89 @@
+export type ButlerRoutingRiskLevel = "low" | "medium" | "high" | "critical";
+export type ButlerRoutingTaskClass =
+  | "trivial"
+  | "ui"
+  | "api"
+  | "deploy"
+  | "docs"
+  | "data"
+  | "writing"
+  | "generic_code"
+  | "read_only"
+  | "research"
+  | "prototype"
+  | "plan"
+  | "recommendation"
+  | "unknown";
+export type ButlerGoalRoutingMode = "none" | "native_goal" | "contract_fallback";
+export type ButlerReviewRoutingTarget = "none" | "codex_review";
+export type WorkerClaimStatus = "completed" | "partial" | "blocked";
+export type WorkerReviewSeverity = "info" | "low" | "medium" | "high" | "critical";
+
+export interface ButlerRoutingQuestionView {
+  id: string;
+  prompt: string;
+  context: string | null;
+  options: Array<{ id: string | null; label: string; description: string | null }>;
+  allowFreeform: boolean;
+}
+
+export interface ButlerRoutingDecisionView {
+  taskClass: ButlerRoutingTaskClass;
+  confidence: number;
+  questionSet: ButlerRoutingQuestionView[];
+  goalRecommendation: {
+    mode: ButlerGoalRoutingMode;
+    goal: string | null;
+    fallbackReason: string | null;
+  };
+  reviewRecommendation: {
+    target: ButlerReviewRoutingTarget;
+    required: boolean;
+    reason: string | null;
+  };
+  subAgentRoles: string[];
+  riskLevel: ButlerRoutingRiskLevel;
+  fallbackReason: string | null;
+  createdAt: number;
+}
+
+export interface WorkerClaimView {
+  claimId: string;
+  status: WorkerClaimStatus;
+  summary: string;
+  evidencePointer: string;
+  proofId: string | null;
+  riskNote: string | null;
+  reviewerTarget: string | null;
+}
+
+export interface WorkerSubAgentSummaryView {
+  role: string;
+  summary: string;
+  evidencePointer: string | null;
+}
+
+export interface WorkerClaimsReportView {
+  version: 1;
+  changedWorkSummary: string;
+  claims: WorkerClaimView[];
+  risks: string[];
+  unresolvedItems: string[];
+  subAgentSummaries: WorkerSubAgentSummaryView[];
+}
+
+export interface WorkerReviewResultRecordView {
+  id: string;
+  reviewSource: "codex_review";
+  turnId: string;
+  reportUpdatedAt: number;
+  severity: WorkerReviewSeverity;
+  findingSummary: string;
+  blocking: boolean;
+  waived: boolean;
+  waiverReason: string | null;
+  automationFailure?: boolean;
+  linkedClaimIds: string[];
+  createdAt: number;
+  updatedAt: number;
+}

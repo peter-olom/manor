@@ -1,4 +1,5 @@
 import type { ButlerStateStore } from "./state-store.js";
+import { getOrchestrationCloseoutBlocker } from "./butler-orchestration.js";
 import { getReviewPanelCloseoutBlocker } from "./review-panel.js";
 import { evaluateOperatorCloseoutGate } from "./supervision-checklist.js";
 import type { ButlerCallbackResolutionState, ButlerThreadCallbackView, CodexThreadRecord, CodexWorkerReportView } from "./types.js";
@@ -13,6 +14,10 @@ export function getOperatorCloseoutBlocker(
   const gate = evaluateOperatorCloseoutGate(thread?.supervisionChecklist, workerReport);
   if (!gate.ok) {
     return gate.reason;
+  }
+  const orchestrationBlocker = getOrchestrationCloseoutBlocker({ thread, workerReport });
+  if (orchestrationBlocker) {
+    return orchestrationBlocker;
   }
   return getReviewPanelCloseoutBlocker(thread?.executionContract);
 }

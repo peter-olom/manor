@@ -21,6 +21,21 @@ export function formatDelegationContractText(input: {
     `task_category: ${input.contract.taskCategory}`,
     `inferred_work_depth: ${input.contract.inferredWorkDepth}`
   ];
+  if (input.contract.orchestration) {
+    lines.push(`routing_task_class: ${input.contract.orchestration.taskClass}`);
+    lines.push(`routing_risk: ${input.contract.orchestration.riskLevel}`);
+    lines.push(`routing_confidence: ${input.contract.orchestration.confidence}`);
+    lines.push(`goal_mode: ${input.contract.orchestration.goalRecommendation.mode}`);
+    if (input.contract.orchestration.goalRecommendation.goal) {
+      lines.push(`goal_recommendation: ${input.contract.orchestration.goalRecommendation.goal}`);
+    }
+    lines.push(`codex_review_required: ${input.contract.orchestration.reviewRecommendation.required ? "yes" : "no"}`);
+    if (input.contract.orchestration.reviewRecommendation.reason) {
+      lines.push(`codex_review_reason: ${input.contract.orchestration.reviewRecommendation.reason}`);
+    }
+    lines.push(...input.contract.orchestration.subAgentRoles.map((role) => `sub_agent_role: ${role}`));
+    lines.push("worker_claims_required: strict_json");
+  }
 
   if (input.contract.mission) {
     lines.push(`mission_intent: ${input.contract.mission.intent}`);
@@ -37,6 +52,7 @@ export function formatDelegationContractText(input: {
     )
   );
   if (input.contract.operatorGoal) lines.push(`operator_goal: ${input.contract.operatorGoal}`);
+  lines.push("worker_claims_schema: {\"version\":1,\"changed_work_summary\":\"...\",\"claims\":[{\"claim_id\":\"claim-1\",\"status\":\"completed\",\"summary\":\"...\",\"evidence_pointer\":\"...\",\"proof_id\":null,\"risk_note\":null,\"reviewer_target\":\"qa\"}],\"risks\":[],\"unresolved_items\":[],\"sub_agent_summaries\":[]}");
   lines.push(...input.notes.map((note) => `note: ${note}`));
   return `${lines.join("\n")}\n\nREQUESTED TASK\n${input.requestedTask}`;
 }

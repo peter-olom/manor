@@ -7,6 +7,7 @@ import type {
   VerificationCheckKind,
   VerificationMatrixRowView
 } from "./types.js";
+import { normalizeRoutingDecision } from "./butler-orchestration.js";
 import { acceptancePointsNeedVisualProof, taskHasUiImplication, VISUAL_PROOF_REQUIREMENT } from "./proof-policy.js";
 import { buildReviewPanel, summarizeReviewPanel } from "./review-panel.js";
 
@@ -496,6 +497,7 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
   const plannerSteps: string[] = [];
   const criticChecks: string[] = [];
   const blockedConditions: string[] = [];
+  const subAgentRoles: string[] = [];
   const values = new Map<string, string>();
 
   for (const line of contractBlock.split(/\r?\n/).slice(1)) {
@@ -539,6 +541,10 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
       blockedConditions.push(value);
       continue;
     }
+    if (key === "sub_agent_role") {
+      subAgentRoles.push(value);
+      continue;
+    }
     values.set(key, value);
   }
 
@@ -579,6 +585,28 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
     blockedConditions
   });
   const missionIntent = normalizeContractText(values.get("mission_intent"));
+  const codexReviewRequired = values.get("codex_review_required")?.toLowerCase() === "yes";
+  const orchestration = values.has("routing_task_class")
+    ? normalizeRoutingDecision({
+        taskClass: values.get("routing_task_class"),
+        confidence: Number(values.get("routing_confidence") ?? "0.5"),
+        questionSet: [],
+        goalRecommendation: {
+          mode: values.get("goal_mode") ?? "none",
+          goal: values.get("goal_recommendation") ?? null,
+          fallbackReason: null
+        },
+        reviewRecommendation: {
+          target: codexReviewRequired ? "codex_review" : "none",
+          required: codexReviewRequired,
+          reason: values.get("codex_review_reason") ?? null
+        },
+        subAgentRoles,
+        riskLevel: values.get("routing_risk") ?? "medium",
+        fallbackReason: null,
+        createdAt: Date.now()
+      }, taskCategory)
+    : null;
 
   return {
     threadId,
@@ -597,6 +625,7 @@ export function parseThreadExecutionContract(previewText: string): CodexThreadEx
     reviewPanel,
     reviewPanelSummary: summarizeReviewPanel(reviewPanel),
     mission: missionIntent ? { ...mission, intent: missionIntent } : mission,
+    ...(orchestration ? { orchestration, reviewResults: [] } : {}),
     notes
   };
 }
