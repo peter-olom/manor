@@ -58,10 +58,10 @@ import {
   reviewChecklistAcceptancePoint,
   updateChecklistHeartbeat
 } from "./supervision-checklist.js";
-import { getStateStoreJobMemory, getStateStoreProjectMemory, listStateStoreJobMemories, listStateStorePendingPromotionCandidates, listStateStoreProjectMemories, recordStateStoreJobCheckpoint, recordStateStoreJobDecision, recordStateStoreJobNote, resolveStateStorePromotionCandidate, submitStateStorePromotionCandidate, syncStateStoreThreadJobMemory } from "./state-store-memory.js";
+import { getStateStoreJobMemory, getStateStoreProjectMemory, deleteStateStoreJobMemoryEntry, deleteStateStoreProjectMemoryEntry, listStateStoreJobMemories, listStateStorePendingPromotionCandidates, listStateStoreProjectMemories, recordStateStoreJobCheckpoint, recordStateStoreJobDecision, recordStateStoreJobNote, resolveStateStorePromotionCandidate, submitStateStorePromotionCandidate, syncStateStoreThreadJobMemory } from "./state-store-memory.js";
 import { completeStateStoreRuntimeCleanupTask, enqueueStateStoreRuntimeCleanupTask, failStateStoreRuntimeCleanupTask, listStateStoreDueRuntimeCleanupTasks, listStateStoreExpiredLeaseIds, noteStateStorePreviewLeaseActivity, noteStateStoreServiceLeaseActivity, noteStateStoreStackLeaseActivity, noteStateStoreThreadLeaseActivity, setStateStorePreviewLeaseLifecycle, setStateStorePreviewLeasePinned, setStateStoreServiceLeasePinned, setStateStoreStackLeaseLifecycle, setStateStoreStackLeasePinned } from "./state-store-runtime.js";
 import { findStateStoreProjectArtifactById, getStateStoreProjectArtifact, getStateStoreProjectPolicy, listStateStoreProjectArtifacts, listStateStoreProjectPolicies, pruneMissingStateStoreProjectArtifacts, removeStateStoreProjectArtifact, searchStateStoreProjectArtifacts, upsertStateStoreProjectArtifact, upsertStateStoreProjectPolicy } from "./state-store-project-assets.js";
-import { recordStateStoreButlerMemory } from "./state-store-butler-memory.js";
+import { deleteStateStoreButlerMemory, recordStateStoreButlerMemory } from "./state-store-butler-memory.js";
 import { enqueueStateStoreMemorySynthesis, listDueStateStoreMemorySynthesis, listStateStoreMemoryGraph, recordStateStoreMemoryObservation, searchStateStoreMemoryGraph, updateStateStoreMemorySynthesisQueueEntry, upsertStateStoreMemoryEntity, upsertStateStoreMemoryRelationship } from "./state-store-memory-graph.js";
 import { listStateStoreDesktopSessions, removeStateStoreDesktopSession, replaceStateStoreDesktopSessions, upsertStateStoreDesktopSession } from "./state-store-desktop.js";
 import { buildStateStoreRuntimeSnapshot, buildStateStoreShellSnapshot, buildStateStoreSnapshot } from "./state-store-snapshot.js";
@@ -269,6 +269,12 @@ export class ButlerStateStore extends EventEmitter {
   listButlerMemory(): ButlerMemoryEntryView[] { return [...this.persistedButlerMemoryEntries]; }
 
   recordButlerMemory(input: { summary: string; details?: string | null; source?: ButlerMemoryEntryView["source"]; sourceMessageId?: string | null; tags?: unknown }): ButlerMemoryEntryView { return recordStateStoreButlerMemory(this.getInternalAccess(), input); }
+
+  deleteButlerMemory(id: string): boolean { return deleteStateStoreButlerMemory(this.getInternalAccess(), id); }
+
+  deleteJobMemoryEntry(threadId: string, entryId: string): boolean { return deleteStateStoreJobMemoryEntry(this.getInternalAccess(), threadId, entryId); }
+
+  deleteProjectMemoryEntry(projectId: string, entryId: string): boolean { return deleteStateStoreProjectMemoryEntry(this.getInternalAccess(), projectId, entryId); }
 
   listMemoryGraph(): MemoryGraphView { return listStateStoreMemoryGraph(this.getInternalAccess()); }
 

@@ -125,7 +125,7 @@ export class PairStore extends EventEmitter {
     const id = crypto.randomUUID();
     const pair: PairChat = {
       id,
-      title: titleFromText(input.title ?? "New Butler chat"),
+      title: titleFromText(input.title ?? "New session"),
       status: "idle",
       projectId: null,
       projectLabel: null,
@@ -135,23 +135,31 @@ export class PairStore extends EventEmitter {
       worker: null,
       memoryQuery: null,
       lastHandoffPrompt: null,
-      messages: [
-        {
-          id: crypto.randomUUID(),
-          role: "butler",
-          lane: "butler",
-          text: "Ready. I will keep this Butler chat isolated, use memory for context, and hand off to one Codex worker when asked.",
-          at: now,
-          sourceThreadId: null,
-          memoryObservationId: null,
-          metadata: { event: "pair.created" }
-        }
-      ]
+      messages: []
     };
     this.pairs.set(pair.id, pair);
     this.queueSave();
     this.emit("change");
     return this.getPair(pair.id)!;
+  }
+
+  updatePairTitle(pairId: string, rawTitle: string): PairChat | null {
+    const pair = this.pairs.get(pairId);
+    if (!pair) {
+      return null;
+    }
+    if (!normalizeText(rawTitle)) {
+      return null;
+    }
+    const next = titleFromText(rawTitle);
+    if (next === pair.title) {
+      return this.getPair(pair.id);
+    }
+    pair.title = next;
+    pair.updatedAt = Date.now();
+    this.queueSave();
+    this.emit("change");
+    return this.getPair(pair.id);
   }
 
   appendMessage(pairId: string, input: AppendMessageInput): PairMessage {
@@ -175,7 +183,7 @@ export class PairStore extends EventEmitter {
     if (pair.messages.length > MAX_PAIR_MESSAGES) {
       pair.messages.splice(0, pair.messages.length - MAX_PAIR_MESSAGES);
     }
-    if (pair.title === "New Butler chat" && input.role === "user") {
+    if ((pair.title === "New session" || pair.title === "New Butler chat") && input.role === "user") {
       pair.title = titleFromText(input.text);
     }
     pair.memoryQuery = input.role === "user" ? titleFromText(input.text) : pair.memoryQuery;

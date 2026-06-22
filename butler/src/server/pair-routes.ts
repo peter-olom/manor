@@ -124,6 +124,20 @@ export function registerPairRoutes(access: PairRouteAccess): void {
     response.json({ ok: pairStore.deletePair(request.params.pairId) });
   });
 
+  app.patch("/api/pairs/:pairId", (request, response) => {
+    const title = readString(request.body?.title);
+    if (!title) {
+      response.status(400).json({ error: "title is required" });
+      return;
+    }
+    const updated = pairStore.updatePairTitle(request.params.pairId, title);
+    if (!updated) {
+      response.status(404).json({ error: "Butler chat not found" });
+      return;
+    }
+    response.json({ pair: pairStore.getPairDetail(updated.id, null, 120) });
+  });
+
   app.get("/api/pairs/:pairId/memory", (request, response) => {
     const query = readString(request.query.query);
     response.json(buildMemoryCards(pairStore, store, request.params.pairId, query || null));

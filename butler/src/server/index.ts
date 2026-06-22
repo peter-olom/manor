@@ -604,6 +604,98 @@ app.post("/api/memory/butler/remember", (request, response) => {
   response.json({ ok: true, entry });
 });
 
+app.get("/api/memory/butler", (request, response) => {
+  const projectId = typeof request.query.projectId === "string" && request.query.projectId ? request.query.projectId : null;
+  const query = typeof request.query.query === "string" ? request.query.query : null;
+  let entries = store.listButlerMemory();
+  if (projectId) {
+    entries = entries.filter((entry) => entry.tags.includes(`project:${projectId}`));
+  }
+  if (query && query.trim()) {
+    const needle = query.trim().toLowerCase();
+    entries = entries.filter(
+      (entry) =>
+        entry.summary.toLowerCase().includes(needle) ||
+        (entry.details ? entry.details.toLowerCase().includes(needle) : false) ||
+        entry.tags.some((tag) => tag.toLowerCase().includes(needle))
+    );
+  }
+  response.json({ entries });
+});
+
+app.get("/api/memory/projects", (request, response) => {
+  const projectId = typeof request.query.projectId === "string" && request.query.projectId ? request.query.projectId : null;
+  const query = typeof request.query.query === "string" ? request.query.query : null;
+  let projects = store.listProjectMemories();
+  if (projectId) {
+    projects = projects.filter((memory) => memory.projectId === projectId);
+  }
+  if (query && query.trim()) {
+    const needle = query.trim().toLowerCase();
+    projects = projects.filter(
+      (memory) =>
+        memory.projectLabel.toLowerCase().includes(needle) ||
+        (memory.summary ? memory.summary.toLowerCase().includes(needle) : false) ||
+        memory.entries.some(
+          (entry) =>
+            entry.summary.toLowerCase().includes(needle) ||
+            (entry.details ? entry.details.toLowerCase().includes(needle) : false)
+        )
+    );
+  }
+  response.json({ projects });
+});
+
+app.get("/api/memory/jobs", (request, response) => {
+  const projectId = typeof request.query.projectId === "string" && request.query.projectId ? request.query.projectId : null;
+  const query = typeof request.query.query === "string" ? request.query.query : null;
+  let jobs = store.listJobMemories(projectId);
+  if (query && query.trim()) {
+    const needle = query.trim().toLowerCase();
+    jobs = jobs.filter((memory) => {
+      if (memory.latestCheckpoint && memory.latestCheckpoint.toLowerCase().includes(needle)) return true;
+      if (memory.nextAction && memory.nextAction.toLowerCase().includes(needle)) return true;
+      if (memory.operatorGoal && memory.operatorGoal.toLowerCase().includes(needle)) return true;
+      if (memory.requestedTask && memory.requestedTask.toLowerCase().includes(needle)) return true;
+      if (memory.decisions.some((decision) => decision.summary.toLowerCase().includes(needle))) return true;
+      if (memory.notes.some((note) => note.toLowerCase().includes(needle))) return true;
+      if (memory.entries.some((entry) => entry.summary.toLowerCase().includes(needle))) return true;
+      return false;
+    });
+  }
+  response.json({ jobs });
+});
+
+app.delete("/api/memory/butler/:id", (request, response) => {
+  const id = request.params.id;
+  const ok = store.deleteButlerMemory(id);
+  if (!ok) {
+    response.status(404).json({ error: "Butler memory entry not found" });
+    return;
+  }
+  response.json({ ok: true });
+});
+
+app.delete("/api/memory/jobs/:threadId/entries/:entryId", (request, response) => {
+  const { threadId, entryId } = request.params;
+  const ok = store.deleteJobMemoryEntry(threadId, entryId);
+  if (!ok) {
+    response.status(404).json({ error: "Job memory entry not found" });
+    return;
+  }
+  response.json({ ok: true });
+});
+
+app.delete("/api/memory/projects/:projectId/entries/:entryId", (request, response) => {
+  const { projectId, entryId } = request.params;
+  const ok = store.deleteProjectMemoryEntry(projectId, entryId);
+  if (!ok) {
+    response.status(404).json({ error: "Project memory entry not found" });
+    return;
+  }
+  response.json({ ok: true });
+});
+
 app.get("/api/chat/history", (request, response) => {
   const beforeRaw = Array.isArray(request.query.before) ? request.query.before[0] : request.query.before;
   const limitRaw = Array.isArray(request.query.limit) ? request.query.limit[0] : request.query.limit;

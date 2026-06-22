@@ -450,3 +450,65 @@ export function resolveStateStorePromotionCandidate(
 
   return null;
 }
+
+export function deleteStateStoreJobMemoryEntry(
+  access: StateStoreInternalAccess,
+  threadId: string,
+  entryId: string
+): boolean {
+  const jobMemory = access.persistedJobMemoriesByThreadId.get(threadId);
+  if (!jobMemory) {
+    return false;
+  }
+  const entry = jobMemory.entries.find((item) => item.id === entryId);
+  if (!entry) {
+    return false;
+  }
+  const candidateId = entry.promotionCandidateId;
+  const remainingEntries = jobMemory.entries.filter((item) => item.id !== entryId);
+  const remainingCandidates = candidateId
+    ? jobMemory.promotionCandidates.filter((candidate) => candidate.id !== candidateId)
+    : jobMemory.promotionCandidates;
+  const nextMemory: JobMemoryView = {
+    ...jobMemory,
+    entries: remainingEntries,
+    promotionCandidates: remainingCandidates,
+    updatedAt: Date.now()
+  };
+  const thread = access.threads.get(threadId);
+  if (thread) {
+    thread.jobMemory = nextMemory;
+    thread.updatedAt = Math.max(thread.updatedAt, nextMemory.updatedAt);
+    access.refreshDerivedThreadState(thread, nextMemory.updatedAt);
+  }
+  access.persistedJobMemoriesByThreadId.set(threadId, { ...nextMemory });
+  queueStateStoreSave(access);
+  emitStateStoreChange(access);
+  return true;
+}
+
+export function deleteStateStoreProjectMemoryEntry(
+  access: StateStoreInternalAccess,
+  projectId: string,
+  entryId: string
+): boolean {
+  const projectMemory = access.persistedProjectMemoriesByProjectId.get(projectId);
+  if (!projectMemory) {
+    return false;
+  }
+  const entry = projectMemory.entries.find((item) => item.id === entryId);
+  if (!entry) {
+    return false;
+  }
+  const remaining = projectMemory.entries.filter((item) => item.id !== entryId);
+  const nextMemory: ProjectMemoryView = {
+    ...projectMemory,
+    entries: remaining,
+    summary: remaining.length === 0 ? null : projectMemory.summary,
+    updatedAt: Date.now()
+  };
+  access.persistedProjectMemoriesByProjectId.set(projectId, nextMemory);
+  queueStateStoreSave(access);
+  emitStateStoreChange(access);
+  return true;
+}
