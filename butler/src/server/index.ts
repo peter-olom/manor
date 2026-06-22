@@ -20,6 +20,8 @@ import { CodexExecMemoryPromotionService } from "./memory-promotion.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
 import { readMemorySynthesisConfig } from "./memory-synthesis-config.js";
 import { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
+import { PairStore } from "./pair-store.js";
+import { registerPairRoutes } from "./pair-routes.js";
 import { registerPreviewAnnotationRoutes } from "./preview-annotation-routes.js";
 import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-routes.js";
 import { buildCodexInputWithReferences, buildComposerInputItemsPrompt, buildReferencePromptText } from "./reference-inputs.js";
@@ -86,6 +88,7 @@ const butlerAuthLoginTimeoutMs = 15_000;
 
 const uiStatePath = path.join(stateDir, "butler-ui.json");
 const scratchPadStatePath = path.join(stateDir, "scratch-pad.json");
+const pairStatePath = path.join(stateDir, "butler-pairs.json");
 const sessionDir = path.join(stateDir, "pi-sessions");
 const staticDir = path.resolve(process.cwd(), "dist/web");
 const indexTemplatePath = path.resolve(process.cwd(), "index.html");
@@ -179,6 +182,8 @@ const store = new ButlerStateStore(uiStatePath, {
   artifactRetentionMs
 });
 await store.load();
+const pairStore = new PairStore(pairStatePath, store);
+await pairStore.load();
 const scratchPadStore = new ScratchPadStore(scratchPadStatePath);
 await scratchPadStore.load();
 const serviceTemplateRegistry = new ServiceTemplateRegistry(path.join(stateDir, "service-templates.json"));
@@ -342,7 +347,11 @@ if (hotReloadEnabled) {
   });
 }
 
-store.on("change", () => sseHub.schedule());
+store.on("change", () => {
+  pairStore.syncWorkerReports();
+  sseHub.schedule();
+});
+pairStore.on("change", () => sseHub.schedule());
 scratchPadStore.on("change", () => sseHub.schedule());
 codexClient.on("change", () => sseHub.schedule());
 codexClient.on("threadPatch", (payload) => sseHub.broadcastThreadPatch(payload));
@@ -443,6 +452,14 @@ registerPreviewAnnotationRoutes({
   runtimeBroker,
   runtimeBrokerToken,
   sseHub,
+  store
+});
+registerPairRoutes({
+  app,
+  codexClient,
+  fileStore,
+  imageStore,
+  pairStore,
   store
 });
 
