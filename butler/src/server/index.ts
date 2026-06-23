@@ -274,7 +274,8 @@ const pairSessions = new PairSessionManager({
   artifactsDir,
   refreshRuntimeInventory: syncRuntimeInventory,
   memoryScheduler,
-  routingClassifier
+  routingClassifier,
+  onButlerPatch: (payload) => sseHub?.broadcastButlerPatch(payload)
 });
 runtimeAccess = {
   artifactsDir,

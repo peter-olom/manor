@@ -2,6 +2,7 @@ import type express from "express";
 
 import { readFileReferenceIds, readImageReferenceIds } from "./server-runtime-helpers.js";
 import type { PairSessionManager } from "./pair-session-manager.js";
+import { isKnownReasoningEffort, isKnownThinkingLevel } from "../shared/pairing.js";
 
 type PairRouteAccess = {
   app: express.Express;
@@ -53,6 +54,19 @@ export function registerPairRoutes(access: PairRouteAccess): void {
 
   app.delete("/api/pairs/:pairId", async (request, response) => {
     response.json({ ok: await pairSessions.deletePair(request.params.pairId) });
+  });
+
+  app.post("/api/pairs/:pairId/stop", async (request, response) => {
+    try {
+      const stopped = await pairSessions.stopButler(request.params.pairId);
+      if (!stopped) {
+        response.status(404).json({ error: "Butler session not found" });
+        return;
+      }
+      response.json({ ok: true });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   app.patch("/api/pairs/:pairId", (request, response) => {
@@ -117,6 +131,10 @@ export function registerPairRoutes(access: PairRouteAccess): void {
           response.status(400).json({ error: "thinkingLevel is required" });
           return;
         }
+        if (!isKnownThinkingLevel(level)) {
+          response.status(400).json({ error: `thinkingLevel must be one of: off, low, medium, high, xhigh` });
+          return;
+        }
         const pair = await pairSessions.setButlerThinkingLevel(request.params.pairId, level);
         if (!pair) {
           response.status(404).json({ error: "Butler session not found" });
@@ -130,12 +148,20 @@ export function registerPairRoutes(access: PairRouteAccess): void {
         response.status(400).json({ error: "effort is required" });
         return;
       }
-      const pair = await pairSessions.setCodexEffort(request.params.pairId, effort);
-      if (!pair) {
-        response.status(404).json({ error: "Butler session not found" });
+      if (!isKnownReasoningEffort(effort)) {
+        response.status(400).json({ error: "effort must be one of: minimal, low, medium, high, xhigh" });
         return;
       }
-      response.json({ pair });
+      try {
+        const pair = await pairSessions.setCodexEffort(request.params.pairId, effort);
+        if (!pair) {
+          response.status(404).json({ error: "Butler session not found" });
+          return;
+        }
+        response.json({ pair });
+      } catch (error) {
+        response.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+      }
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }

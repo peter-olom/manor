@@ -8,6 +8,8 @@ import { ButlerAgentService } from "../../src/server/butler-agent.js";
 import { normalizeOperatorMessages } from "../../src/server/butler-operator-messages.js";
 import { backfillDirectCodexMessagesFromSessionFiles, buildDirectCodexMessagePingSummary } from "../../src/server/direct-codex-message.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
+import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
+import type { ButlerThreadCallbackView } from "../../src/server/types.js";
 
 async function createStore(): Promise<ButlerStateStore> {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-test-"));
@@ -200,6 +202,117 @@ test("direct Codex callback recovery uses worker reply item time instead of refr
 
     assert.equal(liveCallback.reviewState, "running");
     assert.equal(liveCallback.reviewReason, "thread_recovery");
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("gated callback closeout stays blocked without requeueing the same blocker", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-session-"));
+  const threadId = "thread-gated-closeout";
+  const requestedAt = 1_000;
+  const reportAt = 2_000;
+  const originalNow = Date.now;
+  Date.now = () => requestedAt;
+
+  try {
+    store.upsertThreadSummary({
+      id: threadId,
+      status: "idle",
+      cwd: "/workspace",
+      turns: [{ id: "turn-1", status: "completed", items: [] }]
+    });
+    const contract = buildThreadExecutionContract({
+      threadId,
+      workspaceCwd: "/workspace",
+      projectId: "project-1",
+      projectLabel: "Project One",
+      branch: "main",
+      taskText: "Ship supervised code with review.",
+      notes: []
+    });
+    store.setThreadExecutionContract(threadId, {
+      ...contract,
+      orchestration: {
+        taskClass: "generic_code",
+        confidence: 0.9,
+        questionSet: [],
+        goalRecommendation: { mode: "none", goal: null, fallbackReason: null },
+        reviewRecommendation: { target: "codex_review", required: true, reason: "test review" },
+        subAgentRoles: [],
+        riskLevel: "medium",
+        fallbackReason: null,
+        createdAt: requestedAt
+      },
+      reviewResults: []
+    });
+    Date.now = () => reportAt;
+    const report = store.recordWorkerReport(threadId, {
+      turnId: "turn-1",
+      status: "completed",
+      summary: "Done.",
+      details: "All work completed.",
+      claims: {
+        version: 1,
+        changedWorkSummary: "Completed the supervised change.",
+        claims: [
+          {
+            claimId: "claim-1",
+            status: "completed",
+            summary: "Implemented the requested behavior.",
+            evidencePointer: "unit test",
+            proofId: null,
+            riskNote: null,
+            reviewerTarget: "qa"
+          }
+        ],
+        risks: [],
+        unresolvedItems: [],
+        subAgentSummaries: []
+      }
+    });
+    for (const item of store.getSupervisionChecklist(threadId)?.items ?? []) {
+      store.reviewAcceptancePoint({ threadId, pointId: item.id, status: "accepted" });
+    }
+    store.recordWorkerReviewResults(threadId, [
+      {
+        id: "review-failed",
+        reviewSource: "codex_review",
+        turnId: report.turnId,
+        reportUpdatedAt: report.updatedAt,
+        severity: "high",
+        findingSummary: "Codex review automation failed.",
+        blocking: true,
+        waived: false,
+        waiverReason: null,
+        automationFailure: true,
+        linkedClaimIds: ["claim-1"],
+        createdAt: reportAt,
+        updatedAt: reportAt
+      }
+    ]);
+
+    const agent = createButlerAgent(store, sessionDir);
+    const internals = agent as unknown as {
+      registerPendingChatCallback(threadId: string, options?: { nextWorkerReportAction?: "review" | "reply_to_operator"; requestedAt?: number }): void;
+      processPendingChatCallbacks(): Promise<boolean>;
+      pendingChatCallbacks: Map<string, ButlerThreadCallbackView>;
+    };
+    internals.registerPendingChatCallback(threadId, { nextWorkerReportAction: "reply_to_operator", requestedAt });
+
+    Date.now = () => reportAt + 1;
+    assert.equal(await internals.processPendingChatCallbacks(), true);
+    const callback = internals.pendingChatCallbacks.get(threadId);
+    assert.equal(callback?.reviewState, "blocked");
+    assert.match(callback?.blockedCloseoutReason ?? "", /Codex review blocked closeout/);
+    assert.equal(callback?.blockedCloseoutReportAt, report.updatedAt);
+    assert.equal(store.getThread(threadId)?.eventLog.filter((event) => event.method === "butler.closeout.gated").length, 1);
+
+    Date.now = () => reportAt + 2;
+    assert.equal(await internals.processPendingChatCallbacks(), false);
+    assert.equal(callback?.reviewState, "blocked");
+    assert.equal(store.getThread(threadId)?.eventLog.filter((event) => event.method === "butler.closeout.gated").length, 1);
   } finally {
     Date.now = originalNow;
   }

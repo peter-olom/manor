@@ -716,7 +716,7 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   async updateThreadReasoningEffort(threadId: string, effort: ReasoningEffort): Promise<void> {
-    if (effort === null || effort === undefined || !effort) {
+    if (!effort) {
       throw new Error("effort is required");
     }
     await this.codexProviderAdapter.call("thread/settings/update", { threadId, effort });

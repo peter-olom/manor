@@ -106,6 +106,22 @@ test("updatePairSnapshot stores live Butler status and latest message", async ()
   assert.equal(updated.status, "butler_running");
 });
 
+test("updatePairSnapshot exposes blocked Butler closeout reason", async () => {
+  const pairStore = await createPairStore();
+  const created = pairStore.createPair();
+
+  const updated = pairStore.updatePairSnapshot(created.id, {
+    butlerReady: true,
+    butlerPending: false,
+    butlerPendingReason: "Closeout blocked: Codex review failed."
+  });
+
+  assert.ok(updated);
+  assert.equal(updated.butlerPending, false);
+  assert.equal(updated.butlerPendingReason, "Closeout blocked: Codex review failed.");
+  assert.equal(updated.status, "blocked");
+});
+
 test("attachWorker records one Butler-managed worker", async () => {
   const pairStore = await createPairStore();
   const created = pairStore.createPair();

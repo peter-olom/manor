@@ -71,7 +71,7 @@ export type ButlerCallbackResolutionState = "received_worker_callback" | "recove
 export type ButlerOperatorCloseoutStatus = "not_required" | "owed" | "posted";
 export type ButlerCloseoutChannel = "none" | "main_chat";
 export type ButlerNextWorkerReportAction = "review" | "reply_to_operator";
-export type ButlerCallbackReviewState = "idle" | "queued" | "running";
+export type ButlerCallbackReviewState = "idle" | "queued" | "running" | "blocked";
 export type ButlerCallbackReviewReason = "worker_callback" | "thread_recovery" | null;
 export type ReviewPanelRole = "intent" | "qa" | "ui_taste" | "api" | "ops" | "product";
 export type ReviewPanelVerdict = "pending" | "passed" | "concern" | "failed" | "blocked";
@@ -167,8 +167,8 @@ export interface ButlerThreadCallbackView {
   operatorCloseoutStatus: ButlerOperatorCloseoutStatus;
   owesOperatorReply: boolean;
   closeoutChannel: ButlerCloseoutChannel;
-  reviewState: ButlerCallbackReviewState;
-  reviewReason: ButlerCallbackReviewReason;
+  reviewState: ButlerCallbackReviewState; reviewReason: ButlerCallbackReviewReason;
+  blockedCloseoutReason?: string | null; blockedCloseoutReportAt?: number | null;
   closedAt: number | null;
   updatedAt: number;
 }

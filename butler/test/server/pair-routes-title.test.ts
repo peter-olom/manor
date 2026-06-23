@@ -325,3 +325,75 @@ test("PATCH /api/pairs/:pairId/settings returns 404 for unknown pair", async () 
     await close();
   }
 });
+
+test("PATCH /api/pairs/:pairId/settings returns 400 for an invalid butler thinkingLevel", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "butler", thinkingLevel: "banana" })
+    });
+    assert.equal(res.status, 400);
+  } finally {
+    await close();
+  }
+});
+
+test("PATCH /api/pairs/:pairId/settings returns 400 when codex effort missing", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "codex" })
+    });
+    assert.equal(res.status, 400);
+  } finally {
+    await close();
+  }
+});
+
+test("PATCH /api/pairs/:pairId/settings returns 400 for an invalid codex effort", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "codex", effort: "turbo" })
+    });
+    assert.equal(res.status, 400);
+  } finally {
+    await close();
+  }
+});
+
+test("PATCH /api/pairs/:pairId/settings returns 502 when codex provider rejects effort", async () => {
+  const fake = createFakePairSessions();
+  const failingManager = {
+    ...fake.manager,
+    async setCodexEffort(_pairId: string, _effort: string): Promise<PairDetail | null> {
+      throw new Error("codex provider rejected effort");
+    }
+  };
+  const app = mountRoutes(failingManager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "codex", effort: "xhigh" })
+    });
+    assert.equal(res.status, 502);
+    const body = (await res.json()) as { error: string };
+    assert.match(body.error, /codex provider rejected effort/);
+  } finally {
+    await close();
+  }
+});

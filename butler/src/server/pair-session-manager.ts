@@ -13,8 +13,9 @@ import type { ButlerRoutingClassifier } from "./butler-routing-classifier.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-templates.js";
 import type { ButlerStateStore } from "./state-store.js";
-import type { ButlerMessageView } from "./types.js";
+import type { ButlerMessageView, ButlerLivePatchView } from "./types.js";
 import type { PairChat, PairDetail, PairMessage, PairComposeSettings, PairSummary } from "../shared/pairing.js";
+import { DEFAULT_THINKING_LEVELS } from "../shared/pairing.js";
 
 type PairSessionManagerOptions = {
   pairStore: PairStore;
@@ -33,6 +34,7 @@ type PairSessionManagerOptions = {
   refreshRuntimeInventory?: () => Promise<void>;
   memoryScheduler?: MemoryUpdateScheduler | null;
   routingClassifier?: ButlerRoutingClassifier | null;
+  onButlerPatch?: (payload: ButlerLivePatchView) => void;
 };
 
 function pairSystemPrompt(pairId: string): string {
@@ -65,6 +67,17 @@ function mapButlerMessage(message: ButlerMessageView): PairMessage {
     pending: message.pending,
     ...(message.trace && message.trace.length > 0 ? { trace: message.trace } : {})
   };
+}
+
+function blockedCloseoutReason(shell: ReturnType<ButlerAgentService["getShellSnapshot"]>): string | null {
+  const callback = shell.supervision.callbacks.find((entry) =>
+    entry.owesOperatorReply &&
+    entry.callbackState !== "closed" &&
+    entry.reviewState === "blocked" &&
+    typeof entry.blockedCloseoutReason === "string" &&
+    entry.blockedCloseoutReason.trim()
+  );
+  return callback?.blockedCloseoutReason ? `Closeout blocked: ${callback.blockedCloseoutReason}` : null;
 }
 
 export class PairSessionManager {
@@ -116,7 +129,7 @@ export class PairSessionManager {
       messageCount: page?.totalCount ?? updated.messageCount,
       loadedStart: page?.startIndex ?? 0,
       hasMore: page?.hasMore ?? false,
-      compose: service ? this.resolveCompose(updated, service) : { butler: { thinkingLevel: "medium", availableThinkingLevels: ["low", "medium", "high", "xhigh"] }, codex: { effort: null, availableEfforts: [] } }
+      compose: service ? this.resolveCompose(updated, service) : { butler: { thinkingLevel: "medium", availableThinkingLevels: [...DEFAULT_THINKING_LEVELS] }, codex: { effort: null, availableEfforts: [] } }
     };
   }
 
@@ -133,12 +146,8 @@ export class PairSessionManager {
       this.options.pairStore.updatePairComposeOverrides(pairId, { codexEffort: effort });
       return this.getPairDetail(pairId, null, 120);
     }
-    try {
-      if (effort) {
-        await this.options.codexClient.updateThreadReasoningEffort(pair.worker.threadId, effort as never);
-      }
-    } catch {
-      // best-effort: we still persist the override so the UI reflects operator intent
+    if (effort) {
+      await this.options.codexClient.updateThreadReasoningEffort(pair.worker.threadId, effort as never);
     }
     this.options.pairStore.updatePairComposeOverrides(pairId, { codexEffort: effort });
     return this.getPairDetail(pairId, null, 120);
@@ -148,7 +157,7 @@ export class PairSessionManager {
     const shell = service.getShellSnapshot();
     const availableThinkingLevels = shell.compose?.availableThinkingLevels?.length
       ? shell.compose.availableThinkingLevels
-      : (["low", "medium", "high", "xhigh"] as string[]);
+      : [...DEFAULT_THINKING_LEVELS];
     const thinkingLevel = pair.butlerThinkingLevel ?? shell.compose?.thinkingLevel ?? "medium";
     const codexCompose = this.options.codexClient.getConnectionState().compose;
     const workerEffort = pair.worker?.requestedReasoningEffort ?? null;
@@ -168,6 +177,15 @@ export class PairSessionManager {
       this.services.delete(pairId);
     }
     return this.options.pairStore.deletePair(pairId);
+  }
+
+  async stopButler(pairId: string): Promise<boolean> {
+    const loaded = this.services.get(pairId);
+    if (!loaded) return false;
+    await loaded.started;
+    await loaded.service.stopPrompt();
+    this.syncPairSnapshot(pairId);
+    return true;
   }
 
   async sendOperatorMessage(input: {
@@ -261,6 +279,9 @@ export class PairSessionManager {
       throw error;
     });
     service.on("change", () => this.syncPairSnapshot(pair.id));
+    if (this.options.onButlerPatch) {
+      service.on("butlerPatch", this.options.onButlerPatch);
+    }
     this.services.set(pair.id, { service, started });
     await started;
     return service;
@@ -276,6 +297,7 @@ export class PairSessionManager {
       butlerSessionId: shell.sessionId,
       butlerReady: shell.ready,
       butlerPending: shell.pending || shell.isStreaming,
+      butlerPendingReason: blockedCloseoutReason(shell),
       butlerLastError: shell.lastError,
       messageCount: messageCount ?? latestPage?.totalCount ?? 0,
       lastMessage: latestMessage ? mapButlerMessage(latestMessage) : null,

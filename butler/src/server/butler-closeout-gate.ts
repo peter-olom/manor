@@ -30,12 +30,41 @@ export function queueCloseoutReview(callback: ButlerThreadCallbackView, reason: 
   callback.nextWorkerReportAction = "review";
   callback.reviewState = "queued";
   callback.reviewReason = reason;
+  callback.blockedCloseoutReason = null;
+  callback.blockedCloseoutReportAt = null;
   callback.updatedAt = Date.now();
 }
 
 export function idleCloseoutReview(callback: ButlerThreadCallbackView): void {
   callback.reviewState = "idle";
+  callback.blockedCloseoutReason = null;
+  callback.blockedCloseoutReportAt = null;
   callback.updatedAt = Date.now();
+}
+
+export function blockCloseoutReview(
+  callback: ButlerThreadCallbackView,
+  input: {
+    reason: string;
+    reviewReason: "worker_callback" | "thread_recovery";
+    workerReportUpdatedAt: number | null;
+  }
+): void {
+  callback.nextWorkerReportAction = "review";
+  callback.reviewState = "blocked";
+  callback.reviewReason = input.reviewReason;
+  callback.blockedCloseoutReason = input.reason;
+  callback.blockedCloseoutReportAt = input.workerReportUpdatedAt;
+  callback.updatedAt = Date.now();
+}
+
+export function isSameBlockedCloseout(
+  callback: ButlerThreadCallbackView,
+  input: { reason: string; workerReportUpdatedAt: number | null }
+): boolean {
+  return callback.reviewState === "blocked" &&
+    callback.blockedCloseoutReason === input.reason &&
+    callback.blockedCloseoutReportAt === input.workerReportUpdatedAt;
 }
 
 export function applyPostedCloseout(
@@ -60,6 +89,8 @@ export function applyPostedCloseout(
   callback.closeoutChannel = "main_chat";
   callback.reviewState = "idle";
   callback.reviewReason = null;
+  callback.blockedCloseoutReason = null;
+  callback.blockedCloseoutReportAt = null;
   callback.closedAt = input.postedAt;
   callback.updatedAt = Date.now();
 }

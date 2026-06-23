@@ -10,6 +10,64 @@ import type { CodexThreadRecord, CodexWorkerReportView, WorkerReviewResultRecord
 
 type WorkerReviewRunner = (input: { cwd: string; prompt: string; timeoutMs: number }) => Promise<unknown>;
 
+export type CodexWorkerReviewCommandInput = {
+  cwd: string;
+  codexHomeDir: string;
+  schemaPath: string;
+  outputPath: string;
+  model: string | null;
+  prompt: string;
+  timeoutMs: number;
+};
+
+export function buildCodexWorkerReviewArgs(input: Pick<CodexWorkerReviewCommandInput, "schemaPath" | "outputPath" | "model">): string[] {
+  return [
+    "exec",
+    "review",
+    "--uncommitted",
+    "--ephemeral",
+    "--skip-git-repo-check",
+    "--ignore-rules",
+    "--output-schema",
+    input.schemaPath,
+    "--output-last-message",
+    input.outputPath,
+    ...memoryCodexModelArgs(input.model)
+  ];
+}
+
+export async function runCodexWorkerReviewCommand(input: CodexWorkerReviewCommandInput): Promise<void> {
+  const args = buildCodexWorkerReviewArgs(input);
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn("codex", args, {
+      cwd: input.cwd,
+      env: { ...process.env, CODEX_HOME: input.codexHomeDir, NO_COLOR: "1" },
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    let stderr = "";
+    let stdout = "";
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error("codex worker review timed out"));
+    }, input.timeoutMs);
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout = `${stdout}${chunk.toString("utf8")}`.slice(-16_000);
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16_000);
+    });
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      code === 0 ? resolve() : reject(new Error(`codex review exited with ${code}: ${stderr || stdout}`.trim()));
+    });
+    child.stdin.end(input.prompt);
+  });
+}
+
 const OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -166,49 +224,16 @@ export class CodexWorkerReviewService {
     const outputPath = path.join(scratchDir, `${runId}.output.json`);
     await fs.writeFile(schemaPath, JSON.stringify(OUTPUT_SCHEMA, null, 2), "utf8");
 
-    const baseArgs = [
-      "exec",
-      "review",
-      "--uncommitted",
-      "--ephemeral",
-      "--skip-git-repo-check",
-      "--ignore-rules",
-      "--output-schema",
-      schemaPath,
-      "--output-last-message",
-      outputPath
-    ];
-
     try {
       const run = async (model: string | null): Promise<void> => {
-        const args = [...baseArgs, ...memoryCodexModelArgs(model), "-"];
-        await new Promise<void>((resolve, reject) => {
-          const child = spawn("codex", args, {
-            cwd: input.cwd,
-            env: { ...process.env, CODEX_HOME: this.codexHomeDir, NO_COLOR: "1" },
-            stdio: ["pipe", "pipe", "pipe"]
-          });
-          let stderr = "";
-          let stdout = "";
-          const timeout = setTimeout(() => {
-            child.kill("SIGTERM");
-            reject(new Error("codex worker review timed out"));
-          }, input.timeoutMs);
-          child.stdout.on("data", (chunk: Buffer) => {
-            stdout = `${stdout}${chunk.toString("utf8")}`.slice(-16_000);
-          });
-          child.stderr.on("data", (chunk: Buffer) => {
-            stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16_000);
-          });
-          child.on("error", (error) => {
-            clearTimeout(timeout);
-            reject(error);
-          });
-          child.on("close", (code) => {
-            clearTimeout(timeout);
-            code === 0 ? resolve() : reject(new Error(`codex review exited with ${code}: ${stderr || stdout}`.trim()));
-          });
-          child.stdin.end(input.prompt);
+        await runCodexWorkerReviewCommand({
+          cwd: input.cwd,
+          codexHomeDir: this.codexHomeDir,
+          schemaPath,
+          outputPath,
+          model,
+          prompt: input.prompt,
+          timeoutMs: input.timeoutMs
         });
       };
       if (this.model) {

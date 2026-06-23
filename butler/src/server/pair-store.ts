@@ -13,6 +13,7 @@ type PairSnapshotInput = {
   butlerSessionId?: string | null;
   butlerReady?: boolean;
   butlerPending?: boolean;
+  butlerPendingReason?: string | null;
   butlerLastError?: string | null;
   messageCount?: number;
   lastMessage?: PairMessage | null;
@@ -53,6 +54,7 @@ function emptyPair(input: { id: string; title?: string | null; defaultCwd?: stri
     butlerSessionId: input.id,
     butlerReady: false,
     butlerPending: false,
+    butlerPendingReason: null,
     butlerLastError: null,
     worker: null,
     memoryQuery: null,
@@ -82,6 +84,7 @@ function normalizePair(raw: Partial<PairChat> & { id?: string }, store: ButlerSt
   pair.butlerSessionId = typeof raw.butlerSessionId === "string" && raw.butlerSessionId.trim() ? raw.butlerSessionId : pair.id;
   pair.butlerReady = raw.butlerReady === true;
   pair.butlerPending = raw.butlerPending === true;
+  pair.butlerPendingReason = typeof raw.butlerPendingReason === "string" && raw.butlerPendingReason.trim() ? raw.butlerPendingReason : null;
   pair.butlerLastError = typeof raw.butlerLastError === "string" && raw.butlerLastError.trim() ? raw.butlerLastError : null;
   pair.worker = raw.worker ?? null;
   pair.memoryQuery = typeof raw.memoryQuery === "string" && raw.memoryQuery.trim() ? raw.memoryQuery : null;
@@ -95,6 +98,9 @@ function normalizePair(raw: Partial<PairChat> & { id?: string }, store: ButlerSt
 }
 
 function deriveStatus(pair: PairChat, store: ButlerStateStore): PairStatus {
+  if (pair.butlerPendingReason) {
+    return "blocked";
+  }
   if (pair.worker) {
     const report = store.getWorkerReport(pair.worker.threadId);
     const thread = store.getThread(pair.worker.threadId);
@@ -177,6 +183,7 @@ export class PairStore extends EventEmitter {
     if (snapshot.butlerSessionId !== undefined) pair.butlerSessionId = snapshot.butlerSessionId;
     if (snapshot.butlerReady !== undefined) pair.butlerReady = snapshot.butlerReady;
     if (snapshot.butlerPending !== undefined) pair.butlerPending = snapshot.butlerPending;
+    if (snapshot.butlerPendingReason !== undefined) pair.butlerPendingReason = snapshot.butlerPendingReason;
     if (snapshot.butlerLastError !== undefined) pair.butlerLastError = snapshot.butlerLastError;
     if (snapshot.messageCount !== undefined) pair.messageCount = Math.max(0, Math.trunc(snapshot.messageCount));
     if (snapshot.lastMessage !== undefined) pair.lastMessage = snapshot.lastMessage;

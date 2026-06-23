@@ -120,12 +120,6 @@ export class ProviderRuntimeIngestion extends EventEmitter<ProviderRuntimeIngest
         if (effort) {
           this.store.setThreadRequestedReasoningEffort(event.threadId, effort as never);
         }
-        this.emit("runtimePatch", {
-          kind: "thread-state",
-          threadId: event.threadId,
-          state: "idle",
-          at: event.at
-        });
         return;
       }
       case "thread.tokenUsage.updated":

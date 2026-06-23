@@ -94,12 +94,9 @@ export function useAnchoredScroll<T extends HTMLElement>({ bottomKey, resetKey }
           rafHandle.current = null;
           element.scrollTo({ top: element.scrollHeight, behavior: "auto" });
         });
-      } else {
-        pendingUnread.current += 1;
-        setUnreadCount(pendingUnread.current);
       }
     });
-    mutationObserver.observe(element, { childList: true, subtree: true, characterData: true });
+    mutationObserver.observe(element, { childList: true, subtree: true });
     return () => {
       observer.disconnect();
       mutationObserver.disconnect();

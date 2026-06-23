@@ -6,6 +6,7 @@ import { useVirtualWindow } from "./useVirtualWindow";
 import { JumpToLatest } from "./JumpToLatest";
 
 import type { PairDetail, PairMessage, PairTraceItem } from "../shared/pairing";
+import { DEFAULT_THINKING_LEVELS } from "../shared/pairing";
 
 const WORKER_ROW = 132;
 
@@ -74,7 +75,7 @@ export function WorkerPane({ pair, rows, onCodexEffortChange }: WorkerPaneProps)
   const codex = pair.compose?.codex ?? { effort: null, availableEfforts: [] };
   const busy = pair.status === "worker_running";
   const effort = pair.worker.requestedReasoningEffort ?? codex.effort ?? null;
-  const options = codex.availableEfforts.length > 0 ? codex.availableEfforts : ["low", "medium", "high", "xhigh"];
+  const options = codex.availableEfforts.length > 0 ? codex.availableEfforts : [...DEFAULT_THINKING_LEVELS];
 
   return (
     <section className="pane" aria-label="Codex worker lane">

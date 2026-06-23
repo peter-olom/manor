@@ -814,7 +814,7 @@ test("system prompt advises focused checklist refresh for new work", async () =>
 });
 
 test("Butler callback state startup tolerates empty persisted files", () => {
-  const source = readFileSync(path.resolve("src/server/butler-agent.ts"), "utf8");
+  const source = readFileSync(path.resolve("src/server/butler-callback-state.ts"), "utf8");
 
   assert.match(source, /if \(!raw\.trim\(\)\) return;/);
   assert.match(source, /!\(error instanceof SyntaxError\)/);

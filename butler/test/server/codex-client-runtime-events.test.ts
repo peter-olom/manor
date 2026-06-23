@@ -51,10 +51,6 @@ test("thread/settings/updated notification refreshes the per-thread effort", asy
     handleMessage: (message: unknown) => void;
     on: (event: "change" | "threadPatch", listener: (payload?: unknown) => void) => void;
   };
-  const patches: CodexThreadPatchView[] = [];
-  client.on("threadPatch", (payload) => {
-    patches.push(payload as CodexThreadPatchView);
-  });
 
   client.handleMessage({
     method: "thread/settings/updated",
@@ -64,7 +60,6 @@ test("thread/settings/updated notification refreshes the per-thread effort", asy
     }
   });
 
-  await waitFor(() => patches.length > 0 && store.getThread("thread-9")?.requestedReasoningEffort === "xhigh");
+  await waitFor(() => store.getThread("thread-9")?.requestedReasoningEffort === "xhigh");
   assert.equal(store.getThread("thread-9")?.requestedReasoningEffort, "xhigh");
-  assert.equal(patches[0]?.kind, "thread-state");
 });

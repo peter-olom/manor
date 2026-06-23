@@ -58,7 +58,8 @@ import { reviewButlerProofScreenshot } from "./butler-agent-proof-review.js";
 import type { ButlerAgentSessionAccess, ButlerAgentToolAccess } from "./butler-agent-tool-access.js";
 import { BUTLER_TOOL_CATALOG } from "./butler-agent-tool-catalog.js";
 import { keepButlerActivityBefore, normalizeButlerActivitySummaryTurns } from "./butler-activity.js";
-import { applyPostedCloseout, getOperatorCloseoutBlocker as getCloseoutBlocker, idleCloseoutReview, queueCloseoutReview, recordGatedCloseout, recordPostedCloseoutEvents } from "./butler-closeout-gate.js";
+import { loadButlerCallbackState, saveButlerCallbackState } from "./butler-callback-state.js";
+import { applyPostedCloseout, blockCloseoutReview, getOperatorCloseoutBlocker as getCloseoutBlocker, idleCloseoutReview, isSameBlockedCloseout, queueCloseoutReview, recordGatedCloseout, recordPostedCloseoutEvents } from "./butler-closeout-gate.js";
 import { backfillOperatorMessagesFromSessionFiles, normalizeOperatorMessages, normalizeOperatorQuestion, removeOperatorMessage, upsertOperatorMessage } from "./butler-operator-messages.js";
 import { readButlerAuthStatus, readCodexAuthStatus } from "./auth-status.js";
 import { backfillDirectCodexMessagesFromSessionFiles, notifyDirectCodexMessage, type DirectCodexMessageAccess, type DirectCodexMessagePingInput } from "./direct-codex-message.js";
@@ -294,99 +295,11 @@ export class ButlerAgentService extends EventEmitter {
   }
 
   private async loadCallbackState(): Promise<void> {
-    try {
-      const raw = await fs.readFile(this.callbackStatePath, "utf8");
-      if (!raw.trim()) return;
-      const parsed = JSON.parse(raw) as {
-        callbackRecords?: PendingChatCallback[];
-        pendingCallbacks?: PendingChatCallback[];
-        deliveredCloseoutIds?: string[];
-        deliveredMilestoneIds?: string[];
-      };
-
-      this.pendingChatCallbacks.clear();
-      const callbackEntries = parsed.callbackRecords ?? parsed.pendingCallbacks ?? [];
-      for (const entry of callbackEntries) {
-        if (!entry || typeof entry !== "object" || typeof entry.threadId !== "string") {
-          continue;
-        }
-        const requestedAt = typeof entry.requestedAt === "number" && Number.isFinite(entry.requestedAt) ? entry.requestedAt : Date.now();
-        const updatedAt = typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt) ? entry.updatedAt : requestedAt;
-        const callbackState =
-          entry.callbackState === "received_worker_callback" ||
-          entry.callbackState === "missing_worker_callback" ||
-          entry.callbackState === "recovered_from_thread_state" ||
-          entry.callbackState === "closed" ||
-          entry.callbackState === "waiting"
-            ? entry.callbackState
-            : "waiting";
-        const resolutionState =
-          entry.resolutionState === "received_worker_callback" || entry.resolutionState === "recovered_from_thread_state"
-            ? entry.resolutionState
-            : callbackState === "received_worker_callback" || callbackState === "recovered_from_thread_state"
-              ? callbackState
-              : null;
-        const normalizedCallbackState =
-          (entry.operatorCloseoutStatus === "posted" || entry.owesOperatorReply === false) &&
-          (callbackState === "received_worker_callback" || callbackState === "recovered_from_thread_state")
-            ? "closed"
-            : callbackState;
-        const normalizedReviewReason =
-          normalizedCallbackState === "received_worker_callback"
-            ? "worker_callback"
-            : normalizedCallbackState === "missing_worker_callback"
-              ? "thread_recovery"
-              : null;
-        this.pendingChatCallbacks.set(entry.threadId, {
-          threadId: entry.threadId,
-          callbackState: normalizedCallbackState,
-          resolutionState,
-          requestedAt,
-          lastEventAt: typeof entry.lastEventAt === "number" && Number.isFinite(entry.lastEventAt) ? entry.lastEventAt : updatedAt,
-          lastWorkerStatusSeen:
-            entry.lastWorkerStatusSeen === "active" || entry.lastWorkerStatusSeen === "idle" || entry.lastWorkerStatusSeen === "unknown"
-              ? entry.lastWorkerStatusSeen
-              : null,
-          lastTerminalReportAt:
-            typeof entry.lastTerminalReportAt === "number" && Number.isFinite(entry.lastTerminalReportAt)
-              ? entry.lastTerminalReportAt
-              : null,
-          lastPrivateSteerText: typeof entry.lastPrivateSteerText === "string" && entry.lastPrivateSteerText.trim() ? entry.lastPrivateSteerText : null,
-          lastPrivateSteerAt:
-            typeof entry.lastPrivateSteerAt === "number" && Number.isFinite(entry.lastPrivateSteerAt) ? entry.lastPrivateSteerAt : null,
-          nextWorkerReportAction: entry.nextWorkerReportAction === "reply_to_operator" ? "reply_to_operator" : "review",
-          operatorCloseoutStatus:
-            entry.operatorCloseoutStatus === "not_required" ||
-            entry.operatorCloseoutStatus === "owed" ||
-            entry.operatorCloseoutStatus === "posted"
-              ? entry.operatorCloseoutStatus
-              : normalizedCallbackState === "closed"
-                ? "posted"
-                : "owed",
-          owesOperatorReply: typeof entry.owesOperatorReply === "boolean" ? entry.owesOperatorReply : normalizedCallbackState !== "closed",
-          closeoutChannel:
-            entry.closeoutChannel === "main_chat" ||
-            entry.closeoutChannel === "none"
-              ? entry.closeoutChannel
-              : normalizedCallbackState === "closed"
-                ? "main_chat"
-                : "none",
-          reviewState: normalizedReviewReason ? "queued" : "idle",
-          reviewReason: normalizedReviewReason,
-          closedAt: typeof entry.closedAt === "number" && Number.isFinite(entry.closedAt) ? entry.closedAt : null,
-          updatedAt
-        });
-      }
-
-      this.deliveredCloseoutIds.clear();
-      for (const closeoutId of [...(parsed.deliveredCloseoutIds ?? []), ...(parsed.deliveredMilestoneIds ?? [])]) {
-        if (typeof closeoutId === "string" && closeoutId.trim()) {
-          this.deliveredCloseoutIds.add(closeoutId);
-        }
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
-    }
+    await loadButlerCallbackState({
+      callbackStatePath: this.callbackStatePath,
+      pendingChatCallbacks: this.pendingChatCallbacks,
+      deliveredCloseoutIds: this.deliveredCloseoutIds
+    });
   }
 
   async saveOperatorMessageState(): Promise<void> { normalizeOperatorMessages(this.operatorMessages); await writeJsonStateFileAtomic(this.operatorMessageStatePath, this.operatorMessages); }
@@ -408,18 +321,11 @@ export class ButlerAgentService extends EventEmitter {
   }
 
   private async saveCallbackState(): Promise<void> {
-    await fs.writeFile(
-      this.callbackStatePath,
-      JSON.stringify(
-        {
-          callbackRecords: [...this.pendingChatCallbacks.values()],
-          deliveredCloseoutIds: [...this.deliveredCloseoutIds]
-        },
-        null,
-        2
-      ),
-      "utf8"
-    );
+    await saveButlerCallbackState({
+      callbackStatePath: this.callbackStatePath,
+      pendingChatCallbacks: this.pendingChatCallbacks,
+      deliveredCloseoutIds: this.deliveredCloseoutIds
+    });
   }
 
   async clearChat(): Promise<void> { await this.memoryScheduler?.beforeButlerChatClear([...this.operatorMessages]); this.operatorMessages.splice(0, this.operatorMessages.length); clearPendingOperatorPrompts(this.getSessionAccess(), { includeCommitted: true }); this.activityTurns.splice(0, this.activityTurns.length); this.activitySummaryTurns.splice(0, this.activitySummaryTurns.length); this.activeActivityTurnId = null; this.traceBuffer.reset(); await Promise.all([this.saveOperatorMessageState(), this.saveActivitySummaryState()]); clearButlerSessionChat(this.session); this.lastError = null; this.emit("change"); }
@@ -449,6 +355,8 @@ export class ButlerAgentService extends EventEmitter {
       closeoutChannel: "none",
       reviewState: "idle",
       reviewReason: null,
+      blockedCloseoutReason: null,
+      blockedCloseoutReportAt: null,
       closedAt: null,
       updatedAt: now
     });
@@ -526,6 +434,13 @@ export class ButlerAgentService extends EventEmitter {
     const closeoutBlocker = getCloseoutBlocker(this.store, threadId, { thread, workerReport: relevantWorkerReport });
     if (closeoutBlocker) {
       recordGatedCloseout(this.store, threadId, closeoutBlocker);
+      blockCloseoutReview(callback, {
+        reason: closeoutBlocker,
+        reviewReason: relevantWorkerReport ? "worker_callback" : "thread_recovery",
+        workerReportUpdatedAt: relevantWorkerReport?.updatedAt ?? null
+      });
+      await this.saveCallbackState();
+      this.emit("change");
       throw new Error(closeoutBlocker);
     }
     const taskDurationMs = elapsedTaskDurationMs(callback.requestedAt, completedAt);
@@ -635,12 +550,25 @@ export class ButlerAgentService extends EventEmitter {
         callback.lastTerminalReportAt = relevantWorkerReport.updatedAt;
         callback.lastEventAt = relevantWorkerReport.updatedAt;
         callback.lastWorkerStatusSeen = thread.status;
+        if (callback.reviewState === "blocked") {
+          const closeoutBlocker = getCloseoutBlocker(this.store, callback.threadId, { thread, workerReport: relevantWorkerReport });
+          if (closeoutBlocker && isSameBlockedCloseout(callback, { reason: closeoutBlocker, workerReportUpdatedAt: relevantWorkerReport.updatedAt })) {
+            continue;
+          }
+          queueCloseoutReview(callback, "worker_callback");
+          changed = true;
+          continue;
+        }
         if (callback.nextWorkerReportAction === "reply_to_operator") {
           const text = buildChatCallbackText(thread, relevantWorkerReport);
           if (text) {
             const closeoutBlocker = getCloseoutBlocker(this.store, callback.threadId, { thread, workerReport: relevantWorkerReport });
             if (closeoutBlocker) {
-              queueCloseoutReview(callback, "worker_callback");
+              blockCloseoutReview(callback, {
+                reason: closeoutBlocker,
+                reviewReason: "worker_callback",
+                workerReportUpdatedAt: relevantWorkerReport.updatedAt
+              });
               recordGatedCloseout(this.store, callback.threadId, closeoutBlocker);
               changed = true;
               continue;
@@ -1029,7 +957,14 @@ export class ButlerAgentService extends EventEmitter {
           const closeoutBlocker = getCloseoutBlocker(this.store, callback.threadId, { thread, workerReport: relevantWorkerReport });
           if (closeoutBlocker) {
             recordGatedCloseout(this.store, callback.threadId, closeoutBlocker);
-            idleCloseoutReview(nextCallback);
+            blockCloseoutReview(nextCallback, {
+              reason: closeoutBlocker,
+              reviewReason:
+                nextCallback.callbackState === "missing_worker_callback"
+                  ? "thread_recovery"
+                  : "worker_callback",
+              workerReportUpdatedAt: relevantWorkerReport?.updatedAt ?? null
+            });
             await this.saveCallbackState();
             this.emit("change");
             continue;

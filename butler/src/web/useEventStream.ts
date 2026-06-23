@@ -51,6 +51,9 @@ export function useEventStream(handlers: EventStreamHandlers): UseEventStreamRes
       const handlePatch = (event: MessageEvent, channel: "butlerPatch" | "threadPatch") => {
         try {
           const patch = JSON.parse(event.data) as ProviderRuntimeLivePatch;
+          if (!patch || typeof patch !== "object" || typeof patch.kind !== "string") {
+            return;
+          }
           setLastEventAt(Date.now());
           if (channel === "butlerPatch") {
             handlersRef.current.onButlerPatch?.(patch);

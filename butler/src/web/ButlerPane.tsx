@@ -9,6 +9,7 @@ import { useAnchoredScroll } from "./useAnchoredScroll";
 import { useLiveButlerTurn, type CompletedTrace } from "./useLiveButlerTurn";
 
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
+import { DEFAULT_THINKING_LEVELS } from "../shared/pairing";
 import type { PairDetail, PairMessage, PairTraceItem } from "../shared/pairing";
 
 const BUTLER_THREAD_ID = "butler";
@@ -56,6 +57,7 @@ function workLoaderMessage(pair: PairDetail): PairMessage {
 }
 
 function shouldShowWorkLoader(pair: PairDetail): boolean {
+  if (pair.butlerPendingReason) return false;
   return pair.butlerPending || pair.status === "butler_running" || pair.status === "worker_running";
 }
 
@@ -249,7 +251,7 @@ export function ButlerPane({
 
   useEffect(() => {
     if (!onButlerPatch) return;
-    onButlerPatch(live.applyPatch as never);
+    onButlerPatch(live.applyPatch);
     return () => onButlerPatch(null);
   }, [live.applyPatch, onButlerPatch]);
 
@@ -267,6 +269,7 @@ export function ButlerPane({
   const lastMessageId = pair.messages.at(-1)?.id ?? null;
   const lastMessageAt = pair.messages.at(-1)?.at ?? 0;
   const showLoader = shouldShowWorkLoader(pair);
+  const showBlockedCloseout = Boolean(pair.butlerPendingReason);
   const liveStreaming = live.state.status === "streaming" || live.state.status === "completed";
   const liveHasContent = live.state.assistantText.length > 0 || live.state.items.size > 0;
   const lastMessage = pair.messages.at(-1);
@@ -299,7 +302,7 @@ export function ButlerPane({
     }
     return map;
   }, [liveTraceForMessage, lastMessage]);
-  const totalCount = pair.messages.length + (showLoader ? 1 : 0) + (showLiveBubble ? 1 : 0);
+  const totalCount = pair.messages.length + (showLoader ? 1 : 0) + (showBlockedCloseout ? 1 : 0) + (showLiveBubble ? 1 : 0);
   const bottomKey = `${lastMessageId}:${totalCount}:${live.state.assistantText.length}:${live.state.items.size}:${lastMessageAt}`;
 
   const { ref, onScroll, isPinned, unreadCount, scrollToBottom } = useAnchoredScroll<HTMLDivElement>({ bottomKey, resetKey: pair.id });
@@ -328,6 +331,15 @@ export function ButlerPane({
             pending={live.state.status === "streaming"}
           />
         ) : null}
+        {showBlockedCloseout ? (
+          <article className="bubble is-butler" aria-label="Butler closeout is blocked">
+            <header className="bubble-head">
+              <span>Butler</span>
+              <time className="bubble-time">blocked</time>
+            </header>
+            <Markdown className="bubble-body" text={pair.butlerPendingReason ?? ""} />
+          </article>
+        ) : null}
         {showLoader ? (
           <article className="bubble is-butler is-loader" aria-label="Butler is working">
             <span className="working-indicator" aria-live="polite">
@@ -349,7 +361,7 @@ export function ButlerPane({
         onSubmit={onSend}
         busy={busy}
         thinkingLevel={pair.compose?.butler?.thinkingLevel ?? "medium"}
-        availableThinkingLevels={pair.compose?.butler?.availableThinkingLevels ?? ["low", "medium", "high", "xhigh"]}
+        availableThinkingLevels={pair.compose?.butler?.availableThinkingLevels ?? [...DEFAULT_THINKING_LEVELS]}
         onThinkingLevelChange={onThinkingLevelChange}
       />
     </section>

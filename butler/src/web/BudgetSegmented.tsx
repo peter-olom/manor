@@ -1,8 +1,6 @@
 import { memo, useCallback } from "react";
 
-export type BudgetLevel = "low" | "medium" | "high" | "xhigh";
-
-const DEFAULT_LEVELS: BudgetLevel[] = ["low", "medium", "high", "xhigh"];
+import { DEFAULT_THINKING_LEVELS } from "../shared/pairing";
 
 type BudgetSegmentedProps = {
   label: string;
@@ -30,7 +28,7 @@ export const BudgetSegmented = memo(function BudgetSegmented({
     [disabled, onChange, value]
   );
 
-  const list = options.length > 0 ? options : DEFAULT_LEVELS;
+  const list = options.length > 0 ? options : DEFAULT_THINKING_LEVELS;
 
   return (
     <div

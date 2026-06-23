@@ -61,13 +61,12 @@ export type UseLiveButlerTurnResult = {
   state: LiveTurnState;
   completedTraces: CompletedTrace[];
   reset: () => void;
+  applyPatch: (patch: ProviderRuntimeLivePatch) => void;
 };
 
 export function useLiveButlerTurn(threadId: string): UseLiveButlerTurnResult {
   const [state, setState] = useState<LiveTurnState>(INITIAL);
   const [completedTraces, setCompletedTraces] = useState<CompletedTrace[]>([]);
-  const stateRef = useRef(state);
-  stateRef.current = state;
   const lastThreadIdRef = useRef(threadId);
 
   useEffect(() => {
@@ -79,6 +78,7 @@ export function useLiveButlerTurn(threadId: string): UseLiveButlerTurnResult {
   }, [threadId]);
 
   const applyPatch = useCallback((patch: ProviderRuntimeLivePatch) => {
+    if (!patch || typeof patch !== "object" || typeof patch.kind !== "string") return;
     setState((current) => applyPatchToState(current, patch, setCompletedTraces));
   }, []);
 
@@ -87,7 +87,7 @@ export function useLiveButlerTurn(threadId: string): UseLiveButlerTurnResult {
     setCompletedTraces([]);
   }, []);
 
-  return { state, completedTraces, reset, applyPatch } as UseLiveButlerTurnResult & { applyPatch: (p: ProviderRuntimeLivePatch) => void };
+  return { state, completedTraces, reset, applyPatch };
 }
 
 function applyPatchToState(

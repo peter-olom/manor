@@ -607,12 +607,14 @@ export function PairShell() {
   const onThinkingLevelChange = useCallback(
     async (level: string) => {
       if (!pair) return;
+      const previous = pair;
       setPair((current) => (current ? { ...current, butlerThinkingLevel: level, compose: { ...current.compose, butler: { ...current.compose.butler, thinkingLevel: level } } } : current));
       try {
         const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(pair.id)}/settings`, { target: "butler", thinkingLevel: level });
         setPair(payload.pair);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
+        setPair(previous);
       }
     },
     [pair]
@@ -621,12 +623,14 @@ export function PairShell() {
   const onCodexEffortChange = useCallback(
     async (effort: string) => {
       if (!pair) return;
+      const previous = pair;
       setPair((current) => (current ? { ...current, codexEffort: effort, compose: { ...current.compose, codex: { ...current.compose.codex, effort } } } : current));
       try {
         const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(pair.id)}/settings`, { target: "codex", effort });
         setPair(payload.pair);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
+        setPair(previous);
       }
     },
     [pair]
