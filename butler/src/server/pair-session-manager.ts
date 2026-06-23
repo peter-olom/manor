@@ -14,7 +14,7 @@ import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-templates.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { ButlerMessageView } from "./types.js";
-import type { PairDetail, PairMessage, PairSummary } from "../shared/pairing.js";
+import type { PairChat, PairDetail, PairMessage, PairComposeSettings, PairSummary } from "../shared/pairing.js";
 
 type PairSessionManagerOptions = {
   pairStore: PairStore;
@@ -62,7 +62,8 @@ function mapButlerMessage(message: ButlerMessageView): PairMessage {
     sourceThreadId: null,
     memoryObservationId: null,
     metadata: { sourceRole: message.role },
-    pending: message.pending
+    pending: message.pending,
+    ...(message.trace && message.trace.length > 0 ? { trace: message.trace } : {})
   };
 }
 
@@ -99,7 +100,8 @@ export class PairSessionManager {
       messages: page.messages.map(mapButlerMessage),
       messageCount: page.totalCount,
       loadedStart: page.startIndex,
-      hasMore: page.hasMore
+      hasMore: page.hasMore,
+      compose: this.resolveCompose(refreshed, service)
     };
   }
 
@@ -113,7 +115,49 @@ export class PairSessionManager {
       messages: page?.messages.map(mapButlerMessage) ?? [],
       messageCount: page?.totalCount ?? updated.messageCount,
       loadedStart: page?.startIndex ?? 0,
-      hasMore: page?.hasMore ?? false
+      hasMore: page?.hasMore ?? false,
+      compose: service ? this.resolveCompose(updated, service) : { butler: { thinkingLevel: "medium", availableThinkingLevels: ["low", "medium", "high", "xhigh"] }, codex: { effort: null, availableEfforts: [] } }
+    };
+  }
+
+  async setButlerThinkingLevel(pairId: string, level: string): Promise<PairDetail | null> {
+    const service = this.services.get(pairId)?.service;
+    if (!service) return null;
+    service.setThinkingLevel(level as never);
+    return this.getPairDetail(pairId, null, 120);
+  }
+
+  async setCodexEffort(pairId: string, effort: string | null): Promise<PairDetail | null> {
+    const pair = this.options.pairStore.getPair(pairId);
+    if (!pair?.worker) {
+      this.options.pairStore.updatePairComposeOverrides(pairId, { codexEffort: effort });
+      return this.getPairDetail(pairId, null, 120);
+    }
+    try {
+      if (effort) {
+        await this.options.codexClient.updateThreadReasoningEffort(pair.worker.threadId, effort as never);
+      }
+    } catch {
+      // best-effort: we still persist the override so the UI reflects operator intent
+    }
+    this.options.pairStore.updatePairComposeOverrides(pairId, { codexEffort: effort });
+    return this.getPairDetail(pairId, null, 120);
+  }
+
+  private resolveCompose(pair: PairChat, service: ButlerAgentService): PairComposeSettings {
+    const shell = service.getShellSnapshot();
+    const availableThinkingLevels = shell.compose?.availableThinkingLevels?.length
+      ? shell.compose.availableThinkingLevels
+      : (["low", "medium", "high", "xhigh"] as string[]);
+    const thinkingLevel = pair.butlerThinkingLevel ?? shell.compose?.thinkingLevel ?? "medium";
+    const codexCompose = this.options.codexClient.getConnectionState().compose;
+    const workerEffort = pair.worker?.requestedReasoningEffort ?? null;
+    const availableEfforts = (codexCompose?.availableModels ?? [])
+      .flatMap((model) => (model as { supportedReasoningEfforts?: string[] }).supportedReasoningEfforts ?? []);
+    const uniqueEfforts = Array.from(new Set(availableEfforts));
+    return {
+      butler: { thinkingLevel, availableThinkingLevels },
+      codex: { effort: pair.codexEffort ?? workerEffort ?? codexCompose?.effort ?? null, availableEfforts: uniqueEfforts }
     };
   }
 

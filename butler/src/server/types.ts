@@ -1154,6 +1154,40 @@ export interface ButlerWindow {
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 export type ButlerThinkingLevel = "off" | ReasoningEffort;
 
+export type ButlerTraceItemType =
+  | "reasoning"
+  | "command_execution"
+  | "file_change"
+  | "plan"
+  | "mcp_tool_call"
+  | "dynamic_tool_call"
+  | "web_search"
+  | "image_view"
+  | "context_compaction"
+  | "user_message"
+  | "assistant_message"
+  | "error"
+  | "unknown";
+
+export type ButlerTraceItemStatus = "in_progress" | "completed" | "failed" | "declined";
+
+export interface ButlerTraceItemView {
+  id: string;
+  type: ButlerTraceItemType;
+  status: ButlerTraceItemStatus;
+  text: string;
+  title?: string;
+  at: number;
+  completedAt?: number | null;
+}
+
+export interface ButlerTraceMetaView {
+  turnId: string;
+  startedAt: number;
+  completedAt: number;
+  items: ButlerTraceItemView[];
+}
+
 export interface ModelOption {
   id: string;
   label: string;
@@ -1173,6 +1207,8 @@ export interface ButlerMessageView {
   kind: "message";
   pending?: boolean;
   question?: ButlerOperatorQuestionView;
+  trace?: ButlerTraceItemView[];
+  traceMeta?: ButlerTraceMetaView;
 }
 
 export interface ButlerOperatorQuestionOptionView {

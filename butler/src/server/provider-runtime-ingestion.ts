@@ -115,6 +115,19 @@ export class ProviderRuntimeIngestion extends EventEmitter<ProviderRuntimeIngest
           ...(event.payload.name ? { name: event.payload.name } : {})
         });
         return;
+      case "thread.settings.updated": {
+        const effort = typeof event.payload.effort === "string" ? event.payload.effort : null;
+        if (effort) {
+          this.store.setThreadRequestedReasoningEffort(event.threadId, effort as never);
+        }
+        this.emit("runtimePatch", {
+          kind: "thread-state",
+          threadId: event.threadId,
+          state: "idle",
+          at: event.at
+        });
+        return;
+      }
       case "thread.tokenUsage.updated":
         this.store.updateThreadTokenUsage(event.threadId, {
           totalTokens: event.payload.tokens,

@@ -244,4 +244,5 @@ export type ButlerAgentSessionAccess = {
   emit(event: "change"): boolean;
   emit(event: "butlerPatch", payload: import("./types.js").ButlerLivePatchView): boolean;
   persistActivitySummaryTurn(turn: ButlerActivityTurnView): void;
+  traceBuffer: import("./butler-trace-buffer.js").ButlerTraceBuffer;
 };

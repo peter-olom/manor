@@ -107,4 +107,37 @@ export function registerPairRoutes(access: PairRouteAccess): void {
       response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
+
+  app.patch("/api/pairs/:pairId/settings", async (request, response) => {
+    const target = request.body?.target === "codex" ? "codex" : "butler";
+    try {
+      if (target === "butler") {
+        const level = readString(request.body?.thinkingLevel);
+        if (!level) {
+          response.status(400).json({ error: "thinkingLevel is required" });
+          return;
+        }
+        const pair = await pairSessions.setButlerThinkingLevel(request.params.pairId, level);
+        if (!pair) {
+          response.status(404).json({ error: "Butler session not found" });
+          return;
+        }
+        response.json({ pair });
+        return;
+      }
+      const effort = readString(request.body?.effort);
+      if (!effort) {
+        response.status(400).json({ error: "effort is required" });
+        return;
+      }
+      const pair = await pairSessions.setCodexEffort(request.params.pairId, effort);
+      if (!pair) {
+        response.status(404).json({ error: "Butler session not found" });
+        return;
+      }
+      response.json({ pair });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
 }

@@ -93,6 +93,8 @@ import type {
   ButlerThinkingLevel,
   ButlerToolUiEffect,
   ButlerToolView,
+  ButlerTraceItemView,
+  ButlerTraceMetaView,
   CodexThreadExecutionContractView,
   JobMemoryPromotionCandidateView,
   ModelOption
@@ -102,9 +104,12 @@ import { CodexAppServerClient } from "./codex-client.js";
 import type { PreviewLeaseView, PreviewProofRecordView, PreviewVerificationArtifactView, PreviewVerificationView, ProjectMemoryView } from "./types.js";
 const CALLBACK_RECOVERY_TIMEOUT_MS = 30_000;
 
+import { readPersistedTrace, readPersistedTraceMeta } from "./butler-trace-persistence.js";
+
 function isButlerAuthRecoveryError(message: string | null): boolean {
   return typeof message === "string" && /\b(auth|authentication|token|signing in)\b/i.test(message);
 }
+import { ButlerTraceBuffer } from "./butler-trace-buffer.js";
 export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
   private readonly codexClient: CodexAppServerClient;
@@ -151,6 +156,7 @@ export class ButlerAgentService extends EventEmitter {
   private statusRefreshTimer: NodeJS.Timeout | null = null;
   private readonly operatorMessages: ButlerMessageView[] = [];
   private readonly pendingOperatorMessages: ButlerMessageView[] = []; private pendingOperatorMessageSequence = 0; private pendingOperatorMessageRevision = 0;
+  private readonly traceBuffer: ButlerTraceBuffer = new ButlerTraceBuffer();
   private readonly pendingChatCallbacks = new Map<string, PendingChatCallback>();
   private readonly deliveredCloseoutIds = new Set<string>();
   private readonly supervisionSmokePlans = new Map<string, SupervisionSmokePlan>();
@@ -234,7 +240,12 @@ export class ButlerAgentService extends EventEmitter {
         }
 
         const question = normalizeOperatorQuestion((item as Record<string, unknown>).question);
-        this.operatorMessages.push({ id, role, text, at, taskDurationMs, kind, ...(question ? { question } : {}) });
+        const trace = readPersistedTrace((item as Record<string, unknown>).trace);
+        const traceMeta = readPersistedTraceMeta((item as Record<string, unknown>).traceMeta);
+        const next: ButlerMessageView = { id, role, text, at, taskDurationMs, kind, ...(question ? { question } : {}) };
+        if (trace && trace.length > 0) next.trace = trace;
+        if (traceMeta) next.traceMeta = traceMeta;
+        this.operatorMessages.push(next);
       }
 
       if (normalizeOperatorMessages(this.operatorMessages)) await this.saveOperatorMessageState();
@@ -411,7 +422,7 @@ export class ButlerAgentService extends EventEmitter {
     );
   }
 
-  async clearChat(): Promise<void> { await this.memoryScheduler?.beforeButlerChatClear([...this.operatorMessages]); this.operatorMessages.splice(0, this.operatorMessages.length); clearPendingOperatorPrompts(this.getSessionAccess(), { includeCommitted: true }); this.activityTurns.splice(0, this.activityTurns.length); this.activitySummaryTurns.splice(0, this.activitySummaryTurns.length); this.activeActivityTurnId = null; await Promise.all([this.saveOperatorMessageState(), this.saveActivitySummaryState()]); clearButlerSessionChat(this.session); this.lastError = null; this.emit("change"); }
+  async clearChat(): Promise<void> { await this.memoryScheduler?.beforeButlerChatClear([...this.operatorMessages]); this.operatorMessages.splice(0, this.operatorMessages.length); clearPendingOperatorPrompts(this.getSessionAccess(), { includeCommitted: true }); this.activityTurns.splice(0, this.activityTurns.length); this.activitySummaryTurns.splice(0, this.activitySummaryTurns.length); this.activeActivityTurnId = null; this.traceBuffer.reset(); await Promise.all([this.saveOperatorMessageState(), this.saveActivitySummaryState()]); clearButlerSessionChat(this.session); this.lastError = null; this.emit("change"); }
 
   async deleteChatFromMessage(messageId: string): Promise<void> { const syntheticMessage = this.pendingOperatorMessages.find((message) => message.id === messageId); const deletePoint = syntheticMessage ? locateButlerSessionDeletePointBeforeTimestamp(this.session, messageId, syntheticMessage.at) : locateButlerSessionDeletePoint(this.session, messageId); await this.memoryScheduler?.beforeButlerChatDeleteFrom({ messageId, deleteFromTimestamp: deletePoint.targetAt, messages: [...this.operatorMessages] }); const deleteFrom = deleteButlerSessionChatFromLocated(this.session, deletePoint); keepOperatorMessagesBefore(this.operatorMessages, deleteFrom); keepPendingOperatorPromptsBefore(this.getSessionAccess(), deleteFrom); const prunedActivity = keepButlerActivityBefore(this as unknown as ButlerAgentSessionAccess, deleteFrom); await Promise.all([this.saveOperatorMessageState(), ...(prunedActivity ? [this.saveActivitySummaryState()] : [])]); this.lastError = null; this.emit("change"); }
 
@@ -1437,6 +1448,14 @@ export class ButlerAgentService extends EventEmitter {
   getShellSnapshot(): AppShellSnapshot["butler"] { return getButlerShellSnapshot(this.getSessionAccess()); }
 
   getSnapshot(): AppSnapshot["butler"] { return getButlerSnapshot(this.getSessionAccess()); }
+
+  setThinkingLevel(level: ButlerThinkingLevel): void {
+    const access = this.getSessionAccess();
+    if (!access.session) return;
+    access.session.setThinkingLevel(level === "off" || level === "minimal" ? "medium" : level);
+    access.lastError = null;
+    access.emit("change");
+  }
 
   getCodexAuthStatus(): ButlerAuthStatus { return this.codexAuth; }
 

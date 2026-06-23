@@ -30,6 +30,10 @@ function makePair(overrides: Partial<PairDetail> = {}): PairDetail {
     messages: [],
     loadedStart: 0,
     hasMore: false,
+    compose: {
+      butler: { thinkingLevel: "medium", availableThinkingLevels: ["low", "medium", "high", "xhigh"] },
+      codex: { effort: null, availableEfforts: [] }
+    },
     ...overrides
   };
 }
@@ -67,6 +71,30 @@ function createFakePairSessions(initialPair: PairDetail = makePair()) {
       },
       async getWorkerThread(pairId: string): Promise<unknown | null> {
         return pairs.get(pairId)?.worker ? { id: pairs.get(pairId)?.worker?.threadId } : null;
+      },
+      async setButlerThinkingLevel(pairId: string, level: string): Promise<PairDetail | null> {
+        const pair = pairs.get(pairId);
+        if (!pair) return null;
+        const updated: PairDetail = {
+          ...pair,
+          butlerThinkingLevel: level,
+          compose: { ...pair.compose, butler: { ...pair.compose.butler, thinkingLevel: level } },
+          updatedAt: Date.now()
+        };
+        pairs.set(pairId, updated);
+        return updated;
+      },
+      async setCodexEffort(pairId: string, effort: string): Promise<PairDetail | null> {
+        const pair = pairs.get(pairId);
+        if (!pair) return null;
+        const updated: PairDetail = {
+          ...pair,
+          codexEffort: effort,
+          compose: { ...pair.compose, codex: { ...pair.compose.codex, effort } },
+          updatedAt: Date.now()
+        };
+        pairs.set(pairId, updated);
+        return updated;
       },
       async sendOperatorMessage(input: { pairId: string; text: string; imageReferenceIds: string[]; fileReferenceIds: string[] }): Promise<PairDetail | null> {
         const pair = pairs.get(input.pairId);
@@ -223,6 +251,76 @@ test("POST /api/pairs/:pairId/messages rejects direct worker messages", async ()
     });
     assert.equal(res.status, 409);
     assert.equal(fake.sentMessages.length, 0);
+  } finally {
+    await close();
+  }
+});
+
+test("PATCH /api/pairs/:pairId/settings updates the per-pair butler thinking level", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "butler", thinkingLevel: "high" })
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { pair: { butlerThinkingLevel: string; compose: { butler: { thinkingLevel: string } } } };
+    assert.equal(body.pair.butlerThinkingLevel, "high");
+    assert.equal(body.pair.compose.butler.thinkingLevel, "high");
+  } finally {
+    await close();
+  }
+});
+
+test("PATCH /api/pairs/:pairId/settings updates the per-pair codex effort", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "codex", effort: "xhigh" })
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { pair: { codexEffort: string | null; compose: { codex: { effort: string | null } } } };
+    assert.equal(body.pair.codexEffort, "xhigh");
+    assert.equal(body.pair.compose.codex.effort, "xhigh");
+  } finally {
+    await close();
+  }
+});
+
+test("PATCH /api/pairs/:pairId/settings returns 400 when thinkingLevel missing", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "butler" })
+    });
+    assert.equal(res.status, 400);
+  } finally {
+    await close();
+  }
+});
+
+test("PATCH /api/pairs/:pairId/settings returns 404 for unknown pair", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/no-such/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "butler", thinkingLevel: "high" })
+    });
+    assert.equal(res.status, 404);
   } finally {
     await close();
   }

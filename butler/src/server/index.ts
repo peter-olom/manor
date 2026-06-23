@@ -971,6 +971,22 @@ app.post("/api/threads/settings", async (request, response) => {
   }
 });
 
+app.post("/api/threads/:threadId/settings", async (request, response) => {
+  const threadId = request.params.threadId;
+  const effort = typeof request.body?.effort === "string" ? request.body.effort : null;
+  if (!threadId || !effort) {
+    response.status(400).json({ error: "threadId and effort are required" });
+    return;
+  }
+
+  try {
+    await codexClient.updateThreadReasoningEffort(threadId, effort as never);
+    response.json({ ok: true });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 app.post("/api/threads/supervision", (request, response) => {
   const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : "";
   const rawLimit = request.body?.maxButlerTurns;

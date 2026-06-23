@@ -1,32 +1,30 @@
 import {
   startTransition,
   useCallback,
-  useDeferredValue,
   useEffect,
-  useLayoutEffect,
   useMemo,
-  useRef,
   useState
 } from "react";
 
 import { getJson, patchJson, postJson } from "./api";
 import manorLogoLight from "./assets/manor-logo.svg";
 import manorLogoDark from "./assets/manor-logo-dark.svg";
+import { ButlerPane } from "./ButlerPane";
 import {
   ChevronLeftIcon,
   MenuIcon,
   PencilIcon,
   PlusIcon,
   SearchIcon,
-  SendIcon,
   TrashIcon,
   WarningIcon
 } from "./icons";
 import { MemoryDashboard } from "./MemoryDashboard";
-import { SandSpinner } from "./SandSpinner";
 import { TerminalPane } from "./TerminalPane";
-import { useVirtualWindow } from "./useVirtualWindow";
+import { useEventStream } from "./useEventStream";
+import { WorkerPane } from "./WorkerPane";
 
+import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
 import type {
   PairDetail,
   PairDetailResponse,
@@ -69,8 +67,7 @@ type WorkerThread = {
 
 const PAGE_SIZE = 120;
 const PAIR_LIST_ROW = 64;
-const MESSAGE_ROW = 156;
-const WORKER_ROW = 132;
+const BUTLER_PATCH_THREAD_ID = "butler";
 
 const VIEW_LABELS: Record<PairViewMode, string> = {
   butler: "Butler",
@@ -138,31 +135,6 @@ function statusLabel(status: PairStatus | null | undefined): string {
   }
 }
 
-function roleLabel(role: string): string {
-  if (role === "user") return "You";
-  if (role === "butler") return "Butler";
-  if (role === "worker") return "Codex";
-  return "System";
-}
-
-function shouldShowWorkLoader(pair: PairDetail): boolean {
-  return pair.butlerPending || pair.status === "butler_running" || pair.status === "worker_running";
-}
-
-function workLoaderMessage(pair: PairDetail): PairMessage {
-  return {
-    id: `${pair.id}:work-loader`,
-    role: "butler",
-    lane: "butler",
-    text: "",
-    at: pair.lastMessage?.at ?? pair.updatedAt,
-    sourceThreadId: null,
-    memoryObservationId: null,
-    metadata: { kind: "work-loader" },
-    pending: true
-  };
-}
-
 function flattenWorker(thread: WorkerThread | null): WorkerItem[] {
   if (!thread) return [];
   const turnItems = (thread.turns ?? []).flatMap((turn) =>
@@ -178,18 +150,6 @@ function flattenWorker(thread: WorkerThread | null): WorkerItem[] {
     });
   }
   return turnItems.filter((item) => item.text?.trim()).sort((left, right) => left.at - right.at);
-}
-
-function useAutoGrow(value: string, minHeight = 56) {
-  const ref = useRef<HTMLTextAreaElement | null>(null);
-  useLayoutEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-    element.style.height = "0px";
-    const next = Math.max(minHeight, element.scrollHeight);
-    element.style.height = `${Math.min(next, 240)}px`;
-  }, [value, minHeight]);
-  return ref;
 }
 
 function Sidebar({
@@ -214,9 +174,6 @@ function Sidebar({
     if (!query) return pairs;
     return pairs.filter((pair) => pair.title.toLowerCase().includes(query) || (pair.lastMessage?.text ?? "").toLowerCase().includes(query));
   }, [pairs, search]);
-
-  const virtual = useVirtualWindow({ count: filtered.length, rowHeight: PAIR_LIST_ROW, overscan: 6 });
-  const visible = filtered.slice(virtual.start, virtual.end);
 
   return (
     <aside className="sidebar">
@@ -251,26 +208,22 @@ function Sidebar({
         <span>{filtered.length}</span>
       </div>
 
-      <div className="pair-list" ref={virtual.viewportRef} onScroll={virtual.onScroll} data-virtualized-count={filtered.length}>
-        <div style={{ height: virtual.totalHeight, position: "relative" }}>
-          <div style={{ transform: `translateY(${virtual.offsetTop}px)` }}>
-            {visible.length === 0 ? (
-              <div className="pair-empty">
-                {search ? "No sessions match your search." : "Create your first session to get started."}
-              </div>
-            ) : (
-              visible.map((pair) => (
-                <PairRow
-                  key={pair.id}
-                  pair={pair}
-                  isActive={pair.id === selectedPairId}
-                  onSelect={() => onSelect(pair.id)}
-                  onDelete={() => onDelete(pair.id)}
-                />
-              ))
-            )}
+      <div className="pair-list">
+        {filtered.length === 0 ? (
+          <div className="pair-empty">
+            {search ? "No sessions match your search." : "Create your first session to get started."}
           </div>
-        </div>
+        ) : (
+          filtered.map((pair) => (
+            <PairRow
+              key={pair.id}
+              pair={pair}
+              isActive={pair.id === selectedPairId}
+              onSelect={() => onSelect(pair.id)}
+              onDelete={() => onDelete(pair.id)}
+            />
+          ))
+        )}
       </div>
     </aside>
   );
@@ -432,209 +385,6 @@ function Topbar({
   );
 }
 
-function MessageList({ pair, onLoadOlder }: { pair: PairDetail; onLoadOlder: () => void }) {
-  const renderedMessages = useMemo(
-    () => (shouldShowWorkLoader(pair) ? [...pair.messages, workLoaderMessage(pair)] : pair.messages),
-    [pair]
-  );
-  const messages = useDeferredValue(renderedMessages);
-  const virtual = useVirtualWindow({ count: messages.length, rowHeight: MESSAGE_ROW, overscan: 8 });
-  const visible = messages.slice(virtual.start, virtual.end);
-
-  return (
-    <div className="transcript" ref={virtual.viewportRef} onScroll={virtual.onScroll} data-virtualized-count={messages.length}>
-      {pair.hasMore ? (
-        <button className="button is-ghost load-more" type="button" onClick={onLoadOlder}>
-          Load older
-        </button>
-      ) : null}
-      <div style={{ height: virtual.totalHeight, position: "relative" }}>
-        <div className="transcript-stack" style={{ transform: `translateY(${virtual.offsetTop}px)` }}>
-          {visible.map((message) => (
-            <Bubble key={message.id} message={message} />
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Bubble({ message }: { message: PairDetail["messages"][number] }) {
-  const role = message.role === "user" ? "user" : message.role === "worker" ? "worker" : message.role === "butler" ? "butler" : "system";
-  if (message.metadata.kind === "work-loader") {
-    return (
-      <article className="bubble is-butler is-loader" aria-label="Butler is working">
-        <span className="working-indicator" aria-live="polite">
-          <span className="working-indicator-label">Butler</span>
-          <SandSpinner />
-        </span>
-      </article>
-    );
-  }
-  return (
-    <article className={`bubble is-${role}`}>
-      <header className="bubble-head">
-        <span>{roleLabel(message.role)}</span>
-        <time className="bubble-time">{formatTime(message.at)}</time>
-      </header>
-      <div className="bubble-body">{message.text}</div>
-      {message.sourceThreadId ? <footer className="bubble-foot">thread {shortId(message.sourceThreadId)}</footer> : null}
-    </article>
-  );
-}
-
-function WorkerList({ pair, rows }: { pair: PairDetail; rows: WorkerItem[] }) {
-  const virtual = useVirtualWindow({ count: rows.length, rowHeight: WORKER_ROW, overscan: 6 });
-  const visible = rows.slice(virtual.start, virtual.end);
-  return (
-    <div className="transcript" ref={virtual.viewportRef} onScroll={virtual.onScroll} data-virtualized-count={rows.length}>
-      <div style={{ height: virtual.totalHeight, position: "relative" }}>
-        <div className="transcript-stack" style={{ transform: `translateY(${virtual.offsetTop}px)` }}>
-          {visible.map((row) => (
-            <article key={row.id} className={`worker-item ${row.type === "worker_report" ? "is-report" : ""}`}>
-              <header className="head">
-                <span className="type">{row.type.replace(/_/g, " ")}</span>
-                <span className="status is-idle">
-                  <span className="status-dot" />
-                  {row.status}
-                </span>
-                <time className="bubble-time">{formatTime(row.at)}</time>
-              </header>
-              <div className="body">{row.text}</div>
-            </article>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Composer({
-  placeholder,
-  value,
-  onChange,
-  onSubmit,
-  busy,
-  sendLabel = "Send",
-  hint
-}: {
-  placeholder: string;
-  value: string;
-  onChange: (value: string) => void;
-  onSubmit: () => void;
-  busy: boolean;
-  sendLabel?: string;
-  hint?: string;
-}) {
-  const ref = useAutoGrow(value);
-  return (
-    <div className="composer">
-      <form
-        className="composer-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (!value.trim() || busy) return;
-          onSubmit();
-        }}
-      >
-        <textarea
-          ref={ref}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-              event.preventDefault();
-              if (value.trim() && !busy) onSubmit();
-            }
-          }}
-          placeholder={placeholder}
-          rows={2}
-        />
-        <div className="composer-actions">
-          <span className="composer-hint">{hint ?? "⌘ + Return to send"}</span>
-          <button className="composer-send" type="submit" disabled={busy || !value.trim()}>
-            {busy ? <span className="spinner" /> : <SendIcon />}
-            <span>{sendLabel}</span>
-          </button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-function ButlerPane({
-  pair,
-  draft,
-  busy,
-  onDraft,
-  onSend,
-  onLoadOlder
-}: {
-  pair: PairDetail;
-  draft: string;
-  busy: boolean;
-  onDraft: (value: string) => void;
-  onSend: () => void;
-  onLoadOlder: () => void;
-}) {
-  return (
-    <section className="pane" aria-label="Butler lane">
-      <div className="pane-head">
-        <div className="pane-head-info">
-          <h2>Butler</h2>
-          <span className="pane-sub">{pair.messages.length} messages · {shortId(pair.id)}</span>
-        </div>
-      </div>
-      <MessageList pair={pair} onLoadOlder={onLoadOlder} />
-      <Composer
-        placeholder="Message Butler…"
-        value={draft}
-        onChange={onDraft}
-        onSubmit={onSend}
-        busy={busy}
-        sendLabel="Send"
-      />
-    </section>
-  );
-}
-
-function WorkerPane({
-  pair,
-  rows
-}: {
-  pair: PairDetail;
-  rows: WorkerItem[];
-}) {
-  if (!pair.worker) {
-    return (
-      <section className="pane" aria-label="Codex worker lane">
-        <div className="pane-head">
-          <div className="pane-head-info">
-            <h2>Codex worker</h2>
-            <span className="pane-sub">No worker attached</span>
-          </div>
-        </div>
-        <div className="empty-state">
-          <h2>No worker attached</h2>
-          <p>Butler has not delegated work from this session.</p>
-        </div>
-      </section>
-    );
-  }
-
-  return (
-    <section className="pane" aria-label="Codex worker lane">
-      <div className="pane-head">
-        <div className="pane-head-info">
-          <h2>Codex · {shortId(pair.worker.threadId)}</h2>
-          <span className="pane-sub">{pair.worker.status} · one worker max</span>
-        </div>
-      </div>
-      <WorkerList pair={pair} rows={rows} />
-    </section>
-  );
-}
-
 export function PairShell() {
   const [pairs, setPairs] = useState<PairSummary[]>([]);
   const [selectedPairId, setSelectedPairId] = useState<string | null>(null);
@@ -653,6 +403,14 @@ export function PairShell() {
   const [titleDraft, setTitleDraft] = useState("");
   const [savingTitle, setSavingTitle] = useState(false);
   const [titleError, setTitleError] = useState<string | null>(null);
+  const [butlerPatchHandler, setButlerPatchHandler] = useState<((patch: ProviderRuntimeLivePatch) => void) | null>(null);
+
+  useEventStream({
+    onButlerPatch: (patch) => {
+      if (patch.threadId !== BUTLER_PATCH_THREAD_ID) return;
+      butlerPatchHandler?.(patch);
+    }
+  });
 
   const startEditTitle = useCallback(() => {
     if (!pair) return;
@@ -718,7 +476,7 @@ export function PairShell() {
 
   useEffect(() => {
     void loadPairs().catch((err) => setError(err instanceof Error ? err.message : String(err)));
-    const interval = window.setInterval(() => void loadPairs().catch(() => undefined), 3000);
+    const interval = window.setInterval(() => void loadPairs().catch(() => undefined), 5000);
     return () => window.clearInterval(interval);
   }, [loadPairs]);
 
@@ -738,7 +496,7 @@ export function PairShell() {
       }
     };
     void refresh();
-    const interval = window.setInterval(() => void refresh(), 2500);
+    const interval = window.setInterval(() => void refresh(), 5000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
@@ -751,7 +509,7 @@ export function PairShell() {
       return;
     }
     void loadWorker(pair.id).catch(() => undefined);
-    const interval = window.setInterval(() => void loadWorker(pair.id).catch(() => undefined), 3500);
+    const interval = window.setInterval(() => void loadWorker(pair.id).catch(() => undefined), 5000);
     return () => window.clearInterval(interval);
   }, [loadWorker, pair?.id, pair?.worker?.threadId, viewMode]);
 
@@ -842,6 +600,38 @@ export function PairShell() {
     }
   }
 
+  const onButlerPatchRef = useCallback((handler: ((patch: ProviderRuntimeLivePatch) => void) | null) => {
+    setButlerPatchHandler(handler);
+  }, []);
+
+  const onThinkingLevelChange = useCallback(
+    async (level: string) => {
+      if (!pair) return;
+      setPair((current) => (current ? { ...current, butlerThinkingLevel: level, compose: { ...current.compose, butler: { ...current.compose.butler, thinkingLevel: level } } } : current));
+      try {
+        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(pair.id)}/settings`, { target: "butler", thinkingLevel: level });
+        setPair(payload.pair);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [pair]
+  );
+
+  const onCodexEffortChange = useCallback(
+    async (effort: string) => {
+      if (!pair) return;
+      setPair((current) => (current ? { ...current, codexEffort: effort, compose: { ...current.compose, codex: { ...current.compose.codex, effort } } } : current));
+      try {
+        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(pair.id)}/settings`, { target: "codex", effort });
+        setPair(payload.pair);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [pair]
+  );
+
   const workerVisible = viewMode !== "butler" && (pair?.worker || viewMode === "worker");
   const butlerVisible = viewMode !== "worker";
   const cliVisible = viewMode === "cli";
@@ -908,6 +698,8 @@ export function PairShell() {
                     onDraft={setDraft}
                     onSend={() => void sendButler()}
                     onLoadOlder={() => void loadOlder()}
+                    onButlerPatch={onButlerPatchRef}
+                    onThinkingLevelChange={(level) => void onThinkingLevelChange(level)}
                   />
                 ) : null}
                 {viewMode === "split" ? <div className="divider" /> : null}
@@ -915,6 +707,7 @@ export function PairShell() {
                   <WorkerPane
                     pair={pair}
                     rows={workerRows}
+                    onCodexEffortChange={(effort) => void onCodexEffortChange(effort)}
                   />
                 ) : null}
               </div>
@@ -941,3 +734,5 @@ export function PairShell() {
     </main>
   );
 }
+
+export type { PairMessage };

@@ -3,6 +3,33 @@ export type PairLane = "butler" | "worker";
 export type PairStatus = "idle" | "butler_running" | "worker_running" | "needs_butler_review" | "blocked";
 export type PairViewMode = "butler" | "worker" | "split" | "memory" | "cli";
 
+export type PairTraceItemType =
+  | "reasoning"
+  | "command_execution"
+  | "file_change"
+  | "plan"
+  | "mcp_tool_call"
+  | "dynamic_tool_call"
+  | "web_search"
+  | "image_view"
+  | "context_compaction"
+  | "user_message"
+  | "assistant_message"
+  | "error"
+  | "unknown";
+
+export type PairTraceItemStatus = "in_progress" | "completed" | "failed" | "declined";
+
+export type PairTraceItem = {
+  id: string;
+  type: PairTraceItemType;
+  status: PairTraceItemStatus;
+  text: string;
+  title?: string;
+  at: number;
+  completedAt?: number | null;
+};
+
 export type PairMessage = {
   id: string;
   role: PairRole;
@@ -13,6 +40,7 @@ export type PairMessage = {
   memoryObservationId: string | null;
   metadata: Record<string, string>;
   pending?: boolean;
+  trace?: PairTraceItem[];
 };
 
 export type PairWorker = {
@@ -26,6 +54,7 @@ export type PairWorker = {
   lastReportAt: number | null;
   lastReportStatus: "completed" | "blocked" | null;
   lastReportSummary: string | null;
+  requestedReasoningEffort?: string | null;
 };
 
 export type PairChat = {
@@ -46,14 +75,29 @@ export type PairChat = {
   lastHandoffPrompt: string | null;
   messageCount: number;
   lastMessage: PairMessage | null;
+  butlerThinkingLevel?: string | null;
+  codexEffort?: string | null;
+  codexAvailableEfforts?: string[] | null;
 };
 
 export type PairSummary = PairChat;
+
+export type PairComposeSettings = {
+  butler: {
+    thinkingLevel: string;
+    availableThinkingLevels: string[];
+  };
+  codex: {
+    effort: string | null;
+    availableEfforts: string[];
+  };
+};
 
 export type PairDetail = PairChat & {
   messages: PairMessage[];
   loadedStart: number;
   hasMore: boolean;
+  compose: PairComposeSettings;
 };
 
 export type PairListResponse = {
@@ -61,6 +105,10 @@ export type PairListResponse = {
 };
 
 export type PairDetailResponse = {
+  pair: PairDetail;
+};
+
+export type PairSettingsResponse = {
   pair: PairDetail;
 };
 

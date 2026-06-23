@@ -81,11 +81,44 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
   restoreButlerCompactionState(access);
 
   const runtimeMapper = new PiProviderRuntimeMapper();
+  const traceBuffer = access.traceBuffer;
+  if (typeof traceBuffer.reset === "function") {
+    traceBuffer.reset();
+  }
   access.unsubscribeSession = access.session.subscribe((event) => {
     recordButlerActivityEvent(access, event);
     const patches = runtimeMapper.map(event, access.session!);
     let operatorMessageChanged = false;
     for (const patch of patches) {
+      if (patch.kind === "turn-lifecycle" && patch.status === "started") {
+        traceBuffer.startTurn(patch.turnId, patch.at);
+      }
+      if (patch.kind === "item-lifecycle" && patch.itemId) {
+        if (patch.itemType === "assistant_message") {
+          traceBuffer.setAssistantItem(patch.turnId, patch.itemId, patch.at);
+        } else if (patch.itemType !== "user_message") {
+          traceBuffer.upsertItem({
+            turnId: patch.turnId,
+            itemId: patch.itemId,
+            type: patch.itemType,
+            status: patch.status,
+            text: patch.text,
+            ...(patch.title ? { title: patch.title } : {}),
+            at: patch.at,
+            ...(patch.status === "completed" ? { completedAt: patch.at } : {})
+          });
+        }
+      }
+      if (patch.kind === "content-delta" && patch.itemId && patch.itemType !== "assistant_message" && patch.itemType !== "user_message") {
+        traceBuffer.upsertItem({
+          turnId: patch.turnId,
+          itemId: patch.itemId,
+          type: patch.itemType,
+          status: "in_progress",
+          text: patch.delta,
+          at: patch.at
+        });
+      }
       if (patch.kind === "item-lifecycle" && patch.itemType === "user_message" && patch.text.trim()) {
         removeCommittedPendingOperatorPrompt(access, patch.text, patch.at);
       }
@@ -95,13 +128,20 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
         (patch.itemType === "user_message" || patch.itemType === "assistant_message") &&
         isPersistableProviderOperatorMessage(patch.itemType === "user_message" ? "user" : "assistant", patch.text)
       ) {
+        const traceMeta = patch.itemType === "assistant_message"
+          ? traceBuffer.consumeForAssistantItem(patch.itemId)
+          : null;
         operatorMessageChanged =
           upsertProviderBackedOperatorMessage(
             access.operatorMessages,
             `operator-session-${patch.itemId}`,
             patch.text,
             patch.at,
-            patch.itemType === "user_message" ? "user" : "assistant"
+            patch.itemType === "user_message" ? "user" : "assistant",
+            null,
+            traceMeta
+              ? { trace: traceMeta.items, traceMeta }
+              : {}
           ) || operatorMessageChanged;
       }
       access.emit("butlerPatch", patch);

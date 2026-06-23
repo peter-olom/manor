@@ -17,6 +17,13 @@ type PairSnapshotInput = {
   messageCount?: number;
   lastMessage?: PairMessage | null;
   updatedAt?: number;
+  butlerThinkingLevel?: string | null;
+  codexEffort?: string | null;
+};
+
+type PairComposeOverrideInput = {
+  butlerThinkingLevel?: string | null;
+  codexEffort?: string | null;
 };
 
 const DEFAULT_TITLE = "New session";
@@ -51,7 +58,9 @@ function emptyPair(input: { id: string; title?: string | null; defaultCwd?: stri
     memoryQuery: null,
     lastHandoffPrompt: null,
     messageCount: 0,
-    lastMessage: null
+    lastMessage: null,
+    butlerThinkingLevel: null,
+    codexEffort: null
   };
 }
 
@@ -79,6 +88,8 @@ function normalizePair(raw: Partial<PairChat> & { id?: string }, store: ButlerSt
   pair.lastHandoffPrompt = typeof raw.lastHandoffPrompt === "string" && raw.lastHandoffPrompt.trim() ? raw.lastHandoffPrompt : null;
   pair.messageCount = typeof raw.messageCount === "number" && Number.isFinite(raw.messageCount) ? Math.max(0, Math.trunc(raw.messageCount)) : 0;
   pair.lastMessage = raw.lastMessage ?? null;
+  pair.butlerThinkingLevel = typeof raw.butlerThinkingLevel === "string" && raw.butlerThinkingLevel.trim() ? raw.butlerThinkingLevel : null;
+  pair.codexEffort = typeof raw.codexEffort === "string" && raw.codexEffort.trim() ? raw.codexEffort : null;
   pair.status = deriveStatus(pair, store);
   return pair;
 }
@@ -169,8 +180,23 @@ export class PairStore extends EventEmitter {
     if (snapshot.butlerLastError !== undefined) pair.butlerLastError = snapshot.butlerLastError;
     if (snapshot.messageCount !== undefined) pair.messageCount = Math.max(0, Math.trunc(snapshot.messageCount));
     if (snapshot.lastMessage !== undefined) pair.lastMessage = snapshot.lastMessage;
+    if (snapshot.butlerThinkingLevel !== undefined) pair.butlerThinkingLevel = snapshot.butlerThinkingLevel;
+    if (snapshot.codexEffort !== undefined) pair.codexEffort = snapshot.codexEffort;
     pair.status = deriveStatus(pair, this.store);
     pair.updatedAt = Math.max(pair.updatedAt, snapshot.updatedAt ?? pair.lastMessage?.at ?? Date.now());
+    this.queueSave();
+    this.emit("change");
+    return this.getPair(pair.id);
+  }
+
+  updatePairComposeOverrides(pairId: string, override: PairComposeOverrideInput): PairChat | null {
+    const pair = this.pairs.get(pairId);
+    if (!pair) {
+      return null;
+    }
+    if (override.butlerThinkingLevel !== undefined) pair.butlerThinkingLevel = override.butlerThinkingLevel;
+    if (override.codexEffort !== undefined) pair.codexEffort = override.codexEffort;
+    pair.updatedAt = Math.max(pair.updatedAt, Date.now());
     this.queueSave();
     this.emit("change");
     return this.getPair(pair.id);
