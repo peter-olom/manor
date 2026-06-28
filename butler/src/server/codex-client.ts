@@ -758,7 +758,7 @@ export class CodexAppServerClient extends EventEmitter {
     developerInstructions?: string | null;
     effort?: ReasoningEffort | null;
     openWindow?: boolean;
-  }): Promise<{ threadId: string }> {
+  }): Promise<{ threadId: string; turnId: string | null }> {
     const task = options.task.trim();
     if (!task) {
       throw new Error("task is required");
@@ -805,9 +805,11 @@ export class CodexAppServerClient extends EventEmitter {
     }
 
     const turnResult = await this.codexProviderAdapter.sendTurn(threadId, params);
+    let turnId: string | null = turnResult.turnId ?? null;
     if (turnResult.turn && typeof turnResult.turn === "object") {
       const turn = turnResult.turn as Record<string, unknown>;
       if (typeof turn.id === "string") {
+        turnId = turn.id;
         this.activeTurnIds.set(threadId, turn.id);
         if (requestedEffort) {
           this.store.setThreadRequestedReasoningEffort(threadId, requestedEffort, turn.id);
@@ -821,10 +823,10 @@ export class CodexAppServerClient extends EventEmitter {
     }
 
     this.emit("change");
-    return { threadId };
+    return { threadId, turnId };
   }
 
-  async sendMessage(threadId: string, input: string | CodexInputItem[]): Promise<void> {
+  async sendMessage(threadId: string, input: string | CodexInputItem[]): Promise<{ threadId: string; turnId: string | null }> {
     const inputItems = normalizeInputItems(input);
     const threadWorkspace = await this.requireExistingWorkspace(this.store.getThread(threadId)?.cwd);
     if (threadWorkspace) {
@@ -839,7 +841,7 @@ export class CodexAppServerClient extends EventEmitter {
         this.store.upsertThreadSummary({ id: targetThreadId, cwd: threadWorkspace });
       }
       await this.codexProviderAdapter.steerTurn(targetThreadId, activeTurnId, inputItems);
-      return;
+      return { threadId: targetThreadId, turnId: activeTurnId };
     }
 
     const params: Record<string, unknown> = {
@@ -867,6 +869,7 @@ export class CodexAppServerClient extends EventEmitter {
     if (result.turn && typeof result.turn === "object") {
       this.store.updateTurn(targetThreadId, result.turn as Record<string, unknown>);
     }
+    return { threadId: targetThreadId, turnId: result.turnId ?? null };
   }
 
   async stopThread(threadId: string): Promise<boolean> {

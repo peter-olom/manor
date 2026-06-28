@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  bindJobPayloadDelivery,
   buildJobPayload,
   formatJobPayloadMessage,
   listJobPayloads,
@@ -42,6 +43,9 @@ test("job payloads persist structured JSON and keep chat text readable", async (
   assert.equal(read?.schemaVersion, "manor.job_payload.v1");
   assert.equal(read?.protocol.workerThreadId, contract.threadId);
   assert.equal(read?.protocol.reportChannel, "manor-harness");
+  assert.equal(read?.snapshots.length, 1);
+  assert.equal(read?.snapshots[0]?.nodeId, read?.currentNodeId);
+  assert.equal(read?.snapshots[0]?.display.summary, read?.display.summary);
   assert.deepEqual(read?.checklist.map((point) => point.text), contract.acceptancePoints);
   assert.match(prompt, /We're going to build a simple todo app/);
   assert.match(prompt, /I put the job details in Manor/);
@@ -79,7 +83,32 @@ test("job payload updates mutate the current payload node graph", async () => {
   assert.equal(read?.protocol.version, 2);
   assert.equal(read?.nodes.length, 2);
   assert.equal(read?.nodes[1]?.parentId, read?.nodes[0]?.id);
+  assert.equal(read?.snapshots.length, 2);
+  assert.equal(read?.snapshots[1]?.nodeId, read?.nodes[1]?.id);
+  assert.equal(read?.snapshots[1]?.display.summary, "Retry the proof with a focused screenshot.");
   assert.deepEqual(read?.attachments.images, ["image-1"]);
+});
+
+test("job payload delivery binding updates the current node snapshot", () => {
+  const payload = updateJobPayload(
+    buildJobPayload({
+      threadId: "thread-payload",
+      kind: "delegation",
+      instruction: "Initial job"
+    }),
+    {
+      kind: "steering",
+      instruction: "Check the preview again."
+    }
+  );
+
+  const bound = bindJobPayloadDelivery(payload, { turnId: "turn-two" });
+
+  assert.equal(bound.delivery.turnId, "turn-two");
+  assert.equal(bound.nodes[0]?.turnId, null);
+  assert.equal(bound.nodes[1]?.turnId, "turn-two");
+  assert.equal(bound.snapshots[0]?.delivery.turnId, null);
+  assert.equal(bound.snapshots[1]?.delivery.turnId, "turn-two");
 });
 
 test("job payload reads validate stored JSON", async () => {

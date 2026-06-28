@@ -215,6 +215,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           effort: typedParams.thinkingBudget ?? "high",
           openWindow: true
         });
+        await access.bindJobPayloadDelivery(result.threadId, { turnId: result.turnId });
         const delegationContract = await access.buildDelegationContract({
           threadId: result.threadId,
           task,
@@ -524,7 +525,8 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           kind: "rejection_followup",
           instruction: text
         });
-        await access.codexClient.sendMessage(typedParams.threadId, formatJobPayloadMessage("rejection_followup", typedParams.threadId, payload.workerDirective, payload.display.summary));
+        const sent = await access.codexClient.sendMessage(typedParams.threadId, formatJobPayloadMessage("rejection_followup", typedParams.threadId, payload.workerDirective, payload.display.summary));
+        await access.bindJobPayloadDelivery(typedParams.threadId, { turnId: sent.turnId });
         access.store.clearQueuedRejectionInstructions(typedParams.threadId);
         access.registerPendingChatCallback(typedParams.threadId, {
           privateSteerText: text,
@@ -655,7 +657,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           imageReferenceIds: typedParams.imageReferenceIds ?? [],
           fileReferenceIds: typedParams.fileReferenceIds ?? []
         });
-        await access.codexClient.sendMessage(
+        const sent = await access.codexClient.sendMessage(
           typedParams.threadId,
           buildCodexInputWithReferences({
             text: formatJobPayloadMessage("steering", payload.threadId, payload.workerDirective, payload.display.summary),
@@ -665,6 +667,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
             fileReferenceIds: typedParams.fileReferenceIds ?? []
           })
         );
+        await access.bindJobPayloadDelivery(typedParams.threadId, { turnId: sent.turnId });
         access.registerPendingChatCallback(typedParams.threadId, {
           privateSteerText: typedParams.text,
           nextWorkerReportAction: typedParams.nextWorkerReportAction ?? "review"

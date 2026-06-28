@@ -185,6 +185,7 @@ export type ButlerAgentToolAccess = {
     imageReferenceIds?: string[];
     fileReferenceIds?: string[];
   }): Promise<JobPayloadView>;
+  bindJobPayloadDelivery(threadId: string, delivery: { turnId?: string | null; messageId?: string | null }): Promise<JobPayloadView | null>;
   queueDelegationAcknowledgement(threadId: string, text: string): void;
   registerPendingChatCallback(
     threadId: string,

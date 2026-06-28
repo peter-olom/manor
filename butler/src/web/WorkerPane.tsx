@@ -55,6 +55,7 @@ export type WorkerJobPayload = {
   proof: string[];
   constraints: string[];
   notes: string[];
+  snapshots: WorkerJobPayloadSnapshot[];
   nodes: Array<{ id: string; kind: string; parentId: string | null; summary: string; instruction: string; createdAt: number }>;
   delivery: {
     threadId: string;
@@ -62,6 +63,20 @@ export type WorkerJobPayload = {
     messageId: string | null;
   };
   report: WorkerReport | null;
+};
+
+export type WorkerJobPayloadSnapshot = Pick<
+  WorkerJobPayload,
+  "kind" | "status" | "updatedAt" | "display" | "operatorGoal" | "requestedTask" | "checklist" | "proof" | "constraints" | "notes"
+> & {
+  nodeId: string;
+  revision: number;
+  workerDirective: string;
+  delivery: {
+    threadId: string;
+    turnId: string | null;
+    messageId: string | null;
+  };
 };
 
 export type WorkerTimeline = {
@@ -193,6 +208,35 @@ function isButlerMessage(item: WorkerItem): boolean {
   return item.type === "userMessage" || item.type === "user_message";
 }
 
+function snapshotMatchesMessage(snapshot: WorkerJobPayloadSnapshot, item: WorkerItem, turnId: string): boolean {
+  const messageId = snapshot.delivery.messageId;
+  if (messageId && (item.id === messageId || item.id.endsWith(`:${messageId}`))) {
+    return true;
+  }
+  return snapshot.delivery.turnId === turnId;
+}
+
+function payloadForMessage(payload: WorkerJobPayload | null, item: WorkerItem, turnId: string): WorkerPayloadDetailsView | null {
+  if (!payload || !isButlerMessage(item)) {
+    return null;
+  }
+
+  const snapshots = [...(payload.snapshots ?? [])].sort((left, right) => left.updatedAt - right.updatedAt);
+  const exact = snapshots.filter((snapshot) => snapshotMatchesMessage(snapshot, item, turnId)).at(-1);
+  if (exact) {
+    return exact;
+  }
+
+  const temporal = snapshots
+    .filter((snapshot) => snapshot.updatedAt <= item.at + 10_000)
+    .at(-1);
+  if (temporal) {
+    return temporal;
+  }
+
+  return payload.delivery.turnId ? null : payload;
+}
+
 function messageSpeaker(item: WorkerItem): "Butler" | "Codex" {
   return isButlerMessage(item) ? "Butler" : "Codex";
 }
@@ -210,7 +254,12 @@ function payloadLabel(tag: string): string {
   return tag;
 }
 
-function payloadSectionText(payload: WorkerJobPayload, tag: string): string {
+type WorkerPayloadDetailsView = Pick<
+  WorkerJobPayload,
+  "display" | "checklist" | "proof" | "constraints" | "notes"
+> & { report?: WorkerReport | null };
+
+function payloadSectionText(payload: WorkerPayloadDetailsView, tag: string): string {
   if (tag === "checklist") {
     return payload.checklist.length
       ? payload.checklist.map((item, index) => `${index + 1}. ${item.text}${item.note ? `\n   ${item.note}` : ""}`).join("\n")
@@ -223,7 +272,7 @@ function payloadSectionText(payload: WorkerJobPayload, tag: string): string {
   return payload.display.summary;
 }
 
-const WorkerPayloadDetails = memo(function WorkerPayloadDetails({ payload }: { payload: WorkerJobPayload }) {
+const WorkerPayloadDetails = memo(function WorkerPayloadDetails({ payload }: { payload: WorkerPayloadDetailsView }) {
   const tags = payload.display.tags.length > 0 ? payload.display.tags : ["checklist", "proof", "constraints", "notes"];
   const [activeTag, setActiveTag] = useState(tags[0] ?? "checklist");
   return (
@@ -337,7 +386,7 @@ const WorkerActiveTurn = memo(function WorkerActiveTurn({ turn, index, payload }
       <div className="worker-turn-items">
         {sorted.map((item) =>
           isMessage(item.type) ? (
-            <WorkerMessageRow key={item.id} item={item} payload={payload} streaming={item.status === "started"} />
+            <WorkerMessageRow key={item.id} item={item} payload={payloadForMessage(payload, item, turn.id)} streaming={item.status === "started"} />
           ) : (
             <WorkerCompactRow key={item.id} item={item} />
           )
@@ -377,7 +426,7 @@ const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, pay
         <time className="worker-turn-time">{formatTime(turn.startedAt)}</time>
         {durationMs > 0 ? <span className="worker-turn-duration">{formatDuration(durationMs)}</span> : null}
       </header>
-      {leadingMessages.map((item) => <WorkerMessageRow key={item.id} item={item} payload={payload} />)}
+      {leadingMessages.map((item) => <WorkerMessageRow key={item.id} item={item} payload={payloadForMessage(payload, item, turn.id)} />)}
       {supporting.length > 0 ? (
         <details className="worker-activity" {...(defaultOpen ? { open: true } : {})}>
           <summary>
@@ -386,7 +435,7 @@ const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, pay
           <WorkerActivityList items={supporting} />
         </details>
       ) : null}
-      {finalItem ? <WorkerMessageRow key={finalItem.id} item={finalItem} payload={payload} /> : null}
+      {finalItem ? <WorkerMessageRow key={finalItem.id} item={finalItem} payload={payloadForMessage(payload, finalItem, turn.id)} /> : null}
     </section>
   );
 });
@@ -486,7 +535,7 @@ function WorkerTimelineView({ timeline }: { timeline: WorkerTimeline }) {
             key={turn.id}
             turn={turn}
             index={index}
-            payload={payload && (payload.delivery.turnId ? payload.delivery.turnId === turn.id : index === turns.length - 1) ? payload : null}
+            payload={payload}
           />
         ))}
         {report ? <WorkerMessageRow item={reportToWorkerItem(report)} /> : null}

@@ -4,7 +4,7 @@ import type { ButlerAgentService } from "./butler-agent.js";
 import type { CodexAppServerClient } from "./codex-client.js";
 import { type FileReferenceStore } from "./file-store.js";
 import { type ImageReferenceStore } from "./image-store.js";
-import { buildJobPayload, formatJobPayloadMessage, jobPayloadsRoot, persistJobPayload } from "./job-instruction-artifacts.js";
+import { bindJobPayloadDelivery, buildJobPayload, formatJobPayloadMessage, jobPayloadsRoot, persistJobPayload } from "./job-instruction-artifacts.js";
 import { buildCodexInputWithReferences } from "./reference-inputs.js";
 import {
   cleanupManagedWorktree,
@@ -267,6 +267,12 @@ async function startScratchItem(access: ScratchPadRoutesAccess, itemId: string) 
     workspaceMode: workspace.workspaceMode,
     branchName: workspace.branchName
   });
+  const payload = access.store.getThreadJobPayload(result.threadId);
+  if (payload) {
+    const bound = bindJobPayloadDelivery(payload, { turnId: result.turnId });
+    await persistJobPayload(jobPayloadsRoot(access.artifactsDir), bound);
+    access.store.setThreadJobPayload(bound);
+  }
   access.store.addEvent(result.threadId, "butler.scratch_pad.started", "Butler started this job from a scratch pad item.");
   access.butlerAgent.trackScratchPadDelegation(result.threadId);
   return updated;

@@ -69,6 +69,7 @@ import { ManorRestartRequestState } from "./manor-restart-state.js";
 import { buildOnboardingView } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
 import {
+  bindJobPayloadDelivery as bindStoredJobPayloadDelivery,
   buildJobPayload,
   formatJobPayloadMessage,
   jobPayloadsRoot,
@@ -899,10 +900,11 @@ export class ButlerAgentService extends EventEmitter {
       contract: thread?.executionContract ?? null,
       checklist: thread?.supervisionChecklist ?? null
     });
-    await this.codexClient.sendMessage(
+    const sent = await this.codexClient.sendMessage(
       threadId,
       this.imageStore.buildCodexInput(formatJobPayloadMessage(payload.kind as JobPayloadKind, payload.threadId, payload.workerDirective, payload.display.summary), [])
     );
+    await this.bindJobPayloadDelivery(threadId, { turnId: sent.turnId });
     this.store.noteButlerSteer(threadId);
     this.store.addEvent(threadId, "butler.supervision.turn_spent", "Butler spent a private supervision turn on this job.");
   }
@@ -1133,6 +1135,13 @@ export class ButlerAgentService extends EventEmitter {
     await persistJobPayload(jobPayloadsRoot(this.artifactsDir), payload);
     this.store.setThreadJobPayload(payload);
     return payload;
+  }
+
+  private async bindJobPayloadDelivery(threadId: string, delivery: { turnId?: string | null; messageId?: string | null }) {
+    const existing = this.store.getThreadJobPayload(threadId);
+    if (!existing) return null;
+    const payload = bindStoredJobPayloadDelivery(existing, delivery);
+    await persistJobPayload(jobPayloadsRoot(this.artifactsDir), payload); this.store.setThreadJobPayload(payload); return payload;
   }
 
   private getServiceTemplate(templateId: string): LoadedServiceTemplate {

@@ -31,6 +31,22 @@ export interface JobPayloadView {
   constraints: string[];
   notes: string[];
   attachments: { images: string[]; files: string[] };
+  snapshots: Array<{
+    nodeId: string;
+    revision: number;
+    kind: string;
+    status: string;
+    updatedAt: number;
+    display: { summary: string; tags: string[] };
+    workerDirective: string;
+    operatorGoal: string | null;
+    requestedTask: string | null;
+    checklist: Array<{ id: string; text: string; status: string; note: string | null }>;
+    proof: string[];
+    constraints: string[];
+    notes: string[];
+    delivery: { threadId: string; turnId: string | null; messageId: string | null };
+  }>;
   nodes: Array<{
     id: string;
     kind: string;
