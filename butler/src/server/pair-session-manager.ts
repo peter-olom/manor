@@ -12,10 +12,17 @@ import type { PairStore } from "./pair-store.js";
 import type { ButlerRoutingClassifier } from "./butler-routing-classifier.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-templates.js";
+import type { SessionTitleGenerator } from "./session-title-generator.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { ButlerMessageView, ButlerLivePatchView } from "./types.js";
 import type { PairChat, PairDetail, PairMessage, PairComposeSettings, PairSummary } from "../shared/pairing.js";
 import { DEFAULT_THINKING_LEVELS } from "../shared/pairing.js";
+import { pairTitleIsDefault } from "./pair-store.js";
+
+type PairButlerService = Pick<
+  ButlerAgentService,
+  "dispose" | "getMessagePage" | "getShellSnapshot" | "on" | "prompt" | "setThinkingLevel" | "start" | "stopPrompt"
+>;
 
 type PairSessionManagerOptions = {
   pairStore: PairStore;
@@ -35,6 +42,8 @@ type PairSessionManagerOptions = {
   memoryScheduler?: MemoryUpdateScheduler | null;
   routingClassifier?: ButlerRoutingClassifier | null;
   onButlerPatch?: (payload: ButlerLivePatchView) => void;
+  sessionTitleGenerator?: SessionTitleGenerator | null;
+  createButlerService?: (options: ConstructorParameters<typeof ButlerAgentService>[0]) => PairButlerService;
 };
 
 function pairSystemPrompt(pairId: string): string {
@@ -81,7 +90,9 @@ function blockedCloseoutReason(shell: ReturnType<ButlerAgentService["getShellSna
 }
 
 export class PairSessionManager {
-  private readonly services = new Map<string, { service: ButlerAgentService; started: Promise<void> }>();
+  private readonly services = new Map<string, { service: PairButlerService; started: Promise<void> }>();
+  private readonly titleInFlight = new Set<string>();
+  private readonly titleAttempted = new Set<string>();
 
   constructor(private readonly options: PairSessionManagerOptions) {}
 
@@ -108,6 +119,7 @@ export class PairSessionManager {
     const refreshed = this.options.pairStore.getPair(pairId);
     if (!refreshed) return null;
     const page = service.getMessagePage(before, limit);
+    this.maybeGenerateTitleFromPage(refreshed, page.messages);
     return {
       ...refreshed,
       messages: page.messages.map(mapButlerMessage),
@@ -153,7 +165,7 @@ export class PairSessionManager {
     return this.getPairDetail(pairId, null, 120);
   }
 
-  private resolveCompose(pair: PairChat, service: ButlerAgentService): PairComposeSettings {
+  private resolveCompose(pair: PairChat, service: PairButlerService): PairComposeSettings {
     const shell = service.getShellSnapshot();
     const availableThinkingLevels = shell.compose?.availableThinkingLevels?.length
       ? shell.compose.availableThinkingLevels
@@ -208,7 +220,11 @@ export class PairSessionManager {
     });
     const referenceCount = input.imageReferenceIds.length + input.fileReferenceIds.length;
     const displayText = input.text.trim() || (referenceCount === 1 ? "Attached 1 reference file." : `Attached ${referenceCount} reference files.`);
+    const shouldGenerateTitle = this.shouldGenerateTitle(pair, input.text, service);
     service.prompt(promptText, input.imageReferenceIds, { mode: "queue", displayText });
+    if (shouldGenerateTitle) {
+      this.generateTitleAsync(input.pairId, input.text, pair.defaultCwd);
+    }
     this.syncPairSnapshot(input.pairId);
     return this.getPairDetail(input.pairId, null, 120);
   }
@@ -224,7 +240,7 @@ export class PairSessionManager {
     return this.options.store.getThreadDetail(pair.worker.threadId) ?? null;
   }
 
-  private async ensureService(pairId: string): Promise<ButlerAgentService> {
+  private async ensureService(pairId: string): Promise<PairButlerService> {
     const existing = this.services.get(pairId);
     if (existing) {
       await existing.started;
@@ -237,7 +253,8 @@ export class PairSessionManager {
     }
     const sessionDir = path.join(this.options.sessionRootDir, pair.id);
     await fs.mkdir(sessionDir, { recursive: true });
-    const service = new ButlerAgentService({
+    const createService = this.options.createButlerService ?? ((serviceOptions: ConstructorParameters<typeof ButlerAgentService>[0]) => new ButlerAgentService(serviceOptions));
+    const service = createService({
       store: this.options.store,
       codexClient: this.options.codexClient,
       hostController: this.options.hostController,
@@ -285,6 +302,44 @@ export class PairSessionManager {
     this.services.set(pair.id, { service, started });
     await started;
     return service;
+  }
+
+  private shouldGenerateTitle(pair: PairChat, text: string, service: PairButlerService): boolean {
+    if (!this.options.sessionTitleGenerator || this.titleInFlight.has(pair.id) || this.titleAttempted.has(pair.id) || !pairTitleIsDefault(pair.title) || !text.trim()) {
+      return false;
+    }
+    const page = service.getMessagePage(null, 120);
+    return page.totalCount === 0 && !page.messages.some((message) => message.role === "user" || message.role === "user-with-attachments");
+  }
+
+  private maybeGenerateTitleFromPage(pair: PairChat, messages: ButlerMessageView[]): void {
+    if (!this.options.sessionTitleGenerator || this.titleInFlight.has(pair.id) || this.titleAttempted.has(pair.id) || !pairTitleIsDefault(pair.title)) {
+      return;
+    }
+    const firstUserMessage = messages.find((message) => (message.role === "user" || message.role === "user-with-attachments") && (message.displayText?.trim() || message.text.trim()));
+    const text = firstUserMessage?.displayText?.trim() || firstUserMessage?.text.trim() || "";
+    if (text) {
+      this.generateTitleAsync(pair.id, text, pair.defaultCwd);
+    }
+  }
+
+  private generateTitleAsync(pairId: string, firstUserPrompt: string, cwd: string | null): void {
+    const generator = this.options.sessionTitleGenerator;
+    if (!generator) return;
+    this.titleAttempted.add(pairId);
+    this.titleInFlight.add(pairId);
+    void generator.generateTitle({ firstUserPrompt, cwd })
+      .then((title) => {
+        if (title) {
+          this.options.pairStore.updateDefaultPairTitle(pairId, title);
+        }
+      })
+      .catch((error) => {
+        console.warn("Session title generation failed", error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        this.titleInFlight.delete(pairId);
+      });
   }
 
   private syncPairSnapshot(pairId: string, latest?: ButlerMessageView | null, messageCount?: number): void {

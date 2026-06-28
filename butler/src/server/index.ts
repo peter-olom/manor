@@ -33,6 +33,7 @@ import { registerScratchPadRoutes } from "./scratch-pad-routes.js";
 import { registerRuntimeResourceRoutes } from "./runtime-resource-routes.js";
 import { ScratchPadStore } from "./scratch-pad-store.js";
 import { registerServerAssetRoutes } from "./server-asset-routes.js";
+import { CodexSessionTitleGenerator, readSessionTitleConfig } from "./session-title-generator.js";
 import { configureSelfImprovementRequestState, SelfImprovementRequestState } from "./self-improvement-request-state.js";
 import { registerSelfImprovementRoutes } from "./self-improvement-routes.js";
 import { retrieveButlerMemory } from "./memory-retrieval.js";
@@ -206,6 +207,7 @@ const selfImprovementRequests = new SelfImprovementRequestState(path.join(stateD
 await selfImprovementRequests.load();
 configureSelfImprovementRequestState(selfImprovementRequests);
 const memorySynthesisConfig = readMemorySynthesisConfig();
+const sessionTitleGenerator = new CodexSessionTitleGenerator({ stateDir, codexHomeDir, ...readSessionTitleConfig() });
 const memoryReview = new CodexExecMemoryReviewService({ store, stateDir, codexHomeDir, enabled: memorySynthesisConfig.enabled, model: memorySynthesisConfig.model ?? undefined, timeoutMs: memorySynthesisConfig.timeoutMs });
 const routingClassifier = new ButlerRoutingClassifier({ stateDir, codexHomeDir, enabled: true, model: memorySynthesisConfig.model ?? undefined, timeoutMs: memorySynthesisConfig.timeoutMs });
 const workerReview = new CodexWorkerReviewService({ store, stateDir, codexHomeDir, enabled: true, model: memorySynthesisConfig.model ?? undefined, timeoutMs: memorySynthesisConfig.timeoutMs });
@@ -280,6 +282,7 @@ const pairSessions = new PairSessionManager({
   refreshRuntimeInventory: syncRuntimeInventory,
   memoryScheduler,
   routingClassifier,
+  sessionTitleGenerator,
   onButlerPatch: (payload) => sseHub?.broadcastButlerPatch(payload)
 });
 runtimeAccess = {

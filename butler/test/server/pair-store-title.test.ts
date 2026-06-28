@@ -81,6 +81,28 @@ test("updatePairTitle returns null for an unknown pair id", async () => {
   assert.equal(result, null);
 });
 
+test("updateDefaultPairTitle renames only default-titled sessions", async () => {
+  const pairStore = await createPairStore();
+  const created = pairStore.createPair();
+
+  const updated = pairStore.updateDefaultPairTitle(created.id, "Checkout retry flow");
+  assert.ok(updated);
+  assert.equal(updated.title, "Checkout retry flow");
+
+  const ignored = pairStore.updateDefaultPairTitle(created.id, "Overwritten title");
+  assert.equal(ignored, null);
+  assert.equal(pairStore.getPair(created.id)?.title, "Checkout retry flow");
+});
+
+test("updateDefaultPairTitle preserves manual titles", async () => {
+  const pairStore = await createPairStore();
+  const created = pairStore.createPair({ title: "Manual title" });
+
+  const updated = pairStore.updateDefaultPairTitle(created.id, "Generated title");
+  assert.equal(updated, null);
+  assert.equal(pairStore.getPair(created.id)?.title, "Manual title");
+});
+
 test("updatePairSnapshot stores live Butler status and latest message", async () => {
   const pairStore = await createPairStore();
   const created = pairStore.createPair();

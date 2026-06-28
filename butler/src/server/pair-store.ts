@@ -41,6 +41,10 @@ function titleFromText(text: string): string {
   return normalized.length > 72 ? `${normalized.slice(0, 69)}...` : normalized;
 }
 
+export function pairTitleIsDefault(title: string | null | undefined): boolean {
+  return titleFromText(title ?? DEFAULT_TITLE) === DEFAULT_TITLE;
+}
+
 function threadIsStillRunning(thread: ReturnType<ButlerStateStore["getThread"]>): boolean {
   const latestTurn = thread?.turns.at(-1);
   return thread?.status === "active" || latestTurn?.status === "inProgress" || latestTurn?.status === "started";
@@ -194,6 +198,21 @@ export class PairStore extends EventEmitter {
   updatePairTitle(pairId: string, rawTitle: string): PairChat | null {
     const pair = this.pairs.get(pairId);
     if (!pair || !normalizeText(rawTitle)) {
+      return null;
+    }
+    const next = titleFromText(rawTitle);
+    if (next !== pair.title) {
+      pair.title = next;
+      pair.updatedAt = Date.now();
+      this.queueSave();
+      this.emit("change");
+    }
+    return this.getPair(pair.id);
+  }
+
+  updateDefaultPairTitle(pairId: string, rawTitle: string): PairChat | null {
+    const pair = this.pairs.get(pairId);
+    if (!pair || !pairTitleIsDefault(pair.title) || !normalizeText(rawTitle)) {
       return null;
     }
     const next = titleFromText(rawTitle);
