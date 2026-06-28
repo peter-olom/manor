@@ -383,7 +383,7 @@ test("strict JSON claims reject mixed malformed claims", () => {
   );
 });
 
-test("review gate blocks missing or serious findings and allows non-serious findings", async () => {
+test("review gate treats missing Codex review as advisory and blocks serious findings", async () => {
   const store = await createStore();
   const contract = makeContract();
   createThread(store, contract);
@@ -396,7 +396,7 @@ test("review gate blocks missing or serious findings and allows non-serious find
   });
   acceptChecklist(store, contract.threadId);
 
-  assert.match(getOperatorCloseoutBlocker(store, contract.threadId) ?? "", /Codex review is required/);
+  assert.equal(getOperatorCloseoutBlocker(store, contract.threadId), null);
 
   const blocking: WorkerReviewResultRecordView = {
     id: "review-blocking",
@@ -534,6 +534,8 @@ test("automation-failure review results do not suppress retry", async () => {
       updatedAt: 1
     }
   ]);
+  acceptChecklist(store, contract.threadId);
+  assert.equal(getOperatorCloseoutBlocker(store, contract.threadId), null);
   const stateDir = await mkdtemp(path.join(tmpdir(), "manor-review-retry-"));
   let runs = 0;
   const service = new CodexWorkerReviewService({
@@ -551,7 +553,6 @@ test("automation-failure review results do not suppress retry", async () => {
   assert.equal(runs, 1);
   const results = store.getThread(contract.threadId)?.executionContract?.reviewResults ?? [];
   assert.equal(results.some((result) => result.automationFailure !== true && result.reportUpdatedAt === report.updatedAt), true);
-  acceptChecklist(store, contract.threadId);
   assert.equal(getOperatorCloseoutBlocker(store, contract.threadId), null);
 });
 

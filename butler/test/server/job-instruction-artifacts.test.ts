@@ -40,6 +40,8 @@ test("job payloads persist structured JSON and keep chat text readable", async (
   assert.equal(listed.length, 1);
   assert.equal(read?.payloadId, payload.payloadId);
   assert.equal(read?.schemaVersion, "manor.job_payload.v1");
+  assert.equal(read?.protocol.workerThreadId, contract.threadId);
+  assert.equal(read?.protocol.reportChannel, "manor-harness");
   assert.deepEqual(read?.checklist.map((point) => point.text), contract.acceptancePoints);
   assert.match(prompt, /manor-harness --thread thread-payload payload current/);
   assert.doesNotMatch(prompt, /MANOR INSTRUCTION/);
@@ -63,6 +65,8 @@ test("job payload updates mutate the current payload node graph", async () => {
 
   assert.equal(read?.revision, 2);
   assert.equal(read?.kind, "steering");
+  assert.equal(read?.protocol.workerThreadId, "thread-payload");
+  assert.equal(read?.protocol.version, 2);
   assert.equal(read?.nodes.length, 2);
   assert.equal(read?.nodes[1]?.parentId, read?.nodes[0]?.id);
   assert.deepEqual(read?.attachments.images, ["image-1"]);

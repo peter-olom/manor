@@ -8,11 +8,15 @@ import { PairStore } from "../../src/server/pair-store.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 
 async function createPairStore(): Promise<PairStore> {
+  return (await createPairHarness()).pairStore;
+}
+
+async function createPairHarness(): Promise<{ pairStore: PairStore; store: ButlerStateStore }> {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-pair-store-test-"));
   const store = new ButlerStateStore(path.join(dir, "state.json"));
   const pairStore = new PairStore(path.join(dir, "pairs.json"), store);
   await pairStore.load();
-  return pairStore;
+  return { pairStore, store };
 }
 
 test("createPair starts with empty Butler-backed state", async () => {
@@ -137,4 +141,167 @@ test("attachWorker records one Butler-managed worker", async () => {
   assert.equal(updated.worker?.task, "Fix the checkout retry bug");
   assert.equal(updated.worker?.handoffPrompt, "Run the checks and report evidence.");
   assert.equal(updated.status, "worker_running");
+});
+
+test("attachWorker keeps the first worker as the primary pair pipe", async () => {
+  const pairStore = await createPairStore();
+  const created = pairStore.createPair();
+
+  pairStore.attachWorker(created.id, {
+    threadId: "thread-primary",
+    task: "Build the requested app",
+    cwd: "/workspace",
+    handoffPrompt: "Primary job"
+  });
+  const updated = pairStore.attachWorker(created.id, {
+    threadId: "thread-auxiliary",
+    task: "Investigate a platform issue",
+    cwd: "/workspace",
+    handoffPrompt: "Auxiliary job"
+  });
+
+  assert.equal(updated?.worker?.threadId, "thread-primary");
+  assert.equal(updated?.worker?.task, "Build the requested app");
+});
+
+test("active workers with an interim blocked report stay running", async () => {
+  const { pairStore, store } = await createPairHarness();
+  const created = pairStore.createPair();
+  store.upsertThreadSummary({
+    id: "thread-active",
+    status: "active",
+    cwd: "/workspace",
+    turns: [{ id: "turn-active", status: "inProgress", items: [] }]
+  });
+  pairStore.attachWorker(created.id, {
+    threadId: "thread-active",
+    task: "Build the requested app",
+    cwd: "/workspace",
+    handoffPrompt: "Primary job"
+  });
+  store.recordWorkerReport("thread-active", {
+    turnId: "turn-active",
+    status: "blocked",
+    summary: "Reviewer context failed.",
+    details: "A child reviewer could not read its payload."
+  });
+
+  pairStore.syncWorkerReports();
+
+  assert.equal(pairStore.getPair(created.id)?.status, "worker_running");
+});
+
+test("completed worker report returns to idle after Butler posts the callback", async () => {
+  const { pairStore, store } = await createPairHarness();
+  const created = pairStore.createPair();
+  store.upsertThreadSummary({
+    id: "thread-done",
+    status: "idle",
+    cwd: "/workspace",
+    turns: [{ id: "turn-done", status: "completed", items: [] }]
+  });
+  pairStore.attachWorker(created.id, {
+    threadId: "thread-done",
+    task: "Build the requested app",
+    cwd: "/workspace",
+    handoffPrompt: "Primary job"
+  });
+  const report = store.recordWorkerReport("thread-done", {
+    turnId: "turn-done",
+    status: "completed",
+    summary: "Built the app.",
+    details: "Verified locally."
+  });
+
+  pairStore.syncWorkerReports();
+  assert.equal(pairStore.getPair(created.id)?.status, "needs_butler_review");
+
+  const reviewed = pairStore.updatePairSnapshot(created.id, {
+    butlerPending: false,
+    lastMessage: {
+      id: "callback-thread-done:turn-done",
+      role: "butler",
+      lane: "butler",
+      text: "Done.",
+      at: report.updatedAt + 1,
+      sourceThreadId: null,
+      memoryObservationId: null,
+      metadata: {}
+    },
+    updatedAt: report.updatedAt + 1
+  });
+
+  assert.equal(reviewed?.status, "idle");
+  assert.equal(reviewed?.worker?.lastReviewedReportAt, report.updatedAt);
+
+  const later = pairStore.updatePairSnapshot(created.id, {
+    lastMessage: {
+      id: "operator-follow-up",
+      role: "user",
+      lane: "butler",
+      text: "Thanks.",
+      at: report.updatedAt + 2,
+      sourceThreadId: null,
+      memoryObservationId: null,
+      metadata: {}
+    },
+    updatedAt: report.updatedAt + 2
+  });
+
+  assert.equal(later?.status, "idle");
+});
+
+test("a newer worker report needs review even after an earlier callback", async () => {
+  const { pairStore, store } = await createPairHarness();
+  const created = pairStore.createPair();
+  store.upsertThreadSummary({
+    id: "thread-retry",
+    status: "idle",
+    cwd: "/workspace",
+    turns: [{ id: "turn-one", status: "completed", items: [] }]
+  });
+  pairStore.attachWorker(created.id, {
+    threadId: "thread-retry",
+    task: "Build the requested app",
+    cwd: "/workspace",
+    handoffPrompt: "Primary job"
+  });
+  const firstReport = store.recordWorkerReport("thread-retry", {
+    turnId: "turn-one",
+    status: "completed",
+    summary: "First pass.",
+    details: null
+  });
+  pairStore.updatePairSnapshot(created.id, {
+    lastMessage: {
+      id: "callback-thread-retry:turn-one",
+      role: "butler",
+      lane: "butler",
+      text: "First pass done.",
+      at: firstReport.updatedAt + 1,
+      sourceThreadId: null,
+      memoryObservationId: null,
+      metadata: {}
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 2));
+
+  store.upsertThreadSummary({
+    id: "thread-retry",
+    status: "idle",
+    cwd: "/workspace",
+    turns: [
+      { id: "turn-one", status: "completed", items: [] },
+      { id: "turn-two", status: "completed", items: [] }
+    ]
+  });
+  store.recordWorkerReport("thread-retry", {
+    turnId: "turn-two",
+    status: "completed",
+    summary: "Second pass.",
+    details: null
+  });
+
+  pairStore.syncWorkerReports();
+  assert.equal(pairStore.getPair(created.id)?.status, "needs_butler_review");
 });

@@ -1,4 +1,5 @@
 import {
+  assertJobPayloadWorkerAuthority,
   buildJobPayload,
   formatPayloadCurrentText,
   jobPayloadsRoot,
@@ -70,6 +71,7 @@ export async function handleHarnessPayloadAction(input: {
   if (!current) {
     throw new Error("No Manor job payload is stored for this thread.");
   }
+  assertJobPayloadWorkerAuthority(current, input.threadId);
 
   const summary = normalizeString(input.params.summary);
   const details = normalizeString(input.params.details);

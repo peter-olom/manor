@@ -41,6 +41,26 @@ function titleFromText(text: string): string {
   return normalized.length > 72 ? `${normalized.slice(0, 69)}...` : normalized;
 }
 
+function threadIsStillRunning(thread: ReturnType<ButlerStateStore["getThread"]>): boolean {
+  const latestTurn = thread?.turns.at(-1);
+  return thread?.status === "active" || latestTurn?.status === "inProgress" || latestTurn?.status === "started";
+}
+
+function reportCloseoutMessageId(threadId: string, turnId: string): string {
+  return `callback-${threadId}:${turnId}`;
+}
+
+function reviewedReportUpdatedAt(pair: PairChat, store: ButlerStateStore, message: PairMessage | null | undefined): number | null {
+  if (!pair.worker || !message || message.role !== "butler") {
+    return null;
+  }
+  const report = store.getWorkerReport(pair.worker.threadId);
+  if (!report || report.status !== "completed") {
+    return null;
+  }
+  return message.id === reportCloseoutMessageId(report.threadId, report.turnId) ? report.updatedAt : null;
+}
+
 function emptyPair(input: { id: string; title?: string | null; defaultCwd?: string | null; now: number }): PairChat {
   return {
     id: input.id,
@@ -86,7 +106,13 @@ function normalizePair(raw: Partial<PairChat> & { id?: string }, store: ButlerSt
   pair.butlerPending = raw.butlerPending === true;
   pair.butlerPendingReason = typeof raw.butlerPendingReason === "string" && raw.butlerPendingReason.trim() ? raw.butlerPendingReason : null;
   pair.butlerLastError = typeof raw.butlerLastError === "string" && raw.butlerLastError.trim() ? raw.butlerLastError : null;
-  pair.worker = raw.worker ?? null;
+  pair.worker = raw.worker ? {
+    ...raw.worker,
+    lastReviewedReportAt:
+      typeof raw.worker.lastReviewedReportAt === "number" && Number.isFinite(raw.worker.lastReviewedReportAt)
+        ? raw.worker.lastReviewedReportAt
+        : null
+  } : null;
   pair.memoryQuery = typeof raw.memoryQuery === "string" && raw.memoryQuery.trim() ? raw.memoryQuery : null;
   pair.lastHandoffPrompt = typeof raw.lastHandoffPrompt === "string" && raw.lastHandoffPrompt.trim() ? raw.lastHandoffPrompt : null;
   pair.messageCount = typeof raw.messageCount === "number" && Number.isFinite(raw.messageCount) ? Math.max(0, Math.trunc(raw.messageCount)) : 0;
@@ -104,13 +130,18 @@ function deriveStatus(pair: PairChat, store: ButlerStateStore): PairStatus {
   if (pair.worker) {
     const report = store.getWorkerReport(pair.worker.threadId);
     const thread = store.getThread(pair.worker.threadId);
-    if (report?.status === "blocked") {
+    if (report?.status === "blocked" && !threadIsStillRunning(thread)) {
       return "blocked";
     }
-    if (report && (!pair.worker.lastRevertAt || report.updatedAt > pair.worker.lastRevertAt)) {
+    const reportNeedsReview =
+      report &&
+      (report.status === "completed" || !threadIsStillRunning(thread)) &&
+      (!pair.worker.lastRevertAt || report.updatedAt > pair.worker.lastRevertAt) &&
+      (!pair.worker.lastReviewedReportAt || report.updatedAt > pair.worker.lastReviewedReportAt);
+    if (reportNeedsReview) {
       return "needs_butler_review";
     }
-    if (thread?.status === "active" || pair.worker.status === "running" || pair.worker.status === "starting") {
+    if (threadIsStillRunning(thread) || pair.worker.status === "running" || pair.worker.status === "starting") {
       return "worker_running";
     }
   }
@@ -187,6 +218,10 @@ export class PairStore extends EventEmitter {
     if (snapshot.butlerLastError !== undefined) pair.butlerLastError = snapshot.butlerLastError;
     if (snapshot.messageCount !== undefined) pair.messageCount = Math.max(0, Math.trunc(snapshot.messageCount));
     if (snapshot.lastMessage !== undefined) pair.lastMessage = snapshot.lastMessage;
+    const reviewedAt = reviewedReportUpdatedAt(pair, this.store, snapshot.lastMessage);
+    if (reviewedAt && pair.worker && (!pair.worker.lastReviewedReportAt || reviewedAt > pair.worker.lastReviewedReportAt)) {
+      pair.worker.lastReviewedReportAt = reviewedAt;
+    }
     if (snapshot.butlerThinkingLevel !== undefined) pair.butlerThinkingLevel = snapshot.butlerThinkingLevel;
     if (snapshot.codexEffort !== undefined) pair.codexEffort = snapshot.codexEffort;
     pair.status = deriveStatus(pair, this.store);
@@ -214,6 +249,12 @@ export class PairStore extends EventEmitter {
     if (!pair) {
       return null;
     }
+    if (pair.worker && pair.worker.threadId !== input.threadId) {
+      pair.updatedAt = Date.now();
+      this.queueSave();
+      this.emit("change");
+      return this.getPair(pair.id);
+    }
     const thread = this.store.getThread(input.threadId);
     const now = Date.now();
     pair.worker = {
@@ -226,7 +267,8 @@ export class PairStore extends EventEmitter {
       lastRevertAt: null,
       lastReportAt: null,
       lastReportStatus: null,
-      lastReportSummary: null
+      lastReportSummary: null,
+      lastReviewedReportAt: null
     };
     pair.lastHandoffPrompt = pair.worker.handoffPrompt || null;
     pair.updatedAt = now;
@@ -254,6 +296,11 @@ export class PairStore extends EventEmitter {
         pair.worker.lastReportStatus = report.status;
         pair.worker.lastReportSummary = report.summary;
         pair.updatedAt = Math.max(pair.updatedAt, report.updatedAt);
+        changed = true;
+      }
+      const reviewedAt = reviewedReportUpdatedAt(pair, this.store, pair.lastMessage);
+      if (reviewedAt && (!pair.worker.lastReviewedReportAt || reviewedAt > pair.worker.lastReviewedReportAt)) {
+        pair.worker.lastReviewedReportAt = reviewedAt;
         changed = true;
       }
       const nextPairStatus = deriveStatus(pair, this.store);

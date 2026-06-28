@@ -213,12 +213,8 @@ export function getOrchestrationCloseoutBlocker(input: {
   }
   if (!orchestration.reviewRecommendation.required) return null;
   const currentResults = (contract.reviewResults ?? []).filter((result) => result.turnId === report.turnId && result.reportUpdatedAt === report.updatedAt);
-  if (currentResults.length === 0) {
-    return "Codex review is required for this job before Butler can close it.";
-  }
   const completedResults = currentResults.filter((result) => result.automationFailure !== true);
-  const closeoutResults = completedResults.length > 0 ? completedResults : currentResults;
-  const blocker = closeoutResults.find((result) => result.blocking && !result.waived);
+  const blocker = completedResults.find((result) => result.blocking && !result.waived);
   return blocker ? `Codex review blocked closeout: ${blocker.findingSummary}` : null;
 }
 

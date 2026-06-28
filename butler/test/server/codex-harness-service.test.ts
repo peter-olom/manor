@@ -111,6 +111,61 @@ test("harness reads and updates the current payload for the bound thread", async
   assert.equal((updated.data?.payload as { report?: { summary?: string } } | undefined)?.report?.summary, "Worker updated payload");
 });
 
+test("harness rejects payload writes when the stored protocol targets another worker", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-harness-payload-authority-"));
+  const stateDir = path.join(root, "state");
+  const codexHomeDir = path.join(root, "codex-home");
+  const artifactsDir = path.join(root, "artifacts");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "butler-ui.json"), JSON.stringify({ windows: [], focusedWindowId: null }, null, 2), "utf8");
+  const store = new ButlerStateStore(path.join(stateDir, "butler-ui.json"));
+  await store.load();
+  store.upsertThreadSummary({ id: "thread-bound", cwd: "/workspace", status: "active", source: "codex" });
+  const contract = buildThreadExecutionContract({
+    threadId: "thread-bound",
+    workspaceCwd: "/workspace",
+    projectId: "project",
+    projectLabel: "Project",
+    branch: null,
+    taskText: "Respect the bound worker thread.",
+    notes: []
+  });
+  store.setThreadExecutionContract(contract.threadId, contract);
+  const payload = buildJobPayload({
+    threadId: contract.threadId,
+    kind: "delegation",
+    instruction: contract.requestedTask,
+    contract
+  });
+  await persistJobPayload(jobPayloadsRoot(artifactsDir), payload);
+  await writeFile(
+    path.join(jobPayloadsRoot(artifactsDir), contract.threadId, "current.json"),
+    JSON.stringify({ ...payload, protocol: { ...payload.protocol, workerThreadId: "thread-other" } }, null, 2),
+    "utf8"
+  );
+
+  const harness = new CodexHarnessService({
+    codexHomeDir,
+    stateDir,
+    artifactsDir,
+    store,
+    runtimeBroker: { listStacks: async () => [] } as unknown as RuntimeBrokerClient,
+    serviceTemplateRegistry: { list: () => [], get: () => undefined } as unknown as ServiceTemplateRegistry
+  });
+  await harness.load();
+  const capability = await harness.ensureThreadCapability(contract.threadId, "/workspace");
+  assert.ok(capability);
+
+  await assert.rejects(
+    () => harness.handleAction({
+      token: capability.token,
+      action: "payload.update",
+      params: { status: "completed", summary: "Wrong worker" }
+    }),
+    /not bound to this Codex worker thread/
+  );
+});
+
 test("harness recovers the current payload from the thread contract when the payload file is missing", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "manor-harness-payload-fallback-"));
   const stateDir = path.join(root, "state");

@@ -1,4 +1,5 @@
 import {
+  assertJobPayloadWorkerAuthority,
   jobPayloadsRoot,
   persistJobPayload,
   readCurrentJobPayload,
@@ -17,6 +18,7 @@ export async function updatePayloadFromWorkerReport(input: {
   if (!currentPayload) {
     return;
   }
+  assertJobPayloadWorkerAuthority(currentPayload, input.report.threadId);
   const nextPayload = updateJobPayload(currentPayload, {
     kind: "worker_report",
     instruction: [input.report.summary, input.report.details].filter(Boolean).join("\n\n"),
@@ -47,6 +49,7 @@ export async function updatePayloadFromAssist(input: {
   if (!currentPayload) {
     return;
   }
+  assertJobPayloadWorkerAuthority(currentPayload, input.thread.id);
   const nextPayload = updateJobPayload(currentPayload, {
     kind: "assist_context",
     instruction: input.text,

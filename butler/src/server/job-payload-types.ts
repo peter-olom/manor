@@ -2,6 +2,16 @@ export interface JobPayloadView {
   schemaVersion: "manor.job_payload.v1";
   payloadId: string;
   threadId: string;
+  protocol: {
+    taskId: string;
+    butlerThreadId: string | null;
+    workerThreadId: string;
+    currentAttemptId: string;
+    attempt: number;
+    version: number;
+    parentThreadId: string | null;
+    reportChannel: "manor-harness";
+  };
   rootNodeId: string;
   currentNodeId: string;
   revision: number;

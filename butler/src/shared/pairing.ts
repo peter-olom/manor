@@ -66,6 +66,7 @@ export type PairWorker = {
   lastReportAt: number | null;
   lastReportStatus: "completed" | "blocked" | null;
   lastReportSummary: string | null;
+  lastReviewedReportAt: number | null;
   requestedReasoningEffort?: string | null;
 };
 

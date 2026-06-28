@@ -4,6 +4,21 @@ import { getReviewPanelCloseoutBlocker } from "./review-panel.js";
 import { evaluateOperatorCloseoutGate } from "./supervision-checklist.js";
 import type { ButlerCallbackResolutionState, ButlerThreadCallbackView, CodexThreadRecord, CodexWorkerReportView } from "./types.js";
 
+function isThreadStillRunning(thread: CodexThreadRecord | null | undefined): boolean {
+  const latestTurn = thread?.turns.at(-1);
+  return thread?.status === "active" || latestTurn?.status === "inProgress" || latestTurn?.status === "started";
+}
+
+export function relevantTerminalWorkerReport(
+  thread: CodexThreadRecord | null | undefined,
+  report: CodexWorkerReportView | null | undefined,
+  requestedAt: number
+): CodexWorkerReportView | null {
+  if (!report || report.updatedAt < requestedAt) return null;
+  if (report.status === "completed") return report;
+  return isThreadStillRunning(thread) ? null : report;
+}
+
 export function getOperatorCloseoutBlocker(
   store: ButlerStateStore,
   threadId: string,

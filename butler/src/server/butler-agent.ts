@@ -59,7 +59,7 @@ import type { ButlerAgentSessionAccess, ButlerAgentToolAccess } from "./butler-a
 import { BUTLER_TOOL_CATALOG } from "./butler-agent-tool-catalog.js";
 import { keepButlerActivityBefore, normalizeButlerActivitySummaryTurns } from "./butler-activity.js";
 import { loadButlerCallbackState, saveButlerCallbackState } from "./butler-callback-state.js";
-import { applyPostedCloseout, blockCloseoutReview, getOperatorCloseoutBlocker as getCloseoutBlocker, idleCloseoutReview, isSameBlockedCloseout, queueCloseoutReview, recordGatedCloseout, recordPostedCloseoutEvents } from "./butler-closeout-gate.js";
+import { applyPostedCloseout, blockCloseoutReview, getOperatorCloseoutBlocker as getCloseoutBlocker, idleCloseoutReview, isSameBlockedCloseout, queueCloseoutReview, recordGatedCloseout, recordPostedCloseoutEvents, relevantTerminalWorkerReport } from "./butler-closeout-gate.js";
 import { backfillOperatorMessagesFromSessionFiles, normalizeOperatorMessages, normalizeOperatorQuestion, removeOperatorMessage, upsertOperatorMessage } from "./butler-operator-messages.js";
 import { readButlerAuthStatus, readCodexAuthStatus } from "./auth-status.js";
 import { backfillDirectCodexMessagesFromSessionFiles, notifyDirectCodexMessage, type DirectCodexMessageAccess, type DirectCodexMessagePingInput } from "./direct-codex-message.js";
@@ -431,7 +431,7 @@ export class ButlerAgentService extends EventEmitter {
       throw new Error(`Job ${threadId} is no longer available.`);
     }
     const workerReport = this.store.getWorkerReport(threadId);
-    const relevantWorkerReport = workerReport && workerReport.updatedAt >= callback.requestedAt ? workerReport : null;
+    const relevantWorkerReport = relevantTerminalWorkerReport(thread, workerReport, callback.requestedAt);
     const closeoutTurnId = relevantWorkerReport?.turnId ?? getFallbackTurnId(thread);
     if (!closeoutTurnId) {
       throw new Error(`Job ${threadId} does not have a turn Butler can close against yet.`);
@@ -502,7 +502,7 @@ export class ButlerAgentService extends EventEmitter {
 
       const thread = this.store.getThread(callback.threadId);
       const workerReport = this.store.getWorkerReport(callback.threadId);
-      const relevantWorkerReport = workerReport && workerReport.updatedAt >= callback.requestedAt ? workerReport : null;
+      const relevantWorkerReport = relevantTerminalWorkerReport(thread, workerReport, callback.requestedAt);
       const nextStatus = thread?.status ?? "unknown";
       const latestAgentReplyAt = latestCompletedAgentMessageAt(thread);
       const hasRecoverableThreadReply = nextStatus === "idle" && Boolean(thread?.supervisor.latestAgentReply?.trim()) && latestAgentReplyAt !== null && latestAgentReplyAt >= callback.requestedAt;
@@ -555,7 +555,7 @@ export class ButlerAgentService extends EventEmitter {
       }
 
       const workerReport = this.store.getWorkerReport(callback.threadId);
-      const relevantWorkerReport = workerReport && workerReport.updatedAt >= callback.requestedAt ? workerReport : null;
+      const relevantWorkerReport = relevantTerminalWorkerReport(thread, workerReport, callback.requestedAt);
       if (relevantWorkerReport) {
         callback.lastTerminalReportAt = relevantWorkerReport.updatedAt;
         callback.lastEventAt = relevantWorkerReport.updatedAt;
@@ -964,7 +964,7 @@ export class ButlerAgentService extends EventEmitter {
       if (nextCallback.reviewState === "running") {
         const thread = this.store.getThread(callback.threadId);
         const workerReport = this.store.getWorkerReport(callback.threadId);
-        const relevantWorkerReport = workerReport && workerReport.updatedAt >= nextCallback.requestedAt ? workerReport : null;
+        const relevantWorkerReport = relevantTerminalWorkerReport(thread, workerReport, nextCallback.requestedAt);
         const safeCloseoutText =
           nextCallback.callbackState === "received_worker_callback"
             ? buildChatCallbackText(thread, relevantWorkerReport)
@@ -1098,7 +1098,7 @@ export class ButlerAgentService extends EventEmitter {
     if (cached?.signature === signature) {
       return { text: cached.text, contract: cached.contract };
     }
-    const result = await buildButlerDelegationContract({ store: this.store, ...options });
+    const result = await buildButlerDelegationContract({ store: this.store, butlerThreadId: this.session?.sessionId ?? null, ...options });
     await persistJobPayload(jobPayloadsRoot(this.artifactsDir), result.payload);
     this.store.setThreadJobPayload(result.payload);
     const cachedResult = { signature, text: result.text, contract: result.contract };
@@ -1114,11 +1114,13 @@ export class ButlerAgentService extends EventEmitter {
     fileReferenceIds?: string[];
     contract?: CodexThreadExecutionContractView | null;
     checklist?: SupervisionChecklistView | null;
+    butlerThreadId?: string | null;
   }) {
     const thread = this.store.getThread(input.threadId);
     const existing = this.store.getThreadJobPayload(input.threadId);
     const update = {
       ...input,
+      butlerThreadId: input.butlerThreadId ?? this.session?.sessionId ?? null,
       contract: input.contract ?? thread?.executionContract ?? null,
       checklist: input.checklist ?? thread?.supervisionChecklist ?? null
     };

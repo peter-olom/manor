@@ -18,6 +18,7 @@ export async function buildButlerDelegationContract(options: {
   workspace: { cwd: string; branchName: string | null };
   extraNotes?: string[];
   orchestration?: ButlerRoutingDecisionView | null;
+  butlerThreadId?: string | null;
 }): Promise<{ text: string; contract: CodexThreadExecutionContractView; payload: JobPayloadView }> {
   const requestedTask = options.goal ? `${options.task}\n\nGoal: ${options.goal}` : options.task;
   const requestedTaskOnly = options.task.trim();
@@ -67,6 +68,7 @@ export async function buildButlerDelegationContract(options: {
     threadId: options.threadId,
     kind: "delegation",
     instruction: requestedTask,
+    butlerThreadId: options.butlerThreadId ?? null,
     contract
   });
   return { text: formatJobPayloadMessage("delegation", options.threadId), contract, payload };

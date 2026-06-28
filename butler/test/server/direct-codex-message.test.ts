@@ -207,7 +207,7 @@ test("direct Codex callback recovery uses worker reply item time instead of refr
   }
 });
 
-test("gated callback closeout stays blocked without requeueing the same blocker", async () => {
+test("automation-only review failure does not gate callback closeout", async () => {
   const store = await createStore();
   const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-session-"));
   const threadId = "thread-gated-closeout";
@@ -304,15 +304,16 @@ test("gated callback closeout stays blocked without requeueing the same blocker"
     Date.now = () => reportAt + 1;
     assert.equal(await internals.processPendingChatCallbacks(), true);
     const callback = internals.pendingChatCallbacks.get(threadId);
-    assert.equal(callback?.reviewState, "blocked");
-    assert.match(callback?.blockedCloseoutReason ?? "", /Codex review blocked closeout/);
-    assert.equal(callback?.blockedCloseoutReportAt, report.updatedAt);
-    assert.equal(store.getThread(threadId)?.eventLog.filter((event) => event.method === "butler.closeout.gated").length, 1);
+    assert.equal(callback?.callbackState, "closed");
+    assert.equal(callback?.operatorCloseoutStatus, "posted");
+    assert.equal(callback?.reviewState, "idle");
+    assert.equal(callback?.blockedCloseoutReason, null);
+    assert.equal(store.getThread(threadId)?.eventLog.filter((event) => event.method === "butler.closeout.gated").length, 0);
 
     Date.now = () => reportAt + 2;
     assert.equal(await internals.processPendingChatCallbacks(), false);
-    assert.equal(callback?.reviewState, "blocked");
-    assert.equal(store.getThread(threadId)?.eventLog.filter((event) => event.method === "butler.closeout.gated").length, 1);
+    assert.equal(callback?.callbackState, "closed");
+    assert.equal(store.getThread(threadId)?.eventLog.filter((event) => event.method === "butler.closeout.gated").length, 0);
   } finally {
     Date.now = originalNow;
   }

@@ -25,6 +25,8 @@ export type JobPayloadUpdateInput = {
   instruction: string;
   summary?: string | null;
   status?: JobPayloadStatus | null;
+  butlerThreadId?: string | null;
+  parentThreadId?: string | null;
   contract?: CodexThreadExecutionContractView | null;
   checklist?: SupervisionChecklistView | null;
   imageReferenceIds?: string[];
@@ -41,6 +43,16 @@ export const JobPayloadSchema = Type.Object({
   schemaVersion: Type.Literal("manor.job_payload.v1"),
   payloadId: Type.String({ minLength: 1 }),
   threadId: Type.String({ minLength: 1 }),
+  protocol: Type.Object({
+    taskId: Type.String({ minLength: 1 }),
+    butlerThreadId: nullableString,
+    workerThreadId: Type.String({ minLength: 1 }),
+    currentAttemptId: Type.String({ minLength: 1 }),
+    attempt: Type.Number(),
+    version: Type.Number(),
+    parentThreadId: nullableString,
+    reportChannel: Type.Literal("manor-harness")
+  }),
   rootNodeId: Type.String({ minLength: 1 }),
   currentNodeId: Type.String({ minLength: 1 }),
   revision: Type.Number(),
@@ -232,6 +244,16 @@ export function buildJobPayload(input: {
     schemaVersion: "manor.job_payload.v1",
     payloadId: `payload-${input.threadId}`,
     threadId: input.threadId,
+    protocol: {
+      taskId: `task-${input.threadId}`,
+      butlerThreadId: input.butlerThreadId ?? null,
+      workerThreadId: input.threadId,
+      currentAttemptId: `attempt-${input.threadId}-1`,
+      attempt: 1,
+      version: 1,
+      parentThreadId: input.parentThreadId ?? null,
+      reportChannel: "manor-harness"
+    },
     rootNodeId: node.id,
     currentNodeId: node.id,
     revision: 1,
@@ -285,6 +307,14 @@ export function updateJobPayload(payload: JobPayloadView, input: JobPayloadUpdat
   const node = buildNode(payload, input, summary, now);
   const next: JobPayloadView = {
     ...payload,
+    protocol: {
+      ...payload.protocol,
+      workerThreadId: payload.threadId,
+      version: payload.protocol.version + 1,
+      butlerThreadId: input.butlerThreadId ?? payload.protocol.butlerThreadId,
+      parentThreadId: input.parentThreadId ?? payload.protocol.parentThreadId,
+      reportChannel: "manor-harness"
+    },
     currentNodeId: node.id,
     revision: payload.revision + 1,
     kind: input.kind,
@@ -366,6 +396,16 @@ export async function readCurrentJobPayload(rootDir: string, threadId: string): 
     .then((raw) => parseJobPayload(JSON.parse(raw)))
     .catch(() => null);
   return payload?.threadId === threadId ? payload : null;
+}
+
+export function assertJobPayloadWorkerAuthority(payload: JobPayloadView, workerThreadId: string): void {
+  if (
+    payload.threadId !== workerThreadId ||
+    payload.protocol.workerThreadId !== workerThreadId ||
+    payload.delivery.threadId !== workerThreadId
+  ) {
+    throw new Error("Manor job payload is not bound to this Codex worker thread.");
+  }
 }
 
 export async function listJobPayloads(rootDir: string): Promise<JobPayloadView[]> {
