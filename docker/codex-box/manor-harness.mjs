@@ -88,6 +88,8 @@ Proof tips:
   Cookies are injected into the browser context directly; headers remain separate.
   Proof is session-driven: start browser sidecar, run actions, optionally capture screenshots, then stop session.
   Native Electron or VNC-visible proof is desktop-driven: check desktop status, start a desktop session attached to this job workspace, capture screenshots/actions there, then stop it.
+  If the browser proof sidecar is unavailable, retry briefly and then report the proof blocker; do not install browsers or OS packages inside a preview as the default fallback.
+  Desktop proof is optional/profile-gated. Use it only when desktop status says it is ready.
   Text proof is for simple read-only notes and inspection summaries; it stores the note directly in Manor artifacts without creating side files under /repos.
   File proof is for cases where the durable evidence is an existing generated file, PDF, Office file, archive, report, export, log, or saved artifact.
   UI-impacting work must surface screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are insufficient.

@@ -122,3 +122,37 @@ test("Butler lease tools update sticky preview and stack lifecycle", async () =>
   assert.match(stackResult.content[0]?.text ?? "", /lease=sticky ttl=45m/);
   assert.match(previewResult.content[0]?.text ?? "", /lease=sticky/);
 });
+
+test("Butler browser action tool rejects failed browser action payloads", async () => {
+  const definitions: Array<{
+    name: string;
+    execute: (toolCallId: string, params: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>;
+  }> = [];
+
+  const access = {
+    defineButlerTool: (definition: (typeof definitions)[number]) => {
+      definitions.push(definition);
+      return definition;
+    },
+    getToolUiEffects: () => [],
+    runtimeBroker: {
+      runBrowserSessionAction: async () => {
+        throw new Error("Browser-use action evaluate failed.");
+      }
+    }
+  } as unknown as ButlerAgentToolAccess;
+
+  buildButlerStackPreviewTools(access);
+  const browserAction = definitions.find((definition) => definition.name === "browser_session_action");
+  assert.ok(browserAction);
+
+  await assert.rejects(
+    () =>
+      browserAction.execute("tool-call-1", {
+        sessionId: "browser-session-1",
+        actionType: "evaluate",
+        script: "throw new Error('boom')"
+      }),
+    /Browser-use action evaluate failed/
+  );
+});

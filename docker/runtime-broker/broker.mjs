@@ -35,7 +35,7 @@ const codexWorkspaceContainerName = process.env.RUNTIME_CODEX_WORKSPACE_CONTAINE
 const butlerContainerName = process.env.RUNTIME_BUTLER_CONTAINER ?? "manor-butler";
 const butlerArtifactsRootDir = path.posix.resolve(process.env.RUNTIME_BUTLER_ARTIFACTS_DIR ?? "/artifacts");
 const playwrightContainerName = process.env.RUNTIME_PLAYWRIGHT_CONTAINER ?? "manor-playwright";
-const playwrightControlUrl = process.env.RUNTIME_PLAYWRIGHT_CONTROL_URL ?? "http://manor-playwright:3777";
+const playwrightControlUrl = process.env.RUNTIME_PLAYWRIGHT_CONTROL_URL ?? "http://playwright:3777";
 const desktopProofContainerName = process.env.RUNTIME_DESKTOP_PROOF_CONTAINER ?? "manor-desktop-proof";
 const desktopProofControlUrl = process.env.RUNTIME_DESKTOP_PROOF_CONTROL_URL ?? "http://desktop-proof:3888";
 const runtimeBrokerContainerName = process.env.RUNTIME_BROKER_CONTAINER ?? "manor-runtime-broker";
@@ -350,7 +350,7 @@ async function runManagedRuntimeReconcile(reason = "scheduled") {
   }
 }
 
-function getRuntimeHealthSnapshot(now = Date.now()) {
+async function getRuntimeHealthSnapshot(now = Date.now()) {
   const reconcileWindowMs = Math.max((stackInfraReconnectIntervalMs || 30000) * 3, 90000);
   const hasRecentSuccess =
     typeof runtimeReconcileState.lastSucceededAt === "number" &&
@@ -361,9 +361,22 @@ function getRuntimeHealthSnapshot(now = Date.now()) {
     now - runtimeReconcileState.lastStartedAt <= reconcileWindowMs;
   const reconcileHealthy =
     runtimeReconcileState.consecutiveFailures < 3 && (hasRecentSuccess || startupGraceActive);
+  const [playwright, desktop] = await Promise.all([
+    browserController.inspectPlaywrightSidecar(),
+    desktopController.inspectDesktopSidecar()
+  ]);
+  const proof = {
+    playwright,
+    desktop: {
+      ...desktop,
+      required: false,
+      optional: true,
+      message: desktop.available ? desktop.message : `${desktop.message} Desktop proof is optional and profile-gated.`
+    }
+  };
 
   return {
-    ok: reconcileHealthy,
+    ok: reconcileHealthy && playwright.available,
     reconcile: {
       running: runtimeReconcileState.running,
       lastStartedAt: runtimeReconcileState.lastStartedAt,
@@ -372,7 +385,8 @@ function getRuntimeHealthSnapshot(now = Date.now()) {
       lastError: runtimeReconcileState.lastError,
       consecutiveFailures: runtimeReconcileState.consecutiveFailures,
       staleThresholdMs: reconcileWindowMs
-    }
+    },
+    proof
   };
 }
 
@@ -443,7 +457,7 @@ desktopController.registerRoutes(app);
 app.get("/health", async (_request, response) => {
   try {
     await docker.ping();
-    const health = getRuntimeHealthSnapshot();
+    const health = await getRuntimeHealthSnapshot();
     if (!health.ok) {
       response.status(503).json({ ok: false, ...health });
       return;

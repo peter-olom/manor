@@ -15,10 +15,27 @@ const visualReadyPollIntervalMs = Number(process.env.MANOR_PLAYWRIGHT_VISUAL_REA
 const MAX_CAPTURED_CONSOLE_MESSAGES = 20;
 const MAX_CAPTURED_PAGE_ERRORS = 12;
 const MAX_CAPTURED_FAILED_REQUESTS = 20;
+let processErrorCount = 0;
 const RESOLUTION_PROFILES = {
   "1080p": { width: 1920, height: 1080 },
   "2k": { width: 2560, height: 1440 }
 };
+
+function exitAfterProcessError() {
+  setTimeout(() => process.exit(1), 50).unref();
+}
+
+process.on("uncaughtException", (error) => {
+  processErrorCount += 1;
+  console.error("[browser-use] uncaught exception:", toErrorMessage(error));
+  exitAfterProcessError();
+});
+
+process.on("unhandledRejection", (error) => {
+  processErrorCount += 1;
+  console.error("[browser-use] unhandled rejection:", toErrorMessage(error));
+  exitAfterProcessError();
+});
 
 function now() {
   return Date.now();
@@ -1146,7 +1163,23 @@ async function runAction(session, input) {
       error: message
     });
     session.phaseTracker.finish(phase, "failed", message);
-    throw error;
+    return {
+      ok: false,
+      error: message,
+      action: {
+        type,
+        durationMs: Math.max(0, now() - startedAt),
+        status: "failed"
+      },
+      state: {
+        title: session.title,
+        url: session.url,
+        status: session.status,
+        resolution: session.resolution,
+        viewport: session.viewport,
+        actionCount: session.actions.length
+      }
+    };
   }
 }
 
@@ -1396,7 +1429,7 @@ const server = http.createServer(async (request, response) => {
     const url = new URL(request.url || "/", `http://127.0.0.1:${port}`);
 
     if (method === "GET" && url.pathname === "/health") {
-      writeJson(response, 200, { ok: true, sessions: sessions.size });
+      writeJson(response, 200, { ok: true, sessions: sessions.size, processErrors: processErrorCount });
       return;
     }
 

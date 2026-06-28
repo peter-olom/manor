@@ -210,6 +210,7 @@ services:
       RUNTIME_OPERATOR_BASE_URL: ${RUNTIME_OPERATOR_BASE_URL:-http://127.0.0.1:${BUTLER_HOST_PORT:-8180}}
       RUNTIME_OPERATOR_BASE_URL_INTERNAL: http://butler:8080
       RUNTIME_PLAYWRIGHT_CONTAINER: manor-playwright
+      RUNTIME_PLAYWRIGHT_CONTROL_URL: http://playwright:3777
       RUNTIME_DESKTOP_PROOF_CONTAINER: manor-desktop-proof
       RUNTIME_DESKTOP_PROOF_CONTROL_URL: http://desktop-proof:3888
       RUNTIME_BROKER_TOKEN: "${RUNTIME_BROKER_TOKEN:?Run ./install.sh or set RUNTIME_BROKER_TOKEN in .env.}"
@@ -223,6 +224,8 @@ services:
         condition: service_healthy
       codex-box:
         condition: service_started
+      playwright:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test:
@@ -274,6 +277,19 @@ services:
     shm_size: "2gb"
     volumes:
       - playwright-state:/state
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3777/health').then((response)=>{if(!response.ok) process.exit(1);}).catch(()=>process.exit(1))"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     networks:
       - control
       - work
@@ -296,6 +312,19 @@ services:
     volumes:
       - desktop-proof-state:/state
       - repos:/repos
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3888/health').then((response)=>{if(!response.ok) process.exit(1);}).catch(()=>process.exit(1))"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     networks:
       - control
       - work

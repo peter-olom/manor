@@ -361,6 +361,49 @@ export function createBrokerBrowserController(options) {
     return path.posix.join(playwrightArtifactsScratchDir, "browser-use", "browser", scope.threadId, runId);
   }
 
+  async function inspectPlaywrightSidecar() {
+    const container = docker.getContainer(playwrightContainerName);
+    const inspected = await container.inspect().catch(() => null);
+    if (!inspected) {
+      return {
+        required: true,
+        available: false,
+        status: "missing",
+        message: "Playwright proof sidecar has not been created.",
+        health: null
+      };
+    }
+
+    if (!inspected.State?.Running) {
+      return {
+        required: true,
+        available: false,
+        status: inspected.State?.Status || "stopped",
+        message: "Playwright proof sidecar is not running.",
+        health: null
+      };
+    }
+
+    try {
+      const health = await callPlaywrightControl("/health", { method: "GET" });
+      return {
+        required: true,
+        available: true,
+        status: inspected.State?.Status || "running",
+        message: "Playwright proof sidecar is ready.",
+        health
+      };
+    } catch (error) {
+      return {
+        required: true,
+        available: false,
+        status: inspected.State?.Status || "running",
+        message: error instanceof Error ? error.message : String(error),
+        health: null
+      };
+    }
+  }
+
   function buildAnnotationTargets(scope) {
     const targets = [{ id: "butler", label: "Butler" }];
     if (scope.kind === "preview" && scope.threadId) {
@@ -708,6 +751,7 @@ export function createBrokerBrowserController(options) {
 
   return {
     registerRoutes,
+    inspectPlaywrightSidecar,
     closePlaywrightBrowserUseSession,
     listPreviewSessionIdsForLease
   };

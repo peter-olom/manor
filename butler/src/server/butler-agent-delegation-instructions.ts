@@ -26,6 +26,7 @@ export function buildDelegationDeveloperInstructions(
     "Use Codex-shell for repository, git, and code-editing work.",
     "When the task needs a running app, disposable dependency, browser interaction, or durable proof, use manor-harness and choose the simplest working path.",
     "Browser-use sessions already record video, tracing, a ready screenshot, a final screenshot, and per-action screenshots by default. Use them when the task asks for browser proof. Use `manor-harness proof text` for simple read-only notes or inspection summaries so no proof side files are created under /repos. Use file proof only when a durable existing file, PDF, Office file, archive, report, export, or log is the simplest evidence.",
+    "If the browser proof sidecar is unavailable, retry briefly and then report the proof blocker through Manor. Do not install browsers or OS packages inside a preview as the default fallback.",
     "For any task with UI implications, capture and surface screenshot or video proof of the relevant UI state. Text logs or TXT/file proof alone are insufficient.",
     "Do not wait for Manor to infer project commands. If the project needs install, run, test, or bootstrap commands, choose and run them explicitly.",
     "Keep visible Codex chatter useful: post brief progress notes before major phases, after meaningful findings, and before long-running verification.",

@@ -120,3 +120,88 @@ test("browser proof control retries transient sidecar fetch failures", async () 
   assert.equal(attempts, 2);
   assert.equal(browserUseSessions.has("session-after-retry"), true);
 });
+
+test("browser sidecar inspection reports required Playwright availability", async () => {
+  const controller = createBrokerBrowserController({
+    docker: {
+      getContainer() {
+        return {
+          inspect: async () => ({ State: { Running: true, Status: "running" } })
+        };
+      }
+    },
+    playwrightControlUrl: "http://playwright.test",
+    playwrightArtifactsScratchDir: "/tmp/manor-playwright-artifacts",
+    playwrightContainerName: "manor-playwright",
+    previewNetwork: "manor_preview",
+    sharedWorkNetwork: "manor_work",
+    previewNetworkProbeTimeoutMs: 10,
+    browserUseSessions: new Map(),
+    hasBrokerAccess: () => true,
+    requireContainer: async () => null,
+    rejectIfLeaseRetainedFailed: () => false,
+    rejectIfLeaseUnavailable: () => false,
+    parseAliases: () => [],
+    normalizeString: (value) => (typeof value === "string" ? value.trim() : ""),
+    normalizePositiveInteger: () => null,
+    normalizeEnv: () => ({}),
+    normalizeCookieEntries: () => [],
+    normalizeHeaderMap: () => ({}),
+    resolveTargetHost: (containerName) => containerName,
+    appendPreviewRoutePath: (baseUrl, routePath = "") => new URL(routePath.replace(/^\//, ""), baseUrl).toString(),
+    persistVerificationArtifacts: async () => ({}),
+    internalOperatorBaseUrl: "http://butler:8080",
+    brokerToken: "broker-token",
+    playwrightControlFetch: async () =>
+      new Response(JSON.stringify({ ok: true, sessions: 0 }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+  });
+
+  const status = await controller.inspectPlaywrightSidecar();
+
+  assert.equal(status.required, true);
+  assert.equal(status.available, true);
+  assert.equal(status.message, "Playwright proof sidecar is ready.");
+});
+
+test("browser sidecar inspection reports stopped Playwright as unavailable", async () => {
+  const controller = createBrokerBrowserController({
+    docker: {
+      getContainer() {
+        return {
+          inspect: async () => ({ State: { Running: false, Status: "exited" } })
+        };
+      }
+    },
+    playwrightControlUrl: "http://playwright.test",
+    playwrightArtifactsScratchDir: "/tmp/manor-playwright-artifacts",
+    playwrightContainerName: "manor-playwright",
+    previewNetwork: "manor_preview",
+    sharedWorkNetwork: "manor_work",
+    previewNetworkProbeTimeoutMs: 10,
+    browserUseSessions: new Map(),
+    hasBrokerAccess: () => true,
+    requireContainer: async () => null,
+    rejectIfLeaseRetainedFailed: () => false,
+    rejectIfLeaseUnavailable: () => false,
+    parseAliases: () => [],
+    normalizeString: (value) => (typeof value === "string" ? value.trim() : ""),
+    normalizePositiveInteger: () => null,
+    normalizeEnv: () => ({}),
+    normalizeCookieEntries: () => [],
+    normalizeHeaderMap: () => ({}),
+    resolveTargetHost: (containerName) => containerName,
+    appendPreviewRoutePath: (baseUrl, routePath = "") => new URL(routePath.replace(/^\//, ""), baseUrl).toString(),
+    persistVerificationArtifacts: async () => ({}),
+    internalOperatorBaseUrl: "http://butler:8080",
+    brokerToken: "broker-token"
+  });
+
+  const status = await controller.inspectPlaywrightSidecar();
+
+  assert.equal(status.required, true);
+  assert.equal(status.available, false);
+  assert.equal(status.status, "exited");
+});
