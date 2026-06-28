@@ -2540,6 +2540,7 @@ a:hover {
   list-style: none;
   color: var(--text-muted);
   user-select: none;
+  min-height: 28px;
 }
 
 .worker-payload > summary::-webkit-details-marker {
@@ -2548,13 +2549,36 @@ a:hover {
 
 .worker-payload-title {
   flex: 0 0 auto;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  border-radius: 999px;
-  padding: 2px 7px;
-  color: var(--accent-ink);
-  font-size: 10.5px;
+  color: var(--text);
+  font-size: 12px;
   font-weight: 700;
   line-height: 1.4;
+}
+
+.worker-payload-chevron {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  color: var(--text-subtle);
+}
+
+.worker-payload-chevron svg {
+  width: 14px;
+  height: 14px;
+}
+
+.worker-payload-chevron-open {
+  display: none;
+}
+
+.worker-payload[open] .worker-payload-chevron-closed {
+  display: none;
+}
+
+.worker-payload[open] .worker-payload-chevron-open {
+  display: inline-flex;
 }
 
 .worker-payload-summary {
@@ -2611,6 +2635,74 @@ a:hover {
 
 .worker-payload-body > :last-child {
   margin-bottom: 0;
+}
+
+.worker-payload-empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.worker-checklist {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.worker-checklist-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.worker-checklist-marker {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border: 1.5px solid color-mix(in srgb, var(--text-muted) 64%, transparent);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.worker-checklist-item.is-accepted .worker-checklist-marker {
+  border-color: var(--success);
+  background: var(--success);
+  color: #fff;
+}
+
+.worker-checklist-item.is-rejected .worker-checklist-marker {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.worker-checklist-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.worker-checklist-text,
+.worker-checklist-note {
+  overflow-wrap: anywhere;
+}
+
+.worker-checklist-note {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .worker-activity {
