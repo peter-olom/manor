@@ -1,7 +1,23 @@
 import type { ButlerStateStore } from "./state-store.js";
+import { getOrchestrationCloseoutBlocker } from "./butler-orchestration.js";
 import { getReviewPanelCloseoutBlocker } from "./review-panel.js";
 import { evaluateOperatorCloseoutGate } from "./supervision-checklist.js";
 import type { ButlerCallbackResolutionState, ButlerThreadCallbackView, CodexThreadRecord, CodexWorkerReportView } from "./types.js";
+
+function isThreadStillRunning(thread: CodexThreadRecord | null | undefined): boolean {
+  const latestTurn = thread?.turns.at(-1);
+  return thread?.status === "active" || latestTurn?.status === "inProgress" || latestTurn?.status === "started";
+}
+
+export function relevantTerminalWorkerReport(
+  thread: CodexThreadRecord | null | undefined,
+  report: CodexWorkerReportView | null | undefined,
+  requestedAt: number
+): CodexWorkerReportView | null {
+  if (!report || report.updatedAt < requestedAt) return null;
+  if (report.status === "completed") return report;
+  return isThreadStillRunning(thread) ? null : report;
+}
 
 export function getOperatorCloseoutBlocker(
   store: ButlerStateStore,
@@ -14,6 +30,10 @@ export function getOperatorCloseoutBlocker(
   if (!gate.ok) {
     return gate.reason;
   }
+  const orchestrationBlocker = getOrchestrationCloseoutBlocker({ thread, workerReport });
+  if (orchestrationBlocker) {
+    return orchestrationBlocker;
+  }
   return getReviewPanelCloseoutBlocker(thread?.executionContract);
 }
 
@@ -25,12 +45,41 @@ export function queueCloseoutReview(callback: ButlerThreadCallbackView, reason: 
   callback.nextWorkerReportAction = "review";
   callback.reviewState = "queued";
   callback.reviewReason = reason;
+  callback.blockedCloseoutReason = null;
+  callback.blockedCloseoutReportAt = null;
   callback.updatedAt = Date.now();
 }
 
 export function idleCloseoutReview(callback: ButlerThreadCallbackView): void {
   callback.reviewState = "idle";
+  callback.blockedCloseoutReason = null;
+  callback.blockedCloseoutReportAt = null;
   callback.updatedAt = Date.now();
+}
+
+export function blockCloseoutReview(
+  callback: ButlerThreadCallbackView,
+  input: {
+    reason: string;
+    reviewReason: "worker_callback" | "thread_recovery";
+    workerReportUpdatedAt: number | null;
+  }
+): void {
+  callback.nextWorkerReportAction = "review";
+  callback.reviewState = "blocked";
+  callback.reviewReason = input.reviewReason;
+  callback.blockedCloseoutReason = input.reason;
+  callback.blockedCloseoutReportAt = input.workerReportUpdatedAt;
+  callback.updatedAt = Date.now();
+}
+
+export function isSameBlockedCloseout(
+  callback: ButlerThreadCallbackView,
+  input: { reason: string; workerReportUpdatedAt: number | null }
+): boolean {
+  return callback.reviewState === "blocked" &&
+    callback.blockedCloseoutReason === input.reason &&
+    callback.blockedCloseoutReportAt === input.workerReportUpdatedAt;
 }
 
 export function applyPostedCloseout(
@@ -55,6 +104,8 @@ export function applyPostedCloseout(
   callback.closeoutChannel = "main_chat";
   callback.reviewState = "idle";
   callback.reviewReason = null;
+  callback.blockedCloseoutReason = null;
+  callback.blockedCloseoutReportAt = null;
   callback.closedAt = input.postedAt;
   callback.updatedAt = Date.now();
 }

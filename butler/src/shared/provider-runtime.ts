@@ -91,7 +91,11 @@ export type ProviderRuntimeEvent =
     })
   | (ProviderRuntimeBaseEvent & {
       type: "thread.metadata.updated";
-      payload: { name?: string; metadata?: Record<string, unknown> };
+      payload: { name?: string; effort?: string | null; model?: string | null; metadata?: Record<string, unknown> };
+    })
+  | (ProviderRuntimeBaseEvent & {
+      type: "thread.settings.updated";
+      payload: { effort: string | null; model?: string | null; metadata?: Record<string, unknown> };
     })
   | (ProviderRuntimeBaseEvent & {
       type: "thread.tokenUsage.updated";

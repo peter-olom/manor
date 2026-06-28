@@ -347,13 +347,28 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     ]
   },
   {
-    name: "start_self_improvement",
-    label: "Start self-improvement",
-    description: "Start a dedicated Manor self-improvement workstream that implements, verifies, pushes a branch, and opens a draft PR.",
-    uiEffects: [
-      { kind: "openWindow", description: "Opens the Manor self-improvement workstream as a tab." },
-      { kind: "focusWindow", description: "Moves focus into the new self-improvement workstream." }
-    ]
+    name: "request_self_improvement",
+    label: "Request self-improvement",
+    description: "Create a pending Manor self-improvement request for operator review without starting work.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while the request waits in the review queue." }]
+  },
+  {
+    name: "discard_self_improvement",
+    label: "Discard self-improvement",
+    description: "Discard an approved self-improvement session and remove its isolated local changes after explicit operator request.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while discarding self-improvement changes." }]
+  },
+  {
+    name: "commit_self_improvement",
+    label: "Commit self-improvement",
+    description: "Commit approved self-improvement local changes after explicit operator request.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while committing self-improvement changes." }]
+  },
+  {
+    name: "open_self_improvement_pr",
+    label: "Open self-improvement PR",
+    description: "Open a draft PR for committed self-improvement changes after explicit operator request.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while opening a self-improvement pull request." }]
   },
   {
     name: "request_manor_restart",

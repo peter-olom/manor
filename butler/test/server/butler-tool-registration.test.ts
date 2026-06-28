@@ -32,4 +32,8 @@ test("Butler custom tool registration has unique tool names", () => {
   assert.deepEqual([...new Set(duplicates)].sort(), []);
   assert.equal(definitions.filter((definition) => definition.name === "request_manor_restart").length, 1);
   assert.equal(definitions.filter((definition) => definition.name === "read_manor_restart_status").length, 1);
+  assert.equal(definitions.filter((definition) => definition.name === "request_self_improvement").length, 1);
+  assert.equal(definitions.filter((definition) => definition.name === "discard_self_improvement").length, 1);
+  assert.equal(definitions.filter((definition) => definition.name === "commit_self_improvement").length, 1);
+  assert.equal(definitions.filter((definition) => definition.name === "open_self_improvement_pr").length, 1);
 });

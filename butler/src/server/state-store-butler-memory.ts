@@ -34,3 +34,15 @@ export function recordStateStoreButlerMemory(
   emitStateStoreChange(access);
   return entry;
 }
+
+export function deleteStateStoreButlerMemory(access: StateStoreInternalAccess, id: string): boolean {
+  const entries = access.persistedButlerMemoryEntries;
+  const index = entries.findIndex((entry) => entry.id === id);
+  if (index < 0) {
+    return false;
+  }
+  entries.splice(index, 1);
+  queueStateStoreSave(access);
+  emitStateStoreChange(access);
+  return true;
+}

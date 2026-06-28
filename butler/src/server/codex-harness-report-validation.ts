@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 
+import { normalizeWorkerClaimsReport, requiresStrictWorkerClaims } from "./butler-orchestration.js";
 import { hasVisualProof, threadRequiresVisualProof } from "./proof-policy.js";
-import type { CodexThreadRecord, CodexWorkerEvidenceView, PreviewProofRecordView, WorkerEvidenceKind } from "./types.js";
+import type { CodexThreadRecord, CodexWorkerEvidenceView, PreviewProofRecordView, WorkerClaimsReportView, WorkerEvidenceKind } from "./types.js";
 
 function normalizeWorkerEvidenceKind(value: unknown): WorkerEvidenceKind {
   return typeof value === "string" &&
@@ -62,6 +63,8 @@ export function normalizeReportEvidence(raw: unknown): CodexWorkerEvidenceView[]
     .filter((entry): entry is CodexWorkerEvidenceView => Boolean(entry));
 }
 
+export { normalizeWorkerClaimsReport };
+
 function evidenceMatchesKind(entry: CodexWorkerEvidenceView, kind: WorkerEvidenceKind): boolean {
   if (entry.kind === kind) return true;
   if (kind === "visual_review") return entry.kind === "screenshot" || entry.kind === "video" || entry.kind === "proof";
@@ -95,8 +98,18 @@ export function validateCompletedWorkerEvidence(input: {
   thread: CodexThreadRecord;
   evidence: CodexWorkerEvidenceView[];
   threadProofs: PreviewProofRecordView[];
+  claims?: WorkerClaimsReportView | null;
 }): void {
-  const { thread, evidence, threadProofs } = input;
+  const { thread, evidence, threadProofs, claims } = input;
+  if (requiresStrictWorkerClaims(thread)) {
+    if (!claims || claims.claims.length === 0) {
+      throw new Error("Completed orchestrated work requires strict JSON claims with proof pointers.");
+    }
+    const incompleteClaim = claims.claims.find((claim) => claim.status !== "completed");
+    if (incompleteClaim) {
+      throw new Error(`Completed orchestrated work includes an incomplete claim: ${incompleteClaim.claimId}.`);
+    }
+  }
   if ((thread.executionContract?.inferredWorkDepth === "deep" || thread.executionContract?.inferredWorkDepth === "incident") && evidence.length === 0) {
     throw new Error("Deep delegated work requires point-specific evidence before reporting completed.");
   }

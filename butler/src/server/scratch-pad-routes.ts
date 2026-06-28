@@ -4,6 +4,7 @@ import type { ButlerAgentService } from "./butler-agent.js";
 import type { CodexAppServerClient } from "./codex-client.js";
 import { type FileReferenceStore } from "./file-store.js";
 import { type ImageReferenceStore } from "./image-store.js";
+import { bindJobPayloadDelivery, buildJobPayload, formatJobPayloadMessage, jobPayloadsRoot, persistJobPayload } from "./job-instruction-artifacts.js";
 import { buildCodexInputWithReferences } from "./reference-inputs.js";
 import {
   cleanupManagedWorktree,
@@ -15,7 +16,7 @@ import {
 } from "./repo-worktree.js";
 import { ScratchPadStore } from "./scratch-pad-store.js";
 import { ButlerStateStore } from "./state-store.js";
-import { buildThreadExecutionContract, describeProofExpectation, inferTaskCategory } from "./thread-contract.js";
+import { buildThreadExecutionContract, inferTaskCategory } from "./thread-contract.js";
 import type { CodexTaskCategory, ScratchPadAttachmentView, ScratchPadItemView, ScratchPadResultKind, ScratchPadWorkspaceMode } from "./types.js";
 
 type ScratchWorkspace = {
@@ -31,6 +32,7 @@ type ScratchPadRoutesAccess = {
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;
   butlerAgent: ButlerAgentService;
+  artifactsDir: string;
   imageStore: ImageReferenceStore;
   fileStore: FileReferenceStore;
   prepareScratchWorkspace?: (item: ScratchPadItemView, task: string, baseCwd: string) => Promise<ScratchWorkspace>;
@@ -163,29 +165,21 @@ async function buildScratchInput(
       "Prefer safe reads, research, and disposable prototypes until the operator accepts the idea."
     ]
   });
-  const lines = [
-    "MANOR JOB BRIEF",
-    `thread_id: ${threadId}`,
-    `workspace_cwd: ${cwd}`,
-    `project_id: ${project.id}`,
-    `project_label: ${project.label}`,
-    `branch: ${workspace.branchName ?? (workspace.workspaceMode === "managed_worktree" ? "(managed worktree)" : "(existing workspace)")}`,
-    `harness_binding: manor-harness --thread ${threadId}`,
-    `proof_expectation: ${describeProofExpectation(contract.proofExpectation)}`,
-    `task_category: ${contract.taskCategory}`,
-    `inferred_work_depth: ${contract.inferredWorkDepth}`
-  ];
-  for (const point of contract.acceptancePoints) lines.push(`acceptance_point: ${point}`);
-  for (const row of contract.verificationMatrix) {
-    lines.push(`verification_row: ${row.id}|${row.acceptancePointId ?? ""}|${row.checkKinds.join(",")}|${row.text}`);
-  }
-  if (contract.operatorGoal) lines.push(`operator_goal: ${contract.operatorGoal}`);
-  for (const note of contract.notes) lines.push(`note: ${note}`);
   access.store.setThreadExecutionContract(threadId, contract);
   const imageReferenceIds = item.attachments.filter((attachment) => attachment.kind === "image" && attachment.available).map((attachment) => attachment.referenceId);
   const fileReferenceIds = item.attachments.filter((attachment) => attachment.kind === "file" && attachment.available).map((attachment) => attachment.referenceId);
+  const payload = buildJobPayload({
+    threadId,
+    kind: "delegation",
+    instruction: task,
+    contract,
+    imageReferenceIds,
+    fileReferenceIds
+  });
+  await persistJobPayload(jobPayloadsRoot(access.artifactsDir), payload);
+  access.store.setThreadJobPayload(payload);
   return buildCodexInputWithReferences({
-    text: `${lines.join("\n")}\n\nREQUESTED TASK\n${task}`,
+    text: formatJobPayloadMessage("delegation", threadId, payload.requestedTask, payload.display.summary),
     imageStore: access.imageStore,
     imageReferenceIds,
     fileStore: access.fileStore,
@@ -273,6 +267,12 @@ async function startScratchItem(access: ScratchPadRoutesAccess, itemId: string) 
     workspaceMode: workspace.workspaceMode,
     branchName: workspace.branchName
   });
+  const payload = access.store.getThreadJobPayload(result.threadId);
+  if (payload) {
+    const bound = bindJobPayloadDelivery(payload, { turnId: result.turnId });
+    await persistJobPayload(jobPayloadsRoot(access.artifactsDir), bound);
+    access.store.setThreadJobPayload(bound);
+  }
   access.store.addEvent(result.threadId, "butler.scratch_pad.started", "Butler started this job from a scratch pad item.");
   access.butlerAgent.trackScratchPadDelegation(result.threadId);
   return updated;

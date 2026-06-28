@@ -43,6 +43,7 @@ async function createServer(
     focusedCwd?: string | null;
     imageReferences?: Array<{ id: string; name: string; mimeType: string; sizeBytes: number; createdAt: number; url: string; filePath: string }>;
     fileReferences?: Array<{ id: string; name: string; mimeType: string; sizeBytes: number; createdAt: number; url: string; filePath: string }>;
+    jobPayloads?: unknown[];
   } = {}
 ) {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-scratch-pad-routes-"));
@@ -58,7 +59,9 @@ async function createServer(
       getThread: (threadId: string) => threadId === "focused-thread" && options.focusedCwd ? ({ cwd: options.focusedCwd } as never) : null,
       getOpenWindowIds: () => options.focusedCwd ? ["focused-thread"] : [],
       addEvent: () => undefined,
-      setThreadExecutionContract: () => undefined
+      setThreadExecutionContract: () => undefined,
+      getThreadJobPayload: () => null,
+      setThreadJobPayload: (payload: unknown) => options.jobPayloads?.push(payload)
     } as never,
     codexClient: {
       startThread: options.startThread ?? (async () => ({ threadId: "thread-started" })),
@@ -67,6 +70,7 @@ async function createServer(
     butlerAgent: {
       trackScratchPadDelegation: () => undefined
     } as never,
+    artifactsDir: path.join(dir, "artifacts"),
     imageStore: {
       resolveViews: (ids: string[]) =>
         ids.map((id) => {
@@ -140,7 +144,7 @@ test("scratch pad start defaults to a managed workspace", async () => {
       };
     };
 
-    assert.equal(response.status, 201);
+    assert.equal(response.status, 201, JSON.stringify(body));
     assert.equal(prepareCalls.length, 1);
     assert.equal(prepareCalls[0]?.baseCwd, "/repos");
     assert.equal(startCalls[0]?.cwd, "/repos/.manor-worktrees/manor/butler--scratch-pad");
@@ -253,9 +257,8 @@ test("scratch pad carries attachments and deep contract rows into worker input",
       { name: "screen.png", used: true },
       { name: "notes.pdf", used: true }
     ]);
-    assert.match(promptText?.text ?? "", /task_category: research/);
-    assert.match(promptText?.text ?? "", /inferred_work_depth: deep/);
-    assert.match(promptText?.text ?? "", /verification_row: row-1\|point-1\|data_check,intent_review,manual_waiver/);
+    assert.match(promptText?.text ?? "", /I put the job details in Manor/);
+    assert.doesNotMatch(promptText?.text ?? "", /MANOR INSTRUCTION/);
     assert.match(promptText?.text ?? "", /Attached reference images:/);
     assert.match(promptText?.text ?? "", /screen.png/);
     assert.match(promptText?.text ?? "", /notes.pdf \| \/tmp\/notes.pdf/);
@@ -306,9 +309,11 @@ test("scratch pad attachment can be removed before start", async () => {
 
 test("scratch pad infers prototype, plan, recommendation, and API contracts without UI controls", async () => {
   const prompts: string[] = [];
+  const jobPayloads: Array<{ requestedTask?: string | null }> = [];
   const server = await createServer(
     async () => ({ deletedArtifacts: 0, cleanupFailed: false, cleanupError: null }),
     {
+      jobPayloads,
       prepareScratchWorkspace: async () => ({
         cwd: "/repos/.manor-worktrees/manor/butler--shape-scratch",
         workspaceMode: "managed_worktree",
@@ -335,13 +340,15 @@ test("scratch pad infers prototype, plan, recommendation, and API contracts with
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text, autoStart: true })
       });
-      assert.equal(response.status, 201);
+      const body = await response.json();
+      assert.equal(response.status, 201, JSON.stringify(body));
     }
 
-    assert.match(prompts[0] ?? "", /task_category: prototype/);
-    assert.match(prompts[1] ?? "", /task_category: plan/);
-    assert.match(prompts[2] ?? "", /task_category: recommendation/);
-    assert.match(prompts[3] ?? "", /task_category: api/);
+    assert.ok(prompts.every((prompt) => /I put the job details in Manor/.test(prompt)));
+    assert.match(jobPayloads[0]?.requestedTask ?? "", /Prototype a retry policy experiment/);
+    assert.match(jobPayloads[1]?.requestedTask ?? "", /Create an implementation plan/);
+    assert.match(jobPayloads[2]?.requestedTask ?? "", /Recommend which option/);
+    assert.match(jobPayloads[3]?.requestedTask ?? "", /Add API smoke coverage/);
   } finally {
     await server.cleanup();
   }

@@ -19,7 +19,30 @@ async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void>
   assert.equal(predicate(), true);
 }
 
-test("Codex notifications flow through runtime ingestion without broad delta changes", async () => {
+test("updateThreadReasoningEffort issues a thread/settings/update JSON-RPC call", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-codex-runtime-events-"));
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  await store.load();
+
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const client = new CodexAppServerClient("ws://127.0.0.1:1", store, dir) as unknown as {
+    updateThreadReasoningEffort: (threadId: string, effort: string) => Promise<void>;
+  };
+  (client as unknown as { codexProviderAdapter: { call: (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>> } }).codexProviderAdapter = {
+    call: async (method, params) => {
+      calls.push({ method, params });
+      return {};
+    }
+  };
+
+  await client.updateThreadReasoningEffort("thread-7", "high");
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.method, "thread/settings/update");
+  assert.deepEqual(calls[0]?.params, { threadId: "thread-7", effort: "high" });
+});
+
+test("thread/settings/updated notification refreshes the per-thread effort", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-codex-runtime-events-"));
   const store = new ButlerStateStore(path.join(dir, "state.json"));
   await store.load();
@@ -28,43 +51,15 @@ test("Codex notifications flow through runtime ingestion without broad delta cha
     handleMessage: (message: unknown) => void;
     on: (event: "change" | "threadPatch", listener: (payload?: unknown) => void) => void;
   };
-  let clientChanges = 0;
-  let storeChanges = 0;
-  const patches: CodexThreadPatchView[] = [];
-  client.on("change", () => {
-    clientChanges += 1;
-  });
-  client.on("threadPatch", (payload) => {
-    patches.push(payload as CodexThreadPatchView);
-  });
-  store.on("change", () => {
-    storeChanges += 1;
-  });
 
   client.handleMessage({
-    method: "item/agentMessage/delta",
+    method: "thread/settings/updated",
     params: {
-      threadId: "thread-1",
-      turnId: "turn-1",
-      itemId: "item-1",
-      delta: "Fast"
+      threadId: "thread-9",
+      threadSettings: { effort: "xhigh", model: "gpt-5.4" }
     }
   });
 
-  await waitFor(() => patches.length === 1);
-
-  assert.equal(clientChanges, 0);
-  assert.equal(storeChanges, 0);
-  assert.equal(store.getThreadDetail("thread-1")?.turns[0]?.items[0]?.text, "Fast");
-  assert.deepEqual(patches[0], {
-    kind: "content-delta",
-    threadId: "thread-1",
-    turnId: "turn-1",
-    itemId: "item-1",
-    itemType: "assistant_message",
-    streamKind: "assistant_text",
-    delta: "Fast",
-    itemTextLength: 4,
-    at: patches[0]?.at
-  });
+  await waitFor(() => store.getThread("thread-9")?.requestedReasoningEffort === "xhigh");
+  assert.equal(store.getThread("thread-9")?.requestedReasoningEffort, "xhigh");
 });

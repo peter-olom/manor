@@ -12,8 +12,10 @@ const runtimeBrokerBaseUrl = process.env.MANOR_RUNTIME_BROKER_URL || "http://run
 function printHelp() {
   console.log(`Usage:
   manor-harness [--thread <jobId>] status
-  manor-harness [--thread <jobId>] report --status completed|blocked --summary "<text>" [--details "<text>"] [--turn-id <id>] [--evidence-json '<json>' ...] [--evidence "<pointId>|<kind>|<summary>" ...]
+  manor-harness [--thread <jobId>] report --status completed|blocked --summary "<text>" [--details "<text>"] [--turn-id <id>] [--claims-json '<json>'] [--claims-file <path>] [--evidence-json '<json>' ...] [--evidence "<pointId>|<kind>|<summary>" ...]
   manor-harness [--thread <jobId>] assist --summary "<text>" [--details "<text>"] [--question "<text>"]
+  manor-harness [--thread <jobId>] payload current
+  manor-harness [--thread <jobId>] payload update [--status completed|blocked] [--summary "<text>"] [--details "<text>"] [--evidence-json '<json>' ...]
   manor-harness [--thread <jobId>] memory [--provenance]
   manor-harness [--thread <jobId>] memory project [--provenance]
   manor-harness [--thread <jobId>] memory search --query "<text>" [--limit <n>] [--job] [--global] [--provenance]
@@ -86,6 +88,8 @@ Proof tips:
   Cookies are injected into the browser context directly; headers remain separate.
   Proof is session-driven: start browser sidecar, run actions, optionally capture screenshots, then stop session.
   Native Electron or VNC-visible proof is desktop-driven: check desktop status, start a desktop session attached to this job workspace, capture screenshots/actions there, then stop it.
+  If the browser proof sidecar is unavailable, retry briefly and then report the proof blocker; do not install browsers or OS packages inside a preview as the default fallback.
+  Desktop proof is optional/profile-gated. Use it only when desktop status says it is ready.
   Text proof is for simple read-only notes and inspection summaries; it stores the note directly in Manor artifacts without creating side files under /repos.
   File proof is for cases where the durable evidence is an existing generated file, PDF, Office file, archive, report, export, log, or saved artifact.
   UI-impacting work must surface screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are insufficient.
@@ -101,6 +105,8 @@ Blocked reports require --details that explain what failed, what was tried, and 
 Deep work reports should include point-specific evidence, for example:
   --evidence "point-1|build|npm test passed"
   --evidence-json '{"pointId":"point-2","kind":"browser_flow","summary":"Recorded browser proof","proofRunId":"run-id"}'
+Completed orchestrated reports must include strict JSON claims, for example:
+  --claims-json '{"version":1,"changed_work_summary":"Implemented requested behavior","claims":[{"claim_id":"claim-1","status":"completed","summary":"Build passes","evidence_pointer":"npm run build","proof_id":null,"risk_note":null,"reviewer_target":"qa"}],"risks":[],"unresolved_items":[],"sub_agent_summaries":[]}'
 Set MANOR_THREAD_ID or pass --thread <jobId> to bind the harness explicitly when you are outside the job workspace.`);
 }
 
@@ -143,7 +149,11 @@ function matchCapability(capabilities, cwd, explicitThreadId) {
   });
 
   if (matches.length > 0) {
-    return matches.sort((left, right) => String(right.cwd).length - String(left.cwd).length)[0] ?? null;
+    return matches.sort((left, right) => {
+      const cwdDelta = String(right.cwd).length - String(left.cwd).length;
+      if (cwdDelta !== 0) return cwdDelta;
+      return Number(right.updatedAt ?? 0) - Number(left.updatedAt ?? 0);
+    })[0] ?? null;
   }
 
   const currentProjectId = resolveWorkspaceProjectId(normalizedCwd);
@@ -480,6 +490,10 @@ async function main() {
     return;
   }
 
+  if (args[0] === "payload" && !explicitThreadId) {
+    throw new Error("Payload actions require an explicit job binding. Use `manor-harness --thread <jobId> payload ...` or set MANOR_THREAD_ID.");
+  }
+
   const capabilities = await loadCapabilities();
   const capability =
     matchCapability(capabilities, process.cwd(), explicitThreadId) ??
@@ -501,6 +515,7 @@ async function main() {
       summary: readFlag(args, "--summary"),
       details: readFlag(args, "--details"),
       turnId: readFlag(args, "--turn-id"),
+      claims: await readJsonSpec(args, "--claims-file", "--claims-json"),
       evidence: parseReportEvidence(args)
     };
   } else if (args[0] === "assist") {
@@ -510,6 +525,19 @@ async function main() {
       details: readFlag(args, "--details"),
       question: readFlag(args, "--question")
     };
+  } else if (args[0] === "payload") {
+    const subcommand = args[1];
+    if (subcommand === "current") {
+      action = "payload.current";
+    } else if (subcommand === "update") {
+      action = "payload.update";
+      params = {
+        status: readFlag(args, "--status"),
+        summary: readFlag(args, "--summary"),
+        details: readFlag(args, "--details"),
+        evidence: parseReportEvidence(args)
+      };
+    }
   } else if (args[0] === "memory") {
     const subcommand = args[1]?.startsWith("--") ? "" : args[1];
     if (!subcommand) {

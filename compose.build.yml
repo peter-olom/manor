@@ -7,6 +7,8 @@ services:
         CODEX_VERSION: ${CODEX_VERSION:-0.124.0}
         PI_VERSION: ${PI_VERSION:-0.73.0}
     image: manor-butler:local
+    volumes:
+      - ${MANOR_HOST_PROJECT_SOURCE_DIR:-${PWD:-.}}:/repos/manor
 
   codex-box:
     build:
@@ -15,6 +17,8 @@ services:
       args:
         CODEX_VERSION: ${CODEX_VERSION:-0.124.0}
     image: manor-codex-box:local
+    volumes:
+      - ${MANOR_HOST_PROJECT_SOURCE_DIR:-${PWD:-.}}:/repos/manor
 
   egress:
     build:
@@ -39,6 +43,8 @@ services:
       context: .
       dockerfile: docker/host-controller/Dockerfile
     image: manor-host-controller:local
+    environment:
+      MANOR_BUILD_FROM_SOURCE: "1"
 
   playwright:
     build:

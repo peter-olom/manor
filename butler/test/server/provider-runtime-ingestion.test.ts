@@ -115,6 +115,41 @@ test("provider runtime ingestion projects lifecycle and token usage events", asy
   assert.equal(patches.some((patch) => patch.kind === "turn-lifecycle"), true);
 });
 
+test("provider runtime ingestion keeps completed turn time stable across repeated lifecycle events", async () => {
+  const { store, ingestion } = await createHarness();
+  const originalNow = Date.now;
+  let now = 1_000;
+  Date.now = () => now;
+  try {
+    await ingestion.ingest(baseEvent({
+      id: "event-turn-start",
+      type: "turn.started",
+      turnId: "turn-1",
+      payload: {}
+    }));
+    now = 2_000;
+    await ingestion.ingest(baseEvent({
+      id: "event-turn-complete",
+      type: "turn.completed",
+      turnId: "turn-1",
+      payload: { state: "completed" }
+    }));
+    const firstCompletedAt = store.getThreadDetail("thread-1")?.turns[0]?.completedAt;
+
+    now = 9_000;
+    await ingestion.ingest(baseEvent({
+      id: "event-turn-complete-repeat",
+      type: "turn.completed",
+      turnId: "turn-1",
+      payload: { state: "completed" }
+    }));
+
+    assert.equal(store.getThreadDetail("thread-1")?.turns[0]?.completedAt, firstCompletedAt);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test("provider runtime ingestion keeps generic message titles out of visible text", async () => {
   const { store, ingestion, patches } = await createHarness();
 

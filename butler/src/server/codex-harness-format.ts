@@ -14,6 +14,17 @@ export function formatHarnessExecutionContract(thread: CodexThreadRecord): strin
     ...(acceptancePoints.length > 0
       ? [`Acceptance points:\n${acceptancePoints.map((point, index) => `${index + 1}. ${point}`).join("\n")}`]
       : []),
+    ...(contract.orchestration
+      ? [
+          [
+            `Orchestration: class=${contract.orchestration.taskClass} risk=${contract.orchestration.riskLevel}`,
+            `Goal mode: ${contract.orchestration.goalRecommendation.mode}`,
+            `Codex review required: ${contract.orchestration.reviewRecommendation.required ? "yes" : "no"}`,
+            contract.orchestration.subAgentRoles.length > 0 ? `Sub-agent roles: ${contract.orchestration.subAgentRoles.join(", ")}` : null,
+            "Completed reports require strict JSON claims with proof pointers."
+          ].filter(Boolean).join("\n")
+        ]
+      : []),
     ...(threadRequiresVisualProof(thread)
       ? ["Visual proof requirement: capture and surface screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are insufficient."]
       : []),
@@ -29,6 +40,7 @@ export function formatHarnessRuntimeModel(): string[] {
     "Any job with UI implications must surface visual feedback. Record screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are not enough.",
     "Native Electron or VNC-visible desktop proof must use the desktop proof commands. Do not create a private Xvfb display when the operator needs to see the app in noVNC.",
     "For headed desktop work, list existing sessions first, attach the job thread id as the visible desktop workspace label, use current-screen before pointer actions, and use interactive/profile options when the operator needs a persistent desktop.",
+    "If the browser proof sidecar is unavailable, retry briefly and then report the proof blocker through Manor. Do not install browsers or OS packages inside a preview as the default fallback.",
     "If the desktop proof sidecar is unavailable, check desktop status and report that the desktop profile must be started before native headed proof can proceed.",
     "Keep startup explicit. If the project needs install or run commands, choose and run them directly instead of waiting for Manor to infer them.",
     "If the repo has its own AGENTS guidance for install or runtime shape, follow that guidance over these generic defaults."

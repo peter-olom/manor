@@ -9,15 +9,13 @@ import {
   shouldAllowLocalThreadFallback
 } from "./butler-agent-helpers.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
-import {
-  buildSelfImprovementTask,
-  classifyManorBlocker,
-  hasStartedSelfImprovement,
-  resolveManorSelfImprovementCwd
-} from "./butler-self-improvement.js";
+import { formatJobPayloadMessage } from "./job-instruction-artifacts.js";
+import { classifyManorBlocker } from "./butler-self-improvement.js";
 import { buildCodexInputWithReferences } from "./reference-inputs.js";
+import { commitSelfImprovementRequest, discardSelfImprovementRequest, openSelfImprovementPullRequest } from "./self-improvement-actions.js";
+import { getSelfImprovementRequestState } from "./self-improvement-request-state.js";
 import { listWorkspaceProjectDirectories } from "./repo-worktree.js";
-import type { ReasoningEffort, ReviewPanelRole, ReviewPanelVerdict } from "./types.js";
+import type { ReviewPanelRole, ReviewPanelVerdict } from "./types.js";
 
 export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
   return [
@@ -136,123 +134,143 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       }
     }),
     access.defineButlerTool({
-      name: "start_self_improvement",
-      label: "Start self-improvement",
+      name: "request_self_improvement",
+      label: "Request self-improvement",
       description:
-        "Start a dedicated Manor self-improvement Codex job from a direct operator request or a likely Manor platform blocker. The job should implement, verify, push a branch, and open a draft PR.",
+        "Create a pending Manor self-improvement request for operator review. This does not start work or mutate Manor.",
       promptSnippet:
-        "start_self_improvement: use for direct Manor/Butler/Codex platform improvement requests, or for blocked worker reports that likely indicate a Manor platform issue. Do not use for missing credentials, operator approval, third-party outage, or app-specific bugs outside Manor.",
+        "request_self_improvement: create an operator-reviewed request for direct Manor/Butler/Codex platform improvements, or for blocked worker reports that likely indicate a Manor platform issue. Include trigger, symptoms, logs, observations, suspected cause, proposed change, and risk. Do not use for missing credentials, operator approval, third-party outage, or app-specific bugs outside Manor.",
       parameters: Type.Object({
-        problem: Type.String({ minLength: 1 }),
+        trigger: Type.String({ minLength: 1 }),
+        symptoms: Type.String({ minLength: 1 }),
+        logs: Type.Optional(Type.String()),
+        observations: Type.String({ minLength: 1 }),
+        suspectedCause: Type.String({ minLength: 1 }),
+        proposedChange: Type.String({ minLength: 1 }),
+        risk: Type.String({ minLength: 1 }),
         desiredOutcome: Type.Optional(Type.String({ minLength: 1 })),
-        sourceThreadId: Type.Optional(Type.String({ minLength: 1 })),
-        thinkingBudget: Type.Optional(Type.Union([
-          Type.Literal("low"),
-          Type.Literal("medium"),
-          Type.Literal("high"),
-          Type.Literal("xhigh")
-        ])),
-        force: Type.Optional(Type.Boolean())
+        sourceThreadId: Type.Optional(Type.String({ minLength: 1 }))
       }),
-      uiEffects: access.getToolUiEffects("start_self_improvement"),
+      uiEffects: access.getToolUiEffects("request_self_improvement"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as {
-          problem: string;
+          trigger: string;
+          symptoms: string;
+          logs?: string;
+          observations: string;
+          suspectedCause: string;
+          proposedChange: string;
+          risk: string;
           desiredOutcome?: string;
           sourceThreadId?: string;
-          thinkingBudget?: ReasoningEffort;
-          force?: boolean;
         };
         const sourceThreadId = typedParams.sourceThreadId?.trim() || null;
         const sourceThread = sourceThreadId ? access.store.getThread(sourceThreadId) ?? null : null;
         if (sourceThreadId && !sourceThread) {
           throw new Error(`Source job ${sourceThreadId} was not found.`);
         }
-        if (sourceThread && hasStartedSelfImprovement(sourceThread) && typedParams.force !== true) {
+        const requestState = getSelfImprovementRequestState();
+        if (requestState.hasOpenSourceRequest(sourceThread?.id ?? null)) {
           return {
-            content: [{ type: "text", text: `A Manor self-improvement job has already been started for job ${sourceThread.id}.` }],
-            details: { sourceThread, duplicate: true }
+            content: [{ type: "text", text: `A self-improvement request already exists for job ${sourceThread?.id}.` }],
+            details: { sourceThread, duplicate: true, requests: requestState.list() }
           };
         }
 
         const workerReport = sourceThread ? access.store.getWorkerReport(sourceThread.id) : null;
         const classification = sourceThread ? classifyManorBlocker({ thread: sourceThread, workerReport }) : null;
-        const task = buildSelfImprovementTask({
-          problem: typedParams.problem,
+        const request = requestState.create({
+          trigger: typedParams.trigger,
+          symptoms: typedParams.symptoms,
+          logs: typedParams.logs,
+          observations: typedParams.observations,
+          suspectedCause: typedParams.suspectedCause,
+          proposedChange: typedParams.proposedChange,
+          risk: typedParams.risk,
           desiredOutcome: typedParams.desiredOutcome,
-          sourceThread,
-          workerReport,
-          classification
+          sourceThreadId: sourceThread?.id ?? null,
+          sourceProjectLabel: sourceThread?.supervisor.projectLabel ?? null,
+          createdBy: "butler"
         });
-        const manorCwd = await resolveManorSelfImprovementCwd();
-        const workspace = await access.prepareDelegationWorkspace(task, manorCwd);
-        const developerInstructions = await access.buildDelegationDeveloperInstructions(workspace, task);
-        const result = await access.codexClient.startThread({
-          task,
-          input: async (threadId: string) =>
-            buildCodexInputWithReferences({
-              text: (
-                await access.buildDelegationContract({
-                  threadId,
-                  task,
-                  goal: "Improve Manor itself, verify the change, push the branch, and open a draft PR.",
-                  workspace,
-                  extraNotes: [
-                    "This is a Manor self-improvement job.",
-                    "Opening a draft PR is explicitly requested by Butler for this job.",
-                    "Live restart, deploy, destructive cleanup, or host mutation still requires explicit operator approval."
-                  ]
-                })
-              ).text,
-              imageStore: access.imageStore,
-              imageReferenceIds: [],
-              fileStore: access.fileStore,
-              fileReferenceIds: []
-            }),
-          cwd: workspace.cwd,
-          developerInstructions,
-          effort: typedParams.thinkingBudget ?? "high",
-          openWindow: true
-        });
-        const delegationContract = await access.buildDelegationContract({
-          threadId: result.threadId,
-          task,
-          goal: "Improve Manor itself, verify the change, push the branch, and open a draft PR.",
-          workspace,
-          extraNotes: [
-            "This is a Manor self-improvement job.",
-            "Opening a draft PR is explicitly requested by Butler for this job.",
-            "Live restart, deploy, destructive cleanup, or host mutation still requires explicit operator approval."
-          ]
-        });
-        access.store.setThreadExecutionContract(result.threadId, delegationContract.contract);
-        access.store.addEvent(result.threadId, "butler.self_improvement.created", "Butler created this Manor self-improvement job.");
         if (sourceThread) {
-          access.store.addEvent(sourceThread.id, "butler.self_improvement.started", `Started Manor self-improvement job ${result.threadId}.`);
+          access.store.addEvent(sourceThread.id, "butler.self_improvement.requested", `Queued self-improvement request ${request.id}.`);
         }
-        access.noteThreadFocus(result.threadId, "start_self_improvement");
-        access.queueDelegationAcknowledgement(
-          result.threadId,
-          `Accepted. I started a Manor self-improvement job ${result.threadId} and will return here with the result.`
-        );
-        access.registerPendingChatCallback(result.threadId);
-        const supervision = access.store.noteButlerSteer(result.threadId);
 
         return {
           content: [
             {
               type: "text",
-              text: `Started Manor self-improvement job ${result.threadId} from ${workspace.cwd}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}.`
+              text: `Created self-improvement request ${request.id}. It is pending operator approval and no work has started.`
             }
           ],
           details: {
-            threadId: result.threadId,
-            sourceThreadId,
+            request,
             classification,
-            workspace,
-            supervision,
-            thread: access.store.getThread(result.threadId) ?? null
+            sourceThreadId
           }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "discard_self_improvement",
+      label: "Discard self-improvement",
+      description: "Discard an approved self-improvement session and remove its isolated local changes after an explicit operator request.",
+      promptSnippet:
+        "discard_self_improvement: use only when the operator explicitly asks to discard a self-improvement request's local changes. Requires the request id.",
+      parameters: Type.Object({
+        requestId: Type.String({ minLength: 1 })
+      }),
+      uiEffects: access.getToolUiEffects("discard_self_improvement"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as { requestId: string };
+        const request = await discardSelfImprovementRequest(getSelfImprovementRequestState(), access.codexClient, typedParams.requestId.trim());
+        if (request.threadId) access.store.addEvent(request.threadId, "butler.self_improvement.discarded", `Discarded self-improvement request ${request.id}.`);
+        return {
+          content: [{ type: "text", text: `Discarded self-improvement request ${request.id}.` }],
+          details: { request }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "commit_self_improvement",
+      label: "Commit self-improvement",
+      description: "Commit approved self-improvement local changes after an explicit operator request.",
+      promptSnippet:
+        "commit_self_improvement: use only when the operator explicitly asks to commit approved self-improvement changes locally. Requires the request id and commit message.",
+      parameters: Type.Object({
+        requestId: Type.String({ minLength: 1 }),
+        message: Type.String({ minLength: 1 })
+      }),
+      uiEffects: access.getToolUiEffects("commit_self_improvement"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as { requestId: string; message: string };
+        const request = await commitSelfImprovementRequest(getSelfImprovementRequestState(), typedParams.requestId.trim(), typedParams.message);
+        if (request.threadId) access.store.addEvent(request.threadId, "butler.self_improvement.committed", `Committed self-improvement request ${request.id}.`);
+        return {
+          content: [{ type: "text", text: `Committed self-improvement request ${request.id} locally at ${request.commitSha}.` }],
+          details: { request }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "open_self_improvement_pr",
+      label: "Open self-improvement PR",
+      description: "Open a draft pull request for already committed self-improvement changes after an explicit operator request.",
+      promptSnippet:
+        "open_self_improvement_pr: use only when the operator explicitly asks to open a pull request for an already committed self-improvement request. Requires the request id.",
+      parameters: Type.Object({
+        requestId: Type.String({ minLength: 1 }),
+        title: Type.Optional(Type.String({ minLength: 1 })),
+        body: Type.Optional(Type.String({ minLength: 1 }))
+      }),
+      uiEffects: access.getToolUiEffects("open_self_improvement_pr"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as { requestId: string; title?: string; body?: string };
+        const request = await openSelfImprovementPullRequest(getSelfImprovementRequestState(), typedParams.requestId.trim(), typedParams.title ?? null, typedParams.body ?? null);
+        if (request.threadId) access.store.addEvent(request.threadId, "butler.self_improvement.pr_opened", `Opened self-improvement pull request ${request.pullRequestUrl}.`);
+        return {
+          content: [{ type: "text", text: `Opened draft pull request for self-improvement request ${request.id}: ${request.pullRequestUrl}.` }],
+          details: { request }
         };
       }
     }),
@@ -518,7 +536,13 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           };
         }
         await access.codexClient.loadThread(typedParams.threadId);
-        await access.codexClient.sendMessage(typedParams.threadId, text);
+        const payload = await access.createOrUpdateJobPayload({
+          threadId: typedParams.threadId,
+          kind: "rejection_followup",
+          instruction: text
+        });
+        const sent = await access.codexClient.sendMessage(typedParams.threadId, formatJobPayloadMessage("rejection_followup", typedParams.threadId, payload.workerDirective, payload.display.summary));
+        await access.bindJobPayloadDelivery(typedParams.threadId, { turnId: sent.turnId });
         access.store.clearQueuedRejectionInstructions(typedParams.threadId);
         access.registerPendingChatCallback(typedParams.threadId, {
           privateSteerText: text,
@@ -529,6 +553,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         return {
           content: [{ type: "text", text: `Sent queued rejected acceptance points to job ${typedParams.threadId}.` }],
           details: {
+            payload,
             supervision,
             checklist: access.store.getSupervisionChecklist(typedParams.threadId)
           }
@@ -565,12 +590,17 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         if (thread.status !== "active") {
           throw new Error(`Job ${typedParams.threadId} is not active. Answer directly or use message_job if the worker needs a new turn.`);
         }
+        const payload = await access.createOrUpdateJobPayload({
+          threadId: typedParams.threadId,
+          kind: "held_context",
+          instruction: typedParams.text
+        });
         access.registerPendingChatCallback(typedParams.threadId, { nextWorkerReportAction: "review" });
         access.noteThreadFocus(typedParams.threadId, "hold_job_context");
         access.store.addEvent(typedParams.threadId, "butler.context.held", typedParams.text.trim());
         return {
           content: [{ type: "text", text: `Held newer operator context for job ${typedParams.threadId}. Butler will apply it during the next review.` }],
-          details: { thread: access.store.getThread(typedParams.threadId) ?? null }
+          details: { payload, thread: access.store.getThread(typedParams.threadId) ?? null }
         };
       }
     }),
@@ -636,16 +666,24 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         const refreshedChecklist = typedParams.refreshChecklist
           ? access.store.refreshCompletedSupervisionChecklistForFollowup(typedParams.threadId, typedParams.text)
           : null;
-        await access.codexClient.sendMessage(
+        const payload = await access.createOrUpdateJobPayload({
+          threadId: typedParams.threadId,
+          kind: "steering",
+          instruction: typedParams.text,
+          imageReferenceIds: typedParams.imageReferenceIds ?? [],
+          fileReferenceIds: typedParams.fileReferenceIds ?? []
+        });
+        const sent = await access.codexClient.sendMessage(
           typedParams.threadId,
           buildCodexInputWithReferences({
-            text: `BUTLER FOLLOW-UP\nApply this within the existing job context.\n\n${typedParams.text}`,
+            text: formatJobPayloadMessage("steering", payload.threadId, payload.workerDirective, payload.display.summary),
             imageStore: access.imageStore,
             imageReferenceIds: typedParams.imageReferenceIds ?? [],
             fileStore: access.fileStore,
             fileReferenceIds: typedParams.fileReferenceIds ?? []
           })
         );
+        await access.bindJobPayloadDelivery(typedParams.threadId, { turnId: sent.turnId });
         access.registerPendingChatCallback(typedParams.threadId, {
           privateSteerText: typedParams.text,
           nextWorkerReportAction: typedParams.nextWorkerReportAction ?? "review"
@@ -662,6 +700,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           ],
           details: {
             checklist: refreshedChecklist,
+              payload,
             supervision,
             thread: access.store.getThread(typedParams.threadId) ?? null
           }

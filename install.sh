@@ -4,7 +4,7 @@ set -euo pipefail
 
 yes_mode=0
 start_after=1
-build_from_source_forced=0
+build_from_source_mode=""
 image_registry_arg=""
 image_tag_arg=""
 
@@ -16,9 +16,10 @@ Usage:
 Options:
   -y, --yes             Use defaults and do not prompt.
   --no-start            Write configuration and validate Docker, but do not start Manor.
-  --build-from-source   Build local images instead of pulling published images.
-  --image-registry <r>  Image registry namespace. Default: ghcr.io/peter-olom.
-  --image-tag <tag>     Image tag to pull. Default: latest.
+  --build-from-source   Build local images from this checkout. This is the default.
+  --use-images          Use packaged images instead of building from source.
+  --image-registry <r>  Packaged image registry namespace. Default: ghcr.io/peter-olom.
+  --image-tag <tag>     Packaged image tag to pull. Default: latest.
   -h, --help            Show this help.
 EOF
 }
@@ -32,7 +33,10 @@ while [[ $# -gt 0 ]]; do
       start_after=0
       ;;
     --build-from-source|--source)
-      build_from_source_forced=1
+      build_from_source_mode="1"
+      ;;
+    --use-images|--packaged)
+      build_from_source_mode="0"
       ;;
     --image-registry)
       if [[ -z "${2:-}" ]]; then
@@ -268,9 +272,9 @@ else
 fi
 
 build_from_source_default="${MANOR_BUILD_FROM_SOURCE:-$(env_value MANOR_BUILD_FROM_SOURCE || true)}"
-build_from_source_default="${build_from_source_default:-0}"
-if [[ "${build_from_source_forced}" -eq 1 ]]; then
-  build_from_source="1"
+build_from_source_default="${build_from_source_mode:-${build_from_source_default:-1}}"
+if [[ -n "${build_from_source_mode}" ]]; then
+  build_from_source="${build_from_source_mode}"
 else
   build_from_source="$(prompt_bool "Build images from source instead of pulling published images" "${build_from_source_default}")"
 fi

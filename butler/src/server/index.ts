@@ -10,6 +10,8 @@ import httpProxy from "http-proxy";
 import { ButlerAgentService } from "./butler-agent.js";
 import { CodexAppServerClient } from "./codex-client.js";
 import { CodexHarnessService } from "./codex-harness.js";
+import { ButlerRoutingClassifier } from "./butler-routing-classifier.js";
+import { CodexWorkerReviewService } from "./worker-codex-review.js";
 import { FileReferenceStore, MAX_FILE_BYTES } from "./file-store.js";
 import { HostControllerClient } from "./host-controller-client.js";
 import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
@@ -20,6 +22,9 @@ import { CodexExecMemoryPromotionService } from "./memory-promotion.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
 import { readMemorySynthesisConfig } from "./memory-synthesis-config.js";
 import { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
+import { PairSessionManager } from "./pair-session-manager.js";
+import { PairStore } from "./pair-store.js";
+import { registerPairRoutes } from "./pair-routes.js";
 import { registerPreviewAnnotationRoutes } from "./preview-annotation-routes.js";
 import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-routes.js";
 import { buildCodexInputWithReferences, buildComposerInputItemsPrompt, buildReferencePromptText } from "./reference-inputs.js";
@@ -28,6 +33,8 @@ import { registerScratchPadRoutes } from "./scratch-pad-routes.js";
 import { registerRuntimeResourceRoutes } from "./runtime-resource-routes.js";
 import { ScratchPadStore } from "./scratch-pad-store.js";
 import { registerServerAssetRoutes } from "./server-asset-routes.js";
+import { configureSelfImprovementRequestState, SelfImprovementRequestState } from "./self-improvement-request-state.js";
+import { registerSelfImprovementRoutes } from "./self-improvement-routes.js";
 import { retrieveButlerMemory } from "./memory-retrieval.js";
 import { registerManorRestartRoutes } from "./manor-restart-routes.js";
 import {
@@ -86,7 +93,9 @@ const butlerAuthLoginTimeoutMs = 15_000;
 
 const uiStatePath = path.join(stateDir, "butler-ui.json");
 const scratchPadStatePath = path.join(stateDir, "scratch-pad.json");
+const pairStatePath = path.join(stateDir, "butler-pairs-v2.json");
 const sessionDir = path.join(stateDir, "pi-sessions");
+const pairSessionDir = path.join(stateDir, "pi-pair-sessions");
 const staticDir = path.resolve(process.cwd(), "dist/web");
 const indexTemplatePath = path.resolve(process.cwd(), "index.html");
 let butlerAuthLoginSession: {
@@ -179,6 +188,8 @@ const store = new ButlerStateStore(uiStatePath, {
   artifactRetentionMs
 });
 await store.load();
+const pairStore = new PairStore(pairStatePath, store);
+await pairStore.load();
 const scratchPadStore = new ScratchPadStore(scratchPadStatePath);
 await scratchPadStore.load();
 const serviceTemplateRegistry = new ServiceTemplateRegistry(path.join(stateDir, "service-templates.json"));
@@ -191,8 +202,13 @@ const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerTok
 const hostController = new HostControllerClient(hostControllerUrl, hostControllerToken);
 let runtimeAccess!: RuntimeServerAccess;
 let sseHub!: ButlerSseHub;
+const selfImprovementRequests = new SelfImprovementRequestState(path.join(stateDir, "self-improvement-requests.json"), () => sseHub?.schedule(), (error) => console.error("Self-improvement queue save failed", error));
+await selfImprovementRequests.load();
+configureSelfImprovementRequestState(selfImprovementRequests);
 const memorySynthesisConfig = readMemorySynthesisConfig();
 const memoryReview = new CodexExecMemoryReviewService({ store, stateDir, codexHomeDir, enabled: memorySynthesisConfig.enabled, model: memorySynthesisConfig.model ?? undefined, timeoutMs: memorySynthesisConfig.timeoutMs });
+const routingClassifier = new ButlerRoutingClassifier({ stateDir, codexHomeDir, enabled: true, model: memorySynthesisConfig.model ?? undefined, timeoutMs: memorySynthesisConfig.timeoutMs });
+const workerReview = new CodexWorkerReviewService({ store, stateDir, codexHomeDir, enabled: true, model: memorySynthesisConfig.model ?? undefined, timeoutMs: memorySynthesisConfig.timeoutMs });
 const memoryScheduler = new MemoryUpdateScheduler({ store, config: memorySynthesisConfig, stateDir, codexHomeDir });
 const memoryPromotion = new CodexExecMemoryPromotionService({ store, memoryScheduler, config: memorySynthesisConfig, stateDir, codexHomeDir });
 store.setMemoryUpdateObserver(memoryScheduler);
@@ -204,9 +220,11 @@ const codexHarness = new CodexHarnessService({
   runtimeBroker,
   serviceTemplateRegistry,
   memoryReview,
+  workerReview,
   memoryScheduler
 });
 memoryReview.reviewPendingReportsAsync();
+workerReview.reviewPendingReportsAsync();
 memoryScheduler.start();
 memoryPromotion.start();
 await codexHarness.load();
@@ -242,7 +260,27 @@ const butlerAgent = new ButlerAgentService({
   imageStore,
   fileStore,
   artifactsDir,
+  routingClassifier,
   refreshRuntimeInventory: syncRuntimeInventory
+});
+const pairSessions = new PairSessionManager({
+  pairStore,
+  store,
+  codexClient,
+  hostController,
+  runtimeBroker,
+  serviceTemplateRegistry,
+  imageStore,
+  fileStore,
+  piAuthPath: path.join(piAgentDir, "auth.json"),
+  codexAuthPath: path.join(codexHomeDir, "auth.json"),
+  codexConfigDir,
+  sessionRootDir: pairSessionDir,
+  artifactsDir,
+  refreshRuntimeInventory: syncRuntimeInventory,
+  memoryScheduler,
+  routingClassifier,
+  onButlerPatch: (payload) => sseHub?.broadcastButlerPatch(payload)
 });
 runtimeAccess = {
   artifactsDir,
@@ -342,7 +380,11 @@ if (hotReloadEnabled) {
   });
 }
 
-store.on("change", () => sseHub.schedule());
+store.on("change", () => {
+  pairStore.syncWorkerReports();
+  sseHub.schedule();
+});
+pairStore.on("change", () => sseHub.schedule());
 scratchPadStore.on("change", () => sseHub.schedule());
 codexClient.on("change", () => sseHub.schedule());
 codexClient.on("threadPatch", (payload) => sseHub.broadcastThreadPatch(payload));
@@ -433,6 +475,7 @@ registerScratchPadRoutes({
   store,
   codexClient,
   butlerAgent,
+  artifactsDir,
   imageStore,
   fileStore
 });
@@ -444,6 +487,20 @@ registerPreviewAnnotationRoutes({
   runtimeBrokerToken,
   sseHub,
   store
+});
+registerPairRoutes({
+  app,
+  pairSessions
+});
+registerSelfImprovementRoutes({
+  app,
+  requests: selfImprovementRequests,
+  hostController,
+  store,
+  codexClient,
+  imageStore,
+  fileStore,
+  artifactsDir
 });
 
 app.get("/api/memory/jobs/:threadId", (request, response) => {
@@ -585,6 +642,98 @@ app.post("/api/memory/butler/remember", (request, response) => {
     tags
   });
   response.json({ ok: true, entry });
+});
+
+app.get("/api/memory/butler", (request, response) => {
+  const projectId = typeof request.query.projectId === "string" && request.query.projectId ? request.query.projectId : null;
+  const query = typeof request.query.query === "string" ? request.query.query : null;
+  let entries = store.listButlerMemory();
+  if (projectId) {
+    entries = entries.filter((entry) => entry.tags.includes(`project:${projectId}`));
+  }
+  if (query && query.trim()) {
+    const needle = query.trim().toLowerCase();
+    entries = entries.filter(
+      (entry) =>
+        entry.summary.toLowerCase().includes(needle) ||
+        (entry.details ? entry.details.toLowerCase().includes(needle) : false) ||
+        entry.tags.some((tag) => tag.toLowerCase().includes(needle))
+    );
+  }
+  response.json({ entries });
+});
+
+app.get("/api/memory/projects", (request, response) => {
+  const projectId = typeof request.query.projectId === "string" && request.query.projectId ? request.query.projectId : null;
+  const query = typeof request.query.query === "string" ? request.query.query : null;
+  let projects = store.listProjectMemories();
+  if (projectId) {
+    projects = projects.filter((memory) => memory.projectId === projectId);
+  }
+  if (query && query.trim()) {
+    const needle = query.trim().toLowerCase();
+    projects = projects.filter(
+      (memory) =>
+        memory.projectLabel.toLowerCase().includes(needle) ||
+        (memory.summary ? memory.summary.toLowerCase().includes(needle) : false) ||
+        memory.entries.some(
+          (entry) =>
+            entry.summary.toLowerCase().includes(needle) ||
+            (entry.details ? entry.details.toLowerCase().includes(needle) : false)
+        )
+    );
+  }
+  response.json({ projects });
+});
+
+app.get("/api/memory/jobs", (request, response) => {
+  const projectId = typeof request.query.projectId === "string" && request.query.projectId ? request.query.projectId : null;
+  const query = typeof request.query.query === "string" ? request.query.query : null;
+  let jobs = store.listJobMemories(projectId);
+  if (query && query.trim()) {
+    const needle = query.trim().toLowerCase();
+    jobs = jobs.filter((memory) => {
+      if (memory.latestCheckpoint && memory.latestCheckpoint.toLowerCase().includes(needle)) return true;
+      if (memory.nextAction && memory.nextAction.toLowerCase().includes(needle)) return true;
+      if (memory.operatorGoal && memory.operatorGoal.toLowerCase().includes(needle)) return true;
+      if (memory.requestedTask && memory.requestedTask.toLowerCase().includes(needle)) return true;
+      if (memory.decisions.some((decision) => decision.summary.toLowerCase().includes(needle))) return true;
+      if (memory.notes.some((note) => note.toLowerCase().includes(needle))) return true;
+      if (memory.entries.some((entry) => entry.summary.toLowerCase().includes(needle))) return true;
+      return false;
+    });
+  }
+  response.json({ jobs });
+});
+
+app.delete("/api/memory/butler/:id", (request, response) => {
+  const id = request.params.id;
+  const ok = store.deleteButlerMemory(id);
+  if (!ok) {
+    response.status(404).json({ error: "Butler memory entry not found" });
+    return;
+  }
+  response.json({ ok: true });
+});
+
+app.delete("/api/memory/jobs/:threadId/entries/:entryId", (request, response) => {
+  const { threadId, entryId } = request.params;
+  const ok = store.deleteJobMemoryEntry(threadId, entryId);
+  if (!ok) {
+    response.status(404).json({ error: "Job memory entry not found" });
+    return;
+  }
+  response.json({ ok: true });
+});
+
+app.delete("/api/memory/projects/:projectId/entries/:entryId", (request, response) => {
+  const { projectId, entryId } = request.params;
+  const ok = store.deleteProjectMemoryEntry(projectId, entryId);
+  if (!ok) {
+    response.status(404).json({ error: "Project memory entry not found" });
+    return;
+  }
+  response.json({ ok: true });
 });
 
 app.get("/api/chat/history", (request, response) => {
@@ -833,6 +982,22 @@ app.post("/api/threads/settings", async (request, response) => {
 
   try {
     await codexClient.updateComposeSettings(model, effort);
+    response.json({ ok: true });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/threads/:threadId/settings", async (request, response) => {
+  const threadId = request.params.threadId;
+  const effort = typeof request.body?.effort === "string" ? request.body.effort : null;
+  if (!threadId || !effort) {
+    response.status(400).json({ error: "threadId and effort are required" });
+    return;
+  }
+
+  try {
+    await codexClient.updateThreadReasoningEffort(threadId, effort as never);
     response.json({ ok: true });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });

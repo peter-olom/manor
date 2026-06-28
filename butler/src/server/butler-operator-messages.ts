@@ -10,17 +10,21 @@ import {
   isTrivialOperatorQuestionConfirmation
 } from "./butler-agent-helpers.js";
 import { stripElapsedTaskTimeFooter } from "./task-timing.js";
-import type { ButlerMessageView, ButlerOperatorQuestionItemView, ButlerOperatorQuestionView } from "./types.js";
+import type { ButlerMessageView, ButlerOperatorQuestionItemView, ButlerOperatorQuestionView, ButlerTraceItemView, ButlerTraceMetaView } from "./types.js";
 
 type OperatorMessageOptions = {
   role?: string;
   displayText?: string | null;
   question?: ButlerOperatorQuestionView | null;
+  trace?: ButlerTraceItemView[] | null;
+  traceMeta?: ButlerTraceMetaView | null;
   normalize?: boolean;
 };
 
 type ProviderBackedOperatorMessageOptions = {
   normalize?: boolean;
+  trace?: ButlerTraceItemView[] | null;
+  traceMeta?: ButlerTraceMetaView | null;
 };
 
 const MAX_OPERATOR_MESSAGES = SNAPSHOT_MESSAGE_TAIL_LIMIT;
@@ -393,6 +397,8 @@ export function upsertOperatorMessage(messages: ButlerMessageView[], id: string,
   const role = options.role ?? "assistant";
   const displayText = options.displayText?.trim() || null;
   const question = options.question ? normalizeOperatorQuestion(options.question) : null;
+  const trace = options.trace ?? null;
+  const traceMeta = options.traceMeta ?? null;
   let changed = false;
   if (existingMessage) {
     changed =
@@ -401,7 +407,9 @@ export function upsertOperatorMessage(messages: ButlerMessageView[], id: string,
       existingMessage.taskDurationMs !== taskDurationMs ||
       existingMessage.role !== role ||
       existingMessage.displayText !== (displayText ?? undefined) ||
-      JSON.stringify(existingMessage.question ?? null) !== JSON.stringify(question);
+      JSON.stringify(existingMessage.question ?? null) !== JSON.stringify(question) ||
+      JSON.stringify(existingMessage.trace ?? null) !== JSON.stringify(trace) ||
+      JSON.stringify(existingMessage.traceMeta ?? null) !== JSON.stringify(traceMeta);
     existingMessage.text = text;
     existingMessage.at = at;
     existingMessage.taskDurationMs = taskDurationMs;
@@ -410,18 +418,25 @@ export function upsertOperatorMessage(messages: ButlerMessageView[], id: string,
     else delete existingMessage.displayText;
     if (question) existingMessage.question = question;
     else delete existingMessage.question;
+    if (trace && trace.length > 0) existingMessage.trace = trace;
+    else delete existingMessage.trace;
+    if (traceMeta) existingMessage.traceMeta = traceMeta;
+    else delete existingMessage.traceMeta;
   } else {
     changed = true;
-    messages.push({
+    const next: ButlerMessageView = {
       id,
       role,
       text,
-      ...(displayText ? { displayText } : {}),
-      ...(question ? { question } : {}),
       at,
       taskDurationMs,
       kind: "message"
-    });
+    };
+    if (displayText) next.displayText = displayText;
+    if (question) next.question = question;
+    if (trace && trace.length > 0) next.trace = trace;
+    if (traceMeta) next.traceMeta = traceMeta;
+    messages.push(next);
   }
   if (options.normalize !== false) changed = normalizeOperatorMessages(messages) || changed;
   return changed;
@@ -440,6 +455,8 @@ export function upsertProviderBackedOperatorMessage(
   return upsertOperatorMessage(messages, existingId, text, at, null, {
     role,
     displayText,
+    trace: options.trace ?? null,
+    traceMeta: options.traceMeta ?? null,
     normalize: options.normalize
   });
 }

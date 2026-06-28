@@ -1,5 +1,5 @@
 import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
-import { inferThreadExecutionContract, parseThreadExecutionContract } from "./thread-contract.js";
+import { inferThreadExecutionContract } from "./thread-contract.js";
 import type {
   ButlerSupervisorSummaryView,
   ButlerWindow,
@@ -228,8 +228,7 @@ export function summarizePreviewText(value: string | null | undefined, max = 120
     return null;
   }
 
-  const contract = parseThreadExecutionContract(value);
-  return summarizeTaskText(contract?.requestedTask ?? value, max);
+  return summarizeTaskText(value, max);
 }
 
 export function deriveThreadTaskTitle(thread: CodexThreadRecord | null | undefined): string | null {
@@ -832,12 +831,13 @@ export function summarizeItem(item: Record<string, unknown>): string {
 
 export function normalizeItem(item: Record<string, unknown>, status: "started" | "completed"): CodexItemRecord {
   const id = typeof item.id === "string" ? item.id : crypto.randomUUID();
+  const at = typeof item.at === "number" && Number.isFinite(item.at) ? item.at : Date.now();
   return {
     id,
     type: typeof item.type === "string" ? item.type : "unknown",
     status,
     text: summarizeItem(item),
-    at: Date.now(),
+    at,
     raw: item
   };
 }

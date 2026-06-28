@@ -1,9 +1,5 @@
-import { promises as fs } from "node:fs";
-
 import type { CodexThreadRecord, CodexWorkerReportView } from "./types.js";
-
-const MANOR_WORKSPACE_CWD = "/repos/manor";
-const SHARED_WORKSPACE_CWD = "/repos";
+import type { SelfImprovementRequestView } from "../shared/self-improvement.js";
 
 const MANOR_PLATFORM_TERMS = [
   "manor",
@@ -83,19 +79,6 @@ function includesAny(text: string, terms: string[]): string[] {
   return terms.filter((term) => text.includes(term));
 }
 
-export async function resolveManorSelfImprovementCwd(): Promise<string> {
-  try {
-    await fs.access(MANOR_WORKSPACE_CWD);
-    return MANOR_WORKSPACE_CWD;
-  } catch {
-    return SHARED_WORKSPACE_CWD;
-  }
-}
-
-export function hasStartedSelfImprovement(thread: CodexThreadRecord | null | undefined): boolean {
-  return Boolean(thread?.eventLog.some((entry) => entry.method === "butler.self_improvement.started"));
-}
-
 export function classifyManorBlocker(input: {
   thread: CodexThreadRecord | null | undefined;
   workerReport: CodexWorkerReportView | null | undefined;
@@ -155,47 +138,55 @@ export function classifyManorBlocker(input: {
 }
 
 export function buildSelfImprovementTask(input: {
-  problem: string;
+  problem?: string;
   desiredOutcome?: string | null;
+  request?: SelfImprovementRequestView | null;
   sourceThread?: CodexThreadRecord | null;
   workerReport?: CodexWorkerReportView | null;
   classification?: ManorBlockerClassification | null;
 }): string {
+  const request = input.request ?? null;
   const sourceThread = input.sourceThread ?? null;
   const workerReport = input.workerReport ?? null;
   const classification = input.classification ?? null;
+  const problem = request?.trigger ?? input.problem ?? "";
   const sections = [
-    "Manor self-improvement job.",
+    "Approved Manor self-improvement session.",
+    request ? `Request id: ${request.id}` : null,
     "",
     "Problem:",
-    input.problem.trim(),
+    problem.trim(),
     "",
-    input.desiredOutcome?.trim() ? `Desired outcome:\n${input.desiredOutcome.trim()}\n` : null,
-    sourceThread ? `Source job: ${sourceThread.id}` : null,
-    sourceThread ? `Source project: ${sourceThread.supervisor.projectLabel}` : null,
+    request ? `Symptoms:\n${request.symptoms}` : null,
+    request?.logs ? `Logs:\n${request.logs}` : null,
+    request ? `Observations:\n${request.observations}` : null,
+    request ? `Suspected cause:\n${request.suspectedCause}` : null,
+    request ? `Proposed change:\n${request.proposedChange}` : null,
+    request ? `Risk:\n${request.risk}` : null,
+    (request?.desiredOutcome ?? input.desiredOutcome)?.trim() ? `Desired outcome:\n${(request?.desiredOutcome ?? input.desiredOutcome)?.trim()}\n` : null,
+    request?.sourceThreadId ? `Source job: ${request.sourceThreadId}` : sourceThread ? `Source job: ${sourceThread.id}` : null,
+    request?.sourceProjectLabel ? `Source project: ${request.sourceProjectLabel}` : sourceThread ? `Source project: ${sourceThread.supervisor.projectLabel}` : null,
     workerReport ? `Blocked report summary: ${workerReport.summary}` : null,
     workerReport?.details ? `Blocked report details: ${workerReport.details}` : null,
     classification ? `Blocker classification: ${classification.confidence} - ${classification.reason}` : null,
     "",
     "Execution requirements:",
     "- Work on Manor itself.",
-    "- If the Manor checkout is already available, create or use a fresh dedicated branch or worktree for this issue.",
-    "- If the Manor checkout is missing and the job starts in the shared workspace, clone the Manor repository first, then create a fresh dedicated branch.",
+    "- Work only in the isolated self-improvement worktree Butler prepared for this request.",
     "- Inspect the current implementation before editing.",
     "- Keep the fix small, explicit, and production-friendly.",
     "- Add focused regression coverage for the behavior.",
     "- Run the relevant tests and the Butler build when practical.",
     "- If the change has any UI implication, capture and surface screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are insufficient.",
-    "- Do not restart, deploy, or mutate the live Manor stack unless the operator explicitly asks.",
+    "- Do not restart, deploy, commit, push, open a pull request, or mutate the live Manor stack unless the operator explicitly asks after reviewing the local result.",
     "- Do not include secrets, tokens, private URLs, or sensitive proof artifacts in the branch or pull request.",
-    "- Commit the implementation with a clear multi-line message.",
-    "- Push the branch and open a draft pull request against the default branch.",
     "",
     "Report back with:",
     "- What changed.",
     "- Tests and build checks run.",
-    "- Draft pull request URL.",
-    "- Any remaining risk or live-restart requirement."
+    "- The local workspace and branch.",
+    "- Any remaining risk or live-restart requirement.",
+    "- Whether the result should be committed, discarded, or reviewed further."
   ].filter((entry): entry is string => Boolean(entry));
 
   return sections.join("\n");
@@ -203,19 +194,19 @@ export function buildSelfImprovementTask(input: {
 
 export function buildSelfImprovementReviewInstruction(input: {
   classification: ManorBlockerClassification;
-  alreadyStarted: boolean;
+  alreadyQueued: boolean;
 }): string {
   if (!input.classification.shouldInvestigate) {
     return `Manor blocker classifier: do not start self-improvement. ${input.classification.reason}`;
   }
 
-  if (input.alreadyStarted) {
-    return "Manor blocker classifier: a self-improvement job has already been started for this source blocker. Do not start another one unless the operator explicitly asks.";
+  if (input.alreadyQueued) {
+    return "Manor blocker classifier: a self-improvement request already exists for this source blocker. Do not create another one unless the operator explicitly asks.";
   }
 
   return [
     `Manor blocker classifier: ${input.classification.confidence} confidence. ${input.classification.reason}`,
-    "Before posting the blocked closeout, use start_self_improvement with the source job id and blocker summary so a separate Codex job investigates Manor and opens a draft PR.",
-    "After the tool succeeds, use reply_to_operator to explain the blocker and mention that a self-improvement job was started."
+    "Before posting the blocked closeout, use request_self_improvement with the source job id, symptoms, logs, observations, suspected cause, proposed change, and risk so the operator can review it in the queue.",
+    "After the tool succeeds, use reply_to_operator to explain the blocker and mention that a self-improvement request is waiting for operator approval."
   ].join("\n");
 }

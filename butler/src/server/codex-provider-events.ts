@@ -381,6 +381,20 @@ export function mapCodexProviderEvent(input: CodexProviderEventInput): ProviderR
         payload: { providerThreadId: threadId }
       }];
     }
+    case "thread/settings/updated": {
+      const settings = asRecord(params.threadSettings) ?? asRecord(params.settings) ?? null;
+      const effort = asString(settings?.effort) ?? asString(params.effort) ?? null;
+      const model = asString(settings?.model) ?? asString(params.model) ?? null;
+      return [{
+        ...baseEvent(input, params, threadId),
+        type: "thread.settings.updated",
+        payload: {
+          effort: effort ?? null,
+          model: model ?? null,
+          metadata: params
+        }
+      }];
+    }
     case "thread/status/changed":
     case "thread/archived":
     case "thread/unarchived":

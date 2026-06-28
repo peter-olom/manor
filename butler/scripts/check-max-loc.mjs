@@ -76,13 +76,21 @@ const violations = listedFiles
   .filter(shouldCheck)
   .map((relativePath) => {
     const absolutePath = path.join(repoRoot, relativePath);
-    const source = fs.readFileSync(absolutePath, "utf8");
+    let source;
+    try {
+      source = fs.readFileSync(absolutePath, "utf8");
+    } catch (error) {
+      if (error && error.code === "ENOENT") {
+        return null;
+      }
+      throw error;
+    }
     return {
       relativePath,
       lines: countLines(source)
     };
   })
-  .filter((entry) => entry.lines > MAX_LOC)
+  .filter((entry) => entry && entry.lines > MAX_LOC)
   .sort((left, right) => right.lines - left.lines || left.relativePath.localeCompare(right.relativePath));
 
 if (violations.length === 0) {

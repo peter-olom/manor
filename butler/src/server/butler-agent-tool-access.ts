@@ -8,6 +8,8 @@ import type { ImageReferenceStore } from "./image-store.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-templates.js";
 import type { ButlerStateStore } from "./state-store.js";
+import type { JobPayloadView } from "./job-payload-types.js";
+import type { JobPayloadKind } from "./job-instruction-artifacts.js";
 import type {
   AppSnapshot,
   ButlerActivityTurnView,
@@ -17,6 +19,7 @@ import type {
   ButlerNextWorkerReportAction,
   ButlerOnboardingView,
   ButlerOperatorQuestionView,
+  ButlerRoutingDecisionView,
   ButlerThreadCallbackView,
   ButlerToolView,
   ButlerThinkingLevel,
@@ -139,6 +142,15 @@ export type ButlerAgentToolAccess = {
   ): Promise<ProofScreenshotReview>;
   getThreadBudgetLimitMessage(threadId: string): string | null;
   getOperatorCloseoutBlocker(threadId: string): string | null;
+  classifyDelegationRoute(input: {
+    task: string;
+    goal?: string | null;
+    cwd: string;
+    attachmentCount?: number;
+  }): Promise<ButlerRoutingDecisionView>;
+  getDelegationQuestionRoundCount(key: string): number;
+  noteDelegationQuestionRound(key: string): number;
+  clearDelegationQuestionRounds(key: string): void;
   requestManorRestartAuthorization(input: {
     mode?: unknown;
     target?: unknown;
@@ -164,7 +176,16 @@ export type ButlerAgentToolAccess = {
     goal?: string;
     workspace: { cwd: string; branchName: string | null };
     extraNotes?: string[];
+    orchestration?: ButlerRoutingDecisionView | null;
   }): Promise<{ text: string; contract: CodexThreadExecutionContractView }>;
+  createOrUpdateJobPayload(input: {
+    threadId: string;
+    kind: JobPayloadKind;
+    instruction: string;
+    imageReferenceIds?: string[];
+    fileReferenceIds?: string[];
+  }): Promise<JobPayloadView>;
+  bindJobPayloadDelivery(threadId: string, delivery: { turnId?: string | null; messageId?: string | null }): Promise<JobPayloadView | null>;
   queueDelegationAcknowledgement(threadId: string, text: string): void;
   registerPendingChatCallback(
     threadId: string,
@@ -190,6 +211,7 @@ export type ButlerAgentToolAccess = {
 export type ButlerAgentSessionAccess = {
   modelRegistry: ModelRegistry | null;
   session: AgentSession | null;
+  systemPromptSuffix: string | null;
   auth: ButlerAuthStatus;
   codexAuth: ButlerAuthStatus;
   compaction: Omit<ButlerCompactionView, "autoEnabled" | "active" | "count">;
@@ -232,4 +254,5 @@ export type ButlerAgentSessionAccess = {
   emit(event: "change"): boolean;
   emit(event: "butlerPatch", payload: import("./types.js").ButlerLivePatchView): boolean;
   persistActivitySummaryTurn(turn: ButlerActivityTurnView): void;
+  traceBuffer: import("./butler-trace-buffer.js").ButlerTraceBuffer;
 };

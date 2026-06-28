@@ -16,7 +16,6 @@ const targetValues = new Set(["current", "latest"]);
 const gitRefPattern = /^[A-Za-z0-9][A-Za-z0-9._/@+-]{0,127}$/;
 const imageTagPattern = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
 const sourceModeEnvValues = new Set(["1", "true", "yes", "on"]);
-const localManorImagePattern = /^manor-[a-z0-9-]+:local$/;
 
 export function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -67,9 +66,7 @@ export function detectRuntimeRestartMode(buildFromSource, imageReferences = []) 
   if (sourceModeEnvValues.has(String(buildFromSource ?? "").trim().toLowerCase())) {
     return "source";
   }
-  return imageReferences.some((imageReference) => localManorImagePattern.test(String(imageReference ?? "").trim()))
-    ? "source"
-    : "image";
+  return "image";
 }
 
 export function shouldBuildSourceImages(payload) {

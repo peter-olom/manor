@@ -5,6 +5,7 @@ import path from "node:path";
 import type { CodexInputItem } from "./image-store.js";
 import { cleanupManagedWorktree, resolveExistingWorkspaceCwd } from "./repo-worktree.js";
 import { listFilesRecursive, listThreadSessionFiles, listThreadSnapshotFiles, normalizeTimestampMs } from "./codex-session-artifacts.js";
+import { recoverCodexTranscriptActivity } from "./codex-transcript-activity.js";
 import { ButlerStateStore } from "./state-store.js";
 import { CodexAppServerTransport, type JsonRpcMessage } from "./codex-app-server-transport.js";
 import { CodexProviderAdapter } from "./codex-provider-adapter.js";
@@ -688,7 +689,24 @@ export class CodexAppServerClient extends EventEmitter {
     }
 
     await this.restoreThreadUsage(threadId).catch(() => undefined);
+    await this.restoreThreadTranscriptActivity(threadId).catch(() => undefined);
     await this.resumeThread(threadId).catch(() => undefined);
+  }
+
+  private async restoreThreadTranscriptActivity(threadId: string): Promise<void> {
+    const thread = this.store.getThread(threadId);
+    const turns = await recoverCodexTranscriptActivity(this.codexHomeDir, threadId, thread?.createdAt ?? null);
+    for (const turn of turns) {
+      for (const item of turn.items) {
+        const current = this.store.getThread(threadId)?.turns
+          .find((entry) => entry.id === turn.turnId)
+          ?.items.find((entry) => entry.id === item.id);
+        if (current && current.type === item.type && current.text === item.text && current.status === item.status && current.at === item.at) {
+          continue;
+        }
+        this.store.updateItem(threadId, turn.turnId, { ...item }, item.status);
+      }
+    }
   }
 
   async resumeThread(threadId: string, forceConfig = false): Promise<void> {
@@ -715,6 +733,13 @@ export class CodexAppServerClient extends EventEmitter {
     this.emit("change");
   }
 
+  async updateThreadReasoningEffort(threadId: string, effort: ReasoningEffort): Promise<void> {
+    if (!effort) {
+      throw new Error("effort is required");
+    }
+    await this.codexProviderAdapter.call("thread/settings/update", { threadId, effort });
+  }
+
   private syncComposeEffort(effort: ReasoningEffort | null): void {
     if (!effort) {
       return;
@@ -733,7 +758,7 @@ export class CodexAppServerClient extends EventEmitter {
     developerInstructions?: string | null;
     effort?: ReasoningEffort | null;
     openWindow?: boolean;
-  }): Promise<{ threadId: string }> {
+  }): Promise<{ threadId: string; turnId: string | null }> {
     const task = options.task.trim();
     if (!task) {
       throw new Error("task is required");
@@ -780,9 +805,11 @@ export class CodexAppServerClient extends EventEmitter {
     }
 
     const turnResult = await this.codexProviderAdapter.sendTurn(threadId, params);
+    let turnId: string | null = turnResult.turnId ?? null;
     if (turnResult.turn && typeof turnResult.turn === "object") {
       const turn = turnResult.turn as Record<string, unknown>;
       if (typeof turn.id === "string") {
+        turnId = turn.id;
         this.activeTurnIds.set(threadId, turn.id);
         if (requestedEffort) {
           this.store.setThreadRequestedReasoningEffort(threadId, requestedEffort, turn.id);
@@ -796,10 +823,10 @@ export class CodexAppServerClient extends EventEmitter {
     }
 
     this.emit("change");
-    return { threadId };
+    return { threadId, turnId };
   }
 
-  async sendMessage(threadId: string, input: string | CodexInputItem[]): Promise<void> {
+  async sendMessage(threadId: string, input: string | CodexInputItem[]): Promise<{ threadId: string; turnId: string | null }> {
     const inputItems = normalizeInputItems(input);
     const threadWorkspace = await this.requireExistingWorkspace(this.store.getThread(threadId)?.cwd);
     if (threadWorkspace) {
@@ -814,7 +841,7 @@ export class CodexAppServerClient extends EventEmitter {
         this.store.upsertThreadSummary({ id: targetThreadId, cwd: threadWorkspace });
       }
       await this.codexProviderAdapter.steerTurn(targetThreadId, activeTurnId, inputItems);
-      return;
+      return { threadId: targetThreadId, turnId: activeTurnId };
     }
 
     const params: Record<string, unknown> = {
@@ -842,6 +869,7 @@ export class CodexAppServerClient extends EventEmitter {
     if (result.turn && typeof result.turn === "object") {
       this.store.updateTurn(targetThreadId, result.turn as Record<string, unknown>);
     }
+    return { threadId: targetThreadId, turnId: result.turnId ?? null };
   }
 
   async stopThread(threadId: string): Promise<boolean> {

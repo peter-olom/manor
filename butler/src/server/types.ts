@@ -1,5 +1,19 @@
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime.js";
-
+import type { ButlerRoutingDecisionView, WorkerClaimsReportView, WorkerReviewResultRecordView } from "./orchestration-types.js";
+export type {
+  ButlerGoalRoutingMode,
+  ButlerReviewRoutingTarget,
+  ButlerRoutingDecisionView,
+  ButlerRoutingQuestionView,
+  ButlerRoutingRiskLevel,
+  ButlerRoutingTaskClass,
+  WorkerClaimStatus,
+  WorkerClaimsReportView,
+  WorkerClaimView,
+  WorkerReviewResultRecordView,
+  WorkerReviewSeverity,
+  WorkerSubAgentSummaryView
+} from "./orchestration-types.js";
 export type CodexThreadStatus = "active" | "idle" | "unknown";
 export type CodexProofExpectation = "none" | "requested";
 export type CodexInferredWorkDepth = "quick" | "standard" | "deep" | "incident";
@@ -56,7 +70,7 @@ export type ButlerCallbackResolutionState = "received_worker_callback" | "recove
 export type ButlerOperatorCloseoutStatus = "not_required" | "owed" | "posted";
 export type ButlerCloseoutChannel = "none" | "main_chat";
 export type ButlerNextWorkerReportAction = "review" | "reply_to_operator";
-export type ButlerCallbackReviewState = "idle" | "queued" | "running";
+export type ButlerCallbackReviewState = "idle" | "queued" | "running" | "blocked";
 export type ButlerCallbackReviewReason = "worker_callback" | "thread_recovery" | null;
 export type ReviewPanelRole = "intent" | "qa" | "ui_taste" | "api" | "ops" | "product";
 export type ReviewPanelVerdict = "pending" | "passed" | "concern" | "failed" | "blocked";
@@ -116,6 +130,8 @@ export interface CodexThreadExecutionContractView {
   verificationMatrix: VerificationMatrixRowView[];
   reviewPanel: ReviewPanelRunView[];
   reviewPanelSummary: ReviewPanelSummaryView;
+  orchestration?: ButlerRoutingDecisionView;
+  reviewResults?: WorkerReviewResultRecordView[];
   mission?: MissionContractView;
   notes: string[];
 }
@@ -150,8 +166,8 @@ export interface ButlerThreadCallbackView {
   operatorCloseoutStatus: ButlerOperatorCloseoutStatus;
   owesOperatorReply: boolean;
   closeoutChannel: ButlerCloseoutChannel;
-  reviewState: ButlerCallbackReviewState;
-  reviewReason: ButlerCallbackReviewReason;
+  reviewState: ButlerCallbackReviewState; reviewReason: ButlerCallbackReviewReason;
+  blockedCloseoutReason?: string | null; blockedCloseoutReportAt?: number | null;
   closedAt: number | null;
   updatedAt: number;
 }
@@ -209,6 +225,7 @@ export interface CodexWorkerReportView {
   summary: string;
   details: string | null;
   evidence: CodexWorkerEvidenceView[];
+  claims?: WorkerClaimsReportView | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -1092,6 +1109,7 @@ export interface CodexThreadSummary {
   supervisor: CodexThreadSupervisorView;
   executionContract: CodexThreadExecutionContractView | null;
   supervisionChecklist: SupervisionChecklistView | null;
+  jobPayload?: import("./job-payload-types.js").JobPayloadView | null;
   jobMemory: JobMemoryView | null;
 }
 
@@ -1136,6 +1154,40 @@ export interface ButlerWindow {
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 export type ButlerThinkingLevel = "off" | ReasoningEffort;
 
+export type ButlerTraceItemType =
+  | "reasoning"
+  | "command_execution"
+  | "file_change"
+  | "plan"
+  | "mcp_tool_call"
+  | "dynamic_tool_call"
+  | "web_search"
+  | "image_view"
+  | "context_compaction"
+  | "user_message"
+  | "assistant_message"
+  | "error"
+  | "unknown";
+
+export type ButlerTraceItemStatus = "in_progress" | "completed" | "failed" | "declined";
+
+export interface ButlerTraceItemView {
+  id: string;
+  type: ButlerTraceItemType;
+  status: ButlerTraceItemStatus;
+  text: string;
+  title?: string;
+  at: number;
+  completedAt?: number | null;
+}
+
+export interface ButlerTraceMetaView {
+  turnId: string;
+  startedAt: number;
+  completedAt: number;
+  items: ButlerTraceItemView[];
+}
+
 export interface ModelOption {
   id: string;
   label: string;
@@ -1155,6 +1207,8 @@ export interface ButlerMessageView {
   kind: "message";
   pending?: boolean;
   question?: ButlerOperatorQuestionView;
+  trace?: ButlerTraceItemView[];
+  traceMeta?: ButlerTraceMetaView;
 }
 
 export interface ButlerOperatorQuestionOptionView {

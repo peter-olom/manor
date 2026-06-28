@@ -17,11 +17,10 @@ import {
   isCallbackOutstanding,
   selectReviewableProofArtifacts
 } from "../../src/server/butler-agent-helpers.js";
-import { formatDelegationContractText } from "../../src/server/butler-agent-delegation-contract.js";
+import { buildJobPayload } from "../../src/server/job-instruction-artifacts.js";
 import {
   buildSelfImprovementTask,
-  classifyManorBlocker,
-  hasStartedSelfImprovement
+  classifyManorBlocker
 } from "../../src/server/butler-self-improvement.js";
 import { validateCompletedWorkerEvidence } from "../../src/server/codex-harness-report-validation.js";
 import { contractRequiresVisualProof, hasVisualProof, taskHasUiImplication } from "../../src/server/proof-policy.js";
@@ -299,7 +298,7 @@ test("implementation contracts infer internal depth and category verification ro
   assert.ok(contract.verificationMatrix.some((row) => row.checkKinds.includes("taste_review")));
 });
 
-test("delegation contract serializes the mission planner and critic loop", () => {
+test("job payload preserves the mission planner and critic loop", () => {
   const contract = buildThreadExecutionContract({
     threadId: "thread-loop",
     workspaceCwd: "/workspace",
@@ -310,18 +309,17 @@ test("delegation contract serializes the mission planner and critic loop", () =>
     notes: []
   });
 
-  const text = formatDelegationContractText({
+  const payload = buildJobPayload({
     threadId: contract.threadId,
-    workspace: { cwd: contract.workspaceCwd ?? "/workspace", branchName: contract.branch },
-    project: { id: contract.projectId, label: contract.projectLabel },
+    kind: "delegation",
+    instruction: contract.requestedTask,
     contract,
-    notes: contract.notes,
-    requestedTask: contract.requestedTask
   });
+  const payloadContract = payload.executionContract as CodexThreadExecutionContractView;
 
-  assert.match(text, /planner_step:/);
-  assert.match(text, /critic_check:/);
-  assert.match(text, /operator_question_policy:/);
+  assert.ok((payloadContract.mission?.plannerSteps.length ?? 0) > 0);
+  assert.ok((payloadContract.mission?.criticChecks.length ?? 0) > 0);
+  assert.match(payloadContract.mission?.operatorQuestionPolicy ?? "", /Ask only when a product, taste, priority, permission, or irreversible execution choice/);
 });
 
 test("worker reports attach evidence without accepting checklist points", async () => {
@@ -637,7 +635,7 @@ test("queued rejection follow-ups batch rejected points and clear after flush", 
 
   const instruction = store.buildQueuedRejectionInstruction(contract.threadId);
   assert.ok(instruction);
-  assert.match(instruction, /BUTLER CHECKLIST REJECTION FOLLOW-UP/);
+  assert.match(instruction, /Rejected acceptance points/);
   assert.match(instruction, /Show the acknowledgement event/);
   assert.match(instruction, /Show the callback event/);
 
@@ -814,7 +812,7 @@ test("system prompt advises focused checklist refresh for new work", async () =>
 });
 
 test("Butler callback state startup tolerates empty persisted files", () => {
-  const source = readFileSync(path.resolve("src/server/butler-agent.ts"), "utf8");
+  const source = readFileSync(path.resolve("src/server/butler-callback-state.ts"), "utf8");
 
   assert.match(source, /if \(!raw\.trim\(\)\) return;/);
   assert.match(source, /!\(error instanceof SyntaxError\)/);
@@ -831,7 +829,7 @@ test("system prompt biases autonomous domain resolution before job inventory", a
   assert.match(prompt, /Do not collapse real people or folders into job labels/);
 });
 
-test("system prompt routes direct Manor improvement requests to self-improvement", async () => {
+test("system prompt routes direct Manor improvement requests to the approval queue", async () => {
   const store = await createStore();
   const prompt = buildSystemPrompt(store, "No callbacks.");
   const task = buildSelfImprovementTask({
@@ -839,13 +837,14 @@ test("system prompt routes direct Manor improvement requests to self-improvement
     desiredOutcome: "The operator sees timing feedback."
   });
 
-  assert.match(prompt, /start_self_improvement/);
+  assert.match(prompt, /request_self_improvement/);
   assert.match(prompt, /request_manor_restart/);
   assert.match(prompt, /read_manor_restart_status/);
   assert.match(prompt, /direct Manor, Butler, Codex worker, preview, runtime broker, supervision, restart-controller, or dogfooding improvements/);
   assert.match(prompt, /missing credentials, operator approval, external outages, or app-specific bugs outside Manor/);
   assert.match(task, /If the change has any UI implication/);
   assert.match(task, /screenshot or video proof/);
+  assert.match(task, /Do not restart, deploy, commit, push, open a pull request/);
 });
 
 test("callback helper only treats owed non-closed callbacks as outstanding", () => {
@@ -1142,7 +1141,7 @@ test("callback review prompt includes held operator context", async () => {
   assert.match(prompt, /newly supplied staging account/);
 });
 
-test("callback review prompt starts self-improvement for Manor platform blockers", async () => {
+test("callback review prompt queues self-improvement for Manor platform blockers", async () => {
   const store = await createStore();
   const contract = makeContract({
     requestedTask: "Run app preview proof through Manor.",
@@ -1186,8 +1185,8 @@ test("callback review prompt starts self-improvement for Manor platform blockers
   });
 
   assert.match(prompt, /Manor blocker classifier: high confidence/);
-  assert.match(prompt, /use start_self_improvement/);
-  assert.match(prompt, /source job id and blocker summary/);
+  assert.match(prompt, /use request_self_improvement/);
+  assert.match(prompt, /symptoms, logs, observations, suspected cause, proposed change, and risk/);
 });
 
 test("callback review prompt avoids self-improvement for operator-only blockers", async () => {
@@ -1233,23 +1232,7 @@ test("callback review prompt avoids self-improvement for operator-only blockers"
   });
 
   assert.match(prompt, /Manor blocker classifier: do not start self-improvement/);
-  assert.doesNotMatch(prompt, /use start_self_improvement with the source job id/);
-});
-
-test("self-improvement duplicate guard notices source blocker events", async () => {
-  const store = await createStore();
-  const contract = makeContract();
-  store.upsertThreadSummary({
-    id: contract.threadId,
-    status: "idle",
-    cwd: contract.workspaceCwd,
-    turns: [{ id: "turn-1", status: "completed", items: [] }]
-  });
-  store.setThreadExecutionContract(contract.threadId, contract);
-
-  assert.equal(hasStartedSelfImprovement(store.getThread(contract.threadId)), false);
-  store.addEvent(contract.threadId, "butler.self_improvement.started", "Started Manor self-improvement job thread-2.");
-  assert.equal(hasStartedSelfImprovement(store.getThread(contract.threadId)), true);
+  assert.doesNotMatch(prompt, /use request_self_improvement with the source job id/);
 });
 
 test("thread snapshot merge removes synthetic duplicate chat messages", async () => {

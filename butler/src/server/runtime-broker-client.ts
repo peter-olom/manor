@@ -190,10 +190,12 @@ type BrowserSessionStatePayload = {
 };
 
 type BrowserSessionActionPayload = {
-  ok: true;
+  ok: boolean;
+  error?: string;
   action: {
     type: string;
     durationMs: number;
+    status?: "completed" | "failed";
   };
   state: {
     title: string;
@@ -590,10 +592,14 @@ export class RuntimeBrokerClient {
       autoCapture?: boolean;
     }
   ): Promise<BrowserSessionActionPayload> {
-    return this.request<BrowserSessionActionPayload>(`/browser/sessions/${encodeURIComponent(sessionId)}/actions`, {
+    const payload = await this.request<BrowserSessionActionPayload>(`/browser/sessions/${encodeURIComponent(sessionId)}/actions`, {
       method: "POST",
       body: JSON.stringify(input)
     });
+    if (!payload.ok) {
+      throw new Error(payload.error || `Browser-use action ${input.type} failed.`);
+    }
+    return payload;
   }
 
   async stopBrowserSession(sessionId: string, reason?: string): Promise<BrowserSessionStopPayload> {

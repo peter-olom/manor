@@ -159,7 +159,7 @@ export class CodexProviderAdapter extends EventEmitter<CodexProviderAdapterEvent
   async steerTurn(threadId: string, turnId: string, input: unknown): Promise<void> {
     await this.call("turn/steer", {
       threadId,
-      expectedTurnId: turnId,
+      turnId,
       input
     });
   }
@@ -167,7 +167,7 @@ export class CodexProviderAdapter extends EventEmitter<CodexProviderAdapterEvent
   async interruptTurn(threadId: string, turnId?: string): Promise<void> {
     await this.call("turn/interrupt", {
       threadId,
-      ...(turnId ? { expectedTurnId: turnId } : {})
+      ...(turnId ? { turnId } : {})
     });
   }
 

@@ -21,7 +21,8 @@ import {
   registerPendingOperatorPrompt,
   removeCommittedPendingOperatorPrompt,
   removePendingOperatorPrompt,
-  stopButlerPrompt
+  stopButlerPrompt,
+  syncOperatorMessagesFromSessionFiles
 } from "../../src/server/butler-agent-session.js";
 import {
   backfillOperatorMessagesFromSessionFiles,
@@ -244,6 +245,25 @@ test("server-owned pending operator prompts are visible before Pi commits them",
   assert.equal(access.pendingOperatorMessageRevision, 2);
 });
 
+test("provider user echoes do not duplicate visible pending operator prompts", () => {
+  const access = pendingAccess();
+  const id = registerPendingOperatorPrompt(access as never, "Make it store todos locally");
+  access.pendingOperatorMessages[0].at = 100;
+  access.session = {
+    sessionId: "session-1",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "Make it store todos locally" }], timestamp: 110 }
+    ]
+  };
+
+  const messages = getVisibleButlerMessages(access as never);
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].id, id);
+  assert.equal(messages[0].pending, true);
+  assert.equal(messages[0].text, "Make it store todos locally");
+});
+
 test("server-owned pending operator prompts settle one committed user row at a time", () => {
   const access = pendingAccess();
   registerPendingOperatorPrompt(access as never, "same prompt");
@@ -393,6 +413,60 @@ test("provider user history suppresses duplicate durable operator prompts", () =
   assert.deepEqual(messages.map((message) => message.text), ["Normalized prompt", "Done."]);
 });
 
+test("provider user history suppresses duplicate session-backed user prompts", () => {
+  const access = pendingAccess();
+  access.operatorMessages.push({
+    id: "operator-session-message-73",
+    role: "user",
+    text: "Make it store todos locally",
+    at: 100,
+    taskDurationMs: null,
+    kind: "message"
+  });
+  access.session = {
+    sessionId: "session-1",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "Make it store todos locally" }], timestamp: 100 }
+    ]
+  };
+
+  const messages = getVisibleButlerMessages(access as never);
+
+  assert.deepEqual(messages.map((message) => message.id), ["message-0"]);
+});
+
+test("visible user messages collapse committed pending and provider echo duplicates", () => {
+  const access = pendingAccess();
+  access.operatorMessages.push(
+    {
+      id: "pending-operator-1",
+      role: "user",
+      text: "Make it store todos locally",
+      at: 100,
+      taskDurationMs: null,
+      kind: "message"
+    },
+    {
+      id: "operator-session-message-73",
+      role: "user",
+      text: "Make it store todos locally",
+      at: 110,
+      taskDurationMs: null,
+      kind: "message"
+    }
+  );
+  access.session = {
+    sessionId: "session-1",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "Make it store todos locally" }], timestamp: 110 }
+    ]
+  };
+
+  const messages = getVisibleButlerMessages(access as never);
+
+  assert.deepEqual(messages.map((message) => message.id), ["message-0"]);
+});
+
 test("pending operator prompts override durable prompt rows with the same id", () => {
   const access = pendingAccess();
   access.operatorMessages.push({
@@ -489,6 +563,56 @@ test("startup backfill restores operator user prompts from persisted session log
   assert.equal(changed, true);
   assert.deepEqual(messages.map((message) => message.text), ["Show this prompt", "Visible reply"]);
   assert.deepEqual(messages.map((message) => message.role), ["user", "assistant"]);
+});
+
+test("live prompt sync restores provider assistant replies after queued turns complete", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-butler-live-sync-"));
+  const at = Date.parse("2026-06-28T01:11:50.227Z");
+  const messages = [{
+    id: "pending-operator-1782609110224-0",
+    role: "user",
+    text: "Smoke test only. Reply with exactly: Butler smoke ok. Do not delegate.",
+    at,
+    taskDurationMs: null,
+    kind: "message" as const
+  }];
+  let saved = 0;
+  await writeFile(
+    path.join(dir, "session.jsonl"),
+    [
+      JSON.stringify({ type: "message", id: "user", timestamp: "2026-06-28T01:11:50.230Z", message: { role: "user", content: [{ type: "text", text: messages[0]!.text }], timestamp: at } }),
+      JSON.stringify({
+        type: "message",
+        id: "assistant",
+        timestamp: "2026-06-28T01:11:59.145Z",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "Reasoning text that should stay out of chat." },
+            { type: "text", text: "Butler smoke ok. Do not delegate." }
+          ],
+          timestamp: Date.parse("2026-06-28T01:11:52.531Z")
+        }
+      })
+    ].join("\n"),
+    "utf8"
+  );
+
+  const changed = await syncOperatorMessagesFromSessionFiles({
+    operatorMessages: messages,
+    sessionDir: dir,
+    async saveOperatorMessageState() {
+      saved += 1;
+    }
+  });
+
+  assert.equal(changed, true);
+  assert.equal(saved, 1);
+  assert.deepEqual(messages.map((message) => message.role), ["user", "assistant"]);
+  assert.deepEqual(messages.map((message) => message.text), [
+    "Smoke test only. Reply with exactly: Butler smoke ok. Do not delegate.",
+    "Butler smoke ok. Do not delegate."
+  ]);
 });
 
 test("startup backfill ignores internal tool-only assistant turns", async () => {
