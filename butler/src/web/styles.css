@@ -620,6 +620,18 @@ a:hover {
   color: var(--text-subtle);
 }
 
+.topbar-worker-loader {
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent-ink);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.topbar-worker-loader .sand-spinner {
+  color: currentColor;
+}
+
 .segmented {
   display: inline-flex;
   align-items: center;
@@ -2241,31 +2253,34 @@ a:hover {
   display: none;
 }
 
-.worker-row-compact > summary::before {
-  content: "▸";
-  font-size: 8px;
-  color: var(--text-subtle);
-  flex-shrink: 0;
-  transition: transform var(--duration) var(--ease);
-}
-
-.worker-row-compact[open] > summary::before {
-  transform: rotate(90deg);
-}
-
-.worker-row-icon {
+.worker-row-chevron {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 14px;
-  color: var(--text-subtle);
   flex-shrink: 0;
 }
 
-.worker-row-icon svg {
+.worker-row-chevron {
+  width: 13px;
+  height: 13px;
+  color: var(--text-subtle);
+}
+
+.worker-row-chevron svg {
   width: 12px;
   height: 12px;
+}
+
+.worker-row-chevron-open {
+  display: none;
+}
+
+.worker-row-compact[open] .worker-row-chevron-closed {
+  display: none;
+}
+
+.worker-row-compact[open] .worker-row-chevron-open {
+  display: inline-flex;
 }
 
 .worker-row-label {

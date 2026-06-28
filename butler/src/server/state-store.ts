@@ -543,7 +543,7 @@ export class ButlerStateStore extends EventEmitter {
   updateItem(threadId: string, turnId: string, item: Record<string, unknown>, status: "started" | "completed"): void {
     const turn = this.getOrCreateTurn(threadId, turnId);
     const normalized = normalizeItem(item, status);
-    const activityAt = Date.now();
+    const activityAt = normalized.at;
     const existing = turn.items.find((entry) => entry.id === normalized.id);
 
     if (existing) {
@@ -568,7 +568,7 @@ export class ButlerStateStore extends EventEmitter {
 
     const thread = this.getOrCreateThread(threadId);
     if (normalized.type !== "agentMessage" || status === "completed") {
-      thread.updatedAt = activityAt;
+      thread.updatedAt = Math.max(thread.updatedAt, activityAt);
     }
     thread.turnCount = thread.turns.length;
     this.refreshDerivedThreadState(thread, activityAt);

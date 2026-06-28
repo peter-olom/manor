@@ -35,7 +35,7 @@ test("job payloads persist structured JSON and keep chat text readable", async (
   await persistJobPayload(dir, payload);
   const listed = await listJobPayloads(dir);
   const read = await readCurrentJobPayload(dir, contract.threadId);
-  const prompt = formatJobPayloadMessage("delegation", contract.threadId);
+  const prompt = formatJobPayloadMessage("delegation", contract.threadId, "Build a simple todo app.");
 
   assert.equal(listed.length, 1);
   assert.equal(read?.payloadId, payload.payloadId);
@@ -43,8 +43,18 @@ test("job payloads persist structured JSON and keep chat text readable", async (
   assert.equal(read?.protocol.workerThreadId, contract.threadId);
   assert.equal(read?.protocol.reportChannel, "manor-harness");
   assert.deepEqual(read?.checklist.map((point) => point.text), contract.acceptancePoints);
+  assert.match(prompt, /We're going to build a simple todo app/);
+  assert.match(prompt, /I put the job details in Manor/);
   assert.match(prompt, /manor-harness --thread thread-payload payload current/);
   assert.doesNotMatch(prompt, /MANOR INSTRUCTION/);
+});
+
+test("job payload messages lead follow-ups with the requested action", () => {
+  const prompt = formatJobPayloadMessage("steering", "thread-payload", "Please confirm if local storage holds the todos.");
+
+  assert.match(prompt, /^Please confirm if local storage holds the todos\./);
+  assert.match(prompt, /I updated the job payload/);
+  assert.match(prompt, /manor-harness --thread thread-payload payload current/);
 });
 
 test("job payload updates mutate the current payload node graph", async () => {

@@ -5,12 +5,8 @@ import { useAnchoredScroll } from "./useAnchoredScroll";
 import { JumpToLatest } from "./JumpToLatest";
 import { Markdown } from "./Markdown";
 import {
-  CommandIcon,
-  DotIcon,
-  FileChangeIcon,
-  ToolIcon,
-  BrainIcon,
-  SearchIcon
+  ChevronDownIcon,
+  ChevronRightIcon
 } from "./icons";
 
 import type { PairDetail } from "../shared/pairing";
@@ -35,6 +31,7 @@ export type WorkerTurnGroup = {
 };
 
 export type WorkerReport = {
+  turnId?: string | null;
   status: string;
   summary: string;
   details: string | null;
@@ -182,13 +179,14 @@ function statusLabel(status: string): string {
   return status === "completed" ? "done" : status;
 }
 
-function itemIcon(type: string) {
-  if (isCommand(type)) return <CommandIcon />;
-  if (isTool(type)) return <ToolIcon />;
-  if (isSearch(type)) return <SearchIcon />;
-  if (isReasoning(type)) return <BrainIcon />;
-  if (isFileChange(type)) return <FileChangeIcon />;
-  return <DotIcon />;
+function reportToWorkerItem(report: WorkerReport): WorkerItem {
+  return {
+    id: `report:${report.turnId ?? "latest"}:${report.updatedAt}`,
+    type: "assistant_message",
+    status: "completed",
+    text: `${report.summary}${report.details ? `\n\n${report.details}` : ""}`,
+    at: report.updatedAt
+  };
 }
 
 function isButlerMessage(item: WorkerItem): boolean {
@@ -288,16 +286,18 @@ type WorkerCompactRowProps = {
 const WorkerCompactRow = memo(function WorkerCompactRow({ item }: WorkerCompactRowProps) {
   const label = itemTypeLabel(item.type);
   const preview = shortText(item.text, 140);
-  const showBody = item.text.trim().length > preview.length || item.text.includes("\n");
   return (
     <details className={`worker-row-compact ${statusBadgeClass(item.status)}`}>
       <summary>
-        <span className="worker-row-icon" aria-hidden="true">{itemIcon(item.type)}</span>
+        <span className="worker-row-chevron" aria-hidden="true">
+          <span className="worker-row-chevron-closed"><ChevronRightIcon /></span>
+          <span className="worker-row-chevron-open"><ChevronDownIcon /></span>
+        </span>
         <span className="worker-row-label">{label}</span>
         <span className="worker-row-text">{preview || "—"}</span>
         <span className="worker-row-status">{statusLabel(item.status)}</span>
       </summary>
-      {showBody ? <pre className="worker-row-body">{item.text}</pre> : null}
+      <pre className="worker-row-body">{item.text}</pre>
     </details>
   );
 });
@@ -364,6 +364,7 @@ const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, pay
   }
   const visibleMessages = sorted.filter((item) => visibleMessageIds.has(item.id));
   const supporting = sorted.filter((item) => !visibleMessageIds.has(item.id));
+  const leadingMessages = finalItem ? visibleMessages.filter((item) => item.id !== finalItem.id) : visibleMessages;
   const durationMs = resolveTurnDurationMs(turn, finalItem, sorted);
   const activityLabel = summarizeActivity(supporting, 0);
   const defaultOpen = !finalItem;
@@ -376,7 +377,7 @@ const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, pay
         <time className="worker-turn-time">{formatTime(turn.startedAt)}</time>
         {durationMs > 0 ? <span className="worker-turn-duration">{formatDuration(durationMs)}</span> : null}
       </header>
-      {visibleMessages.map((item) => <WorkerMessageRow key={item.id} item={item} payload={payload} />)}
+      {leadingMessages.map((item) => <WorkerMessageRow key={item.id} item={item} payload={payload} />)}
       {supporting.length > 0 ? (
         <details className="worker-activity" {...(defaultOpen ? { open: true } : {})}>
           <summary>
@@ -385,6 +386,7 @@ const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, pay
           <WorkerActivityList items={supporting} />
         </details>
       ) : null}
+      {finalItem ? <WorkerMessageRow key={finalItem.id} item={finalItem} payload={payload} /> : null}
     </section>
   );
 });
@@ -392,23 +394,6 @@ const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, pay
 const WorkerTurnView = memo(function WorkerTurnView({ turn, index, payload }: { turn: WorkerTurnGroup; index: number; payload: WorkerJobPayload | null }) {
   if (turn.completedAt === null) return <WorkerActiveTurn turn={turn} index={index} payload={payload} />;
   return <WorkerCompletedTurn turn={turn} index={index} payload={payload} />;
-});
-
-const WorkerReportCard = memo(function WorkerReportCard({ report }: { report: WorkerReport }) {
-  const text = `${report.summary}${report.details ? `\n\n${report.details}` : ""}`;
-  return (
-    <article className={`worker-item is-report is-${report.status}`}>
-      <header className="head">
-        <span className="type">Codex report</span>
-        <span className="status is-idle">
-          <span className="status-dot" />
-          {report.status}
-        </span>
-        <time className="bubble-time">{formatTime(report.updatedAt)}</time>
-      </header>
-      <div className="body">{text}</div>
-    </article>
-  );
 });
 
 const FallbackRow = memo(function FallbackRow({ row }: { row: WorkerItem }) {
@@ -504,7 +489,7 @@ function WorkerTimelineView({ timeline }: { timeline: WorkerTimeline }) {
             payload={payload && (payload.delivery.turnId ? payload.delivery.turnId === turn.id : index === turns.length - 1) ? payload : null}
           />
         ))}
-        {report ? <WorkerReportCard report={report} /> : null}
+        {report ? <WorkerMessageRow item={reportToWorkerItem(report)} /> : null}
         {turns.length === 0 && !report
           ? fallback.map((row) => <FallbackRow key={row.id} row={row} />)
           : null}

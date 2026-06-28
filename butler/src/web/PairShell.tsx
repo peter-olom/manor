@@ -20,6 +20,7 @@ import {
   WarningIcon
 } from "./icons";
 import { MemoryDashboard } from "./MemoryDashboard";
+import { SandSpinner } from "./SandSpinner";
 import { TerminalPane } from "./TerminalPane";
 import { useEventStream } from "./useEventStream";
 import { WorkerPane } from "./WorkerPane";
@@ -55,7 +56,7 @@ type WorkerThread = {
     completedAt?: number | null;
     items: WorkerItem[];
   }[];
-  workerReport?: { status: string; summary: string; details: string | null; updatedAt: number } | null;
+  workerReport?: { turnId: string; status: string; summary: string; details: string | null; updatedAt: number } | null;
   jobPayload?: WorkerJobPayload | null;
 };
 
@@ -131,11 +132,29 @@ function statusLabel(status: PairStatus | null | undefined): string {
 
 function shapeWorkerTimeline(thread: WorkerThread | null): WorkerTimeline {
   if (!thread) return { turns: [], report: null, payload: null, fallback: [] };
+  const report = thread.workerReport
+    ? {
+        turnId: thread.workerReport.turnId,
+        status: thread.workerReport.status,
+        summary: thread.workerReport.summary,
+        details: thread.workerReport.details,
+        updatedAt: thread.workerReport.updatedAt
+      }
+    : null;
   const turns: WorkerTurnGroup[] = (thread.turns ?? [])
     .map((turn) => {
       const items = (turn.items ?? [])
         .map((item) => ({ ...item, id: `${turn.id}:${item.id}`, status: item.status || turn.status }))
         .filter((item) => item.text?.trim());
+      if (report?.turnId === turn.id) {
+        items.push({
+          id: `${turn.id}:worker-report:${report.updatedAt}`,
+          type: "assistant_message",
+          status: "completed",
+          text: `${report.summary}${report.details ? `\n\n${report.details}` : ""}`,
+          at: report.updatedAt
+        });
+      }
       items.sort((left, right) => left.at - right.at);
       const completedAt = turn.completedAt ?? null;
       let finalIndex: number | null = null;
@@ -157,15 +176,7 @@ function shapeWorkerTimeline(thread: WorkerThread | null): WorkerTimeline {
       };
     })
     .filter((turn) => turn.items.length > 0 || turn.completedAt === null);
-  const report = thread.workerReport
-    ? {
-        status: thread.workerReport.status,
-        summary: thread.workerReport.summary,
-        details: thread.workerReport.details,
-        updatedAt: thread.workerReport.updatedAt
-      }
-    : null;
-  return { turns, report, payload: thread.jobPayload ?? null, fallback: [] };
+  return { turns, report: report && !turns.some((turn) => turn.id === report.turnId) ? report : null, payload: thread.jobPayload ?? null, fallback: [] };
 }
 
 function Sidebar({
@@ -367,6 +378,11 @@ function Topbar({
               {pair ? <PencilIcon /> : null}
             </button>
           )}
+          {pair?.status === "worker_running" ? (
+            <span className="topbar-worker-loader" aria-label="Codex is working">
+              <SandSpinner />
+            </span>
+          ) : null}
           {pair ? <span className="pair-id">{shortId(pair.id)}</span> : null}
           {pair && editingTitle && titleError ? (
             <span className="title-error" role="alert">{titleError}</span>

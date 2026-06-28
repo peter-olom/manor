@@ -71,5 +71,9 @@ export async function buildButlerDelegationContract(options: {
     butlerThreadId: options.butlerThreadId ?? null,
     contract
   });
-  return { text: formatJobPayloadMessage("delegation", options.threadId), contract, payload };
+  return {
+    text: formatJobPayloadMessage("delegation", options.threadId, payload.requestedTask, payload.display.summary),
+    contract,
+    payload
+  };
 }

@@ -899,7 +899,10 @@ export class ButlerAgentService extends EventEmitter {
       contract: thread?.executionContract ?? null,
       checklist: thread?.supervisionChecklist ?? null
     });
-    await this.codexClient.sendMessage(threadId, this.imageStore.buildCodexInput(formatJobPayloadMessage(payload.kind as JobPayloadKind, payload.threadId), []));
+    await this.codexClient.sendMessage(
+      threadId,
+      this.imageStore.buildCodexInput(formatJobPayloadMessage(payload.kind as JobPayloadKind, payload.threadId, payload.workerDirective, payload.display.summary), [])
+    );
     this.store.noteButlerSteer(threadId);
     this.store.addEvent(threadId, "butler.supervision.turn_spent", "Butler spent a private supervision turn on this job.");
   }

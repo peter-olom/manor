@@ -831,12 +831,13 @@ export function summarizeItem(item: Record<string, unknown>): string {
 
 export function normalizeItem(item: Record<string, unknown>, status: "started" | "completed"): CodexItemRecord {
   const id = typeof item.id === "string" ? item.id : crypto.randomUUID();
+  const at = typeof item.at === "number" && Number.isFinite(item.at) ? item.at : Date.now();
   return {
     id,
     type: typeof item.type === "string" ? item.type : "unknown",
     status,
     text: summarizeItem(item),
-    at: Date.now(),
+    at,
     raw: item
   };
 }

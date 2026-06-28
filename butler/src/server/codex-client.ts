@@ -5,6 +5,7 @@ import path from "node:path";
 import type { CodexInputItem } from "./image-store.js";
 import { cleanupManagedWorktree, resolveExistingWorkspaceCwd } from "./repo-worktree.js";
 import { listFilesRecursive, listThreadSessionFiles, listThreadSnapshotFiles, normalizeTimestampMs } from "./codex-session-artifacts.js";
+import { recoverCodexTranscriptActivity } from "./codex-transcript-activity.js";
 import { ButlerStateStore } from "./state-store.js";
 import { CodexAppServerTransport, type JsonRpcMessage } from "./codex-app-server-transport.js";
 import { CodexProviderAdapter } from "./codex-provider-adapter.js";
@@ -688,7 +689,24 @@ export class CodexAppServerClient extends EventEmitter {
     }
 
     await this.restoreThreadUsage(threadId).catch(() => undefined);
+    await this.restoreThreadTranscriptActivity(threadId).catch(() => undefined);
     await this.resumeThread(threadId).catch(() => undefined);
+  }
+
+  private async restoreThreadTranscriptActivity(threadId: string): Promise<void> {
+    const thread = this.store.getThread(threadId);
+    const turns = await recoverCodexTranscriptActivity(this.codexHomeDir, threadId, thread?.createdAt ?? null);
+    for (const turn of turns) {
+      for (const item of turn.items) {
+        const current = this.store.getThread(threadId)?.turns
+          .find((entry) => entry.id === turn.turnId)
+          ?.items.find((entry) => entry.id === item.id);
+        if (current && current.type === item.type && current.text === item.text && current.status === item.status && current.at === item.at) {
+          continue;
+        }
+        this.store.updateItem(threadId, turn.turnId, { ...item }, item.status);
+      }
+    }
   }
 
   async resumeThread(threadId: string, forceConfig = false): Promise<void> {

@@ -245,6 +245,25 @@ test("server-owned pending operator prompts are visible before Pi commits them",
   assert.equal(access.pendingOperatorMessageRevision, 2);
 });
 
+test("provider user echoes do not duplicate visible pending operator prompts", () => {
+  const access = pendingAccess();
+  const id = registerPendingOperatorPrompt(access as never, "Make it store todos locally");
+  access.pendingOperatorMessages[0].at = 100;
+  access.session = {
+    sessionId: "session-1",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "Make it store todos locally" }], timestamp: 110 }
+    ]
+  };
+
+  const messages = getVisibleButlerMessages(access as never);
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].id, id);
+  assert.equal(messages[0].pending, true);
+  assert.equal(messages[0].text, "Make it store todos locally");
+});
+
 test("server-owned pending operator prompts settle one committed user row at a time", () => {
   const access = pendingAccess();
   registerPendingOperatorPrompt(access as never, "same prompt");
@@ -392,6 +411,60 @@ test("provider user history suppresses duplicate durable operator prompts", () =
 
   assert.deepEqual(messages.map((message) => message.id), ["message-0", "message-1"]);
   assert.deepEqual(messages.map((message) => message.text), ["Normalized prompt", "Done."]);
+});
+
+test("provider user history suppresses duplicate session-backed user prompts", () => {
+  const access = pendingAccess();
+  access.operatorMessages.push({
+    id: "operator-session-message-73",
+    role: "user",
+    text: "Make it store todos locally",
+    at: 100,
+    taskDurationMs: null,
+    kind: "message"
+  });
+  access.session = {
+    sessionId: "session-1",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "Make it store todos locally" }], timestamp: 100 }
+    ]
+  };
+
+  const messages = getVisibleButlerMessages(access as never);
+
+  assert.deepEqual(messages.map((message) => message.id), ["message-0"]);
+});
+
+test("visible user messages collapse committed pending and provider echo duplicates", () => {
+  const access = pendingAccess();
+  access.operatorMessages.push(
+    {
+      id: "pending-operator-1",
+      role: "user",
+      text: "Make it store todos locally",
+      at: 100,
+      taskDurationMs: null,
+      kind: "message"
+    },
+    {
+      id: "operator-session-message-73",
+      role: "user",
+      text: "Make it store todos locally",
+      at: 110,
+      taskDurationMs: null,
+      kind: "message"
+    }
+  );
+  access.session = {
+    sessionId: "session-1",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "Make it store todos locally" }], timestamp: 110 }
+    ]
+  };
+
+  const messages = getVisibleButlerMessages(access as never);
+
+  assert.deepEqual(messages.map((message) => message.id), ["message-0"]);
 });
 
 test("pending operator prompts override durable prompt rows with the same id", () => {

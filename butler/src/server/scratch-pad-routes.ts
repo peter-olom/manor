@@ -179,7 +179,7 @@ async function buildScratchInput(
   await persistJobPayload(jobPayloadsRoot(access.artifactsDir), payload);
   access.store.setThreadJobPayload(payload);
   return buildCodexInputWithReferences({
-    text: formatJobPayloadMessage("delegation", threadId),
+    text: formatJobPayloadMessage("delegation", threadId, payload.requestedTask, payload.display.summary),
     imageStore: access.imageStore,
     imageReferenceIds,
     fileStore: access.fileStore,

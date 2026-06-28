@@ -422,25 +422,69 @@ export async function listJobPayloads(rootDir: string): Promise<JobPayloadView[]
 
 function formatPayloadReadCommand(threadId?: string | null): string {
   return threadId
-    ? `Run \`manor-harness --thread ${threadId} payload current\` first and reuse that \`--thread\` value for any payload update`
-    : "Run `manor-harness payload current` first";
+    ? `Use \`manor-harness --thread ${threadId} payload current\` to read the latest details, and keep that same \`--thread\` value for payload updates.`
+    : "Use `manor-harness payload current` to read the latest details.";
 }
 
-export function formatJobPayloadMessage(kind: JobPayloadKind, threadId?: string | null): string {
-  const readLatest = formatPayloadReadCommand(threadId);
-  if (kind === "delegation") {
-    return `I put the job details in Manor for this thread. ${readLatest}, then do the work and report back through the harness.`;
+function firstReadableSentence(value?: string | null): string | null {
+  const source = value
+    ?.replace(/`[^`]+`/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!source) {
+    return null;
   }
-  if (kind === "held_context") {
-    return "I saved new context for this job. Keep going for now; I will apply it during review.";
+  const match = source.match(/^(.{1,180}?)(?:[.!?](?:\s|$)|$)/);
+  const sentence = (match?.[1] ?? source.slice(0, 180)).trim();
+  return sentence ? sentence.replace(/[,:;]+$/, "") : null;
+}
+
+function finishSentence(value: string): string {
+  return /[.!?]$/.test(value) ? value : `${value}.`;
+}
+
+function collaborativeDelegationLead(instruction?: string | null, summary?: string | null): string {
+  const sentence = firstReadableSentence(instruction) ?? firstReadableSentence(summary) ?? "work on this task";
+  const normalized = sentence.replace(/^please\s+/i, "").trim();
+  const match = normalized.match(/^(build|create|implement|add|fix|verify|check|test|run|update|make)\s+(.+)$/i);
+  if (match) {
+    return finishSentence(`We're going to ${match[1]?.toLowerCase()} ${match[2] ?? ""}`.trim());
+  }
+  if (/^(we're|we are|let's|please)\b/i.test(sentence)) {
+    return finishSentence(sentence);
+  }
+  return finishSentence(sentence);
+}
+
+function followUpLead(kind: JobPayloadKind, instruction?: string | null, summary?: string | null): string {
+  const sentence = firstReadableSentence(instruction) ?? firstReadableSentence(summary);
+  if (sentence) {
+    return finishSentence(sentence);
   }
   if (kind === "rejection_followup") {
-    return `I updated the job details with the checklist items that need another pass. ${readLatest}, then continue.`;
+    return "Please take another pass on the checklist items that need work.";
   }
   if (kind === "assist_context") {
-    return `I added Manor guidance for this job. ${readLatest} before continuing.`;
+    return "I added Manor guidance for this job.";
   }
-  return `I updated the job details in Manor. ${readLatest}, then continue from there.`;
+  return "Please continue from the latest job details.";
+}
+
+export function formatJobPayloadMessage(kind: JobPayloadKind, threadId?: string | null, instruction?: string | null, summary?: string | null): string {
+  const readLatest = formatPayloadReadCommand(threadId);
+  if (kind === "delegation") {
+    return `${collaborativeDelegationLead(instruction, summary)} I put the job details in Manor for this thread. ${readLatest} Report back through the harness when done.`;
+  }
+  if (kind === "held_context") {
+    return `${followUpLead(kind, instruction, summary)} I saved this as new context for the job. Keep going for now; I will apply it during review.`;
+  }
+  if (kind === "rejection_followup") {
+    return `${followUpLead(kind, instruction, summary)} I updated the job payload with the checklist items that need another pass. ${readLatest}`;
+  }
+  if (kind === "assist_context") {
+    return `${followUpLead(kind, instruction, summary)} ${readLatest} before continuing.`;
+  }
+  return `${followUpLead(kind, instruction, summary)} I updated the job payload. ${readLatest}`;
 }
 
 export function formatPayloadCurrentText(payload: JobPayloadView | null): string {

@@ -90,7 +90,8 @@ test("message_job updates the job payload and sends readable chat", async () => 
   });
 
   assert.equal(payloads[0]?.kind, "steering");
-  assert.match(JSON.stringify(sent[0]), /I updated the job details/);
+  assert.match(JSON.stringify(sent[0]), /Please retry the browser proof/);
+  assert.match(JSON.stringify(sent[0]), /I updated the job payload/);
   assert.doesNotMatch(JSON.stringify(sent[0]), /MANOR INSTRUCTION/);
 });
 

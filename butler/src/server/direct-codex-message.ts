@@ -72,8 +72,9 @@ function isInternalButlerWorkerPrompt(text: string): boolean {
     "I saved new context for this job.",
     "I updated the job details with the checklist items",
     "I added Manor guidance for this job.",
-    "I updated the job details in Manor."
-  ].some((prefix) => text.startsWith(prefix));
+    "I updated the job details in Manor.",
+    "I updated the job payload."
+  ].some((phrase) => text.includes(phrase));
 }
 
 async function listCodexSessionFiles(root: string): Promise<string[]> {

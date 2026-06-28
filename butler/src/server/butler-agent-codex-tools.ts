@@ -524,7 +524,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           kind: "rejection_followup",
           instruction: text
         });
-        await access.codexClient.sendMessage(typedParams.threadId, formatJobPayloadMessage("rejection_followup", typedParams.threadId));
+        await access.codexClient.sendMessage(typedParams.threadId, formatJobPayloadMessage("rejection_followup", typedParams.threadId, payload.workerDirective, payload.display.summary));
         access.store.clearQueuedRejectionInstructions(typedParams.threadId);
         access.registerPendingChatCallback(typedParams.threadId, {
           privateSteerText: text,
@@ -658,7 +658,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         await access.codexClient.sendMessage(
           typedParams.threadId,
           buildCodexInputWithReferences({
-            text: formatJobPayloadMessage("steering", payload.threadId),
+            text: formatJobPayloadMessage("steering", payload.threadId, payload.workerDirective, payload.display.summary),
             imageStore: access.imageStore,
             imageReferenceIds: typedParams.imageReferenceIds ?? [],
             fileStore: access.fileStore,

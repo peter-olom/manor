@@ -421,6 +421,44 @@ function filterProviderBackedServerOperatorMessages(sessionMessages: ButlerMessa
   });
 }
 
+function filterSessionMessagesShadowedByPendingPrompts(sessionMessages: ButlerMessageView[], pendingMessages: ButlerMessageView[]): ButlerMessageView[] {
+  const pendingPrompts = pendingMessages.filter((message) => message.pending === true && isUserMessage(message));
+  if (pendingPrompts.length === 0) {
+    return sessionMessages;
+  }
+
+  const consumedPendingIds = new Set<string>();
+  return sessionMessages.filter((sessionMessage) => {
+    const pending = pendingPrompts.find((message) =>
+      !consumedPendingIds.has(message.id) &&
+      matchesProviderBackedMessage(sessionMessage, message)
+    );
+    if (!pending) {
+      return true;
+    }
+    consumedPendingIds.add(pending.id);
+    return false;
+  });
+}
+
+function collapseDuplicateVisibleUserMessages(messages: ButlerMessageView[]): ButlerMessageView[] {
+  const collapsed: ButlerMessageView[] = [];
+  for (const message of messages) {
+    const previous = collapsed.at(-1);
+    const duplicateUserMessage =
+      previous &&
+      isUserMessage(previous) &&
+      isUserMessage(message) &&
+      previous.text.trim() === message.text.trim() &&
+      Math.abs((previous.at ?? 0) - (message.at ?? 0)) <= 30_000;
+    if (duplicateUserMessage) {
+      continue;
+    }
+    collapsed.push(message);
+  }
+  return collapsed;
+}
+
 export function removeCommittedPendingOperatorPrompt(access: ButlerAgentSessionAccess, text: string, at: number): void {
   const exactIndex = access.pendingOperatorMessages.findIndex((pending) =>
     pending.pending === true &&
@@ -516,11 +554,14 @@ export function keepPendingOperatorPromptsBefore(access: ButlerAgentSessionAcces
 }
 
 export function getVisibleButlerMessages(access: ButlerAgentSessionAccess) {
-  const sessionMessages = access.session ? serializeMessages(access.session) : [];
+  const rawSessionMessages = access.session ? serializeMessages(access.session) : [];
+  const sessionMessages = filterSessionMessagesShadowedByPendingPrompts(rawSessionMessages, access.pendingOperatorMessages);
   const pendingIds = new Set(access.pendingOperatorMessages.map((message) => message.id));
   const durableOperatorMessages = access.operatorMessages.filter((message) => !pendingIds.has(message.id));
   const serverOperatorMessages = filterProviderBackedServerOperatorMessages(sessionMessages, [...durableOperatorMessages, ...access.pendingOperatorMessages]);
-  const visibleMessages = collapseCallbackDuplicateMessages(mergeVisibleMessages(sessionMessages, serverOperatorMessages as never[]));
+  const visibleMessages = collapseDuplicateVisibleUserMessages(
+    collapseCallbackDuplicateMessages(mergeVisibleMessages(sessionMessages, serverOperatorMessages as never[]))
+  );
   removeTrivialOperatorQuestionConfirmations(visibleMessages, { providerBackedOnly: false });
   return visibleMessages;
 }
