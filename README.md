@@ -74,16 +74,12 @@ Run the guided installer:
 
 The installer checks Docker and Compose, writes local Compose settings, generates a local runtime broker token, and can start Manor.
 
-By default, the installer pulls published Manor images from GHCR. To build images locally instead:
+By default, the installer builds Manor from the local checkout and mounts that source into Butler and the worker container. This source-first mode is required for approval-gated self-improvement execution.
+
+To use packaged images instead:
 
 ```bash
-./install.sh --build-from-source
-```
-
-To pin a published image tag:
-
-```bash
-./install.sh --image-tag sha-<commit>
+./install.sh --use-images --image-tag sha-<commit>
 ```
 
 For the default non-interactive setup:
@@ -144,6 +140,8 @@ Manor runs as one Docker Compose project with these services:
 
 ## Image Distribution
 
+Source-first installs are the primary path. Packaged images remain available for rollback, simpler installs, and environments that should not let Manor edit its own checkout.
+
 Pushes to `main` and version tags publish these images to GHCR:
 
 - `ghcr.io/peter-olom/manor-butler`
@@ -157,7 +155,7 @@ Pushes to `main` and version tags publish these images to GHCR:
 
 Published tags include `latest` for the default branch, release tags, branch tags, and commit SHA tags.
 
-The default Compose file uses published images. Local source builds use the source-build overlay:
+Local source builds use the source-build overlay:
 
 ```bash
 ./manor.sh start --build
@@ -401,7 +399,8 @@ For vulnerability reporting and remote-use hardening, see the [security policy](
 Current local development assumptions:
 
 - the default stack is deployment-safe and persists core state in named Docker volumes
-- the default stack pulls published images
+- source-first installs build local images and mount the active checkout into Butler and worker containers
+- packaged image installs are still supported for rollback and simpler setups
 - Butler source hot reload is opt-in through the development overlay
 - local hot-reload with source images runs use `docker compose -f compose.yml -f compose.build.yml -f compose.dev.yml up -d --build`
 - older host-side `state`, `artifacts`, and `repos` directories are not mounted by default anymore

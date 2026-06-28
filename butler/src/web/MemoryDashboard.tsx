@@ -17,6 +17,16 @@ const PROJECT_ROW = 88;
 const JOB_ROW = 92;
 const BUTLER_ROW = 80;
 
+export type MemoryProjectOption = { id: string; label: string };
+
+export type MemoryDashboardSummary = {
+  section: MemorySection;
+  activeCount: number;
+  totalCount: number;
+  projectOptions: MemoryProjectOption[];
+  counts: Record<MemorySection, { active: number; total: number }>;
+};
+
 function formatTime(value: number | null | undefined): string {
   if (!value) return "—";
   return new Date(value).toLocaleString();
@@ -376,12 +386,40 @@ function ButlerCard({
   );
 }
 
-export function MemoryDashboard() {
-  const [section, setSection] = useState<MemorySection>("projects");
-  const [search, setSearch] = useState("");
-  const [projectFilter, setProjectFilter] = useState<string>("");
+export function MemoryDashboard({
+  showTitle = true,
+  showHeader = true,
+  showSections = true,
+  section: controlledSection,
+  onSectionChange,
+  search: controlledSearch,
+  onSearchChange,
+  projectFilter: controlledProjectFilter,
+  onProjectFilterChange,
+  onSummaryChange
+}: {
+  showTitle?: boolean;
+  showHeader?: boolean;
+  showSections?: boolean;
+  section?: MemorySection;
+  onSectionChange?: (section: MemorySection) => void;
+  search?: string;
+  onSearchChange?: (search: string) => void;
+  projectFilter?: string;
+  onProjectFilterChange?: (projectId: string) => void;
+  onSummaryChange?: (summary: MemoryDashboardSummary) => void;
+}) {
+  const [internalSection, setInternalSection] = useState<MemorySection>("projects");
+  const [internalSearch, setInternalSearch] = useState("");
+  const [internalProjectFilter, setInternalProjectFilter] = useState<string>("");
   const [confirmDelete, setConfirmDelete] = useState<{ kind: "butler" | "project" | "job"; id: string; parentId: string | null; summary: string } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const section = controlledSection ?? internalSection;
+  const search = controlledSearch ?? internalSearch;
+  const projectFilter = controlledProjectFilter ?? internalProjectFilter;
+  const setSection = onSectionChange ?? setInternalSection;
+  const setSearch = onSearchChange ?? setInternalSearch;
+  const setProjectFilter = onProjectFilterChange ?? setInternalProjectFilter;
 
   const projectsQuery = useMemoryList<ProjectMemory>("/api/memory/projects", { projectId: projectFilter || null });
   const jobsQuery = useMemoryList<JobMemory>("/api/memory/jobs", { projectId: projectFilter || null });
@@ -492,16 +530,35 @@ export function MemoryDashboard() {
   const activeCount =
     section === "projects" ? filteredProjects.length : section === "jobs" ? filteredJobs.length : filteredButler.length;
   const totalCount = section === "projects" ? projects.length : section === "jobs" ? jobs.length : butler.length;
+  const counts = useMemo<Record<MemorySection, { active: number; total: number }>>(
+    () => ({
+      projects: { active: filteredProjects.length, total: projects.length },
+      jobs: { active: filteredJobs.length, total: jobs.length },
+      butler: { active: filteredButler.length, total: butler.length }
+    }),
+    [butler.length, filteredButler.length, filteredJobs.length, filteredProjects.length, jobs.length, projects.length]
+  );
+
+  useEffect(() => {
+    onSummaryChange?.({ activeCount, totalCount, section, projectOptions, counts });
+  }, [activeCount, counts, onSummaryChange, projectOptions, section, totalCount]);
 
   return (
-    <div className="dashboard">
-      <div className="dashboard-head">
-        <div className="dashboard-title">
-          <h1>Memory</h1>
+    <div className={`dashboard ${!showHeader && !showSections ? "is-shell-layout" : ""}`}>
+      {showHeader ? (
+      <div className={`dashboard-head ${showTitle ? "" : "is-controls-only"}`}>
+        {showTitle ? (
+          <div className="dashboard-title">
+            <h1>Memory</h1>
+            <span className="dashboard-sub">
+              {activeCount} of {totalCount} {section}
+            </span>
+          </div>
+        ) : (
           <span className="dashboard-sub">
             {activeCount} of {totalCount} {section}
           </span>
-        </div>
+        )}
         <div className="dashboard-controls">
           <div className="search dashboard-search">
             <span className="search-icon">
@@ -531,7 +588,9 @@ export function MemoryDashboard() {
           </select>
         </div>
       </div>
+      ) : null}
 
+      {showSections ? (
       <div className="segmented dashboard-sections" role="tablist" aria-label="Memory section">
         {(["projects", "jobs", "butler"] as MemorySection[]).map((option) => (
           <button
@@ -546,6 +605,7 @@ export function MemoryDashboard() {
           </button>
         ))}
       </div>
+      ) : null}
 
       {actionError ? (
         <div className="error" role="alert">

@@ -20,8 +20,7 @@ import {
 import { buildJobPayload } from "../../src/server/job-instruction-artifacts.js";
 import {
   buildSelfImprovementTask,
-  classifyManorBlocker,
-  hasStartedSelfImprovement
+  classifyManorBlocker
 } from "../../src/server/butler-self-improvement.js";
 import { validateCompletedWorkerEvidence } from "../../src/server/codex-harness-report-validation.js";
 import { contractRequiresVisualProof, hasVisualProof, taskHasUiImplication } from "../../src/server/proof-policy.js";
@@ -830,7 +829,7 @@ test("system prompt biases autonomous domain resolution before job inventory", a
   assert.match(prompt, /Do not collapse real people or folders into job labels/);
 });
 
-test("system prompt routes direct Manor improvement requests to self-improvement", async () => {
+test("system prompt routes direct Manor improvement requests to the approval queue", async () => {
   const store = await createStore();
   const prompt = buildSystemPrompt(store, "No callbacks.");
   const task = buildSelfImprovementTask({
@@ -838,13 +837,14 @@ test("system prompt routes direct Manor improvement requests to self-improvement
     desiredOutcome: "The operator sees timing feedback."
   });
 
-  assert.match(prompt, /start_self_improvement/);
+  assert.match(prompt, /request_self_improvement/);
   assert.match(prompt, /request_manor_restart/);
   assert.match(prompt, /read_manor_restart_status/);
   assert.match(prompt, /direct Manor, Butler, Codex worker, preview, runtime broker, supervision, restart-controller, or dogfooding improvements/);
   assert.match(prompt, /missing credentials, operator approval, external outages, or app-specific bugs outside Manor/);
   assert.match(task, /If the change has any UI implication/);
   assert.match(task, /screenshot or video proof/);
+  assert.match(task, /Do not restart, deploy, commit, push, open a pull request/);
 });
 
 test("callback helper only treats owed non-closed callbacks as outstanding", () => {
@@ -1141,7 +1141,7 @@ test("callback review prompt includes held operator context", async () => {
   assert.match(prompt, /newly supplied staging account/);
 });
 
-test("callback review prompt starts self-improvement for Manor platform blockers", async () => {
+test("callback review prompt queues self-improvement for Manor platform blockers", async () => {
   const store = await createStore();
   const contract = makeContract({
     requestedTask: "Run app preview proof through Manor.",
@@ -1185,8 +1185,8 @@ test("callback review prompt starts self-improvement for Manor platform blockers
   });
 
   assert.match(prompt, /Manor blocker classifier: high confidence/);
-  assert.match(prompt, /use start_self_improvement/);
-  assert.match(prompt, /source job id and blocker summary/);
+  assert.match(prompt, /use request_self_improvement/);
+  assert.match(prompt, /symptoms, logs, observations, suspected cause, proposed change, and risk/);
 });
 
 test("callback review prompt avoids self-improvement for operator-only blockers", async () => {
@@ -1232,23 +1232,7 @@ test("callback review prompt avoids self-improvement for operator-only blockers"
   });
 
   assert.match(prompt, /Manor blocker classifier: do not start self-improvement/);
-  assert.doesNotMatch(prompt, /use start_self_improvement with the source job id/);
-});
-
-test("self-improvement duplicate guard notices source blocker events", async () => {
-  const store = await createStore();
-  const contract = makeContract();
-  store.upsertThreadSummary({
-    id: contract.threadId,
-    status: "idle",
-    cwd: contract.workspaceCwd,
-    turns: [{ id: "turn-1", status: "completed", items: [] }]
-  });
-  store.setThreadExecutionContract(contract.threadId, contract);
-
-  assert.equal(hasStartedSelfImprovement(store.getThread(contract.threadId)), false);
-  store.addEvent(contract.threadId, "butler.self_improvement.started", "Started Manor self-improvement job thread-2.");
-  assert.equal(hasStartedSelfImprovement(store.getThread(contract.threadId)), true);
+  assert.doesNotMatch(prompt, /use request_self_improvement with the source job id/);
 });
 
 test("thread snapshot merge removes synthetic duplicate chat messages", async () => {

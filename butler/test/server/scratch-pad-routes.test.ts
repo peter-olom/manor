@@ -60,6 +60,7 @@ async function createServer(
       getOpenWindowIds: () => options.focusedCwd ? ["focused-thread"] : [],
       addEvent: () => undefined,
       setThreadExecutionContract: () => undefined,
+      getThreadJobPayload: () => null,
       setThreadJobPayload: (payload: unknown) => options.jobPayloads?.push(payload)
     } as never,
     codexClient: {

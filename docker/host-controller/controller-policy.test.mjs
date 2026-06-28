@@ -53,10 +53,10 @@ test("restart policy scopes source and image inputs to detected mode", () => {
   assert.equal(validateRestartModeScope(imageBuildTrue.value, "image").ok, false);
 });
 
-test("runtime mode detection treats local Manor images as source mode", () => {
+test("runtime mode detection requires explicit source mode", () => {
   assert.equal(detectRuntimeRestartMode("1", []), "source");
   assert.equal(detectRuntimeRestartMode("0", ["ghcr.io/peter-olom/manor-butler:latest"]), "image");
-  assert.equal(detectRuntimeRestartMode("0", ["ghcr.io/peter-olom/manor-egress:latest", "manor-butler:local"]), "source");
+  assert.equal(detectRuntimeRestartMode("0", ["ghcr.io/peter-olom/manor-egress:latest", "manor-butler:local"]), "image");
 });
 
 test("source builds are opt-in for current restart and default on for updates", () => {

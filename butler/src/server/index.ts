@@ -33,6 +33,8 @@ import { registerScratchPadRoutes } from "./scratch-pad-routes.js";
 import { registerRuntimeResourceRoutes } from "./runtime-resource-routes.js";
 import { ScratchPadStore } from "./scratch-pad-store.js";
 import { registerServerAssetRoutes } from "./server-asset-routes.js";
+import { configureSelfImprovementRequestState, SelfImprovementRequestState } from "./self-improvement-request-state.js";
+import { registerSelfImprovementRoutes } from "./self-improvement-routes.js";
 import { retrieveButlerMemory } from "./memory-retrieval.js";
 import { registerManorRestartRoutes } from "./manor-restart-routes.js";
 import {
@@ -200,6 +202,9 @@ const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerTok
 const hostController = new HostControllerClient(hostControllerUrl, hostControllerToken);
 let runtimeAccess!: RuntimeServerAccess;
 let sseHub!: ButlerSseHub;
+const selfImprovementRequests = new SelfImprovementRequestState(path.join(stateDir, "self-improvement-requests.json"), () => sseHub?.schedule(), (error) => console.error("Self-improvement queue save failed", error));
+await selfImprovementRequests.load();
+configureSelfImprovementRequestState(selfImprovementRequests);
 const memorySynthesisConfig = readMemorySynthesisConfig();
 const memoryReview = new CodexExecMemoryReviewService({ store, stateDir, codexHomeDir, enabled: memorySynthesisConfig.enabled, model: memorySynthesisConfig.model ?? undefined, timeoutMs: memorySynthesisConfig.timeoutMs });
 const routingClassifier = new ButlerRoutingClassifier({ stateDir, codexHomeDir, enabled: true, model: memorySynthesisConfig.model ?? undefined, timeoutMs: memorySynthesisConfig.timeoutMs });
@@ -486,6 +491,16 @@ registerPreviewAnnotationRoutes({
 registerPairRoutes({
   app,
   pairSessions
+});
+registerSelfImprovementRoutes({
+  app,
+  requests: selfImprovementRequests,
+  hostController,
+  store,
+  codexClient,
+  imageStore,
+  fileStore,
+  artifactsDir
 });
 
 app.get("/api/memory/jobs/:threadId", (request, response) => {

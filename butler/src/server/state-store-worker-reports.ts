@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import { normalizeWorkerClaimsReport } from "./butler-orchestration.js";
+import { getSelfImprovementRequestState } from "./self-improvement-request-state.js";
 import { recordChecklistWorkerEvidence } from "./supervision-checklist.js";
 import { emitStateStoreChange, queueStateStoreSave, type StateStoreInternalAccess } from "./state-store-internals.js";
 import type { CodexThreadExecutionContractView, CodexWorkerEvidenceView, CodexWorkerReportView, WorkerClaimsReportView, WorkerReviewResultRecordView } from "./types.js";
@@ -123,6 +124,13 @@ export function recordStateStoreWorkerReport(
     .sort((left, right) => left.createdAt - right.createdAt)
     .slice(-20);
   access.persistedWorkerReportsByThreadId.set(threadId, nextHistory);
+  if (report.status === "completed") {
+    try {
+      for (const request of getSelfImprovementRequestState().list().filter((entry) => entry.threadId === threadId && entry.status === "running")) {
+        getSelfImprovementRequestState().update(request.id, { status: "changes_ready", completedAt: now });
+      }
+    } catch {}
+  }
   queueStateStoreSave(access);
   emitStateStoreChange(access);
   return nextReport;

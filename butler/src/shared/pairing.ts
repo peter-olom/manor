@@ -1,7 +1,7 @@
 export type PairRole = "user" | "butler" | "worker" | "system";
 export type PairLane = "butler" | "worker";
 export type PairStatus = "idle" | "butler_running" | "worker_running" | "needs_butler_review" | "blocked";
-export type PairViewMode = "butler" | "worker" | "split" | "memory" | "cli";
+export type PairViewMode = "butler" | "worker" | "split" | "memory" | "improve" | "cli";
 
 export const DEFAULT_THINKING_LEVELS: readonly string[] = ["low", "medium", "high", "xhigh"];
 export const BUTLER_THINKING_LEVELS: readonly string[] = ["off", ...DEFAULT_THINKING_LEVELS];

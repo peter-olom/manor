@@ -16,17 +16,27 @@ import {
   PencilIcon,
   PlusIcon,
   SearchIcon,
+  SetupTabIcon,
+  StatusIcon,
+  ThreadsIcon,
   TrashIcon,
   WarningIcon
 } from "./icons";
-import { MemoryDashboard } from "./MemoryDashboard";
+import { MemoryDashboard, type MemoryDashboardSummary, type MemoryProjectOption } from "./MemoryDashboard";
 import { SandSpinner } from "./SandSpinner";
+import {
+  SelfImprovementQueue,
+  formatSelfImprovementTime,
+  selfImprovementStatusLabel
+} from "./SelfImprovementQueue";
 import { TerminalPane } from "./TerminalPane";
 import { useEventStream } from "./useEventStream";
 import { WorkerPane } from "./WorkerPane";
 import type { WorkerItem, WorkerJobPayload, WorkerTimeline, WorkerTurnGroup } from "./WorkerPane";
 
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
+import type { MemorySection } from "../shared/memory";
+import type { SelfImprovementQueueResponse } from "../shared/self-improvement";
 import type {
   PairDetail,
   PairDetailResponse,
@@ -69,10 +79,19 @@ const VIEW_LABELS: Record<PairViewMode, string> = {
   worker: "Codex",
   split: "Both",
   memory: "Memory",
+  improve: "Improve",
   cli: "CLI"
 };
 
-const VIEW_MODES = new Set<PairViewMode>(["butler", "worker", "split", "memory", "cli"]);
+const VIEW_MODES = new Set<PairViewMode>(["butler", "worker", "split", "memory", "improve", "cli"]);
+type WorkstreamViewMode = Exclude<PairViewMode, "memory" | "improve">;
+type ManorSurface = "sessions" | "memory" | "improve";
+const WORKSTREAM_MODES: WorkstreamViewMode[] = ["butler", "worker", "split", "cli"];
+
+function manorSurfaceForView(viewMode: PairViewMode): ManorSurface {
+  if (viewMode === "memory" || viewMode === "improve") return viewMode;
+  return "sessions";
+}
 
 function readInitialViewMode(): PairViewMode {
   if (typeof window === "undefined") return "butler";
@@ -182,7 +201,16 @@ function shapeWorkerTimeline(thread: WorkerThread | null): WorkerTimeline {
 function Sidebar({
   pairs,
   selectedPairId,
+  manorSurface,
+  improvePendingCount,
+  improveQueue,
+  selectedImproveRequestId,
+  memorySection,
+  memorySummary,
   onSelect,
+  onSelectManor,
+  onSelectImproveRequest,
+  onSelectMemorySection,
   onCreate,
   onDelete,
   search,
@@ -190,7 +218,16 @@ function Sidebar({
 }: {
   pairs: PairSummary[];
   selectedPairId: string | null;
+  manorSurface: ManorSurface;
+  improvePendingCount: number;
+  improveQueue: SelfImprovementQueueResponse | null;
+  selectedImproveRequestId: string | null;
+  memorySection: MemorySection;
+  memorySummary: MemoryDashboardSummary | null;
   onSelect: (id: string) => void;
+  onSelectManor: (surface: ManorSurface) => void;
+  onSelectImproveRequest: (id: string) => void;
+  onSelectMemorySection: (section: MemorySection) => void;
   onCreate: () => void;
   onDelete: (id: string) => void;
   search: string;
@@ -201,9 +238,12 @@ function Sidebar({
     if (!query) return pairs;
     return pairs.filter((pair) => pair.title.toLowerCase().includes(query) || (pair.lastMessage?.text ?? "").toLowerCase().includes(query));
   }, [pairs, search]);
+  const improveRequests = improveQueue?.requests ?? [];
+  const selectedImproveRequest =
+    improveRequests.find((request) => request.id === selectedImproveRequestId) ?? improveRequests[0] ?? null;
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${manorSurface === "sessions" ? "" : "is-surface-only"}`}>
       <div className="sidebar-head">
         <div className="brand">
           <picture className="brand-logo">
@@ -211,47 +251,155 @@ function Sidebar({
             <img src={manorLogoDark} alt="Manor" />
           </picture>
         </div>
-        <button className="icon-button is-primary" type="button" onClick={onCreate} aria-label="New session">
-          <PlusIcon />
-        </button>
-      </div>
-      <div className="brand-sub">Sessions</div>
-
-      <div className="search">
-        <span className="search-icon">
-          <SearchIcon />
-        </span>
-        <input
-          type="search"
-          placeholder="Search sessions…"
-          value={search}
-          onChange={(event) => onSearch(event.target.value)}
-          aria-label="Search sessions"
-        />
       </div>
 
-      <div className="sidebar-section">
-        <span>All sessions</span>
-        <span>{filtered.length}</span>
+      <div className="sidebar-switcher">
+        <nav className="sidebar-nav" aria-label="Manor">
+          <button
+            className={`sidebar-nav-item ${manorSurface === "sessions" ? "is-selected" : ""}`}
+            type="button"
+            aria-label="Sessions"
+            aria-current={manorSurface === "sessions" ? "page" : undefined}
+            onClick={() => onSelectManor("sessions")}
+            title="Sessions"
+          >
+            <ThreadsIcon />
+            <span>Sessions</span>
+          </button>
+          <button
+            className={`sidebar-nav-item ${manorSurface === "memory" ? "is-selected" : ""}`}
+            type="button"
+            aria-label="Memory"
+            aria-current={manorSurface === "memory" ? "page" : undefined}
+            onClick={() => onSelectManor("memory")}
+            title="Memory"
+          >
+            <StatusIcon kind="context" />
+            <span>Memory</span>
+          </button>
+          <button
+            className={`sidebar-nav-item ${manorSurface === "improve" ? "is-selected" : ""}`}
+            type="button"
+            aria-label={improvePendingCount > 0 ? `Improve, ${improvePendingCount} pending` : "Improve"}
+            aria-current={manorSurface === "improve" ? "page" : undefined}
+            onClick={() => onSelectManor("improve")}
+            title="Improve"
+          >
+            <SetupTabIcon />
+            <span>Improve</span>
+            {improvePendingCount > 0 ? <span className="sidebar-nav-badge">{improvePendingCount}</span> : null}
+          </button>
+        </nav>
       </div>
+      <div className="sidebar-divider" aria-hidden="true" />
 
-      <div className="pair-list">
-        {filtered.length === 0 ? (
-          <div className="pair-empty">
-            {search ? "No sessions match your search." : "Create your first session to get started."}
+      {manorSurface === "sessions" ? (
+        <>
+          <div className="sidebar-surface-head">
+            <div className="sidebar-surface-title">
+              <span className="sidebar-surface-label">Sessions</span>
+              <span className="sidebar-surface-count">{filtered.length}</span>
+            </div>
+            <button className="icon-button is-primary" type="button" onClick={onCreate} aria-label="New session">
+              <PlusIcon />
+            </button>
           </div>
-        ) : (
-          filtered.map((pair) => (
-            <PairRow
-              key={pair.id}
-              pair={pair}
-              isActive={pair.id === selectedPairId}
-              onSelect={() => onSelect(pair.id)}
-              onDelete={() => onDelete(pair.id)}
+
+          <div className="search">
+            <span className="search-icon">
+              <SearchIcon />
+            </span>
+            <input
+              type="search"
+              placeholder="Search sessions…"
+              value={search}
+              onChange={(event) => onSearch(event.target.value)}
+              aria-label="Search sessions"
             />
-          ))
-        )}
-      </div>
+          </div>
+
+          <div className="pair-list">
+            {filtered.length === 0 ? (
+              <div className="pair-empty">
+                {search ? "No sessions match your search." : "Create your first session to get started."}
+              </div>
+            ) : (
+              filtered.map((pair) => (
+                <PairRow
+                  key={pair.id}
+                  pair={pair}
+                  isActive={pair.id === selectedPairId}
+                  onSelect={() => onSelect(pair.id)}
+                  onDelete={() => onDelete(pair.id)}
+                />
+              ))
+            )}
+          </div>
+        </>
+      ) : null}
+      {manorSurface === "memory" ? (
+        <>
+          <div className="sidebar-surface-head">
+            <div className="sidebar-surface-title">
+              <span className="sidebar-surface-label">Memory</span>
+              <span className="sidebar-surface-count">{memorySummary?.totalCount ?? 0}</span>
+            </div>
+          </div>
+          <div className="sidebar-surface-list" aria-label="Memory sections">
+            {(["projects", "jobs", "butler"] as MemorySection[]).map((sectionOption) => {
+              const count = memorySummary?.counts[sectionOption]?.total ?? 0;
+              const label = sectionOption === "projects" ? "Projects" : sectionOption === "jobs" ? "Jobs" : "Butler";
+              const description =
+                sectionOption === "projects"
+                  ? "Project memory"
+                  : sectionOption === "jobs"
+                    ? "Job memory"
+                    : "Global memory";
+              return (
+                <button
+                  key={sectionOption}
+                  type="button"
+                  className={`sidebar-surface-item ${memorySection === sectionOption ? "is-active" : ""}`}
+                  onClick={() => onSelectMemorySection(sectionOption)}
+                >
+                  <span className="sidebar-surface-item-title">{label}</span>
+                  <span className="sidebar-surface-item-preview">{description}</span>
+                  <span className="sidebar-surface-item-meta">{count}</span>
+                </button>
+              );
+            })}
+          </div>
+        </>
+      ) : null}
+      {manorSurface === "improve" ? (
+        <>
+          <div className="sidebar-surface-head">
+            <div className="sidebar-surface-title">
+              <span className="sidebar-surface-label">Requests</span>
+              <span className="sidebar-surface-count">{improveRequests.length}</span>
+            </div>
+          </div>
+          <div className="sidebar-improve-list" aria-label="Self-improvement requests">
+            {improveRequests.length === 0 ? (
+              <div className="pair-empty">No requests.</div>
+            ) : (
+              improveRequests.map((request) => (
+                <button
+                  key={request.id}
+                  type="button"
+                  className={`improve-item ${request.id === selectedImproveRequest?.id ? "is-active" : ""}`}
+                  onClick={() => onSelectImproveRequest(request.id)}
+                >
+                  <span className={`improve-status is-${request.status}`}>{selfImprovementStatusLabel(request.status)}</span>
+                  <strong>{request.trigger}</strong>
+                  <span>{request.sourceProjectLabel ?? request.sourceThreadId ?? "Manor"}</span>
+                  <time>{formatSelfImprovementTime(request.updatedAt)}</time>
+                </button>
+              ))
+            )}
+          </div>
+        </>
+      ) : null}
     </aside>
   );
 }
@@ -305,6 +453,7 @@ function PairRow({
 function Topbar({
   pair,
   viewMode,
+  workstreamMode,
   onViewMode,
   busy,
   editingTitle,
@@ -316,11 +465,23 @@ function Topbar({
   onCommitTitle,
   onCancelEditTitle,
   onToggleSidebar,
-  isMobileSidebarOpen
+  isMobileSidebarOpen,
+  improveRequestCount,
+  improveEligibilityBlocked,
+  improveEligibilityMode,
+  memorySection,
+  memorySearch,
+  memoryProjectFilter,
+  memoryProjectOptions,
+  memoryActiveCount,
+  memoryTotalCount,
+  onMemorySearch,
+  onMemoryProjectFilter
 }: {
   pair: PairDetail | null;
   viewMode: PairViewMode;
-  onViewMode: (mode: PairViewMode) => void;
+  workstreamMode: WorkstreamViewMode;
+  onViewMode: (mode: WorkstreamViewMode) => void;
   busy: boolean;
   editingTitle: boolean;
   titleDraft: string;
@@ -332,20 +493,45 @@ function Topbar({
   onCancelEditTitle: () => void;
   onToggleSidebar: () => void;
   isMobileSidebarOpen: boolean;
+  improveRequestCount: number;
+  improveEligibilityBlocked: boolean;
+  improveEligibilityMode: string | null;
+  memorySection: MemorySection;
+  memorySearch: string;
+  memoryProjectFilter: string;
+  memoryProjectOptions: MemoryProjectOption[];
+  memoryActiveCount: number;
+  memoryTotalCount: number;
+  onMemorySearch: (value: string) => void;
+  onMemoryProjectFilter: (value: string) => void;
 }) {
+  const isGlobalSurface = viewMode === "memory" || viewMode === "improve";
+  const surfaceTitle = viewMode === "memory" ? "Memory" : viewMode === "improve" ? "Self-improvement" : null;
+  const surfaceMeta =
+    viewMode === "memory"
+      ? `${memoryActiveCount} of ${memoryTotalCount} ${memorySection}`
+      : viewMode === "improve"
+      ? `${improveRequestCount} requests`
+      : null;
+  const modes: WorkstreamViewMode[] = pair ? WORKSTREAM_MODES : ["cli"];
   return (
-    <header className="topbar">
+    <header className={`topbar ${isGlobalSurface ? "is-global-surface" : ""}`}>
       <div className="topbar-left">
         <button
           className="mobile-toggle"
           type="button"
           onClick={onToggleSidebar}
-          aria-label={isMobileSidebarOpen ? "Close sessions" : "Open sessions"}
+          aria-label={isMobileSidebarOpen ? "Close navigation" : "Open navigation"}
         >
           {isMobileSidebarOpen ? <ChevronLeftIcon /> : <MenuIcon />}
         </button>
         <div className="topbar-title">
-          {pair && editingTitle ? (
+          {isGlobalSurface ? (
+            <div className="surface-topbar-title">
+              <h1 className="title-label">{surfaceTitle}</h1>
+              {surfaceMeta ? <span className="surface-topbar-meta">{surfaceMeta}</span> : null}
+            </div>
+          ) : pair && editingTitle ? (
             <input
               className="title-input"
               type="text"
@@ -378,27 +564,63 @@ function Topbar({
               {pair ? <PencilIcon /> : null}
             </button>
           )}
-          {pair?.status === "worker_running" ? (
+          {pair?.status === "worker_running" && !isGlobalSurface ? (
             <span className="topbar-worker-loader" aria-label="Codex is working">
               <SandSpinner />
             </span>
           ) : null}
-          {pair ? <span className="pair-id">{shortId(pair.id)}</span> : null}
-          {pair && editingTitle && titleError ? (
+          {pair && !isGlobalSurface ? <span className="pair-id">{shortId(pair.id)}</span> : null}
+          {pair && !isGlobalSurface && editingTitle && titleError ? (
             <span className="title-error" role="alert">{titleError}</span>
           ) : null}
         </div>
       </div>
       <div className="topbar-right">
-        {pair ? (
+        {viewMode === "memory" ? (
+          <div className="topbar-memory-controls">
+            <div className="search dashboard-search">
+              <span className="search-icon">
+                <SearchIcon />
+              </span>
+              <input
+                type="search"
+                placeholder={`Search ${memorySection}…`}
+                value={memorySearch}
+                onChange={(event) => onMemorySearch(event.target.value)}
+                aria-label={`Search ${memorySection}`}
+              />
+            </div>
+            <select
+              className="dashboard-project-filter"
+              value={memoryProjectFilter}
+              onChange={(event) => onMemoryProjectFilter(event.target.value)}
+              aria-label="Filter by project"
+              disabled={memorySection === "butler"}
+            >
+              <option value="">{memorySection === "butler" ? "Global" : "All projects"}</option>
+              {memoryProjectOptions.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : null}
+        {viewMode === "improve" && improveEligibilityBlocked ? (
+          <span className="improve-gate">
+            <WarningIcon />
+            {improveEligibilityMode === "image" ? "Image mode" : "Disabled"}
+          </span>
+        ) : null}
+        {!isGlobalSurface ? (
           <div className="segmented" role="tablist" aria-label="View mode">
-            {(["butler", "worker", "split", "memory", "cli"] as PairViewMode[]).map((mode) => (
+            {modes.map((mode) => (
               <button
                 key={mode}
                 type="button"
                 role="tab"
-                aria-selected={viewMode === mode}
-                className={viewMode === mode ? "is-selected" : ""}
+                aria-selected={workstreamMode === mode}
+                className={workstreamMode === mode ? "is-selected" : ""}
                 onClick={() => onViewMode(mode)}
               >
                 {VIEW_LABELS[mode]}
@@ -406,7 +628,7 @@ function Topbar({
             ))}
           </div>
         ) : null}
-        {pair?.status ? (
+        {pair?.status && !isGlobalSurface ? (
           <span className={`status is-${pair.status}`}>
             <span className="status-dot" />
             {statusLabel(pair.status)}
@@ -423,6 +645,10 @@ export function PairShell() {
   const [pair, setPair] = useState<PairDetail | null>(null);
   const [workerThread, setWorkerThread] = useState<WorkerThread | null>(null);
   const [viewMode, setViewMode] = useState<PairViewMode>(() => readInitialViewMode());
+  const [lastWorkstreamMode, setLastWorkstreamMode] = useState<WorkstreamViewMode>(() => {
+    const initial = readInitialViewMode();
+    return initial === "memory" || initial === "improve" ? "butler" : initial;
+  });
   const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>(
     () => readInitialTerminalTarget(new URLSearchParams(window.location.search).get("terminal")) ?? "butler"
   );
@@ -436,6 +662,15 @@ export function PairShell() {
   const [savingTitle, setSavingTitle] = useState(false);
   const [titleError, setTitleError] = useState<string | null>(null);
   const [butlerPatchHandler, setButlerPatchHandler] = useState<((patch: ProviderRuntimeLivePatch) => void) | null>(null);
+  const [improvePendingCount, setImprovePendingCount] = useState(0);
+  const [improveQueue, setImproveQueue] = useState<SelfImprovementQueueResponse | null>(null);
+  const [selectedImproveRequestId, setSelectedImproveRequestId] = useState<string | null>(null);
+  const [memorySection, setMemorySection] = useState<MemorySection>("projects");
+  const [memorySearch, setMemorySearch] = useState("");
+  const [memoryProjectFilter, setMemoryProjectFilter] = useState("");
+  const [memorySummary, setMemorySummary] = useState<MemoryDashboardSummary | null>(null);
+
+  const manorSurface = manorSurfaceForView(viewMode);
 
   useEventStream({
     onButlerPatch: (patch) => {
@@ -507,10 +742,31 @@ export function PairShell() {
   }, [terminalTarget, viewMode]);
 
   useEffect(() => {
+    if (viewMode !== "memory" && viewMode !== "improve") setLastWorkstreamMode(viewMode);
+  }, [viewMode]);
+
+  useEffect(() => {
     void loadPairs().catch((err) => setError(err instanceof Error ? err.message : String(err)));
     const interval = window.setInterval(() => void loadPairs().catch(() => undefined), 5000);
     return () => window.clearInterval(interval);
   }, [loadPairs]);
+
+  const loadImproveQueue = useCallback(async () => {
+    const payload = await getJson<SelfImprovementQueueResponse>("/api/self-improvement/requests");
+    startTransition(() => {
+      setImproveQueue(payload);
+      setImprovePendingCount(payload.requests.filter((request) => request.status === "pending").length);
+      setSelectedImproveRequestId((current) =>
+        current && payload.requests.some((request) => request.id === current) ? current : payload.requests[0]?.id ?? null
+      );
+    });
+  }, []);
+
+  useEffect(() => {
+    void loadImproveQueue().catch(() => undefined);
+    const interval = window.setInterval(() => void loadImproveQueue().catch(() => undefined), 5000);
+    return () => window.clearInterval(interval);
+  }, [loadImproveQueue]);
 
   useEffect(() => {
     if (!selectedPairId) {
@@ -536,14 +792,14 @@ export function PairShell() {
   }, [loadPair, selectedPairId]);
 
   useEffect(() => {
-    if (!pair?.worker || viewMode === "butler") {
+    if (!pair?.worker || viewMode === "butler" || manorSurface !== "sessions") {
       setWorkerThread(null);
       return;
     }
     void loadWorker(pair.id).catch(() => undefined);
     const interval = window.setInterval(() => void loadWorker(pair.id).catch(() => undefined), 5000);
     return () => window.clearInterval(interval);
-  }, [loadWorker, pair?.id, pair?.worker?.threadId, viewMode]);
+  }, [loadWorker, manorSurface, pair?.id, pair?.worker?.threadId, viewMode]);
 
   const workerTimeline = useMemo<WorkerTimeline>(() => {
     if (!pair?.worker) return { turns: [], report: null, payload: null, fallback: [] };
@@ -673,24 +929,45 @@ export function PairShell() {
     [pair]
   );
 
-  const workerVisible = viewMode !== "butler" && (pair?.worker || viewMode === "worker");
-  const butlerVisible = viewMode !== "worker";
+  const workerVisible = manorSurface === "sessions" && viewMode !== "butler" && (pair?.worker || viewMode === "worker");
+  const butlerVisible = manorSurface === "sessions" && viewMode !== "worker";
   const cliVisible = viewMode === "cli";
   const selectTerminalTarget = useCallback((target: TerminalTarget) => {
     setTerminalTarget(target);
   }, []);
+  const selectManorSurface = useCallback((surface: ManorSurface) => {
+    cancelEditTitle();
+    setMobileSidebarOpen(false);
+    setViewMode(surface === "sessions" ? lastWorkstreamMode : surface);
+  }, [cancelEditTitle, lastWorkstreamMode]);
 
   return (
     <main className={`app ${mobileSidebarOpen ? "is-mobile-sidebar-open" : ""} ${pair ? "" : "is-empty"}`}>
       <Sidebar
         pairs={pairs}
         selectedPairId={selectedPairId}
+        manorSurface={manorSurface}
+        improvePendingCount={improvePendingCount}
+        improveQueue={improveQueue}
+        selectedImproveRequestId={selectedImproveRequestId}
+        memorySection={memorySection}
+        memorySummary={memorySummary}
         onSelect={(id) => {
           setSelectedPairId(id);
+          setViewMode(lastWorkstreamMode);
           setMobileSidebarOpen(false);
           setEditingTitle(false);
           setTitleDraft("");
           setTitleError(null);
+        }}
+        onSelectManor={selectManorSurface}
+        onSelectImproveRequest={(id) => {
+          setSelectedImproveRequestId(id);
+          setMobileSidebarOpen(false);
+        }}
+        onSelectMemorySection={(section) => {
+          setMemorySection(section);
+          setMobileSidebarOpen(false);
         }}
         onCreate={createPair}
         onDelete={deletePair}
@@ -701,7 +978,11 @@ export function PairShell() {
         <Topbar
           pair={pair}
           viewMode={viewMode}
-          onViewMode={setViewMode}
+          workstreamMode={lastWorkstreamMode}
+          onViewMode={(mode) => {
+            cancelEditTitle();
+            setViewMode(mode);
+          }}
           busy={busy}
           editingTitle={editingTitle}
           titleDraft={titleDraft}
@@ -713,8 +994,19 @@ export function PairShell() {
           onCancelEditTitle={cancelEditTitle}
           onToggleSidebar={() => setMobileSidebarOpen((open) => !open)}
           isMobileSidebarOpen={mobileSidebarOpen}
+          improveRequestCount={improveQueue?.requests.length ?? 0}
+          improveEligibilityBlocked={Boolean(improveQueue?.eligibility && !improveQueue.eligibility.enabled)}
+          improveEligibilityMode={improveQueue?.eligibility.mode ?? null}
+          memorySection={memorySection}
+          memorySearch={memorySearch}
+          memoryProjectFilter={memoryProjectFilter}
+          memoryProjectOptions={memorySummary?.projectOptions ?? []}
+          memoryActiveCount={memorySummary?.activeCount ?? 0}
+          memoryTotalCount={memorySummary?.totalCount ?? 0}
+          onMemorySearch={setMemorySearch}
+          onMemoryProjectFilter={setMemoryProjectFilter}
         />
-        {!pair ? (
+        {!pair && viewMode !== "memory" && viewMode !== "improve" && viewMode !== "cli" ? (
           <div className="empty-state">
             <picture className="empty-logo">
               <source srcSet={manorLogoLight} media="(prefers-color-scheme: light)" />
@@ -729,7 +1021,7 @@ export function PairShell() {
           </div>
         ) : (
           <div className="workspace-views">
-            <div className={`workspace-view is-conversation ${viewMode === "butler" || viewMode === "worker" || viewMode === "split" ? "is-active" : ""}`}>
+            <div className={`workspace-view is-conversation ${pair && (viewMode === "butler" || viewMode === "worker" || viewMode === "split") ? "is-active" : ""}`}>
               <div className={`workspace-body is-${viewMode}`}>
                 {butlerVisible ? (
                   <ButlerPane
@@ -760,7 +1052,24 @@ export function PairShell() {
               ) : null}
             </div>
             <div className={`workspace-view is-memory ${viewMode === "memory" ? "is-active" : ""}`}>
-              <MemoryDashboard />
+              <MemoryDashboard
+                showHeader={false}
+                showSections={false}
+                section={memorySection}
+                onSectionChange={setMemorySection}
+                search={memorySearch}
+                onSearchChange={setMemorySearch}
+                projectFilter={memoryProjectFilter}
+                onProjectFilterChange={setMemoryProjectFilter}
+                onSummaryChange={setMemorySummary}
+              />
+            </div>
+            <div className={`workspace-view is-improve ${viewMode === "improve" ? "is-active" : ""}`}>
+              <SelfImprovementQueue
+                data={improveQueue}
+                selectedId={selectedImproveRequestId}
+                onReload={loadImproveQueue}
+              />
             </div>
             <TerminalPane
               active={cliVisible}

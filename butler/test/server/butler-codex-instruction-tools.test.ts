@@ -43,6 +43,7 @@ async function createHarness() {
       loadThread: async () => undefined,
       sendMessage: async (_threadId: string, input: unknown) => {
         sent.push(input);
+        return { threadId: _threadId, turnId: "turn-sent" };
       }
     },
     imageStore: { resolveViews: () => [], getFilePath: () => null },
@@ -67,6 +68,7 @@ async function createHarness() {
     },
     getActiveOperatorThreadGuard: () => null,
     getThreadBudgetLimitMessage: () => null,
+    bindJobPayloadDelivery: async (threadId: string) => store.getThreadJobPayload(threadId),
     registerPendingChatCallback: () => undefined,
     noteThreadFocus: () => undefined
   } as unknown as ButlerAgentToolAccess;
