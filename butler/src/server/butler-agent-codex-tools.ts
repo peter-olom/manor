@@ -189,26 +189,27 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         const developerInstructions = await access.buildDelegationDeveloperInstructions(workspace, task);
         const result = await access.codexClient.startThread({
           task,
-          input: async (threadId: string) =>
-            buildCodexInputWithReferences({
-              text: (
-                await access.buildDelegationContract({
-                  threadId,
-                  task,
-                  goal: "Improve Manor itself, verify the change, push the branch, and open a draft PR.",
-                  workspace,
-                  extraNotes: [
-                    "This is a Manor self-improvement job.",
-                    "Opening a draft PR is explicitly requested by Butler for this job.",
-                    "Live restart, deploy, destructive cleanup, or host mutation still requires explicit operator approval."
-                  ]
-                })
-              ).text,
+          input: async (threadId: string) => {
+            const delegationContract = await access.buildDelegationContract({
+              threadId,
+              task,
+              goal: "Improve Manor itself, verify the change, push the branch, and open a draft PR.",
+              workspace,
+              extraNotes: [
+                "This is a Manor self-improvement job.",
+                "Opening a draft PR is explicitly requested by Butler for this job.",
+                "Live restart, deploy, destructive cleanup, or host mutation still requires explicit operator approval."
+              ]
+            });
+            access.store.setThreadExecutionContract(threadId, delegationContract.contract);
+            return buildCodexInputWithReferences({
+              text: delegationContract.text,
               imageStore: access.imageStore,
               imageReferenceIds: [],
               fileStore: access.fileStore,
               fileReferenceIds: []
-            }),
+            });
+          },
           cwd: workspace.cwd,
           developerInstructions,
           effort: typedParams.thinkingBudget ?? "high",

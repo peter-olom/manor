@@ -1225,22 +1225,23 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
 
         const result = await access.codexClient.startThread({
           task: delegatedGoal ? `${delegatedTask}\n\nGoal: ${delegatedGoal}` : delegatedTask,
-          input: async (threadId: string) =>
-            buildCodexInputWithReferences({
-              text: (
-                await access.buildDelegationContract({
-                  threadId,
-                  task: delegatedTask,
-                  goal: delegatedGoal,
-                  workspace,
-                  extraNotes: extraNotes.notes
-                })
-              ).text,
+          input: async (threadId: string) => {
+            const delegationContract = await access.buildDelegationContract({
+              threadId,
+              task: delegatedTask,
+              goal: delegatedGoal,
+              workspace,
+              extraNotes: extraNotes.notes
+            });
+            access.store.setThreadExecutionContract(threadId, delegationContract.contract);
+            return buildCodexInputWithReferences({
+              text: delegationContract.text,
               imageStore: access.imageStore,
               imageReferenceIds: typedParams.imageReferenceIds ?? [],
               fileStore: access.fileStore,
               fileReferenceIds: typedParams.fileReferenceIds ?? []
-            }),
+            });
+          },
           cwd: workspace.cwd,
           developerInstructions,
           effort: typedParams.thinkingBudget ?? null,
@@ -1315,21 +1316,22 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
 
         const result = await access.codexClient.startThread({
           task: delegatedTask,
-          input: async (threadId: string) =>
-            buildCodexInputWithReferences({
-              text: (
-                await access.buildDelegationContract({
-                  threadId,
-                  task: delegatedTask,
-                  workspace,
-                  extraNotes
-                })
-              ).text,
+          input: async (threadId: string) => {
+            const delegationContract = await access.buildDelegationContract({
+              threadId,
+              task: delegatedTask,
+              workspace,
+              extraNotes
+            });
+            access.store.setThreadExecutionContract(threadId, delegationContract.contract);
+            return buildCodexInputWithReferences({
+              text: delegationContract.text,
               imageStore: access.imageStore,
               imageReferenceIds: [],
               fileStore: access.fileStore,
               fileReferenceIds: []
-            }),
+            });
+          },
           cwd: workspace.cwd,
           developerInstructions,
           effort: typedParams.thinkingBudget ?? null,

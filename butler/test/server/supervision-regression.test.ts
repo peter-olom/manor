@@ -24,6 +24,7 @@ import {
   hasStartedSelfImprovement
 } from "../../src/server/butler-self-improvement.js";
 import { validateCompletedWorkerEvidence } from "../../src/server/codex-harness-report-validation.js";
+import { CodexHarnessService } from "../../src/server/codex-harness.js";
 import { contractRequiresVisualProof, hasVisualProof, taskHasUiImplication } from "../../src/server/proof-policy.js";
 import { listWorkspaceProjectDirectories, resolveWorkspaceProjectInfo } from "../../src/server/repo-worktree.js";
 import { buildReviewPanel, summarizeReviewPanel } from "../../src/server/review-panel.js";
@@ -322,6 +323,68 @@ test("delegation contract serializes the mission planner and critic loop", () =>
   assert.match(text, /planner_step:/);
   assert.match(text, /critic_check:/);
   assert.match(text, /operator_question_policy:/);
+});
+
+
+test("worker reports can be recorded before a delegated turn is persisted", async () => {
+  const store = await createStore();
+  const contract = makeContract({ proofExpectation: "none", proofExpectationLabel: "proof not requested" });
+  store.upsertThreadSummary({
+    id: contract.threadId,
+    status: "active",
+    cwd: contract.workspaceCwd
+  });
+  store.setThreadExecutionContract(contract.threadId, contract);
+
+  const report = store.recordWorkerReport(contract.threadId, {
+    status: "completed",
+    summary: "Smoke test complete.",
+    details: "The worker finished before Codex persisted a turn."
+  });
+  const thread = store.getThreadDetail(contract.threadId);
+
+  assert.match(report.turnId, /^harness-report-/);
+  assert.equal(thread?.turns.length, 1);
+  assert.equal(thread?.turns[0]?.id, report.turnId);
+  assert.equal(thread?.turns[0]?.status, "completed");
+});
+
+test("harness payload current returns the stored delegation contract", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-harness-test-"));
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  await store.load();
+  const contract = makeContract({ proofExpectation: "none", proofExpectationLabel: "proof not requested" });
+  store.upsertThreadSummary({
+    id: contract.threadId,
+    status: "active",
+    cwd: contract.workspaceCwd
+  });
+  store.setThreadExecutionContract(contract.threadId, contract);
+  const runtimeBroker = { listStacks: async () => [] };
+  const serviceTemplateRegistry = { list: () => [] };
+  const harness = new CodexHarnessService({
+    codexHomeDir: path.join(dir, "codex-home"),
+    stateDir: dir,
+    artifactsDir: path.join(dir, "artifacts"),
+    store,
+    runtimeBroker: runtimeBroker as never,
+    serviceTemplateRegistry: serviceTemplateRegistry as never,
+    memoryReview: null
+  });
+  await harness.load();
+  const capability = await harness.ensureThreadCapability(contract.threadId, contract.workspaceCwd);
+  assert.ok(capability);
+
+  const result = await harness.handleAction({
+    token: capability.token,
+    action: "payload.current"
+  });
+  const payload = result.data?.payload as Record<string, unknown>;
+
+  assert.equal(payload.threadId, contract.threadId);
+  assert.deepEqual(payload.executionContract, contract);
+  assert.deepEqual((payload.checklist as { text: string }[]).map((item) => item.text), contract.acceptancePoints);
+  assert.match(result.text, /manor\.job_payload\.v1/);
 });
 
 test("worker reports attach evidence without accepting checklist points", async () => {

@@ -12,6 +12,7 @@ const runtimeBrokerBaseUrl = process.env.MANOR_RUNTIME_BROKER_URL || "http://run
 function printHelp() {
   console.log(`Usage:
   manor-harness [--thread <jobId>] status
+  manor-harness [--thread <jobId>] payload current
   manor-harness [--thread <jobId>] report --status completed|blocked --summary "<text>" [--details "<text>"] [--turn-id <id>] [--evidence-json '<json>' ...] [--evidence "<pointId>|<kind>|<summary>" ...]
   manor-harness [--thread <jobId>] assist --summary "<text>" [--details "<text>"] [--question "<text>"]
   manor-harness [--thread <jobId>] memory [--provenance]
@@ -494,6 +495,11 @@ async function main() {
 
   if (args[0] === "status") {
     action = "context";
+  } else if (args[0] === "payload") {
+    const subcommand = args[1];
+    if (subcommand === "current") {
+      action = "payload.current";
+    }
   } else if (args[0] === "report") {
     action = "report";
     params = {
@@ -1012,6 +1018,11 @@ async function main() {
     const result = await callHarness(capability.token, action, params);
     if (jsonMode) {
       console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (action === "payload.current") {
+      console.log(JSON.stringify(result.data?.payload ?? {}, null, 2));
       return;
     }
 

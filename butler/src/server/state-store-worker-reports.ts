@@ -87,13 +87,15 @@ export function recordStateStoreWorkerReport(
   const thread = access.getOrCreateThread(threadId);
   const latestTurn = thread.turns.at(-1);
   const explicitTurnId = typeof report.turnId === "string" && report.turnId.trim() ? report.turnId.trim() : null;
-  const turnId = explicitTurnId ?? latestTurn?.id ?? null;
+  const timestamp = Date.now();
+  let turnId = explicitTurnId ?? latestTurn?.id ?? null;
   if (!turnId) {
-    throw new Error("Cannot record a worker report before the thread has an active or completed turn");
+    turnId = `harness-report-${timestamp}`;
+    thread.turns.push({ id: turnId, requestedReasoningEffort: null, status: "completed", error: null, startedAt: timestamp, completedAt: timestamp, items: [] });
+    thread.turnCount = thread.turns.length;
   }
 
   const existing = thread.workerReport;
-  const timestamp = Date.now();
   const now = existing?.turnId === turnId && timestamp <= existing.updatedAt ? existing.updatedAt + 1 : timestamp;
   const evidence = normalizeWorkerReportEvidence(report.evidence, now);
   const nextReport: CodexWorkerReportView = {

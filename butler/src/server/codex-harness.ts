@@ -19,6 +19,7 @@ import { normalizeReportEvidence, validateCompletedWorkerEvidence } from "./code
 import { handleHarnessDesktopAction } from "./codex-harness-desktop.js";
 import { formatHarnessJobMemory, formatHarnessProjectMemory, handleHarnessMemoryAction } from "./codex-harness-memory.js";
 import { handleHarnessProofAction } from "./codex-harness-proof.js";
+import { buildHarnessCurrentPayload } from "./codex-harness-payload.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import { observeHarnessArtifactPolicyAction, observeHarnessMemoryAction } from "./memory-update-harness-hooks.js";
@@ -439,6 +440,13 @@ export class CodexHarnessService {
     const thread = this.getThreadContext(capability);
     if (action === "context" || action.startsWith("stack.") || action.startsWith("preview.") || action.startsWith("service.") || action.startsWith("assist.")) {
       await this.maybeAdoptWorkspaceStack(capability);
+    }
+    if (action === "payload.current") {
+      const payload = buildHarnessCurrentPayload({ capability, thread });
+      return {
+        text: JSON.stringify(payload, null, 2),
+        data: { payload }
+      };
     }
     if (action === "context") {
       const project = this.resolveWorkspaceProject(capability.cwd, thread);
