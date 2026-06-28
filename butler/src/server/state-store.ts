@@ -66,9 +66,7 @@ import { enqueueStateStoreMemorySynthesis, listDueStateStoreMemorySynthesis, lis
 import { listStateStoreDesktopSessions, removeStateStoreDesktopSession, replaceStateStoreDesktopSessions, upsertStateStoreDesktopSession } from "./state-store-desktop.js";
 import { buildStateStoreRuntimeSnapshot, buildStateStoreShellSnapshot, buildStateStoreSnapshot } from "./state-store-snapshot.js";
 import { recordStateStoreWorkerReport, recordStateStoreWorkerReviewResults } from "./state-store-worker-reports.js";
-import { mergeParsedExecutionContract } from "./state-store-contract-normalizers.js";
 import { recordReviewPanelVerdict as applyReviewPanelVerdict } from "./review-panel.js";
-import { parseThreadExecutionContract } from "./thread-contract.js";
 import type {
   AppSnapshot,
   AppShellSnapshot,
@@ -248,7 +246,7 @@ export class ButlerStateStore extends EventEmitter {
       error: incomingTurn.error ?? existingTurn.error,
       requestedReasoningEffort: incomingTurn.requestedReasoningEffort ?? existingTurn.requestedReasoningEffort,
       startedAt: Math.min(existingTurn.startedAt, incomingTurn.startedAt),
-      completedAt: incomingTurn.completedAt ?? existingTurn.completedAt,
+      completedAt: existingTurn.completedAt ?? incomingTurn.completedAt,
       items: this.mergeTurnItems(existingTurn.items, incomingTurn.items)
     };
   }
@@ -383,9 +381,6 @@ export class ButlerStateStore extends EventEmitter {
     record.updatedAt = typeof thread.updatedAt === "number" ? thread.updatedAt * 1000 : record.updatedAt;
     record.status = normalizeStatus(thread.status);
     record.modelProvider = typeof thread.modelProvider === "string" ? thread.modelProvider : record.modelProvider;
-    const parsedExecutionContract = parseThreadExecutionContract(record.preview);
-    if (parsedExecutionContract) { const existingContract = record.executionContract ?? this.persistedExecutionContractsByThreadId.get(id) ?? null; const mergedContract = mergeParsedExecutionContract(existingContract, parsedExecutionContract); record.executionContract = mergedContract; record.supervisionChecklist = buildSupervisionChecklist(record, mergedContract); this.persistedExecutionContractsByThreadId.set(id, mergedContract); this.persistedSupervisionChecklistsByThreadId.set(id, { ...record.supervisionChecklist }); this.memoryUpdateObserver?.observeThreadContract(id, mergedContract); }
-
     if (Array.isArray(thread.turns)) {
       const existingTurnsById = new Map(record.turns.map((turn) => [turn.id, turn]));
       const incomingTurns = (thread.turns as Record<string, unknown>[]).map((turn) => normalizeTurn(turn));
@@ -411,6 +406,10 @@ export class ButlerStateStore extends EventEmitter {
   }
 
   setThreadExecutionContract(threadId: string, contract: CodexThreadExecutionContractView): void { const record = this.getOrCreateThread(threadId); record.executionContract = { ...contract }; record.supervisionChecklist = buildSupervisionChecklist(record, contract); record.updatedAt = Date.now(); this.persistedExecutionContractsByThreadId.set(threadId, { ...record.executionContract }); this.persistedSupervisionChecklistsByThreadId.set(threadId, { ...record.supervisionChecklist }); this.refreshDerivedThreadState(record); this.memoryUpdateObserver?.observeThreadContract(threadId, contract); this.queueSave(); this.emitChange(); }
+
+  setThreadJobPayload(payload: import("./job-payload-types.js").JobPayloadView): void { const record = this.getOrCreateThread(payload.threadId); record.jobPayload = { ...payload, nodes: [...payload.nodes], checklist: [...payload.checklist], proof: [...payload.proof], constraints: [...payload.constraints], notes: [...payload.notes] }; record.updatedAt = Math.max(record.updatedAt, payload.updatedAt); this.refreshDerivedThreadState(record); this.queueSave(); this.emitChange(); }
+
+  getThreadJobPayload(threadId: string): import("./job-payload-types.js").JobPayloadView | null { return this.getOrCreateThread(threadId).jobPayload ?? null; }
 
   getSupervisionChecklist(threadId: string): SupervisionChecklistView | null { return this.getOrCreateThread(threadId).supervisionChecklist; }
 
@@ -528,7 +527,7 @@ export class ButlerStateStore extends EventEmitter {
       record.requestedReasoningEffort = requestedReasoningEffort;
     }
     if (target.status === "completed" || target.status === "failed" || target.status === "interrupted") {
-      target.completedAt = Date.now();
+      target.completedAt = target.completedAt ?? Date.now();
     } else if (!target.startedAt) {
       target.startedAt = Date.now();
     }
@@ -942,6 +941,7 @@ export class ButlerStateStore extends EventEmitter {
         supervisor: thread.supervisor,
         executionContract: thread.executionContract,
         supervisionChecklist: thread.supervisionChecklist,
+        jobPayload: thread.jobPayload,
         jobMemory: thread.jobMemory
       }))
       .sort((a, b) => b.updatedAt - a.updatedAt);
@@ -998,6 +998,7 @@ export class ButlerStateStore extends EventEmitter {
       supervisor: thread.supervisor,
       executionContract: thread.executionContract,
       supervisionChecklist: thread.supervisionChecklist,
+      jobPayload: thread.jobPayload,
       jobMemory: thread.jobMemory,
       turns: thread.turns.map((turn) => this.toTurnView(turn)),
       eventLog: thread.eventLog,

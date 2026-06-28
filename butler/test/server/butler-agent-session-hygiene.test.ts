@@ -21,7 +21,8 @@ import {
   registerPendingOperatorPrompt,
   removeCommittedPendingOperatorPrompt,
   removePendingOperatorPrompt,
-  stopButlerPrompt
+  stopButlerPrompt,
+  syncOperatorMessagesFromSessionFiles
 } from "../../src/server/butler-agent-session.js";
 import {
   backfillOperatorMessagesFromSessionFiles,
@@ -489,6 +490,56 @@ test("startup backfill restores operator user prompts from persisted session log
   assert.equal(changed, true);
   assert.deepEqual(messages.map((message) => message.text), ["Show this prompt", "Visible reply"]);
   assert.deepEqual(messages.map((message) => message.role), ["user", "assistant"]);
+});
+
+test("live prompt sync restores provider assistant replies after queued turns complete", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-butler-live-sync-"));
+  const at = Date.parse("2026-06-28T01:11:50.227Z");
+  const messages = [{
+    id: "pending-operator-1782609110224-0",
+    role: "user",
+    text: "Smoke test only. Reply with exactly: Butler smoke ok. Do not delegate.",
+    at,
+    taskDurationMs: null,
+    kind: "message" as const
+  }];
+  let saved = 0;
+  await writeFile(
+    path.join(dir, "session.jsonl"),
+    [
+      JSON.stringify({ type: "message", id: "user", timestamp: "2026-06-28T01:11:50.230Z", message: { role: "user", content: [{ type: "text", text: messages[0]!.text }], timestamp: at } }),
+      JSON.stringify({
+        type: "message",
+        id: "assistant",
+        timestamp: "2026-06-28T01:11:59.145Z",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "Reasoning text that should stay out of chat." },
+            { type: "text", text: "Butler smoke ok. Do not delegate." }
+          ],
+          timestamp: Date.parse("2026-06-28T01:11:52.531Z")
+        }
+      })
+    ].join("\n"),
+    "utf8"
+  );
+
+  const changed = await syncOperatorMessagesFromSessionFiles({
+    operatorMessages: messages,
+    sessionDir: dir,
+    async saveOperatorMessageState() {
+      saved += 1;
+    }
+  });
+
+  assert.equal(changed, true);
+  assert.equal(saved, 1);
+  assert.deepEqual(messages.map((message) => message.role), ["user", "assistant"]);
+  assert.deepEqual(messages.map((message) => message.text), [
+    "Smoke test only. Reply with exactly: Butler smoke ok. Do not delegate.",
+    "Butler smoke ok. Do not delegate."
+  ]);
 });
 
 test("startup backfill ignores internal tool-only assistant turns", async () => {

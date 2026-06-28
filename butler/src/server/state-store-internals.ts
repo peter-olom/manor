@@ -21,6 +21,7 @@ import {
 } from "./state-store-helpers.js";
 import { loadStateStoreSqliteMemory, persistStateStoreSqliteMemory } from "./state-store-sqlite-memory.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
+import { parseJobPayload } from "./job-instruction-artifacts.js";
 import { normalizeWorkerClaimsReport } from "./butler-orchestration.js";
 import {
   normalizeExecutionContract,
@@ -1295,6 +1296,7 @@ export function restorePersistedStateStoreThread(access: StateStoreInternalAcces
   record.supervisionChecklist = thread.supervisionChecklist
     ? normalizeSupervisionChecklist(thread.supervisionChecklist)
     : record.supervisionChecklist;
+  record.jobPayload = parseJobPayload(thread.jobPayload) ?? record.jobPayload;
   record.jobMemory = thread.jobMemory ? { ...thread.jobMemory } : record.jobMemory;
   record.turns = Array.isArray(thread.turns) ? thread.turns.map((turn) => restorePersistedTurn(turn)) : record.turns;
   record.turnCount = Math.max(record.turnCount, record.turns.length);
@@ -1362,6 +1364,7 @@ export function getOrCreateStateStoreThread(access: StateStoreInternalAccess, id
     supervisor: emptyThreadSupervisor(),
     executionContract: null,
     supervisionChecklist: null,
+    jobPayload: null,
     jobMemory: buildEmptyJobMemory({
       threadId: id,
       projectId: "unknown",

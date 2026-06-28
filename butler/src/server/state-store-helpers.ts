@@ -1,5 +1,5 @@
 import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
-import { inferThreadExecutionContract, parseThreadExecutionContract } from "./thread-contract.js";
+import { inferThreadExecutionContract } from "./thread-contract.js";
 import type {
   ButlerSupervisorSummaryView,
   ButlerWindow,
@@ -228,8 +228,7 @@ export function summarizePreviewText(value: string | null | undefined, max = 120
     return null;
   }
 
-  const contract = parseThreadExecutionContract(value);
-  return summarizeTaskText(contract?.requestedTask ?? value, max);
+  return summarizeTaskText(value, max);
 }
 
 export function deriveThreadTaskTitle(thread: CodexThreadRecord | null | undefined): string | null {

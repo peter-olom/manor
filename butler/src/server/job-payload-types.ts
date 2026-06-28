@@ -1,0 +1,46 @@
+export interface JobPayloadView {
+  schemaVersion: "manor.job_payload.v1";
+  payloadId: string;
+  threadId: string;
+  rootNodeId: string;
+  currentNodeId: string;
+  revision: number;
+  checksum: string;
+  kind: string;
+  status: string;
+  createdAt: number;
+  updatedAt: number;
+  workspace: { cwd: string | null; branch: string | null };
+  project: { id: string; label: string };
+  display: { summary: string; tags: string[] };
+  workerDirective: string;
+  operatorGoal: string | null;
+  requestedTask: string | null;
+  checklist: Array<{ id: string; text: string; status: string; note: string | null }>;
+  proof: string[];
+  constraints: string[];
+  notes: string[];
+  attachments: { images: string[]; files: string[] };
+  nodes: Array<{
+    id: string;
+    kind: string;
+    parentId: string | null;
+    turnId: string | null;
+    messageId: string | null;
+    createdAt: number;
+    updatedAt: number;
+    summary: string;
+    instruction: string;
+    imageReferenceIds: string[];
+    fileReferenceIds: string[];
+  }>;
+  delivery: { threadId: string; turnId: string | null; messageId: string | null };
+  report: {
+    status: string;
+    summary: string;
+    details: string | null;
+    updatedAt: number;
+    evidence: unknown[];
+  } | null;
+  executionContract: unknown | null;
+}

@@ -21,7 +21,7 @@ import {
 import type { ButlerAgentSessionAccess } from "./butler-agent-tool-access.js";
 import { readButlerAuthStatus } from "./auth-status.js";
 import { getButlerActivityTurns, recordButlerActivityEvent } from "./butler-activity.js";
-import { isPersistableProviderOperatorMessage, removeTrivialOperatorQuestionConfirmations, upsertProviderBackedOperatorMessage } from "./butler-operator-messages.js";
+import { backfillOperatorMessagesFromSessionFiles, isPersistableProviderOperatorMessage, removeTrivialOperatorQuestionConfirmations, upsertProviderBackedOperatorMessage } from "./butler-operator-messages.js";
 import { PiProviderRuntimeMapper } from "./pi-provider-events.js";
 import type {
   AppShellSnapshot,
@@ -669,6 +669,16 @@ export async function promptButlerInternal(
   }
 }
 
+export async function syncOperatorMessagesFromSessionFiles(
+  access: Pick<ButlerAgentSessionAccess, "operatorMessages" | "sessionDir" | "saveOperatorMessageState">
+): Promise<boolean> {
+  const changed = await backfillOperatorMessagesFromSessionFiles(access.operatorMessages, access.sessionDir);
+  if (changed) {
+    await access.saveOperatorMessageState();
+  }
+  return changed;
+}
+
 async function queueButlerPrompt(
   access: ButlerAgentSessionAccess,
   text: string,
@@ -707,6 +717,9 @@ async function queueButlerPrompt(
         return false;
       }
       await runButlerPrompt(access, text, imageReferenceIds);
+      if (!options.background) {
+        await syncOperatorMessagesFromSessionFiles(access);
+      }
       if (!options.background) {
         commitPendingOperatorPrompt(access, options.pendingOperatorMessageId);
       }

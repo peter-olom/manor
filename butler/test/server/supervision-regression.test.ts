@@ -17,7 +17,7 @@ import {
   isCallbackOutstanding,
   selectReviewableProofArtifacts
 } from "../../src/server/butler-agent-helpers.js";
-import { formatDelegationContractText } from "../../src/server/butler-agent-delegation-contract.js";
+import { buildJobPayload } from "../../src/server/job-instruction-artifacts.js";
 import {
   buildSelfImprovementTask,
   classifyManorBlocker,
@@ -299,7 +299,7 @@ test("implementation contracts infer internal depth and category verification ro
   assert.ok(contract.verificationMatrix.some((row) => row.checkKinds.includes("taste_review")));
 });
 
-test("delegation contract serializes the mission planner and critic loop", () => {
+test("job payload preserves the mission planner and critic loop", () => {
   const contract = buildThreadExecutionContract({
     threadId: "thread-loop",
     workspaceCwd: "/workspace",
@@ -310,18 +310,17 @@ test("delegation contract serializes the mission planner and critic loop", () =>
     notes: []
   });
 
-  const text = formatDelegationContractText({
+  const payload = buildJobPayload({
     threadId: contract.threadId,
-    workspace: { cwd: contract.workspaceCwd ?? "/workspace", branchName: contract.branch },
-    project: { id: contract.projectId, label: contract.projectLabel },
+    kind: "delegation",
+    instruction: contract.requestedTask,
     contract,
-    notes: contract.notes,
-    requestedTask: contract.requestedTask
   });
+  const payloadContract = payload.executionContract as CodexThreadExecutionContractView;
 
-  assert.match(text, /planner_step:/);
-  assert.match(text, /critic_check:/);
-  assert.match(text, /operator_question_policy:/);
+  assert.ok((payloadContract.mission?.plannerSteps.length ?? 0) > 0);
+  assert.ok((payloadContract.mission?.criticChecks.length ?? 0) > 0);
+  assert.match(payloadContract.mission?.operatorQuestionPolicy ?? "", /Ask only when a product, taste, priority, permission, or irreversible execution choice/);
 });
 
 test("worker reports attach evidence without accepting checklist points", async () => {
@@ -637,7 +636,7 @@ test("queued rejection follow-ups batch rejected points and clear after flush", 
 
   const instruction = store.buildQueuedRejectionInstruction(contract.threadId);
   assert.ok(instruction);
-  assert.match(instruction, /BUTLER CHECKLIST REJECTION FOLLOW-UP/);
+  assert.match(instruction, /Rejected acceptance points/);
   assert.match(instruction, /Show the acknowledgement event/);
   assert.match(instruction, /Show the callback event/);
 

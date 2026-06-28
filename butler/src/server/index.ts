@@ -470,6 +470,7 @@ registerScratchPadRoutes({
   store,
   codexClient,
   butlerAgent,
+  artifactsDir,
   imageStore,
   fileStore
 });

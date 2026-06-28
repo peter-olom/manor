@@ -219,26 +219,6 @@ function normalizeWorkerReviewResult(raw: unknown): WorkerReviewResultRecordView
   };
 }
 
-export function mergeParsedExecutionContract(
-  existingContract: CodexThreadExecutionContractView | null | undefined,
-  parsedExecutionContract: CodexThreadExecutionContractView
-): CodexThreadExecutionContractView {
-  const existingPanel = existingContract?.reviewPanel ?? parsedExecutionContract.reviewPanel;
-  const mergedContract: CodexThreadExecutionContractView = {
-    ...parsedExecutionContract,
-    ...(parsedExecutionContract.orchestration ? { orchestration: parsedExecutionContract.orchestration } : existingContract?.orchestration ? { orchestration: existingContract.orchestration } : {}),
-    reviewResults: existingContract?.reviewResults ?? parsedExecutionContract.reviewResults ?? [],
-    reviewPanel: normalizeReviewPanel(existingPanel, {
-      taskCategory: parsedExecutionContract.taskCategory,
-      inferredWorkDepth: parsedExecutionContract.inferredWorkDepth,
-      requestedTask: parsedExecutionContract.requestedTask
-    }),
-    reviewPanelSummary: parsedExecutionContract.reviewPanelSummary
-  };
-  mergedContract.reviewPanelSummary = summarizeReviewPanel(mergedContract.reviewPanel);
-  return mergedContract;
-}
-
 export function normalizeExecutionContract(contract: CodexThreadExecutionContractView): CodexThreadExecutionContractView {
   const requestedTask =
     typeof contract.requestedTask === "string" && contract.requestedTask.trim()

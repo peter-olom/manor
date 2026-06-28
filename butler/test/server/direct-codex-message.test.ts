@@ -326,10 +326,10 @@ test("direct Codex transcript backfill keeps operator anchors private", async ()
   await writeFile(
     path.join(sessionDir, `rollout-2026-06-15T10-29-06-${threadId}.jsonl`),
     [
-      JSON.stringify({ timestamp: "2026-06-15T10:29:08.000Z", type: "event_msg", payload: { type: "user_message", message: "MANOR JOB BRIEF hidden" } }),
+      JSON.stringify({ timestamp: "2026-06-15T10:29:08.000Z", type: "event_msg", payload: { type: "user_message", message: "I put the job details in Manor for this thread. Please read them first, do the work, and report back through the harness." } }),
       JSON.stringify({ timestamp: "2026-06-15T13:05:43.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),
       JSON.stringify({ timestamp: "2026-06-15T13:05:43.530Z", type: "event_msg", payload: { type: "user_message", message: "Use this illustration instead" } }),
-      JSON.stringify({ timestamp: "2026-06-15T13:31:42.157Z", type: "event_msg", payload: { type: "user_message", message: "BUTLER CHECKLIST REJECTION FOLLOW-UP hidden" } })
+      JSON.stringify({ timestamp: "2026-06-15T13:31:42.157Z", type: "event_msg", payload: { type: "user_message", message: "I updated the job details in Manor. Please read the latest payload and continue from there." } })
     ].join("\n"),
     "utf8"
   );
@@ -401,7 +401,7 @@ test("direct Codex transcript backfill pairs hidden follow-up callbacks to prior
       JSON.stringify({ timestamp: "2026-06-15T13:00:00.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "operator-turn" } }),
       JSON.stringify({ timestamp: "2026-06-15T13:00:00.500Z", type: "event_msg", payload: { type: "user_message", message: "Fix the visual treatment" } }),
       JSON.stringify({ timestamp: "2026-06-15T13:05:00.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "hidden-follow-up-turn" } }),
-      JSON.stringify({ timestamp: "2026-06-15T13:05:00.500Z", type: "event_msg", payload: { type: "user_message", message: "BUTLER CHECKLIST REJECTION FOLLOW-UP hidden" } })
+      JSON.stringify({ timestamp: "2026-06-15T13:05:00.500Z", type: "event_msg", payload: { type: "user_message", message: "I updated the job details in Manor. Please read the latest payload and continue from there." } })
     ].join("\n"),
     "utf8"
   );

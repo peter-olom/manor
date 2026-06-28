@@ -68,6 +68,14 @@ import { HostControllerClient } from "./host-controller-client.js";
 import { ManorRestartRequestState } from "./manor-restart-state.js";
 import { buildOnboardingView } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
+import {
+  buildJobPayload,
+  formatJobPayloadMessage,
+  jobPayloadsRoot,
+  persistJobPayload,
+  updateJobPayload,
+  type JobPayloadKind
+} from "./job-instruction-artifacts.js";
 import { readJsonStateFile, writeJsonStateFileAtomic } from "./json-state-file.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import type { ButlerRoutingClassifier } from "./butler-routing-classifier.js";
@@ -98,7 +106,8 @@ import type {
   ButlerTraceMetaView,
   CodexThreadExecutionContractView,
   JobMemoryPromotionCandidateView,
-  ModelOption
+  ModelOption,
+  SupervisionChecklistView
 } from "./types.js";
 import { ButlerStateStore } from "./state-store.js";
 import { CodexAppServerClient } from "./codex-client.js";
@@ -162,6 +171,7 @@ export class ButlerAgentService extends EventEmitter {
   private readonly deliveredCloseoutIds = new Set<string>();
   private readonly supervisionSmokePlans = new Map<string, SupervisionSmokePlan>();
   private readonly delegationQuestionRounds = new Map<string, number>();
+  private readonly delegationInstructionCache = new Map<string, { signature: string; text: string; contract: CodexThreadExecutionContractView }>();
   private readonly actedSmokeMilestoneIds = new Set<string>();
   private readonly storeChangeHandler = () => this.handleStoreChange();
   private recentThreadFocus: Array<{ threadId: string; notedAt: number; reason: string | null }> = [];
@@ -881,7 +891,15 @@ export class ButlerAgentService extends EventEmitter {
     }
 
     await this.codexClient.loadThread(threadId);
-    await this.codexClient.sendMessage(threadId, this.imageStore.buildCodexInput(text, []));
+    const thread = this.store.getThread(threadId);
+    const payload = await this.createOrUpdateJobPayload({
+      threadId,
+      kind: "steering",
+      instruction: text,
+      contract: thread?.executionContract ?? null,
+      checklist: thread?.supervisionChecklist ?? null
+    });
+    await this.codexClient.sendMessage(threadId, this.imageStore.buildCodexInput(formatJobPayloadMessage(payload.kind as JobPayloadKind, payload.threadId), []));
     this.store.noteButlerSteer(threadId);
     this.store.addEvent(threadId, "butler.supervision.turn_spent", "Butler spent a private supervision turn on this job.");
   }
@@ -1075,7 +1093,41 @@ export class ButlerAgentService extends EventEmitter {
     extraNotes?: string[];
     orchestration?: ButlerRoutingDecisionView | null;
   }): Promise<{ text: string; contract: CodexThreadExecutionContractView }> {
-    return buildButlerDelegationContract({ store: this.store, ...options });
+    const signature = JSON.stringify(options);
+    const cached = this.delegationInstructionCache.get(options.threadId);
+    if (cached?.signature === signature) {
+      return { text: cached.text, contract: cached.contract };
+    }
+    const result = await buildButlerDelegationContract({ store: this.store, ...options });
+    await persistJobPayload(jobPayloadsRoot(this.artifactsDir), result.payload);
+    this.store.setThreadJobPayload(result.payload);
+    const cachedResult = { signature, text: result.text, contract: result.contract };
+    this.delegationInstructionCache.set(options.threadId, cachedResult);
+    return { text: cachedResult.text, contract: cachedResult.contract };
+  }
+
+  private async createOrUpdateJobPayload(input: {
+    threadId: string;
+    kind: JobPayloadKind;
+    instruction: string;
+    imageReferenceIds?: string[];
+    fileReferenceIds?: string[];
+    contract?: CodexThreadExecutionContractView | null;
+    checklist?: SupervisionChecklistView | null;
+  }) {
+    const thread = this.store.getThread(input.threadId);
+    const existing = this.store.getThreadJobPayload(input.threadId);
+    const update = {
+      ...input,
+      contract: input.contract ?? thread?.executionContract ?? null,
+      checklist: input.checklist ?? thread?.supervisionChecklist ?? null
+    };
+    const payload = existing
+      ? updateJobPayload(existing, update)
+      : buildJobPayload(update);
+    await persistJobPayload(jobPayloadsRoot(this.artifactsDir), payload);
+    this.store.setThreadJobPayload(payload);
+    return payload;
   }
 
   private getServiceTemplate(templateId: string): LoadedServiceTemplate {

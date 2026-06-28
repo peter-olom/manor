@@ -116,7 +116,7 @@ export function buildQueuedRejectionInstruction(checklist: SupervisionChecklistV
   }
 
   return [
-    "BUTLER CHECKLIST REJECTION FOLLOW-UP",
+    "Rejected acceptance points",
     "Fix the rejected acceptance points below, then submit one supervisor report with evidence for each point.",
     ...rejected.map((item, index) => `${index + 1}. ${item.text}\nRequired next step: ${item.queuedInstruction}`)
   ].join("\n\n");

@@ -23,6 +23,7 @@ import { MemoryDashboard } from "./MemoryDashboard";
 import { TerminalPane } from "./TerminalPane";
 import { useEventStream } from "./useEventStream";
 import { WorkerPane } from "./WorkerPane";
+import type { WorkerItem, WorkerJobPayload, WorkerTimeline, WorkerTurnGroup } from "./WorkerPane";
 
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
 import type {
@@ -42,27 +43,20 @@ import {
   type TerminalTarget
 } from "../shared/terminal";
 
-type WorkerItem = {
-  id: string;
-  type: string;
-  status: string;
-  text: string;
-  at: number;
-};
-
-type WorkerTurn = {
-  id: string;
-  status: string;
-  items: WorkerItem[];
-};
-
 type WorkerThread = {
   id: string;
   status: string;
   preview?: string;
   supervisor?: { latestAgentReply?: string | null; summary?: string | null };
-  turns?: WorkerTurn[];
+  turns?: {
+    id: string;
+    status: string;
+    startedAt?: number;
+    completedAt?: number | null;
+    items: WorkerItem[];
+  }[];
   workerReport?: { status: string; summary: string; details: string | null; updatedAt: number } | null;
+  jobPayload?: WorkerJobPayload | null;
 };
 
 const PAGE_SIZE = 120;
@@ -135,21 +129,43 @@ function statusLabel(status: PairStatus | null | undefined): string {
   }
 }
 
-function flattenWorker(thread: WorkerThread | null): WorkerItem[] {
-  if (!thread) return [];
-  const turnItems = (thread.turns ?? []).flatMap((turn) =>
-    (turn.items ?? []).map((item) => ({ ...item, id: `${turn.id}:${item.id}`, status: item.status || turn.status }))
-  );
-  if (thread.workerReport) {
-    turnItems.push({
-      id: `report:${thread.workerReport.updatedAt}`,
-      type: "worker_report",
-      status: thread.workerReport.status,
-      text: `${thread.workerReport.summary}${thread.workerReport.details ? `\n\n${thread.workerReport.details}` : ""}`,
-      at: thread.workerReport.updatedAt
-    });
-  }
-  return turnItems.filter((item) => item.text?.trim()).sort((left, right) => left.at - right.at);
+function shapeWorkerTimeline(thread: WorkerThread | null): WorkerTimeline {
+  if (!thread) return { turns: [], report: null, payload: null, fallback: [] };
+  const turns: WorkerTurnGroup[] = (thread.turns ?? [])
+    .map((turn) => {
+      const items = (turn.items ?? [])
+        .map((item) => ({ ...item, id: `${turn.id}:${item.id}`, status: item.status || turn.status }))
+        .filter((item) => item.text?.trim());
+      items.sort((left, right) => left.at - right.at);
+      const completedAt = turn.completedAt ?? null;
+      let finalIndex: number | null = null;
+      if (completedAt !== null) {
+        for (let i = items.length - 1; i >= 0; i -= 1) {
+          if (items[i]?.type === "agentMessage" || items[i]?.type === "assistant_message") {
+            finalIndex = i;
+            break;
+          }
+        }
+      }
+      return {
+        id: turn.id,
+        status: turn.status,
+        startedAt: turn.startedAt ?? items[0]?.at ?? 0,
+        completedAt,
+        items,
+        finalIndex
+      };
+    })
+    .filter((turn) => turn.items.length > 0 || turn.completedAt === null);
+  const report = thread.workerReport
+    ? {
+        status: thread.workerReport.status,
+        summary: thread.workerReport.summary,
+        details: thread.workerReport.details,
+        updatedAt: thread.workerReport.updatedAt
+      }
+    : null;
+  return { turns, report, payload: thread.jobPayload ?? null, fallback: [] };
 }
 
 function Sidebar({
@@ -513,26 +529,31 @@ export function PairShell() {
     return () => window.clearInterval(interval);
   }, [loadWorker, pair?.id, pair?.worker?.threadId, viewMode]);
 
-  const workerRows = useMemo<WorkerItem[]>(() => {
-    if (!pair?.worker) return [];
-    const rows = flattenWorker(workerThread);
-    if (rows.length > 0) return rows;
-    return [
-      {
-        id: `task:${pair.worker.threadId}`,
-        type: "assigned_task",
-        status: pair.worker.status,
-        text: pair.worker.task,
-        at: pair.worker.startedAt
-      },
-      {
-        id: `handoff:${pair.worker.threadId}`,
-        type: "handoff_prompt",
-        status: pair.worker.status,
-        text: pair.worker.handoffPrompt,
-        at: pair.worker.startedAt
-      }
-    ];
+  const workerTimeline = useMemo<WorkerTimeline>(() => {
+    if (!pair?.worker) return { turns: [], report: null, payload: null, fallback: [] };
+    const timeline = shapeWorkerTimeline(workerThread);
+    if (timeline.turns.length > 0 || timeline.report) return timeline;
+    return {
+      turns: [],
+      report: null,
+      payload: null,
+      fallback: [
+        {
+          id: `task:${pair.worker.threadId}`,
+          type: "assigned_task",
+          status: pair.worker.status,
+          text: pair.worker.task,
+          at: pair.worker.startedAt
+        },
+        {
+          id: `handoff:${pair.worker.threadId}`,
+          type: "handoff_prompt",
+          status: pair.worker.status,
+          text: pair.worker.handoffPrompt,
+          at: pair.worker.startedAt
+        }
+      ]
+    };
   }, [pair?.worker, workerThread]);
 
   async function createPair() {
@@ -710,7 +731,7 @@ export function PairShell() {
                 {workerVisible ? (
                   <WorkerPane
                     pair={pair}
-                    rows={workerRows}
+                    timeline={workerTimeline}
                     onCodexEffortChange={(effort) => void onCodexEffortChange(effort)}
                   />
                 ) : null}

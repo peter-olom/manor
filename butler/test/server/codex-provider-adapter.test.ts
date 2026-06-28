@@ -90,7 +90,11 @@ test("Codex provider adapter owns thread and turn operations", async () => {
   assert.deepEqual(calls.map((call) => call.method), ["thread/start", "turn/start", "turn/steer", "turn/interrupt"]);
   assert.deepEqual(calls[2]?.params, {
     threadId: "thread-1",
-    expectedTurnId: "turn-1",
+    turnId: "turn-1",
     input: [{ type: "text", text: "more" }]
+  });
+  assert.deepEqual(calls[3]?.params, {
+    threadId: "thread-1",
+    turnId: "turn-1"
   });
 });

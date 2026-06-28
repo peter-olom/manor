@@ -9,6 +9,7 @@ import {
   shouldAllowLocalThreadFallback
 } from "./butler-agent-helpers.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import { formatJobPayloadMessage } from "./job-instruction-artifacts.js";
 import {
   buildSelfImprovementTask,
   classifyManorBlocker,
@@ -518,7 +519,12 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           };
         }
         await access.codexClient.loadThread(typedParams.threadId);
-        await access.codexClient.sendMessage(typedParams.threadId, text);
+        const payload = await access.createOrUpdateJobPayload({
+          threadId: typedParams.threadId,
+          kind: "rejection_followup",
+          instruction: text
+        });
+        await access.codexClient.sendMessage(typedParams.threadId, formatJobPayloadMessage("rejection_followup", typedParams.threadId));
         access.store.clearQueuedRejectionInstructions(typedParams.threadId);
         access.registerPendingChatCallback(typedParams.threadId, {
           privateSteerText: text,
@@ -529,6 +535,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         return {
           content: [{ type: "text", text: `Sent queued rejected acceptance points to job ${typedParams.threadId}.` }],
           details: {
+            payload,
             supervision,
             checklist: access.store.getSupervisionChecklist(typedParams.threadId)
           }
@@ -565,12 +572,17 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         if (thread.status !== "active") {
           throw new Error(`Job ${typedParams.threadId} is not active. Answer directly or use message_job if the worker needs a new turn.`);
         }
+        const payload = await access.createOrUpdateJobPayload({
+          threadId: typedParams.threadId,
+          kind: "held_context",
+          instruction: typedParams.text
+        });
         access.registerPendingChatCallback(typedParams.threadId, { nextWorkerReportAction: "review" });
         access.noteThreadFocus(typedParams.threadId, "hold_job_context");
         access.store.addEvent(typedParams.threadId, "butler.context.held", typedParams.text.trim());
         return {
           content: [{ type: "text", text: `Held newer operator context for job ${typedParams.threadId}. Butler will apply it during the next review.` }],
-          details: { thread: access.store.getThread(typedParams.threadId) ?? null }
+          details: { payload, thread: access.store.getThread(typedParams.threadId) ?? null }
         };
       }
     }),
@@ -636,10 +648,17 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         const refreshedChecklist = typedParams.refreshChecklist
           ? access.store.refreshCompletedSupervisionChecklistForFollowup(typedParams.threadId, typedParams.text)
           : null;
+        const payload = await access.createOrUpdateJobPayload({
+          threadId: typedParams.threadId,
+          kind: "steering",
+          instruction: typedParams.text,
+          imageReferenceIds: typedParams.imageReferenceIds ?? [],
+          fileReferenceIds: typedParams.fileReferenceIds ?? []
+        });
         await access.codexClient.sendMessage(
           typedParams.threadId,
           buildCodexInputWithReferences({
-            text: `BUTLER FOLLOW-UP\nApply this within the existing job context.\n\n${typedParams.text}`,
+            text: formatJobPayloadMessage("steering", payload.threadId),
             imageStore: access.imageStore,
             imageReferenceIds: typedParams.imageReferenceIds ?? [],
             fileStore: access.fileStore,
@@ -662,6 +681,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           ],
           details: {
             checklist: refreshedChecklist,
+              payload,
             supervision,
             thread: access.store.getThread(typedParams.threadId) ?? null
           }

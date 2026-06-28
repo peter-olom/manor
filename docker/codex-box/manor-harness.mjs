@@ -14,6 +14,8 @@ function printHelp() {
   manor-harness [--thread <jobId>] status
   manor-harness [--thread <jobId>] report --status completed|blocked --summary "<text>" [--details "<text>"] [--turn-id <id>] [--claims-json '<json>'] [--claims-file <path>] [--evidence-json '<json>' ...] [--evidence "<pointId>|<kind>|<summary>" ...]
   manor-harness [--thread <jobId>] assist --summary "<text>" [--details "<text>"] [--question "<text>"]
+  manor-harness [--thread <jobId>] payload current
+  manor-harness [--thread <jobId>] payload update [--status completed|blocked] [--summary "<text>"] [--details "<text>"] [--evidence-json '<json>' ...]
   manor-harness [--thread <jobId>] memory [--provenance]
   manor-harness [--thread <jobId>] memory project [--provenance]
   manor-harness [--thread <jobId>] memory search --query "<text>" [--limit <n>] [--job] [--global] [--provenance]
@@ -145,7 +147,11 @@ function matchCapability(capabilities, cwd, explicitThreadId) {
   });
 
   if (matches.length > 0) {
-    return matches.sort((left, right) => String(right.cwd).length - String(left.cwd).length)[0] ?? null;
+    return matches.sort((left, right) => {
+      const cwdDelta = String(right.cwd).length - String(left.cwd).length;
+      if (cwdDelta !== 0) return cwdDelta;
+      return Number(right.updatedAt ?? 0) - Number(left.updatedAt ?? 0);
+    })[0] ?? null;
   }
 
   const currentProjectId = resolveWorkspaceProjectId(normalizedCwd);
@@ -482,6 +488,10 @@ async function main() {
     return;
   }
 
+  if (args[0] === "payload" && !explicitThreadId) {
+    throw new Error("Payload actions require an explicit job binding. Use `manor-harness --thread <jobId> payload ...` or set MANOR_THREAD_ID.");
+  }
+
   const capabilities = await loadCapabilities();
   const capability =
     matchCapability(capabilities, process.cwd(), explicitThreadId) ??
@@ -513,6 +523,19 @@ async function main() {
       details: readFlag(args, "--details"),
       question: readFlag(args, "--question")
     };
+  } else if (args[0] === "payload") {
+    const subcommand = args[1];
+    if (subcommand === "current") {
+      action = "payload.current";
+    } else if (subcommand === "update") {
+      action = "payload.update";
+      params = {
+        status: readFlag(args, "--status"),
+        summary: readFlag(args, "--summary"),
+        details: readFlag(args, "--details"),
+        evidence: parseReportEvidence(args)
+      };
+    }
   } else if (args[0] === "memory") {
     const subcommand = args[1]?.startsWith("--") ? "" : args[1];
     if (!subcommand) {

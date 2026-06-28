@@ -167,6 +167,42 @@ test("manor-harness preserves service exec cwd as an in-container path", async (
   assert.equal(serviceAbsoluteExec.params?.cwd, "/data");
 });
 
+test("manor-harness forwards payload current requests", async () => {
+  const request = await captureHarnessAction(["--thread", "thread-1", "payload", "current"]);
+  assert.equal(request.action, "payload.current");
+});
+
+test("manor-harness requires explicit thread binding for payload requests", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-harness-payload-binding-test-"));
+  const cwd = path.join(root, "workspace");
+  const codexHome = path.join(root, "codex-home");
+  await mkdir(path.join(codexHome, "manor"), { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(codexHome, "manor", "harness-capabilities.json"),
+    `${JSON.stringify({
+      capabilities: [
+        { id: "capability-1", token: "token-1", threadId: "thread-1", cwd, createdAt: 1, updatedAt: 1 }
+      ]
+    })}\n`,
+    "utf8"
+  );
+
+  const result = await new Promise<{ status: number | null; stderr: string }>((resolve, reject) => {
+    const child = spawn(process.execPath, [harnessPath.pathname, "payload", "current"], {
+      cwd,
+      env: { ...process.env, CODEX_HOME: codexHome, MANOR_BUTLER_BASE_URL: "http://127.0.0.1:1" },
+      stdio: ["ignore", "ignore", "pipe"]
+    });
+    const stderr: Buffer[] = [];
+    child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+    child.on("error", reject);
+    child.on("close", (status) => resolve({ status, stderr: Buffer.concat(stderr).toString("utf8") }));
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Payload actions require an explicit job binding/);
+});
+
 test("manor-harness diagnoses missing bindings with Butler and broker health", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "manor-harness-health-test-"));
   const codexHome = path.join(root, "codex-home");

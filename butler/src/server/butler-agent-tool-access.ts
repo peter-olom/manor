@@ -8,6 +8,8 @@ import type { ImageReferenceStore } from "./image-store.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-templates.js";
 import type { ButlerStateStore } from "./state-store.js";
+import type { JobPayloadView } from "./job-payload-types.js";
+import type { JobPayloadKind } from "./job-instruction-artifacts.js";
 import type {
   AppSnapshot,
   ButlerActivityTurnView,
@@ -176,6 +178,13 @@ export type ButlerAgentToolAccess = {
     extraNotes?: string[];
     orchestration?: ButlerRoutingDecisionView | null;
   }): Promise<{ text: string; contract: CodexThreadExecutionContractView }>;
+  createOrUpdateJobPayload(input: {
+    threadId: string;
+    kind: JobPayloadKind;
+    instruction: string;
+    imageReferenceIds?: string[];
+    fileReferenceIds?: string[];
+  }): Promise<JobPayloadView>;
   queueDelegationAcknowledgement(threadId: string, text: string): void;
   registerPendingChatCallback(
     threadId: string,

@@ -14,7 +14,6 @@ export type {
   WorkerReviewSeverity,
   WorkerSubAgentSummaryView
 } from "./orchestration-types.js";
-
 export type CodexThreadStatus = "active" | "idle" | "unknown";
 export type CodexProofExpectation = "none" | "requested";
 export type CodexInferredWorkDepth = "quick" | "standard" | "deep" | "incident";
@@ -1110,6 +1109,7 @@ export interface CodexThreadSummary {
   supervisor: CodexThreadSupervisorView;
   executionContract: CodexThreadExecutionContractView | null;
   supervisionChecklist: SupervisionChecklistView | null;
+  jobPayload?: import("./job-payload-types.js").JobPayloadView | null;
   jobMemory: JobMemoryView | null;
 }
 

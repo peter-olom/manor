@@ -5,7 +5,6 @@ import path from "node:path";
 import test from "node:test";
 
 import { getOperatorCloseoutBlocker } from "../../src/server/butler-closeout-gate.js";
-import { formatDelegationContractText } from "../../src/server/butler-agent-delegation-contract.js";
 import { buildButlerDelegationTools } from "../../src/server/butler-agent-stack-preview-tools.js";
 import { normalizeWorkerClaimsReport } from "../../src/server/butler-orchestration.js";
 import { ButlerRoutingClassifier } from "../../src/server/butler-routing-classifier.js";
@@ -463,21 +462,12 @@ test("thread summary refresh preserves orchestration and review results", async 
     updatedAt: 1
   };
   store.recordWorkerReviewResults(contract.threadId, [review]);
-  const currentContract = store.getThread(contract.threadId)!.executionContract!;
-  const preview = formatDelegationContractText({
-    threadId: contract.threadId,
-    workspace: { cwd: contract.workspaceCwd, branchName: contract.branch },
-    project: { id: contract.projectId, label: contract.projectLabel },
-    contract: currentContract,
-    notes: currentContract.notes,
-    requestedTask: currentContract.requestedTask
-  });
 
   store.upsertThreadSummary({
     id: contract.threadId,
     status: "idle",
     cwd: contract.workspaceCwd,
-    preview
+    preview: "Updated thread preview"
   });
 
   const refreshed = store.getThread(contract.threadId)?.executionContract;

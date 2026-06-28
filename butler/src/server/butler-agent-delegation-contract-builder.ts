@@ -1,8 +1,9 @@
 import { promises as fs } from "node:fs";
 
 import { extractWorkspaceMentions } from "./butler-agent-helpers.js";
-import { formatDelegationContractText } from "./butler-agent-delegation-contract.js";
 import { findDurableOperatorTasteNotes } from "./butler-agent-operator-question.js";
+import { buildJobPayload, formatJobPayloadMessage } from "./job-instruction-artifacts.js";
+import type { JobPayloadView } from "./job-payload-types.js";
 import { formatProjectPolicyContextLines } from "./project-artifacts-policies.js";
 import { resolveExistingWorkspaceCwd, resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import type { ButlerStateStore } from "./state-store.js";
@@ -17,7 +18,7 @@ export async function buildButlerDelegationContract(options: {
   workspace: { cwd: string; branchName: string | null };
   extraNotes?: string[];
   orchestration?: ButlerRoutingDecisionView | null;
-}): Promise<{ text: string; contract: CodexThreadExecutionContractView }> {
+}): Promise<{ text: string; contract: CodexThreadExecutionContractView; payload: JobPayloadView }> {
   const requestedTask = options.goal ? `${options.task}\n\nGoal: ${options.goal}` : options.task;
   const requestedTaskOnly = options.task.trim();
   const operatorGoal = options.goal?.trim() ? options.goal.trim() : null;
@@ -62,8 +63,11 @@ export async function buildButlerDelegationContract(options: {
     ...(options.orchestration ? { orchestration: options.orchestration, reviewResults: [] } : {}),
     notes: [...new Set(notes.map((note) => note.trim()).filter(Boolean))]
   };
-  return {
-    text: formatDelegationContractText({ threadId: options.threadId, workspace: options.workspace, project, contract, notes, requestedTask }),
+  const payload = buildJobPayload({
+    threadId: options.threadId,
+    kind: "delegation",
+    instruction: requestedTask,
     contract
-  };
+  });
+  return { text: formatJobPayloadMessage("delegation", options.threadId), contract, payload };
 }

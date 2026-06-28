@@ -18,7 +18,9 @@ import { formatHarnessExecutionContract, formatHarnessRuntimeModel } from "./cod
 import { normalizeReportEvidence, normalizeWorkerClaimsReport, validateCompletedWorkerEvidence } from "./codex-harness-report-validation.js";
 import { handleHarnessDesktopAction } from "./codex-harness-desktop.js";
 import { formatHarnessJobMemory, formatHarnessProjectMemory, handleHarnessMemoryAction } from "./codex-harness-memory.js";
+import { handleHarnessPayloadAction } from "./codex-harness-instructions.js";
 import { handleHarnessProofAction } from "./codex-harness-proof.js";
+import { updatePayloadFromAssist, updatePayloadFromWorkerReport } from "./codex-harness-payload.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
 import type { CodexWorkerReviewService } from "./worker-codex-review.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
@@ -490,6 +492,14 @@ export class CodexHarnessService {
       resolveWorkspaceProject: () => this.resolveWorkspaceProject(capability.cwd, thread)
     });
     if (proofResult) return proofResult;
+    const payloadResult = await handleHarnessPayloadAction({
+      action,
+      params,
+      threadId: capability.threadId,
+      artifactsDir: this.artifactsDir,
+      store: this.store
+    });
+    if (payloadResult) return payloadResult;
     if (action === "report") {
       const status = normalizeString(params.status);
       const summary = normalizeString(params.summary);
@@ -502,6 +512,7 @@ export class CodexHarnessService {
       }
       await this.validateWorkerReport(capability, { status, summary, details, evidence, claims });
       const report = this.store.recordWorkerReport(capability.threadId, { status, summary, details, turnId, evidence, claims });
+      await updatePayloadFromWorkerReport({ artifactsDir: this.artifactsDir, store: this.store, report });
       this.store.addEvent(capability.threadId, `harness/report/${status}`, summary);
       this.memoryScheduler?.observeWorkerReport(report);
       this.memoryReview?.reviewWorkerReportAsync(report);
@@ -596,9 +607,11 @@ export class CodexHarnessService {
       if (details) {
         responseLines.push(`Worker details: ${details}`);
       }
+      const text = responseLines.join("\n");
+      await updatePayloadFromAssist({ artifactsDir: this.artifactsDir, store: this.store, thread, summary, text });
       this.store.addEvent(capability.threadId, "harness/assist/request", summary);
       return {
-        text: responseLines.join("\n"),
+        text,
         data: {
           summary,
           details,

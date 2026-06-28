@@ -2,6 +2,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { extractOperatorCallbackThreadId, normalizeOperatorMessages, upsertOperatorMessage } from "./butler-operator-messages.js";
+import type { JobPayloadKind } from "./job-instruction-artifacts.js";
+import type { JobPayloadView } from "./job-payload-types.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { ButlerMessageView, ButlerNextWorkerReportAction } from "./types.js";
 
@@ -18,6 +20,13 @@ export type DirectCodexMessageAccess = {
     threadId: string,
     options?: { privateSteerText?: string | null; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null }
   ): void;
+  createOrUpdateJobPayload?(input: {
+    threadId: string;
+    kind: JobPayloadKind;
+    instruction: string;
+    imageReferenceIds?: string[];
+    fileReferenceIds?: string[];
+  }): Promise<JobPayloadView>;
   noteThreadFocus(threadId: string, reason?: string): void;
   saveCallbackState(): Promise<void>;
   emit(event: "change"): boolean;
@@ -50,16 +59,21 @@ function directCodexMessageText(record: Record<string, unknown>): string | null 
   }
 
   const text = payload.message.trim();
-  if (
-    !text ||
-    text.startsWith("MANOR JOB BRIEF") ||
-    text.startsWith("BUTLER FOLLOW-UP") ||
-    text.startsWith("BUTLER CHECKLIST REJECTION FOLLOW-UP")
-  ) {
+  if (!text || isInternalButlerWorkerPrompt(text)) {
     return null;
   }
 
   return text;
+}
+
+function isInternalButlerWorkerPrompt(text: string): boolean {
+  return [
+    "I put the job details in Manor for this thread.",
+    "I saved new context for this job.",
+    "I updated the job details with the checklist items",
+    "I added Manor guidance for this job.",
+    "I updated the job details in Manor."
+  ].some((prefix) => text.startsWith(prefix));
 }
 
 async function listCodexSessionFiles(root: string): Promise<string[]> {
@@ -261,6 +275,13 @@ export async function notifyDirectCodexMessage(
 
   const privateSteerText = buildDirectCodexMessagePingSummary(input);
   const requestedAt = Date.now();
+  await access.createOrUpdateJobPayload?.({
+    threadId: input.threadId,
+    kind: "direct_message",
+    instruction: privateSteerText,
+    imageReferenceIds: input.imageReferenceIds,
+    fileReferenceIds: input.fileReferenceIds
+  });
   access.store.refreshCompletedSupervisionChecklistForFollowup(input.threadId, privateSteerText);
   access.registerPendingChatCallback(input.threadId, {
     privateSteerText,
