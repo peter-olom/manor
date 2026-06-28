@@ -10,45 +10,9 @@ import { CodexAppServerTransport, type JsonRpcMessage } from "./codex-app-server
 import { CodexProviderAdapter } from "./codex-provider-adapter.js";
 import { ProviderRuntimeIngestion } from "./provider-runtime-ingestion.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
-import type { CodexThreadPatchView, ModelOption, ReasoningEffort, RuntimeCleanupTaskView } from "./types.js";
+import type { ThreadDeleteContext, ComposerSuggestion, FsDirectoryEntry } from "./codex-client-types.js";
+import type { CodexThreadPatchView, ModelOption, ReasoningEffort } from "./types.js";
 import type { ProviderRuntimeEvent, ProviderRuntimeLivePatch } from "../shared/provider-runtime.js";
-
-type ThreadDeleteContext = {
-  threadId: string;
-  cwd: string | null;
-  threadCreatedAt: number | null;
-  stacks: RuntimeCleanupTaskView["stacks"];
-  previews: RuntimeCleanupTaskView["previews"];
-  services: RuntimeCleanupTaskView["services"];
-  proofArtifactPaths?: string[];
-};
-
-export type ComposerSuggestionInputItem =
-  | {
-      type: "skill";
-      name: string;
-      path: string;
-    }
-  | {
-      type: "mention";
-      name?: string;
-      path: string;
-    };
-
-export type ComposerSuggestion = {
-  id: string;
-  kind: "file" | "directory" | "skill" | "app" | "plugin" | "agent";
-  label: string;
-  detail: string | null;
-  insertText: string;
-  inputItem?: ComposerSuggestionInputItem;
-};
-
-type FsDirectoryEntry = {
-  fileName: string;
-  isDirectory: boolean;
-  isFile: boolean;
-};
 
 const COMPOSER_FILE_EXCLUDED_NAMES = new Set([
   ".git",

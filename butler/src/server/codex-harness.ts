@@ -16,6 +16,7 @@ import {
 } from "./codex-harness-helpers.js";
 import { formatHarnessExecutionContract, formatHarnessRuntimeModel } from "./codex-harness-format.js";
 import { normalizeReportEvidence, validateCompletedWorkerEvidence } from "./codex-harness-report-validation.js";
+import { buildHarnessCurrentPayload } from "./codex-harness-payload.js";
 import { handleHarnessDesktopAction } from "./codex-harness-desktop.js";
 import { formatHarnessJobMemory, formatHarnessProjectMemory, handleHarnessMemoryAction } from "./codex-harness-memory.js";
 import { handleHarnessProofAction } from "./codex-harness-proof.js";
@@ -39,11 +40,7 @@ import { ButlerStateStore } from "./state-store.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
-import {
-  applyWorkspacePreviewDefaults,
-  formatWorkspaceBootstrapLines,
-  inspectWorkspaceBootstrap
-} from "./workspace-bootstrap.js";
+import { applyWorkspacePreviewDefaults, formatWorkspaceBootstrapLines, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 import type { CodexThreadRecord, CodexWorkerEvidenceView, PreviewLeaseView, PreviewVerificationView } from "./types.js";
 function mentionsNativeDesktopTarget(thread: CodexThreadRecord): boolean {
   const contract = thread.executionContract;
@@ -439,6 +436,10 @@ export class CodexHarnessService {
     const thread = this.getThreadContext(capability);
     if (action === "context" || action.startsWith("stack.") || action.startsWith("preview.") || action.startsWith("service.") || action.startsWith("assist.")) {
       await this.maybeAdoptWorkspaceStack(capability);
+    }
+    if (action === "payload.current") {
+      const payload = buildHarnessCurrentPayload({ capability, thread, project: this.resolveWorkspaceProject(capability.cwd, thread), jobMemory: this.store.getJobMemory(thread.id), report: thread.workerReport });
+      return { text: JSON.stringify(payload, null, 2), data: { payload } };
     }
     if (action === "context") {
       const project = this.resolveWorkspaceProject(capability.cwd, thread);

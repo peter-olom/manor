@@ -18,6 +18,7 @@ import {
   selectReviewableProofArtifacts
 } from "../../src/server/butler-agent-helpers.js";
 import { formatDelegationContractText } from "../../src/server/butler-agent-delegation-contract.js";
+import { buildHarnessCurrentPayload } from "../../src/server/codex-harness-payload.js";
 import {
   buildSelfImprovementTask,
   classifyManorBlocker,
@@ -245,6 +246,68 @@ test("execution contracts create a pending checklist with every acceptance point
   assert.deepEqual(checklist.items.map((item) => item.status), ["pending", "pending", "pending"]);
 });
 
+test("harness current payload is bound to the selected thread contract", async () => {
+  const store = await createStore();
+  const staleContract = makeContract({
+    threadId: "thread-stale",
+    workspaceCwd: "/workspace/shared",
+    requestedTask: "Tiny payload smoke test; do not run repo commands.",
+    operatorGoal: "Smoke test only.",
+    acceptancePoints: ["Do not touch the repo"]
+  });
+  const currentContract = makeContract({
+    threadId: "thread-current",
+    workspaceCwd: "/workspace/shared",
+    requestedTask: "Review /repos/flashcard-runner as a 2D flashcard game.",
+    operatorGoal: "Review the flashcard game implementation.",
+    acceptancePoints: ["Inspect the game", "Report findings"]
+  });
+
+  for (const contract of [staleContract, currentContract]) {
+    store.upsertThreadSummary({
+      id: contract.threadId,
+      status: "active",
+      cwd: contract.workspaceCwd,
+      supervisor: {
+        projectId: contract.projectId,
+        projectLabel: contract.projectLabel,
+        summary: contract.requestedTask,
+        latestUserPrompt: contract.requestedTask,
+        latestAgentReply: null,
+        blocked: false
+      },
+      turns: [{ id: `${contract.threadId}-turn`, status: "completed", items: [] }]
+    });
+    store.setThreadExecutionContract(contract.threadId, contract);
+  }
+
+  const currentThread = store.getThread(currentContract.threadId);
+  assert.ok(currentThread);
+
+  const payload = buildHarnessCurrentPayload({
+    capability: {
+      id: "cap-current",
+      token: "token-current",
+      threadId: currentContract.threadId,
+      cwd: currentContract.workspaceCwd,
+      createdAt: 1,
+      updatedAt: 1
+    },
+    thread: currentThread,
+    project: { id: currentContract.projectId, label: currentContract.projectLabel },
+    jobMemory: store.getJobMemory(currentContract.threadId)
+  });
+
+  assert.equal(payload.threadId, currentContract.threadId);
+  assert.equal(payload.requestedTask, currentContract.requestedTask);
+  assert.equal((payload.executionContract as typeof currentContract).threadId, currentContract.threadId);
+  assert.deepEqual(
+    (payload.checklist as Array<{ text: string }>).map((item) => item.text),
+    currentContract.acceptancePoints
+  );
+  assert.doesNotMatch(JSON.stringify(payload), /Tiny payload smoke test/);
+});
+
 test("job detail output stays bounded for large loaded transcripts", async () => {
   const store = await createStore();
   const bigText = "large transcript chunk ".repeat(500);
@@ -322,6 +385,7 @@ test("delegation contract serializes the mission planner and critic loop", () =>
   assert.match(text, /planner_step:/);
   assert.match(text, /critic_check:/);
   assert.match(text, /operator_question_policy:/);
+
 });
 
 test("worker reports attach evidence without accepting checklist points", async () => {
