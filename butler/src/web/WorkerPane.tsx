@@ -1,6 +1,7 @@
 import { memo, useMemo, useState } from "react";
 
 import { BudgetSegmented } from "./BudgetSegmented";
+import { ImagePreviewModal, type PreviewMedia } from "./ImagePreviewModal";
 import { useAnchoredScroll } from "./useAnchoredScroll";
 import { JumpToLatest } from "./JumpToLatest";
 import { Markdown } from "./Markdown";
@@ -11,6 +12,7 @@ import {
 
 import type { PairDetail } from "../shared/pairing";
 import { DEFAULT_THINKING_LEVELS } from "../shared/pairing";
+import type { FileReference } from "./api";
 
 export type WorkerItem = {
   id: string;
@@ -131,6 +133,7 @@ type WorkerPaneProps = {
   timeline: WorkerTimeline;
   proofRecords: WorkerProofRecord[];
   onCodexEffortChange: (effort: string) => void;
+  onAttachAnnotatedProof: (payload: { attachment: FileReference; text: string }) => Promise<void>;
 };
 
 function formatTime(value: number | null | undefined): string {
@@ -409,7 +412,13 @@ function proofArtifactLabel(artifact: WorkerProofArtifact): string {
   return artifact.label || artifact.fileName || artifact.kind;
 }
 
-const WorkerProofBundleList = memo(function WorkerProofBundleList({ proofs }: { proofs: WorkerProofRecord[] }) {
+const WorkerProofBundleList = memo(function WorkerProofBundleList({
+  proofs,
+  onPreviewImage
+}: {
+  proofs: WorkerProofRecord[];
+  onPreviewImage: (media: PreviewMedia) => void;
+}) {
   if (proofs.length === 0) return null;
   const visibleProofs = proofs.slice(0, 4);
   return (
@@ -435,9 +444,21 @@ const WorkerProofBundleList = memo(function WorkerProofBundleList({ proofs }: { 
               {screenshots.length > 0 ? (
                 <div className="worker-proof-shots">
                   {screenshots.map((artifact) => (
-                    <a key={`${proof.id}:${artifact.fileName}`} href={artifact.url ?? undefined} target="_blank" rel="noreferrer" title={proofArtifactLabel(artifact)}>
+                    <button
+                      key={`${proof.id}:${artifact.fileName}`}
+                      type="button"
+                      title={proofArtifactLabel(artifact)}
+                      onClick={() =>
+                        onPreviewImage({
+                          name: artifact.fileName || artifact.label || "Proof screenshot",
+                          url: artifact.url ?? "",
+                          kind: "image",
+                          downloadUrl: artifact.downloadUrl ?? artifact.url
+                        })
+                      }
+                    >
                       <img src={artifact.url ?? undefined} alt={proofArtifactLabel(artifact)} />
-                    </a>
+                    </button>
                   ))}
                 </div>
               ) : null}
@@ -557,9 +578,10 @@ type WorkerCompletedTurnProps = {
   payload: WorkerJobPayload | null;
   checklist: WorkerChecklistItem[] | null;
   proofs: WorkerProofRecord[];
+  onPreviewImage: (media: PreviewMedia) => void;
 };
 
-const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, payload, checklist, proofs }: WorkerCompletedTurnProps) {
+const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, payload, checklist, proofs, onPreviewImage }: WorkerCompletedTurnProps) {
   const sorted = useMemo(() => [...turn.items].sort((a, b) => a.at - b.at), [turn.items]);
   const finalIndex = turn.finalIndex;
   const finalItem = finalIndex !== null ? sorted[finalIndex] ?? null : null;
@@ -593,7 +615,7 @@ const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, pay
         </details>
       ) : null}
       {finalItem ? <WorkerMessageRow key={finalItem.id} item={finalItem} payload={payloadForMessage(payload, finalItem, turn.id)} checklist={checklist} /> : null}
-      {finalItem ? <WorkerProofBundleList proofs={proofs} /> : null}
+      {finalItem ? <WorkerProofBundleList proofs={proofs} onPreviewImage={onPreviewImage} /> : null}
     </section>
   );
 });
@@ -603,16 +625,18 @@ const WorkerTurnView = memo(function WorkerTurnView({
   index,
   payload,
   checklist,
-  proofs
+  proofs,
+  onPreviewImage
 }: {
   turn: WorkerTurnGroup;
   index: number;
   payload: WorkerJobPayload | null;
   checklist: WorkerChecklistItem[] | null;
   proofs: WorkerProofRecord[];
+  onPreviewImage: (media: PreviewMedia) => void;
 }) {
   if (turn.completedAt === null) return <WorkerActiveTurn turn={turn} index={index} payload={payload} checklist={checklist} />;
-  return <WorkerCompletedTurn turn={turn} index={index} payload={payload} checklist={checklist} proofs={proofs} />;
+  return <WorkerCompletedTurn turn={turn} index={index} payload={payload} checklist={checklist} proofs={proofs} onPreviewImage={onPreviewImage} />;
 });
 
 const FallbackRow = memo(function FallbackRow({ row }: { row: WorkerItem }) {
@@ -631,7 +655,10 @@ const FallbackRow = memo(function FallbackRow({ row }: { row: WorkerItem }) {
   );
 });
 
-export function WorkerPane({ pair, timeline, proofRecords, onCodexEffortChange }: WorkerPaneProps) {
+export function WorkerPane({ pair, timeline, proofRecords, onCodexEffortChange, onAttachAnnotatedProof }: WorkerPaneProps) {
+  const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
   if (!pair.worker) {
     return (
       <section className="pane" aria-label="Codex worker lane">
@@ -670,12 +697,33 @@ export function WorkerPane({ pair, timeline, proofRecords, onCodexEffortChange }
           className="worker-budget"
         />
       </div>
-      <WorkerTimelineView timeline={timeline} proofRecords={proofRecords} />
+      <WorkerTimelineView timeline={timeline} proofRecords={proofRecords} onPreviewImage={(media) => {
+        setPreviewError(null);
+        setPreviewMedia(media);
+      }} />
+      {previewError ? <div className="error worker-proof-preview-error" role="alert">{previewError}</div> : null}
+      {previewMedia ? (
+        <ImagePreviewModal
+          media={previewMedia}
+          attachTargetLabel="Butler composer"
+          onAttached={onAttachAnnotatedProof}
+          onClose={() => setPreviewMedia(null)}
+          showErrorToast={(error) => setPreviewError(error instanceof Error ? error.message : String(error))}
+        />
+      ) : null}
     </section>
   );
 }
 
-function WorkerTimelineView({ timeline, proofRecords }: { timeline: WorkerTimeline; proofRecords: WorkerProofRecord[] }) {
+function WorkerTimelineView({
+  timeline,
+  proofRecords,
+  onPreviewImage
+}: {
+  timeline: WorkerTimeline;
+  proofRecords: WorkerProofRecord[];
+  onPreviewImage: (media: PreviewMedia) => void;
+}) {
   const { turns, report, reports, payload, checklist, fallback } = timeline;
   const proofsByTurnId = useMemo(() => groupProofsByTurn(turns, proofRecords, reports), [proofRecords, reports, turns]);
   const anchoredProofIds = useMemo(() => new Set([...proofsByTurnId.values()].flat().map((proof) => proof.id)), [proofsByTurnId]);
@@ -711,10 +759,11 @@ function WorkerTimelineView({ timeline, proofRecords }: { timeline: WorkerTimeli
             payload={payload}
             checklist={checklist}
             proofs={proofsByTurnId.get(turn.id) ?? []}
+            onPreviewImage={onPreviewImage}
           />
         ))}
         {report ? <WorkerMessageRow item={reportToWorkerItem(report)} /> : null}
-        {turns.length === 0 ? <WorkerProofBundleList proofs={unanchoredProofs} /> : null}
+        {turns.length === 0 ? <WorkerProofBundleList proofs={unanchoredProofs} onPreviewImage={onPreviewImage} /> : null}
         {turns.length === 0 && !report
           ? fallback.map((row) => <FallbackRow key={row.id} row={row} />)
           : null}

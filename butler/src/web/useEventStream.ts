@@ -9,9 +9,32 @@ export type EventStreamInitialPayload = {
   threads?: unknown;
 };
 
+export type ComposerPrefillPayload = {
+  id: string;
+  target: { kind: "butler" } | { kind: "thread"; threadId: string };
+  text: string;
+  attachment?: {
+    id: string;
+    name: string;
+    mimeType: string;
+    sizeBytes: number;
+    createdAt: number;
+    url: string;
+  };
+};
+
+export type ToastPayload = {
+  id: string;
+  message: string;
+  tone: "success" | "error" | "info";
+  duration: number;
+};
+
 export type EventStreamHandlers = {
   onButlerPatch?: (patch: ProviderRuntimeLivePatch) => void;
   onThreadPatch?: (patch: ProviderRuntimeLivePatch) => void;
+  onComposerPrefill?: (payload: ComposerPrefillPayload) => void;
+  onToast?: (payload: ToastPayload) => void;
   onInitial?: (payload: EventStreamInitialPayload) => void;
   onError?: (error: Event) => void;
 };
@@ -67,6 +90,19 @@ export function useEventStream(handlers: EventStreamHandlers): UseEventStreamRes
 
       source.addEventListener("butlerPatch", (event) => handlePatch(event as MessageEvent, "butlerPatch"));
       source.addEventListener("threadPatch", (event) => handlePatch(event as MessageEvent, "threadPatch"));
+
+      const handleJsonEvent = <T,>(event: MessageEvent, handler: ((payload: T) => void) | undefined) => {
+        try {
+          const payload = JSON.parse(event.data) as T;
+          handler?.(payload);
+          setLastEventAt(Date.now());
+        } catch {
+          // ignore malformed payload
+        }
+      };
+
+      source.addEventListener("composerPrefill", (event) => handleJsonEvent(event as MessageEvent, handlersRef.current.onComposerPrefill));
+      source.addEventListener("toast", (event) => handleJsonEvent(event as MessageEvent, handlersRef.current.onToast));
 
       const handleInitial = (event: MessageEvent) => {
         try {

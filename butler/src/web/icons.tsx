@@ -151,6 +151,49 @@ export function ChevronDownIcon() {
   );
 }
 
+export function CloseIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="square" />
+    </svg>
+  );
+}
+
+export function DownloadIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M8 2.5v7M5.2 7.3 8 10.1l2.8-2.8M3.5 12.5h9" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="square" strokeLinejoin="miter" />
+    </svg>
+  );
+}
+
+export function ImageIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M2.8 3.5h10.4v9H2.8zM4.2 10.8 6.5 8.3l1.7 1.6 1.5-1.9 2.1 2.8" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="miter" />
+      <circle cx="10.5" cy="6" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+export function ZoomInIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <circle cx="7" cy="7" r="4" fill="none" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M7 4.8v4.4M4.8 7h4.4M10.2 10.2 13 13" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="square" />
+    </svg>
+  );
+}
+
+export function ZoomOutIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <circle cx="7" cy="7" r="4" fill="none" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M4.8 7h4.4M10.2 10.2 13 13" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="square" />
+    </svg>
+  );
+}
+
 export function TrashIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">

@@ -2100,6 +2100,87 @@ a:hover {
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.composer-attachment {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 26px;
+  align-items: center;
+  gap: 8px;
+  width: min(100%, 300px);
+  padding: 6px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.composer-attachment-preview,
+.composer-attachment-remove,
+.composer-attachment-file {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.composer-attachment-preview {
+  overflow: hidden;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.composer-attachment-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.composer-attachment-file {
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.composer-attachment-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-attachment-remove {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+}
+
+.composer-attachment-remove:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.composer-attachment-remove svg {
+  width: 13px;
+  height: 13px;
+}
+
 .composer-target {
   display: flex;
   align-items: center;
@@ -2794,13 +2875,18 @@ a:hover {
   gap: 6px;
 }
 
-.worker-proof-shots a {
+.worker-proof-shots button {
   display: block;
   overflow: hidden;
   aspect-ratio: 16 / 9;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface);
+  cursor: zoom-in;
+}
+
+.worker-proof-shots button:hover {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border-strong));
 }
 
 .worker-proof-shots img {
@@ -3563,4 +3649,368 @@ a:hover {
 
 .modal-backdrop {
   background: var(--modal-backdrop-bg, rgba(8, 9, 10, 0.55));
+}
+
+.image-preview-backdrop {
+  z-index: 95;
+  padding: 18px;
+}
+
+.modal-card-image {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(92vw, 1440px);
+  height: min(88dvh, 980px);
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-pop);
+}
+
+.modal-card-image.modal-card-annotation {
+  width: min(94vw, 1500px);
+}
+
+.image-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.image-preview-head h2 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modal-head-actions,
+.modal-zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.modal-icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+}
+
+.modal-icon-action svg {
+  width: 16px;
+  height: 16px;
+}
+
+.modal-icon-action:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border-strong));
+  color: var(--text);
+}
+
+.modal-icon-action:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.modal-zoom-value {
+  min-width: 44px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: center;
+}
+
+.modal-image-shell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: color-mix(in srgb, var(--bg) 88%, #000 12%);
+}
+
+.modal-image-shell.is-zoomed {
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
+.modal-image {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.modal-image-shell.is-zoomed .modal-image {
+  max-width: none;
+  max-height: none;
+  height: auto;
+}
+
+.proof-annotation-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.proof-annotation-stage-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+
+.proof-annotation-hint {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 82%, var(--accent) 18%);
+}
+
+.proof-annotation-hint p,
+.proof-annotation-sidebar-head p,
+.proof-annotation-target,
+.proof-annotation-warning {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.proof-annotation-stage-shell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: color-mix(in srgb, var(--bg) 88%, #000 12%);
+}
+
+.proof-annotation-stage {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.proof-annotation-image {
+  user-select: none;
+}
+
+.proof-annotation-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.proof-annotation-mark {
+  cursor: pointer;
+}
+
+.proof-annotation-badge-text {
+  fill: #ffffff;
+  font-size: 4px;
+  font-weight: 800;
+  dominant-baseline: central;
+  text-anchor: middle;
+}
+
+.proof-annotation-draft {
+  fill: rgba(255, 107, 44, 0.12);
+  stroke: #ff6b2c;
+  stroke-width: 0.55;
+}
+
+.proof-annotation-sidebar {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.proof-annotation-sidebar-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.proof-annotation-sidebar-head strong {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.proof-annotation-count,
+.proof-annotation-item-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: #ff6b2c;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.proof-annotation-empty {
+  display: grid;
+  place-items: center;
+  min-height: 150px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.proof-annotation-list {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.proof-annotation-item {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+}
+
+.proof-annotation-item.is-active {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border-strong));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.proof-annotation-item-head,
+.proof-annotation-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  color: var(--text);
+  text-align: left;
+}
+
+.proof-annotation-item-label {
+  font-weight: 650;
+}
+
+.proof-annotation-item textarea {
+  width: 100%;
+  min-height: 82px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  padding: 8px;
+  outline: none;
+}
+
+.proof-annotation-item textarea:focus {
+  border-color: var(--border-focus);
+}
+
+.proof-annotation-remove {
+  justify-self: start;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.proof-annotation-remove svg {
+  width: 14px;
+  height: 14px;
+}
+
+.proof-annotation-remove:hover {
+  color: var(--danger);
+}
+
+.proof-annotation-sidebar-footer {
+  display: grid;
+  gap: 9px;
+}
+
+.proof-annotation-warning {
+  color: var(--danger);
+}
+
+.proof-annotation-attach {
+  width: 100%;
+}
+
+.worker-proof-preview-error {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 3;
+  max-width: min(420px, calc(100% - 28px));
+}
+
+@media (max-width: 860px) {
+  .image-preview-backdrop {
+    padding: 10px;
+  }
+
+  .modal-card-image,
+  .modal-card-image.modal-card-annotation {
+    width: calc(100vw - 20px);
+    height: min(92dvh, 920px);
+  }
+
+  .image-preview-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .modal-head-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .proof-annotation-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(230px, 34dvh);
+  }
+
+  .proof-annotation-sidebar {
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
 }

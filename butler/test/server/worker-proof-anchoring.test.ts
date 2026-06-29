@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -115,4 +115,20 @@ test("thread detail exposes worker report history for per-turn proof anchoring",
     ["turn-2", "proof-2"]
   ]);
   assert.equal(detail?.workerReport?.turnId, "turn-2");
+});
+
+test("worker proof screenshots open the in-app annotation viewer", async () => {
+  const source = await readFile(new URL("../../src/web/WorkerPane.tsx", import.meta.url), "utf8");
+  assert.match(source, /ImagePreviewModal/);
+  assert.match(source, /onPreviewImage/);
+  assert.doesNotMatch(source, /worker-proof-shots[\s\S]*target="_blank"/);
+});
+
+test("preview annotation inserts are consumed by the pair composer", async () => {
+  const streamSource = await readFile(new URL("../../src/web/useEventStream.ts", import.meta.url), "utf8");
+  const pairSource = await readFile(new URL("../../src/web/PairShell.tsx", import.meta.url), "utf8");
+  assert.match(streamSource, /source\.addEventListener\("composerPrefill"/);
+  assert.match(pairSource, /onComposerPrefill/);
+  assert.match(pairSource, /setComposerAttachments/);
+  assert.match(pairSource, /imageReferenceIds: composerAttachments/);
 });

@@ -6,7 +6,7 @@ import {
   useState
 } from "react";
 
-import { getJson, patchJson, postJson } from "./api";
+import { getJson, patchJson, postJson, type FileReference } from "./api";
 import manorLogoLight from "./assets/manor-logo.svg";
 import manorLogoDark from "./assets/manor-logo-dark.svg";
 import { ButlerPane } from "./ButlerPane";
@@ -23,6 +23,7 @@ import {
   WarningIcon
 } from "./icons";
 import { MemoryDashboard, type MemoryDashboardSummary, type MemoryProjectOption } from "./MemoryDashboard";
+import { ImagePreviewModal, type PreviewMedia } from "./ImagePreviewModal";
 import { SandSpinner } from "./SandSpinner";
 import {
   SelfImprovementQueue,
@@ -721,6 +722,9 @@ export function PairShell() {
   const [memoryProjectFilter, setMemoryProjectFilter] = useState("");
   const [memorySummary, setMemorySummary] = useState<MemoryDashboardSummary | null>(null);
   const [proofsByThreadId, setProofsByThreadId] = useState<Record<string, WorkerProofRecord[]>>({});
+  const [composerAttachments, setComposerAttachments] = useState<FileReference[]>([]);
+  const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
   const manorSurface = manorSurfaceForView(viewMode);
 
@@ -734,6 +738,25 @@ export function PairShell() {
     onButlerPatch: (patch) => {
       if (patch.threadId !== BUTLER_PATCH_THREAD_ID) return;
       butlerPatchHandler?.(patch);
+    },
+    onComposerPrefill: (payload) => {
+      if (!pair) return;
+      if (payload.target.kind === "thread" && payload.target.threadId !== pair.worker?.threadId) return;
+      setDraft((current) => {
+        const next = payload.text.trim();
+        if (!next) return current;
+        return current.trim() ? `${current.trimEnd()}\n\n${next}` : next;
+      });
+      if (payload.attachment) {
+        setComposerAttachments((current) =>
+          current.some((entry) => entry.id === payload.attachment!.id) ? current : [...current, payload.attachment!]
+        );
+      }
+      if (viewMode === "worker") {
+        setViewMode("split");
+      } else if (manorSurface !== "sessions") {
+        setViewMode("butler");
+      }
     },
     onInitial: (payload) => {
       if (payload.runtime) applyRuntimeSnapshot(payload.runtime);
@@ -976,19 +999,33 @@ export function PairShell() {
   async function sendButler() {
     if (!pair) return;
     const text = draft.trim();
-    if (!text) return;
+    if (!text && composerAttachments.length === 0) return;
     setBusy(true);
     setError(null);
     try {
-      const payload = await postJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(pair.id)}/messages`, { text, target: "butler" });
+      const payload = await postJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(pair.id)}/messages`, {
+        text,
+        target: "butler",
+        imageReferenceIds: composerAttachments.filter((attachment) => attachment.mimeType.startsWith("image/")).map((attachment) => attachment.id),
+        fileReferenceIds: composerAttachments.filter((attachment) => !attachment.mimeType.startsWith("image/")).map((attachment) => attachment.id)
+      });
       setPair(payload.pair);
       setDraft("");
+      setComposerAttachments([]);
       await loadPairs();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
+  }
+
+  async function attachAnnotatedProof(payload: { attachment: FileReference; text: string }) {
+    setDraft((current) => (current.trim() ? `${current.trimEnd()}\n\n${payload.text}` : payload.text));
+    setComposerAttachments((current) =>
+      current.some((entry) => entry.id === payload.attachment.id) ? current : [...current, payload.attachment]
+    );
+    if (viewMode === "worker") setViewMode("split");
   }
 
   const onButlerPatchRef = useCallback((handler: ((patch: ProviderRuntimeLivePatch) => void) | null) => {
@@ -1131,6 +1168,12 @@ export function PairShell() {
                     onLoadOlder={() => void loadOlder()}
                     onButlerPatch={onButlerPatchRef}
                     onThinkingLevelChange={(level) => void onThinkingLevelChange(level)}
+                    attachments={composerAttachments}
+                    onRemoveAttachment={(attachmentId) => setComposerAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId))}
+                    onPreviewImage={(media) => {
+                      setPreviewError(null);
+                      setPreviewMedia(media);
+                    }}
                   />
                 ) : null}
                 {viewMode === "split" ? <div className="divider" /> : null}
@@ -1140,6 +1183,7 @@ export function PairShell() {
                     timeline={workerTimeline}
                     proofRecords={workerProofRecords}
                     onCodexEffortChange={(effort) => void onCodexEffortChange(effort)}
+                    onAttachAnnotatedProof={(payload) => attachAnnotatedProof(payload)}
                   />
                 ) : null}
               </div>
@@ -1148,6 +1192,21 @@ export function PairShell() {
                   <WarningIcon />
                   <span>{error}</span>
                 </div>
+              ) : null}
+              {previewError ? (
+                <div className="error" role="alert">
+                  <WarningIcon />
+                  <span>{previewError}</span>
+                </div>
+              ) : null}
+              {previewMedia ? (
+                <ImagePreviewModal
+                  media={previewMedia}
+                  attachTargetLabel="Butler composer"
+                  onAttached={attachAnnotatedProof}
+                  onClose={() => setPreviewMedia(null)}
+                  showErrorToast={(err) => setPreviewError(err instanceof Error ? err.message : String(err))}
+                />
               ) : null}
             </div>
             <div className={`workspace-view is-memory ${viewMode === "memory" ? "is-active" : ""}`}>

@@ -1,6 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { BudgetSegmented } from "./BudgetSegmented";
+import { CloseIcon } from "./icons";
 import { JumpToLatest } from "./JumpToLatest";
 import { Markdown } from "./Markdown";
 import { SandSpinner } from "./SandSpinner";
@@ -11,6 +12,8 @@ import { useLiveButlerTurn, type CompletedTrace } from "./useLiveButlerTurn";
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
 import { DEFAULT_THINKING_LEVELS } from "../shared/pairing";
 import type { PairDetail, PairMessage, PairTraceItem } from "../shared/pairing";
+import type { FileReference } from "./api";
+import type { PreviewMedia } from "./ImagePreviewModal";
 
 const BUTLER_THREAD_ID = "butler";
 
@@ -23,6 +26,9 @@ type ButlerPaneProps = {
   onLoadOlder: () => void;
   onButlerPatch: ((patch: ProviderRuntimeLivePatch) => void) | null;
   onThinkingLevelChange: (level: string) => void;
+  attachments: FileReference[];
+  onRemoveAttachment: (attachmentId: string) => void;
+  onPreviewImage: (media: PreviewMedia) => void;
 };
 
 function formatTime(value: number | null | undefined): string {
@@ -81,6 +87,9 @@ type ComposerProps = {
   thinkingLevel: string;
   availableThinkingLevels: string[];
   onThinkingLevelChange: (level: string) => void;
+  attachments: FileReference[];
+  onRemoveAttachment: (attachmentId: string) => void;
+  onPreviewImage: (media: PreviewMedia) => void;
 };
 
 const Composer = memo(function Composer({
@@ -90,16 +99,47 @@ const Composer = memo(function Composer({
   busy,
   thinkingLevel,
   availableThinkingLevels,
-  onThinkingLevelChange
+  onThinkingLevelChange,
+  attachments,
+  onRemoveAttachment,
+  onPreviewImage
 }: ComposerProps) {
   const ref = useAutoGrow(value);
+  const canSubmit = Boolean(value.trim() || attachments.length > 0);
   return (
     <div className="composer">
+      {attachments.length > 0 ? (
+        <div className="composer-attachments" aria-label="Composer attachments">
+          {attachments.map((attachment) => {
+            const isImage = attachment.mimeType.startsWith("image/");
+            return (
+              <div key={attachment.id} className="composer-attachment">
+                {isImage ? (
+                  <button
+                    className="composer-attachment-preview"
+                    type="button"
+                    onClick={() => onPreviewImage({ name: attachment.name, url: attachment.url, kind: "image", downloadUrl: attachment.url })}
+                    aria-label={`Preview ${attachment.name}`}
+                  >
+                    <img className="composer-attachment-thumb" src={attachment.url} alt="" />
+                  </button>
+                ) : (
+                  <span className="composer-attachment-file" aria-hidden="true">{attachment.name.split(".").pop()?.slice(0, 4) || "file"}</span>
+                )}
+                <span className="composer-attachment-name" title={attachment.name}>{attachment.name}</span>
+                <button className="composer-attachment-remove" type="button" onClick={() => onRemoveAttachment(attachment.id)} aria-label={`Remove ${attachment.name}`}>
+                  <CloseIcon />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
       <form
         className="composer-form"
         onSubmit={(event) => {
           event.preventDefault();
-          if (!value.trim() || busy) return;
+          if (!canSubmit || busy) return;
           onSubmit();
         }}
       >
@@ -110,7 +150,7 @@ const Composer = memo(function Composer({
           onKeyDown={(event) => {
             if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
               event.preventDefault();
-              if (value.trim() && !busy) onSubmit();
+              if (canSubmit && !busy) onSubmit();
             }
           }}
           placeholder="Message Butler…"
@@ -125,7 +165,7 @@ const Composer = memo(function Composer({
             onChange={onThinkingLevelChange}
             className="composer-budget"
           />
-          <button className="composer-send" type="submit" disabled={busy || !value.trim()}>
+          <button className="composer-send" type="submit" disabled={busy || !canSubmit}>
             {busy ? <span className="spinner" /> : <span>Send</span>}
           </button>
         </div>
@@ -227,7 +267,10 @@ export function ButlerPane({
   onSend,
   onLoadOlder,
   onButlerPatch,
-  onThinkingLevelChange
+  onThinkingLevelChange,
+  attachments,
+  onRemoveAttachment,
+  onPreviewImage
 }: ButlerPaneProps) {
   const live = useLiveButlerTurn(BUTLER_THREAD_ID);
   const [completedTraces, setCompletedTraces] = useState<Map<string, CompletedTrace>>(new Map());
@@ -363,6 +406,9 @@ export function ButlerPane({
         thinkingLevel={pair.compose?.butler?.thinkingLevel ?? "medium"}
         availableThinkingLevels={pair.compose?.butler?.availableThinkingLevels ?? [...DEFAULT_THINKING_LEVELS]}
         onThinkingLevelChange={onThinkingLevelChange}
+        attachments={attachments}
+        onRemoveAttachment={onRemoveAttachment}
+        onPreviewImage={onPreviewImage}
       />
     </section>
   );
