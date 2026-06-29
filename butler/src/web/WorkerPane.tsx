@@ -52,6 +52,8 @@ export type WorkerProofArtifact = {
 export type WorkerProofRecord = {
   id: string;
   previewTitle: string;
+  createdAt?: number;
+  updatedAt?: number;
   verification: {
     runId: string;
     ok: boolean;
@@ -549,9 +551,10 @@ type WorkerCompletedTurnProps = {
   index: number;
   payload: WorkerJobPayload | null;
   checklist: WorkerChecklistItem[] | null;
+  proofs: WorkerProofRecord[];
 };
 
-const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, payload, checklist }: WorkerCompletedTurnProps) {
+const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, payload, checklist, proofs }: WorkerCompletedTurnProps) {
   const sorted = useMemo(() => [...turn.items].sort((a, b) => a.at - b.at), [turn.items]);
   const finalIndex = turn.finalIndex;
   const finalItem = finalIndex !== null ? sorted[finalIndex] ?? null : null;
@@ -585,6 +588,7 @@ const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, pay
         </details>
       ) : null}
       {finalItem ? <WorkerMessageRow key={finalItem.id} item={finalItem} payload={payloadForMessage(payload, finalItem, turn.id)} checklist={checklist} /> : null}
+      {finalItem ? <WorkerProofBundleList proofs={proofs} /> : null}
     </section>
   );
 });
@@ -593,15 +597,17 @@ const WorkerTurnView = memo(function WorkerTurnView({
   turn,
   index,
   payload,
-  checklist
+  checklist,
+  proofs
 }: {
   turn: WorkerTurnGroup;
   index: number;
   payload: WorkerJobPayload | null;
   checklist: WorkerChecklistItem[] | null;
+  proofs: WorkerProofRecord[];
 }) {
   if (turn.completedAt === null) return <WorkerActiveTurn turn={turn} index={index} payload={payload} checklist={checklist} />;
-  return <WorkerCompletedTurn turn={turn} index={index} payload={payload} checklist={checklist} />;
+  return <WorkerCompletedTurn turn={turn} index={index} payload={payload} checklist={checklist} proofs={proofs} />;
 });
 
 const FallbackRow = memo(function FallbackRow({ row }: { row: WorkerItem }) {
@@ -666,6 +672,9 @@ export function WorkerPane({ pair, timeline, proofRecords, onCodexEffortChange }
 
 function WorkerTimelineView({ timeline, proofRecords }: { timeline: WorkerTimeline; proofRecords: WorkerProofRecord[] }) {
   const { turns, report, payload, checklist, fallback } = timeline;
+  const proofsByTurnId = useMemo(() => groupProofsByTurn(turns, proofRecords), [proofRecords, turns]);
+  const anchoredProofIds = useMemo(() => new Set([...proofsByTurnId.values()].flat().map((proof) => proof.id)), [proofsByTurnId]);
+  const unanchoredProofs = useMemo(() => proofRecords.filter((proof) => !anchoredProofIds.has(proof.id)), [anchoredProofIds, proofRecords]);
   const lastTurn = turns.at(-1);
   const lastItem = lastTurn?.items.at(-1);
   const bottomKey = `${turns.length}:${lastItem?.id ?? ""}:${lastItem?.at ?? 0}:${report?.updatedAt ?? 0}:${fallback.length}`;
@@ -696,10 +705,11 @@ function WorkerTimelineView({ timeline, proofRecords }: { timeline: WorkerTimeli
             index={index}
             payload={payload}
             checklist={checklist}
+            proofs={proofsByTurnId.get(turn.id) ?? []}
           />
         ))}
         {report ? <WorkerMessageRow item={reportToWorkerItem(report)} /> : null}
-        <WorkerProofBundleList proofs={proofRecords} />
+        {turns.length === 0 ? <WorkerProofBundleList proofs={unanchoredProofs} /> : null}
         {turns.length === 0 && !report
           ? fallback.map((row) => <FallbackRow key={row.id} row={row} />)
           : null}
@@ -707,4 +717,29 @@ function WorkerTimelineView({ timeline, proofRecords }: { timeline: WorkerTimeli
       <JumpToLatest count={unreadCount} onClick={() => scrollToBottom("smooth")} />
     </div>
   );
+}
+
+function proofTimestamp(proof: WorkerProofRecord): number {
+  return proof.verification.checkedAt || proof.updatedAt || proof.createdAt || 0;
+}
+
+function groupProofsByTurn(turns: WorkerTurnGroup[], proofs: WorkerProofRecord[]): Map<string, WorkerProofRecord[]> {
+  const completedTurns = turns
+    .filter((turn) => turn.completedAt !== null)
+    .sort((left, right) => left.startedAt - right.startedAt);
+  const grouped = new Map<string, WorkerProofRecord[]>();
+  if (completedTurns.length === 0) return grouped;
+
+  for (const proof of proofs) {
+    const proofAt = proofTimestamp(proof);
+    const target =
+      [...completedTurns].reverse().find((turn) => proofAt >= turn.startedAt) ??
+      completedTurns[0];
+    const entries = grouped.get(target.id) ?? [];
+    entries.push(proof);
+    entries.sort((left, right) => proofTimestamp(right) - proofTimestamp(left));
+    grouped.set(target.id, entries);
+  }
+
+  return grouped;
 }
