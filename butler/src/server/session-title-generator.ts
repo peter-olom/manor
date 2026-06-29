@@ -1,40 +1,32 @@
-import { spawn } from "node:child_process";
-import crypto from "node:crypto";
-import { promises as fs } from "node:fs";
-import path from "node:path";
+import { complete, type Model } from "@mariozechner/pi-ai";
+import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 
-import { isUnsupportedCodexModelError, memoryCodexModelArgs, normalizeMemoryCodexModel } from "./memory-codex-model.js";
+import { contentToText } from "./butler-agent-helpers.js";
+import { isUnsupportedCodexModelError, normalizeMemoryCodexModel } from "./memory-codex-model.js";
 
-type SessionTitleRunner = (input: { cwd: string; prompt: string; timeoutMs: number }) => Promise<unknown>;
+type SessionTitleRunner = (input: { prompt: string; timeoutMs: number }) => Promise<unknown>;
 
 export type SessionTitleGenerator = {
   generateTitle(input: { firstUserPrompt: string; cwd?: string | null }): Promise<string | null>;
 };
 
-type CodexSessionTitleGeneratorOptions = {
-  stateDir: string;
-  codexHomeDir: string;
+type PiSessionTitleGeneratorOptions = {
+  piAuthPath: string;
   model?: string | null;
   timeoutMs?: number;
   runner?: SessionTitleRunner;
+  modelRegistry?: ModelRegistry;
 };
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_INPUT_CHARS = 4_000;
-const OUTPUT_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["title"],
-  properties: {
-    title: { type: "string", minLength: 1, maxLength: 80 }
-  }
-};
-
+const DEFAULT_TITLE_MODEL_IDS = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.5"];
+const MODEL_REF_PATTERN = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*(?:-[a-z0-9]+)*(?:\/[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*(?:-[a-z0-9]+)*)?$/i;
 const TITLE_PROMPT = [
   "Create a concise session title from the user's first prompt.",
   "Rules:",
   "- Four words or fewer.",
-  "- Plain text only.",
+  "- Return JSON only with key title.",
   "- No quotes, punctuation wrapper, or trailing period.",
   "- Preserve the user's intent."
 ].join("\n");
@@ -77,23 +69,50 @@ function parseTitleOutput(text: string, firstUserPrompt: string): string {
   return sanitizeSessionTitle(typeof parsed.title === "string" ? parsed.title : "", firstUserPrompt);
 }
 
+export function normalizeSessionTitleModel(value: string | null | undefined): string | null {
+  const normalized = normalizeMemoryCodexModel(value);
+  if (normalized) return normalized;
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed.includes(" ") || !MODEL_REF_PATTERN.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
+}
+
 export function readSessionTitleConfig(env: NodeJS.ProcessEnv = process.env): { model: string | null; timeoutMs: number } {
   const timeout = Number(env.MANOR_SESSION_TITLE_TIMEOUT_MS);
   return {
-    model: normalizeMemoryCodexModel(env.MANOR_SESSION_TITLE_MODEL ?? env.MANOR_MEMORY_SYNTHESIS_MODEL),
+    model: normalizeSessionTitleModel(env.MANOR_SESSION_TITLE_MODEL ?? env.MANOR_MEMORY_SYNTHESIS_MODEL),
     timeoutMs: clampTimeout(timeout)
   };
 }
 
-export class CodexSessionTitleGenerator implements SessionTitleGenerator {
+function titleModelPreference(model: Model<any>): number {
+  if (model.provider === "openai-codex") return 0;
+  if (model.provider === "openai") return 1;
+  return 2;
+}
+
+function sortTitleModels(models: Model<any>[]): Model<any>[] {
+  return [...models].sort((a, b) => {
+    const aDefault = DEFAULT_TITLE_MODEL_IDS.indexOf(a.id);
+    const bDefault = DEFAULT_TITLE_MODEL_IDS.indexOf(b.id);
+    const aRank = aDefault === -1 ? DEFAULT_TITLE_MODEL_IDS.length : aDefault;
+    const bRank = bDefault === -1 ? DEFAULT_TITLE_MODEL_IDS.length : bDefault;
+    return aRank - bRank || titleModelPreference(a) - titleModelPreference(b);
+  });
+}
+
+export class PiSessionTitleGenerator implements SessionTitleGenerator {
   private readonly model: string | null;
   private readonly timeoutMs: number;
   private readonly runner: SessionTitleRunner;
+  private modelRegistry: ModelRegistry | null = null;
 
-  constructor(private readonly options: CodexSessionTitleGeneratorOptions) {
-    this.model = normalizeMemoryCodexModel(options.model);
+  constructor(private readonly options: PiSessionTitleGeneratorOptions) {
+    this.model = normalizeSessionTitleModel(options.model);
     this.timeoutMs = clampTimeout(options.timeoutMs);
-    this.runner = options.runner ?? ((input) => this.runCodexExec(input));
+    this.runner = options.runner ?? ((input) => this.runPiCompletion(input));
   }
 
   async generateTitle(input: { firstUserPrompt: string; cwd?: string | null }): Promise<string | null> {
@@ -104,12 +123,11 @@ export class CodexSessionTitleGenerator implements SessionTitleGenerator {
     let raw: unknown;
     try {
       raw = await this.runner({
-        cwd: input.cwd?.trim() || "/repos",
         prompt: `${TITLE_PROMPT}\n\nFirst user prompt:\n${prompt.slice(0, MAX_INPUT_CHARS)}`,
         timeoutMs: this.timeoutMs
       });
     } catch (error) {
-      return null;
+      return fallbackSessionTitle(prompt);
     }
     try {
       const text = typeof raw === "string" ? raw : JSON.stringify(raw ?? {});
@@ -119,53 +137,64 @@ export class CodexSessionTitleGenerator implements SessionTitleGenerator {
     }
   }
 
-  private async runCodexExec(input: { prompt: string; cwd: string; timeoutMs: number }): Promise<string> {
-    const scratchDir = path.join(this.options.stateDir, "session-title");
-    await fs.mkdir(scratchDir, { recursive: true });
-    const runId = crypto.randomUUID();
-    const schemaPath = path.join(scratchDir, `${runId}.schema.json`);
-    const outputPath = path.join(scratchDir, `${runId}.output.json`);
-    await fs.writeFile(schemaPath, JSON.stringify(OUTPUT_SCHEMA, null, 2), "utf8");
-    const baseArgs = ["exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--ignore-rules", "--output-schema", schemaPath, "--output-last-message", outputPath, "--cd", input.cwd];
-    const run = async (model: string | null): Promise<void> => {
-      const args = [...baseArgs, ...memoryCodexModelArgs(model), "-"];
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn("codex", args, {
-          env: { ...process.env, CODEX_HOME: this.options.codexHomeDir, NO_COLOR: "1" },
-          stdio: ["pipe", "pipe", "pipe"]
-        });
-        let stderr = "";
-        let stdout = "";
-        const timeout = setTimeout(() => {
-          child.kill("SIGTERM");
-          reject(new Error("codex exec session title timed out"));
-        }, input.timeoutMs);
-        child.stdout.on("data", (chunk: Buffer) => { stdout = `${stdout}${chunk.toString("utf8")}`.slice(-8_000); });
-        child.stderr.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk.toString("utf8")}`.slice(-8_000); });
-        child.on("error", (error) => { clearTimeout(timeout); reject(error); });
-        child.on("close", (code) => {
-          clearTimeout(timeout);
-          code === 0 ? resolve() : reject(new Error(`codex exec exited with ${code}: ${stderr || stdout}`.trim()));
-        });
-        child.stdin.end(input.prompt);
-      });
-    };
+  private getModelRegistry(): ModelRegistry {
+    this.modelRegistry ??= this.options.modelRegistry ?? ModelRegistry.inMemory(AuthStorage.create(this.options.piAuthPath));
+    return this.modelRegistry;
+  }
 
-    try {
-      if (this.model) {
-        try {
-          await run(this.model);
-        } catch (error) {
-          if (!isUnsupportedCodexModelError(error)) throw error;
-          await fs.rm(outputPath, { force: true }).catch(() => {});
-          await run(null);
-        }
-      } else {
-        await run(null);
-      }
-      return fs.readFile(outputPath, "utf8");
-    } finally {
-      await Promise.all([fs.rm(schemaPath, { force: true }).catch(() => {}), fs.rm(outputPath, { force: true }).catch(() => {})]);
+  private resolveModels(): Model<any>[] {
+    const registry = this.getModelRegistry();
+    const available = registry.getAvailable();
+    const models: Model<any>[] = [];
+    if (this.model) {
+      const requested = this.model;
+      const requestedModels = available.filter((model) => model.id === requested || `${model.provider}/${model.id}` === requested);
+      models.push(...sortTitleModels(requestedModels));
     }
+    for (const model of sortTitleModels(available)) {
+      if (!models.some((candidate) => candidate.provider === model.provider && candidate.id === model.id)) {
+        models.push(model);
+      }
+    }
+    if (models.length === 0) {
+      throw new Error("No Butler model is available for session title generation.");
+    }
+    return models;
+  }
+
+  private async runPiCompletion(input: { prompt: string; timeoutMs: number }): Promise<string> {
+    const registry = this.getModelRegistry();
+    const errors: unknown[] = [];
+    for (const model of this.resolveModels()) {
+      const auth = await registry.getApiKeyAndHeaders(model);
+      if (!auth.ok) {
+        errors.push(new Error(auth.error));
+        continue;
+      }
+
+      const response = await complete(
+        model,
+        {
+          systemPrompt: "You generate short UI session titles. Return compact valid JSON only.",
+          messages: [{ role: "user", timestamp: Date.now(), content: input.prompt }]
+        },
+        {
+          apiKey: auth.apiKey,
+          headers: auth.headers,
+          timeoutMs: input.timeoutMs,
+          maxRetries: 0
+        }
+      );
+
+      if (response.stopReason !== "error" && response.stopReason !== "aborted") {
+        return contentToText(response.content);
+      }
+
+      const error = new Error(response.errorMessage || "Butler session title generation failed.");
+      if (!isUnsupportedCodexModelError(error)) throw error;
+      errors.push(error);
+    }
+
+    throw errors[errors.length - 1] ?? new Error("Butler session title generation failed.");
   }
 }

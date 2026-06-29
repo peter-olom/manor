@@ -5,8 +5,9 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  CodexSessionTitleGenerator,
   fallbackSessionTitle,
+  normalizeSessionTitleModel,
+  PiSessionTitleGenerator,
   readSessionTitleConfig,
   sanitizeSessionTitle
 } from "../../src/server/session-title-generator.js";
@@ -34,37 +35,47 @@ test("readSessionTitleConfig supports a title-specific model and timeout", () =>
   assert.equal(config.timeoutMs, 2500);
 });
 
-test("CodexSessionTitleGenerator returns sanitized runner output", async () => {
+test("readSessionTitleConfig supports provider-qualified title models", () => {
+  const config = readSessionTitleConfig({
+    MANOR_SESSION_TITLE_MODEL: "openai-codex/gpt-5.5",
+    MANOR_MEMORY_SYNTHESIS_MODEL: "gpt-5.4-mini"
+  } as NodeJS.ProcessEnv);
+  assert.equal(config.model, "openai-codex/gpt-5.5");
+});
+
+test("normalizeSessionTitleModel rejects invalid model references", () => {
+  assert.equal(normalizeSessionTitleModel("openai-codex/gpt-5.4-mini"), "openai-codex/gpt-5.4-mini");
+  assert.equal(normalizeSessionTitleModel("not a model"), null);
+});
+
+test("PiSessionTitleGenerator returns sanitized runner output", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-title-test-"));
-  const generator = new CodexSessionTitleGenerator({
-    stateDir: dir,
-    codexHomeDir: dir,
+  const generator = new PiSessionTitleGenerator({
+    piAuthPath: path.join(dir, "auth.json"),
     runner: async () => ({ title: "\"Review checkout retries today\"" })
   });
 
   assert.equal(await generator.generateTitle({ firstUserPrompt: "Please review checkout retries." }), "Review checkout retries today");
 });
 
-test("CodexSessionTitleGenerator falls back for malformed runner output", async () => {
+test("PiSessionTitleGenerator falls back for malformed runner output", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-title-test-"));
-  const generator = new CodexSessionTitleGenerator({
-    stateDir: dir,
-    codexHomeDir: dir,
+  const generator = new PiSessionTitleGenerator({
+    piAuthPath: path.join(dir, "auth.json"),
     runner: async () => "not json"
   });
 
   assert.equal(await generator.generateTitle({ firstUserPrompt: "Feature: Auto add session title" }), "Feature Auto add session");
 });
 
-test("CodexSessionTitleGenerator keeps default title when runner fails", async () => {
+test("PiSessionTitleGenerator falls back when runner fails", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-title-test-"));
-  const generator = new CodexSessionTitleGenerator({
-    stateDir: dir,
-    codexHomeDir: dir,
+  const generator = new PiSessionTitleGenerator({
+    piAuthPath: path.join(dir, "auth.json"),
     runner: async () => {
-      throw new Error("codex exec failed");
+      throw new Error("pi completion failed");
     }
   });
 
-  assert.equal(await generator.generateTitle({ firstUserPrompt: "Feature: Auto add session title" }), null);
+  assert.equal(await generator.generateTitle({ firstUserPrompt: "Feature: Auto add session title" }), "Feature Auto add session");
 });

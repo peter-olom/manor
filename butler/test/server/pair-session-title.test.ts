@@ -111,12 +111,12 @@ test("sendOperatorMessage starts automatic title generation for the first text p
   assert.equal(pairStore.getPair(pair.id)?.title, "Checkout retry review");
 });
 
-test("sendOperatorMessage does not title later prompts after a failed first title run", async () => {
+test("sendOperatorMessage uses fallback title when generator cannot use a model", async () => {
   const calls: string[] = [];
   const { manager, pairStore } = await createManager({
     async generateTitle(input) {
       calls.push(input.firstUserPrompt);
-      return null;
+      return "First prompt";
     }
   });
   const pair = await manager.createPair();
@@ -127,7 +127,7 @@ test("sendOperatorMessage does not title later prompts after a failed first titl
   await Promise.resolve();
 
   assert.deepEqual(calls, ["First prompt"]);
-  assert.equal(pairStore.getPair(pair.id)?.title, "New session");
+  assert.equal(pairStore.getPair(pair.id)?.title, "First prompt");
 });
 
 test("sendOperatorMessage preserves manual titles", async () => {

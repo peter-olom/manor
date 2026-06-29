@@ -93,14 +93,13 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: manor-ollama
+    entrypoint: ["/bin/sh", "-lc"]
     environment:
       MANOR_MEMORY_EMBEDDINGS_MODEL: ${MANOR_MEMORY_EMBEDDINGS_MODEL:-qwen3-embedding:0.6b}
     volumes:
       - ollama-state:/root/.ollama
     command:
       [
-        "sh",
-        "-lc",
         "ollama serve & pid=$$!; until ollama list >/dev/null 2>&1; do sleep 1; done; ollama pull \"$${MANOR_MEMORY_EMBEDDINGS_MODEL:-qwen3-embedding:0.6b}\"; wait \"$$pid\""
       ]
     restart: unless-stopped
@@ -112,6 +111,7 @@ services:
       start_period: 30s
     networks:
       - control
+      - internet
 
   butler-gateway:
     image: nginx:stable-alpine3.23
