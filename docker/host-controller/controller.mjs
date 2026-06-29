@@ -6,7 +6,6 @@ import express from "express";
 import {
   detectRuntimeRestartMode,
   normalizeRestartDelayMs,
-  normalizeString,
   safeTokenMatch,
   shouldBuildSourceImages,
   validateRestartModeScope,
@@ -30,7 +29,6 @@ const applianceServices = [
   "butler",
   "butler-gateway"
 ];
-const applianceContainerNames = new Set(applianceServices.map((service) => `manor-${service}`));
 
 let latestRun = null;
 let activeRun = null;
@@ -137,34 +135,7 @@ async function detectMode(requestedMode) {
   if (requestedMode === "source" || requestedMode === "image") {
     return requestedMode;
   }
-  return detectRuntimeRestartMode(await readEnvValue("MANOR_BUILD_FROM_SOURCE"), await runningApplianceImages());
-}
-
-async function runningApplianceImages() {
-  return await new Promise((resolve) => {
-    let stdout = "";
-    const child = spawn("docker", ["ps", "-a", "--format", "{{.Names}}\t{{.Image}}"], {
-      cwd: manorDir,
-      env: process.env,
-      stdio: ["ignore", "pipe", "ignore"]
-    });
-    child.stdout.on("data", (chunk) => {
-      stdout = limitedTail(stdout + chunk.toString(), 200_000);
-    });
-    child.on("error", () => resolve([]));
-    child.on("close", (exitCode) => {
-      if (exitCode !== 0) {
-        resolve([]);
-        return;
-      }
-      resolve(stdout
-        .split(/\r?\n/)
-        .map((line) => line.split("\t"))
-        .filter(([name]) => applianceContainerNames.has(name))
-        .map(([, image]) => normalizeString(image))
-        .filter(Boolean));
-    });
-  });
+  return detectRuntimeRestartMode(await readEnvValue("MANOR_BUILD_FROM_SOURCE"));
 }
 
 function composeArgs(mode, includeDesktop) {
