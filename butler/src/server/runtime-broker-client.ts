@@ -27,7 +27,7 @@ type LeasePayload = {
   routePrefix: string;
   operatorUrl: string;
   command: string;
-  workspaceMode: "shared" | "snapshot";
+  workspaceMode: "snapshot";
   image: string;
   egressProfile: PreviewEgressProfile;
   egressDomains: string[];
@@ -441,7 +441,7 @@ export class RuntimeBrokerClient {
     branchName: string | null;
     targetPort: number;
     command: string;
-    workspaceMode?: "shared" | "snapshot";
+    workspaceMode?: "snapshot";
     image?: string;
     egressProfile?: PreviewEgressProfile;
     egressDomains?: string[];

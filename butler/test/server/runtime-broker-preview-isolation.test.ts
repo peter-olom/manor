@@ -10,7 +10,34 @@ import { createBrokerCore } from "../../../docker/runtime-broker/broker-core.mjs
 import { createBrokerJsonParserMiddleware } from "../../../docker/runtime-broker/broker-http.mjs";
 import { createBrokerStorage } from "../../../docker/runtime-broker/broker-storage.mjs";
 
-test("runtime broker forces preview leases into snapshot workspace mode", (t) => {
+test("runtime broker rejects shared preview workspace mode", (t) => {
+  const egressConfigPath = path.join(os.tmpdir(), `manor-egress-${process.pid}-${Date.now()}.json`);
+  fs.writeFileSync(egressConfigPath, '{"profiles":[]}\n', "utf8");
+  t.after(() => {
+    fs.rmSync(egressConfigPath, { force: true });
+  });
+
+  const broker = createBrokerCore({
+    previewImage: "node:22",
+    previewEgressConfigPath: egressConfigPath,
+    routeBase: "/preview"
+  });
+
+  assert.throws(
+    () =>
+      broker.buildLease({
+        leaseId: "lease-preview-isolation",
+        title: "Preview isolation",
+        worktreePath: "/repos/example",
+        command: "npm run dev",
+        targetPort: 3000,
+        workspaceMode: "shared"
+      }),
+    /shared previews are no longer supported/
+  );
+});
+
+test("runtime broker creates snapshot preview leases by contract", (t) => {
   const egressConfigPath = path.join(os.tmpdir(), `manor-egress-${process.pid}-${Date.now()}.json`);
   fs.writeFileSync(egressConfigPath, '{"profiles":[]}\n', "utf8");
   t.after(() => {
@@ -29,10 +56,12 @@ test("runtime broker forces preview leases into snapshot workspace mode", (t) =>
     worktreePath: "/repos/example",
     command: "npm run dev",
     targetPort: 3000,
-    workspaceMode: "shared"
+    workspaceMode: "snapshot"
   });
 
   assert.equal(lease.workspaceMode, "snapshot");
+  assert.equal(lease.publicPort, null);
+  assert.equal(lease.publicUrl, null);
   assert.equal(lease.operatorUrl, "/preview/lease-preview-isolation/");
 });
 

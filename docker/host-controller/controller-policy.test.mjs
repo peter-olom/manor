@@ -54,9 +54,9 @@ test("restart policy scopes source and image inputs to detected mode", () => {
 });
 
 test("runtime mode detection requires explicit source mode", () => {
-  assert.equal(detectRuntimeRestartMode("1", []), "source");
-  assert.equal(detectRuntimeRestartMode("0", ["ghcr.io/peter-olom/manor-butler:latest"]), "image");
-  assert.equal(detectRuntimeRestartMode("0", ["ghcr.io/peter-olom/manor-egress:latest", "manor-butler:local"]), "image");
+  assert.equal(detectRuntimeRestartMode("1"), "source");
+  assert.equal(detectRuntimeRestartMode("0"), "image");
+  assert.equal(detectRuntimeRestartMode(""), "image");
 });
 
 test("source builds are opt-in for current restart and default on for updates", () => {

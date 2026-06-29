@@ -662,6 +662,10 @@ async function dropPreviewEgressLeasePolicy(leaseId) {
 }
 
 function buildLease(payload) {
+  if (payload.workspaceMode !== undefined && normalizeString(payload.workspaceMode).toLowerCase() !== "snapshot") {
+    throw new Error("Preview workspaceMode must be snapshot; shared previews are no longer supported.");
+  }
+
   const id = payload.leaseId || crypto.randomUUID();
   const containerName = toContainerName(id);
   const now = Date.now();

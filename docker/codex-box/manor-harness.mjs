@@ -41,13 +41,13 @@ function printHelp() {
   manor-harness [--thread <jobId>] stack promote <stackSelector> [--to <storageKey>]
   manor-harness [--thread <jobId>] stack stop <stackSelector> [--drop-volumes]
   manor-harness [--thread <jobId>] preview list
-  manor-harness [--thread <jobId>] preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--stack <stackSelector>] [--alias <name> ...] [--env KEY=VALUE ...] [--workspace-mode shared|snapshot] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>] [--sticky] [--lease-ttl-minutes <n>]
+  manor-harness [--thread <jobId>] preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--stack <stackSelector>] [--alias <name> ...] [--env KEY=VALUE ...] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>] [--sticky] [--lease-ttl-minutes <n>]
 
 Preview defaults:
   egress-profile=internet
   heartbeat-kind=http
   heartbeat-target=/
-  workspace-mode=shared (use snapshot for disposable smoke runs that should not mutate the source worktree)
+  workspace-mode=snapshot
   runtime rule: do repo and git work in Codex-shell; do installs, app startup, builds, and browser checks in previews
   preview commands start in the job worktree; prefer relative paths there or the contract cwd under /repos
   preview lifecycle is broker-managed; install, start, and debug the app explicitly with preview exec/logs/processes
@@ -232,24 +232,6 @@ async function callHarness(token, action, params = {}) {
   return payload;
 }
 
-async function callBroker(token, pathname, init = {}) {
-  const response = await fetch(new URL(pathname, runtimeBrokerBaseUrl), {
-    ...init,
-    headers: {
-      "content-type": "application/json",
-      "x-manor-codex-token": token,
-      ...(init.headers ?? {})
-    }
-  });
-
-  const payload = await response.json().catch(() => ({ error: "Broker request failed" }));
-  if (!response.ok) {
-    throw new Error(payload?.error || `Broker request failed with ${response.status}`);
-  }
-
-  return payload;
-}
-
 function formatFetchError(error) {
   const message = error instanceof Error ? error.message : String(error);
   const code = error?.cause?.code || error?.code || "";
@@ -273,22 +255,6 @@ async function formatControlPlaneHealth() {
     probeEndpoint("runtime broker", runtimeBrokerBaseUrl, "/health")
   ]);
   return `Control plane: ${butler}; ${broker}.`;
-}
-
-function formatProcessRows(result) {
-  return result.processes.length === 0
-    ? "No processes were reported."
-    : [result.titles.join(" | "), ...result.processes.map((row) => row.join(" | "))].join("\n");
-}
-
-function formatExecResult(result) {
-  return [
-    `exitCode=${result.exitCode ?? "unknown"}`,
-    result.stdout?.trim() ? `stdout:\n${result.stdout.trim()}` : "",
-    result.stderr?.trim() ? `stderr:\n${result.stderr.trim()}` : ""
-  ]
-    .filter(Boolean)
-    .join("\n\n") || "Command completed with no output.";
 }
 
 function readFlag(args, name, fallback = "") {
@@ -357,25 +323,6 @@ function parseReportEvidence(args) {
   return entries;
 }
 
-function mergeCookieHeader(headers, cookieEntries) {
-  if (cookieEntries.length === 0) {
-    return headers;
-  }
-
-  const mergedHeaders = { ...headers };
-  const existingCookieHeader = Object.entries(mergedHeaders).find(([key]) => key.toLowerCase() === "cookie");
-  const cookieValue = cookieEntries.map(([key, value]) => `${key}=${value}`).join("; ");
-
-  if (existingCookieHeader) {
-    const [headerName, existingValue] = existingCookieHeader;
-    mergedHeaders[headerName] = existingValue ? `${existingValue}; ${cookieValue}` : cookieValue;
-  } else {
-    mergedHeaders.cookie = cookieValue;
-  }
-
-  return mergedHeaders;
-}
-
 function readTailArg(args) {
   const raw = readFlag(args, "--tail", "200");
   const value = Number(raw);
@@ -407,14 +354,6 @@ function readNumberFlag(args, name) {
   }
   const value = Number(raw);
   return Number.isFinite(value) ? value : undefined;
-}
-
-function readCommandAfterDoubleDash(args) {
-  const marker = args.indexOf("--");
-  if (marker === -1) {
-    return "";
-  }
-  return args.slice(marker + 1).join(" ").trim();
 }
 
 function readCommandArgsAfterDoubleDash(args) {
@@ -507,7 +446,6 @@ async function main() {
 
   let action = "";
   let params = {};
-  let directBrokerRequest = null;
 
   if (args[0] === "status") {
     action = "context";
@@ -695,7 +633,6 @@ async function main() {
         stackId: readFlag(args, "--stack"),
         aliases: readRepeatedFlag(args, "--alias"),
         env,
-        workspaceMode: readFlag(args, "--workspace-mode"),
         command: readFlag(args, "--command"),
         port: Number(readFlag(args, "--port", "0")),
         image: readFlag(args, "--image"),
@@ -998,56 +935,19 @@ async function main() {
     }
   }
 
-  if (!action && !directBrokerRequest) {
+  if (!action) {
     printHelp();
     process.exitCode = 1;
     return;
   }
 
-  if (directBrokerRequest) {
-    const result = await callBroker(capability.token, directBrokerRequest.path, {
-      method: directBrokerRequest.method,
-      body: directBrokerRequest.body ? JSON.stringify(directBrokerRequest.body) : undefined
-    });
-    if (jsonMode) {
-      console.log(JSON.stringify(result, null, 2));
-      return;
-    }
-
-    if (directBrokerRequest.path.includes("/processes")) {
-      console.log(formatProcessRows(result));
-      return;
-    }
-
-    if (directBrokerRequest.path.includes("/logs")) {
-      console.log(result.logs || "No logs were returned.");
-      return;
-    }
-
-    if (directBrokerRequest.path.endsWith("/exec")) {
-      console.log(formatExecResult(result));
-      return;
-    }
-
-    if (directBrokerRequest.path.startsWith("/leases/")) {
-      const domains = Array.isArray(result.egressDomains) && result.egressDomains.length > 0 ? result.egressDomains.join(", ") : "(none)";
-      console.log(`${result.title} is ${result.runtime?.status || result.status}. Route=${result.operatorUrl}. Egress=${result.egressProfile}. Domains=${domains}.`);
-      return;
-    }
-
-    if (directBrokerRequest.path.startsWith("/services/")) {
-      console.log(`${result.title} is ${result.runtime?.status || result.status}. Host=${result.targetHost} Port=${result.targetPort}.`);
-      return;
-    }
-  } else {
-    const result = await callHarness(capability.token, action, params);
-    if (jsonMode) {
-      console.log(JSON.stringify(result, null, 2));
-      return;
-    }
-
-    console.log(result.text || "");
+  const result = await callHarness(capability.token, action, params);
+  if (jsonMode) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
   }
+
+  console.log(result.text || "");
 }
 
 main().catch(async (error) => {
