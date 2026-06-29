@@ -3,7 +3,7 @@ import { defineTool } from "@mariozechner/pi-coding-agent";
 import type { TSchema } from "@sinclair/typebox";
 
 import type { FileReferenceStore } from "./file-store.js";
-import type { HostControllerClient, ManorRestartRun } from "./host-controller-client.js";
+import type { HostControllerClient } from "./host-controller-client.js";
 import type { ImageReferenceStore } from "./image-store.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-templates.js";
@@ -164,7 +164,6 @@ export type ButlerAgentToolAccess = {
     reason?: unknown;
     details?: unknown;
   }): ManorRestartRequestView;
-  startAuthorizedManorRestart(requestId: string): Promise<{ restartRequest: ManorRestartRequestView; run: ManorRestartRun }>;
   resolveMemoryPromotion(candidateId: string, accepted: boolean): { candidate: JobMemoryPromotionCandidateView; projectMemory: ProjectMemoryView | null } | null;
   buildSupervisionSmokeTask(totalFollowUps: number): string;
   buildDelegationDeveloperInstructions(workspace: { cwd: string; branchName: string | null }, task: string): Promise<string>;

@@ -80,7 +80,7 @@ function parseTitleOutput(text: string, firstUserPrompt: string): string {
 export function readSessionTitleConfig(env: NodeJS.ProcessEnv = process.env): { model: string | null; timeoutMs: number } {
   const timeout = Number(env.MANOR_SESSION_TITLE_TIMEOUT_MS);
   return {
-    model: normalizeMemoryCodexModel(env.MANOR_SESSION_TITLE_MODEL ?? env.MANOR_MEMORY_SYNTHESIS_MODEL ?? env.MANOR_MEMORY_EXEC_MODEL ?? env.MANOR_MEMORY_REVIEW_MODEL),
+    model: normalizeMemoryCodexModel(env.MANOR_SESSION_TITLE_MODEL ?? env.MANOR_MEMORY_SYNTHESIS_MODEL),
     timeoutMs: clampTimeout(timeout)
   };
 }

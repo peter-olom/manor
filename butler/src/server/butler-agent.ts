@@ -837,7 +837,6 @@ export class ButlerAgentService extends EventEmitter {
   authorizeManorRestartRequest(requestId: string): NonNullable<AppSnapshot["butler"]["authorizedManorRestartRequest"]> { return this.manorRestartRequests.authorize(requestId); }
   dismissManorRestartRequest(requestId: string): void { this.manorRestartRequests.dismiss(requestId); }
   async startAuthorizedManorRestart(requestId: string) { return this.manorRestartRequests.start(requestId); }
-  async startManorRestart(input: { target: "current" | "latest"; update: boolean; includeDesktop?: boolean }) { return (await this.hostController.restart({ confirmation: "restart Manor", target: input.target, update: input.update, ...(input.includeDesktop === true ? { includeDesktop: true } : {}) })).run; }
   async getManorRestartStatus() { return this.hostController.getStatus(); }
 
   private async buildDelegationDeveloperInstructions(workspace: { cwd: string; branchName: string | null }, task: string): Promise<string> { return buildDelegationDeveloperInstructions(workspace, task); }

@@ -19,13 +19,11 @@ async function createStore(): Promise<{ store: ButlerStateStore; stateDir: strin
 function testConfig(overrides: Partial<MemorySynthesisConfig> = {}): MemorySynthesisConfig {
   return {
     enabled: true,
-    provider: "codex_exec",
     model: null,
     effort: null,
     timeoutMs: 90_000,
     maxInputChars: 16_000,
     maxCandidatesPerRun: 6,
-    autoPromoteHighConfidence: false,
     promotionAutoResolve: true,
     promotionBatchSize: 20,
     promotionMaxBatchesPerRun: 10,
@@ -56,8 +54,8 @@ function message(id: string, text: string, at: number): ButlerMessageView {
 
 test("memory synthesis config normalizes model labels and honors env overrides", () => {
   assert.equal(readMemorySynthesisConfig({}).model, null);
-  assert.equal(readMemorySynthesisConfig({ MANOR_MEMORY_REVIEW_MODEL: "5.4 mini" }).model, "gpt-5.4-mini");
-  assert.equal(readMemorySynthesisConfig({ MANOR_MEMORY_REVIEW_MODEL: "legacy model" }).model, null);
+  assert.equal(readMemorySynthesisConfig({ MANOR_MEMORY_SYNTHESIS_MODEL: "5.4 mini" }).model, "gpt-5.4-mini");
+  assert.equal(readMemorySynthesisConfig({ MANOR_MEMORY_REVIEW_MODEL: "5.4 mini", MANOR_MEMORY_EXEC_MODEL: "gpt-5.4-mini" }).model, null);
   assert.equal(readMemorySynthesisConfig({}).promotionAutoResolve, true);
   const config = readMemorySynthesisConfig({ MANOR_MEMORY_SYNTHESIS_MODEL: "gpt-5.4-mini", MANOR_MEMORY_SYNTHESIS_ENABLED: "0", MANOR_MEMORY_SYNTHESIS_MAX_CANDIDATES: "12", MANOR_MEMORY_PROMOTION_BATCH_SIZE: "7" });
   assert.equal(config.model, "gpt-5.4-mini");

@@ -527,7 +527,7 @@ export interface PreviewLeaseView extends LeaseLifecycleView {
   routePrefix: string;
   operatorUrl: string;
   command: string;
-  workspaceMode: "shared" | "snapshot";
+  workspaceMode: "snapshot";
   image: string;
   egressProfile: PreviewEgressProfile;
   egressDomains: string[];
@@ -953,13 +953,11 @@ export interface MemoryGraphRetrievalView {
 
 export interface MemorySynthesisConfig {
   enabled: boolean;
-  provider: "codex_exec";
   model: string | null;
   effort: "low" | "medium" | "high" | null;
   timeoutMs: number;
   maxInputChars: number;
   maxCandidatesPerRun: number;
-  autoPromoteHighConfidence: boolean;
   promotionAutoResolve: boolean;
   promotionBatchSize: number;
   promotionMaxBatchesPerRun: number;

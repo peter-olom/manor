@@ -17,12 +17,6 @@ const previewNetwork = process.env.RUNTIME_PREVIEW_NETWORK ?? "manor_work";
 const previewOutboundNetwork = process.env.RUNTIME_PREVIEW_OUTBOUND_NETWORK ?? "manor_preview_outbound";
 const sharedWorkNetwork = process.env.RUNTIME_SERVICE_SHARED_NETWORK ?? "manor_work";
 const previewImage = process.env.RUNTIME_PREVIEW_IMAGE ?? "node:24-trixie";
-const previewHostPortsEnabled = process.env.RUNTIME_PREVIEW_HOST_PORTS === "1";
-const previewExposeHost = process.env.RUNTIME_PREVIEW_EXPOSE_HOST ?? "0.0.0.0";
-const previewPortStart = Number(process.env.RUNTIME_PREVIEW_PORT_START ?? "43000");
-const previewPortEnd = Number(process.env.RUNTIME_PREVIEW_PORT_END ?? "43999");
-const previewPublicHost = process.env.RUNTIME_PREVIEW_PUBLIC_HOST ?? "127.0.0.1";
-const previewTailnetHost = process.env.RUNTIME_PREVIEW_TAILNET_HOST ?? "";
 const routeBase = process.env.RUNTIME_ROUTE_BASE ?? "/preview";
 const operatorBaseUrl = process.env.RUNTIME_OPERATOR_BASE_URL ?? "";
 const previewEgressConfigPath = process.env.RUNTIME_PREVIEW_EGRESS_CONFIG ?? "/opt/manor/config/preview-egress-profiles.json";
@@ -70,12 +64,6 @@ const brokerContext = {
   previewOutboundNetwork,
   sharedWorkNetwork,
   previewImage,
-  previewHostPortsEnabled,
-  previewExposeHost,
-  previewPortStart,
-  previewPortEnd,
-  previewPublicHost,
-  previewTailnetHost,
   routeBase,
   operatorBaseUrl,
   previewEgressConfigPath,
@@ -171,10 +159,7 @@ const {
   parseAliases,
   persistArtifactFiles,
   persistVerificationArtifacts,
-  allocatePreviewHostPort,
-  buildExternalPreviewUrl,
   resolveCodexWorkspaceMounts,
-  resolveCodexWorkspaceUser,
   previewEgressProfiles,
   reconcileManagedRuntimeState,
   rejectIfLeaseRetainedFailed,
@@ -800,7 +785,14 @@ app.post("/leases", async (request, response) => {
     return;
   }
 
-  const lease = buildLease(payload);
+  let lease;
+  try {
+    lease = buildLease(payload);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    return;
+  }
+
   const stack = lease.stackId ? await findStackNetwork(lease.stackId) : null;
   if (lease.stackId && !stack) {
     response.status(400).json({ error: `Unknown stack: ${lease.stackId}` });
@@ -815,29 +807,10 @@ app.post("/leases", async (request, response) => {
   const aliases = [...new Set([lease.containerName, ...lease.aliases])];
   let proxyPort = null;
   let dynamicPolicyName = null;
-  let publicPort = null;
-  let publicUrl = null;
-  let tailnetUrl = null;
 
   try {
     lease.operatorUrl = buildOperatorPreviewUrl(lease);
     envVars.push(`MANOR_PREVIEW_ROUTE_URL=${lease.operatorUrl}`);
-
-    if (previewHostPortsEnabled) {
-      publicPort = await allocatePreviewHostPort();
-      publicUrl = buildExternalPreviewUrl(previewPublicHost, publicPort);
-      tailnetUrl = buildExternalPreviewUrl(previewTailnetHost, publicPort);
-      lease.publicPort = publicPort;
-      lease.publicUrl = publicUrl;
-      lease.tailnetUrl = tailnetUrl;
-      lease.operatorUrl = publicUrl || tailnetUrl || lease.operatorUrl;
-      if (publicUrl) {
-        envVars.push(`MANOR_PREVIEW_PUBLIC_URL=${publicUrl}`);
-      }
-      if (tailnetUrl) {
-        envVars.push(`MANOR_PREVIEW_TAILNET_URL=${tailnetUrl}`);
-      }
-    }
 
     if (stack?.Name) {
       await ensureStackInfrastructure(stack.Name, {
@@ -909,17 +882,9 @@ app.post("/leases", async (request, response) => {
 
     const networkName = stack?.Name || previewNetwork;
     const workspaceMounts = await resolveCodexWorkspaceMounts({ readOnly: true });
-    const sharedWorkspaceUser = lease.workspaceMode === "shared" ? await resolveCodexWorkspaceUser() : null;
-    if (sharedWorkspaceUser && !envVars.some((entry) => /^HOME=/.test(entry))) {
-      envVars.push("HOME=/tmp/manor-preview-home");
-    }
     const sourceWorktreePath = lease.worktreePath;
-    const runtimeWorktreePath =
-      lease.workspaceMode === "snapshot" ? `/tmp/manor-preview-workspaces/${lease.id}` : sourceWorktreePath;
-    const runtimeCommand =
-      lease.workspaceMode === "snapshot"
-        ? buildSnapshotWorkspaceCommand(sourceWorktreePath, runtimeWorktreePath, lease.command)
-        : lease.command;
+    const runtimeWorktreePath = `/tmp/manor-preview-workspaces/${lease.id}`;
+    const runtimeCommand = buildSnapshotWorkspaceCommand(sourceWorktreePath, runtimeWorktreePath, lease.command);
 
     const runtimeContainer = await docker.createContainer({
       Image: lease.image,
@@ -939,12 +904,12 @@ app.post("/leases", async (request, response) => {
         "manor.worktree-path": lease.worktreePath,
         "manor.worktree-source-path": sourceWorktreePath,
         "manor.worktree-runtime-path": runtimeWorktreePath,
-        "manor.workspace-mode": lease.workspaceMode === "snapshot" ? "snapshot" : "shared",
-        "manor.workspace-user": sharedWorkspaceUser ?? "",
+        "manor.workspace-mode": "snapshot",
+        "manor.workspace-user": "",
         "manor.target-port": String(lease.targetPort),
-        "manor.public-port": publicPort ? String(publicPort) : "",
-        "manor.public-url": publicUrl ?? "",
-        "manor.tailnet-url": tailnetUrl ?? "",
+        "manor.public-port": "",
+        "manor.public-url": "",
+        "manor.tailnet-url": "",
         "manor.operator-url": lease.operatorUrl,
         "manor.egress-profile": lease.egressProfile,
         "manor.egress-policy-name": dynamicPolicyName ?? "",
@@ -958,24 +923,11 @@ app.post("/leases", async (request, response) => {
       HostConfig: {
         AutoRemove: true,
         NetworkMode: networkName,
-        Mounts: workspaceMounts,
-        ...(previewHostPortsEnabled
-          ? {
-              PortBindings: {
-                [`${lease.targetPort}/tcp`]: [
-                  {
-                    HostIp: previewExposeHost || "0.0.0.0",
-                    HostPort: String(publicPort)
-                  }
-                ]
-              }
-            }
-          : {})
+        Mounts: workspaceMounts
       },
       ExposedPorts: {
         [`${lease.targetPort}/tcp`]: {}
       },
-      User: sharedWorkspaceUser ?? undefined,
       NetworkingConfig: {
         EndpointsConfig: {
           [networkName]: {

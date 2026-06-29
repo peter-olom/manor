@@ -377,12 +377,6 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while requesting restart authorization." }]
   },
   {
-    name: "start_authorized_manor_restart",
-    label: "Start authorized restart",
-    description: "Consume an operator-authorized Manor restart request and ask the host controller to run it.",
-    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while the restart is scheduled." }]
-  },
-  {
     name: "read_manor_restart_status",
     label: "Restart status",
     description: "Read the active or latest host-controller restart/update run.",
