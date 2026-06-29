@@ -527,7 +527,7 @@ export interface PreviewLeaseView extends LeaseLifecycleView {
   routePrefix: string;
   operatorUrl: string;
   command: string;
-  workspaceMode: "shared" | "snapshot";
+  workspaceMode: "snapshot";
   image: string;
   egressProfile: PreviewEgressProfile;
   egressDomains: string[];

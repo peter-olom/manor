@@ -49,7 +49,7 @@ export function buildButlerManorTools(access: ButlerAgentToolAccess): ButlerCust
       description:
         "Open an operator-facing Manor restart/update authorization dialog. This Butler tool does not directly restart or deploy the live Manor stack.",
       promptSnippet:
-        "request_manor_restart: use when a Manor restart or update needs explicit operator authorization. Provide clear target and reason details; for source restarts from a local commit, pass the exact commit SHA or local branch as gitRef/targetCommit instead of assuming the ref must be fetched. The operator must click the confirmation dialog. The approval route starts the authorized restart through the host controller; after Manor comes back, use read_manor_restart_status. Do not call start_authorized_manor_restart for the normal dialog flow.",
+        "request_manor_restart: use when a Manor restart or update needs explicit operator authorization. Provide clear target and reason details; for source restarts from a local commit, pass the exact commit SHA or local branch as gitRef/targetCommit instead of assuming the ref must be fetched. The operator must click the confirmation dialog. The approval route starts the authorized restart through the host controller; after Manor comes back, use read_manor_restart_status.",
       parameters: Type.Object({
         reason: Type.String({
           minLength: 1,
@@ -94,68 +94,6 @@ export function buildButlerManorTools(access: ButlerAgentToolAccess): ButlerCust
           details: {
             restartRequest,
             liveMutationPerformed: false
-          }
-        };
-      }
-    }),
-    access.defineButlerTool({
-      name: "start_authorized_manor_restart",
-      label: "Start authorized restart",
-      description:
-        "Consume an operator-authorized Manor restart/update request and ask the host controller to start it. This is the live mutation step.",
-      promptSnippet:
-        "start_authorized_manor_restart: legacy/manual fallback only. Do not call this after the browser approval dialog, because the approval route starts the host-controller run directly. Prefer read_manor_restart_status after Manor comes back.",
-      parameters: Type.Object({
-        requestId: Type.String({ minLength: 1, description: "Authorized Manor restart request id." })
-      }),
-      uiEffects: access.getToolUiEffects("start_authorized_manor_restart"),
-      execute: async (_toolCallId, params) => {
-        const typedParams = params as { requestId?: unknown };
-        const requestId = typeof typedParams.requestId === "string" ? typedParams.requestId.trim() : "";
-        if (!requestId) {
-          throw new Error("requestId is required.");
-        }
-
-        let result: Awaited<ReturnType<ButlerAgentToolAccess["startAuthorizedManorRestart"]>>;
-        try {
-          result = await access.startAuthorizedManorRestart(requestId);
-        } catch (error) {
-          if (!(error instanceof Error) || !error.message.includes("No authorized Manor restart request")) {
-            throw error;
-          }
-          const status = await access.hostController.getStatus();
-          const run = status.active ?? status.latestRun;
-          return {
-            content: [
-              {
-                type: "text",
-                text: run
-                  ? [
-                      "No authorized Manor restart request is pending. The approval dialog may already have consumed it.",
-                      formatRestartRun(run)
-                    ].join("\n")
-                  : "No authorized Manor restart request is pending, and no Manor restart has been recorded yet."
-              }
-            ],
-            details: { status }
-          };
-        }
-
-        return {
-          content: [
-            {
-              type: "text",
-              text: [
-                `Host controller accepted authorized Manor restart ${result.run.id}.`,
-                `Authorized request: ${result.restartRequest.id}.`,
-                `Mode: ${result.run.mode}. Target: ${result.run.target}.`,
-                "Butler may disconnect while Manor restarts; read restart status after it comes back."
-              ].join("\n")
-            }
-          ],
-          details: {
-            restartRequest: result.restartRequest,
-            run: result.run
           }
         };
       }

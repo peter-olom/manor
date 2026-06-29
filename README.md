@@ -250,7 +250,7 @@ Current preview behavior:
 - every preview gets a lease
 - sticky preview leases can stay warm for later jobs
 - Butler exposes a stable private route for each lease
-- raw host port publishing is not the default path
+- previews are gateway-only and do not publish raw host ports
 - previews are heartbeat-gated during startup
 - preview egress defaults to normal outbound internet access
 - previews are the default place for installs, builds, app startup, and runtime verification

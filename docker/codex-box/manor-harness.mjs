@@ -41,13 +41,13 @@ function printHelp() {
   manor-harness [--thread <jobId>] stack promote <stackSelector> [--to <storageKey>]
   manor-harness [--thread <jobId>] stack stop <stackSelector> [--drop-volumes]
   manor-harness [--thread <jobId>] preview list
-  manor-harness [--thread <jobId>] preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--stack <stackSelector>] [--alias <name> ...] [--env KEY=VALUE ...] [--workspace-mode shared|snapshot] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>] [--sticky] [--lease-ttl-minutes <n>]
+  manor-harness [--thread <jobId>] preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--stack <stackSelector>] [--alias <name> ...] [--env KEY=VALUE ...] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>] [--sticky] [--lease-ttl-minutes <n>]
 
 Preview defaults:
   egress-profile=internet
   heartbeat-kind=http
   heartbeat-target=/
-  workspace-mode=shared (use snapshot for disposable smoke runs that should not mutate the source worktree)
+  workspace-mode=snapshot
   runtime rule: do repo and git work in Codex-shell; do installs, app startup, builds, and browser checks in previews
   preview commands start in the job worktree; prefer relative paths there or the contract cwd under /repos
   preview lifecycle is broker-managed; install, start, and debug the app explicitly with preview exec/logs/processes
@@ -695,7 +695,6 @@ async function main() {
         stackId: readFlag(args, "--stack"),
         aliases: readRepeatedFlag(args, "--alias"),
         env,
-        workspaceMode: readFlag(args, "--workspace-mode"),
         command: readFlag(args, "--command"),
         port: Number(readFlag(args, "--port", "0")),
         image: readFlag(args, "--image"),

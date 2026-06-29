@@ -126,11 +126,6 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         title: Type.String({ minLength: 1 }),
         command: Type.String({ minLength: 1 }),
         port: Type.Number({ minimum: 1, maximum: 65535 }),
-        workspaceMode: Type.Optional(
-          Type.Union([Type.Literal("shared"), Type.Literal("snapshot")], {
-            description: "Previews always copy into an isolated disposable workspace. The shared value is accepted only for compatibility."
-          })
-        ),
         stackId: Type.Optional(Type.String()),
         aliases: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
         env: Type.Optional(Type.Record(Type.String(), Type.String())),
@@ -199,7 +194,6 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           title: string;
           command: string;
           port: number;
-          workspaceMode?: "shared" | "snapshot";
           stackId?: string;
           aliases?: string[];
           env?: Record<string, string>;

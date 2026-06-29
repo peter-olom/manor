@@ -75,7 +75,6 @@ test("restart authorize route starts the authorized request immediately", async 
         run: makeRestartRun()
       };
     },
-    startManorRestart: async () => makeRestartRun(),
     dismissManorRestartRequest: () => undefined,
     getManorRestartStatus: async () => ({
       ok: true,
@@ -113,7 +112,6 @@ test("restart status route returns the host-controller run", async () => {
     requestManorRestartAuthorization: () => makeAuthorizedRequest("restart-request-1"),
     authorizeManorRestartRequest: () => makeAuthorizedRequest("restart-request-1"),
     startAuthorizedManorRestart: async () => ({ restartRequest: makeAuthorizedRequest("restart-request-1"), run }),
-    startManorRestart: async () => run,
     dismissManorRestartRequest: () => undefined,
     getManorRestartStatus: async () => ({
       ok: true,
@@ -135,19 +133,14 @@ test("restart status route returns the host-controller run", async () => {
   }
 });
 
-test("operator restart route starts current or latest host-controller runs", async () => {
+test("direct restart route is not registered", async () => {
   const app = express();
   app.use(express.json());
-  const inputs: Array<{ target: string; update: boolean }> = [];
 
   registerManorRestartRoutes(app, {
     requestManorRestartAuthorization: () => makeAuthorizedRequest("restart-request-1"),
     authorizeManorRestartRequest: () => makeAuthorizedRequest("restart-request-1"),
     startAuthorizedManorRestart: async () => ({ restartRequest: makeAuthorizedRequest("restart-request-1"), run: makeRestartRun() }),
-    startManorRestart: async (input: { target: "current" | "latest"; update: boolean }) => {
-      inputs.push(input);
-      return { ...makeRestartRun(), target: input.target, update: input.update };
-    },
     dismissManorRestartRequest: () => undefined,
     getManorRestartStatus: async () => ({
       ok: true,
@@ -159,30 +152,13 @@ test("operator restart route starts current or latest host-controller runs", asy
 
   const server = await listen(app);
   try {
-    const currentResponse = await fetch(`${server.origin}/api/manor/restart`, {
+    const response = await fetch(`${server.origin}/api/manor/restart`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ update: false })
     });
-    const currentPayload = await currentResponse.json() as { run?: { target?: string; update?: boolean } };
 
-    const latestResponse = await fetch(`${server.origin}/api/manor/restart`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ update: true })
-    });
-    const latestPayload = await latestResponse.json() as { run?: { target?: string; update?: boolean } };
-
-    assert.equal(currentResponse.status, 202);
-    assert.equal(currentPayload.run?.target, "current");
-    assert.equal(currentPayload.run?.update, false);
-    assert.equal(latestResponse.status, 202);
-    assert.equal(latestPayload.run?.target, "latest");
-    assert.equal(latestPayload.run?.update, true);
-    assert.deepEqual(inputs, [
-      { target: "current", update: false },
-      { target: "latest", update: true }
-    ]);
+    assert.equal(response.status, 404);
   } finally {
     await server.close();
   }
