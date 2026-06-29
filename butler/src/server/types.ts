@@ -1139,6 +1139,7 @@ export interface CodexThreadDetailView extends CodexThreadSummary {
   turns: CodexTurnView[];
   eventLog: CodexEventEntry[];
   workerReport: CodexWorkerReportView | null;
+  workerReports?: CodexWorkerReportView[];
 }
 
 export interface ButlerWindow {

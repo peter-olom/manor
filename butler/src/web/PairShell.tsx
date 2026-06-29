@@ -66,11 +66,25 @@ type WorkerThread = {
     completedAt?: number | null;
     items: WorkerItem[];
   }[];
-  workerReport?: { turnId: string; status: string; summary: string; details: string | null; updatedAt: number } | null;
+  workerReport?: WorkerThreadReport | null;
+  workerReports?: WorkerThreadReport[];
   jobPayload?: WorkerJobPayload | null;
   supervisionChecklist?: {
     items?: Array<{ id: string; text: string; status: string; butlerNote?: string | null; queuedInstruction?: string | null }>;
   } | null;
+};
+
+type WorkerThreadReport = {
+  turnId: string;
+  status: string;
+  summary: string;
+  details: string | null;
+  evidence?: Array<{ proofRunId?: string | null; artifactId?: string | null }>;
+  claims?: {
+    claims?: Array<{ proofId?: string | null }>;
+  } | null;
+  createdAt?: number;
+  updatedAt: number;
 };
 
 type RuntimeProofSnapshot = {
@@ -156,8 +170,20 @@ function statusLabel(status: PairStatus | null | undefined): string {
   }
 }
 
+function workerReportFromWire(report: WorkerThreadReport): WorkerTimeline["reports"][number] {
+  return {
+    turnId: report.turnId,
+    status: report.status,
+    summary: report.summary,
+    details: report.details,
+    evidence: report.evidence,
+    claims: report.claims,
+    updatedAt: report.updatedAt
+  };
+}
+
 function shapeWorkerTimeline(thread: WorkerThread | null): WorkerTimeline {
-  if (!thread) return { turns: [], report: null, payload: null, checklist: null, fallback: [] };
+  if (!thread) return { turns: [], report: null, reports: [], payload: null, checklist: null, fallback: [] };
   const checklist: WorkerChecklistItem[] | null = thread.supervisionChecklist?.items?.length
     ? thread.supervisionChecklist.items.map((item) => ({
         id: item.id,
@@ -166,27 +192,30 @@ function shapeWorkerTimeline(thread: WorkerThread | null): WorkerTimeline {
         note: item.butlerNote ?? item.queuedInstruction ?? null
       }))
     : null;
-  const report = thread.workerReport
-    ? {
-        turnId: thread.workerReport.turnId,
-        status: thread.workerReport.status,
-        summary: thread.workerReport.summary,
-        details: thread.workerReport.details,
-        updatedAt: thread.workerReport.updatedAt
-      }
-    : null;
+  const reportsByTurnId = new Map<string, WorkerTimeline["reports"][number]>();
+  for (const rawReport of thread.workerReports ?? []) {
+    const report = workerReportFromWire(rawReport);
+    if (report.turnId) reportsByTurnId.set(report.turnId, report);
+  }
+  if (thread.workerReport) {
+    const report = workerReportFromWire(thread.workerReport);
+    if (report.turnId) reportsByTurnId.set(report.turnId, report);
+  }
+  const reports = [...reportsByTurnId.values()].sort((left, right) => left.updatedAt - right.updatedAt);
+  const report = reports.at(-1) ?? null;
   const turns: WorkerTurnGroup[] = (thread.turns ?? [])
     .map((turn) => {
       const items = (turn.items ?? [])
         .map((item) => ({ ...item, id: `${turn.id}:${item.id}`, status: item.status || turn.status }))
         .filter((item) => item.text?.trim());
-      if (report?.turnId === turn.id) {
+      const turnReport = reportsByTurnId.get(turn.id) ?? null;
+      if (turnReport) {
         items.push({
-          id: `${turn.id}:worker-report:${report.updatedAt}`,
+          id: `${turn.id}:worker-report:${turnReport.updatedAt}`,
           type: "assistant_message",
           status: "completed",
-          text: `${report.summary}${report.details ? `\n\n${report.details}` : ""}`,
-          at: report.updatedAt
+          text: `${turnReport.summary}${turnReport.details ? `\n\n${turnReport.details}` : ""}`,
+          at: turnReport.updatedAt
         });
       }
       items.sort((left, right) => left.at - right.at);
@@ -213,6 +242,7 @@ function shapeWorkerTimeline(thread: WorkerThread | null): WorkerTimeline {
   return {
     turns,
     report: report && !turns.some((turn) => turn.id === report.turnId) ? report : null,
+    reports,
     payload: thread.jobPayload ?? null,
     checklist,
     fallback: []
@@ -844,12 +874,13 @@ export function PairShell() {
   }, [loadWorker, manorSurface, pair?.id, pair?.worker?.threadId, viewMode]);
 
   const workerTimeline = useMemo<WorkerTimeline>(() => {
-    if (!pair?.worker) return { turns: [], report: null, payload: null, checklist: null, fallback: [] };
+    if (!pair?.worker) return { turns: [], report: null, reports: [], payload: null, checklist: null, fallback: [] };
     const timeline = shapeWorkerTimeline(workerThread);
     if (timeline.turns.length > 0 || timeline.report) return timeline;
     return {
       turns: [],
       report: null,
+      reports: timeline.reports,
       payload: null,
       checklist: timeline.checklist,
       fallback: [

@@ -66,7 +66,7 @@ import { deleteStateStoreMemoryEmbeddingsForSource, listStateStoreMemoryEmbeddin
 import { enqueueStateStoreMemorySynthesis, listDueStateStoreMemorySynthesis, listStateStoreMemoryGraph, recordStateStoreMemoryObservation, searchStateStoreMemoryGraph, updateStateStoreMemorySynthesisQueueEntry, upsertStateStoreMemoryEntity, upsertStateStoreMemoryRelationship } from "./state-store-memory-graph.js";
 import { listStateStoreDesktopSessions, removeStateStoreDesktopSession, replaceStateStoreDesktopSessions, upsertStateStoreDesktopSession } from "./state-store-desktop.js";
 import { buildStateStoreRuntimeSnapshot, buildStateStoreShellSnapshot, buildStateStoreSnapshot } from "./state-store-snapshot.js";
-import { recordStateStoreWorkerReport, recordStateStoreWorkerReviewResults } from "./state-store-worker-reports.js";
+import { listStateStoreWorkerReports, recordStateStoreWorkerReport, recordStateStoreWorkerReviewResults } from "./state-store-worker-reports.js";
 import { recordReviewPanelVerdict as applyReviewPanelVerdict } from "./review-panel.js";
 import type {
   AppSnapshot,
@@ -1001,15 +1001,14 @@ export class ButlerStateStore extends EventEmitter {
       jobMemory: thread.jobMemory,
       turns: thread.turns.map((turn) => this.toTurnView(turn)),
       eventLog: thread.eventLog,
-      workerReport: thread.workerReport
+      workerReport: thread.workerReport,
+      workerReports: this.listWorkerReports(thread.id)
     };
   }
-
   getThreadDetail(threadId: string): CodexThreadDetailView | undefined {
     const thread = this.threads.get(threadId);
     return thread ? this.toThreadDetailView(thread) : undefined;
   }
-
   listOpenThreadDetails(): Record<string, CodexThreadDetailView> {
     if (this.reconcileThreadWindows()) {
       this.queueSave();
@@ -1027,7 +1026,6 @@ export class ButlerStateStore extends EventEmitter {
   getRuntimeSnapshot(serviceTemplates: AppSnapshot["butler"]["serviceTemplates"]): RuntimeSnapshot {
     return buildStateStoreRuntimeSnapshot(this as unknown as Parameters<typeof buildStateStoreRuntimeSnapshot>[0], serviceTemplates);
   }
-
   getShellSnapshot(
     butler: AppShellSnapshot["butler"],
     codexConnection: {
@@ -1071,6 +1069,8 @@ export class ButlerStateStore extends EventEmitter {
     }
     return reports.at(-1) ?? null;
   }
+
+  listWorkerReports(threadId: string): CodexWorkerReportView[] { return listStateStoreWorkerReports(this.getInternalAccess(), threadId); }
 
   getOpenWindowIds(): string[] {
     if (this.reconcileThreadWindows()) {

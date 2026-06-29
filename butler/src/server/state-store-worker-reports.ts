@@ -136,6 +136,15 @@ export function recordStateStoreWorkerReport(
   return nextReport;
 }
 
+export function listStateStoreWorkerReports(access: StateStoreInternalAccess, threadId: string): CodexWorkerReportView[] {
+  const reports = access.persistedWorkerReportsByThreadId.get(threadId) ?? [];
+  const liveReport = access.threads.get(threadId)?.workerReport ?? null;
+  const byTurnId = new Map<string, CodexWorkerReportView>();
+  for (const report of reports) byTurnId.set(report.turnId, report);
+  if (liveReport) byTurnId.set(liveReport.turnId, liveReport);
+  return [...byTurnId.values()].sort((left, right) => left.createdAt - right.createdAt);
+}
+
 export function recordStateStoreWorkerReviewResults(
   access: StateStoreInternalAccess,
   threadId: string,

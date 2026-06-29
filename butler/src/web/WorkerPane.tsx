@@ -35,6 +35,10 @@ export type WorkerReport = {
   status: string;
   summary: string;
   details: string | null;
+  evidence?: Array<{ proofRunId?: string | null; artifactId?: string | null }>;
+  claims?: {
+    claims?: Array<{ proofId?: string | null }>;
+  } | null;
   updatedAt: number;
 };
 
@@ -116,6 +120,7 @@ export type WorkerJobPayloadSnapshot = Pick<
 export type WorkerTimeline = {
   turns: WorkerTurnGroup[];
   report: WorkerReport | null;
+  reports: WorkerReport[];
   payload: WorkerJobPayload | null;
   checklist: WorkerChecklistItem[] | null;
   fallback: WorkerItem[];
@@ -671,8 +676,8 @@ export function WorkerPane({ pair, timeline, proofRecords, onCodexEffortChange }
 }
 
 function WorkerTimelineView({ timeline, proofRecords }: { timeline: WorkerTimeline; proofRecords: WorkerProofRecord[] }) {
-  const { turns, report, payload, checklist, fallback } = timeline;
-  const proofsByTurnId = useMemo(() => groupProofsByTurn(turns, proofRecords), [proofRecords, turns]);
+  const { turns, report, reports, payload, checklist, fallback } = timeline;
+  const proofsByTurnId = useMemo(() => groupProofsByTurn(turns, proofRecords, reports), [proofRecords, reports, turns]);
   const anchoredProofIds = useMemo(() => new Set([...proofsByTurnId.values()].flat().map((proof) => proof.id)), [proofsByTurnId]);
   const unanchoredProofs = useMemo(() => proofRecords.filter((proof) => !anchoredProofIds.has(proof.id)), [anchoredProofIds, proofRecords]);
   const lastTurn = turns.at(-1);
@@ -723,14 +728,55 @@ function proofTimestamp(proof: WorkerProofRecord): number {
   return proof.verification.checkedAt || proof.updatedAt || proof.createdAt || 0;
 }
 
-function groupProofsByTurn(turns: WorkerTurnGroup[], proofs: WorkerProofRecord[]): Map<string, WorkerProofRecord[]> {
+function proofReferenceIds(report: WorkerReport): Set<string> {
+  const ids = new Set<string>();
+  for (const evidence of report.evidence ?? []) {
+    if (evidence.proofRunId) ids.add(evidence.proofRunId);
+    if (evidence.artifactId) ids.add(evidence.artifactId);
+  }
+  for (const claim of report.claims?.claims ?? []) {
+    if (claim.proofId) ids.add(claim.proofId);
+  }
+  return ids;
+}
+
+function proofMatchesReference(proof: WorkerProofRecord, referenceIds: Set<string>): boolean {
+  return referenceIds.has(proof.id) || referenceIds.has(proof.verification.runId);
+}
+
+export function groupProofsByTurn(
+  turns: WorkerTurnGroup[],
+  proofs: WorkerProofRecord[],
+  reports: WorkerReport[] = []
+): Map<string, WorkerProofRecord[]> {
   const completedTurns = turns
     .filter((turn) => turn.completedAt !== null)
     .sort((left, right) => left.startedAt - right.startedAt);
   const grouped = new Map<string, WorkerProofRecord[]>();
   if (completedTurns.length === 0) return grouped;
 
+  const proofIdsAssignedByReport = new Set<string>();
+  const completedTurnIds = new Set(completedTurns.map((turn) => turn.id));
+  for (const report of reports) {
+    if (!report.turnId || !completedTurnIds.has(report.turnId)) continue;
+    const referenceIds = proofReferenceIds(report);
+    if (referenceIds.size === 0) continue;
+    const exactProofs = proofs
+      .filter((proof) => proofMatchesReference(proof, referenceIds))
+      .sort((left, right) => proofTimestamp(right) - proofTimestamp(left));
+    if (exactProofs.length === 0) continue;
+    const entries = grouped.get(report.turnId) ?? [];
+    for (const proof of exactProofs) {
+      if (entries.some((entry) => entry.id === proof.id)) continue;
+      entries.push(proof);
+      proofIdsAssignedByReport.add(proof.id);
+    }
+    entries.sort((left, right) => proofTimestamp(right) - proofTimestamp(left));
+    grouped.set(report.turnId, entries);
+  }
+
   for (const proof of proofs) {
+    if (proofIdsAssignedByReport.has(proof.id)) continue;
     const proofAt = proofTimestamp(proof);
     const target =
       [...completedTurns].reverse().find((turn) => proofAt >= turn.startedAt) ??
