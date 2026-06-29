@@ -14,6 +14,9 @@ const xdgConfigHome = process.env.XDG_CONFIG_HOME || path.join(desktopHome, ".co
 const xdgCacheHome = process.env.XDG_CACHE_HOME || path.join(desktopHome, ".cache");
 const xdgDataHome = process.env.XDG_DATA_HOME || path.join(desktopHome, ".local/share");
 const desktopProfilesDir = process.env.MANOR_DESKTOP_PROOF_PROFILES_DIR || "/state/profiles";
+const DEFAULT_POINTER_PAUSE_MS = 120;
+const DEFAULT_AFTER_ACTION_PAUSE_MS = 220;
+const DEFAULT_KEY_DELAY_MS = 45;
 
 const sessions = new Map();
 
@@ -470,6 +473,88 @@ async function getDisplayGeometry(session) {
     : null;
 }
 
+function clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function actionDelay(input, fallback) {
+  return typeof input.delayMs === "number" && Number.isFinite(input.delayMs)
+    ? Math.max(0, Math.trunc(input.delayMs))
+    : fallback;
+}
+
+async function shortPause(ms = DEFAULT_AFTER_ACTION_PAUSE_MS) {
+  if (ms > 0) {
+    await sleep(ms);
+  }
+}
+
+async function fallbackPointer(session) {
+  const geometry = await getDisplayGeometry(session).catch(() => null);
+  return {
+    x: Math.round((geometry?.width ?? 1920) / 2),
+    y: Math.round((geometry?.height ?? 1080) / 2)
+  };
+}
+
+async function pointerLocation(session) {
+  const pointer = await getPointerLocation(session).catch(() => null);
+  if (pointer && Number.isFinite(pointer.x) && Number.isFinite(pointer.y)) {
+    return pointer;
+  }
+  return fallbackPointer(session);
+}
+
+async function movePointer(session, x, y, options = {}) {
+  const from = await pointerLocation(session);
+  const geometry = await getDisplayGeometry(session).catch(() => null);
+  const targetX = Math.round(clampNumber(x, 0, Math.max(0, (geometry?.width ?? 1920) - 1)));
+  const targetY = Math.round(clampNumber(y, 0, Math.max(0, (geometry?.height ?? 1080) - 1)));
+  const distance = Math.hypot(targetX - from.x, targetY - from.y);
+  const steps = Math.max(8, Math.min(36, Math.ceil(distance / 45)));
+
+  for (let index = 1; index <= steps; index += 1) {
+    const nextX = Math.round(from.x + ((targetX - from.x) * index) / steps);
+    const nextY = Math.round(from.y + ((targetY - from.y) * index) / steps);
+    const result = await runCommand("xdotool", ["mousemove", String(nextX), String(nextY)], { home: session.profileHome });
+    if (result.exitCode !== 0) {
+      throw new Error(result.stderr || "xdotool mousemove failed");
+    }
+    await sleep(8);
+  }
+
+  await shortPause(options.pauseMs ?? DEFAULT_POINTER_PAUSE_MS);
+}
+
+async function clickPointer(session, x, y, button) {
+  await movePointer(session, x, y);
+  const down = await runCommand("xdotool", ["mousedown", String(button)], { home: session.profileHome });
+  if (down.exitCode !== 0) {
+    throw new Error(down.stderr || "xdotool mousedown failed");
+  }
+  await shortPause(70);
+  const up = await runCommand("xdotool", ["mouseup", String(button)], { home: session.profileHome });
+  if (up.exitCode !== 0) {
+    throw new Error(up.stderr || "xdotool mouseup failed");
+  }
+  await shortPause();
+}
+
+async function dragPointer(session, x, y, toX, toY, button) {
+  await movePointer(session, x, y);
+  const down = await runCommand("xdotool", ["mousedown", String(button)], { home: session.profileHome });
+  if (down.exitCode !== 0) {
+    throw new Error(down.stderr || "xdotool mousedown failed");
+  }
+  await shortPause(100);
+  await movePointer(session, toX, toY, { pauseMs: 90 });
+  const up = await runCommand("xdotool", ["mouseup", String(button)], { home: session.profileHome });
+  if (up.exitCode !== 0) {
+    throw new Error(up.stderr || "xdotool mouseup failed");
+  }
+  await shortPause();
+}
+
 function sessionSummary(session) {
   return {
     sessionId: session.sessionId,
@@ -860,10 +945,7 @@ async function runAction(session, input) {
       const x = requiredCoordinate(input, "x");
       const y = requiredCoordinate(input, "y");
       const button = optionalInteger(input.button) ?? 1;
-      const result = await runCommand("xdotool", ["mousemove", String(x), String(y), "click", String(button)], { home: session.profileHome });
-      if (result.exitCode !== 0) {
-        throw new Error(result.stderr || "xdotool click failed");
-      }
+      await clickPointer(session, x, y, button);
     } else if (type === "click_text") {
       const targetText = normalizeString(input.text || input.targetText);
       const fileName = `${Date.now()}-ocr-click.png`;
@@ -881,14 +963,7 @@ async function runAction(session, input) {
         throw new Error(`Could not find visible text "${targetText}".`);
       }
       const button = optionalInteger(input.button) ?? 1;
-      const click = await runCommand(
-        "xdotool",
-        ["mousemove", String(Math.round(match.centerX)), String(Math.round(match.centerY)), "click", String(button)],
-        { home: session.profileHome }
-      );
-      if (click.exitCode !== 0) {
-        throw new Error(click.stderr || "xdotool click_text failed");
-      }
+      await clickPointer(session, Math.round(match.centerX), Math.round(match.centerY), button);
       output = { match, screenshot: artifact, recognizedWordCount: words.length };
     } else if (type === "drag") {
       const x = requiredCoordinate(input, "x");
@@ -896,26 +971,7 @@ async function runAction(session, input) {
       const toX = requiredCoordinate(input, "toX");
       const toY = requiredCoordinate(input, "toY");
       const button = optionalInteger(input.button) ?? 1;
-      const result = await runCommand(
-        "xdotool",
-        [
-          "mousemove",
-          String(x),
-          String(y),
-          "mousedown",
-          String(button),
-          "mousemove",
-          "--sync",
-          String(toX),
-          String(toY),
-          "mouseup",
-          String(button)
-        ],
-        { home: session.profileHome }
-      );
-      if (result.exitCode !== 0) {
-        throw new Error(result.stderr || "xdotool drag failed");
-      }
+      await dragPointer(session, x, y, toX, toY, button);
     } else if (type === "key") {
       const key = normalizeString(input.key);
       if (!key) {
@@ -925,12 +981,14 @@ async function runAction(session, input) {
       if (result.exitCode !== 0) {
         throw new Error(result.stderr || "xdotool key failed");
       }
+      await shortPause();
     } else if (type === "type") {
       const text = typeof input.text === "string" ? input.text : "";
-      const result = await runCommand("xdotool", ["type", "--delay", String(input.delayMs ?? 10), text], { home: session.profileHome });
+      const result = await runCommand("xdotool", ["type", "--delay", String(actionDelay(input, DEFAULT_KEY_DELAY_MS)), text], { home: session.profileHome });
       if (result.exitCode !== 0) {
         throw new Error(result.stderr || "xdotool type failed");
       }
+      await shortPause();
     } else if (type === "window_list") {
       output = { windows: await getWindowList(session) };
     } else if (type === "focus_window") {

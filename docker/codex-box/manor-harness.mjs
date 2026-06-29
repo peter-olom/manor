@@ -87,6 +87,7 @@ Proof tips:
   Use --session-cookie <token> as shorthand for better-auth.session_token=<token>.
   Cookies are injected into the browser context directly; headers remain separate.
   Proof is session-driven: start browser sidecar, run actions, optionally capture screenshots, then stop session.
+  Recorded proof actions are paced as visible interactions by default. Use browser/desktop action commands for proof of clicks, typing, scrolling, and waits instead of instant DOM or script mutations.
   Browser actions capture screenshots by default. When capture is enabled, choose a meaningful --label and plain .png --file-name for the evidence. Use --no-capture for setup actions that should not store a screenshot.
   Native Electron or VNC-visible proof is desktop-driven: check desktop status, start a desktop session attached to this job workspace, capture screenshots/actions there, then stop it.
   Desktop screenshot and current-screen actions also require a meaningful --label and plain .png --file-name.

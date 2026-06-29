@@ -5,6 +5,7 @@ import http from "node:http";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { chromium } from "playwright";
+import { DEFAULT_AFTER_ACTION_PAUSE_MS, humanClickLocator, humanFillLocator, humanScroll, humanTypeText, locatorPoint, movePointer, requireScreenshotFileName, requireScreenshotLabel, setProofWaitOverlay, shortPause, waitOverlayText } from "./human-proof-actions.mjs";
 import { PREVIEW_ANNOTATION_LAYER_SCRIPT } from "./preview-annotation-layer.mjs";
 
 const port = Number(process.env.MANOR_PLAYWRIGHT_PORT ?? "3777");
@@ -661,7 +662,7 @@ async function captureScreenshot(session, fileName, label) {
   if (await fileExists(filePath)) {
     throw new Error(`Screenshot fileName already exists in this session: ${fileName}`);
   }
-  const captured = await session.page.screenshot({ path: filePath, fullPage: true }).then(() => true).catch(() => false);
+  const captured = await session.page.screenshot({ path: filePath, fullPage: false }).then(() => true).catch(() => false);
   if (!captured) {
     return;
   }
@@ -745,22 +746,6 @@ function attachPageObservers(session) {
       session.sameOriginAssetFailureCount += 1;
     }
   });
-}
-
-function requireScreenshotLabel(value) {
-  const label = String(value || "").trim();
-  if (!label) throw new Error("Captured screenshots require a worker-supplied label.");
-  return label;
-}
-
-function requireScreenshotFileName(value) {
-  const fileName = String(value || "").trim();
-  if (!fileName) throw new Error("Captured screenshots require a worker-supplied fileName.");
-  if (fileName.includes("/") || fileName.includes("\\") || fileName === "." || fileName === "..") {
-    throw new Error("Screenshot fileName must be a plain file name.");
-  }
-  if (!fileName.toLowerCase().endsWith(".png")) throw new Error("Screenshot fileName must end in .png.");
-  return fileName;
 }
 
 async function cleanupFailedSession(session, error) {
@@ -887,6 +872,7 @@ async function startSession(input) {
     failedRequestCount: 0,
     responseErrorCount: 0,
     sameOriginAssetFailureCount: 0,
+    pointer: null,
     preflightStages,
     visualContentDetected: null,
     visualSignals: null,
@@ -1008,26 +994,20 @@ async function runAction(session, input) {
       if (!selector) {
         throw new Error("click requires selector");
       }
-      await session.page.locator(selector).first().click(timeoutMs ? { timeout: timeoutMs } : undefined);
+      await humanClickLocator(session, session.page.locator(selector).first(), timeoutMs);
     } else if (type === "fill") {
       const selector = String(input.selector || "").trim();
       if (!selector) {
         throw new Error("fill requires selector");
       }
-      await session.page.locator(selector).first().fill(String(input.value ?? ""), timeoutMs ? { timeout: timeoutMs } : undefined);
+      await humanFillLocator(session, session.page.locator(selector).first(), input.value ?? "", timeoutMs, input);
     } else if (type === "type") {
       const selector = String(input.selector || "").trim();
       if (!selector) {
         throw new Error("type requires selector");
       }
-      const delay =
-        typeof input.delayMs === "number" && Number.isFinite(input.delayMs)
-          ? Math.max(0, Math.trunc(input.delayMs))
-          : undefined;
-      await session.page.locator(selector).first().type(String(input.text ?? ""), {
-        ...(timeoutMs ? { timeout: timeoutMs } : {}),
-        ...(delay !== undefined ? { delay } : {})
-      });
+      await humanClickLocator(session, session.page.locator(selector).first(), timeoutMs);
+      await humanTypeText(session, input.text ?? "", input);
     } else if (type === "press") {
       const key = String(input.key || "").trim();
       if (!key) {
@@ -1035,16 +1015,19 @@ async function runAction(session, input) {
       }
       const selector = String(input.selector || "").trim();
       if (selector) {
-        await session.page.locator(selector).first().press(key, timeoutMs ? { timeout: timeoutMs } : undefined);
+        await humanClickLocator(session, session.page.locator(selector).first(), timeoutMs);
+        await session.page.keyboard.press(key);
       } else {
         await session.page.keyboard.press(key);
       }
+      await shortPause(session.page);
     } else if (type === "hover") {
       const selector = String(input.selector || "").trim();
       if (!selector) {
         throw new Error("hover requires selector");
       }
-      await session.page.locator(selector).first().hover(timeoutMs ? { timeout: timeoutMs } : undefined);
+      const point = await locatorPoint(session.page.locator(selector).first(), timeoutMs);
+      await movePointer(session, point.x, point.y, { pauseMs: DEFAULT_AFTER_ACTION_PAUSE_MS });
     } else if (type === "select") {
       const selector = String(input.selector || "").trim();
       if (!selector) {
@@ -1058,49 +1041,67 @@ async function runAction(session, input) {
       if (values.length === 0) {
         throw new Error("select requires value or values");
       }
-      await session.page.locator(selector).first().selectOption(values, timeoutMs ? { timeout: timeoutMs } : undefined);
+      const locator = session.page.locator(selector).first();
+      await humanClickLocator(session, locator, timeoutMs);
+      await locator.selectOption(values, timeoutMs ? { timeout: timeoutMs } : undefined);
+      await shortPause(session.page);
     } else if (type === "check" || type === "uncheck") {
       const selector = String(input.selector || "").trim();
       if (!selector) {
         throw new Error(`${type} requires selector`);
       }
-      if (type === "check") {
-        await session.page.locator(selector).first().check(timeoutMs ? { timeout: timeoutMs } : undefined);
+      const locator = session.page.locator(selector).first();
+      const checked = await locator.isChecked(timeoutMs ? { timeout: timeoutMs } : undefined);
+      if ((type === "check" && !checked) || (type === "uncheck" && checked)) {
+        if (type === "check") {
+          await locator.check({ ...(timeoutMs ? { timeout: timeoutMs } : {}), trial: true });
+        } else {
+          await locator.uncheck({ ...(timeoutMs ? { timeout: timeoutMs } : {}), trial: true });
+        }
+        await humanClickLocator(session, locator, timeoutMs);
       } else {
-        await session.page.locator(selector).first().uncheck(timeoutMs ? { timeout: timeoutMs } : undefined);
+        const point = await locatorPoint(locator, timeoutMs);
+        await movePointer(session, point.x, point.y, { pauseMs: DEFAULT_AFTER_ACTION_PAUSE_MS });
       }
     } else if (type === "scroll") {
       const selector = String(input.selector || "").trim();
       const x = typeof input.x === "number" && Number.isFinite(input.x) ? input.x : 0;
       const y = typeof input.y === "number" && Number.isFinite(input.y) ? input.y : 0;
-      if (selector) {
-        await session.page.locator(selector).first().evaluate((element, payload) => {
-          element.scrollBy(payload.x, payload.y);
-        }, { x, y });
-      } else {
-        await session.page.mouse.wheel(x, y);
-      }
+      await humanScroll(session, selector, x, y);
     } else if (type === "wait_for") {
       const ms = typeof input.ms === "number" && Number.isFinite(input.ms) ? Math.max(0, Math.trunc(input.ms)) : 0;
       const selector = String(input.selector || "").trim();
       const urlIncludes = String(input.urlIncludes || "").trim();
-      if (selector) {
-        await session.page.locator(selector).first().waitFor({ state: "visible", timeout: timeoutMs ?? 45_000 });
+      const overlayText = waitOverlayText(input, selector, urlIncludes, ms);
+      await setProofWaitOverlay(session.page, overlayText);
+      try {
+        if (selector) {
+          await session.page.locator(selector).first().waitFor({ state: "visible", timeout: timeoutMs ?? 45_000 });
+        }
+        if (urlIncludes) {
+          await session.page.waitForURL((url) => url.toString().includes(urlIncludes), { timeout: timeoutMs ?? 45_000 });
+        }
+        if (ms > 0) {
+          await session.page.waitForTimeout(ms);
+        }
+      } finally {
+        await setProofWaitOverlay(session.page, "");
       }
-      if (urlIncludes) {
-        await session.page.waitForURL((url) => url.toString().includes(urlIncludes), { timeout: timeoutMs ?? 45_000 });
-      }
-      if (ms > 0) {
-        await session.page.waitForTimeout(ms);
-      }
+      await shortPause(session.page, 120);
     } else if (type === "navigate") {
       const url = String(input.url || "").trim();
       if (!url) {
         throw new Error("navigate requires url");
       }
-      const response = await session.page.goto(url, { waitUntil: "load", timeout: timeoutMs ?? 45_000 });
-      session.status = response?.status() ?? session.status;
-      await installPreviewAnnotationLayer(session);
+      await setProofWaitOverlay(session.page, "Loading page");
+      try {
+        const response = await session.page.goto(url, { waitUntil: "load", timeout: timeoutMs ?? 45_000 });
+        session.status = response?.status() ?? session.status;
+        await installPreviewAnnotationLayer(session);
+      } finally {
+        await setProofWaitOverlay(session.page, "");
+      }
+      await shortPause(session.page, DEFAULT_AFTER_ACTION_PAUSE_MS);
     } else if (type === "evaluate") {
       const script = String(input.script || "").trim();
       if (!script) {
