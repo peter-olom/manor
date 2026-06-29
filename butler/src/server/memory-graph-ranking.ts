@@ -1,10 +1,12 @@
 import type { ButlerStateStore } from "./state-store.js";
 import type {
+  JobMemoryPromotionCandidateView,
   MemoryEmbeddingView,
   MemoryEntityView,
   MemoryGraphView,
   MemoryRelationshipView,
-  MemoryRetrievalCandidateView
+  MemoryRetrievalCandidateView,
+  ProjectMemoryEntryView
 } from "./types.js";
 
 export function memoryGraphNodeKey(sourceKind: MemoryEmbeddingView["sourceKind"], sourceId: string): string {
@@ -56,12 +58,6 @@ function entityText(entity: MemoryEntityView | null | undefined): string {
   return [entity.type, entity.name, entity.canonicalKey, entity.summary, ...entity.aliases].filter(Boolean).join("\n");
 }
 
-function relationshipLabel(relationship: MemoryRelationshipView, entitiesById: Map<string, MemoryEntityView>): string {
-  const source = entitiesById.get(relationship.sourceEntityId)?.name ?? relationship.sourceEntityId;
-  const target = entitiesById.get(relationship.targetEntityId)?.name ?? relationship.targetEntityId;
-  return `${source} ${relationship.predicate} ${target}`;
-}
-
 function relationshipTrust(relationship: MemoryRelationshipView, predicate: string): number {
   const confidence = Math.max(0, Math.min(1, relationship.confidence));
   if (predicate === "possible_supersedes" || predicate === "possible_contradicts") return confidence * 0.2;
@@ -79,9 +75,50 @@ export type MemoryGraphRankingIndex = {
   entitiesById: Map<string, MemoryEntityView>;
   memoryEntitiesByKey: Map<string, MemoryEntityView>;
   relationshipsByEntityId: Map<string, MemoryRelationshipView[]>;
+  projectEntriesByProjectId: Map<string, ProjectMemoryEntryView[]>;
+  promotionCandidatesById: Map<string, JobMemoryPromotionCandidateView>;
   query: string | null;
   tokens: string[];
 };
+
+function memorySource(entity: MemoryEntityView | null | undefined): { sourceKind: MemoryEmbeddingView["sourceKind"]; sourceId: string } | null {
+  const match = entity?.canonicalKey.match(/^memory:([^:]+):(.+)$/);
+  if (!match) return null;
+  const sourceKind = match[1];
+  if (sourceKind !== "butler_memory" && sourceKind !== "project_memory" && sourceKind !== "job_memory" && sourceKind !== "promotion_candidate" && sourceKind !== "memory_observation") return null;
+  return { sourceKind, sourceId: match[2] };
+}
+
+function memoryReference(entity: MemoryEntityView | null | undefined): string {
+  const source = memorySource(entity);
+  return source ? `${source.sourceKind}:${source.sourceId}` : entity?.name ?? entity?.id ?? "unknown";
+}
+
+function resolvingProjectEntryId(index: MemoryGraphRankingIndex, source: MemoryEntityView | null | undefined, target: MemoryEntityView | null | undefined): string | null {
+  const sourceMemory = memorySource(source);
+  const targetMemory = memorySource(target);
+  if (sourceMemory?.sourceKind !== "project_memory" || targetMemory?.sourceKind !== "promotion_candidate") return null;
+  const entries = index.projectEntriesByProjectId.get(sourceMemory.sourceId) ?? [];
+  if (entries.length === 0) return null;
+  const candidate = index.promotionCandidatesById.get(targetMemory.sourceId);
+  const byThread = candidate ? entries.filter((entry) => entry.sourceThreadId === candidate.threadId) : [];
+  const candidates = byThread.length > 0 ? byThread : entries;
+  return candidates.reduce((latest, entry) => entry.acceptedAt > latest.acceptedAt ? entry : latest, candidates[0]).id;
+}
+
+function supersessionReference(index: MemoryGraphRankingIndex, source: MemoryEntityView | null | undefined, target: MemoryEntityView | null | undefined): string {
+  const entryId = resolvingProjectEntryId(index, source, target);
+  const sourceReference = memoryReference(source);
+  const targetReference = memoryReference(target);
+  return entryId ? `${sourceReference} entry:${entryId} supersedes ${targetReference}` : `${sourceReference} supersedes ${targetReference}`;
+}
+
+function relationshipLabel(relationship: MemoryRelationshipView, index: MemoryGraphRankingIndex): string {
+  const source = index.entitiesById.get(relationship.sourceEntityId);
+  const target = index.entitiesById.get(relationship.targetEntityId);
+  if (normalizePredicate(relationship.predicate) === "supersedes") return supersessionReference(index, source, target);
+  return `${memoryReference(source)} ${relationship.predicate} ${memoryReference(target)}`;
+}
 
 export function buildMemoryGraphRankingIndex(store: ButlerStateStore, query: string | null): MemoryGraphRankingIndex {
   const graph = store.listMemoryGraph();
@@ -96,7 +133,11 @@ export function buildMemoryGraphRankingIndex(store: ButlerStateStore, query: str
     relationshipsByEntityId.set(relationship.sourceEntityId, [...(relationshipsByEntityId.get(relationship.sourceEntityId) ?? []), relationship]);
     relationshipsByEntityId.set(relationship.targetEntityId, [...(relationshipsByEntityId.get(relationship.targetEntityId) ?? []), relationship]);
   }
-  return { graph, entitiesById, memoryEntitiesByKey, relationshipsByEntityId, query, tokens: tokenize(query) };
+  const projectEntriesByProjectId = new Map(store.listProjectMemories().map((memory) => [memory.projectId, memory.entries]));
+  const promotionCandidatesById = new Map(
+    store.listJobMemories().flatMap((memory) => memory.promotionCandidates.map((candidate) => [candidate.id, candidate] as const))
+  );
+  return { graph, entitiesById, memoryEntitiesByKey, relationshipsByEntityId, projectEntriesByProjectId, promotionCandidatesById, query, tokens: tokenize(query) };
 }
 
 export function scoreMemoryGraphCandidate(
@@ -116,7 +157,9 @@ export function scoreMemoryGraphCandidate(
     const outgoing = relationship.sourceEntityId === node.id;
     const neighborId = outgoing ? relationship.targetEntityId : relationship.sourceEntityId;
     const neighbor = index.entitiesById.get(neighborId);
-    const label = relationshipLabel(relationship, index.entitiesById);
+    const source = index.entitiesById.get(relationship.sourceEntityId);
+    const target = index.entitiesById.get(relationship.targetEntityId);
+    const label = relationshipLabel(relationship, index);
     const trust = relationshipTrust(relationship, predicate);
     relations.push(label);
     score += Math.min(1.5, trust) * 0.15;
@@ -127,10 +170,10 @@ export function scoreMemoryGraphCandidate(
     if (predicate === "supersedes") {
       if (outgoing) {
         score += 11 * trust;
-        supersedes.push(neighbor?.name ?? neighborId);
+        supersedes.push(supersessionReference(index, source, target));
       } else {
         score -= 18 * trust;
-        supersededBy.push(neighbor?.name ?? neighborId);
+        supersededBy.push(supersessionReference(index, source, target));
       }
     }
     if (predicate === "contradicts") {

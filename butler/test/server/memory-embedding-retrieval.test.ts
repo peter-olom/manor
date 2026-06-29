@@ -321,6 +321,8 @@ test("smoke: backfill embeds existing entries and embedding-aware query returns 
   assert.ok((candidate.score.vector ?? 0) > 0.99);
   assert.equal(candidate.eligibleForInjection, false);
   assert.ok((project.graph?.supersedes.length ?? 0) > 0);
+  assert.ok(project.graph?.supersedes.some((entry) => entry.includes("entry:project-quartz") && entry.includes("promotion_candidate:candidate-quartz")));
+  assert.ok(candidate.graph?.supersededBy.some((entry) => entry.includes("entry:project-quartz") && entry.includes("project_memory:manor")));
   assert.ok(project.score.total > candidate.score.total);
   assert.ok(candidate.score.graph < 0);
 });
