@@ -1048,6 +1048,23 @@ export function PairShell() {
     [pair]
   );
 
+  const onButlerModelChange = useCallback(
+    async (model: string) => {
+      if (!pair) return;
+      const previous = pair;
+      const selected = pair.compose.butler.availableModels.find((entry) => entry.id === model) ?? null;
+      setPair((current) => (current ? { ...current, compose: { ...current.compose, butler: { ...current.compose.butler, provider: selected?.provider ?? current.compose.butler.provider, model } } } : current));
+      try {
+        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(pair.id)}/settings`, { target: "butler", model });
+        setPair(payload.pair);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        setPair(previous);
+      }
+    },
+    [pair]
+  );
+
   const onCodexEffortChange = useCallback(
     async (effort: string) => {
       if (!pair) return;
@@ -1055,6 +1072,26 @@ export function PairShell() {
       setPair((current) => (current ? { ...current, codexEffort: effort, compose: { ...current.compose, codex: { ...current.compose.codex, effort } } } : current));
       try {
         const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(pair.id)}/settings`, { target: "codex", effort });
+        setPair(payload.pair);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        setPair(previous);
+      }
+    },
+    [pair]
+  );
+
+  const onCodexModelChange = useCallback(
+    async (model: string) => {
+      if (!pair) return;
+      const previous = pair;
+      const selected = pair.compose.codex.availableModels.find((entry) => entry.id === model) ?? null;
+      const effort = selected && pair.compose.codex.effort && !selected.supportedReasoningEfforts.includes(pair.compose.codex.effort)
+        ? selected.defaultReasoningEffort ?? selected.supportedReasoningEfforts[0] ?? pair.compose.codex.effort
+        : pair.compose.codex.effort;
+      setPair((current) => (current ? { ...current, codexModel: model, codexEffort: effort, compose: { ...current.compose, codex: { ...current.compose.codex, model, effort } } } : current));
+      try {
+        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(pair.id)}/settings`, { target: "codex", model });
         setPair(payload.pair);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -1168,6 +1205,7 @@ export function PairShell() {
                     onLoadOlder={() => void loadOlder()}
                     onButlerPatch={onButlerPatchRef}
                     onThinkingLevelChange={(level) => void onThinkingLevelChange(level)}
+                    onButlerModelChange={(model) => void onButlerModelChange(model)}
                     attachments={composerAttachments}
                     onRemoveAttachment={(attachmentId) => setComposerAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId))}
                     onPreviewImage={(media) => {
@@ -1182,6 +1220,7 @@ export function PairShell() {
                     pair={pair}
                     timeline={workerTimeline}
                     proofRecords={workerProofRecords}
+                    onCodexModelChange={(model) => void onCodexModelChange(model)}
                     onCodexEffortChange={(effort) => void onCodexEffortChange(effort)}
                     onAttachAnnotatedProof={(payload) => attachAnnotatedProof(payload)}
                   />

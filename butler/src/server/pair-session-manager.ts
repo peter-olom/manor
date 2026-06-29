@@ -15,13 +15,13 @@ import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-t
 import type { SessionTitleGenerator } from "./session-title-generator.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { ButlerMessageView, ButlerLivePatchView } from "./types.js";
-import type { PairChat, PairDetail, PairMessage, PairComposeSettings, PairSummary } from "../shared/pairing.js";
+import type { PairChat, PairCodexModelOption, PairDetail, PairMessage, PairComposeSettings, PairSummary } from "../shared/pairing.js";
 import { DEFAULT_THINKING_LEVELS } from "../shared/pairing.js";
 import { pairTitleIsDefault } from "./pair-store.js";
 
 type PairButlerService = Pick<
   ButlerAgentService,
-  "dispose" | "getMessagePage" | "getShellSnapshot" | "on" | "prompt" | "setThinkingLevel" | "start" | "stopPrompt"
+  "dispose" | "getMessagePage" | "getShellSnapshot" | "on" | "prompt" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings"
 >;
 
 type PairSessionManagerOptions = {
@@ -45,6 +45,26 @@ type PairSessionManagerOptions = {
   sessionTitleGenerator?: SessionTitleGenerator | null;
   createButlerService?: (options: ConstructorParameters<typeof ButlerAgentService>[0]) => PairButlerService;
 };
+
+function toPairModelOptions(models: ReturnType<CodexAppServerClient["getConnectionState"]>["compose"]["availableModels"]): PairCodexModelOption[] {
+  return models.map((model) => ({
+    id: model.id,
+    label: model.label,
+    provider: model.provider,
+    supportedReasoningEfforts: [...model.supportedReasoningEfforts],
+    defaultReasoningEffort: model.defaultReasoningEffort
+  }));
+}
+
+function chooseEffortForModel(model: PairCodexModelOption | null, requested: string | null): string | null {
+  if (!model) {
+    return requested;
+  }
+  if (requested && model.supportedReasoningEfforts.includes(requested)) {
+    return requested;
+  }
+  return model.defaultReasoningEffort ?? model.supportedReasoningEfforts[0] ?? null;
+}
 
 function pairSystemPrompt(pairId: string): string {
   return [
@@ -160,7 +180,9 @@ export class PairSessionManager {
       messageCount: page?.totalCount ?? updated.messageCount,
       loadedStart: page?.startIndex ?? 0,
       hasMore: page?.hasMore ?? false,
-      compose: service ? this.resolveCompose(updated, service) : { butler: { thinkingLevel: "medium", availableThinkingLevels: [...DEFAULT_THINKING_LEVELS] }, codex: { effort: null, availableEfforts: [] } }
+      compose: service
+        ? this.resolveCompose(updated, service)
+        : { butler: { provider: null, model: null, thinkingLevel: "medium", availableModels: [], availableThinkingLevels: [...DEFAULT_THINKING_LEVELS] }, codex: { model: null, effort: null, availableModels: [], availableEfforts: [] } }
     };
   }
 
@@ -168,6 +190,19 @@ export class PairSessionManager {
     const service = this.services.get(pairId)?.service;
     if (!service) return null;
     service.setThinkingLevel(level as never);
+    return this.getPairDetail(pairId, null, 120);
+  }
+
+  async setButlerModel(pairId: string, modelId: string): Promise<PairDetail | null> {
+    const service = this.services.get(pairId)?.service;
+    if (!service) return null;
+    const shell = service.getShellSnapshot();
+    const model = (shell.compose?.availableModels ?? []).find((entry) => entry.id === modelId);
+    if (!model) {
+      throw new Error("Selected Butler model is not available");
+    }
+    const thinkingLevel = shell.compose?.thinkingLevel ?? "medium";
+    await service.updateComposeSettings(model.provider ?? shell.compose?.provider ?? "", model.id, thinkingLevel as never);
     return this.getPairDetail(pairId, null, 120);
   }
 
@@ -184,20 +219,42 @@ export class PairSessionManager {
     return this.getPairDetail(pairId, null, 120);
   }
 
+  async setCodexModel(pairId: string, modelId: string): Promise<PairDetail | null> {
+    const pair = this.options.pairStore.getPair(pairId);
+    if (!pair) return null;
+    const compose = this.options.codexClient.getConnectionState().compose;
+    const model = compose.availableModels.find((entry) => entry.id === modelId);
+    if (!model) {
+      throw new Error("Selected Codex model is not available");
+    }
+    const effort = chooseEffortForModel(toPairModelOptions([model])[0] ?? null, pair.codexEffort ?? pair.worker?.requestedReasoningEffort ?? compose.effort ?? null);
+    if (pair.worker) {
+      await this.options.codexClient.updateThreadSettings(pair.worker.threadId, { model: modelId, effort: effort as never });
+    }
+    this.options.pairStore.updatePairComposeOverrides(pairId, { codexModel: modelId, codexEffort: effort });
+    return this.getPairDetail(pairId, null, 120);
+  }
+
   private resolveCompose(pair: PairChat, service: PairButlerService): PairComposeSettings {
     const shell = service.getShellSnapshot();
     const availableThinkingLevels = shell.compose?.availableThinkingLevels?.length
       ? shell.compose.availableThinkingLevels
       : [...DEFAULT_THINKING_LEVELS];
+    const butlerModels = toPairModelOptions(shell.compose?.availableModels ?? []);
     const thinkingLevel = pair.butlerThinkingLevel ?? shell.compose?.thinkingLevel ?? "medium";
     const codexCompose = this.options.codexClient.getConnectionState().compose;
+    const availableModels = toPairModelOptions(codexCompose.availableModels);
+    const selectedModelId = pair.codexModel ?? codexCompose?.model ?? availableModels[0]?.id ?? null;
+    const selectedModel = availableModels.find((model) => model.id === selectedModelId) ?? null;
     const workerEffort = pair.worker?.requestedReasoningEffort ?? null;
-    const availableEfforts = (codexCompose?.availableModels ?? [])
-      .flatMap((model) => (model as { supportedReasoningEfforts?: string[] }).supportedReasoningEfforts ?? []);
+    const availableEfforts = selectedModel
+      ? selectedModel.supportedReasoningEfforts
+      : availableModels.flatMap((model) => model.supportedReasoningEfforts);
     const uniqueEfforts = Array.from(new Set(availableEfforts));
+    const effort = chooseEffortForModel(selectedModel, pair.codexEffort ?? workerEffort ?? codexCompose?.effort ?? null);
     return {
-      butler: { thinkingLevel, availableThinkingLevels },
-      codex: { effort: pair.codexEffort ?? workerEffort ?? codexCompose?.effort ?? null, availableEfforts: uniqueEfforts }
+      butler: { provider: shell.compose?.provider ?? null, model: shell.compose?.model ?? butlerModels[0]?.id ?? null, thinkingLevel, availableModels: butlerModels, availableThinkingLevels },
+      codex: { model: selectedModelId, effort, availableModels, availableEfforts: uniqueEfforts }
     };
   }
 

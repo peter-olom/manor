@@ -126,34 +126,44 @@ export function registerPairRoutes(access: PairRouteAccess): void {
     const target = request.body?.target === "codex" ? "codex" : "butler";
     try {
       if (target === "butler") {
+        const model = readString(request.body?.model);
         const level = readString(request.body?.thinkingLevel);
-        if (!level) {
-          response.status(400).json({ error: "thinkingLevel is required" });
+        if (!model && !level) {
+          response.status(400).json({ error: "model or thinkingLevel is required" });
           return;
         }
-        if (!isKnownThinkingLevel(level)) {
+        if (level && !isKnownThinkingLevel(level)) {
           response.status(400).json({ error: `thinkingLevel must be one of: off, low, medium, high, xhigh` });
           return;
         }
-        const pair = await pairSessions.setButlerThinkingLevel(request.params.pairId, level);
-        if (!pair) {
-          response.status(404).json({ error: "Butler session not found" });
-          return;
+        try {
+          const pair = model
+            ? await pairSessions.setButlerModel(request.params.pairId, model)
+            : await pairSessions.setButlerThinkingLevel(request.params.pairId, level);
+          if (!pair) {
+            response.status(404).json({ error: "Butler session not found" });
+            return;
+          }
+          response.json({ pair });
+        } catch (error) {
+          response.status(502).json({ error: error instanceof Error ? error.message : String(error) });
         }
-        response.json({ pair });
         return;
       }
+      const model = readString(request.body?.model);
       const effort = readString(request.body?.effort);
-      if (!effort) {
-        response.status(400).json({ error: "effort is required" });
+      if (!model && !effort) {
+        response.status(400).json({ error: "model or effort is required" });
         return;
       }
-      if (!isKnownReasoningEffort(effort)) {
+      if (effort && !isKnownReasoningEffort(effort)) {
         response.status(400).json({ error: "effort must be one of: minimal, low, medium, high, xhigh" });
         return;
       }
       try {
-        const pair = await pairSessions.setCodexEffort(request.params.pairId, effort);
+        const pair = model
+          ? await pairSessions.setCodexModel(request.params.pairId, model)
+          : await pairSessions.setCodexEffort(request.params.pairId, effort);
         if (!pair) {
           response.status(404).json({ error: "Butler session not found" });
           return;

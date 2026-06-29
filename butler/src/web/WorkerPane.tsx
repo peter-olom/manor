@@ -5,6 +5,7 @@ import { ImagePreviewModal, type PreviewMedia } from "./ImagePreviewModal";
 import { useAnchoredScroll } from "./useAnchoredScroll";
 import { JumpToLatest } from "./JumpToLatest";
 import { Markdown } from "./Markdown";
+import { ModelSelect } from "./ModelSelect";
 import {
   ChevronDownIcon,
   ChevronRightIcon
@@ -132,6 +133,7 @@ type WorkerPaneProps = {
   pair: PairDetail;
   timeline: WorkerTimeline;
   proofRecords: WorkerProofRecord[];
+  onCodexModelChange: (model: string) => void;
   onCodexEffortChange: (effort: string) => void;
   onAttachAnnotatedProof: (payload: { attachment: FileReference; text: string }) => Promise<void>;
 };
@@ -655,7 +657,7 @@ const FallbackRow = memo(function FallbackRow({ row }: { row: WorkerItem }) {
   );
 });
 
-export function WorkerPane({ pair, timeline, proofRecords, onCodexEffortChange, onAttachAnnotatedProof }: WorkerPaneProps) {
+export function WorkerPane({ pair, timeline, proofRecords, onCodexModelChange, onCodexEffortChange, onAttachAnnotatedProof }: WorkerPaneProps) {
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
@@ -676,10 +678,11 @@ export function WorkerPane({ pair, timeline, proofRecords, onCodexEffortChange, 
     );
   }
 
-  const codex = pair.compose?.codex ?? { effort: null, availableEfforts: [] };
+  const codex = pair.compose?.codex ?? { model: null, effort: null, availableModels: [], availableEfforts: [] };
   const busy = pair.status === "worker_running";
   const effort = pair.worker.requestedReasoningEffort ?? codex.effort ?? null;
   const options = codex.availableEfforts.length > 0 ? codex.availableEfforts : [...DEFAULT_THINKING_LEVELS];
+  const model = codex.model ?? codex.availableModels[0]?.id ?? null;
 
   return (
     <section className="pane" aria-label="Codex worker lane">
@@ -688,14 +691,24 @@ export function WorkerPane({ pair, timeline, proofRecords, onCodexEffortChange, 
           <h2>Codex · {shortId(pair.worker.threadId)}</h2>
           <span className="pane-sub">{pair.worker.status} · one worker max</span>
         </div>
-        <BudgetSegmented
-          label="Codex thinking"
-          value={effort}
-          options={options}
-          disabled={busy}
-          onChange={onCodexEffortChange}
-          className="worker-budget"
-        />
+        <div className="worker-controls" aria-label="Codex settings">
+          <ModelSelect
+            label="Model"
+            value={model}
+            options={codex.availableModels}
+            disabled={busy}
+            onChange={onCodexModelChange}
+            className="is-compact worker-model"
+          />
+          <BudgetSegmented
+            label="Codex thinking"
+            value={effort}
+            options={options}
+            disabled={busy}
+            onChange={onCodexEffortChange}
+            className="worker-budget"
+          />
+        </div>
       </div>
       <WorkerTimelineView timeline={timeline} proofRecords={proofRecords} onPreviewImage={(media) => {
         setPreviewError(null);

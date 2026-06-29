@@ -4,6 +4,7 @@ import { BudgetSegmented } from "./BudgetSegmented";
 import { CloseIcon } from "./icons";
 import { JumpToLatest } from "./JumpToLatest";
 import { Markdown } from "./Markdown";
+import { ModelSelect } from "./ModelSelect";
 import { SandSpinner } from "./SandSpinner";
 import { ThinkingTrace, traceDisclosureLabel } from "./ThinkingTrace";
 import { useAnchoredScroll } from "./useAnchoredScroll";
@@ -11,7 +12,7 @@ import { useLiveButlerTurn, type CompletedTrace } from "./useLiveButlerTurn";
 
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
 import { DEFAULT_THINKING_LEVELS } from "../shared/pairing";
-import type { PairDetail, PairMessage, PairTraceItem } from "../shared/pairing";
+import type { PairDetail, PairMessage, PairModelOption, PairTraceItem } from "../shared/pairing";
 import type { FileReference } from "./api";
 import type { PreviewMedia } from "./ImagePreviewModal";
 
@@ -26,6 +27,7 @@ type ButlerPaneProps = {
   onLoadOlder: () => void;
   onButlerPatch: ((patch: ProviderRuntimeLivePatch) => void) | null;
   onThinkingLevelChange: (level: string) => void;
+  onButlerModelChange: (model: string) => void;
   attachments: FileReference[];
   onRemoveAttachment: (attachmentId: string) => void;
   onPreviewImage: (media: PreviewMedia) => void;
@@ -84,8 +86,11 @@ type ComposerProps = {
   onChange: (value: string) => void;
   onSubmit: () => void;
   busy: boolean;
+  model: string | null;
+  availableModels: PairModelOption[];
   thinkingLevel: string;
   availableThinkingLevels: string[];
+  onModelChange: (model: string) => void;
   onThinkingLevelChange: (level: string) => void;
   attachments: FileReference[];
   onRemoveAttachment: (attachmentId: string) => void;
@@ -97,8 +102,11 @@ const Composer = memo(function Composer({
   onChange,
   onSubmit,
   busy,
+  model,
+  availableModels,
   thinkingLevel,
   availableThinkingLevels,
+  onModelChange,
   onThinkingLevelChange,
   attachments,
   onRemoveAttachment,
@@ -157,14 +165,24 @@ const Composer = memo(function Composer({
           rows={2}
         />
         <div className="composer-actions">
-          <BudgetSegmented
-            label="Butler thinking"
-            value={thinkingLevel}
-            options={availableThinkingLevels}
-            disabled={busy}
-            onChange={onThinkingLevelChange}
-            className="composer-budget"
-          />
+          <div className="composer-settings" aria-label="Butler settings">
+            <ModelSelect
+              label="Butler model"
+              value={model}
+              options={availableModels}
+              disabled={busy}
+              onChange={onModelChange}
+              className="is-compact composer-model"
+            />
+            <BudgetSegmented
+              label="Butler thinking"
+              value={thinkingLevel}
+              options={availableThinkingLevels}
+              disabled={busy}
+              onChange={onThinkingLevelChange}
+              className="composer-budget"
+            />
+          </div>
           <button className="composer-send" type="submit" disabled={busy || !canSubmit}>
             {busy ? <span className="spinner" /> : <span>Send</span>}
           </button>
@@ -268,6 +286,7 @@ export function ButlerPane({
   onLoadOlder,
   onButlerPatch,
   onThinkingLevelChange,
+  onButlerModelChange,
   attachments,
   onRemoveAttachment,
   onPreviewImage
@@ -403,8 +422,11 @@ export function ButlerPane({
         onChange={onDraft}
         onSubmit={onSend}
         busy={busy}
+        model={pair.compose?.butler?.model ?? null}
+        availableModels={pair.compose?.butler?.availableModels ?? []}
         thinkingLevel={pair.compose?.butler?.thinkingLevel ?? "medium"}
         availableThinkingLevels={pair.compose?.butler?.availableThinkingLevels ?? [...DEFAULT_THINKING_LEVELS]}
+        onModelChange={onButlerModelChange}
         onThinkingLevelChange={onThinkingLevelChange}
         attachments={attachments}
         onRemoveAttachment={onRemoveAttachment}
