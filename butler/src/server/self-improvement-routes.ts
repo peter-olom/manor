@@ -8,6 +8,7 @@ import type { FileReferenceStore } from "./file-store.js";
 import type { HostControllerClient } from "./host-controller-client.js";
 import type { ImageReferenceStore } from "./image-store.js";
 import { bindJobPayloadDelivery, jobPayloadsRoot, persistJobPayload } from "./job-instruction-artifacts.js";
+import type { PairSessionManager } from "./pair-session-manager.js";
 import { buildCodexInputWithReferences } from "./reference-inputs.js";
 import { cleanupManagedWorktree, ensureTaskWorktree } from "./repo-worktree.js";
 import { commitSelfImprovementRequest, discardSelfImprovementRequest, openSelfImprovementPullRequest } from "./self-improvement-actions.js";
@@ -21,9 +22,11 @@ type RouteAccess = {
   hostController: HostControllerClient;
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;
+  pairSessions?: Pick<PairSessionManager, "createWorkerPair">;
   imageStore: ImageReferenceStore;
   fileStore: FileReferenceStore;
   artifactsDir: string;
+  prepareWorkspace?: typeof ensureTaskWorktree;
 };
 
 function readText(value: unknown): string {
@@ -31,7 +34,8 @@ function readText(value: unknown): string {
 }
 
 export function registerSelfImprovementRoutes(access: RouteAccess): void {
-  const { app, requests, hostController, store, codexClient, imageStore, fileStore, artifactsDir } = access;
+  const { app, requests, hostController, store, codexClient, pairSessions, imageStore, fileStore, artifactsDir } = access;
+  const prepareWorkspace = access.prepareWorkspace ?? ensureTaskWorktree;
 
   app.get("/api/self-improvement/requests", async (_request, response) => {
     response.json({ requests: requests.list(), eligibility: await resolveSelfImprovementEligibility(hostController) });
@@ -56,7 +60,7 @@ export function registerSelfImprovementRoutes(access: RouteAccess): void {
       const approved = requests.update(current.id, { status: "approved", approvedAt: Date.now() });
       approvedRequestId = approved.id;
       const task = buildSelfImprovementTask({ request: approved });
-      const workspace = await ensureTaskWorktree({ cwd: eligibility.sourceCwd, task });
+      const workspace = await prepareWorkspace({ cwd: eligibility.sourceCwd, task });
       preparedWorkspaceCwd = workspace.cwd;
       const developerInstructions = buildDelegationDeveloperInstructions(workspace, task);
       const result = await codexClient.startThread({
@@ -84,6 +88,16 @@ export function registerSelfImprovementRoutes(access: RouteAccess): void {
         effort: "high",
         openWindow: true
       });
+      const pair = pairSessions
+        ? await pairSessions.createWorkerPair({
+            title: `Self-improvement: ${approved.trigger}`,
+            defaultCwd: workspace.cwd,
+            threadId: result.threadId,
+            task,
+            cwd: workspace.cwd,
+            handoffPrompt: task
+          })
+        : null;
       const contract = await buildButlerDelegationContract({
         store,
         threadId: result.threadId,
@@ -99,7 +113,7 @@ export function registerSelfImprovementRoutes(access: RouteAccess): void {
       store.addEvent(result.threadId, "butler.self_improvement.created", `Approved self-improvement request ${approved.id}.`);
       store.openWindow(result.threadId);
       preparedWorkspaceCwd = null;
-      response.status(202).json({ ok: true, request: requests.update(approved.id, { status: "running", threadId: result.threadId, workspaceCwd: workspace.cwd, branchName: workspace.branchName, startedAt: Date.now() }) });
+      response.status(202).json({ ok: true, request: requests.update(approved.id, { status: "running", threadId: result.threadId, pairId: pair?.id ?? null, workspaceCwd: workspace.cwd, branchName: workspace.branchName, startedAt: Date.now() }) });
     } catch (error) {
       if (preparedWorkspaceCwd) await cleanupManagedWorktree(preparedWorkspaceCwd).catch(() => undefined);
       if (approvedRequestId) {

@@ -349,7 +349,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "request_self_improvement",
     label: "Request self-improvement",
-    description: "Create a pending Manor self-improvement request for operator review without starting work.",
+    description: "Create a pending Manor self-improvement request for operator review after a blocked worker report.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while the request waits in the review queue." }]
   },
   {

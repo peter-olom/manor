@@ -137,9 +137,9 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       name: "request_self_improvement",
       label: "Request self-improvement",
       description:
-        "Create a pending Manor self-improvement request for operator review. This does not start work or mutate Manor.",
+        "Create a pending Manor self-improvement request for operator review after a blocked worker report. This does not start work or mutate Manor.",
       promptSnippet:
-        "request_self_improvement: create an operator-reviewed request for direct Manor/Butler/Codex platform improvements, or for blocked worker reports that likely indicate a Manor platform issue. Include trigger, symptoms, logs, observations, suspected cause, proposed change, and risk. Do not use for missing credentials, operator approval, third-party outage, or app-specific bugs outside Manor.",
+        "request_self_improvement: create an operator-reviewed request only for a blocked worker report that likely indicates a Manor platform issue. Include the blocked source job id, trigger, symptoms, logs, observations, suspected cause, proposed change, and risk. Do not use for direct operator self-improvement requests, missing credentials, operator approval, third-party outage, or app-specific bugs outside Manor.",
       parameters: Type.Object({
         trigger: Type.String({ minLength: 1 }),
         symptoms: Type.String({ minLength: 1 }),
@@ -149,7 +149,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         proposedChange: Type.String({ minLength: 1 }),
         risk: Type.String({ minLength: 1 }),
         desiredOutcome: Type.Optional(Type.String({ minLength: 1 })),
-        sourceThreadId: Type.Optional(Type.String({ minLength: 1 }))
+        sourceThreadId: Type.String({ minLength: 1 })
       }),
       uiEffects: access.getToolUiEffects("request_self_improvement"),
       execute: async (_toolCallId, params) => {
@@ -162,12 +162,19 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           proposedChange: string;
           risk: string;
           desiredOutcome?: string;
-          sourceThreadId?: string;
+          sourceThreadId: string;
         };
         const sourceThreadId = typedParams.sourceThreadId?.trim() || null;
         const sourceThread = sourceThreadId ? access.store.getThread(sourceThreadId) ?? null : null;
         if (sourceThreadId && !sourceThread) {
           throw new Error(`Source job ${sourceThreadId} was not found.`);
+        }
+        if (!sourceThread) {
+          throw new Error("request_self_improvement requires a blocked source job. Direct operator requests should be delegated as normal work.");
+        }
+        const workerReport = access.store.getWorkerReport(sourceThread.id);
+        if (workerReport?.status !== "blocked") {
+          throw new Error("request_self_improvement requires a blocked worker report.");
         }
         const requestState = getSelfImprovementRequestState();
         if (requestState.hasOpenSourceRequest(sourceThread?.id ?? null)) {
@@ -177,8 +184,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           };
         }
 
-        const workerReport = sourceThread ? access.store.getWorkerReport(sourceThread.id) : null;
-        const classification = sourceThread ? classifyManorBlocker({ thread: sourceThread, workerReport }) : null;
+        const classification = classifyManorBlocker({ thread: sourceThread, workerReport });
         const request = requestState.create({
           trigger: typedParams.trigger,
           symptoms: typedParams.symptoms,

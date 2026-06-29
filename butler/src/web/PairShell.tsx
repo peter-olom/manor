@@ -36,7 +36,7 @@ import type { WorkerChecklistItem, WorkerItem, WorkerJobPayload, WorkerProofReco
 
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
 import type { MemorySection } from "../shared/memory";
-import type { SelfImprovementQueueResponse } from "../shared/self-improvement";
+import type { SelfImprovementQueueResponse, SelfImprovementRequestView } from "../shared/self-improvement";
 import type {
   PairDetail,
   PairDetailResponse,
@@ -923,6 +923,25 @@ export function PairShell() {
     setPair((current) => (current && current.id === payload.pair.id ? { ...current, messages: [...payload.pair.messages, ...current.messages], loadedStart: payload.pair.loadedStart, hasMore: payload.pair.hasMore } : current));
   }
 
+  async function openSelfImprovementSession(request: SelfImprovementRequestView) {
+    if (request.pairId) {
+      await loadPairs();
+      const payload = await getJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(request.pairId)}?limit=${PAGE_SIZE}`);
+      setSelectedPairId(payload.pair.id);
+      setPair(payload.pair);
+      setViewMode("worker");
+      setLastWorkstreamMode("worker");
+      setMobileSidebarOpen(false);
+      setEditingTitle(false);
+      setTitleDraft("");
+      setTitleError(null);
+      return;
+    }
+    if (request.threadId) {
+      await postJson("/api/windows/open", { threadId: request.threadId });
+    }
+  }
+
   async function sendButler() {
     if (!pair) return;
     const text = draft.trim();
@@ -1118,6 +1137,7 @@ export function PairShell() {
                 data={improveQueue}
                 selectedId={selectedImproveRequestId}
                 onReload={loadImproveQueue}
+                onOpenSession={openSelfImprovementSession}
               />
             </div>
             <TerminalPane

@@ -503,7 +503,7 @@ registerSelfImprovementRoutes({
   requests: selfImprovementRequests,
   hostController,
   store,
-  codexClient,
+  codexClient, pairSessions,
   imageStore,
   fileStore,
   artifactsDir

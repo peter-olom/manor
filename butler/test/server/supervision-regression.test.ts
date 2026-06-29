@@ -829,7 +829,7 @@ test("system prompt biases autonomous domain resolution before job inventory", a
   assert.match(prompt, /Do not collapse real people or folders into job labels/);
 });
 
-test("system prompt routes direct Manor improvement requests to the approval queue", async () => {
+test("system prompt routes direct Manor improvement requests to normal work", async () => {
   const store = await createStore();
   const prompt = buildSystemPrompt(store, "No callbacks.");
   const task = buildSelfImprovementTask({
@@ -840,7 +840,9 @@ test("system prompt routes direct Manor improvement requests to the approval que
   assert.match(prompt, /request_self_improvement/);
   assert.match(prompt, /request_manor_restart/);
   assert.match(prompt, /read_manor_restart_status/);
-  assert.match(prompt, /direct Manor, Butler, Codex worker, preview, runtime broker, supervision, restart-controller, or dogfooding improvements/);
+  assert.match(prompt, /direct operator requests to improve Manor, Butler, Codex worker behavior, preview, runtime broker, supervision, restart-controller, or dogfooding/);
+  assert.match(prompt, /start normal work with delegate_to_codex/);
+  assert.match(prompt, /self-improvement queue is only for blocked worker reports/);
   assert.match(prompt, /missing credentials, operator approval, external outages, or app-specific bugs outside Manor/);
   assert.match(task, /If the change has any UI implication/);
   assert.match(task, /screenshot or video proof/);
@@ -1185,7 +1187,7 @@ test("callback review prompt queues self-improvement for Manor platform blockers
   });
 
   assert.match(prompt, /Manor blocker classifier: high confidence/);
-  assert.match(prompt, /use request_self_improvement/);
+  assert.match(prompt, /use request_self_improvement with the source job id/);
   assert.match(prompt, /symptoms, logs, observations, suspected cause, proposed change, and risk/);
 });
 

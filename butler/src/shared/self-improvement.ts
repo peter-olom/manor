@@ -30,6 +30,7 @@ export interface SelfImprovementRequestView {
   startedAt: number | null;
   completedAt: number | null;
   threadId: string | null;
+  pairId: string | null;
   workspaceCwd: string | null;
   branchName: string | null;
   commitSha: string | null;

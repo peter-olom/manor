@@ -73,6 +73,7 @@ function normalizeRequest(raw: Partial<SelfImprovementRequestView> & { id?: stri
     startedAt: typeof raw.startedAt === "number" ? raw.startedAt : null,
     completedAt: typeof raw.completedAt === "number" ? raw.completedAt : null,
     threadId: nullableText(raw.threadId),
+    pairId: nullableText(raw.pairId),
     workspaceCwd: nullableText(raw.workspaceCwd),
     branchName: nullableText(raw.branchName),
     commitSha: nullableText(raw.commitSha),

@@ -26,11 +26,13 @@ function DetailRow({ label, value }: { label: string; value: string | null | und
 export function SelfImprovementQueue({
   data,
   selectedId,
-  onReload
+  onReload,
+  onOpenSession
 }: {
   data: SelfImprovementQueueResponse | null;
   selectedId: string | null;
   onReload: () => Promise<void>;
+  onOpenSession: (request: SelfImprovementRequestView) => Promise<void>;
 }) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -54,8 +56,11 @@ export function SelfImprovementQueue({
     setBusyAction(action);
     setError(null);
     try {
-      await postJson(`/api/self-improvement/requests/${encodeURIComponent(selected.id)}/${action}`, body);
+      const payload = await postJson<{ request?: SelfImprovementRequestView }>(`/api/self-improvement/requests/${encodeURIComponent(selected.id)}/${action}`, body);
       await onReload();
+      if (action === "approve" && payload?.request?.pairId) {
+        await onOpenSession(payload.request);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -64,11 +69,11 @@ export function SelfImprovementQueue({
   }
 
   async function openSession(request: SelfImprovementRequestView) {
-    if (!request.threadId) return;
+    if (!request.threadId && !request.pairId) return;
     setBusyAction("open");
     setError(null);
     try {
-      await postJson("/api/windows/open", { threadId: request.threadId });
+      await onOpenSession(request);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -94,7 +99,7 @@ export function SelfImprovementQueue({
                   <p>{formatSelfImprovementTime(selected.requestedAt)}</p>
                 </div>
                 <div className="improve-actions">
-                  {selected.threadId ? <button className="button" type="button" disabled={busyAction === "open"} onClick={() => void openSession(selected)}>Open session</button> : null}
+                  {selected.threadId || selected.pairId ? <button className="button" type="button" disabled={busyAction === "open"} onClick={() => void openSession(selected)}>Open session</button> : null}
                   {selected.status === "pending" ? <button className="button is-primary" type="button" disabled={!eligibility?.enabled || busyAction === "approve"} onClick={() => void runAction("approve")}>Approve</button> : null}
                   {selected.status === "running" || selected.status === "changes_ready" || selected.status === "committed" ? <button className="button is-danger" type="button" disabled={busyAction === "discard"} onClick={() => void runAction("discard")}>Discard</button> : null}
                 </div>

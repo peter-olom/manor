@@ -110,6 +110,25 @@ export class PairSessionManager {
     return this.getPairDetail(pair.id, null, 120) as Promise<PairDetail>;
   }
 
+  async createWorkerPair(input: {
+    title?: string | null;
+    defaultCwd?: string | null;
+    threadId: string;
+    task?: string | null;
+    cwd?: string | null;
+    handoffPrompt?: string | null;
+  }): Promise<PairDetail> {
+    const pair = this.options.pairStore.createPair({ title: input.title, defaultCwd: input.defaultCwd });
+    this.options.pairStore.attachWorker(pair.id, {
+      threadId: input.threadId,
+      task: input.task,
+      cwd: input.cwd,
+      handoffPrompt: input.handoffPrompt
+    });
+    await this.ensureService(pair.id);
+    return this.getPairDetail(pair.id, null, 120) as Promise<PairDetail>;
+  }
+
   async getPairDetail(pairId: string, before: number | null, limit: number): Promise<PairDetail | null> {
     const pair = this.options.pairStore.getPair(pairId);
     if (!pair) return null;
