@@ -708,5 +708,3 @@ function WorkerTimelineView({ timeline, proofRecords }: { timeline: WorkerTimeli
     </div>
   );
 }
-
-export type WorkerItemExport = WorkerItem;

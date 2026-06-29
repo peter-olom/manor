@@ -689,5 +689,3 @@ export function MemoryDashboard({
     </div>
   );
 }
-
-export const __dashboardInternals = { PROJECT_ROW, JOB_ROW, BUTLER_ROW };
