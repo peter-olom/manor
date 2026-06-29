@@ -153,7 +153,7 @@ function statusLabel(status: PairStatus | null | undefined): string {
 }
 
 function shapeWorkerTimeline(thread: WorkerThread | null): WorkerTimeline {
-  if (!thread) return { turns: [], report: null, latestReport: null, payload: null, checklist: null, fallback: [] };
+  if (!thread) return { turns: [], report: null, payload: null, checklist: null, fallback: [] };
   const checklist: WorkerChecklistItem[] | null = thread.supervisionChecklist?.items?.length
     ? thread.supervisionChecklist.items.map((item) => ({
         id: item.id,
@@ -209,7 +209,6 @@ function shapeWorkerTimeline(thread: WorkerThread | null): WorkerTimeline {
   return {
     turns,
     report: report && !turns.some((turn) => turn.id === report.turnId) ? report : null,
-    latestReport: report,
     payload: thread.jobPayload ?? null,
     checklist,
     fallback: []
@@ -820,13 +819,12 @@ export function PairShell() {
   }, [loadWorker, manorSurface, pair?.id, pair?.worker?.threadId, viewMode]);
 
   const workerTimeline = useMemo<WorkerTimeline>(() => {
-    if (!pair?.worker) return { turns: [], report: null, latestReport: null, payload: null, checklist: null, fallback: [] };
+    if (!pair?.worker) return { turns: [], report: null, payload: null, checklist: null, fallback: [] };
     const timeline = shapeWorkerTimeline(workerThread);
     if (timeline.turns.length > 0 || timeline.report) return timeline;
     return {
       turns: [],
       report: null,
-      latestReport: timeline.latestReport,
       payload: null,
       checklist: timeline.checklist,
       fallback: [

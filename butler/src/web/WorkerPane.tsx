@@ -89,7 +89,6 @@ export type WorkerJobPayloadSnapshot = Pick<
 export type WorkerTimeline = {
   turns: WorkerTurnGroup[];
   report: WorkerReport | null;
-  latestReport: WorkerReport | null;
   payload: WorkerJobPayload | null;
   checklist: WorkerChecklistItem[] | null;
   fallback: WorkerItem[];
@@ -259,7 +258,6 @@ function payloadLabel(tag: string): string {
   if (tag === "proof") return "Proof";
   if (tag === "constraints") return "Constraints";
   if (tag === "notes") return "Notes";
-  if (tag === "report") return "Report";
   return tag;
 }
 
@@ -272,7 +270,6 @@ function payloadSectionText(payload: WorkerPayloadDetailsView, tag: string): str
   if (tag === "proof") return payload.proof.length ? payload.proof.map((item) => `- ${item}`).join("\n") : "No proof requested.";
   if (tag === "constraints") return payload.constraints.length ? payload.constraints.map((item) => `- ${item}`).join("\n") : "No constraints.";
   if (tag === "notes") return payload.notes.length ? payload.notes.map((item) => `- ${item}`).join("\n") : "No notes.";
-  if (tag === "report" && payload.report) return `${payload.report.status}: ${payload.report.summary}${payload.report.details ? `\n\n${payload.report.details}` : ""}`;
   return payload.display.summary;
 }
 
@@ -319,21 +316,17 @@ const WorkerPayloadChecklist = memo(function WorkerPayloadChecklist({ items }: {
 
 const WorkerPayloadDetails = memo(function WorkerPayloadDetails({
   payload,
-  checklist,
-  report
+  checklist
 }: {
   payload: WorkerPayloadDetailsView;
   checklist: WorkerChecklistItem[] | null;
-  report: WorkerReport | null;
 }) {
-  const visibleReport = payload.report ?? report;
-  const visiblePayload = visibleReport ? { ...payload, report: visibleReport } : payload;
   const tags = useMemo(() => {
     const base = payload.display.tags.length > 0 ? payload.display.tags : ["checklist", "proof", "constraints", "notes"];
     const hasChecklist = (checklist ?? payload.checklist).length > 0;
-    const ordered = hasChecklist ? ["checklist", ...base.filter((tag) => tag !== "checklist")] : base;
-    return visibleReport ? [...ordered.filter((tag) => tag !== "report"), "report"] : ordered.filter((tag) => tag !== "report");
-  }, [checklist, payload.checklist, payload.display.tags, visibleReport]);
+    const visibleTags = base.filter((tag) => tag !== "report");
+    return hasChecklist ? ["checklist", ...visibleTags.filter((tag) => tag !== "checklist")] : visibleTags;
+  }, [checklist, payload.checklist, payload.display.tags]);
   const [activeTag, setActiveTag] = useState(tags[0] ?? "checklist");
   const selectedTag = tags.includes(activeTag) ? activeTag : tags[0] ?? "checklist";
   const visibleChecklist = checklist ?? payload.checklist;
@@ -366,7 +359,7 @@ const WorkerPayloadDetails = memo(function WorkerPayloadDetails({
         {selectedTag === "checklist" ? (
           <WorkerPayloadChecklist items={visibleChecklist} />
         ) : (
-          <Markdown className="worker-payload-body" text={payloadSectionText(visiblePayload, selectedTag)} />
+          <Markdown className="worker-payload-body" text={payloadSectionText(payload, selectedTag)} />
         )}
       </div>
     </details>
@@ -384,10 +377,9 @@ type WorkerMessageRowProps = {
   streaming?: boolean;
   payload?: WorkerJobPayload | null;
   checklist?: WorkerChecklistItem[] | null;
-  report?: WorkerReport | null;
 };
 
-const WorkerMessageRow = memo(function WorkerMessageRow({ item, streaming, payload, checklist, report }: WorkerMessageRowProps) {
+const WorkerMessageRow = memo(function WorkerMessageRow({ item, streaming, payload, checklist }: WorkerMessageRowProps) {
   const showPayload = isButlerMessage(item) && payload;
   return (
     <article className={`worker-message ${messageClass(item)} ${streaming ? "is-streaming" : ""}`}>
@@ -396,7 +388,7 @@ const WorkerMessageRow = memo(function WorkerMessageRow({ item, streaming, paylo
         <time className="worker-message-time">{formatTime(item.at)}</time>
       </header>
       <Markdown className="worker-message-body" text={item.text} />
-      {showPayload ? <WorkerPayloadDetails payload={payload} checklist={checklist ?? null} report={report ?? null} /> : null}
+      {showPayload ? <WorkerPayloadDetails payload={payload} checklist={checklist ?? null} /> : null}
     </article>
   );
 });
@@ -445,10 +437,9 @@ type WorkerActiveTurnProps = {
   index: number;
   payload: WorkerJobPayload | null;
   checklist: WorkerChecklistItem[] | null;
-  report: WorkerReport | null;
 };
 
-const WorkerActiveTurn = memo(function WorkerActiveTurn({ turn, index, payload, checklist, report }: WorkerActiveTurnProps) {
+const WorkerActiveTurn = memo(function WorkerActiveTurn({ turn, index, payload, checklist }: WorkerActiveTurnProps) {
   const sorted = useMemo(() => [...turn.items].sort((a, b) => a.at - b.at), [turn.items]);
   return (
     <section className="worker-turn is-active" aria-label={`Worker turn ${index + 1} in progress`}>
@@ -461,7 +452,7 @@ const WorkerActiveTurn = memo(function WorkerActiveTurn({ turn, index, payload, 
       <div className="worker-turn-items">
         {sorted.map((item) =>
           isMessage(item.type) ? (
-            <WorkerMessageRow key={item.id} item={item} payload={payloadForMessage(payload, item, turn.id)} checklist={checklist} report={report} streaming={item.status === "started"} />
+            <WorkerMessageRow key={item.id} item={item} payload={payloadForMessage(payload, item, turn.id)} checklist={checklist} streaming={item.status === "started"} />
           ) : (
             <WorkerCompactRow key={item.id} item={item} />
           )
@@ -476,10 +467,9 @@ type WorkerCompletedTurnProps = {
   index: number;
   payload: WorkerJobPayload | null;
   checklist: WorkerChecklistItem[] | null;
-  report: WorkerReport | null;
 };
 
-const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, payload, checklist, report }: WorkerCompletedTurnProps) {
+const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, payload, checklist }: WorkerCompletedTurnProps) {
   const sorted = useMemo(() => [...turn.items].sort((a, b) => a.at - b.at), [turn.items]);
   const finalIndex = turn.finalIndex;
   const finalItem = finalIndex !== null ? sorted[finalIndex] ?? null : null;
@@ -503,7 +493,7 @@ const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, pay
         <time className="worker-turn-time">{formatTime(turn.startedAt)}</time>
         {durationMs > 0 ? <span className="worker-turn-duration">{formatDuration(durationMs)}</span> : null}
       </header>
-      {leadingMessages.map((item) => <WorkerMessageRow key={item.id} item={item} payload={payloadForMessage(payload, item, turn.id)} checklist={checklist} report={report} />)}
+      {leadingMessages.map((item) => <WorkerMessageRow key={item.id} item={item} payload={payloadForMessage(payload, item, turn.id)} checklist={checklist} />)}
       {supporting.length > 0 ? (
         <details className="worker-activity" {...(defaultOpen ? { open: true } : {})}>
           <summary>
@@ -512,7 +502,7 @@ const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, pay
           <WorkerActivityList items={supporting} />
         </details>
       ) : null}
-      {finalItem ? <WorkerMessageRow key={finalItem.id} item={finalItem} payload={payloadForMessage(payload, finalItem, turn.id)} checklist={checklist} report={report} /> : null}
+      {finalItem ? <WorkerMessageRow key={finalItem.id} item={finalItem} payload={payloadForMessage(payload, finalItem, turn.id)} checklist={checklist} /> : null}
     </section>
   );
 });
@@ -521,17 +511,15 @@ const WorkerTurnView = memo(function WorkerTurnView({
   turn,
   index,
   payload,
-  checklist,
-  report
+  checklist
 }: {
   turn: WorkerTurnGroup;
   index: number;
   payload: WorkerJobPayload | null;
   checklist: WorkerChecklistItem[] | null;
-  report: WorkerReport | null;
 }) {
-  if (turn.completedAt === null) return <WorkerActiveTurn turn={turn} index={index} payload={payload} checklist={checklist} report={report} />;
-  return <WorkerCompletedTurn turn={turn} index={index} payload={payload} checklist={checklist} report={report} />;
+  if (turn.completedAt === null) return <WorkerActiveTurn turn={turn} index={index} payload={payload} checklist={checklist} />;
+  return <WorkerCompletedTurn turn={turn} index={index} payload={payload} checklist={checklist} />;
 });
 
 const FallbackRow = memo(function FallbackRow({ row }: { row: WorkerItem }) {
@@ -595,7 +583,7 @@ export function WorkerPane({ pair, timeline, onCodexEffortChange }: WorkerPanePr
 }
 
 function WorkerTimelineView({ timeline }: { timeline: WorkerTimeline }) {
-  const { turns, report, latestReport, payload, checklist, fallback } = timeline;
+  const { turns, report, payload, checklist, fallback } = timeline;
   const lastTurn = turns.at(-1);
   const lastItem = lastTurn?.items.at(-1);
   const bottomKey = `${turns.length}:${lastItem?.id ?? ""}:${lastItem?.at ?? 0}:${report?.updatedAt ?? 0}:${fallback.length}`;
@@ -626,7 +614,6 @@ function WorkerTimelineView({ timeline }: { timeline: WorkerTimeline }) {
             index={index}
             payload={payload}
             checklist={checklist}
-            report={latestReport}
           />
         ))}
         {report ? <WorkerMessageRow item={reportToWorkerItem(report)} /> : null}
