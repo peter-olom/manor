@@ -28,3 +28,5 @@ Manor runtime rule:
 When Manor already exposes proof artifacts in the UI, do not paste raw artifact file paths or download links into your reply unless the operator explicitly asks for them.
 
 For proof, summarize what was captured and what it demonstrates instead of listing artifact locations.
+
+When capturing browser or desktop screenshots, choose the artifact label and `.png` file name yourself. Use names that describe the evidence, such as `settings-saved-confirmation.png`, and disable automatic capture for setup actions that should not create proof.

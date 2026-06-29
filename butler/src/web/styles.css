@@ -2705,6 +2705,137 @@ a:hover {
   line-height: 1.4;
 }
 
+.worker-proof-bundles {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  max-width: min(680px, 100%);
+  align-self: flex-start;
+}
+
+.worker-proof-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-subtle);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.worker-proof-list {
+  display: grid;
+  gap: 8px;
+}
+
+.worker-proof-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+}
+
+.worker-proof-card.is-ok {
+  border-color: color-mix(in srgb, var(--success) 34%, var(--border));
+}
+
+.worker-proof-card.is-failed {
+  border-color: color-mix(in srgb, var(--danger) 46%, var(--border));
+}
+
+.worker-proof-card-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.worker-proof-card-head h3,
+.worker-proof-card-head p,
+.worker-proof-review {
+  margin: 0;
+}
+
+.worker-proof-card-head h3 {
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.worker-proof-card-head p {
+  margin-top: 2px;
+  color: var(--text-subtle);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.3;
+}
+
+.worker-proof-card-head > span {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--success-soft);
+  color: var(--success);
+  padding: 3px 7px;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-transform: capitalize;
+}
+
+.worker-proof-shots {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 6px;
+}
+
+.worker-proof-shots a {
+  display: block;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.worker-proof-shots img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.worker-proof-artifacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.worker-proof-artifacts span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  padding: 3px 7px;
+  font-size: 10.5px;
+  line-height: 1.2;
+}
+
+.worker-proof-review {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .worker-activity {
   align-self: flex-start;
   margin: 2px 0 4px;

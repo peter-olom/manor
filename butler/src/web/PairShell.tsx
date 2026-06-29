@@ -32,7 +32,7 @@ import {
 import { TerminalPane } from "./TerminalPane";
 import { useEventStream } from "./useEventStream";
 import { WorkerPane } from "./WorkerPane";
-import type { WorkerChecklistItem, WorkerItem, WorkerJobPayload, WorkerTimeline, WorkerTurnGroup } from "./WorkerPane";
+import type { WorkerChecklistItem, WorkerItem, WorkerJobPayload, WorkerProofRecord, WorkerTimeline, WorkerTurnGroup } from "./WorkerPane";
 
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
 import type { MemorySection } from "../shared/memory";
@@ -71,6 +71,10 @@ type WorkerThread = {
   supervisionChecklist?: {
     items?: Array<{ id: string; text: string; status: string; butlerNote?: string | null; queuedInstruction?: string | null }>;
   } | null;
+};
+
+type RuntimeProofSnapshot = {
+  previewProofsByThreadId?: Record<string, WorkerProofRecord[]>;
 };
 
 const PAGE_SIZE = 120;
@@ -686,13 +690,23 @@ export function PairShell() {
   const [memorySearch, setMemorySearch] = useState("");
   const [memoryProjectFilter, setMemoryProjectFilter] = useState("");
   const [memorySummary, setMemorySummary] = useState<MemoryDashboardSummary | null>(null);
+  const [proofsByThreadId, setProofsByThreadId] = useState<Record<string, WorkerProofRecord[]>>({});
 
   const manorSurface = manorSurfaceForView(viewMode);
+
+  const applyRuntimeSnapshot = useCallback((runtime: unknown) => {
+    const typed = runtime as RuntimeProofSnapshot | null;
+    if (!typed || typeof typed !== "object" || !typed.previewProofsByThreadId) return;
+    setProofsByThreadId(typed.previewProofsByThreadId);
+  }, []);
 
   useEventStream({
     onButlerPatch: (patch) => {
       if (patch.threadId !== BUTLER_PATCH_THREAD_ID) return;
       butlerPatchHandler?.(patch);
+    },
+    onInitial: (payload) => {
+      if (payload.runtime) applyRuntimeSnapshot(payload.runtime);
     }
   });
 
@@ -785,6 +799,17 @@ export function PairShell() {
     return () => window.clearInterval(interval);
   }, [loadImproveQueue]);
 
+  const loadRuntime = useCallback(async () => {
+    const payload = await getJson<RuntimeProofSnapshot>("/api/runtime");
+    startTransition(() => applyRuntimeSnapshot(payload));
+  }, [applyRuntimeSnapshot]);
+
+  useEffect(() => {
+    void loadRuntime().catch(() => undefined);
+    const interval = window.setInterval(() => void loadRuntime().catch(() => undefined), 5000);
+    return () => window.clearInterval(interval);
+  }, [loadRuntime]);
+
   useEffect(() => {
     if (!selectedPairId) {
       setPair(null);
@@ -845,6 +870,11 @@ export function PairShell() {
       ]
     };
   }, [pair?.worker, workerThread]);
+
+  const workerProofRecords = useMemo(
+    () => (pair?.worker?.threadId ? proofsByThreadId[pair.worker.threadId] ?? [] : []),
+    [pair?.worker?.threadId, proofsByThreadId]
+  );
 
   async function createPair() {
     setBusy(true);
@@ -1058,6 +1088,7 @@ export function PairShell() {
                   <WorkerPane
                     pair={pair}
                     timeline={workerTimeline}
+                    proofRecords={workerProofRecords}
                     onCodexEffortChange={(effort) => void onCodexEffortChange(effort)}
                   />
                 ) : null}

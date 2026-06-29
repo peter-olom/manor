@@ -529,7 +529,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       label: "Browser session action",
       description: "Run one explicit action in an active browser session, including manual screenshots.",
       promptSnippet:
-        "browser_session_action: use this for stepwise browser control. Use actionType=screenshot at any checkpoint where visual proof should be captured.",
+        "browser_session_action: use this for stepwise browser control. Whenever a screenshot will be captured, provide a specific label and .png fileName chosen for that evidence; set autoCapture=false only when no screenshot should be stored.",
       parameters: Type.Object({
         sessionId: Type.String({ minLength: 1 }),
         actionType: Type.String({ minLength: 1 }),
@@ -841,7 +841,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       label: "Current desktop screen",
       description: "Capture the current headed desktop screen and return screenshot, window list, pointer, and display geometry.",
       promptSnippet:
-        "desktop_current_screen: use this before clicking in a headed desktop session and whenever the operator asks what is visible.",
+        "desktop_current_screen: use this before clicking in a headed desktop session and whenever the operator asks what is visible. Provide a specific label and .png fileName chosen for that evidence.",
       parameters: Type.Object({
         sessionId: Type.String({ minLength: 1 }),
         label: Type.Optional(Type.String()),
@@ -876,7 +876,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       label: "Desktop session action",
       description: "Run one action in a headed desktop session, such as screenshot, wait, click, drag, key, type, window control, or clipboard control.",
       promptSnippet:
-        "desktop_session_action: use screenshot checkpoints, window listing/focus, clipboard, and simple desktop input while native Electron proof is running.",
+        "desktop_session_action: use screenshot checkpoints, window listing/focus, clipboard, and simple desktop input while native Electron proof is running. For screenshot/current_screen actions, provide a specific label and .png fileName chosen for that evidence.",
       parameters: Type.Object({
         sessionId: Type.String({ minLength: 1 }),
         actionType: Type.String({ minLength: 1 }),

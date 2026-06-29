@@ -87,7 +87,9 @@ Proof tips:
   Use --session-cookie <token> as shorthand for better-auth.session_token=<token>.
   Cookies are injected into the browser context directly; headers remain separate.
   Proof is session-driven: start browser sidecar, run actions, optionally capture screenshots, then stop session.
+  Browser actions capture screenshots by default. When capture is enabled, choose a meaningful --label and plain .png --file-name for the evidence. Use --no-capture for setup actions that should not store a screenshot.
   Native Electron or VNC-visible proof is desktop-driven: check desktop status, start a desktop session attached to this job workspace, capture screenshots/actions there, then stop it.
+  Desktop screenshot and current-screen actions also require a meaningful --label and plain .png --file-name.
   If the browser proof sidecar is unavailable, retry briefly and then report the proof blocker; do not install browsers or OS packages inside a preview as the default fallback.
   Desktop proof is optional/profile-gated. Use it only when desktop status says it is ready.
   Text proof is for simple read-only notes and inspection summaries; it stores the note directly in Manor artifacts without creating side files under /repos.
@@ -97,7 +99,7 @@ Proof tips:
   Do not use direct curl or fetch from the shared Codex shell to judge live-site browser reachability. That shell is behind restricted egress by design.
   Example:
     manor-harness browser use start --url https://example.com/dashboard --mode headful --session-cookie buyer-token --json
-    manor-harness browser use action <sessionId> --type screenshot --label "after-login" --file-name after-login.png --json
+    manor-harness browser use action <sessionId> --type screenshot --label "Dashboard after login" --file-name dashboard-after-login.png --json
     manor-harness browser use stop <sessionId> --reason "proof complete" --json
 
 Add --json to print the Butler response payload as JSON.

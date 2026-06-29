@@ -384,6 +384,9 @@ async function collectArtifacts(descriptors) {
 
 async function captureScreenshot(session, fileName, label) {
   const filePath = path.join(session.outputDir, fileName);
+  if (await fileExists(filePath)) {
+    throw new Error(`Screenshot fileName already exists in this session: ${fileName}`);
+  }
   const result = await runCommand("scrot", ["-z", filePath], { home: session.profileHome });
   if (result.exitCode !== 0) {
     session.captureErrors.push(result.stderr || `scrot exited ${result.exitCode}`);
@@ -397,6 +400,28 @@ async function captureScreenshot(session, fileName, label) {
   };
   session.screenshotArtifacts.push(descriptor);
   return buildArtifact(descriptor.kind, descriptor.label, descriptor.filePath, descriptor.contentType);
+}
+
+function requireScreenshotLabel(value) {
+  const label = normalizeString(value);
+  if (!label) {
+    throw new Error("Captured screenshots require a worker-supplied label.");
+  }
+  return label;
+}
+
+function requireScreenshotFileName(value) {
+  const fileName = normalizeString(value);
+  if (!fileName) {
+    throw new Error("Captured screenshots require a worker-supplied fileName.");
+  }
+  if (fileName.includes("/") || fileName.includes("\\") || fileName === "." || fileName === "..") {
+    throw new Error("Screenshot fileName must be a plain file name.");
+  }
+  if (!fileName.toLowerCase().endsWith(".png")) {
+    throw new Error("Screenshot fileName must end in .png.");
+  }
+  return fileName;
 }
 
 async function getWindowList(session) {
@@ -804,13 +829,13 @@ async function runAction(session, input) {
       session.lockExpiresAt = null;
       output = { lockOwner: null };
     } else if (type === "screenshot") {
-      const fileName = normalizeString(input.fileName) || `${Date.now()}-desktop.png`;
-      const artifact = await captureScreenshot(session, fileName, normalizeString(input.label) || "Desktop screenshot");
+      const fileName = requireScreenshotFileName(input.fileName);
+      const artifact = await captureScreenshot(session, fileName, requireScreenshotLabel(input.label));
       output = { artifact };
     } else if (type === "current_screen") {
-      const fileName = normalizeString(input.fileName) || `${Date.now()}-current-screen.png`;
+      const fileName = requireScreenshotFileName(input.fileName);
       const [artifact, windows, pointer, geometry] = await Promise.all([
-        captureScreenshot(session, fileName, normalizeString(input.label) || "Current desktop screen"),
+        captureScreenshot(session, fileName, requireScreenshotLabel(input.label)),
         getWindowList(session).catch((error) => ({ error: error instanceof Error ? error.message : String(error), windows: [] })),
         getPointerLocation(session),
         getDisplayGeometry(session)

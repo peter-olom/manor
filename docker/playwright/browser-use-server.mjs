@@ -658,6 +658,9 @@ async function captureScreenshot(session, fileName, label) {
   }
 
   const filePath = path.join(session.outputDir, fileName);
+  if (await fileExists(filePath)) {
+    throw new Error(`Screenshot fileName already exists in this session: ${fileName}`);
+  }
   const captured = await session.page.screenshot({ path: filePath, fullPage: true }).then(() => true).catch(() => false);
   if (!captured) {
     return;
@@ -744,16 +747,20 @@ function attachPageObservers(session) {
   });
 }
 
-function humanizeActionType(type) {
-  return String(type || "")
-    .trim()
-    .replace(/_/g, " ")
-    .toLowerCase();
+function requireScreenshotLabel(value) {
+  const label = String(value || "").trim();
+  if (!label) throw new Error("Captured screenshots require a worker-supplied label.");
+  return label;
 }
 
-function formatAutoCaptureLabel(session, type) {
-  const actionNumber = session.actions.length + 1;
-  return `After ${humanizeActionType(type)} ${actionNumber}`;
+function requireScreenshotFileName(value) {
+  const fileName = String(value || "").trim();
+  if (!fileName) throw new Error("Captured screenshots require a worker-supplied fileName.");
+  if (fileName.includes("/") || fileName.includes("\\") || fileName === "." || fileName === "..") {
+    throw new Error("Screenshot fileName must be a plain file name.");
+  }
+  if (!fileName.toLowerCase().endsWith(".png")) throw new Error("Screenshot fileName must end in .png.");
+  return fileName;
 }
 
 async function cleanupFailedSession(session, error) {
@@ -989,6 +996,9 @@ async function runAction(session, input) {
     typeof input.timeoutMs === "number" && Number.isFinite(input.timeoutMs)
       ? Math.max(250, Math.trunc(input.timeoutMs))
       : undefined;
+  const autoCapture = input.autoCapture !== false;
+  const screenshotLabel = type === "screenshot" || autoCapture ? requireScreenshotLabel(input.label) : null;
+  const screenshotFileName = type === "screenshot" || autoCapture ? requireScreenshotFileName(input.fileName) : null;
   const actionLabel = `${type}${typeof input.selector === "string" && input.selector.trim() ? ` ${input.selector.trim()}` : ""}`;
   const phase = session.phaseTracker.start("action", actionLabel);
 
@@ -1111,9 +1121,7 @@ async function runAction(session, input) {
         })
       );
     } else if (type === "screenshot") {
-      const label = String(input.label || "Custom screenshot").trim() || "Custom screenshot";
-      const fileName = String(input.fileName || `${now()}-shot.png`).trim() || `${now()}-shot.png`;
-      await captureScreenshot(session, fileName, label);
+      await captureScreenshot(session, screenshotFileName, screenshotLabel);
     } else {
       throw new Error(`Unsupported action type: ${type}`);
     }
@@ -1122,9 +1130,8 @@ async function runAction(session, input) {
     session.url = session.page.url() || session.url;
     session.lastActivityAt = now();
 
-    const autoCapture = input.autoCapture !== false;
     if (autoCapture && type !== "screenshot") {
-      await captureScreenshot(session, `${now()}-${type}.png`, formatAutoCaptureLabel(session, type));
+      await captureScreenshot(session, screenshotFileName, screenshotLabel);
     }
 
     session.actions.push({

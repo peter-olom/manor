@@ -38,6 +38,31 @@ export type WorkerReport = {
   updatedAt: number;
 };
 
+export type WorkerProofArtifact = {
+  kind: string;
+  label: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number | null;
+  url: string | null;
+  downloadUrl: string | null;
+  availability: string;
+};
+
+export type WorkerProofRecord = {
+  id: string;
+  previewTitle: string;
+  verification: {
+    runId: string;
+    ok: boolean;
+    failureKind: string;
+    checkedAt: number;
+    url: string;
+    artifacts: WorkerProofArtifact[];
+  };
+  proofReviews?: Array<{ verdict: string; visibleState?: string | null; concern?: string | null }>;
+};
+
 export type WorkerChecklistItem = {
   id: string;
   text: string;
@@ -97,6 +122,7 @@ export type WorkerTimeline = {
 type WorkerPaneProps = {
   pair: PairDetail;
   timeline: WorkerTimeline;
+  proofRecords: WorkerProofRecord[];
   onCodexEffortChange: (effort: string) => void;
 };
 
@@ -366,6 +392,62 @@ const WorkerPayloadDetails = memo(function WorkerPayloadDetails({
   );
 });
 
+function proofStatusLabel(proof: WorkerProofRecord): string {
+  const review = proof.proofReviews?.at(-1);
+  if (review?.verdict) return review.verdict;
+  return proof.verification.ok ? "recorded" : proof.verification.failureKind;
+}
+
+function proofArtifactLabel(artifact: WorkerProofArtifact): string {
+  return artifact.label || artifact.fileName || artifact.kind;
+}
+
+const WorkerProofBundleList = memo(function WorkerProofBundleList({ proofs }: { proofs: WorkerProofRecord[] }) {
+  if (proofs.length === 0) return null;
+  const visibleProofs = proofs.slice(0, 4);
+  return (
+    <section className="worker-proof-bundles" aria-label="Proof attached to conversation">
+      <header className="worker-proof-head">
+        <span>Proof attached</span>
+        <span>{proofs.length} bundle{proofs.length === 1 ? "" : "s"}</span>
+      </header>
+      <div className="worker-proof-list">
+        {visibleProofs.map((proof) => {
+          const screenshots = proof.verification.artifacts.filter((artifact) => artifact.kind === "screenshot" && artifact.url && artifact.availability === "available").slice(0, 3);
+          const artifacts = proof.verification.artifacts.filter((artifact) => artifact.availability === "available").slice(0, 5);
+          const review = proof.proofReviews?.at(-1);
+          return (
+            <article key={proof.id} className={`worker-proof-card ${proof.verification.ok ? "is-ok" : "is-failed"}`}>
+              <div className="worker-proof-card-head">
+                <div>
+                  <h3>{proof.previewTitle || "Proof bundle"}</h3>
+                  <p>{proof.verification.runId}</p>
+                </div>
+                <span>{proofStatusLabel(proof)}</span>
+              </div>
+              {screenshots.length > 0 ? (
+                <div className="worker-proof-shots">
+                  {screenshots.map((artifact) => (
+                    <a key={`${proof.id}:${artifact.fileName}`} href={artifact.url ?? undefined} target="_blank" rel="noreferrer" title={proofArtifactLabel(artifact)}>
+                      <img src={artifact.url ?? undefined} alt={proofArtifactLabel(artifact)} />
+                    </a>
+                  ))}
+                </div>
+              ) : null}
+              <div className="worker-proof-artifacts">
+                {artifacts.map((artifact) => (
+                  <span key={`${proof.id}:artifact:${artifact.fileName}`}>{proofArtifactLabel(artifact)}</span>
+                ))}
+              </div>
+              {review?.visibleState ? <p className="worker-proof-review">{review.visibleState}</p> : null}
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+});
+
 function resolveTurnDurationMs(turn: WorkerTurnGroup, finalItem: WorkerItem | null, items: WorkerItem[]): number {
   if (finalItem && finalItem.at >= turn.startedAt) return finalItem.at - turn.startedAt;
   const lastAt = items.reduce((latest, item) => Math.max(latest, item.at), turn.startedAt);
@@ -538,7 +620,7 @@ const FallbackRow = memo(function FallbackRow({ row }: { row: WorkerItem }) {
   );
 });
 
-export function WorkerPane({ pair, timeline, onCodexEffortChange }: WorkerPaneProps) {
+export function WorkerPane({ pair, timeline, proofRecords, onCodexEffortChange }: WorkerPaneProps) {
   if (!pair.worker) {
     return (
       <section className="pane" aria-label="Codex worker lane">
@@ -577,12 +659,12 @@ export function WorkerPane({ pair, timeline, onCodexEffortChange }: WorkerPanePr
           className="worker-budget"
         />
       </div>
-      <WorkerTimelineView timeline={timeline} />
+      <WorkerTimelineView timeline={timeline} proofRecords={proofRecords} />
     </section>
   );
 }
 
-function WorkerTimelineView({ timeline }: { timeline: WorkerTimeline }) {
+function WorkerTimelineView({ timeline, proofRecords }: { timeline: WorkerTimeline; proofRecords: WorkerProofRecord[] }) {
   const { turns, report, payload, checklist, fallback } = timeline;
   const lastTurn = turns.at(-1);
   const lastItem = lastTurn?.items.at(-1);
@@ -617,6 +699,7 @@ function WorkerTimelineView({ timeline }: { timeline: WorkerTimeline }) {
           />
         ))}
         {report ? <WorkerMessageRow item={reportToWorkerItem(report)} /> : null}
+        <WorkerProofBundleList proofs={proofRecords} />
         {turns.length === 0 && !report
           ? fallback.map((row) => <FallbackRow key={row.id} row={row} />)
           : null}
