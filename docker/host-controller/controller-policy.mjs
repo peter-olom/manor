@@ -62,7 +62,7 @@ export function normalizeRestartDelayMs(value) {
   return Math.max(0, Math.min(30_000, Math.trunc(parsed)));
 }
 
-export function detectRuntimeRestartMode(buildFromSource, imageReferences = []) {
+export function detectRuntimeRestartMode(buildFromSource) {
   if (sourceModeEnvValues.has(String(buildFromSource ?? "").trim().toLowerCase())) {
     return "source";
   }
