@@ -18,13 +18,11 @@ async function createStore(): Promise<{ store: ButlerStateStore; stateDir: strin
 function testConfig(): MemorySynthesisConfig {
   return {
     enabled: true,
-    provider: "codex_exec",
     model: "trace-model",
     effort: null,
     timeoutMs: 90_000,
     maxInputChars: 16_000,
     maxCandidatesPerRun: 1,
-    autoPromoteHighConfidence: false,
     promotionAutoResolve: true,
     promotionBatchSize: 20,
     promotionMaxBatchesPerRun: 10,

@@ -181,7 +181,7 @@ export class CodexExecMemoryReviewService {
     this.codexHomeDir = options.codexHomeDir;
     this.enabled = options.enabled ?? true;
     this.timeoutMs = options.timeoutMs ?? 90_000;
-    this.model = normalizeMemoryCodexModel(options.model ?? process.env.MANOR_MEMORY_SYNTHESIS_MODEL ?? process.env.MANOR_MEMORY_REVIEW_MODEL);
+    this.model = normalizeMemoryCodexModel(options.model ?? process.env.MANOR_MEMORY_SYNTHESIS_MODEL);
     this.runner = options.runner ?? ((input) => this.runCodexExec(input));
   }
 

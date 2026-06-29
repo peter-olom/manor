@@ -27,6 +27,7 @@ test("fallbackSessionTitle creates a deterministic short title", () => {
 test("readSessionTitleConfig supports a title-specific model and timeout", () => {
   const config = readSessionTitleConfig({
     MANOR_SESSION_TITLE_MODEL: "5.4 mini",
+    MANOR_MEMORY_SYNTHESIS_MODEL: "gpt-5.5",
     MANOR_SESSION_TITLE_TIMEOUT_MS: "2500"
   } as NodeJS.ProcessEnv);
   assert.equal(config.model, "gpt-5.4-mini");

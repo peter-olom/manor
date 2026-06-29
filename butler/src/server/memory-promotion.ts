@@ -4,6 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 
 import { isUnsupportedCodexModelError, memoryCodexModelArgs, normalizeMemoryCodexModel } from "./memory-codex-model.js";
+import { resolveMemoryServiceModel } from "./memory-synthesis-config.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { JobMemoryPromotionCandidateView, MemorySynthesisConfig, ProjectMemoryView } from "./types.js";
@@ -135,7 +136,7 @@ export class CodexExecMemoryPromotionService {
     this.batchSize = options.config.promotionBatchSize;
     this.maxBatchesPerRun = options.config.promotionMaxBatchesPerRun;
     this.intervalMs = options.config.promotionIntervalMs;
-    this.model = normalizeMemoryCodexModel(options.config.model ?? process.env.MANOR_MEMORY_PROMOTION_MODEL ?? process.env.MANOR_MEMORY_REVIEW_MODEL);
+    this.model = resolveMemoryServiceModel(process.env.MANOR_MEMORY_PROMOTION_MODEL, options.config.model);
     this.runner = options.runner ?? ((input) => this.runCodexExec(input));
   }
 

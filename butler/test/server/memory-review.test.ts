@@ -392,9 +392,9 @@ test("memory review normalizes display model labels before invoking Codex", asyn
   );
   await chmod(fakeCodexPath, 0o755);
   const originalPath = process.env.PATH;
-  const originalModel = process.env.MANOR_MEMORY_REVIEW_MODEL;
+  const originalModel = process.env.MANOR_MEMORY_SYNTHESIS_MODEL;
   process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
-  process.env.MANOR_MEMORY_REVIEW_MODEL = "5.4 mini";
+  process.env.MANOR_MEMORY_SYNTHESIS_MODEL = "5.4 mini";
   try {
     const service = new CodexExecMemoryReviewService({ store, stateDir, codexHomeDir: stateDir });
 
@@ -416,9 +416,9 @@ test("memory review normalizes display model labels before invoking Codex", asyn
   } finally {
     process.env.PATH = originalPath;
     if (originalModel === undefined) {
-      delete process.env.MANOR_MEMORY_REVIEW_MODEL;
+      delete process.env.MANOR_MEMORY_SYNTHESIS_MODEL;
     } else {
-      process.env.MANOR_MEMORY_REVIEW_MODEL = originalModel;
+      process.env.MANOR_MEMORY_SYNTHESIS_MODEL = originalModel;
     }
   }
 });
@@ -450,9 +450,9 @@ test("memory review falls back to default Codex model when normalized slug is un
   );
   await chmod(fakeCodexPath, 0o755);
   const originalPath = process.env.PATH;
-  const originalModel = process.env.MANOR_MEMORY_REVIEW_MODEL;
+  const originalModel = process.env.MANOR_MEMORY_SYNTHESIS_MODEL;
   process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
-  process.env.MANOR_MEMORY_REVIEW_MODEL = "5.4 mini";
+  process.env.MANOR_MEMORY_SYNTHESIS_MODEL = "5.4 mini";
   try {
     const service = new CodexExecMemoryReviewService({ store, stateDir, codexHomeDir: stateDir });
 
@@ -469,9 +469,9 @@ test("memory review falls back to default Codex model when normalized slug is un
   } finally {
     process.env.PATH = originalPath;
     if (originalModel === undefined) {
-      delete process.env.MANOR_MEMORY_REVIEW_MODEL;
+      delete process.env.MANOR_MEMORY_SYNTHESIS_MODEL;
     } else {
-      process.env.MANOR_MEMORY_REVIEW_MODEL = originalModel;
+      process.env.MANOR_MEMORY_SYNTHESIS_MODEL = originalModel;
     }
   }
 });
@@ -496,9 +496,9 @@ test("memory review does not hide non-model codex exec failures", async () => {
   );
   await chmod(fakeCodexPath, 0o755);
   const originalPath = process.env.PATH;
-  const originalModel = process.env.MANOR_MEMORY_REVIEW_MODEL;
+  const originalModel = process.env.MANOR_MEMORY_SYNTHESIS_MODEL;
   process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
-  process.env.MANOR_MEMORY_REVIEW_MODEL = "gpt-5-codex";
+  process.env.MANOR_MEMORY_SYNTHESIS_MODEL = "gpt-5-codex";
   try {
     const service = new CodexExecMemoryReviewService({ store, stateDir, codexHomeDir: stateDir });
 
@@ -513,9 +513,9 @@ test("memory review does not hide non-model codex exec failures", async () => {
   } finally {
     process.env.PATH = originalPath;
     if (originalModel === undefined) {
-      delete process.env.MANOR_MEMORY_REVIEW_MODEL;
+      delete process.env.MANOR_MEMORY_SYNTHESIS_MODEL;
     } else {
-      process.env.MANOR_MEMORY_REVIEW_MODEL = originalModel;
+      process.env.MANOR_MEMORY_SYNTHESIS_MODEL = originalModel;
     }
   }
 });

@@ -104,7 +104,7 @@ export class ButlerRoutingClassifier {
     this.codexHomeDir = options.codexHomeDir;
     this.enabled = options.enabled ?? true;
     this.timeoutMs = options.timeoutMs ?? 60_000;
-    this.model = normalizeMemoryCodexModel(options.model ?? process.env.MANOR_ROUTING_CLASSIFIER_MODEL ?? process.env.MANOR_MEMORY_REVIEW_MODEL);
+    this.model = normalizeMemoryCodexModel(options.model ?? process.env.MANOR_ROUTING_CLASSIFIER_MODEL);
     this.runner = options.runner ?? ((input) => this.runCodexExec(input));
   }
 
