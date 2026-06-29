@@ -85,7 +85,7 @@ import { ensureTaskWorktree, resolveExistingWorkspaceCwd, resolveWorkspaceBranch
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
-import { elapsedTaskDurationMs, stripElapsedTaskTimeFooter } from "./task-timing.js";
+import { elapsedTaskDurationMs } from "./task-timing.js";
 import { applyWorkspacePreviewDefaults, formatWorkspaceBootstrapLines, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 import type {
   AppSnapshot,
@@ -136,7 +136,6 @@ export class ButlerAgentService extends EventEmitter {
   private readonly artifactsDir: string;
   private readonly operatorMessageStatePath: string;
   private readonly activitySummaryStatePath: string;
-  private readonly legacyNoticeStatePath: string;
   private readonly callbackStatePath: string;
   private readonly refreshRuntimeInventory: (() => Promise<void>) | null;
   private readonly manorRestartRequests: ManorRestartRequestState;
@@ -211,7 +210,6 @@ export class ButlerAgentService extends EventEmitter {
     this.operatorSink = options.operatorSink ?? null;
     this.operatorMessageStatePath = path.join(this.sessionDir, "operator-messages.json");
     this.activitySummaryStatePath = path.join(this.sessionDir, "activity-summaries.json");
-    this.legacyNoticeStatePath = path.join(this.sessionDir, "notices.json");
     this.callbackStatePath = path.join(this.sessionDir, "chat-callbacks.json");
     this.manorRestartRequests = new ManorRestartRequestState(path.join(this.sessionDir, "manor-restart-requests.json"), this.hostController, (error) => {
       this.lastError = error instanceof Error ? error.message : String(error);
@@ -242,7 +240,7 @@ export class ButlerAgentService extends EventEmitter {
         }
         const id = typeof item.id === "string" ? item.id : null;
         const role = typeof item.role === "string" ? item.role : null;
-        const text = typeof item.text === "string" ? stripElapsedTaskTimeFooter(item.text) : null;
+        const text = typeof item.text === "string" ? item.text : null;
         const at = typeof item.at === "number" && Number.isFinite(item.at) ? item.at : null;
         const taskDurationMs = typeof item.taskDurationMs === "number" && Number.isFinite(item.taskDurationMs) ? item.taskDurationMs : null;
         const kind = item.kind === "message" || typeof item.kind !== "string" ? "message" : null;
@@ -266,42 +264,6 @@ export class ButlerAgentService extends EventEmitter {
         throw error;
       }
 
-      await this.loadLegacyOperatorMessageState();
-    }
-  }
-
-  private async loadLegacyOperatorMessageState(): Promise<void> {
-    try {
-      const raw = await fs.readFile(this.legacyNoticeStatePath, "utf8");
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) {
-        return;
-      }
-
-      this.operatorMessages.splice(0, this.operatorMessages.length);
-      for (const item of parsed) {
-        if (!item || typeof item !== "object" || item.kind === "notice") {
-          continue;
-        }
-
-        const id = typeof item.id === "string" ? item.id : null;
-        const role = typeof item.role === "string" ? item.role : null;
-        const text = typeof item.text === "string" ? stripElapsedTaskTimeFooter(item.text) : null;
-        const at = typeof item.at === "number" && Number.isFinite(item.at) ? item.at : null;
-        const taskDurationMs = typeof item.taskDurationMs === "number" && Number.isFinite(item.taskDurationMs) ? item.taskDurationMs : null;
-
-        if (!id || !role || !text) {
-          continue;
-        }
-
-        this.operatorMessages.push({ id, role, text, at, taskDurationMs, kind: "message" });
-      }
-
-      if (normalizeOperatorMessages(this.operatorMessages)) await this.saveOperatorMessageState();
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
     }
   }
 

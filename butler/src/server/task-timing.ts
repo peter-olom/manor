@@ -1,9 +1,3 @@
-const TIMING_FOOTER_PATTERN = /\n\n_Task time \((Butler|Codex)\): [^_]+_$/;
-
-export function stripElapsedTaskTimeFooter(text: string): string {
-  return text.replace(TIMING_FOOTER_PATTERN, "");
-}
-
 export function formatElapsedTaskTime(durationMs: number): string {
   const safeDurationMs = Math.max(0, Math.floor(durationMs));
   const totalSeconds = Math.round(safeDurationMs / 1000);

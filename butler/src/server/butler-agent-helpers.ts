@@ -8,7 +8,7 @@ import {
 import { getSelfImprovementRequestState } from "./self-improvement-request-state.js";
 import { contractRequiresVisualProof } from "./proof-policy.js";
 import { ButlerStateStore } from "./state-store.js";
-import { elapsedTaskDurationMs, stripElapsedTaskTimeFooter } from "./task-timing.js";
+import { elapsedTaskDurationMs } from "./task-timing.js";
 import type { WorkspaceProjectDirectory } from "./repo-worktree.js";
 import type {
   ButlerThreadCallbackView,
@@ -344,7 +344,7 @@ export function serializeMessages(session: AgentSession): ButlerMessageView[] {
         : typeof record.errorMessage === "string"
           ? record.errorMessage
           : "";
-    const text = stripElapsedTaskTimeFooter(rawText);
+    const text = rawText;
     const taskDurationMs = role === "assistant" ? elapsedTaskDurationMs(latestUserMessageAt, at) : null;
 
     if (role === "assistant" && isAttachmentSummaryText(text)) {

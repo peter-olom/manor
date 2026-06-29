@@ -9,7 +9,6 @@ import {
   isButlerBackgroundPromptText,
   isTrivialOperatorQuestionConfirmation
 } from "./butler-agent-helpers.js";
-import { stripElapsedTaskTimeFooter } from "./task-timing.js";
 import type { ButlerMessageView, ButlerOperatorQuestionItemView, ButlerOperatorQuestionView, ButlerTraceItemView, ButlerTraceMetaView } from "./types.js";
 
 type OperatorMessageOptions = {
@@ -285,58 +284,6 @@ function alignCallbacksToDirectOperatorMessages(messages: ButlerMessageView[]): 
   return changed;
 }
 
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function markLegacyAnsweredOperatorQuestions(messages: ButlerMessageView[]): boolean {
-  let changed = false;
-  for (const message of messages) {
-    if (!message.question) {
-      continue;
-    }
-
-    const questionItems = Array.isArray(message.question.questions) && message.question.questions.length > 0
-      ? message.question.questions
-      : [message.question];
-    const laterUserMessages = messages.filter((entry) => isOperatorUserMessage(entry) && (entry.at ?? 0) >= (message.at ?? 0));
-    for (const item of questionItems) {
-      if (item.selectedOptionId) {
-        continue;
-      }
-
-      const answerMessage = laterUserMessages.find((entry) =>
-        item.options.some((option) =>
-          new RegExp(`For\\s+"${escapeRegex(item.prompt)}",\\s*I choose:\\s*${escapeRegex(option.label)}(?:\\.|\\n|$)`, "i").test(entry.text)
-        )
-      );
-      if (!answerMessage) {
-        continue;
-      }
-
-      const selected = item.options.find((option) =>
-        new RegExp(`For\\s+"${escapeRegex(item.prompt)}",\\s*I choose:\\s*${escapeRegex(option.label)}(?:\\.|\\n|$)`, "i").test(answerMessage.text)
-      );
-      if (!selected) {
-        continue;
-      }
-
-      item.selectedOptionId = selected.id;
-      item.answeredAt = answerMessage.at ?? Date.now();
-      changed = true;
-    }
-
-    const first = questionItems[0];
-    if (first && (message.question.selectedOptionId !== first.selectedOptionId || message.question.answeredAt !== first.answeredAt)) {
-      message.question.selectedOptionId = first.selectedOptionId ?? null;
-      message.question.answeredAt = first.answeredAt ?? null;
-      changed = true;
-    }
-  }
-
-  return changed;
-}
-
 export function normalizeOperatorMessages(messages: ButlerMessageView[]): boolean {
   const beforeSignature = JSON.stringify(messages.map((message) => [message.id, message.at ?? null, message.question ?? null]));
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -385,7 +332,6 @@ export function normalizeOperatorMessages(messages: ButlerMessageView[]): boolea
 
   const nextMessages = keptGroups.flat();
   messages.splice(0, messages.length, ...nextMessages);
-  markLegacyAnsweredOperatorQuestions(messages);
   const removedTrivialConfirmations = removeTrivialOperatorQuestionConfirmations(messages, { providerBackedOnly: true });
 
   const afterSignature = JSON.stringify(messages.map((message) => [message.id, message.at ?? null, message.question ?? null]));
@@ -476,7 +422,7 @@ function persistedUserText(message: Record<string, unknown>): string {
 }
 
 function persistedAssistantText(message: Record<string, unknown>): string {
-  return stripElapsedTaskTimeFooter(contentToText(message.content)).trim();
+  return contentToText(message.content).trim();
 }
 
 export async function backfillOperatorMessagesFromSessionFiles(messages: ButlerMessageView[], sessionDir: string): Promise<boolean> {

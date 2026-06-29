@@ -101,11 +101,7 @@ function reviewPendingSourceId(report: CodexWorkerReportView): string {
 
 function parseReviewPendingSourceId(sourceId: string): PendingReviewSource | null {
   const versionedMatch = /^worker-report:([^:]+):\d+:review-pending$/.exec(sourceId);
-  if (versionedMatch) {
-    return { turnId: versionedMatch[1] };
-  }
-  const legacyMatch = /^worker-report:(.+):review-pending$/.exec(sourceId);
-  return legacyMatch ? { turnId: legacyMatch[1] } : null;
+  return versionedMatch ? { turnId: versionedMatch[1] } : null;
 }
 
 function normalizeText(value: string | null | undefined, maxLength: number): string | null {

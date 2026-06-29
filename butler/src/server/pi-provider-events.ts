@@ -9,7 +9,6 @@ import {
   isButlerBackgroundPromptText,
   isTrivialOperatorQuestionConfirmation
 } from "./butler-agent-helpers.js";
-import { stripElapsedTaskTimeFooter } from "./task-timing.js";
 import type {
   ProviderRuntimeContentStreamKind,
   ProviderRuntimeItemStatus,
@@ -58,7 +57,7 @@ function messageText(message: unknown): string {
 
   const text = contentToText(message.content);
   if (text.trim()) {
-    return stripElapsedTaskTimeFooter(text);
+    return text;
   }
 
   if (messageRole(message) === "user-with-attachments") {
@@ -489,7 +488,7 @@ export class PiProviderRuntimeMapper {
         itemId,
         itemType: "assistant_message",
         status: "in_progress",
-        text: stripElapsedTaskTimeFooter(assistantContentText(event, "text_end")),
+        text: assistantContentText(event, "text_end"),
         at,
         title: "Assistant message"
       })];
@@ -594,7 +593,7 @@ export class PiProviderRuntimeMapper {
     const block = typeof contentIndex === "number" ? content[contentIndex] : null;
     if (isRecord(block)) {
       if (streamKind === "assistant_text" && typeof block.text === "string") {
-        return stripElapsedTaskTimeFooter(block.text).length;
+        return block.text.length;
       }
       if (streamKind === "reasoning_text" && typeof block.thinking === "string") {
         return block.thinking.length;

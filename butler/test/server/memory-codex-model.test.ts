@@ -40,13 +40,11 @@ test("memory Codex model env normalization protects active Codex model config ke
 
 test("memory synthesis model config resolves only the current synthesis model key", () => {
   assert.equal(resolveMemorySynthesisModel({ MANOR_MEMORY_SYNTHESIS_MODEL: "5.4 mini" }), "gpt-5.4-mini");
-  assert.equal(resolveMemorySynthesisModel({ MANOR_MEMORY_EXEC_MODEL: "gpt-5.4-mini" }), null);
-  assert.equal(resolveMemorySynthesisModel({ MANOR_MEMORY_REVIEW_MODEL: "gpt-5.4-mini" }), null);
   assert.equal(resolveMemorySynthesisModel({}), null);
 });
 
 test("service-specific memory model config overrides the global synthesis default", () => {
   assert.equal(resolveMemoryServiceModel("gpt-5.5", "5.4 mini"), "gpt-5.5");
   assert.equal(resolveMemoryServiceModel("", "5.4 mini"), "gpt-5.4-mini");
-  assert.equal(resolveMemoryServiceModel("legacy model", "5.4 mini"), "gpt-5.4-mini");
+  assert.equal(resolveMemoryServiceModel("invalid model", "5.4 mini"), "gpt-5.4-mini");
 });

@@ -7,15 +7,6 @@ const DEFAULT_FILE_PROMPT = "Use the attached reference file for this request.";
 const DEFAULT_FILES_PROMPT = "Use the attached reference files for this request.";
 const DEFAULT_MIXED_PROMPT = "Use the attached reference files and images for this request.";
 
-function mapToCodexVisiblePath(filePath: string): string {
-  const normalized = filePath.trim();
-  const legacyPrefix = "/opt/manor/artifacts/";
-  if (normalized.startsWith(legacyPrefix)) {
-    return `/artifacts/${normalized.slice(legacyPrefix.length)}`;
-  }
-  return normalized;
-}
-
 function selectDefaultLead(imageCount: number, fileCount: number): string {
   if (imageCount > 0 && fileCount > 0) {
     return DEFAULT_MIXED_PROMPT;
@@ -68,7 +59,7 @@ export function buildReferencePromptText(input: {
     }
     sections.push("Use shell tools to inspect these files when needed. Use the URL if local path access fails.");
     for (const file of files) {
-      const filePath = mapToCodexVisiblePath(input.fileStore.getFilePath(file.id) ?? file.url);
+      const filePath = (input.fileStore.getFilePath(file.id) ?? file.url).trim();
       const sharedUrl = `http://butler:8080${file.url}?download=1`;
       if (input.includeFilePaths) {
         sections.push(

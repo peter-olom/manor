@@ -139,44 +139,6 @@ test("operator question taste memory skips explicit smoke tests", async () => {
   assert.deepEqual(buildOperatorQuestionTasteMemoryEntries(message.question), []);
 });
 
-test("operator question normalization marks legacy selected answers", () => {
-  const messages: ButlerMessageView[] = [
-    {
-      id: "operator-question-1",
-      role: "assistant",
-      text: "Which direction?\nOptions:\n1. Simple\n2. Complete",
-      at: 1,
-      taskDurationMs: null,
-      kind: "message",
-      question: {
-        id: "operator-question-1",
-        prompt: "Which direction?",
-        context: null,
-        options: [
-          { id: "simple", label: "Simple", description: null },
-          { id: "complete", label: "Complete", description: null }
-        ],
-        allowFreeform: false,
-        createdAt: 1,
-        selectedOptionId: null,
-        answeredAt: null
-      }
-    },
-    {
-      id: "message-2",
-      role: "user",
-      text: 'For "Which direction?", I choose: Simple.',
-      at: 2,
-      taskDurationMs: null,
-      kind: "message"
-    }
-  ];
-
-  assert.equal(normalizeOperatorMessages(messages), true);
-  assert.equal(messages[0]!.question?.selectedOptionId, "simple");
-  assert.equal(messages[0]!.question?.answeredAt, 2);
-});
-
 test("operator question normalization removes trivial provider confirmations", () => {
   const messages: ButlerMessageView[] = [
     {

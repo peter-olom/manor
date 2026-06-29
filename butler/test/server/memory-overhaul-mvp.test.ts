@@ -55,7 +55,6 @@ function message(id: string, text: string, at: number): ButlerMessageView {
 test("memory synthesis config normalizes model labels and honors env overrides", () => {
   assert.equal(readMemorySynthesisConfig({}).model, null);
   assert.equal(readMemorySynthesisConfig({ MANOR_MEMORY_SYNTHESIS_MODEL: "5.4 mini" }).model, "gpt-5.4-mini");
-  assert.equal(readMemorySynthesisConfig({ MANOR_MEMORY_REVIEW_MODEL: "5.4 mini", MANOR_MEMORY_EXEC_MODEL: "gpt-5.4-mini" }).model, null);
   assert.equal(readMemorySynthesisConfig({}).promotionAutoResolve, true);
   const config = readMemorySynthesisConfig({ MANOR_MEMORY_SYNTHESIS_MODEL: "gpt-5.4-mini", MANOR_MEMORY_SYNTHESIS_ENABLED: "0", MANOR_MEMORY_SYNTHESIS_MAX_CANDIDATES: "12", MANOR_MEMORY_PROMOTION_BATCH_SIZE: "7" });
   assert.equal(config.model, "gpt-5.4-mini");
@@ -130,19 +129,19 @@ test("pre-delete and pre-clear hooks capture bounded idempotent synthesis prefli
   assert.equal((suffix?.payload.messages as unknown[]).length, 1);
 });
 
-test("legacy memory retrieval remains compatible while graph search adds relationship-aware context", async () => {
+test("memory retrieval returns job checkpoints while graph search adds relationship-aware context", async () => {
   const { store, stateDir } = await createStore();
   const scheduler = new MemoryUpdateScheduler({ store, stateDir, codexHomeDir: stateDir, config: testConfig({ enabled: false }) });
-  store.upsertThreadSummary({ id: "thread-legacy", cwd: "/workspace", createdAt: 1, status: "running" });
-  store.setThreadExecutionContract("thread-legacy", contract("thread-legacy"));
-  store.recordJobCheckpoint("thread-legacy", { summary: "Legacy checkpoint survived", details: "Existing retrieval should still work." });
-  scheduler.observeHarnessMemory({ threadId: "thread-legacy", kind: "checkpoint", summary: "Graph checkpoint records Campaign.billingSummary dependency", details: "UI waits on API." });
+  store.upsertThreadSummary({ id: "thread-current", cwd: "/workspace", createdAt: 1, status: "running" });
+  store.setThreadExecutionContract("thread-current", contract("thread-current"));
+  store.recordJobCheckpoint("thread-current", { summary: "Current checkpoint saved", details: "Existing retrieval should still work." });
+  scheduler.observeHarnessMemory({ threadId: "thread-current", kind: "checkpoint", summary: "Graph checkpoint records Campaign.billingSummary dependency", details: "UI waits on API." });
 
-  const legacy = retrieveButlerMemory(store, { threadId: "thread-legacy", query: "Legacy checkpoint" });
-  assert.equal(legacy.jobMemories[0]?.latestCheckpoint, "Legacy checkpoint survived");
+  const retrieval = retrieveButlerMemory(store, { threadId: "thread-current", query: "Current checkpoint" });
+  assert.equal(retrieval.jobMemories[0]?.latestCheckpoint, "Current checkpoint saved");
   const graph = store.searchMemoryGraph({ projectId: "project-1", query: "Campaign.billingSummary" });
   assert.equal(graph.observations.some((entry) => entry.summary.includes("Campaign.billingSummary")), true);
-  assert.equal(graph.tasks.some((entry) => entry.threadId === "thread-legacy"), true);
+  assert.equal(graph.tasks.some((entry) => entry.threadId === "thread-current"), true);
 });
 
 test("graph search excludes memory debug trace observations", async () => {
