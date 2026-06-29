@@ -168,7 +168,7 @@ test("smoke: backfill embeds existing entries and embedding-aware query returns 
             sourceThreadId: "thread-quartz",
             kind: "decision",
             summary: "Use local embeddings for quartz memory lookups.",
-            details: "Backfill accepted project entries before query tests.",
+            details: "This accepted project memory supersedes the quartz handoff candidate.",
             acceptedAt: 100
           }
         ],
@@ -247,6 +247,11 @@ test("smoke: backfill embeds existing entries and embedding-aware query returns 
   assert.equal(backfill.failed, 0);
   assert.equal(backfill.embedded, 4);
   assert.deepEqual(new Set(store.listMemoryEmbeddings().map((entry) => entry.sourceKind)), new Set(["project_memory", "job_memory", "promotion_candidate", "butler_memory"]));
+  const predicates = new Set(store.listMemoryGraph().relationships.map((entry) => entry.predicate));
+  assert.ok(predicates.has("supports"));
+  assert.ok(predicates.has("depends_on"));
+  assert.ok(predicates.has("supersedes"));
+  assert.ok(predicates.has("contradicts"));
 
   const retrieval = await retrieveButlerMemoryWithEmbeddings(store, {
     projectId: "manor",
@@ -261,4 +266,7 @@ test("smoke: backfill embeds existing entries and embedding-aware query returns 
   assert.ok(candidate);
   assert.ok((candidate.score.vector ?? 0) > 0.99);
   assert.equal(candidate.eligibleForInjection, false);
+  assert.ok((project.graph?.supersedes.length ?? 0) > 0);
+  assert.ok(project.score.total > candidate.score.total);
+  assert.ok(candidate.score.graph < 0);
 });

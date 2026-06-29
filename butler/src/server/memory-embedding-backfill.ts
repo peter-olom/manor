@@ -6,6 +6,7 @@ import {
   type MemoryEmbeddingProvider
 } from "./memory-embedding-client.js";
 import { butlerMemoryTextForEmbedding, jobMemoryTextForEmbedding, projectMemoryTextForEmbedding, promotionCandidateTextForEmbedding } from "./memory-embedding-text.js";
+import { ensureDeterministicMemoryGraphEdges, ensureMemoryGraphNode } from "./memory-graph-nodes.js";
 import { isAcceptedOperatorPreferenceMemory } from "./memory-metadata.js";
 import type { ButlerMemoryType, MemoryEmbeddingView } from "./types.js";
 
@@ -93,6 +94,17 @@ export async function backfillMemoryEmbeddings(input: {
   const existing = input.store.listMemoryEmbeddings();
   const memories = collectEmbeddableMemories(input.store);
   result.considered = memories.length;
+  for (const memory of memories) {
+    ensureMemoryGraphNode(input.store, {
+      sourceKind: memory.sourceKind,
+      sourceId: memory.sourceId,
+      text: memory.text,
+      memoryType: memory.memoryType,
+      projectId: memory.projectId,
+      threadId: memory.threadId
+    });
+  }
+  ensureDeterministicMemoryGraphEdges(input.store);
   const stale = memories.filter((memory) => {
     const hash = hashEmbeddingText(memory.text);
     const fresh = existing.some((entry) =>

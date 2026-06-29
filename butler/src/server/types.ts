@@ -817,6 +817,7 @@ export type MemoryEntityType =
   | "decision"
   | "environment"
   | "feature"
+  | "memory"
   | "person"
   | "policy"
   | "project"

@@ -55,6 +55,14 @@ export interface MemoryRetrievalCandidateView {
     lexical: number;
     vector: number | null;
     freshness: number;
+    graph: number;
     total: number;
+  };
+  graph?: {
+    nodeId: string | null;
+    relations: string[];
+    contradictedBy: string[];
+    supersedes: string[];
+    supersededBy: string[];
   };
 }

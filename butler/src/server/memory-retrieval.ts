@@ -10,6 +10,7 @@ import type {
 } from "./types.js";
 import { cosineSimilarity, decodeFloat32Vector, hashEmbeddingText, OllamaMemoryEmbeddingProvider, readMemoryEmbeddingConfig, type MemoryEmbeddingConfig, type MemoryEmbeddingProvider } from "./memory-embedding-client.js";
 import { butlerMemoryTextForEmbedding, jobMemoryTextForEmbedding, projectMemoryTextForEmbedding, promotionCandidateTextForEmbedding } from "./memory-embedding-text.js";
+import { buildMemoryGraphRankingIndex, scoreMemoryGraphCandidate, type MemoryGraphRankingIndex } from "./memory-graph-ranking.js";
 import { isAcceptedOperatorPreferenceMemory } from "./memory-metadata.js";
 
 type RetrievalInput = {
@@ -106,8 +107,16 @@ function vectorScore(embedding: MemoryEmbeddingView | null, queryVector: number[
   return cosineSimilarity(queryVector, decodeFloat32Vector(embedding.vectorBase64, embedding.dimension));
 }
 
-function totalScore(input: { lexical: number; vector: number | null; freshness: number }): number {
-  return input.lexical + (input.vector === null ? 0 : input.vector * 5) + input.freshness;
+function totalScore(input: { lexical: number; vector: number | null; freshness: number; graph: number }): number {
+  return input.lexical + (input.vector === null ? 0 : input.vector * 5) + input.freshness + input.graph;
+}
+
+function candidateGraph(index: MemoryGraphRankingIndex, candidate: Pick<MemoryRetrievalCandidateView, "sourceKind" | "sourceId">): NonNullable<MemoryRetrievalCandidateView["graph"]> & { score: number } {
+  return scoreMemoryGraphCandidate(index, candidate);
+}
+
+function candidateScore(input: { lexical: number; vector: number | null; freshness: number; graph: number }): MemoryRetrievalCandidateView["score"] {
+  return { ...input, total: totalScore(input) };
 }
 
 function buildCandidates(
@@ -121,6 +130,7 @@ function buildCandidates(
     tokens: string[];
     queryVector: number[] | null;
     embeddingModel: string | null;
+    graphIndex: MemoryGraphRankingIndex;
   }
 ): MemoryRetrievalCandidateView[] {
   const embeddings = typeof store.listMemoryEmbeddings === "function" ? store.listMemoryEmbeddings() : [];
@@ -128,10 +138,12 @@ function buildCandidates(
   for (const memory of input.projectRollups) {
     const text = projectMemoryText(memory);
     const embedding = embeddingFor(embeddings, "project_memory", memory.projectId, text, input.embeddingModel);
+    const graph = candidateGraph(input.graphIndex, { sourceKind: "project_memory", sourceId: memory.projectId });
     const score = {
       lexical: scoreText(text, input.query, input.tokens),
       vector: vectorScore(embedding, input.queryVector),
-      freshness: freshnessScore(latestProjectEntryAt(memory))
+      freshness: freshnessScore(latestProjectEntryAt(memory)),
+      graph: graph.score
     };
     candidates.push({
       id: `project:${memory.projectId}`,
@@ -144,16 +156,19 @@ function buildCandidates(
       threadId: null,
       eligibleForInjection: false,
       reason: "accepted project memory is retrievable but not injected into worker payloads in shadow mode",
-      score: { ...score, total: totalScore(score) }
+      score: candidateScore(score),
+      graph
     });
   }
   for (const memory of input.jobMemories) {
     const text = jobMemoryText(memory);
     const embedding = embeddingFor(embeddings, "job_memory", memory.threadId, text, input.embeddingModel);
+    const graph = candidateGraph(input.graphIndex, { sourceKind: "job_memory", sourceId: memory.threadId });
     const score = {
       lexical: scoreText(text, input.query, input.tokens),
       vector: vectorScore(embedding, input.queryVector),
-      freshness: freshnessScore(latestJobEntryAt(memory))
+      freshness: freshnessScore(latestJobEntryAt(memory)),
+      graph: graph.score
     };
     candidates.push({
       id: `job:${memory.threadId}`,
@@ -166,16 +181,19 @@ function buildCandidates(
       threadId: memory.threadId,
       eligibleForInjection: false,
       reason: "job memory is retrievable but not injected by embedding shadow retrieval",
-      score: { ...score, total: totalScore(score) }
+      score: candidateScore(score),
+      graph
     });
   }
   for (const memory of input.butlerMemories) {
     const text = butlerMemoryText(memory);
     const embedding = embeddingFor(embeddings, "butler_memory", memory.id, text, input.embeddingModel);
+    const graph = candidateGraph(input.graphIndex, { sourceKind: "butler_memory", sourceId: memory.id });
     const score = {
       lexical: scoreText(text, input.query, input.tokens),
       vector: vectorScore(embedding, input.queryVector),
-      freshness: freshnessScore(memory.createdAt)
+      freshness: freshnessScore(memory.createdAt),
+      graph: graph.score
     };
     const eligible = isAcceptedOperatorPreferenceMemory(memory);
     candidates.push({
@@ -189,16 +207,19 @@ function buildCandidates(
       threadId: memory.threadId ?? null,
       eligibleForInjection: eligible,
       reason: eligible ? "accepted global operator preference" : "global or legacy Butler memory is not eligible for worker injection",
-      score: { ...score, total: totalScore(score) }
+      score: candidateScore(score),
+      graph
     });
   }
   for (const candidate of input.pendingPromotionCandidates) {
     const text = promotionCandidateTextForEmbedding(candidate);
     const embedding = embeddingFor(embeddings, "promotion_candidate", candidate.id, text, input.embeddingModel);
+    const graph = candidateGraph(input.graphIndex, { sourceKind: "promotion_candidate", sourceId: candidate.id });
     const score = {
       lexical: scoreText(text, input.query, input.tokens),
       vector: vectorScore(embedding, input.queryVector),
-      freshness: freshnessScore(candidate.updatedAt)
+      freshness: freshnessScore(candidate.updatedAt),
+      graph: graph.score
     };
     candidates.push({
       id: `promotion:${candidate.id}`,
@@ -211,7 +232,8 @@ function buildCandidates(
       threadId: candidate.threadId,
       eligibleForInjection: false,
       reason: `promotion candidate is ${candidate.status} and requires explicit resolution before project memory injection`,
-      score: { ...score, total: totalScore(score) }
+      score: candidateScore(score),
+      graph
     });
   }
   return candidates.sort((left, right) => right.score.total - left.score.total).slice(0, Math.max(50, (input.queryVector ? 100 : 50)));
@@ -275,7 +297,8 @@ export function retrieveButlerMemory(store: ButlerStateStore, input: RetrievalIn
     query,
     tokens,
     queryVector: Array.isArray(input.queryVector) ? input.queryVector : null,
-    embeddingModel: normalizeText(input.embeddingModel) || null
+    embeddingModel: normalizeText(input.embeddingModel) || null,
+    graphIndex: buildMemoryGraphRankingIndex(store, query)
   });
 
   if (projectId && projectRollups.length === 0) {

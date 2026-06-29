@@ -149,7 +149,7 @@ function normalizeMemoryEntityType(value: unknown): MemoryEntityView["type"] {
     value === "component" ||
     value === "decision" ||
     value === "environment" ||
-    value === "feature" ||
+    value === "feature" || value === "memory" ||
     value === "person" ||
     value === "policy" ||
     value === "project" ||

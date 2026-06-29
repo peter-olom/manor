@@ -79,7 +79,13 @@ export type MemoryDiagnosticsView = {
   };
   graph: {
     entities: number;
+    memoryNodes: number;
     relationships: number;
+    byPredicate: CountMap;
+    contradicted: number;
+    superseded: number;
+    embeddingsMissingGraphNodes: number;
+    graphNodesMissingEmbeddings: number;
     tasks: number;
     taskEvents: number;
   };
@@ -260,7 +266,7 @@ export function buildMemoryDiagnostics(store: ButlerStateStore, input: MemoryDia
       byModel: embeddingModels,
       stale: countStaleEmbeddings(store, embeddings)
     },
-    graph: buildGraphCounts(graph, projectId, threadId, window),
+    graph: buildGraphCounts(graph, embeddings, projectId, threadId, window),
     ...(input.includeSamples === true ? { samples: buildSamples(observations, synthesisQueue, candidates, input.sampleLimit) } : {}),
     warnings
   };
@@ -296,15 +302,29 @@ function buildWarnings(input: {
 
 function buildGraphCounts(
   graph: ReturnType<ButlerStateStore["listMemoryGraph"]>,
+  embeddings: ReturnType<ButlerStateStore["listMemoryEmbeddings"]>,
   projectId: string | null,
   threadId: string | null,
   window: TimeWindow
 ): MemoryDiagnosticsView["graph"] {
   const tasks = graph.tasks.filter((entry) => scopedProject(projectId, entry.projectId) && scopedThread(threadId, entry.threadId) && inWindow(entry.createdAt, window));
   const taskIds = new Set(tasks.map((entry) => entry.id));
+  const entities = graph.entities.filter((entry) => scopedProject(projectId, entry.projectId) && inWindow(entry.createdAt, window));
+  const relationships = graph.relationships.filter((entry) => scopedProject(projectId, entry.projectId) && inWindow(entry.createdAt, window));
+  const byPredicate: CountMap = {};
+  for (const relationship of relationships) countLoose(byPredicate, relationship.predicate);
+  const memoryNodes = entities.filter((entry) => entry.type === "memory");
+  const memoryNodeKeys = new Set(memoryNodes.map((entry) => entry.canonicalKey));
+  const embeddingKeys = new Set(embeddings.filter((entry) => scopedProject(projectId, entry.projectId ?? "global")).map((entry) => `memory:${entry.sourceKind}:${entry.sourceId}`));
   return {
-    entities: graph.entities.filter((entry) => scopedProject(projectId, entry.projectId) && inWindow(entry.createdAt, window)).length,
-    relationships: graph.relationships.filter((entry) => scopedProject(projectId, entry.projectId) && inWindow(entry.createdAt, window)).length,
+    entities: entities.length,
+    memoryNodes: memoryNodes.length,
+    relationships: relationships.length,
+    byPredicate,
+    contradicted: relationships.filter((entry) => entry.predicate === "contradicts").length,
+    superseded: relationships.filter((entry) => entry.predicate === "supersedes").length,
+    embeddingsMissingGraphNodes: [...embeddingKeys].filter((key) => !memoryNodeKeys.has(key)).length,
+    graphNodesMissingEmbeddings: [...memoryNodeKeys].filter((key) => !embeddingKeys.has(key)).length,
     tasks: tasks.length,
     taskEvents: graph.taskEvents.filter((entry) => taskIds.has(entry.taskId) && inWindow(entry.at, window)).length
   };
@@ -376,7 +396,7 @@ export function formatMemoryDiagnostics(view: MemoryDiagnosticsView): string {
     `Project memory: projects=${view.projectMemory.projects}, accepted_entries=${view.projectMemory.acceptedEntries}, kinds=${formatCounts(view.projectMemory.byKind)}`,
     `Butler memory: total=${view.butlerMemory.total}, sources=${formatCounts(view.butlerMemory.bySource)}`,
     `Embeddings: total=${view.embeddings.total}, models=${formatCounts(view.embeddings.byModel)}, stale=${view.embeddings.stale}`,
-    `Graph: entities=${view.graph.entities}, relationships=${view.graph.relationships}, tasks=${view.graph.tasks}, task_events=${view.graph.taskEvents}`,
+    `Graph: entities=${view.graph.entities}, memory_nodes=${view.graph.memoryNodes}, relationships=${view.graph.relationships}, predicates=${formatCounts(view.graph.byPredicate)}, contradicted=${view.graph.contradicted}, superseded=${view.graph.superseded}, embeddings_missing_graph_nodes=${view.graph.embeddingsMissingGraphNodes}, graph_nodes_missing_embeddings=${view.graph.graphNodesMissingEmbeddings}, tasks=${view.graph.tasks}, task_events=${view.graph.taskEvents}`,
     view.warnings.length > 0 ? `Warnings: ${view.warnings.join(" ")}` : "Warnings: none"
   ].join("\n");
 }
