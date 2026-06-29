@@ -26,8 +26,7 @@ export function jobMemoryTextForEmbedding(memory: JobMemoryView): string {
     ...memory.proofRequirements,
     ...memory.notes,
     ...memory.decisions.flatMap((entry) => [entry.summary, entry.details]),
-    ...memory.entries.flatMap((entry) => [entry.kind, entry.summary, entry.details, entry.nextAction, ...entry.blockers, ...entry.plan]),
-    ...memory.promotionCandidates.flatMap((entry) => [entry.kind, entry.summary, entry.details, entry.status])
+    ...memory.entries.flatMap((entry) => [entry.kind, entry.summary, entry.details, entry.nextAction, ...entry.blockers, ...entry.plan])
   ]
     .filter((entry): entry is string => typeof entry === "string" && Boolean(entry.trim()))
     .join("\n");

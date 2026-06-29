@@ -35,6 +35,9 @@ export function readMemorySynthesisConfig(env: NodeJS.ProcessEnv = process.env):
     promotionAutoResolve: boolFromEnv(env.MANOR_MEMORY_PROMOTION_AUTO_RESOLVE, true),
     promotionBatchSize: intFromEnv(env.MANOR_MEMORY_PROMOTION_BATCH_SIZE, 20, 1, 50),
     promotionMaxBatchesPerRun: intFromEnv(env.MANOR_MEMORY_PROMOTION_MAX_BATCHES_PER_RUN, 10, 1, 25),
-    promotionIntervalMs: intFromEnv(env.MANOR_MEMORY_PROMOTION_INTERVAL_MS, 10_000, 1_000, 5 * 60_000)
+    promotionIntervalMs: intFromEnv(env.MANOR_MEMORY_PROMOTION_INTERVAL_MS, 10_000, 1_000, 5 * 60_000),
+    semanticEdgeReviewEnabled: boolFromEnv(env.MANOR_MEMORY_SEMANTIC_EDGES_ENABLED, true),
+    semanticEdgeReviewBatchSize: intFromEnv(env.MANOR_MEMORY_SEMANTIC_EDGES_BATCH_SIZE, 12, 1, 50),
+    semanticEdgeReviewIntervalMs: intFromEnv(env.MANOR_MEMORY_SEMANTIC_EDGES_INTERVAL_MS, 60_000, 5_000, 30 * 60_000)
   };
 }

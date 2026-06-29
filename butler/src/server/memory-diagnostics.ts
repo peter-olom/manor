@@ -82,6 +82,9 @@ export type MemoryDiagnosticsView = {
     memoryNodes: number;
     relationships: number;
     byPredicate: CountMap;
+    proposedSemanticEdges: number;
+    confirmedSemanticEdges: number;
+    modelReviewedPairs: number;
     contradicted: number;
     superseded: number;
     embeddingsMissingGraphNodes: number;
@@ -167,6 +170,10 @@ function scopedThread(threadId: string | null, value: string | null): boolean {
 
 function isDebugTraceObservation(observation: MemoryObservationView): boolean {
   return (observation.payload as { kind?: unknown }).kind === "memory_debug_trace";
+}
+
+function isSemanticEdgeReviewObservation(observation: MemoryObservationView): boolean {
+  return (observation.payload as { kind?: unknown }).kind === "semantic_edge_review";
 }
 
 export function buildMemoryDiagnostics(store: ButlerStateStore, input: MemoryDiagnosticsInput = {}): MemoryDiagnosticsView {
@@ -316,11 +323,23 @@ function buildGraphCounts(
   const memoryNodes = entities.filter((entry) => entry.type === "memory");
   const memoryNodeKeys = new Set(memoryNodes.map((entry) => entry.canonicalKey));
   const embeddingKeys = new Set(embeddings.filter((entry) => scopedProject(projectId, entry.projectId ?? "global")).map((entry) => `memory:${entry.sourceKind}:${entry.sourceId}`));
+  const proposedSemanticEdges = relationships.filter((entry) => entry.predicate === "possible_supersedes" || entry.predicate === "possible_contradicts").length;
+  const confirmedSemanticEdges = relationships.filter(
+    (entry) => ["supports", "supersedes", "contradicts"].includes(entry.predicate) && entry.sourceObservationId.startsWith("model:semantic-edge:")
+  ).length;
   return {
     entities: entities.length,
     memoryNodes: memoryNodes.length,
     relationships: relationships.length,
     byPredicate,
+    proposedSemanticEdges,
+    confirmedSemanticEdges,
+    modelReviewedPairs: graph.observations.filter((entry) =>
+      scopedProject(projectId, entry.projectId) &&
+      scopedThread(threadId, entry.threadId) &&
+      inWindow(entry.observedAt, window) &&
+      isSemanticEdgeReviewObservation(entry)
+    ).length,
     contradicted: relationships.filter((entry) => entry.predicate === "contradicts").length,
     superseded: relationships.filter((entry) => entry.predicate === "supersedes").length,
     embeddingsMissingGraphNodes: [...embeddingKeys].filter((key) => !memoryNodeKeys.has(key)).length,
@@ -396,7 +415,7 @@ export function formatMemoryDiagnostics(view: MemoryDiagnosticsView): string {
     `Project memory: projects=${view.projectMemory.projects}, accepted_entries=${view.projectMemory.acceptedEntries}, kinds=${formatCounts(view.projectMemory.byKind)}`,
     `Butler memory: total=${view.butlerMemory.total}, sources=${formatCounts(view.butlerMemory.bySource)}`,
     `Embeddings: total=${view.embeddings.total}, models=${formatCounts(view.embeddings.byModel)}, stale=${view.embeddings.stale}`,
-    `Graph: entities=${view.graph.entities}, memory_nodes=${view.graph.memoryNodes}, relationships=${view.graph.relationships}, predicates=${formatCounts(view.graph.byPredicate)}, contradicted=${view.graph.contradicted}, superseded=${view.graph.superseded}, embeddings_missing_graph_nodes=${view.graph.embeddingsMissingGraphNodes}, graph_nodes_missing_embeddings=${view.graph.graphNodesMissingEmbeddings}, tasks=${view.graph.tasks}, task_events=${view.graph.taskEvents}`,
+    `Graph: entities=${view.graph.entities}, memory_nodes=${view.graph.memoryNodes}, relationships=${view.graph.relationships}, predicates=${formatCounts(view.graph.byPredicate)}, proposed_semantic_edges=${view.graph.proposedSemanticEdges}, confirmed_semantic_edges=${view.graph.confirmedSemanticEdges}, model_reviewed_pairs=${view.graph.modelReviewedPairs}, contradicted=${view.graph.contradicted}, superseded=${view.graph.superseded}, embeddings_missing_graph_nodes=${view.graph.embeddingsMissingGraphNodes}, graph_nodes_missing_embeddings=${view.graph.graphNodesMissingEmbeddings}, tasks=${view.graph.tasks}, task_events=${view.graph.taskEvents}`,
     view.warnings.length > 0 ? `Warnings: ${view.warnings.join(" ")}` : "Warnings: none"
   ].join("\n");
 }

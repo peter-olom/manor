@@ -26,7 +26,10 @@ function testConfig(): MemorySynthesisConfig {
     promotionAutoResolve: true,
     promotionBatchSize: 20,
     promotionMaxBatchesPerRun: 10,
-    promotionIntervalMs: 10_000
+    promotionIntervalMs: 10_000,
+    semanticEdgeReviewEnabled: true,
+    semanticEdgeReviewBatchSize: 12,
+    semanticEdgeReviewIntervalMs: 60_000
   };
 }
 

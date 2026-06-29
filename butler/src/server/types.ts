@@ -957,6 +957,9 @@ export interface MemorySynthesisConfig {
   promotionBatchSize: number;
   promotionMaxBatchesPerRun: number;
   promotionIntervalMs: number;
+  semanticEdgeReviewEnabled: boolean;
+  semanticEdgeReviewBatchSize: number;
+  semanticEdgeReviewIntervalMs: number;
 }
 
 export type ScratchPadItemStatus = "captured" | "exploring" | "ready_for_review" | "accepted" | "parked" | "dismissed";

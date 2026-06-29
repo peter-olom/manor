@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { backfillMemoryEmbeddings } from "../src/server/memory-embedding-backfill.js";
 import { OllamaMemoryEmbeddingProvider, readMemoryEmbeddingConfig } from "../src/server/memory-embedding-client.js";
+import { readMemorySynthesisConfig } from "../src/server/memory-synthesis-config.js";
+import { MemorySemanticEdgeReviewService } from "../src/server/memory-semantic-edge-review.js";
 import { retrieveButlerMemory } from "../src/server/memory-retrieval.js";
 import { ButlerStateStore } from "../src/server/state-store.js";
 import type { ButlerMemoryEntryView, JobMemoryView, PersistedUiState, ProjectMemoryView } from "../src/server/types.js";
@@ -122,30 +124,33 @@ type QueryCase = {
   rejectedSourceId?: string;
 };
 
-function buildQueries(count: number): QueryCase[] {
+function buildQueries(count: number, corpusSize: number): QueryCase[] {
   return Array.from({ length: count }, (_, index) => {
+    const sourceIndex = Math.max(0, corpusSize - 1 - index);
     const relationQuery = index % 2 === 1;
-    const item = topic(index);
+    const item = topic(sourceIndex);
     return relationQuery
       ? {
-          name: `support-${index}`,
+          name: `support-${sourceIndex}`,
           query: `worker checkpoint next action ${item}`,
           expectedSourceKind: "job_memory" as const,
-          expectedSourceId: `thread-${index}`,
+          expectedSourceId: `thread-${sourceIndex}`,
           relationRequired: "supports" as const
         }
       : {
-          name: `contradiction-${index}`,
+          name: `contradiction-${sourceIndex}`,
           query: `outdated pending promotion candidate ${item}`,
           expectedSourceKind: "project_memory" as const,
-          expectedSourceId: `project-${index}`,
+          expectedSourceId: `project-${sourceIndex}`,
           relationRequired: "supersedes" as const,
-          rejectedSourceId: `candidate-${index}`
+          rejectedSourceId: `candidate-${sourceIndex}`
         };
   });
 }
 
-const statePath = path.join(await mkdtemp(path.join(tmpdir(), "manor-memory-hybrid-prod-smoke-")), "state.json");
+const configuredStatePath = process.env.MANOR_MEMORY_SMOKE_STATE_PATH;
+if (configuredStatePath) await mkdir(path.dirname(configuredStatePath), { recursive: true });
+const statePath = configuredStatePath ?? path.join(await mkdtemp(path.join(tmpdir(), "manor-memory-hybrid-prod-smoke-")), "state.json");
 await writeFile(statePath, JSON.stringify(buildState(CORPUS_SIZE), null, 2));
 
 const store = new ButlerStateStore(statePath);
@@ -159,19 +164,49 @@ const backfill = await backfillMemoryEmbeddings({ store, config, provider, batch
 assert.equal(backfill.failed, 0, JSON.stringify(backfill));
 const embeddings = store.listMemoryEmbeddings();
 assert.ok(embeddings.length >= 1_000, `expected at least 1000 embeddings, got ${embeddings.length}`);
+console.error(`[memory-hybrid-smoke] embedded=${embeddings.length}`);
 const graphBeforeEdges = store.listMemoryGraph();
 assert.ok(graphBeforeEdges.entities.filter((entry) => entry.type === "memory").length >= 1_000, "expected at least 1000 memory graph nodes");
-const semanticEdges = graphBeforeEdges.relationships.filter((entry) => ["supersedes", "contradicts", "supports", "depends_on"].includes(entry.predicate)).length;
-assert.ok(semanticEdges >= QUERY_COUNT * 4, `expected production semantic graph edges, got ${semanticEdges}`);
+const possibleEdges = graphBeforeEdges.relationships.filter((entry) => ["possible_supersedes", "possible_contradicts", "supports", "depends_on"].includes(entry.predicate)).length;
+assert.ok(possibleEdges >= QUERY_COUNT * 4, `expected deterministic graph proposals, got ${possibleEdges}`);
+console.error(`[memory-hybrid-smoke] graph_nodes=${graphBeforeEdges.entities.filter((entry) => entry.type === "memory").length} proposals=${possibleEdges}`);
 
-const queries = buildQueries(QUERY_COUNT);
+const synthesisConfig = {
+  ...readMemorySynthesisConfig(),
+  semanticEdgeReviewEnabled: true
+};
+assert.equal(synthesisConfig.enabled, true, "MANOR_MEMORY_SYNTHESIS_ENABLED must be enabled for semantic edge smoke");
+const semanticErrors: string[] = [];
+const semanticReview = new MemorySemanticEdgeReviewService({
+  store,
+  config: synthesisConfig,
+  stateDir: path.dirname(statePath),
+  codexHomeDir: process.env.CODEX_HOME ?? path.join(process.env.HOME ?? "/tmp", ".codex"),
+  onError: (error) => semanticErrors.push(error instanceof Error ? error.message : String(error))
+});
+let semanticReviewed = 0;
+let semanticRelationships = 0;
+for (let batch = 0; batch < 10 && semanticReviewed < QUERY_COUNT * 2; batch += 1) {
+  const result = await semanticReview.reviewNextBatch(`hybrid-smoke-${batch}`);
+  semanticReviewed += result.reviewed;
+  semanticRelationships += result.relationships;
+  console.error(`[memory-hybrid-smoke] semantic_batch=${batch + 1} reviewed=${semanticReviewed} relationships=${semanticRelationships}`);
+  if (result.reviewed === 0) break;
+}
+const semanticEdges = store.listMemoryGraph().relationships.filter((entry) => ["supersedes", "contradicts", "supports"].includes(entry.predicate) && entry.sourceObservationId.startsWith("model:semantic-edge:")).length;
+assert.ok(semanticReviewed >= QUERY_COUNT * 2, `expected at least ${QUERY_COUNT * 2} model-reviewed semantic pairs, got ${semanticReviewed}; errors=${semanticErrors.join(" | ") || "none"}`);
+assert.ok(semanticEdges >= Math.floor(QUERY_COUNT / 2), `expected a material set of model-confirmed semantic graph edges, got ${semanticEdges}`);
+
+const queries = buildQueries(QUERY_COUNT, CORPUS_SIZE);
 const queryVectors = await provider.embed(queries.map((entry) => entry.query));
+console.error(`[memory-hybrid-smoke] query_vectors=${queryVectors.length}`);
 let hitAt1 = 0;
 let hitAtK = 0;
 let contradictionResolved = 0;
 let relationTraced = 0;
 let reciprocalRankTotal = 0;
 const failures: Array<Record<string, unknown>> = [];
+let sampleQueryResult: Record<string, unknown> | null = null;
 
 for (const [index, query] of queries.entries()) {
   const retrieval = retrieveButlerMemory(store, {
@@ -193,6 +228,28 @@ for (const [index, query] of queries.entries()) {
   if (query.rejectedSourceId && expected?.sourceKind === "project_memory" && expectedSupersedes && (!rejected || (rejected.score.graph < 0 && expected.score.total > rejected.score.total))) {
     contradictionResolved += 1;
   }
+  if (!sampleQueryResult && query.rejectedSourceId && expected) {
+    sampleQueryResult = {
+      query: query.query,
+      expected: `${query.expectedSourceKind}:${query.expectedSourceId}`,
+      rank,
+      top: retrieval.candidates.slice(0, TOP_K).map((candidate) => ({
+        source: `${candidate.sourceKind}:${candidate.sourceId}`,
+        total: Number(candidate.score.total.toFixed(3)),
+        graph: Number(candidate.score.graph.toFixed(3)),
+        supersedes: candidate.graph?.supersedes.slice(0, 3) ?? [],
+        supersededBy: candidate.graph?.supersededBy.slice(0, 3) ?? [],
+        contradictedBy: candidate.graph?.contradictedBy.slice(0, 3) ?? []
+      })),
+      rejected: rejected ? {
+        source: `${rejected.sourceKind}:${rejected.sourceId}`,
+        total: Number(rejected.score.total.toFixed(3)),
+        graph: Number(rejected.score.graph.toFixed(3)),
+        supersededBy: rejected.graph?.supersededBy.slice(0, 3) ?? [],
+        contradictedBy: rejected.graph?.contradictedBy.slice(0, 3) ?? []
+      } : null
+    };
+  }
   if (rank === 0 || rank > TOP_K || !relationMatched || (query.rejectedSourceId && (!expectedSupersedes || (rejected && (rejected.score.graph >= 0 || expected!.score.total <= rejected.score.total))))) {
     failures.push({
       name: query.name,
@@ -213,6 +270,9 @@ console.log(JSON.stringify({
   corpusSize: CORPUS_SIZE,
   embeddings: embeddings.length,
   memoryGraphNodes: store.listMemoryGraph().entities.filter((entry) => entry.type === "memory").length,
+  possibleEdges,
+  semanticReviewed,
+  semanticRelationships,
   semanticEdges,
   queries: queries.length,
   topK: TOP_K,
@@ -221,5 +281,6 @@ console.log(JSON.stringify({
   mrr: Number((reciprocalRankTotal / queries.length).toFixed(4)),
   contradictionResolved,
   relationTraced,
+  sampleQueryResult,
   durationMs: Date.now() - startedAt
 }, null, 2));

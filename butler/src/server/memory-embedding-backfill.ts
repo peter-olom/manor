@@ -10,7 +10,7 @@ import { ensureDeterministicMemoryGraphEdges, ensureMemoryGraphNode } from "./me
 import { isAcceptedOperatorPreferenceMemory } from "./memory-metadata.js";
 import type { ButlerMemoryType, MemoryEmbeddingView } from "./types.js";
 
-type EmbeddableMemory = {
+export type EmbeddableMemory = {
   sourceKind: MemoryEmbeddingView["sourceKind"];
   sourceId: string;
   text: string;

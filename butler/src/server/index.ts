@@ -19,6 +19,7 @@ import { normalizeMemoryCodexModelEnv } from "./memory-codex-model.js";
 import { getMemoryDebugTrace, listMemoryDebugTraces } from "./memory-debug-traces.js";
 import { buildMemoryDiagnostics } from "./memory-diagnostics.js";
 import { MemoryEmbeddingService } from "./memory-embedding-service.js";
+import { MemorySemanticEdgeReviewService } from "./memory-semantic-edge-review.js";
 import { CodexExecMemoryPromotionService } from "./memory-promotion.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
 import { readMemorySynthesisConfig, resolveMemoryServiceModel } from "./memory-synthesis-config.js";
@@ -210,6 +211,7 @@ const workerReview = new CodexWorkerReviewService({ store, stateDir, codexHomeDi
 const memoryScheduler = new MemoryUpdateScheduler({ store, config: memorySynthesisConfig, stateDir, codexHomeDir });
 const memoryPromotion = new CodexExecMemoryPromotionService({ store, memoryScheduler, config: memorySynthesisConfig, stateDir, codexHomeDir });
 const memoryEmbeddings = new MemoryEmbeddingService({ store, onResult: (result, reason) => { if (result.embedded > 0 || result.failed > 0) console.log(`Memory embedding ${reason}: embedded=${result.embedded} skipped=${result.skippedFresh} failed=${result.failed}`); }, onError: (error, reason) => console.warn(`Memory embedding ${reason} failed`, error) });
+const memorySemanticEdges = new MemorySemanticEdgeReviewService({ store, config: memorySynthesisConfig, stateDir, codexHomeDir, onResult: (result, reason) => { if (result.reviewed > 0 || result.relationships > 0) console.log(`Memory semantic edge review ${reason}: reviewed=${result.reviewed} relationships=${result.relationships}`); }, onError: (error, reason) => console.warn(`Memory semantic edge review ${reason} failed`, error) });
 store.setMemoryUpdateObserver(memoryScheduler);
 const codexHarness = new CodexHarnessService({
   codexHomeDir,
@@ -227,6 +229,7 @@ workerReview.reviewPendingReportsAsync();
 memoryScheduler.start();
 memoryPromotion.start();
 memoryEmbeddings.start();
+memorySemanticEdges.start();
 await codexHarness.load();
 await codexHarness.reconcileThreadCapabilities();
 const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, {
@@ -1491,4 +1494,5 @@ server.on("close", () => {
   clearInterval(artifactReaper);
   clearInterval(runtimeReconciler);
   memoryEmbeddings.dispose();
+  memorySemanticEdges.stop();
 });

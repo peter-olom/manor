@@ -116,7 +116,7 @@ export function ensureDeterministicMemoryGraphEdges(store: ButlerStateStore): nu
           predicate: "supports",
           targetEntityId: projectNode.id,
           sourceObservationId: `deterministic:project:${project.projectId}:supports:${entry.id}`,
-          confidence: 0.95
+          confidence: 0.65
         });
         created += 1;
       }
@@ -128,18 +128,18 @@ export function ensureDeterministicMemoryGraphEdges(store: ButlerStateStore): nu
         store.upsertMemoryRelationship({
           projectId: project.projectId,
           sourceEntityId: projectNode.id,
-          predicate: "supersedes",
+          predicate: "possible_supersedes",
           targetEntityId: candidateNode.id,
           sourceObservationId,
-          confidence: 1
+          confidence: 0.35
         });
         store.upsertMemoryRelationship({
           projectId: project.projectId,
           sourceEntityId: projectNode.id,
-          predicate: "contradicts",
+          predicate: "possible_contradicts",
           targetEntityId: candidateNode.id,
           sourceObservationId,
-          confidence: 1
+          confidence: 0.35
         });
         created += 2;
       }

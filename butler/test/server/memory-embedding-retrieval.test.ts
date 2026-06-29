@@ -7,9 +7,10 @@ import test from "node:test";
 import { backfillMemoryEmbeddings } from "../../src/server/memory-embedding-backfill.js";
 import { encodeFloat32Vector, hashEmbeddingText, type MemoryEmbeddingConfig, type MemoryEmbeddingProvider } from "../../src/server/memory-embedding-client.js";
 import { butlerMemoryTextForEmbedding, projectMemoryTextForEmbedding } from "../../src/server/memory-embedding-text.js";
+import { MemorySemanticEdgeReviewService } from "../../src/server/memory-semantic-edge-review.js";
 import { retrieveButlerMemory, retrieveButlerMemoryWithEmbeddings } from "../../src/server/memory-retrieval.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
-import type { PersistedUiState } from "../../src/server/types.js";
+import type { MemorySynthesisConfig, PersistedUiState } from "../../src/server/types.js";
 
 async function createStore(state: PersistedUiState): Promise<ButlerStateStore> {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-memory-embedding-test-"));
@@ -38,6 +39,24 @@ const fakeProvider: MemoryEmbeddingProvider = {
       return [0, 1];
     });
   }
+};
+
+const fakeSynthesisConfig: MemorySynthesisConfig = {
+  enabled: true,
+  provider: "codex_exec",
+  model: "gpt-5.4-mini",
+  effort: null,
+  timeoutMs: 1_000,
+  maxInputChars: 16_000,
+  maxCandidatesPerRun: 6,
+  autoPromoteHighConfidence: false,
+  promotionAutoResolve: true,
+  promotionBatchSize: 20,
+  promotionMaxBatchesPerRun: 10,
+  promotionIntervalMs: 10_000,
+  semanticEdgeReviewEnabled: true,
+  semanticEdgeReviewBatchSize: 12,
+  semanticEdgeReviewIntervalMs: 60_000
 };
 
 test("embedding ranking does not make legacy global memory eligible for injection", async () => {
@@ -250,8 +269,43 @@ test("smoke: backfill embeds existing entries and embedding-aware query returns 
   const predicates = new Set(store.listMemoryGraph().relationships.map((entry) => entry.predicate));
   assert.ok(predicates.has("supports"));
   assert.ok(predicates.has("depends_on"));
-  assert.ok(predicates.has("supersedes"));
-  assert.ok(predicates.has("contradicts"));
+  assert.ok(predicates.has("possible_supersedes"));
+  assert.ok(predicates.has("possible_contradicts"));
+  assert.equal(predicates.has("supersedes"), false);
+  assert.equal(predicates.has("contradicts"), false);
+
+  const semanticStateDir = await mkdtemp(path.join(tmpdir(), "manor-memory-semantic-test-"));
+  const semanticReview = new MemorySemanticEdgeReviewService({
+    store,
+    config: fakeSynthesisConfig,
+    stateDir: semanticStateDir,
+    codexHomeDir: semanticStateDir,
+    runner: async ({ prompt }) => {
+      const payload = JSON.parse(prompt.split("Payload:\n").at(-1) ?? "{}") as { pairs?: Array<{ pairId: string; left: { sourceKind: string }; right: { sourceKind: string } }> };
+      return {
+        decisions: (payload.pairs ?? []).flatMap((pair) => {
+          if (pair.left.sourceKind === "job_memory" && pair.right.sourceKind === "project_memory") {
+            return [{ pairId: pair.pairId, predicate: "supports" as const, sourceSide: "left" as const, confidence: 0.92, reason: "The job memory produced the accepted project memory." }];
+          }
+          if (pair.left.sourceKind === "project_memory" && pair.right.sourceKind === "promotion_candidate") {
+            return [
+              { pairId: pair.pairId, predicate: "supersedes" as const, sourceSide: "left" as const, confidence: 0.95, reason: "Accepted project memory is canonical over the pending candidate." },
+              { pairId: pair.pairId, predicate: "contradicts" as const, sourceSide: "left" as const, confidence: 0.9, reason: "The accepted memory resolves the stale pending candidate." }
+            ];
+          }
+          return [{ pairId: pair.pairId, predicate: "none" as const, sourceSide: "left" as const, confidence: 0, reason: "No durable semantic relation." }];
+        })
+      };
+    }
+  });
+  const semanticResult = await semanticReview.reviewNextBatch();
+  assert.ok(semanticResult.reviewed > 0);
+  assert.ok(semanticResult.relationships >= 2);
+  assert.deepEqual(await semanticReview.reviewNextBatch(), { reviewed: 0, relationships: 0 });
+
+  const confirmedPredicates = new Set(store.listMemoryGraph().relationships.map((entry) => entry.predicate));
+  assert.ok(confirmedPredicates.has("supersedes"));
+  assert.ok(confirmedPredicates.has("contradicts"));
 
   const retrieval = await retrieveButlerMemoryWithEmbeddings(store, {
     projectId: "manor",

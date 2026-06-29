@@ -26,6 +26,9 @@ function testConfig(overrides: Partial<MemorySynthesisConfig> = {}): MemorySynth
     promotionBatchSize: 20,
     promotionMaxBatchesPerRun: 10,
     promotionIntervalMs: 10_000,
+    semanticEdgeReviewEnabled: true,
+    semanticEdgeReviewBatchSize: 12,
+    semanticEdgeReviewIntervalMs: 60_000,
     ...overrides
   };
 }

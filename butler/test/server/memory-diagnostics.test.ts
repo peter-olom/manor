@@ -89,6 +89,47 @@ async function seedDiagnosticStore(): Promise<{ store: ButlerStateStore; from: n
     summary: "Memory synthesis completed",
     observedAt: from + 2
   });
+  store.recordMemoryObservation({
+    idempotencyKey: "semantic-edge-review:pair-1",
+    projectId: "project-1",
+    projectLabel: "Project One",
+    threadId: "thread-1",
+    sourceKind: "synthesis_result",
+    sourceId: "pair-1",
+    summary: "Semantic edge review completed",
+    payload: { kind: "semantic_edge_review", pairId: "pair-1" },
+    observedAt: from + 3
+  });
+  const currentMemory = store.upsertMemoryEntity({
+    projectId: "project-1",
+    type: "memory",
+    name: "Current memory",
+    canonicalKey: "memory:project_memory:project-1",
+    sourceObservationId: observation.id
+  });
+  const staleMemory = store.upsertMemoryEntity({
+    projectId: "project-1",
+    type: "memory",
+    name: "Stale candidate",
+    canonicalKey: "memory:promotion_candidate:candidate-1",
+    sourceObservationId: observation.id
+  });
+  store.upsertMemoryRelationship({
+    projectId: "project-1",
+    sourceEntityId: currentMemory.id,
+    predicate: "possible_supersedes",
+    targetEntityId: staleMemory.id,
+    sourceObservationId: "deterministic:project-1:supersedes:candidate-1",
+    confidence: 0.35
+  });
+  store.upsertMemoryRelationship({
+    projectId: "project-1",
+    sourceEntityId: currentMemory.id,
+    predicate: "supersedes",
+    targetEntityId: staleMemory.id,
+    sourceObservationId: "model:semantic-edge:pair-1:supersedes:left",
+    confidence: 0.91
+  });
   store.submitJobMemoryPromotionCandidate("thread-1", {
     kind: "note",
     summary: "Pending review candidate",
@@ -118,13 +159,13 @@ test("memory diagnostics summarizes pipeline counts and date filtering", async (
     now: to + 20 * 60_000
   });
 
-  assert.equal(diagnostics.observations.total, 2);
+  assert.equal(diagnostics.observations.total, 3);
   assert.equal(diagnostics.observations.bySourceKind.harness_checkpoint, 1);
   assert.equal(diagnostics.synthesis.byStatus.completed, 1);
   assert.equal(diagnostics.synthesis.byStatus.failed, 1);
   assert.equal(diagnostics.synthesis.byStatus.pending, 1);
   assert.equal(diagnostics.synthesis.due, 1);
-  assert.equal(diagnostics.synthesis.completedResults, 1);
+  assert.equal(diagnostics.synthesis.completedResults, 2);
   assert.equal(diagnostics.synthesis.failedWithError, 1);
   assert.equal(diagnostics.candidates.total, 2);
   assert.equal(diagnostics.candidates.byStatus.pending, 1);
@@ -134,8 +175,12 @@ test("memory diagnostics summarizes pipeline counts and date filtering", async (
   assert.equal(diagnostics.candidates.resolvedInWindow, 1);
   assert.equal(diagnostics.projectMemory.acceptedEntries, 1);
   assert.equal(diagnostics.butlerMemory.total, 0);
+  assert.equal(diagnostics.graph.proposedSemanticEdges, 1);
+  assert.equal(diagnostics.graph.confirmedSemanticEdges, 1);
+  assert.equal(diagnostics.graph.modelReviewedPairs, 1);
   assert.equal(diagnostics.samples?.recentCandidates.length, 2);
   assert.match(formatMemoryDiagnostics(diagnostics), /Candidates: total=2/);
+  assert.match(formatMemoryDiagnostics(diagnostics), /confirmed_semantic_edges=1/);
 });
 
 test("harness memory diagnostics returns the shared structured report", async () => {
