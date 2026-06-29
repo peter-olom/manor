@@ -3,8 +3,14 @@ import type {
   ButlerMemoryEntryView,
   ButlerMemoryRetrievalView,
   JobMemoryView,
+  JobMemoryPromotionCandidateView,
+  MemoryEmbeddingView,
+  MemoryRetrievalCandidateView,
   ProjectMemoryView
 } from "./types.js";
+import { cosineSimilarity, decodeFloat32Vector, hashEmbeddingText, OllamaMemoryEmbeddingProvider, readMemoryEmbeddingConfig, type MemoryEmbeddingConfig, type MemoryEmbeddingProvider } from "./memory-embedding-client.js";
+import { butlerMemoryTextForEmbedding, jobMemoryTextForEmbedding, projectMemoryTextForEmbedding, promotionCandidateTextForEmbedding } from "./memory-embedding-text.js";
+import { isAcceptedOperatorPreferenceMemory } from "./memory-metadata.js";
 
 type RetrievalInput = {
   projectId?: string | null;
@@ -13,6 +19,8 @@ type RetrievalInput = {
   limit?: number | null;
   includeGlobal?: boolean | null;
   includeProvenance?: boolean | null;
+  queryVector?: number[] | null;
+  embeddingModel?: string | null;
 };
 
 function normalizeText(value: string | null | undefined): string {
@@ -42,32 +50,7 @@ function scoreText(text: string, query: string | null, tokens: string[]): number
 }
 
 function jobMemoryText(memory: JobMemoryView): string {
-  return [
-    memory.source,
-    String(memory.createdAt),
-    memory.operatorGoal,
-    memory.requestedTask,
-    memory.latestCheckpoint,
-    memory.nextAction,
-    ...memory.currentPlan,
-    ...memory.blockers,
-    ...memory.assumptions,
-    ...memory.proofRequirements,
-    ...memory.notes,
-    ...memory.decisions.flatMap((entry) => [entry.summary, entry.details]),
-    ...memory.entries.flatMap((entry) => [
-      entry.summary,
-      entry.details,
-      entry.nextAction,
-      ...entry.blockers,
-      ...entry.plan,
-      ...entry.assumptions,
-      ...entry.proofRequirements
-    ]),
-    ...memory.promotionCandidates.flatMap((entry) => [entry.summary, entry.details, entry.status])
-  ]
-    .filter((entry): entry is string => typeof entry === "string" && Boolean(entry.trim()))
-    .join("\n");
+  return jobMemoryTextForEmbedding(memory);
 }
 
 function jobMemoryActivityAt(memory: JobMemoryView): number {
@@ -81,16 +64,157 @@ function jobMemoryActivityAt(memory: JobMemoryView): number {
 }
 
 function projectMemoryText(memory: ProjectMemoryView): string {
-  return [
-    memory.summary,
-    ...memory.entries.flatMap((entry) => [entry.kind, entry.summary, entry.details])
-  ]
-    .filter((entry): entry is string => typeof entry === "string" && Boolean(entry.trim()))
-    .join("\n");
+  return projectMemoryTextForEmbedding(memory);
 }
 
 function butlerMemoryText(memory: ButlerMemoryEntryView): string {
-  return [memory.summary, memory.details, ...memory.tags].filter((entry): entry is string => typeof entry === "string" && Boolean(entry.trim())).join("\n");
+  return butlerMemoryTextForEmbedding(memory);
+}
+
+function freshnessScore(timestamp: number): number {
+  if (!Number.isFinite(timestamp)) return 0;
+  const ageDays = Math.max(0, (Date.now() - timestamp) / 86_400_000);
+  return Math.max(0, 1 - Math.min(1, ageDays / 90));
+}
+
+function latestProjectEntryAt(memory: ProjectMemoryView): number {
+  return memory.entries.length > 0 ? Math.max(...memory.entries.map((entry) => entry.acceptedAt)) : memory.updatedAt;
+}
+
+function latestJobEntryAt(memory: JobMemoryView): number {
+  return jobMemoryActivityAt(memory);
+}
+
+function embeddingFor(
+  embeddings: MemoryEmbeddingView[],
+  sourceKind: MemoryEmbeddingView["sourceKind"],
+  sourceId: string,
+  text: string,
+  model: string | null
+): MemoryEmbeddingView | null {
+  const hash = hashEmbeddingText(text);
+  return embeddings.find((entry) =>
+    entry.sourceKind === sourceKind &&
+    entry.sourceId === sourceId &&
+    entry.sourceTextHash === hash &&
+    (!model || entry.model === model)
+  ) ?? null;
+}
+
+function vectorScore(embedding: MemoryEmbeddingView | null, queryVector: number[] | null): number | null {
+  if (!embedding || !queryVector || queryVector.length === 0) return null;
+  return cosineSimilarity(queryVector, decodeFloat32Vector(embedding.vectorBase64, embedding.dimension));
+}
+
+function totalScore(input: { lexical: number; vector: number | null; freshness: number }): number {
+  return input.lexical + (input.vector === null ? 0 : input.vector * 5) + input.freshness;
+}
+
+function buildCandidates(
+  store: ButlerStateStore,
+  input: {
+    projectRollups: ProjectMemoryView[];
+    jobMemories: JobMemoryView[];
+    butlerMemories: ButlerMemoryEntryView[];
+    pendingPromotionCandidates: JobMemoryPromotionCandidateView[];
+    query: string | null;
+    tokens: string[];
+    queryVector: number[] | null;
+    embeddingModel: string | null;
+  }
+): MemoryRetrievalCandidateView[] {
+  const embeddings = typeof store.listMemoryEmbeddings === "function" ? store.listMemoryEmbeddings() : [];
+  const candidates: MemoryRetrievalCandidateView[] = [];
+  for (const memory of input.projectRollups) {
+    const text = projectMemoryText(memory);
+    const embedding = embeddingFor(embeddings, "project_memory", memory.projectId, text, input.embeddingModel);
+    const score = {
+      lexical: scoreText(text, input.query, input.tokens),
+      vector: vectorScore(embedding, input.queryVector),
+      freshness: freshnessScore(latestProjectEntryAt(memory))
+    };
+    candidates.push({
+      id: `project:${memory.projectId}`,
+      sourceKind: "project_memory",
+      sourceId: memory.projectId,
+      text,
+      memoryType: "project_fact",
+      scopeKind: "project",
+      projectId: memory.projectId,
+      threadId: null,
+      eligibleForInjection: false,
+      reason: "accepted project memory is retrievable but not injected into worker payloads in shadow mode",
+      score: { ...score, total: totalScore(score) }
+    });
+  }
+  for (const memory of input.jobMemories) {
+    const text = jobMemoryText(memory);
+    const embedding = embeddingFor(embeddings, "job_memory", memory.threadId, text, input.embeddingModel);
+    const score = {
+      lexical: scoreText(text, input.query, input.tokens),
+      vector: vectorScore(embedding, input.queryVector),
+      freshness: freshnessScore(latestJobEntryAt(memory))
+    };
+    candidates.push({
+      id: `job:${memory.threadId}`,
+      sourceKind: "job_memory",
+      sourceId: memory.threadId,
+      text,
+      memoryType: "thread_fact",
+      scopeKind: "thread",
+      projectId: memory.projectId,
+      threadId: memory.threadId,
+      eligibleForInjection: false,
+      reason: "job memory is retrievable but not injected by embedding shadow retrieval",
+      score: { ...score, total: totalScore(score) }
+    });
+  }
+  for (const memory of input.butlerMemories) {
+    const text = butlerMemoryText(memory);
+    const embedding = embeddingFor(embeddings, "butler_memory", memory.id, text, input.embeddingModel);
+    const score = {
+      lexical: scoreText(text, input.query, input.tokens),
+      vector: vectorScore(embedding, input.queryVector),
+      freshness: freshnessScore(memory.createdAt)
+    };
+    const eligible = isAcceptedOperatorPreferenceMemory(memory);
+    candidates.push({
+      id: `butler:${memory.id}`,
+      sourceKind: "butler_memory",
+      sourceId: memory.id,
+      text,
+      memoryType: memory.memoryType ?? "legacy_global",
+      scopeKind: memory.scopeKind ?? "global",
+      projectId: memory.projectId ?? null,
+      threadId: memory.threadId ?? null,
+      eligibleForInjection: eligible,
+      reason: eligible ? "accepted global operator preference" : "global or legacy Butler memory is not eligible for worker injection",
+      score: { ...score, total: totalScore(score) }
+    });
+  }
+  for (const candidate of input.pendingPromotionCandidates) {
+    const text = promotionCandidateTextForEmbedding(candidate);
+    const embedding = embeddingFor(embeddings, "promotion_candidate", candidate.id, text, input.embeddingModel);
+    const score = {
+      lexical: scoreText(text, input.query, input.tokens),
+      vector: vectorScore(embedding, input.queryVector),
+      freshness: freshnessScore(candidate.updatedAt)
+    };
+    candidates.push({
+      id: `promotion:${candidate.id}`,
+      sourceKind: "promotion_candidate",
+      sourceId: candidate.id,
+      text,
+      memoryType: "project_fact",
+      scopeKind: "project",
+      projectId: candidate.projectId,
+      threadId: candidate.threadId,
+      eligibleForInjection: false,
+      reason: `promotion candidate is ${candidate.status} and requires explicit resolution before project memory injection`,
+      score: { ...score, total: totalScore(score) }
+    });
+  }
+  return candidates.sort((left, right) => right.score.total - left.score.total).slice(0, Math.max(50, (input.queryVector ? 100 : 50)));
 }
 
 function formatTime(value: number | null | undefined): string {
@@ -119,6 +243,7 @@ export function retrieveButlerMemory(store: ButlerStateStore, input: RetrievalIn
   const threadId = normalizeText(input.threadId) || null;
   const query = normalizeText(input.query) || null;
   const includeProvenance = input.includeProvenance === true;
+  const tokens = queryTokens(query);
   const warnings: string[] = [];
 
   const projectRollups = rankByQuery(
@@ -137,6 +262,21 @@ export function retrieveButlerMemory(store: ButlerStateStore, input: RetrievalIn
     ? rankByQuery(store.listButlerMemory(), query, butlerMemoryText, (memory) => memory.createdAt).slice(0, limit)
     : [];
   const pendingPromotionCandidates = store.listPendingPromotionCandidates(projectId).slice(0, limit);
+  const useVectorPool = Array.isArray(input.queryVector) && input.queryVector.length > 0;
+  const vectorProjectRollups = projectId
+    ? [store.getProjectMemory(projectId)].filter((entry): entry is ProjectMemoryView => Boolean(entry))
+    : store.listProjectMemories();
+  const vectorButlerMemories = input.includeGlobal ? store.listButlerMemory() : [];
+  const candidates = buildCandidates(store, {
+    projectRollups: useVectorPool ? vectorProjectRollups : projectRollups,
+    jobMemories: useVectorPool ? jobCandidates : jobMemories,
+    butlerMemories: useVectorPool ? vectorButlerMemories : butlerMemories,
+    pendingPromotionCandidates: useVectorPool ? store.listPendingPromotionCandidates(projectId) : pendingPromotionCandidates,
+    query,
+    tokens,
+    queryVector: Array.isArray(input.queryVector) ? input.queryVector : null,
+    embeddingModel: normalizeText(input.embeddingModel) || null
+  });
 
   if (projectId && projectRollups.length === 0) {
     warnings.push("No project rollup matched the requested project.");
@@ -153,6 +293,8 @@ export function retrieveButlerMemory(store: ButlerStateStore, input: RetrievalIn
     projectId,
     threadId,
     includeProvenance,
+    candidates,
+    shadowTraceId: candidates.length > 0 ? `shadow-${Date.now()}` : null,
     projectRollups,
     jobMemories,
     butlerMemories,
@@ -160,6 +302,25 @@ export function retrieveButlerMemory(store: ButlerStateStore, input: RetrievalIn
     warnings,
     retrievedAt: Date.now()
   };
+}
+
+export async function retrieveButlerMemoryWithEmbeddings(
+  store: ButlerStateStore,
+  input: RetrievalInput = {},
+  options: { config?: MemoryEmbeddingConfig; provider?: MemoryEmbeddingProvider } = {}
+): Promise<ButlerMemoryRetrievalView> {
+  const config = options.config ?? readMemoryEmbeddingConfig();
+  const query = normalizeText(input.query) || null;
+  if (!config.enabled || !query || Array.isArray(input.queryVector)) return retrieveButlerMemory(store, input);
+  try {
+    const provider = options.provider ?? new OllamaMemoryEmbeddingProvider(config);
+    const [queryVector] = await provider.embed([query]);
+    return retrieveButlerMemory(store, { ...input, queryVector: queryVector ?? null, embeddingModel: config.model });
+  } catch (error) {
+    const retrieval = retrieveButlerMemory(store, input);
+    retrieval.warnings.push(`Embedding query failed: ${error instanceof Error ? error.message : String(error)}`);
+    return retrieval;
+  }
 }
 
 export function formatButlerMemoryRetrieval(view: ButlerMemoryRetrievalView): string {

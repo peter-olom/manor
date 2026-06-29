@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import { upsertOperatorMessage } from "./butler-operator-messages.js";
+import { formatOperatorPreferenceMemory, isAcceptedOperatorPreferenceMemory } from "./memory-metadata.js";
 import type { ButlerMemoryEntryView, ButlerMessageView, ButlerOperatorQuestionItemView, ButlerOperatorQuestionView } from "./types.js";
 
 type OperatorQuestionItemInput = {
@@ -33,11 +34,18 @@ type OperatorQuestionTasteMemoryAccess = {
     source?: ButlerMemoryEntryView["source"];
     sourceMessageId?: string | null;
     tags?: unknown;
+    memoryType?: ButlerMemoryEntryView["memoryType"];
+    scopeKind?: ButlerMemoryEntryView["scopeKind"];
+    reviewState?: ButlerMemoryEntryView["reviewState"];
+    confidence?: number | null;
+    provenance?: Record<string, unknown>;
   }): ButlerMemoryEntryView;
 };
 
 const DURABLE_OPERATOR_TASTE_PATTERN =
   /\b(taste|prefer|preference|style|voice|tone|design|polish|quality|like|dislike|vision|autonomy|handholding|ask|question|decision|planner|critic|loop)\b/i;
+const OPERATOR_PREFERENCE_EVIDENCE_PATTERN =
+  /\b(operator preference|prefer(?:s|red|ence)?|style|voice|tone|design taste|polish|quality bar|autonomy|handholding|ask fewer|ask before|question policy)\b/i;
 const SKIP_OPERATOR_QUESTION_MEMORY_PATTERN =
   /\b(smoke test|test only|verification only|temporary test|do not remember|don't remember)\b/i;
 
@@ -66,9 +74,10 @@ function tagsForOperatorTasteQuestion(text: string): string[] {
 
 export function findDurableOperatorTasteNotes(memoryEntries: ButlerMemoryEntryView[]): string[] {
   return memoryEntries
-    .filter((entry) => DURABLE_OPERATOR_TASTE_PATTERN.test(`${entry.summary} ${entry.details ?? ""} ${(entry.tags ?? []).join(" ")}`))
+    .filter((entry) => isAcceptedOperatorPreferenceMemory(entry))
+    .filter((entry) => OPERATOR_PREFERENCE_EVIDENCE_PATTERN.test(`${entry.summary} ${entry.details ?? ""} ${(entry.tags ?? []).join(" ")}`))
     .slice(-6)
-    .map((entry) => `${entry.summary}${entry.details ? ` - ${entry.details}` : ""}`);
+    .map(formatOperatorPreferenceMemory);
 }
 
 function buildQuestionOptions(input: { options?: Array<{ id?: string | null; label: string; description?: string | null }> }): ButlerOperatorQuestionItemView["options"] {
@@ -259,7 +268,15 @@ export function recordOperatorQuestionTasteMemory(
     access.recordButlerMemory({
       ...candidate,
       source: "butler_tool",
-      sourceMessageId: message.id
+      sourceMessageId: message.id,
+      memoryType: "operator_preference",
+      scopeKind: "global",
+      reviewState: "accepted",
+      confidence: 1,
+      provenance: {
+        source: "operator_question",
+        messageId: message.id
+      }
     });
     recorded += 1;
   }

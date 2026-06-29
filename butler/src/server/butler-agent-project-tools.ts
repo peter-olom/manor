@@ -19,7 +19,7 @@ import {
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
 import { formatMemoryDebugTrace, formatMemoryDebugTraceList, getMemoryDebugTrace, listMemoryDebugTraces } from "./memory-debug-traces.js";
 import { buildMemoryDiagnostics, formatMemoryDiagnostics } from "./memory-diagnostics.js";
-import { formatButlerMemoryRetrieval, retrieveButlerMemory } from "./memory-retrieval.js";
+import { formatButlerMemoryRetrieval, retrieveButlerMemoryWithEmbeddings } from "./memory-retrieval.js";
 
 function hasOwnField(value: unknown, key: string): boolean {
   return Boolean(value) && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key);
@@ -67,7 +67,7 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
       }),
       uiEffects: access.getToolUiEffects("retrieve_memory"),
       execute: async (_toolCallId, params) => {
-        const retrieval = retrieveButlerMemory(access.store, {
+        const retrieval = await retrieveButlerMemoryWithEmbeddings(access.store, {
           projectId: typeof params.projectId === "string" ? params.projectId : null,
           threadId: typeof params.threadId === "string" ? params.threadId : null,
           query: typeof params.query === "string" ? params.query : null,

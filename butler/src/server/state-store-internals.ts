@@ -23,6 +23,7 @@ import { loadStateStoreSqliteMemory, persistStateStoreSqliteMemory } from "./sta
 import { decoratePreviewVerification } from "./preview-verification.js";
 import { parseJobPayload } from "./job-instruction-artifacts.js";
 import { normalizeWorkerClaimsReport } from "./butler-orchestration.js";
+import { normalizeButlerMemoryMetadata, normalizeButlerMemoryType } from "./memory-metadata.js";
 import {
   normalizeExecutionContract,
   normalizeSupervisionChecklist,
@@ -43,6 +44,7 @@ import type {
   JobMemoryPromotionCandidateView,
   JobMemoryView,
   MemoryEntityView,
+  MemoryEmbeddingView,
   MemoryObservationView,
   MemoryRelationshipView,
   MemorySynthesisQueueEntryView,
@@ -90,6 +92,7 @@ export type StateStoreInternalAccess = {
   persistedJobMemoriesByThreadId: Map<string, JobMemoryView>;
   persistedProjectMemoriesByProjectId: Map<string, ProjectMemoryView>;
   persistedButlerMemoryEntries: ButlerMemoryEntryView[];
+  persistedMemoryEmbeddingsById: Map<string, MemoryEmbeddingView>;
   persistedMemoryObservations: MemoryObservationView[];
   persistedMemoryObservationIdsByKey: Map<string, string>;
   persistedMemoryEntitiesById: Map<string, MemoryEntityView>;
@@ -156,6 +159,32 @@ function normalizeMemoryEntityType(value: unknown): MemoryEntityView["type"] {
     value === "thread"
     ? value
     : "unknown";
+}
+
+function normalizeMemoryEmbedding(value: unknown): MemoryEmbeddingView | null {
+  const entry = value && typeof value === "object" ? value as Partial<MemoryEmbeddingView> : null;
+  if (!entry || typeof entry.sourceId !== "string" || typeof entry.sourceTextHash !== "string" || typeof entry.model !== "string" || typeof entry.vectorBase64 !== "string") {
+    return null;
+  }
+  const sourceKind = entry.sourceKind === "project_memory" || entry.sourceKind === "job_memory" || entry.sourceKind === "promotion_candidate" || entry.sourceKind === "memory_observation" ? entry.sourceKind : "butler_memory";
+  const id = typeof entry.id === "string" && entry.id.trim() ? entry.id.trim() : `emb-${crypto.createHash("sha256").update(`${sourceKind}:${entry.sourceId}:${entry.model}:${entry.sourceTextHash}`).digest("hex").slice(0, 24)}`;
+  return {
+    id,
+    sourceKind,
+    sourceId: entry.sourceId.trim(),
+    sourceTextHash: entry.sourceTextHash.trim(),
+    model: entry.model.trim(),
+    modelTag: typeof entry.modelTag === "string" && entry.modelTag.trim() ? entry.modelTag.trim() : entry.model.trim(),
+    dimension: typeof entry.dimension === "number" && Number.isFinite(entry.dimension) ? Math.max(1, Math.trunc(entry.dimension)) : 1,
+    vectorBase64: entry.vectorBase64.trim(),
+    memoryType: normalizeButlerMemoryType(entry.memoryType),
+    projectId: typeof entry.projectId === "string" && entry.projectId.trim() ? entry.projectId.trim() : null,
+    threadId: typeof entry.threadId === "string" && entry.threadId.trim() ? entry.threadId.trim() : null,
+    provenance: entry.provenance && typeof entry.provenance === "object" && !Array.isArray(entry.provenance) ? { ...entry.provenance } : {},
+    contentVersion: typeof entry.contentVersion === "number" && Number.isFinite(entry.contentVersion) ? Math.max(1, Math.trunc(entry.contentVersion)) : 1,
+    createdAt: typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : Date.now(),
+    embeddedAt: typeof entry.embeddedAt === "number" && Number.isFinite(entry.embeddedAt) ? entry.embeddedAt : Date.now()
+  };
 }
 
 function normalizeMemoryTaskStatus(value: unknown): MemoryTaskView["status"] {
@@ -694,6 +723,7 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     access.persistedJobMemoriesByThreadId.clear();
     access.persistedProjectMemoriesByProjectId.clear();
     access.persistedButlerMemoryEntries.splice(0, access.persistedButlerMemoryEntries.length);
+    access.persistedMemoryEmbeddingsById.clear();
     access.persistedMemoryObservations.splice(0, access.persistedMemoryObservations.length);
     access.persistedMemoryObservationIdsByKey.clear();
     access.persistedMemoryEntitiesById.clear();
@@ -902,18 +932,30 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
         .filter((entry): entry is ButlerMemoryEntryView => Boolean(entry) && typeof entry === "object" && typeof entry.summary === "string")
         .map((entry): ButlerMemoryEntryView => {
           const source: ButlerMemoryEntryView["source"] = entry.source === "manual_chat_save" ? "manual_chat_save" : "butler_tool";
+          const tags = normalizeStringList(entry.tags, 12);
           return {
             id: typeof entry.id === "string" && entry.id.trim() ? entry.id.trim() : crypto.randomUUID(),
             summary: entry.summary.trim(),
             details: typeof entry.details === "string" && entry.details.trim() ? entry.details.trim() : null,
             source,
             sourceMessageId: typeof entry.sourceMessageId === "string" && entry.sourceMessageId.trim() ? entry.sourceMessageId.trim() : null,
-            tags: normalizeStringList(entry.tags, 12),
-            createdAt: typeof entry.createdAt === "number" ? entry.createdAt : Date.now()
+            tags,
+            createdAt: typeof entry.createdAt === "number" ? entry.createdAt : Date.now(),
+            ...normalizeButlerMemoryMetadata({
+              ...entry,
+              memoryType: entry.memoryType ?? "legacy_global",
+              reviewState: entry.reviewState ?? "legacy"
+            }, tags)
           };
         })
         .slice(-100)
     );
+    for (const rawEmbedding of Array.isArray(data.memoryEmbeddings) ? data.memoryEmbeddings : []) {
+      const embedding = normalizeMemoryEmbedding(rawEmbedding);
+      if (embedding) {
+        access.persistedMemoryEmbeddingsById.set(embedding.id, embedding);
+      }
+    }
     const memoryGraph = data.memoryGraph ?? {};
     for (const raw of Array.isArray(memoryGraph.observations) ? memoryGraph.observations : []) {
       if (!raw || typeof raw !== "object" || typeof raw.id !== "string" || typeof raw.idempotencyKey !== "string" || typeof raw.summary !== "string") {
@@ -1178,6 +1220,7 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     access.persistedJobMemoriesByThreadId.clear();
     access.persistedProjectMemoriesByProjectId.clear();
     access.persistedButlerMemoryEntries.splice(0, access.persistedButlerMemoryEntries.length);
+    access.persistedMemoryEmbeddingsById.clear();
     access.persistedMemoryObservations.splice(0, access.persistedMemoryObservations.length);
     access.persistedMemoryObservationIdsByKey.clear();
     access.persistedMemoryEntitiesById.clear();
@@ -1211,6 +1254,7 @@ export async function persistStateStoreNow(access: StateStoreInternalAccess): Pr
     jobMemoriesByThreadId: Object.fromEntries([...access.persistedJobMemoriesByThreadId.entries()].map(([threadId, memory]) => [threadId, memory])),
     projectMemoriesByProjectId: Object.fromEntries([...access.persistedProjectMemoriesByProjectId.entries()].map(([projectId, memory]) => [projectId, memory])),
     butlerMemoryEntries: access.persistedButlerMemoryEntries,
+    memoryEmbeddings: [...access.persistedMemoryEmbeddingsById.values()],
     memoryGraph: {
       observations: access.persistedMemoryObservations,
       entities: [...access.persistedMemoryEntitiesById.values()],

@@ -83,6 +83,15 @@ export type ButlerMemoryEntry = {
   sourceMessageId: string | null;
   tags: string[];
   createdAt: number;
+  memoryType?: string;
+  scopeKind?: "global" | "project" | "thread";
+  projectId?: string | null;
+  threadId?: string | null;
+  reviewState?: "accepted" | "pending" | "rejected" | "legacy";
+  confidence?: number | null;
+  expiresAt?: number | null;
+  supersedesId?: string | null;
+  contentVersion?: number;
 };
 
 export type MemorySection = "projects" | "jobs" | "butler";

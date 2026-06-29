@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   answerOperatorQuestionMessage,
   buildOperatorQuestionTasteMemoryEntries,
+  findDurableOperatorTasteNotes,
   postOperatorQuestionMessage
 } from "../../src/server/butler-agent-operator-question.js";
 import { normalizeOperatorMessages, removeTrivialOperatorQuestionConfirmations } from "../../src/server/butler-operator-messages.js";
@@ -117,6 +118,61 @@ test("operator question answers produce durable taste memory candidates", async 
   assert.equal(entries.length, 1);
   assert.match(entries[0]!.summary, /Operator preference: Which autonomy behavior should Butler prefer -> Ask fewer better questions/);
   assert.deepEqual(entries[0]!.tags, ["operator-taste", "operator-question", "autonomy"]);
+});
+
+test("durable taste retrieval ignores legacy task facts and artifact notes", () => {
+  const notes = findDurableOperatorTasteNotes([
+    {
+      id: "legacy-chatbox",
+      summary: "Victor's last assignment was ChatBox, not Asiri.",
+      details: "Correction from a prior task; asks and questions were discussed.",
+      source: "butler_tool",
+      sourceMessageId: null,
+      tags: ["operator-taste", "question"],
+      createdAt: 1,
+      memoryType: "legacy_global",
+      scopeKind: "global",
+      reviewState: "legacy",
+      confidence: null,
+      expiresAt: null,
+      supersedesId: null,
+      contentVersion: 1
+    },
+    {
+      id: "legacy-artifact",
+      summary: "PDF artifact was regenerated with ASCII-safe bullets.",
+      details: "One-time glyph rendering repair note.",
+      source: "manual_chat_save",
+      sourceMessageId: null,
+      tags: ["design", "quality"],
+      createdAt: 2,
+      memoryType: "legacy_global",
+      scopeKind: "global",
+      reviewState: "legacy",
+      confidence: null,
+      expiresAt: null,
+      supersedesId: null,
+      contentVersion: 1
+    },
+    {
+      id: "accepted-preference",
+      summary: "Operator preference: Ask fewer better questions",
+      details: "Infer from memory and inspect state first.",
+      source: "butler_tool",
+      sourceMessageId: "operator-question-1",
+      tags: ["operator-taste", "operator-question", "autonomy"],
+      createdAt: 3,
+      memoryType: "operator_preference",
+      scopeKind: "global",
+      reviewState: "accepted",
+      confidence: 1,
+      expiresAt: null,
+      supersedesId: null,
+      contentVersion: 1
+    }
+  ]);
+
+  assert.deepEqual(notes, ["Operator preference: Ask fewer better questions - Infer from memory and inspect state first."]);
 });
 
 test("operator question taste memory skips explicit smoke tests", async () => {

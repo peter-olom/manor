@@ -1,5 +1,7 @@
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime.js";
 import type { ButlerRoutingDecisionView, WorkerClaimsReportView, WorkerReviewResultRecordView } from "./orchestration-types.js";
+import type { ButlerMemoryEntryView, MemoryEmbeddingView, MemoryRetrievalCandidateView } from "./memory-types.js";
+export type { ButlerMemoryEntryView, ButlerMemoryReviewState, ButlerMemoryScopeKind, ButlerMemoryType, MemoryEmbeddingView, MemoryRetrievalCandidateView } from "./memory-types.js";
 export type {
   ButlerGoalRoutingMode,
   ButlerReviewRoutingTarget,
@@ -778,22 +780,14 @@ export interface ButlerMemoryRetrievalView {
   projectId: string | null;
   threadId: string | null;
   includeProvenance: boolean;
+  candidates: MemoryRetrievalCandidateView[];
+  shadowTraceId: string | null;
   projectRollups: ProjectMemoryView[];
   jobMemories: JobMemoryView[];
   butlerMemories: ButlerMemoryEntryView[];
   pendingPromotionCandidates: JobMemoryPromotionCandidateView[];
   warnings: string[];
   retrievedAt: number;
-}
-
-export interface ButlerMemoryEntryView {
-  id: string;
-  summary: string;
-  details: string | null;
-  source: "butler_tool" | "manual_chat_save";
-  sourceMessageId: string | null;
-  tags: string[];
-  createdAt: number;
 }
 
 export type MemoryObservationSourceKind =
@@ -1492,6 +1486,7 @@ export interface PersistedUiState {
   supervisionChecklistsByThreadId?: Record<string, SupervisionChecklistView>;
   projectMemoriesByProjectId?: Record<string, ProjectMemoryView>;
   butlerMemoryEntries?: ButlerMemoryEntryView[];
+  memoryEmbeddings?: MemoryEmbeddingView[];
   memoryGraph?: Partial<MemoryGraphView>;
   projectArtifactsByProjectId?: Record<string, ProjectArtifactView[]>;
   projectPoliciesByProjectId?: Record<string, ProjectPolicyView[]>;

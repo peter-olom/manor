@@ -72,6 +72,11 @@ export type MemoryDiagnosticsView = {
     total: number;
     bySource: CountMap;
   };
+  embeddings: {
+    total: number;
+    byModel: CountMap;
+    stale: number;
+  };
   graph: {
     entities: number;
     relationships: number;
@@ -203,6 +208,9 @@ export function buildMemoryDiagnostics(store: ButlerStateStore, input: MemoryDia
 
   const butlerMemorySource: CountMap = {};
   for (const entry of butlerMemory) countLoose(butlerMemorySource, entry.source);
+  const embeddings = store.listMemoryEmbeddings();
+  const embeddingModels: CountMap = {};
+  for (const embedding of embeddings) countLoose(embeddingModels, embedding.model);
 
   const pendingCandidateAges = candidates.filter((entry) => entry.status === "pending").map((entry) => entry.createdAt);
   const pendingSynthesisAges = synthesisQueue.filter((entry) => entry.status === "pending" || entry.status === "running").map((entry) => entry.createdAt);
@@ -247,10 +255,26 @@ export function buildMemoryDiagnostics(store: ButlerStateStore, input: MemoryDia
       total: butlerMemory.length,
       bySource: butlerMemorySource
     },
+    embeddings: {
+      total: embeddings.length,
+      byModel: embeddingModels,
+      stale: countStaleEmbeddings(store, embeddings)
+    },
     graph: buildGraphCounts(graph, projectId, threadId, window),
     ...(input.includeSamples === true ? { samples: buildSamples(observations, synthesisQueue, candidates, input.sampleLimit) } : {}),
     warnings
   };
+}
+
+function countStaleEmbeddings(store: ButlerStateStore, embeddings: ReturnType<ButlerStateStore["listMemoryEmbeddings"]>): number {
+  let stale = 0;
+  for (const embedding of embeddings) {
+    if (embedding.sourceKind === "butler_memory" && !store.listButlerMemory().some((entry) => entry.id === embedding.sourceId)) stale += 1;
+    if (embedding.sourceKind === "project_memory" && !store.getProjectMemory(embedding.sourceId)) stale += 1;
+    if (embedding.sourceKind === "job_memory" && !store.getJobMemory(embedding.sourceId)) stale += 1;
+    if (embedding.sourceKind === "promotion_candidate" && !store.listJobMemories().some((memory) => memory.promotionCandidates.some((candidate) => candidate.id === embedding.sourceId))) stale += 1;
+  }
+  return stale;
 }
 
 function buildWarnings(input: {
@@ -351,6 +375,7 @@ export function formatMemoryDiagnostics(view: MemoryDiagnosticsView): string {
     `Job entries: total=${view.jobMemoryEntries.total}, kinds=${formatCounts(view.jobMemoryEntries.byKind)}`,
     `Project memory: projects=${view.projectMemory.projects}, accepted_entries=${view.projectMemory.acceptedEntries}, kinds=${formatCounts(view.projectMemory.byKind)}`,
     `Butler memory: total=${view.butlerMemory.total}, sources=${formatCounts(view.butlerMemory.bySource)}`,
+    `Embeddings: total=${view.embeddings.total}, models=${formatCounts(view.embeddings.byModel)}, stale=${view.embeddings.stale}`,
     `Graph: entities=${view.graph.entities}, relationships=${view.graph.relationships}, tasks=${view.graph.tasks}, task_events=${view.graph.taskEvents}`,
     view.warnings.length > 0 ? `Warnings: ${view.warnings.join(" ")}` : "Warnings: none"
   ].join("\n");

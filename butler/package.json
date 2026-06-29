@@ -10,6 +10,7 @@
     "build:web": "vite build",
     "check:max-loc": "node ./scripts/check-max-loc.mjs",
     "dev:start": "tsx watch src/server/index.ts",
+    "smoke:memory-embeddings": "tsx scripts/memory-embedding-prod-smoke.ts",
     "start": "node dist/server/index.js",
     "test": "tsx --test \"test/**/*.test.ts\""
   },

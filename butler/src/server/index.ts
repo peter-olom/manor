@@ -18,6 +18,7 @@ import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
 import { normalizeMemoryCodexModelEnv } from "./memory-codex-model.js";
 import { getMemoryDebugTrace, listMemoryDebugTraces } from "./memory-debug-traces.js";
 import { buildMemoryDiagnostics } from "./memory-diagnostics.js";
+import { MemoryEmbeddingService } from "./memory-embedding-service.js";
 import { CodexExecMemoryPromotionService } from "./memory-promotion.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
 import { readMemorySynthesisConfig, resolveMemoryServiceModel } from "./memory-synthesis-config.js";
@@ -36,14 +37,9 @@ import { registerServerAssetRoutes } from "./server-asset-routes.js";
 import { CodexSessionTitleGenerator, readSessionTitleConfig } from "./session-title-generator.js";
 import { configureSelfImprovementRequestState, SelfImprovementRequestState } from "./self-improvement-request-state.js";
 import { registerSelfImprovementRoutes } from "./self-improvement-routes.js";
-import { retrieveButlerMemory } from "./memory-retrieval.js";
+import { retrieveButlerMemoryWithEmbeddings } from "./memory-retrieval.js";
 import { registerManorRestartRoutes } from "./manor-restart-routes.js";
-import {
-  proxyPreviewRoute,
-  registerPreviewProxyResponseRewriter,
-  resolvePreviewRefererRouteUrl,
-  resolvePreviewRouteUrl
-} from "./preview-gateway.js";
+import { proxyPreviewRoute, registerPreviewProxyResponseRewriter, resolvePreviewRefererRouteUrl, resolvePreviewRouteUrl } from "./preview-gateway.js";
 import { reconcileDesktopSessions, registerDesktopSessionRoutes } from "./server-desktop-routes.js";
 import {
   ButlerSseHub,
@@ -213,6 +209,7 @@ const routingClassifier = new ButlerRoutingClassifier({ stateDir, codexHomeDir, 
 const workerReview = new CodexWorkerReviewService({ store, stateDir, codexHomeDir, enabled: true, model: resolveMemoryServiceModel(process.env.MANOR_WORKER_REVIEW_MODEL, memorySynthesisConfig.model) ?? undefined, timeoutMs: memorySynthesisConfig.timeoutMs });
 const memoryScheduler = new MemoryUpdateScheduler({ store, config: memorySynthesisConfig, stateDir, codexHomeDir });
 const memoryPromotion = new CodexExecMemoryPromotionService({ store, memoryScheduler, config: memorySynthesisConfig, stateDir, codexHomeDir });
+const memoryEmbeddings = new MemoryEmbeddingService({ store, onResult: (result, reason) => { if (result.embedded > 0 || result.failed > 0) console.log(`Memory embedding ${reason}: embedded=${result.embedded} skipped=${result.skippedFresh} failed=${result.failed}`); }, onError: (error, reason) => console.warn(`Memory embedding ${reason} failed`, error) });
 store.setMemoryUpdateObserver(memoryScheduler);
 const codexHarness = new CodexHarnessService({
   codexHomeDir,
@@ -229,6 +226,7 @@ memoryReview.reviewPendingReportsAsync();
 workerReview.reviewPendingReportsAsync();
 memoryScheduler.start();
 memoryPromotion.start();
+memoryEmbeddings.start();
 await codexHarness.load();
 await codexHarness.reconcileThreadCapabilities();
 const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, {
@@ -535,7 +533,7 @@ app.get("/api/memory/projects/:projectId", (request, response) => {
   });
 });
 
-app.get("/api/memory/retrieve", (request, response) => {
+app.get("/api/memory/retrieve", async (request, response) => {
   const projectId = typeof request.query.projectId === "string" ? request.query.projectId : null;
   const threadId = typeof request.query.threadId === "string" ? request.query.threadId : null;
   const query = typeof request.query.query === "string" ? request.query.query : null;
@@ -544,7 +542,7 @@ app.get("/api/memory/retrieve", (request, response) => {
   const includeProvenance = request.query.includeProvenance === "1" || request.query.includeProvenance === "true";
 
   response.json({
-    retrieval: retrieveButlerMemory(store, {
+    retrieval: await retrieveButlerMemoryWithEmbeddings(store, {
       projectId,
       threadId,
       query,
@@ -1492,4 +1490,5 @@ server.on("close", () => {
   clearInterval(runtimeCleanupWorker);
   clearInterval(artifactReaper);
   clearInterval(runtimeReconciler);
+  memoryEmbeddings.dispose();
 });

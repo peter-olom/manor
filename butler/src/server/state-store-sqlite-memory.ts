@@ -5,6 +5,7 @@ import path from "node:path";
 
 import initSqlJs from "sql.js";
 
+import { normalizeButlerMemoryMetadata, normalizeButlerMemoryType } from "./memory-metadata.js";
 import { normalizeJobMemoryEntryKind, normalizeStringList } from "./state-store-helpers.js";
 import type { StateStoreInternalAccess } from "./state-store-internals.js";
 import type {
@@ -14,6 +15,7 @@ import type {
   JobMemoryPromotionCandidateView,
   JobMemoryView,
   MemoryEntityView,
+  MemoryEmbeddingView,
   MemoryObservationView,
   MemoryRelationshipView,
   MemorySynthesisQueueEntryView,
@@ -119,8 +121,11 @@ function ensureSchema(db: SqlJsDatabase): void {
     "CREATE TABLE IF NOT EXISTS project_memories (project_id TEXT PRIMARY KEY, project_label TEXT NOT NULL, summary TEXT, updated_at INTEGER NOT NULL);",
     "CREATE TABLE IF NOT EXISTS project_memory_entries (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_thread_id TEXT NOT NULL, kind TEXT NOT NULL, summary TEXT NOT NULL, details TEXT, accepted_at INTEGER NOT NULL);",
     "CREATE INDEX IF NOT EXISTS idx_project_memory_entries_project ON project_memory_entries(project_id, accepted_at DESC);",
-    "CREATE TABLE IF NOT EXISTS butler_memory_entries (id TEXT PRIMARY KEY, summary TEXT NOT NULL, details TEXT, source TEXT NOT NULL, source_message_id TEXT, tags_json TEXT NOT NULL, created_at INTEGER NOT NULL);",
+    "CREATE TABLE IF NOT EXISTS butler_memory_entries (id TEXT PRIMARY KEY, summary TEXT NOT NULL, details TEXT, source TEXT NOT NULL, source_message_id TEXT, tags_json TEXT NOT NULL, created_at INTEGER NOT NULL, memory_type TEXT, scope_kind TEXT, project_id TEXT, thread_id TEXT, review_state TEXT, confidence REAL, expires_at INTEGER, supersedes_id TEXT, provenance_json TEXT, content_version INTEGER);",
     "CREATE INDEX IF NOT EXISTS idx_butler_memory_created ON butler_memory_entries(created_at DESC);",
+    "CREATE TABLE IF NOT EXISTS memory_embeddings (id TEXT PRIMARY KEY, source_kind TEXT NOT NULL, source_id TEXT NOT NULL, source_text_hash TEXT NOT NULL, model TEXT NOT NULL, model_tag TEXT NOT NULL, dimension INTEGER NOT NULL, vector_base64 TEXT NOT NULL, memory_type TEXT NOT NULL, project_id TEXT, thread_id TEXT, provenance_json TEXT NOT NULL, content_version INTEGER NOT NULL, created_at INTEGER NOT NULL, embedded_at INTEGER NOT NULL);",
+    "CREATE INDEX IF NOT EXISTS idx_memory_embeddings_source ON memory_embeddings(source_kind, source_id);",
+    "CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model ON memory_embeddings(model, model_tag);",
     "CREATE TABLE IF NOT EXISTS memory_observations (id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, project_label TEXT NOT NULL, thread_id TEXT, source_kind TEXT NOT NULL, source_id TEXT NOT NULL, summary TEXT NOT NULL, details TEXT, payload_json TEXT NOT NULL, observed_at INTEGER NOT NULL, created_at INTEGER NOT NULL, durable INTEGER NOT NULL);",
     "CREATE INDEX IF NOT EXISTS idx_memory_observations_project_observed ON memory_observations(project_id, observed_at DESC);",
     "CREATE INDEX IF NOT EXISTS idx_memory_observations_thread_observed ON memory_observations(thread_id, observed_at DESC);",
@@ -144,6 +149,16 @@ function ensureSchema(db: SqlJsDatabase): void {
   ].join("\n"));
   ensureColumn(db, "job_memories", "source", "TEXT");
   ensureColumn(db, "job_memories", "created_at", "INTEGER");
+  ensureColumn(db, "butler_memory_entries", "memory_type", "TEXT");
+  ensureColumn(db, "butler_memory_entries", "scope_kind", "TEXT");
+  ensureColumn(db, "butler_memory_entries", "project_id", "TEXT");
+  ensureColumn(db, "butler_memory_entries", "thread_id", "TEXT");
+  ensureColumn(db, "butler_memory_entries", "review_state", "TEXT");
+  ensureColumn(db, "butler_memory_entries", "confidence", "REAL");
+  ensureColumn(db, "butler_memory_entries", "expires_at", "INTEGER");
+  ensureColumn(db, "butler_memory_entries", "supersedes_id", "TEXT");
+  ensureColumn(db, "butler_memory_entries", "provenance_json", "TEXT");
+  ensureColumn(db, "butler_memory_entries", "content_version", "INTEGER");
 }
 
 function ensureColumn(db: SqlJsDatabase, tableName: string, columnName: string, definition: string): void {
@@ -203,6 +218,35 @@ function jsonObject(value: unknown): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function normalizeEmbeddingSourceKind(value: unknown): MemoryEmbeddingView["sourceKind"] {
+  return value === "project_memory" || value === "job_memory" || value === "promotion_candidate" || value === "memory_observation" ? value : "butler_memory";
+}
+
+function rowToMemoryEmbedding(row: Record<string, unknown>): MemoryEmbeddingView | null {
+  const sourceId = typeof row.source_id === "string" && row.source_id.trim() ? row.source_id.trim() : "";
+  const sourceTextHash = typeof row.source_text_hash === "string" && row.source_text_hash.trim() ? row.source_text_hash.trim() : "";
+  const model = typeof row.model === "string" && row.model.trim() ? row.model.trim() : "";
+  const vectorBase64 = typeof row.vector_base64 === "string" && row.vector_base64.trim() ? row.vector_base64.trim() : "";
+  if (!sourceId || !sourceTextHash || !model || !vectorBase64) return null;
+  return {
+    id: typeof row.id === "string" && row.id.trim() ? row.id.trim() : crypto.randomUUID(),
+    sourceKind: normalizeEmbeddingSourceKind(row.source_kind),
+    sourceId,
+    sourceTextHash,
+    model,
+    modelTag: typeof row.model_tag === "string" && row.model_tag.trim() ? row.model_tag.trim() : model,
+    dimension: typeof row.dimension === "number" && Number.isFinite(row.dimension) ? Math.max(1, Math.trunc(row.dimension)) : 1,
+    vectorBase64,
+    memoryType: normalizeButlerMemoryType(row.memory_type),
+    projectId: nullableString(row.project_id),
+    threadId: nullableString(row.thread_id),
+    provenance: jsonObject(row.provenance_json),
+    contentVersion: typeof row.content_version === "number" && Number.isFinite(row.content_version) ? Math.max(1, Math.trunc(row.content_version)) : 1,
+    createdAt: typeof row.created_at === "number" ? row.created_at : Date.now(),
+    embeddedAt: typeof row.embedded_at === "number" ? row.embedded_at : Date.now()
+  };
 }
 
 function nullableString(value: unknown): string | null {
@@ -420,6 +464,7 @@ export async function loadStateStoreSqliteMemory(access: StateStoreInternalAcces
     const projectRows = queryRows(db, "SELECT * FROM project_memories;");
     const projectEntryRows = queryRows(db, "SELECT * FROM project_memory_entries;");
     const butlerRows = queryRows(db, "SELECT * FROM butler_memory_entries;");
+    const embeddingRows = queryRows(db, "SELECT * FROM memory_embeddings;");
     const observationRows = queryRows(db, "SELECT * FROM memory_observations;");
     const entityRows = queryRows(db, "SELECT * FROM memory_entities;");
     const relationshipRows = queryRows(db, "SELECT * FROM memory_relationships;");
@@ -428,7 +473,7 @@ export async function loadStateStoreSqliteMemory(access: StateStoreInternalAcces
     const synthesisQueueRows = queryRows(db, "SELECT * FROM memory_synthesis_queue;");
     const artifactRows = queryRows(db, "SELECT * FROM project_artifacts;");
     const hasGraphRows = observationRows.length > 0 || entityRows.length > 0 || relationshipRows.length > 0 || taskRows.length > 0 || taskEventRows.length > 0 || synthesisQueueRows.length > 0;
-    const hasMemoryRows = jobRows.length > 0 || projectRows.length > 0 || projectEntryRows.length > 0 || butlerRows.length > 0 || hasGraphRows;
+    const hasMemoryRows = jobRows.length > 0 || projectRows.length > 0 || projectEntryRows.length > 0 || butlerRows.length > 0 || embeddingRows.length > 0 || hasGraphRows;
     const hasArtifactRows = artifactRows.length > 0;
     if (!hasMemoryRows && !hasArtifactRows) {
       await saveDb(dbPath, db);
@@ -490,15 +535,38 @@ export async function loadStateStoreSqliteMemory(access: StateStoreInternalAcces
         });
       }
 
-      access.persistedButlerMemoryEntries.splice(0, access.persistedButlerMemoryEntries.length, ...butlerRows.map((row): ButlerMemoryEntryView => ({
-        id: String(row.id ?? crypto.randomUUID()),
-        summary: String(row.summary ?? ""),
-        details: typeof row.details === "string" && row.details ? row.details : null,
-        source: row.source === "manual_chat_save" ? "manual_chat_save" : "butler_tool",
-        sourceMessageId: typeof row.source_message_id === "string" && row.source_message_id ? row.source_message_id : null,
-        tags: jsonList(row.tags_json),
-        createdAt: typeof row.created_at === "number" ? row.created_at : Date.now()
-      })).sort((left, right) => left.createdAt - right.createdAt).slice(-100));
+      access.persistedButlerMemoryEntries.splice(0, access.persistedButlerMemoryEntries.length, ...butlerRows.map((row): ButlerMemoryEntryView => {
+        const tags = jsonList(row.tags_json);
+        return {
+          id: String(row.id ?? crypto.randomUUID()),
+          summary: String(row.summary ?? ""),
+          details: typeof row.details === "string" && row.details ? row.details : null,
+          source: row.source === "manual_chat_save" ? "manual_chat_save" : "butler_tool",
+          sourceMessageId: typeof row.source_message_id === "string" && row.source_message_id ? row.source_message_id : null,
+          tags,
+          createdAt: typeof row.created_at === "number" ? row.created_at : Date.now(),
+          ...normalizeButlerMemoryMetadata({
+            memoryType: row.memory_type ?? "legacy_global",
+            scopeKind: row.scope_kind,
+            projectId: row.project_id,
+            threadId: row.thread_id,
+            reviewState: row.review_state ?? "legacy",
+            confidence: row.confidence,
+            expiresAt: row.expires_at,
+            supersedesId: row.supersedes_id,
+            provenance: jsonObject(row.provenance_json),
+            contentVersion: row.content_version
+          }, tags)
+        };
+      }).sort((left, right) => left.createdAt - right.createdAt).slice(-100));
+
+      access.persistedMemoryEmbeddingsById.clear();
+      for (const row of embeddingRows) {
+        const embedding = rowToMemoryEmbedding(row);
+        if (embedding) {
+          access.persistedMemoryEmbeddingsById.set(embedding.id, embedding);
+        }
+      }
 
       access.persistedMemoryObservations.splice(0, access.persistedMemoryObservations.length);
       access.persistedMemoryObservationIdsByKey.clear();
@@ -644,6 +712,7 @@ export async function persistStateStoreSqliteMemory(access: StateStoreInternalAc
     db.run("DELETE FROM project_memories;");
     db.run("DELETE FROM job_memories;");
     db.run("DELETE FROM butler_memory_entries;");
+    db.run("DELETE FROM memory_embeddings;");
     db.run("DELETE FROM memory_synthesis_queue;");
     db.run("DELETE FROM memory_task_events;");
     db.run("DELETE FROM memory_tasks;");
@@ -689,14 +758,43 @@ export async function persistStateStoreSqliteMemory(access: StateStoreInternalAc
       }
     }
     for (const entry of access.persistedButlerMemoryEntries) {
-      db.run("INSERT INTO butler_memory_entries VALUES (?, ?, ?, ?, ?, ?, ?);", [
+      db.run("INSERT INTO butler_memory_entries (id, summary, details, source, source_message_id, tags_json, created_at, memory_type, scope_kind, project_id, thread_id, review_state, confidence, expires_at, supersedes_id, provenance_json, content_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);", [
         entry.id,
         entry.summary,
         entry.details,
         entry.source,
         entry.sourceMessageId,
         JSON.stringify(entry.tags),
-        entry.createdAt
+        entry.createdAt,
+        entry.memoryType ?? "legacy_global",
+        entry.scopeKind ?? "global",
+        entry.projectId ?? null,
+        entry.threadId ?? null,
+        entry.reviewState ?? "legacy",
+        entry.confidence ?? null,
+        entry.expiresAt ?? null,
+        entry.supersedesId ?? null,
+        JSON.stringify(entry.provenance ?? {}),
+        entry.contentVersion ?? 1
+      ]);
+    }
+    for (const embedding of access.persistedMemoryEmbeddingsById.values()) {
+      db.run("INSERT INTO memory_embeddings (id, source_kind, source_id, source_text_hash, model, model_tag, dimension, vector_base64, memory_type, project_id, thread_id, provenance_json, content_version, created_at, embedded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);", [
+        embedding.id,
+        embedding.sourceKind,
+        embedding.sourceId,
+        embedding.sourceTextHash,
+        embedding.model,
+        embedding.modelTag,
+        embedding.dimension,
+        embedding.vectorBase64,
+        embedding.memoryType,
+        embedding.projectId,
+        embedding.threadId,
+        JSON.stringify(embedding.provenance),
+        embedding.contentVersion,
+        embedding.createdAt,
+        embedding.embeddedAt
       ]);
     }
     for (const observation of access.persistedMemoryObservations) {

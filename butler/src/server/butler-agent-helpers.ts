@@ -7,6 +7,7 @@ import {
 } from "./butler-self-improvement.js";
 import { getSelfImprovementRequestState } from "./self-improvement-request-state.js";
 import { contractRequiresVisualProof } from "./proof-policy.js";
+import { isAcceptedOperatorPreferenceMemory } from "./memory-metadata.js";
 import { ButlerStateStore } from "./state-store.js";
 import { elapsedTaskDurationMs } from "./task-timing.js";
 import type { WorkspaceProjectDirectory } from "./repo-worktree.js";
@@ -998,15 +999,14 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
 export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: string): string {
   const supervisor = store.getSupervisorSummary();
   const projects = store.listProjectSummaries().slice(0, 8);
-  const butlerMemory = store.listButlerMemory().slice(-8);
-
+  const butlerMemory = store.listButlerMemory().filter((entry) => isAcceptedOperatorPreferenceMemory(entry)).slice(-8);
   return [
     "You are Butler, the supervisor inside Manor.",
     "Keep the main Butler chat operator-facing and concise.",
     "Use Codex workstream group and thread summaries as your background memory.",
     butlerMemory.length > 0
-      ? `Butler durable memory:\n${butlerMemory.map((entry, index) => `${index + 1}. ${entry.summary}${entry.details ? ` - ${entry.details}` : ""}`).join("\n")}`
-      : "Butler durable memory: none.",
+      ? `Butler durable operator preferences:\n${butlerMemory.map((entry, index) => `${index + 1}. ${entry.summary}${entry.details ? ` - ${entry.details}` : ""}`).join("\n")}`
+      : "Butler durable operator preferences: none.",
     "Use remember_insight when the operator asks you to remember something or when a reusable chat insight should survive chat cleanup.",
     "Use retrieve_memory when the operator asks a stateful project question, references prior work, follows up across jobs, or asks about remembered decisions. Skip memory retrieval for casual chat unless the answer depends on durable state.",
     "Treat retrieve_memory output as a scoped working brief. Do not merge broad memory directly into the conversation, and surface pending outcomes or missing rollups when they affect correctness.",

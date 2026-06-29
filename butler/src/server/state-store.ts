@@ -62,6 +62,7 @@ import { getStateStoreJobMemory, getStateStoreProjectMemory, deleteStateStoreJob
 import { completeStateStoreRuntimeCleanupTask, enqueueStateStoreRuntimeCleanupTask, failStateStoreRuntimeCleanupTask, listStateStoreDueRuntimeCleanupTasks, listStateStoreExpiredLeaseIds, noteStateStorePreviewLeaseActivity, noteStateStoreServiceLeaseActivity, noteStateStoreStackLeaseActivity, noteStateStoreThreadLeaseActivity, setStateStorePreviewLeaseLifecycle, setStateStorePreviewLeasePinned, setStateStoreServiceLeasePinned, setStateStoreStackLeaseLifecycle, setStateStoreStackLeasePinned } from "./state-store-runtime.js";
 import { findStateStoreProjectArtifactById, getStateStoreProjectArtifact, getStateStoreProjectPolicy, listStateStoreProjectArtifacts, listStateStoreProjectPolicies, pruneMissingStateStoreProjectArtifacts, removeStateStoreProjectArtifact, searchStateStoreProjectArtifacts, upsertStateStoreProjectArtifact, upsertStateStoreProjectPolicy } from "./state-store-project-assets.js";
 import { deleteStateStoreButlerMemory, recordStateStoreButlerMemory } from "./state-store-butler-memory.js";
+import { deleteStateStoreMemoryEmbeddingsForSource, listStateStoreMemoryEmbeddings, upsertStateStoreMemoryEmbedding } from "./state-store-memory-embeddings.js";
 import { enqueueStateStoreMemorySynthesis, listDueStateStoreMemorySynthesis, listStateStoreMemoryGraph, recordStateStoreMemoryObservation, searchStateStoreMemoryGraph, updateStateStoreMemorySynthesisQueueEntry, upsertStateStoreMemoryEntity, upsertStateStoreMemoryRelationship } from "./state-store-memory-graph.js";
 import { listStateStoreDesktopSessions, removeStateStoreDesktopSession, replaceStateStoreDesktopSessions, upsertStateStoreDesktopSession } from "./state-store-desktop.js";
 import { buildStateStoreRuntimeSnapshot, buildStateStoreShellSnapshot, buildStateStoreSnapshot } from "./state-store-snapshot.js";
@@ -84,7 +85,7 @@ import type {
   DesktopSessionView,
   JobMemoryEntryKind, JobMemoryPromotionCandidateView, JobMemoryView, PreviewProofRecordView, PreviewProofReviewView, PreviewVerificationArtifactView,
   PreviewVerificationConsoleMessageView, PreviewVerificationFailedRequestView, PreviewVerificationView, PreviewLeaseView,
-  MemoryEntityType, MemoryGraphRetrievalView, MemoryGraphView, MemoryObservationSourceKind, MemoryObservationView,
+  MemoryEmbeddingView, MemoryEntityType, MemoryGraphRetrievalView, MemoryGraphView, MemoryObservationSourceKind, MemoryObservationView,
   MemoryRelationshipView, MemorySynthesisPriority, MemorySynthesisQueueEntryView, MemoryTaskStatus,
   ProjectMemoryView, ProjectArtifactView, ProjectPolicyView, ReasoningEffort, RuntimeCleanupTaskView, RuntimeSnapshot,
   StackLeaseView, ServiceLeaseView, SupervisionChecklistItemStatus, SupervisionChecklistView, PersistedUiState, ReviewPanelRole, ReviewPanelVerdict,
@@ -126,6 +127,7 @@ export class ButlerStateStore extends EventEmitter {
   private readonly persistedJobMemoriesByThreadId = new Map<string, JobMemoryView>();
   private readonly persistedProjectMemoriesByProjectId = new Map<string, ProjectMemoryView>();
   private readonly persistedButlerMemoryEntries: ButlerMemoryEntryView[] = [];
+  private readonly persistedMemoryEmbeddingsById = new Map<string, MemoryEmbeddingView>();
   private readonly persistedMemoryObservations: MemoryObservationView[] = []; private readonly persistedMemoryObservationIdsByKey = new Map<string, string>();
   private readonly persistedMemoryEntitiesById = new Map<string, MemoryGraphView["entities"][number]>(); private readonly persistedMemoryEntityIdsByKey = new Map<string, string>();
   private readonly persistedMemoryRelationshipsById = new Map<string, MemoryRelationshipView>(); private readonly persistedMemoryTasksById = new Map<string, MemoryGraphView["tasks"][number]>();
@@ -265,12 +267,9 @@ export class ButlerStateStore extends EventEmitter {
   listProjectMemories(): ProjectMemoryView[] { return listStateStoreProjectMemories(this.getInternalAccess()); } listJobMemories(projectId?: string | null): JobMemoryView[] { return listStateStoreJobMemories(this.getInternalAccess(), projectId); }
 
   listButlerMemory(): ButlerMemoryEntryView[] { return [...this.persistedButlerMemoryEntries]; }
-
-  recordButlerMemory(input: { summary: string; details?: string | null; source?: ButlerMemoryEntryView["source"]; sourceMessageId?: string | null; tags?: unknown }): ButlerMemoryEntryView { return recordStateStoreButlerMemory(this.getInternalAccess(), input); }
-
-  deleteButlerMemory(id: string): boolean { return deleteStateStoreButlerMemory(this.getInternalAccess(), id); }
-
-  deleteJobMemoryEntry(threadId: string, entryId: string): boolean { return deleteStateStoreJobMemoryEntry(this.getInternalAccess(), threadId, entryId); }
+  recordButlerMemory(input: { summary: string; details?: string | null; source?: ButlerMemoryEntryView["source"]; sourceMessageId?: string | null; tags?: unknown; memoryType?: ButlerMemoryEntryView["memoryType"]; scopeKind?: ButlerMemoryEntryView["scopeKind"]; projectId?: string | null; threadId?: string | null; reviewState?: ButlerMemoryEntryView["reviewState"]; confidence?: number | null; expiresAt?: number | null; supersedesId?: string | null; provenance?: Record<string, unknown>; contentVersion?: number }): ButlerMemoryEntryView { return recordStateStoreButlerMemory(this.getInternalAccess(), input); }
+  deleteButlerMemory(id: string): boolean { return deleteStateStoreButlerMemory(this.getInternalAccess(), id); } listMemoryEmbeddings(): MemoryEmbeddingView[] { return listStateStoreMemoryEmbeddings(this.getInternalAccess()); }
+  upsertMemoryEmbedding(input: Omit<MemoryEmbeddingView, "id" | "createdAt" | "embeddedAt"> & { id?: string; createdAt?: number; embeddedAt?: number }): MemoryEmbeddingView { return upsertStateStoreMemoryEmbedding(this.getInternalAccess(), input); } deleteMemoryEmbeddingsForSource(sourceKind: MemoryEmbeddingView["sourceKind"], sourceId: string): number { return deleteStateStoreMemoryEmbeddingsForSource(this.getInternalAccess(), sourceKind, sourceId); } deleteJobMemoryEntry(threadId: string, entryId: string): boolean { return deleteStateStoreJobMemoryEntry(this.getInternalAccess(), threadId, entryId); }
 
   deleteProjectMemoryEntry(projectId: string, entryId: string): boolean { return deleteStateStoreProjectMemoryEntry(this.getInternalAccess(), projectId, entryId); }
 

@@ -35,6 +35,12 @@ services:
       MANOR_PI_AUTO_UPDATE: ${MANOR_PI_AUTO_UPDATE:-0}
       MANOR_PI_AUTO_UPDATE_VERSION: ${MANOR_PI_AUTO_UPDATE_VERSION:-latest}
       MANOR_PI_AUTO_UPDATE_REQUIRED: ${MANOR_PI_AUTO_UPDATE_REQUIRED:-0}
+      MANOR_MEMORY_EMBEDDINGS_ENABLED: ${MANOR_MEMORY_EMBEDDINGS_ENABLED:-1}
+      MANOR_MEMORY_EMBEDDINGS_PROVIDER: ${MANOR_MEMORY_EMBEDDINGS_PROVIDER:-ollama}
+      MANOR_MEMORY_EMBEDDINGS_HOST: ${MANOR_MEMORY_EMBEDDINGS_HOST:-http://ollama:11434}
+      MANOR_MEMORY_EMBEDDINGS_MODEL: ${MANOR_MEMORY_EMBEDDINGS_MODEL:-qwen3-embedding:0.6b}
+      MANOR_MEMORY_EMBEDDINGS_TIMEOUT_MS: ${MANOR_MEMORY_EMBEDDINGS_TIMEOUT_MS:-10000}
+      MANOR_MEMORY_EMBEDDINGS_BACKFILL_BATCH_SIZE: ${MANOR_MEMORY_EMBEDDINGS_BACKFILL_BATCH_SIZE:-12}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_API_KEY_FILE: ${OPENAI_API_KEY_FILE:-}
       HTTP_PROXY: http://egress:3128
@@ -44,8 +50,8 @@ services:
       http_proxy: http://egress:3128
       https_proxy: http://egress:3128
       all_proxy: http://egress:3128
-      NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
-      no_proxy: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
+      NO_PROXY: localhost,127.0.0.1,ollama,codex-box,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
+      no_proxy: localhost,127.0.0.1,ollama,codex-box,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
       RUNTIME_BROKER_URL: http://runtime-broker:8090
       RUNTIME_BROKER_TOKEN: "${RUNTIME_BROKER_TOKEN:?Run ./install.sh or set RUNTIME_BROKER_TOKEN in .env.}"
       MANOR_HOST_CONTROLLER_URL: http://host-controller:8092
@@ -67,6 +73,8 @@ services:
         condition: service_started
       host-controller:
         condition: service_started
+      ollama:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "--silent", "--fail", "http://127.0.0.1:8080/livez"]
@@ -78,6 +86,29 @@ services:
       - control
       - internet
       - work
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: manor-ollama
+    environment:
+      MANOR_MEMORY_EMBEDDINGS_MODEL: ${MANOR_MEMORY_EMBEDDINGS_MODEL:-qwen3-embedding:0.6b}
+    volumes:
+      - ollama-state:/root/.ollama
+    command:
+      [
+        "sh",
+        "-lc",
+        "ollama serve & pid=$$!; until ollama list >/dev/null 2>&1; do sleep 1; done; ollama pull \"$${MANOR_MEMORY_EMBEDDINGS_MODEL:-qwen3-embedding:0.6b}\"; wait \"$$pid\""
+      ]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ollama show \"$${MANOR_MEMORY_EMBEDDINGS_MODEL:-qwen3-embedding:0.6b}\" >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+    networks:
+      - control
 
   butler-gateway:
     image: nginx:stable-alpine3.23
@@ -349,3 +380,4 @@ volumes:
   repos:
   host-controller-state:
   runtime-broker-state:
+  ollama-state:
