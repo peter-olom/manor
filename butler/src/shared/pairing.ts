@@ -70,6 +70,16 @@ export type PairWorker = {
   requestedReasoningEffort?: string | null;
 };
 
+export type PairModelOption = {
+  id: string;
+  label: string;
+  provider: string | null;
+  supportedReasoningEfforts: string[];
+  defaultReasoningEffort: string | null;
+};
+
+export type PairCodexModelOption = PairModelOption;
+
 export type PairChat = {
   id: string;
   title: string;
@@ -90,6 +100,7 @@ export type PairChat = {
   messageCount: number;
   lastMessage: PairMessage | null;
   butlerThinkingLevel?: string | null;
+  codexModel?: string | null;
   codexEffort?: string | null;
   codexAvailableEfforts?: string[] | null;
 };
@@ -98,11 +109,16 @@ export type PairSummary = PairChat;
 
 export type PairComposeSettings = {
   butler: {
+    provider: string | null;
+    model: string | null;
     thinkingLevel: string;
+    availableModels: PairModelOption[];
     availableThinkingLevels: string[];
   };
   codex: {
+    model: string | null;
     effort: string | null;
+    availableModels: PairCodexModelOption[];
     availableEfforts: string[];
   };
 };

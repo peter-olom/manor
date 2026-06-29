@@ -1,4 +1,4 @@
-import { memo, useCallback } from "react";
+import { memo } from "react";
 
 import { DEFAULT_THINKING_LEVELS } from "../shared/pairing";
 
@@ -19,39 +19,25 @@ export const BudgetSegmented = memo(function BudgetSegmented({
   onChange,
   className
 }: BudgetSegmentedProps) {
-  const handleClick = useCallback(
-    (next: string) => () => {
-      if (disabled) return;
-      if (next === value) return;
-      onChange(next);
-    },
-    [disabled, onChange, value]
-  );
-
   const list = options.length > 0 ? options : DEFAULT_THINKING_LEVELS;
+  const selected = value ?? list[0] ?? "";
 
   return (
-    <div
-      className={`budget-segmented ${disabled ? "is-disabled" : ""} ${className ?? ""}`.trim()}
-      role="radiogroup"
-      aria-label={label}
-    >
-      <span className="budget-segmented-label">{label}</span>
-      <div className="budget-segmented-options">
+    <label className={`budget-segmented ${disabled ? "is-disabled" : ""} ${className ?? ""}`.trim()}>
+      <span className="sr-only">{label}</span>
+      <select
+        value={selected}
+        aria-label={label}
+        title={label}
+        disabled={disabled || list.length === 0}
+        onChange={(event) => onChange(event.currentTarget.value)}
+      >
         {list.map((option) => (
-          <button
-            key={option}
-            type="button"
-            role="radio"
-            aria-checked={option === value}
-            className={`budget-segmented-option ${option === value ? "is-selected" : ""}`}
-            disabled={disabled}
-            onClick={handleClick(option)}
-          >
+          <option key={option} value={option}>
             {option}
-          </button>
+          </option>
         ))}
-      </div>
-    </div>
+      </select>
+    </label>
   );
 });

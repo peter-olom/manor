@@ -31,8 +31,19 @@ function makePair(overrides: Partial<PairDetail> = {}): PairDetail {
     loadedStart: 0,
     hasMore: false,
     compose: {
-      butler: { thinkingLevel: "medium", availableThinkingLevels: ["low", "medium", "high", "xhigh"] },
-      codex: { effort: null, availableEfforts: [] }
+      butler: {
+        provider: "openai",
+        model: "gpt-5",
+        thinkingLevel: "medium",
+        availableModels: [{ id: "gpt-5", label: "GPT-5", provider: "openai", supportedReasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "medium" }],
+        availableThinkingLevels: ["low", "medium", "high", "xhigh"]
+      },
+      codex: {
+        model: "gpt-5-codex",
+        effort: null,
+        availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: "openai", supportedReasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "medium" }],
+        availableEfforts: ["low", "medium", "high"]
+      }
     },
     ...overrides
   };
@@ -84,6 +95,17 @@ function createFakePairSessions(initialPair: PairDetail = makePair()) {
         pairs.set(pairId, updated);
         return updated;
       },
+      async setButlerModel(pairId: string, model: string): Promise<PairDetail | null> {
+        const pair = pairs.get(pairId);
+        if (!pair) return null;
+        const updated: PairDetail = {
+          ...pair,
+          compose: { ...pair.compose, butler: { ...pair.compose.butler, model } },
+          updatedAt: Date.now()
+        };
+        pairs.set(pairId, updated);
+        return updated;
+      },
       async setCodexEffort(pairId: string, effort: string): Promise<PairDetail | null> {
         const pair = pairs.get(pairId);
         if (!pair) return null;
@@ -91,6 +113,18 @@ function createFakePairSessions(initialPair: PairDetail = makePair()) {
           ...pair,
           codexEffort: effort,
           compose: { ...pair.compose, codex: { ...pair.compose.codex, effort } },
+          updatedAt: Date.now()
+        };
+        pairs.set(pairId, updated);
+        return updated;
+      },
+      async setCodexModel(pairId: string, model: string): Promise<PairDetail | null> {
+        const pair = pairs.get(pairId);
+        if (!pair) return null;
+        const updated: PairDetail = {
+          ...pair,
+          codexModel: model,
+          compose: { ...pair.compose, codex: { ...pair.compose.codex, model } },
           updatedAt: Date.now()
         };
         pairs.set(pairId, updated);
@@ -275,6 +309,24 @@ test("PATCH /api/pairs/:pairId/settings updates the per-pair butler thinking lev
   }
 });
 
+test("PATCH /api/pairs/:pairId/settings updates the Butler model", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "butler", model: "gpt-5-pro" })
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { pair: { compose: { butler: { model: string | null } } } };
+    assert.equal(body.pair.compose.butler.model, "gpt-5-pro");
+  } finally {
+    await close();
+  }
+});
+
 test("PATCH /api/pairs/:pairId/settings updates the per-pair codex effort", async () => {
   const fake = createFakePairSessions();
   const app = mountRoutes(fake.manager);
@@ -289,6 +341,41 @@ test("PATCH /api/pairs/:pairId/settings updates the per-pair codex effort", asyn
     const body = (await res.json()) as { pair: { codexEffort: string | null; compose: { codex: { effort: string | null } } } };
     assert.equal(body.pair.codexEffort, "xhigh");
     assert.equal(body.pair.compose.codex.effort, "xhigh");
+  } finally {
+    await close();
+  }
+});
+
+test("PATCH /api/pairs/:pairId/settings updates the per-pair codex model", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "codex", model: "gpt-5-codex-high" })
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { pair: { codexModel: string | null; compose: { codex: { model: string | null } } } };
+    assert.equal(body.pair.codexModel, "gpt-5-codex-high");
+    assert.equal(body.pair.compose.codex.model, "gpt-5-codex-high");
+  } finally {
+    await close();
+  }
+});
+
+test("PATCH /api/pairs/:pairId/settings returns 400 when codex model and effort are missing", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "codex" })
+    });
+    assert.equal(res.status, 400);
   } finally {
     await close();
   }

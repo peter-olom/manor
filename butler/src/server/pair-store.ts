@@ -19,11 +19,13 @@ type PairSnapshotInput = {
   lastMessage?: PairMessage | null;
   updatedAt?: number;
   butlerThinkingLevel?: string | null;
+  codexModel?: string | null;
   codexEffort?: string | null;
 };
 
 type PairComposeOverrideInput = {
   butlerThinkingLevel?: string | null;
+  codexModel?: string | null;
   codexEffort?: string | null;
 };
 
@@ -86,6 +88,7 @@ function emptyPair(input: { id: string; title?: string | null; defaultCwd?: stri
     messageCount: 0,
     lastMessage: null,
     butlerThinkingLevel: null,
+    codexModel: null,
     codexEffort: null
   };
 }
@@ -122,6 +125,7 @@ function normalizePair(raw: Partial<PairChat> & { id?: string }, store: ButlerSt
   pair.messageCount = typeof raw.messageCount === "number" && Number.isFinite(raw.messageCount) ? Math.max(0, Math.trunc(raw.messageCount)) : 0;
   pair.lastMessage = raw.lastMessage ?? null;
   pair.butlerThinkingLevel = typeof raw.butlerThinkingLevel === "string" && raw.butlerThinkingLevel.trim() ? raw.butlerThinkingLevel : null;
+  pair.codexModel = typeof raw.codexModel === "string" && raw.codexModel.trim() ? raw.codexModel : null;
   pair.codexEffort = typeof raw.codexEffort === "string" && raw.codexEffort.trim() ? raw.codexEffort : null;
   pair.status = deriveStatus(pair, store);
   return pair;
@@ -242,6 +246,7 @@ export class PairStore extends EventEmitter {
       pair.worker.lastReviewedReportAt = reviewedAt;
     }
     if (snapshot.butlerThinkingLevel !== undefined) pair.butlerThinkingLevel = snapshot.butlerThinkingLevel;
+    if (snapshot.codexModel !== undefined) pair.codexModel = snapshot.codexModel;
     if (snapshot.codexEffort !== undefined) pair.codexEffort = snapshot.codexEffort;
     pair.status = deriveStatus(pair, this.store);
     pair.updatedAt = Math.max(pair.updatedAt, snapshot.updatedAt ?? pair.lastMessage?.at ?? Date.now());
@@ -256,6 +261,7 @@ export class PairStore extends EventEmitter {
       return null;
     }
     if (override.butlerThinkingLevel !== undefined) pair.butlerThinkingLevel = override.butlerThinkingLevel;
+    if (override.codexModel !== undefined) pair.codexModel = override.codexModel;
     if (override.codexEffort !== undefined) pair.codexEffort = override.codexEffort;
     pair.updatedAt = Math.max(pair.updatedAt, Date.now());
     this.queueSave();

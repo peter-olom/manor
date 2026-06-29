@@ -737,7 +737,33 @@ export class CodexAppServerClient extends EventEmitter {
     if (!effort) {
       throw new Error("effort is required");
     }
-    await this.codexProviderAdapter.call("thread/settings/update", { threadId, effort });
+    await this.updateThreadSettings(threadId, { effort });
+  }
+
+  async updateThreadSettings(threadId: string, settings: { model?: string | null; effort?: ReasoningEffort | null }): Promise<void> {
+    if (!threadId) {
+      throw new Error("threadId is required");
+    }
+    const params: Record<string, unknown> = { threadId };
+    let model: ModelOption | null = null;
+    if (settings.model) {
+      model = this.availableModels.find((entry) => entry.id === settings.model) ?? null;
+      if (!model) {
+        throw new Error("Selected Codex model is not available");
+      }
+      params.model = model.id;
+    }
+    if (settings.effort) {
+      const resolvedEffort = model ? this.resolveEffort(model, settings.effort) : settings.effort;
+      if (!resolvedEffort) {
+        throw new Error("Selected Codex effort is not available for this model");
+      }
+      params.effort = resolvedEffort;
+    }
+    if (!params.model && !params.effort) {
+      throw new Error("model or effort is required");
+    }
+    await this.codexProviderAdapter.call("thread/settings/update", params);
   }
 
   private syncComposeEffort(effort: ReasoningEffort | null): void {

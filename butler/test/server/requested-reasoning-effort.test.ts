@@ -108,3 +108,68 @@ test("Codex startThread stores delegated xhigh effort locally and sends it in tu
   assert.equal(store.getThreadDetail(result.threadId)?.requestedReasoningEffort, "xhigh");
   assert.equal(store.getThreadDetail(result.threadId)?.turns[0]?.requestedReasoningEffort, "xhigh");
 });
+
+test("Codex thread settings update sends selected model and compatible effort", async () => {
+  const { store, dir } = await createStore("manor-codex-model-test-");
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const client = new CodexAppServerClient("ws://127.0.0.1:1", store, dir, {
+    onThreadCapabilityReady: async () => undefined
+  });
+  const clientState = client as unknown as {
+    availableModels: ModelOption[];
+    codexProviderAdapter: {
+      call: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+    };
+  };
+  clientState.availableModels = [{
+    id: "gpt-5-codex-high",
+    label: "GPT-5 Codex High",
+    provider: "openai",
+    supportsReasoning: true,
+    supportedReasoningEfforts: ["low", "medium", "high"],
+    defaultReasoningEffort: "medium"
+  }];
+  clientState.codexProviderAdapter = {
+    call: async (method: string, params: Record<string, unknown>) => {
+      calls.push({ method, params });
+      return { ok: true };
+    }
+  };
+
+  await client.updateThreadSettings("thread-model-settings", { model: "gpt-5-codex-high", effort: "xhigh" });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.method, "thread/settings/update");
+  assert.deepEqual(calls[0]?.params, {
+    threadId: "thread-model-settings",
+    model: "gpt-5-codex-high",
+    effort: "medium"
+  });
+});
+
+test("Codex thread settings rejects unavailable models before provider call", async () => {
+  const { store, dir } = await createStore("manor-codex-model-reject-test-");
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const client = new CodexAppServerClient("ws://127.0.0.1:1", store, dir, {
+    onThreadCapabilityReady: async () => undefined
+  });
+  const clientState = client as unknown as {
+    availableModels: ModelOption[];
+    codexProviderAdapter: {
+      call: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+    };
+  };
+  clientState.availableModels = [];
+  clientState.codexProviderAdapter = {
+    call: async (method: string, params: Record<string, unknown>) => {
+      calls.push({ method, params });
+      return { ok: true };
+    }
+  };
+
+  await assert.rejects(
+    () => client.updateThreadSettings("thread-model-settings", { model: "missing-model" }),
+    /Selected Codex model is not available/
+  );
+  assert.equal(calls.length, 0);
+});
