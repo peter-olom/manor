@@ -132,6 +132,7 @@ export type WorkerTimeline = {
 type WorkerPaneProps = {
   pair: PairDetail;
   timeline: WorkerTimeline;
+  loading?: boolean;
   proofRecords: WorkerProofRecord[];
   onCodexModelChange: (model: string) => void;
   onCodexEffortChange: (effort: string) => void;
@@ -657,7 +658,7 @@ const FallbackRow = memo(function FallbackRow({ row }: { row: WorkerItem }) {
   );
 });
 
-export function WorkerPane({ pair, timeline, proofRecords, onCodexModelChange, onCodexEffortChange, onAttachAnnotatedProof }: WorkerPaneProps) {
+export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCodexModelChange, onCodexEffortChange, onAttachAnnotatedProof }: WorkerPaneProps) {
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
@@ -710,7 +711,7 @@ export function WorkerPane({ pair, timeline, proofRecords, onCodexModelChange, o
           />
         </div>
       </div>
-      <WorkerTimelineView timeline={timeline} proofRecords={proofRecords} onPreviewImage={(media) => {
+      <WorkerTimelineView loading={loading} timeline={timeline} proofRecords={proofRecords} onPreviewImage={(media) => {
         setPreviewError(null);
         setPreviewMedia(media);
       }} />
@@ -729,10 +730,12 @@ export function WorkerPane({ pair, timeline, proofRecords, onCodexModelChange, o
 }
 
 function WorkerTimelineView({
+  loading,
   timeline,
   proofRecords,
   onPreviewImage
 }: {
+  loading: boolean;
   timeline: WorkerTimeline;
   proofRecords: WorkerProofRecord[];
   onPreviewImage: (media: PreviewMedia) => void;
@@ -749,6 +752,17 @@ function WorkerTimelineView({
     bottomKey,
     resetKey
   });
+
+  if (loading && turns.length === 0 && !report && fallback.length === 0) {
+    return (
+      <div className="transcript" ref={ref} onScroll={onScroll}>
+        <div className="empty-state is-inline">
+          <p>Loading worker activity…</p>
+        </div>
+        <JumpToLatest count={unreadCount} onClick={() => scrollToBottom("smooth")} />
+      </div>
+    );
+  }
 
   if (turns.length === 0 && !report && fallback.length === 0) {
     return (

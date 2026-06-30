@@ -696,6 +696,8 @@ export function PairShell() {
   const [selectedPairId, setSelectedPairId] = useState<string | null>(null);
   const [pair, setPair] = useState<PairDetail | null>(null);
   const [workerThread, setWorkerThread] = useState<WorkerThread | null>(null);
+  const [workerThreadPairId, setWorkerThreadPairId] = useState<string | null>(null);
+  const [workerThreadLoading, setWorkerThreadLoading] = useState(false);
   const [viewMode, setViewMode] = useState<PairViewMode>(() => readInitialViewMode());
   const [lastWorkstreamMode, setLastWorkstreamMode] = useState<WorkstreamViewMode>(() => {
     const initial = readInitialViewMode();
@@ -727,6 +729,12 @@ export function PairShell() {
   const [previewError, setPreviewError] = useState<string | null>(null);
 
   const manorSurface = manorSurfaceForView(viewMode);
+  const activePair = pair?.id === selectedPairId ? pair : null;
+  const shouldLoadWorkerThread = manorSurface === "sessions" && viewMode !== "butler" && Boolean(activePair?.worker);
+  const activeWorkerPairId = shouldLoadWorkerThread ? activePair?.id ?? null : null;
+  const activeWorkerThreadId = shouldLoadWorkerThread ? activePair?.worker?.threadId ?? null : null;
+  const activeWorkerThread = workerThreadPairId === activeWorkerPairId ? workerThread : null;
+  const activeWorkerThreadLoading = Boolean(activeWorkerPairId && (workerThreadPairId !== activeWorkerPairId || workerThreadLoading));
 
   const applyRuntimeSnapshot = useCallback((runtime: unknown) => {
     const typed = runtime as RuntimeProofSnapshot | null;
@@ -740,8 +748,8 @@ export function PairShell() {
       butlerPatchHandler?.(patch);
     },
     onComposerPrefill: (payload) => {
-      if (!pair) return;
-      if (payload.target.kind === "thread" && payload.target.threadId !== pair.worker?.threadId) return;
+      if (!activePair) return;
+      if (payload.target.kind === "thread" && payload.target.threadId !== activePair.worker?.threadId) return;
       setDraft((current) => {
         const next = payload.text.trim();
         if (!next) return current;
@@ -764,11 +772,11 @@ export function PairShell() {
   });
 
   const startEditTitle = useCallback(() => {
-    if (!pair) return;
-    setTitleDraft(pair.title);
+    if (!activePair) return;
+    setTitleDraft(activePair.title);
     setTitleError(null);
     setEditingTitle(true);
-  }, [pair]);
+  }, [activePair]);
 
   const cancelEditTitle = useCallback(() => {
     setEditingTitle(false);
@@ -777,31 +785,33 @@ export function PairShell() {
   }, []);
 
   const commitTitle = useCallback(async () => {
-    if (!pair) return;
+    if (!activePair) return;
     const next = titleDraft.trim();
     if (!next) {
       setTitleError("Title cannot be empty");
       return;
     }
-    if (next === pair.title) {
+    if (next === activePair.title) {
       setEditingTitle(false);
       setTitleError(null);
       return;
     }
+    const previous = activePair;
     setSavingTitle(true);
     setTitleError(null);
     try {
-      const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(pair.id)}`, { title: next });
+      const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(activePair.id)}`, { title: next });
       setPair(payload.pair);
       setPairs((current) => current.map((entry) => (entry.id === payload.pair.id ? { ...entry, title: payload.pair.title, updatedAt: payload.pair.updatedAt } : entry)));
       setEditingTitle(false);
       setTitleDraft("");
     } catch (err) {
       setTitleError(err instanceof Error ? err.message : String(err));
+      setPair(previous);
     } finally {
       setSavingTitle(false);
     }
-  }, [pair, titleDraft]);
+  }, [activePair, titleDraft]);
 
   const loadPairs = useCallback(async () => {
     const payload = await getJson<PairListResponse>("/api/pairs");
@@ -811,14 +821,9 @@ export function PairShell() {
     });
   }, []);
 
-  const loadPair = useCallback(async (pairId: string) => {
-    const payload = await getJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(pairId)}?limit=${PAGE_SIZE}`);
-    startTransition(() => setPair(payload.pair));
-  }, []);
-
-  const loadWorker = useCallback(async (pairId: string) => {
+  const loadWorker = useCallback(async (pairId: string): Promise<WorkerThread | null> => {
     const payload = await getJson<PairWorkerThreadResponse>(`/api/pairs/${encodeURIComponent(pairId)}/worker-thread`);
-    startTransition(() => setWorkerThread((payload.thread as WorkerThread | null) ?? null));
+    return (payload.thread as WorkerThread | null) ?? null;
   }, []);
 
   useEffect(() => {
@@ -871,7 +876,10 @@ export function PairShell() {
     let cancelled = false;
     const refresh = async () => {
       try {
-        await loadPair(selectedPairId);
+        const payload = await getJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(selectedPairId)}?limit=${PAGE_SIZE}`);
+        if (!cancelled) {
+          startTransition(() => setPair(payload.pair));
+        }
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : String(err));
@@ -884,22 +892,48 @@ export function PairShell() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [loadPair, selectedPairId]);
+  }, [selectedPairId]);
 
   useEffect(() => {
-    if (!pair?.worker || viewMode === "butler" || manorSurface !== "sessions") {
+    if (!activeWorkerPairId) {
       setWorkerThread(null);
+      setWorkerThreadPairId(null);
+      setWorkerThreadLoading(false);
       return;
     }
-    void loadWorker(pair.id).catch(() => undefined);
-    const interval = window.setInterval(() => void loadWorker(pair.id).catch(() => undefined), 5000);
-    return () => window.clearInterval(interval);
-  }, [loadWorker, manorSurface, pair?.id, pair?.worker?.threadId, viewMode]);
+    let cancelled = false;
+    const pairId = activeWorkerPairId;
+    setWorkerThread(null);
+    setWorkerThreadPairId(pairId);
+    setWorkerThreadLoading(true);
+    const refresh = async () => {
+      try {
+        const thread = await loadWorker(pairId);
+        if (!cancelled) {
+          startTransition(() => {
+            setWorkerThread(thread);
+            setWorkerThreadPairId(pairId);
+            setWorkerThreadLoading(false);
+          });
+        }
+      } catch {
+        if (!cancelled) {
+          setWorkerThreadLoading(false);
+        }
+      }
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [activeWorkerPairId, activeWorkerThreadId, loadWorker]);
 
   const workerTimeline = useMemo<WorkerTimeline>(() => {
-    if (!pair?.worker) return { turns: [], report: null, reports: [], payload: null, checklist: null, fallback: [] };
-    const timeline = shapeWorkerTimeline(workerThread);
-    if (timeline.turns.length > 0 || timeline.report) return timeline;
+    if (!activePair?.worker) return { turns: [], report: null, reports: [], payload: null, checklist: null, fallback: [] };
+    const timeline = shapeWorkerTimeline(activeWorkerThread);
+    if (activeWorkerThreadLoading || timeline.turns.length > 0 || timeline.report) return timeline;
     return {
       turns: [],
       report: null,
@@ -908,26 +942,26 @@ export function PairShell() {
       checklist: timeline.checklist,
       fallback: [
         {
-          id: `task:${pair.worker.threadId}`,
+          id: `task:${activePair.worker.threadId}`,
           type: "assigned_task",
-          status: pair.worker.status,
-          text: pair.worker.task,
-          at: pair.worker.startedAt
+          status: activePair.worker.status,
+          text: activePair.worker.task,
+          at: activePair.worker.startedAt
         },
         {
-          id: `handoff:${pair.worker.threadId}`,
+          id: `handoff:${activePair.worker.threadId}`,
           type: "handoff_prompt",
-          status: pair.worker.status,
-          text: pair.worker.handoffPrompt,
-          at: pair.worker.startedAt
+          status: activePair.worker.status,
+          text: activePair.worker.handoffPrompt,
+          at: activePair.worker.startedAt
         }
       ]
     };
-  }, [pair?.worker, workerThread]);
+  }, [activePair?.worker, activeWorkerThread, activeWorkerThreadLoading]);
 
   const workerProofRecords = useMemo(
-    () => (pair?.worker?.threadId ? proofsByThreadId[pair.worker.threadId] ?? [] : []),
-    [pair?.worker?.threadId, proofsByThreadId]
+    () => (activePair?.worker?.threadId ? proofsByThreadId[activePair.worker.threadId] ?? [] : []),
+    [activePair?.worker?.threadId, proofsByThreadId]
   );
 
   async function createPair() {
@@ -972,8 +1006,8 @@ export function PairShell() {
   }
 
   async function loadOlder() {
-    if (!pair?.hasMore) return;
-    const payload = await getJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(pair.id)}?before=${pair.loadedStart}&limit=${PAGE_SIZE}`);
+    if (!activePair?.hasMore) return;
+    const payload = await getJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(activePair.id)}?before=${activePair.loadedStart}&limit=${PAGE_SIZE}`);
     setPair((current) => (current && current.id === payload.pair.id ? { ...current, messages: [...payload.pair.messages, ...current.messages], loadedStart: payload.pair.loadedStart, hasMore: payload.pair.hasMore } : current));
   }
 
@@ -997,13 +1031,13 @@ export function PairShell() {
   }
 
   async function sendButler() {
-    if (!pair) return;
+    if (!activePair) return;
     const text = draft.trim();
     if (!text && composerAttachments.length === 0) return;
     setBusy(true);
     setError(null);
     try {
-      const payload = await postJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(pair.id)}/messages`, {
+      const payload = await postJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(activePair.id)}/messages`, {
         text,
         target: "butler",
         imageReferenceIds: composerAttachments.filter((attachment) => attachment.mimeType.startsWith("image/")).map((attachment) => attachment.id),
@@ -1034,75 +1068,75 @@ export function PairShell() {
 
   const onThinkingLevelChange = useCallback(
     async (level: string) => {
-      if (!pair) return;
-      const previous = pair;
+      if (!activePair) return;
+      const previous = activePair;
       setPair((current) => (current ? { ...current, butlerThinkingLevel: level, compose: { ...current.compose, butler: { ...current.compose.butler, thinkingLevel: level } } } : current));
       try {
-        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(pair.id)}/settings`, { target: "butler", thinkingLevel: level });
+        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(activePair.id)}/settings`, { target: "butler", thinkingLevel: level });
         setPair(payload.pair);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
         setPair(previous);
       }
     },
-    [pair]
+    [activePair]
   );
 
   const onButlerModelChange = useCallback(
     async (model: string) => {
-      if (!pair) return;
-      const previous = pair;
-      const selected = pair.compose.butler.availableModels.find((entry) => entry.id === model) ?? null;
+      if (!activePair) return;
+      const previous = activePair;
+      const selected = activePair.compose.butler.availableModels.find((entry) => entry.id === model) ?? null;
       setPair((current) => (current ? { ...current, compose: { ...current.compose, butler: { ...current.compose.butler, provider: selected?.provider ?? current.compose.butler.provider, model } } } : current));
       try {
-        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(pair.id)}/settings`, { target: "butler", model });
+        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(activePair.id)}/settings`, { target: "butler", model });
         setPair(payload.pair);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
         setPair(previous);
       }
     },
-    [pair]
+    [activePair]
   );
 
   const onCodexEffortChange = useCallback(
     async (effort: string) => {
-      if (!pair) return;
-      const previous = pair;
+      if (!activePair) return;
+      const previous = activePair;
       setPair((current) => (current ? { ...current, codexEffort: effort, compose: { ...current.compose, codex: { ...current.compose.codex, effort } } } : current));
       try {
-        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(pair.id)}/settings`, { target: "codex", effort });
+        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(activePair.id)}/settings`, { target: "codex", effort });
         setPair(payload.pair);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
         setPair(previous);
       }
     },
-    [pair]
+    [activePair]
   );
 
   const onCodexModelChange = useCallback(
     async (model: string) => {
-      if (!pair) return;
-      const previous = pair;
-      const selected = pair.compose.codex.availableModels.find((entry) => entry.id === model) ?? null;
-      const effort = selected && pair.compose.codex.effort && !selected.supportedReasoningEfforts.includes(pair.compose.codex.effort)
-        ? selected.defaultReasoningEffort ?? selected.supportedReasoningEfforts[0] ?? pair.compose.codex.effort
-        : pair.compose.codex.effort;
+      if (!activePair) return;
+      const previous = activePair;
+      const selected = activePair.compose.codex.availableModels.find((entry) => entry.id === model) ?? null;
+      const effort = selected && activePair.compose.codex.effort && !selected.supportedReasoningEfforts.includes(activePair.compose.codex.effort)
+        ? selected.defaultReasoningEffort ?? selected.supportedReasoningEfforts[0] ?? activePair.compose.codex.effort
+        : activePair.compose.codex.effort;
       setPair((current) => (current ? { ...current, codexModel: model, codexEffort: effort, compose: { ...current.compose, codex: { ...current.compose.codex, model, effort } } } : current));
       try {
-        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(pair.id)}/settings`, { target: "codex", model });
+        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(activePair.id)}/settings`, { target: "codex", model });
         setPair(payload.pair);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
         setPair(previous);
       }
     },
-    [pair]
+    [activePair]
   );
 
-  const workerVisible = manorSurface === "sessions" && viewMode !== "butler" && (pair?.worker || viewMode === "worker");
-  const butlerVisible = manorSurface === "sessions" && viewMode !== "worker";
+  const workerVisible = manorSurface === "sessions" && viewMode !== "butler" && Boolean(activePair) && (activePair?.worker || viewMode === "worker");
+  const butlerVisible = manorSurface === "sessions" && viewMode !== "worker" && Boolean(activePair);
   const cliVisible = viewMode === "cli";
   const selectTerminalTarget = useCallback((target: TerminalTarget) => {
     setTerminalTarget(target);
@@ -1114,7 +1148,7 @@ export function PairShell() {
   }, [cancelEditTitle, lastWorkstreamMode]);
 
   return (
-    <main className={`app ${mobileSidebarOpen ? "is-mobile-sidebar-open" : ""} ${pair ? "" : "is-empty"}`}>
+    <main className={`app ${mobileSidebarOpen ? "is-mobile-sidebar-open" : ""} ${activePair ? "" : "is-empty"}`}>
       <Sidebar
         pairs={pairs}
         selectedPairId={selectedPairId}
@@ -1148,7 +1182,7 @@ export function PairShell() {
       />
       <section className="workspace">
         <Topbar
-          pair={pair}
+          pair={activePair}
           viewMode={viewMode}
           workstreamMode={lastWorkstreamMode}
           onViewMode={(mode) => {
@@ -1178,7 +1212,7 @@ export function PairShell() {
           onMemorySearch={setMemorySearch}
           onMemoryProjectFilter={setMemoryProjectFilter}
         />
-        {!pair && viewMode !== "memory" && viewMode !== "improve" && viewMode !== "cli" ? (
+        {!activePair && viewMode !== "memory" && viewMode !== "improve" && viewMode !== "cli" ? (
           <div className="empty-state">
             <picture className="empty-logo">
               <source srcSet={manorLogoLight} media="(prefers-color-scheme: light)" />
@@ -1193,11 +1227,11 @@ export function PairShell() {
           </div>
         ) : (
           <div className="workspace-views">
-            <div className={`workspace-view is-conversation ${pair && (viewMode === "butler" || viewMode === "worker" || viewMode === "split") ? "is-active" : ""}`}>
+            <div className={`workspace-view is-conversation ${activePair && (viewMode === "butler" || viewMode === "worker" || viewMode === "split") ? "is-active" : ""}`}>
               <div className={`workspace-body is-${viewMode}`}>
                 {butlerVisible ? (
                   <ButlerPane
-                    pair={pair}
+                    pair={activePair}
                     draft={draft}
                     busy={busy}
                     onDraft={setDraft}
@@ -1217,8 +1251,9 @@ export function PairShell() {
                 {viewMode === "split" ? <div className="divider" /> : null}
                 {workerVisible ? (
                   <WorkerPane
-                    pair={pair}
+                    pair={activePair}
                     timeline={workerTimeline}
+                    loading={activeWorkerThreadLoading}
                     proofRecords={workerProofRecords}
                     onCodexModelChange={(model) => void onCodexModelChange(model)}
                     onCodexEffortChange={(effort) => void onCodexEffortChange(effort)}
