@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import type { CodexAppServerClient } from "./codex-client.js";
 import { cleanupManagedWorktree } from "./repo-worktree.js";
 import type { SelfImprovementRequestState } from "./self-improvement-request-state.js";
+import { stopWorkerThread, type WorkerClientAccess } from "./worker-client-router.js";
 import type { SelfImprovementRequestView } from "../shared/self-improvement.js";
 
 const execFileAsync = promisify(execFile);
@@ -21,12 +21,12 @@ function readWorkspaceRequest(requests: SelfImprovementRequestState, requestId: 
 
 export async function discardSelfImprovementRequest(
   requests: SelfImprovementRequestState,
-  codexClient: Pick<CodexAppServerClient, "stopThread">,
+  workerClient: WorkerClientAccess,
   requestId: string
 ): Promise<SelfImprovementRequestView> {
   const current = requests.get(requestId);
   if (!current) throw new Error("Self-improvement request was not found.");
-  if (current.threadId) await codexClient.stopThread(current.threadId).catch(() => undefined);
+  if (current.threadId) await stopWorkerThread(workerClient, current.threadId).catch(() => undefined);
   if (current.workspaceCwd) await cleanupManagedWorktree(current.workspaceCwd);
   return requests.update(current.id, { status: "discarded", completedAt: Date.now() });
 }

@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { getModel } from "@mariozechner/pi-ai";
-import { AuthStorage, defineTool, ModelRegistry, type AgentSession } from "@mariozechner/pi-coding-agent";
+import { defineTool, type AgentSession, type ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { TSchema } from "@sinclair/typebox";
 import {
   buildCallbackReviewPrompt,
@@ -79,6 +79,8 @@ import {
 } from "./job-instruction-artifacts.js";
 import { readJsonStateFile, writeJsonStateFileAtomic } from "./json-state-file.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
+import { createManorModelRegistry } from "./model-provider-config.js";
+import { loadWorkerThread, sendWorkerMessage, type WorkerClientAccess } from "./worker-client-router.js";
 import type { ButlerRoutingClassifier } from "./butler-routing-classifier.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
 import { ensureTaskWorktree, resolveExistingWorkspaceCwd, resolveWorkspaceBranchName, resolveWorkspaceProjectInfo, taskRequiresManagedWorktree } from "./repo-worktree.js";
@@ -112,6 +114,7 @@ import type {
 } from "./types.js";
 import { ButlerStateStore } from "./state-store.js";
 import { CodexAppServerClient } from "./codex-client.js";
+import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { PreviewLeaseView, PreviewProofRecordView, PreviewVerificationArtifactView, PreviewVerificationView, ProjectMemoryView } from "./types.js";
 const CALLBACK_RECOVERY_TIMEOUT_MS = 30_000;
 
@@ -124,6 +127,7 @@ import { ButlerTraceBuffer } from "./butler-trace-buffer.js";
 export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
   private readonly codexClient: CodexAppServerClient;
+  private readonly piRpcWorkerClient: PiRpcWorkerClient | null;
   private readonly hostController: HostControllerClient;
   private readonly runtimeBroker: RuntimeBrokerClient;
   private readonly serviceTemplateRegistry: ServiceTemplateRegistry;
@@ -193,6 +197,7 @@ export class ButlerAgentService extends EventEmitter {
     super();
     this.store = options.store;
     this.codexClient = options.codexClient;
+    this.piRpcWorkerClient = options.piRpcWorkerClient ?? null;
     this.hostController = options.hostController;
     this.runtimeBroker = options.runtimeBroker;
     this.serviceTemplateRegistry = options.serviceTemplateRegistry;
@@ -456,7 +461,7 @@ export class ButlerAgentService extends EventEmitter {
       const now = Date.now();
       callback.updatedAt = now;
       try {
-        await this.codexClient.loadThread(callback.threadId);
+        await loadWorkerThread(this.getWorkerClientAccess(), callback.threadId);
       } catch {
         callback.lastWorkerStatusSeen = "unknown";
         changed = true;
@@ -610,7 +615,7 @@ export class ButlerAgentService extends EventEmitter {
     await this.manorRestartRequests.load();
     this.auth = await readButlerAuthStatus(this.piAuthPath);
     this.codexAuth = await readCodexAuthStatus(this.codexAuthPath);
-    this.modelRegistry = ModelRegistry.inMemory(AuthStorage.create(this.piAuthPath));
+    this.modelRegistry = await createManorModelRegistry(this.piAuthPath);
     await this.createOrRefreshSession();
     await this.refreshExternalStatus();
     this.store.on("change", this.storeChangeHandler);
@@ -650,7 +655,7 @@ export class ButlerAgentService extends EventEmitter {
 
     if (butlerAuthChanged) {
       this.auth = nextAuth;
-      this.modelRegistry = ModelRegistry.inMemory(AuthStorage.create(this.piAuthPath));
+      this.modelRegistry = await createManorModelRegistry(this.piAuthPath);
       await this.createOrRefreshSession();
     }
     if (clearedStaleAuthError) {
@@ -684,6 +689,14 @@ export class ButlerAgentService extends EventEmitter {
   }
 
   private getToolAccess(): ButlerAgentToolAccess { return this as unknown as ButlerAgentToolAccess; }
+
+  private getWorkerClientAccess(): WorkerClientAccess {
+    return {
+      store: this.store,
+      codexClient: this.codexClient,
+      piRpcWorkerClient: this.piRpcWorkerClient
+    };
+  }
 
   private getSessionAccess(): ButlerAgentSessionAccess { return this as unknown as ButlerAgentSessionAccess; }
 
@@ -852,7 +865,7 @@ export class ButlerAgentService extends EventEmitter {
       throw new Error(limitMessage);
     }
 
-    await this.codexClient.loadThread(threadId);
+    await loadWorkerThread(this.getWorkerClientAccess(), threadId);
     const thread = this.store.getThread(threadId);
     const payload = await this.createOrUpdateJobPayload({
       threadId,
@@ -861,7 +874,8 @@ export class ButlerAgentService extends EventEmitter {
       contract: thread?.executionContract ?? null,
       checklist: thread?.supervisionChecklist ?? null
     });
-    const sent = await this.codexClient.sendMessage(
+    const sent = await sendWorkerMessage(
+      this.getWorkerClientAccess(),
       threadId,
       this.imageStore.buildCodexInput(formatJobPayloadMessage(payload.kind as JobPayloadKind, payload.threadId, payload.workerDirective, payload.display.summary), [])
     );

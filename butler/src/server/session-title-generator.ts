@@ -1,8 +1,9 @@
 import { complete, type Model } from "@mariozechner/pi-ai";
-import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
+import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
 
 import { contentToText } from "./butler-agent-helpers.js";
 import { isUnsupportedCodexModelError, normalizeMemoryCodexModel } from "./memory-codex-model.js";
+import { createManorModelRegistry } from "./model-provider-config.js";
 
 type SessionTitleRunner = (input: { prompt: string; timeoutMs: number }) => Promise<unknown>;
 
@@ -137,13 +138,13 @@ export class PiSessionTitleGenerator implements SessionTitleGenerator {
     }
   }
 
-  private getModelRegistry(): ModelRegistry {
-    this.modelRegistry ??= this.options.modelRegistry ?? ModelRegistry.inMemory(AuthStorage.create(this.options.piAuthPath));
+  private async getModelRegistry(): Promise<ModelRegistry> {
+    this.modelRegistry ??= this.options.modelRegistry ?? await createManorModelRegistry(this.options.piAuthPath);
     return this.modelRegistry;
   }
 
-  private resolveModels(): Model<any>[] {
-    const registry = this.getModelRegistry();
+  private async resolveModels(): Promise<Model<any>[]> {
+    const registry = await this.getModelRegistry();
     const available = registry.getAvailable();
     const models: Model<any>[] = [];
     if (this.model) {
@@ -163,9 +164,9 @@ export class PiSessionTitleGenerator implements SessionTitleGenerator {
   }
 
   private async runPiCompletion(input: { prompt: string; timeoutMs: number }): Promise<string> {
-    const registry = this.getModelRegistry();
+    const registry = await this.getModelRegistry();
     const errors: unknown[] = [];
-    for (const model of this.resolveModels()) {
+    for (const model of await this.resolveModels()) {
       const auth = await registry.getApiKeyAndHeaders(model);
       if (!auth.ok) {
         errors.push(new Error(auth.error));

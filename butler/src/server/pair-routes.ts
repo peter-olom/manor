@@ -123,7 +123,7 @@ export function registerPairRoutes(access: PairRouteAccess): void {
   });
 
   app.patch("/api/pairs/:pairId/settings", async (request, response) => {
-    const target = request.body?.target === "codex" ? "codex" : "butler";
+    const target = request.body?.target === "codex" || request.body?.target === "worker" ? "worker" : "butler";
     try {
       if (target === "butler") {
         const model = readString(request.body?.model);

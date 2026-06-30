@@ -39,7 +39,7 @@ type SemanticEdgeReviewOutput = {
 
 type SemanticEdgeReviewRunner = (input: { prompt: string; cwd: string; timeoutMs: number; config: MemorySynthesisConfig }) => Promise<SemanticEdgeReviewOutput>;
 
-const OUTPUT_SCHEMA = {
+export const SEMANTIC_EDGE_REVIEW_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: ["decisions"],
@@ -433,7 +433,7 @@ export class MemorySemanticEdgeReviewService {
     const runId = crypto.randomUUID();
     const schemaPath = path.join(scratchDir, `${runId}.schema.json`);
     const outputPath = path.join(scratchDir, `${runId}.output.json`);
-    await fs.writeFile(schemaPath, JSON.stringify(OUTPUT_SCHEMA, null, 2), "utf8");
+    await fs.writeFile(schemaPath, JSON.stringify(SEMANTIC_EDGE_REVIEW_OUTPUT_SCHEMA, null, 2), "utf8");
     const effortArgs = input.config.effort ? ["--reasoning-effort", input.config.effort] : [];
     const baseArgs = ["exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--ignore-rules", "--output-schema", schemaPath, "--output-last-message", outputPath, "--cd", input.cwd || "/repos", ...effortArgs];
     const run = async (model: string | null): Promise<void> => {

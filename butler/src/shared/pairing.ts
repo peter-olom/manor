@@ -115,6 +115,14 @@ export type PairComposeSettings = {
     availableModels: PairModelOption[];
     availableThinkingLevels: string[];
   };
+  worker: {
+    runtime: "auto" | "codex" | "pi-rpc";
+    provider: string | null;
+    model: string | null;
+    effort: string | null;
+    availableModels: PairCodexModelOption[];
+    availableEfforts: string[];
+  };
   codex: {
     model: string | null;
     effort: string | null;

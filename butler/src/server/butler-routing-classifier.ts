@@ -10,7 +10,7 @@ import type { ButlerRoutingDecisionView } from "./types.js";
 
 type RoutingClassifierRunner = (input: { cwd: string; prompt: string; timeoutMs: number }) => Promise<unknown>;
 
-const OUTPUT_SCHEMA = {
+export const ROUTING_CLASSIFIER_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: [
@@ -168,7 +168,7 @@ export class ButlerRoutingClassifier {
     const runId = crypto.randomUUID();
     const schemaPath = path.join(scratchDir, `${runId}.schema.json`);
     const outputPath = path.join(scratchDir, `${runId}.output.json`);
-    await fs.writeFile(schemaPath, JSON.stringify(OUTPUT_SCHEMA, null, 2), "utf8");
+    await fs.writeFile(schemaPath, JSON.stringify(ROUTING_CLASSIFIER_OUTPUT_SCHEMA, null, 2), "utf8");
     const baseArgs = [
       "exec",
       "--ephemeral",

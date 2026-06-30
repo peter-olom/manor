@@ -8,24 +8,18 @@ import express from "express";
 import httpProxy from "http-proxy";
 
 import { ButlerAgentService } from "./butler-agent.js";
+import { createBackgroundModelServices } from "./background-model-services.js";
 import { CodexAppServerClient } from "./codex-client.js";
 import { CodexHarnessService } from "./codex-harness.js";
-import { ButlerRoutingClassifier } from "./butler-routing-classifier.js";
-import { CodexWorkerReviewService } from "./worker-codex-review.js";
 import { FileReferenceStore, MAX_FILE_BYTES } from "./file-store.js";
 import { HostControllerClient } from "./host-controller-client.js";
 import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
 import { normalizeMemoryCodexModelEnv } from "./memory-codex-model.js";
 import { getMemoryDebugTrace, listMemoryDebugTraces } from "./memory-debug-traces.js";
 import { buildMemoryDiagnostics } from "./memory-diagnostics.js";
-import { MemoryEmbeddingService } from "./memory-embedding-service.js";
-import { MemorySemanticEdgeReviewService } from "./memory-semantic-edge-review.js";
-import { CodexExecMemoryPromotionService } from "./memory-promotion.js";
-import { CodexExecMemoryReviewService } from "./memory-review.js";
-import { readMemorySynthesisConfig, resolveMemoryServiceModel } from "./memory-synthesis-config.js";
-import { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import { PairSessionManager } from "./pair-session-manager.js";
 import { PairStore } from "./pair-store.js";
+import { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import { registerPairRoutes } from "./pair-routes.js";
 import { registerPreviewAnnotationRoutes } from "./preview-annotation-routes.js";
 import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-routes.js";
@@ -42,21 +36,11 @@ import { retrieveButlerMemoryWithEmbeddings } from "./memory-retrieval.js";
 import { registerManorRestartRoutes } from "./manor-restart-routes.js";
 import { proxyPreviewRoute, registerPreviewProxyResponseRewriter, resolvePreviewRefererRouteUrl, resolvePreviewRouteUrl } from "./preview-gateway.js";
 import { reconcileDesktopSessions, registerDesktopSessionRoutes } from "./server-desktop-routes.js";
-import {
-  ButlerSseHub,
-  cleanupThreadRuntimeResources,
-  currentBootstrapSnapshot,
-  pruneEmptyArtifactParents,
-  readImageReferenceIds,
-  readFileReferenceIds,
-  removeStackArtifactsFromStore,
-  resolvePreviewProxyTarget,
-  shouldAllowLocalThreadWindow,
-  type RuntimeServerAccess
-} from "./server-runtime-helpers.js";
+import { ButlerSseHub, cleanupThreadRuntimeResources, currentBootstrapSnapshot, pruneEmptyArtifactParents, readImageReferenceIds, readFileReferenceIds, removeStackArtifactsFromStore, resolvePreviewProxyTarget, shouldAllowLocalThreadWindow, type RuntimeServerAccess } from "./server-runtime-helpers.js";
 import { ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { ButlerStateStore } from "./state-store.js";
 import { registerThreadArtifactRoutes } from "./thread-artifact-routes.js";
+import { deleteAllWorkerThreads, deleteWorkerThread, loadWorkerThread, sendWorkerMessage, stopWorkerThread, updateUnifiedWorkerCompose, updateWorkerThreadEffort } from "./worker-client-router.js";
 
 normalizeMemoryCodexModelEnv(process.env);
 
@@ -203,17 +187,16 @@ let sseHub!: ButlerSseHub;
 const selfImprovementRequests = new SelfImprovementRequestState(path.join(stateDir, "self-improvement-requests.json"), () => sseHub?.schedule(), (error) => console.error("Self-improvement queue save failed", error));
 await selfImprovementRequests.load();
 configureSelfImprovementRequestState(selfImprovementRequests);
-const memorySynthesisConfig = readMemorySynthesisConfig();
 const piAuthPath = path.join(piAgentDir, "auth.json");
 const codexAuthPath = path.join(codexHomeDir, "auth.json");
+const piRpcWorkerClient = new PiRpcWorkerClient({ store, piAuthPath, sessionRootDir: path.join(stateDir, "pi-worker-sessions") });
 const sessionTitleGenerator = new PiSessionTitleGenerator({ piAuthPath, ...readSessionTitleConfig() });
-const memoryReview = new CodexExecMemoryReviewService({ store, stateDir, codexHomeDir, enabled: memorySynthesisConfig.enabled, model: memorySynthesisConfig.model ?? undefined, timeoutMs: memorySynthesisConfig.timeoutMs });
-const routingClassifier = new ButlerRoutingClassifier({ stateDir, codexHomeDir, enabled: true, model: resolveMemoryServiceModel(process.env.MANOR_ROUTING_CLASSIFIER_MODEL, memorySynthesisConfig.model) ?? undefined, timeoutMs: memorySynthesisConfig.timeoutMs });
-const workerReview = new CodexWorkerReviewService({ store, stateDir, codexHomeDir, enabled: true, model: resolveMemoryServiceModel(process.env.MANOR_WORKER_REVIEW_MODEL, memorySynthesisConfig.model) ?? undefined, timeoutMs: memorySynthesisConfig.timeoutMs });
-const memoryScheduler = new MemoryUpdateScheduler({ store, config: memorySynthesisConfig, stateDir, codexHomeDir });
-const memoryPromotion = new CodexExecMemoryPromotionService({ store, memoryScheduler, config: memorySynthesisConfig, stateDir, codexHomeDir });
-const memoryEmbeddings = new MemoryEmbeddingService({ store, onResult: (result, reason) => { if (result.embedded > 0 || result.failed > 0) console.log(`Memory embedding ${reason}: embedded=${result.embedded} skipped=${result.skippedFresh} failed=${result.failed}`); }, onError: (error, reason) => console.warn(`Memory embedding ${reason} failed`, error) });
-const memorySemanticEdges = new MemorySemanticEdgeReviewService({ store, config: memorySynthesisConfig, stateDir, codexHomeDir, onResult: (result, reason) => { if (result.reviewed > 0 || result.relationships > 0) console.log(`Memory semantic edge review ${reason}: reviewed=${result.reviewed} relationships=${result.relationships}`); }, onError: (error, reason) => console.warn(`Memory semantic edge review ${reason} failed`, error) });
+const { memoryReview, routingClassifier, workerReview, memoryScheduler, memoryPromotion, memoryEmbeddings, memorySemanticEdges } = createBackgroundModelServices({
+  store,
+  stateDir,
+  codexHomeDir,
+  piAuthPath
+});
 store.setMemoryUpdateObserver(memoryScheduler);
 const codexHarness = new CodexHarnessService({
   codexHomeDir,
@@ -255,6 +238,7 @@ const butlerAgent = new ButlerAgentService({
   store,
   memoryScheduler,
   codexClient,
+  piRpcWorkerClient,
   hostController,
   runtimeBroker,
   serviceTemplateRegistry,
@@ -272,6 +256,7 @@ const pairSessions = new PairSessionManager({
   pairStore,
   store,
   codexClient,
+  piRpcWorkerClient,
   hostController,
   runtimeBroker,
   serviceTemplateRegistry,
@@ -306,6 +291,7 @@ await fs.mkdir(piAgentDir, { recursive: true });
 
 await butlerAgent.start();
 codexClient.start();
+await piRpcWorkerClient.start();
 
 const app = express();
 const server = http.createServer(app);
@@ -394,15 +380,18 @@ pairStore.on("change", () => sseHub.schedule());
 scratchPadStore.on("change", () => sseHub.schedule());
 codexClient.on("change", () => sseHub.schedule());
 codexClient.on("threadPatch", (payload) => sseHub.broadcastThreadPatch(payload));
+piRpcWorkerClient.on("change", () => sseHub.schedule());
+piRpcWorkerClient.on("threadPatch", (payload) => sseHub.broadcastThreadPatch(payload));
 butlerAgent.on("change", () => sseHub.schedule());
 butlerAgent.on("butlerPatch", (payload) => sseHub.broadcastButlerPatch(payload));
 
 app.get("/api/health", (_request, response) => {
   response.json({
-    ok: true,
-    codex: codexClient.getConnectionState(),
-    butler: butlerAgent.getSnapshot()
-  });
+	    ok: true,
+	    codex: codexClient.getConnectionState(),
+	    piRpcWorker: piRpcWorkerClient.getConnectionState(),
+	    butler: butlerAgent.getSnapshot()
+	  });
 });
 
 app.get("/livez", (_request, response) => {
@@ -480,6 +469,7 @@ registerScratchPadRoutes({
   scratchPadStore,
   store,
   codexClient,
+  piRpcWorkerClient,
   butlerAgent,
   artifactsDir,
   imageStore,
@@ -503,7 +493,9 @@ registerSelfImprovementRoutes({
   requests: selfImprovementRequests,
   hostController,
   store,
-  codexClient, pairSessions,
+  codexClient,
+  piRpcWorkerClient,
+  pairSessions,
   imageStore,
   fileStore,
   artifactsDir
@@ -939,7 +931,8 @@ app.post("/api/threads/messages", async (request, response) => {
   }
 
   try {
-    await codexClient.sendMessage(
+    await sendWorkerMessage(
+      { store, codexClient, piRpcWorkerClient },
       threadId,
       buildCodexInputWithReferences({
         text,
@@ -971,7 +964,7 @@ app.post("/api/threads/stop", async (request, response) => {
   }
 
   try {
-    const stopped = await codexClient.stopThread(threadId);
+    const stopped = await stopWorkerThread({ store, codexClient, piRpcWorkerClient }, threadId);
     response.json({ ok: true, stopped });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -987,7 +980,7 @@ app.post("/api/threads/settings", async (request, response) => {
   }
 
   try {
-    await codexClient.updateComposeSettings(model, effort);
+    await updateUnifiedWorkerCompose({ store, codexClient, piRpcWorkerClient }, { model, effort: effort as never });
     response.json({ ok: true });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -1003,7 +996,7 @@ app.post("/api/threads/:threadId/settings", async (request, response) => {
   }
 
   try {
-    await codexClient.updateThreadReasoningEffort(threadId, effort as never);
+    await updateWorkerThreadEffort({ store, codexClient, piRpcWorkerClient }, threadId, effort as never);
     response.json({ ok: true });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -1037,7 +1030,7 @@ app.post("/api/threads/delete", async (request, response) => {
     return;
   }
 
-  void codexClient.deleteThread(threadId).catch((error) => {
+  void deleteWorkerThread({ store, codexClient, piRpcWorkerClient }, threadId).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     sseHub.broadcastToast(`Thread cleanup failed: ${message}`, "error", 6000);
   });
@@ -1046,7 +1039,7 @@ app.post("/api/threads/delete", async (request, response) => {
 });
 
 app.post("/api/threads/delete-all", async (_request, response) => {
-  void codexClient.deleteAllThreads().catch((error) => {
+  void deleteAllWorkerThreads({ store, codexClient, piRpcWorkerClient }).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     sseHub.broadcastToast(`Bulk thread cleanup failed: ${message}`, "error", 6000);
   });
@@ -1062,7 +1055,7 @@ app.post("/api/windows/open", async (request, response) => {
   }
 
   try {
-    await codexClient.loadThread(threadId);
+    await loadWorkerThread({ store, codexClient, piRpcWorkerClient }, threadId);
     store.openWindow(threadId);
     response.json({ ok: true });
   } catch (error) {
@@ -1088,7 +1081,7 @@ app.post("/api/windows/focus", async (request, response) => {
   }
 
   try {
-    await codexClient.loadThread(threadId);
+    await loadWorkerThread({ store, codexClient, piRpcWorkerClient }, threadId);
     store.focusWindow(threadId);
     response.json({ ok: true });
   } catch (error) {

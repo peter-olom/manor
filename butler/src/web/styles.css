@@ -1661,6 +1661,11 @@ a:hover {
   padding: 10px 12px;
 }
 
+.bubble.is-loader .bubble-disclosure {
+  align-self: stretch;
+  margin: 6px 0 0;
+}
+
 .bubble-head {
   display: flex;
   align-items: center;

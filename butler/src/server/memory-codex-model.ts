@@ -8,7 +8,9 @@ const KNOWN_CODEX_MODEL_LABELS = new Map<string, string>([
   ["gpt-5.5", "gpt-5.5"]
 ]);
 
-const CODEX_MODEL_SLUG_PATTERN = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*(?:-[a-z0-9]+)*$/i;
+const MODEL_REF_PART = "[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*(?:-[a-z0-9]+)*";
+const CODEX_MODEL_SLUG_PATTERN = new RegExp(`^${MODEL_REF_PART}$`, "i");
+const PROVIDER_MODEL_REF_PATTERN = new RegExp(`^${MODEL_REF_PART}\\/${MODEL_REF_PART}$`, "i");
 
 export function normalizeMemoryCodexModel(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
@@ -20,7 +22,10 @@ export function normalizeMemoryCodexModel(value: string | null | undefined): str
   if (known) {
     return known;
   }
-  return CODEX_MODEL_SLUG_PATTERN.test(trimmed) && !trimmed.includes(" ") ? trimmed : null;
+  if (trimmed.includes(" ")) {
+    return null;
+  }
+  return CODEX_MODEL_SLUG_PATTERN.test(trimmed) || PROVIDER_MODEL_REF_PATTERN.test(trimmed) ? trimmed : null;
 }
 
 export function memoryCodexModelArgs(value: string | null | undefined): string[] {

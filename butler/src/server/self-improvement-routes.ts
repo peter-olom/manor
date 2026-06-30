@@ -4,6 +4,7 @@ import { buildButlerDelegationContract } from "./butler-agent-delegation-contrac
 import { buildDelegationDeveloperInstructions } from "./butler-agent-delegation-instructions.js";
 import { buildSelfImprovementTask } from "./butler-self-improvement.js";
 import type { CodexAppServerClient } from "./codex-client.js";
+import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { FileReferenceStore } from "./file-store.js";
 import type { HostControllerClient } from "./host-controller-client.js";
 import type { ImageReferenceStore } from "./image-store.js";
@@ -15,6 +16,7 @@ import { commitSelfImprovementRequest, discardSelfImprovementRequest, openSelfIm
 import { resolveSelfImprovementEligibility } from "./self-improvement-eligibility.js";
 import type { SelfImprovementRequestState } from "./self-improvement-request-state.js";
 import type { ButlerStateStore } from "./state-store.js";
+import { startWorkerThread } from "./worker-client-router.js";
 
 type RouteAccess = {
   app: express.Express;
@@ -22,6 +24,7 @@ type RouteAccess = {
   hostController: HostControllerClient;
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;
+  piRpcWorkerClient?: PiRpcWorkerClient | null;
   pairSessions?: Pick<PairSessionManager, "createWorkerPair">;
   imageStore: ImageReferenceStore;
   fileStore: FileReferenceStore;
@@ -34,7 +37,7 @@ function readText(value: unknown): string {
 }
 
 export function registerSelfImprovementRoutes(access: RouteAccess): void {
-  const { app, requests, hostController, store, codexClient, pairSessions, imageStore, fileStore, artifactsDir } = access;
+  const { app, requests, hostController, store, pairSessions, imageStore, fileStore, artifactsDir } = access;
   const prepareWorkspace = access.prepareWorkspace ?? ensureTaskWorktree;
 
   app.get("/api/self-improvement/requests", async (_request, response) => {
@@ -63,7 +66,7 @@ export function registerSelfImprovementRoutes(access: RouteAccess): void {
       const workspace = await prepareWorkspace({ cwd: eligibility.sourceCwd, task });
       preparedWorkspaceCwd = workspace.cwd;
       const developerInstructions = buildDelegationDeveloperInstructions(workspace, task);
-      const result = await codexClient.startThread({
+      const result = await startWorkerThread(access, {
         task,
         input: async (threadId) => buildCodexInputWithReferences({
           text: (await buildButlerDelegationContract({
@@ -86,7 +89,8 @@ export function registerSelfImprovementRoutes(access: RouteAccess): void {
         cwd: workspace.cwd,
         developerInstructions,
         effort: "high",
-        openWindow: true
+        openWindow: true,
+        runtime: "auto"
       });
       const pair = pairSessions
         ? await pairSessions.createWorkerPair({
@@ -127,7 +131,7 @@ export function registerSelfImprovementRoutes(access: RouteAccess): void {
 
   app.post("/api/self-improvement/requests/:requestId/discard", async (request, response) => {
     try {
-      response.json({ ok: true, request: await discardSelfImprovementRequest(requests, codexClient, request.params.requestId) });
+      response.json({ ok: true, request: await discardSelfImprovementRequest(requests, access, request.params.requestId) });
     } catch (error) {
       response.status(409).json({ error: error instanceof Error ? error.message : String(error) });
     }

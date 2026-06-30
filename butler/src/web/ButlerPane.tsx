@@ -46,7 +46,7 @@ function shortId(value: string | null | undefined): string {
 function roleLabel(role: string): string {
   if (role === "user") return "You";
   if (role === "butler") return "Butler";
-  if (role === "worker") return "Codex";
+  if (role === "worker") return "Worker";
   return "System";
 }
 
@@ -197,17 +197,31 @@ type CompletedTraceBubbleProps = {
   defaultOpen?: boolean;
 };
 
-const CompletedTraceBubble = memo(function CompletedTraceBubble({ trace, defaultOpen = false }: CompletedTraceBubbleProps) {
-  const label = useMemo(() => traceDisclosureLabel(trace.items), [trace.items]);
+type TraceDisclosureProps = {
+  items: PairTraceItem[];
+  defaultOpen?: boolean;
+  label?: string;
+};
+
+function liveActivityLabel(items: PairTraceItem[]): string {
+  return `Working through ${traceDisclosureLabel(items).replace(/^Thought for /, "")}`;
+}
+
+const TraceDisclosure = memo(function TraceDisclosure({ items, defaultOpen = false, label }: TraceDisclosureProps) {
+  const summary = useMemo(() => label ?? traceDisclosureLabel(items), [items, label]);
   return (
     <details className="bubble-disclosure" {...(defaultOpen ? { open: true } : {})}>
       <summary>
         <span className="bubble-disclosure-icon" aria-hidden="true" />
-        <span>{label}</span>
+        <span>{summary}</span>
       </summary>
-      <ThinkingTrace items={trace.items} />
+      <ThinkingTrace items={items} />
     </details>
   );
+});
+
+const CompletedTraceBubble = memo(function CompletedTraceBubble({ trace, defaultOpen = false }: CompletedTraceBubbleProps) {
+  return <TraceDisclosure items={trace.items} defaultOpen={defaultOpen} />;
 });
 
 type LiveBubbleProps = {
@@ -233,12 +247,30 @@ const LiveBubble = memo(function LiveBubble({ text, items, pending }: LiveBubble
       </header>
       {traceItems.length > 0 ? (
         pending ? (
-          <ThinkingTrace items={traceItems} />
+          <TraceDisclosure items={traceItems} defaultOpen label={liveActivityLabel(traceItems)} />
         ) : (
           <CompletedTraceBubble trace={trace} />
         )
       ) : null}
       {text ? <Markdown className="bubble-body" text={text} /> : null}
+    </article>
+  );
+});
+
+type WorkLoaderBubbleProps = {
+  items: PairTraceItem[];
+};
+
+const WorkLoaderBubble = memo(function WorkLoaderBubble({ items }: WorkLoaderBubbleProps) {
+  return (
+    <article className="bubble is-butler is-loader" aria-label="Butler is working">
+      <span className="working-indicator" aria-live="polite">
+        <span className="working-indicator-label">Butler</span>
+        <SandSpinner />
+      </span>
+      {items.length > 0 ? (
+        <TraceDisclosure items={items} defaultOpen label={liveActivityLabel(items)} />
+      ) : null}
     </article>
   );
 });
@@ -251,14 +283,7 @@ type BubbleProps = {
 const Bubble = memo(function Bubble({ message, liveTrace }: BubbleProps) {
   const role = message.role === "user" ? "user" : message.role === "worker" ? "worker" : message.role === "butler" ? "butler" : "system";
   if (message.metadata.kind === "work-loader") {
-    return (
-      <article className="bubble is-butler is-loader" aria-label="Butler is working">
-        <span className="working-indicator" aria-live="polite">
-          <span className="working-indicator-label">Butler</span>
-          <SandSpinner />
-        </span>
-      </article>
-    );
+    return <WorkLoaderBubble items={[]} />;
   }
   const persistedTrace = message.trace && message.trace.length > 0
     ? { messageId: message.id, items: message.trace, durationMs: 0, startedAt: message.at, completedAt: message.at }
@@ -333,15 +358,16 @@ export function ButlerPane({
   const showLoader = shouldShowWorkLoader(pair);
   const showBlockedCloseout = Boolean(pair.butlerPendingReason);
   const liveStreaming = live.state.status === "streaming" || live.state.status === "completed";
-  const liveHasContent = live.state.assistantText.length > 0 || live.state.items.size > 0;
+  const liveHasAssistantText = live.state.assistantText.trim().length > 0;
   const lastMessage = pair.messages.at(-1);
   const lastMessageIsButler = lastMessage?.role === "butler";
   const lastMessageCoversLive = lastMessageIsButler
     && live.state.completedAt !== null
     && lastMessage !== undefined
     && lastMessage.at >= live.state.completedAt;
-  const showLiveBubble = liveStreaming && liveHasContent && !lastMessageCoversLive;
   const liveItems = useMemo(() => [...live.state.items.values()].sort((a, b) => a.at - b.at), [live.state.items]);
+  const showLiveBubble = liveStreaming && liveHasAssistantText && !lastMessageCoversLive;
+  const showWorkBubble = showLoader || (liveStreaming && liveItems.length > 0 && !showLiveBubble && !lastMessageCoversLive);
   const liveTraceForMessage = useMemo<CompletedTrace | undefined>(() => {
     if (live.completedTraces.length === 0) return undefined;
     const lastButlerIndex = (() => {
@@ -364,7 +390,7 @@ export function ButlerPane({
     }
     return map;
   }, [liveTraceForMessage, lastMessage]);
-  const totalCount = pair.messages.length + (showLoader ? 1 : 0) + (showBlockedCloseout ? 1 : 0) + (showLiveBubble ? 1 : 0);
+  const totalCount = pair.messages.length + (showWorkBubble ? 1 : 0) + (showBlockedCloseout ? 1 : 0) + (showLiveBubble ? 1 : 0);
   const bottomKey = `${lastMessageId}:${totalCount}:${live.state.assistantText.length}:${live.state.items.size}:${lastMessageAt}`;
 
   const { ref, onScroll, isPinned, unreadCount, scrollToBottom } = useAnchoredScroll<HTMLDivElement>({ bottomKey, resetKey: pair.id });
@@ -402,14 +428,7 @@ export function ButlerPane({
             <Markdown className="bubble-body" text={pair.butlerPendingReason ?? ""} />
           </article>
         ) : null}
-        {showLoader ? (
-          <article className="bubble is-butler is-loader" aria-label="Butler is working">
-            <span className="working-indicator" aria-live="polite">
-              <span className="working-indicator-label">Butler</span>
-              <SandSpinner />
-            </span>
-          </article>
-        ) : null}
+        {showWorkBubble ? <WorkLoaderBubble items={showLiveBubble ? [] : liveItems} /> : null}
         <JumpToLatest
           count={unreadCount}
           onClick={() => {

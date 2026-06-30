@@ -2,6 +2,7 @@ import type express from "express";
 
 import type { ButlerAgentService } from "./butler-agent.js";
 import type { CodexAppServerClient } from "./codex-client.js";
+import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import { type FileReferenceStore } from "./file-store.js";
 import { type ImageReferenceStore } from "./image-store.js";
 import { bindJobPayloadDelivery, buildJobPayload, formatJobPayloadMessage, jobPayloadsRoot, persistJobPayload } from "./job-instruction-artifacts.js";
@@ -18,6 +19,7 @@ import { ScratchPadStore } from "./scratch-pad-store.js";
 import { ButlerStateStore } from "./state-store.js";
 import { buildThreadExecutionContract, inferTaskCategory } from "./thread-contract.js";
 import type { CodexTaskCategory, ScratchPadAttachmentView, ScratchPadItemView, ScratchPadResultKind, ScratchPadWorkspaceMode } from "./types.js";
+import { deleteWorkerThread, startWorkerThread } from "./worker-client-router.js";
 
 type ScratchWorkspace = {
   cwd: string;
@@ -31,6 +33,7 @@ type ScratchPadRoutesAccess = {
   scratchPadStore: ScratchPadStore;
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;
+  piRpcWorkerClient?: PiRpcWorkerClient | null;
   butlerAgent: ButlerAgentService;
   artifactsDir: string;
   imageStore: ImageReferenceStore;
@@ -245,15 +248,16 @@ async function startScratchItem(access: ScratchPadRoutesAccess, itemId: string) 
   const task = buildScratchTask(item);
   const baseCwd = await resolveExistingWorkspaceCwd(item.cwd ?? resolveDefaultScratchCwd(access));
   const workspace = await (access.prepareScratchWorkspace ?? prepareScratchWorkspace)(item, task, baseCwd);
-  let result: Awaited<ReturnType<CodexAppServerClient["startThread"]>>;
+  let result: Awaited<ReturnType<typeof startWorkerThread>>;
   try {
-    result = await access.codexClient.startThread({
+    result = await startWorkerThread(access, {
       task,
       input: (threadId) => buildScratchInput(access, item, threadId, task, workspace),
       cwd: workspace.cwd,
       developerInstructions: buildDeveloperInstructions(workspace),
       effort: "high",
-      openWindow: true
+      openWindow: true,
+      runtime: "auto"
     });
   } catch (error) {
     if (workspace.created && workspace.workspaceMode === "managed_worktree") {
@@ -350,7 +354,7 @@ export function registerScratchPadRoutes(access: ScratchPadRoutesAccess): void {
 
     try {
       const cleanup = item.threadId
-        ? await access.codexClient.deleteThread(item.threadId, { waitForCleanup: true })
+        ? await deleteWorkerThread(access, item.threadId, { waitForCleanup: true }) as { deletedArtifacts?: number; cleanupFailed?: boolean; cleanupError?: string | null }
         : { deletedArtifacts: 0, cleanupFailed: false, cleanupError: null };
       if (cleanup.cleanupFailed) {
         response.status(500).json({ error: cleanup.cleanupError ?? "Thread cleanup failed" });
@@ -366,7 +370,7 @@ export function registerScratchPadRoutes(access: ScratchPadRoutesAccess): void {
         response.status(404).json({ error: "Scratch item not found" });
         return;
       }
-      response.json({ ok: true, item: removed, threadDeleted: Boolean(item.threadId), deletedArtifacts: cleanup.deletedArtifacts + workspaceArtifacts });
+      response.json({ ok: true, item: removed, threadDeleted: Boolean(item.threadId), deletedArtifacts: (cleanup.deletedArtifacts ?? 0) + workspaceArtifacts });
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }

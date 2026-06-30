@@ -4,6 +4,7 @@ import path from "node:path";
 import { ButlerAgentService } from "./butler-agent.js";
 import { buildReferencePromptText } from "./reference-inputs.js";
 import type { CodexAppServerClient } from "./codex-client.js";
+import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { FileReferenceStore } from "./file-store.js";
 import type { HostControllerClient } from "./host-controller-client.js";
 import type { ImageReferenceStore } from "./image-store.js";
@@ -18,6 +19,7 @@ import type { ButlerMessageView, ButlerLivePatchView } from "./types.js";
 import type { PairChat, PairCodexModelOption, PairDetail, PairMessage, PairComposeSettings, PairSummary } from "../shared/pairing.js";
 import { DEFAULT_THINKING_LEVELS } from "../shared/pairing.js";
 import { pairTitleIsDefault } from "./pair-store.js";
+import { getUnifiedWorkerCompose, loadWorkerThread, updateUnifiedWorkerCompose, updateWorkerThreadEffort } from "./worker-client-router.js";
 
 type PairButlerService = Pick<
   ButlerAgentService,
@@ -28,6 +30,7 @@ type PairSessionManagerOptions = {
   pairStore: PairStore;
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;
+  piRpcWorkerClient?: PiRpcWorkerClient | null;
   hostController: HostControllerClient;
   runtimeBroker: RuntimeBrokerClient;
   serviceTemplateRegistry: ServiceTemplateRegistry;
@@ -70,7 +73,7 @@ function pairSystemPrompt(pairId: string): string {
   return [
     "PAIR SUPERVISION CONTEXT",
     `You are Butler supervising exactly one Manor pair: ${pairId}.`,
-    "The operator only talks to you. Do not tell the operator to message Codex directly.",
+    "The operator only talks to you. Do not tell the operator to message the worker directly.",
     "When work should be executed, use delegate_to_codex or message_job. When worker evidence returns, review it adversarially before replying to the operator.",
     "Keep operator-visible replies concise. Do not mention hidden tool prompts or internal routing."
   ].join("\n");
@@ -182,7 +185,11 @@ export class PairSessionManager {
       hasMore: page?.hasMore ?? false,
       compose: service
         ? this.resolveCompose(updated, service)
-        : { butler: { provider: null, model: null, thinkingLevel: "medium", availableModels: [], availableThinkingLevels: [...DEFAULT_THINKING_LEVELS] }, codex: { model: null, effort: null, availableModels: [], availableEfforts: [] } }
+        : {
+            butler: { provider: null, model: null, thinkingLevel: "medium", availableModels: [], availableThinkingLevels: [...DEFAULT_THINKING_LEVELS] },
+            worker: { runtime: "auto", provider: null, model: null, effort: null, availableModels: [], availableEfforts: [] },
+            codex: { model: null, effort: null, availableModels: [], availableEfforts: [] }
+          }
     };
   }
 
@@ -209,11 +216,13 @@ export class PairSessionManager {
   async setCodexEffort(pairId: string, effort: string | null): Promise<PairDetail | null> {
     const pair = this.options.pairStore.getPair(pairId);
     if (!pair?.worker) {
+      if (effort) await updateUnifiedWorkerCompose(this.options, { model: pair?.codexModel ?? null, effort: effort as never });
       this.options.pairStore.updatePairComposeOverrides(pairId, { codexEffort: effort });
       return this.getPairDetail(pairId, null, 120);
     }
     if (effort) {
-      await this.options.codexClient.updateThreadReasoningEffort(pair.worker.threadId, effort as never);
+      await updateWorkerThreadEffort(this.options, pair.worker.threadId, effort as never);
+      await updateUnifiedWorkerCompose(this.options, { model: pair.codexModel ?? null, effort: effort as never });
     }
     this.options.pairStore.updatePairComposeOverrides(pairId, { codexEffort: effort });
     return this.getPairDetail(pairId, null, 120);
@@ -222,15 +231,16 @@ export class PairSessionManager {
   async setCodexModel(pairId: string, modelId: string): Promise<PairDetail | null> {
     const pair = this.options.pairStore.getPair(pairId);
     if (!pair) return null;
-    const compose = this.options.codexClient.getConnectionState().compose;
+    const compose = getUnifiedWorkerCompose(this.options, pair.codexModel ?? null, pair.codexEffort ?? null);
     const model = compose.availableModels.find((entry) => entry.id === modelId);
     if (!model) {
-      throw new Error("Selected Codex model is not available");
+      throw new Error("Selected worker model is not available");
     }
     const effort = chooseEffortForModel(toPairModelOptions([model])[0] ?? null, pair.codexEffort ?? pair.worker?.requestedReasoningEffort ?? compose.effort ?? null);
     if (pair.worker) {
-      await this.options.codexClient.updateThreadSettings(pair.worker.threadId, { model: modelId, effort: effort as never });
+      await updateWorkerThreadEffort(this.options, pair.worker.threadId, effort as never);
     }
+    await updateUnifiedWorkerCompose(this.options, { model: modelId, effort: effort as never });
     this.options.pairStore.updatePairComposeOverrides(pairId, { codexModel: modelId, codexEffort: effort });
     return this.getPairDetail(pairId, null, 120);
   }
@@ -242,18 +252,20 @@ export class PairSessionManager {
       : [...DEFAULT_THINKING_LEVELS];
     const butlerModels = toPairModelOptions(shell.compose?.availableModels ?? []);
     const thinkingLevel = pair.butlerThinkingLevel ?? shell.compose?.thinkingLevel ?? "medium";
-    const codexCompose = this.options.codexClient.getConnectionState().compose;
-    const availableModels = toPairModelOptions(codexCompose.availableModels);
-    const selectedModelId = pair.codexModel ?? codexCompose?.model ?? availableModels[0]?.id ?? null;
+    const workerCompose = getUnifiedWorkerCompose(this.options, pair.codexModel ?? null, pair.codexEffort ?? null);
+    const availableModels = toPairModelOptions(workerCompose.availableModels);
+    const selectedModelId = workerCompose.model ?? availableModels[0]?.id ?? null;
     const selectedModel = availableModels.find((model) => model.id === selectedModelId) ?? null;
     const workerEffort = pair.worker?.requestedReasoningEffort ?? null;
     const availableEfforts = selectedModel
       ? selectedModel.supportedReasoningEfforts
       : availableModels.flatMap((model) => model.supportedReasoningEfforts);
     const uniqueEfforts = Array.from(new Set(availableEfforts));
-    const effort = chooseEffortForModel(selectedModel, pair.codexEffort ?? workerEffort ?? codexCompose?.effort ?? null);
+    const effort = chooseEffortForModel(selectedModel, pair.codexEffort ?? workerEffort ?? workerCompose.effort ?? null);
+    const worker = { runtime: workerCompose.runtime, provider: workerCompose.provider, model: selectedModelId, effort, availableModels, availableEfforts: uniqueEfforts };
     return {
       butler: { provider: shell.compose?.provider ?? null, model: shell.compose?.model ?? butlerModels[0]?.id ?? null, thinkingLevel, availableModels: butlerModels, availableThinkingLevels },
+      worker,
       codex: { model: selectedModelId, effort, availableModels, availableEfforts: uniqueEfforts }
     };
   }
@@ -309,7 +321,7 @@ export class PairSessionManager {
     const pair = this.options.pairStore.getPair(pairId);
     if (!pair?.worker) return null;
     try {
-      await this.options.codexClient.loadThread(pair.worker.threadId);
+      await loadWorkerThread(this.options, pair.worker.threadId);
     } catch {
       // Saved local state is enough for the read-only worker pane.
     }
@@ -333,6 +345,7 @@ export class PairSessionManager {
     const service = createService({
       store: this.options.store,
       codexClient: this.options.codexClient,
+      piRpcWorkerClient: this.options.piRpcWorkerClient ?? null,
       hostController: this.options.hostController,
       runtimeBroker: this.options.runtimeBroker,
       serviceTemplateRegistry: this.options.serviceTemplateRegistry,

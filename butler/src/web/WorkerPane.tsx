@@ -190,7 +190,7 @@ function itemTypeLabel(type: string): string {
   if (isSearch(type)) return "Search";
   if (isReasoning(type)) return "Thinking";
   if (isFileChange(type)) return "File";
-  if (isMessage(type)) return type.startsWith("agent") || type === "assistant_message" ? "Codex" : "Butler";
+  if (isMessage(type)) return type.startsWith("agent") || type === "assistant_message" ? "Worker" : "Butler";
   return type.replace(/_/g, " ");
 }
 
@@ -284,8 +284,8 @@ function payloadForMessage(payload: WorkerJobPayload | null, item: WorkerItem, t
   return payload.delivery.turnId ? null : payload;
 }
 
-function messageSpeaker(item: WorkerItem): "Butler" | "Codex" {
-  return isButlerMessage(item) ? "Butler" : "Codex";
+function messageSpeaker(item: WorkerItem): "Butler" | "Worker" {
+  return isButlerMessage(item) ? "Butler" : "Worker";
 }
 
 function messageClass(item: WorkerItem): string {
@@ -558,7 +558,7 @@ const WorkerActiveTurn = memo(function WorkerActiveTurn({ turn, index, payload, 
     <section className="worker-turn is-active" aria-label={`Worker turn ${index + 1} in progress`}>
       <header className="worker-turn-head">
         <span className="worker-turn-dot" aria-hidden="true" />
-        <span className="worker-turn-title">Codex turn {index + 1}</span>
+        <span className="worker-turn-title">Worker turn {index + 1}</span>
         <span className="worker-turn-status">in progress</span>
         <time className="worker-turn-time">{formatTime(turn.startedAt)}</time>
       </header>
@@ -603,7 +603,7 @@ const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, pay
   return (
     <section className="worker-turn is-complete" aria-label={`Worker turn ${index + 1} complete`}>
       <header className="worker-turn-head">
-        <span className="worker-turn-title">Codex turn {index + 1}</span>
+        <span className="worker-turn-title">Worker turn {index + 1}</span>
         <span className="worker-turn-status is-done">complete</span>
         <time className="worker-turn-time">{formatTime(turn.startedAt)}</time>
         {durationMs > 0 ? <span className="worker-turn-duration">{formatDuration(durationMs)}</span> : null}
@@ -664,10 +664,10 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCo
 
   if (!pair.worker) {
     return (
-      <section className="pane" aria-label="Codex worker lane">
+      <section className="pane" aria-label="Worker lane">
         <div className="pane-head">
           <div className="pane-head-info">
-            <h2>Codex worker</h2>
+            <h2>Worker</h2>
             <span className="pane-sub">No worker attached</span>
           </div>
         </div>
@@ -679,30 +679,30 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCo
     );
   }
 
-  const codex = pair.compose?.codex ?? { model: null, effort: null, availableModels: [], availableEfforts: [] };
+  const worker = pair.compose?.worker ?? pair.compose?.codex ?? { model: null, effort: null, availableModels: [], availableEfforts: [] };
   const busy = pair.status === "worker_running";
-  const effort = pair.worker.requestedReasoningEffort ?? codex.effort ?? null;
-  const options = codex.availableEfforts.length > 0 ? codex.availableEfforts : [...DEFAULT_THINKING_LEVELS];
-  const model = codex.model ?? codex.availableModels[0]?.id ?? null;
+  const effort = pair.worker.requestedReasoningEffort ?? worker.effort ?? null;
+  const options = worker.availableEfforts.length > 0 ? worker.availableEfforts : [...DEFAULT_THINKING_LEVELS];
+  const model = worker.model ?? worker.availableModels[0]?.id ?? null;
 
   return (
-    <section className="pane" aria-label="Codex worker lane">
+    <section className="pane" aria-label="Worker lane">
       <div className="pane-head">
         <div className="pane-head-info">
-          <h2>Codex · {shortId(pair.worker.threadId)}</h2>
+          <h2>Worker · {shortId(pair.worker.threadId)}</h2>
           <span className="pane-sub">{pair.worker.status} · one worker max</span>
         </div>
-        <div className="worker-controls" aria-label="Codex settings">
+        <div className="worker-controls" aria-label="Worker settings">
           <ModelSelect
             label="Model"
             value={model}
-            options={codex.availableModels}
+            options={worker.availableModels}
             disabled={busy}
             onChange={onCodexModelChange}
             className="is-compact worker-model"
           />
           <BudgetSegmented
-            label="Codex thinking"
+            label="Thinking"
             value={effort}
             options={options}
             disabled={busy}

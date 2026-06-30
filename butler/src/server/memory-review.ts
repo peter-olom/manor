@@ -41,7 +41,7 @@ type MemoryReviewContext = {
   } | null;
 };
 
-const OUTPUT_SCHEMA = {
+export const MEMORY_REVIEW_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: ["candidates"],
@@ -494,7 +494,7 @@ export class CodexExecMemoryReviewService {
     const runId = crypto.randomUUID();
     const schemaPath = path.join(scratchDir, `${runId}.schema.json`);
     const outputPath = path.join(scratchDir, `${runId}.output.json`);
-    await fs.writeFile(schemaPath, JSON.stringify(OUTPUT_SCHEMA, null, 2), "utf8");
+    await fs.writeFile(schemaPath, JSON.stringify(MEMORY_REVIEW_OUTPUT_SCHEMA, null, 2), "utf8");
 
     const baseArgs = [
       "exec",

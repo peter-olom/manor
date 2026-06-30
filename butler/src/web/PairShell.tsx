@@ -1103,9 +1103,9 @@ export function PairShell() {
     async (effort: string) => {
       if (!activePair) return;
       const previous = activePair;
-      setPair((current) => (current ? { ...current, codexEffort: effort, compose: { ...current.compose, codex: { ...current.compose.codex, effort } } } : current));
+      setPair((current) => (current ? { ...current, codexEffort: effort, compose: { ...current.compose, worker: { ...current.compose.worker, effort }, codex: { ...current.compose.codex, effort } } } : current));
       try {
-        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(activePair.id)}/settings`, { target: "codex", effort });
+        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(activePair.id)}/settings`, { target: "worker", effort });
         setPair(payload.pair);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -1119,13 +1119,14 @@ export function PairShell() {
     async (model: string) => {
       if (!activePair) return;
       const previous = activePair;
-      const selected = activePair.compose.codex.availableModels.find((entry) => entry.id === model) ?? null;
-      const effort = selected && activePair.compose.codex.effort && !selected.supportedReasoningEfforts.includes(activePair.compose.codex.effort)
-        ? selected.defaultReasoningEffort ?? selected.supportedReasoningEfforts[0] ?? activePair.compose.codex.effort
-        : activePair.compose.codex.effort;
-      setPair((current) => (current ? { ...current, codexModel: model, codexEffort: effort, compose: { ...current.compose, codex: { ...current.compose.codex, model, effort } } } : current));
+      const workerCompose = activePair.compose.worker ?? activePair.compose.codex;
+      const selected = workerCompose.availableModels.find((entry) => entry.id === model) ?? null;
+      const effort = selected && workerCompose.effort && !selected.supportedReasoningEfforts.includes(workerCompose.effort)
+        ? selected.defaultReasoningEffort ?? selected.supportedReasoningEfforts[0] ?? workerCompose.effort
+        : workerCompose.effort;
+      setPair((current) => (current ? { ...current, codexModel: model, codexEffort: effort, compose: { ...current.compose, worker: { ...current.compose.worker, model, effort, provider: selected?.provider ?? current.compose.worker.provider }, codex: { ...current.compose.codex, model, effort } } } : current));
       try {
-        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(activePair.id)}/settings`, { target: "codex", model });
+        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(activePair.id)}/settings`, { target: "worker", model });
         setPair(payload.pair);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));

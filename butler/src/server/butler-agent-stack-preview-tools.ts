@@ -11,6 +11,7 @@ import { buildFallbackRoutingDecision } from "./butler-routing-fallback.js";
 import { isSharedShellRepoBootstrapTask } from "./thread-contract.js";
 import { applyWorkspacePreviewDefaults, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 import type { ButlerRoutingDecisionView, ButlerRoutingQuestionView } from "./types.js";
+import { startWorkerThread, type WorkerRuntimePreference } from "./worker-client-router.js";
 
 function delegationQuestionKey(input: { task: string; goal?: string | null; cwd?: string | null }): string {
   return crypto
@@ -1208,15 +1209,21 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
   return [
     access.defineButlerTool({
       name: "delegate_to_codex",
-      label: "Delegate to Codex",
+      label: "Delegate to worker",
       description:
-        "Start a new Codex workstream for execution such as repo cloning, project setup, coding work, shell work, file generation, app building, or command execution. Optionally choose the Codex thinking budget for the delegated turn.",
+        "Start a new worker workstream for execution such as repo cloning, project setup, coding work, shell work, file generation, app building, or command execution. Optionally choose the thinking budget and worker runtime.",
       promptSnippet:
-        "delegate_to_codex: start new execution, coding, shell work, repo setup, app build, file generation, or other task delivery by Codex. Budget policy: use low for most execution/coding; medium for extra agency, planning, ambiguity, or product judgment; high for tough issues after medium underperforms or clearly hard incidents; xhigh is exceptional and under 1% usage.",
+        "delegate_to_codex: start new execution, coding, shell work, repo setup, app build, file generation, or other task delivery by a worker. Use workerRuntime=auto unless a specific runtime is required. Budget policy: use low for most execution/coding; medium for extra agency, planning, ambiguity, or product judgment; high for tough issues after medium underperforms or clearly hard incidents; xhigh is exceptional and under 1% usage.",
       parameters: Type.Object({
         task: Type.String({ minLength: 1 }),
         goal: Type.Optional(Type.String({ minLength: 1 })),
         cwd: Type.Optional(Type.String()),
+        workerRuntime: Type.Optional(Type.Union([
+          Type.Literal("auto"),
+          Type.Literal("codex"),
+          Type.Literal("pi-rpc")
+        ])),
+        workerModel: Type.Optional(Type.String({ minLength: 1 })),
         thinkingBudget: Type.Optional(Type.Union([
           Type.Literal("low"),
           Type.Literal("medium"),
@@ -1232,6 +1239,8 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           task: string;
           goal?: string;
           cwd?: string;
+          workerRuntime?: WorkerRuntimePreference;
+          workerModel?: string;
           thinkingBudget?: ReasoningEffort;
           imageReferenceIds?: string[];
           fileReferenceIds?: string[];
@@ -1305,7 +1314,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
             }
           : { notes: questionCapNote ? [questionCapNote] : undefined };
 
-        const result = await access.codexClient.startThread({
+        const result = await startWorkerThread(access, {
           task: delegatedGoal ? `${delegatedTask}\n\nGoal: ${delegatedGoal}` : delegatedTask,
           input: async (threadId: string) =>
             buildCodexInputWithReferences({
@@ -1327,7 +1336,9 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           cwd: workspace.cwd,
           developerInstructions,
           effort: typedParams.thinkingBudget ?? null,
-          openWindow: true
+          openWindow: true,
+          runtime: typedParams.workerRuntime ?? "auto",
+          model: typedParams.workerModel ?? null
         });
         const delegationContract = await access.buildDelegationContract({
           threadId: result.threadId,
@@ -1342,7 +1353,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         access.noteThreadFocus(result.threadId, "delegate_to_codex");
         access.queueDelegationAcknowledgement(
           result.threadId,
-          `Accepted. I delegated this to Codex in job ${result.threadId} and will return here with the result.`
+          `Accepted. I delegated this to the ${result.runtime === "pi-rpc" ? "Pi RPC" : "Codex"} worker in job ${result.threadId} and will return here with the result.`
         );
         access.registerPendingChatCallback(result.threadId);
         const supervision = access.store.noteButlerSteer(result.threadId);
@@ -1351,11 +1362,13 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           content: [
             {
               type: "text",
-              text: `Delegated the task to Codex in job ${result.threadId} from ${workspace.cwd}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}.`
+              text: `Delegated the task to the ${result.runtime === "pi-rpc" ? "Pi RPC" : "Codex"} worker in job ${result.threadId} from ${workspace.cwd}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}.`
             }
           ],
           details: {
             threadId: result.threadId,
+            runtime: result.runtime,
+            workerModel: typedParams.workerModel ?? null,
             thinkingBudget: typedParams.thinkingBudget ?? null,
             orchestration,
             supervision,
@@ -1398,7 +1411,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         const developerInstructions = await access.buildDelegationDeveloperInstructions(workspace, delegatedTask);
         const extraNotes = ["Synthetic Butler supervision smoke test. Do not gather proof unless the smoke test explicitly asks for it."];
 
-        const result = await access.codexClient.startThread({
+        const result = await startWorkerThread(access, {
           task: delegatedTask,
           input: async (threadId: string) =>
             buildCodexInputWithReferences({
@@ -1418,7 +1431,8 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           cwd: workspace.cwd,
           developerInstructions,
           effort: typedParams.thinkingBudget ?? null,
-          openWindow: true
+          openWindow: true,
+          runtime: "auto"
         });
         const delegationContract = await access.buildDelegationContract({
           threadId: result.threadId,
@@ -1431,7 +1445,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         access.noteThreadFocus(result.threadId, "run_supervision_smoke_test");
         access.queueDelegationAcknowledgement(
           result.threadId,
-          `Accepted. I started a supervision smoke test in job ${result.threadId}. I will return here when it completes.`
+          `Accepted. I started a supervision smoke test in ${result.runtime === "pi-rpc" ? "Pi RPC" : "Codex"} job ${result.threadId}. I will return here when it completes.`
         );
         access.registerPendingChatCallback(result.threadId);
         access.store.setThreadSupervisionLimit(result.threadId, totalFollowUps + 2);

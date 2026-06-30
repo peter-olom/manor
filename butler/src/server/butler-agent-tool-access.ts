@@ -31,6 +31,7 @@ import type {
   ProjectMemoryView
 } from "./types.js";
 import type { CodexAppServerClient } from "./codex-client.js";
+import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { ButlerOperatorThreadGuard, ProofScreenshotReview, ResolvedPreviewProof, SupervisionSmokePlan } from "./butler-agent-helpers.js";
 
 export type ButlerCustomTool = ReturnType<typeof defineTool>;
@@ -51,6 +52,7 @@ export type ButlerToolDefiner = <TParams extends Record<string, unknown>>(defini
 export type ButlerAgentToolAccess = {
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;
+  piRpcWorkerClient: PiRpcWorkerClient | null;
   hostController: HostControllerClient;
   runtimeBroker: RuntimeBrokerClient;
   serviceTemplateRegistry: ServiceTemplateRegistry;

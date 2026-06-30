@@ -1,0 +1,96 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  ollamaWebFetch,
+  ollamaWebSearch,
+  readOllamaWebToolsConfig,
+  shouldAttachOllamaWebTools
+} from "../../src/server/ollama-web-tools.js";
+import { ollamaWebToolsExtensionArgsForProvider } from "../../src/server/pi-rpc-worker-client.js";
+
+test("readOllamaWebToolsConfig enables tools only when an Ollama API key is configured", async () => {
+  assert.equal((await readOllamaWebToolsConfig({
+    MANOR_OLLAMA_WEB_TOOLS_ENABLED: "1"
+  } as NodeJS.ProcessEnv)).enabled, false);
+
+  const config = await readOllamaWebToolsConfig({
+    MANOR_OLLAMA_WEB_TOOLS_ENABLED: "1",
+    MANOR_OLLAMA_WEB_TOOLS_BASE_URL: "https://ollama.example/api/",
+    MANOR_OLLAMA_WEB_SEARCH_MAX_RESULTS: "50",
+    OLLAMA_API_KEY: "test-key"
+  } as NodeJS.ProcessEnv);
+
+  assert.equal(config.enabled, true);
+  assert.equal(config.baseUrl, "https://ollama.example/api");
+  assert.equal(config.maxResults, 10);
+});
+
+test("ollamaWebSearch calls Ollama Cloud web_search with bearer auth and clamps result count", async () => {
+  const calls: Array<{ input: string | URL; init?: RequestInit }> = [];
+  const fetchImpl = async (input: string | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    return new Response(JSON.stringify({
+      results: [{ title: "Result", url: "https://example.com", content: "Snippet" }]
+    }), { status: 200 });
+  };
+
+  const result = await ollamaWebSearch({ query: "latest Manor", maxResults: 99 }, {
+    enabled: true,
+    apiKey: "test-key",
+    baseUrl: "https://ollama.example/api",
+    maxResults: 5,
+    timeoutMs: 5_000,
+    maxContentChars: 1_000
+  }, fetchImpl);
+
+  assert.deepEqual(result.results, [{ title: "Result", url: "https://example.com", content: "Snippet" }]);
+  assert.equal(String(calls[0]?.input), "https://ollama.example/api/web_search");
+  assert.equal(calls[0]?.init?.method, "POST");
+  assert.equal((calls[0]?.init?.headers as Record<string, string>).Authorization, "Bearer test-key");
+  assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), { query: "latest Manor", max_results: 10 });
+});
+
+test("ollamaWebFetch calls Ollama Cloud web_fetch", async () => {
+  const calls: Array<{ input: string | URL; init?: RequestInit }> = [];
+  const fetchImpl = async (input: string | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    return new Response(JSON.stringify({
+      title: "Fetched",
+      content: "Page content",
+      links: ["https://example.com/a"]
+    }), { status: 200 });
+  };
+
+  const result = await ollamaWebFetch({ url: "https://example.com" }, {
+    enabled: true,
+    apiKey: "test-key",
+    baseUrl: "https://ollama.example/api",
+    maxResults: 5,
+    timeoutMs: 5_000,
+    maxContentChars: 1_000
+  }, fetchImpl);
+
+  assert.equal(result.title, "Fetched");
+  assert.equal(String(calls[0]?.input), "https://ollama.example/api/web_fetch");
+  assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), { url: "https://example.com" });
+});
+
+test("Ollama web tools attach only to the Ollama Cloud provider by default", async () => {
+  const env = {
+    MANOR_OLLAMA_CLOUD_PROVIDER_ID: "ollama-cloud",
+    OLLAMA_API_KEY: "test-key"
+  } as NodeJS.ProcessEnv;
+
+  assert.equal(shouldAttachOllamaWebTools("ollama-cloud", env), true);
+  assert.equal(shouldAttachOllamaWebTools("openai", env), false);
+  assert.deepEqual(await ollamaWebToolsExtensionArgsForProvider("openai", env), []);
+  assert.match((await ollamaWebToolsExtensionArgsForProvider("ollama-cloud", env))[1] ?? "", /pi-ollama-web-tools-extension\.(ts|js)$/);
+});
+
+test("Ollama web tools can be attached to all Pi models by opt-in", () => {
+  assert.equal(shouldAttachOllamaWebTools("some-provider", {
+    MANOR_OLLAMA_WEB_TOOLS_FOR_ALL_PI_MODELS: "1",
+    OLLAMA_API_KEY: "test-key"
+  } as NodeJS.ProcessEnv), true);
+});

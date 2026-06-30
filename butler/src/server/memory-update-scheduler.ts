@@ -84,7 +84,7 @@ const DEFAULT_INTERVAL_MS = 30_000;
 const RETRY_DELAY_MS = 5 * 60_000;
 const MAX_ATTEMPTS = 3;
 const SENSITIVE_MEMORY_PATTERN = /\b(sk-[A-Za-z0-9_-]{8,}|bearer\s+[A-Za-z0-9._-]+|api[_-]?key|password|secret|token)\b/i;
-const OUTPUT_SCHEMA = {
+export const MEMORY_SYNTHESIS_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: ["candidates", "entities", "relationships"],
@@ -627,7 +627,7 @@ export class MemoryUpdateScheduler {
     const runId = crypto.randomUUID();
     const schemaPath = path.join(scratchDir, `${runId}.schema.json`);
     const outputPath = path.join(scratchDir, `${runId}.output.json`);
-    await fs.writeFile(schemaPath, JSON.stringify(OUTPUT_SCHEMA, null, 2), "utf8");
+    await fs.writeFile(schemaPath, JSON.stringify(MEMORY_SYNTHESIS_OUTPUT_SCHEMA, null, 2), "utf8");
     const effortArgs = input.config.effort ? ["--reasoning-effort", input.config.effort] : [];
     const baseArgs = ["exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--ignore-rules", "--output-schema", schemaPath, "--output-last-message", outputPath, "--cd", input.cwd || "/repos", ...effortArgs];
     const run = async (model: string | null): Promise<void> => {

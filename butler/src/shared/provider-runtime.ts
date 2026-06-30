@@ -1,4 +1,4 @@
-export type ProviderRuntimeProvider = "codex" | "opencode" | (string & {});
+export type ProviderRuntimeProvider = "codex" | "pi-rpc" | (string & {});
 
 export type ProviderRuntimeContentStreamKind =
   | "assistant_text"

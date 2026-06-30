@@ -16,15 +16,16 @@ import { commitSelfImprovementRequest, discardSelfImprovementRequest, openSelfIm
 import { getSelfImprovementRequestState } from "./self-improvement-request-state.js";
 import { listWorkspaceProjectDirectories } from "./repo-worktree.js";
 import type { ReviewPanelRole, ReviewPanelVerdict } from "./types.js";
+import { deleteAllWorkerThreads, deleteWorkerThread, loadWorkerThread, sendWorkerMessage } from "./worker-client-router.js";
 
 export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
   return [
     access.defineButlerTool({
       name: "list_jobs",
       label: "List jobs",
-      description: "List tracked Codex jobs/threads across statuses, including active and inactive jobs, with current summaries.",
+      description: "List tracked worker jobs/threads across statuses, including active and inactive jobs, with current summaries.",
       promptSnippet:
-        "list_jobs: use for broad Codex job/thread checks, counts, active/idle/blocked status summaries, or finding jobs by project before choosing one to inspect. Do not use it as the first tool for people, team, intern, mentee, or folder inventory questions unless the operator explicitly asks about jobs/threads/workers.",
+        "list_jobs: use for broad worker job/thread checks, counts, active/idle/blocked status summaries, or finding jobs by project before choosing one to inspect. Do not use it as the first tool for people, team, intern, mentee, or folder inventory questions unless the operator explicitly asks about jobs/threads/workers.",
       parameters: Type.Object({
         limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
         status: Type.Optional(Type.String())
@@ -42,7 +43,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
     access.defineButlerTool({
       name: "read_job",
       label: "Read job",
-      description: "Read one specific Codex job/thread in detail by thread id, including loaded turns and messages.",
+      description: "Read one specific worker job/thread in detail by thread id, including loaded turns and messages.",
       promptSnippet: "read_job: use after you have a specific thread id and need that job's transcript, supervisor state, or details.",
       parameters: Type.Object({
         threadId: Type.String()
@@ -51,7 +52,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       execute: async (_toolCallId, params) => {
         const typedParams = params as { threadId: string };
         try {
-          await access.codexClient.loadThread(typedParams.threadId);
+          await loadWorkerThread(access, typedParams.threadId);
         } catch (error) {
           if (!shouldAllowLocalThreadFallback(access.store, typedParams.threadId, error)) {
             throw error;
@@ -59,7 +60,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           access.store.addEvent(
             typedParams.threadId,
             "thread/read/local-fallback",
-            "Codex live thread refresh was unavailable, so Butler used the saved local job transcript."
+            "Live worker thread refresh was unavailable, so Butler used the saved local job transcript."
           );
         }
         access.noteThreadFocus(typedParams.threadId, "read_job");
@@ -229,7 +230,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       uiEffects: access.getToolUiEffects("discard_self_improvement"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as { requestId: string };
-        const request = await discardSelfImprovementRequest(getSelfImprovementRequestState(), access.codexClient, typedParams.requestId.trim());
+        const request = await discardSelfImprovementRequest(getSelfImprovementRequestState(), access, typedParams.requestId.trim());
         if (request.threadId) access.store.addEvent(request.threadId, "butler.self_improvement.discarded", `Discarded self-improvement request ${request.id}.`);
         return {
           content: [{ type: "text", text: `Discarded self-improvement request ${request.id}.` }],
@@ -329,7 +330,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
     access.defineButlerTool({
       name: "open_job_window",
       label: "Open job window",
-      description: "Open a focused job window in the Butler UI for a specific Codex job.",
+      description: "Open a focused job window in the Butler UI for a specific worker job.",
       promptSnippet: "open_job_window: open a deeper UI window for a job the operator wants to inspect.",
       parameters: Type.Object({
         threadId: Type.String()
@@ -338,7 +339,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       execute: async (_toolCallId, params) => {
         const typedParams = params as { threadId: string };
         try {
-          await access.codexClient.loadThread(typedParams.threadId);
+          await loadWorkerThread(access, typedParams.threadId);
         } catch (error) {
           if (!shouldAllowLocalThreadFallback(access.store, typedParams.threadId, error)) {
             throw error;
@@ -346,7 +347,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           access.store.addEvent(
             typedParams.threadId,
             "thread/window/local-fallback",
-            "Codex live thread refresh was unavailable, so Butler opened the saved local job window instead."
+            "Live worker thread refresh was unavailable, so Butler opened the saved local job window instead."
           );
         }
         access.store.openWindow(typedParams.threadId);
@@ -388,7 +389,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
     access.defineButlerTool({
       name: "read_supervision_checklist",
       label: "Read checklist",
-      description: "Read the structured Butler supervision checklist for one delegated Codex job.",
+      description: "Read the structured Butler supervision checklist for one delegated worker job.",
       promptSnippet: "read_supervision_checklist: inspect acceptance points, worker evidence, Butler decisions, and heartbeat for one job.",
       parameters: Type.Object({
         threadId: Type.String()
@@ -541,13 +542,13 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
             }
           };
         }
-        await access.codexClient.loadThread(typedParams.threadId);
+        await loadWorkerThread(access, typedParams.threadId);
         const payload = await access.createOrUpdateJobPayload({
           threadId: typedParams.threadId,
           kind: "rejection_followup",
           instruction: text
         });
-        const sent = await access.codexClient.sendMessage(typedParams.threadId, formatJobPayloadMessage("rejection_followup", typedParams.threadId, payload.workerDirective, payload.display.summary));
+        const sent = await sendWorkerMessage(access, typedParams.threadId, formatJobPayloadMessage("rejection_followup", typedParams.threadId, payload.workerDirective, payload.display.summary));
         await access.bindJobPayloadDelivery(typedParams.threadId, { turnId: sent.turnId });
         access.store.clearQueuedRejectionInstructions(typedParams.threadId);
         access.registerPendingChatCallback(typedParams.threadId, {
@@ -570,7 +571,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       name: "hold_job_context",
       label: "Hold job context",
       description:
-        "Record newer operator context for one active Codex job without interrupting the worker. Butler will apply the held context during the next callback review.",
+        "Record newer operator context for one active worker job without interrupting the worker. Butler will apply the held context during the next callback review.",
       promptSnippet:
         "hold_job_context: use when the operator gives newer context for an active job, but the worker can finish the current turn before Butler decides whether to steer, accept, reject, or close.",
       parameters: Type.Object({
@@ -614,9 +615,9 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       name: "message_job",
       label: "Message job",
       description:
-        "Send a private follow-up instruction into one existing valid Codex job outside checklist rejection review. Use flush_rejected_acceptance_points for rejected acceptance points.",
+        "Send a private follow-up instruction into one existing valid worker job outside checklist rejection review. Use flush_rejected_acceptance_points for rejected acceptance points.",
       promptSnippet:
-        "message_job: steer, continue, retry, stop, clean up, or ask an existing valid Codex job when this is not rejected-checklist steering.",
+        "message_job: steer, continue, retry, stop, clean up, or ask an existing valid worker job when this is not rejected-checklist steering.",
       parameters: Type.Object({
         threadId: Type.String(),
         text: Type.String({ minLength: 1 }),
@@ -655,7 +656,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         const thread = access.store.getThread(typedParams.threadId);
         if (!thread || !thread.cwd || thread.source === "unknown" || thread.turnCount === 0) {
           throw new Error(
-            `Job ${typedParams.threadId} is not a valid reusable Codex workstream. Start a fresh Codex job with delegate_to_codex instead.`
+            `Job ${typedParams.threadId} is not a valid reusable worker workstream. Start a fresh worker job with delegate_to_codex instead.`
           );
         }
         const limitMessage = access.getThreadBudgetLimitMessage(typedParams.threadId);
@@ -668,7 +669,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
             }
           };
         }
-        await access.codexClient.loadThread(typedParams.threadId);
+        await loadWorkerThread(access, typedParams.threadId);
         const refreshedChecklist = typedParams.refreshChecklist
           ? access.store.refreshCompletedSupervisionChecklistForFollowup(typedParams.threadId, typedParams.text)
           : null;
@@ -679,7 +680,8 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           imageReferenceIds: typedParams.imageReferenceIds ?? [],
           fileReferenceIds: typedParams.fileReferenceIds ?? []
         });
-        const sent = await access.codexClient.sendMessage(
+        const sent = await sendWorkerMessage(
+          access,
           typedParams.threadId,
           buildCodexInputWithReferences({
             text: formatJobPayloadMessage("steering", payload.threadId, payload.workerDirective, payload.display.summary),
@@ -750,30 +752,30 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
     access.defineButlerTool({
       name: "delete_job",
       label: "Delete job",
-      description: "Permanently delete one Codex job thread and its local session artifacts.",
-      promptSnippet: "delete_job: remove one Codex job thread when the operator explicitly asks for deletion.",
+      description: "Permanently delete one worker job thread and its local session artifacts.",
+      promptSnippet: "delete_job: remove one worker job thread when the operator explicitly asks for deletion.",
       parameters: Type.Object({
         threadId: Type.String()
       }),
       uiEffects: access.getToolUiEffects("delete_job"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as { threadId: string };
-        const result = await access.codexClient.deleteThread(typedParams.threadId);
+        const result = await deleteWorkerThread(access, typedParams.threadId);
         return {
           content: [{ type: "text", text: `Deleted job ${typedParams.threadId}.` }],
-          details: result
+          details: typeof result === "object" && result !== null ? result as Record<string, unknown> : { result }
         };
       }
     }),
     access.defineButlerTool({
       name: "delete_all_jobs",
       label: "Delete all jobs",
-      description: "Permanently delete all Codex job threads and their local session artifacts.",
-      promptSnippet: "delete_all_jobs: remove all Codex job threads only when the operator explicitly asks for a full cleanup.",
+      description: "Permanently delete all worker job threads and their local session artifacts.",
+      promptSnippet: "delete_all_jobs: remove all worker job threads only when the operator explicitly asks for a full cleanup.",
       parameters: Type.Object({}),
       uiEffects: access.getToolUiEffects("delete_all_jobs"),
       execute: async () => {
-        const result = await access.codexClient.deleteAllThreads();
+        const result = await deleteAllWorkerThreads(access);
         return {
           content: [{ type: "text", text: `Deleted ${result.deletedThreadIds.length} jobs.` }],
           details: result

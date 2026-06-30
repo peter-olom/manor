@@ -1,4 +1,5 @@
 import type { CodexAppServerClient } from "./codex-client.js";
+import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { FileReferenceStore } from "./file-store.js";
 import type { HostControllerClient } from "./host-controller-client.js";
 import type { ImageReferenceStore } from "./image-store.js";
@@ -16,6 +17,7 @@ export type ButlerOperatorSink = {
 export type ButlerAgentServiceOptions = {
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;
+  piRpcWorkerClient?: PiRpcWorkerClient | null;
   hostController: HostControllerClient;
   runtimeBroker: RuntimeBrokerClient;
   serviceTemplateRegistry: ServiceTemplateRegistry;

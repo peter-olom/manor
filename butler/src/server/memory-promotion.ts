@@ -33,7 +33,7 @@ type PromotionResolutionStats = {
   rejected: number;
 };
 
-const OUTPUT_SCHEMA = {
+export const MEMORY_PROMOTION_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: ["decisions"],
@@ -241,7 +241,7 @@ export class CodexExecMemoryPromotionService {
     const runId = crypto.randomUUID();
     const schemaPath = path.join(scratchDir, `${runId}.schema.json`);
     const outputPath = path.join(scratchDir, `${runId}.output.json`);
-    await fs.writeFile(schemaPath, JSON.stringify(OUTPUT_SCHEMA, null, 2), "utf8");
+    await fs.writeFile(schemaPath, JSON.stringify(MEMORY_PROMOTION_OUTPUT_SCHEMA, null, 2), "utf8");
     const baseArgs = ["exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--ignore-rules", "--output-schema", schemaPath, "--output-last-message", outputPath, "--cd", input.cwd || "/repos"];
     const run = async (model: string | null): Promise<void> => {
       const args = [...baseArgs, ...memoryCodexModelArgs(model), "-"];

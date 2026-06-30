@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { AuthStorage, createAgentSession, DefaultResourceLoader, ModelRegistry, SessionManager } from "@mariozechner/pi-coding-agent";
+import { AuthStorage, createAgentSession, DefaultResourceLoader, SessionManager } from "@mariozechner/pi-coding-agent";
 
 import {
   BUTLER_BACKGROUND_PROMPT_PREFIX,
@@ -23,6 +23,7 @@ import { readButlerAuthStatus } from "./auth-status.js";
 import { getButlerActivityTurns, recordButlerActivityEvent } from "./butler-activity.js";
 import { backfillOperatorMessagesFromSessionFiles, isPersistableProviderOperatorMessage, removeTrivialOperatorQuestionConfirmations, upsertProviderBackedOperatorMessage } from "./butler-operator-messages.js";
 import { PiProviderRuntimeMapper } from "./pi-provider-events.js";
+import { createManorModelRegistry, modelToModelOption } from "./model-provider-config.js";
 import type {
   AppShellSnapshot,
   AppSnapshot,
@@ -591,8 +592,7 @@ export function getButlerLiveSnapshot(access: ButlerAgentSessionAccess): ButlerL
 }
 
 export function getButlerShellSnapshot(access: ButlerAgentSessionAccess): AppShellSnapshot["butler"] {
-  const codexCompose = access.codexClient.getConnectionState().compose;
-  const availableModels = codexCompose.availableModels;
+  const availableModels = (access.modelRegistry?.getAvailable() ?? []).map(modelToModelOption);
   const availableThinkingLevels = ["low", "medium", "high", "xhigh"] as ButlerThinkingLevel[];
   const currentThinkingLevel = availableThinkingLevels.includes(access.session?.thinkingLevel as ButlerThinkingLevel)
     ? (access.session?.thinkingLevel as ButlerThinkingLevel)
@@ -747,7 +747,7 @@ async function queueButlerPrompt(
       const nextAuth = await readButlerAuthStatus(access.piAuthPath);
       if (nextAuth.mode !== access.auth.mode || nextAuth.loggedIn !== access.auth.loggedIn) {
         access.auth = nextAuth;
-        access.modelRegistry = ModelRegistry.inMemory(AuthStorage.create(access.piAuthPath));
+        access.modelRegistry = await createManorModelRegistry(access.piAuthPath);
         await createOrRefreshButlerSession(access);
       } else {
         access.auth = nextAuth;
