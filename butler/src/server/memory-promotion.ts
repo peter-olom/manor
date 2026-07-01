@@ -3,7 +3,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 
-import { isUnsupportedCodexModelError, memoryCodexModelArgs, normalizeMemoryCodexModel } from "./memory-codex-model.js";
+import { isUnsupportedCodexModelError, memoryCodexModelArgs } from "./memory-codex-model.js";
+import { getActiveManorSettings } from "./manor-settings-runtime.js";
 import { resolveMemoryServiceModel } from "./memory-synthesis-config.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import type { ButlerStateStore } from "./state-store.js";
@@ -107,13 +108,13 @@ export class CodexExecMemoryPromotionService {
   private readonly memoryScheduler: MemoryUpdateScheduler;
   private readonly stateDir: string;
   private readonly codexHomeDir: string;
-  private readonly enabled: boolean;
-  private readonly timeoutMs: number;
-  private readonly maxInputChars: number;
-  private readonly batchSize: number;
-  private readonly maxBatchesPerRun: number;
-  private readonly intervalMs: number;
-  private readonly model: string | null;
+  private enabled: boolean;
+  private timeoutMs: number;
+  private maxInputChars: number;
+  private batchSize: number;
+  private maxBatchesPerRun: number;
+  private intervalMs: number;
+  private model: string | null;
   private readonly runner: PromotionRunner;
   private timer: NodeJS.Timeout | null = null;
   private inFlight = false;
@@ -136,7 +137,7 @@ export class CodexExecMemoryPromotionService {
     this.batchSize = options.config.promotionBatchSize;
     this.maxBatchesPerRun = options.config.promotionMaxBatchesPerRun;
     this.intervalMs = options.config.promotionIntervalMs;
-    this.model = resolveMemoryServiceModel(process.env.MANOR_MEMORY_PROMOTION_MODEL, options.config.model);
+    this.model = resolveMemoryServiceModel(getActiveManorSettings().modelTasks.memoryPromotionModel, options.config.model);
     this.runner = options.runner ?? ((input) => this.runCodexExec(input));
   }
 
@@ -149,6 +150,19 @@ export class CodexExecMemoryPromotionService {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+  }
+
+  applyConfig(config: MemorySynthesisConfig, model: string | null): void {
+    const wasRunning = Boolean(this.timer);
+    this.stop();
+    this.enabled = config.enabled && config.promotionAutoResolve;
+    this.timeoutMs = config.timeoutMs;
+    this.maxInputChars = config.maxInputChars;
+    this.batchSize = config.promotionBatchSize;
+    this.maxBatchesPerRun = config.promotionMaxBatchesPerRun;
+    this.intervalMs = config.promotionIntervalMs;
+    this.model = resolveMemoryServiceModel(model, config.model);
+    if (wasRunning || this.enabled) this.start();
   }
 
   resolvePendingCandidatesAsync(): void {

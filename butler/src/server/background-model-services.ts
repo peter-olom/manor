@@ -1,4 +1,6 @@
 import { ButlerRoutingClassifier, ROUTING_CLASSIFIER_OUTPUT_SCHEMA } from "./butler-routing-classifier.js";
+import { getActiveManorSettings } from "./manor-settings-runtime.js";
+import { readMemoryEmbeddingConfig } from "./memory-embedding-client.js";
 import { MemoryEmbeddingService } from "./memory-embedding-service.js";
 import { MemorySemanticEdgeReviewService, SEMANTIC_EDGE_REVIEW_OUTPUT_SCHEMA } from "./memory-semantic-edge-review.js";
 import { CodexExecMemoryPromotionService, MEMORY_PROMOTION_OUTPUT_SCHEMA } from "./memory-promotion.js";
@@ -16,53 +18,60 @@ export function createBackgroundModelServices(input: {
   piAuthPath: string;
 }) {
   const { store, stateDir, codexHomeDir, piAuthPath } = input;
-  const memorySynthesisConfig = readMemorySynthesisConfig();
   const modelTasks = new ManorModelTaskRunner({ stateDir, codexHomeDir, piAuthPath });
-  const memoryReviewModel = memorySynthesisConfig.model ?? null;
-  const routingClassifierModel = resolveMemoryServiceModel(process.env.MANOR_ROUTING_CLASSIFIER_MODEL, memorySynthesisConfig.model);
-  const workerReviewModel = resolveMemoryServiceModel(process.env.MANOR_WORKER_REVIEW_MODEL, memorySynthesisConfig.model);
-  const memoryPromotionModel = resolveMemoryServiceModel(process.env.MANOR_MEMORY_PROMOTION_MODEL, memorySynthesisConfig.model);
+  const serviceModels = () => {
+    const settings = getActiveManorSettings();
+    const config = readMemorySynthesisConfig();
+    return {
+      config,
+      memoryReviewModel: config.model ?? null,
+      routingClassifierModel: resolveMemoryServiceModel(settings.modelTasks.routingClassifierModel, config.model),
+      workerReviewModel: resolveMemoryServiceModel(settings.modelTasks.workerReviewModel, config.model),
+      memoryPromotionModel: resolveMemoryServiceModel(settings.modelTasks.memoryPromotionModel, config.model)
+    };
+  };
+  const initial = serviceModels();
 
   const memoryReview = new CodexExecMemoryReviewService({
     store,
     stateDir,
     codexHomeDir,
-    enabled: memorySynthesisConfig.enabled,
-    model: memoryReviewModel ?? undefined,
-    timeoutMs: memorySynthesisConfig.timeoutMs,
-    runner: async (runnerInput) => await modelTasks.runJson({ purpose: "memory review", ...runnerInput, model: memoryReviewModel, schema: MEMORY_REVIEW_OUTPUT_SCHEMA }) as never
+    enabled: initial.config.enabled,
+    model: initial.memoryReviewModel ?? undefined,
+    timeoutMs: initial.config.timeoutMs,
+    runner: async (runnerInput) => await modelTasks.runJson({ purpose: "memory review", ...runnerInput, model: serviceModels().memoryReviewModel, schema: MEMORY_REVIEW_OUTPUT_SCHEMA }) as never
   });
   const routingClassifier = new ButlerRoutingClassifier({
     stateDir,
     codexHomeDir,
     enabled: true,
-    model: routingClassifierModel ?? undefined,
-    timeoutMs: memorySynthesisConfig.timeoutMs,
-    runner: async (runnerInput) => await modelTasks.runJson({ purpose: "routing classifier", ...runnerInput, model: routingClassifierModel, schema: ROUTING_CLASSIFIER_OUTPUT_SCHEMA })
+    model: initial.routingClassifierModel ?? undefined,
+    timeoutMs: initial.config.timeoutMs,
+    runner: async (runnerInput) => await modelTasks.runJson({ purpose: "routing classifier", ...runnerInput, model: serviceModels().routingClassifierModel, schema: ROUTING_CLASSIFIER_OUTPUT_SCHEMA })
   });
   const workerReview = new CodexWorkerReviewService({
     store,
     stateDir,
     codexHomeDir,
     enabled: true,
-    model: workerReviewModel ?? undefined,
-    timeoutMs: memorySynthesisConfig.timeoutMs,
-    runner: async (runnerInput) => await modelTasks.runJson({ purpose: "worker review", ...runnerInput, model: workerReviewModel, schema: WORKER_REVIEW_OUTPUT_SCHEMA })
+    model: initial.workerReviewModel ?? undefined,
+    timeoutMs: initial.config.timeoutMs,
+    runner: async (runnerInput) => await modelTasks.runJson({ purpose: "worker review", ...runnerInput, model: serviceModels().workerReviewModel, schema: WORKER_REVIEW_OUTPUT_SCHEMA })
   });
   const memoryScheduler = new MemoryUpdateScheduler({
     store,
-    config: memorySynthesisConfig,
+    config: initial.config,
     stateDir,
     codexHomeDir,
-    runner: async (runnerInput) => await modelTasks.runJson({ purpose: "memory synthesis", ...runnerInput, model: memorySynthesisConfig.model, schema: MEMORY_SYNTHESIS_OUTPUT_SCHEMA }) as never
+    runner: async (runnerInput) => await modelTasks.runJson({ purpose: "memory synthesis", ...runnerInput, model: serviceModels().config.model, schema: MEMORY_SYNTHESIS_OUTPUT_SCHEMA }) as never
   });
   const memoryPromotion = new CodexExecMemoryPromotionService({
     store,
     memoryScheduler,
-    config: memorySynthesisConfig,
+    config: initial.config,
     stateDir,
     codexHomeDir,
-    runner: async (runnerInput) => await modelTasks.runJson({ purpose: "memory promotion", ...runnerInput, model: memoryPromotionModel, schema: MEMORY_PROMOTION_OUTPUT_SCHEMA }) as never
+    runner: async (runnerInput) => await modelTasks.runJson({ purpose: "memory promotion", ...runnerInput, model: serviceModels().memoryPromotionModel, schema: MEMORY_PROMOTION_OUTPUT_SCHEMA }) as never
   });
   const memoryEmbeddings = new MemoryEmbeddingService({
     store,
@@ -75,10 +84,10 @@ export function createBackgroundModelServices(input: {
   });
   const memorySemanticEdges = new MemorySemanticEdgeReviewService({
     store,
-    config: memorySynthesisConfig,
+    config: initial.config,
     stateDir,
     codexHomeDir,
-    runner: async (runnerInput) => await modelTasks.runJson({ purpose: "memory semantic edge review", ...runnerInput, model: memorySynthesisConfig.model, schema: SEMANTIC_EDGE_REVIEW_OUTPUT_SCHEMA }) as never,
+    runner: async (runnerInput) => await modelTasks.runJson({ purpose: "memory semantic edge review", ...runnerInput, model: serviceModels().config.model, schema: SEMANTIC_EDGE_REVIEW_OUTPUT_SCHEMA }) as never,
     onResult: (result, reason) => {
       if (result.reviewed > 0 || result.relationships > 0) {
         console.log(`Memory semantic edge review ${reason}: reviewed=${result.reviewed} relationships=${result.relationships}`);
@@ -86,6 +95,17 @@ export function createBackgroundModelServices(input: {
     },
     onError: (error, reason) => console.warn(`Memory semantic edge review ${reason} failed`, error)
   });
+  const applySettings = () => {
+    const current = serviceModels();
+    modelTasks.applySettings();
+    memoryReview.applyConfig({ enabled: current.config.enabled, timeoutMs: current.config.timeoutMs, model: current.memoryReviewModel });
+    routingClassifier.applyConfig({ enabled: true, timeoutMs: current.config.timeoutMs, model: current.routingClassifierModel });
+    workerReview.applyConfig({ enabled: true, timeoutMs: current.config.timeoutMs, model: current.workerReviewModel });
+    memoryScheduler.applyConfig(current.config);
+    memoryPromotion.applyConfig(current.config, current.memoryPromotionModel);
+    memoryEmbeddings.applyConfig(readMemoryEmbeddingConfig());
+    memorySemanticEdges.applyConfig(current.config);
+  };
 
   return {
     memoryReview,
@@ -94,6 +114,7 @@ export function createBackgroundModelServices(input: {
     memoryScheduler,
     memoryPromotion,
     memoryEmbeddings,
-    memorySemanticEdges
+    memorySemanticEdges,
+    applySettings
   };
 }

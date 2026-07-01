@@ -30,6 +30,7 @@ import {
   formatSelfImprovementTime,
   selfImprovementStatusLabel
 } from "./SelfImprovementQueue";
+import { SettingsDashboard } from "./SettingsDashboard";
 import { TerminalPane } from "./TerminalPane";
 import { useEventStream } from "./useEventStream";
 import { WorkerPane } from "./WorkerPane";
@@ -102,16 +103,17 @@ const VIEW_LABELS: Record<PairViewMode, string> = {
   split: "Both",
   memory: "Memory",
   improve: "Improve",
+  settings: "Settings",
   cli: "CLI"
 };
 
-const VIEW_MODES = new Set<PairViewMode>(["butler", "worker", "split", "memory", "improve", "cli"]);
-type WorkstreamViewMode = Exclude<PairViewMode, "memory" | "improve">;
-type ManorSurface = "sessions" | "memory" | "improve";
+const VIEW_MODES = new Set<PairViewMode>(["butler", "worker", "split", "memory", "improve", "settings", "cli"]);
+type WorkstreamViewMode = Exclude<PairViewMode, "memory" | "improve" | "settings">;
+type ManorSurface = "sessions" | "memory" | "improve" | "settings";
 const WORKSTREAM_MODES: WorkstreamViewMode[] = ["butler", "worker", "split", "cli"];
 
 function manorSurfaceForView(viewMode: PairViewMode): ManorSurface {
-  if (viewMode === "memory" || viewMode === "improve") return viewMode;
+  if (viewMode === "memory" || viewMode === "improve" || viewMode === "settings") return viewMode;
   return "sessions";
 }
 
@@ -341,6 +343,17 @@ function Sidebar({
             <span>Improve</span>
             {improvePendingCount > 0 ? <span className="sidebar-nav-badge">{improvePendingCount}</span> : null}
           </button>
+          <button
+            className={`sidebar-nav-item ${manorSurface === "settings" ? "is-selected" : ""}`}
+            type="button"
+            aria-label="Settings"
+            aria-current={manorSurface === "settings" ? "page" : undefined}
+            onClick={() => onSelectManor("settings")}
+            title="Settings"
+          >
+            <SetupTabIcon />
+            <span>Settings</span>
+          </button>
         </nav>
       </div>
       <div className="sidebar-divider" aria-hidden="true" />
@@ -452,6 +465,13 @@ function Sidebar({
           </div>
         </>
       ) : null}
+      {manorSurface === "settings" ? (
+        <div className="sidebar-surface-head">
+          <div className="sidebar-surface-title">
+            <span className="sidebar-surface-label">Settings</span>
+          </div>
+        </div>
+      ) : null}
     </aside>
   );
 }
@@ -557,14 +577,16 @@ function Topbar({
   onMemorySearch: (value: string) => void;
   onMemoryProjectFilter: (value: string) => void;
 }) {
-  const isGlobalSurface = viewMode === "memory" || viewMode === "improve";
-  const surfaceTitle = viewMode === "memory" ? "Memory" : viewMode === "improve" ? "Self-improvement" : null;
+  const isGlobalSurface = viewMode === "memory" || viewMode === "improve" || viewMode === "settings";
+  const surfaceTitle = viewMode === "memory" ? "Memory" : viewMode === "improve" ? "Self-improvement" : viewMode === "settings" ? "Settings" : null;
   const surfaceMeta =
     viewMode === "memory"
       ? `${memoryActiveCount} of ${memoryTotalCount} ${memorySection}`
       : viewMode === "improve"
-      ? `${improveRequestCount} requests`
-      : null;
+        ? `${improveRequestCount} requests`
+        : viewMode === "settings"
+          ? "Runtime configuration"
+          : null;
   const modes: WorkstreamViewMode[] = pair ? WORKSTREAM_MODES : ["cli"];
   return (
     <header className={`topbar ${isGlobalSurface ? "is-global-surface" : ""}`}>
@@ -701,7 +723,7 @@ export function PairShell() {
   const [viewMode, setViewMode] = useState<PairViewMode>(() => readInitialViewMode());
   const [lastWorkstreamMode, setLastWorkstreamMode] = useState<WorkstreamViewMode>(() => {
     const initial = readInitialViewMode();
-    return initial === "memory" || initial === "improve" ? "butler" : initial;
+    return initial === "memory" || initial === "improve" || initial === "settings" ? "butler" : initial;
   });
   const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>(
     () => readInitialTerminalTarget(new URLSearchParams(window.location.search).get("terminal")) ?? "butler"
@@ -831,7 +853,7 @@ export function PairShell() {
   }, [terminalTarget, viewMode]);
 
   useEffect(() => {
-    if (viewMode !== "memory" && viewMode !== "improve") setLastWorkstreamMode(viewMode);
+    if (viewMode !== "memory" && viewMode !== "improve" && viewMode !== "settings") setLastWorkstreamMode(viewMode);
   }, [viewMode]);
 
   useEffect(() => {
@@ -1213,7 +1235,7 @@ export function PairShell() {
           onMemorySearch={setMemorySearch}
           onMemoryProjectFilter={setMemoryProjectFilter}
         />
-        {!activePair && viewMode !== "memory" && viewMode !== "improve" && viewMode !== "cli" ? (
+        {!activePair && viewMode !== "memory" && viewMode !== "improve" && viewMode !== "settings" && viewMode !== "cli" ? (
           <div className="empty-state">
             <picture className="empty-logo">
               <source srcSet={manorLogoLight} media="(prefers-color-scheme: light)" />
@@ -1304,6 +1326,9 @@ export function PairShell() {
                 onReload={loadImproveQueue}
                 onOpenSession={openSelfImprovementSession}
               />
+            </div>
+            <div className={`workspace-view is-settings ${viewMode === "settings" ? "is-active" : ""}`}>
+              <SettingsDashboard />
             </div>
             <TerminalPane
               active={cliVisible}

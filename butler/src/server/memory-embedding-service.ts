@@ -18,8 +18,8 @@ export type MemoryEmbeddingServiceOptions = {
 
 export class MemoryEmbeddingService {
   private readonly store: ButlerStateStore;
-  private readonly config: MemoryEmbeddingConfig;
-  private readonly provider: MemoryEmbeddingProvider;
+  private config: MemoryEmbeddingConfig;
+  private provider: MemoryEmbeddingProvider;
   private readonly debounceMs: number;
   private readonly onResult: MemoryEmbeddingServiceOptions["onResult"];
   private readonly onError: MemoryEmbeddingServiceOptions["onError"];
@@ -50,6 +50,14 @@ export class MemoryEmbeddingService {
     this.store.off("change", this.changeHandler);
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+  }
+
+  applyConfig(config: MemoryEmbeddingConfig, provider?: MemoryEmbeddingProvider): void {
+    const wasStarted = this.started;
+    if (wasStarted) this.dispose();
+    this.config = config;
+    this.provider = provider ?? new OllamaMemoryEmbeddingProvider(config);
+    if (wasStarted || config.enabled) this.start();
   }
 
   schedule(reason: string, delayMs = this.debounceMs): void {

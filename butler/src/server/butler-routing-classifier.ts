@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { normalizeRoutingDecision } from "./butler-orchestration.js";
+import { getActiveManorSettings } from "./manor-settings-runtime.js";
 import { isUnsupportedCodexModelError, memoryCodexModelArgs, normalizeMemoryCodexModel } from "./memory-codex-model.js";
 import { inferTaskCategory, inferWorkDepth } from "./thread-contract.js";
 import type { ButlerRoutingDecisionView } from "./types.js";
@@ -87,9 +88,9 @@ export const ROUTING_CLASSIFIER_OUTPUT_SCHEMA = {
 export class ButlerRoutingClassifier {
   private readonly stateDir: string;
   private readonly codexHomeDir: string;
-  private readonly enabled: boolean;
-  private readonly timeoutMs: number;
-  private readonly model: string | null;
+  private enabled: boolean;
+  private timeoutMs: number;
+  private model: string | null;
   private readonly runner: RoutingClassifierRunner;
 
   constructor(options: {
@@ -104,8 +105,14 @@ export class ButlerRoutingClassifier {
     this.codexHomeDir = options.codexHomeDir;
     this.enabled = options.enabled ?? true;
     this.timeoutMs = options.timeoutMs ?? 60_000;
-    this.model = normalizeMemoryCodexModel(options.model ?? process.env.MANOR_ROUTING_CLASSIFIER_MODEL);
+    this.model = normalizeMemoryCodexModel(options.model ?? getActiveManorSettings().modelTasks.routingClassifierModel);
     this.runner = options.runner ?? ((input) => this.runCodexExec(input));
+  }
+
+  applyConfig(options: { enabled?: boolean; timeoutMs?: number; model?: string | null }): void {
+    this.enabled = options.enabled ?? this.enabled;
+    this.timeoutMs = options.timeoutMs ?? this.timeoutMs;
+    if ("model" in options) this.model = normalizeMemoryCodexModel(options.model) ?? null;
   }
 
   async classify(input: {

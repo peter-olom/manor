@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { isUnsupportedCodexModelError, memoryCodexModelArgs, normalizeMemoryCodexModel } from "./memory-codex-model.js";
+import { resolveMemorySynthesisModel } from "./memory-synthesis-config.js";
 import { recordMemoryDebugTrace, type MemoryDebugTraceDecision } from "./memory-debug-traces.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { CodexWorkerReportView, JobMemoryEntryKind } from "./types.js";
@@ -156,9 +157,9 @@ export class CodexExecMemoryReviewService {
   private readonly store: ButlerStateStore;
   private readonly stateDir: string;
   private readonly codexHomeDir: string;
-  private readonly enabled: boolean;
-  private readonly timeoutMs: number;
-  private readonly model: string | null;
+  private enabled: boolean;
+  private timeoutMs: number;
+  private model: string | null;
   private readonly runner: MemoryReviewRunner;
   private readonly inFlightReports = new Set<string>();
   private readonly queuedReports = new Map<string, CodexWorkerReportView>();
@@ -177,8 +178,14 @@ export class CodexExecMemoryReviewService {
     this.codexHomeDir = options.codexHomeDir;
     this.enabled = options.enabled ?? true;
     this.timeoutMs = options.timeoutMs ?? 90_000;
-    this.model = normalizeMemoryCodexModel(options.model ?? process.env.MANOR_MEMORY_SYNTHESIS_MODEL);
+    this.model = normalizeMemoryCodexModel(options.model) ?? resolveMemorySynthesisModel();
     this.runner = options.runner ?? ((input) => this.runCodexExec(input));
+  }
+
+  applyConfig(options: { enabled?: boolean; timeoutMs?: number; model?: string | null }): void {
+    this.enabled = options.enabled ?? this.enabled;
+    this.timeoutMs = options.timeoutMs ?? this.timeoutMs;
+    if ("model" in options) this.model = normalizeMemoryCodexModel(options.model) ?? null;
   }
 
   reviewWorkerReportAsync(report: CodexWorkerReportView): void {

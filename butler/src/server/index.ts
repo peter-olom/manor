@@ -14,6 +14,10 @@ import { CodexHarnessService } from "./codex-harness.js";
 import { FileReferenceStore, MAX_FILE_BYTES } from "./file-store.js";
 import { HostControllerClient } from "./host-controller-client.js";
 import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
+import { createManorSettingsApplyHandler } from "./manor-settings-apply.js";
+import { defaultManorSettingsPath, ManorSettingsService } from "./manor-settings-service.js";
+import { setActiveManorSettingsService } from "./manor-settings-runtime.js";
+import { registerManorSettingsRoutes } from "./manor-settings-routes.js";
 import { normalizeMemoryCodexModelEnv } from "./memory-codex-model.js";
 import { getMemoryDebugTrace, listMemoryDebugTraces } from "./memory-debug-traces.js";
 import { buildMemoryDiagnostics } from "./memory-diagnostics.js";
@@ -78,14 +82,15 @@ const scratchPadStatePath = path.join(stateDir, "scratch-pad.json");
 const pairStatePath = path.join(stateDir, "butler-pairs-v2.json");
 const sessionDir = path.join(stateDir, "pi-sessions");
 const pairSessionDir = path.join(stateDir, "pi-pair-sessions");
-const staticDir = path.resolve(process.cwd(), "dist/web");
-const indexTemplatePath = path.resolve(process.cwd(), "index.html");
+const staticDir = path.resolve(process.cwd(), "dist/web"); const indexTemplatePath = path.resolve(process.cwd(), "index.html");
 let butlerAuthLoginSession: {
   child: ChildProcessWithoutNullStreams;
   authUrl: string | null;
   startedAt: number;
   output: string;
 } | null = null;
+
+const settingsService = new ManorSettingsService(defaultManorSettingsPath(stateDir)); await settingsService.load(); setActiveManorSettingsService(settingsService);
 
 function extractAuthUrl(output: string): string | null {
   const match = output.match(/https:\/\/auth\.openai\.com\/oauth\/authorize\?\S+/);
@@ -187,11 +192,10 @@ let sseHub!: ButlerSseHub;
 const selfImprovementRequests = new SelfImprovementRequestState(path.join(stateDir, "self-improvement-requests.json"), () => sseHub?.schedule(), (error) => console.error("Self-improvement queue save failed", error));
 await selfImprovementRequests.load();
 configureSelfImprovementRequestState(selfImprovementRequests);
-const piAuthPath = path.join(piAgentDir, "auth.json");
-const codexAuthPath = path.join(codexHomeDir, "auth.json");
+const piAuthPath = path.join(piAgentDir, "auth.json"); const codexAuthPath = path.join(codexHomeDir, "auth.json");
 const piRpcWorkerClient = new PiRpcWorkerClient({ store, piAuthPath, sessionRootDir: path.join(stateDir, "pi-worker-sessions") });
 const sessionTitleGenerator = new PiSessionTitleGenerator({ piAuthPath, ...readSessionTitleConfig() });
-const { memoryReview, routingClassifier, workerReview, memoryScheduler, memoryPromotion, memoryEmbeddings, memorySemanticEdges } = createBackgroundModelServices({
+const { memoryReview, routingClassifier, workerReview, memoryScheduler, memoryPromotion, memoryEmbeddings, memorySemanticEdges, applySettings: applyBackgroundSettings } = createBackgroundModelServices({
   store,
   stateDir,
   codexHomeDir,
@@ -273,6 +277,8 @@ const pairSessions = new PairSessionManager({
   sessionTitleGenerator,
   onButlerPatch: (payload) => sseHub?.broadcastButlerPatch(payload)
 });
+
+const applyManagedSettingsChange = createManorSettingsApplyHandler({ settingsService, applyBackgroundSettings, sessionTitleGenerator, piRpcWorkerClient, butlerAgent, store, codexClient, getSseHub: () => sseHub });
 runtimeAccess = {
   artifactsDir,
   butlerAgent,
@@ -488,6 +494,7 @@ registerPairRoutes({
   app,
   pairSessions
 });
+registerManorSettingsRoutes({ app, settingsService, store, codexClient, piRpcWorkerClient, butlerAgent, onSettingsChanged: applyManagedSettingsChange });
 registerSelfImprovementRoutes({
   app,
   requests: selfImprovementRequests,

@@ -77,6 +77,10 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     await this.loadModels();
   }
 
+  async refreshModels(): Promise<void> {
+    await this.loadModels();
+  }
+
   getConnectionState(): { connected: boolean; lastError: string | null; compose: { provider: string | null; model: string | null; effort: ReasoningEffort | null; availableModels: ModelOption[] } } {
     return {
       connected: true,

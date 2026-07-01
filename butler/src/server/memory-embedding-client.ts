@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 
+import { getActiveManorSettings } from "./manor-settings-runtime.js";
+
 export type MemoryEmbeddingConfig = {
   enabled: boolean;
   provider: "ollama";
@@ -14,16 +16,14 @@ export type MemoryEmbeddingProvider = {
 };
 
 export function readMemoryEmbeddingConfig(env: NodeJS.ProcessEnv = process.env): MemoryEmbeddingConfig {
-  const enabledValue = env.MANOR_MEMORY_EMBEDDINGS_ENABLED;
+  const settings = getActiveManorSettings(env).embeddings;
   return {
-    enabled: enabledValue === undefined || enabledValue === "1" || enabledValue === "true",
-    provider: "ollama",
-    host: (env.MANOR_MEMORY_EMBEDDINGS_HOST || "http://127.0.0.1:11434").replace(/\/+$/, ""),
-    model: env.MANOR_MEMORY_EMBEDDINGS_MODEL || "qwen3-embedding:0.6b",
-    timeoutMs: Number.isFinite(Number(env.MANOR_MEMORY_EMBEDDINGS_TIMEOUT_MS)) ? Math.max(1_000, Number(env.MANOR_MEMORY_EMBEDDINGS_TIMEOUT_MS)) : 10_000,
-    backfillBatchSize: Number.isFinite(Number(env.MANOR_MEMORY_EMBEDDINGS_BACKFILL_BATCH_SIZE))
-      ? Math.max(1, Math.min(32, Math.trunc(Number(env.MANOR_MEMORY_EMBEDDINGS_BACKFILL_BATCH_SIZE))))
-      : 12
+    enabled: settings.enabled,
+    provider: settings.provider,
+    host: settings.host,
+    model: settings.model,
+    timeoutMs: settings.timeoutMs,
+    backfillBatchSize: settings.backfillBatchSize
   };
 }
 

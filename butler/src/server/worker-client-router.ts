@@ -1,5 +1,6 @@
 import type { CodexInputItem } from "./image-store.js";
 import { isCodexPreferredModelRef } from "./model-provider-config.js";
+import { getActiveManorSettings } from "./manor-settings-runtime.js";
 import type { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { ButlerStateStore } from "./state-store.js";
@@ -35,8 +36,15 @@ export type UnifiedWorkerCompose = {
 };
 
 function configuredWorkerRuntime(): WorkerRuntimePreference {
-  const raw = process.env.MANOR_WORKER_RUNTIME?.trim().toLowerCase();
-  return raw === "codex" || raw === "pi-rpc" ? raw : "auto";
+  return getActiveManorSettings().worker.runtime;
+}
+
+function configuredWorkerModel(): string | null {
+  return getActiveManorSettings().worker.defaultModel;
+}
+
+function configuredWorkerEffort(): ReasoningEffort | null {
+  return getActiveManorSettings().worker.defaultEffort as ReasoningEffort | null;
 }
 
 function providerQualifiedModel(model: ModelOption): string {
@@ -79,7 +87,7 @@ export function resolveNewWorkerRuntime(access: WorkerClientAccess, input: { run
     return "pi-rpc";
   }
   if (preference === "codex") return "codex";
-  const selectedModel = input.model?.trim() || process.env.MANOR_WORKER_MODEL?.trim() || null;
+  const selectedModel = input.model?.trim() || configuredWorkerModel();
   if (selectedModel && !isCodexPreferredModelRef(selectedModel)) {
     if (!access.piRpcWorkerClient) throw new Error(`Model ${selectedModel} requires Pi RPC, but Pi RPC worker runtime is not available`);
     return "pi-rpc";
@@ -98,14 +106,14 @@ export function getUnifiedWorkerCompose(access: WorkerClientAccess, overrideMode
     seen.add(model.id);
     return true;
   });
-  const configuredModel = overrideModel?.trim() || process.env.MANOR_WORKER_MODEL?.trim() || null;
+  const configuredModel = overrideModel?.trim() || configuredWorkerModel();
   const runtimePreference = configuredWorkerRuntime();
   const defaultModel = runtimePreference === "pi-rpc"
     ? piModels[0]?.id ?? codexModels[0]?.id ?? null
     : resolveAvailableModelId(codexCompose.model, availableModels) ?? codexModels[0]?.id ?? piModels[0]?.id ?? null;
   const model = resolveAvailableModelId(configuredModel, availableModels) ?? defaultModel;
   const selected = availableModels.find((entry) => entry.id === model) ?? null;
-  const effort = (overrideEffort as ReasoningEffort | null) ?? codexCompose.effort ?? piCompose?.effort ?? selected?.defaultReasoningEffort ?? null;
+  const effort = (overrideEffort as ReasoningEffort | null) ?? configuredWorkerEffort() ?? codexCompose.effort ?? piCompose?.effort ?? selected?.defaultReasoningEffort ?? null;
   const availableEfforts = Array.from(new Set((selected ? selected.supportedReasoningEfforts : availableModels.flatMap((entry) => entry.supportedReasoningEfforts)) as ReasoningEffort[]));
   return {
     runtime: runtimePreference,
@@ -136,7 +144,7 @@ export async function updateUnifiedWorkerCompose(access: WorkerClientAccess, inp
 }
 
 export async function startWorkerThread(access: WorkerClientAccess, options: WorkerStartOptions): Promise<{ threadId: string; turnId: string | null; runtime: WorkerRuntime }> {
-  const requestedModel = options.model?.trim() || process.env.MANOR_WORKER_MODEL?.trim() || null;
+  const requestedModel = options.model?.trim() || configuredWorkerModel();
   const runtime = resolveNewWorkerRuntime(access, { ...options, model: requestedModel });
   if (requestedModel) {
     await updateUnifiedWorkerCompose(access, { model: requestedModel, effort: options.effort ?? null });

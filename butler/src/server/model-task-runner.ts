@@ -6,6 +6,7 @@ import path from "node:path";
 import { complete, type Api, type Message, type Model, type ToolCall } from "@mariozechner/pi-ai";
 import { contentToText } from "./butler-agent-helpers.js";
 import { isUnsupportedCodexModelError, memoryCodexModelArgs } from "./memory-codex-model.js";
+import { getActiveManorSettings } from "./manor-settings-runtime.js";
 import { createManorModelRegistry, isCodexPreferredModelRef, parseProviderModelRef, type ProviderModelRef } from "./model-provider-config.js";
 import { appendOllamaWebToolInstruction, appendToolMessages, executeOllamaWebToolCall, ollamaWebTools, readOllamaWebToolsConfig, shouldAttachOllamaWebTools } from "./ollama-web-tools.js";
 
@@ -25,9 +26,8 @@ export type ModelTaskRunner = {
 
 type RunnerMode = "auto" | "codex" | "pi";
 
-function runnerMode(env: NodeJS.ProcessEnv): RunnerMode {
-  const value = env.MANOR_MODEL_TASK_RUNNER?.trim().toLowerCase();
-  return value === "codex" || value === "pi" ? value : "auto";
+function runnerMode(): RunnerMode {
+  return getActiveManorSettings().modelTasks.runnerMode;
 }
 
 function normalizeRef(ref: string | ProviderModelRef | null | undefined): ProviderModelRef {
@@ -45,13 +45,17 @@ export class ManorModelTaskRunner implements ModelTaskRunner {
   private readonly stateDir: string;
   private readonly codexHomeDir: string;
   private readonly piAuthPath: string;
-  private readonly mode: RunnerMode;
+  private mode: RunnerMode;
 
   constructor(options: { stateDir: string; codexHomeDir: string; piAuthPath: string; mode?: RunnerMode }) {
     this.stateDir = options.stateDir;
     this.codexHomeDir = options.codexHomeDir;
     this.piAuthPath = options.piAuthPath;
-    this.mode = options.mode ?? runnerMode(process.env);
+    this.mode = options.mode ?? runnerMode();
+  }
+
+  applySettings(mode = runnerMode()): void {
+    this.mode = mode;
   }
 
   async runJson(input: ModelTaskRunnerInput): Promise<unknown> {

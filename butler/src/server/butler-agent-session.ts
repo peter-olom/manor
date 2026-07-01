@@ -23,7 +23,8 @@ import { readButlerAuthStatus } from "./auth-status.js";
 import { getButlerActivityTurns, recordButlerActivityEvent } from "./butler-activity.js";
 import { backfillOperatorMessagesFromSessionFiles, isPersistableProviderOperatorMessage, removeTrivialOperatorQuestionConfirmations, upsertProviderBackedOperatorMessage } from "./butler-operator-messages.js";
 import { PiProviderRuntimeMapper } from "./pi-provider-events.js";
-import { createManorModelRegistry, modelToModelOption } from "./model-provider-config.js";
+import { getActiveManorSettings } from "./manor-settings-runtime.js";
+import { createManorModelRegistry, modelToModelOption, parseProviderModelRef } from "./model-provider-config.js";
 import type {
   AppShellSnapshot,
   AppSnapshot,
@@ -69,6 +70,7 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
 
   sanitizeButlerSessionMessages(access);
   dropTrailingFailedButlerTurns(access);
+  await applyManagedButlerDefaults(access);
 
   access.compaction = {
     lastReason: null,
@@ -171,6 +173,22 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
     access.ready = true;
     access.emit("change");
   });
+}
+
+async function applyManagedButlerDefaults(access: ButlerAgentSessionAccess): Promise<void> {
+  if (!access.session || !access.modelRegistry) return;
+  const settings = getActiveManorSettings().butler;
+  const ref = parseProviderModelRef(settings.defaultModel);
+  if (ref.model) {
+    const providers = ref.provider
+      ? [ref.provider]
+      : access.auth.mode === "chatgpt"
+        ? ["openai-codex", "openai"]
+        : ["openai", "openai-codex"];
+    const model = providers.map((provider) => access.modelRegistry?.find(provider, ref.model!)).find(Boolean);
+    if (model) await access.session.setModel(model);
+  }
+  access.session.setThinkingLevel(settings.defaultThinkingLevel === "off" ? "medium" : settings.defaultThinkingLevel);
 }
 
 export async function sanitizePersistedButlerSessions(access: ButlerAgentSessionAccess): Promise<void> {

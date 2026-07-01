@@ -178,11 +178,11 @@ function fallbackCandidateKind(sourceKind: MemoryObservationSourceKind): JobMemo
 
 export class MemoryUpdateScheduler {
   private readonly store: ButlerStateStore;
-  private readonly config: MemorySynthesisConfig;
+  private config: MemorySynthesisConfig;
   private readonly stateDir: string;
   private readonly codexHomeDir: string;
   private readonly runner: SynthesisRunner;
-  private readonly intervalMs: number;
+  private intervalMs: number;
   private timer: NodeJS.Timeout | null = null;
   private inFlight = false;
 
@@ -210,6 +210,14 @@ export class MemoryUpdateScheduler {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+  }
+
+  applyConfig(config: MemorySynthesisConfig, intervalMs = this.intervalMs): void {
+    const wasRunning = Boolean(this.timer);
+    this.stop();
+    this.config = config;
+    this.intervalMs = Math.max(1_000, Math.trunc(intervalMs));
+    if (wasRunning || config.enabled) this.start();
   }
 
   recordMemoryEvent(input: RecordMemoryEventInput, options: RecordMemoryEventOptions = {}): MemoryObservationView {

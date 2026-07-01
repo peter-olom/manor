@@ -2,6 +2,7 @@ import { complete, type Model } from "@mariozechner/pi-ai";
 import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
 
 import { contentToText } from "./butler-agent-helpers.js";
+import { getActiveManorSettings } from "./manor-settings-runtime.js";
 import { isUnsupportedCodexModelError, normalizeMemoryCodexModel } from "./memory-codex-model.js";
 import { createManorModelRegistry } from "./model-provider-config.js";
 
@@ -81,10 +82,10 @@ export function normalizeSessionTitleModel(value: string | null | undefined): st
 }
 
 export function readSessionTitleConfig(env: NodeJS.ProcessEnv = process.env): { model: string | null; timeoutMs: number } {
-  const timeout = Number(env.MANOR_SESSION_TITLE_TIMEOUT_MS);
+  const settings = getActiveManorSettings(env);
   return {
-    model: normalizeSessionTitleModel(env.MANOR_SESSION_TITLE_MODEL ?? env.MANOR_MEMORY_SYNTHESIS_MODEL),
-    timeoutMs: clampTimeout(timeout)
+    model: normalizeSessionTitleModel(settings.modelTasks.sessionTitleModel ?? settings.modelTasks.memorySynthesisModel),
+    timeoutMs: clampTimeout(settings.modelTasks.sessionTitleTimeoutMs)
   };
 }
 
@@ -105,8 +106,8 @@ function sortTitleModels(models: Model<any>[]): Model<any>[] {
 }
 
 export class PiSessionTitleGenerator implements SessionTitleGenerator {
-  private readonly model: string | null;
-  private readonly timeoutMs: number;
+  private model: string | null;
+  private timeoutMs: number;
   private readonly runner: SessionTitleRunner;
   private modelRegistry: ModelRegistry | null = null;
 
@@ -114,6 +115,12 @@ export class PiSessionTitleGenerator implements SessionTitleGenerator {
     this.model = normalizeSessionTitleModel(options.model);
     this.timeoutMs = clampTimeout(options.timeoutMs);
     this.runner = options.runner ?? ((input) => this.runPiCompletion(input));
+  }
+
+  applySettings(config = readSessionTitleConfig()): void {
+    this.model = normalizeSessionTitleModel(config.model);
+    this.timeoutMs = clampTimeout(config.timeoutMs);
+    this.modelRegistry = null;
   }
 
   async generateTitle(input: { firstUserPrompt: string; cwd?: string | null }): Promise<string | null> {

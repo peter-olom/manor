@@ -636,6 +636,12 @@ export class ButlerAgentService extends EventEmitter {
     this.unsubscribeSession = null;
   }
 
+  async refreshModelSettings(): Promise<void> {
+    this.modelRegistry = await createManorModelRegistry(this.piAuthPath);
+    await this.createOrRefreshSession();
+    this.emit("change");
+  }
+
   private async refreshExternalStatus(): Promise<void> {
     const nextAuth = await readButlerAuthStatus(this.piAuthPath);
     const nextCodexAuth = await readCodexAuthStatus(this.codexAuthPath);

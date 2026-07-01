@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { isUnsupportedCodexModelError, memoryCodexModelArgs, normalizeMemoryCodexModel } from "./memory-codex-model.js";
+import { getActiveManorSettings } from "./manor-settings-runtime.js";
 import { normalizeWorkerReviewResults, shouldRunCodexWorkerReview } from "./butler-orchestration.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { CodexThreadRecord, CodexWorkerReportView, WorkerReviewResultRecordView } from "./types.js";
@@ -97,9 +98,9 @@ export class CodexWorkerReviewService {
   private readonly store: ButlerStateStore;
   private readonly stateDir: string;
   private readonly codexHomeDir: string;
-  private readonly enabled: boolean;
-  private readonly timeoutMs: number;
-  private readonly model: string | null;
+  private enabled: boolean;
+  private timeoutMs: number;
+  private model: string | null;
   private readonly runner: WorkerReviewRunner;
   private readonly inFlightReports = new Set<string>();
 
@@ -117,8 +118,14 @@ export class CodexWorkerReviewService {
     this.codexHomeDir = options.codexHomeDir;
     this.enabled = options.enabled ?? true;
     this.timeoutMs = options.timeoutMs ?? 120_000;
-    this.model = normalizeMemoryCodexModel(options.model ?? process.env.MANOR_WORKER_REVIEW_MODEL);
+    this.model = normalizeMemoryCodexModel(options.model ?? getActiveManorSettings().modelTasks.workerReviewModel);
     this.runner = options.runner ?? ((input) => this.runCodexReview(input));
+  }
+
+  applyConfig(options: { enabled?: boolean; timeoutMs?: number; model?: string | null }): void {
+    this.enabled = options.enabled ?? this.enabled;
+    this.timeoutMs = options.timeoutMs ?? this.timeoutMs;
+    if ("model" in options) this.model = normalizeMemoryCodexModel(options.model) ?? null;
   }
 
   reviewWorkerReportAsync(report: CodexWorkerReportView): void {

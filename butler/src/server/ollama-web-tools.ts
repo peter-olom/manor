@@ -1,6 +1,6 @@
-import { promises as fs } from "node:fs";
-
 import { Type, type Message, type Tool, type ToolCall, type ToolResultMessage } from "@mariozechner/pi-ai";
+
+import { getActiveManorSettings, readSecretSourceValue } from "./manor-settings-runtime.js";
 
 export type OllamaWebToolsConfig = {
   enabled: boolean;
@@ -49,33 +49,8 @@ export const OLLAMA_WEB_FETCH_TOOL: Tool = {
   }) as never
 };
 
-function envBool(value: string | undefined, fallback: boolean): boolean {
-  if (value === undefined || value.trim() === "") return fallback;
-  const normalized = value.trim().toLowerCase();
-  return normalized !== "0" && normalized !== "false" && normalized !== "off" && normalized !== "no";
-}
-
-function envNumber(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
 function clampInteger(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.trunc(value)));
-}
-
-async function readSecretValue(env: NodeJS.ProcessEnv, key: string, fileKey: string): Promise<string | null> {
-  const direct = env[key]?.trim();
-  if (direct) return direct;
-
-  const filePath = env[fileKey]?.trim();
-  if (!filePath) return null;
-  const content = await fs.readFile(filePath, "utf8").catch(() => "");
-  return content.trim() || null;
-}
-
-function normalizeBaseUrl(value: string): string {
-  return value.replace(/\/+$/, "");
 }
 
 function truncateText(value: string, maxChars: number): string {
@@ -111,23 +86,24 @@ function normalizeFetchResponse(value: unknown, maxContentChars: number): Ollama
 }
 
 export async function readOllamaWebToolsConfig(env: NodeJS.ProcessEnv = process.env): Promise<OllamaWebToolsConfig> {
-  const enabled = envBool(env.MANOR_OLLAMA_WEB_TOOLS_ENABLED, true);
-  const apiKey = enabled ? await readSecretValue(env, "OLLAMA_API_KEY", "OLLAMA_API_KEY_FILE") : null;
+  const settings = getActiveManorSettings(env);
+  const webTools = settings.providers.ollamaWebTools;
+  const apiKey = webTools.enabled ? await readSecretSourceValue(webTools.apiKeySource, env) : null;
   return {
-    enabled: enabled && Boolean(apiKey),
+    enabled: webTools.enabled && Boolean(apiKey),
     apiKey,
-    baseUrl: normalizeBaseUrl(env.MANOR_OLLAMA_WEB_TOOLS_BASE_URL?.trim() || "https://ollama.com/api"),
-    maxResults: clampInteger(envNumber(env.MANOR_OLLAMA_WEB_SEARCH_MAX_RESULTS, 5), 1, 10),
-    timeoutMs: Math.max(1_000, envNumber(env.MANOR_OLLAMA_WEB_TOOLS_TIMEOUT_MS, 30_000)),
-    maxContentChars: Math.max(1_000, envNumber(env.MANOR_OLLAMA_WEB_TOOLS_MAX_CONTENT_CHARS, 12_000))
+    baseUrl: webTools.baseUrl,
+    maxResults: webTools.maxResults,
+    timeoutMs: webTools.timeoutMs,
+    maxContentChars: webTools.maxContentChars
   };
 }
 
 export function shouldAttachOllamaWebTools(modelProvider: string | null | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
-  if (!envBool(env.MANOR_OLLAMA_WEB_TOOLS_ENABLED, true)) return false;
-  if (envBool(env.MANOR_OLLAMA_WEB_TOOLS_FOR_ALL_PI_MODELS, false)) return true;
-  const providerId = env.MANOR_OLLAMA_CLOUD_PROVIDER_ID?.trim() || "ollama-cloud";
-  return modelProvider === providerId;
+  const settings = getActiveManorSettings(env);
+  if (!settings.providers.ollamaWebTools.enabled) return false;
+  if (settings.providers.ollamaWebTools.forAllPiModels) return true;
+  return modelProvider === settings.providers.ollamaCloud.providerId;
 }
 
 async function postOllamaWebEndpoint<T>(

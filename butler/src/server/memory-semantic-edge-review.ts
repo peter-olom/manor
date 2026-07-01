@@ -250,7 +250,7 @@ function fallbackDecisions(pair: MemorySemanticEdgeReviewPair): SemanticEdgeDeci
 
 export class MemorySemanticEdgeReviewService {
   private readonly store: ButlerStateStore;
-  private readonly config: MemorySynthesisConfig;
+  private config: MemorySynthesisConfig;
   private readonly stateDir: string;
   private readonly codexHomeDir: string;
   private readonly runner: SemanticEdgeReviewRunner;
@@ -286,6 +286,13 @@ export class MemorySemanticEdgeReviewService {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+  }
+
+  applyConfig(config: MemorySynthesisConfig): void {
+    const wasRunning = Boolean(this.timer);
+    this.stop();
+    this.config = config;
+    if (wasRunning || (config.enabled && config.semanticEdgeReviewEnabled)) this.start();
   }
 
   async reviewNextBatch(reason = "manual"): Promise<{ reviewed: number; relationships: number }> {
