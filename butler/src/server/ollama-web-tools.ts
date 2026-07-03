@@ -87,8 +87,9 @@ function normalizeFetchResponse(value: unknown, maxContentChars: number): Ollama
 
 export async function readOllamaWebToolsConfig(env: NodeJS.ProcessEnv = process.env): Promise<OllamaWebToolsConfig> {
   const settings = getActiveManorSettings(env);
-  const webTools = settings.providers.ollamaWebTools;
-  const apiKey = webTools.enabled ? await readSecretSourceValue(webTools.apiKeySource, env) : null;
+  const ollamaCloud = settings.providers.ollamaCloud;
+  const webTools = ollamaCloud.webTools;
+  const apiKey = webTools.enabled ? await readSecretSourceValue(ollamaCloud.apiKeySource, env) : null;
   return {
     enabled: webTools.enabled && Boolean(apiKey),
     apiKey,
@@ -101,8 +102,8 @@ export async function readOllamaWebToolsConfig(env: NodeJS.ProcessEnv = process.
 
 export function shouldAttachOllamaWebTools(modelProvider: string | null | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
   const settings = getActiveManorSettings(env);
-  if (!settings.providers.ollamaWebTools.enabled) return false;
-  if (settings.providers.ollamaWebTools.forAllPiModels) return true;
+  if (!settings.providers.ollamaCloud.webTools.enabled) return false;
+  if (settings.providers.ollamaCloud.webTools.forAllPiModels) return true;
   return modelProvider === settings.providers.ollamaCloud.providerId;
 }
 

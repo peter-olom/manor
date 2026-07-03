@@ -30,7 +30,7 @@ import {
   formatSelfImprovementTime,
   selfImprovementStatusLabel
 } from "./SelfImprovementQueue";
-import { SettingsDashboard } from "./SettingsDashboard";
+import { SettingsDashboard, SETTINGS_SECTIONS, type SettingsSectionId } from "./SettingsDashboard";
 import { TerminalPane } from "./TerminalPane";
 import { useEventStream } from "./useEventStream";
 import { WorkerPane } from "./WorkerPane";
@@ -111,6 +111,7 @@ const VIEW_MODES = new Set<PairViewMode>(["butler", "worker", "split", "memory",
 type WorkstreamViewMode = Exclude<PairViewMode, "memory" | "improve" | "settings">;
 type ManorSurface = "sessions" | "memory" | "improve" | "settings";
 const WORKSTREAM_MODES: WorkstreamViewMode[] = ["butler", "worker", "split", "cli"];
+const SETTINGS_SECTION_IDS = new Set<SettingsSectionId>(SETTINGS_SECTIONS.map((section) => section.id));
 
 function manorSurfaceForView(viewMode: PairViewMode): ManorSurface {
   if (viewMode === "memory" || viewMode === "improve" || viewMode === "settings") return viewMode;
@@ -119,13 +120,30 @@ function manorSurfaceForView(viewMode: PairViewMode): ManorSurface {
 
 function readInitialViewMode(): PairViewMode {
   if (typeof window === "undefined") return "butler";
+  if (window.location.pathname === "/settings" || window.location.pathname.startsWith("/settings/")) return "settings";
   const value = new URLSearchParams(window.location.search).get("view");
   return value && VIEW_MODES.has(value as PairViewMode) ? (value as PairViewMode) : "butler";
 }
 
-function syncUrlState(viewMode: PairViewMode, terminalTarget: TerminalTarget): void {
+function readInitialSettingsSection(): SettingsSectionId {
+  if (typeof window === "undefined") return "overview";
+  const [, prefix, section] = window.location.pathname.split("/");
+  if (prefix !== "settings") return "overview";
+  return SETTINGS_SECTION_IDS.has(section as SettingsSectionId) ? (section as SettingsSectionId) : "overview";
+}
+
+function syncUrlState(viewMode: PairViewMode, terminalTarget: TerminalTarget, settingsSection: SettingsSectionId): void {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
+  if (viewMode === "settings") {
+    url.pathname = `/settings/${settingsSection}`;
+    url.search = "";
+    window.history.replaceState(null, "", `${url.pathname}${url.hash}`);
+    return;
+  }
+  if (url.pathname === "/settings" || url.pathname.startsWith("/settings/")) {
+    url.pathname = "/";
+  }
   if (viewMode === "butler") {
     url.searchParams.delete("view");
   } else {
@@ -261,10 +279,12 @@ function Sidebar({
   selectedImproveRequestId,
   memorySection,
   memorySummary,
+  settingsSection,
   onSelect,
   onSelectManor,
   onSelectImproveRequest,
   onSelectMemorySection,
+  onSelectSettingsSection,
   onCreate,
   onDelete,
   search,
@@ -278,10 +298,12 @@ function Sidebar({
   selectedImproveRequestId: string | null;
   memorySection: MemorySection;
   memorySummary: MemoryDashboardSummary | null;
+  settingsSection: SettingsSectionId;
   onSelect: (id: string) => void;
   onSelectManor: (surface: ManorSurface) => void;
   onSelectImproveRequest: (id: string) => void;
   onSelectMemorySection: (section: MemorySection) => void;
+  onSelectSettingsSection: (section: SettingsSectionId) => void;
   onCreate: () => void;
   onDelete: (id: string) => void;
   search: string;
@@ -343,135 +365,156 @@ function Sidebar({
             <span>Improve</span>
             {improvePendingCount > 0 ? <span className="sidebar-nav-badge">{improvePendingCount}</span> : null}
           </button>
-          <button
-            className={`sidebar-nav-item ${manorSurface === "settings" ? "is-selected" : ""}`}
-            type="button"
-            aria-label="Settings"
-            aria-current={manorSurface === "settings" ? "page" : undefined}
-            onClick={() => onSelectManor("settings")}
-            title="Settings"
-          >
-            <SetupTabIcon />
-            <span>Settings</span>
-          </button>
         </nav>
       </div>
       <div className="sidebar-divider" aria-hidden="true" />
 
-      {manorSurface === "sessions" ? (
-        <>
-          <div className="sidebar-surface-head">
-            <div className="sidebar-surface-title">
-              <span className="sidebar-surface-label">Sessions</span>
-              <span className="sidebar-surface-count">{filtered.length}</span>
-            </div>
-            <button className="icon-button is-primary" type="button" onClick={onCreate} aria-label="New session">
-              <PlusIcon />
-            </button>
-          </div>
-
-          <div className="search">
-            <span className="search-icon">
-              <SearchIcon />
-            </span>
-            <input
-              type="search"
-              placeholder="Search sessions…"
-              value={search}
-              onChange={(event) => onSearch(event.target.value)}
-              aria-label="Search sessions"
-            />
-          </div>
-
-          <div className="pair-list">
-            {filtered.length === 0 ? (
-              <div className="pair-empty">
-                {search ? "No sessions match your search." : "Create your first session to get started."}
+      <div className="sidebar-body">
+        {manorSurface === "sessions" ? (
+          <>
+            <div className="sidebar-surface-head">
+              <div className="sidebar-surface-title">
+                <span className="sidebar-surface-label">Sessions</span>
+                <span className="sidebar-surface-count">{filtered.length}</span>
               </div>
-            ) : (
-              filtered.map((pair) => (
-                <PairRow
-                  key={pair.id}
-                  pair={pair}
-                  isActive={pair.id === selectedPairId}
-                  onSelect={() => onSelect(pair.id)}
-                  onDelete={() => onDelete(pair.id)}
-                />
-              ))
-            )}
-          </div>
-        </>
-      ) : null}
-      {manorSurface === "memory" ? (
-        <>
-          <div className="sidebar-surface-head">
-            <div className="sidebar-surface-title">
-              <span className="sidebar-surface-label">Memory</span>
-              <span className="sidebar-surface-count">{memorySummary?.totalCount ?? 0}</span>
+              <button className="icon-button is-primary" type="button" onClick={onCreate} aria-label="New session">
+                <PlusIcon />
+              </button>
             </div>
-          </div>
-          <div className="sidebar-surface-list" aria-label="Memory sections">
-            {(["projects", "jobs", "butler"] as MemorySection[]).map((sectionOption) => {
-              const count = memorySummary?.counts[sectionOption]?.total ?? 0;
-              const label = sectionOption === "projects" ? "Projects" : sectionOption === "jobs" ? "Jobs" : "Butler";
-              const description =
-                sectionOption === "projects"
-                  ? "Project memory"
-                  : sectionOption === "jobs"
-                    ? "Job memory"
-                    : "Global memory";
-              return (
-                <button
-                  key={sectionOption}
-                  type="button"
-                  className={`sidebar-surface-item ${memorySection === sectionOption ? "is-active" : ""}`}
-                  onClick={() => onSelectMemorySection(sectionOption)}
-                >
-                  <span className="sidebar-surface-item-title">{label}</span>
-                  <span className="sidebar-surface-item-preview">{description}</span>
-                  <span className="sidebar-surface-item-meta">{count}</span>
-                </button>
-              );
-            })}
-          </div>
-        </>
-      ) : null}
-      {manorSurface === "improve" ? (
-        <>
-          <div className="sidebar-surface-head">
-            <div className="sidebar-surface-title">
-              <span className="sidebar-surface-label">Requests</span>
-              <span className="sidebar-surface-count">{improveRequests.length}</span>
+
+            <div className="search">
+              <span className="search-icon">
+                <SearchIcon />
+              </span>
+              <input
+                type="search"
+                placeholder="Search sessions…"
+                value={search}
+                onChange={(event) => onSearch(event.target.value)}
+                aria-label="Search sessions"
+              />
             </div>
-          </div>
-          <div className="sidebar-improve-list" aria-label="Self-improvement requests">
-            {improveRequests.length === 0 ? (
-              <div className="pair-empty">No requests.</div>
-            ) : (
-              improveRequests.map((request) => (
+
+            <div className="pair-list">
+              {filtered.length === 0 ? (
+                <div className="pair-empty">
+                  {search ? "No sessions match your search." : "Create your first session to get started."}
+                </div>
+              ) : (
+                filtered.map((pair) => (
+                  <PairRow
+                    key={pair.id}
+                    pair={pair}
+                    isActive={pair.id === selectedPairId}
+                    onSelect={() => onSelect(pair.id)}
+                    onDelete={() => onDelete(pair.id)}
+                  />
+                ))
+              )}
+            </div>
+          </>
+        ) : null}
+        {manorSurface === "memory" ? (
+          <>
+            <div className="sidebar-surface-head">
+              <div className="sidebar-surface-title">
+                <span className="sidebar-surface-label">Memory</span>
+                <span className="sidebar-surface-count">{memorySummary?.totalCount ?? 0}</span>
+              </div>
+            </div>
+            <div className="sidebar-surface-list" aria-label="Memory sections">
+              {(["projects", "jobs", "butler"] as MemorySection[]).map((sectionOption) => {
+                const count = memorySummary?.counts[sectionOption]?.total ?? 0;
+                const label = sectionOption === "projects" ? "Projects" : sectionOption === "jobs" ? "Jobs" : "Butler";
+                const description =
+                  sectionOption === "projects"
+                    ? "Project memory"
+                    : sectionOption === "jobs"
+                      ? "Job memory"
+                      : "Global memory";
+                return (
+                  <button
+                    key={sectionOption}
+                    type="button"
+                    className={`sidebar-surface-item ${memorySection === sectionOption ? "is-active" : ""}`}
+                    onClick={() => onSelectMemorySection(sectionOption)}
+                  >
+                    <span className="sidebar-surface-item-title">{label}</span>
+                    <span className="sidebar-surface-item-preview">{description}</span>
+                    <span className="sidebar-surface-item-meta">{count}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        ) : null}
+        {manorSurface === "improve" ? (
+          <>
+            <div className="sidebar-surface-head">
+              <div className="sidebar-surface-title">
+                <span className="sidebar-surface-label">Requests</span>
+                <span className="sidebar-surface-count">{improveRequests.length}</span>
+              </div>
+            </div>
+            <div className="sidebar-improve-list" aria-label="Self-improvement requests">
+              {improveRequests.length === 0 ? (
+                <div className="pair-empty">No requests.</div>
+              ) : (
+                improveRequests.map((request) => (
+                  <button
+                    key={request.id}
+                    type="button"
+                    className={`improve-item ${request.id === selectedImproveRequest?.id ? "is-active" : ""}`}
+                    onClick={() => onSelectImproveRequest(request.id)}
+                  >
+                    <span className={`improve-status is-${request.status}`}>{selfImprovementStatusLabel(request.status)}</span>
+                    <strong>{request.trigger}</strong>
+                    <span>{request.sourceProjectLabel ?? request.sourceThreadId ?? "Manor"}</span>
+                    <time>{formatSelfImprovementTime(request.updatedAt)}</time>
+                  </button>
+                ))
+              )}
+            </div>
+          </>
+        ) : null}
+        {manorSurface === "settings" ? (
+          <>
+            <div className="sidebar-surface-head">
+              <div className="sidebar-surface-title">
+                <span className="sidebar-surface-label">Settings</span>
+              </div>
+            </div>
+            <div className="sidebar-surface-list" aria-label="Settings sections">
+              {SETTINGS_SECTIONS.map((section) => (
                 <button
-                  key={request.id}
+                  key={section.id}
                   type="button"
-                  className={`improve-item ${request.id === selectedImproveRequest?.id ? "is-active" : ""}`}
-                  onClick={() => onSelectImproveRequest(request.id)}
+                  className={`sidebar-surface-item ${settingsSection === section.id ? "is-active" : ""}`}
+                  aria-current={settingsSection === section.id ? "page" : undefined}
+                  onClick={() => onSelectSettingsSection(section.id)}
                 >
-                  <span className={`improve-status is-${request.status}`}>{selfImprovementStatusLabel(request.status)}</span>
-                  <strong>{request.trigger}</strong>
-                  <span>{request.sourceProjectLabel ?? request.sourceThreadId ?? "Manor"}</span>
-                  <time>{formatSelfImprovementTime(request.updatedAt)}</time>
+                  <span className="sidebar-surface-item-title">{section.label}</span>
+                  <span className="sidebar-surface-item-preview">{section.description}</span>
                 </button>
-              ))
-            )}
-          </div>
-        </>
-      ) : null}
-      {manorSurface === "settings" ? (
-        <div className="sidebar-surface-head">
-          <div className="sidebar-surface-title">
-            <span className="sidebar-surface-label">Settings</span>
-          </div>
-        </div>
-      ) : null}
+              ))}
+            </div>
+          </>
+        ) : null}
+      </div>
+
+      <div className="sidebar-footer">
+        <button
+          className={`sidebar-settings-button ${manorSurface === "settings" ? "is-active" : ""}`}
+          type="button"
+          aria-label="Settings"
+          aria-current={manorSurface === "settings" ? "page" : undefined}
+          onClick={() => onSelectManor("settings")}
+          title="Settings"
+        >
+          <SetupTabIcon />
+          <span>Settings</span>
+        </button>
+      </div>
     </aside>
   );
 }
@@ -547,6 +590,7 @@ function Topbar({
   memoryProjectOptions,
   memoryActiveCount,
   memoryTotalCount,
+  settingsSection,
   onMemorySearch,
   onMemoryProjectFilter
 }: {
@@ -574,18 +618,20 @@ function Topbar({
   memoryProjectOptions: MemoryProjectOption[];
   memoryActiveCount: number;
   memoryTotalCount: number;
+  settingsSection: SettingsSectionId;
   onMemorySearch: (value: string) => void;
   onMemoryProjectFilter: (value: string) => void;
 }) {
   const isGlobalSurface = viewMode === "memory" || viewMode === "improve" || viewMode === "settings";
   const surfaceTitle = viewMode === "memory" ? "Memory" : viewMode === "improve" ? "Self-improvement" : viewMode === "settings" ? "Settings" : null;
+  const settingsSectionLabel = SETTINGS_SECTIONS.find((section) => section.id === settingsSection)?.label ?? "Overview";
   const surfaceMeta =
     viewMode === "memory"
       ? `${memoryActiveCount} of ${memoryTotalCount} ${memorySection}`
       : viewMode === "improve"
         ? `${improveRequestCount} requests`
         : viewMode === "settings"
-          ? "Runtime configuration"
+          ? settingsSectionLabel
           : null;
   const modes: WorkstreamViewMode[] = pair ? WORKSTREAM_MODES : ["cli"];
   return (
@@ -725,6 +771,7 @@ export function PairShell() {
     const initial = readInitialViewMode();
     return initial === "memory" || initial === "improve" || initial === "settings" ? "butler" : initial;
   });
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionId>(() => readInitialSettingsSection());
   const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>(
     () => readInitialTerminalTarget(new URLSearchParams(window.location.search).get("terminal")) ?? "butler"
   );
@@ -849,8 +896,18 @@ export function PairShell() {
   }, []);
 
   useEffect(() => {
-    syncUrlState(viewMode, terminalTarget);
-  }, [terminalTarget, viewMode]);
+    syncUrlState(viewMode, terminalTarget, settingsSection);
+  }, [settingsSection, terminalTarget, viewMode]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      setViewMode(readInitialViewMode());
+      setSettingsSection(readInitialSettingsSection());
+      setTerminalTarget(readInitialTerminalTarget(new URLSearchParams(window.location.search).get("terminal")) ?? "butler");
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   useEffect(() => {
     if (viewMode !== "memory" && viewMode !== "improve" && viewMode !== "settings") setLastWorkstreamMode(viewMode);
@@ -1169,6 +1226,12 @@ export function PairShell() {
     setMobileSidebarOpen(false);
     setViewMode(surface === "sessions" ? lastWorkstreamMode : surface);
   }, [cancelEditTitle, lastWorkstreamMode]);
+  const selectSettingsSection = useCallback((section: SettingsSectionId) => {
+    cancelEditTitle();
+    setSettingsSection(section);
+    setViewMode("settings");
+    setMobileSidebarOpen(false);
+  }, [cancelEditTitle]);
 
   return (
     <main className={`app ${mobileSidebarOpen ? "is-mobile-sidebar-open" : ""} ${activePair ? "" : "is-empty"}`}>
@@ -1181,6 +1244,7 @@ export function PairShell() {
         selectedImproveRequestId={selectedImproveRequestId}
         memorySection={memorySection}
         memorySummary={memorySummary}
+        settingsSection={settingsSection}
         onSelect={(id) => {
           setSelectedPairId(id);
           setViewMode(lastWorkstreamMode);
@@ -1198,6 +1262,7 @@ export function PairShell() {
           setMemorySection(section);
           setMobileSidebarOpen(false);
         }}
+        onSelectSettingsSection={selectSettingsSection}
         onCreate={createPair}
         onDelete={deletePair}
         search={search}
@@ -1232,6 +1297,7 @@ export function PairShell() {
           memoryProjectOptions={memorySummary?.projectOptions ?? []}
           memoryActiveCount={memorySummary?.activeCount ?? 0}
           memoryTotalCount={memorySummary?.totalCount ?? 0}
+          settingsSection={settingsSection}
           onMemorySearch={setMemorySearch}
           onMemoryProjectFilter={setMemoryProjectFilter}
         />
@@ -1328,7 +1394,7 @@ export function PairShell() {
               />
             </div>
             <div className={`workspace-view is-settings ${viewMode === "settings" ? "is-active" : ""}`}>
-              <SettingsDashboard />
+              <SettingsDashboard activeSection={settingsSection} />
             </div>
             <TerminalPane
               active={cliVisible}

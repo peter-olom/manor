@@ -6,7 +6,7 @@ import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { ModelOption, ReasoningEffort } from "./types.js";
 
-export type WorkerRuntime = "codex" | "pi-rpc";
+export type WorkerRuntime = "openai" | "pi-rpc";
 export type WorkerRuntimePreference = WorkerRuntime | "auto";
 
 export type WorkerClientAccess = {
@@ -77,7 +77,7 @@ function resolveAvailableModelId(modelRef: string | null | undefined, availableM
 export function resolveThreadWorkerRuntime(access: WorkerClientAccess, threadId: string): WorkerRuntime {
   const thread = access.store.getThread(threadId);
   if (thread?.source === "pi-rpc" || threadId.startsWith("pi-")) return "pi-rpc";
-  return "codex";
+  return "openai";
 }
 
 export function resolveNewWorkerRuntime(access: WorkerClientAccess, input: { runtime?: WorkerRuntimePreference | null; model?: string | null } = {}): WorkerRuntime {
@@ -86,13 +86,13 @@ export function resolveNewWorkerRuntime(access: WorkerClientAccess, input: { run
     if (!access.piRpcWorkerClient) throw new Error("Pi RPC worker runtime is not available");
     return "pi-rpc";
   }
-  if (preference === "codex") return "codex";
+  if (preference === "openai") return "openai";
   const selectedModel = input.model?.trim() || configuredWorkerModel();
   if (selectedModel && !isCodexPreferredModelRef(selectedModel)) {
     if (!access.piRpcWorkerClient) throw new Error(`Model ${selectedModel} requires Pi RPC, but Pi RPC worker runtime is not available`);
     return "pi-rpc";
   }
-  return "codex";
+  return "openai";
 }
 
 export function getUnifiedWorkerCompose(access: WorkerClientAccess, overrideModel?: string | null, overrideEffort?: string | null): UnifiedWorkerCompose {

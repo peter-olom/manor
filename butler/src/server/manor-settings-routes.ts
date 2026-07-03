@@ -2,17 +2,21 @@ import type { Express } from "express";
 
 import type {
   ManorSettings,
+  SettingsProviderAvailabilityMap,
   SettingsValidationKey,
   SettingsValidationResult
 } from "../shared/settings.js";
-import { getActiveManorSettings, readSecretSourceValue } from "./manor-settings-runtime.js";
+import { getActiveManorSettings, isSecretSourceAvailable, readSecretSourceValue } from "./manor-settings-runtime.js";
 import type { ButlerAgentService } from "./butler-agent.js";
 import type { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { ButlerStateStore } from "./state-store.js";
 import { ollamaWebFetch, ollamaWebSearch, readOllamaWebToolsConfig } from "./ollama-web-tools.js";
+import { opencodeWebFetch, opencodeWebSearch, readOpencodeWebToolsConfig } from "./opencode-web-tools.js";
 import { getUnifiedWorkerCompose } from "./worker-client-router.js";
 import type { ManorSettingsService } from "./manor-settings-service.js";
+import type { ModelOption, ButlerAuthStatus } from "./types.js";
+import type { SettingsGroupKey } from "../shared/settings.js";
 
 type SettingsRouteAccess = {
   app: Express;
@@ -28,8 +32,11 @@ const VALIDATION_KEYS: SettingsValidationKey[] = [
   "codex",
   "piRpc",
   "ollamaCloud",
+  "opencodeGo",
   "ollamaWebSearch",
   "ollamaWebFetch",
+  "opencodeWebSearch",
+  "opencodeWebFetch",
   "memoryEmbeddings"
 ];
 
@@ -68,7 +75,8 @@ async function validateOllamaCloud(settings: ManorSettings): Promise<SettingsVal
   const apiKey = await readSecretSourceValue(config.apiKeySource);
   if (!apiKey) return result("not_configured", "No API key is available from the configured secret source.");
   const model = config.models[0];
-  if (!model) return result("failed", "No Ollama Cloud model is configured.");
+  const modelId = typeof model === "string" ? model : model?.id;
+  if (!modelId) return result("failed", "No Ollama Cloud model is configured.");
   const response = await fetchJsonStatus(`${config.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -76,15 +84,29 @@ async function validateOllamaCloud(settings: ManorSettings): Promise<SettingsVal
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      model,
+      model: modelId,
       messages: [{ role: "user", content: "Reply with OK." }],
       max_tokens: 1,
       stream: false
     })
   }, 30_000);
   return response.ok
-    ? result("ok", `Completion check reached ${config.providerId}/${model}.`)
+    ? result("ok", `Completion check reached ${config.providerId}/${modelId}.`)
     : result("failed", `Completion check failed with HTTP ${response.status}: ${redactMessage(response.text)}`);
+}
+
+async function validateOpencodeGo(settings: ManorSettings): Promise<SettingsValidationResult> {
+  const config = settings.providers.opencodeGo;
+  if (!config.enabled) return result("not_configured", "OpenCode Go provider is disabled.");
+  const apiKey = await readSecretSourceValue(config.apiKeySource);
+  if (!apiKey) return result("not_configured", "No API key is available from the configured secret source.");
+  const response = await fetchJsonStatus(`${config.baseUrl}/models`, {
+    method: "GET",
+    headers: { "Authorization": `Bearer ${apiKey}` }
+  }, 30_000);
+  return response.ok
+    ? result("ok", `OpenCode Go models endpoint is reachable at ${config.providerId}.`)
+    : result("failed", `OpenCode Go check failed with HTTP ${response.status}: ${redactMessage(response.text)}`);
 }
 
 async function validateWebSearch(): Promise<SettingsValidationResult> {
@@ -99,6 +121,20 @@ async function validateWebFetch(): Promise<SettingsValidationResult> {
   if (!config.enabled) return result("not_configured", "Ollama web fetch is disabled or missing an API key.");
   await ollamaWebFetch({ url: "https://example.com" }, config);
   return result("ok", "Ollama web_fetch returned a response.");
+}
+
+async function validateOpencodeWebSearch(): Promise<SettingsValidationResult> {
+  const config = readOpencodeWebToolsConfig();
+  if (!config.enabled) return result("not_configured", "OpenCode web search is disabled.");
+  await opencodeWebSearch({ query: "Manor settings validation", maxResults: 1 }, config);
+  return result("ok", "OpenCode web_search returned a response.");
+}
+
+async function validateOpencodeWebFetch(): Promise<SettingsValidationResult> {
+  const config = readOpencodeWebToolsConfig();
+  if (!config.enabled) return result("not_configured", "OpenCode web fetch is disabled.");
+  await opencodeWebFetch({ url: "https://example.com" }, config);
+  return result("ok", "OpenCode web_fetch returned a response.");
 }
 
 async function validateEmbeddingHost(settings: ManorSettings): Promise<SettingsValidationResult> {
@@ -122,8 +158,11 @@ async function runValidation(access: SettingsRouteAccess, target: SettingsValida
     }
     const settings = getActiveManorSettings();
     if (target === "ollamaCloud") return await validateOllamaCloud(settings);
+    if (target === "opencodeGo") return await validateOpencodeGo(settings);
     if (target === "ollamaWebSearch") return await validateWebSearch();
     if (target === "ollamaWebFetch") return await validateWebFetch();
+    if (target === "opencodeWebSearch") return await validateOpencodeWebSearch();
+    if (target === "opencodeWebFetch") return await validateOpencodeWebFetch();
     return await validateEmbeddingHost(settings);
   } catch (error) {
     return result("failed", redactMessage(error));
@@ -134,16 +173,57 @@ function settingsPayload(access: SettingsRouteAccess) {
   const codex = access.codexClient.getConnectionState();
   const piRpc = access.piRpcWorkerClient.getConnectionState();
   const butler = access.butlerAgent.getShellSnapshot().compose;
+  const settings = access.settingsService.getSettings();
+  const butlerAuth = access.butlerAgent.getButlerAuthStatus();
+  const codexAuth = access.butlerAgent.getCodexAuthStatus();
+  const providerAvailability = computeProviderAvailability(settings, butlerAuth, codexAuth);
   return {
-    settings: access.settingsService.getSettings(),
+    settings,
     provenance: access.settingsService.getProvenance(),
     availableModels: {
       butler: butler.availableModels,
       codex: codex.compose.availableModels,
       piRpc: piRpc.compose.availableModels,
+      opencodeGo: collectOpencodeGoModels(butler.availableModels, settings),
       worker: getUnifiedWorkerCompose(access)
     },
+    providerAvailability,
+    openaiCodexAuth: {
+      butler: butlerAuth,
+      codex: codexAuth
+    },
     validation: access.settingsService.getValidation()
+  };
+}
+
+function collectOpencodeGoModels(butlerModels: ModelOption[], settings: ManorSettings): ModelOption[] {
+  const providerId = settings.providers.opencodeGo.providerId;
+  return butlerModels.filter((model) => model.provider === providerId);
+}
+
+function computeProviderAvailability(settings: ManorSettings, butlerAuth: ButlerAuthStatus, codexAuth: ButlerAuthStatus): SettingsProviderAvailabilityMap {
+  const ollama = settings.providers.ollamaCloud;
+  const opencode = settings.providers.opencodeGo;
+  const ollamaSecret = isSecretSourceAvailable(ollama.apiKeySource);
+  const opencodeSecret = isSecretSourceAvailable(opencode.apiKeySource);
+  const openaiEnvSecret = isSecretSourceAvailable({ type: "env", name: "OPENAI_API_KEY" });
+  const openaiAuthed = openaiEnvSecret || butlerAuth.loggedIn || codexAuth.loggedIn;
+  return {
+    "openai-codex": {
+      secretAvailable: openaiAuthed,
+      enabled: true,
+      reason: openaiAuthed ? null : "Set OPENAI_API_KEY or sign in with ChatGPT to use OpenAI/Codex models."
+    },
+    "ollama-cloud": {
+      secretAvailable: ollamaSecret,
+      enabled: ollama.enabled,
+      reason: ollamaSecret ? null : "Set OLLAMA_API_KEY (or OLLAMA_API_KEY_FILE) before starting Manor to use Ollama Cloud."
+    },
+    "opencode-go": {
+      secretAvailable: opencodeSecret,
+      enabled: opencode.enabled,
+      reason: opencodeSecret ? null : "Set OPENCODE_API_KEY (or OPENCODE_API_KEY_FILE) before starting Manor to use OpenCode Go."
+    }
   };
 }
 
@@ -165,6 +245,21 @@ export function registerManorSettingsRoutes(access: SettingsRouteAccess): void {
   access.app.post("/api/settings/reseed", async (_request, response) => {
     try {
       await access.settingsService.reseedUnset();
+      await access.onSettingsChanged();
+      response.json(settingsPayload(access));
+    } catch (error) {
+      response.status(400).json({ error: redactMessage(error) });
+    }
+  });
+
+  access.app.post("/api/settings/restore-group", async (request, response) => {
+    try {
+      const group = typeof request.body?.group === "string" ? request.body.group as SettingsGroupKey : null;
+      if (!group) {
+        response.status(400).json({ error: "Missing 'group' in request body." });
+        return;
+      }
+      await access.settingsService.restoreGroup(group);
       await access.onSettingsChanged();
       response.json(settingsPayload(access));
     } catch (error) {

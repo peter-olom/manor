@@ -116,7 +116,7 @@ export type PairComposeSettings = {
     availableThinkingLevels: string[];
   };
   worker: {
-    runtime: "auto" | "codex" | "pi-rpc";
+    runtime: "auto" | "openai" | "pi-rpc";
     provider: string | null;
     model: string | null;
     effort: string | null;

@@ -16,7 +16,7 @@ import { HostControllerClient } from "./host-controller-client.js";
 import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
 import { createManorSettingsApplyHandler } from "./manor-settings-apply.js";
 import { defaultManorSettingsPath, ManorSettingsService } from "./manor-settings-service.js";
-import { setActiveManorSettingsService } from "./manor-settings-runtime.js";
+import { setActiveManorSettingsService, getActiveManorSettings } from "./manor-settings-runtime.js";
 import { registerManorSettingsRoutes } from "./manor-settings-routes.js";
 import { normalizeMemoryCodexModelEnv } from "./memory-codex-model.js";
 import { getMemoryDebugTrace, listMemoryDebugTraces } from "./memory-debug-traces.js";
@@ -84,6 +84,13 @@ const sessionDir = path.join(stateDir, "pi-sessions");
 const pairSessionDir = path.join(stateDir, "pi-pair-sessions");
 const staticDir = path.resolve(process.cwd(), "dist/web"); const indexTemplatePath = path.resolve(process.cwd(), "index.html");
 let butlerAuthLoginSession: {
+  child: ChildProcessWithoutNullStreams;
+  authUrl: string | null;
+  startedAt: number;
+  output: string;
+} | null = null;
+
+let codexAuthLoginSession: {
   child: ChildProcessWithoutNullStreams;
   authUrl: string | null;
   startedAt: number;
@@ -167,6 +174,80 @@ function startButlerAuthLogin(): Promise<string> {
   });
 }
 
+function extractCodexAuthUrl(output: string): string | null {
+  const match = output.match(/https:\/\/auth\.openai\.com\/codex\/device\S*/);
+  return match ? match[0] : null;
+}
+
+function clearCodexAuthLoginSession(child: ChildProcessWithoutNullStreams): void {
+  if (codexAuthLoginSession?.child === child) {
+    codexAuthLoginSession = null;
+  }
+}
+
+function startCodexAuthLogin(): Promise<string> {
+  if (codexAuthLoginSession?.authUrl) {
+    return Promise.resolve(codexAuthLoginSession.authUrl);
+  }
+
+  if (codexAuthLoginSession) {
+    codexAuthLoginSession.child.kill();
+    codexAuthLoginSession = null;
+  }
+
+  const child = spawn("codex", ["login", "--device-auth"], {
+    env: {
+      ...process.env,
+      CODEX_HOME: codexHomeDir
+    }
+  });
+
+  codexAuthLoginSession = {
+    child,
+    authUrl: null,
+    startedAt: Date.now(),
+    output: ""
+  };
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error("Timed out waiting for Codex auth URL. Open the Codex terminal and run codex-auth device."));
+    }, butlerAuthLoginTimeoutMs);
+
+    const finishWithUrl = (chunk: Buffer) => {
+      const session = codexAuthLoginSession;
+      if (!session || session.child !== child) {
+        return;
+      }
+
+      session.output += chunk.toString("utf8");
+      const authUrl = extractCodexAuthUrl(session.output);
+      if (!authUrl) {
+        return;
+      }
+
+      session.authUrl = authUrl;
+      clearTimeout(timeout);
+      resolve(authUrl);
+    };
+
+    child.stdout.on("data", finishWithUrl);
+    child.stderr.on("data", finishWithUrl);
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      clearCodexAuthLoginSession(child);
+      reject(error);
+    });
+    child.on("exit", (code) => {
+      clearTimeout(timeout);
+      clearCodexAuthLoginSession(child);
+      if (code !== 0) {
+        reject(new Error(`Codex auth exited with code ${code ?? "unknown"}. Open the Codex terminal and run codex-auth device.`));
+      }
+    });
+  });
+}
+
 const store = new ButlerStateStore(uiStatePath, {
   previewLeaseTtlMs,
   stackLeaseTtlMs,
@@ -238,6 +319,11 @@ const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, 
   artifactsDir,
   authTokenFile: codexAppServerAuthTokenFile
 });
+function buildOperatorPromptSuffix(): string | null {
+  const name = getActiveManorSettings().overview.operatorName.trim();
+  return name ? `Refer to the operator as ${name}.` : null;
+}
+
 const butlerAgent = new ButlerAgentService({
   store,
   memoryScheduler,
@@ -254,7 +340,8 @@ const butlerAgent = new ButlerAgentService({
   fileStore,
   artifactsDir,
   routingClassifier,
-  refreshRuntimeInventory: syncRuntimeInventory
+  refreshRuntimeInventory: syncRuntimeInventory,
+  systemPromptSuffix: buildOperatorPromptSuffix()
 });
 const pairSessions = new PairSessionManager({
   pairStore,
@@ -430,6 +517,20 @@ app.post("/api/auth/butler/device", async (_request, response) => {
     response.json({
       authUrl,
       startedAt: butlerAuthLoginSession?.startedAt ?? Date.now()
+    });
+  } catch (error) {
+    response.status(500).json({
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
+app.post("/api/auth/codex/device", async (_request, response) => {
+  try {
+    const authUrl = await startCodexAuthLogin();
+    response.json({
+      authUrl,
+      startedAt: codexAuthLoginSession?.startedAt ?? Date.now()
     });
   } catch (error) {
     response.status(500).json({

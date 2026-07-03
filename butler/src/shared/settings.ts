@@ -1,13 +1,16 @@
 export type SettingsProvenance = "default" | "env_seed" | "ui";
 
 export type SettingsGroupKey =
+  | "overview"
   | "providers.ollamaCloud"
-  | "providers.ollamaWebTools"
+  | "providers.opencodeGo"
   | "worker"
   | "butler"
   | "modelTasks"
   | "memory"
   | "embeddings";
+
+export type SettingsProviderKey = "openai-codex" | "ollama-cloud" | "opencode-go";
 
 export type SettingsSecretSource =
   | { type: "env"; name: string }
@@ -15,11 +18,36 @@ export type SettingsSecretSource =
   | { type: "asiri"; workspace: string; path: string };
 
 export type SettingsRunnerMode = "auto" | "codex" | "pi";
-export type SettingsWorkerRuntime = "auto" | "codex" | "pi-rpc";
+export type SettingsWorkerRuntime = "auto" | "openai" | "pi-rpc";
 export type SettingsReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 export type SettingsThinkingLevel = "off" | "low" | "medium" | "high" | "xhigh";
 
+export type SettingsProviderModel =
+  | string
+  | { id: string; api?: string | null; reasoning?: boolean | null };
+
+export type SettingsWebTools = {
+  enabled: boolean;
+  baseUrl: string;
+  maxResults: number;
+  timeoutMs: number;
+  maxContentChars: number;
+  forAllPiModels: boolean;
+};
+
+export type SettingsOpencodeWebTools = {
+  enabled: boolean;
+  maxResults: number;
+  timeoutMs: number;
+  maxContentChars: number;
+};
+
 export type ManorSettings = {
+  overview: {
+    operatorName: string;
+    butlerProvider: SettingsProviderKey;
+    codexProvider: SettingsProviderKey;
+  };
   providers: {
     ollamaCloud: {
       enabled: boolean;
@@ -27,22 +55,29 @@ export type ManorSettings = {
       providerName: string;
       baseUrl: string;
       api: string;
-      models: string[];
+      models: SettingsProviderModel[];
       contextWindow: number;
       maxTokens: number;
       reasoning: boolean;
       supportsDeveloperRole: boolean;
       supportsReasoningEffort: boolean;
       apiKeySource: SettingsSecretSource;
+      webTools: SettingsWebTools;
     };
-    ollamaWebTools: {
+    opencodeGo: {
       enabled: boolean;
+      providerId: string;
+      providerName: string;
       baseUrl: string;
-      maxResults: number;
-      timeoutMs: number;
-      maxContentChars: number;
-      forAllPiModels: boolean;
+      api: string;
+      models: SettingsProviderModel[];
+      contextWindow: number;
+      maxTokens: number;
+      reasoning: boolean;
+      supportsDeveloperRole: boolean;
+      supportsReasoningEffort: boolean;
       apiKeySource: SettingsSecretSource;
+      webTools: SettingsOpencodeWebTools;
     };
   };
   worker: {
@@ -95,8 +130,11 @@ export type SettingsValidationKey =
   | "codex"
   | "piRpc"
   | "ollamaCloud"
+  | "opencodeGo"
   | "ollamaWebSearch"
   | "ollamaWebFetch"
+  | "opencodeWebSearch"
+  | "opencodeWebFetch"
   | "memoryEmbeddings";
 
 export type SettingsValidationResult = {
@@ -106,3 +144,15 @@ export type SettingsValidationResult = {
 };
 
 export type SettingsValidationMap = Record<SettingsValidationKey, SettingsValidationResult>;
+
+export type SettingsProviderAvailability = {
+  secretAvailable: boolean;
+  enabled: boolean;
+  reason: string | null;
+};
+
+export type SettingsProviderAvailabilityMap = {
+  "openai-codex": SettingsProviderAvailability;
+  "ollama-cloud": SettingsProviderAvailability;
+  "opencode-go": SettingsProviderAvailability;
+};

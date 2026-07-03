@@ -15,6 +15,7 @@ import type {
   SettingsValidationResult
 } from "../shared/settings.js";
 import {
+  DEFAULT_MANOR_SETTINGS,
   DEFAULT_SETTINGS_VALIDATION,
   SETTINGS_GROUP_KEYS,
   SETTINGS_VALIDATION_KEYS,
@@ -165,7 +166,7 @@ function parseJsonObject(value: string): unknown {
 function patchGroupKeys(patch: Partial<ManorSettings>): SettingsGroupKey[] {
   const keys: SettingsGroupKey[] = [];
   if (patch.providers?.ollamaCloud) keys.push("providers.ollamaCloud");
-  if (patch.providers?.ollamaWebTools) keys.push("providers.ollamaWebTools");
+  if (patch.providers?.opencodeGo) keys.push("providers.opencodeGo");
   if (patch.worker) keys.push("worker");
   if (patch.butler) keys.push("butler");
   if (patch.modelTasks) keys.push("modelTasks");
@@ -177,7 +178,7 @@ function patchGroupKeys(patch: Partial<ManorSettings>): SettingsGroupKey[] {
 function patchGroupValue(patch: Partial<ManorSettings>, key: SettingsGroupKey): unknown {
   switch (key) {
     case "providers.ollamaCloud": return patch.providers?.ollamaCloud;
-    case "providers.ollamaWebTools": return patch.providers?.ollamaWebTools;
+    case "providers.opencodeGo": return patch.providers?.opencodeGo;
     case "worker": return patch.worker;
     case "butler": return patch.butler;
     case "modelTasks": return patch.modelTasks;
@@ -274,6 +275,16 @@ export class ManorSettingsService extends EventEmitter<{ change: [ManorSettings]
     await this.persistGroups(next, keys, "env_seed");
     this.settings = next;
     for (const key of keys) this.provenance[key] = envSeed.provenance[key];
+    this.emit("change", this.getSettings());
+    return this.getSettings();
+  }
+
+  async restoreGroup(key: SettingsGroupKey): Promise<ManorSettings> {
+    this.assertLoaded();
+    const next = applyGroupValue(this.settings, key, groupValue(DEFAULT_MANOR_SETTINGS, key));
+    await this.persistGroups(next, [key], "default");
+    this.settings = next;
+    this.provenance[key] = "default";
     this.emit("change", this.getSettings());
     return this.getSettings();
   }

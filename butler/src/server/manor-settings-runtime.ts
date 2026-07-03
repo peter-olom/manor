@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { promises as fs, statSync } from "node:fs";
 
 import type { ManorSettings, SettingsSecretSource } from "../shared/settings.js";
 import { buildManorSettingsFromEnv, cloneManorSettings } from "./manor-settings-schema.js";
@@ -40,4 +40,20 @@ export async function readSecretSourceValue(source: SettingsSecretSource, env: N
     return content.trim() || null;
   }
   return null;
+}
+
+export function isSecretSourceAvailable(source: SettingsSecretSource, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (source.type === "env") {
+    return Boolean(env[source.name]?.trim());
+  }
+  if (source.type === "file") {
+    const filePath = env[source.pathEnv]?.trim();
+    if (!filePath) return false;
+    try {
+      return Boolean(statSync(filePath).isFile());
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }

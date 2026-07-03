@@ -7,6 +7,7 @@ import { RpcClient, type RpcEventListener } from "@mariozechner/pi-coding-agent"
 
 import { createManorModelRegistry, modelToModelOption } from "./model-provider-config.js";
 import { readOllamaWebToolsConfig, shouldAttachOllamaWebTools } from "./ollama-web-tools.js";
+import { shouldAttachOpencodeWebTools } from "./opencode-web-tools.js";
 import { PiProviderRuntimeMapper } from "./pi-provider-events.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { CodexInputItem } from "./image-store.js";
@@ -53,12 +54,21 @@ export function defaultOllamaWebToolsExtensionPath(): string {
   return path.join(path.dirname(currentPath), `pi-ollama-web-tools-extension${path.extname(currentPath)}`);
 }
 
-export async function ollamaWebToolsExtensionArgsForProvider(provider: string | null | undefined, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
-  const config = await readOllamaWebToolsConfig(env);
-  if (!config.enabled || !shouldAttachOllamaWebTools(provider, env)) {
-    return [];
+export function defaultOpencodeWebToolsExtensionPath(): string {
+  const currentPath = fileURLToPath(import.meta.url);
+  return path.join(path.dirname(currentPath), `pi-opencode-web-tools-extension${path.extname(currentPath)}`);
+}
+
+export async function webToolsExtensionArgsForProvider(provider: string | null | undefined, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
+  const args: string[] = [];
+  const ollamaConfig = await readOllamaWebToolsConfig(env);
+  if (ollamaConfig.enabled && shouldAttachOllamaWebTools(provider, env)) {
+    args.push("--extension", defaultOllamaWebToolsExtensionPath());
   }
-  return ["--extension", defaultOllamaWebToolsExtensionPath()];
+  if (shouldAttachOpencodeWebTools(provider, env)) {
+    args.push("--extension", defaultOpencodeWebToolsExtensionPath());
+  }
+  return args;
 }
 
 export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
@@ -192,7 +202,7 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
 
   private async createSession(threadId: string, cwd: string): Promise<PiWorkerSession> {
     const modelRef = this.selectedProvider && this.selectedModel ? `${this.selectedProvider}/${this.selectedModel}` : this.selectedModel ?? undefined;
-    const extensionArgs = await this.ollamaWebToolsExtensionArgs();
+    const extensionArgs = await this.webToolsExtensionArgs();
     const client = new RpcClient({
       cwd,
       cliPath: this.options.cliPath ?? defaultPiCliPath(),
@@ -216,8 +226,8 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     return session;
   }
 
-  private async ollamaWebToolsExtensionArgs(): Promise<string[]> {
-    return ollamaWebToolsExtensionArgsForProvider(this.selectedProvider);
+  private async webToolsExtensionArgs(): Promise<string[]> {
+    return webToolsExtensionArgsForProvider(this.selectedProvider);
   }
 
   private applyPatch(patch: ProviderRuntimeLivePatch): void {

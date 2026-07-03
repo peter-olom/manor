@@ -1439,6 +1439,7 @@ export class ButlerAgentService extends EventEmitter {
     access.emit("change");
   }
 
+  getButlerAuthStatus(): ButlerAuthStatus { return this.auth; }
   getCodexAuthStatus(): ButlerAuthStatus { return this.codexAuth; }
 
   trackScratchPadDelegation(threadId: string): void {

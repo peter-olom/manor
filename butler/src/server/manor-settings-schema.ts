@@ -2,12 +2,16 @@ import type {
   ManorSettings,
   ManorSettingsProvenance,
   SettingsGroupKey,
+  SettingsOpencodeWebTools,
   SettingsProvenance,
+  SettingsProviderKey,
+  SettingsProviderModel,
   SettingsReasoningEffort,
   SettingsSecretSource,
   SettingsThinkingLevel,
   SettingsValidationKey,
   SettingsValidationMap,
+  SettingsWebTools,
   SettingsWorkerRuntime
 } from "../shared/settings.js";
 
@@ -20,9 +24,28 @@ const DEFAULT_OLLAMA_CLOUD_MODELS = [
   "minimax-m3"
 ];
 
+// OpenCode Go models. Models served via the Anthropic /v1/messages shape
+// declare api:"anthropic"; the rest inherit the provider-level openai-completions.
+const DEFAULT_OPENCODE_GO_MODELS: SettingsProviderModel[] = [
+  "glm-5.2",
+  "glm-5.1",
+  "kimi-k2.7-code",
+  "kimi-k2.6",
+  "deepseek-v4-pro",
+  "deepseek-v4-flash",
+  "mimo-v2.5",
+  "mimo-v2.5-pro",
+  { id: "minimax-m3", api: "anthropic" },
+  { id: "minimax-m2.7", api: "anthropic" },
+  { id: "qwen3.7-max", api: "anthropic" },
+  { id: "qwen3.7-plus", api: "anthropic" },
+  { id: "qwen3.6-plus", api: "anthropic" }
+];
+
 export const SETTINGS_GROUP_KEYS: SettingsGroupKey[] = [
+  "overview",
   "providers.ollamaCloud",
-  "providers.ollamaWebTools",
+  "providers.opencodeGo",
   "worker",
   "butler",
   "modelTasks",
@@ -34,12 +57,20 @@ export const SETTINGS_VALIDATION_KEYS: SettingsValidationKey[] = [
   "codex",
   "piRpc",
   "ollamaCloud",
+  "opencodeGo",
   "ollamaWebSearch",
   "ollamaWebFetch",
+  "opencodeWebSearch",
+  "opencodeWebFetch",
   "memoryEmbeddings"
 ];
 
 export const DEFAULT_MANOR_SETTINGS: ManorSettings = {
+  overview: {
+    operatorName: "",
+    butlerProvider: "openai-codex",
+    codexProvider: "openai-codex"
+  },
   providers: {
     ollamaCloud: {
       enabled: true,
@@ -53,16 +84,35 @@ export const DEFAULT_MANOR_SETTINGS: ManorSettings = {
       reasoning: true,
       supportsDeveloperRole: false,
       supportsReasoningEffort: false,
-      apiKeySource: { type: "env", name: "OLLAMA_API_KEY" }
+      apiKeySource: { type: "env", name: "OLLAMA_API_KEY" },
+      webTools: {
+        enabled: true,
+        baseUrl: "https://ollama.com/api",
+        maxResults: 5,
+        timeoutMs: 30_000,
+        maxContentChars: 12_000,
+        forAllPiModels: false
+      }
     },
-    ollamaWebTools: {
-      enabled: true,
-      baseUrl: "https://ollama.com/api",
-      maxResults: 5,
-      timeoutMs: 30_000,
-      maxContentChars: 12_000,
-      forAllPiModels: false,
-      apiKeySource: { type: "env", name: "OLLAMA_API_KEY" }
+    opencodeGo: {
+      enabled: false,
+      providerId: "opencode-go",
+      providerName: "OpenCode Go",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+      api: "openai-completions",
+      models: DEFAULT_OPENCODE_GO_MODELS,
+      contextWindow: 131_072,
+      maxTokens: 32_768,
+      reasoning: true,
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: false,
+      apiKeySource: { type: "env", name: "OPENCODE_API_KEY" },
+      webTools: {
+        enabled: false,
+        maxResults: 5,
+        timeoutMs: 30_000,
+        maxContentChars: 12_000
+      }
     }
   },
   worker: {
@@ -166,6 +216,29 @@ function csv(value: unknown, fallback: string[]): string[] {
   return normalized.length > 0 ? normalized : [...fallback];
 }
 
+function providerModels(value: unknown, fallback: SettingsProviderModel[]): SettingsProviderModel[] {
+  const coerce = (entry: unknown): SettingsProviderModel | null => {
+    if (typeof entry === "string") {
+      const trimmed = entry.trim();
+      return trimmed || null;
+    }
+    if (isRecord(entry) && typeof entry.id === "string" && entry.id.trim()) {
+      const api = typeof entry.api === "string" && entry.api.trim() ? entry.api.trim() : null;
+      const reasoning = typeof entry.reasoning === "boolean" ? entry.reasoning : null;
+      return { id: entry.id.trim(), api, reasoning };
+    }
+    return null;
+  };
+  const list: SettingsProviderModel[] = [];
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const coerced = coerce(entry);
+      if (coerced) list.push(coerced);
+    }
+  }
+  return list.length > 0 ? list : fallback.map((entry) => (typeof entry === "string" ? entry : { ...entry }));
+}
+
 function secretSource(value: unknown, fallback: SettingsSecretSource): SettingsSecretSource {
   if (!isRecord(value)) return { ...fallback };
   if (value.type === "env") {
@@ -180,6 +253,28 @@ function secretSource(value: unknown, fallback: SettingsSecretSource): SettingsS
   return { ...fallback };
 }
 
+function webTools(value: unknown, fallback: SettingsWebTools): SettingsWebTools {
+  const raw = isRecord(value) ? value : {};
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    baseUrl: baseUrl(raw.baseUrl, fallback.baseUrl),
+    maxResults: integer(raw.maxResults, fallback.maxResults, 1, 10),
+    timeoutMs: integer(raw.timeoutMs, fallback.timeoutMs, 1_000, 10 * 60_000),
+    maxContentChars: integer(raw.maxContentChars, fallback.maxContentChars, 1_000, 200_000),
+    forAllPiModels: bool(raw.forAllPiModels, false)
+  };
+}
+
+function opencodeWebTools(value: unknown, fallback: SettingsOpencodeWebTools): SettingsOpencodeWebTools {
+  const raw = isRecord(value) ? value : {};
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    maxResults: integer(raw.maxResults, fallback.maxResults, 1, 10),
+    timeoutMs: integer(raw.timeoutMs, fallback.timeoutMs, 1_000, 10 * 60_000),
+    maxContentChars: integer(raw.maxContentChars, fallback.maxContentChars, 1_000, 200_000)
+  };
+}
+
 function reasoningEffort(value: unknown): SettingsReasoningEffort | null {
   return value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" ? value : null;
 }
@@ -189,7 +284,10 @@ function thinkingLevel(value: unknown): SettingsThinkingLevel {
 }
 
 function workerRuntime(value: unknown): SettingsWorkerRuntime {
-  return value === "codex" || value === "pi-rpc" ? value : "auto";
+  if (value === "codex") {
+    throw new Error("MANOR_WORKER_RUNTIME=codex is no longer supported. Use 'openai' for OpenAI/Codex CLI, or 'pi-rpc' for Pi RPC. Run Reseed to reset settings.");
+  }
+  return value === "openai" || value === "pi-rpc" ? value : "auto";
 }
 
 function runnerMode(value: unknown): ManorSettings["modelTasks"]["runnerMode"] {
@@ -200,11 +298,23 @@ function memoryEffort(value: unknown): ManorSettings["memory"]["synthesisEffort"
   return value === "low" || value === "medium" || value === "high" ? value : null;
 }
 
+function checkBreakingShape(providers: Record<string, unknown>): void {
+  if ("ollamaWebTools" in providers) {
+    throw new Error("providers.ollamaWebTools has been moved to providers.ollamaCloud.webTools. Run Reseed to reset settings.");
+  }
+}
+
+function providerKey(value: unknown, fallback: SettingsProviderKey): SettingsProviderKey {
+  return value === "openai-codex" || value === "ollama-cloud" || value === "opencode-go" ? value : fallback;
+}
+
 export function normalizeManorSettings(value: unknown): ManorSettings {
   const raw = isRecord(value) ? value : {};
+  const overview = isRecord(raw.overview) ? raw.overview : {};
   const providers = isRecord(raw.providers) ? raw.providers : {};
+  checkBreakingShape(providers);
   const ollamaCloud = isRecord(providers.ollamaCloud) ? providers.ollamaCloud : {};
-  const ollamaWebTools = isRecord(providers.ollamaWebTools) ? providers.ollamaWebTools : {};
+  const opencodeGo = isRecord(providers.opencodeGo) ? providers.opencodeGo : {};
   const worker = isRecord(raw.worker) ? raw.worker : {};
   const butler = isRecord(raw.butler) ? raw.butler : {};
   const modelTasks = isRecord(raw.modelTasks) ? raw.modelTasks : {};
@@ -212,6 +322,11 @@ export function normalizeManorSettings(value: unknown): ManorSettings {
   const embeddings = isRecord(raw.embeddings) ? raw.embeddings : {};
 
   return {
+    overview: {
+      operatorName: typeof overview.operatorName === "string" ? overview.operatorName.trim() : "",
+      butlerProvider: providerKey(overview.butlerProvider, DEFAULT_MANOR_SETTINGS.overview.butlerProvider),
+      codexProvider: providerKey(overview.codexProvider, DEFAULT_MANOR_SETTINGS.overview.codexProvider)
+    },
     providers: {
       ollamaCloud: {
         enabled: bool(ollamaCloud.enabled, DEFAULT_MANOR_SETTINGS.providers.ollamaCloud.enabled),
@@ -219,22 +334,29 @@ export function normalizeManorSettings(value: unknown): ManorSettings {
         providerName: text(ollamaCloud.providerName, DEFAULT_MANOR_SETTINGS.providers.ollamaCloud.providerName),
         baseUrl: baseUrl(ollamaCloud.baseUrl, DEFAULT_MANOR_SETTINGS.providers.ollamaCloud.baseUrl),
         api: text(ollamaCloud.api, DEFAULT_MANOR_SETTINGS.providers.ollamaCloud.api),
-        models: csv(ollamaCloud.models, DEFAULT_MANOR_SETTINGS.providers.ollamaCloud.models),
+        models: providerModels(ollamaCloud.models, DEFAULT_MANOR_SETTINGS.providers.ollamaCloud.models),
         contextWindow: integer(ollamaCloud.contextWindow, DEFAULT_MANOR_SETTINGS.providers.ollamaCloud.contextWindow, 8_192, 2_000_000),
         maxTokens: integer(ollamaCloud.maxTokens, DEFAULT_MANOR_SETTINGS.providers.ollamaCloud.maxTokens, 1_024, 2_000_000),
         reasoning: bool(ollamaCloud.reasoning, DEFAULT_MANOR_SETTINGS.providers.ollamaCloud.reasoning),
         supportsDeveloperRole: bool(ollamaCloud.supportsDeveloperRole, false),
         supportsReasoningEffort: bool(ollamaCloud.supportsReasoningEffort, false),
-        apiKeySource: secretSource(ollamaCloud.apiKeySource, DEFAULT_MANOR_SETTINGS.providers.ollamaCloud.apiKeySource)
+        apiKeySource: secretSource(ollamaCloud.apiKeySource, DEFAULT_MANOR_SETTINGS.providers.ollamaCloud.apiKeySource),
+        webTools: webTools(ollamaCloud.webTools, DEFAULT_MANOR_SETTINGS.providers.ollamaCloud.webTools)
       },
-      ollamaWebTools: {
-        enabled: bool(ollamaWebTools.enabled, DEFAULT_MANOR_SETTINGS.providers.ollamaWebTools.enabled),
-        baseUrl: baseUrl(ollamaWebTools.baseUrl, DEFAULT_MANOR_SETTINGS.providers.ollamaWebTools.baseUrl),
-        maxResults: integer(ollamaWebTools.maxResults, DEFAULT_MANOR_SETTINGS.providers.ollamaWebTools.maxResults, 1, 10),
-        timeoutMs: integer(ollamaWebTools.timeoutMs, DEFAULT_MANOR_SETTINGS.providers.ollamaWebTools.timeoutMs, 1_000, 10 * 60_000),
-        maxContentChars: integer(ollamaWebTools.maxContentChars, DEFAULT_MANOR_SETTINGS.providers.ollamaWebTools.maxContentChars, 1_000, 200_000),
-        forAllPiModels: bool(ollamaWebTools.forAllPiModels, false),
-        apiKeySource: secretSource(ollamaWebTools.apiKeySource, DEFAULT_MANOR_SETTINGS.providers.ollamaWebTools.apiKeySource)
+      opencodeGo: {
+        enabled: bool(opencodeGo.enabled, DEFAULT_MANOR_SETTINGS.providers.opencodeGo.enabled),
+        providerId: text(opencodeGo.providerId, DEFAULT_MANOR_SETTINGS.providers.opencodeGo.providerId),
+        providerName: text(opencodeGo.providerName, DEFAULT_MANOR_SETTINGS.providers.opencodeGo.providerName),
+        baseUrl: baseUrl(opencodeGo.baseUrl, DEFAULT_MANOR_SETTINGS.providers.opencodeGo.baseUrl),
+        api: text(opencodeGo.api, DEFAULT_MANOR_SETTINGS.providers.opencodeGo.api),
+        models: providerModels(opencodeGo.models, DEFAULT_MANOR_SETTINGS.providers.opencodeGo.models),
+        contextWindow: integer(opencodeGo.contextWindow, DEFAULT_MANOR_SETTINGS.providers.opencodeGo.contextWindow, 8_192, 2_000_000),
+        maxTokens: integer(opencodeGo.maxTokens, DEFAULT_MANOR_SETTINGS.providers.opencodeGo.maxTokens, 1_024, 2_000_000),
+        reasoning: bool(opencodeGo.reasoning, DEFAULT_MANOR_SETTINGS.providers.opencodeGo.reasoning),
+        supportsDeveloperRole: bool(opencodeGo.supportsDeveloperRole, false),
+        supportsReasoningEffort: bool(opencodeGo.supportsReasoningEffort, false),
+        apiKeySource: secretSource(opencodeGo.apiKeySource, DEFAULT_MANOR_SETTINGS.providers.opencodeGo.apiKeySource),
+        webTools: opencodeWebTools(opencodeGo.webTools, DEFAULT_MANOR_SETTINGS.providers.opencodeGo.webTools)
       }
     },
     worker: {
@@ -289,6 +411,11 @@ function envSource(env: NodeJS.ProcessEnv): SettingsSecretSource {
   return { type: "env", name: "OLLAMA_API_KEY" };
 }
 
+function opencodeEnvSource(env: NodeJS.ProcessEnv): SettingsSecretSource {
+  if (env.OPENCODE_API_KEY_FILE?.trim()) return { type: "file", pathEnv: "OPENCODE_API_KEY_FILE" };
+  return { type: "env", name: "OPENCODE_API_KEY" };
+}
+
 function hasEnv(env: NodeJS.ProcessEnv, key: string): boolean {
   return env[key] !== undefined && `${env[key]}`.trim() !== "";
 }
@@ -303,30 +430,54 @@ export function buildManorSettingsFromEnv(env: NodeJS.ProcessEnv = process.env):
     write(env[key] ?? "");
   };
 
+  apply("overview", "MANOR_OPERATOR_NAME", (value) => { settings.overview.operatorName = value.trim(); });
+  apply("overview", "MANOR_BUTLER_PROVIDER", (value) => { settings.overview.butlerProvider = providerKey(value, settings.overview.butlerProvider); });
+  apply("overview", "MANOR_CODEX_PROVIDER", (value) => { settings.overview.codexProvider = providerKey(value, settings.overview.codexProvider); });
+
   apply("providers.ollamaCloud", "MANOR_OLLAMA_CLOUD_ENABLED", (value) => { settings.providers.ollamaCloud.enabled = bool(value, settings.providers.ollamaCloud.enabled); });
   apply("providers.ollamaCloud", "MANOR_OLLAMA_CLOUD_PROVIDER_ID", (value) => { settings.providers.ollamaCloud.providerId = text(value, settings.providers.ollamaCloud.providerId); });
   apply("providers.ollamaCloud", "MANOR_OLLAMA_CLOUD_PROVIDER_NAME", (value) => { settings.providers.ollamaCloud.providerName = text(value, settings.providers.ollamaCloud.providerName); });
   apply("providers.ollamaCloud", "MANOR_OLLAMA_CLOUD_BASE_URL", (value) => { settings.providers.ollamaCloud.baseUrl = baseUrl(value, settings.providers.ollamaCloud.baseUrl); });
   apply("providers.ollamaCloud", "MANOR_OLLAMA_CLOUD_API", (value) => { settings.providers.ollamaCloud.api = text(value, settings.providers.ollamaCloud.api); });
-  apply("providers.ollamaCloud", "MANOR_OLLAMA_CLOUD_MODELS", (value) => { settings.providers.ollamaCloud.models = csv(value, settings.providers.ollamaCloud.models); });
+  apply("providers.ollamaCloud", "MANOR_OLLAMA_CLOUD_MODELS", (value) => {
+    const ids = csv(value, []);
+    if (ids.length > 0) settings.providers.ollamaCloud.models = ids;
+  });
   apply("providers.ollamaCloud", "MANOR_OLLAMA_CLOUD_CONTEXT_WINDOW", (value) => { settings.providers.ollamaCloud.contextWindow = integer(value, settings.providers.ollamaCloud.contextWindow, 8_192, 2_000_000); });
   apply("providers.ollamaCloud", "MANOR_OLLAMA_CLOUD_MAX_TOKENS", (value) => { settings.providers.ollamaCloud.maxTokens = integer(value, settings.providers.ollamaCloud.maxTokens, 1_024, 2_000_000); });
   apply("providers.ollamaCloud", "MANOR_OLLAMA_CLOUD_REASONING", (value) => { settings.providers.ollamaCloud.reasoning = bool(value, settings.providers.ollamaCloud.reasoning); });
   apply("providers.ollamaCloud", "MANOR_OLLAMA_CLOUD_SUPPORTS_DEVELOPER_ROLE", (value) => { settings.providers.ollamaCloud.supportsDeveloperRole = bool(value, false); });
   apply("providers.ollamaCloud", "MANOR_OLLAMA_CLOUD_SUPPORTS_REASONING_EFFORT", (value) => { settings.providers.ollamaCloud.supportsReasoningEffort = bool(value, false); });
+  apply("providers.ollamaCloud", "MANOR_OLLAMA_WEB_TOOLS_ENABLED", (value) => { settings.providers.ollamaCloud.webTools.enabled = bool(value, settings.providers.ollamaCloud.webTools.enabled); });
+  apply("providers.ollamaCloud", "MANOR_OLLAMA_WEB_TOOLS_BASE_URL", (value) => { settings.providers.ollamaCloud.webTools.baseUrl = baseUrl(value, settings.providers.ollamaCloud.webTools.baseUrl); });
+  apply("providers.ollamaCloud", "MANOR_OLLAMA_WEB_SEARCH_MAX_RESULTS", (value) => { settings.providers.ollamaCloud.webTools.maxResults = integer(value, settings.providers.ollamaCloud.webTools.maxResults, 1, 10); });
+  apply("providers.ollamaCloud", "MANOR_OLLAMA_WEB_TOOLS_TIMEOUT_MS", (value) => { settings.providers.ollamaCloud.webTools.timeoutMs = integer(value, settings.providers.ollamaCloud.webTools.timeoutMs, 1_000, 10 * 60_000); });
+  apply("providers.ollamaCloud", "MANOR_OLLAMA_WEB_TOOLS_MAX_CONTENT_CHARS", (value) => { settings.providers.ollamaCloud.webTools.maxContentChars = integer(value, settings.providers.ollamaCloud.webTools.maxContentChars, 1_000, 200_000); });
+  apply("providers.ollamaCloud", "MANOR_OLLAMA_WEB_TOOLS_FOR_ALL_PI_MODELS", (value) => { settings.providers.ollamaCloud.webTools.forAllPiModels = bool(value, false); });
   if (hasEnv(env, "OLLAMA_API_KEY") || hasEnv(env, "OLLAMA_API_KEY_FILE")) {
     markEnvGroup(envGroups, "providers.ollamaCloud");
-    markEnvGroup(envGroups, "providers.ollamaWebTools");
     settings.providers.ollamaCloud.apiKeySource = envSource(env);
-    settings.providers.ollamaWebTools.apiKeySource = envSource(env);
   }
 
-  apply("providers.ollamaWebTools", "MANOR_OLLAMA_WEB_TOOLS_ENABLED", (value) => { settings.providers.ollamaWebTools.enabled = bool(value, settings.providers.ollamaWebTools.enabled); });
-  apply("providers.ollamaWebTools", "MANOR_OLLAMA_WEB_TOOLS_BASE_URL", (value) => { settings.providers.ollamaWebTools.baseUrl = baseUrl(value, settings.providers.ollamaWebTools.baseUrl); });
-  apply("providers.ollamaWebTools", "MANOR_OLLAMA_WEB_SEARCH_MAX_RESULTS", (value) => { settings.providers.ollamaWebTools.maxResults = integer(value, settings.providers.ollamaWebTools.maxResults, 1, 10); });
-  apply("providers.ollamaWebTools", "MANOR_OLLAMA_WEB_TOOLS_TIMEOUT_MS", (value) => { settings.providers.ollamaWebTools.timeoutMs = integer(value, settings.providers.ollamaWebTools.timeoutMs, 1_000, 10 * 60_000); });
-  apply("providers.ollamaWebTools", "MANOR_OLLAMA_WEB_TOOLS_MAX_CONTENT_CHARS", (value) => { settings.providers.ollamaWebTools.maxContentChars = integer(value, settings.providers.ollamaWebTools.maxContentChars, 1_000, 200_000); });
-  apply("providers.ollamaWebTools", "MANOR_OLLAMA_WEB_TOOLS_FOR_ALL_PI_MODELS", (value) => { settings.providers.ollamaWebTools.forAllPiModels = bool(value, false); });
+  apply("providers.opencodeGo", "MANOR_OPENCODE_GO_ENABLED", (value) => { settings.providers.opencodeGo.enabled = bool(value, settings.providers.opencodeGo.enabled); });
+  apply("providers.opencodeGo", "MANOR_OPENCODE_GO_PROVIDER_ID", (value) => { settings.providers.opencodeGo.providerId = text(value, settings.providers.opencodeGo.providerId); });
+  apply("providers.opencodeGo", "MANOR_OPENCODE_GO_PROVIDER_NAME", (value) => { settings.providers.opencodeGo.providerName = text(value, settings.providers.opencodeGo.providerName); });
+  apply("providers.opencodeGo", "MANOR_OPENCODE_GO_BASE_URL", (value) => { settings.providers.opencodeGo.baseUrl = baseUrl(value, settings.providers.opencodeGo.baseUrl); });
+  apply("providers.opencodeGo", "MANOR_OPENCODE_GO_API", (value) => { settings.providers.opencodeGo.api = text(value, settings.providers.opencodeGo.api); });
+  apply("providers.opencodeGo", "MANOR_OPENCODE_GO_MODELS", (value) => {
+    const ids = csv(value, []);
+    if (ids.length > 0) settings.providers.opencodeGo.models = ids;
+  });
+  apply("providers.opencodeGo", "MANOR_OPENCODE_GO_CONTEXT_WINDOW", (value) => { settings.providers.opencodeGo.contextWindow = integer(value, settings.providers.opencodeGo.contextWindow, 8_192, 2_000_000); });
+  apply("providers.opencodeGo", "MANOR_OPENCODE_GO_MAX_TOKENS", (value) => { settings.providers.opencodeGo.maxTokens = integer(value, settings.providers.opencodeGo.maxTokens, 1_024, 2_000_000); });
+  apply("providers.opencodeGo", "MANOR_OPENCODE_GO_REASONING", (value) => { settings.providers.opencodeGo.reasoning = bool(value, settings.providers.opencodeGo.reasoning); });
+  apply("providers.opencodeGo", "MANOR_OPENCODE_GO_SUPPORTS_DEVELOPER_ROLE", (value) => { settings.providers.opencodeGo.supportsDeveloperRole = bool(value, false); });
+  apply("providers.opencodeGo", "MANOR_OPENCODE_GO_SUPPORTS_REASONING_EFFORT", (value) => { settings.providers.opencodeGo.supportsReasoningEffort = bool(value, false); });
+  apply("providers.opencodeGo", "MANOR_OPENCODE_GO_WEB_TOOLS_ENABLED", (value) => { settings.providers.opencodeGo.webTools.enabled = bool(value, settings.providers.opencodeGo.webTools.enabled); });
+  if (hasEnv(env, "OPENCODE_API_KEY") || hasEnv(env, "OPENCODE_API_KEY_FILE")) {
+    markEnvGroup(envGroups, "providers.opencodeGo");
+    settings.providers.opencodeGo.apiKeySource = opencodeEnvSource(env);
+  }
 
   apply("worker", "MANOR_WORKER_RUNTIME", (value) => { settings.worker.runtime = workerRuntime(value); });
   apply("worker", "MANOR_WORKER_MODEL", (value) => { settings.worker.defaultModel = nullableText(value); });
@@ -370,8 +521,9 @@ export function buildManorSettingsFromEnv(env: NodeJS.ProcessEnv = process.env):
 
 export function groupValue(settings: ManorSettings, key: SettingsGroupKey): unknown {
   switch (key) {
+    case "overview": return settings.overview;
     case "providers.ollamaCloud": return settings.providers.ollamaCloud;
-    case "providers.ollamaWebTools": return settings.providers.ollamaWebTools;
+    case "providers.opencodeGo": return settings.providers.opencodeGo;
     case "worker": return settings.worker;
     case "butler": return settings.butler;
     case "modelTasks": return settings.modelTasks;
@@ -383,8 +535,9 @@ export function groupValue(settings: ManorSettings, key: SettingsGroupKey): unkn
 export function applyGroupValue(settings: ManorSettings, key: SettingsGroupKey, value: unknown): ManorSettings {
   const next = cloneManorSettings(settings);
   switch (key) {
+    case "overview": next.overview = { ...next.overview, ...(isRecord(value) ? value : {}) } as never; break;
     case "providers.ollamaCloud": next.providers.ollamaCloud = { ...next.providers.ollamaCloud, ...(isRecord(value) ? value : {}) } as never; break;
-    case "providers.ollamaWebTools": next.providers.ollamaWebTools = { ...next.providers.ollamaWebTools, ...(isRecord(value) ? value : {}) } as never; break;
+    case "providers.opencodeGo": next.providers.opencodeGo = { ...next.providers.opencodeGo, ...(isRecord(value) ? value : {}) } as never; break;
     case "worker": next.worker = { ...next.worker, ...(isRecord(value) ? value : {}) } as never; break;
     case "butler": next.butler = { ...next.butler, ...(isRecord(value) ? value : {}) } as never; break;
     case "modelTasks": next.modelTasks = { ...next.modelTasks, ...(isRecord(value) ? value : {}) } as never; break;

@@ -2,6 +2,7 @@ import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { Api, Model } from "@mariozechner/pi-ai";
 
 import { getActiveManorSettings, readSecretSourceValue } from "./manor-settings-runtime.js";
+import type { SettingsProviderModel, SettingsSecretSource } from "../shared/settings.js";
 import type { ModelOption } from "./types.js";
 
 export type ProviderModelRef = {
@@ -55,40 +56,78 @@ export function modelToModelOption(model: Model<Api>): ModelOption {
   };
 }
 
-export async function registerManorProviders(registry: ModelRegistry, env: NodeJS.ProcessEnv = process.env): Promise<void> {
-  const settings = getActiveManorSettings(env);
-  const ollamaCloud = settings.providers.ollamaCloud;
-  if (!ollamaCloud.enabled) {
-    return;
-  }
+type ProviderModelEntry = {
+  id: string;
+  api: string;
+  reasoning: boolean;
+};
 
-  const apiKey = await readSecretSourceValue(ollamaCloud.apiKeySource, env);
-  if (!apiKey) {
-    return;
+function resolveModelEntry(entry: SettingsProviderModel, providerApi: string, providerReasoning: boolean): ProviderModelEntry {
+  if (typeof entry === "string") {
+    return { id: entry, api: providerApi, reasoning: providerReasoning };
   }
+  return {
+    id: entry.id,
+    api: entry.api ?? providerApi,
+    reasoning: entry.reasoning ?? providerReasoning
+  };
+}
 
-  const config = {
-    name: ollamaCloud.providerName,
-    baseUrl: ollamaCloud.baseUrl,
-    api: ollamaCloud.api as Api,
+type CloudLikeProvider = {
+  enabled: boolean;
+  providerId: string;
+  providerName: string;
+  baseUrl: string;
+  api: string;
+  models: SettingsProviderModel[];
+  contextWindow: number;
+  maxTokens: number;
+  reasoning: boolean;
+  supportsDeveloperRole: boolean;
+  supportsReasoningEffort: boolean;
+  apiKeySource: SettingsSecretSource;
+};
+
+function buildProviderConfig(provider: CloudLikeProvider, apiKey: string) {
+  return {
+    name: provider.providerName,
+    baseUrl: provider.baseUrl,
+    api: provider.api as Api,
     apiKey,
     authHeader: true,
     compat: {
-      supportsDeveloperRole: ollamaCloud.supportsDeveloperRole,
-      supportsReasoningEffort: ollamaCloud.supportsReasoningEffort
+      supportsDeveloperRole: provider.supportsDeveloperRole,
+      supportsReasoningEffort: provider.supportsReasoningEffort
     } as never,
-    models: ollamaCloud.models.map((id) => ({
-      id,
-      name: modelName(id),
-      reasoning: ollamaCloud.reasoning,
-      input: ["text"],
-      contextWindow: ollamaCloud.contextWindow,
-      maxTokens: ollamaCloud.maxTokens,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
-    }))
+    models: provider.models.map((entry) => {
+      const resolved = resolveModelEntry(entry, provider.api, provider.reasoning);
+      return {
+        id: resolved.id,
+        name: modelName(resolved.id),
+        reasoning: resolved.reasoning,
+        input: ["text"],
+        contextWindow: provider.contextWindow,
+        maxTokens: provider.maxTokens,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        api: resolved.api as Api
+      } as never;
+    })
   };
+}
 
-  registry.registerProvider(ollamaCloud.providerId, config as never);
+async function registerCloudLikeProvider(registry: ModelRegistry, provider: CloudLikeProvider, env: NodeJS.ProcessEnv): Promise<boolean> {
+  if (!provider.enabled) return false;
+  const apiKey = await readSecretSourceValue(provider.apiKeySource, env);
+  if (!apiKey) return false;
+  const config = buildProviderConfig(provider, apiKey);
+  registry.registerProvider(provider.providerId, config as never);
+  return true;
+}
+
+export async function registerManorProviders(registry: ModelRegistry, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const settings = getActiveManorSettings(env);
+  await registerCloudLikeProvider(registry, settings.providers.ollamaCloud as CloudLikeProvider, env);
+  await registerCloudLikeProvider(registry, settings.providers.opencodeGo as CloudLikeProvider, env);
 }
 
 export async function createManorModelRegistry(piAuthPath: string, env: NodeJS.ProcessEnv = process.env): Promise<ModelRegistry> {
