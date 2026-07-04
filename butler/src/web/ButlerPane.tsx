@@ -114,6 +114,7 @@ const Composer = memo(function Composer({
 }: ComposerProps) {
   const ref = useAutoGrow(value);
   const canSubmit = Boolean(value.trim() || attachments.length > 0);
+  const isMultilineDraft = value.includes("\n");
   return (
     <div className="composer">
       {attachments.length > 0 ? (
@@ -156,10 +157,17 @@ const Composer = memo(function Composer({
           value={value}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+            if (event.metaKey || event.ctrlKey) {
               event.preventDefault();
               if (canSubmit && !busy) onSubmit();
+              return;
             }
+            if (event.shiftKey || isMultilineDraft) {
+              return;
+            }
+            event.preventDefault();
+            if (canSubmit && !busy) onSubmit();
           }}
           placeholder="Message Butler…"
           rows={2}
@@ -182,6 +190,7 @@ const Composer = memo(function Composer({
               onChange={onThinkingLevelChange}
               className="composer-budget"
             />
+            {isMultilineDraft ? <span className="composer-hint">Ctrl/Cmd + Enter</span> : null}
           </div>
           <button className="composer-send" type="submit" disabled={busy || !canSubmit}>
             {busy ? <span className="spinner" /> : <span>Send</span>}
