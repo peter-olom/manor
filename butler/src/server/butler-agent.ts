@@ -125,7 +125,7 @@ function isButlerAuthRecoveryError(message: string | null): boolean {
 }
 import { ButlerTraceBuffer } from "./butler-trace-buffer.js";
 import { getActiveManorSettings } from "./manor-settings-runtime.js";
-import { ollamaWebSearchTool, ollamaWebFetchTool } from "./pi-ollama-web-tools-extension.js";
+import { buildButlerProviderWebTools, PROVIDER_WEB_FETCH_TOOL_NAME, PROVIDER_WEB_SEARCH_TOOL_NAME } from "./provider-web-tools.js";
 export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
   private readonly codexClient: CodexAppServerClient;
@@ -690,12 +690,12 @@ export class ButlerAgentService extends EventEmitter {
   // This is the single discoverable registry for Butler actions and their UI
   // side effects. Keep agent tool definitions aligned with this catalog.
   private buildToolCatalog(): ButlerToolView[] {
-    const settings = getActiveManorSettings();
     const base = [...BUTLER_TOOL_CATALOG];
-    if (settings.providers.ollamaCloud.webTools.enabled && settings.providers.ollamaCloud.webTools.forAllPiModels) {
+    const activeTools = new Set(this.session?.getActiveToolNames() ?? []);
+    if (activeTools.has(PROVIDER_WEB_SEARCH_TOOL_NAME) && activeTools.has(PROVIDER_WEB_FETCH_TOOL_NAME)) {
       base.push(
-        { name: "web_search", label: "Web Search", description: "Search the web using Ollama Cloud web search.", uiEffects: [] },
-        { name: "web_fetch", label: "Web Fetch", description: "Fetch a web page through Ollama Cloud web fetch.", uiEffects: [] }
+        { name: PROVIDER_WEB_SEARCH_TOOL_NAME, label: "Web Search", description: "Search the web using the provider configured for the current Butler model.", uiEffects: [] },
+        { name: PROVIDER_WEB_FETCH_TOOL_NAME, label: "Web Fetch", description: "Fetch a web page using the provider configured for the current Butler model.", uiEffects: [] }
       );
     }
     return base;
@@ -1424,14 +1424,11 @@ export class ButlerAgentService extends EventEmitter {
   private buildCustomTools() {
     const toolAccess = this.getToolAccess();
     const tools = [...buildButlerStackPreviewTools(toolAccess), ...buildButlerFilesystemTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerManorTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerOperatorTools(toolAccess), ...buildButlerCodexTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
-    const settings = getActiveManorSettings();
-    if (settings.providers.ollamaCloud.webTools.enabled && settings.providers.ollamaCloud.webTools.forAllPiModels) {
-      tools.push(ollamaWebSearchTool, ollamaWebFetchTool);
-    }
+    tools.push(...buildButlerProviderWebTools(() => this.session?.model?.provider));
     return tools;
   }
 
-  private async createOrRefreshSession(): Promise<void> { await createOrRefreshButlerSession(this.getSessionAccess()); }
+  private async createOrRefreshSession(): Promise<void> { await createOrRefreshButlerSession(this.getSessionAccess()); this.toolCatalog = this.buildToolCatalog(); }
 
   private async sanitizePersistedSessions(): Promise<void> { await sanitizePersistedButlerSessions(this.getSessionAccess()); }
 
@@ -1494,5 +1491,5 @@ export class ButlerAgentService extends EventEmitter {
 
   async stopPrompt(): Promise<boolean> { return stopButlerPrompt(this.getSessionAccess()); }
 
-  async updateComposeSettings(provider: string, modelId: string, thinkingLevel: ButlerThinkingLevel): Promise<void> { await updateButlerComposeSettings(this.getSessionAccess(), provider, modelId, thinkingLevel); }
+  async updateComposeSettings(provider: string, modelId: string, thinkingLevel: ButlerThinkingLevel): Promise<void> { await updateButlerComposeSettings(this.getSessionAccess(), provider, modelId, thinkingLevel); this.toolCatalog = this.buildToolCatalog(); this.emit("change"); }
 }

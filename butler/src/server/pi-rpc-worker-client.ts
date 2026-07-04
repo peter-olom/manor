@@ -6,8 +6,7 @@ import { fileURLToPath } from "node:url";
 import { RpcClient, type RpcEventListener } from "@mariozechner/pi-coding-agent";
 
 import { createManorModelRegistry, modelToModelOption } from "./model-provider-config.js";
-import { readOllamaWebToolsConfig, shouldAttachOllamaWebTools } from "./ollama-web-tools.js";
-import { shouldAttachOpencodeWebTools } from "./opencode-web-tools.js";
+import { selectProviderWebToolSource } from "./provider-web-tools.js";
 import { PiProviderRuntimeMapper } from "./pi-provider-events.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { CodexInputItem } from "./image-store.js";
@@ -60,15 +59,10 @@ export function defaultOpencodeWebToolsExtensionPath(): string {
 }
 
 export async function webToolsExtensionArgsForProvider(provider: string | null | undefined, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
-  const args: string[] = [];
-  const ollamaConfig = await readOllamaWebToolsConfig(env);
-  if (ollamaConfig.enabled && shouldAttachOllamaWebTools(provider, env)) {
-    args.push("--extension", defaultOllamaWebToolsExtensionPath());
-  }
-  if (shouldAttachOpencodeWebTools(provider, env)) {
-    args.push("--extension", defaultOpencodeWebToolsExtensionPath());
-  }
-  return args;
+  const source = await selectProviderWebToolSource(provider, env);
+  if (source === "opencode") return ["--extension", defaultOpencodeWebToolsExtensionPath()];
+  if (source === "ollama") return ["--extension", defaultOllamaWebToolsExtensionPath()];
+  return [];
 }
 
 export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {

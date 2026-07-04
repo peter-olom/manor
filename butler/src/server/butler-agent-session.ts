@@ -25,6 +25,7 @@ import { backfillOperatorMessagesFromSessionFiles, isPersistableProviderOperator
 import { PiProviderRuntimeMapper } from "./pi-provider-events.js";
 import { getActiveManorSettings } from "./manor-settings-runtime.js";
 import { createManorModelRegistry, modelToModelOption, parseProviderModelRef } from "./model-provider-config.js";
+import { syncProviderWebToolsForSession } from "./provider-web-tools.js";
 import type {
   AppShellSnapshot,
   AppSnapshot,
@@ -77,6 +78,7 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
   sanitizeButlerSessionMessages(access);
   dropTrailingFailedButlerTurns(access);
   await applyManagedButlerDefaults(access);
+  if (access.session) await syncProviderWebToolsForSession(access.session);
 
   access.compaction = {
     lastReason: null,
@@ -844,6 +846,7 @@ export async function updateButlerComposeSettings(
 
   await access.session.setModel(model);
   access.session.setThinkingLevel(thinkingLevel === "off" || thinkingLevel === "minimal" ? "medium" : thinkingLevel);
+  await syncProviderWebToolsForSession(access.session);
   access.lastError = null;
   access.emit("change");
 }

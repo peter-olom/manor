@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { ollamaWebFetch, ollamaWebSearch, readOllamaWebToolsConfig, shouldAttachOllamaWebTools } from "../../src/server/ollama-web-tools.js";
 import { webToolsExtensionArgsForProvider } from "../../src/server/pi-rpc-worker-client.js";
+import { selectProviderWebToolSource, syncProviderWebToolsForSession } from "../../src/server/provider-web-tools.js";
 
 test("readOllamaWebToolsConfig enables tools only when an Ollama API key is configured", async () => {
   assert.equal((await readOllamaWebToolsConfig({
@@ -88,4 +89,60 @@ test("Ollama web tools can be attached to all Pi models by opt-in", () => {
     MANOR_OLLAMA_WEB_TOOLS_FOR_ALL_PI_MODELS: "1",
     OLLAMA_API_KEY: "test-key"
   } as NodeJS.ProcessEnv), true);
+});
+
+test("OpenCode web tools take priority over Ollama all-model tools for OpenCode models", async () => {
+  const env = {
+    MANOR_OPENCODE_GO_PROVIDER_ID: "opencode-go",
+    MANOR_OPENCODE_GO_WEB_TOOLS_ENABLED: "1",
+    MANOR_OLLAMA_WEB_TOOLS_ENABLED: "1",
+    MANOR_OLLAMA_WEB_TOOLS_FOR_ALL_PI_MODELS: "1",
+    OLLAMA_API_KEY: "test-key"
+  } as NodeJS.ProcessEnv;
+
+  assert.equal(await selectProviderWebToolSource("opencode-go", env), "opencode");
+  const args = await webToolsExtensionArgsForProvider("opencode-go", env);
+  assert.equal(args.length, 2);
+  assert.match(args[1] ?? "", /pi-opencode-web-tools-extension\.(ts|js)$/);
+  assert.doesNotMatch(args.join(" "), /pi-ollama-web-tools-extension/);
+});
+
+test("Butler web tools are active only when the current model provider has a usable source", async () => {
+  const env = {
+    MANOR_OPENCODE_GO_PROVIDER_ID: "opencode-go",
+    MANOR_OPENCODE_GO_WEB_TOOLS_ENABLED: "1",
+    MANOR_OLLAMA_WEB_TOOLS_ENABLED: "0"
+  } as NodeJS.ProcessEnv;
+  const session = {
+    model: { provider: "opencode-go" as string | null },
+    activeTools: ["prepare_worktree"],
+    getActiveToolNames() { return this.activeTools; },
+    setActiveToolsByName(toolNames: string[]) { this.activeTools = toolNames; }
+  };
+
+  assert.equal(await selectProviderWebToolSource("opencode-go", env), "opencode");
+  await syncProviderWebToolsForSession(session, env);
+  assert.deepEqual(session.activeTools.sort(), ["prepare_worktree", "web_fetch", "web_search"]);
+
+  session.model.provider = "openai";
+  await syncProviderWebToolsForSession(session, env);
+  assert.deepEqual(session.activeTools, ["prepare_worktree"]);
+});
+
+test("Butler and workers both skip Ollama all-model web tools when the Ollama key is missing", async () => {
+  const env = {
+    MANOR_OLLAMA_WEB_TOOLS_ENABLED: "1",
+    MANOR_OLLAMA_WEB_TOOLS_FOR_ALL_PI_MODELS: "1"
+  } as NodeJS.ProcessEnv;
+  const session = {
+    model: { provider: "openai" as string | null },
+    activeTools: ["prepare_worktree", "web_search", "web_fetch"],
+    getActiveToolNames() { return this.activeTools; },
+    setActiveToolsByName(toolNames: string[]) { this.activeTools = toolNames; }
+  };
+
+  assert.equal(await selectProviderWebToolSource("openai", env), null);
+  assert.deepEqual(await webToolsExtensionArgsForProvider("openai", env), []);
+  await syncProviderWebToolsForSession(session, env);
+  assert.deepEqual(session.activeTools, ["prepare_worktree"]);
 });

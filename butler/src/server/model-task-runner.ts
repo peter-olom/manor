@@ -8,7 +8,8 @@ import { contentToText } from "./butler-agent-helpers.js";
 import { isUnsupportedCodexModelError, memoryCodexModelArgs } from "./memory-codex-model.js";
 import { getActiveManorSettings } from "./manor-settings-runtime.js";
 import { createManorModelRegistry, isCodexPreferredModelRef, parseProviderModelRef, type ProviderModelRef } from "./model-provider-config.js";
-import { appendOllamaWebToolInstruction, appendToolMessages, executeOllamaWebToolCall, ollamaWebTools, readOllamaWebToolsConfig, shouldAttachOllamaWebTools } from "./ollama-web-tools.js";
+import { appendToolMessages } from "./ollama-web-tools.js";
+import { appendProviderWebToolInstruction, executeProviderWebToolCall, providerWebTools, selectProviderWebToolSource, PROVIDER_WEB_FETCH_TOOL_NAME, PROVIDER_WEB_SEARCH_TOOL_NAME } from "./provider-web-tools.js";
 
 export type ModelTaskRunnerInput = {
   purpose: string;
@@ -113,13 +114,12 @@ export class ManorModelTaskRunner implements ModelTaskRunner {
     if (!auth.ok) {
       throw new Error(auth.error);
     }
-    const webToolsConfig = await readOllamaWebToolsConfig();
-    const useOllamaWebTools = webToolsConfig.enabled && shouldAttachOllamaWebTools(model.provider);
+    const webToolSource = await selectProviderWebToolSource(model.provider);
     const baseSystemPrompt = `You are Manor's ${input.purpose} model task runner. Follow the requested output format exactly.`;
     const context = {
-      systemPrompt: useOllamaWebTools ? appendOllamaWebToolInstruction(baseSystemPrompt) : baseSystemPrompt,
+      systemPrompt: webToolSource ? appendProviderWebToolInstruction(baseSystemPrompt) : baseSystemPrompt,
       messages: [{ role: "user", timestamp: Date.now(), content: input.prompt }] as Message[],
-      ...(useOllamaWebTools ? { tools: ollamaWebTools() } : {})
+      ...(webToolSource ? { tools: providerWebTools(webToolSource) } : {})
     };
     let response = await complete(model, context, {
       apiKey: auth.apiKey,
@@ -127,10 +127,10 @@ export class ManorModelTaskRunner implements ModelTaskRunner {
       timeoutMs: input.timeoutMs,
       maxRetries: 0
     });
-    for (let round = 0; useOllamaWebTools && round < 4; round += 1) {
-      const toolCalls = response.content.filter((entry): entry is ToolCall => entry.type === "toolCall" && (entry.name === "web_search" || entry.name === "web_fetch"));
+    for (let round = 0; webToolSource && round < 4; round += 1) {
+      const toolCalls = response.content.filter((entry): entry is ToolCall => entry.type === "toolCall" && (entry.name === PROVIDER_WEB_SEARCH_TOOL_NAME || entry.name === PROVIDER_WEB_FETCH_TOOL_NAME));
       if (response.stopReason !== "toolUse" && toolCalls.length === 0) break;
-      const toolResults = await Promise.all(toolCalls.map((toolCall) => executeOllamaWebToolCall(toolCall, webToolsConfig)));
+      const toolResults = await Promise.all(toolCalls.map((toolCall) => executeProviderWebToolCall(toolCall, webToolSource)));
       context.messages = appendToolMessages(context.messages, response, toolResults);
       response = await complete(model, context, {
         apiKey: auth.apiKey,
@@ -143,7 +143,7 @@ export class ManorModelTaskRunner implements ModelTaskRunner {
       throw new Error(response.errorMessage || `Pi inline ${input.purpose} failed.`);
     }
     if (response.stopReason === "toolUse") {
-      throw new Error(`Pi inline ${input.purpose} requested more Ollama web tool calls than Manor allows.`);
+      throw new Error(`Pi inline ${input.purpose} requested more web tool calls than Manor allows.`);
     }
     return contentToText(response.content).trim();
   }
