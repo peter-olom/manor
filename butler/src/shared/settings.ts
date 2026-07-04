@@ -2,6 +2,7 @@ export type SettingsProvenance = "default" | "env_seed" | "ui";
 
 export type SettingsGroupKey =
   | "overview"
+  | "providers.ollamaLocal"
   | "providers.ollamaCloud"
   | "providers.opencodeGo"
   | "worker"
@@ -10,7 +11,7 @@ export type SettingsGroupKey =
   | "memory"
   | "embeddings";
 
-export type SettingsProviderKey = "openai-codex" | "ollama-cloud" | "opencode-go";
+export type SettingsProviderKey = "openai-codex" | "ollama-local" | "ollama-cloud" | "opencode-go";
 
 export type SettingsSecretSource =
   | { type: "env"; name: string }
@@ -49,6 +50,22 @@ export type ManorSettings = {
     codexProvider: SettingsProviderKey;
   };
   providers: {
+    ollamaLocal: {
+      enabled: boolean;
+      providerId: string;
+      providerName: string;
+      baseUrl: string;
+      nativeBaseUrl: string;
+      api: string;
+      models: SettingsProviderModel[];
+      contextWindow: number;
+      maxTokens: number;
+      reasoning: boolean;
+      supportsDeveloperRole: boolean;
+      supportsReasoningEffort: boolean;
+      apiKeySource: SettingsSecretSource | null;
+      authHeader: boolean;
+    };
     ollamaCloud: {
       enabled: boolean;
       providerId: string;
@@ -129,6 +146,7 @@ export type SettingsValidationStatus = "not_configured" | "ok" | "failed";
 export type SettingsValidationKey =
   | "codex"
   | "piRpc"
+  | "ollamaLocal"
   | "ollamaCloud"
   | "opencodeGo"
   | "ollamaWebSearch"
@@ -153,6 +171,7 @@ export type SettingsProviderAvailability = {
 
 export type SettingsProviderAvailabilityMap = {
   "openai-codex": SettingsProviderAvailability;
+  "ollama-local": SettingsProviderAvailability;
   "ollama-cloud": SettingsProviderAvailability;
   "opencode-go": SettingsProviderAvailability;
 };

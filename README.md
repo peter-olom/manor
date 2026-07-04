@@ -63,7 +63,7 @@ That bias is intentional. Manor is not trying to be neutral infrastructure for e
 Prerequisites:
 
 - Docker with Compose support
-- OpenAI API-key auth or ChatGPT device-code login
+- OpenAI API-key auth, ChatGPT device-code login, or a local Ollama chat model
 - GitHub auth in the Codex box if repo cloning or fresh project setup is needed
 
 Run the guided installer:

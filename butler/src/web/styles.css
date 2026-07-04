@@ -5000,6 +5000,57 @@ a:hover {
   font-size: 12px;
 }
 
+.settings-model-pull {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.settings-model-pull input {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-pull-status {
+  display: grid;
+  gap: 7px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 12.5px;
+  margin-bottom: 12px;
+}
+
+.settings-pull-status.is-error {
+  background: var(--danger-surface, rgba(220, 38, 38, 0.08));
+  color: var(--danger, #dc2626);
+}
+
+.settings-pull-status.is-done {
+  color: var(--success, #16a34a);
+}
+
+.settings-pull-status.is-warning {
+  color: var(--warning, #d97706);
+  background: var(--warning-surface, rgba(217, 119, 6, 0.08));
+}
+
+.settings-pull-progress {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border, rgba(148, 163, 184, 0.25));
+}
+
+.settings-pull-progress span {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
 /* Disabled toggle hint (secret missing) */
 .settings-toggle.is-disabled {
   opacity: 0.6;

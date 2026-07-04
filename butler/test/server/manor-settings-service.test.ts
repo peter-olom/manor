@@ -9,21 +9,35 @@ import { ManorSettingsService } from "../../src/server/manor-settings-service.js
 
 test("buildManorSettingsFromEnv parses and clamps seed values", () => {
   const { settings, provenance } = buildManorSettingsFromEnv({
+    MANOR_OLLAMA_LOCAL_MODELS: "qwen3:8b",
+    MANOR_OLLAMA_LOCAL_NATIVE_BASE_URL: "http://localhost:11434",
     MANOR_OLLAMA_CLOUD_MODELS: "glm-5.2,kimi-k2.6",
     MANOR_OLLAMA_WEB_SEARCH_MAX_RESULTS: "99",
     MANOR_WORKER_RUNTIME: "pi-rpc",
     MANOR_WORKER_EFFORT: "xhigh",
     MANOR_MEMORY_SYNTHESIS_MAX_CANDIDATES: "99",
-    OLLAMA_API_KEY_FILE: "/run/secrets/ollama"
+    OLLAMA_API_KEY_FILE: "/run/secrets/ollama",
+    OLLAMA_LOCAL_API_KEY_FILE: "/run/secrets/local-ollama"
   } as NodeJS.ProcessEnv);
 
+  assert.deepEqual(settings.providers.ollamaLocal.models, ["qwen3:8b"]);
+  assert.equal(settings.providers.ollamaLocal.nativeBaseUrl, "http://localhost:11434");
+  assert.deepEqual(settings.providers.ollamaLocal.apiKeySource, { type: "file", pathEnv: "OLLAMA_LOCAL_API_KEY_FILE" });
   assert.deepEqual(settings.providers.ollamaCloud.models, ["glm-5.2", "kimi-k2.6"]);
   assert.equal(settings.providers.ollamaCloud.webTools.maxResults, 10);
   assert.equal(settings.worker.runtime, "pi-rpc");
   assert.equal(settings.worker.defaultEffort, "xhigh");
   assert.equal(settings.memory.synthesisMaxCandidatesPerRun, 50);
   assert.deepEqual(settings.providers.ollamaCloud.apiKeySource, { type: "file", pathEnv: "OLLAMA_API_KEY_FILE" });
+  assert.equal(provenance["providers.ollamaLocal"], "env_seed");
   assert.equal(provenance["providers.ollamaCloud"], "env_seed");
+});
+
+test("Ollama Local defaults to disabled without a secret source outside env seed", () => {
+  const { settings, provenance } = buildManorSettingsFromEnv({} as NodeJS.ProcessEnv);
+  assert.equal(settings.providers.ollamaLocal.enabled, false);
+  assert.equal(settings.providers.ollamaLocal.apiKeySource, null);
+  assert.equal(provenance["providers.ollamaLocal"], "default");
 });
 
 test("ManorSettingsService seeds env once and preserves UI edits", async () => {

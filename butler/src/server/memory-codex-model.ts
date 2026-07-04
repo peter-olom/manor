@@ -10,7 +10,23 @@ const KNOWN_CODEX_MODEL_LABELS = new Map<string, string>([
 
 const MODEL_REF_PART = "[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*(?:-[a-z0-9]+)*";
 const CODEX_MODEL_SLUG_PATTERN = new RegExp(`^${MODEL_REF_PART}$`, "i");
-const PROVIDER_MODEL_REF_PATTERN = new RegExp(`^${MODEL_REF_PART}\\/${MODEL_REF_PART}$`, "i");
+const PROVIDER_MODEL_REF_PATTERN = new RegExp(`^(${MODEL_REF_PART})\\/(\\S+)$`, "i");
+
+function normalizeProviderModelRef(value: string): string | null {
+  const match = PROVIDER_MODEL_REF_PATTERN.exec(value);
+  if (!match) {
+    return null;
+  }
+  const provider = match[1]!;
+  const rawModel = match[2]!;
+  let model = rawModel;
+  try {
+    model = decodeURIComponent(rawModel);
+  } catch {
+    model = rawModel;
+  }
+  return model && !/\s/.test(model) ? `${provider}/${model}` : null;
+}
 
 export function normalizeMemoryCodexModel(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
@@ -25,7 +41,10 @@ export function normalizeMemoryCodexModel(value: string | null | undefined): str
   if (trimmed.includes(" ")) {
     return null;
   }
-  return CODEX_MODEL_SLUG_PATTERN.test(trimmed) || PROVIDER_MODEL_REF_PATTERN.test(trimmed) ? trimmed : null;
+  if (CODEX_MODEL_SLUG_PATTERN.test(trimmed)) {
+    return trimmed;
+  }
+  return normalizeProviderModelRef(trimmed);
 }
 
 export function memoryCodexModelArgs(value: string | null | undefined): string[] {

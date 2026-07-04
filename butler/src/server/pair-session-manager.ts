@@ -20,6 +20,7 @@ import type { PairChat, PairCodexModelOption, PairDetail, PairMessage, PairCompo
 import { DEFAULT_THINKING_LEVELS } from "../shared/pairing.js";
 import { pairTitleIsDefault } from "./pair-store.js";
 import { getUnifiedWorkerCompose, loadWorkerThread, updateUnifiedWorkerCompose, updateWorkerThreadEffort } from "./worker-client-router.js";
+import { parseProviderModelRef } from "./model-provider-config.js";
 
 type PairButlerService = Pick<
   ButlerAgentService,
@@ -208,8 +209,9 @@ export class PairSessionManager {
     if (!model) {
       throw new Error("Selected Butler model is not available");
     }
+    const ref = parseProviderModelRef(model.id);
     const thinkingLevel = shell.compose?.thinkingLevel ?? "medium";
-    await service.updateComposeSettings(model.provider ?? shell.compose?.provider ?? "", model.id, thinkingLevel as never);
+    await service.updateComposeSettings(ref.provider ?? model.provider ?? shell.compose?.provider ?? "", ref.model ?? model.id, thinkingLevel as never);
     return this.getPairDetail(pairId, null, 120);
   }
 

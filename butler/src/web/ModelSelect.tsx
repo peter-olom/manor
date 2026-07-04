@@ -15,6 +15,10 @@ function modelLabel(model: PairModelOption): string {
   return model.provider ? `${model.label} · ${model.provider}` : model.label;
 }
 
+function modelValue(model: PairModelOption): string {
+  return model.provider && !model.id.startsWith(`${model.provider}/`) ? `${model.provider}/${model.id}` : model.id;
+}
+
 export const ModelSelect = memo(function ModelSelect({
   label,
   value,
@@ -36,7 +40,7 @@ export const ModelSelect = memo(function ModelSelect({
       >
         {options.length === 0 ? <option value="">Default</option> : null}
         {options.map((option) => (
-          <option key={option.id} value={option.id}>
+          <option key={modelValue(option)} value={modelValue(option)}>
             {modelLabel(option)}
           </option>
         ))}

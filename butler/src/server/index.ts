@@ -2,7 +2,6 @@ import { promises as fs } from "node:fs";
 import crypto from "node:crypto";
 import http from "node:http";
 import path from "node:path";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import express from "express";
 import httpProxy from "http-proxy";
@@ -33,6 +32,7 @@ import { registerScratchPadRoutes } from "./scratch-pad-routes.js";
 import { registerRuntimeResourceRoutes } from "./runtime-resource-routes.js";
 import { ScratchPadStore } from "./scratch-pad-store.js";
 import { registerServerAssetRoutes } from "./server-asset-routes.js";
+import { registerDeviceAuthRoutes } from "./device-auth-routes.js";
 import { PiSessionTitleGenerator, readSessionTitleConfig } from "./session-title-generator.js";
 import { configureSelfImprovementRequestState, SelfImprovementRequestState } from "./self-improvement-request-state.js";
 import { registerSelfImprovementRoutes } from "./self-improvement-routes.js";
@@ -75,7 +75,6 @@ const jsonBodyLimit = process.env.MANOR_UPLOAD_JSON_LIMIT ?? "64mb";
 const imageUploadBinaryLimit = process.env.MANOR_IMAGE_UPLOAD_BINARY_LIMIT ?? `${Math.ceil(MAX_IMAGE_BYTES / (1024 * 1024))}mb`;
 const fileUploadBinaryLimit = process.env.MANOR_FILE_UPLOAD_BINARY_LIMIT ?? `${Math.ceil(MAX_FILE_BYTES / (1024 * 1024))}mb`;
 const previewAnnotationSecret = crypto.randomBytes(32).toString("hex");
-const butlerAuthLoginTimeoutMs = 15_000;
 
 const uiStatePath = path.join(stateDir, "butler-ui.json");
 const scratchPadStatePath = path.join(stateDir, "scratch-pad.json");
@@ -83,170 +82,8 @@ const pairStatePath = path.join(stateDir, "butler-pairs-v2.json");
 const sessionDir = path.join(stateDir, "pi-sessions");
 const pairSessionDir = path.join(stateDir, "pi-pair-sessions");
 const staticDir = path.resolve(process.cwd(), "dist/web"); const indexTemplatePath = path.resolve(process.cwd(), "index.html");
-let butlerAuthLoginSession: {
-  child: ChildProcessWithoutNullStreams;
-  authUrl: string | null;
-  startedAt: number;
-  output: string;
-} | null = null;
-
-let codexAuthLoginSession: {
-  child: ChildProcessWithoutNullStreams;
-  authUrl: string | null;
-  startedAt: number;
-  output: string;
-} | null = null;
 
 const settingsService = new ManorSettingsService(defaultManorSettingsPath(stateDir)); await settingsService.load(); setActiveManorSettingsService(settingsService);
-
-function extractAuthUrl(output: string): string | null {
-  const match = output.match(/https:\/\/auth\.openai\.com\/oauth\/authorize\?\S+/);
-  return match ? match[0] : null;
-}
-
-function clearButlerAuthLoginSession(child: ChildProcessWithoutNullStreams): void {
-  if (butlerAuthLoginSession?.child === child) {
-    butlerAuthLoginSession = null;
-  }
-}
-
-function startButlerAuthLogin(): Promise<string> {
-  if (butlerAuthLoginSession?.authUrl) {
-    return Promise.resolve(butlerAuthLoginSession.authUrl);
-  }
-
-  if (butlerAuthLoginSession) {
-    butlerAuthLoginSession.child.kill();
-    butlerAuthLoginSession = null;
-  }
-
-  const child = spawn("butler-auth", ["device"], {
-    env: {
-      ...process.env,
-      PI_AGENT_DIR: piAgentDir,
-      CODEX_HOME: process.env.CODEX_HOME ?? path.join(path.dirname(piAgentDir), ".codex")
-    }
-  });
-
-  butlerAuthLoginSession = {
-    child,
-    authUrl: null,
-    startedAt: Date.now(),
-    output: ""
-  };
-
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error("Timed out waiting for Butler auth URL. Open the Butler terminal and run butler-auth device."));
-    }, butlerAuthLoginTimeoutMs);
-
-    const finishWithUrl = (chunk: Buffer) => {
-      const session = butlerAuthLoginSession;
-      if (!session || session.child !== child) {
-        return;
-      }
-
-      session.output += chunk.toString("utf8");
-      const authUrl = extractAuthUrl(session.output);
-      if (!authUrl) {
-        return;
-      }
-
-      session.authUrl = authUrl;
-      clearTimeout(timeout);
-      resolve(authUrl);
-    };
-
-    child.stdout.on("data", finishWithUrl);
-    child.stderr.on("data", finishWithUrl);
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      clearButlerAuthLoginSession(child);
-      reject(error);
-    });
-    child.on("exit", (code) => {
-      clearTimeout(timeout);
-      clearButlerAuthLoginSession(child);
-      if (code !== 0) {
-        reject(new Error(`Butler auth exited with code ${code ?? "unknown"}. Open the Butler terminal and run butler-auth device.`));
-      }
-    });
-  });
-}
-
-function extractCodexAuthUrl(output: string): string | null {
-  const match = output.match(/https:\/\/auth\.openai\.com\/codex\/device\S*/);
-  return match ? match[0] : null;
-}
-
-function clearCodexAuthLoginSession(child: ChildProcessWithoutNullStreams): void {
-  if (codexAuthLoginSession?.child === child) {
-    codexAuthLoginSession = null;
-  }
-}
-
-function startCodexAuthLogin(): Promise<string> {
-  if (codexAuthLoginSession?.authUrl) {
-    return Promise.resolve(codexAuthLoginSession.authUrl);
-  }
-
-  if (codexAuthLoginSession) {
-    codexAuthLoginSession.child.kill();
-    codexAuthLoginSession = null;
-  }
-
-  const child = spawn("codex", ["login", "--device-auth"], {
-    env: {
-      ...process.env,
-      CODEX_HOME: codexHomeDir
-    }
-  });
-
-  codexAuthLoginSession = {
-    child,
-    authUrl: null,
-    startedAt: Date.now(),
-    output: ""
-  };
-
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error("Timed out waiting for Codex auth URL. Open the Codex terminal and run codex-auth device."));
-    }, butlerAuthLoginTimeoutMs);
-
-    const finishWithUrl = (chunk: Buffer) => {
-      const session = codexAuthLoginSession;
-      if (!session || session.child !== child) {
-        return;
-      }
-
-      session.output += chunk.toString("utf8");
-      const authUrl = extractCodexAuthUrl(session.output);
-      if (!authUrl) {
-        return;
-      }
-
-      session.authUrl = authUrl;
-      clearTimeout(timeout);
-      resolve(authUrl);
-    };
-
-    child.stdout.on("data", finishWithUrl);
-    child.stderr.on("data", finishWithUrl);
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      clearCodexAuthLoginSession(child);
-      reject(error);
-    });
-    child.on("exit", (code) => {
-      clearTimeout(timeout);
-      clearCodexAuthLoginSession(child);
-      if (code !== 0) {
-        reject(new Error(`Codex auth exited with code ${code ?? "unknown"}. Open the Codex terminal and run codex-auth device.`));
-      }
-    });
-  });
-}
 
 const store = new ButlerStateStore(uiStatePath, {
   previewLeaseTtlMs,
@@ -511,33 +348,7 @@ app.get("/api/shell", (_request, response) => {
   }));
 });
 
-app.post("/api/auth/butler/device", async (_request, response) => {
-  try {
-    const authUrl = await startButlerAuthLogin();
-    response.json({
-      authUrl,
-      startedAt: butlerAuthLoginSession?.startedAt ?? Date.now()
-    });
-  } catch (error) {
-    response.status(500).json({
-      error: error instanceof Error ? error.message : String(error)
-    });
-  }
-});
-
-app.post("/api/auth/codex/device", async (_request, response) => {
-  try {
-    const authUrl = await startCodexAuthLogin();
-    response.json({
-      authUrl,
-      startedAt: codexAuthLoginSession?.startedAt ?? Date.now()
-    });
-  } catch (error) {
-    response.status(500).json({
-      error: error instanceof Error ? error.message : String(error)
-    });
-  }
-});
+registerDeviceAuthRoutes(app, { piAgentDir, codexHomeDir });
 
 app.get("/api/runtime", async (_request, response) => {
   try {

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { RpcClient, type RpcEventListener } from "@mariozechner/pi-coding-agent";
 
-import { createManorModelRegistry, modelToModelOption } from "./model-provider-config.js";
+import { createManorModelRegistry, modelToModelOption, syncManorPiModelsJson } from "./model-provider-config.js";
 import { selectProviderWebToolSource } from "./provider-web-tools.js";
 import { PiProviderRuntimeMapper } from "./pi-provider-events.js";
 import type { ButlerStateStore } from "./state-store.js";
@@ -186,6 +186,7 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
   }
 
   private async loadModels(): Promise<void> {
+    await syncManorPiModelsJson(this.options.piAuthPath);
     const registry = await createManorModelRegistry(this.options.piAuthPath);
     this.availableModels = registry.getAvailable().map(modelToModelOption);
     const selected = this.availableModels.find((model) => model.id === this.selectedModel && model.provider === this.selectedProvider) ?? this.availableModels[0] ?? null;
@@ -195,7 +196,8 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
   }
 
   private async createSession(threadId: string, cwd: string): Promise<PiWorkerSession> {
-    const modelRef = this.selectedProvider && this.selectedModel ? `${this.selectedProvider}/${this.selectedModel}` : this.selectedModel ?? undefined;
+    await syncManorPiModelsJson(this.options.piAuthPath);
+    const modelRef = this.selectedModel ?? undefined;
     const extensionArgs = await this.webToolsExtensionArgs();
     const client = new RpcClient({
       cwd,

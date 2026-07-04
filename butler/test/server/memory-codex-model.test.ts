@@ -16,6 +16,9 @@ test("memory Codex model normalization maps GPT display labels to Codex slugs", 
 
 test("memory Codex model normalization allows valid slugs and omits invalid labels", () => {
   assert.equal(normalizeMemoryCodexModel("gpt-5.4-mini"), "gpt-5.4-mini");
+  assert.equal(normalizeMemoryCodexModel("ollama-local/qwen3:8b"), "ollama-local/qwen3:8b");
+  assert.equal(normalizeMemoryCodexModel("ollama-local/qwen3%3A8b"), "ollama-local/qwen3:8b");
+  assert.equal(normalizeMemoryCodexModel("openrouter/anthropic/claude-sonnet-4"), "openrouter/anthropic/claude-sonnet-4");
   assert.equal(normalizeMemoryCodexModel("not a codex model label"), null);
   assert.deepEqual(memoryCodexModelArgs("not a codex model label"), []);
 });

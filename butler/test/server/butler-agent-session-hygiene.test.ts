@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
+
 import {
   BUTLER_BACKGROUND_PROMPT_PREFIX,
   contentAttachmentSummary,
@@ -22,8 +24,10 @@ import {
   removeCommittedPendingOperatorPrompt,
   removePendingOperatorPrompt,
   stopButlerPrompt,
-  syncOperatorMessagesFromSessionFiles
+  syncOperatorMessagesFromSessionFiles,
+  updateButlerComposeSettings
 } from "../../src/server/butler-agent-session.js";
+import { registerManorProviders } from "../../src/server/model-provider-config.js";
 import {
   backfillOperatorMessagesFromSessionFiles,
   normalizeOperatorMessages,
@@ -154,6 +158,44 @@ test("Butler message serialization keeps attachment-only user rows visible", () 
   assert.equal(messages.length, 1);
   assert.equal(messages[0].role, "user-with-attachments");
   assert.equal(messages[0].text, "Attached 1 image, 1 file");
+});
+
+test("Butler compose settings accepts provider-qualified local model ids", async () => {
+  const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+  await registerManorProviders(registry, {
+    MANOR_OLLAMA_LOCAL_ENABLED: "1",
+    MANOR_OLLAMA_LOCAL_PROVIDER_ID: "ollama-local",
+    MANOR_OLLAMA_LOCAL_BASE_URL: "http://ollama:11434/v1",
+    MANOR_OLLAMA_LOCAL_MODELS: "qwen3:8b"
+  } as NodeJS.ProcessEnv);
+
+  const session = {
+    model: null as { provider?: string | null; id?: string | null } | null,
+    async setModel(model: { provider?: string | null; id?: string | null }) {
+      session.model = model;
+    },
+    setThinkingLevel() {},
+    getActiveToolNames() {
+      return [];
+    },
+    setActiveToolsByName() {}
+  };
+  let emitted = false;
+
+  await updateButlerComposeSettings({
+    session,
+    modelRegistry: registry,
+    auth: { mode: "api" },
+    lastError: "previous error",
+    emit() {
+      emitted = true;
+      return true;
+    }
+  } as never, "ollama-local", "ollama-local/qwen3%3A8b", "medium");
+
+  assert.equal(session.model?.provider, "ollama-local");
+  assert.equal(session.model?.id, "qwen3:8b");
+  assert.equal(emitted, true);
 });
 
 test("Butler message serialization skips internal assistant tool-only rows", () => {

@@ -24,7 +24,7 @@ import { getButlerActivityTurns, recordButlerActivityEvent } from "./butler-acti
 import { backfillOperatorMessagesFromSessionFiles, isPersistableProviderOperatorMessage, removeTrivialOperatorQuestionConfirmations, upsertProviderBackedOperatorMessage } from "./butler-operator-messages.js";
 import { PiProviderRuntimeMapper } from "./pi-provider-events.js";
 import { getActiveManorSettings } from "./manor-settings-runtime.js";
-import { createManorModelRegistry, modelToModelOption, parseProviderModelRef } from "./model-provider-config.js";
+import { createManorModelRegistry, formatProviderModelRef, modelToModelOption, parseProviderModelRef } from "./model-provider-config.js";
 import { syncProviderWebToolsForSession } from "./provider-web-tools.js";
 import type {
   AppShellSnapshot,
@@ -618,18 +618,24 @@ export function getButlerLiveSnapshot(access: ButlerAgentSessionAccess): ButlerL
 }
 
 export function getButlerShellSnapshot(access: ButlerAgentSessionAccess): AppShellSnapshot["butler"] {
-  const availableModels = (access.modelRegistry?.getAvailable() ?? []).map(modelToModelOption);
+  const availableModels = (access.modelRegistry?.getAvailable() ?? []).map(modelToModelOption).map((model) => ({
+    ...model,
+    id: formatProviderModelRef({ provider: model.provider ?? null, model: model.id }) ?? model.id
+  }));
   const availableThinkingLevels = ["low", "medium", "high", "xhigh"] as ButlerThinkingLevel[];
   const currentThinkingLevel = availableThinkingLevels.includes(access.session?.thinkingLevel as ButlerThinkingLevel)
     ? (access.session?.thinkingLevel as ButlerThinkingLevel)
     : "medium";
+  const currentModel = access.session?.model
+    ? formatProviderModelRef({ provider: access.session.model.provider, model: access.session.model.id })
+    : null;
 
   return {
     ready: access.ready,
     pending: access.pending || access.pendingOperatorMessages.some((message) => message.pending === true),
     isStreaming: access.session?.isStreaming ?? false,
     sessionId: access.session?.sessionId ?? null,
-    model: access.session?.model?.id ?? null,
+    model: currentModel,
     auth: access.auth as AppSnapshot["butler"]["auth"],
     tools: access.toolCatalog as AppSnapshot["butler"]["tools"],
     onboarding: access.onboarding as AppSnapshot["butler"]["onboarding"],
@@ -660,7 +666,7 @@ export function getButlerShellSnapshot(access: ButlerAgentSessionAccess): AppShe
     lastError: access.lastError,
     compose: {
       provider: access.session?.model?.provider ?? null,
-      model: access.session?.model?.id ?? null,
+      model: currentModel,
       thinkingLevel: currentThinkingLevel,
       availableThinkingLevels,
       availableModels
@@ -831,14 +837,20 @@ export async function updateButlerComposeSettings(
     throw new Error("Butler agent is not ready");
   }
 
-  const lookupProviders = provider
-    ? [provider]
+  const parsedRef = parseProviderModelRef(modelId);
+  const ref = provider && parsedRef.provider !== provider
+    ? { provider, model: modelId }
+    : { provider: provider || parsedRef.provider, model: parsedRef.model ?? modelId };
+  const lookupModelId = ref.model ?? modelId;
+  const lookupProvider = provider || ref.provider;
+  const lookupProviders = lookupProvider
+    ? [lookupProvider]
     : access.auth.mode === "chatgpt"
       ? ["openai-codex", "openai"]
       : ["openai", "openai-codex"];
 
   const model = lookupProviders
-    .map((candidateProvider) => access.modelRegistry?.find(candidateProvider, modelId))
+    .map((candidateProvider) => access.modelRegistry?.find(candidateProvider, lookupModelId))
     .find(Boolean);
   if (!model) {
     throw new Error("Selected Butler model is not available");

@@ -24,6 +24,8 @@ const DEFAULT_OLLAMA_CLOUD_MODELS = [
   "minimax-m3"
 ];
 
+const DEFAULT_OLLAMA_LOCAL_MODELS: SettingsProviderModel[] = [];
+
 // OpenCode Go models. The official list lives at
 // https://opencode.ai/zen/go/v1/models and is mirrored here as a fallback.
 // Models served via the Anthropic /v1/messages shape declare api:"anthropic";
@@ -70,6 +72,7 @@ export function buildOpencodeGoModelEntry(id: string): SettingsProviderModel {
 
 export const SETTINGS_GROUP_KEYS: SettingsGroupKey[] = [
   "overview",
+  "providers.ollamaLocal",
   "providers.ollamaCloud",
   "providers.opencodeGo",
   "worker",
@@ -82,6 +85,7 @@ export const SETTINGS_GROUP_KEYS: SettingsGroupKey[] = [
 export const SETTINGS_VALIDATION_KEYS: SettingsValidationKey[] = [
   "codex",
   "piRpc",
+  "ollamaLocal",
   "ollamaCloud",
   "opencodeGo",
   "ollamaWebSearch",
@@ -98,6 +102,22 @@ export const DEFAULT_MANOR_SETTINGS: ManorSettings = {
     codexProvider: "openai-codex"
   },
   providers: {
+    ollamaLocal: {
+      enabled: false,
+      providerId: "ollama-local",
+      providerName: "Ollama Local",
+      baseUrl: "http://ollama:11434/v1",
+      nativeBaseUrl: "http://ollama:11434",
+      api: "openai-completions",
+      models: DEFAULT_OLLAMA_LOCAL_MODELS,
+      contextWindow: 65_536,
+      maxTokens: 16_384,
+      reasoning: true,
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: false,
+      apiKeySource: null,
+      authHeader: false
+    },
     ollamaCloud: {
       enabled: true,
       providerId: "ollama-cloud",
@@ -331,7 +351,7 @@ function checkBreakingShape(providers: Record<string, unknown>): void {
 }
 
 function providerKey(value: unknown, fallback: SettingsProviderKey): SettingsProviderKey {
-  return value === "openai-codex" || value === "ollama-cloud" || value === "opencode-go" ? value : fallback;
+  return value === "openai-codex" || value === "ollama-local" || value === "ollama-cloud" || value === "opencode-go" ? value : fallback;
 }
 
 export function normalizeManorSettings(value: unknown): ManorSettings {
@@ -339,6 +359,7 @@ export function normalizeManorSettings(value: unknown): ManorSettings {
   const overview = isRecord(raw.overview) ? raw.overview : {};
   const providers = isRecord(raw.providers) ? raw.providers : {};
   checkBreakingShape(providers);
+  const ollamaLocal = isRecord(providers.ollamaLocal) ? providers.ollamaLocal : {};
   const ollamaCloud = isRecord(providers.ollamaCloud) ? providers.ollamaCloud : {};
   const opencodeGo = isRecord(providers.opencodeGo) ? providers.opencodeGo : {};
   const worker = isRecord(raw.worker) ? raw.worker : {};
@@ -354,6 +375,26 @@ export function normalizeManorSettings(value: unknown): ManorSettings {
       codexProvider: providerKey(overview.codexProvider, DEFAULT_MANOR_SETTINGS.overview.codexProvider)
     },
     providers: {
+      ollamaLocal: {
+        enabled: bool(ollamaLocal.enabled, DEFAULT_MANOR_SETTINGS.providers.ollamaLocal.enabled),
+        providerId: text(ollamaLocal.providerId, DEFAULT_MANOR_SETTINGS.providers.ollamaLocal.providerId),
+        providerName: text(ollamaLocal.providerName, DEFAULT_MANOR_SETTINGS.providers.ollamaLocal.providerName),
+        baseUrl: baseUrl(ollamaLocal.baseUrl, DEFAULT_MANOR_SETTINGS.providers.ollamaLocal.baseUrl),
+        nativeBaseUrl: baseUrl(ollamaLocal.nativeBaseUrl, DEFAULT_MANOR_SETTINGS.providers.ollamaLocal.nativeBaseUrl),
+        api: text(ollamaLocal.api, DEFAULT_MANOR_SETTINGS.providers.ollamaLocal.api),
+        models: providerModels(ollamaLocal.models, DEFAULT_MANOR_SETTINGS.providers.ollamaLocal.models),
+        contextWindow: integer(ollamaLocal.contextWindow, DEFAULT_MANOR_SETTINGS.providers.ollamaLocal.contextWindow, 8_192, 2_000_000),
+        maxTokens: integer(ollamaLocal.maxTokens, DEFAULT_MANOR_SETTINGS.providers.ollamaLocal.maxTokens, 1_024, 2_000_000),
+        reasoning: bool(ollamaLocal.reasoning, DEFAULT_MANOR_SETTINGS.providers.ollamaLocal.reasoning),
+        supportsDeveloperRole: bool(ollamaLocal.supportsDeveloperRole, false),
+        supportsReasoningEffort: bool(ollamaLocal.supportsReasoningEffort, false),
+        apiKeySource: "apiKeySource" in ollamaLocal
+          ? ollamaLocal.apiKeySource === null
+            ? null
+            : secretSource(ollamaLocal.apiKeySource, { type: "env", name: "OLLAMA_LOCAL_API_KEY" })
+          : DEFAULT_MANOR_SETTINGS.providers.ollamaLocal.apiKeySource,
+        authHeader: bool(ollamaLocal.authHeader, false)
+      },
       ollamaCloud: {
         enabled: bool(ollamaCloud.enabled, DEFAULT_MANOR_SETTINGS.providers.ollamaCloud.enabled),
         providerId: text(ollamaCloud.providerId, DEFAULT_MANOR_SETTINGS.providers.ollamaCloud.providerId),
@@ -437,6 +478,11 @@ function envSource(env: NodeJS.ProcessEnv): SettingsSecretSource {
   return { type: "env", name: "OLLAMA_API_KEY" };
 }
 
+function ollamaLocalEnvSource(env: NodeJS.ProcessEnv): SettingsSecretSource {
+  if (env.OLLAMA_LOCAL_API_KEY_FILE?.trim()) return { type: "file", pathEnv: "OLLAMA_LOCAL_API_KEY_FILE" };
+  return { type: "env", name: "OLLAMA_LOCAL_API_KEY" };
+}
+
 function opencodeEnvSource(env: NodeJS.ProcessEnv): SettingsSecretSource {
   if (env.OPENCODE_API_KEY_FILE?.trim()) return { type: "file", pathEnv: "OPENCODE_API_KEY_FILE" };
   return { type: "env", name: "OPENCODE_API_KEY" };
@@ -459,6 +505,26 @@ export function buildManorSettingsFromEnv(env: NodeJS.ProcessEnv = process.env):
   apply("overview", "MANOR_OPERATOR_NAME", (value) => { settings.overview.operatorName = value.trim(); });
   apply("overview", "MANOR_BUTLER_PROVIDER", (value) => { settings.overview.butlerProvider = providerKey(value, settings.overview.butlerProvider); });
   apply("overview", "MANOR_CODEX_PROVIDER", (value) => { settings.overview.codexProvider = providerKey(value, settings.overview.codexProvider); });
+
+  apply("providers.ollamaLocal", "MANOR_OLLAMA_LOCAL_ENABLED", (value) => { settings.providers.ollamaLocal.enabled = bool(value, settings.providers.ollamaLocal.enabled); });
+  apply("providers.ollamaLocal", "MANOR_OLLAMA_LOCAL_PROVIDER_ID", (value) => { settings.providers.ollamaLocal.providerId = text(value, settings.providers.ollamaLocal.providerId); });
+  apply("providers.ollamaLocal", "MANOR_OLLAMA_LOCAL_PROVIDER_NAME", (value) => { settings.providers.ollamaLocal.providerName = text(value, settings.providers.ollamaLocal.providerName); });
+  apply("providers.ollamaLocal", "MANOR_OLLAMA_LOCAL_BASE_URL", (value) => { settings.providers.ollamaLocal.baseUrl = baseUrl(value, settings.providers.ollamaLocal.baseUrl); });
+  apply("providers.ollamaLocal", "MANOR_OLLAMA_LOCAL_NATIVE_BASE_URL", (value) => { settings.providers.ollamaLocal.nativeBaseUrl = baseUrl(value, settings.providers.ollamaLocal.nativeBaseUrl); });
+  apply("providers.ollamaLocal", "MANOR_OLLAMA_LOCAL_API", (value) => { settings.providers.ollamaLocal.api = text(value, settings.providers.ollamaLocal.api); });
+  apply("providers.ollamaLocal", "MANOR_OLLAMA_LOCAL_MODELS", (value) => {
+    settings.providers.ollamaLocal.models = csv(value, []);
+  });
+  apply("providers.ollamaLocal", "MANOR_OLLAMA_LOCAL_CONTEXT_WINDOW", (value) => { settings.providers.ollamaLocal.contextWindow = integer(value, settings.providers.ollamaLocal.contextWindow, 8_192, 2_000_000); });
+  apply("providers.ollamaLocal", "MANOR_OLLAMA_LOCAL_MAX_TOKENS", (value) => { settings.providers.ollamaLocal.maxTokens = integer(value, settings.providers.ollamaLocal.maxTokens, 1_024, 2_000_000); });
+  apply("providers.ollamaLocal", "MANOR_OLLAMA_LOCAL_REASONING", (value) => { settings.providers.ollamaLocal.reasoning = bool(value, settings.providers.ollamaLocal.reasoning); });
+  apply("providers.ollamaLocal", "MANOR_OLLAMA_LOCAL_SUPPORTS_DEVELOPER_ROLE", (value) => { settings.providers.ollamaLocal.supportsDeveloperRole = bool(value, false); });
+  apply("providers.ollamaLocal", "MANOR_OLLAMA_LOCAL_SUPPORTS_REASONING_EFFORT", (value) => { settings.providers.ollamaLocal.supportsReasoningEffort = bool(value, false); });
+  apply("providers.ollamaLocal", "MANOR_OLLAMA_LOCAL_AUTH_HEADER", (value) => { settings.providers.ollamaLocal.authHeader = bool(value, false); });
+  if (hasEnv(env, "OLLAMA_LOCAL_API_KEY") || hasEnv(env, "OLLAMA_LOCAL_API_KEY_FILE")) {
+    markEnvGroup(envGroups, "providers.ollamaLocal");
+    settings.providers.ollamaLocal.apiKeySource = ollamaLocalEnvSource(env);
+  }
 
   apply("providers.ollamaCloud", "MANOR_OLLAMA_CLOUD_ENABLED", (value) => { settings.providers.ollamaCloud.enabled = bool(value, settings.providers.ollamaCloud.enabled); });
   apply("providers.ollamaCloud", "MANOR_OLLAMA_CLOUD_PROVIDER_ID", (value) => { settings.providers.ollamaCloud.providerId = text(value, settings.providers.ollamaCloud.providerId); });
@@ -548,6 +614,7 @@ export function buildManorSettingsFromEnv(env: NodeJS.ProcessEnv = process.env):
 export function groupValue(settings: ManorSettings, key: SettingsGroupKey): unknown {
   switch (key) {
     case "overview": return settings.overview;
+    case "providers.ollamaLocal": return settings.providers.ollamaLocal;
     case "providers.ollamaCloud": return settings.providers.ollamaCloud;
     case "providers.opencodeGo": return settings.providers.opencodeGo;
     case "worker": return settings.worker;
@@ -562,6 +629,7 @@ export function applyGroupValue(settings: ManorSettings, key: SettingsGroupKey, 
   const next = cloneManorSettings(settings);
   switch (key) {
     case "overview": next.overview = { ...next.overview, ...(isRecord(value) ? value : {}) } as never; break;
+    case "providers.ollamaLocal": next.providers.ollamaLocal = { ...next.providers.ollamaLocal, ...(isRecord(value) ? value : {}) } as never; break;
     case "providers.ollamaCloud": next.providers.ollamaCloud = { ...next.providers.ollamaCloud, ...(isRecord(value) ? value : {}) } as never; break;
     case "providers.opencodeGo": next.providers.opencodeGo = { ...next.providers.opencodeGo, ...(isRecord(value) ? value : {}) } as never; break;
     case "worker": next.worker = { ...next.worker, ...(isRecord(value) ? value : {}) } as never; break;

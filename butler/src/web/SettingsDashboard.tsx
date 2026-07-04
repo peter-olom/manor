@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { getJson, patchJson, postJson } from "./api";
@@ -15,6 +15,7 @@ import type {
 
 type ModelOption = { id: string; label: string; provider: string | null };
 type AuthStatusView = { mode: "chatgpt" | "api" | "none" | "unknown"; loggedIn: boolean; validationError: string | null; lastValidatedAt: number | null };
+type OllamaPullEvent = { status?: string; digest?: string; total?: number; completed?: number; error?: string; warning?: boolean; done?: boolean };
 type SettingsResponse = {
   settings: ManorSettings;
   provenance: ManorSettingsProvenance;
@@ -22,6 +23,7 @@ type SettingsResponse = {
     butler: ModelOption[];
     codex: ModelOption[];
     piRpc: ModelOption[];
+    ollamaLocal: ModelOption[];
     opencodeGo: ModelOption[];
     worker: { availableModels: ModelOption[] };
   };
@@ -31,6 +33,8 @@ type SettingsResponse = {
 };
 
 const GROUP_LABELS: Record<SettingsGroupKey, string> = {
+  overview: "Overview",
+  "providers.ollamaLocal": "Ollama Local",
   "providers.ollamaCloud": "Ollama Cloud",
   "providers.opencodeGo": "OpenCode Go",
   worker: "Worker",
@@ -43,6 +47,7 @@ const GROUP_LABELS: Record<SettingsGroupKey, string> = {
 const VALIDATION_TARGETS: SettingsValidationKey[] = [
   "codex",
   "piRpc",
+  "ollamaLocal",
   "ollamaCloud",
   "opencodeGo",
   "ollamaWebSearch",
@@ -55,6 +60,7 @@ const VALIDATION_TARGETS: SettingsValidationKey[] = [
 const VALIDATION_LABELS: Record<SettingsValidationKey, string> = {
   codex: "OpenAI / Codex runtime",
   piRpc: "Pi RPC",
+  ollamaLocal: "Ollama Local",
   ollamaCloud: "Ollama Cloud",
   opencodeGo: "OpenCode Go",
   ollamaWebSearch: "Ollama web search",
@@ -75,7 +81,7 @@ export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; descript
 
 const SECTION_HELP: Record<SettingsSectionId, string> = {
   overview: "Set the operator name and which provider Butler and Codex should use.",
-  providers: "Configure the model providers (OpenAI/Codex, Ollama Cloud, OpenCode Go) and web tools Butler can use.",
+  providers: "Configure the model providers (OpenAI/Codex, Ollama Local, Ollama Cloud, OpenCode Go) and web tools Butler can use.",
   runtime: "Choose where work runs, which models handle routine tasks, and how much thinking to spend.",
   memory: "Tune synthesis, promotion, semantic review, and embedding backfill behavior.",
   diagnostics: "Run connection checks for the services Butler depends on."
@@ -86,7 +92,7 @@ function cloneSettings(settings: ManorSettings): ManorSettings {
 }
 
 function modelValue(option: ModelOption): string {
-  return option.provider ? `${option.provider}/${option.id}` : option.id;
+  return option.provider && !option.id.startsWith(`${option.provider}/`) ? `${option.provider}/${option.id}` : option.id;
 }
 
 function secretLabel(source: SettingsSecretSource): string {
@@ -95,7 +101,7 @@ function secretLabel(source: SettingsSecretSource): string {
   return `asiri:${source.workspace}:${source.path}`;
 }
 
-type ProviderKey = "openai-codex" | "ollama-cloud" | "opencode-go";
+type ProviderKey = "openai-codex" | "ollama-local" | "ollama-cloud" | "opencode-go";
 
 function providerModels(models: ModelOption[], providerId: string): ModelOption[] {
   return models.filter((model) => model.provider === providerId);
@@ -127,6 +133,7 @@ function formatAuthSummary(auth?: AuthStatusView): string {
 function availableProviderOptions(availability: SettingsProviderAvailabilityMap): { value: string; label: string }[] {
   const options: { value: string; label: string }[] = [];
   if (availability["openai-codex"].secretAvailable) options.push({ value: "openai-codex", label: "OpenAI / Codex" });
+  if (availability["ollama-local"].secretAvailable && availability["ollama-local"].enabled) options.push({ value: "ollama-local", label: "Ollama Local" });
   if (availability["ollama-cloud"].secretAvailable && availability["ollama-cloud"].enabled) options.push({ value: "ollama-cloud", label: "Ollama Cloud" });
   if (availability["opencode-go"].secretAvailable && availability["opencode-go"].enabled) options.push({ value: "opencode-go", label: "OpenCode Go" });
   return options;
@@ -188,12 +195,20 @@ function ToggleGrid({ children }: { children: ReactNode }) {
 const PROVIDER_LABELS: Record<string, string> = {
   "openai-codex": "OpenAI / Codex",
   "openai": "OpenAI",
+  "ollama-local": "Ollama Local",
   "ollama-cloud": "Ollama Cloud",
   "opencode-go": "OpenCode Go"
 };
 
 function providerLabel(provider: string): string {
   return PROVIDER_LABELS[provider] ?? provider;
+}
+
+function formatBytes(value: number): string {
+  if (value >= 1024 * 1024 * 1024) return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${value} B`;
 }
 
 function ModelSelectField({
@@ -334,14 +349,26 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
   const [validating, setValidating] = useState<SettingsValidationKey | null>(null);
   const [validatingAll, setValidatingAll] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [providerTab, setProviderTab] = useState<"openai" | "ollama" | "opencode">(() => {
+  const [providerTab, setProviderTab] = useState<"openai" | "ollamaLocal" | "ollama" | "opencode">(() => {
     if (typeof window === "undefined") return "openai";
     const param = new URLSearchParams(window.location.search).get("provider");
+    if (param === "ollama-local") return "ollamaLocal";
     return param === "ollama" || param === "opencode" ? param : "openai";
   });
   const [authPending, setAuthPending] = useState<"butler" | "codex" | null>(null);
   const [authUrl, setAuthUrl] = useState<{ side: "butler" | "codex"; url: string } | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [ollamaLocalModels, setOllamaLocalModels] = useState<{ id: string; contextWindow: number | null; capabilities?: string[] }[] | null>(null);
+  const [ollamaLocalModelsLoading, setOllamaLocalModelsLoading] = useState(false);
+  const [ollamaLocalModelsError, setOllamaLocalModelsError] = useState<string | null>(null);
+  const [ollamaPullModel, setOllamaPullModel] = useState("");
+  const [ollamaPulling, setOllamaPulling] = useState(false);
+  const [ollamaPullStatus, setOllamaPullStatus] = useState<string | null>(null);
+  const [ollamaPullProgress, setOllamaPullProgress] = useState<{ completed: number; total: number } | null>(null);
+  const [ollamaPullError, setOllamaPullError] = useState<string | null>(null);
+  const [ollamaPullWarning, setOllamaPullWarning] = useState(false);
+  const [ollamaPullDone, setOllamaPullDone] = useState(false);
+  const ollamaPullAbortRef = useRef<AbortController | null>(null);
   const [ollamaModels, setOllamaModels] = useState<{ id: string; contextWindow: number | null }[] | null>(null);
   const [ollamaModelsLoading, setOllamaModelsLoading] = useState(false);
   const [ollamaModelsError, setOllamaModelsError] = useState<string | null>(null);
@@ -367,9 +394,15 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
   useEffect(() => {
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
-    url.searchParams.set("provider", providerTab);
+    url.searchParams.set("provider", providerTab === "ollamaLocal" ? "ollama-local" : providerTab);
     window.history.replaceState(null, "", url.toString());
   }, [providerTab]);
+
+  useEffect(() => {
+    if (payload?.providerAvailability["ollama-local"].enabled && !ollamaLocalModels && !ollamaLocalModelsLoading) {
+      void fetchOllamaLocalModels();
+    }
+  }, [payload, ollamaLocalModels, ollamaLocalModelsLoading]);
 
   useEffect(() => {
     if (payload?.providerAvailability["ollama-cloud"].secretAvailable && !ollamaModels && !ollamaModelsLoading) {
@@ -467,6 +500,99 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
     }
   }
 
+  async function fetchOllamaLocalModels() {
+    setOllamaLocalModelsLoading(true);
+    setOllamaLocalModelsError(null);
+    try {
+      const res = await getJson<{ models: { id: string; contextWindow: number | null; capabilities?: string[] }[] }>("/api/settings/providers/ollama-local/models");
+      setOllamaLocalModels(res.models);
+    } catch (error) {
+      setOllamaLocalModelsError(error instanceof Error ? error.message : String(error));
+      setOllamaLocalModels([]);
+    } finally {
+      setOllamaLocalModelsLoading(false);
+    }
+  }
+
+  async function pullOllamaLocalModel() {
+    const model = ollamaPullModel.trim();
+    if (!model || ollamaPulling || !payload?.settings.providers.ollamaLocal.enabled) return;
+    const controller = new AbortController();
+    ollamaPullAbortRef.current = controller;
+    setOllamaPulling(true);
+    setOllamaPullError(null);
+    setOllamaPullWarning(false);
+    setOllamaPullDone(false);
+    setOllamaPullProgress(null);
+    setOllamaPullStatus(`Pulling ${model}...`);
+    try {
+      const response = await fetch("/api/settings/providers/ollama-local/pull", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model }),
+        signal: controller.signal
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(payload?.error || `Pull failed with HTTP ${response.status}`);
+      }
+      if (!response.body) throw new Error("Pull did not return a progress stream.");
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let sawWarning = false;
+      let latestStatus: string | null = null;
+      const handleLine = (line: string) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        let event: OllamaPullEvent;
+        try {
+          event = JSON.parse(trimmed) as OllamaPullEvent;
+        } catch {
+          event = { status: trimmed };
+        }
+        if (event.error) throw new Error(event.error);
+        if (event.warning) {
+          sawWarning = true;
+          setOllamaPullWarning(true);
+        }
+        if (event.status) {
+          latestStatus = event.status;
+          setOllamaPullStatus(event.status);
+        }
+        if (typeof event.completed === "number" && typeof event.total === "number" && event.total > 0) {
+          setOllamaPullProgress({ completed: event.completed, total: event.total });
+        }
+        if (event.done) setOllamaPullDone(true);
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? "";
+        for (const line of lines) handleLine(line);
+      }
+      buffer += decoder.decode();
+      handleLine(buffer);
+
+      setOllamaPullDone(true);
+      if (!sawWarning && !latestStatus) setOllamaPullStatus("Pull complete.");
+      if (!sawWarning) setOllamaPullModel("");
+      await fetchOllamaLocalModels();
+      const next = await getJson<SettingsResponse>("/api/settings");
+      setPayload(next);
+      setDraft(cloneSettings(next.settings));
+    } catch (error) {
+      setOllamaPullError(controller.signal.aborted ? "Pull cancelled." : error instanceof Error ? error.message : String(error));
+    } finally {
+      if (ollamaPullAbortRef.current === controller) ollamaPullAbortRef.current = null;
+      setOllamaPulling(false);
+    }
+  }
+
   async function fetchOpencodeModels() {
     setOpencodeModelsLoading(true);
     setOpencodeModelsError(null);
@@ -543,6 +669,8 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
   const savedMessage = message === "Saved" || message === "Reseed complete" ? message : null;
   const errorMessage = message && !savedMessage ? message : null;
   const testing = validatingAll || Boolean(validating);
+  const pullPercent = ollamaPullProgress ? Math.max(0, Math.min(100, (ollamaPullProgress.completed / ollamaPullProgress.total) * 100)) : null;
+  const ollamaLocalPullEnabled = payload.settings.providers.ollamaLocal.enabled;
 
   return (
     <div className="settings-page">
@@ -593,6 +721,7 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
         {activeSection === "providers" ? <Section id="providers" title="Providers">
           <div className="settings-provider-tabs">
             <button className={`settings-provider-tab ${providerTab === "openai" ? "is-active" : ""}`} type="button" onClick={() => setProviderTab("openai")}>OpenAI / Codex</button>
+            <button className={`settings-provider-tab ${providerTab === "ollamaLocal" ? "is-active" : ""}`} type="button" onClick={() => setProviderTab("ollamaLocal")}>Ollama Local</button>
             <button className={`settings-provider-tab ${providerTab === "ollama" ? "is-active" : ""}`} type="button" onClick={() => setProviderTab("ollama")}>Ollama Cloud</button>
             <button className={`settings-provider-tab ${providerTab === "opencode" ? "is-active" : ""}`} type="button" onClick={() => setProviderTab("opencode")}>OpenCode Go</button>
           </div>
@@ -630,6 +759,82 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
               <Field label="Web tools" hint="Web search/fetch is built into ChatGPT — no separate config needed.">
                 <input readOnly value="Built into ChatGPT" />
               </Field>
+            </SubGroup>
+          ) : null}
+
+          {providerTab === "ollamaLocal" ? (
+            <SubGroup title={GROUP_LABELS["providers.ollamaLocal"]}>
+              <ToggleGrid>
+                <Toggle
+                  label="Enabled"
+                  hint="Use local Ollama models as a provider"
+                  checked={draft.providers.ollamaLocal.enabled}
+                  onChange={(next) => update((s) => { s.providers.ollamaLocal.enabled = next; })}
+                />
+              </ToggleGrid>
+              <FieldGrid>
+                <Field label="Base URL"><input readOnly value={draft.providers.ollamaLocal.baseUrl} /></Field>
+                <Field label="Native host"><input readOnly value={draft.providers.ollamaLocal.nativeBaseUrl} /></Field>
+              </FieldGrid>
+              <div className="settings-subgroup-divider" />
+              <div className="settings-subgroup-section-head"><h4>Local chat models</h4></div>
+              <div className="settings-model-pills">
+                {ollamaLocalModelsLoading ? <span className="settings-model-pills-hint">Loading…</span> : null}
+                {ollamaLocalModelsError ? <div className="settings-auth-error">{ollamaLocalModelsError}</div> : null}
+                {ollamaLocalModels?.map((model) => (
+                  <span
+                    key={model.id}
+                    className="settings-model-pill"
+                    title={model.contextWindow ? `${(model.contextWindow / 1024).toFixed(0)}k context` : undefined}
+                  >
+                    {model.id}
+                    {model.contextWindow ? <span className="settings-model-pill-ctx">{(model.contextWindow / 1024).toFixed(0)}k</span> : null}
+                  </span>
+                ))}
+                {ollamaLocalModels && ollamaLocalModels.length === 0 && !ollamaLocalModelsLoading ? <span className="settings-model-pills-hint">No local chat models found.</span> : null}
+              </div>
+              <div className="settings-subgroup-divider" />
+              <div className="settings-subgroup-section-head"><h4>Pull model</h4></div>
+              <div className="settings-model-pull">
+                <input
+                  value={ollamaPullModel}
+                  placeholder="qwen3:8b"
+                  disabled={ollamaPulling || !ollamaLocalPullEnabled}
+                  onChange={(event) => {
+                    setOllamaPullModel(event.target.value);
+                    setOllamaPullError(null);
+                    setOllamaPullWarning(false);
+                    setOllamaPullDone(false);
+                    setOllamaPullStatus(null);
+                    setOllamaPullProgress(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && ollamaLocalPullEnabled) void pullOllamaLocalModel();
+                  }}
+                />
+                <button className="button is-primary" type="button" disabled={ollamaPulling || !ollamaLocalPullEnabled || !ollamaPullModel.trim()} onClick={() => void pullOllamaLocalModel()}>
+                  {ollamaPulling ? "Pulling..." : "Pull"}
+                </button>
+                {ollamaPulling ? (
+                  <button className="button" type="button" onClick={() => ollamaPullAbortRef.current?.abort()}>
+                    Cancel
+                  </button>
+                ) : null}
+              </div>
+              {(ollamaPullStatus || ollamaPullProgress || ollamaPullError || ollamaPullDone) ? (
+                <div className={`settings-pull-status ${ollamaPullError ? "is-error" : ollamaPullWarning ? "is-warning" : ollamaPullDone ? "is-done" : ""}`}>
+                  {ollamaPullStatus ? <span>{ollamaPullStatus}</span> : null}
+                  {ollamaPullProgress && pullPercent !== null ? (
+                    <>
+                      <div className="settings-pull-progress" aria-label="Pull progress">
+                        <span style={{ width: `${pullPercent}%` }} />
+                      </div>
+                      <span>{formatBytes(ollamaPullProgress.completed)} / {formatBytes(ollamaPullProgress.total)}</span>
+                    </>
+                  ) : null}
+                  {ollamaPullError ? <span>{ollamaPullError}</span> : null}
+                </div>
+              ) : null}
             </SubGroup>
           ) : null}
 

@@ -45,6 +45,8 @@ test("readSessionTitleConfig supports provider-qualified title models", () => {
 
 test("normalizeSessionTitleModel rejects invalid model references", () => {
   assert.equal(normalizeSessionTitleModel("openai-codex/gpt-5.4-mini"), "openai-codex/gpt-5.4-mini");
+  assert.equal(normalizeSessionTitleModel("ollama-local/qwen3%3A8b"), "ollama-local/qwen3:8b");
+  assert.equal(normalizeSessionTitleModel("openrouter/anthropic/claude-sonnet-4"), "openrouter/anthropic/claude-sonnet-4");
   assert.equal(normalizeSessionTitleModel("not a model"), null);
 });
 
