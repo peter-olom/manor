@@ -185,8 +185,11 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
 
 async function applyManagedButlerDefaults(access: ButlerAgentSessionAccess): Promise<void> {
   if (!access.session || !access.modelRegistry) return;
-  const settings = getActiveManorSettings().butler;
-  const ref = parseProviderModelRef(settings.defaultModel);
+  const fallbackSettings = getActiveManorSettings().butler;
+  const lastUsed = typeof access.getButlerDefaults === "function" ? access.getButlerDefaults() : null;
+  const defaultModel = lastUsed?.model ?? fallbackSettings.defaultModel;
+  const defaultThinkingLevel = lastUsed?.thinkingLevel ?? fallbackSettings.defaultThinkingLevel;
+  const ref = parseProviderModelRef(defaultModel);
   if (ref.model) {
     const providers = ref.provider
       ? [ref.provider]
@@ -196,7 +199,7 @@ async function applyManagedButlerDefaults(access: ButlerAgentSessionAccess): Pro
     const model = providers.map((provider) => access.modelRegistry?.find(provider, ref.model!)).find(Boolean);
     if (model) await access.session.setModel(model);
   }
-  access.session.setThinkingLevel(settings.defaultThinkingLevel === "off" ? "medium" : settings.defaultThinkingLevel);
+  access.session.setThinkingLevel((defaultThinkingLevel === "off" ? "medium" : defaultThinkingLevel) as never);
 }
 
 export async function sanitizePersistedButlerSessions(access: ButlerAgentSessionAccess): Promise<void> {

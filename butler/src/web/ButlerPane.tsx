@@ -4,7 +4,7 @@ import { BudgetSegmented } from "./BudgetSegmented";
 import { CloseIcon } from "./icons";
 import { JumpToLatest } from "./JumpToLatest";
 import { Markdown } from "./Markdown";
-import { ModelSelect } from "./ModelSelect";
+import { ModelPicker } from "./ModelPicker";
 import { SandSpinner } from "./SandSpinner";
 import { ThinkingTrace, traceDisclosureLabel } from "./ThinkingTrace";
 import { useAnchoredScroll } from "./useAnchoredScroll";
@@ -174,13 +174,14 @@ const Composer = memo(function Composer({
         />
         <div className="composer-actions">
           <div className="composer-settings" aria-label="Butler settings">
-            <ModelSelect
+            <ModelPicker
               label="Butler model"
               value={model}
               options={availableModels}
               disabled={busy}
+              compact
+              className="composer-model"
               onChange={onModelChange}
-              className="is-compact composer-model"
             />
             <BudgetSegmented
               label="Butler thinking"

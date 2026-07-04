@@ -14,6 +14,11 @@ export type ButlerOperatorSink = {
   onOperatorReply?: (input: { threadId: string; text: string; at: number }) => void;
 };
 
+export type ButlerAgentDefaults = {
+  model: string | null;
+  thinkingLevel: string | null;
+};
+
 export type ButlerAgentServiceOptions = {
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;
@@ -33,4 +38,5 @@ export type ButlerAgentServiceOptions = {
   routingClassifier?: ButlerRoutingClassifier | null;
   systemPromptSuffix?: string | null;
   operatorSink?: ButlerOperatorSink | null;
+  getButlerDefaults?: () => ButlerAgentDefaults | null;
 };

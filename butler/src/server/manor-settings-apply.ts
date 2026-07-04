@@ -6,6 +6,7 @@ import type { PiSessionTitleGenerator } from "./session-title-generator.js";
 import type { ButlerSseHub } from "./server-runtime-helpers.js";
 import type { ButlerStateStore } from "./state-store.js";
 import { updateUnifiedWorkerCompose } from "./worker-client-router.js";
+import { clearOllamaCloudModelsCache } from "./ollama-cloud-models.js";
 import type { ManorSettingsService } from "./manor-settings-service.js";
 
 export function createManorSettingsApplyHandler(input: {
@@ -20,6 +21,7 @@ export function createManorSettingsApplyHandler(input: {
   getSseHub: () => ButlerSseHub | null | undefined;
 }): () => Promise<void> {
   return async () => {
+    clearOllamaCloudModelsCache();
     input.applyBackgroundSettings();
     input.sessionTitleGenerator.applySettings();
     await input.piRpcWorkerClient.refreshModels().catch((error) => console.warn("Pi RPC model refresh failed after settings update", error));

@@ -7,6 +7,15 @@ import type { PairChat, PairMessage, PairStatus, PairSummary } from "../shared/p
 
 type PersistedPairState = {
   pairs: PairChat[];
+  lastUsedCompose?: LastUsedCompose | null;
+};
+
+export type LastUsedCompose = {
+  butlerModel?: string | null;
+  butlerThinkingLevel?: string | null;
+  workerModel?: string | null;
+  workerEffort?: string | null;
+  updatedAt?: number | null;
 };
 
 type PairSnapshotInput = {
@@ -19,17 +28,35 @@ type PairSnapshotInput = {
   lastMessage?: PairMessage | null;
   updatedAt?: number;
   butlerThinkingLevel?: string | null;
+  butlerModel?: string | null;
   codexModel?: string | null;
   codexEffort?: string | null;
 };
 
 type PairComposeOverrideInput = {
   butlerThinkingLevel?: string | null;
+  butlerModel?: string | null;
   codexModel?: string | null;
   codexEffort?: string | null;
 };
 
 const DEFAULT_TITLE = "New session";
+
+function normalizeLastUsedCompose(raw: LastUsedCompose | null | undefined): LastUsedCompose | null {
+  if (!raw) return null;
+  const butlerModel = typeof raw.butlerModel === "string" && raw.butlerModel.trim() ? raw.butlerModel : null;
+  const butlerThinkingLevel = typeof raw.butlerThinkingLevel === "string" && raw.butlerThinkingLevel.trim() ? raw.butlerThinkingLevel : null;
+  const workerModel = typeof raw.workerModel === "string" && raw.workerModel.trim() ? raw.workerModel : null;
+  const workerEffort = typeof raw.workerEffort === "string" && raw.workerEffort.trim() ? raw.workerEffort : null;
+  if (!butlerModel && !butlerThinkingLevel && !workerModel && !workerEffort) return null;
+  return {
+    butlerModel,
+    butlerThinkingLevel,
+    workerModel,
+    workerEffort,
+    updatedAt: typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : null
+  };
+}
 
 function normalizeText(value: string | null | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
@@ -88,6 +115,7 @@ function emptyPair(input: { id: string; title?: string | null; defaultCwd?: stri
     messageCount: 0,
     lastMessage: null,
     butlerThinkingLevel: null,
+    butlerModel: null,
     codexModel: null,
     codexEffort: null
   };
@@ -124,9 +152,10 @@ function normalizePair(raw: Partial<PairChat> & { id?: string }, store: ButlerSt
   pair.lastHandoffPrompt = typeof raw.lastHandoffPrompt === "string" && raw.lastHandoffPrompt.trim() ? raw.lastHandoffPrompt : null;
   pair.messageCount = typeof raw.messageCount === "number" && Number.isFinite(raw.messageCount) ? Math.max(0, Math.trunc(raw.messageCount)) : 0;
   pair.lastMessage = raw.lastMessage ?? null;
-  pair.butlerThinkingLevel = typeof raw.butlerThinkingLevel === "string" && raw.butlerThinkingLevel.trim() ? raw.butlerThinkingLevel : null;
-  pair.codexModel = typeof raw.codexModel === "string" && raw.codexModel.trim() ? raw.codexModel : null;
-  pair.codexEffort = typeof raw.codexEffort === "string" && raw.codexEffort.trim() ? raw.codexEffort : null;
+    pair.butlerThinkingLevel = typeof raw.butlerThinkingLevel === "string" && raw.butlerThinkingLevel.trim() ? raw.butlerThinkingLevel : null;
+    pair.butlerModel = typeof raw.butlerModel === "string" && raw.butlerModel.trim() ? raw.butlerModel : null;
+    pair.codexModel = typeof raw.codexModel === "string" && raw.codexModel.trim() ? raw.codexModel : null;
+    pair.codexEffort = typeof raw.codexEffort === "string" && raw.codexEffort.trim() ? raw.codexEffort : null;
   pair.status = deriveStatus(pair, store);
   return pair;
 }
@@ -158,6 +187,7 @@ function deriveStatus(pair: PairChat, store: ButlerStateStore): PairStatus {
 
 export class PairStore extends EventEmitter {
   private pairs = new Map<string, PairChat>();
+  private lastUsedCompose: LastUsedCompose | null = null;
   private saveInFlight: Promise<void> | null = null;
   private saveQueued = false;
 
@@ -177,6 +207,11 @@ export class PairStore extends EventEmitter {
         this.pairs.set(pair.id, pair);
       }
     }
+    this.lastUsedCompose = normalizeLastUsedCompose(loaded.lastUsedCompose);
+  }
+
+  getLastUsedCompose(): LastUsedCompose | null {
+    return this.lastUsedCompose ? { ...this.lastUsedCompose } : null;
   }
 
   listSummaries(): PairSummary[] {
@@ -193,6 +228,12 @@ export class PairStore extends EventEmitter {
   createPair(input: { title?: string | null; defaultCwd?: string | null } = {}): PairChat {
     const now = Date.now();
     const pair = emptyPair({ id: crypto.randomUUID(), title: input.title ?? DEFAULT_TITLE, defaultCwd: input.defaultCwd, now });
+    if (this.lastUsedCompose) {
+      pair.butlerThinkingLevel = this.lastUsedCompose.butlerThinkingLevel ?? null;
+      pair.butlerModel = this.lastUsedCompose.butlerModel ?? null;
+      pair.codexModel = this.lastUsedCompose.workerModel ?? null;
+      pair.codexEffort = this.lastUsedCompose.workerEffort ?? null;
+    }
     this.pairs.set(pair.id, pair);
     this.queueSave();
     this.emit("change");
@@ -246,6 +287,7 @@ export class PairStore extends EventEmitter {
       pair.worker.lastReviewedReportAt = reviewedAt;
     }
     if (snapshot.butlerThinkingLevel !== undefined) pair.butlerThinkingLevel = snapshot.butlerThinkingLevel;
+    if (snapshot.butlerModel !== undefined) pair.butlerModel = snapshot.butlerModel;
     if (snapshot.codexModel !== undefined) pair.codexModel = snapshot.codexModel;
     if (snapshot.codexEffort !== undefined) pair.codexEffort = snapshot.codexEffort;
     pair.status = deriveStatus(pair, this.store);
@@ -261,9 +303,17 @@ export class PairStore extends EventEmitter {
       return null;
     }
     if (override.butlerThinkingLevel !== undefined) pair.butlerThinkingLevel = override.butlerThinkingLevel;
+    if (override.butlerModel !== undefined) pair.butlerModel = override.butlerModel;
     if (override.codexModel !== undefined) pair.codexModel = override.codexModel;
     if (override.codexEffort !== undefined) pair.codexEffort = override.codexEffort;
     pair.updatedAt = Math.max(pair.updatedAt, Date.now());
+    this.lastUsedCompose = normalizeLastUsedCompose({
+      butlerModel: override.butlerModel !== undefined ? override.butlerModel : this.lastUsedCompose?.butlerModel ?? null,
+      butlerThinkingLevel: override.butlerThinkingLevel !== undefined ? override.butlerThinkingLevel : this.lastUsedCompose?.butlerThinkingLevel ?? null,
+      workerModel: override.codexModel !== undefined ? override.codexModel : this.lastUsedCompose?.workerModel ?? null,
+      workerEffort: override.codexEffort !== undefined ? override.codexEffort : this.lastUsedCompose?.workerEffort ?? null,
+      updatedAt: Date.now()
+    });
     this.queueSave();
     this.emit("change");
     return this.getPair(pair.id);
@@ -366,7 +416,8 @@ export class PairStore extends EventEmitter {
   private async flushSave(): Promise<void> {
     this.saveQueued = false;
     await writeJsonStateFileAtomic(this.statePath, {
-      pairs: [...this.pairs.values()].sort((left, right) => left.createdAt - right.createdAt)
+      pairs: [...this.pairs.values()].sort((left, right) => left.createdAt - right.createdAt),
+      lastUsedCompose: this.lastUsedCompose
     } satisfies PersistedPairState);
   }
 }

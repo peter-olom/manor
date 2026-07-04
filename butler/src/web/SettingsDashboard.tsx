@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { getJson, patchJson, postJson } from "./api";
+import { ModelPicker, type ModelPickerGroup, type ModelPickerOption } from "./ModelPicker";
 import { SetupTabIcon, WarningIcon } from "./icons";
 import type {
   ManorSettings,
@@ -74,7 +75,7 @@ export type SettingsSectionId = "overview" | "providers" | "runtime" | "memory" 
 export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; description: string }[] = [
   { id: "overview", label: "Overview", description: "Operator and provider defaults" },
   { id: "providers", label: "Providers", description: "Model and tool access" },
-  { id: "runtime", label: "Runtime", description: "Worker and Butler defaults" },
+  { id: "runtime", label: "Runtime", description: "Worker runtime and model tasks" },
   { id: "memory", label: "Memory", description: "Synthesis and embeddings" },
   { id: "diagnostics", label: "Diagnostics", description: "Connection tests" }
 ];
@@ -82,17 +83,13 @@ export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; descript
 const SECTION_HELP: Record<SettingsSectionId, string> = {
   overview: "Set the operator name and which provider Butler and Codex should use.",
   providers: "Configure the model providers (OpenAI/Codex, Ollama Local, Ollama Cloud, OpenCode Go) and web tools Butler can use.",
-  runtime: "Choose where work runs, which models handle routine tasks, and how much thinking to spend.",
+  runtime: "Choose where work runs and which models handle routine background tasks. Worker and Butler model picks live on each chat window and carry over to new sessions.",
   memory: "Tune synthesis, promotion, semantic review, and embedding backfill behavior.",
   diagnostics: "Run connection checks for the services Butler depends on."
 };
 
 function cloneSettings(settings: ManorSettings): ManorSettings {
   return JSON.parse(JSON.stringify(settings)) as ManorSettings;
-}
-
-function modelValue(option: ModelOption): string {
-  return option.provider && !option.id.startsWith(`${option.provider}/`) ? `${option.provider}/${option.id}` : option.id;
 }
 
 function secretLabel(source: SettingsSecretSource): string {
@@ -228,30 +225,37 @@ function ModelSelectField({
   onChange: (next: string | null) => void;
   disabled?: boolean;
 }) {
-  const filtered = available
-    ? models.filter((model) => {
-        const entry = available[(model.provider ?? "openai-codex") as ProviderKey];
-        return !entry || entry.secretAvailable;
-      })
-    : models;
-  const groups = groupModelsByProvider(filtered);
+  const filtered = useMemo(
+    () => available
+      ? models.filter((model) => {
+          const entry = available[(model.provider ?? "openai-codex") as ProviderKey];
+          return !entry || entry.secretAvailable;
+        })
+      : models,
+    [available, models]
+  );
+  const groups: ModelPickerGroup[] = useMemo(
+    () => groupModelsByProvider(filtered).map((group) => ({
+      provider: group.provider,
+      label: providerLabel(group.provider),
+      options: group.options as ModelPickerOption[]
+    })),
+    [filtered]
+  );
+  const options = filtered as ModelPickerOption[];
   return (
     <Field label={label} hint={hint}>
-      <select
-        value={value ?? ""}
+      <ModelPicker
+        label={label}
+        value={value}
+        options={options}
+        groups={groups}
+        placeholder="Model default"
         disabled={disabled || filtered.length === 0}
-        onChange={(event) => onChange(event.target.value || null)}
-      >
-        <option value="">Model default</option>
-        {groups.map((group) => (
-          <optgroup key={group.provider} label={providerLabel(group.provider)}>
-            {group.options.map((model) => {
-              const ref = modelValue(model);
-              return <option key={ref} value={ref}>{model.label}</option>;
-            })}
-          </optgroup>
-        ))}
-      </select>
+        allowClear
+        clearLabel="Use model default"
+        onChange={onChange}
+      />
     </Field>
   );
 }
@@ -376,7 +380,6 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
   const [opencodeModelsLoading, setOpencodeModelsLoading] = useState(false);
   const [opencodeModelsError, setOpencodeModelsError] = useState<string | null>(null);
 
-  const workerModels = useMemo(() => payload?.availableModels.worker.availableModels ?? [], [payload]);
   const butlerModels = useMemo(() => payload?.availableModels.butler ?? [], [payload]);
 
   const dirty = Boolean(draft && payload && !settingsEqual(draft, payload.settings));
@@ -940,45 +943,6 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
                   <option value="auto">Auto</option>
                   <option value="openai">OpenAI / Codex CLI</option>
                   <option value="pi-rpc">Pi RPC</option>
-                </select>
-              </Field>
-              <ModelSelectField
-                label="Default model"
-                value={draft.worker.defaultModel}
-                models={workerModels}
-                available={payload.providerAvailability}
-                onChange={(next) => update((s) => { s.worker.defaultModel = next; })}
-              />
-              <Field label="Default effort">
-                <select value={draft.worker.defaultEffort ?? ""} onChange={(event) => update((s) => { s.worker.defaultEffort = (event.target.value || null) as never; })}>
-                  <option value="">Model default</option>
-                  <option value="minimal">Minimal</option>
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="xhigh">X-high</option>
-                </select>
-              </Field>
-            </FieldGrid>
-          </SubGroup>
-
-          <SubGroup title={GROUP_LABELS.butler}>
-            <FieldGrid>
-              <ModelSelectField
-                label="Default model"
-                hint="Set before Butler delegates. Falls back to default if unset."
-                value={draft.butler.defaultModel}
-                models={butlerModels}
-                available={payload.providerAvailability}
-                onChange={(next) => update((s) => { s.butler.defaultModel = next; })}
-              />
-              <Field label="Thinking">
-                <select value={draft.butler.defaultThinkingLevel} onChange={(event) => update((s) => { s.butler.defaultThinkingLevel = event.target.value as never; })}>
-                  <option value="off">Off</option>
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="xhigh">X-high</option>
                 </select>
               </Field>
             </FieldGrid>

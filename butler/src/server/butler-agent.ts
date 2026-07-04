@@ -41,7 +41,7 @@ import {
   type SupervisionSmokePlan
 } from "./butler-agent-helpers.js";
 import { buildButlerCodexTools } from "./butler-agent-codex-tools.js";
-import type { ButlerAgentServiceOptions, ButlerOperatorSink } from "./butler-agent-options.js";
+import type { ButlerAgentServiceOptions, ButlerAgentDefaults, ButlerOperatorSink } from "./butler-agent-options.js";
 import { clearPendingOperatorPrompts, createOrRefreshButlerSession, getButlerLiveSnapshot, getButlerMessagePage, getButlerShellSnapshot, getButlerSnapshot, keepPendingOperatorPromptsBefore, promptButler, promptButlerInternal, registerPendingOperatorPrompt, removePendingOperatorPrompt, stopButlerPrompt, restoreButlerCompactionState, sanitizeButlerSessionMessages, sanitizePersistedButlerSessions, updateButlerComposeSettings } from "./butler-agent-session.js";
 import { clearButlerSessionChat, deleteButlerSessionChatFromLocated, keepOperatorMessagesBefore, locateButlerSessionDeletePoint, locateButlerSessionDeletePointBeforeTimestamp } from "./butler-agent-chat-hygiene.js";
 import { buildOperatorCloseoutText } from "./butler-agent-closeout-text.js";
@@ -149,6 +149,7 @@ export class ButlerAgentService extends EventEmitter {
   private readonly routingClassifier: ButlerRoutingClassifier | null;
   private readonly systemPromptSuffix: string | null;
   private readonly operatorSink: ButlerOperatorSink | null;
+  private readonly getButlerDefaultsProvider: (() => ButlerAgentDefaults | null) | null;
   private modelRegistry: ModelRegistry | null = null;
   private session: AgentSession | null = null;
   private auth: ButlerAuthStatus = { mode: "none", loggedIn: false, validationError: null, lastValidatedAt: null };
@@ -215,6 +216,7 @@ export class ButlerAgentService extends EventEmitter {
     this.routingClassifier = options.routingClassifier ?? null;
     this.systemPromptSuffix = options.systemPromptSuffix?.trim() || null;
     this.operatorSink = options.operatorSink ?? null;
+    this.getButlerDefaultsProvider = options.getButlerDefaults ?? null;
     this.operatorMessageStatePath = path.join(this.sessionDir, "operator-messages.json");
     this.activitySummaryStatePath = path.join(this.sessionDir, "activity-summaries.json");
     this.callbackStatePath = path.join(this.sessionDir, "chat-callbacks.json");
@@ -716,6 +718,8 @@ export class ButlerAgentService extends EventEmitter {
   }
 
   private getSessionAccess(): ButlerAgentSessionAccess { return this as unknown as ButlerAgentSessionAccess; }
+
+  getButlerDefaults(): ButlerAgentDefaults | null { return this.getButlerDefaultsProvider ? this.getButlerDefaultsProvider() : null; }
 
   resolveMemoryPromotion(candidateId: string, accepted: boolean): { candidate: JobMemoryPromotionCandidateView; projectMemory: ProjectMemoryView | null } | null {
     const candidate = this.store.resolvePromotionCandidate(candidateId, accepted);

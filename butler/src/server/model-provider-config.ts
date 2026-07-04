@@ -6,6 +6,7 @@ import type { Api, Model } from "@mariozechner/pi-ai";
 
 import { getActiveManorSettings, readSecretSourceValue } from "./manor-settings-runtime.js";
 import { assertOllamaLocalBaseUrl, fetchOllamaLocalModels } from "./ollama-local-models.js";
+import { fetchOllamaCloudModelsCached } from "./ollama-cloud-models.js";
 import type { SettingsSecretSource } from "../shared/settings.js";
 import type { ModelOption } from "./types.js";
 
@@ -181,6 +182,21 @@ async function registerCloudLikeProvider(registry: ModelRegistry, provider: Clou
   return true;
 }
 
+async function registerOllamaCloudProvider(registry: ModelRegistry, provider: CloudLikeProvider, env: NodeJS.ProcessEnv): Promise<boolean> {
+  if (!provider.enabled) return false;
+  const apiKey = provider.apiKeySource ? await readSecretSourceValue(provider.apiKeySource, env) : null;
+  if (!apiKey) return false;
+  let models = provider.models;
+  if (models.length === 0) {
+    const discovered = await fetchOllamaCloudModelsCached(getActiveManorSettings(env)).catch(() => []);
+    if (discovered.length === 0) return false;
+    models = discovered.map((model) => ({ id: model.id, contextWindow: model.contextWindow }));
+  }
+  const config = buildProviderConfig({ ...provider, models }, apiKey);
+  registry.registerProvider(provider.providerId, config as never);
+  return true;
+}
+
 async function registerOllamaLocalProvider(registry: ModelRegistry, provider: OllamaLocalProvider, env: NodeJS.ProcessEnv): Promise<boolean> {
   const config = await buildOllamaLocalProviderConfig(provider, env);
   if (!config) return false;
@@ -191,7 +207,7 @@ async function registerOllamaLocalProvider(registry: ModelRegistry, provider: Ol
 export async function registerManorProviders(registry: ModelRegistry, env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const settings = getActiveManorSettings(env);
   await registerOllamaLocalProvider(registry, settings.providers.ollamaLocal as OllamaLocalProvider, env);
-  await registerCloudLikeProvider(registry, settings.providers.ollamaCloud as CloudLikeProvider, env);
+  await registerOllamaCloudProvider(registry, settings.providers.ollamaCloud as CloudLikeProvider, env);
   await registerCloudLikeProvider(registry, settings.providers.opencodeGo as CloudLikeProvider, env);
 }
 

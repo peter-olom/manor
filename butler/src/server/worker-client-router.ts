@@ -98,8 +98,8 @@ export function resolveNewWorkerRuntime(access: WorkerClientAccess, input: { run
 export function getUnifiedWorkerCompose(access: WorkerClientAccess, overrideModel?: string | null, overrideEffort?: string | null): UnifiedWorkerCompose {
   const codexCompose = access.codexClient.getConnectionState().compose;
   const piCompose = access.piRpcWorkerClient?.getConnectionState().compose ?? null;
-  const codexModels = codexCompose.availableModels.map(qualifyModelOption);
-  const piModels = piCompose?.availableModels.map(qualifyModelOption) ?? [];
+  const codexModels = codexCompose.availableModels.map(qualifyModelOption).filter((model) => model.provider !== "opencode");
+  const piModels = piCompose?.availableModels.map(qualifyModelOption).filter((model) => model.provider !== "opencode") ?? [];
   const seen = new Set<string>();
   const availableModels = [...codexModels, ...piModels].filter((model) => {
     if (seen.has(model.id)) return false;

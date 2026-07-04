@@ -100,6 +100,7 @@ export type PairChat = {
   messageCount: number;
   lastMessage: PairMessage | null;
   butlerThinkingLevel?: string | null;
+  butlerModel?: string | null;
   codexModel?: string | null;
   codexEffort?: string | null;
   codexAvailableEfforts?: string[] | null;

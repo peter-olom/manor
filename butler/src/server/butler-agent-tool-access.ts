@@ -252,6 +252,7 @@ export type ButlerAgentSessionAccess = {
   buildCustomTools(): ButlerCustomTool[];
   listServiceTemplates(): LoadedServiceTemplate[];
   saveOperatorMessageState(): Promise<void>;
+  getButlerDefaults?: () => { model: string | null; thinkingLevel: string | null } | null;
   emit(event: "change"): boolean;
   emit(event: "butlerPatch", payload: import("./types.js").ButlerLivePatchView): boolean;
   persistActivitySummaryTurn(turn: ButlerActivityTurnView): void;

@@ -18,6 +18,7 @@ import type { ManorSettingsService } from "./manor-settings-service.js";
 import type { ModelOption, ButlerAuthStatus } from "./types.js";
 import type { SettingsGroupKey } from "../shared/settings.js";
 import { assertOllamaLocalBaseUrl, fetchOllamaLocalModels, nativeOllamaBaseUrl, normalizeOllamaModelName, type OllamaLocalModelInfo } from "./ollama-local-models.js";
+import { fetchOllamaCloudModelsCached, type OllamaCloudModelInfo } from "./ollama-cloud-models.js";
 
 type SettingsRouteAccess = {
   app: Express;
@@ -285,8 +286,6 @@ function computeProviderAvailability(settings: ManorSettings, butlerAuth: Butler
   };
 }
 
-type OllamaCloudModelInfo = { id: string; contextWindow: number | null };
-
 async function fetchOllamaLocalModelsForSettings(settings: ManorSettings): Promise<OllamaLocalModelInfo[]> {
   const config = settings.providers.ollamaLocal;
   return fetchOllamaLocalModels({ nativeBaseUrl: config.nativeBaseUrl || nativeOllamaBaseUrl(config.baseUrl), timeoutMs: 10_000 });
@@ -363,47 +362,6 @@ async function streamOllamaLocalPull(access: SettingsRouteAccess, model: string,
   }
 }
 
-async function fetchOllamaCloudModels(settings: ManorSettings): Promise<OllamaCloudModelInfo[]> {
-  const config = settings.providers.ollamaCloud;
-  const apiKey = await readSecretSourceValue(config.apiKeySource);
-  if (!apiKey) throw new Error("No Ollama Cloud API key is available from the configured secret source.");
-  const nativeBase = config.webTools.baseUrl.replace(/\/$/, "");
-  const headers = { "Authorization": `Bearer ${apiKey}` };
-
-  const tagsRes = await fetchJson<{ models?: { name?: string; model?: string }[] }>(`${nativeBase}/tags`, { method: "GET", headers }, 30_000);
-  if (!tagsRes.ok || !tagsRes.data?.models) {
-    throw new Error(`Failed to list Ollama Cloud models (HTTP ${tagsRes.status}): ${redactMessage(tagsRes.text)}`);
-  }
-
-  const modelNames = tagsRes.data.models
-    .map((m) => m.name ?? m.model)
-    .filter((name): name is string => Boolean(name));
-
-  const infos = await Promise.all(modelNames.map(async (name) => {
-    try {
-      const showRes = await fetchJson<{ model_info?: Record<string, unknown> }>(`${nativeBase}/show`, {
-        method: "POST",
-        headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: name })
-      }, 15_000);
-      let contextWindow: number | null = null;
-      if (showRes.ok && showRes.data?.model_info) {
-        for (const key of Object.keys(showRes.data.model_info)) {
-          if (key.endsWith(".context_length")) {
-            const val = showRes.data.model_info[key];
-            if (typeof val === "number") { contextWindow = val; break; }
-          }
-        }
-      }
-      return { id: name, contextWindow } as OllamaCloudModelInfo;
-    } catch {
-      return { id: name, contextWindow: null } as OllamaCloudModelInfo;
-    }
-  }));
-
-  return infos;
-}
-
 type OpencodeGoModelInfo = { id: string };
 
 async function fetchOpencodeGoModels(settings: ManorSettings): Promise<OpencodeGoModelInfo[]> {
@@ -476,7 +434,7 @@ export function registerManorSettingsRoutes(access: SettingsRouteAccess): void {
   access.app.get("/api/settings/providers/ollama-cloud/models", async (_request, response) => {
     try {
       const settings = getActiveManorSettings();
-      const models = await fetchOllamaCloudModels(settings);
+      const models = await fetchOllamaCloudModelsCached(settings);
       response.json({ models });
     } catch (error) {
       response.status(500).json({ error: redactMessage(error) });

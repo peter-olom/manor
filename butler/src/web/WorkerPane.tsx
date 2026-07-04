@@ -5,7 +5,7 @@ import { ImagePreviewModal, type PreviewMedia } from "./ImagePreviewModal";
 import { useAnchoredScroll } from "./useAnchoredScroll";
 import { JumpToLatest } from "./JumpToLatest";
 import { Markdown } from "./Markdown";
-import { ModelSelect } from "./ModelSelect";
+import { ModelPicker } from "./ModelPicker";
 import {
   ChevronDownIcon,
   ChevronRightIcon
@@ -693,13 +693,14 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCo
           <span className="pane-sub">{pair.worker.status} · one worker max</span>
         </div>
         <div className="worker-controls" aria-label="Worker settings">
-          <ModelSelect
+          <ModelPicker
             label="Model"
             value={model}
             options={worker.availableModels}
             disabled={busy}
+            compact
+            className="worker-model"
             onChange={onCodexModelChange}
-            className="is-compact worker-model"
           />
           <BudgetSegmented
             label="Thinking"

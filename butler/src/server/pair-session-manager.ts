@@ -51,13 +51,15 @@ type PairSessionManagerOptions = {
 };
 
 function toPairModelOptions(models: ReturnType<CodexAppServerClient["getConnectionState"]>["compose"]["availableModels"]): PairCodexModelOption[] {
-  return models.map((model) => ({
-    id: model.id,
-    label: model.label,
-    provider: model.provider,
-    supportedReasoningEfforts: [...model.supportedReasoningEfforts],
-    defaultReasoningEffort: model.defaultReasoningEffort
-  }));
+  return models
+    .filter((model) => model.provider !== "opencode")
+    .map((model) => ({
+      id: model.id,
+      label: model.label,
+      provider: model.provider,
+      supportedReasoningEfforts: [...model.supportedReasoningEfforts],
+      defaultReasoningEffort: model.defaultReasoningEffort
+    }));
 }
 
 function chooseEffortForModel(model: PairCodexModelOption | null, requested: string | null): string | null {
@@ -198,6 +200,7 @@ export class PairSessionManager {
     const service = this.services.get(pairId)?.service;
     if (!service) return null;
     service.setThinkingLevel(level as never);
+    this.options.pairStore.updatePairComposeOverrides(pairId, { butlerThinkingLevel: level });
     return this.getPairDetail(pairId, null, 120);
   }
 
@@ -212,6 +215,7 @@ export class PairSessionManager {
     const ref = parseProviderModelRef(model.id);
     const thinkingLevel = shell.compose?.thinkingLevel ?? "medium";
     await service.updateComposeSettings(ref.provider ?? model.provider ?? shell.compose?.provider ?? "", ref.model ?? model.id, thinkingLevel as never);
+    this.options.pairStore.updatePairComposeOverrides(pairId, { butlerModel: modelId });
     return this.getPairDetail(pairId, null, 120);
   }
 

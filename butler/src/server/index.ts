@@ -178,7 +178,15 @@ const butlerAgent = new ButlerAgentService({
   artifactsDir,
   routingClassifier,
   refreshRuntimeInventory: syncRuntimeInventory,
-  systemPromptSuffix: buildOperatorPromptSuffix()
+  systemPromptSuffix: buildOperatorPromptSuffix(),
+  getButlerDefaults: () => {
+    const lastUsed = pairStore.getLastUsedCompose();
+    if (!lastUsed) return null;
+    return {
+      model: lastUsed.butlerModel ?? null,
+      thinkingLevel: lastUsed.butlerThinkingLevel ?? null
+    };
+  }
 });
 const pairSessions = new PairSessionManager({
   pairStore,

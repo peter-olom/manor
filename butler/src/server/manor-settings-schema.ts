@@ -15,14 +15,7 @@ import type {
   SettingsWorkerRuntime
 } from "../shared/settings.js";
 
-const DEFAULT_OLLAMA_CLOUD_MODELS = [
-  "gpt-oss:120b",
-  "glm-5.2",
-  "kimi-k2.6",
-  "qwen3.5",
-  "deepseek-v4-flash",
-  "minimax-m3"
-];
+const DEFAULT_OLLAMA_CLOUD_MODELS: SettingsProviderModel[] = [];
 
 const DEFAULT_OLLAMA_LOCAL_MODELS: SettingsProviderModel[] = [];
 
