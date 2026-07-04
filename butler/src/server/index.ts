@@ -365,7 +365,7 @@ const pairSessions = new PairSessionManager({
   onButlerPatch: (payload) => sseHub?.broadcastButlerPatch(payload)
 });
 
-const applyManagedSettingsChange = createManorSettingsApplyHandler({ settingsService, applyBackgroundSettings, sessionTitleGenerator, piRpcWorkerClient, butlerAgent, store, codexClient, getSseHub: () => sseHub });
+const applyManagedSettingsChange = createManorSettingsApplyHandler({ settingsService, applyBackgroundSettings, sessionTitleGenerator, piRpcWorkerClient, butlerAgent, pairSessions, store, codexClient, getSseHub: () => sseHub });
 runtimeAccess = {
   artifactsDir,
   butlerAgent,

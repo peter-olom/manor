@@ -1,6 +1,7 @@
 import type { ButlerAgentService } from "./butler-agent.js";
 import type { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
+import type { PairSessionManager } from "./pair-session-manager.js";
 import type { PiSessionTitleGenerator } from "./session-title-generator.js";
 import type { ButlerSseHub } from "./server-runtime-helpers.js";
 import type { ButlerStateStore } from "./state-store.js";
@@ -13,6 +14,7 @@ export function createManorSettingsApplyHandler(input: {
   sessionTitleGenerator: PiSessionTitleGenerator;
   piRpcWorkerClient: PiRpcWorkerClient;
   butlerAgent: ButlerAgentService;
+  pairSessions?: Pick<PairSessionManager, "refreshModelSettings"> | null;
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;
   getSseHub: () => ButlerSseHub | null | undefined;
@@ -22,6 +24,7 @@ export function createManorSettingsApplyHandler(input: {
     input.sessionTitleGenerator.applySettings();
     await input.piRpcWorkerClient.refreshModels().catch((error) => console.warn("Pi RPC model refresh failed after settings update", error));
     await input.butlerAgent.refreshModelSettings().catch((error) => console.warn("Butler model refresh failed after settings update", error));
+    await input.pairSessions?.refreshModelSettings().catch((error) => console.warn("Pair session model refresh failed after settings update", error));
     const worker = input.settingsService.getSettings().worker;
     await updateUnifiedWorkerCompose({ store: input.store, codexClient: input.codexClient, piRpcWorkerClient: input.piRpcWorkerClient }, {
       model: worker.defaultModel,

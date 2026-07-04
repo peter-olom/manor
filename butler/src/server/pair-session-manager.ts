@@ -23,7 +23,7 @@ import { getUnifiedWorkerCompose, loadWorkerThread, updateUnifiedWorkerCompose, 
 
 type PairButlerService = Pick<
   ButlerAgentService,
-  "dispose" | "getMessagePage" | "getShellSnapshot" | "on" | "prompt" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings"
+  "dispose" | "getMessagePage" | "getShellSnapshot" | "on" | "prompt" | "refreshModelSettings" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings"
 >;
 
 type PairSessionManagerOptions = {
@@ -286,6 +286,14 @@ export class PairSessionManager {
     await loaded.service.stopPrompt();
     this.syncPairSnapshot(pairId);
     return true;
+  }
+
+  async refreshModelSettings(): Promise<void> {
+    await Promise.all([...this.services.entries()].map(async ([pairId, loaded]) => {
+      await loaded.started;
+      await loaded.service.refreshModelSettings();
+      this.syncPairSnapshot(pairId);
+    }));
   }
 
   async sendOperatorMessage(input: {

@@ -46,6 +46,12 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
   access.unsubscribeSession?.();
   access.unsubscribeSession = null;
 
+  if (access.session) {
+    await access.session.abort().catch(() => {});
+    access.session.dispose();
+    access.session = null;
+  }
+
   await sanitizePersistedButlerSessions(access);
 
   const authStorage = AuthStorage.create(access.piAuthPath);

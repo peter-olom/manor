@@ -58,6 +58,20 @@ function safeTargets(value: unknown): SettingsValidationKey[] {
   return targets.length > 0 ? [...new Set(targets)] : VALIDATION_KEYS;
 }
 
+async function fetchJson<T>(url: string, init: RequestInit, timeoutMs: number): Promise<{ ok: boolean; status: number; data: T | null; text: string }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    const text = await response.text().catch(() => "");
+    let data: T | null = null;
+    try { data = text ? JSON.parse(text) as T : null; } catch { /* keep null */ }
+    return { ok: response.ok, status: response.status, data, text };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function fetchJsonStatus(url: string, init: RequestInit, timeoutMs: number): Promise<{ ok: boolean; status: number; text: string }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -227,6 +241,49 @@ function computeProviderAvailability(settings: ManorSettings, butlerAuth: Butler
   };
 }
 
+type OllamaCloudModelInfo = { id: string; contextWindow: number | null };
+
+async function fetchOllamaCloudModels(settings: ManorSettings): Promise<OllamaCloudModelInfo[]> {
+  const config = settings.providers.ollamaCloud;
+  const apiKey = await readSecretSourceValue(config.apiKeySource);
+  if (!apiKey) throw new Error("No Ollama Cloud API key is available from the configured secret source.");
+  const nativeBase = config.webTools.baseUrl.replace(/\/$/, "");
+  const headers = { "Authorization": `Bearer ${apiKey}` };
+
+  const tagsRes = await fetchJson<{ models?: { name?: string; model?: string }[] }>(`${nativeBase}/tags`, { method: "GET", headers }, 30_000);
+  if (!tagsRes.ok || !tagsRes.data?.models) {
+    throw new Error(`Failed to list Ollama Cloud models (HTTP ${tagsRes.status}): ${redactMessage(tagsRes.text)}`);
+  }
+
+  const modelNames = tagsRes.data.models
+    .map((m) => m.name ?? m.model)
+    .filter((name): name is string => Boolean(name));
+
+  const infos = await Promise.all(modelNames.map(async (name) => {
+    try {
+      const showRes = await fetchJson<{ model_info?: Record<string, unknown> }>(`${nativeBase}/show`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: name })
+      }, 15_000);
+      let contextWindow: number | null = null;
+      if (showRes.ok && showRes.data?.model_info) {
+        for (const key of Object.keys(showRes.data.model_info)) {
+          if (key.endsWith(".context_length")) {
+            const val = showRes.data.model_info[key];
+            if (typeof val === "number") { contextWindow = val; break; }
+          }
+        }
+      }
+      return { id: name, contextWindow } as OllamaCloudModelInfo;
+    } catch {
+      return { id: name, contextWindow: null } as OllamaCloudModelInfo;
+    }
+  }));
+
+  return infos;
+}
+
 export function registerManorSettingsRoutes(access: SettingsRouteAccess): void {
   access.app.get("/api/settings", (_request, response) => {
     response.json(settingsPayload(access));
@@ -273,5 +330,15 @@ export function registerManorSettingsRoutes(access: SettingsRouteAccess): void {
       await access.settingsService.setValidation(target, await runValidation(access, target));
     }
     response.json(settingsPayload(access));
+  });
+
+  access.app.get("/api/settings/providers/ollama-cloud/models", async (_request, response) => {
+    try {
+      const settings = getActiveManorSettings();
+      const models = await fetchOllamaCloudModels(settings);
+      response.json({ models });
+    } catch (error) {
+      response.status(500).json({ error: redactMessage(error) });
+    }
   });
 }

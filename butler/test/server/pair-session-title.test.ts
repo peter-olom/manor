@@ -13,10 +13,16 @@ import type { SessionTitleGenerator } from "../../src/server/session-title-gener
 
 class FakeButlerService extends EventEmitter {
   messages: ButlerMessageView[] = [];
+  refreshCount = 0;
 
   async start(): Promise<void> {}
 
   dispose(): void {}
+
+  async refreshModelSettings(): Promise<void> {
+    this.refreshCount += 1;
+    this.emit("change");
+  }
 
   async stopPrompt(): Promise<void> {}
 
@@ -186,4 +192,13 @@ test("sendOperatorMessage skips attachment-only prompts", async () => {
   await Promise.resolve();
 
   assert.deepEqual(calls, []);
+});
+
+test("refreshModelSettings refreshes loaded pair services", async () => {
+  const { manager, service } = await createManager();
+  await manager.createPair();
+
+  await manager.refreshModelSettings();
+
+  assert.equal(service.refreshCount, 1);
 });

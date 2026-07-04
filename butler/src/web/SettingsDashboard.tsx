@@ -280,17 +280,14 @@ function Section({
   );
 }
 
-function SubGroup({ title, provenance, actions, children }: { title: string; provenance?: string; actions?: ReactNode; children: ReactNode }) {
+function SubGroup({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
   return (
     <div className="settings-subgroup">
       <div className="settings-subgroup-head">
         <div>
           <h3>{title}</h3>
         </div>
-        <div className="settings-subgroup-head-actions">
-          {provenance ? <span className="settings-provenance">{provenance}</span> : null}
-          {actions}
-        </div>
+        {actions ? <div className="settings-subgroup-head-actions">{actions}</div> : null}
       </div>
       <div className="settings-subgroup-body">{children}</div>
     </div>
@@ -346,10 +343,17 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
   const [validating, setValidating] = useState<SettingsValidationKey | null>(null);
   const [validatingAll, setValidatingAll] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [providerTab, setProviderTab] = useState<"openai" | "ollama" | "opencode">("openai");
+  const [providerTab, setProviderTab] = useState<"openai" | "ollama" | "opencode">(() => {
+    if (typeof window === "undefined") return "openai";
+    const param = new URLSearchParams(window.location.search).get("provider");
+    return param === "ollama" || param === "opencode" ? param : "openai";
+  });
   const [authPending, setAuthPending] = useState<"butler" | "codex" | null>(null);
   const [authUrl, setAuthUrl] = useState<{ side: "butler" | "codex"; url: string } | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [ollamaModels, setOllamaModels] = useState<{ id: string; contextWindow: number | null }[] | null>(null);
+  const [ollamaModelsLoading, setOllamaModelsLoading] = useState(false);
+  const [ollamaModelsError, setOllamaModelsError] = useState<string | null>(null);
 
   const workerModels = useMemo(() => payload?.availableModels.worker.availableModels ?? [], [payload]);
   const butlerModels = useMemo(() => payload?.availableModels.butler ?? [], [payload]);
@@ -365,6 +369,19 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
   useEffect(() => {
     void load().catch((error) => setMessage(error instanceof Error ? error.message : String(error)));
   }, [load]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("provider", providerTab);
+    window.history.replaceState(null, "", url.toString());
+  }, [providerTab]);
+
+  useEffect(() => {
+    if (payload?.providerAvailability["ollama-cloud"].secretAvailable && !ollamaModels && !ollamaModelsLoading) {
+      void fetchOllamaModels();
+    }
+  }, [payload, ollamaModels, ollamaModelsLoading]);
 
   const update = useCallback((mutate: (settings: ManorSettings) => void) => {
     setMessage(null);
@@ -433,6 +450,20 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
       setMessage("Auth status refreshed.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function fetchOllamaModels() {
+    setOllamaModelsLoading(true);
+    setOllamaModelsError(null);
+    try {
+      const res = await getJson<{ models: { id: string; contextWindow: number | null }[] }>("/api/settings/providers/ollama-cloud/models");
+      setOllamaModels(res.models);
+    } catch (error) {
+      setOllamaModelsError(error instanceof Error ? error.message : String(error));
+      setOllamaModels([]);
+    } finally {
+      setOllamaModelsLoading(false);
     }
   }
 
@@ -521,7 +552,7 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
 
       <div className="settings-content">
         {activeSection === "overview" ? <Section id="overview" title="Overview">
-          <SubGroup title="Operator" provenance={payload.provenance.overview || undefined}>
+          <SubGroup title="Operator">
             <FieldGrid>
               <Field label="Operator name" hint="How Butler should refer to you in chat. Leave blank for no name.">
                 <input value={draft.overview.operatorName} placeholder="(none)" onChange={(event) => update((s) => { s.overview.operatorName = event.target.value; })} />
@@ -529,7 +560,7 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
             </FieldGrid>
           </SubGroup>
 
-          <SubGroup title="Provider routing" provenance={payload.provenance.overview || undefined}>
+          <SubGroup title="Provider routing">
             <FieldGrid>
               <Field label="Butler provider" hint="Which provider Butler should use for chat.">
                 <select value={draft.overview.butlerProvider} onChange={(event) => update((s) => { s.overview.butlerProvider = event.target.value as never; })}>
@@ -553,7 +584,7 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
           </div>
 
           {providerTab === "openai" ? (
-            <SubGroup title="OpenAI / Codex" provenance={undefined}>
+            <SubGroup title="OpenAI / Codex">
               {authError ? <div className="settings-auth-error">{authError}</div> : null}
               {authUrl ? (
                 <div className="settings-auth-pending">
@@ -589,50 +620,57 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
           ) : null}
 
           {providerTab === "ollama" ? (
-            <SubGroup title={GROUP_LABELS["providers.ollamaCloud"]} provenance={payload.provenance["providers.ollamaCloud"] || undefined}>
-              <ToggleGrid>
-                <Toggle
-                  label="Enabled"
-                  hint={payload.providerAvailability["ollama-cloud"].reason ?? "Use Ollama Cloud as a model provider"}
-                  checked={draft.providers.ollamaCloud.enabled}
-                  onChange={(next) => update((s) => { s.providers.ollamaCloud.enabled = next; })}
-                />
-              </ToggleGrid>
-              <FieldGrid>
-                <Field label="Provider ID"><input value={draft.providers.ollamaCloud.providerId} onChange={(event) => update((s) => { s.providers.ollamaCloud.providerId = event.target.value; })} /></Field>
-                <Field label="Provider name"><input value={draft.providers.ollamaCloud.providerName} onChange={(event) => update((s) => { s.providers.ollamaCloud.providerName = event.target.value; })} /></Field>
-                <Field label="Base URL"><input value={draft.providers.ollamaCloud.baseUrl} onChange={(event) => update((s) => { s.providers.ollamaCloud.baseUrl = event.target.value; })} /></Field>
-                <Field label="API"><input value={draft.providers.ollamaCloud.api} onChange={(event) => update((s) => { s.providers.ollamaCloud.api = event.target.value; })} /></Field>
-                <Field label="Models" hint="Comma-separated list" wide><input value={modelsToCsv(draft.providers.ollamaCloud.models)} onChange={(event) => update((s) => { s.providers.ollamaCloud.models = event.target.value.split(",").map((entry) => entry.trim()).filter(Boolean); })} /></Field>
-                <Field label="Context window"><input type="number" value={draft.providers.ollamaCloud.contextWindow} onChange={(event) => update((s) => { s.providers.ollamaCloud.contextWindow = Number(event.target.value); })} /></Field>
-                <Field label="Max tokens"><input type="number" value={draft.providers.ollamaCloud.maxTokens} onChange={(event) => update((s) => { s.providers.ollamaCloud.maxTokens = Number(event.target.value); })} /></Field>
-                <Field label="API key source" hint={secretLabel(draft.providers.ollamaCloud.apiKeySource)} wide>
-                  <SecretSourceEditor value={draft.providers.ollamaCloud.apiKeySource} onChange={(value) => update((s) => { s.providers.ollamaCloud.apiKeySource = value; })} />
-                </Field>
-              </FieldGrid>
-              <ToggleGrid>
-                <Toggle label="Reasoning" checked={draft.providers.ollamaCloud.reasoning} onChange={(next) => update((s) => { s.providers.ollamaCloud.reasoning = next; })} />
-                <Toggle label="Developer role" checked={draft.providers.ollamaCloud.supportsDeveloperRole} onChange={(next) => update((s) => { s.providers.ollamaCloud.supportsDeveloperRole = next; })} />
-                <Toggle label="Reasoning effort" checked={draft.providers.ollamaCloud.supportsReasoningEffort} onChange={(next) => update((s) => { s.providers.ollamaCloud.supportsReasoningEffort = next; })} />
-              </ToggleGrid>
+            <SubGroup title={GROUP_LABELS["providers.ollamaCloud"]}>
+              {payload.providerAvailability["ollama-cloud"].secretAvailable ? (
+                <>
+                  <ToggleGrid>
+                    <Toggle
+                      label="Enabled"
+                      hint="Use Ollama Cloud as a model provider"
+                      checked={draft.providers.ollamaCloud.enabled}
+                      onChange={(next) => update((s) => { s.providers.ollamaCloud.enabled = next; })}
+                    />
+                  </ToggleGrid>
+                  <Field label="Base URL"><input readOnly value={draft.providers.ollamaCloud.baseUrl} /></Field>
+                  <div className="settings-subgroup-divider" />
+                  <div className="settings-subgroup-section-head"><h4>Models</h4></div>
+                  <div className="settings-model-pills">
+                    {ollamaModelsLoading ? <span className="settings-model-pills-hint">Loading…</span> : null}
+                    {ollamaModelsError ? <div className="settings-auth-error">{ollamaModelsError}</div> : null}
+                    {ollamaModels?.map((model) => (
+                      <span
+                        key={model.id}
+                        className="settings-model-pill"
+                        title={model.contextWindow ? `${(model.contextWindow / 1024).toFixed(0)}k context` : undefined}
+                      >
+                        {model.id}
+                        {model.contextWindow ? <span className="settings-model-pill-ctx">{(model.contextWindow / 1024).toFixed(0)}k</span> : null}
+                      </span>
+                    ))}
+                    {ollamaModels && ollamaModels.length === 0 && !ollamaModelsLoading ? <span className="settings-model-pills-hint">No models found.</span> : null}
+                  </div>
 
-              <div className="settings-subgroup-divider" />
-              <div className="settings-subgroup-section-head"><h4>Web tools (search &amp; fetch)</h4></div>
-              <ToggleGrid>
-                <Toggle label="Enabled" hint="Attach web_search/web_fetch to workers using Ollama models" checked={draft.providers.ollamaCloud.webTools.enabled} onChange={(next) => update((s) => { s.providers.ollamaCloud.webTools.enabled = next; })} />
-                <Toggle label="All Pi models" hint="Attach to all Pi models, not just Ollama" checked={draft.providers.ollamaCloud.webTools.forAllPiModels} onChange={(next) => update((s) => { s.providers.ollamaCloud.webTools.forAllPiModels = next; })} />
-              </ToggleGrid>
-              <FieldGrid>
-                <Field label="Base URL" wide><input value={draft.providers.ollamaCloud.webTools.baseUrl} onChange={(event) => update((s) => { s.providers.ollamaCloud.webTools.baseUrl = event.target.value; })} /></Field>
-                <Field label="Max results"><input type="number" value={draft.providers.ollamaCloud.webTools.maxResults} onChange={(event) => update((s) => { s.providers.ollamaCloud.webTools.maxResults = Number(event.target.value); })} /></Field>
-                <Field label="Timeout (ms)"><input type="number" value={draft.providers.ollamaCloud.webTools.timeoutMs} onChange={(event) => update((s) => { s.providers.ollamaCloud.webTools.timeoutMs = Number(event.target.value); })} /></Field>
-                <Field label="Max content chars"><input type="number" value={draft.providers.ollamaCloud.webTools.maxContentChars} onChange={(event) => update((s) => { s.providers.ollamaCloud.webTools.maxContentChars = Number(event.target.value); })} /></Field>
-              </FieldGrid>
+                  <div className="settings-subgroup-divider" />
+                  <div className="settings-subgroup-section-head"><h4>Web tools (search &amp; fetch)</h4></div>
+                  <ToggleGrid>
+                    <Toggle label="Enabled" hint="Attach web_search/web_fetch to workers using Ollama models" checked={draft.providers.ollamaCloud.webTools.enabled} onChange={(next) => update((s) => { s.providers.ollamaCloud.webTools.enabled = next; })} />
+                    <Toggle label="All Butler models" hint="Attach to all Butler models, not just Ollama" checked={draft.providers.ollamaCloud.webTools.forAllPiModels} onChange={(next) => update((s) => { s.providers.ollamaCloud.webTools.forAllPiModels = next; })} />
+                  </ToggleGrid>
+                  <FieldGrid>
+                    <Field label="Base URL" wide><input readOnly value={draft.providers.ollamaCloud.webTools.baseUrl} /></Field>
+                    <Field label="Max results"><input type="number" value={draft.providers.ollamaCloud.webTools.maxResults} onChange={(event) => update((s) => { s.providers.ollamaCloud.webTools.maxResults = Number(event.target.value); })} /></Field>
+                    <Field label="Timeout (ms)"><input type="number" value={draft.providers.ollamaCloud.webTools.timeoutMs} onChange={(event) => update((s) => { s.providers.ollamaCloud.webTools.timeoutMs = Number(event.target.value); })} /></Field>
+                    <Field label="Max content chars"><input type="number" value={draft.providers.ollamaCloud.webTools.maxContentChars} onChange={(event) => update((s) => { s.providers.ollamaCloud.webTools.maxContentChars = Number(event.target.value); })} /></Field>
+                  </FieldGrid>
+                </>
+              ) : (
+                <div className="settings-auth-error">Ollama Cloud is disabled. Set OLLAMA_API_KEY in .env and restart Manor to enable it.</div>
+              )}
             </SubGroup>
           ) : null}
 
           {providerTab === "opencode" ? (
-            <SubGroup title={GROUP_LABELS["providers.opencodeGo"]} provenance={payload.provenance["providers.opencodeGo"] || undefined}>
+            <SubGroup title={GROUP_LABELS["providers.opencodeGo"]}>
               <ToggleGrid>
                 <Toggle
                   label="Enabled"
@@ -642,22 +680,9 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
                 />
               </ToggleGrid>
               <FieldGrid>
-                <Field label="Provider ID"><input value={draft.providers.opencodeGo.providerId} onChange={(event) => update((s) => { s.providers.opencodeGo.providerId = event.target.value; })} /></Field>
-                <Field label="Provider name"><input value={draft.providers.opencodeGo.providerName} onChange={(event) => update((s) => { s.providers.opencodeGo.providerName = event.target.value; })} /></Field>
-                <Field label="Base URL"><input value={draft.providers.opencodeGo.baseUrl} onChange={(event) => update((s) => { s.providers.opencodeGo.baseUrl = event.target.value; })} /></Field>
-                <Field label="API"><input value={draft.providers.opencodeGo.api} onChange={(event) => update((s) => { s.providers.opencodeGo.api = event.target.value; })} /></Field>
+                <Field label="Base URL"><input readOnly value={draft.providers.opencodeGo.baseUrl} /></Field>
                 <Field label="Models" hint="Comma-separated; some models use anthropic API" wide><input value={modelsToCsv(draft.providers.opencodeGo.models)} onChange={(event) => update((s) => { s.providers.opencodeGo.models = event.target.value.split(",").map((entry) => entry.trim()).filter(Boolean); })} /></Field>
-                <Field label="Context window"><input type="number" value={draft.providers.opencodeGo.contextWindow} onChange={(event) => update((s) => { s.providers.opencodeGo.contextWindow = Number(event.target.value); })} /></Field>
-                <Field label="Max tokens"><input type="number" value={draft.providers.opencodeGo.maxTokens} onChange={(event) => update((s) => { s.providers.opencodeGo.maxTokens = Number(event.target.value); })} /></Field>
-                <Field label="API key source" hint={secretLabel(draft.providers.opencodeGo.apiKeySource)} wide>
-                  <SecretSourceEditor value={draft.providers.opencodeGo.apiKeySource} onChange={(value) => update((s) => { s.providers.opencodeGo.apiKeySource = value; })} />
-                </Field>
               </FieldGrid>
-              <ToggleGrid>
-                <Toggle label="Reasoning" checked={draft.providers.opencodeGo.reasoning} onChange={(next) => update((s) => { s.providers.opencodeGo.reasoning = next; })} />
-                <Toggle label="Developer role" checked={draft.providers.opencodeGo.supportsDeveloperRole} onChange={(next) => update((s) => { s.providers.opencodeGo.supportsDeveloperRole = next; })} />
-                <Toggle label="Reasoning effort" checked={draft.providers.opencodeGo.supportsReasoningEffort} onChange={(next) => update((s) => { s.providers.opencodeGo.supportsReasoningEffort = next; })} />
-              </ToggleGrid>
 
               <div className="settings-subgroup-divider" />
               <div className="settings-subgroup-section-head"><h4>Web tools (search &amp; fetch via Exa)</h4></div>
@@ -674,7 +699,7 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
         </Section> : null}
 
         {activeSection === "runtime" ? <Section id="runtime" title="Runtime">
-          <SubGroup title={GROUP_LABELS.worker} provenance={payload.provenance.worker || undefined}>
+          <SubGroup title={GROUP_LABELS.worker}>
             <FieldGrid>
               <Field label="Runtime" hint="Where new turns run">
                 <select value={draft.worker.runtime} onChange={(event) => update((s) => { s.worker.runtime = event.target.value as never; })}>
@@ -703,7 +728,7 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
             </FieldGrid>
           </SubGroup>
 
-          <SubGroup title={GROUP_LABELS.butler} provenance={payload.provenance.butler || undefined}>
+          <SubGroup title={GROUP_LABELS.butler}>
             <FieldGrid>
               <ModelSelectField
                 label="Default model"
@@ -725,7 +750,7 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
             </FieldGrid>
           </SubGroup>
 
-          <SubGroup title={GROUP_LABELS.modelTasks} provenance={payload.provenance.modelTasks || undefined}>
+          <SubGroup title={GROUP_LABELS.modelTasks}>
             <FieldGrid>
               <Field label="Runner">
                 <select value={draft.modelTasks.runnerMode} onChange={(event) => update((s) => { s.modelTasks.runnerMode = event.target.value as never; })}>
@@ -779,7 +804,7 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
         </Section> : null}
 
         {activeSection === "memory" ? <Section id="memory" title="Memory">
-          <SubGroup title={GROUP_LABELS.memory} provenance={payload.provenance.memory || undefined}>
+          <SubGroup title={GROUP_LABELS.memory}>
             <ToggleGrid>
               <Toggle label="Synthesis" hint="Run synthesis passes" checked={draft.memory.synthesisEnabled} onChange={(next) => update((s) => { s.memory.synthesisEnabled = next; })} />
               <Toggle label="Auto promote" checked={draft.memory.promotionAutoResolve} onChange={(next) => update((s) => { s.memory.promotionAutoResolve = next; })} />
@@ -805,7 +830,7 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
             </FieldGrid>
           </SubGroup>
 
-          <SubGroup title={GROUP_LABELS.embeddings} provenance={payload.provenance.embeddings || undefined}
+          <SubGroup title={GROUP_LABELS.embeddings}
             actions={<button className="button is-small" type="button" onClick={() => void restoreGroup("embeddings")} disabled={saving || testing}>Restore defaults</button>}
           >
             <ToggleGrid>

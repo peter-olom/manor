@@ -137,8 +137,7 @@ function syncUrlState(viewMode: PairViewMode, terminalTarget: TerminalTarget, se
   const url = new URL(window.location.href);
   if (viewMode === "settings") {
     url.pathname = `/settings/${settingsSection}`;
-    url.search = "";
-    window.history.replaceState(null, "", `${url.pathname}${url.hash}`);
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
     return;
   }
   if (url.pathname === "/settings" || url.pathname.startsWith("/settings/")) {

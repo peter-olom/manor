@@ -52,6 +52,9 @@ const webFetchTool = defineTool({
   }
 });
 
+export const ollamaWebSearchTool = webSearchTool;
+export const ollamaWebFetchTool = webFetchTool;
+
 export default async function ollamaWebToolsExtension(pi: ExtensionAPI): Promise<void> {
   const config = await readOllamaWebToolsConfig();
   if (!config.enabled) {

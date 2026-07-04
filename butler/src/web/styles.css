@@ -4539,6 +4539,20 @@ a:hover {
   background: var(--bg-elevated);
 }
 
+.settings-field input[readonly],
+.settings-field input:read-only {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.settings-field input[readonly]:hover,
+.settings-field input[readonly]:focus,
+.settings-field input:read-only:hover,
+.settings-field input:read-only:focus {
+  background: var(--surface);
+  border-color: transparent;
+}
+
 .settings-field input[type="checkbox"] {
   width: 18px;
   min-height: 18px;
@@ -4877,6 +4891,113 @@ a:hover {
 .settings-auth-pending a {
   color: var(--accent);
   text-decoration: underline;
+}
+
+.settings-model-list {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.settings-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.settings-model-row-name {
+  font-size: 12.5px;
+  font-family: var(--mono, monospace);
+  color: var(--text);
+}
+
+.settings-model-remove {
+  background: none;
+  border: none;
+  color: var(--danger);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius);
+}
+
+.settings-model-remove:hover {
+  background: var(--danger-soft);
+}
+
+.settings-model-add {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-model-add input {
+  flex: 1;
+}
+
+.settings-model-discovered {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.settings-model-discovered-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: pointer;
+  font-size: 12.5px;
+}
+
+.settings-model-discovered-row.is-selected {
+  background: var(--accent-soft, rgba(59, 130, 246, 0.08));
+}
+
+.settings-model-discovered-row input[type="checkbox"] {
+  margin: 0;
+}
+
+.settings-model-row-ctx {
+  color: var(--text-subtle);
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.settings-model-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.settings-model-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border, rgba(0,0,0,0.08));
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--mono, monospace);
+}
+
+.settings-model-pill-ctx {
+  font-size: 10px;
+  color: var(--text-subtle);
+  font-family: var(--sans, sans-serif);
+}
+
+.settings-model-pills-hint {
+  color: var(--text-subtle);
+  font-size: 12px;
 }
 
 /* Disabled toggle hint (secret missing) */

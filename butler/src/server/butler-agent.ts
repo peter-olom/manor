@@ -124,6 +124,8 @@ function isButlerAuthRecoveryError(message: string | null): boolean {
   return typeof message === "string" && /\b(auth|authentication|token|signing in)\b/i.test(message);
 }
 import { ButlerTraceBuffer } from "./butler-trace-buffer.js";
+import { getActiveManorSettings } from "./manor-settings-runtime.js";
+import { ollamaWebSearchTool, ollamaWebFetchTool } from "./pi-ollama-web-tools-extension.js";
 export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
   private readonly codexClient: CodexAppServerClient;
@@ -165,7 +167,7 @@ export class ButlerAgentService extends EventEmitter {
   private lastError: string | null = null;
   private promptQueue: Promise<void> = Promise.resolve();
   private stopRequestSequence = 0;
-  private readonly toolCatalog: ButlerToolView[];
+  private toolCatalog: ButlerToolView[];
   private unsubscribeSession: (() => void) | null = null;
   private statusRefreshTimer: NodeJS.Timeout | null = null;
   private readonly operatorMessages: ButlerMessageView[] = [];
@@ -638,6 +640,7 @@ export class ButlerAgentService extends EventEmitter {
 
   async refreshModelSettings(): Promise<void> {
     this.modelRegistry = await createManorModelRegistry(this.piAuthPath);
+    this.toolCatalog = this.buildToolCatalog();
     await this.createOrRefreshSession();
     this.emit("change");
   }
@@ -687,7 +690,15 @@ export class ButlerAgentService extends EventEmitter {
   // This is the single discoverable registry for Butler actions and their UI
   // side effects. Keep agent tool definitions aligned with this catalog.
   private buildToolCatalog(): ButlerToolView[] {
-    return BUTLER_TOOL_CATALOG;
+    const settings = getActiveManorSettings();
+    const base = [...BUTLER_TOOL_CATALOG];
+    if (settings.providers.ollamaCloud.webTools.enabled && settings.providers.ollamaCloud.webTools.forAllPiModels) {
+      base.push(
+        { name: "web_search", label: "Web Search", description: "Search the web using Ollama Cloud web search.", uiEffects: [] },
+        { name: "web_fetch", label: "Web Fetch", description: "Fetch a web page through Ollama Cloud web fetch.", uiEffects: [] }
+      );
+    }
+    return base;
   }
 
   private getToolUiEffects(name: string): ButlerToolUiEffect[] {
@@ -1412,7 +1423,12 @@ export class ButlerAgentService extends EventEmitter {
 
   private buildCustomTools() {
     const toolAccess = this.getToolAccess();
-    return [...buildButlerStackPreviewTools(toolAccess), ...buildButlerFilesystemTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerManorTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerOperatorTools(toolAccess), ...buildButlerCodexTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
+    const tools = [...buildButlerStackPreviewTools(toolAccess), ...buildButlerFilesystemTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerManorTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerOperatorTools(toolAccess), ...buildButlerCodexTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
+    const settings = getActiveManorSettings();
+    if (settings.providers.ollamaCloud.webTools.enabled && settings.providers.ollamaCloud.webTools.forAllPiModels) {
+      tools.push(ollamaWebSearchTool, ollamaWebFetchTool);
+    }
+    return tools;
   }
 
   private async createOrRefreshSession(): Promise<void> { await createOrRefreshButlerSession(this.getSessionAccess()); }
