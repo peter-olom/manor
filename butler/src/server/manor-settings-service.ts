@@ -165,6 +165,7 @@ function parseJsonObject(value: string): unknown {
 
 function patchGroupKeys(patch: Partial<ManorSettings>): SettingsGroupKey[] {
   const keys: SettingsGroupKey[] = [];
+  if (patch.overview) keys.push("overview");
   if (patch.providers?.ollamaCloud) keys.push("providers.ollamaCloud");
   if (patch.providers?.opencodeGo) keys.push("providers.opencodeGo");
   if (patch.worker) keys.push("worker");
@@ -177,6 +178,7 @@ function patchGroupKeys(patch: Partial<ManorSettings>): SettingsGroupKey[] {
 
 function patchGroupValue(patch: Partial<ManorSettings>, key: SettingsGroupKey): unknown {
   switch (key) {
+    case "overview": return patch.overview;
     case "providers.ollamaCloud": return patch.providers?.ollamaCloud;
     case "providers.opencodeGo": return patch.providers?.opencodeGo;
     case "worker": return patch.worker;
