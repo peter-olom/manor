@@ -8,7 +8,6 @@ import type {
   ManorSettingsProvenance,
   SettingsGroupKey,
   SettingsProviderAvailabilityMap,
-  SettingsProviderModel,
   SettingsSecretSource,
   SettingsValidationKey,
   SettingsValidationMap
@@ -88,14 +87,6 @@ function cloneSettings(settings: ManorSettings): ManorSettings {
 
 function modelValue(option: ModelOption): string {
   return option.provider ? `${option.provider}/${option.id}` : option.id;
-}
-
-function modelId(entry: SettingsProviderModel): string {
-  return typeof entry === "string" ? entry : entry.id;
-}
-
-function modelsToCsv(models: SettingsProviderModel[]): string {
-  return models.map(modelId).join(",");
 }
 
 function secretLabel(source: SettingsSecretSource): string {
@@ -354,6 +345,9 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
   const [ollamaModels, setOllamaModels] = useState<{ id: string; contextWindow: number | null }[] | null>(null);
   const [ollamaModelsLoading, setOllamaModelsLoading] = useState(false);
   const [ollamaModelsError, setOllamaModelsError] = useState<string | null>(null);
+  const [opencodeModels, setOpencodeModels] = useState<{ id: string }[] | null>(null);
+  const [opencodeModelsLoading, setOpencodeModelsLoading] = useState(false);
+  const [opencodeModelsError, setOpencodeModelsError] = useState<string | null>(null);
 
   const workerModels = useMemo(() => payload?.availableModels.worker.availableModels ?? [], [payload]);
   const butlerModels = useMemo(() => payload?.availableModels.butler ?? [], [payload]);
@@ -382,6 +376,12 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
       void fetchOllamaModels();
     }
   }, [payload, ollamaModels, ollamaModelsLoading]);
+
+  useEffect(() => {
+    if (payload?.providerAvailability["opencode-go"].secretAvailable && !opencodeModels && !opencodeModelsLoading) {
+      void fetchOpencodeModels();
+    }
+  }, [payload, opencodeModels, opencodeModelsLoading]);
 
   const update = useCallback((mutate: (settings: ManorSettings) => void) => {
     setMessage(null);
@@ -464,6 +464,20 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
       setOllamaModels([]);
     } finally {
       setOllamaModelsLoading(false);
+    }
+  }
+
+  async function fetchOpencodeModels() {
+    setOpencodeModelsLoading(true);
+    setOpencodeModelsError(null);
+    try {
+      const res = await getJson<{ models: { id: string }[] }>("/api/settings/providers/opencode-go/models");
+      setOpencodeModels(res.models);
+    } catch (error) {
+      setOpencodeModelsError(error instanceof Error ? error.message : String(error));
+      setOpencodeModels([]);
+    } finally {
+      setOpencodeModelsLoading(false);
     }
   }
 
@@ -671,29 +685,44 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
 
           {providerTab === "opencode" ? (
             <SubGroup title={GROUP_LABELS["providers.opencodeGo"]}>
-              <ToggleGrid>
-                <Toggle
-                  label="Enabled"
-                  hint={payload.providerAvailability["opencode-go"].reason ?? "Use OpenCode Go as a model provider"}
-                  checked={draft.providers.opencodeGo.enabled}
-                  onChange={(next) => update((s) => { s.providers.opencodeGo.enabled = next; })}
-                />
-              </ToggleGrid>
-              <FieldGrid>
-                <Field label="Base URL"><input readOnly value={draft.providers.opencodeGo.baseUrl} /></Field>
-                <Field label="Models" hint="Comma-separated; some models use anthropic API" wide><input value={modelsToCsv(draft.providers.opencodeGo.models)} onChange={(event) => update((s) => { s.providers.opencodeGo.models = event.target.value.split(",").map((entry) => entry.trim()).filter(Boolean); })} /></Field>
-              </FieldGrid>
+              {payload.providerAvailability["opencode-go"].secretAvailable ? (
+                <>
+                  <ToggleGrid>
+                    <Toggle
+                      label="Enabled"
+                      hint="Use OpenCode Go as a model provider"
+                      checked={draft.providers.opencodeGo.enabled}
+                      onChange={(next) => update((s) => { s.providers.opencodeGo.enabled = next; })}
+                    />
+                  </ToggleGrid>
+                  <Field label="Base URL"><input readOnly value={draft.providers.opencodeGo.baseUrl} /></Field>
+                  <div className="settings-subgroup-divider" />
+                  <div className="settings-subgroup-section-head"><h4>Models</h4></div>
+                  <div className="settings-model-pills">
+                    {opencodeModelsLoading ? <span className="settings-model-pills-hint">Loading…</span> : null}
+                    {opencodeModelsError ? <div className="settings-auth-error">{opencodeModelsError}</div> : null}
+                    {opencodeModels?.map((model) => (
+                      <span key={model.id} className="settings-model-pill" title="Served from OpenCode Go">
+                        {model.id}
+                      </span>
+                    ))}
+                    {opencodeModels && opencodeModels.length === 0 && !opencodeModelsLoading ? <span className="settings-model-pills-hint">No models found.</span> : null}
+                  </div>
 
-              <div className="settings-subgroup-divider" />
-              <div className="settings-subgroup-section-head"><h4>Web tools (search &amp; fetch via Exa)</h4></div>
-              <ToggleGrid>
-                <Toggle label="Enabled" hint="Attach web_search/web_fetch to workers using OpenCode models" checked={draft.providers.opencodeGo.webTools.enabled} onChange={(next) => update((s) => { s.providers.opencodeGo.webTools.enabled = next; })} />
-              </ToggleGrid>
-              <FieldGrid>
-                <Field label="Max results"><input type="number" value={draft.providers.opencodeGo.webTools.maxResults} onChange={(event) => update((s) => { s.providers.opencodeGo.webTools.maxResults = Number(event.target.value); })} /></Field>
-                <Field label="Timeout (ms)"><input type="number" value={draft.providers.opencodeGo.webTools.timeoutMs} onChange={(event) => update((s) => { s.providers.opencodeGo.webTools.timeoutMs = Number(event.target.value); })} /></Field>
-                <Field label="Max content chars"><input type="number" value={draft.providers.opencodeGo.webTools.maxContentChars} onChange={(event) => update((s) => { s.providers.opencodeGo.webTools.maxContentChars = Number(event.target.value); })} /></Field>
-              </FieldGrid>
+                  <div className="settings-subgroup-divider" />
+                  <div className="settings-subgroup-section-head"><h4>Web tools (search &amp; fetch via Exa)</h4></div>
+                  <ToggleGrid>
+                    <Toggle label="Enabled" hint="Attach web_search/web_fetch to workers using OpenCode models" checked={draft.providers.opencodeGo.webTools.enabled} onChange={(next) => update((s) => { s.providers.opencodeGo.webTools.enabled = next; })} />
+                  </ToggleGrid>
+                  <FieldGrid>
+                    <Field label="Max results"><input type="number" value={draft.providers.opencodeGo.webTools.maxResults} onChange={(event) => update((s) => { s.providers.opencodeGo.webTools.maxResults = Number(event.target.value); })} /></Field>
+                    <Field label="Timeout (ms)"><input type="number" value={draft.providers.opencodeGo.webTools.timeoutMs} onChange={(event) => update((s) => { s.providers.opencodeGo.webTools.timeoutMs = Number(event.target.value); })} /></Field>
+                    <Field label="Max content chars"><input type="number" value={draft.providers.opencodeGo.webTools.maxContentChars} onChange={(event) => update((s) => { s.providers.opencodeGo.webTools.maxContentChars = Number(event.target.value); })} /></Field>
+                  </FieldGrid>
+                </>
+              ) : (
+                <div className="settings-auth-error">OpenCode Go is disabled. Set OPENCODE_API_KEY in .env and restart Manor to enable it.</div>
+              )}
             </SubGroup>
           ) : null}
         </Section> : null}

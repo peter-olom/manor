@@ -284,6 +284,27 @@ async function fetchOllamaCloudModels(settings: ManorSettings): Promise<OllamaCl
   return infos;
 }
 
+type OpencodeGoModelInfo = { id: string };
+
+async function fetchOpencodeGoModels(settings: ManorSettings): Promise<OpencodeGoModelInfo[]> {
+  const config = settings.providers.opencodeGo;
+  const apiKey = await readSecretSourceValue(config.apiKeySource);
+  if (!apiKey) throw new Error("No OpenCode Go API key is available from the configured secret source.");
+  const base = config.baseUrl.replace(/\/$/, "");
+  const res = await fetchJson<{ data?: { id?: string }[] }>(
+    `${base}/models`,
+    { method: "GET", headers: { "Authorization": `Bearer ${apiKey}` } },
+    30_000
+  );
+  if (!res.ok || !res.data?.data) {
+    throw new Error(`Failed to list OpenCode Go models (HTTP ${res.status}): ${redactMessage(res.text)}`);
+  }
+  return res.data.data
+    .map((m) => m?.id)
+    .filter((id): id is string => Boolean(id))
+    .map((id) => ({ id }));
+}
+
 export function registerManorSettingsRoutes(access: SettingsRouteAccess): void {
   access.app.get("/api/settings", (_request, response) => {
     response.json(settingsPayload(access));
@@ -336,6 +357,16 @@ export function registerManorSettingsRoutes(access: SettingsRouteAccess): void {
     try {
       const settings = getActiveManorSettings();
       const models = await fetchOllamaCloudModels(settings);
+      response.json({ models });
+    } catch (error) {
+      response.status(500).json({ error: redactMessage(error) });
+    }
+  });
+
+  access.app.get("/api/settings/providers/opencode-go/models", async (_request, response) => {
+    try {
+      const settings = getActiveManorSettings();
+      const models = await fetchOpencodeGoModels(settings);
       response.json({ models });
     } catch (error) {
       response.status(500).json({ error: redactMessage(error) });

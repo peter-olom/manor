@@ -1,13 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  ollamaWebFetch,
-  ollamaWebSearch,
-  readOllamaWebToolsConfig,
-  shouldAttachOllamaWebTools
-} from "../../src/server/ollama-web-tools.js";
-import { ollamaWebToolsExtensionArgsForProvider } from "../../src/server/pi-rpc-worker-client.js";
+import { ollamaWebFetch, ollamaWebSearch, readOllamaWebToolsConfig, shouldAttachOllamaWebTools } from "../../src/server/ollama-web-tools.js";
+import { webToolsExtensionArgsForProvider } from "../../src/server/pi-rpc-worker-client.js";
 
 test("readOllamaWebToolsConfig enables tools only when an Ollama API key is configured", async () => {
   assert.equal((await readOllamaWebToolsConfig({
@@ -84,8 +79,8 @@ test("Ollama web tools attach only to the Ollama Cloud provider by default", asy
 
   assert.equal(shouldAttachOllamaWebTools("ollama-cloud", env), true);
   assert.equal(shouldAttachOllamaWebTools("openai", env), false);
-  assert.deepEqual(await ollamaWebToolsExtensionArgsForProvider("openai", env), []);
-  assert.match((await ollamaWebToolsExtensionArgsForProvider("ollama-cloud", env))[1] ?? "", /pi-ollama-web-tools-extension\.(ts|js)$/);
+  assert.deepEqual(await webToolsExtensionArgsForProvider("openai", env), []);
+  assert.match((await webToolsExtensionArgsForProvider("ollama-cloud", env))[1] ?? "", /pi-ollama-web-tools-extension\.(ts|js)$/);
 });
 
 test("Ollama web tools can be attached to all Pi models by opt-in", () => {

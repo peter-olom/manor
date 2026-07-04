@@ -24,23 +24,49 @@ const DEFAULT_OLLAMA_CLOUD_MODELS = [
   "minimax-m3"
 ];
 
-// OpenCode Go models. Models served via the Anthropic /v1/messages shape
-// declare api:"anthropic"; the rest inherit the provider-level openai-completions.
-const DEFAULT_OPENCODE_GO_MODELS: SettingsProviderModel[] = [
-  "glm-5.2",
-  "glm-5.1",
+// OpenCode Go models. The official list lives at
+// https://opencode.ai/zen/go/v1/models and is mirrored here as a fallback.
+// Models served via the Anthropic /v1/messages shape declare api:"anthropic";
+// the rest inherit the provider-level openai-completions. The Anthropic shape
+// follows the MiniMax/Qwen families on the OpenCode Go catalog.
+const ANTHROID_API_MODEL_PREFIXES = ["minimax-", "qwen3."];
+
+function opencodeModelApi(modelId: string): "anthropic" | null {
+  return ANTHROID_API_MODEL_PREFIXES.some((prefix) => modelId.startsWith(prefix)) ? "anthropic" : null;
+}
+
+const DEFAULT_OPENCODE_GO_MODEL_IDS = [
+  "minimax-m3",
+  "minimax-m2.7",
+  "minimax-m2.5",
   "kimi-k2.7-code",
   "kimi-k2.6",
+  "kimi-k2.5",
+  "glm-5.2",
+  "glm-5.1",
+  "glm-5",
   "deepseek-v4-pro",
   "deepseek-v4-flash",
-  "mimo-v2.5",
+  "qwen3.7-max",
+  "qwen3.7-plus",
+  "qwen3.6-plus",
+  "qwen3.5-plus",
+  "mimo-v2-pro",
+  "mimo-v2-omni",
   "mimo-v2.5-pro",
-  { id: "minimax-m3", api: "anthropic" },
-  { id: "minimax-m2.7", api: "anthropic" },
-  { id: "qwen3.7-max", api: "anthropic" },
-  { id: "qwen3.7-plus", api: "anthropic" },
-  { id: "qwen3.6-plus", api: "anthropic" }
+  "mimo-v2.5",
+  "hy3-preview"
 ];
+
+const DEFAULT_OPENCODE_GO_MODELS: SettingsProviderModel[] = DEFAULT_OPENCODE_GO_MODEL_IDS.map((id) => {
+  const api = opencodeModelApi(id);
+  return api ? { id, api } : id;
+});
+
+export function buildOpencodeGoModelEntry(id: string): SettingsProviderModel {
+  const api = opencodeModelApi(id);
+  return api ? { id, api } : id;
+}
 
 export const SETTINGS_GROUP_KEYS: SettingsGroupKey[] = [
   "overview",
@@ -95,7 +121,7 @@ export const DEFAULT_MANOR_SETTINGS: ManorSettings = {
       }
     },
     opencodeGo: {
-      enabled: false,
+      enabled: true,
       providerId: "opencode-go",
       providerName: "OpenCode Go",
       baseUrl: "https://opencode.ai/zen/go/v1",

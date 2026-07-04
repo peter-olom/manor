@@ -18,7 +18,7 @@ test("buildManorSettingsFromEnv parses and clamps seed values", () => {
   } as NodeJS.ProcessEnv);
 
   assert.deepEqual(settings.providers.ollamaCloud.models, ["glm-5.2", "kimi-k2.6"]);
-  assert.equal(settings.providers.ollamaWebTools.maxResults, 10);
+  assert.equal(settings.providers.ollamaCloud.webTools.maxResults, 10);
   assert.equal(settings.worker.runtime, "pi-rpc");
   assert.equal(settings.worker.defaultEffort, "xhigh");
   assert.equal(settings.memory.synthesisMaxCandidatesPerRun, 50);
