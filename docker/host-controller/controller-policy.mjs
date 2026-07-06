@@ -7,6 +7,7 @@ const restartKeys = new Set([
   "gitRef",
   "imageTag",
   "includeDesktop",
+  "hotReload",
   "build",
   "update"
 ]);
@@ -155,6 +156,11 @@ export function validateRestartPayload(payload) {
     return includeDesktop;
   }
 
+  const hotReload = optionalBoolean(payload.hotReload, "hotReload");
+  if (!hotReload.ok) {
+    return hotReload;
+  }
+
   const build = optionalBoolean(payload.build, "build");
   if (!build.ok) {
     return build;
@@ -173,6 +179,7 @@ export function validateRestartPayload(payload) {
       gitRef: gitRef.value,
       imageTag: imageTag.value,
       includeDesktop: includeDesktop.value === true,
+      hotReload: hotReload.value,
       build: build.value,
       update: update.value === true
     }
@@ -188,6 +195,9 @@ export function validateRestartModeScope(payload, mode) {
   }
   if (payload.build === true && mode !== "source") {
     return { ok: false, error: "build true is only allowed when the detected restart mode is source." };
+  }
+  if (payload.hotReload === true && mode !== "source") {
+    return { ok: false, error: "hotReload true is only allowed when the detected restart mode is source." };
   }
   return { ok: true, value: { ...payload, mode } };
 }

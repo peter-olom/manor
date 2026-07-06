@@ -20,12 +20,19 @@ export type SettingsSecretSource =
 
 export type SettingsRunnerMode = "auto" | "codex" | "pi";
 export type SettingsWorkerRuntime = "auto" | "openai" | "pi-rpc";
-export type SettingsReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
-export type SettingsThinkingLevel = "off" | "low" | "medium" | "high" | "xhigh";
+export type SettingsReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type SettingsThinkingLevel = "off" | SettingsReasoningEffort;
 
 export type SettingsProviderModel =
   | string
-  | { id: string; api?: string | null; reasoning?: boolean | null };
+  | {
+      id: string;
+      api?: string | null;
+      reasoning?: boolean | null;
+      contextWindow?: number | null;
+      thinkingLevelMap?: Partial<Record<SettingsThinkingLevel, string | null>>;
+      compat?: Record<string, unknown>;
+    };
 
 export type SettingsWebTools = {
   enabled: boolean;

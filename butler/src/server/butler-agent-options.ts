@@ -19,6 +19,12 @@ export type ButlerAgentDefaults = {
   thinkingLevel: string | null;
 };
 
+export type ButlerWorkerDefaults = {
+  runtime: "auto" | "openai" | "pi-rpc" | null;
+  model?: string | null;
+  effort?: string | null;
+};
+
 export type ButlerAgentServiceOptions = {
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;
@@ -39,4 +45,5 @@ export type ButlerAgentServiceOptions = {
   systemPromptSuffix?: string | null;
   operatorSink?: ButlerOperatorSink | null;
   getButlerDefaults?: () => ButlerAgentDefaults | null;
+  getWorkerDefaults?: () => ButlerWorkerDefaults | null;
 };

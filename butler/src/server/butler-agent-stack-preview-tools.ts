@@ -1221,6 +1221,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         workerRuntime: Type.Optional(Type.Union([
           Type.Literal("auto"),
           Type.Literal("codex"),
+          Type.Literal("openai"),
           Type.Literal("pi-rpc")
         ])),
         workerModel: Type.Optional(Type.String({ minLength: 1 })),
@@ -1239,7 +1240,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           task: string;
           goal?: string;
           cwd?: string;
-          workerRuntime?: WorkerRuntimePreference;
+          workerRuntime?: WorkerRuntimePreference | "codex";
           workerModel?: string;
           thinkingBudget?: ReasoningEffort;
           imageReferenceIds?: string[];
@@ -1305,6 +1306,9 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         access.clearDelegationQuestionRounds(questionKey);
         const repoBootstrapTask = isSharedShellRepoBootstrapTask(delegatedTask);
         const developerInstructions = await access.buildDelegationDeveloperInstructions(workspace, delegatedTask);
+        const workerDefaults = typeof access.getWorkerDefaults === "function" ? access.getWorkerDefaults() : null;
+        const workerRuntime = typedParams.workerRuntime === "codex" ? "openai" : typedParams.workerRuntime;
+        const workerEffort = (workerDefaults?.effort ?? null) as ReasoningEffort | null;
         const extraNotes = repoBootstrapTask
           ? {
               notes: [
@@ -1332,13 +1336,13 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
               imageReferenceIds: typedParams.imageReferenceIds ?? [],
               fileStore: access.fileStore,
               fileReferenceIds: typedParams.fileReferenceIds ?? []
-            }),
+          }),
           cwd: workspace.cwd,
           developerInstructions,
-          effort: typedParams.thinkingBudget ?? null,
+          effort: typedParams.thinkingBudget ?? workerEffort,
           openWindow: true,
-          runtime: typedParams.workerRuntime ?? "auto",
-          model: typedParams.workerModel ?? null
+          runtime: workerRuntime ?? workerDefaults?.runtime ?? "auto",
+          model: typedParams.workerModel ?? workerDefaults?.model ?? null
         });
         const delegationContract = await access.buildDelegationContract({
           threadId: result.threadId,

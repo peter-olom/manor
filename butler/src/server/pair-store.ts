@@ -15,6 +15,7 @@ export type LastUsedCompose = {
   butlerThinkingLevel?: string | null;
   workerModel?: string | null;
   workerEffort?: string | null;
+  workerRuntime?: "auto" | "openai" | "pi-rpc" | null;
   updatedAt?: number | null;
 };
 
@@ -38,6 +39,7 @@ type PairComposeOverrideInput = {
   butlerModel?: string | null;
   codexModel?: string | null;
   codexEffort?: string | null;
+  workerRuntime?: "auto" | "openai" | "pi-rpc" | null;
 };
 
 const DEFAULT_TITLE = "New session";
@@ -48,12 +50,14 @@ function normalizeLastUsedCompose(raw: LastUsedCompose | null | undefined): Last
   const butlerThinkingLevel = typeof raw.butlerThinkingLevel === "string" && raw.butlerThinkingLevel.trim() ? raw.butlerThinkingLevel : null;
   const workerModel = typeof raw.workerModel === "string" && raw.workerModel.trim() ? raw.workerModel : null;
   const workerEffort = typeof raw.workerEffort === "string" && raw.workerEffort.trim() ? raw.workerEffort : null;
-  if (!butlerModel && !butlerThinkingLevel && !workerModel && !workerEffort) return null;
+  const workerRuntime = raw.workerRuntime === "auto" || raw.workerRuntime === "openai" || raw.workerRuntime === "pi-rpc" ? raw.workerRuntime : null;
+  if (!butlerModel && !butlerThinkingLevel && !workerModel && !workerEffort && !workerRuntime) return null;
   return {
     butlerModel,
     butlerThinkingLevel,
     workerModel,
     workerEffort,
+    workerRuntime,
     updatedAt: typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : null
   };
 }
@@ -117,7 +121,8 @@ function emptyPair(input: { id: string; title?: string | null; defaultCwd?: stri
     butlerThinkingLevel: null,
     butlerModel: null,
     codexModel: null,
-    codexEffort: null
+    codexEffort: null,
+    workerRuntime: null
   };
 }
 
@@ -156,6 +161,7 @@ function normalizePair(raw: Partial<PairChat> & { id?: string }, store: ButlerSt
     pair.butlerModel = typeof raw.butlerModel === "string" && raw.butlerModel.trim() ? raw.butlerModel : null;
     pair.codexModel = typeof raw.codexModel === "string" && raw.codexModel.trim() ? raw.codexModel : null;
     pair.codexEffort = typeof raw.codexEffort === "string" && raw.codexEffort.trim() ? raw.codexEffort : null;
+    pair.workerRuntime = raw.workerRuntime === "auto" || raw.workerRuntime === "openai" || raw.workerRuntime === "pi-rpc" ? raw.workerRuntime : null;
   pair.status = deriveStatus(pair, store);
   return pair;
 }
@@ -233,6 +239,7 @@ export class PairStore extends EventEmitter {
       pair.butlerModel = this.lastUsedCompose.butlerModel ?? null;
       pair.codexModel = this.lastUsedCompose.workerModel ?? null;
       pair.codexEffort = this.lastUsedCompose.workerEffort ?? null;
+      pair.workerRuntime = this.lastUsedCompose.workerRuntime ?? null;
     }
     this.pairs.set(pair.id, pair);
     this.queueSave();
@@ -306,12 +313,14 @@ export class PairStore extends EventEmitter {
     if (override.butlerModel !== undefined) pair.butlerModel = override.butlerModel;
     if (override.codexModel !== undefined) pair.codexModel = override.codexModel;
     if (override.codexEffort !== undefined) pair.codexEffort = override.codexEffort;
+    if (override.workerRuntime !== undefined) pair.workerRuntime = override.workerRuntime;
     pair.updatedAt = Math.max(pair.updatedAt, Date.now());
     this.lastUsedCompose = normalizeLastUsedCompose({
       butlerModel: override.butlerModel !== undefined ? override.butlerModel : this.lastUsedCompose?.butlerModel ?? null,
       butlerThinkingLevel: override.butlerThinkingLevel !== undefined ? override.butlerThinkingLevel : this.lastUsedCompose?.butlerThinkingLevel ?? null,
       workerModel: override.codexModel !== undefined ? override.codexModel : this.lastUsedCompose?.workerModel ?? null,
       workerEffort: override.codexEffort !== undefined ? override.codexEffort : this.lastUsedCompose?.workerEffort ?? null,
+      workerRuntime: override.workerRuntime !== undefined ? override.workerRuntime : this.lastUsedCompose?.workerRuntime ?? null,
       updatedAt: Date.now()
     });
     this.queueSave();

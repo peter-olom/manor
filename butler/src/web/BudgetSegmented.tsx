@@ -1,7 +1,5 @@
 import { memo } from "react";
 
-import { DEFAULT_THINKING_LEVELS } from "../shared/pairing";
-
 type BudgetSegmentedProps = {
   label: string;
   value: string | null | undefined;
@@ -11,6 +9,23 @@ type BudgetSegmentedProps = {
   className?: string;
 };
 
+const OPTION_LABELS: Record<string, string> = {
+  off: "Off",
+  default: "Default",
+  none: "None",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "XHigh",
+  max: "Max",
+  thinking: "Thinking"
+};
+
+function displayLabel(option: string): string {
+  return OPTION_LABELS[option] ?? option.charAt(0).toUpperCase() + option.slice(1);
+}
+
 export const BudgetSegmented = memo(function BudgetSegmented({
   label,
   value,
@@ -19,24 +34,29 @@ export const BudgetSegmented = memo(function BudgetSegmented({
   onChange,
   className
 }: BudgetSegmentedProps) {
-  const list = options.length > 0 ? options : DEFAULT_THINKING_LEVELS;
+  const list = options;
   const selected = value ?? list[0] ?? "";
+  const isEmpty = list.length === 0;
 
   return (
-    <label className={`budget-segmented ${disabled ? "is-disabled" : ""} ${className ?? ""}`.trim()}>
+    <label className={`budget-segmented ${disabled || isEmpty ? "is-disabled" : ""} ${className ?? ""}`.trim()}>
       <span className="sr-only">{label}</span>
       <select
         value={selected}
         aria-label={label}
         title={label}
-        disabled={disabled || list.length === 0}
+        disabled={disabled || isEmpty}
         onChange={(event) => onChange(event.currentTarget.value)}
       >
-        {list.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
+        {isEmpty ? (
+          <option value="">N/A</option>
+        ) : (
+          list.map((option) => (
+            <option key={option} value={option}>
+              {displayLabel(option)}
+            </option>
+          ))
+        )}
       </select>
     </label>
   );

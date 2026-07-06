@@ -57,6 +57,8 @@ function toPairModelOptions(models: ReturnType<CodexAppServerClient["getConnecti
       id: model.id,
       label: model.label,
       provider: model.provider,
+      supportsReasoning: model.supportsReasoning,
+      supportedThinkingLevels: [...model.supportedThinkingLevels],
       supportedReasoningEfforts: [...model.supportedReasoningEfforts],
       defaultReasoningEffort: model.defaultReasoningEffort
     }));
@@ -70,6 +72,14 @@ function chooseEffortForModel(model: PairCodexModelOption | null, requested: str
     return requested;
   }
   return model.defaultReasoningEffort ?? model.supportedReasoningEfforts[0] ?? null;
+}
+
+function chooseThinkingLevelForModel(model: PairCodexModelOption | null, requested: string | null): string {
+  const levels = model?.supportedThinkingLevels ?? [];
+  if (requested && levels.includes(requested)) {
+    return requested;
+  }
+  return model?.defaultReasoningEffort ?? levels[0] ?? "medium";
 }
 
 function pairSystemPrompt(pairId: string): string {
@@ -199,6 +209,11 @@ export class PairSessionManager {
   async setButlerThinkingLevel(pairId: string, level: string): Promise<PairDetail | null> {
     const service = this.services.get(pairId)?.service;
     if (!service) return null;
+    const shell = service.getShellSnapshot();
+    const availableLevels = shell.compose?.availableThinkingLevels ?? [];
+    if (availableLevels.length > 0 && !availableLevels.includes(level as never)) {
+      throw new Error("Selected Butler thinking level is not available for this model");
+    }
     service.setThinkingLevel(level as never);
     this.options.pairStore.updatePairComposeOverrides(pairId, { butlerThinkingLevel: level });
     return this.getPairDetail(pairId, null, 120);
@@ -221,33 +236,40 @@ export class PairSessionManager {
 
   async setCodexEffort(pairId: string, effort: string | null): Promise<PairDetail | null> {
     const pair = this.options.pairStore.getPair(pairId);
+    const compose = getUnifiedWorkerCompose(this.options, pair?.codexModel ?? null, effort, pair?.workerRuntime ?? null);
+    const resolvedEffort = compose.effort;
     if (!pair?.worker) {
-      if (effort) await updateUnifiedWorkerCompose(this.options, { model: pair?.codexModel ?? null, effort: effort as never });
-      this.options.pairStore.updatePairComposeOverrides(pairId, { codexEffort: effort });
+      if (resolvedEffort) await updateUnifiedWorkerCompose(this.options, { model: pair?.codexModel ?? null, effort: resolvedEffort as never, runtime: pair?.workerRuntime ?? null });
+      this.options.pairStore.updatePairComposeOverrides(pairId, { codexEffort: resolvedEffort });
       return this.getPairDetail(pairId, null, 120);
     }
-    if (effort) {
-      await updateWorkerThreadEffort(this.options, pair.worker.threadId, effort as never);
-      await updateUnifiedWorkerCompose(this.options, { model: pair.codexModel ?? null, effort: effort as never });
+    if (resolvedEffort) {
+      await updateWorkerThreadEffort(this.options, pair.worker.threadId, resolvedEffort as never);
+      await updateUnifiedWorkerCompose(this.options, { model: pair.codexModel ?? null, effort: resolvedEffort as never, runtime: pair.workerRuntime ?? null });
     }
-    this.options.pairStore.updatePairComposeOverrides(pairId, { codexEffort: effort });
+    this.options.pairStore.updatePairComposeOverrides(pairId, { codexEffort: resolvedEffort });
     return this.getPairDetail(pairId, null, 120);
   }
 
   async setCodexModel(pairId: string, modelId: string): Promise<PairDetail | null> {
     const pair = this.options.pairStore.getPair(pairId);
     if (!pair) return null;
-    const compose = getUnifiedWorkerCompose(this.options, pair.codexModel ?? null, pair.codexEffort ?? null);
+    const compose = getUnifiedWorkerCompose(this.options, pair.codexModel ?? null, pair.codexEffort ?? null, pair.workerRuntime ?? null);
     const model = compose.availableModels.find((entry) => entry.id === modelId);
     if (!model) {
       throw new Error("Selected worker model is not available");
     }
     const effort = chooseEffortForModel(toPairModelOptions([model])[0] ?? null, pair.codexEffort ?? pair.worker?.requestedReasoningEffort ?? compose.effort ?? null);
-    if (pair.worker) {
+    if (pair.worker && effort) {
       await updateWorkerThreadEffort(this.options, pair.worker.threadId, effort as never);
     }
-    await updateUnifiedWorkerCompose(this.options, { model: modelId, effort: effort as never });
+    await updateUnifiedWorkerCompose(this.options, { model: modelId, effort: effort as never, runtime: pair.workerRuntime ?? null });
     this.options.pairStore.updatePairComposeOverrides(pairId, { codexModel: modelId, codexEffort: effort });
+    return this.getPairDetail(pairId, null, 120);
+  }
+
+  async setWorkerRuntime(pairId: string, runtime: "auto" | "openai" | "pi-rpc"): Promise<PairDetail | null> {
+    this.options.pairStore.updatePairComposeOverrides(pairId, { workerRuntime: runtime });
     return this.getPairDetail(pairId, null, 120);
   }
 
@@ -255,10 +277,12 @@ export class PairSessionManager {
     const shell = service.getShellSnapshot();
     const availableThinkingLevels = shell.compose?.availableThinkingLevels?.length
       ? shell.compose.availableThinkingLevels
-      : [...DEFAULT_THINKING_LEVELS];
+      : [];
     const butlerModels = toPairModelOptions(shell.compose?.availableModels ?? []);
-    const thinkingLevel = pair.butlerThinkingLevel ?? shell.compose?.thinkingLevel ?? "medium";
-    const workerCompose = getUnifiedWorkerCompose(this.options, pair.codexModel ?? null, pair.codexEffort ?? null);
+    const selectedButlerModelId = shell.compose?.model ?? butlerModels[0]?.id ?? null;
+    const selectedButlerModel = butlerModels.find((model) => model.id === selectedButlerModelId) ?? butlerModels[0] ?? null;
+    const thinkingLevel = chooseThinkingLevelForModel(selectedButlerModel, pair.butlerThinkingLevel ?? shell.compose?.thinkingLevel ?? null);
+    const workerCompose = getUnifiedWorkerCompose(this.options, pair.codexModel ?? null, pair.codexEffort ?? null, pair.workerRuntime ?? null);
     const availableModels = toPairModelOptions(workerCompose.availableModels);
     const selectedModelId = workerCompose.model ?? availableModels[0]?.id ?? null;
     const selectedModel = availableModels.find((model) => model.id === selectedModelId) ?? null;
@@ -386,6 +410,14 @@ export class PairSessionManager {
           this.syncPairSnapshot(pair.id);
         },
         onOperatorReply: () => this.syncPairSnapshot(pair.id)
+      },
+      getWorkerDefaults: () => {
+        const current = this.options.pairStore.getPair(pair.id);
+        return {
+          runtime: current?.workerRuntime ?? null,
+          model: current?.codexModel ?? null,
+          effort: current?.codexEffort ?? null
+        };
       }
     });
     const started = service.start().then(() => {

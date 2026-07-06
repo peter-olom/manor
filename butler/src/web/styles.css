@@ -2447,7 +2447,6 @@ a:hover {
 
 .model-picker-popover {
   position: absolute;
-  bottom: calc(100% + 4px);
   left: 0;
   z-index: 60;
   width: min(280px, calc(100vw - 24px));
@@ -2460,6 +2459,19 @@ a:hover {
   box-shadow: var(--shadow-pop);
   overflow: hidden;
   animation: popover-in 140ms var(--ease);
+}
+
+.model-picker-popover.is-anchor-above {
+  bottom: calc(100% + 4px);
+}
+
+.model-picker-popover.is-anchor-below {
+  top: calc(100% + 4px);
+}
+
+.model-picker.worker-model .model-picker-popover {
+  right: 0;
+  left: auto;
 }
 
 .model-picker-search {
@@ -2660,6 +2672,35 @@ a:hover {
   padding: 4px 8px;
   border-radius: var(--radius);
   background: var(--surface-raised);
+}
+
+.worker-runtime {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.worker-runtime select {
+  max-width: 110px;
+  min-width: 70px;
+  height: 21px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 10.5px;
+  text-transform: lowercase;
+  padding: 0 20px 0 7px;
+}
+
+.worker-runtime select:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.worker-runtime.is-disabled {
+  opacity: 0.65;
 }
 
 .composer-budget {

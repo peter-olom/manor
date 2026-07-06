@@ -3,12 +3,20 @@ import path from "node:path";
 
 import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { Api, Model } from "@mariozechner/pi-ai";
+import { getModels } from "@mariozechner/pi-ai";
 
 import { getActiveManorSettings, readSecretSourceValue } from "./manor-settings-runtime.js";
 import { assertOllamaLocalBaseUrl, fetchOllamaLocalModels } from "./ollama-local-models.js";
 import { fetchOllamaCloudModelsCached } from "./ollama-cloud-models.js";
+import { fetchOpencodeGoModelsCached, opencodeGoModelToProviderInput } from "./opencode-go-models.js";
+import {
+  getModelCapabilityMetadata,
+  mergeThinkingLevelMaps
+} from "./model-capabilities.js";
+import { enrichModelsWithOpenRouterCapabilities } from "./openrouter-model-capabilities.js";
 import type { SettingsSecretSource } from "../shared/settings.js";
-import type { ModelOption } from "./types.js";
+import type { PiThinkingLevel } from "./pi-thinking-levels.js";
+import type { ButlerThinkingLevel, ModelOption, ReasoningEffort } from "./types.js";
 
 export type ProviderModelRef = {
   provider: string | null;
@@ -52,27 +60,96 @@ export function isCodexPreferredModelRef(ref: string | ProviderModelRef | null |
   return parsed.provider === "openai" || parsed.provider === "openai-codex" || parsed.provider === "codex";
 }
 
+export function shouldExposeManorModel(model: { provider: string | null }, env: NodeJS.ProcessEnv = process.env): boolean {
+  const settings = getActiveManorSettings(env);
+  switch (model.provider) {
+    case settings.providers.ollamaLocal.providerId:
+    case "ollama-local":
+      return settings.providers.ollamaLocal.enabled;
+    case settings.providers.ollamaCloud.providerId:
+    case "ollama-cloud":
+      return settings.providers.ollamaCloud.enabled;
+    case settings.providers.opencodeGo.providerId:
+    case "opencode-go":
+      return settings.providers.opencodeGo.enabled;
+    case "opencode":
+      return false;
+    default:
+      return true;
+  }
+}
+
+const PI_THINKING_LEVEL_ORDER: PiThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+const EXPLICIT_ONLY_PI_THINKING_LEVELS = new Set<PiThinkingLevel>(["xhigh"]);
+
+function isReasoningEffort(value: ButlerThinkingLevel): value is ReasoningEffort {
+  return value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max";
+}
+
+function displayThinkingLevelForTransportLevel(level: PiThinkingLevel, mapped: string | null | undefined): ButlerThinkingLevel {
+  if (mapped === "default" || mapped === "none" || mapped === "thinking" || mapped === "max") return mapped;
+  return level;
+}
+
+function nativeThinkingFormat(model: Model<Api>): string | null {
+  const value = (model.compat as { nativeThinkingFormat?: unknown } | undefined)?.nativeThinkingFormat;
+  return typeof value === "string" ? value : null;
+}
+
+/**
+ * Derive the picker-facing thinking levels from Manor's richer map instead of
+ * Pi's helper. Pi currently understands the common levels only, while Manor and
+ * OpenCode both need to preserve provider-specific levels such as `max`.
+ *
+ * The compatibility rule intentionally matches Pi for ordinary models: when a
+ * reasoning model has no explicit map, `minimal` through `high` remain
+ * available and `xhigh` is opt-in. If a provider maps Pi's `xhigh` transport
+ * level to native `max`, Manor displays that option as `max` so the picker
+ * shows provider semantics instead of Pi's implementation detail.
+ */
+function supportedThinkingLevelsForModel(model: Model<Api>): { levels: ButlerThinkingLevel[]; transports: Partial<Record<ButlerThinkingLevel, PiThinkingLevel>> } {
+  if (!model.reasoning) return { levels: ["off"], transports: { off: "off" } };
+  const thinkingLevelMap = (model as { thinkingLevelMap?: Partial<Record<ButlerThinkingLevel, string | null>> }).thinkingLevelMap;
+  const levels: ButlerThinkingLevel[] = [];
+  const transports: Partial<Record<ButlerThinkingLevel, PiThinkingLevel>> = {};
+  for (const level of PI_THINKING_LEVEL_ORDER) {
+    const mapped = thinkingLevelMap?.[level];
+    if (mapped === null) continue;
+    if (EXPLICIT_ONLY_PI_THINKING_LEVELS.has(level) && mapped === undefined) continue;
+    const displayLevel = displayThinkingLevelForTransportLevel(level, mapped);
+    if (!levels.includes(displayLevel)) {
+      levels.push(displayLevel);
+      transports[displayLevel] = level;
+    }
+  }
+  return { levels, transports };
+}
+
 export function modelToModelOption(model: Model<Api>): ModelOption {
-  const thinkingLevels = model.reasoning ? Object.entries(model.thinkingLevelMap ?? {})
-    .filter(([, value]) => value !== null)
-    .map(([level]) => level)
-    .filter((level) => level !== "off" && level !== "minimal") : [];
-  const supportedReasoningEfforts = thinkingLevels.length > 0 ? thinkingLevels : model.reasoning ? ["low", "medium", "high", "xhigh"] : [];
+  const { levels: supportedThinkingLevels, transports } = supportedThinkingLevelsForModel(model);
+  const exposesNativeThinkingVariants = nativeThinkingFormat(model) !== null;
+  const supportedReasoningEfforts = exposesNativeThinkingVariants
+    ? []
+    : supportedThinkingLevels.filter(isReasoningEffort);
   return {
     id: model.id,
     label: model.name || model.id,
     provider: model.provider,
     supportsReasoning: model.reasoning,
-    supportedReasoningEfforts: supportedReasoningEfforts as ModelOption["supportedReasoningEfforts"],
-    defaultReasoningEffort: supportedReasoningEfforts.includes("medium") ? "medium" as never : (supportedReasoningEfforts[0] as never) ?? null
+    supportedThinkingLevels,
+    supportedReasoningEfforts,
+    defaultReasoningEffort: supportedReasoningEfforts.includes("medium") ? "medium" : supportedReasoningEfforts[0] ?? null,
+    thinkingLevelTransports: transports
   };
 }
 
 type ProviderModelEntry = {
   id: string;
-  api: string;
-  reasoning: boolean;
+  api?: string | null;
+  reasoning?: boolean | null;
   contextWindow: number | null;
+  thinkingLevelMap?: Partial<Record<ButlerThinkingLevel, string | null>>;
+  compat?: Record<string, unknown>;
 };
 
 type ProviderModelInput = string | {
@@ -80,17 +157,25 @@ type ProviderModelInput = string | {
   api?: string | null;
   reasoning?: boolean | null;
   contextWindow?: number | null;
+  thinkingLevelMap?: Partial<Record<ButlerThinkingLevel, string | null>>;
+  compat?: Record<string, unknown>;
 };
 
-function resolveModelEntry(entry: ProviderModelInput, providerApi: string, providerReasoning: boolean): ProviderModelEntry {
+function modelInputId(entry: ProviderModelInput): string {
+  return typeof entry === "string" ? entry : entry.id;
+}
+
+function resolveModelEntry(entry: ProviderModelInput): ProviderModelEntry {
   if (typeof entry === "string") {
-    return { id: entry, api: providerApi, reasoning: providerReasoning, contextWindow: null };
+    return { id: entry, contextWindow: null };
   }
   return {
     id: entry.id,
-    api: entry.api ?? providerApi,
-    reasoning: entry.reasoning ?? providerReasoning,
-    contextWindow: typeof entry.contextWindow === "number" && Number.isFinite(entry.contextWindow) ? entry.contextWindow : null
+    api: entry.api ?? null,
+    reasoning: entry.reasoning ?? null,
+    contextWindow: typeof entry.contextWindow === "number" && Number.isFinite(entry.contextWindow) ? entry.contextWindow : null,
+    thinkingLevelMap: entry.thinkingLevelMap,
+    compat: entry.compat
   };
 }
 
@@ -115,7 +200,17 @@ type OllamaLocalProvider = CloudLikeProvider & {
   nativeBaseUrl: string;
 };
 
-function buildProviderConfig(provider: CloudLikeProvider, apiKey: string) {
+const CONFIGURED_PROVIDER_DISCOVERY_TIMEOUT_MS = 1_500;
+const MANOR_MANAGED_PROVIDER_IDS_KEY = "manorManagedProviderIds";
+
+/**
+ * Build the Pi provider config Manor registers at runtime or writes to
+ * models.json. Most providers benefit from Pi's built-in catalog as a metadata
+ * base, but OpenCode Go deliberately opts out because its subscription model
+ * list can move faster than Pi's generated registry. For that provider, live
+ * OpenCode discovery plus the provider-specific adapter is the authority.
+ */
+function buildProviderConfig(provider: CloudLikeProvider, apiKey: string, options: { useBuiltInModels?: boolean } = {}) {
   const maxTokensField = provider.maxTokensField ?? (
     provider.providerId.includes("ollama") || provider.baseUrl.includes("ollama")
       ? "max_tokens"
@@ -126,6 +221,14 @@ function buildProviderConfig(provider: CloudLikeProvider, apiKey: string) {
     supportsReasoningEffort: provider.supportsReasoningEffort,
     ...(maxTokensField ? { maxTokensField } : {})
   };
+  const builtInModels = new Map<string, Model<Api>>();
+  if (options.useBuiltInModels !== false) {
+    try {
+      for (const model of getModels(provider.providerId as never)) {
+        builtInModels.set(model.id, model);
+      }
+    } catch { /* provider not in built-in catalog */ }
+  }
   return {
     name: provider.providerName,
     baseUrl: provider.baseUrl,
@@ -134,23 +237,47 @@ function buildProviderConfig(provider: CloudLikeProvider, apiKey: string) {
     authHeader: provider.authHeader ?? true,
     compat: compat as never,
     models: provider.models.map((entry) => {
-      const resolved = resolveModelEntry(entry, provider.api, provider.reasoning);
+      const resolved = resolveModelEntry(entry);
+      const builtIn = builtInModels.get(resolved.id);
+      const capabilities = getModelCapabilityMetadata(resolved.id);
+      const thinkingLevelMap = mergeThinkingLevelMaps(
+        builtIn?.thinkingLevelMap,
+        capabilities?.thinkingLevelMap,
+        resolved.thinkingLevelMap
+      );
+      const modelCompat = {
+        ...(builtIn?.compat ?? {}),
+        ...compat,
+        ...(capabilities?.compat ?? {}),
+        ...(resolved.compat ?? {})
+      };
       return {
         id: resolved.id,
-        name: modelName(resolved.id),
-        reasoning: resolved.reasoning,
-        input: ["text"],
-        contextWindow: resolved.contextWindow ?? provider.contextWindow,
-        maxTokens: provider.maxTokens,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        api: resolved.api as Api,
-        compat
+        name: builtIn?.name ?? modelName(resolved.id),
+        reasoning: resolved.reasoning ?? builtIn?.reasoning ?? capabilities?.reasoning ?? provider.reasoning,
+        thinkingLevelMap,
+        input: builtIn?.input ?? ["text"],
+        contextWindow: resolved.contextWindow ?? builtIn?.contextWindow ?? capabilities?.contextWindow ?? provider.contextWindow,
+        maxTokens: builtIn?.maxTokens ?? provider.maxTokens,
+        cost: builtIn?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        api: (resolved.api ?? builtIn?.api ?? provider.api) as Api,
+        compat: modelCompat
       } as never;
     })
   };
 }
 
 type ResolvedProviderConfig = ReturnType<typeof buildProviderConfig>;
+
+async function modelsJsonApiKey(provider: CloudLikeProvider, env: NodeJS.ProcessEnv, actualApiKey: string): Promise<string> {
+  const source = provider.apiKeySource;
+  if (!source) return actualApiKey;
+  if (source.type === "env") return source.name;
+  if (source.type === "file" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(source.pathEnv)) {
+    return `!sh -c 'cat "$${source.pathEnv}"'`;
+  }
+  return actualApiKey;
+}
 
 async function resolveOllamaLocalProviderModels(provider: OllamaLocalProvider): Promise<ProviderModelInput[]> {
   if (provider.models.length > 0) return provider.models;
@@ -172,27 +299,68 @@ async function buildOllamaLocalProviderConfig(provider: OllamaLocalProvider, env
   return buildProviderConfig({ ...provider, models }, apiKey || "ollama");
 }
 
-async function registerCloudLikeProvider(registry: ModelRegistry, provider: CloudLikeProvider, env: NodeJS.ProcessEnv): Promise<boolean> {
-  if (!provider.enabled) return false;
-  if (provider.models.length === 0) return false;
+function mergeDiscoveredModels(configured: ProviderModelInput[], discovered: ProviderModelInput[]): ProviderModelInput[] {
+  if (discovered.length === 0) return configured;
+  const configuredById = new Map(configured.map((entry) => [modelInputId(entry), entry]));
+  return discovered.map((entry) => {
+    const id = modelInputId(entry);
+    const configuredEntry = configuredById.get(id);
+    if (!configuredEntry) return entry;
+    if (typeof configuredEntry === "string" && typeof entry === "string") return entry;
+    const configuredObject = typeof configuredEntry === "string" ? { id: configuredEntry } : configuredEntry;
+    const discoveredObject = typeof entry === "string" ? { id: entry } : entry;
+    return {
+      ...discoveredObject,
+      ...configuredObject,
+      contextWindow: configuredObject.contextWindow ?? discoveredObject.contextWindow ?? null
+    };
+  });
+}
+
+async function buildOllamaCloudProviderConfig(provider: CloudLikeProvider, env: NodeJS.ProcessEnv, options: { forModelsJson?: boolean } = {}): Promise<ResolvedProviderConfig | null> {
+  if (!provider.enabled) return null;
   const apiKey = provider.apiKeySource ? await readSecretSourceValue(provider.apiKeySource, env) : null;
-  if (!apiKey) return false;
-  const config = buildProviderConfig(provider, apiKey);
+  if (!apiKey) return null;
+  const settings = getActiveManorSettings(env);
+  const discovered = await fetchOllamaCloudModelsCached(settings, {
+    env,
+    timeoutMs: CONFIGURED_PROVIDER_DISCOVERY_TIMEOUT_MS
+  }).catch(() => []);
+  let models = provider.models;
+  models = mergeDiscoveredModels(models, discovered.map((model) => ({ id: model.id, contextWindow: model.contextWindow })));
+  if (models.length === 0) return null;
+  models = await enrichModelsWithOpenRouterCapabilities(models, { timeoutMs: CONFIGURED_PROVIDER_DISCOVERY_TIMEOUT_MS })
+    .catch(() => models);
+  const configApiKey = options.forModelsJson ? await modelsJsonApiKey(provider, env, apiKey) : apiKey;
+  return buildProviderConfig({ ...provider, models }, configApiKey, { useBuiltInModels: false });
+}
+
+async function registerOllamaCloudProvider(registry: ModelRegistry, provider: CloudLikeProvider, env: NodeJS.ProcessEnv): Promise<boolean> {
+  const config = await buildOllamaCloudProviderConfig(provider, env);
+  if (!config) return false;
   registry.registerProvider(provider.providerId, config as never);
   return true;
 }
 
-async function registerOllamaCloudProvider(registry: ModelRegistry, provider: CloudLikeProvider, env: NodeJS.ProcessEnv): Promise<boolean> {
-  if (!provider.enabled) return false;
+async function buildOpencodeGoProviderConfig(provider: CloudLikeProvider, env: NodeJS.ProcessEnv, options: { forModelsJson?: boolean } = {}): Promise<ResolvedProviderConfig | null> {
+  if (!provider.enabled) return null;
   const apiKey = provider.apiKeySource ? await readSecretSourceValue(provider.apiKeySource, env) : null;
-  if (!apiKey) return false;
-  let models = provider.models;
-  if (models.length === 0) {
-    const discovered = await fetchOllamaCloudModelsCached(getActiveManorSettings(env)).catch(() => []);
-    if (discovered.length === 0) return false;
-    models = discovered.map((model) => ({ id: model.id, contextWindow: model.contextWindow }));
-  }
-  const config = buildProviderConfig({ ...provider, models }, apiKey);
+  if (!apiKey) return null;
+  const settings = getActiveManorSettings(env);
+  const discovered = await fetchOpencodeGoModelsCached(settings, {
+    env,
+    timeoutMs: CONFIGURED_PROVIDER_DISCOVERY_TIMEOUT_MS
+  }).catch(() => []);
+  const discoveredModels = discovered.map(opencodeGoModelToProviderInput);
+  if (discoveredModels.length === 0) return null;
+  const models = mergeDiscoveredModels(provider.models, discoveredModels);
+  const configApiKey = options.forModelsJson ? await modelsJsonApiKey(provider, env, apiKey) : apiKey;
+  return buildProviderConfig({ ...provider, models }, configApiKey);
+}
+
+async function registerOpencodeGoProvider(registry: ModelRegistry, provider: CloudLikeProvider, env: NodeJS.ProcessEnv): Promise<boolean> {
+  const config = await buildOpencodeGoProviderConfig(provider, env);
+  if (!config) return false;
   registry.registerProvider(provider.providerId, config as never);
   return true;
 }
@@ -208,7 +376,7 @@ export async function registerManorProviders(registry: ModelRegistry, env: NodeJ
   const settings = getActiveManorSettings(env);
   await registerOllamaLocalProvider(registry, settings.providers.ollamaLocal as OllamaLocalProvider, env);
   await registerOllamaCloudProvider(registry, settings.providers.ollamaCloud as CloudLikeProvider, env);
-  await registerCloudLikeProvider(registry, settings.providers.opencodeGo as CloudLikeProvider, env);
+  await registerOpencodeGoProvider(registry, settings.providers.opencodeGo as CloudLikeProvider, env);
 }
 
 export async function createManorModelRegistry(piAuthPath: string, env: NodeJS.ProcessEnv = process.env): Promise<ModelRegistry> {
@@ -241,18 +409,54 @@ async function readModelsJsonObject(filePath: string): Promise<{ current: Record
   }
 }
 
+function readManagedProviderIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+}
+
 export async function syncManorPiModelsJson(piAuthPath: string, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
   const settings = getActiveManorSettings(env);
   const localProvider = settings.providers.ollamaLocal as OllamaLocalProvider;
+  const cloudProvider = settings.providers.ollamaCloud as CloudLikeProvider;
+  const opencodeProvider = settings.providers.opencodeGo as CloudLikeProvider;
   const localConfig = await buildOllamaLocalProviderConfig(localProvider, env);
-  if (!localConfig) return false;
+  const cloudConfig = await buildOllamaCloudProviderConfig(cloudProvider, env, { forModelsJson: true });
+  const opencodeConfig = await buildOpencodeGoProviderConfig(opencodeProvider, env, { forModelsJson: true });
+  const managedProviders = [
+    [localProvider.providerId, localConfig],
+    [cloudProvider.providerId, cloudConfig],
+    [opencodeProvider.providerId, opencodeConfig]
+  ] as const;
+  const managedProviderIds = new Set([
+    "ollama-local",
+    "ollama-cloud",
+    "opencode-go",
+    localProvider.providerId,
+    cloudProvider.providerId,
+    opencodeProvider.providerId
+  ]);
+  const enabledProviders = managedProviders.filter((entry): entry is readonly [string, ResolvedProviderConfig] => Boolean(entry[1]));
 
   const agentDir = path.dirname(piAuthPath);
   const modelsPath = path.join(agentDir, "models.json");
   const { current, currentText } = await readModelsJsonObject(modelsPath);
+  if (enabledProviders.length === 0 && currentText === null) return false;
   const providers = isJsonObject(current.providers) ? { ...current.providers } : {};
-  providers[localProvider.providerId] = localConfig;
-  const next = { ...current, providers };
+  for (const providerId of readManagedProviderIds(current[MANOR_MANAGED_PROVIDER_IDS_KEY])) {
+    managedProviderIds.add(providerId);
+  }
+  for (const providerId of managedProviderIds) {
+    delete providers[providerId];
+  }
+  for (const [providerId, config] of enabledProviders) {
+    providers[providerId] = config;
+  }
+  const next: Record<string, unknown> = { ...current, providers };
+  if (enabledProviders.length > 0) {
+    next[MANOR_MANAGED_PROVIDER_IDS_KEY] = enabledProviders.map(([providerId]) => providerId);
+  } else {
+    delete next[MANOR_MANAGED_PROVIDER_IDS_KEY];
+  }
   const nextText = `${JSON.stringify(next, null, 2)}\n`;
   if (currentText === nextText) return false;
   await fs.mkdir(agentDir, { recursive: true });

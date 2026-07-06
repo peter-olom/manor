@@ -8,7 +8,7 @@ import test from "node:test";
 import { PairSessionManager } from "../../src/server/pair-session-manager.js";
 import { PairStore } from "../../src/server/pair-store.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
-import type { ButlerMessagePageView, ButlerMessageView } from "../../src/server/types.js";
+import type { ButlerMessagePageView, ButlerMessageView, ModelOption, ReasoningEffort } from "../../src/server/types.js";
 import type { SessionTitleGenerator } from "../../src/server/session-title-generator.js";
 
 class FakeButlerService extends EventEmitter {
@@ -63,21 +63,33 @@ class FakeButlerService extends EventEmitter {
   }
 }
 
-async function createManager(generator: SessionTitleGenerator | null = null): Promise<{
+async function createManager(generator: SessionTitleGenerator | null = null, onCreateService?: (options: unknown) => void, runtime?: { codexModels?: ModelOption[] }): Promise<{
   manager: PairSessionManager;
   pairStore: PairStore;
   service: FakeButlerService;
+  store: ButlerStateStore;
+  codexUpdates: Array<{ model: string; effort: ReasoningEffort | null }>;
+  threadEffortUpdates: Array<{ threadId: string; effort: ReasoningEffort }>;
 }> {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-pair-session-test-"));
   const store = new ButlerStateStore(path.join(dir, "state.json"));
   const pairStore = new PairStore(path.join(dir, "pairs.json"), store);
   await pairStore.load();
   const service = new FakeButlerService();
+  const codexUpdates: Array<{ model: string; effort: ReasoningEffort | null }> = [];
+  const threadEffortUpdates: Array<{ threadId: string; effort: ReasoningEffort }> = [];
+  const codexModels = runtime?.codexModels ?? [];
   const manager = new PairSessionManager({
     pairStore,
     store,
     codexClient: {
-      getConnectionState: () => ({ connected: true, lastError: null, compose: { model: null, effort: null, availableModels: [] } })
+      getConnectionState: () => ({ connected: true, lastError: null, compose: { model: null, effort: null, availableModels: codexModels } }),
+      updateComposeSettings: async (model: string, effort: ReasoningEffort | null) => {
+        codexUpdates.push({ model, effort });
+      },
+      updateThreadReasoningEffort: async (threadId: string, effort: ReasoningEffort) => {
+        threadEffortUpdates.push({ threadId, effort });
+      }
     },
     hostController: {},
     runtimeBroker: {},
@@ -90,9 +102,12 @@ async function createManager(generator: SessionTitleGenerator | null = null): Pr
     sessionRootDir: path.join(dir, "sessions"),
     artifactsDir: path.join(dir, "artifacts"),
     sessionTitleGenerator: generator,
-    createButlerService: () => service as never
+    createButlerService: (serviceOptions: unknown) => {
+      onCreateService?.(serviceOptions);
+      return service as never;
+    }
   } as never);
-  return { manager, pairStore, service };
+  return { manager, pairStore, service, store, codexUpdates, threadEffortUpdates };
 }
 
 test("sendOperatorMessage starts automatic title generation for the first text prompt", async () => {
@@ -201,4 +216,53 @@ test("refreshModelSettings refreshes loaded pair services", async () => {
   await manager.refreshModelSettings();
 
   assert.equal(service.refreshCount, 1);
+});
+
+test("loaded pair services read current worker compose defaults", async () => {
+  let serviceOptions: { getWorkerDefaults?: () => { runtime: string | null; model?: string | null; effort?: string | null } | null } | null = null;
+  const model: ModelOption = {
+    id: "gpt-5-codex",
+    label: "GPT-5 Codex",
+    provider: null,
+    supportsReasoning: true,
+    supportedThinkingLevels: ["low", "medium", "high", "xhigh"],
+    supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
+    defaultReasoningEffort: "medium"
+  };
+  const { manager } = await createManager(null, (options) => {
+    serviceOptions = options as typeof serviceOptions;
+  }, { codexModels: [model] });
+  const pair = await manager.createPair();
+
+  await manager.setWorkerRuntime(pair.id, "auto");
+  await manager.setCodexModel(pair.id, "gpt-5-codex");
+  await manager.setCodexEffort(pair.id, "xhigh");
+
+  assert.deepEqual(serviceOptions?.getWorkerDefaults?.(), {
+    runtime: "auto",
+    model: "gpt-5-codex",
+    effort: "xhigh"
+  });
+});
+
+test("attached worker model switch skips thread effort update when target model has no effort", async () => {
+  const noEffortModel: ModelOption = {
+    id: "gpt-chat",
+    label: "GPT Chat",
+    provider: null,
+    supportsReasoning: false,
+    supportedThinkingLevels: ["off"],
+    supportedReasoningEfforts: [],
+    defaultReasoningEffort: null
+  };
+  const { manager, pairStore, store, codexUpdates, threadEffortUpdates } = await createManager(null, undefined, { codexModels: [noEffortModel] });
+  const pair = await manager.createPair();
+  store.upsertThreadSummary({ id: "worker-thread", source: "appServer", status: "idle", turns: [] });
+  pairStore.attachWorker(pair.id, { threadId: "worker-thread" });
+
+  await manager.setCodexModel(pair.id, "gpt-chat");
+
+  assert.deepEqual(threadEffortUpdates, []);
+  assert.deepEqual(codexUpdates, [{ model: "gpt-chat", effort: null }]);
+  assert.equal(pairStore.getPair(pair.id)?.codexEffort, null);
 });

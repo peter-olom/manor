@@ -1,7 +1,8 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { AuthStorage, createAgentSession, DefaultResourceLoader, SessionManager } from "@mariozechner/pi-coding-agent";
+import type { Api, Model } from "@mariozechner/pi-ai";
+import { AuthStorage, createAgentSession, DefaultResourceLoader, SessionManager, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 import {
   BUTLER_BACKGROUND_PROMPT_PREFIX,
@@ -24,8 +25,11 @@ import { getButlerActivityTurns, recordButlerActivityEvent } from "./butler-acti
 import { backfillOperatorMessagesFromSessionFiles, isPersistableProviderOperatorMessage, removeTrivialOperatorQuestionConfirmations, upsertProviderBackedOperatorMessage } from "./butler-operator-messages.js";
 import { PiProviderRuntimeMapper } from "./pi-provider-events.js";
 import { getActiveManorSettings } from "./manor-settings-runtime.js";
-import { createManorModelRegistry, formatProviderModelRef, modelToModelOption, parseProviderModelRef } from "./model-provider-config.js";
+import { createManorModelRegistry, formatProviderModelRef, modelToModelOption, parseProviderModelRef, shouldExposeManorModel } from "./model-provider-config.js";
+import { isChatGptSubscriptionModelAvailable, isOpenAiRuntimeProvider } from "./chatgpt-entitlement.js";
 import { syncProviderWebToolsForSession } from "./provider-web-tools.js";
+import { displayThinkingLevelForModelOption, piThinkingLevelForModelOption } from "./pi-thinking-levels.js";
+import { applyOpencodeGoNativeThinkingPayload } from "./pi-opencode-web-tools-extension.js";
 import type {
   AppShellSnapshot,
   AppSnapshot,
@@ -38,6 +42,14 @@ import type {
 } from "./types.js";
 
 const MAX_PENDING_OPERATOR_MESSAGES = 20;
+
+function fallbackThinkingLevel(levels: readonly ButlerThinkingLevel[], defaultReasoningEffort: ButlerThinkingLevel | null | undefined): ButlerThinkingLevel {
+  return defaultReasoningEffort ?? levels[0] ?? "off";
+}
+
+function registerOpencodeGoRequestTransforms(pi: ExtensionAPI): void {
+  pi.on("before_provider_request", (event) => applyOpencodeGoNativeThinkingPayload(event.payload));
+}
 
 export async function createOrRefreshButlerSession(access: ButlerAgentSessionAccess): Promise<void> {
   if (!access.modelRegistry) {
@@ -59,6 +71,7 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
   const resourceLoader = new DefaultResourceLoader({
     cwd: "/repos",
     agentDir: path.dirname(access.piAuthPath),
+    extensionFactories: [registerOpencodeGoRequestTransforms],
     systemPromptOverride: () => [buildSystemPrompt(access.store, access.describePendingCallbacks()), access.systemPromptSuffix].filter(Boolean).join("\n\n")
   });
   await resourceLoader.reload();
@@ -183,23 +196,60 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
   });
 }
 
-async function applyManagedButlerDefaults(access: ButlerAgentSessionAccess): Promise<void> {
+function liveChatGptModelIds(access: ButlerAgentSessionAccess): Set<string> | null {
+  if (access.auth.mode !== "chatgpt") return null;
+  const state = access.codexClient.getConnectionState();
+  const models = state.compose.availableModels;
+  if (!state.connected || models.length === 0) return null;
+  return new Set(models.map((model) => parseProviderModelRef(model.id).model ?? model.id));
+}
+
+function getAvailableButlerModels(access: ButlerAgentSessionAccess): Model<Api>[] {
+  const liveModelIds = liveChatGptModelIds(access);
+  return (access.modelRegistry?.getAvailable() ?? []).filter((model) => {
+    if (!shouldExposeManorModel(model)) return false;
+    if (access.auth.mode === "chatgpt" && !isChatGptSubscriptionModelAvailable(model)) return false;
+    if (!liveModelIds || !isOpenAiRuntimeProvider(model.provider)) return true;
+    return liveModelIds.has(model.id);
+  });
+}
+
+export async function applyManagedButlerDefaults(access: ButlerAgentSessionAccess): Promise<void> {
   if (!access.session || !access.modelRegistry) return;
   const fallbackSettings = getActiveManorSettings().butler;
   const lastUsed = typeof access.getButlerDefaults === "function" ? access.getButlerDefaults() : null;
   const defaultModel = lastUsed?.model ?? fallbackSettings.defaultModel;
   const defaultThinkingLevel = lastUsed?.thinkingLevel ?? fallbackSettings.defaultThinkingLevel;
   const ref = parseProviderModelRef(defaultModel);
+  const availableModels = getAvailableButlerModels(access);
+  let selectedModel: Model<Api> | null = null;
+  let modelChanged = false;
   if (ref.model) {
     const providers = ref.provider
       ? [ref.provider]
       : access.auth.mode === "chatgpt"
         ? ["openai-codex", "openai"]
         : ["openai", "openai-codex"];
-    const model = providers.map((provider) => access.modelRegistry?.find(provider, ref.model!)).find(Boolean);
-    if (model) await access.session.setModel(model);
+    selectedModel = providers
+      .map((provider) => availableModels.find((model) => model.provider === provider && model.id === ref.model))
+      .find(Boolean) ?? null;
   }
-  access.session.setThinkingLevel((defaultThinkingLevel === "off" ? "medium" : defaultThinkingLevel) as never);
+  if (selectedModel) {
+    await access.session.setModel(selectedModel);
+    modelChanged = true;
+  }
+  const activeModel = modelChanged
+    ? selectedModel
+    : access.session.model
+      ? availableModels.find((model) => model.provider === access.session?.model?.provider && model.id === access.session?.model?.id) ?? access.session.model
+      : null;
+  const option = activeModel ? modelToModelOption(activeModel) : null;
+  const levels = option?.supportedThinkingLevels ?? [];
+  const requestedThinkingLevel = defaultThinkingLevel as ButlerThinkingLevel;
+  const thinkingLevel: ButlerThinkingLevel = levels.includes(requestedThinkingLevel)
+    ? requestedThinkingLevel
+    : fallbackThinkingLevel(levels, option?.defaultReasoningEffort as ButlerThinkingLevel | null | undefined);
+  access.session.setThinkingLevel(piThinkingLevelForModelOption(thinkingLevel, option) as never);
 }
 
 export async function sanitizePersistedButlerSessions(access: ButlerAgentSessionAccess): Promise<void> {
@@ -621,17 +671,21 @@ export function getButlerLiveSnapshot(access: ButlerAgentSessionAccess): ButlerL
 }
 
 export function getButlerShellSnapshot(access: ButlerAgentSessionAccess): AppShellSnapshot["butler"] {
-  const availableModels = (access.modelRegistry?.getAvailable() ?? []).map(modelToModelOption).map((model) => ({
+  const availableModels = getAvailableButlerModels(access).map(modelToModelOption).map((model) => ({
     ...model,
     id: formatProviderModelRef({ provider: model.provider ?? null, model: model.id }) ?? model.id
   }));
-  const availableThinkingLevels = ["low", "medium", "high", "xhigh"] as ButlerThinkingLevel[];
-  const currentThinkingLevel = availableThinkingLevels.includes(access.session?.thinkingLevel as ButlerThinkingLevel)
-    ? (access.session?.thinkingLevel as ButlerThinkingLevel)
-    : "medium";
   const currentModel = access.session?.model
     ? formatProviderModelRef({ provider: access.session.model.provider, model: access.session.model.id })
     : null;
+  const selectedModel = availableModels.find((model) => model.id === currentModel) ?? availableModels[0] ?? null;
+  const availableThinkingLevels = selectedModel?.supportedThinkingLevels?.length
+    ? selectedModel.supportedThinkingLevels as ButlerThinkingLevel[]
+    : [];
+  const displayedSessionLevel = displayThinkingLevelForModelOption(access.session?.thinkingLevel as ButlerThinkingLevel | null | undefined, selectedModel);
+  const currentThinkingLevel = displayedSessionLevel && availableThinkingLevels.includes(displayedSessionLevel)
+    ? displayedSessionLevel
+    : fallbackThinkingLevel(availableThinkingLevels, selectedModel?.defaultReasoningEffort as ButlerThinkingLevel | null | undefined);
 
   return {
     ready: access.ready,
@@ -851,16 +905,22 @@ export async function updateButlerComposeSettings(
     : access.auth.mode === "chatgpt"
       ? ["openai-codex", "openai"]
       : ["openai", "openai-codex"];
+  const availableModels = getAvailableButlerModels(access);
 
   const model = lookupProviders
-    .map((candidateProvider) => access.modelRegistry?.find(candidateProvider, lookupModelId))
+    .map((candidateProvider) => availableModels.find((entry) => entry.provider === candidateProvider && entry.id === lookupModelId))
     .find(Boolean);
   if (!model) {
     throw new Error("Selected Butler model is not available");
   }
 
   await access.session.setModel(model);
-  access.session.setThinkingLevel(thinkingLevel === "off" || thinkingLevel === "minimal" ? "medium" : thinkingLevel);
+  const option = modelToModelOption(model);
+  const levels = option.supportedThinkingLevels;
+  const nextThinkingLevel = levels.includes(thinkingLevel)
+    ? thinkingLevel
+    : fallbackThinkingLevel(levels, option.defaultReasoningEffort as ButlerThinkingLevel | null | undefined);
+  access.session.setThinkingLevel(piThinkingLevelForModelOption(nextThinkingLevel, option) as never);
   await syncProviderWebToolsForSession(access.session);
   access.lastError = null;
   access.emit("change");

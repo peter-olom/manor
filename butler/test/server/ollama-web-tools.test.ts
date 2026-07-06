@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ollamaWebFetch, ollamaWebSearch, readOllamaWebToolsConfig, shouldAttachOllamaWebTools } from "../../src/server/ollama-web-tools.js";
+import { applyOpencodeGoNativeThinkingPayload } from "../../src/server/pi-opencode-web-tools-extension.js";
 import { webToolsExtensionArgsForProvider } from "../../src/server/pi-rpc-worker-client.js";
 import { selectProviderWebToolSource, syncProviderWebToolsForSession } from "../../src/server/provider-web-tools.js";
 
@@ -105,6 +106,37 @@ test("OpenCode web tools take priority over Ollama all-model tools for OpenCode 
   assert.equal(args.length, 2);
   assert.match(args[1] ?? "", /pi-opencode-web-tools-extension\.(ts|js)$/);
   assert.doesNotMatch(args.join(" "), /pi-ollama-web-tools-extension/);
+});
+
+test("OpenCode provider extension loads for native request transforms even when web tools are disabled", async () => {
+  const env = {
+    MANOR_OPENCODE_GO_PROVIDER_ID: "opencode-go",
+    MANOR_OPENCODE_GO_WEB_TOOLS_ENABLED: "0"
+  } as NodeJS.ProcessEnv;
+
+  assert.equal(await selectProviderWebToolSource("opencode-go", env), null);
+  const args = await webToolsExtensionArgsForProvider("opencode-go", env);
+  assert.equal(args.length, 2);
+  assert.match(args[1] ?? "", /pi-opencode-web-tools-extension\.(ts|js)$/);
+});
+
+test("OpenCode provider extension patches MiniMax M3 native thinking variants", () => {
+  assert.deepEqual(
+    applyOpencodeGoNativeThinkingPayload({ model: "minimax-m3", thinking: { type: "old" } }),
+    { model: "minimax-m3" }
+  );
+  assert.deepEqual(
+    applyOpencodeGoNativeThinkingPayload({ model: "minimax-m3", reasoning_effort: "none" }),
+    { model: "minimax-m3", thinking: { type: "disabled" } }
+  );
+  assert.deepEqual(
+    applyOpencodeGoNativeThinkingPayload({ model: "minimax-m3", reasoning_effort: "thinking" }),
+    { model: "minimax-m3", thinking: { type: "adaptive" } }
+  );
+  assert.deepEqual(
+    applyOpencodeGoNativeThinkingPayload({ model: "glm-5.2", reasoning_effort: "high" }),
+    { model: "glm-5.2", reasoning_effort: "high" }
+  );
 });
 
 test("Butler web tools are active only when the current model provider has a usable source", async () => {

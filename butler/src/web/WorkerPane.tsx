@@ -12,7 +12,6 @@ import {
 } from "./icons";
 
 import type { PairDetail } from "../shared/pairing";
-import { DEFAULT_THINKING_LEVELS } from "../shared/pairing";
 import type { FileReference } from "./api";
 
 export type WorkerItem = {
@@ -136,6 +135,7 @@ type WorkerPaneProps = {
   proofRecords: WorkerProofRecord[];
   onCodexModelChange: (model: string) => void;
   onCodexEffortChange: (effort: string) => void;
+  onWorkerRuntimeChange: (runtime: "auto" | "openai" | "pi-rpc") => void;
   onAttachAnnotatedProof: (payload: { attachment: FileReference; text: string }) => Promise<void>;
 };
 
@@ -658,17 +658,55 @@ const FallbackRow = memo(function FallbackRow({ row }: { row: WorkerItem }) {
   );
 });
 
-export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCodexModelChange, onCodexEffortChange, onAttachAnnotatedProof }: WorkerPaneProps) {
+export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCodexModelChange, onCodexEffortChange, onWorkerRuntimeChange, onAttachAnnotatedProof }: WorkerPaneProps) {
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
   if (!pair.worker) {
+    const worker = pair.compose?.worker ?? pair.compose?.codex ?? { model: null, effort: null, availableModels: [], availableEfforts: [] };
+    const options = worker.availableEfforts;
+    const model = worker.model ?? worker.availableModels[0]?.id ?? null;
+    const effort = worker.effort ?? null;
+    const runtime = pair.workerRuntime ?? ("runtime" in worker && worker.runtime ? worker.runtime : "auto");
     return (
       <section className="pane" aria-label="Worker lane">
         <div className="pane-head">
           <div className="pane-head-info">
             <h2>Worker</h2>
             <span className="pane-sub">No worker attached</span>
+          </div>
+          <div className="worker-controls" aria-label="Worker settings">
+            <label className="worker-runtime">
+              <span className="sr-only">Worker runtime</span>
+              <select
+                value={runtime}
+                aria-label="Worker runtime"
+                title="Worker runtime"
+                onChange={(event) => onWorkerRuntimeChange(event.target.value as "auto" | "openai" | "pi-rpc")}
+              >
+                <option value="auto">Auto</option>
+                <option value="openai">OpenAI Codex</option>
+                <option value="pi-rpc">Pi RPC</option>
+              </select>
+            </label>
+            <ModelPicker
+              label="Model"
+              value={model}
+              options={worker.availableModels}
+              compact
+              anchor="below"
+              className="worker-model"
+              onChange={onCodexModelChange}
+            />
+            {options.length > 0 ? (
+              <BudgetSegmented
+                label="Thinking"
+                value={effort}
+                options={options}
+                onChange={onCodexEffortChange}
+                className="worker-budget"
+              />
+            ) : null}
           </div>
         </div>
         <div className="empty-state">
@@ -682,8 +720,9 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCo
   const worker = pair.compose?.worker ?? pair.compose?.codex ?? { model: null, effort: null, availableModels: [], availableEfforts: [] };
   const busy = pair.status === "worker_running";
   const effort = pair.worker.requestedReasoningEffort ?? worker.effort ?? null;
-  const options = worker.availableEfforts.length > 0 ? worker.availableEfforts : [...DEFAULT_THINKING_LEVELS];
+  const options = worker.availableEfforts;
   const model = worker.model ?? worker.availableModels[0]?.id ?? null;
+  const runtime = pair.workerRuntime ?? ("runtime" in worker && worker.runtime ? worker.runtime : "auto");
 
   return (
     <section className="pane" aria-label="Worker lane">
@@ -699,17 +738,34 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCo
             options={worker.availableModels}
             disabled={busy}
             compact
+            anchor="below"
             className="worker-model"
             onChange={onCodexModelChange}
           />
-          <BudgetSegmented
-            label="Thinking"
-            value={effort}
-            options={options}
-            disabled={busy}
-            onChange={onCodexEffortChange}
-            className="worker-budget"
-          />
+          {options.length > 0 ? (
+            <BudgetSegmented
+              label="Thinking"
+              value={effort}
+              options={options}
+              disabled={busy}
+              onChange={onCodexEffortChange}
+              className="worker-budget"
+            />
+          ) : null}
+          <label className={`worker-runtime ${busy ? "is-disabled" : ""}`.trim()}>
+            <span className="sr-only">Worker runtime</span>
+            <select
+              value={runtime}
+              aria-label="Worker runtime"
+              title="Worker runtime"
+              disabled={busy}
+              onChange={(event) => onWorkerRuntimeChange(event.target.value as "auto" | "openai" | "pi-rpc")}
+            >
+              <option value="auto">Auto</option>
+              <option value="openai">OpenAI Codex</option>
+              <option value="pi-rpc">Pi RPC</option>
+            </select>
+          </label>
         </div>
       </div>
       <WorkerTimelineView loading={loading} timeline={timeline} proofRecords={proofRecords} onPreviewImage={(media) => {

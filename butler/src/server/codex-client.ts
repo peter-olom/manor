@@ -120,36 +120,99 @@ function normalizeModelLabel(rawLabel: string, id: string): string {
   return `${head}-${version}${suffix ? ` ${suffix}` : ""}`;
 }
 
-function parseModelSortKey(model: Pick<ModelOption, "id" | "label">): { version: number[]; suffixWeight: number; label: string } {
-  const source = `${model.id} ${model.label}`.toLowerCase().replace(/\s+/g, "-");
-  const match = source.match(/(?:^|-)gpt-(\d+(?:\.\d+)*)([^ ]*)/);
-  const version = match ? match[1]!.split(".").map((part) => Number.parseInt(part, 10)).filter(Number.isFinite) : [];
-  const suffixWeight = match?.[2] ? match[2]!.split("-").filter(Boolean).length : 0;
+function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max";
+}
+
+function codexModelEntryIsSelectable(entry: Record<string, unknown>): boolean {
+  if (entry.disabled === true || entry.isDisabled === true) return false;
+  if (entry.available === false || entry.isAvailable === false) return false;
+  if (entry.supported === false || entry.isSupported === false) return false;
+  if (entry.hidden === true || entry.showInPicker === false || entry.show_in_picker === false) return false;
+  if (typeof entry.visibility === "string" && entry.visibility !== "list") return false;
+  return true;
+}
+
+function codexModelEntryId(entry: Record<string, unknown>): string | null {
+  return typeof entry.id === "string"
+    ? entry.id
+    : typeof entry.model === "string"
+      ? entry.model
+      : typeof entry.slug === "string"
+        ? entry.slug
+        : null;
+}
+
+function codexModelEntryLabel(entry: Record<string, unknown>, id: string): string {
+  return typeof entry.displayName === "string"
+    ? entry.displayName
+    : typeof entry.display_name === "string"
+      ? entry.display_name
+      : id;
+}
+
+function codexSupportedReasoningEfforts(entry: Record<string, unknown>): ReasoningEffort[] {
+  const rawEfforts = Array.isArray(entry.supportedReasoningEfforts)
+    ? entry.supportedReasoningEfforts
+    : Array.isArray(entry.supported_reasoning_levels)
+      ? entry.supported_reasoning_levels
+      : [];
+
+  return rawEfforts
+    .map((option) => {
+      if (isReasoningEffort(option)) return option;
+      if (option && typeof option === "object" && "reasoningEffort" in option) {
+        const effort = (option as { reasoningEffort?: unknown }).reasoningEffort;
+        return isReasoningEffort(effort) ? effort : null;
+      }
+      if (option && typeof option === "object" && "effort" in option) {
+        const effort = (option as { effort?: unknown }).effort;
+        return isReasoningEffort(effort) ? effort : null;
+      }
+      return null;
+    })
+    .filter((value): value is ReasoningEffort => Boolean(value));
+}
+
+function codexDefaultReasoningEffort(entry: Record<string, unknown>): ReasoningEffort | null {
+  const value = typeof entry.defaultReasoningEffort === "string"
+    ? entry.defaultReasoningEffort
+    : typeof entry.default_reasoning_level === "string"
+      ? entry.default_reasoning_level
+      : null;
+  return isReasoningEffort(value) ? value : null;
+}
+
+function modelOptionFromCodexEntry(entry: Record<string, unknown>): ModelOption | null {
+  const id = codexModelEntryId(entry);
+  if (!id || !codexModelEntryIsSelectable(entry)) {
+    return null;
+  }
+
+  const supportedReasoningEfforts = codexSupportedReasoningEfforts(entry);
+  const declaredDefault = codexDefaultReasoningEffort(entry);
 
   return {
-    version,
-    suffixWeight,
-    label: model.label.toLowerCase()
+    id,
+    label: normalizeModelLabel(codexModelEntryLabel(entry, id), id),
+    provider: null,
+    supportsReasoning: supportedReasoningEfforts.length > 0,
+    supportedThinkingLevels: supportedReasoningEfforts,
+    supportedReasoningEfforts,
+    defaultReasoningEffort: declaredDefault && supportedReasoningEfforts.includes(declaredDefault)
+      ? declaredDefault
+      : supportedReasoningEfforts.includes("medium")
+        ? "medium"
+        : supportedReasoningEfforts[0] ?? null
   };
 }
 
-function compareModelsByNewest(a: ModelOption, b: ModelOption): number {
-  const aKey = parseModelSortKey(a);
-  const bKey = parseModelSortKey(b);
-  const length = Math.max(aKey.version.length, bKey.version.length);
-
-  for (let index = 0; index < length; index += 1) {
-    const difference = (bKey.version[index] ?? -1) - (aKey.version[index] ?? -1);
-    if (difference !== 0) {
-      return difference;
-    }
-  }
-
-  if (aKey.suffixWeight !== bKey.suffixWeight) {
-    return aKey.suffixWeight - bKey.suffixWeight;
-  }
-
-  return aKey.label.localeCompare(bKey.label);
+function hasMissingChatGptOnlyCacheModel(appServerEntries: Record<string, unknown>[], cacheEntries: Record<string, unknown>[]): boolean {
+  const appServerIds = new Set(appServerEntries.map(codexModelEntryId).filter((id): id is string => Boolean(id)));
+  return cacheEntries.some((entry) => {
+    const id = codexModelEntryId(entry);
+    return Boolean(id && !appServerIds.has(id) && codexModelEntryIsSelectable(entry) && (entry.supported_in_api === false || entry.supportedInApi === false));
+  });
 }
 
 function normalizeInputItems(input: string | CodexInputItem[]): CodexInputItem[] {
@@ -370,50 +433,50 @@ export class CodexAppServerClient extends EventEmitter {
 
   private async loadModels(): Promise<void> {
     let cursor: string | null = null;
-    const models: ModelOption[] = [];
+    const appServerEntries: Record<string, unknown>[] = [];
 
-    do {
-      const result = await this.codexProviderAdapter.listModels({
-        cursor,
-        limit: 100,
-        includeHidden: false
-      });
+    try {
+      do {
+        const result = await this.codexProviderAdapter.listModels({
+          cursor,
+          limit: 100,
+          includeHidden: false
+        });
 
-      for (const entry of result.data) {
-        const id = typeof entry.id === "string" ? entry.id : typeof entry.model === "string" ? entry.model : null;
-        if (!id) {
-          continue;
+        for (const entry of result.data) {
+          appServerEntries.push(entry);
         }
 
-        const supportedReasoningEfforts = Array.isArray(entry.supportedReasoningEfforts)
-          ? entry.supportedReasoningEfforts
-              .map((option) =>
-                option && typeof option === "object" && "reasoningEffort" in option && typeof option.reasoningEffort === "string"
-                  ? (option.reasoningEffort as ReasoningEffort)
-                  : null
-              )
-              .filter((value): value is ReasoningEffort => Boolean(value))
-          : [];
+        cursor = result.nextCursor;
+      } while (cursor);
+    } catch (error) {
+      this.availableModels = [];
+      this.selectedModel = null;
+      this.selectedEffort = null;
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.emit("change");
+      throw error;
+    }
 
-        models.push({
-          id,
-          label: normalizeModelLabel(typeof entry.displayName === "string" ? entry.displayName : id, id),
-          provider: null,
-          supportsReasoning: supportedReasoningEfforts.length > 0,
-          supportedReasoningEfforts,
-          defaultReasoningEffort:
-            typeof entry.defaultReasoningEffort === "string" ? (entry.defaultReasoningEffort as ReasoningEffort) : supportedReasoningEfforts[0] ?? null
-        });
-      }
-
-      cursor = result.nextCursor;
-    } while (cursor);
-
-    this.availableModels = [...models].sort(compareModelsByNewest);
+    const cacheEntries = await this.readCodexModelCacheEntries();
+    const selectedEntries = hasMissingChatGptOnlyCacheModel(appServerEntries, cacheEntries) ? cacheEntries : appServerEntries;
+    this.availableModels = selectedEntries.map(modelOptionFromCodexEntry).filter((model): model is ModelOption => Boolean(model));
     const defaultModel = this.availableModels.find((model) => model.id === this.selectedModel) ?? this.availableModels[0] ?? null;
     this.selectedModel = defaultModel?.id ?? null;
     this.selectedEffort = defaultModel ? this.resolveEffort(defaultModel, this.selectedEffort) : null;
     this.emit("change");
+  }
+
+  private async readCodexModelCacheEntries(): Promise<Record<string, unknown>[]> {
+    try {
+      const raw = await fs.readFile(path.join(this.codexHomeDir, "models_cache.json"), "utf8");
+      const parsed = JSON.parse(raw) as { models?: unknown };
+      return Array.isArray(parsed.models)
+        ? parsed.models.filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object" && !Array.isArray(entry)))
+        : [];
+    } catch {
+      return [];
+    }
   }
 
   private async listComposerFiles(root: string, query: string): Promise<ComposerSuggestion[]> {
@@ -823,8 +886,11 @@ export class CodexAppServerClient extends EventEmitter {
       params.model = this.selectedModel;
     }
 
-    this.syncComposeEffort(options.effort ?? null);
-    const requestedEffort = options.effort ?? this.selectedEffort;
+    const selectedModel = this.availableModels.find((entry) => entry.id === this.selectedModel) ?? null;
+    const requestedEffort = selectedModel
+      ? this.resolveEffort(selectedModel, options.effort ?? this.selectedEffort)
+      : options.effort ?? this.selectedEffort;
+    this.selectedEffort = requestedEffort;
     if (requestedEffort) {
       params.effort = requestedEffort;
       this.store.setThreadRequestedReasoningEffort(threadId, requestedEffort);

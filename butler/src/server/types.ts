@@ -1148,8 +1148,8 @@ export interface ButlerWindow {
   openedAt: number;
 }
 
-export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
-export type ButlerThinkingLevel = "off" | ReasoningEffort;
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type ButlerThinkingLevel = "off" | "default" | "thinking" | ReasoningEffort;
 
 export type ButlerTraceItemType =
   | "reasoning"
@@ -1190,8 +1190,10 @@ export interface ModelOption {
   label: string;
   provider: string | null;
   supportsReasoning: boolean;
+  supportedThinkingLevels: ButlerThinkingLevel[];
   supportedReasoningEfforts: ReasoningEffort[];
   defaultReasoningEffort: ReasoningEffort | null;
+  thinkingLevelTransports?: Partial<Record<ButlerThinkingLevel, "off" | "minimal" | "low" | "medium" | "high" | "xhigh">>;
 }
 
 export interface ButlerMessageView {

@@ -28,6 +28,7 @@ export type ModelPickerProps = {
   allowClear?: boolean;
   clearLabel?: string;
   compact?: boolean;
+  anchor?: "above" | "below";
   className?: string;
   onChange: (next: string | null) => void;
 };
@@ -151,6 +152,7 @@ export const ModelPicker = memo(function ModelPicker({
   allowClear = false,
   clearLabel = "Clear",
   compact = false,
+  anchor = "above",
   className,
   onChange
 }: ModelPickerProps) {
@@ -287,8 +289,10 @@ export const ModelPicker = memo(function ModelPicker({
 
   const shownLabel = isDisabled && disabledPlaceholder ? disabledPlaceholder : selectedLabel;
 
+  const rootClass = ["model-picker", compact ? "is-compact" : "", className ?? ""].filter(Boolean).join(" ");
+
   return (
-    <div className={`model-picker ${compact ? "is-compact" : ""}`.trim()} ref={rootRef}>
+    <div className={rootClass} ref={rootRef}>
       <button
         ref={triggerRef}
         type="button"
@@ -320,7 +324,7 @@ export const ModelPicker = memo(function ModelPicker({
         </span>
       </button>
       {open ? (
-        <div className="model-picker-popover" role="dialog" aria-label={label}>
+        <div className={`model-picker-popover is-anchor-${anchor}`} role="dialog" aria-label={label}>
           <div className="model-picker-search">
             <span className="model-picker-search-icon" aria-hidden="true"><SearchIcon /></span>
             <input

@@ -41,7 +41,7 @@ import {
   type SupervisionSmokePlan
 } from "./butler-agent-helpers.js";
 import { buildButlerCodexTools } from "./butler-agent-codex-tools.js";
-import type { ButlerAgentServiceOptions, ButlerAgentDefaults, ButlerOperatorSink } from "./butler-agent-options.js";
+import type { ButlerAgentDefaults, ButlerAgentServiceOptions, ButlerOperatorSink, ButlerWorkerDefaults } from "./butler-agent-options.js";
 import { clearPendingOperatorPrompts, createOrRefreshButlerSession, getButlerLiveSnapshot, getButlerMessagePage, getButlerShellSnapshot, getButlerSnapshot, keepPendingOperatorPromptsBefore, promptButler, promptButlerInternal, registerPendingOperatorPrompt, removePendingOperatorPrompt, stopButlerPrompt, restoreButlerCompactionState, sanitizeButlerSessionMessages, sanitizePersistedButlerSessions, updateButlerComposeSettings } from "./butler-agent-session.js";
 import { clearButlerSessionChat, deleteButlerSessionChatFromLocated, keepOperatorMessagesBefore, locateButlerSessionDeletePoint, locateButlerSessionDeletePointBeforeTimestamp } from "./butler-agent-chat-hygiene.js";
 import { buildOperatorCloseoutText } from "./butler-agent-closeout-text.js";
@@ -79,7 +79,7 @@ import {
 } from "./job-instruction-artifacts.js";
 import { readJsonStateFile, writeJsonStateFileAtomic } from "./json-state-file.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
-import { createManorModelRegistry } from "./model-provider-config.js";
+import { createManorModelRegistry, modelToModelOption } from "./model-provider-config.js";
 import { loadWorkerThread, sendWorkerMessage, type WorkerClientAccess } from "./worker-client-router.js";
 import type { ButlerRoutingClassifier } from "./butler-routing-classifier.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
@@ -126,6 +126,7 @@ function isButlerAuthRecoveryError(message: string | null): boolean {
 import { ButlerTraceBuffer } from "./butler-trace-buffer.js";
 import { getActiveManorSettings } from "./manor-settings-runtime.js";
 import { buildButlerProviderWebTools, PROVIDER_WEB_FETCH_TOOL_NAME, PROVIDER_WEB_SEARCH_TOOL_NAME } from "./provider-web-tools.js";
+import { piThinkingLevelForModelOption } from "./pi-thinking-levels.js";
 export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
   private readonly codexClient: CodexAppServerClient;
@@ -149,7 +150,6 @@ export class ButlerAgentService extends EventEmitter {
   private readonly routingClassifier: ButlerRoutingClassifier | null;
   private readonly systemPromptSuffix: string | null;
   private readonly operatorSink: ButlerOperatorSink | null;
-  private readonly getButlerDefaultsProvider: (() => ButlerAgentDefaults | null) | null;
   private modelRegistry: ModelRegistry | null = null;
   private session: AgentSession | null = null;
   private auth: ButlerAuthStatus = { mode: "none", loggedIn: false, validationError: null, lastValidatedAt: null };
@@ -196,7 +196,7 @@ export class ButlerAgentService extends EventEmitter {
     lastAborted: false,
     lastError: null
   };
-  constructor(options: ButlerAgentServiceOptions) {
+  constructor(private readonly options: ButlerAgentServiceOptions) {
     super();
     this.store = options.store;
     this.codexClient = options.codexClient;
@@ -216,7 +216,6 @@ export class ButlerAgentService extends EventEmitter {
     this.routingClassifier = options.routingClassifier ?? null;
     this.systemPromptSuffix = options.systemPromptSuffix?.trim() || null;
     this.operatorSink = options.operatorSink ?? null;
-    this.getButlerDefaultsProvider = options.getButlerDefaults ?? null;
     this.operatorMessageStatePath = path.join(this.sessionDir, "operator-messages.json");
     this.activitySummaryStatePath = path.join(this.sessionDir, "activity-summaries.json");
     this.callbackStatePath = path.join(this.sessionDir, "chat-callbacks.json");
@@ -719,7 +718,8 @@ export class ButlerAgentService extends EventEmitter {
 
   private getSessionAccess(): ButlerAgentSessionAccess { return this as unknown as ButlerAgentSessionAccess; }
 
-  getButlerDefaults(): ButlerAgentDefaults | null { return this.getButlerDefaultsProvider ? this.getButlerDefaultsProvider() : null; }
+  getButlerDefaults(): ButlerAgentDefaults | null { return this.options.getButlerDefaults?.() ?? null; }
+  getWorkerDefaults(): ButlerWorkerDefaults | null { return this.options.getWorkerDefaults?.() ?? null; }
 
   resolveMemoryPromotion(candidateId: string, accepted: boolean): { candidate: JobMemoryPromotionCandidateView; projectMemory: ProjectMemoryView | null } | null {
     const candidate = this.store.resolvePromotionCandidate(candidateId, accepted);
@@ -1451,7 +1451,8 @@ export class ButlerAgentService extends EventEmitter {
   setThinkingLevel(level: ButlerThinkingLevel): void {
     const access = this.getSessionAccess();
     if (!access.session) return;
-    access.session.setThinkingLevel(level === "off" || level === "minimal" ? "medium" : level);
+    const option = access.session.model ? modelToModelOption(access.session.model) : null;
+    access.session.setThinkingLevel(piThinkingLevelForModelOption(level, option) as never);
     access.lastError = null;
     access.emit("change");
   }

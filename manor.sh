@@ -10,6 +10,7 @@ Usage:
   ./manor.sh start [--build|--source] [--dev] [--desktop]
   ./manor.sh stop [--dev] [--desktop]
   ./manor.sh restart [--build|--source] [--dev] [--desktop]
+  ./manor.sh dev-restart [--build] [--desktop]
   ./manor.sh status [--dev] [--desktop]
   ./manor.sh logs [--dev] [--desktop] [--follow] [--tail <n>] [service ...]
   ./manor.sh desktop start [--build|--source]
@@ -66,6 +67,7 @@ profile_args=()
 build_args=()
 log_args=("--tail" "100")
 services=()
+preserved_dev=0
 
 command="${1:-}"
 if [[ -z "${command}" || "${command}" == "-h" || "${command}" == "--help" || "${command}" == "help" ]]; then
@@ -152,6 +154,35 @@ apply_options() {
   fi
 }
 
+preserve_running_dev_overlay() {
+  if [[ "${add_dev}" -eq 1 ]]; then
+    return
+  fi
+
+  local project_name="${COMPOSE_PROJECT_NAME:-$(env_value COMPOSE_PROJECT_NAME || true)}"
+  project_name="${project_name:-manor}"
+  local container_id=""
+  container_id="$(docker ps \
+    --filter "label=com.docker.compose.project=${project_name}" \
+    --filter "label=com.docker.compose.service=butler" \
+    --quiet | head -n 1 || true)"
+
+  if [[ -z "${container_id}" ]]; then
+    return
+  fi
+
+  local running_env=""
+  running_env="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${container_id}" 2>/dev/null || true)"
+  local config_files=""
+  config_files="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "${container_id}" 2>/dev/null || true)"
+
+  if grep -qx 'BUTLER_HOT_RELOAD=1' <<<"${running_env}" || [[ "${config_files}" == *"compose.dev.yml"* ]]; then
+    add_source_build=1
+    add_dev=1
+    preserved_dev=1
+  fi
+}
+
 run_compose() {
   local command_args=(docker compose "${compose_args[@]}")
   if [[ "${#profile_args[@]}" -gt 0 ]]; then
@@ -202,6 +233,18 @@ case "${command}" in
     ;;
   restart)
     parse_common_options "$@"
+    preserve_running_dev_overlay
+    apply_options
+    if [[ "${preserved_dev}" -eq 1 ]]; then
+      echo "Preserving Butler hot reload mode."
+    fi
+    run_up --force-recreate
+    print_url
+    ;;
+  dev-restart)
+    parse_common_options "$@"
+    add_source_build=1
+    add_dev=1
     apply_options
     run_up --force-recreate
     print_url

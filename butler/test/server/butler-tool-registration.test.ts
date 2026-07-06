@@ -8,6 +8,17 @@ import { buildButlerServiceTools } from "../../src/server/butler-agent-service-t
 import { buildButlerDelegationTools, buildButlerStackPreviewTools } from "../../src/server/butler-agent-stack-preview-tools.js";
 import type { ButlerAgentToolAccess } from "../../src/server/butler-agent-tool-access.js";
 
+function schemaContainsLiteral(schema: unknown, literal: string): boolean {
+  if (!schema || typeof schema !== "object") return false;
+  const record = schema as Record<string, unknown>;
+  if (record.const === literal) return true;
+  if (Array.isArray(record.enum) && record.enum.includes(literal)) return true;
+  return Object.values(record).some((value) => {
+    if (Array.isArray(value)) return value.some((entry) => schemaContainsLiteral(entry, literal));
+    return schemaContainsLiteral(value, literal);
+  });
+}
+
 test("Butler custom tool registration has unique tool names", () => {
   const definitions: Array<{ name: string }> = [];
   const access = {
@@ -36,4 +47,15 @@ test("Butler custom tool registration has unique tool names", () => {
   assert.equal(definitions.filter((definition) => definition.name === "discard_self_improvement").length, 1);
   assert.equal(definitions.filter((definition) => definition.name === "commit_self_improvement").length, 1);
   assert.equal(definitions.filter((definition) => definition.name === "open_self_improvement_pr").length, 1);
+});
+
+test("delegation tool schema accepts legacy codex worker runtime", () => {
+  const tools = buildButlerDelegationTools({
+    defineButlerTool: (definition) => definition,
+    getToolUiEffects: () => []
+  } as unknown as ButlerAgentToolAccess);
+  const tool = tools.find((definition) => definition.name === "delegate_to_codex") as { parameters?: Record<string, unknown> } | undefined;
+  const properties = tool?.parameters?.properties as Record<string, unknown> | undefined;
+
+  assert.equal(schemaContainsLiteral(properties?.workerRuntime, "codex"), true);
 });

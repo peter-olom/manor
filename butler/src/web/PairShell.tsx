@@ -99,7 +99,7 @@ const BUTLER_PATCH_THREAD_ID = "butler";
 
 const VIEW_LABELS: Record<PairViewMode, string> = {
   butler: "Butler",
-  worker: "Codex",
+  worker: "Worker",
   split: "Both",
   memory: "Memory",
   improve: "Improve",
@@ -1214,6 +1214,22 @@ export function PairShell() {
     [activePair]
   );
 
+  const onWorkerRuntimeChange = useCallback(
+    async (runtime: "auto" | "openai" | "pi-rpc") => {
+      if (!activePair) return;
+      const previous = activePair;
+      setPair((current) => (current ? { ...current, workerRuntime: runtime, compose: { ...current.compose, worker: { ...current.compose.worker, runtime } } } : current));
+      try {
+        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(activePair.id)}/settings`, { target: "worker", workerRuntime: runtime });
+        setPair(payload.pair);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        setPair(previous);
+      }
+    },
+    [activePair]
+  );
+
   const workerVisible = manorSurface === "sessions" && viewMode !== "butler" && Boolean(activePair) && (activePair?.worker || viewMode === "worker");
   const butlerVisible = manorSurface === "sessions" && viewMode !== "worker" && Boolean(activePair);
   const cliVisible = viewMode === "cli";
@@ -1345,6 +1361,7 @@ export function PairShell() {
                     proofRecords={workerProofRecords}
                     onCodexModelChange={(model) => void onCodexModelChange(model)}
                     onCodexEffortChange={(effort) => void onCodexEffortChange(effort)}
+                    onWorkerRuntimeChange={(runtime) => void onWorkerRuntimeChange(runtime)}
                     onAttachAnnotatedProof={(payload) => attachAnnotatedProof(payload)}
                   />
                 ) : null}

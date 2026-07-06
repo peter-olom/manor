@@ -18,7 +18,8 @@ import type { ManorSettingsService } from "./manor-settings-service.js";
 import type { ModelOption, ButlerAuthStatus } from "./types.js";
 import type { SettingsGroupKey } from "../shared/settings.js";
 import { assertOllamaLocalBaseUrl, fetchOllamaLocalModels, nativeOllamaBaseUrl, normalizeOllamaModelName, type OllamaLocalModelInfo } from "./ollama-local-models.js";
-import { fetchOllamaCloudModelsCached, type OllamaCloudModelInfo } from "./ollama-cloud-models.js";
+import { fetchOllamaCloudModelsCached } from "./ollama-cloud-models.js";
+import { fetchOpencodeGoModelsCached } from "./opencode-go-models.js";
 
 type SettingsRouteAccess = {
   app: Express;
@@ -59,20 +60,6 @@ function safeTargets(value: unknown): SettingsValidationKey[] {
   const list = Array.isArray(value) ? value : typeof value === "string" ? [value] : VALIDATION_KEYS;
   const targets = list.filter((entry): entry is SettingsValidationKey => typeof entry === "string" && VALIDATION_KEYS.includes(entry as SettingsValidationKey));
   return targets.length > 0 ? [...new Set(targets)] : VALIDATION_KEYS;
-}
-
-async function fetchJson<T>(url: string, init: RequestInit, timeoutMs: number): Promise<{ ok: boolean; status: number; data: T | null; text: string }> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, { ...init, signal: controller.signal });
-    const text = await response.text().catch(() => "");
-    let data: T | null = null;
-    try { data = text ? JSON.parse(text) as T : null; } catch { /* keep null */ }
-    return { ok: response.ok, status: response.status, data, text };
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 async function fetchJsonStatus(url: string, init: RequestInit, timeoutMs: number): Promise<{ ok: boolean; status: number; text: string }> {
@@ -121,8 +108,12 @@ async function validateOllamaCloud(settings: ManorSettings): Promise<SettingsVal
   const apiKey = await readSecretSourceValue(config.apiKeySource);
   if (!apiKey) return result("not_configured", "No API key is available from the configured secret source.");
   const model = config.models[0];
-  const modelId = typeof model === "string" ? model : model?.id;
-  if (!modelId) return result("failed", "No Ollama Cloud model is configured.");
+  const configuredModelId = typeof model === "string" ? model : model?.id;
+  const discoveredModelId = configuredModelId
+    ? null
+    : (await fetchOllamaCloudModelsCached(settings, { timeoutMs: 10_000 }).catch(() => []))[0]?.id ?? null;
+  const modelId = configuredModelId ?? discoveredModelId;
+  if (!modelId) return result("failed", "No Ollama Cloud model is configured or discoverable.");
   const response = await fetchJsonStatus(`${config.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -144,15 +135,10 @@ async function validateOllamaCloud(settings: ManorSettings): Promise<SettingsVal
 async function validateOpencodeGo(settings: ManorSettings): Promise<SettingsValidationResult> {
   const config = settings.providers.opencodeGo;
   if (!config.enabled) return result("not_configured", "OpenCode Go provider is disabled.");
-  const apiKey = await readSecretSourceValue(config.apiKeySource);
-  if (!apiKey) return result("not_configured", "No API key is available from the configured secret source.");
-  const response = await fetchJsonStatus(`${config.baseUrl}/models`, {
-    method: "GET",
-    headers: { "Authorization": `Bearer ${apiKey}` }
-  }, 30_000);
-  return response.ok
-    ? result("ok", `OpenCode Go models endpoint is reachable at ${config.providerId}.`)
-    : result("failed", `OpenCode Go check failed with HTTP ${response.status}: ${redactMessage(response.text)}`);
+  const models = await fetchOpencodeGoModelsCached(settings, { force: true, timeoutMs: 10_000 });
+  return models.length > 0
+    ? result("ok", `${models.length} OpenCode Go models are available from OpenCode Go.`)
+    : result("failed", "No OpenCode Go models are available from OpenCode Go.");
 }
 
 async function validateWebSearch(): Promise<SettingsValidationResult> {
@@ -232,7 +218,7 @@ function settingsPayload(access: SettingsRouteAccess) {
       codex: codex.compose.availableModels,
       piRpc: piRpc.compose.availableModels,
       ollamaLocal: collectOllamaLocalModels(butler.availableModels, settings),
-      opencodeGo: collectOpencodeGoModels(butler.availableModels, settings),
+      opencodeGo: collectOpencodeGoModels([...butler.availableModels, ...piRpc.compose.availableModels], settings),
       worker: getUnifiedWorkerCompose(access)
     },
     providerAvailability,
@@ -251,7 +237,14 @@ function collectOllamaLocalModels(butlerModels: ModelOption[], settings: ManorSe
 
 function collectOpencodeGoModels(butlerModels: ModelOption[], settings: ManorSettings): ModelOption[] {
   const providerId = settings.providers.opencodeGo.providerId;
-  return butlerModels.filter((model) => model.provider === providerId);
+  const seen = new Set<string>();
+  return butlerModels.filter((model) => {
+    if (model.provider !== providerId && model.provider !== "opencode-go") return false;
+    const key = `${model.provider}/${model.id}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function computeProviderAvailability(settings: ManorSettings, butlerAuth: ButlerAuthStatus, codexAuth: ButlerAuthStatus): SettingsProviderAvailabilityMap {
@@ -362,27 +355,6 @@ async function streamOllamaLocalPull(access: SettingsRouteAccess, model: string,
   }
 }
 
-type OpencodeGoModelInfo = { id: string };
-
-async function fetchOpencodeGoModels(settings: ManorSettings): Promise<OpencodeGoModelInfo[]> {
-  const config = settings.providers.opencodeGo;
-  const apiKey = await readSecretSourceValue(config.apiKeySource);
-  if (!apiKey) throw new Error("No OpenCode Go API key is available from the configured secret source.");
-  const base = config.baseUrl.replace(/\/$/, "");
-  const res = await fetchJson<{ data?: { id?: string }[] }>(
-    `${base}/models`,
-    { method: "GET", headers: { "Authorization": `Bearer ${apiKey}` } },
-    30_000
-  );
-  if (!res.ok || !res.data?.data) {
-    throw new Error(`Failed to list OpenCode Go models (HTTP ${res.status}): ${redactMessage(res.text)}`);
-  }
-  return res.data.data
-    .map((m) => m?.id)
-    .filter((id): id is string => Boolean(id))
-    .map((id) => ({ id }));
-}
-
 export function registerManorSettingsRoutes(access: SettingsRouteAccess): void {
   access.app.get("/api/settings", (_request, response) => {
     response.json(settingsPayload(access));
@@ -482,7 +454,7 @@ export function registerManorSettingsRoutes(access: SettingsRouteAccess): void {
   access.app.get("/api/settings/providers/opencode-go/models", async (_request, response) => {
     try {
       const settings = getActiveManorSettings();
-      const models = await fetchOpencodeGoModels(settings);
+      const models = await fetchOpencodeGoModelsCached(settings);
       response.json({ models });
     } catch (error) {
       response.status(500).json({ error: redactMessage(error) });

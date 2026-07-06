@@ -5,9 +5,13 @@ import { fileURLToPath } from "node:url";
 
 import { RpcClient, type RpcEventListener } from "@mariozechner/pi-coding-agent";
 
-import { createManorModelRegistry, modelToModelOption, syncManorPiModelsJson } from "./model-provider-config.js";
+import { createManorModelRegistry, modelToModelOption, shouldExposeManorModel, syncManorPiModelsJson } from "./model-provider-config.js";
+import { readButlerAuthStatus } from "./auth-status.js";
+import { isChatGptSubscriptionModelAvailable } from "./chatgpt-entitlement.js";
+import { getActiveManorSettings } from "./manor-settings-runtime.js";
 import { selectProviderWebToolSource } from "./provider-web-tools.js";
 import { PiProviderRuntimeMapper } from "./pi-provider-events.js";
+import { piThinkingLevelForEffort } from "./pi-thinking-levels.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { CodexInputItem } from "./image-store.js";
 import type { CodexThreadPatchView, ModelOption, ReasoningEffort } from "./types.js";
@@ -59,6 +63,10 @@ export function defaultOpencodeWebToolsExtensionPath(): string {
 }
 
 export async function webToolsExtensionArgsForProvider(provider: string | null | undefined, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
+  const settings = getActiveManorSettings(env);
+  if (provider === settings.providers.opencodeGo.providerId || provider === "opencode-go") {
+    return ["--extension", defaultOpencodeWebToolsExtensionPath()];
+  }
   const source = await selectProviderWebToolSource(provider, env);
   if (source === "opencode") return ["--extension", defaultOpencodeWebToolsExtensionPath()];
   if (source === "ollama") return ["--extension", defaultOllamaWebToolsExtensionPath()];
@@ -110,7 +118,7 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
   async updateThreadReasoningEffort(threadId: string, effort: ReasoningEffort): Promise<void> {
     const session = this.sessions.get(threadId);
     if (!session) throw new Error("Pi RPC worker thread is not loaded");
-    await session.client.setThinkingLevel(effort === "minimal" ? "low" : effort as never);
+    await session.client.setThinkingLevel(piThinkingLevelForEffort(effort) as never);
     this.options.store.setThreadRequestedReasoningEffort(threadId, effort);
   }
 
@@ -140,7 +148,8 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     const resolvedInput = typeof options.input === "function" ? await options.input(threadId) : (options.input ?? [{ type: "text", text: task } as CodexInputItem]);
     const prompt = [options.developerInstructions?.trim() ? `Developer instructions:\n${options.developerInstructions.trim()}` : null, inputItemsToText(resolvedInput)].filter(Boolean).join("\n\n");
     if (options.effort ?? this.selectedEffort) {
-      await session.client.setThinkingLevel((options.effort ?? this.selectedEffort) as never);
+      const requestedEffort = (options.effort ?? this.selectedEffort) as ReasoningEffort;
+      await session.client.setThinkingLevel(piThinkingLevelForEffort(requestedEffort) as never);
       this.options.store.setThreadRequestedReasoningEffort(threadId, (options.effort ?? this.selectedEffort) as never);
     }
     await session.client.prompt(prompt);
@@ -188,7 +197,11 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
   private async loadModels(): Promise<void> {
     await syncManorPiModelsJson(this.options.piAuthPath);
     const registry = await createManorModelRegistry(this.options.piAuthPath);
-    this.availableModels = registry.getAvailable().map(modelToModelOption);
+    const auth = await readButlerAuthStatus(this.options.piAuthPath);
+    this.availableModels = registry.getAvailable()
+      .filter((model) => shouldExposeManorModel(model))
+      .filter((model) => auth.mode !== "chatgpt" || isChatGptSubscriptionModelAvailable(model))
+      .map(modelToModelOption);
     const selected = this.availableModels.find((model) => model.id === this.selectedModel && model.provider === this.selectedProvider) ?? this.availableModels[0] ?? null;
     this.selectedProvider = selected?.provider ?? null;
     this.selectedModel = selected?.id ?? null;

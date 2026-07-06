@@ -13,6 +13,7 @@ import {
   serializeMessages,
   summarizeToolResultDetails
 } from "../../src/server/butler-agent-helpers.js";
+import { ButlerAgentService } from "../../src/server/butler-agent.js";
 import {
   clearPendingOperatorPrompts,
   commitPendingOperatorPrompt,
@@ -20,6 +21,7 @@ import {
   hasBlockingStopRequest,
   getVisibleButlerMessages,
   keepPendingOperatorPromptsBefore,
+  applyManagedButlerDefaults,
   registerPendingOperatorPrompt,
   removeCommittedPendingOperatorPrompt,
   removePendingOperatorPrompt,
@@ -28,6 +30,7 @@ import {
   updateButlerComposeSettings
 } from "../../src/server/butler-agent-session.js";
 import { registerManorProviders } from "../../src/server/model-provider-config.js";
+import { getActiveManorSettings, setActiveManorSettings } from "../../src/server/manor-settings-runtime.js";
 import {
   backfillOperatorMessagesFromSessionFiles,
   normalizeOperatorMessages,
@@ -51,6 +54,32 @@ function pendingAccess() {
     }
   };
 }
+
+test("Butler live thinking setter preserves exact supported level", () => {
+  const calls: string[] = [];
+  let emitted = false;
+  const service = Object.create(ButlerAgentService.prototype) as ButlerAgentService & {
+    session: { setThinkingLevel(level: string): void };
+    lastError: string | null;
+    emit(event: string): boolean;
+  };
+  service.session = {
+    setThinkingLevel(level: string) {
+      calls.push(level);
+    }
+  };
+  service.lastError = "stale";
+  service.emit = (event: string) => {
+    emitted = event === "change";
+    return true;
+  };
+
+  service.setThinkingLevel("minimal" as never);
+
+  assert.deepEqual(calls, ["minimal"]);
+  assert.equal(service.lastError, null);
+  assert.equal(emitted, true);
+});
 
 test("Butler session sanitizer removes orphan tool results", () => {
   const messages = [
@@ -160,14 +189,18 @@ test("Butler message serialization keeps attachment-only user rows visible", () 
   assert.equal(messages[0].text, "Attached 1 image, 1 file");
 });
 
-test("Butler compose settings accepts provider-qualified local model ids", async () => {
-  const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
-  await registerManorProviders(registry, {
+test("Butler compose settings accepts provider-qualified local model ids", async (t) => {
+  const env = {
     MANOR_OLLAMA_LOCAL_ENABLED: "1",
     MANOR_OLLAMA_LOCAL_PROVIDER_ID: "ollama-local",
     MANOR_OLLAMA_LOCAL_BASE_URL: "http://ollama:11434/v1",
     MANOR_OLLAMA_LOCAL_MODELS: "qwen3:8b"
-  } as NodeJS.ProcessEnv);
+  } as NodeJS.ProcessEnv;
+  setActiveManorSettings(getActiveManorSettings(env));
+  t.after(() => setActiveManorSettings(null));
+
+  const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+  await registerManorProviders(registry, env);
 
   const session = {
     model: null as { provider?: string | null; id?: string | null } | null,
@@ -196,6 +229,86 @@ test("Butler compose settings accepts provider-qualified local model ids", async
   assert.equal(session.model?.provider, "ollama-local");
   assert.equal(session.model?.id, "qwen3:8b");
   assert.equal(emitted, true);
+});
+
+test("Butler defaults preserve current model when no default model is configured", async (t) => {
+  const env = {
+    MANOR_OLLAMA_LOCAL_ENABLED: "1",
+    MANOR_OLLAMA_LOCAL_PROVIDER_ID: "ollama-local",
+    MANOR_OLLAMA_LOCAL_BASE_URL: "http://ollama:11434/v1",
+    MANOR_OLLAMA_LOCAL_MODELS: "qwen3:8b,llama3:8b"
+  } as NodeJS.ProcessEnv;
+  setActiveManorSettings(getActiveManorSettings(env));
+  t.after(() => setActiveManorSettings(null));
+
+  const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+  await registerManorProviders(registry, env);
+  const existingModel = registry.getAvailable().find((model) => model.provider === "ollama-local" && model.id === "llama3:8b");
+  assert.ok(existingModel);
+  const setModelCalls: Array<{ provider: string; id: string }> = [];
+  let thinkingLevel: string | null = null;
+  const session = {
+    model: existingModel,
+    async setModel(model: { provider: string; id: string }) {
+      setModelCalls.push({ provider: model.provider, id: model.id });
+      session.model = model as never;
+    },
+    setThinkingLevel(level: string) {
+      thinkingLevel = level;
+    }
+  };
+
+  await applyManagedButlerDefaults({
+    session,
+    modelRegistry: registry,
+    auth: { mode: "api" }
+  } as never);
+
+  assert.deepEqual(setModelCalls, []);
+  assert.equal(session.model.id, "llama3:8b");
+  assert.equal(thinkingLevel, "medium");
+});
+
+test("Butler defaults use off when a reasoning model has no selectable thinking variants", async () => {
+  const noVariantModel = {
+    id: "qwen3.7-max",
+    name: "Qwen 3.7 Max",
+    provider: "opencode-go",
+    baseUrl: "https://opencode.example/zen/go/v1",
+    api: "openai-completions",
+    input: ["text"],
+    contextWindow: 131_072,
+    maxTokens: 32_768,
+    reasoning: true,
+    thinkingLevelMap: {
+      off: null,
+      minimal: null,
+      low: null,
+      medium: null,
+      high: null,
+      xhigh: null
+    },
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+  };
+  let thinkingLevel: string | null = null;
+  const session = {
+    model: noVariantModel,
+    setThinkingLevel(level: string) {
+      thinkingLevel = level;
+    }
+  };
+
+  await applyManagedButlerDefaults({
+    session,
+    modelRegistry: {
+      getAvailable() {
+        return [noVariantModel];
+      }
+    },
+    auth: { mode: "api" }
+  } as never);
+
+  assert.equal(thinkingLevel, "off");
 });
 
 test("Butler message serialization skips internal assistant tool-only rows", () => {

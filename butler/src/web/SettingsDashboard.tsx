@@ -73,17 +73,17 @@ const VALIDATION_LABELS: Record<SettingsValidationKey, string> = {
 
 export type SettingsSectionId = "overview" | "providers" | "runtime" | "memory" | "diagnostics";
 export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; description: string }[] = [
-  { id: "overview", label: "Overview", description: "Operator and provider defaults" },
+  { id: "overview", label: "Overview", description: "Operator identity" },
   { id: "providers", label: "Providers", description: "Model and tool access" },
-  { id: "runtime", label: "Runtime", description: "Worker runtime and model tasks" },
+  { id: "runtime", label: "Runtime", description: "Background model tasks" },
   { id: "memory", label: "Memory", description: "Synthesis and embeddings" },
   { id: "diagnostics", label: "Diagnostics", description: "Connection tests" }
 ];
 
 const SECTION_HELP: Record<SettingsSectionId, string> = {
-  overview: "Set the operator name and which provider Butler and Codex should use.",
+  overview: "Set the operator name. Provider and model picks live on each chat window and carry over to new sessions.",
   providers: "Configure the model providers (OpenAI/Codex, Ollama Local, Ollama Cloud, OpenCode Go) and web tools Butler can use.",
-  runtime: "Choose where work runs and which models handle routine background tasks. Worker and Butler model picks live on each chat window and carry over to new sessions.",
+  runtime: "Configure which models handle routine background tasks. Worker runtime and model picks live on the Worker tab and carry over to new sessions.",
   memory: "Tune synthesis, promotion, semantic review, and embedding backfill behavior.",
   diagnostics: "Run connection checks for the services Butler depends on."
 };
@@ -125,15 +125,6 @@ function formatAuthSummary(auth?: AuthStatusView): string {
   if (auth.mode === "chatgpt") return "Signed in with ChatGPT";
   if (auth.mode === "api") return "Signed in with API key";
   return "Signed in";
-}
-
-function availableProviderOptions(availability: SettingsProviderAvailabilityMap): { value: string; label: string }[] {
-  const options: { value: string; label: string }[] = [];
-  if (availability["openai-codex"].secretAvailable) options.push({ value: "openai-codex", label: "OpenAI / Codex" });
-  if (availability["ollama-local"].secretAvailable && availability["ollama-local"].enabled) options.push({ value: "ollama-local", label: "Ollama Local" });
-  if (availability["ollama-cloud"].secretAvailable && availability["ollama-cloud"].enabled) options.push({ value: "ollama-cloud", label: "Ollama Cloud" });
-  if (availability["opencode-go"].secretAvailable && availability["opencode-go"].enabled) options.push({ value: "opencode-go", label: "OpenCode Go" });
-  return options;
 }
 
 function Field({
@@ -408,13 +399,13 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
   }, [payload, ollamaLocalModels, ollamaLocalModelsLoading]);
 
   useEffect(() => {
-    if (payload?.providerAvailability["ollama-cloud"].secretAvailable && !ollamaModels && !ollamaModelsLoading) {
+    if (payload?.providerAvailability["ollama-cloud"].secretAvailable && payload.providerAvailability["ollama-cloud"].enabled && !ollamaModels && !ollamaModelsLoading) {
       void fetchOllamaModels();
     }
   }, [payload, ollamaModels, ollamaModelsLoading]);
 
   useEffect(() => {
-    if (payload?.providerAvailability["opencode-go"].secretAvailable && !opencodeModels && !opencodeModelsLoading) {
+    if (payload?.providerAvailability["opencode-go"].secretAvailable && payload.providerAvailability["opencode-go"].enabled && !opencodeModels && !opencodeModelsLoading) {
       void fetchOpencodeModels();
     }
   }, [payload, opencodeModels, opencodeModelsLoading]);
@@ -704,21 +695,6 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
               </Field>
             </FieldGrid>
           </SubGroup>
-
-          <SubGroup title="Provider routing">
-            <FieldGrid>
-              <Field label="Butler provider" hint="Which provider Butler should use for chat.">
-                <select value={draft.overview.butlerProvider} onChange={(event) => update((s) => { s.overview.butlerProvider = event.target.value as never; })}>
-                  {availableProviderOptions(payload.providerAvailability).map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                </select>
-              </Field>
-              <Field label="Codex worker provider" hint="Which provider the Codex worker should use for delegated work.">
-                <select value={draft.overview.codexProvider} onChange={(event) => update((s) => { s.overview.codexProvider = event.target.value as never; })}>
-                  {availableProviderOptions(payload.providerAvailability).map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                </select>
-              </Field>
-            </FieldGrid>
-          </SubGroup>
         </Section> : null}
 
         {activeSection === "providers" ? <Section id="providers" title="Providers">
@@ -904,29 +880,35 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
                     />
                   </ToggleGrid>
                   <Field label="Base URL"><input readOnly value={draft.providers.opencodeGo.baseUrl} /></Field>
-                  <div className="settings-subgroup-divider" />
-                  <div className="settings-subgroup-section-head"><h4>Models</h4></div>
-                  <div className="settings-model-pills">
-                    {opencodeModelsLoading ? <span className="settings-model-pills-hint">Loading…</span> : null}
-                    {opencodeModelsError ? <div className="settings-auth-error">{opencodeModelsError}</div> : null}
-                    {opencodeModels?.map((model) => (
-                      <span key={model.id} className="settings-model-pill" title="Served from OpenCode Go">
-                        {model.id}
-                      </span>
-                    ))}
-                    {opencodeModels && opencodeModels.length === 0 && !opencodeModelsLoading ? <span className="settings-model-pills-hint">No models found.</span> : null}
-                  </div>
+                  {draft.providers.opencodeGo.enabled ? (
+                    <>
+                      <div className="settings-subgroup-divider" />
+                      <div className="settings-subgroup-section-head"><h4>Models</h4></div>
+                      <div className="settings-model-pills">
+                        {opencodeModelsLoading ? <span className="settings-model-pills-hint">Loading…</span> : null}
+                        {opencodeModelsError ? <div className="settings-auth-error">{opencodeModelsError}</div> : null}
+                        {opencodeModels?.map((model) => (
+                          <span key={model.id} className="settings-model-pill" title="Served from OpenCode Go">
+                            {model.id}
+                          </span>
+                        ))}
+                        {opencodeModels && opencodeModels.length === 0 && !opencodeModelsLoading ? <span className="settings-model-pills-hint">No models found.</span> : null}
+                      </div>
 
-                  <div className="settings-subgroup-divider" />
-                  <div className="settings-subgroup-section-head"><h4>Web tools (search &amp; fetch via Exa)</h4></div>
-                  <ToggleGrid>
-                    <Toggle label="Enabled" hint="Attach web_search/web_fetch to workers using OpenCode models" checked={draft.providers.opencodeGo.webTools.enabled} onChange={(next) => update((s) => { s.providers.opencodeGo.webTools.enabled = next; })} />
-                  </ToggleGrid>
-                  <FieldGrid>
-                    <Field label="Max results"><input type="number" value={draft.providers.opencodeGo.webTools.maxResults} onChange={(event) => update((s) => { s.providers.opencodeGo.webTools.maxResults = Number(event.target.value); })} /></Field>
-                    <Field label="Timeout (ms)"><input type="number" value={draft.providers.opencodeGo.webTools.timeoutMs} onChange={(event) => update((s) => { s.providers.opencodeGo.webTools.timeoutMs = Number(event.target.value); })} /></Field>
-                    <Field label="Max content chars"><input type="number" value={draft.providers.opencodeGo.webTools.maxContentChars} onChange={(event) => update((s) => { s.providers.opencodeGo.webTools.maxContentChars = Number(event.target.value); })} /></Field>
-                  </FieldGrid>
+                      <div className="settings-subgroup-divider" />
+                      <div className="settings-subgroup-section-head"><h4>Web tools (search &amp; fetch via Exa)</h4></div>
+                      <ToggleGrid>
+                        <Toggle label="Enabled" hint="Attach web_search/web_fetch to workers using OpenCode models" checked={draft.providers.opencodeGo.webTools.enabled} onChange={(next) => update((s) => { s.providers.opencodeGo.webTools.enabled = next; })} />
+                      </ToggleGrid>
+                      <FieldGrid>
+                        <Field label="Max results"><input type="number" value={draft.providers.opencodeGo.webTools.maxResults} onChange={(event) => update((s) => { s.providers.opencodeGo.webTools.maxResults = Number(event.target.value); })} /></Field>
+                        <Field label="Timeout (ms)"><input type="number" value={draft.providers.opencodeGo.webTools.timeoutMs} onChange={(event) => update((s) => { s.providers.opencodeGo.webTools.timeoutMs = Number(event.target.value); })} /></Field>
+                        <Field label="Max content chars"><input type="number" value={draft.providers.opencodeGo.webTools.maxContentChars} onChange={(event) => update((s) => { s.providers.opencodeGo.webTools.maxContentChars = Number(event.target.value); })} /></Field>
+                      </FieldGrid>
+                    </>
+                  ) : (
+                    <div className="settings-auth-error">OpenCode Go is disabled.</div>
+                  )}
                 </>
               ) : (
                 <div className="settings-auth-error">OpenCode Go is disabled. Set OPENCODE_API_KEY in .env and restart Manor to enable it.</div>
@@ -936,18 +918,6 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
         </Section> : null}
 
         {activeSection === "runtime" ? <Section id="runtime" title="Runtime">
-          <SubGroup title={GROUP_LABELS.worker}>
-            <FieldGrid>
-              <Field label="Runtime" hint="Where new turns run">
-                <select value={draft.worker.runtime} onChange={(event) => update((s) => { s.worker.runtime = event.target.value as never; })}>
-                  <option value="auto">Auto</option>
-                  <option value="openai">OpenAI / Codex CLI</option>
-                  <option value="pi-rpc">Pi RPC</option>
-                </select>
-              </Field>
-            </FieldGrid>
-          </SubGroup>
-
           <SubGroup title={GROUP_LABELS.modelTasks}>
             <FieldGrid>
               <Field label="Runner">

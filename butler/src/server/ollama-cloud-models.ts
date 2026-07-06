@@ -19,14 +19,21 @@ async function fetchJson<T>(url: string, init: RequestInit, timeoutMs: number): 
   }
 }
 
-async function fetchOllamaCloudModelsOnce(settings: ManorSettings): Promise<OllamaCloudModelInfo[]> {
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("Timed out listing Ollama Cloud models.")), timeoutMs);
+    promise.then(resolve, reject).finally(() => clearTimeout(timeout));
+  });
+}
+
+async function fetchOllamaCloudModelsOnce(settings: ManorSettings, env: NodeJS.ProcessEnv, timeoutMs = 30_000): Promise<OllamaCloudModelInfo[]> {
   const config = settings.providers.ollamaCloud;
-  const apiKey = await readSecretSourceValue(config.apiKeySource);
+  const apiKey = await readSecretSourceValue(config.apiKeySource, env);
   if (!apiKey) throw new Error("No Ollama Cloud API key is available from the configured secret source.");
   const nativeBase = config.webTools.baseUrl.replace(/\/$/, "");
   const headers = { "Authorization": `Bearer ${apiKey}` };
 
-  const tagsRes = await fetchJson<{ models?: { name?: string; model?: string }[] }>(`${nativeBase}/tags`, { method: "GET", headers }, 30_000);
+  const tagsRes = await fetchJson<{ models?: { name?: string; model?: string }[] }>(`${nativeBase}/tags`, { method: "GET", headers }, timeoutMs);
   if (!tagsRes.ok || !tagsRes.data?.models) {
     throw new Error(`Failed to list Ollama Cloud models (HTTP ${tagsRes.status}): ${tagsRes.text.slice(0, 800)}`);
   }
@@ -41,7 +48,7 @@ async function fetchOllamaCloudModelsOnce(settings: ManorSettings): Promise<Olla
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify({ model: name })
-      }, 15_000);
+      }, Math.min(timeoutMs, 15_000));
       let contextWindow: number | null = null;
       if (showRes.ok && showRes.data?.model_info) {
         for (const key of Object.keys(showRes.data.model_info)) {
@@ -69,15 +76,19 @@ type CacheEntry = {
 const CACHE_TTL_MS = 10 * 60 * 1000;
 let cache: CacheEntry | null = null;
 
-export async function fetchOllamaCloudModelsCached(settings: ManorSettings, options: { force?: boolean } = {}): Promise<OllamaCloudModelInfo[]> {
+export function getCachedOllamaCloudModels(): OllamaCloudModelInfo[] {
+  return cache?.models ?? [];
+}
+
+export async function fetchOllamaCloudModelsCached(settings: ManorSettings, options: { force?: boolean; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): Promise<OllamaCloudModelInfo[]> {
   const now = Date.now();
   if (!options.force && cache && now - cache.fetchedAt < CACHE_TTL_MS && cache.inFlight === null) {
     return cache.models;
   }
   if (cache?.inFlight) {
-    return cache.inFlight;
+    return options.timeoutMs ? withTimeout(cache.inFlight, options.timeoutMs) : cache.inFlight;
   }
-  const inFlight = fetchOllamaCloudModelsOnce(settings)
+  const inFlight = fetchOllamaCloudModelsOnce(settings, options.env ?? process.env, options.timeoutMs)
     .then((models) => {
       cache = { models, fetchedAt: Date.now(), inFlight: null };
       return models;
@@ -87,7 +98,7 @@ export async function fetchOllamaCloudModelsCached(settings: ManorSettings, opti
       throw error;
     });
   cache = { models: cache?.models ?? [], fetchedAt: cache?.fetchedAt ?? 0, inFlight };
-  return inFlight;
+  return options.timeoutMs ? withTimeout(inFlight, options.timeoutMs) : inFlight;
 }
 
 export function clearOllamaCloudModelsCache(): void {

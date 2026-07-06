@@ -206,6 +206,11 @@ export type ButlerAgentToolAccess = {
     }>;
   }): Promise<ButlerMessageView & { question: ButlerOperatorQuestionView }>;
   getCodexAuthStatus(): ButlerAuthStatus;
+  getWorkerDefaults?: () => {
+    runtime: "auto" | "openai" | "pi-rpc" | null;
+    model?: string | null;
+    effort?: string | null;
+  } | null;
   getSnapshot(): AppSnapshot["butler"];
 };
 

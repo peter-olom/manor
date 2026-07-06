@@ -20,6 +20,7 @@ test("restart policy accepts a minimal confirmed restart", () => {
     gitRef: null,
     imageTag: null,
     includeDesktop: false,
+    hotReload: undefined,
     build: undefined,
     update: false
   });
@@ -51,6 +52,11 @@ test("restart policy scopes source and image inputs to detected mode", () => {
   const imageBuildTrue = validateRestartPayload({ confirmation: "restart Manor", mode: "image", build: true });
   assert.equal(imageBuildTrue.ok, true);
   assert.equal(validateRestartModeScope(imageBuildTrue.value, "image").ok, false);
+
+  const sourceHotReload = validateRestartPayload({ confirmation: "restart Manor", mode: "source", hotReload: true });
+  assert.equal(sourceHotReload.ok, true);
+  assert.equal(validateRestartModeScope(sourceHotReload.value, "source").ok, true);
+  assert.equal(validateRestartModeScope(sourceHotReload.value, "image").ok, false);
 });
 
 test("runtime mode detection requires explicit source mode", () => {

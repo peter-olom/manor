@@ -888,7 +888,7 @@ export function shouldExposeCodexItem(item: CodexItemRecord): boolean {
 
 
 export function normalizeReasoningEffort(value: unknown): ReasoningEffort | null {
-  return value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" ? value : null;
+  return value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" ? value : null;
 }
 
 export function normalizeTurn(turn: Record<string, unknown>): CodexTurnRecord {

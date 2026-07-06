@@ -52,11 +52,42 @@ const webFetchTool = defineTool({
   }
 });
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Restore OpenCode's native MiniMax M3 variants after Pi has produced its
+ * OpenAI-compatible payload. Pi can only store fixed thinking levels, so Manor
+ * maps the picker values onto transport levels and patches the final request
+ * here. Pi emits `reasoning_effort: "none"` or
+ * `reasoning_effort: "thinking"` as local sentinels for the provider-native
+ * variants. This hook removes that sentinel before the request leaves Pi and
+ * restores OpenCode's native `thinking` object.
+ */
+export function applyOpencodeGoNativeThinkingPayload(payload: unknown): unknown {
+  if (!isRecord(payload)) return payload;
+  const modelId = typeof payload.model === "string" ? payload.model.toLowerCase() : "";
+  if (!modelId.includes("minimax-m3")) return payload;
+
+  const next = { ...payload };
+  const variant = typeof next.reasoning_effort === "string" ? next.reasoning_effort : null;
+  delete next.reasoning_effort;
+  if (variant === "none") {
+    next.thinking = { type: "disabled" };
+  } else if (variant === "thinking") {
+    next.thinking = { type: "adaptive" };
+  } else {
+    delete next.thinking;
+  }
+  return next;
+}
+
 export default async function opencodeWebToolsExtension(pi: ExtensionAPI): Promise<void> {
   const config = readOpencodeWebToolsConfig();
-  if (!config.enabled) {
-    return;
+  pi.on("before_provider_request", (event) => applyOpencodeGoNativeThinkingPayload(event.payload));
+  if (config.enabled) {
+    pi.registerTool(webSearchTool);
+    pi.registerTool(webFetchTool);
   }
-  pi.registerTool(webSearchTool);
-  pi.registerTool(webFetchTool);
 }

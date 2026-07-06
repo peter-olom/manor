@@ -2,7 +2,7 @@ import type express from "express";
 
 import { readFileReferenceIds, readImageReferenceIds } from "./server-runtime-helpers.js";
 import type { PairSessionManager } from "./pair-session-manager.js";
-import { isKnownReasoningEffort, isKnownThinkingLevel } from "../shared/pairing.js";
+import { isKnownReasoningEffort, isKnownThinkingLevel, type PairDetail } from "../shared/pairing.js";
 
 type PairRouteAccess = {
   app: express.Express;
@@ -133,7 +133,7 @@ export function registerPairRoutes(access: PairRouteAccess): void {
           return;
         }
         if (level && !isKnownThinkingLevel(level)) {
-          response.status(400).json({ error: `thinkingLevel must be one of: off, low, medium, high, xhigh` });
+          response.status(400).json({ error: `thinkingLevel must be one of: off, none, minimal, low, medium, high, xhigh, max` });
           return;
         }
         try {
@@ -152,18 +152,28 @@ export function registerPairRoutes(access: PairRouteAccess): void {
       }
       const model = readString(request.body?.model);
       const effort = readString(request.body?.effort);
-      if (!model && !effort) {
-        response.status(400).json({ error: "model or effort is required" });
+      const workerRuntime = readString(request.body?.workerRuntime);
+      if (!model && !effort && !workerRuntime) {
+        response.status(400).json({ error: "model, effort, or workerRuntime is required" });
         return;
       }
       if (effort && !isKnownReasoningEffort(effort)) {
-        response.status(400).json({ error: "effort must be one of: minimal, low, medium, high, xhigh" });
+        response.status(400).json({ error: "effort must be one of: none, minimal, low, medium, high, xhigh, max" });
+        return;
+      }
+      if (workerRuntime && workerRuntime !== "auto" && workerRuntime !== "openai" && workerRuntime !== "pi-rpc") {
+        response.status(400).json({ error: "workerRuntime must be one of: auto, openai, pi-rpc" });
         return;
       }
       try {
-        const pair = model
-          ? await pairSessions.setCodexModel(request.params.pairId, model)
-          : await pairSessions.setCodexEffort(request.params.pairId, effort);
+        let pair: PairDetail | null = null;
+        if (workerRuntime) {
+          pair = await pairSessions.setWorkerRuntime(request.params.pairId, workerRuntime as "auto" | "openai" | "pi-rpc");
+        } else if (model) {
+          pair = await pairSessions.setCodexModel(request.params.pairId, model);
+        } else if (effort) {
+          pair = await pairSessions.setCodexEffort(request.params.pairId, effort);
+        }
         if (!pair) {
           response.status(404).json({ error: "Butler session not found" });
           return;

@@ -11,7 +11,6 @@ import { useAnchoredScroll } from "./useAnchoredScroll";
 import { useLiveButlerTurn, type CompletedTrace } from "./useLiveButlerTurn";
 
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
-import { DEFAULT_THINKING_LEVELS } from "../shared/pairing";
 import type { PairDetail, PairMessage, PairModelOption, PairTraceItem } from "../shared/pairing";
 import type { FileReference } from "./api";
 import type { PreviewMedia } from "./ImagePreviewModal";
@@ -183,14 +182,16 @@ const Composer = memo(function Composer({
               className="composer-model"
               onChange={onModelChange}
             />
-            <BudgetSegmented
-              label="Butler thinking"
-              value={thinkingLevel}
-              options={availableThinkingLevels}
-              disabled={busy}
-              onChange={onThinkingLevelChange}
-              className="composer-budget"
-            />
+            {availableThinkingLevels.length > 0 ? (
+              <BudgetSegmented
+                label="Butler thinking"
+                value={thinkingLevel}
+                options={availableThinkingLevels}
+                disabled={busy}
+                onChange={onThinkingLevelChange}
+                className="composer-budget"
+              />
+            ) : null}
             {isMultilineDraft ? <span className="composer-hint">Ctrl/Cmd + Enter</span> : null}
           </div>
           <button className="composer-send" type="submit" disabled={busy || !canSubmit}>
@@ -454,7 +455,7 @@ export function ButlerPane({
         model={pair.compose?.butler?.model ?? null}
         availableModels={pair.compose?.butler?.availableModels ?? []}
         thinkingLevel={pair.compose?.butler?.thinkingLevel ?? "medium"}
-        availableThinkingLevels={pair.compose?.butler?.availableThinkingLevels ?? [...DEFAULT_THINKING_LEVELS]}
+        availableThinkingLevels={pair.compose?.butler?.availableThinkingLevels ?? []}
         onModelChange={onButlerModelChange}
         onThinkingLevelChange={onThinkingLevelChange}
         attachments={attachments}

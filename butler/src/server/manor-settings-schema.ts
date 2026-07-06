@@ -19,49 +19,7 @@ const DEFAULT_OLLAMA_CLOUD_MODELS: SettingsProviderModel[] = [];
 
 const DEFAULT_OLLAMA_LOCAL_MODELS: SettingsProviderModel[] = [];
 
-// OpenCode Go models. The official list lives at
-// https://opencode.ai/zen/go/v1/models and is mirrored here as a fallback.
-// Models served via the Anthropic /v1/messages shape declare api:"anthropic";
-// the rest inherit the provider-level openai-completions. The Anthropic shape
-// follows the MiniMax/Qwen families on the OpenCode Go catalog.
-const ANTHROID_API_MODEL_PREFIXES = ["minimax-", "qwen3."];
-
-function opencodeModelApi(modelId: string): "anthropic" | null {
-  return ANTHROID_API_MODEL_PREFIXES.some((prefix) => modelId.startsWith(prefix)) ? "anthropic" : null;
-}
-
-const DEFAULT_OPENCODE_GO_MODEL_IDS = [
-  "minimax-m3",
-  "minimax-m2.7",
-  "minimax-m2.5",
-  "kimi-k2.7-code",
-  "kimi-k2.6",
-  "kimi-k2.5",
-  "glm-5.2",
-  "glm-5.1",
-  "glm-5",
-  "deepseek-v4-pro",
-  "deepseek-v4-flash",
-  "qwen3.7-max",
-  "qwen3.7-plus",
-  "qwen3.6-plus",
-  "qwen3.5-plus",
-  "mimo-v2-pro",
-  "mimo-v2-omni",
-  "mimo-v2.5-pro",
-  "mimo-v2.5",
-  "hy3-preview"
-];
-
-const DEFAULT_OPENCODE_GO_MODELS: SettingsProviderModel[] = DEFAULT_OPENCODE_GO_MODEL_IDS.map((id) => {
-  const api = opencodeModelApi(id);
-  return api ? { id, api } : id;
-});
-
-export function buildOpencodeGoModelEntry(id: string): SettingsProviderModel {
-  const api = opencodeModelApi(id);
-  return api ? { id, api } : id;
-}
+const DEFAULT_OPENCODE_GO_MODELS: SettingsProviderModel[] = [];
 
 export const SETTINGS_GROUP_KEYS: SettingsGroupKey[] = [
   "overview",
@@ -256,6 +214,15 @@ function csv(value: unknown, fallback: string[]): string[] {
 }
 
 function providerModels(value: unknown, fallback: SettingsProviderModel[]): SettingsProviderModel[] {
+  const modelCompat = (entry: unknown): Record<string, unknown> | undefined => {
+    if (!isRecord(entry)) return undefined;
+    const compat: Record<string, unknown> = {};
+    if (typeof entry.supportsDeveloperRole === "boolean") compat.supportsDeveloperRole = entry.supportsDeveloperRole;
+    if (typeof entry.supportsReasoningEffort === "boolean") compat.supportsReasoningEffort = entry.supportsReasoningEffort;
+    if (entry.maxTokensField === "max_tokens" || entry.maxTokensField === "max_completion_tokens") compat.maxTokensField = entry.maxTokensField;
+    if (typeof entry.thinkingFormat === "string" && entry.thinkingFormat.trim()) compat.thinkingFormat = entry.thinkingFormat.trim();
+    return Object.keys(compat).length > 0 ? compat : undefined;
+  };
   const coerce = (entry: unknown): SettingsProviderModel | null => {
     if (typeof entry === "string") {
       const trimmed = entry.trim();
@@ -264,7 +231,24 @@ function providerModels(value: unknown, fallback: SettingsProviderModel[]): Sett
     if (isRecord(entry) && typeof entry.id === "string" && entry.id.trim()) {
       const api = typeof entry.api === "string" && entry.api.trim() ? entry.api.trim() : null;
       const reasoning = typeof entry.reasoning === "boolean" ? entry.reasoning : null;
-      return { id: entry.id.trim(), api, reasoning };
+      const contextWindow = typeof entry.contextWindow === "number" && Number.isFinite(entry.contextWindow) ? entry.contextWindow : null;
+      const thinkingLevelMap = isRecord(entry.thinkingLevelMap)
+        ? Object.fromEntries(
+          Object.entries(entry.thinkingLevelMap)
+            .filter(([level, value]) =>
+              (level === "off" || level === "none" || level === "minimal" || level === "low" || level === "medium" || level === "high" || level === "xhigh" || level === "max")
+              && (typeof value === "string" || value === null)
+            )
+        ) as Partial<Record<SettingsThinkingLevel, string | null>>
+        : undefined;
+      return {
+        id: entry.id.trim(),
+        api,
+        reasoning,
+        contextWindow,
+        ...(thinkingLevelMap && Object.keys(thinkingLevelMap).length > 0 ? { thinkingLevelMap } : {}),
+        ...(modelCompat(entry.compat) ? { compat: modelCompat(entry.compat) } : {})
+      };
     }
     return null;
   };
@@ -315,16 +299,16 @@ function opencodeWebTools(value: unknown, fallback: SettingsOpencodeWebTools): S
 }
 
 function reasoningEffort(value: unknown): SettingsReasoningEffort | null {
-  return value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" ? value : null;
+  return value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" ? value : null;
 }
 
 function thinkingLevel(value: unknown): SettingsThinkingLevel {
-  return value === "off" || value === "low" || value === "medium" || value === "high" || value === "xhigh" ? value : "medium";
+  return value === "off" || value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" ? value : "medium";
 }
 
 function workerRuntime(value: unknown): SettingsWorkerRuntime {
   if (value === "codex") {
-    throw new Error("MANOR_WORKER_RUNTIME=codex is no longer supported. Use 'openai' for OpenAI/Codex CLI, or 'pi-rpc' for Pi RPC. Run Reseed to reset settings.");
+    throw new Error("MANOR_WORKER_RUNTIME=codex is no longer supported. Use 'openai' for OpenAI Codex, or 'pi-rpc' for Pi RPC. Run Reseed to reset settings.");
   }
   return value === "openai" || value === "pi-rpc" ? value : "auto";
 }

@@ -64,6 +64,7 @@ function publicRun(run) {
     gitRef: run.gitRef,
     imageTag: run.imageTag,
     includeDesktop: run.includeDesktop,
+    hotReload: run.hotReload,
     update: run.update,
     startedAt: run.startedAt,
     completedAt: run.completedAt,
@@ -138,10 +139,13 @@ async function detectMode(requestedMode) {
   return detectRuntimeRestartMode(await readEnvValue("MANOR_BUILD_FROM_SOURCE"));
 }
 
-function composeArgs(mode, includeDesktop) {
+function composeArgs(mode, includeDesktop, hotReload = false) {
   const args = ["compose", "-f", "compose.yml"];
   if (mode === "source") {
     args.push("-f", "compose.build.yml");
+  }
+  if (mode === "source" && hotReload) {
+    args.push("-f", "compose.dev.yml");
   }
   if (includeDesktop) {
     args.push("--profile", "desktop");
@@ -207,6 +211,53 @@ async function runStep(run, label, command, args, options = {}) {
       reject(new Error(`${label} failed with exit code ${exitCode}`));
     });
   });
+}
+
+async function commandOutput(command, args) {
+  return await new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(command, args, {
+      cwd: manorDir,
+      env: { ...process.env, COMPOSE_PROJECT_NAME: composeProjectName },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    child.stdout.on("data", (chunk) => {
+      stdout = limitedTail(stdout + chunk.toString());
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr = limitedTail(stderr + chunk.toString());
+    });
+    child.on("error", reject);
+    child.on("close", (exitCode) => {
+      if (exitCode === 0) {
+        resolve(stdout);
+        return;
+      }
+      reject(new Error(stderr || `${command} ${args.join(" ")} failed with exit code ${exitCode}`));
+    });
+  });
+}
+
+async function detectRunningButlerHotReload() {
+  const listed = await commandOutput("docker", [
+    "ps",
+    "--filter",
+    `label=com.docker.compose.project=${composeProjectName}`,
+    "--filter",
+    "label=com.docker.compose.service=butler",
+    "--quiet"
+  ]).catch(() => "");
+  const containerId = listed.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+  if (!containerId) {
+    return false;
+  }
+  const env = await commandOutput("docker", ["inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", containerId]).catch(() => "");
+  if (env.split(/\r?\n/).includes("BUTLER_HOT_RELOAD=1")) {
+    return true;
+  }
+  const configFiles = await commandOutput("docker", ["inspect", "--format", "{{index .Config.Labels \"com.docker.compose.project.config_files\"}}", containerId]).catch(() => "");
+  return configFiles.includes("compose.dev.yml");
 }
 
 async function clearGitWorktree(run) {
@@ -279,7 +330,7 @@ async function restartAppliance(run) {
   await cleanupStaleReplacementContainers(run, services);
   for (const service of services) {
     await runStep(run, `Restart ${service}`, "docker", [
-      ...composeArgs(run.mode, run.includeDesktop),
+      ...composeArgs(run.mode, run.includeDesktop, run.hotReload),
       "up",
       "-d",
       "--force-recreate",
@@ -391,6 +442,7 @@ function createRun(payload) {
     gitRef: payload.gitRef,
     imageTag: payload.imageTag,
     includeDesktop: payload.includeDesktop === true,
+    hotReload: payload.hotReload === true,
     update: payload.update === true || payload.target === "latest" || Boolean(payload.gitRef || payload.imageTag),
     build: shouldBuildSourceImages(payload),
     delayMs: defaultDelayMs,
@@ -452,7 +504,13 @@ app.post("/restart", authorize, async (request, response) => {
     return;
   }
 
+  const hotReload = scoped.value.hotReload === true
+    ? true
+    : scoped.value.hotReload === false
+      ? false
+      : mode === "source" && await detectRunningButlerHotReload();
   const run = createRun(scoped.value);
+  run.hotReload = hotReload;
   latestRun = run;
   await persist();
   void executeRun(run);

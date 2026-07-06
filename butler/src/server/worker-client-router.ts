@@ -1,5 +1,6 @@
 import type { CodexInputItem } from "./image-store.js";
-import { isCodexPreferredModelRef } from "./model-provider-config.js";
+import { isOpenAiRuntimeProvider } from "./chatgpt-entitlement.js";
+import { shouldExposeManorModel } from "./model-provider-config.js";
 import { getActiveManorSettings } from "./manor-settings-runtime.js";
 import type { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
@@ -58,20 +59,28 @@ function qualifyModelOption(model: ModelOption): ModelOption {
   };
 }
 
-function codexModelId(modelRef: string): string {
-  const trimmed = modelRef.trim();
-  return trimmed.includes("/") ? trimmed.split("/").slice(1).join("/") : trimmed;
+function isPiWorkerModel(model: ModelOption): boolean {
+  return !isOpenAiRuntimeProvider(model.provider) && model.provider !== "opencode" && shouldExposeManorModel(model);
 }
 
 function resolveAvailableModelId(modelRef: string | null | undefined, availableModels: ModelOption[]): string | null {
   const trimmed = modelRef?.trim() || null;
   if (!trimmed) return null;
   if (availableModels.some((entry) => entry.id === trimmed)) return trimmed;
-  if (isCodexPreferredModelRef(trimmed)) {
-    const unqualified = codexModelId(trimmed);
-    if (availableModels.some((entry) => entry.id === unqualified)) return unqualified;
-  }
   return null;
+}
+
+function resolveProviderModelId(provider: string | null | undefined, modelId: string | null | undefined, availableModels: ModelOption[]): string | null {
+  const trimmed = modelId?.trim() || null;
+  if (!trimmed) return null;
+  return availableModels.find((entry) => entry.id === trimmed || (provider ? entry.id === `${provider}/${trimmed}` : false))?.id ?? null;
+}
+
+function resolveEffortForModel(model: ModelOption | null, requested: ReasoningEffort | null): ReasoningEffort | null {
+  if (!model) return requested;
+  if (!model.supportsReasoning || model.supportedReasoningEfforts.length === 0) return null;
+  if (requested && model.supportedReasoningEfforts.includes(requested)) return requested;
+  return model.defaultReasoningEffort ?? model.supportedReasoningEfforts[0] ?? null;
 }
 
 export function resolveThreadWorkerRuntime(access: WorkerClientAccess, threadId: string): WorkerRuntime {
@@ -88,18 +97,28 @@ export function resolveNewWorkerRuntime(access: WorkerClientAccess, input: { run
   }
   if (preference === "openai") return "openai";
   const selectedModel = input.model?.trim() || configuredWorkerModel();
-  if (selectedModel && !isCodexPreferredModelRef(selectedModel)) {
+  const piState = access.piRpcWorkerClient && typeof access.piRpcWorkerClient.getConnectionState === "function"
+    ? access.piRpcWorkerClient.getConnectionState()
+    : null;
+  const piModels = piState?.compose.availableModels.map(qualifyModelOption).filter(isPiWorkerModel) ?? [];
+  if (selectedModel && resolveAvailableModelId(selectedModel, piModels)) {
     if (!access.piRpcWorkerClient) throw new Error(`Model ${selectedModel} requires Pi RPC, but Pi RPC worker runtime is not available`);
     return "pi-rpc";
   }
   return "openai";
 }
 
-export function getUnifiedWorkerCompose(access: WorkerClientAccess, overrideModel?: string | null, overrideEffort?: string | null): UnifiedWorkerCompose {
-  const codexCompose = access.codexClient.getConnectionState().compose;
-  const piCompose = access.piRpcWorkerClient?.getConnectionState().compose ?? null;
-  const codexModels = codexCompose.availableModels.map(qualifyModelOption).filter((model) => model.provider !== "opencode");
-  const piModels = piCompose?.availableModels.map(qualifyModelOption).filter((model) => model.provider !== "opencode") ?? [];
+export function getUnifiedWorkerCompose(access: WorkerClientAccess, overrideModel?: string | null, overrideEffort?: string | null, overrideRuntime?: WorkerRuntimePreference | null): UnifiedWorkerCompose {
+  const codexState = typeof access.codexClient.getConnectionState === "function"
+    ? access.codexClient.getConnectionState()
+    : null;
+  const piState = access.piRpcWorkerClient && typeof access.piRpcWorkerClient.getConnectionState === "function"
+    ? access.piRpcWorkerClient.getConnectionState()
+    : null;
+  const codexCompose = codexState?.compose ?? { model: null, effort: null, availableModels: [] };
+  const piCompose = piState?.compose ?? null;
+  const codexModels = codexCompose.availableModels.filter((model) => model.provider !== "opencode");
+  const piModels = piCompose?.availableModels.map(qualifyModelOption).filter(isPiWorkerModel) ?? [];
   const seen = new Set<string>();
   const availableModels = [...codexModels, ...piModels].filter((model) => {
     if (seen.has(model.id)) return false;
@@ -107,35 +126,52 @@ export function getUnifiedWorkerCompose(access: WorkerClientAccess, overrideMode
     return true;
   });
   const configuredModel = overrideModel?.trim() || configuredWorkerModel();
-  const runtimePreference = configuredWorkerRuntime();
+  const runtimePreference = overrideRuntime ?? configuredWorkerRuntime();
+  const selectableModels = runtimePreference === "pi-rpc"
+    ? piModels
+    : runtimePreference === "openai"
+      ? codexModels
+      : availableModels;
+  const selectedPiModel = resolveProviderModelId(piCompose?.provider, piCompose?.model, piModels);
   const defaultModel = runtimePreference === "pi-rpc"
-    ? piModels[0]?.id ?? codexModels[0]?.id ?? null
-    : resolveAvailableModelId(codexCompose.model, availableModels) ?? codexModels[0]?.id ?? piModels[0]?.id ?? null;
-  const model = resolveAvailableModelId(configuredModel, availableModels) ?? defaultModel;
-  const selected = availableModels.find((entry) => entry.id === model) ?? null;
-  const effort = (overrideEffort as ReasoningEffort | null) ?? configuredWorkerEffort() ?? codexCompose.effort ?? piCompose?.effort ?? selected?.defaultReasoningEffort ?? null;
-  const availableEfforts = Array.from(new Set((selected ? selected.supportedReasoningEfforts : availableModels.flatMap((entry) => entry.supportedReasoningEfforts)) as ReasoningEffort[]));
+    ? selectedPiModel ?? piModels[0]?.id ?? null
+    : runtimePreference === "openai"
+      ? resolveAvailableModelId(codexCompose.model, codexModels) ?? codexModels[0]?.id ?? null
+      : resolveAvailableModelId(codexCompose.model, availableModels) ?? codexModels[0]?.id ?? piModels[0]?.id ?? null;
+  const model = resolveAvailableModelId(configuredModel, selectableModels) ?? defaultModel;
+  const selected = selectableModels.find((entry) => entry.id === model) ?? null;
+  const effort = resolveEffortForModel(
+    selected,
+    (overrideEffort as ReasoningEffort | null) ?? configuredWorkerEffort() ?? codexCompose.effort ?? piCompose?.effort ?? selected?.defaultReasoningEffort ?? null
+  );
+  const availableEfforts = Array.from(new Set((selected ? selected.supportedReasoningEfforts : selectableModels.flatMap((entry) => entry.supportedReasoningEfforts)) as ReasoningEffort[]));
+  const runtime = runtimePreference === "auto"
+    ? resolveNewWorkerRuntime(access, { runtime: runtimePreference, model })
+    : runtimePreference;
   return {
-    runtime: runtimePreference,
+    runtime,
     provider: selected?.provider ?? null,
     model,
     effort,
-    availableModels,
+    availableModels: selectableModels,
     availableEfforts
   };
 }
 
-export async function updateUnifiedWorkerCompose(access: WorkerClientAccess, input: { model?: string | null; effort?: ReasoningEffort | null }): Promise<{ model: string | null; effort: ReasoningEffort | null; runtime: WorkerRuntime }> {
-  const compose = getUnifiedWorkerCompose(access, input.model ?? null, input.effort ?? null);
+export async function updateUnifiedWorkerCompose(access: WorkerClientAccess, input: { model?: string | null; effort?: ReasoningEffort | null; runtime?: WorkerRuntimePreference | null }): Promise<{ model: string | null; effort: ReasoningEffort | null; runtime: WorkerRuntime }> {
+  const compose = getUnifiedWorkerCompose(access, input.model ?? null, input.effort ?? null, input.runtime ?? null);
   const model = resolveAvailableModelId(input.model, compose.availableModels) ?? compose.model;
-  const effort = input.effort ?? compose.effort;
-  const runtime = resolveNewWorkerRuntime(access, { model, runtime: "auto" });
+  const effort = compose.effort;
+  const runtime = resolveNewWorkerRuntime(access, { model, runtime: input.runtime ?? "auto" });
   if (runtime === "pi-rpc") {
     if (!access.piRpcWorkerClient) throw new Error("Pi RPC worker runtime is not available");
     if (model) await access.piRpcWorkerClient.updateComposeSettings(model, effort);
   } else if (model) {
-    await access.codexClient.updateComposeSettings(codexModelId(model), effort ?? null);
+    await access.codexClient.updateComposeSettings(model, effort ?? null);
   } else if (effort) {
+    if (typeof access.codexClient.getConnectionState !== "function") {
+      return { model, effort, runtime };
+    }
     const current = access.codexClient.getConnectionState().compose.model;
     if (!current) throw new Error("No Codex worker model is selected");
     await access.codexClient.updateComposeSettings(current, effort);
@@ -146,12 +182,11 @@ export async function updateUnifiedWorkerCompose(access: WorkerClientAccess, inp
 export async function startWorkerThread(access: WorkerClientAccess, options: WorkerStartOptions): Promise<{ threadId: string; turnId: string | null; runtime: WorkerRuntime }> {
   const requestedModel = options.model?.trim() || configuredWorkerModel();
   const runtime = resolveNewWorkerRuntime(access, { ...options, model: requestedModel });
-  if (requestedModel) {
-    await updateUnifiedWorkerCompose(access, { model: requestedModel, effort: options.effort ?? null });
-  }
+  const compose = await updateUnifiedWorkerCompose(access, { model: requestedModel, effort: options.effort ?? null, runtime });
   const client = runtime === "pi-rpc" ? access.piRpcWorkerClient : access.codexClient;
   if (!client) throw new Error("Pi RPC worker runtime is not available");
-  const result = await client.startThread(options);
+  const { model: _model, runtime: _runtime, ...clientOptions } = options;
+  const result = await client.startThread({ ...clientOptions, effort: compose.effort });
   return { ...result, runtime };
 }
 
