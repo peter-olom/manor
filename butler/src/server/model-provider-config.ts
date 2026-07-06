@@ -9,10 +9,13 @@ import { getActiveManorSettings, readSecretSourceValue } from "./manor-settings-
 import { assertOllamaLocalBaseUrl, fetchOllamaLocalModels } from "./ollama-local-models.js";
 import { fetchOllamaCloudModelsCached } from "./ollama-cloud-models.js";
 import { fetchOpencodeGoModelsCached, opencodeGoModelToProviderInput } from "./opencode-go-models.js";
+import { compareModelIdsAscending } from "./model-id-sort.js";
 import {
   getModelCapabilityMetadata,
-  mergeThinkingLevelMaps
+  mergeThinkingLevelMaps,
+  ollamaOpenAiThinkingMetadata
 } from "./model-capabilities.js";
+import { opencodeOpenAiCompatibleModelMetadata } from "./opencode-openai-compatible-transform.js";
 import { enrichModelsWithOpenRouterCapabilities } from "./openrouter-model-capabilities.js";
 import type { SettingsSecretSource } from "../shared/settings.js";
 import type { PiThinkingLevel } from "./pi-thinking-levels.js";
@@ -87,6 +90,7 @@ function isReasoningEffort(value: ButlerThinkingLevel): value is ReasoningEffort
 }
 
 function displayThinkingLevelForTransportLevel(level: PiThinkingLevel, mapped: string | null | undefined): ButlerThinkingLevel {
+  if (level === "off" && mapped === "none") return "off";
   if (mapped === "default" || mapped === "none" || mapped === "thinking" || mapped === "max") return mapped;
   return level;
 }
@@ -108,7 +112,7 @@ function nativeThinkingFormat(model: Model<Api>): string | null {
  * shows provider semantics instead of Pi's implementation detail.
  */
 function supportedThinkingLevelsForModel(model: Model<Api>): { levels: ButlerThinkingLevel[]; transports: Partial<Record<ButlerThinkingLevel, PiThinkingLevel>> } {
-  if (!model.reasoning) return { levels: ["off"], transports: { off: "off" } };
+  if (!model.reasoning) return { levels: [], transports: {} };
   const thinkingLevelMap = (model as { thinkingLevelMap?: Partial<Record<ButlerThinkingLevel, string | null>> }).thinkingLevelMap;
   const levels: ButlerThinkingLevel[] = [];
   const transports: Partial<Record<ButlerThinkingLevel, PiThinkingLevel>> = {};
@@ -163,6 +167,10 @@ type ProviderModelInput = string | {
 
 function modelInputId(entry: ProviderModelInput): string {
   return typeof entry === "string" ? entry : entry.id;
+}
+
+function sortModelInputsAscending(models: ProviderModelInput[]): ProviderModelInput[] {
+  return [...models].sort((left, right) => compareModelIdsAscending(modelInputId(left), modelInputId(right)));
 }
 
 function resolveModelEntry(entry: ProviderModelInput): ProviderModelEntry {
@@ -282,7 +290,16 @@ async function modelsJsonApiKey(provider: CloudLikeProvider, env: NodeJS.Process
 async function resolveOllamaLocalProviderModels(provider: OllamaLocalProvider): Promise<ProviderModelInput[]> {
   if (provider.models.length > 0) return provider.models;
   const discovered = await fetchOllamaLocalModels({ nativeBaseUrl: provider.nativeBaseUrl, timeoutMs: 2_500 }).catch(() => []);
-  return discovered.map((model) => ({ id: model.id, contextWindow: model.contextWindow }));
+  return discovered.map((model) => {
+    const metadata = ollamaOpenAiThinkingMetadata(model.capabilities);
+    return {
+      id: model.id,
+      contextWindow: model.contextWindow,
+      reasoning: metadata?.reasoning ?? null,
+      thinkingLevelMap: metadata?.thinkingLevelMap,
+      compat: metadata?.compat
+    };
+  });
 }
 
 async function buildOllamaLocalProviderConfig(provider: OllamaLocalProvider, env: NodeJS.ProcessEnv): Promise<ResolvedProviderConfig | null> {
@@ -317,6 +334,20 @@ function mergeDiscoveredModels(configured: ProviderModelInput[], discovered: Pro
   });
 }
 
+function withOllamaCloudOpenCodeMetadata(entry: ProviderModelInput): ProviderModelInput {
+  const base = typeof entry === "string" ? { id: entry } : entry;
+  if (base.reasoning === false) return base;
+  const metadata = opencodeOpenAiCompatibleModelMetadata(base.id);
+  return {
+    ...base,
+    reasoning: base.reasoning ?? metadata.reasoning ?? null,
+    thinkingLevelMap: mergeThinkingLevelMaps(metadata.thinkingLevelMap, base.thinkingLevelMap),
+    compat: metadata.compat || base.compat
+      ? { ...(metadata.compat ?? {}), ...(base.compat ?? {}) }
+      : undefined
+  };
+}
+
 async function buildOllamaCloudProviderConfig(provider: CloudLikeProvider, env: NodeJS.ProcessEnv, options: { forModelsJson?: boolean } = {}): Promise<ResolvedProviderConfig | null> {
   if (!provider.enabled) return null;
   const apiKey = provider.apiKeySource ? await readSecretSourceValue(provider.apiKeySource, env) : null;
@@ -327,12 +358,29 @@ async function buildOllamaCloudProviderConfig(provider: CloudLikeProvider, env: 
     timeoutMs: CONFIGURED_PROVIDER_DISCOVERY_TIMEOUT_MS
   }).catch(() => []);
   let models = provider.models;
-  models = mergeDiscoveredModels(models, discovered.map((model) => ({ id: model.id, contextWindow: model.contextWindow })));
+  models = mergeDiscoveredModels(models, discovered.map((model) => {
+    const metadata = model.capabilities?.some((entry) => entry.trim().toLowerCase() === "thinking")
+      ? opencodeOpenAiCompatibleModelMetadata(model.id)
+      : ollamaOpenAiThinkingMetadata(model.capabilities);
+    return {
+      id: model.id,
+      contextWindow: model.contextWindow,
+      reasoning: metadata?.reasoning ?? null,
+      thinkingLevelMap: metadata?.thinkingLevelMap,
+      compat: metadata?.compat
+    };
+  }));
   if (models.length === 0) return null;
   models = await enrichModelsWithOpenRouterCapabilities(models, { timeoutMs: CONFIGURED_PROVIDER_DISCOVERY_TIMEOUT_MS })
     .catch(() => models);
+  models = sortModelInputsAscending(models.map(withOllamaCloudOpenCodeMetadata));
   const configApiKey = options.forModelsJson ? await modelsJsonApiKey(provider, env, apiKey) : apiKey;
-  return buildProviderConfig({ ...provider, models }, configApiKey, { useBuiltInModels: false });
+  return buildProviderConfig({
+    ...provider,
+    models,
+    reasoning: false,
+    supportsReasoningEffort: true
+  }, configApiKey, { useBuiltInModels: false });
 }
 
 async function registerOllamaCloudProvider(registry: ModelRegistry, provider: CloudLikeProvider, env: NodeJS.ProcessEnv): Promise<boolean> {

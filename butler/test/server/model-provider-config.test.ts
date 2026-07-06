@@ -21,6 +21,7 @@ import { clearOpenRouterModelCapabilitiesCache } from "../../src/server/openrout
 import { isChatGptSubscriptionModelAvailable } from "../../src/server/chatgpt-entitlement.js";
 import {
   getModelCapabilityMetadata,
+  ollamaOpenAiThinkingMetadata,
   thinkingLevelMapFromSupportedEfforts
 } from "../../src/server/model-capabilities.js";
 import { setActiveManorSettings } from "../../src/server/manor-settings-runtime.js";
@@ -116,6 +117,24 @@ test("getModelCapabilityMetadata matches GLM-5.2 by alias", () => {
   assert.equal(getModelCapabilityMetadata("glm-4.9"), null);
 });
 
+test("ollamaOpenAiThinkingMetadata maps native thinking capability to explicit OpenAI-compatible efforts", () => {
+  const metadata = ollamaOpenAiThinkingMetadata(["completion", "tools", "thinking"]);
+  assert.equal(metadata?.reasoning, true);
+  assert.deepEqual(metadata?.thinkingLevelMap, {
+    off: "none",
+    none: "none",
+    minimal: null,
+    low: "low",
+    medium: "medium",
+    high: "high",
+    xhigh: "max",
+    max: "max"
+  });
+  assert.equal(metadata?.compat?.supportsReasoningEffort, true);
+  assert.deepEqual(ollamaOpenAiThinkingMetadata(["completion"]), { reasoning: false, __source: "provider-manifest" });
+  assert.equal(ollamaOpenAiThinkingMetadata(null), null);
+});
+
 test("registerManorProviders registers Ollama Cloud models from env", async () => {
   clearOllamaCloudModelsCache();
   const originalFetch = globalThis.fetch;
@@ -205,6 +224,128 @@ test("registerManorProviders bounds Ollama Cloud discovery even without fallback
   assert.ok(Date.now() - startedAt < 2_500);
   assert.equal(called, true);
   assert.deepEqual(registry.getAvailable().filter((model) => model.provider === "ollama-cloud"), []);
+});
+
+test("registerManorProviders derives Ollama Cloud thinking levels from live capabilities", async (t) => {
+  clearOllamaCloudModelsCache();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL, init?: RequestInit): Promise<Response> => {
+    const url = String(input);
+    if (url === "https://ollama.example/api/tags") {
+      return Response.json({
+        models: [
+          { name: "qwen3.5:cloud" },
+          { name: "gpt-oss:20b" },
+          { name: "glm-5.2:cloud" },
+          { name: "deepseek-v4-flash:cloud" }
+        ]
+      });
+    }
+    if (url === "https://ollama.example/api/show") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
+      if (body.model === "glm-5.2:cloud") {
+        return Response.json({
+          capabilities: ["completion", "tools", "thinking"],
+          model_info: { "glm.context_length": 1_000_000 }
+        });
+      }
+      if (body.model === "deepseek-v4-flash:cloud") {
+        return Response.json({
+          capabilities: ["completion", "tools", "thinking"],
+          model_info: { "deepseek.context_length": 131_072 }
+        });
+      }
+      if (body.model === "qwen3.5:cloud") {
+        return Response.json({
+          capabilities: ["completion", "tools", "thinking"],
+          model_info: { "qwen.context_length": 262_144 }
+        });
+      }
+      return Response.json({
+        capabilities: ["completion", "tools"],
+        model_info: { "gptoss.context_length": 128_000 }
+      });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    clearOllamaCloudModelsCache();
+  });
+
+  const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+  await registerManorProviders(registry, {
+    MANOR_OLLAMA_LOCAL_ENABLED: "0",
+    MANOR_OLLAMA_CLOUD_ENABLED: "1",
+    MANOR_OLLAMA_CLOUD_PROVIDER_ID: "ollama-cloud",
+    MANOR_OLLAMA_CLOUD_BASE_URL: "https://ollama.example/v1",
+    MANOR_OLLAMA_CLOUD_MODELS: "",
+    MANOR_OLLAMA_WEB_TOOLS_BASE_URL: "https://ollama.example/api",
+    OLLAMA_API_KEY: "test-key"
+  } as NodeJS.ProcessEnv);
+
+  const models = registry.getAvailable().filter((model) => model.provider === "ollama-cloud");
+  assert.deepEqual(models.map((model) => model.id), ["deepseek-v4-flash:cloud", "glm-5.2:cloud", "gpt-oss:20b", "qwen3.5:cloud"]);
+
+  const glmModel = models.find((model) => model.id === "glm-5.2:cloud")!;
+  assert.equal(glmModel.contextWindow, 1_000_000);
+  assert.equal(glmModel.reasoning, true);
+  assert.equal(glmModel.compat?.supportsReasoningEffort, true);
+  const glmOption = modelToModelOption(glmModel);
+  assert.deepEqual(glmOption.supportedThinkingLevels, ["high", "max"]);
+  assert.deepEqual(glmOption.supportedReasoningEfforts, ["high", "max"]);
+  assert.equal(glmOption.defaultReasoningEffort, "high");
+  assert.deepEqual(glmOption.thinkingLevelTransports, { high: "high", max: "xhigh" });
+
+  const deepseekOption = modelToModelOption(models.find((model) => model.id === "deepseek-v4-flash:cloud")!);
+  assert.deepEqual(deepseekOption.supportedThinkingLevels, ["low", "medium", "high", "max"]);
+  assert.deepEqual(deepseekOption.supportedReasoningEfforts, ["low", "medium", "high", "max"]);
+
+  const qwenOption = modelToModelOption(models.find((model) => model.id === "qwen3.5:cloud")!);
+  assert.equal(qwenOption.supportsReasoning, true);
+  assert.deepEqual(qwenOption.supportedThinkingLevels, []);
+  assert.deepEqual(qwenOption.supportedReasoningEfforts, []);
+
+  const plainOption = modelToModelOption(models.find((model) => model.id === "gpt-oss:20b")!);
+  assert.equal(plainOption.supportsReasoning, false);
+  assert.deepEqual(plainOption.supportedThinkingLevels, []);
+  assert.deepEqual(plainOption.supportedReasoningEfforts, []);
+});
+
+test("registerManorProviders applies OpenCode-style Ollama Cloud metadata to configured fallback models", async (t) => {
+  clearOllamaCloudModelsCache();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("no live discovery in this test");
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    clearOllamaCloudModelsCache();
+  });
+
+  const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+  await registerManorProviders(registry, {
+    MANOR_OLLAMA_LOCAL_ENABLED: "0",
+    MANOR_OLLAMA_CLOUD_ENABLED: "1",
+    MANOR_OLLAMA_CLOUD_PROVIDER_ID: "ollama-cloud",
+    MANOR_OLLAMA_CLOUD_BASE_URL: "https://ollama.example/v1",
+    MANOR_OLLAMA_CLOUD_MODELS: "qwen3.5,north-mini-code,glm-5.2,deepseek-v4-flash",
+    OLLAMA_API_KEY: "test-key"
+  } as NodeJS.ProcessEnv);
+
+  const models = registry.getAvailable().filter((model) => model.provider === "ollama-cloud");
+  assert.deepEqual(models.map((model) => model.id), ["deepseek-v4-flash", "glm-5.2", "north-mini-code", "qwen3.5"]);
+  const glmOption = modelToModelOption(models.find((model) => model.id === "glm-5.2")!);
+  assert.deepEqual(glmOption.supportedThinkingLevels, ["high", "max"]);
+
+  const deepseekOption = modelToModelOption(models.find((model) => model.id === "deepseek-v4-flash")!);
+  assert.deepEqual(deepseekOption.supportedThinkingLevels, ["low", "medium", "high", "max"]);
+
+  const qwenOption = modelToModelOption(models.find((model) => model.id === "qwen3.5")!);
+  assert.deepEqual(qwenOption.supportedThinkingLevels, []);
+
+  const northMiniOption = modelToModelOption(models.find((model) => model.id === "north-mini-code")!);
+  assert.deepEqual(northMiniOption.supportedThinkingLevels, ["off", "high"]);
 });
 
 test("registerManorProviders registers Ollama Local models without a real API key", async () => {

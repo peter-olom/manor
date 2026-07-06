@@ -1,7 +1,12 @@
 import { readSecretSourceValue } from "./manor-settings-runtime.js";
+import { compareModelIdsAscending } from "./model-id-sort.js";
 import type { ManorSettings } from "../shared/settings.js";
 
-export type OllamaCloudModelInfo = { id: string; contextWindow: number | null };
+export type OllamaCloudModelInfo = {
+  id: string;
+  contextWindow: number | null;
+  capabilities: string[] | null;
+};
 
 type FetchJsonResult<T> = { ok: boolean; status: number; data: T | null; text: string };
 
@@ -17,6 +22,23 @@ async function fetchJson<T>(url: string, init: RequestInit, timeoutMs: number): 
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function stringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  return value
+    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    .map((entry) => entry.trim());
+}
+
+function contextWindowFromModelInfo(value: unknown): number | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  for (const key of Object.keys(value)) {
+    if (!key.endsWith(".context_length")) continue;
+    const candidate = (value as Record<string, unknown>)[key];
+    if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
+  }
+  return null;
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -38,33 +60,32 @@ async function fetchOllamaCloudModelsOnce(settings: ManorSettings, env: NodeJS.P
     throw new Error(`Failed to list Ollama Cloud models (HTTP ${tagsRes.status}): ${tagsRes.text.slice(0, 800)}`);
   }
 
-  const modelNames = tagsRes.data.models
+  const modelNames = Array.from(new Set(tagsRes.data.models
     .map((m) => m.name ?? m.model)
-    .filter((name): name is string => Boolean(name));
+    .filter((name): name is string => Boolean(name))))
+    .sort(compareModelIdsAscending);
 
   const infos = await Promise.all(modelNames.map(async (name) => {
     try {
-      const showRes = await fetchJson<{ model_info?: Record<string, unknown> }>(`${nativeBase}/show`, {
+      const showRes = await fetchJson<{ capabilities?: string[]; model_info?: Record<string, unknown> }>(`${nativeBase}/show`, {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify({ model: name })
       }, Math.min(timeoutMs, 15_000));
-      let contextWindow: number | null = null;
-      if (showRes.ok && showRes.data?.model_info) {
-        for (const key of Object.keys(showRes.data.model_info)) {
-          if (key.endsWith(".context_length")) {
-            const val = showRes.data.model_info[key];
-            if (typeof val === "number") { contextWindow = val; break; }
-          }
-        }
+      if (showRes.ok) {
+        return {
+          id: name,
+          capabilities: stringArray(showRes.data?.capabilities),
+          contextWindow: contextWindowFromModelInfo(showRes.data?.model_info)
+        } as OllamaCloudModelInfo;
       }
-      return { id: name, contextWindow } as OllamaCloudModelInfo;
+      return { id: name, contextWindow: null, capabilities: null } as OllamaCloudModelInfo;
     } catch {
-      return { id: name, contextWindow: null } as OllamaCloudModelInfo;
+      return { id: name, contextWindow: null, capabilities: null } as OllamaCloudModelInfo;
     }
   }));
 
-  return infos;
+  return infos.sort((left, right) => compareModelIdsAscending(left.id, right.id));
 }
 
 type CacheEntry = {

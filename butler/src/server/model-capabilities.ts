@@ -41,6 +41,42 @@ export function mergeThinkingLevelMaps(...maps: Array<Partial<Record<SettingsThi
   return mergeRecord(...maps);
 }
 
+/**
+ * Ollama's native model metadata exposes a coarse `thinking` capability, while
+ * the Pi/OpenAI-compatible route needs concrete effort values in the outgoing
+ * request. OpenCode's provider layer handles this as two separate concerns:
+ * first decide whether a model can reason, then attach provider-specific
+ * variants that map UI choices to the transport payload.
+ *
+ * We mirror that shape for Ollama. The picker shows the human-facing `max`
+ * variant, but Pi still transports it as its fixed `xhigh` level; the model map
+ * then converts that to Ollama's `max` effort. `off` is also explicit because
+ * Ollama can enable thinking by default for thinking-capable models, and an
+ * omitted request field is not a reliable off switch.
+ */
+export function ollamaOpenAiThinkingMetadata(capabilities: readonly string[] | null | undefined): ModelCapabilityMetadata | null {
+  if (!capabilities) return null;
+  const normalized = new Set(capabilities.map((entry) => entry.trim().toLowerCase()).filter(Boolean));
+  if (!normalized.has("thinking")) {
+    return { reasoning: false, __source: "provider-manifest" };
+  }
+  return {
+    reasoning: true,
+    thinkingLevelMap: {
+      off: "none",
+      none: "none",
+      minimal: null,
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "max",
+      max: "max"
+    },
+    compat: { supportsReasoningEffort: true },
+    __source: "provider-manifest"
+  };
+}
+
 export function thinkingLevelMapFromSupportedEfforts(efforts: readonly string[] | null): Partial<Record<SettingsThinkingLevel, string | null>> | undefined {
   if (efforts === null) return undefined;
   if (efforts.length === 0) return undefined;

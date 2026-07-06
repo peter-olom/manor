@@ -1,98 +1,13 @@
 import crypto from "node:crypto";
 
 import { readSecretSourceValue } from "./manor-settings-runtime.js";
-import type { ManorSettings, SettingsProviderModel, SettingsThinkingLevel } from "../shared/settings.js";
+import { compareModelIdsAscending } from "./model-id-sort.js";
+import { opencodeOpenAiCompatibleModelMetadata } from "./opencode-openai-compatible-transform.js";
+import type { ManorSettings, SettingsProviderModel } from "../shared/settings.js";
 
 export type OpencodeGoModelInfo = { id: string };
 
 type FetchJsonResult<T> = { ok: boolean; status: number; data: T | null; text: string };
-
-const OPENCODE_GO_GLM52_THINKING_LEVEL_MAP = {
-  off: null,
-  none: null,
-  minimal: null,
-  low: null,
-  medium: null,
-  high: "high",
-  xhigh: "max"
-} satisfies Partial<Record<SettingsThinkingLevel, string | null>>;
-
-const OPENCODE_GO_NO_VARIANT_THINKING_LEVEL_MAP = {
-  off: null,
-  minimal: null,
-  low: null,
-  medium: null,
-  high: null,
-  xhigh: null
-} satisfies Partial<Record<SettingsThinkingLevel, string | null>>;
-
-const OPENCODE_GO_STANDARD_REASONING_LEVEL_MAP = {
-  off: null,
-  minimal: null,
-  low: "low",
-  medium: "medium",
-  high: "high",
-  xhigh: null
-} satisfies Partial<Record<SettingsThinkingLevel, string | null>>;
-
-const OPENCODE_GO_DEEPSEEK_V4_REASONING_LEVEL_MAP = {
-  off: null,
-  minimal: null,
-  low: "low",
-  medium: "medium",
-  high: "high",
-  xhigh: "max"
-} satisfies Partial<Record<SettingsThinkingLevel, string | null>>;
-
-const OPENCODE_GO_NORTH_MINI_CODE_REASONING_LEVEL_MAP = {
-  off: "none",
-  minimal: null,
-  low: null,
-  medium: null,
-  high: "high",
-  xhigh: null
-} satisfies Partial<Record<SettingsThinkingLevel, string | null>>;
-
-const OPENCODE_GO_MINIMAX_M3_THINKING_LEVEL_MAP = {
-  off: "default",
-  minimal: "none",
-  low: null,
-  medium: null,
-  high: null,
-  xhigh: "thinking"
-} satisfies Partial<Record<SettingsThinkingLevel, string | null>>;
-
-/**
- * Return whether OpenCode's transform layer treats the model as a GLM-5.2
- * variant. OpenCode currently accepts the dotted, dashed, and compact spellings
- * because different upstream providers expose the same model family under
- * slightly different IDs.
- */
-function isGlm52ModelId(id: string): boolean {
-  const normalized = id.toLowerCase();
-  return ["glm-5.2", "glm-5-2", "glm-5p2"].some((alias) => normalized.includes(alias));
-}
-
-/**
- * Return whether OpenCode's OpenAI-compatible transform deliberately exposes no
- * selectable variants for the model family. These models may still reason, but
- * OpenCode does not let the user choose a reasoning effort because the upstream
- * either ignores that knob, controls thinking through a provider-specific body
- * field, or enables thinking by model default.
- */
-function opencodeGoSuppressesSelectableVariants(id: string): boolean {
-  return id.includes("deepseek-chat") ||
-    id.includes("deepseek-reasoner") ||
-    id.includes("deepseek-r1") ||
-    id.includes("deepseek-v3") ||
-    id.includes("minimax") ||
-    (id.includes("glm") && !isGlm52ModelId(id)) ||
-    id.includes("kimi") ||
-    id.includes("k2p") ||
-    id.includes("qwen") ||
-    id.includes("big-pickle") ||
-    (id.includes("grok") && !id.includes("grok-3-mini"));
-}
 
 /**
  * Mirrors OpenCode's OpenAI-compatible variant transform for OpenCode Go.
@@ -116,61 +31,7 @@ function opencodeGoSuppressesSelectableVariants(id: string): boolean {
  * parameter OpenCode would not send.
  */
 export function opencodeGoModelMetadata(id: string): Omit<Exclude<SettingsProviderModel, string>, "id"> {
-  const normalized = id.toLowerCase();
-  if (normalized.includes("minimax-m3")) {
-    return {
-      reasoning: true,
-      thinkingLevelMap: OPENCODE_GO_MINIMAX_M3_THINKING_LEVEL_MAP,
-      compat: { supportsReasoningEffort: true, nativeThinkingFormat: "minimax-m3" }
-    };
-  }
-  if (isGlm52ModelId(id)) {
-    return {
-      reasoning: true,
-      thinkingLevelMap: OPENCODE_GO_GLM52_THINKING_LEVEL_MAP,
-      compat: { supportsReasoningEffort: true }
-    };
-  }
-  if (normalized.includes("grok-3-mini")) {
-    return {
-      reasoning: true,
-      thinkingLevelMap: {
-        off: null,
-        minimal: null,
-        low: "low",
-        medium: null,
-        high: "high",
-        xhigh: null
-      },
-      compat: { supportsReasoningEffort: true }
-    };
-  }
-  if (opencodeGoSuppressesSelectableVariants(normalized)) {
-    return {
-      reasoning: true,
-      thinkingLevelMap: OPENCODE_GO_NO_VARIANT_THINKING_LEVEL_MAP,
-      compat: { supportsReasoningEffort: false }
-    };
-  }
-  if (normalized.includes("north-mini-code")) {
-    return {
-      reasoning: true,
-      thinkingLevelMap: OPENCODE_GO_NORTH_MINI_CODE_REASONING_LEVEL_MAP,
-      compat: { supportsReasoningEffort: true }
-    };
-  }
-  if (normalized.includes("deepseek-v4")) {
-    return {
-      reasoning: true,
-      thinkingLevelMap: OPENCODE_GO_DEEPSEEK_V4_REASONING_LEVEL_MAP,
-      compat: { supportsReasoningEffort: true }
-    };
-  }
-  return {
-    reasoning: true,
-    thinkingLevelMap: OPENCODE_GO_STANDARD_REASONING_LEVEL_MAP,
-    compat: { supportsReasoningEffort: true }
-  };
+  return opencodeOpenAiCompatibleModelMetadata(id, { nativeMinimaxM3: true });
 }
 
 /**
@@ -206,56 +67,6 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
     const timeout = setTimeout(() => reject(new Error("Timed out listing OpenCode Go models.")), timeoutMs);
     promise.then(resolve, reject).finally(() => clearTimeout(timeout));
   });
-}
-
-const MODEL_TIER_RANK: Record<string, number> = {
-  max: 90,
-  ultra: 80,
-  pro: 70,
-  plus: 60,
-  code: 50,
-  omni: 45,
-  flash: 40,
-  mini: 30,
-  small: 20,
-  preview: 10
-};
-
-function modelFamilyPrefix(id: string): string {
-  return id.toLowerCase().match(/^[^0-9]+/)?.[0] ?? id.toLowerCase();
-}
-
-function modelVersionParts(id: string): number[] {
-  return Array.from(id.matchAll(/\d+(?:\.\d+)*/g))
-    .flatMap((match) => match[0].split(".").map((part) => Number(part)))
-    .filter((value) => Number.isFinite(value));
-}
-
-function modelTierRank(id: string): number {
-  const tokens = id.toLowerCase().split(/[^a-z0-9]+/g);
-  return tokens.reduce((score, token) => Math.max(score, MODEL_TIER_RANK[token] ?? 0), 0);
-}
-
-function compareNumberArraysAscending(left: readonly number[], right: readonly number[]): number {
-  const length = Math.max(left.length, right.length);
-  for (let index = 0; index < length; index++) {
-    const leftPart = left[index] ?? -1;
-    const rightPart = right[index] ?? -1;
-    if (leftPart !== rightPart) return leftPart - rightPart;
-  }
-  return 0;
-}
-
-function compareModelIdsAscending(left: string, right: string): number {
-  const leftFamily = modelFamilyPrefix(left);
-  const rightFamily = modelFamilyPrefix(right);
-  if (leftFamily === rightFamily) {
-    const versionOrder = compareNumberArraysAscending(modelVersionParts(left), modelVersionParts(right));
-    if (versionOrder !== 0) return versionOrder;
-    const tierOrder = modelTierRank(left) - modelTierRank(right);
-    if (tierOrder !== 0) return tierOrder;
-  }
-  return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
 }
 
 async function fetchOpencodeGoModelsOnce(settings: ManorSettings, apiKey: string, timeoutMs = 30_000): Promise<OpencodeGoModelInfo[]> {
