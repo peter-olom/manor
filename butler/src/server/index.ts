@@ -35,7 +35,8 @@ import { registerRuntimeResourceRoutes } from "./runtime-resource-routes.js";
 import { ScratchPadStore } from "./scratch-pad-store.js";
 import { registerServerAssetRoutes } from "./server-asset-routes.js";
 import { registerDeviceAuthRoutes } from "./device-auth-routes.js";
-import { PiSessionTitleGenerator, readSessionTitleConfig } from "./session-title-generator.js";
+import { ManorSessionTitleGenerator, readSessionTitleConfig } from "./session-title-generator.js";
+import { ManorModelTaskRunner } from "./model-task-runner.js";
 import { configureSelfImprovementRequestState, SelfImprovementRequestState } from "./self-improvement-request-state.js";
 import { registerSelfImprovementRoutes } from "./self-improvement-routes.js";
 import { retrieveButlerMemoryWithEmbeddings } from "./memory-retrieval.js";
@@ -114,12 +115,16 @@ await selfImprovementRequests.load();
 configureSelfImprovementRequestState(selfImprovementRequests);
 const piAuthPath = path.join(piAgentDir, "auth.json"); const codexAuthPath = path.join(codexHomeDir, "auth.json");
 const piRpcWorkerClient = new PiRpcWorkerClient({ store, piAuthPath, sessionRootDir: path.join(stateDir, "pi-worker-sessions") });
-const sessionTitleGenerator = new PiSessionTitleGenerator({ piAuthPath, ...readSessionTitleConfig() });
+const modelTasks = new ManorModelTaskRunner({ stateDir, codexHomeDir, piAuthPath });
+const sessionTitleGenerator = new ManorSessionTitleGenerator({
+  ...readSessionTitleConfig(),
+  runner: async (input) => modelTasks.runText({ purpose: "session title", ...input })
+});
 const { memoryReview, memoryScheduler, memoryPromotion, memoryEmbeddings, memorySemanticEdges, applySettings: applyBackgroundSettings } = createBackgroundModelServices({
   store,
   stateDir,
   codexHomeDir,
-  piAuthPath
+  modelTasks
 });
 store.setMemoryUpdateObserver(memoryScheduler);
 const codexHarness = new CodexHarnessService({

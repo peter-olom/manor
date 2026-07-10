@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { getJson, patchJson, postJson } from "./api";
-import { ModelPicker, type ModelPickerGroup, type ModelPickerOption } from "./ModelPicker";
-import { SetupTabIcon, WarningIcon } from "./icons";
+import { ModelPicker, modelOptionValue, type ModelPickerGroup, type ModelPickerOption } from "./ModelPicker";
+import { WarningIcon } from "./icons";
 import type {
   ManorSettings,
   ManorSettingsProvenance,
@@ -26,9 +26,11 @@ type SettingsResponse = {
     piRpc: ModelOption[];
     ollamaLocal: ModelOption[];
     opencodeGo: ModelOption[];
+    modelTasks: ModelOption[];
     worker: { availableModels: ModelOption[] };
   };
   providerAvailability: SettingsProviderAvailabilityMap;
+  modelTaskProviderAvailability: SettingsProviderAvailabilityMap;
   openaiCodexAuth?: { butler: AuthStatusView; codex: AuthStatusView };
   validation: SettingsValidationMap;
 };
@@ -73,16 +75,16 @@ const VALIDATION_LABELS: Record<SettingsValidationKey, string> = {
 
 export type SettingsSectionId = "runtime" | "providers" | "memory" | "diagnostics";
 export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; description: string }[] = [
-  { id: "runtime", label: "Runtime", description: "Operator and background tasks" },
+  { id: "runtime", label: "Runtime", description: "Operator, Worker, and titles" },
   { id: "providers", label: "Providers", description: "Model and tool access" },
-  { id: "memory", label: "Memory", description: "Synthesis and embeddings" },
+  { id: "memory", label: "Memory", description: "Models, synthesis, and embeddings" },
   { id: "diagnostics", label: "Diagnostics", description: "Connection tests" }
 ];
 
 const SECTION_HELP: Record<SettingsSectionId, string> = {
   providers: "Configure the model providers (OpenAI/Codex, Ollama Local, Ollama Cloud, OpenCode Go) and web tools Butler can use.",
-  runtime: "Set the operator name, the first Worker default, and models for supporting tasks. Session and Worker model picks carry over automatically.",
-  memory: "Tune synthesis, promotion, semantic review, and embedding backfill behavior.",
+  runtime: "Set the operator name, the first Worker default, and the model used for session titles. Session and Worker model picks carry over automatically.",
+  memory: "Choose the models and behavior used to synthesize, promote, and connect memory.",
   diagnostics: "Run connection checks for the services Butler depends on."
 };
 
@@ -190,6 +192,47 @@ function providerLabel(provider: string): string {
   return PROVIDER_LABELS[provider] ?? provider;
 }
 
+export function resolveProviderSettingsParam(provider: string | null, aliases: Record<string, string>): string | null {
+  if (!provider) return null;
+  if (aliases[provider]) return aliases[provider];
+  if (provider === "ollama-local") return "ollama-local";
+  if (provider === "ollama-cloud") return "ollama";
+  if (provider === "opencode-go") return "opencode";
+  if (provider === "openai" || provider === "openai-codex") return "openai";
+  return null;
+}
+
+function matchingModels(value: string, models: ModelOption[]): ModelOption[] {
+  return models.filter((model) => {
+    const optionValue = modelOptionValue(model as ModelPickerOption);
+    if (model.id === value || optionValue === value) return true;
+    return !value.includes("/") && optionValue.endsWith(`/${value}`);
+  });
+}
+
+export function resolveSettingsModelValue(value: string | null, models: ModelOption[]): string | null {
+  if (!value) return null;
+  const matches = matchingModels(value, models);
+  return matches.length === 1 ? modelOptionValue(matches[0] as ModelPickerOption) : null;
+}
+
+function modelProvider(value: string | null, models: ModelOption[]): string | null {
+  if (!value) return null;
+  const resolved = resolveSettingsModelValue(value, models);
+  const match = resolved ? models.find((model) => modelOptionValue(model as ModelPickerOption) === resolved) : null;
+  if (match?.provider) return match.provider;
+  return value.includes("/") ? value.slice(0, value.indexOf("/")) : null;
+}
+
+function taskRouteHint(value: string | null, models: ModelOption[], automaticHint: string): string {
+  const provider = modelProvider(value, models);
+  return provider ? `Manor runs this with ${providerLabel(provider)} automatically.` : automaticHint;
+}
+
+function seconds(milliseconds: number): number {
+  return Math.max(1, Math.round(milliseconds / 1000));
+}
+
 function formatBytes(value: number): string {
   if (value >= 1024 * 1024 * 1024) return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
   if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
@@ -204,7 +247,9 @@ function ModelSelectField({
   models,
   available,
   onChange,
-  disabled
+  disabled,
+  automaticLabel = "Automatic",
+  providerSettingsTabs = {}
 }: {
   label: string;
   hint?: string;
@@ -213,6 +258,8 @@ function ModelSelectField({
   available: SettingsProviderAvailabilityMap | null;
   onChange: (next: string | null) => void;
   disabled?: boolean;
+  automaticLabel?: string;
+  providerSettingsTabs?: Record<string, string>;
 }) {
   const filtered = useMemo(
     () => available
@@ -223,28 +270,49 @@ function ModelSelectField({
       : models,
     [available, models]
   );
+  const resolvedValue = resolveSettingsModelValue(value, filtered);
+  const selectedValue = resolvedValue ?? value;
+  const selectedIsAvailable = Boolean(resolvedValue);
+  const unavailableProvider = value?.includes("/") ? value.slice(0, value.indexOf("/")) : null;
+  const unavailableReason = unavailableProvider
+    ? available?.[unavailableProvider as ProviderKey]?.reason ?? null
+    : null;
+  const unavailableProviderTab = resolveProviderSettingsParam(unavailableProvider, providerSettingsTabs);
+  const pickerOptions = useMemo<ModelOption[]>(
+    () => value && !selectedIsAvailable
+      ? [{ id: value, label: `Unavailable · ${value}`, provider: unavailableProvider, disabled: true, disabledReason: unavailableReason } as ModelPickerOption, ...filtered]
+      : filtered,
+    [filtered, selectedIsAvailable, unavailableProvider, unavailableReason, value]
+  );
   const groups: ModelPickerGroup[] = useMemo(
-    () => groupModelsByProvider(filtered).map((group) => ({
+    () => groupModelsByProvider(pickerOptions).map((group) => ({
       provider: group.provider,
       label: providerLabel(group.provider),
       options: group.options as ModelPickerOption[]
     })),
-    [filtered]
+    [pickerOptions]
   );
-  const options = filtered as ModelPickerOption[];
+  const options = pickerOptions as ModelPickerOption[];
   return (
     <Field label={label} hint={hint}>
       <ModelPicker
         label={label}
-        value={value}
+        value={selectedValue}
         options={options}
         groups={groups}
-        placeholder="Model default"
-        disabled={disabled || filtered.length === 0}
+        placeholder={automaticLabel}
+        disabled={disabled || (filtered.length === 0 && !value)}
+        disabledPlaceholder="No authenticated models"
         allowClear
-        clearLabel="Use model default"
+        clearLabel={`Use ${automaticLabel.toLowerCase()}`}
         onChange={onChange}
       />
+      {value && !selectedIsAvailable ? (
+        <span className="settings-field-warning" role="status">
+          This saved model is unavailable. {unavailableReason ?? "Reconnect its provider or choose another model."}{" "}
+          <a href={unavailableProviderTab ? `/settings/providers?provider=${unavailableProviderTab}` : "/settings/providers"}>Open provider settings</a>
+        </span>
+      ) : null}
     </Field>
   );
 }
@@ -369,7 +437,7 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
   const [opencodeModelsLoading, setOpencodeModelsLoading] = useState(false);
   const [opencodeModelsError, setOpencodeModelsError] = useState<string | null>(null);
 
-  const butlerModels = useMemo(() => payload?.availableModels.butler ?? [], [payload]);
+  const taskModels = useMemo(() => payload?.availableModels.modelTasks ?? [], [payload]);
   const workerModels = useMemo(() => payload?.availableModels.worker.availableModels ?? [], [payload]);
 
   const dirty = Boolean(draft && payload && !settingsEqual(draft, payload.settings));
@@ -436,13 +504,14 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
   }
 
   async function reseed() {
+    if (!window.confirm("Reset all Manor settings to their environment and built-in defaults?")) return;
     setSaving(true);
     setMessage(null);
     try {
       const next = await postJson<SettingsResponse>("/api/settings/reseed", {});
       setPayload(next);
       setDraft(cloneSettings(next.settings));
-      setMessage("Reseed complete");
+      setMessage("Reset complete");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -659,34 +728,34 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
     );
   }
 
-  const savedMessage = message === "Saved" || message === "Reseed complete" ? message : null;
+  const providerSettingsTabs: Record<string, string> = {
+    [draft.providers.ollamaLocal.providerId]: "ollama-local",
+    [draft.providers.ollamaCloud.providerId]: "ollama",
+    [draft.providers.opencodeGo.providerId]: "opencode"
+  };
+
+  const savedMessage = message === "Saved" || message === "Reset complete" ? message : null;
   const errorMessage = message && !savedMessage ? message : null;
   const testing = validatingAll || Boolean(validating);
   const pullPercent = ollamaPullProgress ? Math.max(0, Math.min(100, (ollamaPullProgress.completed / ollamaPullProgress.total) * 100)) : null;
   const ollamaLocalPullEnabled = payload.settings.providers.ollamaLocal.enabled;
+  const settingsActions = (extra?: ReactNode) => (
+    <>
+      {extra}
+      <span className="settings-save-status" aria-live="polite">
+        {dirty ? "Unsaved changes" : savedMessage ?? "All changes saved"}
+      </span>
+      <button className="button is-primary" type="button" onClick={save} disabled={saving || testing || !dirty}>
+        {saving ? "Saving..." : "Save changes"}
+      </button>
+    </>
+  );
 
   return (
     <div className="settings-page">
-      <div className="settings-toolbar">
-        <div className="settings-title">
-          <SetupTabIcon />
-          <div>
-            <h1>Settings</h1>
-            <span>Runtime configuration</span>
-          </div>
-          {dirty ? <span className="settings-dirty">Unsaved changes</span> : null}
-          {savedMessage ? <span className="settings-saved">{savedMessage}</span> : null}
-        </div>
-        <div className="settings-actions">
-          <button className="button" type="button" onClick={reseed} disabled={saving || testing}>Reseed</button>
-          <button className="button is-primary" type="button" onClick={save} disabled={saving || testing || !dirty}>
-            {saving ? "Saving..." : "Save"}
-          </button>
-        </div>
-      </div>
-
       <div className="settings-content">
-        {activeSection === "providers" ? <Section id="providers" title="Providers">
+        {errorMessage ? <div className="settings-error settings-feedback"><WarningIcon />{errorMessage}</div> : null}
+        {activeSection === "providers" ? <Section id="providers" title="Providers" actions={settingsActions()}>
           <div className="settings-provider-tabs">
             <button className={`settings-provider-tab ${providerTab === "openai" ? "is-active" : ""}`} type="button" onClick={() => setProviderTab("openai")}>OpenAI / Codex</button>
             <button className={`settings-provider-tab ${providerTab === "ollamaLocal" ? "is-active" : ""}`} type="button" onClick={() => setProviderTab("ollamaLocal")}>Ollama Local</button>
@@ -906,7 +975,7 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
           ) : null}
         </Section> : null}
 
-        {activeSection === "runtime" ? <Section id="runtime" title="Runtime">
+        {activeSection === "runtime" ? <Section id="runtime" title="Runtime" actions={settingsActions()}>
           <SubGroup title="Operator">
             <FieldGrid>
               <Field label="Operator name" hint="How Butler should refer to you in chat. Leave blank for no name.">
@@ -926,68 +995,89 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
               />
             </FieldGrid>
           </SubGroup>
-          <SubGroup title={GROUP_LABELS.modelTasks}>
+          <SubGroup title="Session titles">
             <FieldGrid>
-              <Field label="Background task runner" hint="Chooses how Butler runs supporting tasks such as titles and memory.">
-                <select value={draft.modelTasks.runnerMode} onChange={(event) => update((s) => { s.modelTasks.runnerMode = event.target.value as never; })}>
-                  <option value="auto">Auto</option>
-                  <option value="codex">Codex</option>
-                  <option value="pi">Pi inline</option>
-                </select>
-              </Field>
               <ModelSelectField
-                label="Title model"
+                label="Preferred title model"
+                hint={`${taskRouteHint(draft.modelTasks.sessionTitleModel, taskModels, "Manor chooses the first authenticated provider automatically.")} If generation fails, Manor builds a short title from the first message.`}
                 value={draft.modelTasks.sessionTitleModel}
-                models={butlerModels}
-                available={payload.providerAvailability}
+                models={taskModels}
+                available={payload.modelTaskProviderAvailability}
+                providerSettingsTabs={providerSettingsTabs}
                 onChange={(next) => update((s) => { s.modelTasks.sessionTitleModel = next; })}
               />
-              <Field label="Title timeout (ms)"><input type="number" value={draft.modelTasks.sessionTitleTimeoutMs} onChange={(event) => update((s) => { s.modelTasks.sessionTitleTimeoutMs = Number(event.target.value); })} /></Field>
             </FieldGrid>
+            <details className="settings-advanced">
+              <summary>Advanced</summary>
+              <div className="settings-advanced-body">
+                <Field label="Title timeout" hint="Manor uses the message fallback if title generation exceeds this time.">
+                  <div className="settings-number-unit">
+                    <input min={1} max={60} step={1} type="number" value={seconds(draft.modelTasks.sessionTitleTimeoutMs)} onChange={(event) => update((s) => { s.modelTasks.sessionTitleTimeoutMs = Number(event.target.value) * 1000; })} />
+                    <span>seconds</span>
+                  </div>
+                </Field>
+              </div>
+            </details>
           </SubGroup>
         </Section> : null}
 
-        {activeSection === "memory" ? <Section id="memory" title="Memory">
-          <SubGroup title={GROUP_LABELS.memory}>
+        {activeSection === "memory" ? <Section id="memory" title="Memory" actions={settingsActions()}>
+          <SubGroup title="Memory processing">
             <ToggleGrid>
-              <Toggle label="Synthesis" hint="Run synthesis passes" checked={draft.memory.synthesisEnabled} onChange={(next) => update((s) => { s.memory.synthesisEnabled = next; })} />
-              <Toggle label="Auto promote" checked={draft.memory.promotionAutoResolve} onChange={(next) => update((s) => { s.memory.promotionAutoResolve = next; })} />
-              <Toggle label="Semantic edges" checked={draft.memory.semanticEdgeReviewEnabled} onChange={(next) => update((s) => { s.memory.semanticEdgeReviewEnabled = next; })} />
+              <Toggle label="Synthesis and review" hint="Turn completed work into reusable memory" checked={draft.memory.synthesisEnabled} onChange={(next) => update((s) => { s.memory.synthesisEnabled = next; })} />
+              <Toggle label="Automatic promotion" hint="Promote strong memory candidates without manual review" checked={draft.memory.promotionAutoResolve} onChange={(next) => update((s) => { s.memory.promotionAutoResolve = next; })} />
+              <Toggle label="Semantic relationships" hint="Connect related memories in the background" checked={draft.memory.semanticEdgeReviewEnabled} onChange={(next) => update((s) => { s.memory.semanticEdgeReviewEnabled = next; })} />
             </ToggleGrid>
+            <div className="settings-subgroup-divider" />
+            <div className="settings-subgroup-section-head">
+              <h4>Task models</h4>
+              <p>Manor uses each selected model through its authenticated provider automatically.</p>
+            </div>
             <FieldGrid>
               <ModelSelectField
-                label="Memory model"
-                hint="Model used to synthesize memory"
+                label="Review and synthesis model"
+                hint={taskRouteHint(draft.modelTasks.memorySynthesisModel, taskModels, "Manor chooses the first authenticated provider automatically.")}
                 value={draft.modelTasks.memorySynthesisModel}
-                models={butlerModels}
-                available={payload.providerAvailability}
+                models={taskModels}
+                available={payload.modelTaskProviderAvailability}
+                providerSettingsTabs={providerSettingsTabs}
                 onChange={(next) => update((s) => { s.modelTasks.memorySynthesisModel = next; })}
               />
               <ModelSelectField
                 label="Promotion model"
-                hint="Promotes memory candidates"
+                hint={draft.modelTasks.memoryPromotionModel
+                  ? taskRouteHint(draft.modelTasks.memoryPromotionModel, taskModels, "Manor reuses the review and synthesis model.")
+                  : "Automatic reuses the review and synthesis model."}
                 value={draft.modelTasks.memoryPromotionModel}
-                models={butlerModels}
-                available={payload.providerAvailability}
+                models={taskModels}
+                available={payload.modelTaskProviderAvailability}
+                providerSettingsTabs={providerSettingsTabs}
                 onChange={(next) => update((s) => { s.modelTasks.memoryPromotionModel = next; })}
               />
-              <Field label="Synthesis effort">
-                <select value={draft.memory.synthesisEffort ?? ""} onChange={(event) => update((s) => { s.memory.synthesisEffort = (event.target.value || null) as never; })}>
-                  <option value="">Default</option>
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                </select>
-              </Field>
-              <Field label="Timeout (ms)"><input type="number" value={draft.memory.synthesisTimeoutMs} onChange={(event) => update((s) => { s.memory.synthesisTimeoutMs = Number(event.target.value); })} /></Field>
-              <Field label="Max input chars"><input type="number" value={draft.memory.synthesisMaxInputChars} onChange={(event) => update((s) => { s.memory.synthesisMaxInputChars = Number(event.target.value); })} /></Field>
-              <Field label="Candidates per run"><input type="number" value={draft.memory.synthesisMaxCandidatesPerRun} onChange={(event) => update((s) => { s.memory.synthesisMaxCandidatesPerRun = Number(event.target.value); })} /></Field>
-              <Field label="Promotion batch"><input type="number" value={draft.memory.promotionBatchSize} onChange={(event) => update((s) => { s.memory.promotionBatchSize = Number(event.target.value); })} /></Field>
-              <Field label="Promotion max batches"><input type="number" value={draft.memory.promotionMaxBatchesPerRun} onChange={(event) => update((s) => { s.memory.promotionMaxBatchesPerRun = Number(event.target.value); })} /></Field>
-              <Field label="Promotion interval (ms)"><input type="number" value={draft.memory.promotionIntervalMs} onChange={(event) => update((s) => { s.memory.promotionIntervalMs = Number(event.target.value); })} /></Field>
-              <Field label="Semantic batch"><input type="number" value={draft.memory.semanticEdgeReviewBatchSize} onChange={(event) => update((s) => { s.memory.semanticEdgeReviewBatchSize = Number(event.target.value); })} /></Field>
-              <Field label="Semantic interval (ms)"><input type="number" value={draft.memory.semanticEdgeReviewIntervalMs} onChange={(event) => update((s) => { s.memory.semanticEdgeReviewIntervalMs = Number(event.target.value); })} /></Field>
             </FieldGrid>
+            <details className="settings-advanced">
+              <summary>Advanced tuning</summary>
+              <div className="settings-advanced-body">
+                <FieldGrid>
+                  <Field label="Synthesis effort">
+                    <select value={draft.memory.synthesisEffort ?? ""} onChange={(event) => update((s) => { s.memory.synthesisEffort = (event.target.value || null) as never; })}>
+                      <option value="">Model default</option>
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                    </select>
+                  </Field>
+                  <Field label="Task timeout"><div className="settings-number-unit"><input min={5} max={600} step={5} type="number" value={seconds(draft.memory.synthesisTimeoutMs)} onChange={(event) => update((s) => { s.memory.synthesisTimeoutMs = Number(event.target.value) * 1000; })} /><span>seconds</span></div></Field>
+                  <Field label="Maximum input characters"><input min={2000} max={200000} step={1000} type="number" value={draft.memory.synthesisMaxInputChars} onChange={(event) => update((s) => { s.memory.synthesisMaxInputChars = Number(event.target.value); })} /></Field>
+                  <Field label="Candidates per run"><input min={1} max={50} type="number" value={draft.memory.synthesisMaxCandidatesPerRun} onChange={(event) => update((s) => { s.memory.synthesisMaxCandidatesPerRun = Number(event.target.value); })} /></Field>
+                  <Field label="Promotion batch size"><input min={1} max={50} type="number" value={draft.memory.promotionBatchSize} onChange={(event) => update((s) => { s.memory.promotionBatchSize = Number(event.target.value); })} /></Field>
+                  <Field label="Promotion batches per run"><input min={1} max={25} type="number" value={draft.memory.promotionMaxBatchesPerRun} onChange={(event) => update((s) => { s.memory.promotionMaxBatchesPerRun = Number(event.target.value); })} /></Field>
+                  <Field label="Promotion interval"><div className="settings-number-unit"><input min={1} max={300} type="number" value={seconds(draft.memory.promotionIntervalMs)} onChange={(event) => update((s) => { s.memory.promotionIntervalMs = Number(event.target.value) * 1000; })} /><span>seconds</span></div></Field>
+                  <Field label="Relationship review batch"><input min={1} max={50} type="number" value={draft.memory.semanticEdgeReviewBatchSize} onChange={(event) => update((s) => { s.memory.semanticEdgeReviewBatchSize = Number(event.target.value); })} /></Field>
+                  <Field label="Relationship review interval"><div className="settings-number-unit"><input min={5} max={1800} step={5} type="number" value={seconds(draft.memory.semanticEdgeReviewIntervalMs)} onChange={(event) => update((s) => { s.memory.semanticEdgeReviewIntervalMs = Number(event.target.value) * 1000; })} /><span>seconds</span></div></Field>
+                </FieldGrid>
+              </div>
+            </details>
           </SubGroup>
 
           <SubGroup title={GROUP_LABELS.embeddings}
@@ -999,16 +1089,23 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
             <FieldGrid>
               <Field label="Host" hint="Any Ollama-compatible /api/embed endpoint (local or remote)"><input value={draft.embeddings.host} onChange={(event) => update((s) => { s.embeddings.host = event.target.value; })} /></Field>
               <Field label="Model"><input value={draft.embeddings.model} onChange={(event) => update((s) => { s.embeddings.model = event.target.value; })} /></Field>
-              <Field label="Timeout (ms)"><input type="number" value={draft.embeddings.timeoutMs} onChange={(event) => update((s) => { s.embeddings.timeoutMs = Number(event.target.value); })} /></Field>
-              <Field label="Backfill batch size"><input type="number" value={draft.embeddings.backfillBatchSize} onChange={(event) => update((s) => { s.embeddings.backfillBatchSize = Number(event.target.value); })} /></Field>
             </FieldGrid>
+            <details className="settings-advanced">
+              <summary>Advanced tuning</summary>
+              <div className="settings-advanced-body">
+                <FieldGrid>
+                  <Field label="Request timeout"><div className="settings-number-unit"><input min={1} max={600} type="number" value={seconds(draft.embeddings.timeoutMs)} onChange={(event) => update((s) => { s.embeddings.timeoutMs = Number(event.target.value) * 1000; })} /><span>seconds</span></div></Field>
+                  <Field label="Backfill batch size"><input min={1} max={32} type="number" value={draft.embeddings.backfillBatchSize} onChange={(event) => update((s) => { s.embeddings.backfillBatchSize = Number(event.target.value); })} /></Field>
+                </FieldGrid>
+              </div>
+            </details>
           </SubGroup>
         </Section> : null}
 
         {activeSection === "diagnostics" ? <Section
           id="diagnostics"
           title="Diagnostics"
-          actions={
+          actions={settingsActions(
             <button
               className="button is-primary"
               type="button"
@@ -1017,7 +1114,7 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
             >
               {validatingAll ? "Testing all..." : "Test all"}
             </button>
-          }
+          )}
         >
           <SubGroup title="Connection tests">
             <div className="settings-diag-summary">
@@ -1049,9 +1146,14 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
               })}
             </div>
           </SubGroup>
+          <SubGroup title="Reset settings">
+            <p className="settings-subgroup-copy">Replace saved UI settings with the current environment and built-in defaults.</p>
+            <div>
+              <button className="button" type="button" onClick={reseed} disabled={saving || testing}>Reset all settings</button>
+            </div>
+          </SubGroup>
         </Section> : null}
 
-        {errorMessage ? <div className="settings-error"><WarningIcon />{errorMessage}</div> : null}
       </div>
     </div>
   );

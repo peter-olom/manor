@@ -6,17 +6,16 @@ import { CodexExecMemoryPromotionService, MEMORY_PROMOTION_OUTPUT_SCHEMA } from 
 import { CodexExecMemoryReviewService, MEMORY_REVIEW_OUTPUT_SCHEMA } from "./memory-review.js";
 import { readMemorySynthesisConfig, resolveMemoryServiceModel } from "./memory-synthesis-config.js";
 import { MemoryUpdateScheduler, MEMORY_SYNTHESIS_OUTPUT_SCHEMA } from "./memory-update-scheduler.js";
-import { ManorModelTaskRunner } from "./model-task-runner.js";
+import type { ModelTaskRunner } from "./model-task-runner.js";
 import type { ButlerStateStore } from "./state-store.js";
 
 export function createBackgroundModelServices(input: {
   store: ButlerStateStore;
   stateDir: string;
   codexHomeDir: string;
-  piAuthPath: string;
+  modelTasks: ModelTaskRunner;
 }) {
-  const { store, stateDir, codexHomeDir, piAuthPath } = input;
-  const modelTasks = new ManorModelTaskRunner({ stateDir, codexHomeDir, piAuthPath });
+  const { store, stateDir, codexHomeDir, modelTasks } = input;
   const serviceModels = () => {
     const settings = getActiveManorSettings();
     const config = readMemorySynthesisConfig();
@@ -76,7 +75,6 @@ export function createBackgroundModelServices(input: {
   });
   const applySettings = () => {
     const current = serviceModels();
-    modelTasks.applySettings();
     memoryReview.applyConfig({ enabled: current.config.enabled, timeoutMs: current.config.timeoutMs, model: current.memoryReviewModel });
     memoryScheduler.applyConfig(current.config);
     memoryPromotion.applyConfig(current.config, current.memoryPromotionModel);

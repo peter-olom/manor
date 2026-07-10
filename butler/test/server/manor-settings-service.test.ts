@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import initSqlJs from "sql.js";
 
 import { buildManorSettingsFromEnv } from "../../src/server/manor-settings-schema.js";
+import { normalizeManorSettings } from "../../src/server/manor-settings-schema.js";
 import { ManorSettingsService } from "../../src/server/manor-settings-service.js";
+
+const require = createRequire(import.meta.url);
 
 test("buildManorSettingsFromEnv parses and clamps seed values", () => {
   const { settings, provenance } = buildManorSettingsFromEnv({
@@ -36,6 +41,48 @@ test("Ollama Local defaults to disabled without a secret source outside env seed
   assert.equal(settings.providers.ollamaLocal.enabled, false);
   assert.equal(settings.providers.ollamaLocal.apiKeySource, null);
   assert.equal(provenance["providers.ollamaLocal"], "default");
+});
+
+test("legacy model task runner settings are ignored", () => {
+  const settings = normalizeManorSettings({
+    modelTasks: {
+      runnerMode: "codex",
+      sessionTitleModel: "ollama-local/qwen3.5:0.8b"
+    }
+  });
+  assert.equal("runnerMode" in settings.modelTasks, false);
+  assert.equal(settings.modelTasks.sessionTitleModel, "ollama-local/qwen3.5:0.8b");
+
+  const seeded = buildManorSettingsFromEnv({ MANOR_MODEL_TASK_RUNNER: "pi" } as NodeJS.ProcessEnv);
+  assert.equal("runnerMode" in seeded.settings.modelTasks, false);
+});
+
+test("ManorSettingsService removes legacy runner mode from persisted settings", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-settings-migration-"));
+  const dbPath = path.join(dir, "settings.sqlite");
+  try {
+    const original = new ManorSettingsService(dbPath, {} as NodeJS.ProcessEnv);
+    await original.load();
+    const SQL = await initSqlJs({ locateFile: (file) => require.resolve(`sql.js/dist/${file}`) });
+    const db = new SQL.Database(new Uint8Array(await readFile(dbPath)));
+    const legacy = { ...original.getSettings().modelTasks, runnerMode: "codex" };
+    db.run(
+      "UPDATE settings_groups SET value_json = ? WHERE profile_id = ? AND group_key = ?;",
+      [JSON.stringify(legacy), "active", "modelTasks"]
+    );
+    await writeFile(dbPath, Buffer.from(db.export()));
+    db.close();
+
+    const migrated = new ManorSettingsService(dbPath, {} as NodeJS.ProcessEnv);
+    await migrated.load();
+    assert.equal("runnerMode" in migrated.getSettings().modelTasks, false);
+    const migratedDb = new SQL.Database(new Uint8Array(await readFile(dbPath)));
+    const persisted = migratedDb.exec("SELECT value_json FROM settings_groups WHERE profile_id = 'active' AND group_key = 'modelTasks';")[0]?.values[0]?.[0];
+    migratedDb.close();
+    assert.equal(typeof persisted === "string" && persisted.includes("runnerMode"), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("ManorSettingsService seeds env once and preserves UI edits", async () => {

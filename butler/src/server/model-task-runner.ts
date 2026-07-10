@@ -4,9 +4,9 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { complete, type Api, type Message, type Model, type ToolCall } from "@mariozechner/pi-ai";
+import { readCodexAuthStatus } from "./auth-status.js";
 import { contentToText } from "./butler-agent-helpers.js";
-import { isUnsupportedCodexModelError, memoryCodexModelArgs } from "./memory-codex-model.js";
-import { getActiveManorSettings } from "./manor-settings-runtime.js";
+import { memoryCodexModelArgs } from "./memory-codex-model.js";
 import { createManorModelRegistry, isCodexPreferredModelRef, parseProviderModelRef, type ProviderModelRef } from "./model-provider-config.js";
 import { appendToolMessages } from "./ollama-web-tools.js";
 import { appendProviderWebToolInstruction, executeProviderWebToolCall, providerWebTools, selectProviderWebToolSource, PROVIDER_WEB_FETCH_TOOL_NAME, PROVIDER_WEB_SEARCH_TOOL_NAME } from "./provider-web-tools.js";
@@ -25,14 +25,81 @@ export type ModelTaskRunner = {
   runText(input: ModelTaskRunnerInput): Promise<string>;
 };
 
-type RunnerMode = "auto" | "codex" | "pi";
-
-function runnerMode(): RunnerMode {
-  return getActiveManorSettings().modelTasks.runnerMode;
-}
+type ResolvedModelTaskRunnerInput = ModelTaskRunnerInput & { model: ProviderModelRef; deadline: number };
+type PiModelAuth =
+  | { ok: true; apiKey: string; headers?: Record<string, string> }
+  | { ok: false; error: string };
+type ModelTaskRunnerOptions = {
+  stateDir: string;
+  codexHomeDir: string;
+  piAuthPath: string;
+  codexAuthenticated?: () => Promise<boolean>;
+  codexExecutor?: (input: ResolvedModelTaskRunnerInput) => Promise<string>;
+  piExecutor?: (input: ResolvedModelTaskRunnerInput) => Promise<string>;
+};
 
 function normalizeRef(ref: string | ProviderModelRef | null | undefined): ProviderModelRef {
   return typeof ref === "string" ? parseProviderModelRef(ref) : (ref ?? { provider: null, model: null });
+}
+
+function matchesModelRef(entry: Model<Api>, ref: ProviderModelRef): boolean {
+  if (!ref.model) return false;
+  const entryId = entry.id.startsWith(`${entry.provider}/`) ? entry.id : `${entry.provider}/${entry.id}`;
+  if (ref.provider) return entry.provider === ref.provider && (entry.id === ref.model || entryId === `${ref.provider}/${ref.model}`);
+  return entry.id === ref.model || entryId === ref.model || entry.id.endsWith(`/${ref.model}`);
+}
+
+export function modelTaskTransport(ref: string | ProviderModelRef | null | undefined, codexAuthenticated: boolean): "codex" | "pi" {
+  const normalized = normalizeRef(ref);
+  if (normalized.provider || normalized.model) return isCodexPreferredModelRef(normalized) ? "codex" : "pi";
+  return codexAuthenticated ? "codex" : "pi";
+}
+
+function providerReconnectError(provider: string, detail?: string): Error {
+  return new Error(`The ${provider} background provider needs to be reconnected${detail ? ` (${detail})` : ""}. Open Settings → Providers to repair authentication, or choose another model.`);
+}
+
+export async function selectAuthenticatedPiModel(
+  available: Model<Api>[],
+  ref: ProviderModelRef,
+  getAuth: (model: Model<Api>) => Promise<PiModelAuth>
+): Promise<{ model: Model<Api>; auth: Extract<PiModelAuth, { ok: true }> }> {
+  const candidates = ref.model
+    ? available.filter((entry) => matchesModelRef(entry, ref))
+    : available.filter((entry) => !isCodexPreferredModelRef({ provider: entry.provider, model: entry.id }));
+  if (candidates.length === 0) {
+    const requested = ref.provider && ref.model ? `${ref.provider}/${ref.model}` : ref.model ?? "automatic selection";
+    throw new Error(`The background model ${requested} is unavailable. Open Settings → Providers to reconnect it, or choose another model.`);
+  }
+  let lastAuthError: string | null = null;
+  for (const model of candidates) {
+    const auth = await getAuth(model);
+    if (auth.ok) return { model, auth };
+    lastAuthError = auth.error;
+    if (ref.model) throw providerReconnectError(model.provider, auth.error);
+  }
+  throw providerReconnectError("configured", lastAuthError ?? "no authenticated model is available");
+}
+
+function remainingTimeout(deadline: number, purpose: string): number {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw new Error(`${purpose} timed out`);
+  return remaining;
+}
+
+export async function withinDeadline<T>(promise: Promise<T>, deadline: number, purpose: string): Promise<T> {
+  const timeoutMs = remainingTimeout(deadline, purpose);
+  let timeout: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${purpose} timed out`)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 function extractJson(text: string): string {
@@ -42,21 +109,26 @@ function extractJson(text: string): string {
   return match ? match[1]!.trim() : trimmed;
 }
 
+function isAuthenticationFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /auth|log.?in|sign.?in|unauthori[sz]ed|forbidden|invalid (?:api )?key|expired (?:token|credential)|\b401\b|\b403\b/i.test(message);
+}
+
 export class ManorModelTaskRunner implements ModelTaskRunner {
   private readonly stateDir: string;
   private readonly codexHomeDir: string;
   private readonly piAuthPath: string;
-  private mode: RunnerMode;
+  private readonly authStatus: () => Promise<boolean>;
+  private readonly codexExecutor?: (input: ResolvedModelTaskRunnerInput) => Promise<string>;
+  private readonly piExecutor?: (input: ResolvedModelTaskRunnerInput) => Promise<string>;
 
-  constructor(options: { stateDir: string; codexHomeDir: string; piAuthPath: string; mode?: RunnerMode }) {
+  constructor(options: ModelTaskRunnerOptions) {
     this.stateDir = options.stateDir;
     this.codexHomeDir = options.codexHomeDir;
     this.piAuthPath = options.piAuthPath;
-    this.mode = options.mode ?? runnerMode();
-  }
-
-  applySettings(mode = runnerMode()): void {
-    this.mode = mode;
+    this.authStatus = options.codexAuthenticated ?? (async () => Boolean(process.env.OPENAI_API_KEY?.trim()) || (await readCodexAuthStatus(path.join(this.codexHomeDir, "auth.json"))).loggedIn);
+    this.codexExecutor = options.codexExecutor;
+    this.piExecutor = options.piExecutor;
   }
 
   async runJson(input: ModelTaskRunnerInput): Promise<unknown> {
@@ -73,47 +145,38 @@ export class ManorModelTaskRunner implements ModelTaskRunner {
 
   async runText(input: ModelTaskRunnerInput): Promise<string> {
     const ref = normalizeRef(input.model);
-    if (this.shouldUsePi(ref)) {
-      return this.runPiInline({ ...input, model: ref });
+    const deadline = Date.now() + input.timeoutMs;
+    const codexAuthenticated = await withinDeadline(this.authStatus(), deadline, input.purpose);
+    const resolvedInput = { ...input, model: ref, deadline };
+    if (modelTaskTransport(ref, codexAuthenticated) === "pi") {
+      return this.piExecutor ? this.piExecutor(resolvedInput) : this.runPiInline(resolvedInput);
     }
+    if (!codexAuthenticated) throw providerReconnectError("OpenAI / Codex");
     try {
-      return await this.runCodexExec({ ...input, model: ref });
+      return await withinDeadline(
+        this.codexExecutor ? this.codexExecutor(resolvedInput) : this.runCodexExec(resolvedInput),
+        deadline,
+        input.purpose
+      );
     } catch (error) {
-      if (this.mode !== "auto" || !isUnsupportedCodexModelError(error)) {
-        throw error;
-      }
-      return this.runPiInline({ ...input, model: ref });
+      if (isAuthenticationFailure(error)) throw providerReconnectError("OpenAI / Codex");
+      throw error;
     }
   }
 
-  private shouldUsePi(ref: ProviderModelRef): boolean {
-    if (this.mode === "pi") return true;
-    if (this.mode === "codex") return false;
-    return !isCodexPreferredModelRef(ref);
-  }
-
-  private async resolvePiModel(ref: ProviderModelRef): Promise<{ registry: Awaited<ReturnType<typeof createManorModelRegistry>>; model: Model<Api> }> {
-    const registry = await createManorModelRegistry(this.piAuthPath);
+  private async resolvePiModel(ref: ProviderModelRef, deadline: number, purpose: string): Promise<{ model: Model<Api>; auth: Extract<PiModelAuth, { ok: true }> }> {
+    const registry = await withinDeadline(createManorModelRegistry(this.piAuthPath), deadline, purpose);
     const available = registry.getAvailable();
-    const model =
-      ref.provider && ref.model
-        ? available.find((entry) => entry.provider === ref.provider && entry.id === ref.model)
-        : ref.model
-          ? available.find((entry) => entry.id === ref.model || `${entry.provider}/${entry.id}` === ref.model)
-          : available[0];
-    if (!model) {
-      const requested = ref.provider && ref.model ? `${ref.provider}/${ref.model}` : ref.model ?? "default";
-      throw new Error(`No Pi model is available for ${requested}.`);
-    }
-    return { registry, model };
+    return selectAuthenticatedPiModel(
+      available,
+      ref,
+      (model) => withinDeadline(registry.getApiKeyAndHeaders(model) as Promise<PiModelAuth>, deadline, purpose)
+    );
   }
 
-  private async runPiInline(input: ModelTaskRunnerInput & { model: ProviderModelRef }): Promise<string> {
-    const { registry, model } = await this.resolvePiModel(input.model);
-    const auth = await registry.getApiKeyAndHeaders(model);
-    if (!auth.ok) {
-      throw new Error(auth.error);
-    }
+  private async runPiInline(input: ResolvedModelTaskRunnerInput): Promise<string> {
+    const deadline = input.deadline;
+    const { model, auth } = await this.resolvePiModel(input.model, deadline, input.purpose);
     const webToolSource = await selectProviderWebToolSource(model.provider);
     const baseSystemPrompt = `You are Manor's ${input.purpose} model task runner. Follow the requested output format exactly.`;
     const context = {
@@ -124,18 +187,22 @@ export class ManorModelTaskRunner implements ModelTaskRunner {
     let response = await complete(model, context, {
       apiKey: auth.apiKey,
       headers: auth.headers,
-      timeoutMs: input.timeoutMs,
+      timeoutMs: remainingTimeout(deadline, input.purpose),
       maxRetries: 0
     });
     for (let round = 0; webToolSource && round < 4; round += 1) {
       const toolCalls = response.content.filter((entry): entry is ToolCall => entry.type === "toolCall" && (entry.name === PROVIDER_WEB_SEARCH_TOOL_NAME || entry.name === PROVIDER_WEB_FETCH_TOOL_NAME));
       if (response.stopReason !== "toolUse" && toolCalls.length === 0) break;
-      const toolResults = await Promise.all(toolCalls.map((toolCall) => executeProviderWebToolCall(toolCall, webToolSource)));
+      const toolResults = await withinDeadline(
+        Promise.all(toolCalls.map((toolCall) => executeProviderWebToolCall(toolCall, webToolSource))),
+        deadline,
+        input.purpose
+      );
       context.messages = appendToolMessages(context.messages, response, toolResults);
       response = await complete(model, context, {
         apiKey: auth.apiKey,
         headers: auth.headers,
-        timeoutMs: input.timeoutMs,
+        timeoutMs: remainingTimeout(deadline, input.purpose),
         maxRetries: 0
       });
     }
@@ -148,7 +215,7 @@ export class ManorModelTaskRunner implements ModelTaskRunner {
     return contentToText(response.content).trim();
   }
 
-  private async runCodexExec(input: ModelTaskRunnerInput & { model: ProviderModelRef }): Promise<string> {
+  private async runCodexExec(input: ResolvedModelTaskRunnerInput): Promise<string> {
     const scratchDir = path.join(this.stateDir, "model-tasks");
     await fs.mkdir(scratchDir, { recursive: true });
     const runId = crypto.randomUUID();
@@ -187,7 +254,7 @@ export class ManorModelTaskRunner implements ModelTaskRunner {
         const timeout = setTimeout(() => {
           child.kill("SIGTERM");
           reject(new Error(`codex exec ${input.purpose} timed out`));
-        }, input.timeoutMs);
+        }, remainingTimeout(input.deadline, input.purpose));
         child.stdout.on("data", (chunk: Buffer) => {
           stdout = `${stdout}${chunk.toString("utf8")}`.slice(-16_000);
         });

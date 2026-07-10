@@ -284,6 +284,7 @@ export const ModelPicker = memo(function ModelPicker({
     compact ? "is-compact" : "",
     open ? "is-open" : "",
     isDisabled ? "is-disabled" : "",
+    allowClear && selectedValue && !isDisabled ? "has-clear" : "",
     className ?? ""
   ].filter(Boolean).join(" ");
 
@@ -306,23 +307,20 @@ export const ModelPicker = memo(function ModelPicker({
         onKeyDown={onTriggerKeyDown}
       >
         <span className="model-picker-trigger-label">{shownLabel || displayPlaceholder}</span>
-        {allowClear && selectedValue && !isDisabled ? (
-          <button
-            type="button"
-            className="model-picker-clear"
-            aria-label={clearLabel}
-            onClick={(event) => {
-              event.stopPropagation();
-              choose(null);
-            }}
-          >
-            <CloseIcon />
-          </button>
-        ) : null}
         <span className="model-picker-chevron" aria-hidden="true">
           <ChevronDownIcon />
         </span>
       </button>
+      {allowClear && selectedValue && !isDisabled ? (
+        <button
+          type="button"
+          className="model-picker-clear"
+          aria-label={clearLabel}
+          onClick={() => choose(null)}
+        >
+          <CloseIcon />
+        </button>
+      ) : null}
       {open ? (
         <div className={`model-picker-popover is-anchor-${anchor}`} role="dialog" aria-label={label}>
           <div className="model-picker-search">

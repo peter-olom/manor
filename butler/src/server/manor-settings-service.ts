@@ -239,6 +239,12 @@ export class ManorSettingsService extends EventEmitter<{ change: [ManorSettings]
         if (shouldUseEnv) {
           changed = true;
           this.writeGroup(db, key, groupValue(nextSettings, key), nextProvenance[key], now);
+        } else {
+          const normalizedValue = groupValue(nextSettings, key);
+          if (JSON.stringify(normalizedValue) !== JSON.stringify(value)) {
+            changed = true;
+            this.writeGroup(db, key, normalizedValue, nextProvenance[key], now);
+          }
         }
       }
 

@@ -18,7 +18,6 @@ export type SettingsSecretSource =
   | { type: "file"; pathEnv: string }
   | { type: "asiri"; workspace: string; path: string };
 
-export type SettingsRunnerMode = "auto" | "codex" | "pi";
 export type SettingsReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type SettingsThinkingLevel = "off" | SettingsReasoningEffort;
 
@@ -112,7 +111,6 @@ export type ManorSettings = {
     defaultThinkingLevel: SettingsThinkingLevel;
   };
   modelTasks: {
-    runnerMode: SettingsRunnerMode;
     memorySynthesisModel: string | null;
     sessionTitleModel: string | null;
     sessionTitleTimeoutMs: number;
@@ -177,4 +175,5 @@ export type SettingsProviderAvailabilityMap = {
   "ollama-local": SettingsProviderAvailability;
   "ollama-cloud": SettingsProviderAvailability;
   "opencode-go": SettingsProviderAvailability;
+  [providerId: string]: SettingsProviderAvailability;
 };

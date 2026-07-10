@@ -8,6 +8,7 @@ import { registerManorSettingsRoutes } from "../../src/server/manor-settings-rou
 import { clearOllamaCloudModelsCache } from "../../src/server/ollama-cloud-models.js";
 import { clearOpencodeGoModelsCache } from "../../src/server/opencode-go-models.js";
 import { getActiveManorSettings, setActiveManorSettings } from "../../src/server/manor-settings-runtime.js";
+import type { ModelOption } from "../../src/server/types.js";
 import type { SettingsValidationKey, SettingsValidationResult } from "../../src/shared/settings.js";
 
 async function listen(app: express.Express): Promise<{ url: string; close: () => Promise<void> }> {
@@ -21,6 +22,80 @@ async function listen(app: express.Express): Promise<{ url: string; close: () =>
       })
   };
 }
+
+function model(id: string, provider: string): ModelOption {
+  return {
+    id,
+    label: id,
+    provider,
+    supportsReasoning: false,
+    supportedThinkingLevels: [],
+    supportedReasoningEfforts: [],
+    defaultReasoningEffort: null
+  };
+}
+
+test("settings exposes only authenticated provider models for background tasks, including custom provider ids", async (t) => {
+  const settings = getActiveManorSettings({
+    MANOR_OPENCODE_GO_ENABLED: "1",
+    MANOR_OPENCODE_GO_PROVIDER_ID: "custom-go",
+    OPENCODE_API_KEY: "test-key"
+  } as NodeJS.ProcessEnv);
+  setActiveManorSettings(settings);
+  const previousOpenCodeKey = process.env.OPENCODE_API_KEY;
+  const previousOpenAiKey = process.env.OPENAI_API_KEY;
+  process.env.OPENCODE_API_KEY = "test-key";
+  delete process.env.OPENAI_API_KEY;
+  t.after(() => {
+    if (previousOpenCodeKey === undefined) delete process.env.OPENCODE_API_KEY;
+    else process.env.OPENCODE_API_KEY = previousOpenCodeKey;
+    if (previousOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAiKey;
+    setActiveManorSettings(null);
+  });
+
+  const codexModel = model("gpt-5.4", "openai-codex");
+  const openCodeModel = model("glm-5.2", "custom-go");
+  const app = express();
+  app.use(express.json());
+  registerManorSettingsRoutes({
+    app,
+    settingsService: {
+      getSettings: () => settings,
+      getProvenance: () => ({}),
+      getValidation: () => ({})
+    },
+    store: { getThread: () => null, listThreads: () => [] },
+    codexClient: {
+      getConnectionState: () => ({ connected: true, lastError: null, compose: { model: null, effort: null, availableModels: [codexModel] } })
+    },
+    piRpcWorkerClient: {
+      getConnectionState: () => ({ lastError: null, compose: { provider: "custom-go", model: null, effort: null, availableModels: [openCodeModel] } })
+    },
+    butlerAgent: {
+      getShellSnapshot: () => ({ compose: { availableModels: [codexModel, openCodeModel] } }),
+      getButlerAuthStatus: () => ({ loggedIn: true }),
+      getCodexAuthStatus: () => ({ loggedIn: false })
+    },
+    onSettingsChanged: async () => undefined
+  } as never);
+
+  const server = await listen(app);
+  try {
+    const response = await fetch(`${server.url}/api/settings`);
+    const payload = await response.json() as {
+      availableModels: { modelTasks: ModelOption[] };
+      providerAvailability: Record<string, { secretAvailable: boolean }>;
+      modelTaskProviderAvailability: Record<string, { secretAvailable: boolean }>;
+    };
+    assert.equal(response.status, 200);
+    assert.deepEqual(payload.availableModels.modelTasks.map((entry) => entry.id), ["custom-go/glm-5.2"]);
+    assert.equal(payload.providerAvailability["openai-codex"]?.secretAvailable, true);
+    assert.equal(payload.modelTaskProviderAvailability["openai-codex"]?.secretAvailable, false);
+  } finally {
+    await server.close();
+  }
+});
 
 test("settings diagnostics validates Ollama Cloud using discovered models", async (t) => {
   clearOllamaCloudModelsCache();

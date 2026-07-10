@@ -210,11 +210,16 @@ function settingsPayload(access: SettingsRouteAccess) {
   const butlerAuth = access.butlerAgent.getButlerAuthStatus();
   const codexAuth = access.butlerAgent.getCodexAuthStatus();
   const providerAvailability = computeProviderAvailability(settings, butlerAuth, codexAuth);
+  const modelTaskProviderAvailability = computeModelTaskProviderAvailability(providerAvailability, codexAuth);
   const workerCompose = getUnifiedWorkerCompose({
     ...access,
     getCodexAuthStatus: () => codexAuth,
     getWorkerAffinity: () => typeof access.butlerAgent.getWorkerAffinity === "function" ? access.butlerAgent.getWorkerAffinity() : null
   });
+  const modelTaskModels = collectModelTaskModels(
+    [butler.availableModels, piRpc.compose.availableModels, codex.compose.availableModels],
+    modelTaskProviderAvailability
+  );
   return {
     settings,
     provenance: access.settingsService.getProvenance(),
@@ -224,15 +229,48 @@ function settingsPayload(access: SettingsRouteAccess) {
       piRpc: piRpc.compose.availableModels,
       ollamaLocal: collectOllamaLocalModels(butler.availableModels, settings),
       opencodeGo: collectOpencodeGoModels([...butler.availableModels, ...piRpc.compose.availableModels], settings),
+      modelTasks: modelTaskModels,
       worker: workerCompose
     },
     providerAvailability,
+    modelTaskProviderAvailability,
     openaiCodexAuth: {
       butler: butlerAuth,
       codex: codexAuth
     },
     validation: access.settingsService.getValidation()
   };
+}
+
+function computeModelTaskProviderAvailability(
+  availability: SettingsProviderAvailabilityMap,
+  codexAuth: ButlerAuthStatus
+): SettingsProviderAvailabilityMap {
+  const codexAvailable = isSecretSourceAvailable({ type: "env", name: "OPENAI_API_KEY" }) || codexAuth.loggedIn;
+  return {
+    ...availability,
+    "openai-codex": {
+      enabled: true,
+      secretAvailable: codexAvailable,
+      reason: codexAvailable ? null : "Set OPENAI_API_KEY or sign in to Codex to use OpenAI models for background tasks."
+    }
+  };
+}
+
+function collectModelTaskModels(modelSets: ModelOption[][], availability: SettingsProviderAvailabilityMap): ModelOption[] {
+  const seen = new Set<string>();
+  const models: ModelOption[] = [];
+  for (const model of modelSets.flat()) {
+    const provider = model.provider ?? "openai-codex";
+    const providerState = availability[provider as keyof SettingsProviderAvailabilityMap];
+    if (!providerState?.enabled || !providerState.secretAvailable) continue;
+    const id = model.id.startsWith(`${provider}/`) ? model.id : `${provider}/${model.id}`;
+    const key = `${provider}:${id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    models.push({ ...model, id, provider });
+  }
+  return models;
 }
 
 function collectOllamaLocalModels(butlerModels: ModelOption[], settings: ManorSettings): ModelOption[] {
@@ -260,7 +298,7 @@ function computeProviderAvailability(settings: ManorSettings, butlerAuth: Butler
   const opencodeSecret = isSecretSourceAvailable(opencode.apiKeySource);
   const openaiEnvSecret = isSecretSourceAvailable({ type: "env", name: "OPENAI_API_KEY" });
   const openaiAuthed = openaiEnvSecret || butlerAuth.loggedIn || codexAuth.loggedIn;
-  return {
+  const availability: SettingsProviderAvailabilityMap = {
     "openai-codex": {
       secretAvailable: openaiAuthed,
       enabled: true,
@@ -282,6 +320,10 @@ function computeProviderAvailability(settings: ManorSettings, butlerAuth: Butler
       reason: opencodeSecret ? null : "Set OPENCODE_API_KEY (or OPENCODE_API_KEY_FILE) before starting Manor to use OpenCode Go."
     }
   };
+  availability[ollamaLocal.providerId] = availability["ollama-local"];
+  availability[ollama.providerId] = availability["ollama-cloud"];
+  availability[opencode.providerId] = availability["opencode-go"];
+  return availability;
 }
 
 async function fetchOllamaLocalModelsForSettings(settings: ManorSettings): Promise<OllamaLocalModelInfo[]> {

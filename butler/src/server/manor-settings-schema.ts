@@ -120,7 +120,6 @@ export const DEFAULT_MANOR_SETTINGS: ManorSettings = {
     defaultThinkingLevel: "medium"
   },
   modelTasks: {
-    runnerMode: "auto",
     memorySynthesisModel: null,
     sessionTitleModel: null,
     sessionTitleTimeoutMs: 15_000,
@@ -302,10 +301,6 @@ function thinkingLevel(value: unknown): SettingsThinkingLevel {
   return value === "off" || value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" ? value : "medium";
 }
 
-function runnerMode(value: unknown): ManorSettings["modelTasks"]["runnerMode"] {
-  return value === "codex" || value === "pi" ? value : "auto";
-}
-
 function memoryEffort(value: unknown): ManorSettings["memory"]["synthesisEffort"] {
   return value === "low" || value === "medium" || value === "high" ? value : null;
 }
@@ -401,7 +396,6 @@ export function normalizeManorSettings(value: unknown): ManorSettings {
       defaultThinkingLevel: thinkingLevel(butler.defaultThinkingLevel)
     },
     modelTasks: {
-      runnerMode: runnerMode(modelTasks.runnerMode),
       memorySynthesisModel: nullableText(modelTasks.memorySynthesisModel),
       sessionTitleModel: nullableText(modelTasks.sessionTitleModel),
       sessionTitleTimeoutMs: integer(modelTasks.sessionTitleTimeoutMs, 15_000, 1_000, 60_000),
@@ -539,7 +533,6 @@ export function buildManorSettingsFromEnv(env: NodeJS.ProcessEnv = process.env):
   apply("butler", "MANOR_BUTLER_MODEL", (value) => { settings.butler.defaultModel = nullableText(value); });
   apply("butler", "MANOR_BUTLER_THINKING_LEVEL", (value) => { settings.butler.defaultThinkingLevel = thinkingLevel(value); });
 
-  apply("modelTasks", "MANOR_MODEL_TASK_RUNNER", (value) => { settings.modelTasks.runnerMode = runnerMode(value); });
   apply("modelTasks", "MANOR_MEMORY_SYNTHESIS_MODEL", (value) => { settings.modelTasks.memorySynthesisModel = nullableText(value); });
   apply("modelTasks", "MANOR_MEMORY_REVIEW_MODEL", (value) => { settings.modelTasks.memorySynthesisModel ??= nullableText(value); });
   apply("modelTasks", "MANOR_SESSION_TITLE_MODEL", (value) => { settings.modelTasks.sessionTitleModel = nullableText(value); });

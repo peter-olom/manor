@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import test from "node:test";
 
 import {
   fallbackSessionTitle,
+  ManorSessionTitleGenerator,
   normalizeSessionTitleModel,
-  PiSessionTitleGenerator,
   readSessionTitleConfig,
   sanitizeSessionTitle
 } from "../../src/server/session-title-generator.js";
@@ -43,6 +40,11 @@ test("readSessionTitleConfig supports provider-qualified title models", () => {
   assert.equal(config.model, "openai-codex/gpt-5.5");
 });
 
+test("readSessionTitleConfig does not inherit the memory model", () => {
+  const config = readSessionTitleConfig({ MANOR_MEMORY_SYNTHESIS_MODEL: "gpt-5.5" } as NodeJS.ProcessEnv);
+  assert.equal(config.model, null);
+});
+
 test("normalizeSessionTitleModel rejects invalid model references", () => {
   assert.equal(normalizeSessionTitleModel("openai-codex/gpt-5.4-mini"), "openai-codex/gpt-5.4-mini");
   assert.equal(normalizeSessionTitleModel("ollama-local/qwen3%3A8b"), "ollama-local/qwen3:8b");
@@ -50,30 +52,33 @@ test("normalizeSessionTitleModel rejects invalid model references", () => {
   assert.equal(normalizeSessionTitleModel("not a model"), null);
 });
 
-test("PiSessionTitleGenerator returns sanitized runner output", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "manor-title-test-"));
-  const generator = new PiSessionTitleGenerator({
-    piAuthPath: path.join(dir, "auth.json"),
-    runner: async () => ({ title: "\"Review checkout retries today\"" })
+test("ManorSessionTitleGenerator returns sanitized runner output and forwards task settings", async () => {
+  let received: { timeoutMs: number; model: string | null; cwd: string | null } | null = null;
+  const generator = new ManorSessionTitleGenerator({
+    model: "ollama-local/qwen3.5:0.8b",
+    timeoutMs: 2500,
+    runner: async (input) => {
+      received = input;
+      return { title: "\"Review checkout retries today\"" };
+    }
   });
 
-  assert.equal(await generator.generateTitle({ firstUserPrompt: "Please review checkout retries." }), "Review checkout retries today");
+  assert.equal(await generator.generateTitle({ firstUserPrompt: "Please review checkout retries.", cwd: "/repos/manor" }), "Review checkout retries today");
+  assert.equal(received?.timeoutMs, 2500);
+  assert.equal(received?.model, "ollama-local/qwen3.5:0.8b");
+  assert.equal(received?.cwd, "/repos/manor");
 });
 
-test("PiSessionTitleGenerator falls back for malformed runner output", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "manor-title-test-"));
-  const generator = new PiSessionTitleGenerator({
-    piAuthPath: path.join(dir, "auth.json"),
+test("ManorSessionTitleGenerator falls back for malformed runner output", async () => {
+  const generator = new ManorSessionTitleGenerator({
     runner: async () => "not json"
   });
 
   assert.equal(await generator.generateTitle({ firstUserPrompt: "Feature: Auto add session title" }), "Feature Auto add session");
 });
 
-test("PiSessionTitleGenerator falls back when runner fails", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "manor-title-test-"));
-  const generator = new PiSessionTitleGenerator({
-    piAuthPath: path.join(dir, "auth.json"),
+test("ManorSessionTitleGenerator falls back when runner fails", async () => {
+  const generator = new ManorSessionTitleGenerator({
     runner: async () => {
       throw new Error("pi completion failed");
     }
