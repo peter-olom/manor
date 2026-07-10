@@ -496,12 +496,12 @@ function payloadFilePath(rootDir: string, threadId: string): string {
   return path.join(rootDir, threadId, "current.json");
 }
 
-export async function persistJobPayload(rootDir: string, payload: JobPayloadView): Promise<JobPayloadView> {
+export async function persistJobPayload(rootDir: string, payload: JobPayloadView, options: { beforeCommit?: () => void | Promise<void> } = {}): Promise<JobPayloadView> {
   const parsed = parseJobPayload(payload);
   if (!parsed) {
     throw new Error("Invalid Manor job payload.");
   }
-  await writeJsonStateFileAtomic(payloadFilePath(rootDir, payload.threadId), parsed);
+  await writeJsonStateFileAtomic(payloadFilePath(rootDir, payload.threadId), parsed, options);
   return parsed;
 }
 

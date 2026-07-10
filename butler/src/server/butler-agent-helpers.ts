@@ -10,6 +10,8 @@ import { contractRequiresVisualProof } from "./proof-policy.js";
 import { isAcceptedOperatorPreferenceMemory } from "./memory-metadata.js";
 import { ButlerStateStore } from "./state-store.js";
 import { elapsedTaskDurationMs } from "./task-timing.js";
+import { BUTLER_BACKGROUND_PROMPT_PREFIX, isButlerBackgroundPromptText, stripEphemeralButlerTurns } from "./butler-background-context.js";
+export { BUTLER_BACKGROUND_PROMPT_PREFIX, BUTLER_EPHEMERAL_BACKGROUND_PROMPT_PREFIX, isButlerBackgroundPromptText } from "./butler-background-context.js";
 import type { WorkspaceProjectDirectory } from "./repo-worktree.js";
 import type {
   ButlerThreadCallbackView,
@@ -62,7 +64,6 @@ export type ButlerOperatorThreadGuard = {
 
 export const SNAPSHOT_MESSAGE_TAIL_LIMIT = 80;
 export const MAX_HISTORY_PAGE_SIZE = 1000;
-export const BUTLER_BACKGROUND_PROMPT_PREFIX = "[[BUTLER_BACKGROUND]]";
 const MAX_BACKGROUND_HISTORY_TEXT_CHARS = 20_000;
 const MAX_HISTORY_TEXT_PART_CHARS = 80_000;
 const MAX_TOOL_RESULT_TEXT_CHARS = 40_000;
@@ -73,10 +74,6 @@ const JOB_DETAIL_MAX_CHARS = 50_000;
 const TOOL_RESULT_DETAIL_KEY_LIMIT = 16;
 const THREAD_ID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const ATTACHMENT_SUMMARY_TEXT_PATTERN = /^Attached \d+ (?:image|images|file|files|attachment|attachments)(?:, \d+ (?:image|images|file|files|attachment|attachments))*$/;
-
-export function isButlerBackgroundPromptText(text: string | null | undefined): boolean {
-  return typeof text === "string" && text.trimStart().startsWith(BUTLER_BACKGROUND_PROMPT_PREFIX);
-}
 
 export function isTrivialOperatorQuestionConfirmation(text: string | null | undefined): boolean {
   if (typeof text !== "string") {
@@ -531,11 +528,12 @@ function getToolResultCallIds(message: unknown): string[] {
 }
 
 export function sanitizeHistoryMessages(messages: AgentMessage[]): { messages: AgentMessage[]; changed: boolean } {
-  let changed = false;
+  const ephemeral = stripEphemeralButlerTurns(messages);
+  let changed = ephemeral.changed;
   const knownToolCallIds = new Set<string>();
   const nextMessages: AgentMessage[] = [];
 
-  for (const message of messages) {
+  for (const message of ephemeral.messages) {
     const sanitized = sanitizeHistoryMessage(message);
     if (sanitized.changed) {
       changed = true;
@@ -919,11 +917,10 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
       const latestEvidence = item.evidence.at(-1);
       return `${item.id}: ${item.status} - ${item.text}${latestEvidence ? ` | latest evidence: ${latestEvidence.summary}` : ""}${item.butlerNote ? ` | Butler note: ${item.butlerNote}` : ""}${item.queuedInstruction ? ` | queued instruction: ${item.queuedInstruction}` : ""}`;
     }) ?? [];
-  const panelLines =
-    contract?.reviewPanel.map((entry) => {
-      const concern = entry.requiredFollowUp ?? entry.concerns[0] ?? entry.reviewerNote ?? "";
-      return `${entry.role}: ${entry.verdict} - ${entry.scope}${concern ? ` | ${concern}` : ""}`;
-    }) ?? [];
+  const adversarialReviewLines = relevantWorkerReport
+    ? (contract?.reviewResults ?? []).filter((entry) => entry.turnId === relevantWorkerReport.turnId && entry.reportUpdatedAt === relevantWorkerReport.updatedAt && entry.automationFailure !== true)
+        .map((entry) => `${entry.id} | ${entry.severity}${entry.waived ? " disproved" : entry.blocking ? " blocking" : ""}: ${entry.findingSummary}${entry.waiverReason ? ` | resolution: ${entry.waiverReason}` : ""}${entry.linkedClaimIds.length > 0 ? ` | claims: ${entry.linkedClaimIds.join(", ")}` : ""}`)
+    : [];
 
   return [
     BUTLER_BACKGROUND_PROMPT_PREFIX,
@@ -950,9 +947,9 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     matrixLines.length > 0
       ? `Verification matrix:\n${matrixLines.join("\n")}`
       : "Verification matrix: none.",
-    panelLines.length > 0
-      ? `Hidden review panel:\n${panelLines.join("\n")}\nRun these reviewers after reading the worker report and proof. Record each verdict with record_review_panel_verdict before final acceptance. Failed or blocked reviewer concerns must become rejected checklist points or one batched rework instruction.`
-      : "Hidden review panel: none.",
+    adversarialReviewLines.length > 0
+      ? `Isolated adversarial review findings:\n${adversarialReviewLines.join("\n")}\nTreat these compact findings as reviewer input. Butler owns the final acceptance decision and worker steering.`
+      : "Isolated adversarial review findings: none available.",
     contract ? `Proof expectation: ${contract.proofExpectationLabel}` : "Proof expectation: unknown",
     contract ? `Internal task category: ${contract.taskCategory}. Internal depth: ${contract.inferredWorkDepth}. Do not expose depth to the operator; use it only to decide how hard to verify.` : "",
     visualProofRequired
@@ -972,6 +969,8 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     "Use nextWorkerReportAction=reply_to_operator only for no-checklist jobs, blocked reports, or operator-input reports. Completed checklist work must still go through Butler review.",
     "Decide from the job context and thread state, not from worker phrasing heuristics.",
     "Review the worker report and available proof against every acceptance point.",
+    "Use the isolated adversarial review findings without exposing the reviewer transcript or internal review machinery to the operator.",
+    "A blocking reviewer finding must become a rejected checklist point and one batched worker follow-up unless Butler can disprove it from stronger evidence.",
     "Review the mission intent and taste notes before accepting. A technically complete worker report can still fail if it misses the desired outcome or quality bar.",
     "Use the mission planner steps as the expected work path. Reject completion when the worker skipped meaningful planning, inspection, verification, or taste review.",
     "Run the mission critic checks before accepting. If a critic check fails, convert it into a rejected checklist point or one batched rework instruction.",
@@ -1032,9 +1031,8 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Tool selection guide: use list_projects for project inventory questions; use list_jobs for broad Codex job/thread checks, counts, status summaries, or project filtering; use read_job only when inspecting one specific job by id.",
     "Project count means known project directories. Active project work means currently tracked Codex workstream groups or active Codex jobs. If the operator asks how many projects we have, answer the known project count first; if they ask what we are actively working on, answer tracked active work separately.",
     "Do not answer project inventory questions from supervisor state alone. Supervisor state only covers tracked workstream groups; call list_projects first for project counts or project lists unless the operator explicitly asks only about active, idle, blocked, or tracked work.",
-    "Use read_supervision_checklist to inspect a delegated job's structured acceptance points, evidence, hidden reviewer state, and heartbeat; use record_review_panel_verdict for specialist reviewer decisions; use review_acceptance_point when you have reviewed evidence and are accepting, rejecting, or waiving one point; use flush_rejected_acceptance_points after marking all rejected points.",
+    "Use read_supervision_checklist to inspect a delegated job's acceptance points, evidence, and heartbeat; use review_acceptance_point when you have reviewed evidence and are accepting, rejecting, or waiving one point; use disprove_review_finding only when stronger evidence proves a blocking adversarial finding is false; use flush_rejected_acceptance_points after marking all rejected points.",
     "After delegate_to_codex returns, use its real result to acknowledge the real job id. Never invent or predict a job id.",
-    "When using delegate_to_codex, set thinkingBudget deliberately: low is the default for most execution and coding; medium is for jobs needing extra agency, planning, ambiguity handling, or product judgment; high is for tough issues, usually after medium has not produced the right outcome or for clearly hard incidents; xhigh is exceptional and should be used for fewer than 1% of jobs.",
     "For operator follow-up on an existing valid Codex job, default to message_job when it is the same workspace and task context and the job needs new instructions outside checklist rejection review; answer directly when the request can be handled from existing state.",
     "Start a new Codex job for a same-workspace follow-up only when isolation is clearly warranted, such as conflicting branch/worktree requirements, a stale or invalid thread, parallel-risk, or a materially different task; surface and record that reason when you delegate anew.",
     "When new work arrives for an existing job and the visible checklist is already fully accepted or waived, use message_job with refreshChecklist so the new work gets a clear focused checklist.",

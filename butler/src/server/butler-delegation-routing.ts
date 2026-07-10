@@ -9,14 +9,7 @@ export function buildDelegationRoutingDecision(input: {
   const taskClass = inferTaskCategory(taskText);
   const depth = inferWorkDepth(taskText, taskClass);
   const highRisk = taskClass === "deploy" || depth === "incident" || /\b(prod|production|secret|payment|migration|delete|security)\b/i.test(taskText);
-  const reviewRequired =
-    highRisk ||
-    depth === "deep" ||
-    taskClass === "ui" ||
-    taskClass === "api" ||
-    taskClass === "data" ||
-    taskClass === "generic_code" ||
-    taskClass === "prototype";
+  const reviewRequired = true;
   const longWork = depth === "deep" || depth === "incident";
 
   return {
@@ -27,9 +20,9 @@ export function buildDelegationRoutingDecision(input: {
       ? { mode: "native_goal", goal: input.goal ?? input.task, fallbackReason: null }
       : { mode: "none", goal: null, fallbackReason: null },
     reviewRecommendation: {
-      target: reviewRequired ? "codex_review" : "none",
+      target: "adversarial_review",
       required: reviewRequired,
-      reason: reviewRequired ? "Butler's delegation contract requires review for this risk profile." : null
+      reason: "Butler reviews every completed worker job before acceptance."
     },
     subAgentRoles: highRisk ? ["adversarial-review"] : [],
     riskLevel: highRisk ? "high" : reviewRequired ? "medium" : "low",

@@ -7,6 +7,8 @@ import express from "express";
 import httpProxy from "http-proxy";
 
 import { ButlerAgentService } from "./butler-agent.js";
+import { directWorkerDispatchMarker } from "./butler-callback-state.js";
+import { runSerializedJobMutation, runSerializedJobMutations } from "./butler-job-mutation-guard.js";
 import { createBackgroundModelServices } from "./background-model-services.js";
 import { CodexAppServerClient } from "./codex-client.js";
 import { CodexHarnessService } from "./codex-harness.js";
@@ -113,7 +115,7 @@ configureSelfImprovementRequestState(selfImprovementRequests);
 const piAuthPath = path.join(piAgentDir, "auth.json"); const codexAuthPath = path.join(codexHomeDir, "auth.json");
 const piRpcWorkerClient = new PiRpcWorkerClient({ store, piAuthPath, sessionRootDir: path.join(stateDir, "pi-worker-sessions") });
 const sessionTitleGenerator = new PiSessionTitleGenerator({ piAuthPath, ...readSessionTitleConfig() });
-const { memoryReview, workerReview, memoryScheduler, memoryPromotion, memoryEmbeddings, memorySemanticEdges, applySettings: applyBackgroundSettings } = createBackgroundModelServices({
+const { memoryReview, memoryScheduler, memoryPromotion, memoryEmbeddings, memorySemanticEdges, applySettings: applyBackgroundSettings } = createBackgroundModelServices({
   store,
   stateDir,
   codexHomeDir,
@@ -128,11 +130,9 @@ const codexHarness = new CodexHarnessService({
   runtimeBroker,
   serviceTemplateRegistry,
   memoryReview,
-  workerReview,
   memoryScheduler
 });
 memoryReview.reviewPendingReportsAsync();
-workerReview.reviewPendingReportsAsync();
 memoryScheduler.start();
 memoryPromotion.start();
 memoryEmbeddings.start();
@@ -185,7 +185,9 @@ const butlerAgent = new ButlerAgentService({
       model: lastUsed.butlerModel ?? null,
       thinkingLevel: lastUsed.butlerThinkingLevel ?? null
     };
-  }
+  },
+  getWorkerAffinity: () => pairStore.getWorkerAffinity(),
+  recordSuccessfulWorkerSelection: (selection) => pairStore.recordSuccessfulWorkerSelection(selection)
 });
 const pairSessions = new PairSessionManager({
   pairStore,
@@ -205,6 +207,7 @@ const pairSessions = new PairSessionManager({
   refreshRuntimeInventory: syncRuntimeInventory,
   memoryScheduler,
   sessionTitleGenerator,
+  getCodexAuthStatus: () => butlerAgent.getCodexAuthStatus(),
   onButlerPatch: (payload) => sseHub?.broadcastButlerPatch(payload)
 });
 
@@ -228,6 +231,7 @@ await fs.mkdir(piAgentDir, { recursive: true });
 await butlerAgent.start();
 codexClient.start();
 await piRpcWorkerClient.start();
+await pairSessions.startSupervisedSessions();
 
 const app = express();
 const server = http.createServer(app);
@@ -420,6 +424,9 @@ registerSelfImprovementRoutes({
   store,
   codexClient,
   piRpcWorkerClient,
+  getCodexAuthStatus: () => butlerAgent.getCodexAuthStatus(),
+  getWorkerAffinity: () => butlerAgent.getWorkerAffinity(),
+  recordSuccessfulWorkerSelection: (selection) => butlerAgent.recordSuccessfulWorkerSelection(selection),
   pairSessions,
   imageStore,
   fileStore,
@@ -856,24 +863,25 @@ app.post("/api/threads/messages", async (request, response) => {
   }
 
   try {
-    await sendWorkerMessage(
-      { store, codexClient, piRpcWorkerClient },
-      threadId,
-      buildCodexInputWithReferences({
-        text,
-        imageStore,
-        imageReferenceIds,
-        fileStore,
-        fileReferenceIds,
-        extraInputItems: inputItems
-      })
-    );
-    await butlerAgent.notifyDirectCodexMessage({
-      threadId,
-      text,
-      imageReferenceIds,
-      fileReferenceIds,
-      inputItems
+    await runSerializedJobMutation(threadId, async () => {
+      const requestedAt = Date.now();
+      const directInput = { threadId, text, imageReferenceIds, fileReferenceIds, inputItems, requestedAt };
+      const reservation = await butlerAgent.reserveDirectCodexMessage(directInput);
+      let sent = false;
+      try {
+        const workerInput = buildCodexInputWithReferences({ text, imageStore, imageReferenceIds, fileStore, fileReferenceIds, extraInputItems: inputItems });
+        workerInput.push({ type: "text", text: directWorkerDispatchMarker(threadId, requestedAt) });
+        await sendWorkerMessage(
+          { store, codexClient, piRpcWorkerClient },
+          threadId,
+          workerInput
+        );
+        sent = true;
+        await butlerAgent.notifyDirectCodexMessage({ ...directInput, callbackAlreadyRegistered: true });
+      } catch (error) {
+        if (!sent) await butlerAgent.rollbackDirectCodexMessage(threadId, requestedAt, reservation);
+        throw error;
+      }
     });
     response.status(202).json({ ok: true });
   } catch (error) {
@@ -905,7 +913,13 @@ app.post("/api/threads/settings", async (request, response) => {
   }
 
   try {
-    await updateUnifiedWorkerCompose({ store, codexClient, piRpcWorkerClient }, { model, effort: effort as never });
+    await updateUnifiedWorkerCompose({
+      store,
+      codexClient,
+      piRpcWorkerClient,
+      getCodexAuthStatus: () => butlerAgent.getCodexAuthStatus(),
+      getWorkerAffinity: () => butlerAgent.getWorkerAffinity()
+    }, { model, effort: effort as never });
     response.json({ ok: true });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -955,7 +969,13 @@ app.post("/api/threads/delete", async (request, response) => {
     return;
   }
 
-  void deleteWorkerThread({ store, codexClient, piRpcWorkerClient }, threadId).catch((error) => {
+  void runSerializedJobMutation(threadId, async () => {
+    try {
+      await deleteWorkerThread({ store, codexClient, piRpcWorkerClient }, threadId);
+    } finally {
+      if (!store.getThread(threadId)) await butlerAgent.removeExternalWorkerDelegation(threadId);
+    }
+  }).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     sseHub.broadcastToast(`Thread cleanup failed: ${message}`, "error", 6000);
   });
@@ -964,7 +984,16 @@ app.post("/api/threads/delete", async (request, response) => {
 });
 
 app.post("/api/threads/delete-all", async (_request, response) => {
-  void deleteAllWorkerThreads({ store, codexClient, piRpcWorkerClient }).catch((error) => {
+  const threadIds = store.listThreads().map((thread) => thread.id);
+  void runSerializedJobMutations(threadIds, async () => {
+    try {
+      await deleteAllWorkerThreads({ store, codexClient, piRpcWorkerClient });
+    } finally {
+      await Promise.all(threadIds
+        .filter((threadId) => !store.getThread(threadId))
+        .map((threadId) => butlerAgent.removeExternalWorkerDelegation(threadId)));
+    }
+  }).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     sseHub.broadcastToast(`Bulk thread cleanup failed: ${message}`, "error", 6000);
   });

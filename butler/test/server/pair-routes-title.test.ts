@@ -83,6 +83,9 @@ function createFakePairSessions(initialPair: PairDetail = makePair()) {
       async getWorkerThread(pairId: string): Promise<unknown | null> {
         return pairs.get(pairId)?.worker ? { id: pairs.get(pairId)?.worker?.threadId } : null;
       },
+      async retryBlockedReview(pairId: string): Promise<PairDetail | null> {
+        return pairs.get(pairId) ?? null;
+      },
       async setButlerThinkingLevel(pairId: string, level: string): Promise<PairDetail | null> {
         const pair = pairs.get(pairId);
         if (!pair) return null;
@@ -480,6 +483,20 @@ test("PATCH /api/pairs/:pairId/settings returns 502 when codex provider rejects 
     assert.equal(res.status, 502);
     const body = (await res.json()) as { error: string };
     assert.match(body.error, /codex provider rejected effort/);
+  } finally {
+    await close();
+  }
+});
+
+test("POST /api/pairs/:pairId/retry-review retries a paused adversarial review", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/retry-review`, { method: "POST" });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { pair: { id: string } };
+    assert.equal(body.pair.id, "pair-1");
   } finally {
     await close();
   }

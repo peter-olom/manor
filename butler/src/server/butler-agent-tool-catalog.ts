@@ -339,8 +339,8 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   },
   {
     name: "delegate_to_codex",
-    label: "Delegate to Codex",
-    description: "Start a new Codex workstream for an execution task such as repo cloning, project setup, coding work, or command execution, with an optional thinking budget.",
+    label: "Delegate to worker",
+    description: "Start a worker workstream using the operator's authenticated-provider model selection and defaults.",
     uiEffects: [
       { kind: "openWindow", description: "Opens the delegated Codex workstream as a tab." },
       { kind: "focusWindow", description: "Moves focus into the new Codex workstream." }
@@ -419,10 +419,10 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "refreshThread", description: "Refreshes the target run after Butler updates checklist state." }]
   },
   {
-    name: "record_review_panel_verdict",
-    label: "Record reviewer",
-    description: "Record a hidden specialist reviewer verdict for one delegated job.",
-    uiEffects: [{ kind: "refreshThread", description: "Refreshes the target run after Butler updates reviewer state." }]
+    name: "disprove_review_finding",
+    label: "Disprove review finding",
+    description: "Record Butler's evidence-backed decision that an isolated blocking review finding is a false positive.",
+    uiEffects: [{ kind: "refreshThread", description: "Refreshes the target run after Butler resolves the review finding." }]
   },
   {
     name: "flush_rejected_acceptance_points",

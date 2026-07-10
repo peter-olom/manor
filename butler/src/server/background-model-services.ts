@@ -8,7 +8,6 @@ import { readMemorySynthesisConfig, resolveMemoryServiceModel } from "./memory-s
 import { MemoryUpdateScheduler, MEMORY_SYNTHESIS_OUTPUT_SCHEMA } from "./memory-update-scheduler.js";
 import { ManorModelTaskRunner } from "./model-task-runner.js";
 import type { ButlerStateStore } from "./state-store.js";
-import { CodexWorkerReviewService, WORKER_REVIEW_OUTPUT_SCHEMA } from "./worker-codex-review.js";
 
 export function createBackgroundModelServices(input: {
   store: ButlerStateStore;
@@ -24,7 +23,6 @@ export function createBackgroundModelServices(input: {
     return {
       config,
       memoryReviewModel: config.model ?? null,
-      workerReviewModel: resolveMemoryServiceModel(settings.modelTasks.workerReviewModel, config.model),
       memoryPromotionModel: resolveMemoryServiceModel(settings.modelTasks.memoryPromotionModel, config.model)
     };
   };
@@ -38,15 +36,6 @@ export function createBackgroundModelServices(input: {
     model: initial.memoryReviewModel ?? undefined,
     timeoutMs: initial.config.timeoutMs,
     runner: async (runnerInput) => await modelTasks.runJson({ purpose: "memory review", ...runnerInput, model: serviceModels().memoryReviewModel, schema: MEMORY_REVIEW_OUTPUT_SCHEMA }) as never
-  });
-  const workerReview = new CodexWorkerReviewService({
-    store,
-    stateDir,
-    codexHomeDir,
-    enabled: true,
-    model: initial.workerReviewModel ?? undefined,
-    timeoutMs: initial.config.timeoutMs,
-    runner: async (runnerInput) => await modelTasks.runJson({ purpose: "worker review", ...runnerInput, model: serviceModels().workerReviewModel, schema: WORKER_REVIEW_OUTPUT_SCHEMA })
   });
   const memoryScheduler = new MemoryUpdateScheduler({
     store,
@@ -89,7 +78,6 @@ export function createBackgroundModelServices(input: {
     const current = serviceModels();
     modelTasks.applySettings();
     memoryReview.applyConfig({ enabled: current.config.enabled, timeoutMs: current.config.timeoutMs, model: current.memoryReviewModel });
-    workerReview.applyConfig({ enabled: true, timeoutMs: current.config.timeoutMs, model: current.workerReviewModel });
     memoryScheduler.applyConfig(current.config);
     memoryPromotion.applyConfig(current.config, current.memoryPromotionModel);
     memoryEmbeddings.applyConfig(readMemoryEmbeddingConfig());
@@ -98,7 +86,6 @@ export function createBackgroundModelServices(input: {
 
   return {
     memoryReview,
-    workerReview,
     memoryScheduler,
     memoryPromotion,
     memoryEmbeddings,

@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { normalizeRoutingDecision } from "./butler-orchestration.js";
 import { normalizeReviewPanel, summarizeReviewPanel } from "./review-panel.js";
 import { buildMissionContract, buildVerificationMatrix, inferTaskCategory, inferWorkDepth } from "./thread-contract.js";
+import { normalizeWorkerReviewPaths } from "./worker-review-attribution.js";
 import type {
   CodexThreadExecutionContractView,
   CodexWorkerEvidenceView,
@@ -202,7 +203,7 @@ function normalizeWorkerReviewResult(raw: unknown): WorkerReviewResultRecordView
   const now = Date.now();
   return {
     id: typeof record.id === "string" && record.id.trim() ? record.id.trim() : crypto.randomUUID(),
-    reviewSource: "codex_review",
+    reviewSource: "adversarial_review",
     turnId,
     reportUpdatedAt: typeof record.reportUpdatedAt === "number" && Number.isFinite(record.reportUpdatedAt) ? record.reportUpdatedAt : 0,
     severity: normalizeReviewSeverity(record.severity),
@@ -214,6 +215,9 @@ function normalizeWorkerReviewResult(raw: unknown): WorkerReviewResultRecordView
     linkedClaimIds: Array.isArray(record.linkedClaimIds)
       ? record.linkedClaimIds.filter((entry): entry is string => typeof entry === "string" && Boolean(entry.trim())).map((entry) => entry.trim())
       : [],
+    modelProvider: typeof record.modelProvider === "string" && record.modelProvider.trim() ? record.modelProvider.trim() : null,
+    modelId: typeof record.modelId === "string" && record.modelId.trim() ? record.modelId.trim() : null,
+    reasoningLevel: typeof record.reasoningLevel === "string" && record.reasoningLevel.trim() ? record.reasoningLevel.trim() : null,
     createdAt: typeof record.createdAt === "number" && Number.isFinite(record.createdAt) ? record.createdAt : now,
     updatedAt: typeof record.updatedAt === "number" && Number.isFinite(record.updatedAt) ? record.updatedAt : now
   };
@@ -265,6 +269,14 @@ export function normalizeExecutionContract(contract: CodexThreadExecutionContrac
   const orchestration = normalizeRoutingDecision(contract.orchestration, taskCategory);
   const reviewResults = Array.isArray(contract.reviewResults)
     ? contract.reviewResults.map((entry) => normalizeWorkerReviewResult(entry)).filter((entry): entry is WorkerReviewResultRecordView => Boolean(entry)).slice(-80)
+    : [];
+  const reviewPeerContexts = Array.isArray(contract.reviewPeerContexts)
+    ? contract.reviewPeerContexts.flatMap((entry) => {
+        if (!entry || typeof entry !== "object" || typeof entry.sourceThreadId !== "string") return [];
+        const paths = normalizeWorkerReviewPaths(entry.paths);
+        const attributionUnknown = entry.attributionUnknown === true;
+        return paths.length > 0 || attributionUnknown ? [{ sourceThreadId: entry.sourceThreadId, baselineTreeSha: typeof entry.baselineTreeSha === "string" ? entry.baselineTreeSha : null, paths, attributionUnknown, recordedAt: typeof entry.recordedAt === "number" && Number.isFinite(entry.recordedAt) ? entry.recordedAt : Date.now() }] : [];
+      }).slice(-32)
     : [];
   const rawMission = contract.mission && typeof contract.mission === "object" ? contract.mission : null;
   const mission = rawMission
@@ -322,6 +334,9 @@ export function normalizeExecutionContract(contract: CodexThreadExecutionContrac
     reviewPanelSummary: summarizeReviewPanel(reviewPanel),
     ...(orchestration ? { orchestration } : {}),
     reviewResults,
+    reviewPeerContexts,
+    reviewPeerContextOverflow: contract.reviewPeerContextOverflow === true,
+    reviewBaselineCaptureFailed: contract.reviewBaselineCaptureFailed === true,
     ...(mission ? { mission } : {}),
     notes: Array.isArray(contract.notes) ? contract.notes.filter((note): note is string => typeof note === "string") : []
   };

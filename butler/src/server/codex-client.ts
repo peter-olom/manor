@@ -6,6 +6,8 @@ import type { CodexInputItem } from "./image-store.js";
 import { cleanupManagedWorktree, resolveExistingWorkspaceCwd } from "./repo-worktree.js";
 import { listFilesRecursive, listThreadSessionFiles, listThreadSnapshotFiles, normalizeTimestampMs } from "./codex-session-artifacts.js";
 import { recoverCodexTranscriptActivity } from "./codex-transcript-activity.js";
+import { CodexOperationGuard } from "./codex-operation-guard.js";
+import { StaleWorkerOperationError } from "./stale-worker-operation-error.js";
 import { ButlerStateStore } from "./state-store.js";
 import { CodexAppServerTransport, type JsonRpcMessage } from "./codex-app-server-transport.js";
 import { CodexProviderAdapter } from "./codex-provider-adapter.js";
@@ -248,6 +250,7 @@ export class CodexAppServerClient extends EventEmitter {
   private readonly directControlThreadIds = new Set<string>();
   private readonly activeTurnIds = new Map<string, string>();
   private readonly deletedThreadIds = new Set<string>();
+  private readonly operationGuard = new CodexOperationGuard((threadId) => this.deletedThreadIds.has(threadId));
   private lastError: string | null = null;
   private availableModels: ModelOption[] = [];
   private selectedModel: string | null = null;
@@ -280,6 +283,7 @@ export class CodexAppServerClient extends EventEmitter {
   ) {
     super();
     this.store = store;
+    for (const threadId of store.listDeletedCodexThreadIds()) this.deletedThreadIds.add(threadId);
     this.codexHomeDir = codexHomeDir;
     this.artifactsDir = options?.artifactsDir ? path.resolve(options.artifactsDir) : null;
     this.onThreadCapabilityReady = options?.onThreadCapabilityReady ?? null;
@@ -302,6 +306,7 @@ export class CodexAppServerClient extends EventEmitter {
         this.resumedThreadIds.clear();
         this.directControlThreadIds.clear();
         this.activeTurnIds.clear();
+        this.operationGuard.clear();
       }
     });
     this.codexProviderAdapter = new CodexProviderAdapter(this.transport);
@@ -309,16 +314,86 @@ export class CodexAppServerClient extends EventEmitter {
     this.transport.on("change", () => {
       this.emit("change");
     });
-    this.codexProviderAdapter.on("runtimeEvent", (event) => {
-      if (!this.deletedThreadIds.has(event.threadId)) {
-        this.ingestRuntimeEvent(event);
-      }
-    });
+    this.codexProviderAdapter.on("runtimeEvent", (event) => this.handleRuntimeEvent(event));
     this.codexProviderAdapter.on("unmappedNotification", (message) => this.handleUnmappedNotification(message));
   }
 
   start(): void {
     this.transport.start();
+  }
+
+  private currentThreadOperationGeneration(threadId: string): number {
+    return this.operationGuard.current(threadId);
+  }
+
+  private advanceThreadOperationGeneration(threadId: string): number {
+    return this.operationGuard.advance(threadId);
+  }
+
+  private isThreadOperationCurrent(threadId: string, generation: number): boolean {
+    return this.operationGuard.isCurrent(threadId, generation);
+  }
+
+  private beginThreadOperation(threadId: string): number {
+    return this.operationGuard.begin(threadId);
+  }
+
+  private staleOperation(threadId: string): StaleWorkerOperationError {
+    return new StaleWorkerOperationError(threadId);
+  }
+
+  private async rejectStaleStartedThread(threadId: string): Promise<never> {
+    let cleanupError: unknown;
+    if (!this.deletedThreadIds.has(threadId) && !this.operationGuard.hasCurrentAcceptedOperation(threadId)) {
+      try {
+        await this.store.removeThreadDurably(threadId);
+        this.markThreadDeleted(threadId);
+        this.clearThreadOperationState(threadId);
+        await this.store.flushSave();
+        await this.onThreadCapabilityRemoved?.(threadId);
+        await this.unsubscribeThread(threadId);
+        this.emit("change");
+      } catch (error) {
+        cleanupError = error;
+      }
+    }
+    throw new StaleWorkerOperationError(threadId, cleanupError);
+  }
+
+  private bindTurnToOperation(threadId: string, turnId: string, generation: number): void {
+    for (const event of this.operationGuard.bindTurn(threadId, turnId, generation)) this.handleRuntimeEvent(event);
+  }
+
+  private clearThreadOperationState(threadId: string): void {
+    this.operationGuard.clearThread(threadId);
+  }
+
+  private markThreadDeleted(threadId: string): void {
+    this.deletedThreadIds.add(threadId);
+    this.store.markCodexThreadDeleted(threadId);
+  }
+
+  private restoreDeletedThread(threadId: string): boolean {
+    const restored = this.deletedThreadIds.delete(threadId);
+    return this.store.restoreDeletedCodexThread(threadId) || restored;
+  }
+
+  private async retireAbsentDeletionTombstones(providerThreadIds: Set<string>): Promise<void> {
+    const retired = [...this.deletedThreadIds].filter((threadId) =>
+      !providerThreadIds.has(threadId) && !this.store.hasRuntimeCleanupTaskForThread(threadId)
+    );
+    if (retired.length === 0) return;
+    for (const threadId of retired) this.restoreDeletedThread(threadId);
+    try {
+      await this.store.flushSave();
+    } catch (error) {
+      for (const threadId of retired) this.markThreadDeleted(threadId);
+      throw error;
+    }
+  }
+
+  invalidateThreadOperations(threadId: string): void {
+    this.operationGuard.invalidate(threadId);
   }
 
   private async requireExistingWorkspace(cwd: string | null | undefined): Promise<string | null> {
@@ -351,12 +426,22 @@ export class CodexAppServerClient extends EventEmitter {
     }
   }
 
-  private ingestRuntimeEvent(event: ProviderRuntimeEvent): void {
+  private handleRuntimeEvent(event: ProviderRuntimeEvent): void {
+    const operationGeneration = this.operationGuard.generationForEvent(event);
+    if (operationGeneration === undefined || !this.operationGuard.eventIsCurrent(event.threadId, operationGeneration)) {
+      return;
+    }
+
     this.noteRuntimeEvent(event);
-    void this.providerRuntimeIngestion.ingest(event).catch((error) => {
+    void this.providerRuntimeIngestion.ingest(
+      event,
+      () => this.operationGuard.eventIsCurrent(event.threadId, operationGeneration)
+    ).catch((error) => {
       this.lastError = error instanceof Error ? error.message : String(error);
       this.emit("change");
     });
+
+    this.operationGuard.completeEvent(event);
   }
 
   getConnectionState(): { connected: boolean; lastError: string | null; compose: { model: string | null; effort: ReasoningEffort | null; availableModels: ModelOption[] } } {
@@ -400,6 +485,7 @@ export class CodexAppServerClient extends EventEmitter {
 
   private async seedThreads(): Promise<void> {
     let cursor: string | null = null;
+    const providerThreadIds = new Set<string>();
 
     do {
       const result = await this.codexProviderAdapter.listThreads({
@@ -409,6 +495,7 @@ export class CodexAppServerClient extends EventEmitter {
       });
 
       for (const thread of result.data) {
+        if (typeof thread.id === "string") providerThreadIds.add(thread.id);
         if (typeof thread.id === "string" && this.deletedThreadIds.has(thread.id)) {
           continue;
         }
@@ -418,7 +505,11 @@ export class CodexAppServerClient extends EventEmitter {
       cursor = result.nextCursor;
     } while (cursor);
 
-    const loadedIds = await this.codexProviderAdapter.listLoadedThreads();
+    const providerLoadedIds = await this.codexProviderAdapter.listLoadedThreads();
+    for (const threadId of providerLoadedIds) providerThreadIds.add(threadId);
+    await this.retireAbsentDeletionTombstones(providerThreadIds);
+    const loadedIds = providerLoadedIds
+      .filter((threadId) => !this.deletedThreadIds.has(threadId));
     this.store.markLoadedThreads(loadedIds);
     this.store.markThreadInventoryReady();
 
@@ -722,13 +813,19 @@ export class CodexAppServerClient extends EventEmitter {
     return params;
   }
 
-  private async ensureInteractiveThread(threadId: string): Promise<string> {
+  private async ensureInteractiveThread(threadId: string, operationGeneration: number): Promise<string> {
+    if (!this.isThreadOperationCurrent(threadId, operationGeneration)) {
+      throw this.staleOperation(threadId);
+    }
     if (this.directControlThreadIds.has(threadId)) {
       return threadId;
     }
 
     const thread = this.store.getThread(threadId);
-    await this.resumeThread(threadId, true);
+    await this.resumeThread(threadId, true, operationGeneration);
+    if (!this.isThreadOperationCurrent(threadId, operationGeneration)) {
+      throw this.staleOperation(threadId);
+    }
     this.directControlThreadIds.add(threadId);
 
     if (thread && thread.source !== "appServer") {
@@ -738,9 +835,27 @@ export class CodexAppServerClient extends EventEmitter {
     return threadId;
   }
 
-  async loadThread(threadId: string): Promise<void> {
-    this.deletedThreadIds.delete(threadId);
+  async loadThread(threadId: string, options: { restoreDeleted?: boolean } = {}): Promise<void> {
+    const restoringDeletedThread = this.deletedThreadIds.has(threadId);
+    if (restoringDeletedThread && options.restoreDeleted !== true) {
+      throw new Error("Thread was deleted in Manor. Restore it explicitly before loading it again.");
+    }
+    if (restoringDeletedThread && this.store.hasRuntimeCleanupTaskForThread(threadId)) {
+      throw new Error("Thread cleanup is still running. Wait for cleanup to finish before restoring it.");
+    }
+    const operationGeneration = restoringDeletedThread
+      ? this.advanceThreadOperationGeneration(threadId)
+      : this.currentThreadOperationGeneration(threadId);
+    if (!restoringDeletedThread && !this.isThreadOperationCurrent(threadId, operationGeneration)) return;
     const result = await this.codexProviderAdapter.loadThread(threadId);
+    if (restoringDeletedThread) {
+      if (this.currentThreadOperationGeneration(threadId) !== operationGeneration) return;
+      this.restoreDeletedThread(threadId);
+      await this.store.flushSave();
+    }
+    if (!this.isThreadOperationCurrent(threadId, operationGeneration)) {
+      return;
+    }
 
     if (result.thread && typeof result.thread === "object") {
       this.store.setThreadDetail(result.thread as Record<string, unknown>);
@@ -751,16 +866,22 @@ export class CodexAppServerClient extends EventEmitter {
       );
     }
 
-    await this.restoreThreadUsage(threadId).catch(() => undefined);
-    await this.restoreThreadTranscriptActivity(threadId).catch(() => undefined);
-    await this.resumeThread(threadId).catch(() => undefined);
+    if (!this.isThreadOperationCurrent(threadId, operationGeneration)) return;
+    await this.restoreThreadUsage(threadId, operationGeneration).catch(() => undefined);
+    if (!this.isThreadOperationCurrent(threadId, operationGeneration)) return;
+    await this.restoreThreadTranscriptActivity(threadId, operationGeneration).catch(() => undefined);
+    if (!this.isThreadOperationCurrent(threadId, operationGeneration)) return;
+    await this.resumeThread(threadId, false, operationGeneration).catch(() => undefined);
   }
 
-  private async restoreThreadTranscriptActivity(threadId: string): Promise<void> {
+  private async restoreThreadTranscriptActivity(threadId: string, operationGeneration?: number): Promise<void> {
     const thread = this.store.getThread(threadId);
     const turns = await recoverCodexTranscriptActivity(this.codexHomeDir, threadId, thread?.createdAt ?? null);
     for (const turn of turns) {
       for (const item of turn.items) {
+        if (operationGeneration !== undefined && !this.isThreadOperationCurrent(threadId, operationGeneration)) {
+          return;
+        }
         const current = this.store.getThread(threadId)?.turns
           .find((entry) => entry.id === turn.turnId)
           ?.items.find((entry) => entry.id === item.id);
@@ -772,13 +893,19 @@ export class CodexAppServerClient extends EventEmitter {
     }
   }
 
-  async resumeThread(threadId: string, forceConfig = false): Promise<void> {
-    this.deletedThreadIds.delete(threadId);
+  async resumeThread(threadId: string, forceConfig = false, operationGeneration?: number): Promise<void> {
+    const expectedGeneration = operationGeneration ?? this.currentThreadOperationGeneration(threadId);
+    if (!this.isThreadOperationCurrent(threadId, expectedGeneration)) {
+      return;
+    }
     if (!forceConfig && this.resumedThreadIds.has(threadId)) {
       return;
     }
 
     const result = await this.codexProviderAdapter.resumeThread(threadId, this.buildResumeConfig());
+    if (!this.isThreadOperationCurrent(threadId, expectedGeneration)) {
+      return;
+    }
     if (result.thread && typeof result.thread === "object") {
       this.store.upsertThreadSummary(result.thread as Record<string, unknown>);
     }
@@ -863,16 +990,20 @@ export class CodexAppServerClient extends EventEmitter {
     const thread = started.thread && typeof started.thread === "object" ? (started.thread as Record<string, unknown>) : null;
     const threadId = started.threadId;
 
-    this.deletedThreadIds.delete(threadId);
+    if (this.restoreDeletedThread(threadId)) await this.store.flushSave();
     if (thread) {
       this.store.upsertThreadSummary(thread);
     }
     await this.onThreadCapabilityReady?.(threadId, threadCwd ?? (thread && typeof thread.cwd === "string" ? thread.cwd : null));
     this.resumedThreadIds.add(threadId);
     this.directControlThreadIds.add(threadId);
+    const operationGeneration = this.beginThreadOperation(threadId);
 
     const resolvedInput =
       typeof options.input === "function" ? await options.input(threadId) : (options.input ?? task);
+    if (!this.isThreadOperationCurrent(threadId, operationGeneration)) {
+      return this.rejectStaleStartedThread(threadId);
+    }
     const params: Record<string, unknown> = {
       threadId,
       input: normalizeInputItems(resolvedInput)
@@ -896,12 +1027,27 @@ export class CodexAppServerClient extends EventEmitter {
       this.store.setThreadRequestedReasoningEffort(threadId, requestedEffort);
     }
 
-    const turnResult = await this.codexProviderAdapter.sendTurn(threadId, params);
+    let turnResult;
+    try {
+      turnResult = await this.codexProviderAdapter.sendTurn(threadId, params);
+    } catch (error) {
+      if (!this.isThreadOperationCurrent(threadId, operationGeneration)) {
+        return this.rejectStaleStartedThread(threadId);
+      }
+      throw error;
+    }
     let turnId: string | null = turnResult.turnId ?? null;
-    if (turnResult.turn && typeof turnResult.turn === "object") {
-      const turn = turnResult.turn as Record<string, unknown>;
+    const turn = turnResult.turn && typeof turnResult.turn === "object"
+      ? (turnResult.turn as Record<string, unknown>)
+      : null;
+    if (!turnId && typeof turn?.id === "string") turnId = turn.id;
+    if (turnId) this.bindTurnToOperation(threadId, turnId, operationGeneration);
+    if (!this.isThreadOperationCurrent(threadId, operationGeneration)) {
+      if (turnId) await this.codexProviderAdapter.interruptTurn(threadId, turnId).catch(() => undefined);
+      return this.rejectStaleStartedThread(threadId);
+    }
+    if (turn) {
       if (typeof turn.id === "string") {
-        turnId = turn.id;
         this.activeTurnIds.set(threadId, turn.id);
         if (requestedEffort) {
           this.store.setThreadRequestedReasoningEffort(threadId, requestedEffort, turn.id);
@@ -920,19 +1066,44 @@ export class CodexAppServerClient extends EventEmitter {
 
   async sendMessage(threadId: string, input: string | CodexInputItem[]): Promise<{ threadId: string; turnId: string | null }> {
     const inputItems = normalizeInputItems(input);
+    if (this.deletedThreadIds.has(threadId)) {
+      throw new Error("Thread has been deleted");
+    }
+    const preflightGeneration = this.currentThreadOperationGeneration(threadId);
     const threadWorkspace = await this.requireExistingWorkspace(this.store.getThread(threadId)?.cwd);
+    if (!this.isThreadOperationCurrent(threadId, preflightGeneration)) {
+      throw this.staleOperation(threadId);
+    }
     if (threadWorkspace) {
       this.store.upsertThreadSummary({ id: threadId, cwd: threadWorkspace });
     }
     await this.onThreadCapabilityReady?.(threadId, threadWorkspace);
-    const targetThreadId = await this.ensureInteractiveThread(threadId);
+    if (!this.isThreadOperationCurrent(threadId, preflightGeneration)) {
+      throw this.staleOperation(threadId);
+    }
+    const targetThreadId = await this.ensureInteractiveThread(threadId, preflightGeneration);
+    if (!this.isThreadOperationCurrent(targetThreadId, preflightGeneration)) {
+      throw this.staleOperation(targetThreadId);
+    }
+    const operationGeneration = this.beginThreadOperation(targetThreadId);
 
     const activeTurnId = this.activeTurnIds.get(targetThreadId);
     if (activeTurnId) {
+      this.bindTurnToOperation(targetThreadId, activeTurnId, operationGeneration);
       if (threadWorkspace) {
         this.store.upsertThreadSummary({ id: targetThreadId, cwd: threadWorkspace });
       }
-      await this.codexProviderAdapter.steerTurn(targetThreadId, activeTurnId, inputItems);
+      try {
+        await this.codexProviderAdapter.steerTurn(targetThreadId, activeTurnId, inputItems);
+      } catch (error) {
+        if (!this.isThreadOperationCurrent(targetThreadId, operationGeneration)) {
+          throw this.staleOperation(targetThreadId);
+        }
+        throw error;
+      }
+      if (!this.isThreadOperationCurrent(targetThreadId, operationGeneration)) {
+        throw this.staleOperation(targetThreadId);
+      }
       return { threadId: targetThreadId, turnId: activeTurnId };
     }
 
@@ -954,9 +1125,31 @@ export class CodexAppServerClient extends EventEmitter {
       params.effort = this.selectedEffort;
     }
 
-    const result = await this.codexProviderAdapter.sendTurn(targetThreadId, params);
+    let result;
+    try {
+      result = await this.codexProviderAdapter.sendTurn(targetThreadId, params);
+    } catch (error) {
+      if (!this.isThreadOperationCurrent(targetThreadId, operationGeneration)) {
+        throw this.staleOperation(targetThreadId);
+      }
+      throw error;
+    }
+    const resultTurn = result.turn && typeof result.turn === "object" ? (result.turn as Record<string, unknown>) : null;
+    const resultTurnId = result.turnId ?? (typeof resultTurn?.id === "string" ? resultTurn.id : null);
+    if (resultTurnId) {
+      this.bindTurnToOperation(targetThreadId, resultTurnId, operationGeneration);
+    }
+    if (!this.isThreadOperationCurrent(targetThreadId, operationGeneration)) {
+      if (resultTurnId) {
+        await this.codexProviderAdapter.interruptTurn(targetThreadId, resultTurnId).catch(() => undefined);
+      }
+      throw this.staleOperation(targetThreadId);
+    }
     if (threadWorkspace) {
       this.store.upsertThreadSummary({ id: targetThreadId, cwd: threadWorkspace });
+    }
+    if (resultTurnId) {
+      this.activeTurnIds.set(targetThreadId, resultTurnId);
     }
     if (result.turn && typeof result.turn === "object") {
       this.store.updateTurn(targetThreadId, result.turn as Record<string, unknown>);
@@ -965,12 +1158,16 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   async stopThread(threadId: string): Promise<boolean> {
+    this.invalidateThreadOperations(threadId);
+    const operationGeneration = this.currentThreadOperationGeneration(threadId);
     const activeTurnId = this.activeTurnIds.get(threadId);
     if (!activeTurnId) {
       return false;
     }
 
     await this.codexProviderAdapter.interruptTurn(threadId, activeTurnId);
+    if (!this.isThreadOperationCurrent(threadId, operationGeneration)) return true;
+    if (this.activeTurnIds.get(threadId) !== activeTurnId) return true;
     this.activeTurnIds.delete(threadId);
     this.store.setThreadStatus(threadId, "idle");
     this.store.addEvent(threadId, "turn/interrupt", "Turn interrupted by operator");
@@ -978,7 +1175,7 @@ export class CodexAppServerClient extends EventEmitter {
     return true;
   }
 
-  private async restoreThreadUsage(threadId: string): Promise<void> {
+  private async restoreThreadUsage(threadId: string, operationGeneration?: number): Promise<void> {
     const sessionFiles = await listThreadSessionFiles(this.codexHomeDir, threadId, this.store.getThread(threadId)?.createdAt ?? null);
 
     if (sessionFiles.length === 0) {
@@ -1000,6 +1197,9 @@ export class CodexAppServerClient extends EventEmitter {
         continue;
       }
 
+      if (operationGeneration !== undefined && !this.isThreadOperationCurrent(threadId, operationGeneration)) {
+        return;
+      }
       this.store.updateThreadTokenUsage(threadId, usage);
       return;
     }
@@ -1212,17 +1412,20 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   async deleteThread(threadId: string, options: { waitForCleanup?: boolean } = {}): Promise<{ deletedArtifacts: number; cleanupFailed?: boolean; cleanupError?: string | null }> {
+    this.invalidateThreadOperations(threadId);
     const context = this.buildThreadDeleteContext(threadId);
     await this.memoryScheduler?.beforeThreadDelete(context);
     if (options.waitForCleanup) {
       try {
         await this.onThreadDeleting?.({ threadId: context.threadId, cwd: context.cwd, threadCreatedAt: context.threadCreatedAt, stacks: context.stacks, previews: context.previews, services: context.services });
         const deletedArtifacts = await this.deleteThreadArtifacts(context.threadId, context.cwd, context.threadCreatedAt);
-        this.deletedThreadIds.add(threadId);
+        this.markThreadDeleted(threadId);
         this.store.removeThread(threadId);
+        this.clearThreadOperationState(threadId);
+        await this.store.flushSave();
         await this.onThreadCapabilityRemoved?.(threadId);
         this.emit("change");
-        await this.unsubscribeThread(threadId);
+        void this.unsubscribeThread(threadId).catch(() => undefined);
         return { deletedArtifacts, cleanupFailed: false, cleanupError: null };
       } catch (error) {
         return { deletedArtifacts: 0, cleanupFailed: true, cleanupError: error instanceof Error ? error.message : String(error) };
@@ -1230,35 +1433,40 @@ export class CodexAppServerClient extends EventEmitter {
     }
 
     this.store.enqueueRuntimeCleanupTask({ threadId: context.threadId, cwd: context.cwd, threadCreatedAt: context.threadCreatedAt, stacks: context.stacks, previews: context.previews, services: context.services, proofArtifactPaths: context.proofArtifactPaths });
-    this.deletedThreadIds.add(threadId);
+    this.markThreadDeleted(threadId);
     this.store.removeThread(threadId);
+    this.clearThreadOperationState(threadId);
+    await this.store.flushSave();
     this.scheduleCleanupQueue();
     await this.onThreadCapabilityRemoved?.(threadId);
     this.emit("change");
-    await this.unsubscribeThread(threadId);
+    void this.unsubscribeThread(threadId).catch(() => undefined);
     this.scheduleCleanupQueue();
     return { deletedArtifacts: 0, cleanupFailed: false, cleanupError: null };
   }
 
   async deleteAllThreads(): Promise<{ deletedThreadIds: string[]; deletedArtifacts: number }> {
     const threadIds = this.store.listThreads().map((thread) => thread.id);
+    for (const threadId of threadIds) {
+      this.invalidateThreadOperations(threadId);
+    }
     const deleteContexts = threadIds.map((threadId) => this.buildThreadDeleteContext(threadId));
     await this.memoryScheduler?.beforeThreadsDelete(deleteContexts);
     for (const context of deleteContexts) {
       this.store.enqueueRuntimeCleanupTask({ threadId: context.threadId, cwd: context.cwd, threadCreatedAt: context.threadCreatedAt, stacks: context.stacks, previews: context.previews, services: context.services, proofArtifactPaths: context.proofArtifactPaths });
     }
     for (const threadId of threadIds) {
-      this.deletedThreadIds.add(threadId);
+      this.markThreadDeleted(threadId);
     }
     this.store.removeThreads(threadIds);
+    for (const threadId of threadIds) this.clearThreadOperationState(threadId);
+    await this.store.flushSave();
     this.scheduleCleanupQueue();
     for (const threadId of threadIds) {
       await this.onThreadCapabilityRemoved?.(threadId);
     }
     this.emit("change");
-    for (const threadId of threadIds) {
-      await this.unsubscribeThread(threadId);
-    }
+    for (const threadId of threadIds) void this.unsubscribeThread(threadId).catch(() => undefined);
     return { deletedThreadIds: threadIds, deletedArtifacts: 0 };
   }
 }

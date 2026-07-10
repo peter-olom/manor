@@ -5,10 +5,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { ButlerAgentService } from "../../src/server/butler-agent.js";
+import { directWorkerDispatchMarker } from "../../src/server/butler-callback-state.js";
 import { normalizeOperatorMessages } from "../../src/server/butler-operator-messages.js";
 import { backfillDirectCodexMessagesFromSessionFiles, buildDirectCodexMessagePingSummary } from "../../src/server/direct-codex-message.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
+import { StaleWorkerOperationError } from "../../src/server/stale-worker-operation-error.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
+import { runSerializedJobMutation } from "../../src/server/butler-job-mutation-guard.js";
+import { sendWorkerMessage } from "../../src/server/worker-client-router.js";
 import type { ButlerThreadCallbackView } from "../../src/server/types.js";
 
 async function createStore(): Promise<ButlerStateStore> {
@@ -82,6 +86,325 @@ test("direct Codex messages register Butler supervision callback", async () => {
 
   const messages = agent.getLiveSnapshot().messages;
   assert.equal(messages.length, 0);
+});
+
+test("deleting a Worker removes its outstanding Butler callback", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-delete-"));
+  const threadId = "thread-delete-callback";
+  store.upsertThreadSummary({ id: threadId, status: "active", cwd: "/workspace", turns: [{ id: "turn-1", status: "completed", items: [] }] });
+  const agent = createButlerAgent(store, sessionDir);
+  await agent.notifyDirectCodexMessage({ threadId, text: "Continue.", imageReferenceIds: [], fileReferenceIds: [], inputItems: [] });
+  assert.equal(agent.getShellSnapshot().supervision.callbacks.length, 1);
+
+  await agent.removeExternalWorkerDelegation(threadId);
+
+  assert.equal(agent.getShellSnapshot().supervision.callbacks.length, 0);
+});
+
+test("direct Worker callback is persisted before send and rolled back on failure", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-reserve-"));
+  const threadId = "thread-reserved-callback";
+  store.upsertThreadSummary({ id: threadId, status: { type: "idle" }, cwd: "/workspace", turns: [{ id: "turn-1", status: "completed", items: [] }] });
+  const agent = createButlerAgent(store, sessionDir);
+  const requestedAt = Date.now();
+
+  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Run the follow-up.", requestedAt });
+  assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.requestedAt, requestedAt);
+  assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.lastPrivateSteerText, "Run the follow-up.");
+  assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.dispatchState, "reserving");
+  await agent.notifyDirectCodexMessage({ threadId, text: "Run the follow-up.", requestedAt, callbackAlreadyRegistered: true });
+  assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.dispatchState, "ready");
+
+  await agent.rollbackDirectCodexMessage(threadId, requestedAt, reservation);
+  assert.equal(agent.getShellSnapshot().supervision.callbacks.length, 0);
+
+  await agent.notifyDirectCodexMessage({ threadId, text: "Original review.", requestedAt: requestedAt + 1 });
+  const internals = agent as unknown as { pendingChatCallbacks: Map<string, ButlerThreadCallbackView> };
+  internals.pendingChatCallbacks.get(threadId)!.reviewState = "running";
+  await runSerializedJobMutation(threadId, async () => {
+    const interrupted = await agent.reserveDirectCodexMessage({ threadId, text: "Replacement send.", requestedAt: requestedAt + 2 });
+    await agent.rollbackDirectCodexMessage(threadId, requestedAt + 2, interrupted);
+    assert.equal(internals.pendingChatCallbacks.get(threadId)?.reviewState, "queued");
+  });
+  agent.dispose();
+});
+
+test("a stale direct Worker dispatch rolls back its reserved callback", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-stale-dispatch-"));
+  const threadId = "thread-stale-direct-dispatch";
+  store.upsertThreadSummary({ id: threadId, source: "appServer", status: { type: "idle" }, cwd: "/workspace", turns: [] });
+  const agent = createButlerAgent(store, sessionDir);
+  const requestedAt = Date.now();
+  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Never accepted.", requestedAt });
+
+  let caught: unknown;
+  try {
+    await sendWorkerMessage({
+      store,
+      codexClient: {
+        sendMessage: async () => { throw new StaleWorkerOperationError(threadId); }
+      }
+    } as never, threadId, "Never accepted.");
+  } catch (error) {
+    caught = error;
+    await agent.rollbackDirectCodexMessage(threadId, requestedAt, reservation);
+  }
+
+  assert.ok(caught instanceof StaleWorkerOperationError);
+  assert.equal(agent.getShellSnapshot().supervision.callbacks.length, 0);
+  agent.dispose();
+});
+
+test("startup drops a pre-send callback reservation with no Worker activity", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-phantom-"));
+  const threadId = "thread-phantom-callback";
+  store.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [{ id: "turn-old", status: "completed", items: [] }] });
+  const requestedAt = Date.now() - 10 * 60_000;
+  const agent = createButlerAgent(store, sessionDir, {
+    getConnectionState: () => ({ compose: { availableModels: [] } }),
+    loadThread: async () => { throw new Error("provider session is unavailable after restart"); }
+  });
+  await agent.reserveDirectCodexMessage({ threadId, text: "Never sent.", requestedAt });
+
+  await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
+
+  assert.equal(agent.getShellSnapshot().supervision.callbacks.length, 0);
+  agent.dispose();
+});
+
+test("startup promotes only the exact accepted direct-message dispatch", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-accepted-"));
+  const threadId = "thread-accepted-callback";
+  const requestedAt = Date.now() - 1_000;
+  store.upsertThreadSummary({
+    id: threadId,
+    status: "active",
+    cwd: "/workspace",
+    turns: [{
+      id: "turn-direct",
+      status: "started",
+      items: [
+        { id: "user-old", type: "userMessage", text: "Earlier request." },
+        { id: "user-direct", type: "userMessage", text: `Run it.\n${directWorkerDispatchMarker(threadId, requestedAt)}` }
+      ]
+    }]
+  });
+  const agent = createButlerAgent(store, sessionDir, {
+    getConnectionState: () => ({ compose: { availableModels: [] } }),
+    loadThread: async () => { throw new Error("provider session is unavailable after restart"); }
+  });
+  await agent.reserveDirectCodexMessage({ threadId, text: "Run it.", requestedAt });
+
+  await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
+
+  assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.dispatchState, "ready");
+  agent.dispose();
+});
+
+test("an unconfirmed reservation ignores unrelated Worker activity during recovery", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-unconfirmed-"));
+  const threadId = "thread-unconfirmed-callback";
+  const requestedAt = Date.now() - 1_000;
+  store.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [{ id: "turn-unrelated", status: "completed", items: [{ id: "reply", type: "agentMessage", text: "Unrelated work completed.", at: Date.now() }] }] });
+  store.recordWorkerReport(threadId, { turnId: "turn-unrelated", status: "completed", summary: "Unrelated work.", details: null });
+  const agent = createButlerAgent(store, sessionDir, {
+    getConnectionState: () => ({ compose: { availableModels: [] } }),
+    loadThread: async () => undefined
+  });
+  await agent.reserveDirectCodexMessage({ threadId, text: "This was never sent.", requestedAt });
+
+  await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
+
+  const callback = agent.getShellSnapshot().supervision.callbacks[0];
+  assert.equal(callback?.dispatchState, "reserving");
+  assert.equal(callback?.callbackState, "waiting");
+  assert.equal(callback?.reviewState, "idle");
+  agent.dispose();
+});
+
+test("a persisted closeout message reconciles its callback without posting twice", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-closeout-recovery-"));
+  const threadId = "thread-closeout-recovery";
+  store.upsertThreadSummary({
+    id: threadId,
+    status: "idle",
+    cwd: "/workspace",
+    turns: [{ id: "turn-1", status: "completed", items: [] }]
+  });
+  const agent = createButlerAgent(store, sessionDir);
+  const internals = agent as unknown as {
+    operatorMessages: Array<{ id: string; role: string; text: string; at: number; taskDurationMs: null; kind: "message" }>;
+    operatorSink: { onOperatorReply(input: unknown): void } | null;
+    postOperatorJobReply(threadId: string, text: string): Promise<void>;
+    pendingChatCallbacks: Map<string, ButlerThreadCallbackView>;
+  };
+  await agent.notifyDirectCodexMessage({ threadId, text: "Finish it.", requestedAt: 1 });
+  internals.operatorMessages.push({ id: `callback-fallback-${threadId}:turn-1`, role: "assistant", text: "Already posted.", at: 2, taskDurationMs: null, kind: "message" });
+  let reposts = 0;
+  internals.operatorSink = { onOperatorReply: () => { reposts += 1; } };
+
+  await internals.postOperatorJobReply(threadId, "Do not repost this.");
+
+  assert.equal(reposts, 0);
+  assert.equal(internals.pendingChatCallbacks.get(threadId)?.operatorCloseoutStatus, "posted");
+  assert.equal(internals.pendingChatCallbacks.get(threadId)?.owesOperatorReply, false);
+  agent.dispose();
+});
+
+test("restart reconciliation closes a delivered callback before queuing recovery", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-delivered-recovery-"));
+  const threadId = "thread-delivered-recovery";
+  store.upsertThreadSummary({
+    id: threadId,
+    status: "idle",
+    cwd: "/workspace",
+    turns: [{
+      id: "turn-1",
+      status: "completed",
+      items: [{ id: "reply", type: "agentMessage", status: "completed", text: "Finished." }]
+    }]
+  });
+  const agent = createButlerAgent(store, sessionDir, {
+    getConnectionState: () => ({ compose: { availableModels: [] } }),
+    loadThread: async () => undefined
+  });
+  await agent.notifyDirectCodexMessage({ threadId, text: "Finish it.", requestedAt: 10 });
+  const internals = agent as unknown as {
+    operatorMessages: Array<{ id: string; role: string; text: string; at: number; taskDurationMs: null; kind: "message" }>;
+    pendingChatCallbacks: Map<string, ButlerThreadCallbackView>;
+    reconcilePendingChatCallbacks(): Promise<void>;
+  };
+  internals.operatorMessages.push({
+    id: `callback-${threadId}:turn-1`,
+    role: "assistant",
+    text: "Already delivered.",
+    at: 51,
+    taskDurationMs: null,
+    kind: "message"
+  });
+  Object.assign(internals.pendingChatCallbacks.get(threadId)!, {
+    callbackState: "missing_worker_callback",
+    reviewState: "queued",
+    reviewReason: "thread_recovery"
+  });
+
+  await internals.reconcilePendingChatCallbacks();
+
+  const callback = internals.pendingChatCallbacks.get(threadId);
+  assert.equal(callback?.callbackState, "closed");
+  assert.equal(callback?.operatorCloseoutStatus, "posted");
+  assert.equal(callback?.owesOperatorReply, false);
+  assert.equal(callback?.reviewState, "idle");
+  assert.equal(internals.operatorMessages.filter((message) => message.id === `callback-${threadId}:turn-1`).length, 1);
+  agent.dispose();
+});
+
+test("startup does not rearm a delivered latest Worker turn", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-delivered-latest-"));
+  const threadId = "thread-delivered-latest";
+  store.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [{ id: "turn-1", status: "completed", items: [] }] });
+  const agent = createButlerAgent(store, sessionDir);
+  const internals = agent as unknown as {
+    deliveredCloseoutIds: Set<string>;
+    pendingChatCallbacks: Map<string, ButlerThreadCallbackView>;
+  };
+  internals.deliveredCloseoutIds.add(`${threadId}:turn-1`);
+
+  await agent.ensureExternalWorkerDelegation(threadId);
+
+  assert.equal(internals.pendingChatCallbacks.size, 0);
+  agent.dispose();
+});
+
+test("startup rearms when Worker has a newer undelivered turn", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-undelivered-latest-"));
+  const threadId = "thread-undelivered-latest";
+  store.upsertThreadSummary({
+    id: threadId,
+    status: "idle",
+    cwd: "/workspace",
+    turns: [
+      { id: "turn-1", status: "completed", items: [] },
+      { id: "turn-2", status: "completed", items: [] }
+    ]
+  });
+  const agent = createButlerAgent(store, sessionDir);
+  const internals = agent as unknown as {
+    deliveredCloseoutIds: Set<string>;
+    pendingChatCallbacks: Map<string, ButlerThreadCallbackView>;
+  };
+  internals.deliveredCloseoutIds.add(`${threadId}:turn-1`);
+
+  await agent.ensureExternalWorkerDelegation(threadId);
+
+  assert.equal(internals.pendingChatCallbacks.get(threadId)?.owesOperatorReply, true);
+  agent.dispose();
+});
+
+test("background callback review failures stay out of Butler chat errors", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-background-review-error-"));
+  const agent = createButlerAgent(store, sessionDir);
+  const internals = agent as unknown as {
+    lastError: string | null;
+    processCallbackReviews(): Promise<void>;
+    callbackReviewScheduler: { schedule(): void };
+  };
+  let releaseAttempt!: () => void;
+  const attempted = new Promise<void>((resolve) => { releaseAttempt = resolve; });
+  internals.processCallbackReviews = async () => {
+    releaseAttempt();
+    throw new Error("Isolated Butler supervision timed out.");
+  };
+
+  internals.callbackReviewScheduler.schedule();
+  await attempted;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(agent.getShellSnapshot().lastError, null);
+
+  internals.lastError = "Foreground Butler failure.";
+  let releaseSecondAttempt!: () => void;
+  const secondAttempted = new Promise<void>((resolve) => { releaseSecondAttempt = resolve; });
+  internals.processCallbackReviews = async () => {
+    releaseSecondAttempt();
+    throw new Error("Background provider failed.");
+  };
+  internals.callbackReviewScheduler.schedule();
+  await secondAttempted;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(agent.getShellSnapshot().lastError, "Foreground Butler failure.");
+  agent.dispose();
+});
+
+test("startup keeps a closed historical callback closed until newer Worker activity", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-closed-"));
+  const threadId = "thread-closed-callback";
+  store.upsertThreadSummary({ id: threadId, status: { type: "idle" }, cwd: "/workspace", turns: [{ id: "turn-1", status: "completed", items: [] }] });
+  const agent = createButlerAgent(store, sessionDir);
+  await agent.notifyDirectCodexMessage({ threadId, text: "Initial work.", imageReferenceIds: [], fileReferenceIds: [], inputItems: [] });
+  const internals = agent as unknown as { pendingChatCallbacks: Map<string, ButlerThreadCallbackView> };
+  const closed = internals.pendingChatCallbacks.get(threadId)!;
+  const closedAt = Date.now();
+  Object.assign(closed, { callbackState: "closed", operatorCloseoutStatus: "posted", owesOperatorReply: false, closedAt, updatedAt: closedAt });
+
+  await agent.ensureExternalWorkerDelegation(threadId);
+  assert.equal(internals.pendingChatCallbacks.get(threadId), closed);
+
+  store.getThread(threadId)!.turns.push({ id: "turn-2", requestedReasoningEffort: null, status: "started", error: null, startedAt: closedAt + 1, completedAt: null, items: [] });
+  await agent.ensureExternalWorkerDelegation(threadId);
+  assert.notEqual(internals.pendingChatCallbacks.get(threadId), closed);
+  assert.equal(internals.pendingChatCallbacks.get(threadId)?.owesOperatorReply, true);
 });
 
 test("operator history normalization hides persisted direct Codex prompts", () => {
@@ -207,7 +530,7 @@ test("direct Codex callback recovery uses worker reply item time instead of refr
   }
 });
 
-test("automation-only review failure does not gate callback closeout", async () => {
+test("completed direct-reply callbacks queue adversarial review before closeout", async () => {
   const store = await createStore();
   const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-session-"));
   const threadId = "thread-gated-closeout";
@@ -239,7 +562,7 @@ test("automation-only review failure does not gate callback closeout", async () 
         confidence: 0.9,
         questionSet: [],
         goalRecommendation: { mode: "none", goal: null, fallbackReason: null },
-        reviewRecommendation: { target: "codex_review", required: true, reason: "test review" },
+        reviewRecommendation: { target: "adversarial_review", required: true, reason: "test review" },
         subAgentRoles: [],
         riskLevel: "medium",
         fallbackReason: null,
@@ -278,7 +601,7 @@ test("automation-only review failure does not gate callback closeout", async () 
     store.recordWorkerReviewResults(threadId, [
       {
         id: "review-failed",
-        reviewSource: "codex_review",
+        reviewSource: "adversarial_review",
         turnId: report.turnId,
         reportUpdatedAt: report.updatedAt,
         severity: "high",
@@ -288,6 +611,9 @@ test("automation-only review failure does not gate callback closeout", async () 
         waiverReason: null,
         automationFailure: true,
         linkedClaimIds: ["claim-1"],
+        modelProvider: "openai-codex",
+        modelId: "gpt-5.5",
+        reasoningLevel: "high",
         createdAt: reportAt,
         updatedAt: reportAt
       }
@@ -295,25 +621,39 @@ test("automation-only review failure does not gate callback closeout", async () 
 
     const agent = createButlerAgent(store, sessionDir);
     const internals = agent as unknown as {
-      registerPendingChatCallback(threadId: string, options?: { nextWorkerReportAction?: "review" | "reply_to_operator"; requestedAt?: number }): void;
+      registerPendingChatCallback(threadId: string, options?: { nextWorkerReportAction?: "review" | "reply_to_operator"; requestedAt?: number }): Promise<void>;
       processPendingChatCallbacks(): Promise<boolean>;
       pendingChatCallbacks: Map<string, ButlerThreadCallbackView>;
     };
-    internals.registerPendingChatCallback(threadId, { nextWorkerReportAction: "reply_to_operator", requestedAt });
+    await internals.registerPendingChatCallback(threadId, { nextWorkerReportAction: "reply_to_operator", requestedAt });
 
     Date.now = () => reportAt + 1;
     assert.equal(await internals.processPendingChatCallbacks(), true);
     const callback = internals.pendingChatCallbacks.get(threadId);
-    assert.equal(callback?.callbackState, "closed");
-    assert.equal(callback?.operatorCloseoutStatus, "posted");
-    assert.equal(callback?.reviewState, "idle");
-    assert.equal(callback?.blockedCloseoutReason, null);
+    assert.equal(callback?.callbackState, "received_worker_callback");
+    assert.equal(callback?.operatorCloseoutStatus, "owed");
+    assert.equal(callback?.reviewState, "queued");
+    assert.equal(callback?.blockedCloseoutReason ?? null, null);
     assert.equal(store.getThread(threadId)?.eventLog.filter((event) => event.method === "butler.closeout.gated").length, 0);
 
     Date.now = () => reportAt + 2;
     assert.equal(await internals.processPendingChatCallbacks(), false);
-    assert.equal(callback?.callbackState, "closed");
+    assert.equal(callback?.callbackState, "received_worker_callback");
     assert.equal(store.getThread(threadId)?.eventLog.filter((event) => event.method === "butler.closeout.gated").length, 0);
+
+    if (!callback) throw new Error("callback missing");
+    callback.reviewState = "blocked";
+    callback.blockedCloseoutReason = "Adversarial review paused after 3 failed attempts: provider unavailable";
+    callback.blockedCloseoutReportAt = report.updatedAt;
+    assert.equal(await internals.processPendingChatCallbacks(), false);
+    assert.equal(callback.reviewState, "blocked");
+    assert.match(callback.blockedCloseoutReason ?? "", /paused after 3 failed attempts/);
+
+    callback.reviewState = "blocked";
+    callback.blockedCloseoutReason = "Adversarial review must finish before Butler can close the job.";
+    callback.blockedCloseoutReportAt = report.updatedAt;
+    assert.equal(await internals.processPendingChatCallbacks(), true);
+    assert.equal(callback.reviewState, "queued");
   } finally {
     Date.now = originalNow;
   }

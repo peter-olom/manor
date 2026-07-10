@@ -66,7 +66,8 @@ import { deleteStateStoreMemoryEmbeddingsForSource, listStateStoreMemoryEmbeddin
 import { enqueueStateStoreMemorySynthesis, listDueStateStoreMemorySynthesis, listStateStoreMemoryGraph, recordStateStoreMemoryObservation, searchStateStoreMemoryGraph, updateStateStoreMemorySynthesisQueueEntry, upsertStateStoreMemoryEntity, upsertStateStoreMemoryRelationship } from "./state-store-memory-graph.js";
 import { listStateStoreDesktopSessions, removeStateStoreDesktopSession, replaceStateStoreDesktopSessions, upsertStateStoreDesktopSession } from "./state-store-desktop.js";
 import { buildStateStoreRuntimeSnapshot, buildStateStoreShellSnapshot, buildStateStoreSnapshot } from "./state-store-snapshot.js";
-import { listStateStoreWorkerReports, recordStateStoreWorkerReport, recordStateStoreWorkerReviewResults } from "./state-store-worker-reports.js";
+import { listStateStoreWorkerReports, recordStateStoreWorkerReport, recordStateStoreWorkerReviewPeerContext, recordStateStoreWorkerReviewResults, replaceStateStoreWorkerReviewBaseline, type WorkerReviewBaselineState } from "./state-store-worker-reports.js";
+import { removeStateStoreThreadDurably } from "./state-store-thread-deletion.js";
 import { recordReviewPanelVerdict as applyReviewPanelVerdict } from "./review-panel.js";
 import type {
   AppSnapshot,
@@ -106,6 +107,7 @@ export class ButlerStateStore extends EventEmitter {
   private readonly serviceLeases = new Map<string, ServiceLeaseView>();
   private readonly desktopSessions = new Map<string, DesktopSessionView>();
   private readonly runtimeCleanupTasks = new Map<string, RuntimeCleanupTaskView>();
+  private readonly deletedCodexThreadIds = new Set<string>();
   private readonly previewProofs = new Map<string, PreviewProofRecordView>();
   private readonly persistedSupervisionByThreadId = new Map<string, { butlerTurnsUsed: number; maxButlerTurns: number | null }>();
   private readonly persistedWorkerReportsByThreadId = new Map<string, CodexWorkerReportView[]>();
@@ -136,9 +138,7 @@ export class ButlerStateStore extends EventEmitter {
   private readonly persistedProjectPoliciesByProjectId = new Map<string, ProjectPolicyView[]>();
   private memoryUpdateObserver: StoreMemoryUpdateObserver | null = null;
   private getInternalAccess(): StateStoreInternalAccess { return this as unknown as StateStoreInternalAccess; }
-  private reconcileThreadWindows(): boolean {
-    return reconcileStateStoreThreadWindows(this.getInternalAccess());
-  }
+  private reconcileThreadWindows(): boolean { return reconcileStateStoreThreadWindows(this.getInternalAccess()); }
   private refreshStackMembership(stackId: string, now = Date.now()): void {
     refreshStateStoreStackMembership(this.getInternalAccess(), stackId, now);
   }
@@ -284,25 +284,22 @@ export class ButlerStateStore extends EventEmitter {
   updateMemorySynthesisQueueEntry(id: string, patch: Parameters<typeof updateStateStoreMemorySynthesisQueueEntry>[2]): MemorySynthesisQueueEntryView | null { return updateStateStoreMemorySynthesisQueueEntry(this.getInternalAccess(), id, patch); }
 
   listProjectArtifacts(projectId?: string | null): ProjectArtifactView[] { return listStateStoreProjectArtifacts(this.getInternalAccess(), projectId); }
-
   searchProjectArtifacts(input: { projectId?: string | null; query?: string | null; kind?: ProjectArtifactView["kind"] | null; tags?: string[]; limit?: number | null }): Promise<ProjectArtifactView[]> { return searchStateStoreProjectArtifacts(this.getInternalAccess(), input); }
-
   getProjectArtifact(projectId: string, artifactId: string): ProjectArtifactView | null { return getStateStoreProjectArtifact(this.getInternalAccess(), projectId, artifactId); }
-
   findProjectArtifactById(artifactId: string): ProjectArtifactView | null { return findStateStoreProjectArtifactById(this.getInternalAccess(), artifactId); }
-
   upsertProjectArtifact(artifact: ProjectArtifactView): ProjectArtifactView { return upsertStateStoreProjectArtifact(this.getInternalAccess(), artifact); }
-
   removeProjectArtifact(projectId: string, artifactId: string): ProjectArtifactView | null { return removeStateStoreProjectArtifact(this.getInternalAccess(), projectId, artifactId); }
   pruneMissingProjectArtifacts(projectId?: string | null): Promise<number> { return pruneMissingStateStoreProjectArtifacts(this.getInternalAccess(), projectId); }
   flushSave(): Promise<void> { return flushStateStoreSave(this.getInternalAccess()); }
 
+  listDeletedCodexThreadIds(): string[] { return [...this.deletedCodexThreadIds]; }
+  isCodexThreadDeleted(threadId: string): boolean { return this.deletedCodexThreadIds.has(threadId); }
+  markCodexThreadDeleted(threadId: string): void { const normalized = threadId.trim(); if (!normalized || this.deletedCodexThreadIds.has(normalized)) return; this.deletedCodexThreadIds.add(normalized); this.queueSave(); this.emitChange(); }
+  restoreDeletedCodexThread(threadId: string): boolean { if (!this.deletedCodexThreadIds.delete(threadId)) return false; this.queueSave(); this.emitChange(); return true; }
+
   listProjectPolicies(projectId?: string | null): ProjectPolicyView[] { return listStateStoreProjectPolicies(this.getInternalAccess(), projectId); }
-
   getProjectPolicy(projectId: string, policyId: string): ProjectPolicyView | null { return getStateStoreProjectPolicy(this.getInternalAccess(), projectId, policyId); }
-
   upsertProjectPolicy(policy: ProjectPolicyView): ProjectPolicyView { return upsertStateStoreProjectPolicy(this.getInternalAccess(), policy); }
-
   listPendingPromotionCandidates(projectId?: string | null): JobMemoryPromotionCandidateView[] { return listStateStorePendingPromotionCandidates(this.getInternalAccess(), projectId); }
 
   recordJobCheckpoint(
@@ -742,6 +739,8 @@ export class ButlerStateStore extends EventEmitter {
     completeStateStoreRuntimeCleanupTask(this.getInternalAccess(), taskId);
   }
 
+  hasRuntimeCleanupTaskForThread(threadId: string): boolean { return [...this.runtimeCleanupTasks.values()].some((task) => task.threadId === threadId); }
+
   failRuntimeCleanupTask(taskId: string, errorMessage: string, nextAttemptAt: number): { task: RuntimeCleanupTaskView | null; notify: boolean } {
     return failStateStoreRuntimeCleanupTask(this.getInternalAccess(), taskId, errorMessage, nextAttemptAt);
   }
@@ -880,7 +879,7 @@ export class ButlerStateStore extends EventEmitter {
     this.queueSave();
     this.emitChange();
   }
-
+  removeThreadDurably(threadId: string): Promise<boolean> { return removeStateStoreThreadDurably(this.getInternalAccess(), threadId, () => this.removeThread(threadId), () => this.flushSave()); }
   removeThreads(threadIds: string[]): void {
     const targets = new Set(threadIds);
     if (targets.size === 0) {
@@ -1052,8 +1051,9 @@ export class ButlerStateStore extends EventEmitter {
     return recordStateStoreWorkerReport(this.getInternalAccess(), threadId, report);
   }
 
-  recordWorkerReviewResults(threadId: string, results: WorkerReviewResultRecordView[]): CodexThreadExecutionContractView | null { const contract = recordStateStoreWorkerReviewResults(this.getInternalAccess(), threadId, results); if (contract) this.addEvent(threadId, "butler.codex_review.recorded", `Recorded ${results.length} Codex review finding${results.length === 1 ? "" : "s"}.`); return contract; }
-
+  recordWorkerReviewResults(threadId: string, results: WorkerReviewResultRecordView[]): CodexThreadExecutionContractView | null { const contract = recordStateStoreWorkerReviewResults(this.getInternalAccess(), threadId, results); if (contract) this.addEvent(threadId, "butler.adversarial_review.recorded", `Recorded ${results.length} adversarial review finding${results.length === 1 ? "" : "s"}.`); return contract; }
+  recordWorkerReviewPeerContext(threadId: string, context: NonNullable<CodexThreadExecutionContractView["reviewPeerContexts"]>[number]): void { recordStateStoreWorkerReviewPeerContext(this.getInternalAccess(), threadId, context); }
+  replaceWorkerReviewBaseline(threadId: string, baseline: WorkerReviewBaselineState): void { replaceStateStoreWorkerReviewBaseline(this.getInternalAccess(), threadId, baseline); }
   getWorkerReport(threadId: string, turnId?: string | null): CodexWorkerReportView | null {
     const liveReport = this.threads.get(threadId)?.workerReport ?? null;
     if (liveReport && (!turnId || liveReport.turnId === turnId)) {

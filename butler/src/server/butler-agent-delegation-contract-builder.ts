@@ -6,6 +6,7 @@ import { buildJobPayload, formatJobPayloadMessage } from "./job-instruction-arti
 import type { JobPayloadView } from "./job-payload-types.js";
 import { formatProjectPolicyContextLines } from "./project-artifacts-policies.js";
 import { resolveExistingWorkspaceCwd, resolveWorkspaceProjectInfo } from "./repo-worktree.js";
+import { captureGitReviewBaseline, resolveGitRoot } from "./git-review-scope.js";
 import type { ButlerStateStore } from "./state-store.js";
 import { buildThreadExecutionContract, isSharedShellRepoBootstrapTask } from "./thread-contract.js";
 import type { ButlerRoutingDecisionView, CodexThreadExecutionContractView } from "./types.js";
@@ -19,6 +20,7 @@ export async function buildButlerDelegationContract(options: {
   extraNotes?: string[];
   orchestration?: ButlerRoutingDecisionView | null;
   butlerThreadId?: string | null;
+  reviewBaselineRoot?: string;
 }): Promise<{ text: string; contract: CodexThreadExecutionContractView; payload: JobPayloadView }> {
   const requestedTask = options.goal ? `${options.task}\n\nGoal: ${options.goal}` : options.task;
   const requestedTaskOnly = options.task.trim();
@@ -36,7 +38,7 @@ export async function buildButlerDelegationContract(options: {
   if (options.extraNotes?.length) notes.push(...options.extraNotes);
   if (options.orchestration?.goalRecommendation.mode === "native_goal") notes.push("Use native Codex goal mode for this long or multi-phase job when the worker surface supports it.");
   else if (options.orchestration?.goalRecommendation.mode === "contract_fallback") notes.push(`Use the goal recommendation as a compact worker contract: ${options.orchestration.goalRecommendation.fallbackReason ?? "native goal mode was not available"}.`);
-  if (options.orchestration?.reviewRecommendation.required) notes.push(`Butler will run a Codex review before acceptance: ${options.orchestration.reviewRecommendation.reason ?? "risk-based review required"}.`);
+  if (options.orchestration?.reviewRecommendation.required) notes.push(`Butler will run an isolated adversarial review before acceptance: ${options.orchestration.reviewRecommendation.reason ?? "review required"}.`);
   if (options.orchestration?.subAgentRoles.length) notes.push(`Run sub-agents inside the worker thread for these roles and return only distilled summaries: ${options.orchestration.subAgentRoles.join(", ")}.`);
   if (isSharedShellRepoBootstrapTask(requestedTaskOnly)) notes.push("This job begins in the shared /repos workspace. Create or clone the repo first, then continue inside it.");
 
@@ -44,6 +46,8 @@ export async function buildButlerDelegationContract(options: {
   if (durableTasteNotes.length > 0) notes.push(...durableTasteNotes.map((note) => `Durable operator taste: ${note}`));
   const projectPolicyLines = formatProjectPolicyContextLines({ store: options.store, projectId: project.id });
   if (projectPolicyLines.length > 1) notes.push(...projectPolicyLines.slice(1));
+  const reviewGitRoot = await resolveGitRoot(options.workspace.cwd);
+  const reviewBaseline = reviewGitRoot ? await captureGitReviewBaseline(reviewGitRoot, options.reviewBaselineRoot) : null;
 
   const baseContract = buildThreadExecutionContract({
     threadId: options.threadId,
@@ -61,6 +65,11 @@ export async function buildButlerDelegationContract(options: {
     ...baseContract,
     requestedTask: requestedTaskOnly,
     operatorGoal,
+    reviewBaselineCwd: reviewBaseline?.cwd ?? null,
+    reviewBaselineSha: reviewBaseline?.sha ?? null,
+    reviewBaselineTreeSha: reviewBaseline?.treeSha ?? null,
+    reviewBaselineObjectDir: reviewBaseline?.objectDir ?? null,
+    reviewBaselineCaptureFailed: Boolean(reviewGitRoot && !reviewBaseline),
     ...(options.orchestration ? { orchestration: options.orchestration, reviewResults: [] } : {}),
     notes: [...new Set(notes.map((note) => note.trim()).filter(Boolean))]
   };

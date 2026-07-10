@@ -10,12 +10,12 @@ import {
 } from "./butler-agent-helpers.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
 import { formatJobPayloadMessage } from "./job-instruction-artifacts.js";
+import { assertCallbackReviewCurrent, runSerializedJobMutations } from "./butler-job-mutation-guard.js";
 import { classifyManorBlocker } from "./butler-self-improvement.js";
 import { buildCodexInputWithReferences } from "./reference-inputs.js";
 import { commitSelfImprovementRequest, discardSelfImprovementRequest, openSelfImprovementPullRequest } from "./self-improvement-actions.js";
 import { getSelfImprovementRequestState } from "./self-improvement-request-state.js";
 import { listWorkspaceProjectDirectories } from "./repo-worktree.js";
-import type { ReviewPanelRole, ReviewPanelVerdict } from "./types.js";
 import { deleteAllWorkerThreads, deleteWorkerThread, loadWorkerThread, sendWorkerMessage } from "./worker-client-router.js";
 
 export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
@@ -398,14 +398,10 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       execute: async (_toolCallId, params) => {
         const typedParams = params as { threadId: string };
         const checklist = access.store.getSupervisionChecklist(typedParams.threadId);
-        const panel = access.store.getThread(typedParams.threadId)?.executionContract?.reviewPanel ?? [];
         const text = checklist
           ? [
               `Supervision checklist for job ${typedParams.threadId}: ${checklist.reviewState}`,
               `Heartbeat: ${checklist.heartbeat.lastKnownThreadStatus}${checklist.heartbeat.stale ? " stale" : ""}`,
-              panel.length > 0
-                ? `Review panel: ${panel.map((entry) => `${entry.role}=${entry.verdict}${entry.requiredFollowUp ? ` (${entry.requiredFollowUp})` : ""}`).join(", ")}`
-                : "Review panel: none",
               ...checklist.items.map((item) => {
                 const latestEvidence = item.evidence.at(-1);
                 return `${item.id}: ${item.status} - ${item.text}${item.butlerNote ? ` | Butler: ${item.butlerNote}` : ""}${latestEvidence ? ` | Evidence: ${latestEvidence.summary}` : ""}`;
@@ -415,62 +411,6 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         return {
           content: [{ type: "text", text }],
           details: { checklist }
-        };
-      }
-    }),
-    access.defineButlerTool({
-      name: "record_review_panel_verdict",
-      label: "Record reviewer",
-      description: "Record a hidden specialist reviewer verdict for one delegated job before Butler accepts or closes it.",
-      promptSnippet:
-        "record_review_panel_verdict: record intent, QA, UI taste, API, ops, or product reviewer verdicts; failed or blocked verdicts require follow-up.",
-      parameters: Type.Object({
-        threadId: Type.String(),
-        role: Type.Union([
-          Type.Literal("intent"),
-          Type.Literal("qa"),
-          Type.Literal("ui_taste"),
-          Type.Literal("api"),
-          Type.Literal("ops"),
-          Type.Literal("product")
-        ]),
-        verdict: Type.Union([
-          Type.Literal("passed"),
-          Type.Literal("concern"),
-          Type.Literal("failed"),
-          Type.Literal("blocked")
-        ]),
-        concerns: Type.Optional(Type.Array(Type.String())),
-        evidenceRefs: Type.Optional(Type.Array(Type.String())),
-        requiredFollowUp: Type.Optional(Type.String()),
-        note: Type.Optional(Type.String())
-      }),
-      uiEffects: access.getToolUiEffects("record_review_panel_verdict"),
-      execute: async (_toolCallId, params) => {
-        const typedParams = params as {
-          threadId: string;
-          role: ReviewPanelRole;
-          verdict: Exclude<ReviewPanelVerdict, "pending">;
-          concerns?: string[];
-          evidenceRefs?: string[];
-          requiredFollowUp?: string;
-          note?: string;
-        };
-        if ((typedParams.verdict === "failed" || typedParams.verdict === "blocked") && !typedParams.requiredFollowUp?.trim()) {
-          throw new Error("Failed or blocked reviewer verdicts require requiredFollowUp.");
-        }
-        const contract = access.store.recordReviewPanelVerdict({
-          threadId: typedParams.threadId,
-          role: typedParams.role,
-          verdict: typedParams.verdict,
-          concerns: typedParams.concerns,
-          evidenceRefs: typedParams.evidenceRefs,
-          requiredFollowUp: typedParams.requiredFollowUp,
-          note: typedParams.note
-        });
-        return {
-          content: [{ type: "text", text: `${typedParams.role} reviewer marked ${typedParams.verdict}.` }],
-          details: { reviewPanel: contract.reviewPanel, reviewPanelSummary: contract.reviewPanelSummary }
         };
       }
     }),
@@ -515,6 +455,42 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       }
     }),
     access.defineButlerTool({
+      name: "disprove_review_finding",
+      label: "Disprove review finding",
+      description: "Resolve one isolated blocking review finding only when stronger concrete evidence proves it is a false positive.",
+      promptSnippet: "disprove_review_finding: waive a blocking adversarial finding only when you can cite stronger concrete evidence that disproves it; otherwise reject the affected acceptance point and steer the worker.",
+      parameters: Type.Object({
+        threadId: Type.String(),
+        findingId: Type.String(),
+        evidence: Type.String({ minLength: 1 })
+      }),
+      uiEffects: access.getToolUiEffects("disprove_review_finding"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as { threadId: string; findingId: string; evidence: string };
+        const thread = access.store.getThread(typedParams.threadId);
+        const report = access.store.getWorkerReport(typedParams.threadId);
+        const finding = thread?.executionContract?.reviewResults?.find((entry) =>
+          entry.id === typedParams.findingId &&
+          entry.turnId === report?.turnId &&
+          entry.reportUpdatedAt === report?.updatedAt
+        );
+        if (!finding) throw new Error("The review finding is not part of the current Worker report.");
+        if (!finding.blocking) throw new Error("Only blocking review findings need an explicit Butler resolution.");
+        const evidence = typedParams.evidence.trim();
+        access.store.recordWorkerReviewResults(typedParams.threadId, [{
+          ...finding,
+          waived: true,
+          waiverReason: `Butler disproved this finding: ${evidence}`,
+          updatedAt: Date.now()
+        }]);
+        access.store.addEvent(typedParams.threadId, "butler.adversarial_review.disproved", `Butler disproved review finding ${finding.id}: ${evidence}`);
+        return {
+          content: [{ type: "text", text: `Review finding ${finding.id} marked disproved from stronger evidence.` }],
+          details: { finding: access.store.getThread(typedParams.threadId)?.executionContract?.reviewResults?.find((entry) => entry.id === finding.id) ?? null }
+        };
+      }
+    }),
+    access.defineButlerTool({
       name: "flush_rejected_acceptance_points",
       label: "Send rejected points",
       description: "Send one private worker follow-up containing all queued rejected acceptance-point instructions.",
@@ -548,10 +524,12 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           kind: "rejection_followup",
           instruction: text
         });
+        assertCallbackReviewCurrent(typedParams.threadId);
         const sent = await sendWorkerMessage(access, typedParams.threadId, formatJobPayloadMessage("rejection_followup", typedParams.threadId, payload.workerDirective, payload.display.summary));
         await access.bindJobPayloadDelivery(typedParams.threadId, { turnId: sent.turnId });
+        assertCallbackReviewCurrent(typedParams.threadId);
         access.store.clearQueuedRejectionInstructions(typedParams.threadId);
-        access.registerPendingChatCallback(typedParams.threadId, {
+        await access.registerPendingChatCallback(typedParams.threadId, {
           privateSteerText: text,
           nextWorkerReportAction: "review"
         });
@@ -602,7 +580,8 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           kind: "held_context",
           instruction: typedParams.text
         });
-        access.registerPendingChatCallback(typedParams.threadId, { nextWorkerReportAction: "review" });
+        assertCallbackReviewCurrent(typedParams.threadId);
+        await access.registerPendingChatCallback(typedParams.threadId, { preservePrivateSteer: true, nextWorkerReportAction: "review" });
         access.noteThreadFocus(typedParams.threadId, "hold_job_context");
         access.store.addEvent(typedParams.threadId, "butler.context.held", typedParams.text.trim());
         return {
@@ -680,6 +659,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           imageReferenceIds: typedParams.imageReferenceIds ?? [],
           fileReferenceIds: typedParams.fileReferenceIds ?? []
         });
+        assertCallbackReviewCurrent(typedParams.threadId);
         const sent = await sendWorkerMessage(
           access,
           typedParams.threadId,
@@ -692,7 +672,8 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
           })
         );
         await access.bindJobPayloadDelivery(typedParams.threadId, { turnId: sent.turnId });
-        access.registerPendingChatCallback(typedParams.threadId, {
+        assertCallbackReviewCurrent(typedParams.threadId);
+        await access.registerPendingChatCallback(typedParams.threadId, {
           privateSteerText: typedParams.text,
           nextWorkerReportAction: typedParams.nextWorkerReportAction ?? "review"
         });
@@ -760,11 +741,15 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       uiEffects: access.getToolUiEffects("delete_job"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as { threadId: string };
-        const result = await deleteWorkerThread(access, typedParams.threadId);
-        return {
-          content: [{ type: "text", text: `Deleted job ${typedParams.threadId}.` }],
-          details: typeof result === "object" && result !== null ? result as Record<string, unknown> : { result }
-        };
+        try {
+          const result = await deleteWorkerThread(access, typedParams.threadId);
+          return {
+            content: [{ type: "text", text: `Deleted job ${typedParams.threadId}.` }],
+            details: typeof result === "object" && result !== null ? result as Record<string, unknown> : { result }
+          };
+        } finally {
+          if (!access.store.getThread(typedParams.threadId)) await access.removeExternalWorkerDelegation?.(typedParams.threadId);
+        }
       }
     }),
     access.defineButlerTool({
@@ -775,7 +760,16 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
       parameters: Type.Object({}),
       uiEffects: access.getToolUiEffects("delete_all_jobs"),
       execute: async () => {
-        const result = await deleteAllWorkerThreads(access);
+        const threadIds = access.store.listThreads().map((thread) => thread.id);
+        const result = await runSerializedJobMutations(threadIds, async () => {
+          try {
+            return await deleteAllWorkerThreads(access);
+          } finally {
+            await Promise.all(threadIds
+              .filter((threadId) => !access.store.getThread(threadId))
+              .map((threadId) => access.removeExternalWorkerDelegation?.(threadId)));
+          }
+        });
         return {
           content: [{ type: "text", text: `Deleted ${result.deletedThreadIds.length} jobs.` }],
           details: result

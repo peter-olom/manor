@@ -64,11 +64,17 @@ async function createServer(
       setThreadJobPayload: (payload: unknown) => options.jobPayloads?.push(payload)
     } as never,
     codexClient: {
+      getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "high", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["high"], supportedReasoningEfforts: ["high"], defaultReasoningEffort: "high" }] } }),
+      updateComposeSettings: async () => undefined,
       startThread: options.startThread ?? (async () => ({ threadId: "thread-started" })),
       deleteThread
     } as never,
     butlerAgent: {
-      trackScratchPadDelegation: () => undefined
+      trackScratchPadDelegation: () => undefined,
+      removeExternalWorkerDelegation: async () => undefined,
+      getCodexAuthStatus: () => ({ loggedIn: true }),
+      getWorkerAffinity: () => null,
+      recordSuccessfulWorkerSelection: () => undefined
     } as never,
     artifactsDir: path.join(dir, "artifacts"),
     imageStore: {

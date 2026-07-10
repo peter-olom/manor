@@ -16,8 +16,7 @@ export type {
   WorkerReviewSeverity,
   WorkerSubAgentSummaryView
 } from "./orchestration-types.js";
-export type CodexThreadStatus = "active" | "idle" | "unknown";
-export type CodexProofExpectation = "none" | "requested";
+export type CodexThreadStatus = "active" | "idle" | "unknown"; export type CodexProofExpectation = "none" | "requested";
 export type CodexInferredWorkDepth = "quick" | "standard" | "deep" | "incident";
 export type CodexTaskCategory =
   | "ui"
@@ -134,10 +133,13 @@ export interface CodexThreadExecutionContractView {
   reviewPanelSummary: ReviewPanelSummaryView;
   orchestration?: ButlerRoutingDecisionView;
   reviewResults?: WorkerReviewResultRecordView[];
-  mission?: MissionContractView;
-  notes: string[];
+  reviewBaselineCwd?: string | null;
+  reviewBaselineSha?: string | null;
+  reviewBaselineTreeSha?: string | null;
+  reviewBaselineObjectDir?: string | null; reviewBaselineCaptureFailed?: boolean;
+  reviewPeerContexts?: Array<{ sourceThreadId: string; baselineTreeSha: string | null; paths: string[]; attributionUnknown?: boolean; recordedAt: number }>; reviewPeerContextOverflow?: boolean;
+  mission?: MissionContractView; notes: string[];
 }
-
 export interface VerificationMatrixRowView {
   id: string;
   acceptancePointId: string | null;
@@ -168,7 +170,10 @@ export interface ButlerThreadCallbackView {
   operatorCloseoutStatus: ButlerOperatorCloseoutStatus;
   owesOperatorReply: boolean;
   closeoutChannel: ButlerCloseoutChannel;
-  reviewState: ButlerCallbackReviewState; reviewReason: ButlerCallbackReviewReason;
+  dispatchState?: "ready" | "reserving"; reviewState: ButlerCallbackReviewState; reviewReason: ButlerCallbackReviewReason;
+  reviewModelProvider?: string | null;
+  reviewModelId?: string | null;
+  reviewReasoningLevel?: ButlerThinkingLevel | null;
   blockedCloseoutReason?: string | null; blockedCloseoutReportAt?: number | null;
   closedAt: number | null;
   updatedAt: number;
@@ -1369,7 +1374,6 @@ export interface ManorRestartRequestView {
   status: "pending" | "authorized" | "dismissed";
   authorizedAt: number | null;
 }
-
 export interface AppSnapshot {
   codex: {
     connected: boolean;
@@ -1423,7 +1427,6 @@ export interface AppSnapshot {
     };
   };
 }
-
 export interface AppShellSnapshot {
   codex: AppSnapshot["codex"] extends infer TCodex
     ? TCodex extends { openThreads: unknown }
@@ -1446,14 +1449,12 @@ export interface AppShellSnapshot {
       : never
     : never;
 }
-
 export interface ButlerLiveSnapshot {
   messages: ButlerMessageView[];
   messageCount: number;
   pendingRevision?: number;
   activityTurns: ButlerActivityTurnView[];
 }
-
 export interface RuntimeSnapshot {
   latestPreviewProofsByThreadId: Record<string, PreviewProofRecordView>;
   previewProofsByThreadId: Record<string, PreviewProofRecordView[]>;
@@ -1463,16 +1464,15 @@ export interface RuntimeSnapshot {
   services: ServiceLeaseView[];
   desktopSessions: DesktopSessionView[];
 }
-
 export interface AppBootstrapSnapshot {
   shell: AppShellSnapshot;
   butlerLive: ButlerLiveSnapshot;
   runtime: RuntimeSnapshot;
   openThreads: Record<string, CodexThreadDetailView>;
 }
-
 export interface PersistedUiState {
   threads?: CodexThreadDetailView[];
+  deletedCodexThreadIds?: string[];
   windows: ButlerWindow[];
   focusedWindowId: string | null;
   stackLeases?: StackLeaseView[];

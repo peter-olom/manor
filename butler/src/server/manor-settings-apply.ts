@@ -30,7 +30,13 @@ export function createManorSettingsApplyHandler(input: {
     await input.butlerAgent.refreshModelSettings().catch((error) => console.warn("Butler model refresh failed after settings update", error));
     await input.pairSessions?.refreshModelSettings().catch((error) => console.warn("Pair session model refresh failed after settings update", error));
     const worker = input.settingsService.getSettings().worker;
-    await updateUnifiedWorkerCompose({ store: input.store, codexClient: input.codexClient, piRpcWorkerClient: input.piRpcWorkerClient }, {
+    await updateUnifiedWorkerCompose({
+      store: input.store,
+      codexClient: input.codexClient,
+      piRpcWorkerClient: input.piRpcWorkerClient,
+      getCodexAuthStatus: () => input.butlerAgent.getCodexAuthStatus(),
+      getWorkerAffinity: () => input.butlerAgent.getWorkerAffinity()
+    }, {
       model: worker.defaultModel,
       effort: worker.defaultEffort as never
     }).catch((error) => console.warn("Worker compose refresh failed after settings update", error));

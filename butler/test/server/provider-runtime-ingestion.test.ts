@@ -247,3 +247,20 @@ test("provider runtime ingestion serializes async event application", async () =
 
   assert.equal(store.getThreadDetail("thread-1")?.turns[0]?.items[0]?.text, "AB");
 });
+
+test("provider runtime ingestion rechecks operation validity before queued mutation", async () => {
+  const { store, ingestion, patches } = await createHarness();
+  let operationIsCurrent = true;
+
+  const pending = ingestion.ingest(baseEvent({
+    id: "event-stale",
+    type: "turn.started",
+    turnId: "stale-turn",
+    payload: {}
+  }), () => operationIsCurrent);
+  operationIsCurrent = false;
+  await pending;
+
+  assert.equal(store.getThreadDetail("thread-1")?.turns.length ?? 0, 0);
+  assert.equal(patches.length, 0);
+});

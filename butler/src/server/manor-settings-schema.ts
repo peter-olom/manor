@@ -11,8 +11,7 @@ import type {
   SettingsThinkingLevel,
   SettingsValidationKey,
   SettingsValidationMap,
-  SettingsWebTools,
-  SettingsWorkerRuntime
+  SettingsWebTools
 } from "../shared/settings.js";
 
 const DEFAULT_OLLAMA_CLOUD_MODELS: SettingsProviderModel[] = [];
@@ -113,7 +112,6 @@ export const DEFAULT_MANOR_SETTINGS: ManorSettings = {
     }
   },
   worker: {
-    runtime: "auto",
     defaultModel: null,
     defaultEffort: null
   },
@@ -126,7 +124,6 @@ export const DEFAULT_MANOR_SETTINGS: ManorSettings = {
     memorySynthesisModel: null,
     sessionTitleModel: null,
     sessionTitleTimeoutMs: 15_000,
-    workerReviewModel: null,
     memoryPromotionModel: null
   },
   memory: {
@@ -305,13 +302,6 @@ function thinkingLevel(value: unknown): SettingsThinkingLevel {
   return value === "off" || value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" ? value : "medium";
 }
 
-function workerRuntime(value: unknown): SettingsWorkerRuntime {
-  if (value === "codex") {
-    throw new Error("MANOR_WORKER_RUNTIME=codex is no longer supported. Use 'openai' for OpenAI Codex, or 'pi-rpc' for Pi RPC. Run Reseed to reset settings.");
-  }
-  return value === "openai" || value === "pi-rpc" ? value : "auto";
-}
-
 function runnerMode(value: unknown): ManorSettings["modelTasks"]["runnerMode"] {
   return value === "codex" || value === "pi" ? value : "auto";
 }
@@ -403,7 +393,6 @@ export function normalizeManorSettings(value: unknown): ManorSettings {
       }
     },
     worker: {
-      runtime: workerRuntime(worker.runtime),
       defaultModel: nullableText(worker.defaultModel),
       defaultEffort: reasoningEffort(worker.defaultEffort)
     },
@@ -416,7 +405,6 @@ export function normalizeManorSettings(value: unknown): ManorSettings {
       memorySynthesisModel: nullableText(modelTasks.memorySynthesisModel),
       sessionTitleModel: nullableText(modelTasks.sessionTitleModel),
       sessionTitleTimeoutMs: integer(modelTasks.sessionTitleTimeoutMs, 15_000, 1_000, 60_000),
-      workerReviewModel: nullableText(modelTasks.workerReviewModel),
       memoryPromotionModel: nullableText(modelTasks.memoryPromotionModel)
     },
     memory: {
@@ -546,7 +534,6 @@ export function buildManorSettingsFromEnv(env: NodeJS.ProcessEnv = process.env):
     settings.providers.opencodeGo.apiKeySource = opencodeEnvSource(env);
   }
 
-  apply("worker", "MANOR_WORKER_RUNTIME", (value) => { settings.worker.runtime = workerRuntime(value); });
   apply("worker", "MANOR_WORKER_MODEL", (value) => { settings.worker.defaultModel = nullableText(value); });
   apply("worker", "MANOR_WORKER_EFFORT", (value) => { settings.worker.defaultEffort = reasoningEffort(value); });
   apply("butler", "MANOR_BUTLER_MODEL", (value) => { settings.butler.defaultModel = nullableText(value); });
@@ -557,7 +544,6 @@ export function buildManorSettingsFromEnv(env: NodeJS.ProcessEnv = process.env):
   apply("modelTasks", "MANOR_MEMORY_REVIEW_MODEL", (value) => { settings.modelTasks.memorySynthesisModel ??= nullableText(value); });
   apply("modelTasks", "MANOR_SESSION_TITLE_MODEL", (value) => { settings.modelTasks.sessionTitleModel = nullableText(value); });
   apply("modelTasks", "MANOR_SESSION_TITLE_TIMEOUT_MS", (value) => { settings.modelTasks.sessionTitleTimeoutMs = integer(value, settings.modelTasks.sessionTitleTimeoutMs, 1_000, 60_000); });
-  apply("modelTasks", "MANOR_WORKER_REVIEW_MODEL", (value) => { settings.modelTasks.workerReviewModel = nullableText(value); });
   apply("modelTasks", "MANOR_MEMORY_PROMOTION_MODEL", (value) => { settings.modelTasks.memoryPromotionModel = nullableText(value); });
 
   apply("memory", "MANOR_MEMORY_SYNTHESIS_ENABLED", (value) => { settings.memory.synthesisEnabled = bool(value, settings.memory.synthesisEnabled); });

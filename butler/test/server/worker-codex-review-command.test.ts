@@ -1,84 +1,54 @@
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCodexWorkerReviewArgs, runCodexWorkerReviewCommand } from "../../src/server/worker-codex-review.js";
+import { buildCodexAdversarialReviewArgs, shouldUseNativeCodexReview } from "../../src/server/butler-adversarial-review.js";
+import { isolatedModelResourceOptions } from "../../src/server/isolated-model-resources.js";
 
-test("worker codex review command has no positional prompt", () => {
-  const args = buildCodexWorkerReviewArgs({
+test("Codex adversarial review uses the selected model and reasoning and reads Butler's prompt from stdin", () => {
+  const args = buildCodexAdversarialReviewArgs({
     schemaPath: "/tmp/schema.json",
     outputPath: "/tmp/output.json",
-    model: null
+    modelId: "gpt-5.5",
+    thinkingLevel: "high"
   });
 
   assert.deepEqual(args, [
     "exec",
-    "review",
-    "--uncommitted",
+    "--sandbox",
+    "read-only",
     "--ephemeral",
+    "--ignore-user-config",
     "--skip-git-repo-check",
     "--ignore-rules",
     "--output-schema",
     "/tmp/schema.json",
     "--output-last-message",
-    "/tmp/output.json"
+    "/tmp/output.json",
+    "--model",
+    "gpt-5.5",
+    "--config",
+    'model_reasoning_effort="high"',
+    "review",
+    "-"
   ]);
-  assert.equal(args.includes("-"), false);
+  assert.equal(args.at(-1), "-");
+  assert.equal(args.includes("--uncommitted"), false);
   assert.equal(args.includes("Review this closeout."), false);
 });
 
-test("worker codex review command pipes prompt through stdin", async () => {
-  const binDir = await mkdtemp(path.join(tmpdir(), "manor-worker-review-bin-"));
-  const capturePath = path.join(binDir, "capture.json");
-  const codexPath = path.join(binDir, "codex");
-  await writeFile(
-    codexPath,
-    [
-      "#!/usr/bin/env node",
-      'const fs = require("node:fs");',
-      `const capturePath = ${JSON.stringify(capturePath)};`,
-      "let stdin = '';",
-      "process.stdin.setEncoding('utf8');",
-      "process.stdin.on('data', chunk => { stdin += chunk; });",
-      "process.stdin.on('end', () => {",
-      "  fs.writeFileSync(capturePath, JSON.stringify({ args: process.argv.slice(2), stdin, codexHome: process.env.CODEX_HOME }));",
-      "});"
-    ].join("\n"),
-    "utf8"
-  );
-  await chmod(codexPath, 0o755);
-  const originalPath = process.env.PATH;
-  process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+test("native Codex review is limited to the Codex provider credential", () => {
+  assert.equal(shouldUseNativeCodexReview("openai-codex", true), true);
+  assert.equal(shouldUseNativeCodexReview("codex", true), true);
+  assert.equal(shouldUseNativeCodexReview("openai", true), false);
+  assert.equal(shouldUseNativeCodexReview("openai-codex", false), false);
+});
 
-  try {
-    await runCodexWorkerReviewCommand({
-      cwd: binDir,
-      codexHomeDir: "/tmp/codex-home",
-      schemaPath: "/tmp/schema.json",
-      outputPath: "/tmp/output.json",
-      model: null,
-      prompt: "Review the delegated closeout.",
-      timeoutMs: 5_000
-    });
-
-    const captured = JSON.parse(await readFile(capturePath, "utf8"));
-    assert.equal(captured.stdin, "Review the delegated closeout.");
-    assert.equal(captured.codexHome, "/tmp/codex-home");
-    assert.deepEqual(captured.args, [
-      "exec",
-      "review",
-      "--uncommitted",
-      "--ephemeral",
-      "--skip-git-repo-check",
-      "--ignore-rules",
-      "--output-schema",
-      "/tmp/schema.json",
-      "--output-last-message",
-      "/tmp/output.json"
-    ]);
-  } finally {
-    process.env.PATH = originalPath;
-  }
+test("isolated review sessions disable ambient Pi resources", () => {
+  const options = isolatedModelResourceOptions();
+  assert.equal(options.noExtensions, true);
+  assert.equal(options.noSkills, true);
+  assert.equal(options.noPromptTemplates, true);
+  assert.equal(options.noThemes, true);
+  assert.equal(options.noContextFiles, true);
+  assert.deepEqual(options.appendSystemPromptOverride(), []);
 });

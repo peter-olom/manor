@@ -404,4 +404,13 @@ test("Pi tool execution maps to runtime item lifecycle patches", () => {
   assert.equal(endPatch.kind, "item-lifecycle");
   assert.equal(endPatch.status, "completed");
   assert.equal(endPatch.title, "read_file");
+
+  const [editPatch] = mapper.map({
+    type: "tool_execution_start",
+    toolCallId: "call-2",
+    toolName: "edit",
+    args: { path: "src/app.ts", oldText: "old", newText: "new" }
+  } as never, fakeSession as never);
+  assert.equal(editPatch.itemType, "file_change");
+  assert.match(editPatch.text, /src\/app\.ts/);
 });

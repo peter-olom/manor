@@ -131,3 +131,58 @@ test("hold_job_context persists held context in the payload without sending a tu
   assert.equal(payloads[0]?.kind, "held_context");
   assert.equal(sent.length, 0);
 });
+
+test("partial delete all removes Butler callbacks only for deleted Workers", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-codex-delete-all-partial-"));
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  for (const threadId of ["pi-a", "pi-b"]) {
+    store.upsertThreadSummary({ id: threadId, source: "pi-rpc", status: "idle", cwd: "/workspace", turns: [] });
+  }
+  const removedCallbacks: string[] = [];
+  const deleteCalls: string[] = [];
+  const tools = buildButlerCodexTools({
+    defineButlerTool: (definition) => definition,
+    getToolUiEffects: () => [],
+    store,
+    codexClient: { deleteAllThreads: async () => { throw new Error("Codex deletion should not run"); } },
+    piRpcWorkerClient: {
+      deleteThread: async (threadId: string) => {
+        deleteCalls.push(threadId);
+        if (deleteCalls.length === 1) {
+          store.removeThread(threadId);
+          return true;
+        }
+        return false;
+      }
+    },
+    removeExternalWorkerDelegation: async (threadId: string) => { removedCallbacks.push(threadId); }
+  } as never);
+
+  await assert.rejects(() => tool(tools, "delete_all_jobs").execute("call-1", {}), /could not be deleted/);
+  assert.deepEqual(removedCallbacks, [deleteCalls[0]]);
+  assert.ok(store.getThread(deleteCalls[1]!));
+});
+
+test("single delete removes Butler callback when baseline cleanup fails", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-codex-delete-cleanup-failure-"));
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  const threadId = "codex-delete";
+  store.upsertThreadSummary({ id: threadId, source: "appServer", status: "idle", cwd: "/workspace", turns: [] });
+  store.setThreadExecutionContract(threadId, {
+    ...buildThreadExecutionContract({ threadId, workspaceCwd: "/workspace", projectId: "project", projectLabel: "Project", branch: null, taskText: "Work", taskCategory: "generic_code", inferredWorkDepth: "standard", notes: [] }),
+    reviewBaselineObjectDir: path.join(dir, "baseline-delete", "objects")
+  });
+  const removedCallbacks: string[] = [];
+  const tools = buildButlerCodexTools({
+    defineButlerTool: (definition) => definition,
+    getToolUiEffects: () => [],
+    store,
+    codexClient: { deleteThread: async () => { store.removeThread(threadId); return { deletedArtifacts: 0 }; } },
+    cleanupReviewBaseline: async () => { throw new Error("cleanup failed"); },
+    removeExternalWorkerDelegation: async (deletedThreadId: string) => { removedCallbacks.push(deletedThreadId); }
+  } as never);
+
+  await tool(tools, "delete_job").execute("call-1", { threadId });
+  assert.deepEqual(removedCallbacks, [threadId]);
+  assert.equal(store.getThread(threadId), undefined);
+});

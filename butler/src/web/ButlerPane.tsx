@@ -21,12 +21,15 @@ type ButlerPaneProps = {
   pair: PairDetail;
   draft: string;
   busy: boolean;
+  sendDisabled: boolean;
   onDraft: (value: string) => void;
   onSend: () => void;
   onLoadOlder: () => void;
   onButlerPatch: ((patch: ProviderRuntimeLivePatch) => void) | null;
   onThinkingLevelChange: (level: string) => void;
   onButlerModelChange: (model: string) => void;
+  onRetryReview: () => void;
+  onOpenProviderSettings: () => void;
   attachments: FileReference[];
   onRemoveAttachment: (attachmentId: string) => void;
   onPreviewImage: (media: PreviewMedia) => void;
@@ -85,6 +88,7 @@ type ComposerProps = {
   onChange: (value: string) => void;
   onSubmit: () => void;
   busy: boolean;
+  sendDisabled: boolean;
   model: string | null;
   availableModels: PairModelOption[];
   thinkingLevel: string;
@@ -101,6 +105,7 @@ const Composer = memo(function Composer({
   onChange,
   onSubmit,
   busy,
+  sendDisabled,
   model,
   availableModels,
   thinkingLevel,
@@ -147,7 +152,7 @@ const Composer = memo(function Composer({
         className="composer-form"
         onSubmit={(event) => {
           event.preventDefault();
-          if (!canSubmit || busy) return;
+          if (!canSubmit || busy || sendDisabled) return;
           onSubmit();
         }}
       >
@@ -159,14 +164,14 @@ const Composer = memo(function Composer({
             if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
             if (event.metaKey || event.ctrlKey) {
               event.preventDefault();
-              if (canSubmit && !busy) onSubmit();
+              if (canSubmit && !busy && !sendDisabled) onSubmit();
               return;
             }
             if (event.shiftKey || isMultilineDraft) {
               return;
             }
             event.preventDefault();
-            if (canSubmit && !busy) onSubmit();
+            if (canSubmit && !busy && !sendDisabled) onSubmit();
           }}
           placeholder="Message Butler…"
           rows={2}
@@ -194,7 +199,7 @@ const Composer = memo(function Composer({
             ) : null}
             {isMultilineDraft ? <span className="composer-hint">Ctrl/Cmd + Enter</span> : null}
           </div>
-          <button className="composer-send" type="submit" disabled={busy || !canSubmit}>
+          <button className="composer-send" type="submit" disabled={busy || sendDisabled || !canSubmit}>
             {busy ? <span className="spinner" /> : <span>Send</span>}
           </button>
         </div>
@@ -317,12 +322,15 @@ export function ButlerPane({
   pair,
   draft,
   busy,
+  sendDisabled,
   onDraft,
   onSend,
   onLoadOlder,
   onButlerPatch,
   onThinkingLevelChange,
   onButlerModelChange,
+  onRetryReview,
+  onOpenProviderSettings,
   attachments,
   onRemoveAttachment,
   onPreviewImage
@@ -437,6 +445,7 @@ export function ButlerPane({
               <time className="bubble-time">blocked</time>
             </header>
             <Markdown className="bubble-body" text={pair.butlerPendingReason ?? ""} />
+            {pair.butlerPendingReason?.includes("Adversarial review paused") ? <button className="button" type="button" disabled={busy} onClick={onRetryReview}>Retry review</button> : null}
           </article>
         ) : null}
         {showWorkBubble ? <WorkLoaderBubble items={showLiveBubble ? [] : liveItems} /> : null}
@@ -447,11 +456,17 @@ export function ButlerPane({
           }}
         />
       </div>
-      <Composer
+      {(pair.compose?.butler?.availableModels.length ?? 0) === 0 ? (
+        <div className="empty-state">
+          <p>Connect a provider before messaging Butler.</p>
+          <button className="button is-primary" type="button" onClick={onOpenProviderSettings}>Open provider settings</button>
+        </div>
+      ) : <Composer
         value={draft}
         onChange={onDraft}
         onSubmit={onSend}
         busy={busy}
+        sendDisabled={sendDisabled}
         model={pair.compose?.butler?.model ?? null}
         availableModels={pair.compose?.butler?.availableModels ?? []}
         thinkingLevel={pair.compose?.butler?.thinkingLevel ?? "medium"}
@@ -461,7 +476,7 @@ export function ButlerPane({
         attachments={attachments}
         onRemoveAttachment={onRemoveAttachment}
         onPreviewImage={onPreviewImage}
-      />
+      />}
     </section>
   );
 }

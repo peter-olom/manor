@@ -69,6 +69,19 @@ export function registerPairRoutes(access: PairRouteAccess): void {
     }
   });
 
+  app.post("/api/pairs/:pairId/retry-review", async (request, response) => {
+    try {
+      const pair = await pairSessions.retryBlockedReview(request.params.pairId);
+      if (!pair) {
+        response.status(404).json({ error: "Butler session not found" });
+        return;
+      }
+      response.json({ pair });
+    } catch (error) {
+      response.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.patch("/api/pairs/:pairId", (request, response) => {
     const title = readString(request.body?.title);
     if (!title) {
@@ -152,24 +165,17 @@ export function registerPairRoutes(access: PairRouteAccess): void {
       }
       const model = readString(request.body?.model);
       const effort = readString(request.body?.effort);
-      const workerRuntime = readString(request.body?.workerRuntime);
-      if (!model && !effort && !workerRuntime) {
-        response.status(400).json({ error: "model, effort, or workerRuntime is required" });
+      if (!model && !effort) {
+        response.status(400).json({ error: "model or effort is required" });
         return;
       }
       if (effort && !isKnownReasoningEffort(effort)) {
         response.status(400).json({ error: "effort must be one of: none, minimal, low, medium, high, xhigh, max" });
         return;
       }
-      if (workerRuntime && workerRuntime !== "auto" && workerRuntime !== "openai" && workerRuntime !== "pi-rpc") {
-        response.status(400).json({ error: "workerRuntime must be one of: auto, openai, pi-rpc" });
-        return;
-      }
       try {
         let pair: PairDetail | null = null;
-        if (workerRuntime) {
-          pair = await pairSessions.setWorkerRuntime(request.params.pairId, workerRuntime as "auto" | "openai" | "pi-rpc");
-        } else if (model) {
+        if (model) {
           pair = await pairSessions.setCodexModel(request.params.pairId, model);
         } else if (effort) {
           pair = await pairSessions.setCodexEffort(request.params.pairId, effort);

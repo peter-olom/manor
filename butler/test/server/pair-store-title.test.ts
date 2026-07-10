@@ -38,6 +38,38 @@ test("createPair defaults the title to 'New session'", async () => {
   assert.equal(pair.messageCount, 0);
 });
 
+test("worker affinity records successful selections without treating picker changes as use", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-worker-affinity-test-"));
+  const statePath = path.join(dir, "state.json");
+  const pairPath = path.join(dir, "pairs.json");
+  const store = new ButlerStateStore(statePath);
+  const pairStore = new PairStore(pairPath, store);
+  await pairStore.load();
+  const pair = pairStore.createPair();
+
+  pairStore.updatePairComposeOverrides(pair.id, { codexModel: "ollama-cloud/preview" });
+  assert.equal(pairStore.getWorkerAffinity(), null);
+
+  pairStore.recordSuccessfulWorkerSelection({
+    provider: "ollama-cloud",
+    model: "ollama-cloud/glm-5.2",
+    effort: "high"
+  });
+  assert.deepEqual(pairStore.getWorkerAffinity(), {
+    hasSuccessfulDelegation: true,
+    lastProvider: "ollama-cloud",
+    modelByProvider: { "ollama-cloud": "ollama-cloud/glm-5.2" },
+    effortByProvider: { "ollama-cloud": "high" },
+    updatedAt: pairStore.getWorkerAffinity()?.updatedAt ?? null
+  });
+  assert.equal(pairStore.createPair().codexModel, null);
+
+  await pairStore.flushPendingSave();
+  const reloaded = new PairStore(pairPath, store);
+  await reloaded.load();
+  assert.equal(reloaded.getWorkerAffinity()?.modelByProvider["ollama-cloud"], "ollama-cloud/glm-5.2");
+});
+
 test("updatePairTitle renames the session", async () => {
   const pairStore = await createPairStore();
   const created = pairStore.createPair();

@@ -1,4 +1,5 @@
 import type express from "express";
+import path from "node:path";
 
 import { buildButlerDelegationContract } from "./butler-agent-delegation-contract-builder.js";
 import { buildDelegationDeveloperInstructions } from "./butler-agent-delegation-instructions.js";
@@ -16,7 +17,7 @@ import { commitSelfImprovementRequest, discardSelfImprovementRequest, openSelfIm
 import { resolveSelfImprovementEligibility } from "./self-improvement-eligibility.js";
 import type { SelfImprovementRequestState } from "./self-improvement-request-state.js";
 import type { ButlerStateStore } from "./state-store.js";
-import { startWorkerThread } from "./worker-client-router.js";
+import { startWorkerThread, type WorkerClientAccess } from "./worker-client-router.js";
 
 type RouteAccess = {
   app: express.Express;
@@ -29,6 +30,9 @@ type RouteAccess = {
   imageStore: ImageReferenceStore;
   fileStore: FileReferenceStore;
   artifactsDir: string;
+  getCodexAuthStatus?: () => { loggedIn: boolean };
+  getWorkerAffinity?: WorkerClientAccess["getWorkerAffinity"];
+  recordSuccessfulWorkerSelection?: WorkerClientAccess["recordSuccessfulWorkerSelection"];
   prepareWorkspace?: typeof ensureTaskWorktree;
 };
 
@@ -66,26 +70,34 @@ export function registerSelfImprovementRoutes(access: RouteAccess): void {
       const workspace = await prepareWorkspace({ cwd: eligibility.sourceCwd, task });
       preparedWorkspaceCwd = workspace.cwd;
       const developerInstructions = buildDelegationDeveloperInstructions(workspace, task);
+      let delegation: Awaited<ReturnType<typeof buildButlerDelegationContract>> | null = null;
       const result = await startWorkerThread(access, {
         task,
-        input: async (threadId) => buildCodexInputWithReferences({
-          text: (await buildButlerDelegationContract({
+        input: async (threadId) => {
+          delegation = await buildButlerDelegationContract({
             store,
             threadId,
             task,
             goal: "Investigate and implement this approved Manor self-improvement request locally only.",
             workspace,
+            reviewBaselineRoot: path.join(artifactsDir, "review-baselines"),
             extraNotes: [
               "This self-improvement request was operator-approved for local work only.",
               "Do not commit, push, open a pull request, restart Manor, deploy, or mutate the host unless the operator later asks explicitly.",
               "Report the local changes, verification, remaining risk, and whether a restart is needed."
             ]
-          })).text,
-          imageStore,
-          imageReferenceIds: [],
-          fileStore,
-          fileReferenceIds: []
-        }),
+          });
+          await persistJobPayload(jobPayloadsRoot(artifactsDir), delegation.payload);
+          store.setThreadJobPayload(delegation.payload);
+          store.setThreadExecutionContract(threadId, delegation.contract);
+          return buildCodexInputWithReferences({
+            text: delegation.text,
+            imageStore,
+            imageReferenceIds: [],
+            fileStore,
+            fileReferenceIds: []
+          });
+        },
         cwd: workspace.cwd,
         developerInstructions,
         effort: "high",
@@ -102,18 +114,11 @@ export function registerSelfImprovementRoutes(access: RouteAccess): void {
             handoffPrompt: task
           })
         : null;
-      const contract = await buildButlerDelegationContract({
-        store,
-        threadId: result.threadId,
-        task,
-        goal: "Investigate and implement this approved Manor self-improvement request locally only.",
-        workspace,
-        extraNotes: ["Do not commit, push, open a pull request, restart Manor, deploy, or mutate the host unless the operator later asks explicitly."]
-      });
-      const boundPayload = bindJobPayloadDelivery(contract.payload, { turnId: result.turnId });
+      const completedDelegation = delegation as Awaited<ReturnType<typeof buildButlerDelegationContract>> | null;
+      if (!completedDelegation) throw new Error("Self-improvement Worker started without a persisted delegation contract.");
+      const boundPayload = bindJobPayloadDelivery(completedDelegation.payload, { turnId: result.turnId });
       await persistJobPayload(jobPayloadsRoot(artifactsDir), boundPayload);
       store.setThreadJobPayload(boundPayload);
-      store.setThreadExecutionContract(result.threadId, contract.contract);
       store.addEvent(result.threadId, "butler.self_improvement.created", `Approved self-improvement request ${approved.id}.`);
       store.openWindow(result.threadId);
       preparedWorkspaceCwd = null;

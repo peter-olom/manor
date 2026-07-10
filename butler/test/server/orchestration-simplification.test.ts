@@ -6,12 +6,12 @@ import test from "node:test";
 
 import { getOperatorCloseoutBlocker } from "../../src/server/butler-closeout-gate.js";
 import { buildButlerDelegationTools } from "../../src/server/butler-agent-stack-preview-tools.js";
+import { buildButlerCodexTools } from "../../src/server/butler-agent-codex-tools.js";
 import { buildDelegationRoutingDecision } from "../../src/server/butler-delegation-routing.js";
 import { normalizeWorkerClaimsReport } from "../../src/server/butler-orchestration.js";
 import { validateCompletedWorkerEvidence } from "../../src/server/codex-harness-report-validation.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
-import { CodexWorkerReviewService } from "../../src/server/worker-codex-review.js";
 import type {
   ButlerRoutingDecisionView,
   CodexThreadExecutionContractView,
@@ -30,7 +30,7 @@ function routingDecision(overrides: Partial<ButlerRoutingDecisionView> = {}): Bu
     confidence: 0.91,
     questionSet: [],
     goalRecommendation: { mode: "none", goal: null, fallbackReason: null },
-    reviewRecommendation: { target: "codex_review", required: true, reason: "Risk-based review required." },
+    reviewRecommendation: { target: "adversarial_review", required: true, reason: "Review required." },
     subAgentRoles: ["qa", "adversarial-review"],
     riskLevel: "high",
     fallbackReason: null,
@@ -100,14 +100,14 @@ function acceptChecklist(store: ButlerStateStore, threadId: string): void {
 test("delegation routing is derived from Butler's explicit tool call", () => {
   const apiDecision = buildDelegationRoutingDecision({ task: "Implement an API route and tests" });
   assert.equal(apiDecision.taskClass, "api");
-  assert.equal(apiDecision.reviewRecommendation.target, "codex_review");
+  assert.equal(apiDecision.reviewRecommendation.target, "adversarial_review");
   assert.equal(apiDecision.reviewRecommendation.required, true);
   assert.equal(apiDecision.questionSet.length, 0);
   assert.equal(apiDecision.fallbackReason, null);
 
   const readOnlyDecision = buildDelegationRoutingDecision({ task: "What is the Runner setting?" });
   assert.equal(readOnlyDecision.taskClass, "read_only");
-  assert.equal(readOnlyDecision.reviewRecommendation.required, false);
+  assert.equal(readOnlyDecision.reviewRecommendation.required, true);
 });
 
 test("delegation starts worker directly with deterministic routing metadata", async () => {
@@ -133,6 +133,8 @@ test("delegation starts worker directly with deterministic routing metadata", as
       return {} as never;
     },
     codexClient: {
+      getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "medium", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["medium"], supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium" }] } }),
+      updateComposeSettings: async () => undefined,
       startThread: async (input: { input: (threadId: string) => Promise<unknown> }) => {
         await input.input("thread-direct");
         return { threadId: "thread-direct" };
@@ -141,6 +143,7 @@ test("delegation starts worker directly with deterministic routing metadata", as
     imageStore: { resolveViews: () => [], getFilePath: () => null },
     fileStore: { resolveViews: () => [], getFilePath: () => null },
     store,
+    getCodexAuthStatus: () => ({ loggedIn: true }),
     noteThreadFocus: () => undefined,
     queueDelegationAcknowledgement: () => undefined,
     registerPendingChatCallback: () => undefined
@@ -177,6 +180,8 @@ test("delegation contract receives the resolved workspace cwd", async () => {
       };
     },
     codexClient: {
+      getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "medium", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["medium"], supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium" }] } }),
+      updateComposeSettings: async () => undefined,
       startThread: async (input: { input: (threadId: string) => Promise<unknown> }) => {
         await input.input("thread-resolved-cwd");
         return { threadId: "thread-resolved-cwd" };
@@ -185,6 +190,7 @@ test("delegation contract receives the resolved workspace cwd", async () => {
     imageStore: { resolveViews: () => [], getFilePath: () => null },
     fileStore: { resolveViews: () => [], getFilePath: () => null },
     store,
+    getCodexAuthStatus: () => ({ loggedIn: true }),
     noteThreadFocus: () => undefined,
     queueDelegationAcknowledgement: () => undefined,
     registerPendingChatCallback: () => undefined
@@ -211,6 +217,8 @@ test("shared repository bootstrap delegation keeps the bootstrap note", async ()
       return { text: "brief", contract };
     },
     codexClient: {
+      getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "medium", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["medium"], supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium" }] } }),
+      updateComposeSettings: async () => undefined,
       startThread: async (input: { input: (threadId: string) => Promise<unknown> }) => {
         await input.input("thread-cap");
         return { threadId: "thread-cap" };
@@ -219,6 +227,7 @@ test("shared repository bootstrap delegation keeps the bootstrap note", async ()
     imageStore: { resolveViews: () => [], getFilePath: () => null },
     fileStore: { resolveViews: () => [], getFilePath: () => null },
     store,
+    getCodexAuthStatus: () => ({ loggedIn: true }),
     noteThreadFocus: () => undefined,
     queueDelegationAcknowledgement: () => undefined,
     registerPendingChatCallback: () => undefined
@@ -286,7 +295,7 @@ test("strict JSON claims reject mixed malformed claims", () => {
   );
 });
 
-test("review gate treats missing Codex review as advisory and blocks serious findings", async () => {
+test("review gate requires a completed adversarial review and blocks serious findings", async () => {
   const store = await createStore();
   const contract = makeContract();
   createThread(store, contract);
@@ -299,11 +308,11 @@ test("review gate treats missing Codex review as advisory and blocks serious fin
   });
   acceptChecklist(store, contract.threadId);
 
-  assert.equal(getOperatorCloseoutBlocker(store, contract.threadId), null);
+  assert.match(getOperatorCloseoutBlocker(store, contract.threadId) ?? "", /Adversarial review must finish/);
 
   const blocking: WorkerReviewResultRecordView = {
     id: "review-blocking",
-    reviewSource: "codex_review",
+    reviewSource: "adversarial_review",
     turnId: report.turnId,
     reportUpdatedAt: report.updatedAt,
     severity: "high",
@@ -312,6 +321,9 @@ test("review gate treats missing Codex review as advisory and blocks serious fin
     waived: false,
     waiverReason: null,
     linkedClaimIds: ["claim-1"],
+    modelProvider: "openai-codex",
+    modelId: "gpt-5.5",
+    reasoningLevel: "high",
     createdAt: 1,
     updatedAt: 1
   };
@@ -346,13 +358,54 @@ test("review gate treats missing Codex review as advisory and blocks serious fin
   assert.equal(getOperatorCloseoutBlocker(store2, contract2.threadId), null);
 });
 
+test("Butler can disprove a blocking review finding from stronger evidence", async () => {
+  const store = await createStore();
+  const contract = makeContract();
+  createThread(store, contract);
+  const report = store.recordWorkerReport(contract.threadId, { turnId: "turn-1", status: "completed", summary: "Done.", details: null, claims: claims() });
+  acceptChecklist(store, contract.threadId);
+  store.recordWorkerReviewResults(contract.threadId, [{
+    id: "review-false-positive",
+    reviewSource: "adversarial_review",
+    turnId: report.turnId,
+    reportUpdatedAt: report.updatedAt,
+    severity: "high",
+    findingSummary: "The failure path is untested.",
+    blocking: true,
+    waived: false,
+    waiverReason: null,
+    linkedClaimIds: [],
+    modelProvider: "openai-codex",
+    modelId: "gpt-5.5",
+    reasoningLevel: "high",
+    createdAt: 1,
+    updatedAt: 1
+  }]);
+  const tool = buildButlerCodexTools({
+    defineButlerTool: (definition) => definition,
+    getToolUiEffects: () => [],
+    store
+  } as never).find((entry) => entry.name === "disprove_review_finding") as { execute: (id: string, params: Record<string, unknown>) => Promise<unknown> };
+
+  await tool.execute("call-1", {
+    threadId: contract.threadId,
+    findingId: "review-false-positive",
+    evidence: "The persisted integration run contains the asserted 500 response."
+  });
+
+  assert.equal(getOperatorCloseoutBlocker(store, contract.threadId), null);
+  const finding = store.getThread(contract.threadId)?.executionContract?.reviewResults?.find((entry) => entry.id === "review-false-positive");
+  assert.equal(finding?.waived, true);
+  assert.match(finding?.waiverReason ?? "", /persisted integration run/);
+});
+
 test("thread summary refresh preserves orchestration and review results", async () => {
   const store = await createStore();
   const contract = makeContract();
   createThread(store, contract);
   const review: WorkerReviewResultRecordView = {
     id: "review-preserved",
-    reviewSource: "codex_review",
+    reviewSource: "adversarial_review",
     turnId: "turn-1",
     reportUpdatedAt: 12,
     severity: "info",
@@ -361,6 +414,9 @@ test("thread summary refresh preserves orchestration and review results", async 
     waived: false,
     waiverReason: null,
     linkedClaimIds: [],
+    modelProvider: "openai-codex",
+    modelId: "gpt-5.5",
+    reasoningLevel: "high",
     createdAt: 1,
     updatedAt: 1
   };
@@ -376,87 +432,6 @@ test("thread summary refresh preserves orchestration and review results", async 
   const refreshed = store.getThread(contract.threadId)?.executionContract;
   assert.equal(refreshed?.orchestration?.taskClass, "generic_code");
   assert.equal(refreshed?.reviewResults?.[0]?.id, "review-preserved");
-});
-
-test("failed Codex review is persisted as a retryable blocking review result", async () => {
-  const store = await createStore();
-  const contract = makeContract();
-  createThread(store, contract);
-  const report = store.recordWorkerReport(contract.threadId, {
-    turnId: "turn-1",
-    status: "completed",
-    summary: "Done.",
-    details: null,
-    claims: claims()
-  });
-  const stateDir = await mkdtemp(path.join(tmpdir(), "manor-review-failed-"));
-  const service = new CodexWorkerReviewService({
-    store,
-    stateDir,
-    codexHomeDir: stateDir,
-    runner: async () => {
-      throw new Error("review service unavailable");
-    }
-  });
-
-  service.reviewWorkerReportAsync(report);
-  await new Promise((resolve) => setTimeout(resolve, 10));
-
-  const results = store.getThread(contract.threadId)?.executionContract?.reviewResults ?? [];
-  assert.equal(results.length, 1);
-  assert.equal(results[0]?.blocking, true);
-  assert.equal(results[0]?.automationFailure, true);
-  assert.match(results[0]?.findingSummary ?? "", /review service unavailable/);
-});
-
-test("automation-failure review results do not suppress retry", async () => {
-  const store = await createStore();
-  const contract = makeContract();
-  createThread(store, contract);
-  const report = store.recordWorkerReport(contract.threadId, {
-    turnId: "turn-1",
-    status: "completed",
-    summary: "Done.",
-    details: null,
-    claims: claims()
-  });
-  store.recordWorkerReviewResults(contract.threadId, [
-    {
-      id: "review-turn-1-failed",
-      reviewSource: "codex_review",
-      turnId: report.turnId,
-      reportUpdatedAt: report.updatedAt,
-      severity: "high",
-      findingSummary: "Codex review automation failed.",
-      blocking: true,
-      waived: false,
-      waiverReason: null,
-      automationFailure: true,
-      linkedClaimIds: ["claim-1"],
-      createdAt: 1,
-      updatedAt: 1
-    }
-  ]);
-  acceptChecklist(store, contract.threadId);
-  assert.equal(getOperatorCloseoutBlocker(store, contract.threadId), null);
-  const stateDir = await mkdtemp(path.join(tmpdir(), "manor-review-retry-"));
-  let runs = 0;
-  const service = new CodexWorkerReviewService({
-    store,
-    stateDir,
-    codexHomeDir: stateDir,
-    runner: async () => {
-      runs += 1;
-      return { findings: [] };
-    }
-  });
-
-  await service.reviewWorkerReport(report);
-
-  assert.equal(runs, 1);
-  const results = store.getThread(contract.threadId)?.executionContract?.reviewResults ?? [];
-  assert.equal(results.some((result) => result.automationFailure !== true && result.reportUpdatedAt === report.updatedAt), true);
-  assert.equal(getOperatorCloseoutBlocker(store, contract.threadId), null);
 });
 
 test("sub-agent summaries are normalized without raw transcript requirements", () => {

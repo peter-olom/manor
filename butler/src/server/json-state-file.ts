@@ -32,7 +32,7 @@ export async function readJsonStateFile<T>(filePath: string, fallback: T): Promi
   }
 }
 
-export async function writeJsonStateFileAtomic(filePath: string, value: unknown): Promise<void> {
+export async function writeJsonStateFileAtomic(filePath: string, value: unknown, options: { beforeCommit?: () => void | Promise<void> } = {}): Promise<void> {
   const directory = path.dirname(filePath);
   const basename = path.basename(filePath);
   const temporaryPath = path.join(directory, `.${basename}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`);
@@ -40,6 +40,7 @@ export async function writeJsonStateFileAtomic(filePath: string, value: unknown)
   try {
     await fs.mkdir(directory, { recursive: true });
     await fs.writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await options.beforeCommit?.();
     await fs.rename(temporaryPath, filePath);
   } catch (error) {
     await fs.rm(temporaryPath, { force: true }).catch(() => undefined);

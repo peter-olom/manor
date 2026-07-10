@@ -81,8 +81,8 @@ export class ProviderRuntimeIngestion extends EventEmitter<ProviderRuntimeIngest
     super();
   }
 
-  ingest(event: ProviderRuntimeEvent): Promise<void> {
-    this.queue = this.queue.then(() => this.apply(event));
+  ingest(event: ProviderRuntimeEvent, shouldApply: () => boolean = () => true): Promise<void> {
+    this.queue = this.queue.then(() => shouldApply() ? this.apply(event) : undefined);
     return this.queue;
   }
 

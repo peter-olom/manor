@@ -19,7 +19,6 @@ export type SettingsSecretSource =
   | { type: "asiri"; workspace: string; path: string };
 
 export type SettingsRunnerMode = "auto" | "codex" | "pi";
-export type SettingsWorkerRuntime = "auto" | "openai" | "pi-rpc";
 export type SettingsReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type SettingsThinkingLevel = "off" | SettingsReasoningEffort;
 
@@ -105,7 +104,6 @@ export type ManorSettings = {
     };
   };
   worker: {
-    runtime: SettingsWorkerRuntime;
     defaultModel: string | null;
     defaultEffort: SettingsReasoningEffort | null;
   };
@@ -118,7 +116,6 @@ export type ManorSettings = {
     memorySynthesisModel: string | null;
     sessionTitleModel: string | null;
     sessionTitleTimeoutMs: number;
-    workerReviewModel: string | null;
     memoryPromotionModel: string | null;
   };
   memory: {

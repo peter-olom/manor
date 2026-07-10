@@ -337,6 +337,7 @@ export class PiProviderRuntimeMapper {
   }
 
   private toolItemType(toolName: string): ProviderRuntimeItemType {
+    if (toolName === "edit" || toolName === "write" || toolName === "apply_patch") return "file_change";
     return toolName === "bash" || toolName === "execute_bash" ? "command_execution" : "dynamic_tool_call";
   }
 

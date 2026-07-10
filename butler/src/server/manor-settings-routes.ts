@@ -210,6 +210,11 @@ function settingsPayload(access: SettingsRouteAccess) {
   const butlerAuth = access.butlerAgent.getButlerAuthStatus();
   const codexAuth = access.butlerAgent.getCodexAuthStatus();
   const providerAvailability = computeProviderAvailability(settings, butlerAuth, codexAuth);
+  const workerCompose = getUnifiedWorkerCompose({
+    ...access,
+    getCodexAuthStatus: () => codexAuth,
+    getWorkerAffinity: () => typeof access.butlerAgent.getWorkerAffinity === "function" ? access.butlerAgent.getWorkerAffinity() : null
+  });
   return {
     settings,
     provenance: access.settingsService.getProvenance(),
@@ -219,7 +224,7 @@ function settingsPayload(access: SettingsRouteAccess) {
       piRpc: piRpc.compose.availableModels,
       ollamaLocal: collectOllamaLocalModels(butler.availableModels, settings),
       opencodeGo: collectOpencodeGoModels([...butler.availableModels, ...piRpc.compose.availableModels], settings),
-      worker: getUnifiedWorkerCompose(access)
+      worker: workerCompose
     },
     providerAvailability,
     openaiCodexAuth: {

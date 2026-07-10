@@ -105,7 +105,6 @@ export type PairChat = {
   butlerModel?: string | null;
   codexModel?: string | null;
   codexEffort?: string | null;
-  workerRuntime?: "auto" | "openai" | "pi-rpc" | null;
   codexAvailableEfforts?: string[] | null;
 };
 

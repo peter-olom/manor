@@ -6,6 +6,15 @@ import { recordChecklistWorkerEvidence } from "./supervision-checklist.js";
 import { emitStateStoreChange, queueStateStoreSave, type StateStoreInternalAccess } from "./state-store-internals.js";
 import type { CodexThreadExecutionContractView, CodexWorkerEvidenceView, CodexWorkerReportView, WorkerClaimsReportView, WorkerReviewResultRecordView } from "./types.js";
 
+export type WorkerReviewBaselineState = {
+  cwd: string | null;
+  sha: string | null;
+  treeSha: string | null;
+  objectDir: string | null;
+  peerContexts: NonNullable<CodexThreadExecutionContractView["reviewPeerContexts"]>;
+  peerContextOverflow: boolean;
+};
+
 function normalizeWorkerReportEvidence(rawEvidence: unknown, fallbackCreatedAt: number): CodexWorkerEvidenceView[] {
   if (!Array.isArray(rawEvidence)) {
     return [];
@@ -161,4 +170,27 @@ export function recordStateStoreWorkerReviewResults(
   queueStateStoreSave(access);
   emitStateStoreChange(access);
   return thread.executionContract;
+}
+
+export function recordStateStoreWorkerReviewPeerContext(access: StateStoreInternalAccess, threadId: string, context: NonNullable<CodexThreadExecutionContractView["reviewPeerContexts"]>[number]): void {
+  const thread = access.threads.get(threadId);
+  if (!thread?.executionContract || (context.paths.length === 0 && context.attributionUnknown !== true)) return;
+  const retained = (thread.executionContract.reviewPeerContexts ?? []).filter((entry) => entry.sourceThreadId !== context.sourceThreadId);
+  if (retained.length >= 32) thread.executionContract.reviewPeerContextOverflow = true;
+  thread.executionContract.reviewPeerContexts = [
+    ...retained,
+    context
+  ].slice(-32);
+  access.persistedExecutionContractsByThreadId.set(threadId, { ...thread.executionContract });
+  queueStateStoreSave(access);
+  emitStateStoreChange(access);
+}
+
+export function replaceStateStoreWorkerReviewBaseline(access: StateStoreInternalAccess, threadId: string, baseline: WorkerReviewBaselineState): void {
+  const thread = access.threads.get(threadId);
+  if (!thread?.executionContract) return;
+  thread.executionContract = { ...thread.executionContract, reviewBaselineCwd: baseline.cwd, reviewBaselineSha: baseline.sha, reviewBaselineTreeSha: baseline.treeSha, reviewBaselineObjectDir: baseline.objectDir, reviewPeerContexts: baseline.peerContexts, reviewPeerContextOverflow: baseline.peerContextOverflow };
+  access.persistedExecutionContractsByThreadId.set(threadId, { ...thread.executionContract });
+  queueStateStoreSave(access);
+  emitStateStoreChange(access);
 }

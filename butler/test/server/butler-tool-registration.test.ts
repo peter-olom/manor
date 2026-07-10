@@ -49,7 +49,7 @@ test("Butler custom tool registration has unique tool names", () => {
   assert.equal(definitions.filter((definition) => definition.name === "open_self_improvement_pr").length, 1);
 });
 
-test("delegation tool schema accepts legacy codex worker runtime", () => {
+test("delegation tool schema keeps provider, model, and thinking selection out of Butler control", () => {
   const tools = buildButlerDelegationTools({
     defineButlerTool: (definition) => definition,
     getToolUiEffects: () => []
@@ -57,5 +57,7 @@ test("delegation tool schema accepts legacy codex worker runtime", () => {
   const tool = tools.find((definition) => definition.name === "delegate_to_codex") as { parameters?: Record<string, unknown> } | undefined;
   const properties = tool?.parameters?.properties as Record<string, unknown> | undefined;
 
-  assert.equal(schemaContainsLiteral(properties?.workerRuntime, "codex"), true);
+  assert.equal(properties?.workerRuntime, undefined);
+  assert.equal(properties?.workerModel, undefined);
+  assert.equal(properties?.thinkingBudget, undefined);
 });

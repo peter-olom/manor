@@ -15,7 +15,7 @@ export type ButlerRoutingTaskClass =
   | "recommendation"
   | "unknown";
 export type ButlerGoalRoutingMode = "none" | "native_goal" | "contract_fallback";
-export type ButlerReviewRoutingTarget = "none" | "codex_review";
+export type ButlerReviewRoutingTarget = "none" | "adversarial_review";
 export type WorkerClaimStatus = "completed" | "partial" | "blocked";
 export type WorkerReviewSeverity = "info" | "low" | "medium" | "high" | "critical";
 
@@ -74,7 +74,7 @@ export interface WorkerClaimsReportView {
 
 export interface WorkerReviewResultRecordView {
   id: string;
-  reviewSource: "codex_review";
+  reviewSource: "adversarial_review";
   turnId: string;
   reportUpdatedAt: number;
   severity: WorkerReviewSeverity;
@@ -84,6 +84,9 @@ export interface WorkerReviewResultRecordView {
   waiverReason: string | null;
   automationFailure?: boolean;
   linkedClaimIds: string[];
+  modelProvider: string | null;
+  modelId: string | null;
+  reasoningLevel: string | null;
   createdAt: number;
   updatedAt: number;
 }

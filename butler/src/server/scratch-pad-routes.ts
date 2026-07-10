@@ -1,4 +1,5 @@
 import type express from "express";
+import path from "node:path";
 
 import type { ButlerAgentService } from "./butler-agent.js";
 import type { CodexAppServerClient } from "./codex-client.js";
@@ -6,6 +7,8 @@ import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import { type FileReferenceStore } from "./file-store.js";
 import { type ImageReferenceStore } from "./image-store.js";
 import { bindJobPayloadDelivery, buildJobPayload, formatJobPayloadMessage, jobPayloadsRoot, persistJobPayload } from "./job-instruction-artifacts.js";
+import { captureGitReviewBaseline, resolveGitRoot } from "./git-review-scope.js";
+import { runSerializedJobMutation } from "./butler-job-mutation-guard.js";
 import { buildCodexInputWithReferences } from "./reference-inputs.js";
 import {
   cleanupManagedWorktree,
@@ -150,6 +153,8 @@ async function buildScratchInput(
 ) {
   const cwd = workspace.cwd;
   const project = resolveWorkspaceProjectInfo(cwd);
+  const reviewGitRoot = await resolveGitRoot(cwd);
+  const reviewBaseline = reviewGitRoot ? await captureGitReviewBaseline(reviewGitRoot, path.join(access.artifactsDir, "review-baselines")) : null;
   const contract = buildThreadExecutionContract({
     threadId,
     workspaceCwd: cwd,
@@ -168,14 +173,22 @@ async function buildScratchInput(
       "Prefer safe reads, research, and disposable prototypes until the operator accepts the idea."
     ]
   });
-  access.store.setThreadExecutionContract(threadId, contract);
+  const reviewableContract = {
+    ...contract,
+    reviewBaselineCwd: reviewBaseline?.cwd ?? null,
+    reviewBaselineSha: reviewBaseline?.sha ?? null,
+    reviewBaselineTreeSha: reviewBaseline?.treeSha ?? null,
+    reviewBaselineObjectDir: reviewBaseline?.objectDir ?? null,
+    reviewBaselineCaptureFailed: Boolean(reviewGitRoot && !reviewBaseline)
+  };
+  access.store.setThreadExecutionContract(threadId, reviewableContract);
   const imageReferenceIds = item.attachments.filter((attachment) => attachment.kind === "image" && attachment.available).map((attachment) => attachment.referenceId);
   const fileReferenceIds = item.attachments.filter((attachment) => attachment.kind === "file" && attachment.available).map((attachment) => attachment.referenceId);
   const payload = buildJobPayload({
     threadId,
     kind: "delegation",
     instruction: task,
-    contract,
+    contract: reviewableContract,
     imageReferenceIds,
     fileReferenceIds
   });
@@ -250,7 +263,12 @@ async function startScratchItem(access: ScratchPadRoutesAccess, itemId: string) 
   const workspace = await (access.prepareScratchWorkspace ?? prepareScratchWorkspace)(item, task, baseCwd);
   let result: Awaited<ReturnType<typeof startWorkerThread>>;
   try {
-    result = await startWorkerThread(access, {
+    result = await startWorkerThread({
+      ...access,
+      getCodexAuthStatus: () => access.butlerAgent.getCodexAuthStatus(),
+      getWorkerAffinity: () => access.butlerAgent.getWorkerAffinity(),
+      recordSuccessfulWorkerSelection: (selection) => access.butlerAgent.recordSuccessfulWorkerSelection(selection)
+    }, {
       task,
       input: (threadId) => buildScratchInput(access, item, threadId, task, workspace),
       cwd: workspace.cwd,
@@ -278,7 +296,7 @@ async function startScratchItem(access: ScratchPadRoutesAccess, itemId: string) 
     access.store.setThreadJobPayload(bound);
   }
   access.store.addEvent(result.threadId, "butler.scratch_pad.started", "Butler started this job from a scratch pad item.");
-  access.butlerAgent.trackScratchPadDelegation(result.threadId);
+  await access.butlerAgent.trackScratchPadDelegation(result.threadId);
   return updated;
 }
 
@@ -354,7 +372,13 @@ export function registerScratchPadRoutes(access: ScratchPadRoutesAccess): void {
 
     try {
       const cleanup = item.threadId
-        ? await deleteWorkerThread(access, item.threadId, { waitForCleanup: true }) as { deletedArtifacts?: number; cleanupFailed?: boolean; cleanupError?: string | null }
+        ? await runSerializedJobMutation(item.threadId, async () => {
+            try {
+              return await deleteWorkerThread(access, item.threadId!, { waitForCleanup: true }) as { deletedArtifacts?: number; cleanupFailed?: boolean; cleanupError?: string | null };
+            } finally {
+              if (!access.store.getThread(item.threadId!)) await access.butlerAgent.removeExternalWorkerDelegation(item.threadId!);
+            }
+          })
         : { deletedArtifacts: 0, cleanupFailed: false, cleanupError: null };
       if (cleanup.cleanupFailed) {
         response.status(500).json({ error: cleanup.cleanupError ?? "Thread cleanup failed" });

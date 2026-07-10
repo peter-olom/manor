@@ -83,7 +83,7 @@ export function normalizeRoutingDecision(raw: unknown, fallbackTaskClass: CodexT
   if (rawGoalMode !== "none" && rawGoalMode !== "native_goal" && rawGoalMode !== "contract_fallback") return null;
   const reviewRequired = review.required === true;
   const rawReviewTarget = text(review.target, 40);
-  if (rawReviewTarget !== "none" && rawReviewTarget !== "codex_review") return null;
+  if (rawReviewTarget !== "none" && rawReviewTarget !== "codex_review" && rawReviewTarget !== "adversarial_review") return null;
 
   return {
     taskClass: rawTaskClass as ButlerRoutingTaskClass,
@@ -95,8 +95,8 @@ export function normalizeRoutingDecision(raw: unknown, fallbackTaskClass: CodexT
       fallbackReason: text(goal.fallbackReason ?? goal.fallback_reason, 500)
     },
     reviewRecommendation: {
-      target: rawReviewTarget,
-      required: reviewRequired || rawReviewTarget === "codex_review",
+      target: rawReviewTarget === "codex_review" ? "adversarial_review" : rawReviewTarget,
+      required: reviewRequired || rawReviewTarget === "codex_review" || rawReviewTarget === "adversarial_review",
       reason: text(review.reason, 500)
     },
     subAgentRoles: stringList(rawSubAgentRoles, 8, 80),
@@ -199,28 +199,30 @@ export function getOrchestrationCloseoutBlocker(input: {
 }): string | null {
   const contract = input.thread?.executionContract;
   const orchestration = contract?.orchestration;
-  if (!contract || !orchestration) return null;
+  if (!contract) return null;
   const report = input.workerReport;
   if (report?.status !== "completed") return null;
-  if (!report.claims || report.claims.claims.length === 0) {
+  if (orchestration && (!report.claims || report.claims.claims.length === 0)) {
     return "Completed worker reports must include strict JSON claims with proof pointers before Butler can close the job.";
   }
-  if (report.claims.claims.some((claim) => claim.status !== "completed")) {
+  if (orchestration && report.claims?.claims.some((claim) => claim.status !== "completed")) {
     return "Completed worker reports cannot close while any strict claim is partial or blocked.";
   }
-  if (report.claims.unresolvedItems.length > 0) {
+  if (orchestration && report.claims?.unresolvedItems.length) {
     return "Completed worker report still lists unresolved items. Butler must resolve, rework, or waive them before closeout.";
   }
-  if (!orchestration.reviewRecommendation.required) return null;
   const currentResults = (contract.reviewResults ?? []).filter((result) => result.turnId === report.turnId && result.reportUpdatedAt === report.updatedAt);
   const completedResults = currentResults.filter((result) => result.automationFailure !== true);
+  if (completedResults.length === 0) {
+    return "Adversarial review must finish before Butler can close the job.";
+  }
   const blocker = completedResults.find((result) => result.blocking && !result.waived);
-  return blocker ? `Codex review blocked closeout: ${blocker.findingSummary}` : null;
+  return blocker ? `Adversarial review blocked closeout: ${blocker.findingSummary}` : null;
 }
 
 export function shouldRunCodexWorkerReview(contract: CodexThreadExecutionContractView | null | undefined, report: CodexWorkerReportView): boolean {
   if (report.status !== "completed") return false;
-  if (!contract?.orchestration?.reviewRecommendation.required) return false;
+  if (!contract) return false;
   const existing = (contract.reviewResults ?? []).some((result) => result.turnId === report.turnId && result.reportUpdatedAt === report.updatedAt && result.automationFailure !== true);
   return !existing;
 }
@@ -231,6 +233,9 @@ export function normalizeWorkerReviewResults(input: {
   turnId: string;
   reportUpdatedAt: number;
   defaultBlocking?: boolean;
+  modelProvider?: string | null;
+  modelId?: string | null;
+  reasoningLevel?: string | null;
 }): WorkerReviewResultRecordView[] {
   const record = input.raw && typeof input.raw === "object" ? (input.raw as Record<string, unknown>) : {};
   const rawFindings = Array.isArray(record.findings) ? record.findings : [];
@@ -245,7 +250,7 @@ export function normalizeWorkerReviewResults(input: {
       const blocking = typeof item.blocking === "boolean" ? item.blocking : severity === "high" || severity === "critical" || input.defaultBlocking === true;
       return {
         id: readRecordString(item, "id") ?? `review-${input.turnId}-${index + 1}-${crypto.randomUUID().slice(0, 8)}`,
-        reviewSource: "codex_review" as const,
+        reviewSource: "adversarial_review" as const,
         turnId: input.turnId,
         reportUpdatedAt: input.reportUpdatedAt,
         severity,
@@ -255,6 +260,9 @@ export function normalizeWorkerReviewResults(input: {
         waiverReason: readRecordString(item, "waiverReason", "waiver_reason"),
         automationFailure: false,
         linkedClaimIds: stringList(item.linkedClaimIds ?? item.linked_claim_ids, 20, 100),
+        modelProvider: input.modelProvider?.trim() || null,
+        modelId: input.modelId?.trim() || null,
+        reasoningLevel: input.reasoningLevel?.trim() || null,
         createdAt: Date.now(),
         updatedAt: Date.now()
       };

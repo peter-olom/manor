@@ -12,6 +12,7 @@ import { getActiveManorSettings } from "./manor-settings-runtime.js";
 import { selectProviderWebToolSource } from "./provider-web-tools.js";
 import { PiProviderRuntimeMapper } from "./pi-provider-events.js";
 import { piThinkingLevelForEffort } from "./pi-thinking-levels.js";
+import { StaleWorkerOperationError } from "./stale-worker-operation-error.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { CodexInputItem } from "./image-store.js";
 import type { CodexThreadPatchView, ModelOption, ReasoningEffort } from "./types.js";
@@ -28,6 +29,10 @@ type PiWorkerSession = {
   mapper: PiProviderRuntimeMapper;
   unsubscribe: (() => void) | null;
   cwd: string;
+  activityVersion: number;
+  acceptedEventVersion: number | null;
+  eventStreamVersion: number | null;
+  pendingPromptGenerations: number[];
 };
 
 function inputItemsToText(input: string | CodexInputItem[]): string {
@@ -83,6 +88,62 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
 
   constructor(private readonly options: { store: ButlerStateStore; piAuthPath: string; sessionRootDir: string; cliPath?: string | null }) {
     super();
+  }
+
+  private beginSessionOperation(session: PiWorkerSession): number {
+    session.activityVersion += 1;
+    session.acceptedEventVersion = session.activityVersion;
+    return session.activityVersion;
+  }
+
+  private invalidateSessionOperations(session: PiWorkerSession): number {
+    session.activityVersion += 1;
+    session.acceptedEventVersion = null;
+    return session.activityVersion;
+  }
+
+  private isSessionGenerationCurrent(session: PiWorkerSession, generation: number): boolean {
+    return this.sessions.get(session.threadId) === session && session.activityVersion === generation;
+  }
+
+  private isSessionEventGenerationCurrent(session: PiWorkerSession, generation: number | null): boolean {
+    return generation !== null
+      && this.isSessionGenerationCurrent(session, generation)
+      && session.acceptedEventVersion === generation;
+  }
+
+  private invalidateSessionGenerationIfCurrent(session: PiWorkerSession, generation: number): void {
+    if (this.isSessionGenerationCurrent(session, generation)) this.invalidateSessionOperations(session);
+  }
+
+  private staleOperation(threadId: string): StaleWorkerOperationError {
+    return new StaleWorkerOperationError(threadId);
+  }
+
+  private async rejectStaleStartedSession(session: PiWorkerSession): Promise<never> {
+    let cleanupError: unknown;
+    if (this.sessions.get(session.threadId) === session && session.acceptedEventVersion === null) {
+      try {
+        await this.options.store.removeThreadDurably(session.threadId);
+        session.unsubscribe?.();
+        this.sessions.delete(session.threadId);
+        await session.client.stop();
+        this.emit("change");
+      } catch (error) {
+        cleanupError = error;
+      }
+    }
+    throw new StaleWorkerOperationError(session.threadId, cleanupError);
+  }
+
+  private async promptSession(session: PiWorkerSession, generation: number, text: string): Promise<void> {
+    session.pendingPromptGenerations.push(generation);
+    try {
+      await session.client.prompt(text);
+    } finally {
+      const pendingIndex = session.pendingPromptGenerations.indexOf(generation);
+      if (pendingIndex >= 0) session.pendingPromptGenerations.splice(pendingIndex, 1);
+    }
   }
 
   async start(): Promise<void> {
@@ -145,14 +206,25 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
       updatedAt: Date.now()
     });
     if (options.openWindow !== false) this.options.store.openWindow(threadId);
+    const preflightGeneration = session.activityVersion;
     const resolvedInput = typeof options.input === "function" ? await options.input(threadId) : (options.input ?? [{ type: "text", text: task } as CodexInputItem]);
+    if (!this.isSessionGenerationCurrent(session, preflightGeneration)) return this.rejectStaleStartedSession(session);
     const prompt = [options.developerInstructions?.trim() ? `Developer instructions:\n${options.developerInstructions.trim()}` : null, inputItemsToText(resolvedInput)].filter(Boolean).join("\n\n");
     if (options.effort ?? this.selectedEffort) {
       const requestedEffort = (options.effort ?? this.selectedEffort) as ReasoningEffort;
       await session.client.setThinkingLevel(piThinkingLevelForEffort(requestedEffort) as never);
+      if (!this.isSessionGenerationCurrent(session, preflightGeneration)) return this.rejectStaleStartedSession(session);
       this.options.store.setThreadRequestedReasoningEffort(threadId, (options.effort ?? this.selectedEffort) as never);
     }
-    await session.client.prompt(prompt);
+    const operationGeneration = this.beginSessionOperation(session);
+    try {
+      await this.promptSession(session, operationGeneration, prompt);
+    } catch (error) {
+      if (!this.isSessionGenerationCurrent(session, operationGeneration)) return this.rejectStaleStartedSession(session);
+      this.invalidateSessionGenerationIfCurrent(session, operationGeneration);
+      throw error;
+    }
+    if (!this.isSessionGenerationCurrent(session, operationGeneration)) return this.rejectStaleStartedSession(session);
     this.emit("change");
     return { threadId, turnId: null };
   }
@@ -161,17 +233,34 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     const session = this.sessions.get(threadId);
     if (!session) throw new Error("Pi RPC worker thread is not loaded");
     const text = inputItemsToText(input);
+    const preflightGeneration = session.activityVersion;
     const state = await session.client.getState().catch(() => null);
-    if (state?.isStreaming) await session.client.steer(text);
-    else await session.client.prompt(text);
+    if (!this.isSessionGenerationCurrent(session, preflightGeneration)) throw this.staleOperation(threadId);
+    const operationGeneration = this.beginSessionOperation(session);
+    try {
+      if (state?.isStreaming) {
+        session.eventStreamVersion = operationGeneration;
+        await session.client.steer(text);
+      } else {
+        await this.promptSession(session, operationGeneration, text);
+      }
+    } catch (error) {
+      if (!this.isSessionGenerationCurrent(session, operationGeneration)) throw this.staleOperation(threadId);
+      this.invalidateSessionGenerationIfCurrent(session, operationGeneration);
+      throw error;
+    }
+    if (!this.isSessionGenerationCurrent(session, operationGeneration)) throw this.staleOperation(threadId);
     return { threadId, turnId: null };
   }
 
   async stopThread(threadId: string): Promise<boolean> {
     const session = this.sessions.get(threadId);
     if (!session) return false;
+    const activityVersion = this.invalidateSessionOperations(session);
     await session.client.abort().catch(() => undefined);
-    this.options.store.setThreadStatus(threadId, "idle");
+    session.pendingPromptGenerations = session.pendingPromptGenerations.filter((generation) => generation > activityVersion);
+    if (!this.isSessionGenerationCurrent(session, activityVersion)) return true;
+    this.options.store.setThreadStatus(threadId, { type: "idle" });
     this.emit("change");
     return true;
   }
@@ -184,14 +273,29 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
 
   async deleteThread(threadId: string): Promise<boolean> {
     const session = this.sessions.get(threadId);
-    if (!session) return false;
+    if (!session) {
+      if (!this.options.store.getThread(threadId)) return false;
+      await this.removeThreadDurably(threadId);
+      this.emit("change");
+      return true;
+    }
+    this.invalidateSessionOperations(session);
+    await this.removeThreadDurably(threadId);
+    session.pendingPromptGenerations = [];
     session.unsubscribe?.();
-    await session.client.stop();
+    void session.client.stop().catch(() => undefined);
     this.sessions.delete(threadId);
-    this.options.store.closeWindow(threadId);
-    this.options.store.removeThread(threadId);
     this.emit("change");
     return true;
+  }
+
+  private async removeThreadDurably(threadId: string): Promise<void> {
+    try {
+      await this.options.store.removeThreadDurably(threadId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Pi Worker deletion could not be persisted: ${message}`);
+    }
   }
 
   private async loadModels(): Promise<void> {
@@ -225,12 +329,21 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     });
     const mapper = new PiProviderRuntimeMapper(threadId);
     await client.start();
-    const listener: RpcEventListener = (event) => {
-      const patches = mapper.map(event as never, { messages: [], getSessionStats: () => ({ contextUsage: null }) } as never);
-      for (const patch of patches) this.applyPatch(patch);
+    const session: PiWorkerSession = {
+      threadId,
+      client,
+      mapper,
+      unsubscribe: null,
+      cwd,
+      activityVersion: 0,
+      acceptedEventVersion: null,
+      eventStreamVersion: null,
+      pendingPromptGenerations: []
     };
-    const unsubscribe = client.onEvent(listener);
-    const session: PiWorkerSession = { threadId, client, mapper, unsubscribe, cwd };
+    const listener: RpcEventListener = (event) => {
+      this.handleSessionEvent(session, event);
+    };
+    session.unsubscribe = client.onEvent(listener);
     this.sessions.set(threadId, session);
     return session;
   }
@@ -239,9 +352,31 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     return webToolsExtensionArgsForProvider(this.selectedProvider);
   }
 
-  private applyPatch(patch: ProviderRuntimeLivePatch): void {
+  private handleSessionEvent(session: PiWorkerSession, event: Parameters<RpcEventListener>[0]): void {
+    let eventGeneration = session.eventStreamVersion ?? session.acceptedEventVersion;
+    if (event.type === "agent_start") {
+      eventGeneration = session.pendingPromptGenerations.shift() ?? session.acceptedEventVersion;
+      session.eventStreamVersion = eventGeneration;
+    }
+
+    const patches = session.mapper.map(
+      event as never,
+      { messages: [], getSessionStats: () => ({ contextUsage: null }) } as never
+    );
+    for (const patch of patches) this.applyPatch(session, eventGeneration, patch);
+
+    if (event.type === "agent_end") {
+      if (session.eventStreamVersion === eventGeneration) session.eventStreamVersion = null;
+      if (session.acceptedEventVersion === eventGeneration) session.acceptedEventVersion = null;
+    }
+  }
+
+  private applyPatch(session: PiWorkerSession, operationGeneration: number | null, patch: ProviderRuntimeLivePatch): void {
+    if (!this.isSessionEventGenerationCurrent(session, operationGeneration)) {
+      return;
+    }
     if (patch.kind === "thread-state") {
-      this.options.store.setThreadStatus(patch.threadId, patch.state === "idle" ? "idle" : "active");
+      this.options.store.setThreadStatus(patch.threadId, { type: patch.state === "idle" ? "idle" : "active" });
     } else if (patch.kind === "turn-lifecycle") {
       this.options.store.updateTurn(patch.threadId, {
         id: patch.turnId,

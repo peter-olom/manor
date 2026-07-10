@@ -61,7 +61,7 @@ test("review panel selection stays minimal and category aware", () => {
   ]);
 });
 
-test("review panel verdicts persist and failed verdicts block closeout", async () => {
+test("legacy review panel verdicts persist while adversarial review owns closeout", async () => {
   const store = await createStore();
   const contract = buildThreadExecutionContract({
     threadId: "thread-panel",
@@ -87,7 +87,7 @@ test("review panel verdicts persist and failed verdicts block closeout", async (
 
   assert.equal(updated.reviewPanel.find((entry) => entry.role === "ui_taste")?.verdict, "failed");
   assert.equal(updated.reviewPanelSummary.status, "blocked");
-  assert.match(
+  assert.equal(
     getOperatorCloseoutBlocker(store, "thread-panel", {
       thread: store.getThread("thread-panel"),
       workerReport: {
@@ -101,11 +101,11 @@ test("review panel verdicts persist and failed verdicts block closeout", async (
         updatedAt: 1
       }
     }),
-    /UI taste reviewer blocked closeout/
+    "Adversarial review must finish before Butler can close the job."
   );
 });
 
-test("callback review prompt includes panel instructions and state", async () => {
+test("callback review prompt includes only compact adversarial findings", async () => {
   const store = await createStore();
   const contract = buildThreadExecutionContract({
     threadId: "thread-prompt",
@@ -120,10 +120,40 @@ test("callback review prompt includes panel instructions and state", async () =>
   });
   const reviewPanel = buildReviewPanel({ taskCategory: "research", inferredWorkDepth: "deep", requestedTask: contract.requestedTask, attachmentCount: 1 });
   store.setThreadExecutionContract("thread-prompt", { ...contract, reviewPanel, reviewPanelSummary: summarizeReviewPanel(reviewPanel) });
+  store.upsertThreadSummary({ id: "thread-prompt", status: "idle", cwd: "/workspace", turns: [{ id: "turn-1", status: "completed", items: [] }] });
+  const report = store.recordWorkerReport("thread-prompt", { turnId: "turn-1", status: "completed", summary: "Done", details: null });
+  store.recordWorkerReviewResults("thread-prompt", [{
+    id: "review-1",
+    reviewSource: "adversarial_review",
+    turnId: report.turnId,
+    reportUpdatedAt: report.updatedAt,
+    severity: "high",
+    findingSummary: "The failure path is untested.",
+    blocking: true,
+    waived: false,
+    waiverReason: null,
+    linkedClaimIds: [],
+    modelProvider: "opencode-go",
+    modelId: "glm-5.2",
+    reasoningLevel: "max",
+    createdAt: report.updatedAt,
+    updatedAt: report.updatedAt
+  }]);
 
   const prompt = buildCallbackReviewPrompt(store, callback("thread-prompt"));
 
-  assert.match(prompt, /Hidden review panel:/);
-  assert.match(prompt, /record_review_panel_verdict/);
-  assert.match(prompt, /Failed or blocked reviewer concerns must become rejected checklist points/);
+  assert.match(prompt, /Isolated adversarial review findings:/);
+  assert.match(prompt, /review-1 \| high blocking: The failure path is untested/);
+  assert.doesNotMatch(prompt, /Hidden review panel:/);
+  assert.doesNotMatch(prompt, /record_review_panel_verdict/);
+
+  store.recordWorkerReviewResults("thread-prompt", [{
+    ...(store.getThread("thread-prompt")?.executionContract?.reviewResults?.[0] as NonNullable<typeof contract.reviewResults>[number]),
+    waived: true,
+    waiverReason: "Butler disproved this finding from the persisted failure-path run."
+  }]);
+  const retryPrompt = buildCallbackReviewPrompt(store, callback("thread-prompt"));
+  assert.match(retryPrompt, /review-1 \| high disproved:/);
+  assert.match(retryPrompt, /resolution: Butler disproved this finding/);
+  assert.doesNotMatch(retryPrompt, /review-1 \| high blocking:/);
 });

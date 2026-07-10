@@ -8,6 +8,7 @@ import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 
 import {
   BUTLER_BACKGROUND_PROMPT_PREFIX,
+  BUTLER_EPHEMERAL_BACKGROUND_PROMPT_PREFIX,
   contentAttachmentSummary,
   sanitizeHistoryMessages,
   serializeMessages,
@@ -141,6 +142,24 @@ test("Butler session sanitizer bounds background prompts and tool results", () =
   assert.match(toolResult.content[0]?.text ?? "", /characters omitted/);
   assert.deepEqual(Object.keys(toolResult.details ?? {}).sort(), ["omittedDetails", "uiEffects"]);
   assert.deepEqual((toolResult.details?.omittedDetails as { keys?: string[] }).keys, ["thread"]);
+});
+
+test("Butler session sanitizer removes ephemeral review turns from model context", () => {
+  const messages = [
+    { role: "user", content: [{ type: "text", text: "Keep this operator turn." }] },
+    { role: "assistant", content: [{ type: "text", text: "Kept." }] },
+    { role: "user", content: [{ type: "text", text: `${BUTLER_EPHEMERAL_BACKGROUND_PROMPT_PREFIX}\nReview job 1.` }] },
+    { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "read_job", arguments: {} }] },
+    { role: "toolResult", toolCallId: "call-1", content: [{ type: "text", text: "private review evidence" }] },
+    { role: "assistant", content: [{ type: "text", text: "Private review decision." }] },
+    { role: "user", content: [{ type: "text", text: "Keep the next operator turn too." }] }
+  ];
+
+  const sanitized = sanitizeHistoryMessages(messages as never);
+
+  assert.equal(sanitized.changed, true);
+  assert.deepEqual(sanitized.messages.map((message) => (message as { role: string }).role), ["user", "assistant", "user"]);
+  assert.doesNotMatch(JSON.stringify(sanitized.messages), /private review/i);
 });
 
 test("tool result detail summarization preserves only ui effects and metadata", () => {

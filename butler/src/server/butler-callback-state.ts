@@ -1,6 +1,14 @@
 import { promises as fs } from "node:fs";
 
 import type { PendingChatCallback } from "./butler-agent-helpers.js";
+import { writeJsonStateFileAtomic } from "./json-state-file.js";
+import type { CodexThreadRecord } from "./types.js";
+
+const RESERVED_CALLBACK_RECOVERY_GRACE_MS = 5 * 60_000;
+
+export function directWorkerDispatchMarker(threadId: string, requestedAt: number): string {
+  return `<!-- manor-direct-dispatch:${threadId}:${requestedAt} -->`;
+}
 
 type PersistedCallbackState = {
   callbackRecords?: PendingChatCallback[];
@@ -40,11 +48,12 @@ function normalizeCallbackEntry(entry: PendingChatCallback): PendingChatCallback
       : normalizedCallbackState === "missing_worker_callback"
         ? "thread_recovery"
         : null;
+  const interruptedAutomationReview = entry.reviewState === "running" ||
+    (entry.reviewState === "blocked" && entry.blockedCloseoutReason?.startsWith("Adversarial review paused") === true);
   const reviewState =
-    entry.reviewState === "blocked" ||
-    entry.reviewState === "running" ||
-    entry.reviewState === "queued" ||
-    entry.reviewState === "idle"
+    interruptedAutomationReview
+      ? "queued"
+      : entry.reviewState === "blocked" || entry.reviewState === "queued" || entry.reviewState === "idle"
       ? entry.reviewState
       : normalizedReviewReason
         ? "queued"
@@ -84,8 +93,12 @@ function normalizeCallbackEntry(entry: PendingChatCallback): PendingChatCallback
         : normalizedCallbackState === "closed"
           ? "main_chat"
           : "none",
+    dispatchState: entry.dispatchState === "reserving" ? "reserving" : "ready",
     reviewState,
     reviewReason: normalizedReviewReason,
+    reviewModelProvider: typeof entry.reviewModelProvider === "string" && entry.reviewModelProvider.trim() ? entry.reviewModelProvider.trim() : null,
+    reviewModelId: typeof entry.reviewModelId === "string" && entry.reviewModelId.trim() ? entry.reviewModelId.trim() : null,
+    reviewReasoningLevel: typeof entry.reviewReasoningLevel === "string" ? entry.reviewReasoningLevel : null,
     blockedCloseoutReason:
       reviewState === "blocked" && typeof entry.blockedCloseoutReason === "string" && entry.blockedCloseoutReason.trim()
         ? entry.blockedCloseoutReason
@@ -129,16 +142,27 @@ export async function saveButlerCallbackState(input: {
   pendingChatCallbacks: Map<string, PendingChatCallback>;
   deliveredCloseoutIds: Set<string>;
 }): Promise<void> {
-  await fs.writeFile(
-    input.callbackStatePath,
-    JSON.stringify(
-      {
-        callbackRecords: [...input.pendingChatCallbacks.values()],
-        deliveredCloseoutIds: [...input.deliveredCloseoutIds]
-      },
-      null,
-      2
-    ),
-    "utf8"
-  );
+  await writeJsonStateFileAtomic(input.callbackStatePath, {
+    callbackRecords: [...input.pendingChatCallbacks.values()],
+    deliveredCloseoutIds: [...input.deliveredCloseoutIds]
+  });
+}
+
+export function reconcileReservedCallbackDispatch(callback: PendingChatCallback, thread: CodexThreadRecord | undefined): "ready" | "drop" | null {
+  if (callback.dispatchState !== "reserving") return null;
+  if (!thread) return "drop";
+  const marker = directWorkerDispatchMarker(callback.threadId, callback.requestedAt);
+  const markerWasAccepted = thread.turns.some((turn) => turn.items.some((item) => {
+    if (item.type !== "userMessage") return false;
+    let rawText = "";
+    try {
+      const serialized = JSON.stringify(item.raw);
+      rawText = typeof serialized === "string" ? serialized : "";
+    } catch {
+      rawText = "";
+    }
+    return item.text.includes(marker) || rawText.includes(marker);
+  }));
+  if (markerWasAccepted) return "ready";
+  return Date.now() - callback.requestedAt >= RESERVED_CALLBACK_RECOVERY_GRACE_MS ? "drop" : null;
 }

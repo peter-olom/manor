@@ -4,16 +4,55 @@ import { complete, type Model } from "@mariozechner/pi-ai";
 import type { AgentSession, ModelRegistry } from "@mariozechner/pi-coding-agent";
 
 import { contentToText, parseProofScreenshotReview, type ProofScreenshotReview, type ResolvedPreviewProof } from "./butler-agent-helpers.js";
+import { modelToModelOption } from "./model-provider-config.js";
+import { applyOpencodeGoNativeThinkingPayload } from "./pi-opencode-web-tools-extension.js";
+import { piThinkingLevelForModelOption } from "./pi-thinking-levels.js";
 import { inspectProofArtifacts } from "./proof-artifact-inspector.js";
+import type { ButlerThinkingLevel } from "./types.js";
 
 type ButlerProofReviewAccess = {
   modelRegistry: ModelRegistry | null;
   session: AgentSession | null;
+  completeModel?: typeof complete;
 };
 
-async function resolveButlerProofReviewModel(access: ButlerProofReviewAccess, needsVision: boolean): Promise<Model<any>> {
+type ButlerProofReviewOptions = {
+  expectedOutcome?: string;
+  signal?: AbortSignal;
+  modelProvider?: string;
+  modelId?: string;
+  reasoningLevel?: ButlerThinkingLevel;
+};
+
+export function buildButlerProofReviewCompletionOptions(
+  model: Model<any>,
+  auth: { apiKey?: string; headers?: Record<string, string> },
+  options?: ButlerProofReviewOptions
+) {
+  const reasoning = options?.reasoningLevel
+    ? piThinkingLevelForModelOption(options.reasoningLevel, modelToModelOption(model))
+    : null;
+  return {
+    apiKey: auth.apiKey,
+    headers: auth.headers,
+    signal: options?.signal,
+    timeoutMs: 60_000,
+    ...(reasoning ? { reasoning } : {}),
+    onPayload: (payload: unknown) => applyOpencodeGoNativeThinkingPayload(payload)
+  };
+}
+
+async function resolveButlerProofReviewModel(access: ButlerProofReviewAccess, needsVision: boolean, pinned?: { provider?: string; id?: string }): Promise<Model<any>> {
   if (!access.modelRegistry) {
     throw new Error("Butler model registry is not ready");
+  }
+
+  const availableModels = access.modelRegistry.getAvailable();
+  if (pinned?.id) {
+    const pinnedModel = availableModels.find((model) => model.id === pinned.id && (!pinned.provider || model.provider === pinned.provider));
+    if (!pinnedModel) throw new Error("The Butler model pinned for proof review is no longer available. Reconnect it in Settings → Providers, then retry.");
+    if (needsVision && !pinnedModel.input.includes("image")) throw new Error("The Butler model pinned for this review cannot inspect image proof. Select an image-capable model for the main session and retry.");
+    return pinnedModel;
   }
 
   const currentModel = access.session?.model;
@@ -21,12 +60,12 @@ async function resolveButlerProofReviewModel(access: ButlerProofReviewAccess, ne
     return currentModel;
   }
 
-  const availableModels = access.modelRegistry.getAvailable().filter((model) => !needsVision || model.input.includes("image"));
+  const compatibleModels = availableModels.filter((model) => !needsVision || model.input.includes("image"));
   const currentProvider = currentModel?.provider ?? null;
   const preferredModel =
-    (currentProvider ? availableModels.find((model) => model.provider === currentProvider) : null) ??
-    availableModels.find((model) => model.provider === "openai-codex" || model.provider === "openai") ??
-    availableModels[0];
+    (currentProvider ? compatibleModels.find((model) => model.provider === currentProvider) : null) ??
+    compatibleModels.find((model) => model.provider === "openai-codex" || model.provider === "openai") ??
+    compatibleModels[0];
 
   if (!preferredModel) {
     throw new Error("No vision-capable Butler model is available.");
@@ -38,14 +77,13 @@ async function resolveButlerProofReviewModel(access: ButlerProofReviewAccess, ne
 export async function reviewButlerProofScreenshot(
   access: ButlerProofReviewAccess,
   proof: ResolvedPreviewProof,
-  options?: {
-    expectedOutcome?: string;
-  }
+  options?: ButlerProofReviewOptions
 ): Promise<ProofScreenshotReview> {
   if (!access.modelRegistry) {
     throw new Error("Butler model registry is not ready");
   }
 
+  options?.signal?.throwIfAborted();
   const inspection = await inspectProofArtifacts(proof.artifacts);
   const preferredScreenshots = inspection.imageArtifacts.filter((artifact) => /after script|final/i.test(artifact.label));
   const images = (preferredScreenshots.length > 0 ? preferredScreenshots : inspection.imageArtifacts).slice(-4);
@@ -55,7 +93,8 @@ export async function reviewButlerProofScreenshot(
       buffer: await fs.readFile(artifact.filePath)
     }))
   );
-  const model = await resolveButlerProofReviewModel(access, imagePayloads.length > 0);
+  options?.signal?.throwIfAborted();
+  const model = await resolveButlerProofReviewModel(access, imagePayloads.length > 0, { provider: options?.modelProvider, id: options?.modelId });
   const auth = await access.modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) {
     throw new Error(auth.error);
@@ -80,7 +119,7 @@ export async function reviewButlerProofScreenshot(
     .filter(Boolean)
     .join("\n");
 
-  const response = await complete(
+  const response = await (access.completeModel ?? complete)(
     model,
     {
       systemPrompt:
@@ -100,11 +139,9 @@ export async function reviewButlerProofScreenshot(
         }
       ]
     },
-    {
-      apiKey: auth.apiKey,
-      headers: auth.headers
-    }
+    buildButlerProofReviewCompletionOptions(model, auth, options)
   );
+  options?.signal?.throwIfAborted();
 
   if (response.stopReason === "error" || response.stopReason === "aborted") {
     throw new Error(response.errorMessage || "Butler proof review failed.");

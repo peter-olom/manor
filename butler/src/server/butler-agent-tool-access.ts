@@ -45,7 +45,8 @@ export type ButlerToolDefiner = <TParams extends Record<string, unknown>>(defini
   uiEffects: ButlerToolUiEffect[];
   execute: (
     toolCallId: string,
-    params: TParams
+    params: TParams,
+    signal?: AbortSignal
   ) => Promise<{ content: Array<{ type: "text"; text: string }>; details?: Record<string, unknown> }>;
 }) => ButlerCustomTool;
 
@@ -140,6 +141,7 @@ export type ButlerAgentToolAccess = {
     proof: ResolvedPreviewProof,
     options?: {
       expectedOutcome?: string;
+      signal?: AbortSignal;
     }
   ): Promise<ProofScreenshotReview>;
   getThreadBudgetLimitMessage(threadId: string): string | null;
@@ -178,11 +180,12 @@ export type ButlerAgentToolAccess = {
     fileReferenceIds?: string[];
   }): Promise<JobPayloadView>;
   bindJobPayloadDelivery(threadId: string, delivery: { turnId?: string | null; messageId?: string | null }): Promise<JobPayloadView | null>;
-  queueDelegationAcknowledgement(threadId: string, text: string): void;
+  queueDelegationAcknowledgement(threadId: string, text: string, selection?: { provider?: string | null; model?: string | null; effort?: string | null }): void;
   registerPendingChatCallback(
     threadId: string,
-    options?: { privateSteerText?: string | null; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null }
-  ): void;
+    options?: { privateSteerText?: string | null; preservePrivateSteer?: boolean; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null }
+  ): Promise<void>;
+  removeExternalWorkerDelegation?(threadId: string): Promise<void>;
   postOperatorJobReply(threadId: string, text: string): Promise<void>;
   postOperatorQuestion(input: {
     prompt?: string;

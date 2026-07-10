@@ -13,7 +13,6 @@ test("buildManorSettingsFromEnv parses and clamps seed values", () => {
     MANOR_OLLAMA_LOCAL_NATIVE_BASE_URL: "http://localhost:11434",
     MANOR_OLLAMA_CLOUD_MODELS: "glm-5.2,kimi-k2.6",
     MANOR_OLLAMA_WEB_SEARCH_MAX_RESULTS: "99",
-    MANOR_WORKER_RUNTIME: "pi-rpc",
     MANOR_WORKER_EFFORT: "xhigh",
     MANOR_MEMORY_SYNTHESIS_MAX_CANDIDATES: "99",
     OLLAMA_API_KEY_FILE: "/run/secrets/ollama",
@@ -25,7 +24,6 @@ test("buildManorSettingsFromEnv parses and clamps seed values", () => {
   assert.deepEqual(settings.providers.ollamaLocal.apiKeySource, { type: "file", pathEnv: "OLLAMA_LOCAL_API_KEY_FILE" });
   assert.deepEqual(settings.providers.ollamaCloud.models, ["glm-5.2", "kimi-k2.6"]);
   assert.equal(settings.providers.ollamaCloud.webTools.maxResults, 10);
-  assert.equal(settings.worker.runtime, "pi-rpc");
   assert.equal(settings.worker.defaultEffort, "xhigh");
   assert.equal(settings.memory.synthesisMaxCandidatesPerRun, 50);
   assert.deepEqual(settings.providers.ollamaCloud.apiKeySource, { type: "file", pathEnv: "OLLAMA_API_KEY_FILE" });

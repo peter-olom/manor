@@ -776,6 +776,7 @@ export function PairShell() {
   );
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [butlerComposePending, setButlerComposePending] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -1109,7 +1110,7 @@ export function PairShell() {
   }
 
   async function sendButler() {
-    if (!activePair) return;
+    if (!activePair || butlerComposePending > 0) return;
     const text = draft.trim();
     if (!text && composerAttachments.length === 0) return;
     setBusy(true);
@@ -1125,6 +1126,20 @@ export function PairShell() {
       setDraft("");
       setComposerAttachments([]);
       await loadPairs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function retryBlockedReview() {
+    if (!activePair) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const payload = await postJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(activePair.id)}/retry-review`, {});
+      setPair(payload.pair);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1148,6 +1163,7 @@ export function PairShell() {
     async (level: string) => {
       if (!activePair) return;
       const previous = activePair;
+      setButlerComposePending((count) => count + 1);
       setPair((current) => (current ? { ...current, butlerThinkingLevel: level, compose: { ...current.compose, butler: { ...current.compose.butler, thinkingLevel: level } } } : current));
       try {
         const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(activePair.id)}/settings`, { target: "butler", thinkingLevel: level });
@@ -1155,6 +1171,8 @@ export function PairShell() {
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
         setPair(previous);
+      } finally {
+        setButlerComposePending((count) => Math.max(0, count - 1));
       }
     },
     [activePair]
@@ -1164,6 +1182,7 @@ export function PairShell() {
     async (model: string) => {
       if (!activePair) return;
       const previous = activePair;
+      setButlerComposePending((count) => count + 1);
       const selected = activePair.compose.butler.availableModels.find((entry) => entry.id === model) ?? null;
       setPair((current) => (current ? { ...current, compose: { ...current.compose, butler: { ...current.compose.butler, provider: selected?.provider ?? current.compose.butler.provider, model } } } : current));
       try {
@@ -1172,6 +1191,8 @@ export function PairShell() {
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
         setPair(previous);
+      } finally {
+        setButlerComposePending((count) => Math.max(0, count - 1));
       }
     },
     [activePair]
@@ -1205,22 +1226,6 @@ export function PairShell() {
       setPair((current) => (current ? { ...current, codexModel: model, codexEffort: effort, compose: { ...current.compose, worker: { ...current.compose.worker, model, effort, provider: selected?.provider ?? current.compose.worker.provider }, codex: { ...current.compose.codex, model, effort } } } : current));
       try {
         const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(activePair.id)}/settings`, { target: "worker", model });
-        setPair(payload.pair);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-        setPair(previous);
-      }
-    },
-    [activePair]
-  );
-
-  const onWorkerRuntimeChange = useCallback(
-    async (runtime: "auto" | "openai" | "pi-rpc") => {
-      if (!activePair) return;
-      const previous = activePair;
-      setPair((current) => (current ? { ...current, workerRuntime: runtime, compose: { ...current.compose, worker: { ...current.compose.worker, runtime } } } : current));
-      try {
-        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(activePair.id)}/settings`, { target: "worker", workerRuntime: runtime });
         setPair(payload.pair);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -1337,13 +1342,16 @@ export function PairShell() {
                   <ButlerPane
                     pair={activePair}
                     draft={draft}
-                    busy={busy}
+                    busy={busy || butlerComposePending > 0 || activePair.butlerPending}
+                    sendDisabled={busy || butlerComposePending > 0 || activePair.butlerPending || /chosen Butler model|No connected Butler model/i.test(activePair.butlerLastError ?? "")}
                     onDraft={setDraft}
                     onSend={() => void sendButler()}
                     onLoadOlder={() => void loadOlder()}
                     onButlerPatch={onButlerPatchRef}
                     onThinkingLevelChange={(level) => void onThinkingLevelChange(level)}
                     onButlerModelChange={(model) => void onButlerModelChange(model)}
+                    onRetryReview={() => void retryBlockedReview()}
+                    onOpenProviderSettings={() => selectSettingsSection("providers")}
                     attachments={composerAttachments}
                     onRemoveAttachment={(attachmentId) => setComposerAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId))}
                     onPreviewImage={(media) => {
@@ -1361,7 +1369,7 @@ export function PairShell() {
                     proofRecords={workerProofRecords}
                     onCodexModelChange={(model) => void onCodexModelChange(model)}
                     onCodexEffortChange={(effort) => void onCodexEffortChange(effort)}
-                    onWorkerRuntimeChange={(runtime) => void onWorkerRuntimeChange(runtime)}
+                    onOpenProviderSettings={() => selectSettingsSection("providers")}
                     onAttachAnnotatedProof={(payload) => attachAnnotatedProof(payload)}
                   />
                 ) : null}
@@ -1370,6 +1378,15 @@ export function PairShell() {
                 <div className="error" role="alert">
                   <WarningIcon />
                   <span>{error}</span>
+                </div>
+              ) : null}
+              {activePair?.butlerLastError ? (
+                <div className="error" role="alert">
+                  <WarningIcon />
+                  <span>{activePair.butlerLastError}</span>
+                  {/provider|auth|sign in|connect|codex access/i.test(activePair.butlerLastError)
+                    ? <button className="button" type="button" onClick={() => selectSettingsSection("providers")}>Open provider settings</button>
+                    : null}
                 </div>
               ) : null}
               {previewError ? (

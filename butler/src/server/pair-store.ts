@@ -8,6 +8,15 @@ import type { PairChat, PairMessage, PairStatus, PairSummary } from "../shared/p
 type PersistedPairState = {
   pairs: PairChat[];
   lastUsedCompose?: LastUsedCompose | null;
+  workerAffinity?: WorkerProviderAffinity | null;
+};
+
+export type WorkerProviderAffinity = {
+  hasSuccessfulDelegation: boolean;
+  lastProvider: string | null;
+  modelByProvider: Record<string, string>;
+  effortByProvider: Record<string, string | null>;
+  updatedAt: number | null;
 };
 
 export type LastUsedCompose = {
@@ -15,7 +24,6 @@ export type LastUsedCompose = {
   butlerThinkingLevel?: string | null;
   workerModel?: string | null;
   workerEffort?: string | null;
-  workerRuntime?: "auto" | "openai" | "pi-rpc" | null;
   updatedAt?: number | null;
 };
 
@@ -39,7 +47,6 @@ type PairComposeOverrideInput = {
   butlerModel?: string | null;
   codexModel?: string | null;
   codexEffort?: string | null;
-  workerRuntime?: "auto" | "openai" | "pi-rpc" | null;
 };
 
 const DEFAULT_TITLE = "New session";
@@ -50,15 +57,48 @@ function normalizeLastUsedCompose(raw: LastUsedCompose | null | undefined): Last
   const butlerThinkingLevel = typeof raw.butlerThinkingLevel === "string" && raw.butlerThinkingLevel.trim() ? raw.butlerThinkingLevel : null;
   const workerModel = typeof raw.workerModel === "string" && raw.workerModel.trim() ? raw.workerModel : null;
   const workerEffort = typeof raw.workerEffort === "string" && raw.workerEffort.trim() ? raw.workerEffort : null;
-  const workerRuntime = raw.workerRuntime === "auto" || raw.workerRuntime === "openai" || raw.workerRuntime === "pi-rpc" ? raw.workerRuntime : null;
-  if (!butlerModel && !butlerThinkingLevel && !workerModel && !workerEffort && !workerRuntime) return null;
+  if (!butlerModel && !butlerThinkingLevel && !workerModel && !workerEffort) return null;
   return {
     butlerModel,
     butlerThinkingLevel,
     workerModel,
     workerEffort,
-    workerRuntime,
     updatedAt: typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : null
+  };
+}
+
+function normalizeWorkerAffinity(raw: WorkerProviderAffinity | null | undefined): WorkerProviderAffinity | null {
+  if (!raw || raw.hasSuccessfulDelegation !== true) return null;
+  const lastProvider = typeof raw.lastProvider === "string" && raw.lastProvider.trim() ? raw.lastProvider.trim() : null;
+  const modelByProvider = Object.fromEntries(
+    Object.entries(raw.modelByProvider ?? {}).filter(([provider, model]) => provider.trim() && typeof model === "string" && model.trim())
+  );
+  if (!lastProvider || !modelByProvider[lastProvider]) return null;
+  const effortByProvider = Object.fromEntries(
+    Object.entries(raw.effortByProvider ?? {}).filter(([provider, effort]) =>
+      provider.trim() && (effort === null || (typeof effort === "string" && effort.trim()))
+    )
+  ) as Record<string, string | null>;
+  return {
+    hasSuccessfulDelegation: true,
+    lastProvider,
+    modelByProvider,
+    effortByProvider,
+    updatedAt: typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : null
+  };
+}
+
+function migratedWorkerAffinity(lastUsed: LastUsedCompose | null): WorkerProviderAffinity | null {
+  const model = lastUsed?.workerModel?.trim();
+  if (!model) return null;
+  const slash = model.indexOf("/");
+  const provider = slash > 0 ? model.slice(0, slash) : "openai-codex";
+  return {
+    hasSuccessfulDelegation: true,
+    lastProvider: provider,
+    modelByProvider: { [provider]: model },
+    effortByProvider: { [provider]: lastUsed?.workerEffort?.trim() || null },
+    updatedAt: lastUsed?.updatedAt ?? null
   };
 }
 
@@ -121,8 +161,7 @@ function emptyPair(input: { id: string; title?: string | null; defaultCwd?: stri
     butlerThinkingLevel: null,
     butlerModel: null,
     codexModel: null,
-    codexEffort: null,
-    workerRuntime: null
+    codexEffort: null
   };
 }
 
@@ -161,7 +200,6 @@ function normalizePair(raw: Partial<PairChat> & { id?: string }, store: ButlerSt
     pair.butlerModel = typeof raw.butlerModel === "string" && raw.butlerModel.trim() ? raw.butlerModel : null;
     pair.codexModel = typeof raw.codexModel === "string" && raw.codexModel.trim() ? raw.codexModel : null;
     pair.codexEffort = typeof raw.codexEffort === "string" && raw.codexEffort.trim() ? raw.codexEffort : null;
-    pair.workerRuntime = raw.workerRuntime === "auto" || raw.workerRuntime === "openai" || raw.workerRuntime === "pi-rpc" ? raw.workerRuntime : null;
   pair.status = deriveStatus(pair, store);
   return pair;
 }
@@ -194,6 +232,7 @@ function deriveStatus(pair: PairChat, store: ButlerStateStore): PairStatus {
 export class PairStore extends EventEmitter {
   private pairs = new Map<string, PairChat>();
   private lastUsedCompose: LastUsedCompose | null = null;
+  private workerAffinity: WorkerProviderAffinity | null = null;
   private saveInFlight: Promise<void> | null = null;
   private saveQueued = false;
 
@@ -214,10 +253,42 @@ export class PairStore extends EventEmitter {
       }
     }
     this.lastUsedCompose = normalizeLastUsedCompose(loaded.lastUsedCompose);
+    this.workerAffinity = normalizeWorkerAffinity(loaded.workerAffinity) ?? migratedWorkerAffinity(this.lastUsedCompose);
   }
 
   getLastUsedCompose(): LastUsedCompose | null {
     return this.lastUsedCompose ? { ...this.lastUsedCompose } : null;
+  }
+
+  getWorkerAffinity(): WorkerProviderAffinity | null {
+    return this.workerAffinity ? {
+      ...this.workerAffinity,
+      modelByProvider: { ...this.workerAffinity.modelByProvider },
+      effortByProvider: { ...this.workerAffinity.effortByProvider }
+    } : null;
+  }
+
+  recordSuccessfulWorkerSelection(input: { provider: string; model: string; effort?: string | null }): WorkerProviderAffinity {
+    const provider = input.provider.trim();
+    const model = input.model.trim();
+    if (!provider || !model) throw new Error("Worker provider and model are required");
+    const now = Date.now();
+    this.workerAffinity = {
+      hasSuccessfulDelegation: true,
+      lastProvider: provider,
+      modelByProvider: { ...this.workerAffinity?.modelByProvider, [provider]: model },
+      effortByProvider: { ...this.workerAffinity?.effortByProvider, [provider]: input.effort?.trim() || null },
+      updatedAt: now
+    };
+    this.lastUsedCompose = normalizeLastUsedCompose({
+      ...this.lastUsedCompose,
+      workerModel: model,
+      workerEffort: input.effort?.trim() || null,
+      updatedAt: now
+    });
+    this.queueSave();
+    this.emit("change");
+    return this.getWorkerAffinity()!;
   }
 
   listSummaries(): PairSummary[] {
@@ -237,9 +308,6 @@ export class PairStore extends EventEmitter {
     if (this.lastUsedCompose) {
       pair.butlerThinkingLevel = this.lastUsedCompose.butlerThinkingLevel ?? null;
       pair.butlerModel = this.lastUsedCompose.butlerModel ?? null;
-      pair.codexModel = this.lastUsedCompose.workerModel ?? null;
-      pair.codexEffort = this.lastUsedCompose.workerEffort ?? null;
-      pair.workerRuntime = this.lastUsedCompose.workerRuntime ?? null;
     }
     this.pairs.set(pair.id, pair);
     this.queueSave();
@@ -313,14 +381,12 @@ export class PairStore extends EventEmitter {
     if (override.butlerModel !== undefined) pair.butlerModel = override.butlerModel;
     if (override.codexModel !== undefined) pair.codexModel = override.codexModel;
     if (override.codexEffort !== undefined) pair.codexEffort = override.codexEffort;
-    if (override.workerRuntime !== undefined) pair.workerRuntime = override.workerRuntime;
     pair.updatedAt = Math.max(pair.updatedAt, Date.now());
     this.lastUsedCompose = normalizeLastUsedCompose({
       butlerModel: override.butlerModel !== undefined ? override.butlerModel : this.lastUsedCompose?.butlerModel ?? null,
       butlerThinkingLevel: override.butlerThinkingLevel !== undefined ? override.butlerThinkingLevel : this.lastUsedCompose?.butlerThinkingLevel ?? null,
-      workerModel: override.codexModel !== undefined ? override.codexModel : this.lastUsedCompose?.workerModel ?? null,
-      workerEffort: override.codexEffort !== undefined ? override.codexEffort : this.lastUsedCompose?.workerEffort ?? null,
-      workerRuntime: override.workerRuntime !== undefined ? override.workerRuntime : this.lastUsedCompose?.workerRuntime ?? null,
+      workerModel: this.lastUsedCompose?.workerModel ?? null,
+      workerEffort: this.lastUsedCompose?.workerEffort ?? null,
       updatedAt: Date.now()
     });
     this.queueSave();
@@ -409,6 +475,13 @@ export class PairStore extends EventEmitter {
     return deleted;
   }
 
+  async flushPendingSave(): Promise<void> {
+    while (this.saveInFlight || this.saveQueued) {
+      if (!this.saveInFlight) this.queueSave();
+      await this.saveInFlight;
+    }
+  }
+
   private queueSave(): void {
     this.saveQueued = true;
     if (this.saveInFlight) {
@@ -426,7 +499,8 @@ export class PairStore extends EventEmitter {
     this.saveQueued = false;
     await writeJsonStateFileAtomic(this.statePath, {
       pairs: [...this.pairs.values()].sort((left, right) => left.createdAt - right.createdAt),
-      lastUsedCompose: this.lastUsedCompose
+      lastUsedCompose: this.lastUsedCompose,
+      workerAffinity: this.workerAffinity
     } satisfies PersistedPairState);
   }
 }

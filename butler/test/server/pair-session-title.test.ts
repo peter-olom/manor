@@ -14,8 +14,34 @@ import type { SessionTitleGenerator } from "../../src/server/session-title-gener
 class FakeButlerService extends EventEmitter {
   messages: ButlerMessageView[] = [];
   refreshCount = 0;
+  startCount = 0;
+  pending = false;
+  trackedExternalThreads: string[] = [];
+  retryReviewCount = 0;
+  compose: {
+    provider: string | null;
+    model: string | null;
+    thinkingLevel: string;
+    availableThinkingLevels: string[];
+    availableModels: ModelOption[];
+  } = {
+    provider: "openai",
+    model: "gpt-test",
+    thinkingLevel: "medium",
+    availableThinkingLevels: ["low", "medium", "high", "xhigh"],
+    availableModels: [{
+      id: "gpt-test",
+      label: "GPT Test",
+      provider: "openai",
+      supportsReasoning: true,
+      supportedThinkingLevels: ["low", "medium", "high", "xhigh"],
+      supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
+      defaultReasoningEffort: "medium"
+    }]
+  };
+  nextCompose: FakeButlerService["compose"] | null = null;
 
-  async start(): Promise<void> {}
+  async start(): Promise<void> { this.startCount += 1; }
 
   dispose(): void {}
 
@@ -26,7 +52,26 @@ class FakeButlerService extends EventEmitter {
 
   async stopPrompt(): Promise<void> {}
 
+  ensureExternalWorkerDelegation(threadId: string): void {
+    if (!this.trackedExternalThreads.includes(threadId)) this.trackedExternalThreads.push(threadId);
+  }
+
+  retryBlockedCallbackReviews(): boolean {
+    this.retryReviewCount += 1;
+    return true;
+  }
+
   setThinkingLevel(_level: never): void {}
+
+  async updateComposeSettings(provider: string, model: string, thinkingLevel: string): Promise<void> {
+    this.compose = this.nextCompose ?? {
+      ...this.compose,
+      provider,
+      model,
+      thinkingLevel
+    };
+    this.nextCompose = null;
+  }
 
   prompt(text: string): void {
     this.messages.push({
@@ -54,10 +99,10 @@ class FakeButlerService extends EventEmitter {
     return {
       sessionId: "fake-session",
       ready: true,
-      pending: false,
+      pending: this.pending,
       isStreaming: false,
       lastError: null,
-      compose: { thinkingLevel: "medium", availableThinkingLevels: ["low", "medium", "high", "xhigh"] },
+      compose: this.compose,
       supervision: { callbacks: [] }
     };
   }
@@ -99,6 +144,7 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
     piAuthPath: path.join(dir, "pi-auth.json"),
     codexAuthPath: path.join(dir, "codex-auth.json"),
     codexConfigDir: dir,
+    getCodexAuthStatus: () => ({ loggedIn: true }),
     sessionRootDir: path.join(dir, "sessions"),
     artifactsDir: path.join(dir, "artifacts"),
     sessionTitleGenerator: generator,
@@ -218,6 +264,67 @@ test("refreshModelSettings refreshes loaded pair services", async () => {
   assert.equal(service.refreshCount, 1);
 });
 
+test("createWorkerPair registers external work for Butler review", async () => {
+  const { manager, service, store } = await createManager();
+  store.upsertThreadSummary({ id: "external-worker", source: "appServer", status: "active", turns: [] });
+
+  await manager.createWorkerPair({ threadId: "external-worker", task: "Improve Manor" });
+
+  assert.deepEqual(service.trackedExternalThreads, ["external-worker"]);
+});
+
+test("startup resumes Butler services for persisted active Worker sessions", async () => {
+  const { manager, pairStore, service, store } = await createManager();
+  store.upsertThreadSummary({ id: "persisted-worker", source: "appServer", status: "active", turns: [] });
+  const pair = pairStore.createPair({ title: "Persisted work" });
+  pairStore.attachWorker(pair.id, { threadId: "persisted-worker", task: "Resume review" });
+
+  await manager.startSupervisedSessions();
+
+  assert.equal(service.startCount, 1);
+  assert.deepEqual(service.trackedExternalThreads, ["persisted-worker"]);
+});
+
+test("startup resumes idle attached Workers that never produced a report", async () => {
+  const { manager, pairStore, service, store } = await createManager();
+  store.upsertThreadSummary({ id: "missing-report-worker", source: "appServer", status: "idle", turns: [] });
+  const pair = pairStore.createPair({ title: "Missing callback" });
+  pairStore.attachWorker(pair.id, { threadId: "missing-report-worker", task: "Recover callback" });
+
+  await manager.startSupervisedSessions();
+
+  assert.equal(service.startCount, 1);
+  assert.deepEqual(service.trackedExternalThreads, ["missing-report-worker"]);
+});
+
+test("startup does not rearm an already reviewed historical Worker", async () => {
+  const { manager, pairStore, service, store } = await createManager();
+  store.upsertThreadSummary({ id: "reviewed-worker", source: "appServer", status: { type: "idle" }, turns: [{ id: "turn-1", status: "completed", items: [] }] });
+  const report = store.recordWorkerReport("reviewed-worker", { turnId: "turn-1", status: "completed", summary: "Done", details: null });
+  const pair = pairStore.createPair({ title: "Reviewed work" });
+  pairStore.attachWorker(pair.id, { threadId: "reviewed-worker", task: "Already reviewed" });
+  pairStore.updatePairSnapshot(pair.id, {
+    lastMessage: { id: "callback-reviewed-worker:turn-1", role: "butler", lane: "butler", text: "Done", at: report.updatedAt, sourceThreadId: "reviewed-worker", memoryObservationId: null, metadata: {} }
+  });
+  assert.equal(pairStore.getPair(pair.id)?.worker?.lastReviewedReportAt, report.updatedAt);
+
+  await manager.startSupervisedSessions();
+
+  assert.equal(service.startCount, 0);
+  assert.deepEqual(service.trackedExternalThreads, []);
+});
+
+test("retryBlockedReview delegates recovery to the pair Butler", async () => {
+  const { manager, pairStore, service, store } = await createManager();
+  store.upsertThreadSummary({ id: "paused-worker", source: "appServer", status: "idle", turns: [] });
+  const pair = await manager.createPair();
+  pairStore.attachWorker(pair.id, { threadId: "paused-worker" });
+
+  await manager.retryBlockedReview(pair.id);
+
+  assert.equal(service.retryReviewCount, 1);
+});
+
 test("loaded pair services read current worker compose defaults", async () => {
   let serviceOptions: { getWorkerDefaults?: () => { runtime: string | null; model?: string | null; effort?: string | null } | null } | null = null;
   const model: ModelOption = {
@@ -234,7 +341,6 @@ test("loaded pair services read current worker compose defaults", async () => {
   }, { codexModels: [model] });
   const pair = await manager.createPair();
 
-  await manager.setWorkerRuntime(pair.id, "auto");
   await manager.setCodexModel(pair.id, "gpt-5-codex");
   await manager.setCodexEffort(pair.id, "xhigh");
 
@@ -243,6 +349,101 @@ test("loaded pair services read current worker compose defaults", async () => {
     model: "gpt-5-codex",
     effort: "xhigh"
   });
+});
+
+test("new pair services read the inherited Butler compose defaults", async () => {
+  let serviceOptions: { getButlerDefaults?: () => { model: string | null; thinkingLevel: string | null } | null } | null = null;
+  const { manager, pairStore } = await createManager(null, (options) => {
+    serviceOptions = options as typeof serviceOptions;
+  });
+  const firstPair = await manager.createPair();
+  pairStore.updatePairComposeOverrides(firstPair.id, {
+    butlerModel: "opencode-go/qwen3.7-max",
+    butlerThinkingLevel: "high"
+  });
+
+  await manager.createPair();
+
+  assert.deepEqual(serviceOptions?.getButlerDefaults?.(), {
+    model: "opencode-go/qwen3.7-max",
+    thinkingLevel: "high"
+  });
+});
+
+test("Butler model changes persist the effective model and thinking level", async () => {
+  const targetModel: ModelOption = {
+    id: "opencode-go/qwen3.7-max",
+    label: "Qwen 3.7 Max",
+    provider: "opencode-go",
+    supportsReasoning: true,
+    supportedThinkingLevels: ["off"],
+    supportedReasoningEfforts: [],
+    defaultReasoningEffort: null
+  };
+  const { manager, pairStore, service } = await createManager();
+  service.compose = {
+    provider: "openai-codex",
+    model: "openai-codex/gpt-5-codex",
+    thinkingLevel: "xhigh",
+    availableThinkingLevels: ["low", "medium", "high", "xhigh"],
+    availableModels: [targetModel]
+  };
+  service.nextCompose = {
+    provider: "opencode-go",
+    model: targetModel.id,
+    thinkingLevel: "off",
+    availableThinkingLevels: ["off"],
+    availableModels: [targetModel]
+  };
+  const pair = await manager.createPair();
+
+  await manager.setButlerModel(pair.id, targetModel.id);
+
+  assert.equal(pairStore.getPair(pair.id)?.butlerModel, targetModel.id);
+  assert.equal(pairStore.getPair(pair.id)?.butlerThinkingLevel, "off");
+  assert.equal(pairStore.getLastUsedCompose()?.butlerModel, targetModel.id);
+  assert.equal(pairStore.getLastUsedCompose()?.butlerThinkingLevel, "off");
+});
+
+test("Butler model and thinking changes wait for the active main-chat turn", async () => {
+  const { manager, service } = await createManager();
+  service.compose.availableModels = [{
+    id: "openai/gpt-5",
+    label: "GPT-5",
+    provider: "openai",
+    supportsReasoning: true,
+    supportedThinkingLevels: ["medium", "high"],
+    supportedReasoningEfforts: ["medium", "high"],
+    defaultReasoningEffort: "medium"
+  }];
+  const pair = await manager.createPair();
+  service.pending = true;
+
+  await assert.rejects(() => manager.setButlerModel(pair.id, "openai/gpt-5"), /Wait for this turn to finish/);
+  await assert.rejects(() => manager.setButlerThinkingLevel(pair.id, "high"), /Wait for this turn to finish/);
+});
+
+test("an unavailable chosen Butler model blocks chat with provider remediation", async () => {
+  const { manager, pairStore, service } = await createManager();
+  const pair = await manager.createPair();
+  pairStore.updatePairComposeOverrides(pair.id, { butlerModel: "ollama-cloud/missing-model" });
+
+  const detail = await manager.getPairDetail(pair.id, null, 120);
+
+  assert.match(detail?.butlerLastError ?? "", /chosen Butler model .* unavailable/i);
+  await assert.rejects(() => manager.sendOperatorMessage({ pairId: pair.id, text: "Hello", imageReferenceIds: [], fileReferenceIds: [] }), /reconnect it, or choose another/);
+  assert.equal(service.messages.length, 0);
+});
+
+test("an empty Butler provider inventory blocks chat with a settings action message", async () => {
+  const { manager, service } = await createManager();
+  const pair = await manager.createPair();
+  service.compose = { ...service.compose, provider: null, model: null, availableModels: [] };
+
+  const detail = await manager.getPairDetail(pair.id, null, 120);
+
+  assert.match(detail?.butlerLastError ?? "", /No connected Butler model/);
+  await assert.rejects(() => manager.sendOperatorMessage({ pairId: pair.id, text: "Hello", imageReferenceIds: [], fileReferenceIds: [] }), /Open Settings/);
 });
 
 test("attached worker model switch skips thread effort update when target model has no effort", async () => {

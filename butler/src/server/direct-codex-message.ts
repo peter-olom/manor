@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { extractOperatorCallbackThreadId, normalizeOperatorMessages, upsertOperatorMessage } from "./butler-operator-messages.js";
+import { runSerializedCallbackReplacement } from "./butler-job-mutation-guard.js";
 import type { JobPayloadKind } from "./job-instruction-artifacts.js";
 import type { JobPayloadView } from "./job-payload-types.js";
 import type { ButlerStateStore } from "./state-store.js";
@@ -12,14 +13,17 @@ export type DirectCodexMessagePingInput = {
   imageReferenceIds?: string[];
   fileReferenceIds?: string[];
   inputItems?: unknown[];
+  requestedAt?: number;
+  callbackAlreadyRegistered?: boolean;
 };
 
 export type DirectCodexMessageAccess = {
   store: ButlerStateStore;
   registerPendingChatCallback(
     threadId: string,
-    options?: { privateSteerText?: string | null; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null }
-  ): void;
+    options?: { privateSteerText?: string | null; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null; dispatchState?: "ready" | "reserving" }
+  ): Promise<void>;
+  markPendingChatCallbackDispatched(threadId: string, requestedAt: number): Promise<void>;
   createOrUpdateJobPayload?(input: {
     threadId: string;
     kind: JobPayloadKind;
@@ -274,23 +278,29 @@ export async function notifyDirectCodexMessage(
     throw new Error(`Job ${input.threadId} is not available for Butler notification.`);
   }
 
-  const privateSteerText = buildDirectCodexMessagePingSummary(input);
-  const requestedAt = Date.now();
-  await access.createOrUpdateJobPayload?.({
-    threadId: input.threadId,
-    kind: "direct_message",
-    instruction: privateSteerText,
-    imageReferenceIds: input.imageReferenceIds,
-    fileReferenceIds: input.fileReferenceIds
+  await runSerializedCallbackReplacement(input.threadId, async () => {
+    const privateSteerText = buildDirectCodexMessagePingSummary(input);
+    const requestedAt = typeof input.requestedAt === "number" && Number.isFinite(input.requestedAt) ? input.requestedAt : Date.now();
+    await access.createOrUpdateJobPayload?.({
+      threadId: input.threadId,
+      kind: "direct_message",
+      instruction: privateSteerText,
+      imageReferenceIds: input.imageReferenceIds,
+      fileReferenceIds: input.fileReferenceIds
+    });
+    access.store.refreshCompletedSupervisionChecklistForFollowup(input.threadId, privateSteerText);
+    if (!input.callbackAlreadyRegistered) {
+      await access.registerPendingChatCallback(input.threadId, {
+        privateSteerText,
+        nextWorkerReportAction: "review",
+        requestedAt
+      });
+    } else {
+      await access.markPendingChatCallbackDispatched(input.threadId, requestedAt);
+    }
+    access.noteThreadFocus(input.threadId, "direct_codex_message");
+    access.store.addEvent(input.threadId, "butler.direct_message.pinged", "Butler was pinged for an operator direct message to Codex.");
+    await access.saveCallbackState();
+    access.emit("change");
   });
-  access.store.refreshCompletedSupervisionChecklistForFollowup(input.threadId, privateSteerText);
-  access.registerPendingChatCallback(input.threadId, {
-    privateSteerText,
-    nextWorkerReportAction: "review",
-    requestedAt
-  });
-  access.noteThreadFocus(input.threadId, "direct_codex_message");
-  access.store.addEvent(input.threadId, "butler.direct_message.pinged", "Butler was pinged for an operator direct message to Codex.");
-  await access.saveCallbackState();
-  access.emit("change");
 }

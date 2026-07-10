@@ -6,6 +6,7 @@ import { AuthStorage, createAgentSession, DefaultResourceLoader, SessionManager,
 
 import {
   BUTLER_BACKGROUND_PROMPT_PREFIX,
+  BUTLER_EPHEMERAL_BACKGROUND_PROMPT_PREFIX,
   buildLatestProofMap,
   buildProofsByThreadMap,
   buildMessagePage,
@@ -24,7 +25,7 @@ import { readButlerAuthStatus } from "./auth-status.js";
 import { getButlerActivityTurns, recordButlerActivityEvent } from "./butler-activity.js";
 import { backfillOperatorMessagesFromSessionFiles, isPersistableProviderOperatorMessage, removeTrivialOperatorQuestionConfirmations, upsertProviderBackedOperatorMessage } from "./butler-operator-messages.js";
 import { PiProviderRuntimeMapper } from "./pi-provider-events.js";
-import { getActiveManorSettings } from "./manor-settings-runtime.js";
+import { getActiveManorSettings, isSecretSourceAvailable } from "./manor-settings-runtime.js";
 import { createManorModelRegistry, formatProviderModelRef, modelToModelOption, parseProviderModelRef, shouldExposeManorModel } from "./model-provider-config.js";
 import { isChatGptSubscriptionModelAvailable, isOpenAiRuntimeProvider } from "./chatgpt-entitlement.js";
 import { syncProviderWebToolsForSession } from "./provider-web-tools.js";
@@ -204,10 +205,28 @@ function liveChatGptModelIds(access: ButlerAgentSessionAccess): Set<string> | nu
   return new Set(models.map((model) => parseProviderModelRef(model.id).model ?? model.id));
 }
 
+function isButlerModelProviderAuthenticated(access: ButlerAgentSessionAccess, provider: string | null | undefined): boolean {
+  const settings = getActiveManorSettings();
+  if (isOpenAiRuntimeProvider(provider)) {
+    return access.auth.loggedIn || isSecretSourceAvailable({ type: "env", name: "OPENAI_API_KEY" });
+  }
+  if (provider === settings.providers.ollamaLocal.providerId || provider === "ollama-local") {
+    return settings.providers.ollamaLocal.enabled;
+  }
+  if (provider === settings.providers.ollamaCloud.providerId || provider === "ollama-cloud") {
+    return settings.providers.ollamaCloud.enabled && isSecretSourceAvailable(settings.providers.ollamaCloud.apiKeySource);
+  }
+  if (provider === settings.providers.opencodeGo.providerId || provider === "opencode-go") {
+    return settings.providers.opencodeGo.enabled && isSecretSourceAvailable(settings.providers.opencodeGo.apiKeySource);
+  }
+  return false;
+}
+
 function getAvailableButlerModels(access: ButlerAgentSessionAccess): Model<Api>[] {
   const liveModelIds = liveChatGptModelIds(access);
   return (access.modelRegistry?.getAvailable() ?? []).filter((model) => {
     if (!shouldExposeManorModel(model)) return false;
+    if (!isButlerModelProviderAuthenticated(access, model.provider)) return false;
     if (access.auth.mode === "chatgpt" && !isChatGptSubscriptionModelAvailable(model)) return false;
     if (!liveModelIds || !isOpenAiRuntimeProvider(model.provider)) return true;
     return liveModelIds.has(model.id);
@@ -234,14 +253,18 @@ export async function applyManagedButlerDefaults(access: ButlerAgentSessionAcces
       .map((provider) => availableModels.find((model) => model.provider === provider && model.id === ref.model))
       .find(Boolean) ?? null;
   }
-  if (selectedModel) {
+  const currentModel = access.session.model
+    ? availableModels.find((model) => model.provider === access.session?.model?.provider && model.id === access.session?.model?.id) ?? null
+    : null;
+  selectedModel ??= currentModel ?? availableModels[0] ?? null;
+  if (selectedModel && selectedModel !== access.session.model) {
     await access.session.setModel(selectedModel);
     modelChanged = true;
   }
   const activeModel = modelChanged
     ? selectedModel
     : access.session.model
-      ? availableModels.find((model) => model.provider === access.session?.model?.provider && model.id === access.session?.model?.id) ?? access.session.model
+      ? availableModels.find((model) => model.provider === access.session?.model?.provider && model.id === access.session?.model?.id) ?? null
       : null;
   const option = activeModel ? modelToModelOption(activeModel) : null;
   const levels = option?.supportedThinkingLevels ?? [];
@@ -788,11 +811,13 @@ export async function stopButlerPrompt(access: ButlerAgentSessionAccess, options
 export async function promptButlerInternal(
   access: ButlerAgentSessionAccess,
   text: string,
-  imageReferenceIds: string[] = []
+  imageReferenceIds: string[] = [],
+  options: { ephemeral?: boolean } = {}
 ): Promise<void> {
-  const normalizedText = text.trimStart().startsWith(BUTLER_BACKGROUND_PROMPT_PREFIX)
-    ? text
-    : `${BUTLER_BACKGROUND_PROMPT_PREFIX}\n${text}`;
+  const withoutBackgroundMarker = text
+    .replace(/^\s*\[\[BUTLER_(?:EPHEMERAL_)?BACKGROUND\]\]\s*/u, "")
+    .trimStart();
+  const normalizedText = `${options.ephemeral ? BUTLER_EPHEMERAL_BACKGROUND_PROMPT_PREFIX : BUTLER_BACKGROUND_PROMPT_PREFIX}\n${withoutBackgroundMarker}`;
   const ok = await queueButlerPrompt(access, normalizedText, imageReferenceIds, { background: true });
   if (!ok) {
     throw new Error(access.lastError ?? "Butler background supervision prompt failed.");

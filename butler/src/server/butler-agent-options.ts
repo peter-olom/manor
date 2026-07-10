@@ -4,12 +4,13 @@ import type { FileReferenceStore } from "./file-store.js";
 import type { HostControllerClient } from "./host-controller-client.js";
 import type { ImageReferenceStore } from "./image-store.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
+import type { WorkerProviderAffinity } from "./pair-store.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { ServiceTemplateRegistry } from "./service-templates.js";
 import type { ButlerStateStore } from "./state-store.js";
 
 export type ButlerOperatorSink = {
-  onDelegationAcknowledgement?: (input: { threadId: string; text: string; at: number }) => void;
+  onDelegationAcknowledgement?: (input: { threadId: string; text: string; at: number; provider?: string | null; model?: string | null; effort?: string | null }) => void;
   onOperatorReply?: (input: { threadId: string; text: string; at: number }) => void;
 };
 
@@ -44,4 +45,6 @@ export type ButlerAgentServiceOptions = {
   operatorSink?: ButlerOperatorSink | null;
   getButlerDefaults?: () => ButlerAgentDefaults | null;
   getWorkerDefaults?: () => ButlerWorkerDefaults | null;
+  getWorkerAffinity?: () => WorkerProviderAffinity | null;
+  recordSuccessfulWorkerSelection?: (input: { provider: string; model: string; effort?: string | null }) => unknown;
 };

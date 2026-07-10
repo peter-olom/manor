@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-
 import {
   buildEmptyJobMemory,
   buildEmptyProjectMemory,
@@ -104,6 +103,7 @@ export type StateStoreInternalAccess = {
   persistedMemorySynthesisQueueIdsByKey: Map<string, string>;
   persistedProjectArtifactsByProjectId: Map<string, ProjectArtifactView[]>;
   persistedProjectPoliciesByProjectId: Map<string, ProjectPolicyView[]>;
+  deletedCodexThreadIds: Set<string>; latestStartedTurnIds: Map<string, string>; latestCompletedTurnIds: Map<string, string>; latestBlockedTurnIds: Map<string, string>;
   windows: ButlerWindow[];
   focusedWindowId: string | null;
   saveTimer: NodeJS.Timeout | null;
@@ -648,24 +648,23 @@ export function updateStateStoreArtifactAvailability(
     );
     changed = true;
   }
-
   if (changed) {
     queueStateStoreSave(access);
     emitStateStoreChange(access);
   }
-
   return changed;
 }
-
 export async function loadStateStore(access: StateStoreInternalAccess): Promise<void> {
   try {
     const raw = await fs.readFile(access.uiStatePath, "utf8");
     const data = JSON.parse(raw) as PersistedUiState;
     access.threadInventoryReady = false;
     access.threads.clear();
+    access.deletedCodexThreadIds.clear();
+    for (const threadId of Array.isArray(data.deletedCodexThreadIds) ? data.deletedCodexThreadIds : []) if (typeof threadId === "string" && threadId.trim()) access.deletedCodexThreadIds.add(threadId.trim());
     access.windows = Array.isArray(data.windows)
       ? data.windows
-          .filter((window): window is ButlerWindow => Boolean(window && typeof window.threadId === "string"))
+          .filter((window): window is ButlerWindow => Boolean(window && typeof window.threadId === "string" && !access.deletedCodexThreadIds.has(window.threadId)))
           .map((window) =>
             normalizeWindow({
               threadId: window.threadId,
@@ -1168,7 +1167,7 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
       await persistStateStoreSqliteMemory(access);
     }
     for (const thread of Array.isArray(data.threads) ? data.threads : []) {
-      if (thread && typeof thread === "object" && typeof thread.id === "string") {
+      if (thread && typeof thread === "object" && typeof thread.id === "string" && !access.deletedCodexThreadIds.has(thread.id)) {
         restorePersistedStateStoreThread(access, thread as CodexThreadDetailView);
       }
     }
@@ -1206,6 +1205,7 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     }
   } catch {
     access.threads.clear();
+    access.deletedCodexThreadIds.clear();
     access.windows = [];
     access.focusedWindowId = null;
     access.stackLeases.clear();
@@ -1235,11 +1235,11 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     access.threadInventoryReady = false;
   }
 }
-
 export async function persistStateStoreNow(access: StateStoreInternalAccess): Promise<void> {
   access.windows = access.windows.map((window) => normalizeWindow(window, access.threads.get(window.threadId)));
   const payload: PersistedUiState = {
     threads: access.listThreads().map((thread) => access.toThreadDetailView(access.threads.get(thread.id) ?? access.getOrCreateThread(thread.id))),
+    deletedCodexThreadIds: [...access.deletedCodexThreadIds].sort(),
     windows: access.windows,
     focusedWindowId: access.focusedWindowId,
     stackLeases: [...access.stackLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),

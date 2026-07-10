@@ -135,7 +135,7 @@ type WorkerPaneProps = {
   proofRecords: WorkerProofRecord[];
   onCodexModelChange: (model: string) => void;
   onCodexEffortChange: (effort: string) => void;
-  onWorkerRuntimeChange: (runtime: "auto" | "openai" | "pi-rpc") => void;
+  onOpenProviderSettings: () => void;
   onAttachAnnotatedProof: (payload: { attachment: FileReference; text: string }) => Promise<void>;
 };
 
@@ -658,7 +658,7 @@ const FallbackRow = memo(function FallbackRow({ row }: { row: WorkerItem }) {
   );
 });
 
-export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCodexModelChange, onCodexEffortChange, onWorkerRuntimeChange, onAttachAnnotatedProof }: WorkerPaneProps) {
+export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCodexModelChange, onCodexEffortChange, onOpenProviderSettings, onAttachAnnotatedProof }: WorkerPaneProps) {
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
@@ -667,7 +667,6 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCo
     const options = worker.availableEfforts;
     const model = worker.model ?? worker.availableModels[0]?.id ?? null;
     const effort = worker.effort ?? null;
-    const runtime = pair.workerRuntime ?? ("runtime" in worker && worker.runtime ? worker.runtime : "auto");
     return (
       <section className="pane" aria-label="Worker lane">
         <div className="pane-head">
@@ -676,28 +675,17 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCo
             <span className="pane-sub">No worker attached</span>
           </div>
           <div className="worker-controls" aria-label="Worker settings">
-            <label className="worker-runtime">
-              <span className="sr-only">Worker runtime</span>
-              <select
-                value={runtime}
-                aria-label="Worker runtime"
-                title="Worker runtime"
-                onChange={(event) => onWorkerRuntimeChange(event.target.value as "auto" | "openai" | "pi-rpc")}
-              >
-                <option value="auto">Auto</option>
-                <option value="openai">OpenAI Codex</option>
-                <option value="pi-rpc">Pi RPC</option>
-              </select>
-            </label>
-            <ModelPicker
-              label="Model"
-              value={model}
-              options={worker.availableModels}
-              compact
-              anchor="below"
-              className="worker-model"
-              onChange={onCodexModelChange}
-            />
+            {worker.availableModels.length > 0 ? (
+              <ModelPicker
+                label="Model"
+                value={model}
+                options={worker.availableModels}
+                compact
+                anchor="below"
+                className="worker-model"
+                onChange={onCodexModelChange}
+              />
+            ) : null}
             {options.length > 0 ? (
               <BudgetSegmented
                 label="Thinking"
@@ -710,8 +698,9 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCo
           </div>
         </div>
         <div className="empty-state">
-          <h2>No worker attached</h2>
-          <p>Butler has not delegated work from this session.</p>
+          <h2>{worker.availableModels.length > 0 ? "No worker attached" : "Connect a worker provider"}</h2>
+          <p>{worker.availableModels.length > 0 ? "Butler has not delegated work from this session." : "Connect at least one provider before Butler delegates work."}</p>
+          {worker.availableModels.length === 0 ? <button className="button is-primary" type="button" onClick={onOpenProviderSettings}>Open provider settings</button> : null}
         </div>
       </section>
     );
@@ -722,7 +711,6 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCo
   const effort = pair.worker.requestedReasoningEffort ?? worker.effort ?? null;
   const options = worker.availableEfforts;
   const model = worker.model ?? worker.availableModels[0]?.id ?? null;
-  const runtime = pair.workerRuntime ?? ("runtime" in worker && worker.runtime ? worker.runtime : "auto");
 
   return (
     <section className="pane" aria-label="Worker lane">
@@ -732,16 +720,18 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCo
           <span className="pane-sub">{pair.worker.status} · one worker max</span>
         </div>
         <div className="worker-controls" aria-label="Worker settings">
-          <ModelPicker
-            label="Model"
-            value={model}
-            options={worker.availableModels}
-            disabled={busy}
-            compact
-            anchor="below"
-            className="worker-model"
-            onChange={onCodexModelChange}
-          />
+          {worker.availableModels.length > 0 ? (
+            <ModelPicker
+              label="Model"
+              value={model}
+              options={worker.availableModels}
+              disabled={busy}
+              compact
+              anchor="below"
+              className="worker-model"
+              onChange={onCodexModelChange}
+            />
+          ) : <button className="button" type="button" onClick={onOpenProviderSettings}>Reconnect provider</button>}
           {options.length > 0 ? (
             <BudgetSegmented
               label="Thinking"
@@ -752,20 +742,6 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCo
               className="worker-budget"
             />
           ) : null}
-          <label className={`worker-runtime ${busy ? "is-disabled" : ""}`.trim()}>
-            <span className="sr-only">Worker runtime</span>
-            <select
-              value={runtime}
-              aria-label="Worker runtime"
-              title="Worker runtime"
-              disabled={busy}
-              onChange={(event) => onWorkerRuntimeChange(event.target.value as "auto" | "openai" | "pi-rpc")}
-            >
-              <option value="auto">Auto</option>
-              <option value="openai">OpenAI Codex</option>
-              <option value="pi-rpc">Pi RPC</option>
-            </select>
-          </label>
         </div>
       </div>
       <WorkerTimelineView loading={loading} timeline={timeline} proofRecords={proofRecords} onPreviewImage={(media) => {

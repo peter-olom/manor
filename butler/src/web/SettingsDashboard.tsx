@@ -81,7 +81,7 @@ export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; descript
 
 const SECTION_HELP: Record<SettingsSectionId, string> = {
   providers: "Configure the model providers (OpenAI/Codex, Ollama Local, Ollama Cloud, OpenCode Go) and web tools Butler can use.",
-  runtime: "Set the operator name and configure which models handle routine background tasks. Worker runtime and model picks live on the Worker tab and carry over to new sessions.",
+  runtime: "Set the operator name, the first Worker default, and models for supporting tasks. Session and Worker model picks carry over automatically.",
   memory: "Tune synthesis, promotion, semantic review, and embedding backfill behavior.",
   diagnostics: "Run connection checks for the services Butler depends on."
 };
@@ -218,7 +218,7 @@ function ModelSelectField({
     () => available
       ? models.filter((model) => {
           const entry = available[(model.provider ?? "openai-codex") as ProviderKey];
-          return !entry || entry.secretAvailable;
+          return Boolean(entry?.secretAvailable && entry.enabled);
         })
       : models,
     [available, models]
@@ -370,6 +370,7 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
   const [opencodeModelsError, setOpencodeModelsError] = useState<string | null>(null);
 
   const butlerModels = useMemo(() => payload?.availableModels.butler ?? [], [payload]);
+  const workerModels = useMemo(() => payload?.availableModels.worker.availableModels ?? [], [payload]);
 
   const dirty = Boolean(draft && payload && !settingsEqual(draft, payload.settings));
 
@@ -913,9 +914,21 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
               </Field>
             </FieldGrid>
           </SubGroup>
+          <SubGroup title="Worker defaults">
+            <FieldGrid>
+              <ModelSelectField
+                label="Default worker model"
+                hint="Used for the first delegation when more than one provider is connected. If unset, Manor prefers Codex, OpenCode Go, Ollama Cloud, then Ollama Local."
+                value={draft.worker.defaultModel ?? payload.availableModels.worker.model}
+                models={workerModels}
+                available={null}
+                onChange={(next) => update((s) => { s.worker.defaultModel = next; })}
+              />
+            </FieldGrid>
+          </SubGroup>
           <SubGroup title={GROUP_LABELS.modelTasks}>
             <FieldGrid>
-              <Field label="Background task runner" hint="Chooses how Butler runs model tasks like titles, routing, review, and memory.">
+              <Field label="Background task runner" hint="Chooses how Butler runs supporting tasks such as titles and memory.">
                 <select value={draft.modelTasks.runnerMode} onChange={(event) => update((s) => { s.modelTasks.runnerMode = event.target.value as never; })}>
                   <option value="auto">Auto</option>
                   <option value="codex">Codex</option>
@@ -930,14 +943,6 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
                 onChange={(next) => update((s) => { s.modelTasks.sessionTitleModel = next; })}
               />
               <Field label="Title timeout (ms)"><input type="number" value={draft.modelTasks.sessionTitleTimeoutMs} onChange={(event) => update((s) => { s.modelTasks.sessionTitleTimeoutMs = Number(event.target.value); })} /></Field>
-              <ModelSelectField
-                label="Review model"
-                hint="Reviews worker output"
-                value={draft.modelTasks.workerReviewModel}
-                models={butlerModels}
-                available={payload.providerAvailability}
-                onChange={(next) => update((s) => { s.modelTasks.workerReviewModel = next; })}
-              />
             </FieldGrid>
           </SubGroup>
         </Section> : null}

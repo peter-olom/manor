@@ -208,6 +208,8 @@ test("approval creates a visible session linked to the self-improvement request"
     hostController: { getStatus: async () => ({ ok: true, active: null, latestRun: null, detectedMode: "source" }) } as never,
     store,
     codexClient: {
+      getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "high", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["high"], supportedReasoningEfforts: ["high"], defaultReasoningEffort: "high" }] } }),
+      updateComposeSettings: async () => undefined,
       startThread: async (options: { input: (threadId: string) => Promise<unknown>; cwd: string }) => {
         await options.input("thread-approved");
         store.upsertThreadSummary({
@@ -219,6 +221,9 @@ test("approval creates a visible session linked to the self-improvement request"
         return { threadId: "thread-approved", turnId: "turn-1" };
       }
     } as never,
+    getCodexAuthStatus: () => ({ loggedIn: true }),
+    getWorkerAffinity: () => null,
+    recordSuccessfulWorkerSelection: () => undefined,
     pairSessions: {
       createWorkerPair: async (input) => {
         createdPairs.push({ threadId: input.threadId, cwd: input.cwd ?? null, task: input.task ?? null });

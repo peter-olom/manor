@@ -14,16 +14,16 @@ import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-templates.js";
 import type { SessionTitleGenerator } from "./session-title-generator.js";
 import type { ButlerStateStore } from "./state-store.js";
-import type { ButlerMessageView, ButlerLivePatchView } from "./types.js";
+import type { ButlerMessageView, ButlerLivePatchView, ModelOption } from "./types.js";
 import type { PairChat, PairCodexModelOption, PairDetail, PairMessage, PairComposeSettings, PairSummary } from "../shared/pairing.js";
 import { DEFAULT_THINKING_LEVELS } from "../shared/pairing.js";
 import { pairTitleIsDefault } from "./pair-store.js";
-import { getUnifiedWorkerCompose, loadWorkerThread, updateUnifiedWorkerCompose, updateWorkerThreadEffort } from "./worker-client-router.js";
+import { getUnifiedWorkerCompose, loadWorkerThread, updateUnifiedWorkerCompose, updateWorkerThreadEffort, type WorkerClientAccess } from "./worker-client-router.js";
 import { parseProviderModelRef } from "./model-provider-config.js";
 
 type PairButlerService = Pick<
   ButlerAgentService,
-  "dispose" | "getMessagePage" | "getShellSnapshot" | "on" | "prompt" | "refreshModelSettings" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings"
+  "dispose" | "ensureExternalWorkerDelegation" | "getMessagePage" | "getShellSnapshot" | "on" | "prompt" | "refreshModelSettings" | "retryBlockedCallbackReviews" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings"
 >;
 
 type PairSessionManagerOptions = {
@@ -45,6 +45,7 @@ type PairSessionManagerOptions = {
   memoryScheduler?: MemoryUpdateScheduler | null;
   onButlerPatch?: (payload: ButlerLivePatchView) => void;
   sessionTitleGenerator?: SessionTitleGenerator | null;
+  getCodexAuthStatus?: () => { loggedIn: boolean };
   createButlerService?: (options: ConstructorParameters<typeof ButlerAgentService>[0]) => PairButlerService;
 };
 
@@ -123,6 +124,39 @@ function blockedCloseoutReason(shell: ReturnType<ButlerAgentService["getShellSna
   return callback?.blockedCloseoutReason ? `Closeout blocked: ${callback.blockedCloseoutReason}` : null;
 }
 
+function butlerModelMatchesReference(model: ModelOption, reference: string): boolean {
+  if (model.id === reference) return true;
+  const parsed = parseProviderModelRef(reference);
+  const openAiProviders = new Set(["openai", "openai-codex"]);
+  const providerMatches = !parsed.provider || !model.provider || parsed.provider === model.provider ||
+    (openAiProviders.has(parsed.provider) && openAiProviders.has(model.provider));
+  return providerMatches && parsed.model === model.id;
+}
+
+function butlerModelAvailabilityError(pair: PairChat, shell: ReturnType<ButlerAgentService["getShellSnapshot"]>): string | null {
+  const available = shell.compose?.availableModels ?? [];
+  if (available.length === 0) return "No connected Butler model is available. Open Settings → Providers to connect or repair a provider.";
+  if (pair.butlerModel && !available.some((model) => butlerModelMatchesReference(model, pair.butlerModel!))) {
+    return `The chosen Butler model ${pair.butlerModel} is unavailable. Open Settings → Providers to reconnect it, or choose another Butler model.`;
+  }
+  return null;
+}
+
+function pairNeedsSupervision(pair: PairChat, store: ButlerStateStore): boolean {
+  if (!pair.worker) return false;
+  const thread = store.getThread(pair.worker.threadId);
+  const report = store.getWorkerReport(pair.worker.threadId);
+  if (threadIsStillRunningForSupervision(thread) || pair.worker.status === "running" || pair.worker.status === "starting") return true;
+  if (!report) return true;
+  if ((thread?.turns.at(-1)?.startedAt ?? 0) > report.updatedAt) return true;
+  return !pair.worker.lastReviewedReportAt || report.updatedAt > pair.worker.lastReviewedReportAt;
+}
+
+function threadIsStillRunningForSupervision(thread: ReturnType<ButlerStateStore["getThread"]>): boolean {
+  const latestTurn = thread?.turns.at(-1);
+  return thread?.status === "active" || latestTurn?.status === "inProgress" || latestTurn?.status === "started";
+}
+
 export class PairSessionManager {
   private readonly services = new Map<string, { service: PairButlerService; started: Promise<void> }>();
   private readonly titleInFlight = new Set<string>();
@@ -130,12 +164,25 @@ export class PairSessionManager {
 
   constructor(private readonly options: PairSessionManagerOptions) {}
 
+  private getWorkerClientAccess(): WorkerClientAccess {
+    return {
+      ...this.options,
+      getWorkerAffinity: () => this.options.pairStore.getWorkerAffinity(),
+      recordSuccessfulWorkerSelection: (selection) => this.options.pairStore.recordSuccessfulWorkerSelection(selection)
+    };
+  }
+
   async listSummaries(): Promise<PairSummary[]> {
     this.options.pairStore.syncWorkerReports();
     for (const pairId of this.services.keys()) {
       this.syncPairSnapshot(pairId);
     }
     return this.options.pairStore.listSummaries();
+  }
+
+  async startSupervisedSessions(): Promise<void> {
+    const supervised = this.options.pairStore.listSummaries().filter((pair) => pairNeedsSupervision(pair, this.options.store));
+    await Promise.allSettled(supervised.map((pair) => this.ensureService(pair.id)));
   }
 
   async createPair(input: { title?: string | null; defaultCwd?: string | null } = {}): Promise<PairDetail> {
@@ -159,7 +206,8 @@ export class PairSessionManager {
       cwd: input.cwd,
       handoffPrompt: input.handoffPrompt
     });
-    await this.ensureService(pair.id);
+    const service = await this.ensureService(pair.id);
+    await service.ensureExternalWorkerDelegation(input.threadId);
     return this.getPairDetail(pair.id, null, 120) as Promise<PairDetail>;
   }
 
@@ -208,6 +256,7 @@ export class PairSessionManager {
     const service = this.services.get(pairId)?.service;
     if (!service) return null;
     const shell = service.getShellSnapshot();
+    if (shell.pending || shell.isStreaming) throw new Error("Butler is working. Wait for this turn to finish before changing its model or thinking level.");
     const availableLevels = shell.compose?.availableThinkingLevels ?? [];
     if (availableLevels.length > 0 && !availableLevels.includes(level as never)) {
       throw new Error("Selected Butler thinking level is not available for this model");
@@ -221,6 +270,7 @@ export class PairSessionManager {
     const service = this.services.get(pairId)?.service;
     if (!service) return null;
     const shell = service.getShellSnapshot();
+    if (shell.pending || shell.isStreaming) throw new Error("Butler is working. Wait for this turn to finish before changing its model or thinking level.");
     const model = (shell.compose?.availableModels ?? []).find((entry) => entry.id === modelId);
     if (!model) {
       throw new Error("Selected Butler model is not available");
@@ -228,22 +278,26 @@ export class PairSessionManager {
     const ref = parseProviderModelRef(model.id);
     const thinkingLevel = shell.compose?.thinkingLevel ?? "medium";
     await service.updateComposeSettings(ref.provider ?? model.provider ?? shell.compose?.provider ?? "", ref.model ?? model.id, thinkingLevel as never);
-    this.options.pairStore.updatePairComposeOverrides(pairId, { butlerModel: modelId });
+    const effectiveCompose = service.getShellSnapshot().compose;
+    this.options.pairStore.updatePairComposeOverrides(pairId, {
+      butlerModel: effectiveCompose?.model ?? modelId,
+      butlerThinkingLevel: effectiveCompose?.thinkingLevel ?? thinkingLevel
+    });
     return this.getPairDetail(pairId, null, 120);
   }
 
   async setCodexEffort(pairId: string, effort: string | null): Promise<PairDetail | null> {
     const pair = this.options.pairStore.getPair(pairId);
-    const compose = getUnifiedWorkerCompose(this.options, pair?.codexModel ?? null, effort, pair?.workerRuntime ?? null);
+    const compose = getUnifiedWorkerCompose(this.getWorkerClientAccess(), pair?.codexModel ?? null, effort, "auto");
     const resolvedEffort = compose.effort;
     if (!pair?.worker) {
-      if (resolvedEffort) await updateUnifiedWorkerCompose(this.options, { model: pair?.codexModel ?? null, effort: resolvedEffort as never, runtime: pair?.workerRuntime ?? null });
+      if (resolvedEffort) await updateUnifiedWorkerCompose(this.getWorkerClientAccess(), { model: pair?.codexModel ?? null, effort: resolvedEffort as never, runtime: "auto" });
       this.options.pairStore.updatePairComposeOverrides(pairId, { codexEffort: resolvedEffort });
       return this.getPairDetail(pairId, null, 120);
     }
     if (resolvedEffort) {
-      await updateWorkerThreadEffort(this.options, pair.worker.threadId, resolvedEffort as never);
-      await updateUnifiedWorkerCompose(this.options, { model: pair.codexModel ?? null, effort: resolvedEffort as never, runtime: pair.workerRuntime ?? null });
+      await updateWorkerThreadEffort(this.getWorkerClientAccess(), pair.worker.threadId, resolvedEffort as never);
+      await updateUnifiedWorkerCompose(this.getWorkerClientAccess(), { model: pair.codexModel ?? null, effort: resolvedEffort as never, runtime: "auto" });
     }
     this.options.pairStore.updatePairComposeOverrides(pairId, { codexEffort: resolvedEffort });
     return this.getPairDetail(pairId, null, 120);
@@ -252,22 +306,17 @@ export class PairSessionManager {
   async setCodexModel(pairId: string, modelId: string): Promise<PairDetail | null> {
     const pair = this.options.pairStore.getPair(pairId);
     if (!pair) return null;
-    const compose = getUnifiedWorkerCompose(this.options, pair.codexModel ?? null, pair.codexEffort ?? null, pair.workerRuntime ?? null);
+    const compose = getUnifiedWorkerCompose(this.getWorkerClientAccess(), pair.codexModel ?? null, pair.codexEffort ?? null, "auto");
     const model = compose.availableModels.find((entry) => entry.id === modelId);
     if (!model) {
       throw new Error("Selected worker model is not available");
     }
     const effort = chooseEffortForModel(toPairModelOptions([model])[0] ?? null, pair.codexEffort ?? pair.worker?.requestedReasoningEffort ?? compose.effort ?? null);
     if (pair.worker && effort) {
-      await updateWorkerThreadEffort(this.options, pair.worker.threadId, effort as never);
+      await updateWorkerThreadEffort(this.getWorkerClientAccess(), pair.worker.threadId, effort as never);
     }
-    await updateUnifiedWorkerCompose(this.options, { model: modelId, effort: effort as never, runtime: pair.workerRuntime ?? null });
+    await updateUnifiedWorkerCompose(this.getWorkerClientAccess(), { model: modelId, effort: effort as never, runtime: "auto" });
     this.options.pairStore.updatePairComposeOverrides(pairId, { codexModel: modelId, codexEffort: effort });
-    return this.getPairDetail(pairId, null, 120);
-  }
-
-  async setWorkerRuntime(pairId: string, runtime: "auto" | "openai" | "pi-rpc"): Promise<PairDetail | null> {
-    this.options.pairStore.updatePairComposeOverrides(pairId, { workerRuntime: runtime });
     return this.getPairDetail(pairId, null, 120);
   }
 
@@ -280,7 +329,7 @@ export class PairSessionManager {
     const selectedButlerModelId = shell.compose?.model ?? butlerModels[0]?.id ?? null;
     const selectedButlerModel = butlerModels.find((model) => model.id === selectedButlerModelId) ?? butlerModels[0] ?? null;
     const thinkingLevel = chooseThinkingLevelForModel(selectedButlerModel, pair.butlerThinkingLevel ?? shell.compose?.thinkingLevel ?? null);
-    const workerCompose = getUnifiedWorkerCompose(this.options, pair.codexModel ?? null, pair.codexEffort ?? null, pair.workerRuntime ?? null);
+    const workerCompose = getUnifiedWorkerCompose(this.getWorkerClientAccess(), pair.codexModel ?? null, pair.codexEffort ?? null, "auto");
     const availableModels = toPairModelOptions(workerCompose.availableModels);
     const selectedModelId = workerCompose.model ?? availableModels[0]?.id ?? null;
     const selectedModel = availableModels.find((model) => model.id === selectedModelId) ?? null;
@@ -333,6 +382,8 @@ export class PairSessionManager {
     const pair = this.options.pairStore.getPair(input.pairId);
     if (!pair) return null;
     const service = await this.ensureService(input.pairId);
+    const selectionError = butlerModelAvailabilityError(pair, service.getShellSnapshot());
+    if (selectionError) throw new Error(selectionError);
     const promptText = buildReferencePromptText({
       text: input.text,
       imageStore: this.options.imageStore,
@@ -357,11 +408,19 @@ export class PairSessionManager {
     const pair = this.options.pairStore.getPair(pairId);
     if (!pair?.worker) return null;
     try {
-      await loadWorkerThread(this.options, pair.worker.threadId);
+      await loadWorkerThread(this.getWorkerClientAccess(), pair.worker.threadId);
     } catch {
       // Saved local state is enough for the read-only worker pane.
     }
     return this.options.store.getThreadDetail(pair.worker.threadId) ?? null;
+  }
+
+  async retryBlockedReview(pairId: string): Promise<PairDetail | null> {
+    const pair = this.options.pairStore.getPair(pairId);
+    if (!pair) return null;
+    const service = await this.ensureService(pairId);
+    if (!service.retryBlockedCallbackReviews(pair.worker?.threadId)) throw new Error("No paused adversarial review is waiting to retry.");
+    return this.getPairDetail(pairId, null, 120);
   }
 
   private async ensureService(pairId: string): Promise<PairButlerService> {
@@ -396,8 +455,12 @@ export class PairSessionManager {
       memoryScheduler: this.options.memoryScheduler,
       systemPromptSuffix: pairSystemPrompt(pair.id),
       operatorSink: {
-        onDelegationAcknowledgement: ({ threadId, text }) => {
+        onDelegationAcknowledgement: ({ threadId, text, model, effort }) => {
           const thread = this.options.store.getThread(threadId);
+          this.options.pairStore.updatePairComposeOverrides(pair.id, {
+            codexModel: model ?? null,
+            codexEffort: effort ?? null
+          });
           this.options.pairStore.attachWorker(pair.id, {
             threadId,
             task: thread?.executionContract?.requestedTask ?? thread?.supervisor.latestUserPrompt ?? null,
@@ -411,15 +474,30 @@ export class PairSessionManager {
       getWorkerDefaults: () => {
         const current = this.options.pairStore.getPair(pair.id);
         return {
-          runtime: current?.workerRuntime ?? null,
+          runtime: "auto",
           model: current?.codexModel ?? null,
           effort: current?.codexEffort ?? null
         };
+      },
+      getWorkerAffinity: () => this.options.pairStore.getWorkerAffinity(),
+      recordSuccessfulWorkerSelection: (selection) => this.options.pairStore.recordSuccessfulWorkerSelection(selection),
+      getButlerDefaults: () => {
+        const current = this.options.pairStore.getPair(pair.id);
+        return {
+          model: current?.butlerModel ?? null,
+          thinkingLevel: current?.butlerThinkingLevel ?? null
+        };
       }
     });
-    const started = service.start().then(() => {
+    const started = service.start().then(async () => {
+      const currentPair = this.options.pairStore.getPair(pair.id);
+      if (currentPair?.worker && pairNeedsSupervision(currentPair, this.options.store)) await service.ensureExternalWorkerDelegation(currentPair.worker.threadId);
       this.syncPairSnapshot(pair.id);
     }).catch((error) => {
+      if (this.services.get(pair.id)?.service === service) {
+        this.services.delete(pair.id);
+        service.dispose();
+      }
       this.options.pairStore.updatePairSnapshot(pair.id, {
         butlerReady: false,
         butlerPending: false,
@@ -478,6 +556,7 @@ export class PairSessionManager {
     const service = this.services.get(pairId)?.service;
     if (!service) return;
     const shell = service.getShellSnapshot();
+    const pair = this.options.pairStore.getPair(pairId);
     const latestPage = latest === undefined || messageCount === undefined ? service.getMessagePage(null, 1) : null;
     const latestMessage = latest ?? latestPage?.messages.at(-1) ?? null;
     this.options.pairStore.updatePairSnapshot(pairId, {
@@ -485,7 +564,7 @@ export class PairSessionManager {
       butlerReady: shell.ready,
       butlerPending: shell.pending || shell.isStreaming,
       butlerPendingReason: blockedCloseoutReason(shell),
-      butlerLastError: shell.lastError,
+      butlerLastError: (pair ? butlerModelAvailabilityError(pair, shell) : null) ?? shell.lastError,
       messageCount: messageCount ?? latestPage?.totalCount ?? 0,
       lastMessage: latestMessage ? mapButlerMessage(latestMessage) : null,
       updatedAt: latestMessage?.at ?? Date.now()
