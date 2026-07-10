@@ -1,4 +1,3 @@
-import { ButlerRoutingClassifier, ROUTING_CLASSIFIER_OUTPUT_SCHEMA } from "./butler-routing-classifier.js";
 import { getActiveManorSettings } from "./manor-settings-runtime.js";
 import { readMemoryEmbeddingConfig } from "./memory-embedding-client.js";
 import { MemoryEmbeddingService } from "./memory-embedding-service.js";
@@ -25,7 +24,6 @@ export function createBackgroundModelServices(input: {
     return {
       config,
       memoryReviewModel: config.model ?? null,
-      routingClassifierModel: resolveMemoryServiceModel(settings.modelTasks.routingClassifierModel, config.model),
       workerReviewModel: resolveMemoryServiceModel(settings.modelTasks.workerReviewModel, config.model),
       memoryPromotionModel: resolveMemoryServiceModel(settings.modelTasks.memoryPromotionModel, config.model)
     };
@@ -40,14 +38,6 @@ export function createBackgroundModelServices(input: {
     model: initial.memoryReviewModel ?? undefined,
     timeoutMs: initial.config.timeoutMs,
     runner: async (runnerInput) => await modelTasks.runJson({ purpose: "memory review", ...runnerInput, model: serviceModels().memoryReviewModel, schema: MEMORY_REVIEW_OUTPUT_SCHEMA }) as never
-  });
-  const routingClassifier = new ButlerRoutingClassifier({
-    stateDir,
-    codexHomeDir,
-    enabled: true,
-    model: initial.routingClassifierModel ?? undefined,
-    timeoutMs: initial.config.timeoutMs,
-    runner: async (runnerInput) => await modelTasks.runJson({ purpose: "routing classifier", ...runnerInput, model: serviceModels().routingClassifierModel, schema: ROUTING_CLASSIFIER_OUTPUT_SCHEMA })
   });
   const workerReview = new CodexWorkerReviewService({
     store,
@@ -99,7 +89,6 @@ export function createBackgroundModelServices(input: {
     const current = serviceModels();
     modelTasks.applySettings();
     memoryReview.applyConfig({ enabled: current.config.enabled, timeoutMs: current.config.timeoutMs, model: current.memoryReviewModel });
-    routingClassifier.applyConfig({ enabled: true, timeoutMs: current.config.timeoutMs, model: current.routingClassifierModel });
     workerReview.applyConfig({ enabled: true, timeoutMs: current.config.timeoutMs, model: current.workerReviewModel });
     memoryScheduler.applyConfig(current.config);
     memoryPromotion.applyConfig(current.config, current.memoryPromotionModel);
@@ -109,7 +98,6 @@ export function createBackgroundModelServices(input: {
 
   return {
     memoryReview,
-    routingClassifier,
     workerReview,
     memoryScheduler,
     memoryPromotion,

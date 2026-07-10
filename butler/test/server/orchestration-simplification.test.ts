@@ -6,8 +6,8 @@ import test from "node:test";
 
 import { getOperatorCloseoutBlocker } from "../../src/server/butler-closeout-gate.js";
 import { buildButlerDelegationTools } from "../../src/server/butler-agent-stack-preview-tools.js";
+import { buildDelegationRoutingDecision } from "../../src/server/butler-delegation-routing.js";
 import { normalizeWorkerClaimsReport } from "../../src/server/butler-orchestration.js";
-import { ButlerRoutingClassifier } from "../../src/server/butler-routing-classifier.js";
 import { validateCompletedWorkerEvidence } from "../../src/server/codex-harness-report-validation.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
@@ -97,101 +97,26 @@ function acceptChecklist(store: ButlerStateStore, threadId: string): void {
   }
 }
 
-test("routing classifier returns strict decisions for common task classes", async () => {
-  const stateDir = await mkdtemp(path.join(tmpdir(), "manor-routing-classifier-"));
-  const outputs = [
-    routingDecision({ taskClass: "trivial", reviewRecommendation: { target: "none", required: false, reason: null }, riskLevel: "low" }),
-    routingDecision({ taskClass: "ui", goalRecommendation: { mode: "native_goal", goal: "Complete the UI workflow", fallbackReason: null } }),
-    routingDecision({ taskClass: "api" }),
-    routingDecision({ taskClass: "deploy", riskLevel: "critical" }),
-    routingDecision({ taskClass: "research", subAgentRoles: ["researcher", "critic"] })
-  ];
-  const service = new ButlerRoutingClassifier({
-    stateDir,
-    codexHomeDir: stateDir,
-    runner: async () => outputs.shift()!
-  });
+test("delegation routing is derived from Butler's explicit tool call", () => {
+  const apiDecision = buildDelegationRoutingDecision({ task: "Implement an API route and tests" });
+  assert.equal(apiDecision.taskClass, "api");
+  assert.equal(apiDecision.reviewRecommendation.target, "codex_review");
+  assert.equal(apiDecision.reviewRecommendation.required, true);
+  assert.equal(apiDecision.questionSet.length, 0);
+  assert.equal(apiDecision.fallbackReason, null);
 
-  assert.equal((await service.classify({ task: "What time is it?", cwd: "/tmp" })).taskClass, "trivial");
-  assert.equal((await service.classify({ task: "Build the settings UI", cwd: "/tmp" })).goalRecommendation.mode, "native_goal");
-  assert.equal((await service.classify({ task: "Add an API route", cwd: "/tmp" })).taskClass, "api");
-  assert.equal((await service.classify({ task: "Deploy to staging", cwd: "/tmp" })).riskLevel, "critical");
-  assert.deepEqual((await service.classify({ task: "Research options", cwd: "/tmp" })).subAgentRoles, ["researcher", "critic"]);
+  const readOnlyDecision = buildDelegationRoutingDecision({ task: "What is the Runner setting?" });
+  assert.equal(readOnlyDecision.taskClass, "read_only");
+  assert.equal(readOnlyDecision.reviewRecommendation.required, false);
 });
 
-test("routing classifier falls back from native goal when capability is unavailable", async () => {
-  const stateDir = await mkdtemp(path.join(tmpdir(), "manor-routing-goal-"));
-  const service = new ButlerRoutingClassifier({
-    stateDir,
-    codexHomeDir: stateDir,
-    runner: async () => routingDecision({ goalRecommendation: { mode: "native_goal", goal: "Finish the long job", fallbackReason: null } })
-  });
-
-  const decision = await service.classify({ task: "Long multi-phase implementation", cwd: "/tmp", goalModeAvailable: false });
-  assert.equal(decision.goalRecommendation.mode, "contract_fallback");
-  assert.match(decision.goalRecommendation.fallbackReason ?? "", /Native goal mode/);
-});
-
-test("routing classifier rejects malformed decisions", async () => {
-  const stateDir = await mkdtemp(path.join(tmpdir(), "manor-routing-malformed-"));
-  const service = new ButlerRoutingClassifier({
-    stateDir,
-    codexHomeDir: stateDir,
-    runner: async () => ({})
-  });
-
-  await assert.rejects(
-    () => service.classify({ task: "Implement something", cwd: "/tmp" }),
-    /invalid JSON/
-  );
-});
-
-test("classifier failure posts structured operator questions instead of delegating", async () => {
-  const questions: unknown[] = [];
-  let questionRounds = 0;
-  const tool = buildButlerDelegationTools({
-    defineButlerTool: (definition) => definition,
-    getToolUiEffects: () => [],
-    classifyDelegationRoute: async () => {
-      throw new Error("bad classifier output");
-    },
-    prepareDelegationWorkspace: async () => ({ cwd: "/workspace", branchName: null }),
-    getDelegationQuestionRoundCount: () => questionRounds,
-    noteDelegationQuestionRound: () => {
-      questionRounds += 1;
-      return questionRounds;
-    },
-    postOperatorQuestion: async (input) => {
-      questions.push(input);
-      return {} as never;
-    }
-  } as never).find((entry) => entry.name === "delegate_to_codex") as {
-    execute: (toolCallId: string, params: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>;
-  };
-
-  const result = await tool.execute("call-1", { task: "Implement something" });
-  assert.match(result.content[0]!.text, /Routing classifier failed/);
-  assert.equal(questions.length, 1);
-});
-
-test("classifier failure delegates with heuristic assumptions after operator proceed", async () => {
+test("delegation starts worker directly with deterministic routing metadata", async () => {
   const store = await createStore();
-  let questionRounds = 1;
   let capturedOrchestration: ButlerRoutingDecisionView | null = null;
+  let postedQuestions = 0;
   const tool = buildButlerDelegationTools({
     defineButlerTool: (definition) => definition,
     getToolUiEffects: () => [],
-    classifyDelegationRoute: async () => {
-      throw new Error("classifier timeout");
-    },
-    getDelegationQuestionRoundCount: () => questionRounds,
-    noteDelegationQuestionRound: () => {
-      questionRounds += 1;
-      return questionRounds;
-    },
-    clearDelegationQuestionRounds: () => {
-      questionRounds = 0;
-    },
     prepareDelegationWorkspace: async () => ({ cwd: "/workspace", branchName: null }),
     buildDelegationDeveloperInstructions: async () => "",
     buildDelegationContract: async (input: { threadId: string; orchestration?: ButlerRoutingDecisionView | null }) => {
@@ -203,10 +128,14 @@ test("classifier failure delegates with heuristic assumptions after operator pro
       });
       return { text: "brief", contract };
     },
+    postOperatorQuestion: async () => {
+      postedQuestions += 1;
+      return {} as never;
+    },
     codexClient: {
       startThread: async (input: { input: (threadId: string) => Promise<unknown> }) => {
-        await input.input("thread-fallback");
-        return { threadId: "thread-fallback" };
+        await input.input("thread-direct");
+        return { threadId: "thread-direct" };
       }
     },
     imageStore: { resolveViews: () => [], getFilePath: () => null },
@@ -221,34 +150,32 @@ test("classifier failure delegates with heuristic assumptions after operator pro
 
   const result = await tool.execute("call-1", { task: "Implement the API change" });
   assert.match(result.content[0]!.text, /Delegated/);
-  assert.match(capturedOrchestration?.fallbackReason ?? "", /classifier timeout/);
+  assert.equal(capturedOrchestration?.taskClass, "api");
   assert.equal(capturedOrchestration?.reviewRecommendation.required, true);
-  assert.equal(questionRounds, 0);
+  assert.equal(capturedOrchestration?.fallbackReason, null);
+  assert.equal(postedQuestions, 0);
 });
 
-test("delegation classifier receives the resolved workspace cwd", async () => {
+test("delegation contract receives the resolved workspace cwd", async () => {
   const store = await createStore();
-  let classifierCwd: string | null = null;
+  let capturedWorkspace: { cwd: string; branchName: string | null } | null = null;
   const tool = buildButlerDelegationTools({
     defineButlerTool: (definition) => definition,
     getToolUiEffects: () => [],
     prepareDelegationWorkspace: async () => ({ cwd: "/repos/project", branchName: "main" }),
-    classifyDelegationRoute: async (input: { cwd: string }) => {
-      classifierCwd = input.cwd;
-      return routingDecision();
-    },
-    getDelegationQuestionRoundCount: () => 0,
-    clearDelegationQuestionRounds: () => undefined,
     buildDelegationDeveloperInstructions: async () => "",
-    buildDelegationContract: async (input: { threadId: string; orchestration?: ButlerRoutingDecisionView | null }) => ({
-      text: "brief",
-      contract: makeContract({
-        threadId: input.threadId,
-        workspaceCwd: "/repos/project",
-        branch: "main",
-        orchestration: input.orchestration ?? routingDecision()
-      })
-    }),
+    buildDelegationContract: async (input: { threadId: string; workspace: { cwd: string; branchName: string | null }; orchestration?: ButlerRoutingDecisionView | null }) => {
+      capturedWorkspace = input.workspace;
+      return {
+        text: "brief",
+        contract: makeContract({
+          threadId: input.threadId,
+          workspaceCwd: input.workspace.cwd,
+          branch: input.workspace.branchName,
+          orchestration: input.orchestration ?? routingDecision()
+        })
+      };
+    },
     codexClient: {
       startThread: async (input: { input: (threadId: string) => Promise<unknown> }) => {
         await input.input("thread-resolved-cwd");
@@ -266,46 +193,21 @@ test("delegation classifier receives the resolved workspace cwd", async () => {
   };
 
   await tool.execute("call-1", { task: "Implement the API change", cwd: "/repos/.manor-worktrees/project/stale" });
-  assert.equal(classifierCwd, "/repos/project");
+  assert.equal(capturedWorkspace?.cwd, "/repos/project");
+  assert.equal(capturedWorkspace?.branchName, "main");
 });
 
-test("structured question soft cap proceeds with stated assumptions", async () => {
-  let postedQuestions = 0;
+test("shared repository bootstrap delegation keeps the bootstrap note", async () => {
   let capturedNotes: string[] | undefined;
   const store = await createStore();
   const tool = buildButlerDelegationTools({
     defineButlerTool: (definition) => definition,
     getToolUiEffects: () => [],
-    classifyDelegationRoute: async () =>
-      routingDecision({
-        questionSet: [
-          {
-            id: "q1",
-            prompt: "Which deploy target?",
-            context: null,
-            options: [
-              { id: "staging", label: "Staging", description: null },
-              { id: "prod", label: "Production", description: null }
-            ],
-            allowFreeform: true
-          }
-        ]
-      }),
-    getDelegationQuestionRoundCount: () => 3,
-    noteDelegationQuestionRound: () => {
-      postedQuestions += 1;
-      return postedQuestions;
-    },
-    clearDelegationQuestionRounds: () => undefined,
-    postOperatorQuestion: async () => {
-      postedQuestions += 1;
-      return {} as never;
-    },
-    prepareDelegationWorkspace: async () => ({ cwd: "/workspace", branchName: null }),
+    prepareDelegationWorkspace: async () => ({ cwd: "/repos", branchName: null }),
     buildDelegationDeveloperInstructions: async () => "",
     buildDelegationContract: async (input: { threadId: string; extraNotes?: string[] }) => {
       capturedNotes = input.extraNotes;
-      const contract = makeContract({ threadId: input.threadId, workspaceCwd: "/workspace" });
+      const contract = makeContract({ threadId: input.threadId, workspaceCwd: "/repos" });
       return { text: "brief", contract };
     },
     codexClient: {
@@ -324,10 +226,11 @@ test("structured question soft cap proceeds with stated assumptions", async () =
     execute: (toolCallId: string, params: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>;
   };
 
-  const result = await tool.execute("call-1", { task: "Deploy this change" });
+  const result = await tool.execute("call-1", {
+    task: "Clone the repository into /repos, check git status, and create branch butler/bootstrap"
+  });
   assert.match(result.content[0]!.text, /Delegated/);
-  assert.equal(postedQuestions, 0);
-  assert.ok(capturedNotes?.some((note) => /soft cap/.test(note)));
+  assert.ok(capturedNotes?.some((note) => /shared \/repos workspace/.test(note)));
 });
 
 test("completed orchestrated reports require strict JSON claims", async () => {

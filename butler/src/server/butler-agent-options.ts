@@ -4,7 +4,6 @@ import type { FileReferenceStore } from "./file-store.js";
 import type { HostControllerClient } from "./host-controller-client.js";
 import type { ImageReferenceStore } from "./image-store.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
-import type { ButlerRoutingClassifier } from "./butler-routing-classifier.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { ServiceTemplateRegistry } from "./service-templates.js";
 import type { ButlerStateStore } from "./state-store.js";
@@ -41,7 +40,6 @@ export type ButlerAgentServiceOptions = {
   artifactsDir: string;
   refreshRuntimeInventory?: () => Promise<void>;
   memoryScheduler?: MemoryUpdateScheduler | null;
-  routingClassifier?: ButlerRoutingClassifier | null;
   systemPromptSuffix?: string | null;
   operatorSink?: ButlerOperatorSink | null;
   getButlerDefaults?: () => ButlerAgentDefaults | null;

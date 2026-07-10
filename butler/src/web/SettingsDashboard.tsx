@@ -34,7 +34,7 @@ type SettingsResponse = {
 };
 
 const GROUP_LABELS: Record<SettingsGroupKey, string> = {
-  overview: "Overview",
+  overview: "Operator",
   "providers.ollamaLocal": "Ollama Local",
   "providers.ollamaCloud": "Ollama Cloud",
   "providers.opencodeGo": "OpenCode Go",
@@ -71,19 +71,17 @@ const VALIDATION_LABELS: Record<SettingsValidationKey, string> = {
   memoryEmbeddings: "Embeddings"
 };
 
-export type SettingsSectionId = "overview" | "providers" | "runtime" | "memory" | "diagnostics";
+export type SettingsSectionId = "runtime" | "providers" | "memory" | "diagnostics";
 export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; description: string }[] = [
-  { id: "overview", label: "Overview", description: "Operator identity" },
+  { id: "runtime", label: "Runtime", description: "Operator and background tasks" },
   { id: "providers", label: "Providers", description: "Model and tool access" },
-  { id: "runtime", label: "Runtime", description: "Background model tasks" },
   { id: "memory", label: "Memory", description: "Synthesis and embeddings" },
   { id: "diagnostics", label: "Diagnostics", description: "Connection tests" }
 ];
 
 const SECTION_HELP: Record<SettingsSectionId, string> = {
-  overview: "Set the operator name. Provider and model picks live on each chat window and carry over to new sessions.",
   providers: "Configure the model providers (OpenAI/Codex, Ollama Local, Ollama Cloud, OpenCode Go) and web tools Butler can use.",
-  runtime: "Configure which models handle routine background tasks. Worker runtime and model picks live on the Worker tab and carry over to new sessions.",
+  runtime: "Set the operator name and configure which models handle routine background tasks. Worker runtime and model picks live on the Worker tab and carry over to new sessions.",
   memory: "Tune synthesis, promotion, semantic review, and embedding backfill behavior.",
   diagnostics: "Run connection checks for the services Butler depends on."
 };
@@ -142,7 +140,7 @@ function Field({
     <label className={`settings-field ${wide ? "is-wide" : ""}`}>
       <span className="settings-field-label">{label}</span>
       {children}
-      {hint ? <small>{hint}</small> : <small className="settings-control-spacer" aria-hidden="true">&nbsp;</small>}
+      {hint ? <small>{hint}</small> : null}
     </label>
   );
 }
@@ -687,16 +685,6 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
       </div>
 
       <div className="settings-content">
-        {activeSection === "overview" ? <Section id="overview" title="Overview">
-          <SubGroup title="Operator">
-            <FieldGrid>
-              <Field label="Operator name" hint="How Butler should refer to you in chat. Leave blank for no name.">
-                <input value={draft.overview.operatorName} placeholder="(none)" onChange={(event) => update((s) => { s.overview.operatorName = event.target.value; })} />
-              </Field>
-            </FieldGrid>
-          </SubGroup>
-        </Section> : null}
-
         {activeSection === "providers" ? <Section id="providers" title="Providers">
           <div className="settings-provider-tabs">
             <button className={`settings-provider-tab ${providerTab === "openai" ? "is-active" : ""}`} type="button" onClick={() => setProviderTab("openai")}>OpenAI / Codex</button>
@@ -918,23 +906,22 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
         </Section> : null}
 
         {activeSection === "runtime" ? <Section id="runtime" title="Runtime">
+          <SubGroup title="Operator">
+            <FieldGrid>
+              <Field label="Operator name" hint="How Butler should refer to you in chat. Leave blank for no name.">
+                <input value={draft.overview.operatorName} placeholder="(none)" onChange={(event) => update((s) => { s.overview.operatorName = event.target.value; })} />
+              </Field>
+            </FieldGrid>
+          </SubGroup>
           <SubGroup title={GROUP_LABELS.modelTasks}>
             <FieldGrid>
-              <Field label="Runner">
+              <Field label="Background task runner" hint="Chooses how Butler runs model tasks like titles, routing, review, and memory.">
                 <select value={draft.modelTasks.runnerMode} onChange={(event) => update((s) => { s.modelTasks.runnerMode = event.target.value as never; })}>
                   <option value="auto">Auto</option>
                   <option value="codex">Codex</option>
                   <option value="pi">Pi inline</option>
                 </select>
               </Field>
-              <ModelSelectField
-                label="Memory model"
-                hint="Model used to synthesize memory"
-                value={draft.modelTasks.memorySynthesisModel}
-                models={butlerModels}
-                available={payload.providerAvailability}
-                onChange={(next) => update((s) => { s.modelTasks.memorySynthesisModel = next; })}
-              />
               <ModelSelectField
                 label="Title model"
                 value={draft.modelTasks.sessionTitleModel}
@@ -944,28 +931,12 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
               />
               <Field label="Title timeout (ms)"><input type="number" value={draft.modelTasks.sessionTitleTimeoutMs} onChange={(event) => update((s) => { s.modelTasks.sessionTitleTimeoutMs = Number(event.target.value); })} /></Field>
               <ModelSelectField
-                label="Routing model"
-                hint="Classifies which worker should pick up a turn"
-                value={draft.modelTasks.routingClassifierModel}
-                models={butlerModels}
-                available={payload.providerAvailability}
-                onChange={(next) => update((s) => { s.modelTasks.routingClassifierModel = next; })}
-              />
-              <ModelSelectField
                 label="Review model"
                 hint="Reviews worker output"
                 value={draft.modelTasks.workerReviewModel}
                 models={butlerModels}
                 available={payload.providerAvailability}
                 onChange={(next) => update((s) => { s.modelTasks.workerReviewModel = next; })}
-              />
-              <ModelSelectField
-                label="Promotion model"
-                hint="Promotes memory candidates"
-                value={draft.modelTasks.memoryPromotionModel}
-                models={butlerModels}
-                available={payload.providerAvailability}
-                onChange={(next) => update((s) => { s.modelTasks.memoryPromotionModel = next; })}
               />
             </FieldGrid>
           </SubGroup>
@@ -979,6 +950,22 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
               <Toggle label="Semantic edges" checked={draft.memory.semanticEdgeReviewEnabled} onChange={(next) => update((s) => { s.memory.semanticEdgeReviewEnabled = next; })} />
             </ToggleGrid>
             <FieldGrid>
+              <ModelSelectField
+                label="Memory model"
+                hint="Model used to synthesize memory"
+                value={draft.modelTasks.memorySynthesisModel}
+                models={butlerModels}
+                available={payload.providerAvailability}
+                onChange={(next) => update((s) => { s.modelTasks.memorySynthesisModel = next; })}
+              />
+              <ModelSelectField
+                label="Promotion model"
+                hint="Promotes memory candidates"
+                value={draft.modelTasks.memoryPromotionModel}
+                models={butlerModels}
+                available={payload.providerAvailability}
+                onChange={(next) => update((s) => { s.modelTasks.memoryPromotionModel = next; })}
+              />
               <Field label="Synthesis effort">
                 <select value={draft.memory.synthesisEffort ?? ""} onChange={(event) => update((s) => { s.memory.synthesisEffort = (event.target.value || null) as never; })}>
                   <option value="">Default</option>

@@ -126,10 +126,10 @@ function readInitialViewMode(): PairViewMode {
 }
 
 function readInitialSettingsSection(): SettingsSectionId {
-  if (typeof window === "undefined") return "overview";
+  if (typeof window === "undefined") return "runtime";
   const [, prefix, section] = window.location.pathname.split("/");
-  if (prefix !== "settings") return "overview";
-  return SETTINGS_SECTION_IDS.has(section as SettingsSectionId) ? (section as SettingsSectionId) : "overview";
+  if (prefix !== "settings") return "runtime";
+  return SETTINGS_SECTION_IDS.has(section as SettingsSectionId) ? (section as SettingsSectionId) : "runtime";
 }
 
 function syncUrlState(viewMode: PairViewMode, terminalTarget: TerminalTarget, settingsSection: SettingsSectionId): void {
@@ -623,7 +623,7 @@ function Topbar({
 }) {
   const isGlobalSurface = viewMode === "memory" || viewMode === "improve" || viewMode === "settings";
   const surfaceTitle = viewMode === "memory" ? "Memory" : viewMode === "improve" ? "Self-improvement" : viewMode === "settings" ? "Settings" : null;
-  const settingsSectionLabel = SETTINGS_SECTIONS.find((section) => section.id === settingsSection)?.label ?? "Overview";
+  const settingsSectionLabel = SETTINGS_SECTIONS.find((section) => section.id === settingsSection)?.label ?? "Runtime";
   const surfaceMeta =
     viewMode === "memory"
       ? `${memoryActiveCount} of ${memoryTotalCount} ${memorySection}`

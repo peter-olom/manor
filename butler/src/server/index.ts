@@ -113,7 +113,7 @@ configureSelfImprovementRequestState(selfImprovementRequests);
 const piAuthPath = path.join(piAgentDir, "auth.json"); const codexAuthPath = path.join(codexHomeDir, "auth.json");
 const piRpcWorkerClient = new PiRpcWorkerClient({ store, piAuthPath, sessionRootDir: path.join(stateDir, "pi-worker-sessions") });
 const sessionTitleGenerator = new PiSessionTitleGenerator({ piAuthPath, ...readSessionTitleConfig() });
-const { memoryReview, routingClassifier, workerReview, memoryScheduler, memoryPromotion, memoryEmbeddings, memorySemanticEdges, applySettings: applyBackgroundSettings } = createBackgroundModelServices({
+const { memoryReview, workerReview, memoryScheduler, memoryPromotion, memoryEmbeddings, memorySemanticEdges, applySettings: applyBackgroundSettings } = createBackgroundModelServices({
   store,
   stateDir,
   codexHomeDir,
@@ -176,7 +176,6 @@ const butlerAgent = new ButlerAgentService({
   imageStore,
   fileStore,
   artifactsDir,
-  routingClassifier,
   refreshRuntimeInventory: syncRuntimeInventory,
   systemPromptSuffix: buildOperatorPromptSuffix(),
   getButlerDefaults: () => {
@@ -205,7 +204,6 @@ const pairSessions = new PairSessionManager({
   artifactsDir,
   refreshRuntimeInventory: syncRuntimeInventory,
   memoryScheduler,
-  routingClassifier,
   sessionTitleGenerator,
   onButlerPatch: (payload) => sseHub?.broadcastButlerPatch(payload)
 });

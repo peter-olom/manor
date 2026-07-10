@@ -7,39 +7,11 @@ import { buildCodexInputWithReferences } from "./reference-inputs.js";
 import { buildButlerStackTools } from "./butler-agent-stack-tools.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
 import type { PreviewProofReviewView, ReasoningEffort } from "./types.js";
-import { buildFallbackRoutingDecision } from "./butler-routing-fallback.js";
+import { buildDelegationRoutingDecision } from "./butler-delegation-routing.js";
 import { isSharedShellRepoBootstrapTask } from "./thread-contract.js";
 import { applyWorkspacePreviewDefaults, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
-import type { ButlerRoutingDecisionView, ButlerRoutingQuestionView } from "./types.js";
+import type { ButlerRoutingDecisionView } from "./types.js";
 import { startWorkerThread, type WorkerRuntimePreference } from "./worker-client-router.js";
-
-function delegationQuestionKey(input: { task: string; goal?: string | null; cwd?: string | null }): string {
-  return crypto
-    .createHash("sha256")
-    .update(JSON.stringify({ task: input.task.trim(), goal: input.goal?.trim() ?? null, cwd: input.cwd?.trim() ?? null }))
-    .digest("hex")
-    .slice(0, 24);
-}
-
-function operatorQuestionFromRouting(question: ButlerRoutingQuestionView): {
-  prompt: string;
-  context?: string | null;
-  options: Array<{ id?: string | null; label: string; description?: string | null }>;
-  allowFreeform?: boolean;
-} {
-  const options = question.options.length >= 2
-    ? question.options
-    : [
-        { id: "answer", label: "Answer first", description: "Pause delegation until the missing information is provided." },
-        { id: "assume", label: "Proceed", description: "Continue with Butler's stated assumptions." }
-      ];
-  return {
-    prompt: question.prompt,
-    context: question.context,
-    options,
-    allowFreeform: question.allowFreeform
-  };
-}
 
 function normalizeLeaseTtlMs(leaseTtlMinutes: unknown): number | null {
   const numeric = typeof leaseTtlMinutes === "number" ? leaseTtlMinutes : Number(leaseTtlMinutes);
@@ -1248,75 +1220,16 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         };
         const delegatedTask = typedParams.task;
         const delegatedGoal = typedParams.goal;
-        const questionKey = delegationQuestionKey({ task: delegatedTask, goal: delegatedGoal, cwd: typedParams.cwd });
         const workspace = await access.prepareDelegationWorkspace(typedParams.task, typedParams.cwd);
-        let orchestration: ButlerRoutingDecisionView;
-        try {
-          orchestration = await access.classifyDelegationRoute({
-            task: delegatedTask,
-            goal: delegatedGoal,
-            cwd: workspace.cwd,
-            attachmentCount: (typedParams.imageReferenceIds?.length ?? 0) + (typedParams.fileReferenceIds?.length ?? 0)
-          });
-        } catch (error) {
-          const existingRounds = access.getDelegationQuestionRoundCount(questionKey);
-          const message = error instanceof Error ? error.message : String(error);
-          if (existingRounds > 0) {
-            orchestration = buildFallbackRoutingDecision({
-              task: delegatedTask,
-              goal: delegatedGoal,
-              fallbackReason: `Routing classifier failed after operator question: ${message}`
-            });
-          } else {
-            const rounds = access.noteDelegationQuestionRound(questionKey);
-            await access.postOperatorQuestion({
-              questions: [
-                {
-                  prompt: "Butler could not classify this delegation route. What should it do next?",
-                  context: `Classifier failure: ${message}`,
-                  options: [
-                    { id: "clarify", label: "Clarify first", description: "Provide missing routing, risk, review, or acceptance details before delegation." },
-                    { id: "proceed", label: "Proceed", description: "Delegate with Butler's explicit assumptions." }
-                  ],
-                  allowFreeform: true
-                }
-              ]
-            });
-            return {
-              content: [{ type: "text", text: `Routing classifier failed; posted structured operator question before delegation. Question round ${rounds}/3.` }],
-              details: { classifierError: message, questionRounds: rounds }
-            };
-          }
-        }
-        const currentQuestionRounds = access.getDelegationQuestionRoundCount(questionKey);
-        if (orchestration.questionSet.length > 0 && currentQuestionRounds < 3) {
-          const rounds = access.noteDelegationQuestionRound(questionKey);
-          await access.postOperatorQuestion({
-            questions: orchestration.questionSet.slice(0, 3).map(operatorQuestionFromRouting)
-          });
-          return {
-            content: [{ type: "text", text: `Posted structured operator questions before delegation. Question round ${rounds}/3.` }],
-            details: { orchestration, questionRounds: rounds }
-          };
-        }
-        const questionCapNote =
-          orchestration.questionSet.length > 0 && currentQuestionRounds >= 3
-            ? "Structured pre-delegation question soft cap reached. Proceed with Butler's stated assumptions and surface any remaining ambiguity as a blocker."
-            : null;
-        access.clearDelegationQuestionRounds(questionKey);
+        const orchestration = buildDelegationRoutingDecision({ task: delegatedTask, goal: delegatedGoal });
         const repoBootstrapTask = isSharedShellRepoBootstrapTask(delegatedTask);
         const developerInstructions = await access.buildDelegationDeveloperInstructions(workspace, delegatedTask);
         const workerDefaults = typeof access.getWorkerDefaults === "function" ? access.getWorkerDefaults() : null;
         const workerRuntime = typedParams.workerRuntime === "codex" ? "openai" : typedParams.workerRuntime;
         const workerEffort = (workerDefaults?.effort ?? null) as ReasoningEffort | null;
         const extraNotes = repoBootstrapTask
-          ? {
-              notes: [
-                "This job starts in the shared /repos workspace. Create or clone the repo first, then continue inside that repo.",
-                questionCapNote
-              ].filter((note): note is string => Boolean(note))
-            }
-          : { notes: questionCapNote ? [questionCapNote] : undefined };
+          ? ["This job starts in the shared /repos workspace. Create or clone the repo first, then continue inside that repo."]
+          : undefined;
 
         const result = await startWorkerThread(access, {
           task: delegatedGoal ? `${delegatedTask}\n\nGoal: ${delegatedGoal}` : delegatedTask,
@@ -1328,7 +1241,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
                   task: delegatedTask,
                   goal: delegatedGoal,
                   workspace,
-                  extraNotes: extraNotes.notes,
+                  extraNotes,
                   orchestration
                 })
               ).text,
@@ -1349,7 +1262,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           task: delegatedTask,
           goal: delegatedGoal,
           workspace,
-          extraNotes: extraNotes.notes,
+          extraNotes,
           orchestration
         });
         access.store.setThreadExecutionContract(result.threadId, delegationContract.contract);

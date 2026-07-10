@@ -28,7 +28,6 @@ test("memory Codex model env normalization protects active Codex model config ke
     MANOR_MEMORY_SYNTHESIS_MODEL: "GPT-5.4 mini",
     MANOR_MEMORY_PROMOTION_MODEL: "5.4 mini",
     MANOR_WORKER_REVIEW_MODEL: "not a codex model label",
-    MANOR_ROUTING_CLASSIFIER_MODEL: "gpt-5.5",
     MANOR_SESSION_TITLE_MODEL: "openai-codex/gpt-5.5"
   };
 
@@ -37,7 +36,6 @@ test("memory Codex model env normalization protects active Codex model config ke
   assert.equal(env.MANOR_MEMORY_SYNTHESIS_MODEL, "gpt-5.4-mini");
   assert.equal(env.MANOR_MEMORY_PROMOTION_MODEL, "gpt-5.4-mini");
   assert.equal(env.MANOR_WORKER_REVIEW_MODEL, undefined);
-  assert.equal(env.MANOR_ROUTING_CLASSIFIER_MODEL, "gpt-5.5");
   assert.equal(env.MANOR_SESSION_TITLE_MODEL, "openai-codex/gpt-5.5");
 });
 

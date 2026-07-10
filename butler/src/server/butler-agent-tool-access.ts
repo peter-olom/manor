@@ -144,15 +144,6 @@ export type ButlerAgentToolAccess = {
   ): Promise<ProofScreenshotReview>;
   getThreadBudgetLimitMessage(threadId: string): string | null;
   getOperatorCloseoutBlocker(threadId: string): string | null;
-  classifyDelegationRoute(input: {
-    task: string;
-    goal?: string | null;
-    cwd: string;
-    attachmentCount?: number;
-  }): Promise<ButlerRoutingDecisionView>;
-  getDelegationQuestionRoundCount(key: string): number;
-  noteDelegationQuestionRound(key: string): number;
-  clearDelegationQuestionRounds(key: string): void;
   requestManorRestartAuthorization(input: {
     mode?: unknown;
     target?: unknown;

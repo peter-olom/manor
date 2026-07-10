@@ -81,7 +81,6 @@ import { readJsonStateFile, writeJsonStateFileAtomic } from "./json-state-file.j
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import { createManorModelRegistry, modelToModelOption } from "./model-provider-config.js";
 import { loadWorkerThread, sendWorkerMessage, type WorkerClientAccess } from "./worker-client-router.js";
-import type { ButlerRoutingClassifier } from "./butler-routing-classifier.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
 import { ensureTaskWorktree, resolveExistingWorkspaceCwd, resolveWorkspaceBranchName, resolveWorkspaceProjectInfo, taskRequiresManagedWorktree } from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
@@ -147,7 +146,6 @@ export class ButlerAgentService extends EventEmitter {
   private readonly refreshRuntimeInventory: (() => Promise<void>) | null;
   private readonly manorRestartRequests: ManorRestartRequestState;
   private readonly memoryScheduler: MemoryUpdateScheduler | null;
-  private readonly routingClassifier: ButlerRoutingClassifier | null;
   private readonly systemPromptSuffix: string | null;
   private readonly operatorSink: ButlerOperatorSink | null;
   private modelRegistry: ModelRegistry | null = null;
@@ -177,7 +175,6 @@ export class ButlerAgentService extends EventEmitter {
   private readonly pendingChatCallbacks = new Map<string, PendingChatCallback>();
   private readonly deliveredCloseoutIds = new Set<string>();
   private readonly supervisionSmokePlans = new Map<string, SupervisionSmokePlan>();
-  private readonly delegationQuestionRounds = new Map<string, number>();
   private readonly delegationInstructionCache = new Map<string, { signature: string; text: string; contract: CodexThreadExecutionContractView }>();
   private readonly actedSmokeMilestoneIds = new Set<string>();
   private readonly storeChangeHandler = () => this.handleStoreChange();
@@ -213,7 +210,6 @@ export class ButlerAgentService extends EventEmitter {
     this.artifactsDir = options.artifactsDir;
     this.refreshRuntimeInventory = options.refreshRuntimeInventory ?? null;
     this.memoryScheduler = options.memoryScheduler ?? null;
-    this.routingClassifier = options.routingClassifier ?? null;
     this.systemPromptSuffix = options.systemPromptSuffix?.trim() || null;
     this.operatorSink = options.operatorSink ?? null;
     this.operatorMessageStatePath = path.join(this.sessionDir, "operator-messages.json");
@@ -794,38 +790,6 @@ export class ButlerAgentService extends EventEmitter {
   }
 
   private getOperatorCloseoutBlocker(threadId: string): string | null { return getCloseoutBlocker(this.store, threadId); }
-
-  private async classifyDelegationRoute(input: {
-    task: string;
-    goal?: string | null;
-    cwd: string;
-    attachmentCount?: number;
-  }): Promise<ButlerRoutingDecisionView> {
-    if (!this.routingClassifier) {
-      throw new Error("Routing classifier is unavailable.");
-    }
-    return this.routingClassifier.classify({
-      task: input.task,
-      goal: input.goal,
-      cwd: input.cwd,
-      attachmentCount: input.attachmentCount,
-      goalModeAvailable: true
-    });
-  }
-
-  private getDelegationQuestionRoundCount(key: string): number {
-    return this.delegationQuestionRounds.get(key) ?? 0;
-  }
-
-  private noteDelegationQuestionRound(key: string): number {
-    const next = this.getDelegationQuestionRoundCount(key) + 1;
-    this.delegationQuestionRounds.set(key, next);
-    return next;
-  }
-
-  private clearDelegationQuestionRounds(key: string): void {
-    this.delegationQuestionRounds.delete(key);
-  }
 
   get pendingManorRestartRequest(): AppSnapshot["butler"]["pendingManorRestartRequest"] { return this.manorRestartRequests.pendingRequest; }
   get authorizedManorRestartRequest(): AppSnapshot["butler"]["authorizedManorRestartRequest"] { return this.manorRestartRequests.authorizedRequest; }

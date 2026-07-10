@@ -4723,44 +4723,6 @@ a:hover {
   gap: 16px;
 }
 
-.settings-overview {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 24px;
-  align-items: start;
-}
-
-.settings-overview-block {
-  display: grid;
-  gap: 18px;
-  min-height: 0;
-  padding: 22px 24px;
-  border-radius: var(--radius-lg);
-  background: var(--bg-elevated);
-}
-
-.settings-overview-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 14px;
-  min-height: 28px;
-}
-
-.settings-overview-head h3 {
-  margin: 0;
-  font-size: 14.5px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-  color: var(--text);
-}
-
-.settings-overview-head-hint {
-  color: var(--text-subtle);
-  font-size: 11.5px;
-  font-weight: 500;
-}
-
 .settings-diag-summary {
   display: flex;
   flex-wrap: wrap;
@@ -4796,7 +4758,6 @@ a:hover {
 
 .settings-field {
   display: grid;
-  grid-template-rows: auto minmax(40px, auto) minmax(16px, auto);
   gap: 7px;
   min-width: 0;
   color: var(--text-muted);
@@ -5083,7 +5044,7 @@ a:hover {
   color: var(--danger);
 }
 
-/* Capability status cards (Overview) */
+/* Capability status cards */
 .settings-capability-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -5362,10 +5323,6 @@ a:hover {
 }
 
 /* Per-section identity — color only the heading text, no extra rules */
-#settings-section-overview .settings-section h2 {
-  color: var(--accent);
-}
-
 #settings-section-providers .settings-section h2 {
   color: var(--success);
 }
@@ -5383,11 +5340,6 @@ a:hover {
 }
 
 /* Section-specific tweaks that make each page feel composed */
-
-/* Overview: single column, stacked cards */
-#settings-section-overview .settings-overview {
-  grid-template-columns: minmax(0, 1fr);
-}
 
 /* Providers: stack the secret-source rows on their own line and give
    the toggles a touch more room so they read as a group */
@@ -5440,7 +5392,6 @@ a:hover {
     flex-wrap: wrap;
   }
 
-  .settings-overview,
   .settings-section-body {
     grid-template-columns: 1fr;
   }

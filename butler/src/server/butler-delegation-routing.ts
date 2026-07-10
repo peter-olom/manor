@@ -1,10 +1,9 @@
 import { inferTaskCategory, inferWorkDepth } from "./thread-contract.js";
 import type { ButlerRoutingDecisionView } from "./types.js";
 
-export function buildFallbackRoutingDecision(input: {
+export function buildDelegationRoutingDecision(input: {
   task: string;
   goal?: string | null;
-  fallbackReason: string;
 }): ButlerRoutingDecisionView {
   const taskText = [input.task, input.goal ?? ""].filter(Boolean).join("\n");
   const taskClass = inferTaskCategory(taskText);
@@ -22,19 +21,19 @@ export function buildFallbackRoutingDecision(input: {
 
   return {
     taskClass,
-    confidence: 0.45,
+    confidence: 0.75,
     questionSet: [],
     goalRecommendation: longWork
-      ? { mode: "native_goal", goal: input.goal ?? input.task, fallbackReason: input.fallbackReason }
+      ? { mode: "native_goal", goal: input.goal ?? input.task, fallbackReason: null }
       : { mode: "none", goal: null, fallbackReason: null },
     reviewRecommendation: {
       target: reviewRequired ? "codex_review" : "none",
       required: reviewRequired,
-      reason: reviewRequired ? "Heuristic fallback requires review for this risk profile." : null
+      reason: reviewRequired ? "Butler's delegation contract requires review for this risk profile." : null
     },
     subAgentRoles: highRisk ? ["adversarial-review"] : [],
     riskLevel: highRisk ? "high" : reviewRequired ? "medium" : "low",
-    fallbackReason: input.fallbackReason,
+    fallbackReason: null,
     createdAt: Date.now()
   };
 }

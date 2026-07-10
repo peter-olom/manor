@@ -55,8 +55,7 @@ export function memoryCodexModelArgs(value: string | null | undefined): string[]
 export const MEMORY_CODEX_MODEL_ENV_KEYS = [
   "MANOR_MEMORY_SYNTHESIS_MODEL",
   "MANOR_MEMORY_PROMOTION_MODEL",
-  "MANOR_WORKER_REVIEW_MODEL",
-  "MANOR_ROUTING_CLASSIFIER_MODEL"
+  "MANOR_WORKER_REVIEW_MODEL"
 ] as const;
 
 export function normalizeMemoryCodexModelEnv(env: NodeJS.ProcessEnv): void {

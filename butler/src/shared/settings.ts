@@ -118,7 +118,6 @@ export type ManorSettings = {
     memorySynthesisModel: string | null;
     sessionTitleModel: string | null;
     sessionTitleTimeoutMs: number;
-    routingClassifierModel: string | null;
     workerReviewModel: string | null;
     memoryPromotionModel: string | null;
   };

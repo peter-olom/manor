@@ -10,7 +10,6 @@ import type { HostControllerClient } from "./host-controller-client.js";
 import type { ImageReferenceStore } from "./image-store.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import type { PairStore } from "./pair-store.js";
-import type { ButlerRoutingClassifier } from "./butler-routing-classifier.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-templates.js";
 import type { SessionTitleGenerator } from "./session-title-generator.js";
@@ -44,7 +43,6 @@ type PairSessionManagerOptions = {
   artifactsDir: string;
   refreshRuntimeInventory?: () => Promise<void>;
   memoryScheduler?: MemoryUpdateScheduler | null;
-  routingClassifier?: ButlerRoutingClassifier | null;
   onButlerPatch?: (payload: ButlerLivePatchView) => void;
   sessionTitleGenerator?: SessionTitleGenerator | null;
   createButlerService?: (options: ConstructorParameters<typeof ButlerAgentService>[0]) => PairButlerService;
@@ -396,7 +394,6 @@ export class PairSessionManager {
       artifactsDir: this.options.artifactsDir,
       refreshRuntimeInventory: this.options.refreshRuntimeInventory,
       memoryScheduler: this.options.memoryScheduler,
-      routingClassifier: this.options.routingClassifier,
       systemPromptSuffix: pairSystemPrompt(pair.id),
       operatorSink: {
         onDelegationAcknowledgement: ({ threadId, text }) => {

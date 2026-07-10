@@ -126,7 +126,6 @@ export const DEFAULT_MANOR_SETTINGS: ManorSettings = {
     memorySynthesisModel: null,
     sessionTitleModel: null,
     sessionTitleTimeoutMs: 15_000,
-    routingClassifierModel: null,
     workerReviewModel: null,
     memoryPromotionModel: null
   },
@@ -417,7 +416,6 @@ export function normalizeManorSettings(value: unknown): ManorSettings {
       memorySynthesisModel: nullableText(modelTasks.memorySynthesisModel),
       sessionTitleModel: nullableText(modelTasks.sessionTitleModel),
       sessionTitleTimeoutMs: integer(modelTasks.sessionTitleTimeoutMs, 15_000, 1_000, 60_000),
-      routingClassifierModel: nullableText(modelTasks.routingClassifierModel),
       workerReviewModel: nullableText(modelTasks.workerReviewModel),
       memoryPromotionModel: nullableText(modelTasks.memoryPromotionModel)
     },
@@ -559,7 +557,6 @@ export function buildManorSettingsFromEnv(env: NodeJS.ProcessEnv = process.env):
   apply("modelTasks", "MANOR_MEMORY_REVIEW_MODEL", (value) => { settings.modelTasks.memorySynthesisModel ??= nullableText(value); });
   apply("modelTasks", "MANOR_SESSION_TITLE_MODEL", (value) => { settings.modelTasks.sessionTitleModel = nullableText(value); });
   apply("modelTasks", "MANOR_SESSION_TITLE_TIMEOUT_MS", (value) => { settings.modelTasks.sessionTitleTimeoutMs = integer(value, settings.modelTasks.sessionTitleTimeoutMs, 1_000, 60_000); });
-  apply("modelTasks", "MANOR_ROUTING_CLASSIFIER_MODEL", (value) => { settings.modelTasks.routingClassifierModel = nullableText(value); });
   apply("modelTasks", "MANOR_WORKER_REVIEW_MODEL", (value) => { settings.modelTasks.workerReviewModel = nullableText(value); });
   apply("modelTasks", "MANOR_MEMORY_PROMOTION_MODEL", (value) => { settings.modelTasks.memoryPromotionModel = nullableText(value); });
 
