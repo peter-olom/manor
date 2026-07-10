@@ -5,7 +5,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 
 const codeXHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
-const registryPath = path.join(codeXHome, "manor", "harness-capabilities.json");
+const registryPath = process.env.MANOR_HARNESS_REGISTRY_PATH || path.join(codeXHome, "manor", "harness-capabilities.json");
 const butlerBaseUrl = process.env.MANOR_BUTLER_BASE_URL || "http://butler:8080";
 const runtimeBrokerBaseUrl = process.env.MANOR_RUNTIME_BROKER_URL || "http://runtime-broker:8090";
 

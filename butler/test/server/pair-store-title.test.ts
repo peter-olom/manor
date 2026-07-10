@@ -194,7 +194,62 @@ test("attachWorker records one Butler-managed worker", async () => {
   assert.equal(updated.worker?.threadId, "thread-1");
   assert.equal(updated.worker?.task, "Fix the checkout retry bug");
   assert.equal(updated.worker?.handoffPrompt, "Run the checks and report evidence.");
+  assert.equal(updated.worker?.runtime, null);
   assert.equal(updated.status, "worker_running");
+});
+
+test("same-thread attachment refresh preserves the recorded worker identity", async () => {
+  const pairStore = await createPairStore();
+  const created = pairStore.createPair();
+  const first = pairStore.attachWorker(created.id, {
+    threadId: "thread-identity",
+    runtime: "pi-rpc",
+    provider: "ollama-cloud",
+    model: "ollama-cloud/glm-5.2",
+    effort: "high",
+    task: "Original task"
+  });
+
+  const refreshed = pairStore.attachWorker(created.id, {
+    threadId: "thread-identity",
+    task: "Refreshed task"
+  });
+
+  assert.equal(refreshed?.worker?.runtime, "pi-rpc");
+  assert.equal(refreshed?.worker?.provider, "ollama-cloud");
+  assert.equal(refreshed?.worker?.model, "ollama-cloud/glm-5.2");
+  assert.equal(refreshed?.worker?.requestedReasoningEffort, "high");
+  assert.equal(refreshed?.worker?.startedAt, first?.worker?.startedAt);
+  assert.equal(refreshed?.worker?.task, "Refreshed task");
+});
+
+test("replacement attachment requires the expected worker and can restore it exactly", async () => {
+  const pairStore = await createPairStore();
+  const empty = pairStore.createPair();
+  pairStore.attachWorker(empty.id, { threadId: "unexpected", replacesThreadId: "missing" });
+  assert.equal(pairStore.getPair(empty.id)?.worker, null);
+
+  const created = pairStore.createPair();
+  pairStore.attachWorker(created.id, {
+    threadId: "thread-old",
+    runtime: "openai",
+    provider: "openai-codex",
+    model: "gpt-5.4",
+    effort: "high",
+    task: "Keep this task"
+  });
+  const original = structuredClone(pairStore.getPair(created.id)?.worker ?? null);
+  pairStore.attachWorker(created.id, {
+    threadId: "thread-new",
+    runtime: "pi-rpc",
+    provider: "opencode-go",
+    model: "opencode-go/minimax-m3",
+    replacesThreadId: "thread-old"
+  });
+
+  assert.equal(pairStore.restoreWorkerIfCurrent(created.id, "thread-new", original), true);
+  assert.deepEqual(pairStore.getPair(created.id)?.worker, original);
+  assert.equal(pairStore.restoreWorkerIfCurrent(created.id, "thread-new", original), false);
 });
 
 test("attachWorker keeps the first worker as the primary pair pipe", async () => {
@@ -216,6 +271,48 @@ test("attachWorker keeps the first worker as the primary pair pipe", async () =>
 
   assert.equal(updated?.worker?.threadId, "thread-primary");
   assert.equal(updated?.worker?.task, "Build the requested app");
+});
+
+test("attachWorker replaces only the named worker and preserves handoff identity", async () => {
+  const pairStore = await createPairStore();
+  const created = pairStore.createPair();
+  pairStore.attachWorker(created.id, {
+    threadId: "thread-codex",
+    runtime: "openai",
+    provider: "openai-codex",
+    model: "gpt-5.4",
+    effort: "high"
+  });
+
+  const updated = pairStore.attachWorker(created.id, {
+    threadId: "thread-pi",
+    runtime: "pi-rpc",
+    provider: "opencode-go",
+    model: "opencode-go/minimax-m3",
+    effort: "medium",
+    replacesThreadId: "thread-codex"
+  });
+
+  assert.deepEqual(updated?.worker && {
+    threadId: updated.worker.threadId,
+    runtime: updated.worker.runtime,
+    provider: updated.worker.provider,
+    model: updated.worker.model,
+    effort: updated.worker.requestedReasoningEffort,
+    handedOffFrom: updated.worker.handedOffFrom
+  }, {
+    threadId: "thread-pi",
+    runtime: "pi-rpc",
+    provider: "opencode-go",
+    model: "opencode-go/minimax-m3",
+    effort: "medium",
+    handedOffFrom: {
+      threadId: "thread-codex",
+      runtime: "openai",
+      provider: "openai-codex",
+      model: "gpt-5.4"
+    }
+  });
 });
 
 test("active workers with an interim blocked report stay running", async () => {

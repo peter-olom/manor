@@ -20,7 +20,9 @@ export async function buildButlerDelegationContract(options: {
   extraNotes?: string[];
   orchestration?: ButlerRoutingDecisionView | null;
   butlerThreadId?: string | null;
+  parentThreadId?: string | null;
   reviewBaselineRoot?: string;
+  reviewBaselineSource?: CodexThreadExecutionContractView | null;
 }): Promise<{ text: string; contract: CodexThreadExecutionContractView; payload: JobPayloadView }> {
   const requestedTask = options.goal ? `${options.task}\n\nGoal: ${options.goal}` : options.task;
   const requestedTaskOnly = options.task.trim();
@@ -46,7 +48,8 @@ export async function buildButlerDelegationContract(options: {
   if (durableTasteNotes.length > 0) notes.push(...durableTasteNotes.map((note) => `Durable operator taste: ${note}`));
   const projectPolicyLines = formatProjectPolicyContextLines({ store: options.store, projectId: project.id });
   if (projectPolicyLines.length > 1) notes.push(...projectPolicyLines.slice(1));
-  const reviewGitRoot = await resolveGitRoot(options.workspace.cwd);
+  const inheritedBaseline = options.reviewBaselineSource ?? null;
+  const reviewGitRoot = inheritedBaseline ? null : await resolveGitRoot(options.workspace.cwd);
   const reviewBaseline = reviewGitRoot ? await captureGitReviewBaseline(reviewGitRoot, options.reviewBaselineRoot) : null;
 
   const baseContract = buildThreadExecutionContract({
@@ -65,11 +68,13 @@ export async function buildButlerDelegationContract(options: {
     ...baseContract,
     requestedTask: requestedTaskOnly,
     operatorGoal,
-    reviewBaselineCwd: reviewBaseline?.cwd ?? null,
-    reviewBaselineSha: reviewBaseline?.sha ?? null,
-    reviewBaselineTreeSha: reviewBaseline?.treeSha ?? null,
-    reviewBaselineObjectDir: reviewBaseline?.objectDir ?? null,
-    reviewBaselineCaptureFailed: Boolean(reviewGitRoot && !reviewBaseline),
+    reviewBaselineCwd: inheritedBaseline?.reviewBaselineCwd ?? reviewBaseline?.cwd ?? null,
+    reviewBaselineSha: inheritedBaseline?.reviewBaselineSha ?? reviewBaseline?.sha ?? null,
+    reviewBaselineTreeSha: inheritedBaseline?.reviewBaselineTreeSha ?? reviewBaseline?.treeSha ?? null,
+    reviewBaselineObjectDir: inheritedBaseline?.reviewBaselineObjectDir ?? reviewBaseline?.objectDir ?? null,
+    reviewBaselineCaptureFailed: inheritedBaseline?.reviewBaselineCaptureFailed ?? Boolean(reviewGitRoot && !reviewBaseline),
+    reviewPeerContexts: inheritedBaseline?.reviewPeerContexts?.map((entry) => ({ ...entry, paths: [...entry.paths] })) ?? [],
+    reviewPeerContextOverflow: inheritedBaseline?.reviewPeerContextOverflow ?? false,
     ...(options.orchestration ? { orchestration: options.orchestration, reviewResults: [] } : {}),
     notes: [...new Set(notes.map((note) => note.trim()).filter(Boolean))]
   };
@@ -78,6 +83,7 @@ export async function buildButlerDelegationContract(options: {
     kind: "delegation",
     instruction: requestedTask,
     butlerThreadId: options.butlerThreadId ?? null,
+    parentThreadId: options.parentThreadId ?? null,
     contract
   });
   return {

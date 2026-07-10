@@ -114,7 +114,6 @@ const selfImprovementRequests = new SelfImprovementRequestState(path.join(stateD
 await selfImprovementRequests.load();
 configureSelfImprovementRequestState(selfImprovementRequests);
 const piAuthPath = path.join(piAgentDir, "auth.json"); const codexAuthPath = path.join(codexHomeDir, "auth.json");
-const piRpcWorkerClient = new PiRpcWorkerClient({ store, piAuthPath, sessionRootDir: path.join(stateDir, "pi-worker-sessions") });
 const modelTasks = new ManorModelTaskRunner({ stateDir, codexHomeDir, piAuthPath });
 const sessionTitleGenerator = new ManorSessionTitleGenerator({
   ...readSessionTitleConfig(),
@@ -144,6 +143,22 @@ memoryEmbeddings.start();
 memorySemanticEdges.start();
 await codexHarness.load();
 await codexHarness.reconcileThreadCapabilities();
+const piRpcWorkerClient = new PiRpcWorkerClient({
+  store,
+  piAuthPath,
+  sessionRootDir: path.join(stateDir, "pi-worker-sessions"),
+  codexHomeDir,
+  butlerBaseUrl: `http://127.0.0.1:${port}`,
+  onThreadCapabilityReady: async (threadId, cwd) => {
+    await codexHarness.ensureThreadCapability(threadId, cwd);
+  },
+  onThreadCapabilityRemoved: async (threadId) => {
+    await codexHarness.revokeThreadCapability(threadId);
+  },
+  onThreadDeleting: async (context) => {
+    await cleanupThreadRuntimeResources(runtimeAccess, context);
+  }
+});
 const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, {
   onThreadCapabilityReady: async (threadId, cwd) => {
     await codexHarness.ensureThreadCapability(threadId, cwd);

@@ -18,10 +18,13 @@ type FakeSession = {
     steer: (text: string) => Promise<void>;
     abort: () => Promise<void>;
     stop: () => Promise<void>;
+    setThinkingLevel?: (level: string) => Promise<void>;
   };
   mapper: PiProviderRuntimeMapper;
   unsubscribe: (() => void) | null;
   cwd: string;
+  provider?: string;
+  model?: string;
   activityVersion: number;
   acceptedEventVersion: number | null;
   eventStreamVersion: number | null;
@@ -30,8 +33,12 @@ type FakeSession = {
 
 type TestClient = {
   sessions: Map<string, FakeSession>;
-  createSession: (threadId: string, cwd: string) => Promise<FakeSession>;
-  startThread: (options: { task: string; cwd?: string; input?: (threadId: string) => Promise<string> }) => Promise<{ threadId: string; turnId: string | null }>;
+  availableModels: Array<Record<string, unknown>>;
+  selectedProvider: string | null;
+  selectedModel: string | null;
+  selectedEffort: "low" | "medium" | "high" | "xhigh" | null;
+  createSession: (threadId: string, cwd: string, provider: string, model: string) => Promise<FakeSession>;
+  startThread: (options: { task: string; cwd?: string; provider?: string; model?: string; effort?: "low" | "medium" | "high" | "xhigh" | null; input?: (threadId: string) => Promise<string> }) => Promise<{ threadId: string; turnId: string | null }>;
   sendMessage: (threadId: string, input: string) => Promise<{ threadId: string; turnId: string | null }>;
   stopThread: (threadId: string) => Promise<boolean>;
   deleteThread: (threadId: string) => Promise<boolean>;
@@ -422,10 +429,13 @@ test("a stopped initial Pi start rejects and removes the phantom session", async
       pendingPromptGenerations: []
     };
     const client = new PiRpcWorkerClient({ store, piAuthPath: path.join(dir, "auth.json"), sessionRootDir: path.join(dir, "sessions") }) as unknown as TestClient;
+    client.availableModels = [{ id: "glm-5.2", provider: "ollama-cloud" }];
     let startedThreadId = "";
-    client.createSession = async (createdThreadId) => {
+    client.createSession = async (createdThreadId, _cwd, provider, model) => {
       startedThreadId = createdThreadId;
       session.threadId = createdThreadId;
+      session.provider = provider;
+      session.model = model;
       client.sessions.set(createdThreadId, session);
       return session;
     };
@@ -433,6 +443,8 @@ test("a stopped initial Pi start rejects and removes the phantom session", async
     const starting = client.startThread({
       task: "Never started",
       cwd: dir,
+      provider: "ollama-cloud",
+      model: "ollama-cloud/glm-5.2",
       input: async (startedThreadId) => {
         assert.equal(await client.stopThread(startedThreadId), true);
         return "Never dispatch this";
@@ -442,6 +454,230 @@ test("a stopped initial Pi start rejects and removes the phantom session", async
     await assert.rejects(starting, StaleWorkerOperationError);
     assert.equal(promptCalls, 0);
     assert.equal(stopCalls, 1);
+    assert.equal(client.sessions.has(startedThreadId), false);
+    assert.equal(store.getThread(startedThreadId), undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Pi creates the harness capability before building the worker payload", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-capability-order-"));
+  try {
+    const store = await createStore(dir);
+    const order: string[] = [];
+    const client = new PiRpcWorkerClient({
+      store,
+      piAuthPath: path.join(dir, "auth.json"),
+      sessionRootDir: path.join(dir, "sessions"),
+      onThreadCapabilityReady: async (threadId) => {
+        assert.ok(store.getThread(threadId));
+        order.push("capability");
+      }
+    }) as unknown as TestClient;
+    client.availableModels = [{ id: "glm-5.2", provider: "ollama-cloud" }];
+    client.createSession = async (threadId, cwd, provider, model) => {
+      const session: FakeSession = {
+        threadId,
+        client: {
+          getState: async () => ({ isStreaming: false }),
+          prompt: async () => { order.push("prompt"); },
+          steer: async () => undefined,
+          abort: async () => undefined,
+          stop: async () => undefined
+        },
+        mapper: new PiProviderRuntimeMapper(threadId),
+        unsubscribe: null,
+        cwd,
+        provider,
+        model,
+        activityVersion: 0,
+        acceptedEventVersion: null,
+        eventStreamVersion: null,
+        pendingPromptGenerations: []
+      };
+      client.sessions.set(threadId, session);
+      return session;
+    };
+
+    await client.startThread({
+      task: "Read the Manor payload",
+      cwd: dir,
+      provider: "ollama-cloud",
+      model: "ollama-cloud/glm-5.2",
+      input: async () => {
+        order.push("payload");
+        return "Bound payload";
+      }
+    });
+
+    assert.deepEqual(order, ["capability", "payload", "prompt"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an exact Pi worker start preserves an explicit null effort", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-null-effort-"));
+  try {
+    const store = await createStore(dir);
+    let thinkingCalls = 0;
+    const client = new PiRpcWorkerClient({
+      store,
+      piAuthPath: path.join(dir, "auth.json"),
+      sessionRootDir: path.join(dir, "sessions")
+    }) as unknown as TestClient;
+    client.availableModels = [{ id: "glm-5.2", provider: "ollama-cloud" }];
+    client.selectedProvider = "ollama-cloud";
+    client.selectedModel = "glm-5.2";
+    client.selectedEffort = "high";
+    client.createSession = async (threadId, cwd, provider, model) => {
+      const session: FakeSession = {
+        threadId,
+        client: {
+          getState: async () => ({ isStreaming: false }),
+          prompt: async () => undefined,
+          steer: async () => undefined,
+          abort: async () => undefined,
+          stop: async () => undefined,
+          setThinkingLevel: async () => { thinkingCalls += 1; }
+        },
+        mapper: new PiProviderRuntimeMapper(threadId),
+        unsubscribe: null,
+        cwd,
+        provider,
+        model,
+        activityVersion: 0,
+        acceptedEventVersion: null,
+        eventStreamVersion: null,
+        pendingPromptGenerations: []
+      };
+      client.sessions.set(threadId, session);
+      return session;
+    };
+
+    const started = await client.startThread({
+      task: "Use provider defaults",
+      cwd: dir,
+      provider: "ollama-cloud",
+      model: "ollama-cloud/glm-5.2",
+      effort: null
+    });
+
+    assert.equal(thinkingCalls, 0);
+    assert.equal(store.getThread(started.threadId)?.requestedReasoningEffort, null);
+    assert.equal(client.selectedEffort, "high");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed Pi worker payload factory removes its thread, capability, and session", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-input-failure-"));
+  try {
+    const store = await createStore(dir);
+    const lifecycle: string[] = [];
+    let stopped = 0;
+    let startedThreadId = "";
+    const client = new PiRpcWorkerClient({
+      store,
+      piAuthPath: path.join(dir, "auth.json"),
+      sessionRootDir: path.join(dir, "sessions"),
+      onThreadCapabilityReady: async () => { lifecycle.push("ready"); },
+      onThreadCapabilityRemoved: async () => { lifecycle.push("removed"); }
+    }) as unknown as TestClient;
+    client.availableModels = [{ id: "glm-5.2", provider: "ollama-cloud" }];
+    client.createSession = async (threadId, cwd, provider, model) => {
+      startedThreadId = threadId;
+      const session: FakeSession = {
+        threadId,
+        client: {
+          getState: async () => ({ isStreaming: false }),
+          prompt: async () => undefined,
+          steer: async () => undefined,
+          abort: async () => undefined,
+          stop: async () => { stopped += 1; }
+        },
+        mapper: new PiProviderRuntimeMapper(threadId),
+        unsubscribe: null,
+        cwd,
+        provider,
+        model,
+        activityVersion: 0,
+        acceptedEventVersion: null,
+        eventStreamVersion: null,
+        pendingPromptGenerations: []
+      };
+      client.sessions.set(threadId, session);
+      return session;
+    };
+
+    await assert.rejects(() => client.startThread({
+      task: "Build payload",
+      cwd: dir,
+      provider: "ollama-cloud",
+      model: "ollama-cloud/glm-5.2",
+      input: async () => { throw new Error("payload factory failed"); }
+    }), /payload factory failed/);
+
+    assert.deepEqual(lifecycle, ["ready", "removed"]);
+    assert.equal(stopped, 1);
+    assert.equal(client.sessions.has(startedThreadId), false);
+    assert.equal(store.getThread(startedThreadId), undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed initial Pi prompt removes its thread, capability, and session", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-prompt-failure-"));
+  try {
+    const store = await createStore(dir);
+    let capabilityRemovals = 0;
+    let stopped = 0;
+    let startedThreadId = "";
+    const client = new PiRpcWorkerClient({
+      store,
+      piAuthPath: path.join(dir, "auth.json"),
+      sessionRootDir: path.join(dir, "sessions"),
+      onThreadCapabilityReady: async () => undefined,
+      onThreadCapabilityRemoved: async () => { capabilityRemovals += 1; }
+    }) as unknown as TestClient;
+    client.availableModels = [{ id: "glm-5.2", provider: "ollama-cloud" }];
+    client.createSession = async (threadId, cwd, provider, model) => {
+      startedThreadId = threadId;
+      const session: FakeSession = {
+        threadId,
+        client: {
+          getState: async () => ({ isStreaming: false }),
+          prompt: async () => { throw new Error("initial prompt failed"); },
+          steer: async () => undefined,
+          abort: async () => undefined,
+          stop: async () => { stopped += 1; }
+        },
+        mapper: new PiProviderRuntimeMapper(threadId),
+        unsubscribe: null,
+        cwd,
+        provider,
+        model,
+        activityVersion: 0,
+        acceptedEventVersion: null,
+        eventStreamVersion: null,
+        pendingPromptGenerations: []
+      };
+      client.sessions.set(threadId, session);
+      return session;
+    };
+
+    await assert.rejects(() => client.startThread({
+      task: "Dispatch",
+      cwd: dir,
+      provider: "ollama-cloud",
+      model: "ollama-cloud/glm-5.2"
+    }), /initial prompt failed/);
+
+    assert.equal(capabilityRemovals, 1);
+    assert.equal(stopped, 1);
     assert.equal(client.sessions.has(startedThreadId), false);
     assert.equal(store.getThread(startedThreadId), undefined);
   } finally {

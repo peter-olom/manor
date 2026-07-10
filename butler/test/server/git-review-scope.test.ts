@@ -112,6 +112,32 @@ test("accepted closeout rotates the review baseline and retires peer attribution
   await cleanupGitReviewBaseline(rotated?.reviewBaselineObjectDir);
 });
 
+test("rotating a handed-off worker keeps a review baseline still referenced by its peer", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-review-shared-baseline-"));
+  const repo = await createRepo(dir);
+  const artifactsDir = path.join(dir, "artifacts");
+  const initial = await captureGitReviewBaseline(repo, path.join(artifactsDir, "review-baselines"));
+  assert.ok(initial);
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  for (const threadId of ["source-worker", "replacement-worker"]) {
+    store.upsertThreadSummary({ id: threadId, source: "appServer", status: "idle", cwd: repo, turns: [] });
+    store.setThreadExecutionContract(threadId, {
+      ...buildThreadExecutionContract({ threadId, workspaceCwd: repo, projectId: "project", projectLabel: "Project", branch: null, taskText: "Change feature.txt.", notes: [] }),
+      reviewBaselineCwd: initial.cwd,
+      reviewBaselineSha: initial.sha,
+      reviewBaselineTreeSha: initial.treeSha,
+      reviewBaselineObjectDir: initial.objectDir
+    });
+  }
+  await writeFile(path.join(repo, "feature.txt"), "handoff state\n", "utf8");
+
+  assert.equal(await rotateWorkerReviewBaseline(store, "source-worker", artifactsDir), true);
+  assert.ok(await stat(initial.objectDir));
+
+  await cleanupGitReviewBaseline(initial.objectDir);
+  await cleanupGitReviewBaseline(store.getThread("source-worker")?.executionContract?.reviewBaselineObjectDir);
+});
+
 test("failed baseline persistence restores the prior baseline and peer attribution", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-review-rotate-rollback-"));
   const repo = await createRepo(dir);

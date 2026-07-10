@@ -4,7 +4,19 @@ import { captureGitReviewBaseline, cleanupGitReviewBaseline } from "./git-review
 import type { ButlerStateStore } from "./state-store.js";
 import type { WorkerReviewBaselineState } from "./state-store-worker-reports.js";
 
-export async function rotateWorkerReviewBaseline(store: ButlerStateStore, threadId: string, artifactsDir: string, options: { flush?: () => Promise<void> } = {}): Promise<boolean> {
+export function isWorkerReviewBaselineReferenced(store: ButlerStateStore, objectDir: string | null | undefined): boolean {
+  if (!objectDir) return false;
+  const target = path.resolve(objectDir);
+  return store.listThreads().some((thread) => {
+    const candidate = store.getThread(thread.id)?.executionContract?.reviewBaselineObjectDir;
+    return Boolean(candidate && path.resolve(candidate) === target);
+  });
+}
+
+export async function rotateWorkerReviewBaseline(store: ButlerStateStore, threadId: string, artifactsDir: string, options: {
+  flush?: () => Promise<void>;
+  cleanup?: typeof cleanupGitReviewBaseline;
+} = {}): Promise<boolean> {
   const contract = store.getThread(threadId)?.executionContract;
   const cwd = contract?.reviewBaselineCwd ?? contract?.workspaceCwd;
   if (!contract || !cwd) return false;
@@ -24,9 +36,11 @@ export async function rotateWorkerReviewBaseline(store: ButlerStateStore, thread
   } catch {
     store.replaceWorkerReviewBaseline(threadId, prior);
     await store.flushSave().catch(() => undefined);
-    await cleanupGitReviewBaseline(baseline.objectDir).catch(() => undefined);
+    await (options.cleanup ?? cleanupGitReviewBaseline)(baseline.objectDir).catch(() => undefined);
     return false;
   }
-  if (prior.objectDir !== baseline.objectDir) await cleanupGitReviewBaseline(prior.objectDir).catch(() => undefined);
+  if (prior.objectDir !== baseline.objectDir && !isWorkerReviewBaselineReferenced(store, prior.objectDir)) {
+    await (options.cleanup ?? cleanupGitReviewBaseline)(prior.objectDir).catch(() => undefined);
+  }
   return true;
 }

@@ -13,6 +13,7 @@ import { assertCallbackReviewCurrent, monitorCallbackReviewCurrent } from "./but
 import type { ModelOption, ReasoningEffort } from "./types.js";
 import { workerExecutionEndAt } from "./worker-execution-window.js";
 import { workerFileChangeAttribution } from "./worker-review-attribution.js";
+import { isWorkerReviewBaselineReferenced } from "./worker-review-baseline.js";
 
 export type WorkerRuntime = "openai" | "pi-rpc";
 export type WorkerRuntimePreference = WorkerRuntime | "auto";
@@ -36,6 +37,7 @@ type WorkerStartOptions = {
   openWindow?: boolean;
   runtime?: WorkerRuntimePreference | null;
   model?: string | null;
+  recordSelection?: boolean;
 };
 
 export type UnifiedWorkerCompose = {
@@ -134,7 +136,12 @@ function qualifyModelOption(model: ModelOption): ModelOption {
 }
 
 function isPiWorkerModel(model: ModelOption): boolean {
-  return !isOpenAiRuntimeProvider(model.provider) && model.provider !== "opencode" && shouldExposeManorModel(model);
+  const settings = getActiveManorSettings();
+  return new Set([
+    settings.providers.ollamaLocal.providerId,
+    settings.providers.ollamaCloud.providerId,
+    settings.providers.opencodeGo.providerId
+  ]).has(model.provider ?? "") && shouldExposeManorModel(model);
 }
 
 function resolveAvailableModelId(modelRef: string | null | undefined, availableModels: ModelOption[]): string | null {
@@ -332,12 +339,22 @@ export async function startWorkerThread(access: WorkerClientAccess, options: Wor
       throw new Error("No connected Worker model is available. Open Settings → Providers to connect or repair a provider, then retry.");
     }
     const runtime = resolveNewWorkerRuntime(access, { ...options, model: preview.model });
-    const compose = await updateUnifiedWorkerCompose(access, { model: preview.model, effort: preview.effort, runtime });
+    const compose = {
+      runtime,
+      provider: preview.provider,
+      model: preview.model,
+      effort: options.effort === null ? null : preview.effort
+    };
     const client = runtime === "pi-rpc" ? access.piRpcWorkerClient : access.codexClient;
     if (!client) throw new Error("Pi RPC worker runtime is not available");
-    const { model: _model, runtime: _runtime, ...clientOptions } = options;
-    const result = await client.startThread({ ...clientOptions, effort: compose.effort });
-    if (compose.provider && compose.model) {
+    const { runtime: _runtime, recordSelection: _recordSelection, ...clientOptions } = options;
+    const result = await client.startThread({
+      ...clientOptions,
+      provider: compose.provider,
+      model: compose.model,
+      effort: compose.effort
+    });
+    if (options.recordSelection !== false && compose.provider && compose.model) {
       access.recordSuccessfulWorkerSelection?.({ provider: compose.provider, model: compose.model, effort: compose.effort });
     }
     return {
@@ -468,7 +485,9 @@ export async function deleteWorkerThread(access: WorkerClientAccess, threadId: s
   if (access.store.getThread(threadId)) {
     throw new Error(typeof cleanupError === "string" && cleanupError ? cleanupError : `Worker job ${threadId} could not be deleted.`);
   }
-  await (access.cleanupReviewBaseline ?? cleanupGitReviewBaseline)(baselineObjectDir).catch(() => undefined);
+  if (!isWorkerReviewBaselineReferenced(access.store, baselineObjectDir)) {
+    await (access.cleanupReviewBaseline ?? cleanupGitReviewBaseline)(baselineObjectDir).catch(() => undefined);
+  }
   return result;
 }
 
@@ -494,6 +513,8 @@ export async function deleteAllWorkerThreads(access: WorkerClientAccess): Promis
     };
   } finally {
     const deletedIds = threadIds.filter((threadId) => !access.store.getThread(threadId));
-    await Promise.allSettled(deletedIds.map((threadId) => (access.cleanupReviewBaseline ?? cleanupGitReviewBaseline)(baselineObjectDirs.get(threadId))));
+    const cleanupDirs = [...new Set(deletedIds.map((threadId) => baselineObjectDirs.get(threadId)).filter((value): value is string => Boolean(value)))]
+      .filter((objectDir) => !isWorkerReviewBaselineReferenced(access.store, objectDir));
+    await Promise.allSettled(cleanupDirs.map((objectDir) => (access.cleanupReviewBaseline ?? cleanupGitReviewBaseline)(objectDir)));
   }
 }

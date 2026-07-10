@@ -15,7 +15,7 @@ import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-t
 import type { SessionTitleGenerator } from "./session-title-generator.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { ButlerMessageView, ButlerLivePatchView, ModelOption } from "./types.js";
-import type { PairChat, PairCodexModelOption, PairDetail, PairMessage, PairComposeSettings, PairSummary } from "../shared/pairing.js";
+import type { PairChat, PairCodexModelOption, PairDetail, PairMessage, PairComposeSettings, PairSummary, PairWorker } from "../shared/pairing.js";
 import { DEFAULT_THINKING_LEVELS } from "../shared/pairing.js";
 import { pairTitleIsDefault } from "./pair-store.js";
 import { getUnifiedWorkerCompose, loadWorkerThread, updateUnifiedWorkerCompose, updateWorkerThreadEffort, type WorkerClientAccess } from "./worker-client-router.js";
@@ -23,7 +23,7 @@ import { parseProviderModelRef } from "./model-provider-config.js";
 
 type PairButlerService = Pick<
   ButlerAgentService,
-  "dispose" | "ensureExternalWorkerDelegation" | "getMessagePage" | "getShellSnapshot" | "on" | "prompt" | "refreshModelSettings" | "retryBlockedCallbackReviews" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings"
+  "dispose" | "ensureExternalWorkerDelegation" | "getMessagePage" | "getShellSnapshot" | "handoffWorker" | "on" | "prompt" | "refreshModelSettings" | "retryBlockedCallbackReviews" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings"
 >;
 
 type PairSessionManagerOptions = {
@@ -161,8 +161,24 @@ export class PairSessionManager {
   private readonly services = new Map<string, { service: PairButlerService; started: Promise<void> }>();
   private readonly titleInFlight = new Set<string>();
   private readonly titleAttempted = new Set<string>();
+  private readonly handoffTails = new Map<string, Promise<void>>();
 
   constructor(private readonly options: PairSessionManagerOptions) {}
+
+  private async runSerializedPairHandoff<T>(pairId: string, run: () => Promise<T>): Promise<T> {
+    const previous = this.handoffTails.get(pairId) ?? Promise.resolve();
+    let release!: () => void;
+    const turn = new Promise<void>((resolve) => { release = resolve; });
+    const tail = previous.catch(() => undefined).then(() => turn);
+    this.handoffTails.set(pairId, tail);
+    await previous.catch(() => undefined);
+    try {
+      return await run();
+    } finally {
+      release();
+      if (this.handoffTails.get(pairId) === tail) this.handoffTails.delete(pairId);
+    }
+  }
 
   private getWorkerClientAccess(): WorkerClientAccess {
     return {
@@ -198,13 +214,21 @@ export class PairSessionManager {
     task?: string | null;
     cwd?: string | null;
     handoffPrompt?: string | null;
+    runtime?: "openai" | "pi-rpc" | null;
+    provider?: string | null;
+    model?: string | null;
+    effort?: string | null;
   }): Promise<PairDetail> {
     const pair = this.options.pairStore.createPair({ title: input.title, defaultCwd: input.defaultCwd });
     this.options.pairStore.attachWorker(pair.id, {
       threadId: input.threadId,
       task: input.task,
       cwd: input.cwd,
-      handoffPrompt: input.handoffPrompt
+      handoffPrompt: input.handoffPrompt,
+      runtime: input.runtime,
+      provider: input.provider,
+      model: input.model,
+      effort: input.effort
     });
     const service = await this.ensureService(pair.id);
     await service.ensureExternalWorkerDelegation(input.threadId);
@@ -288,7 +312,7 @@ export class PairSessionManager {
 
   async setCodexEffort(pairId: string, effort: string | null): Promise<PairDetail | null> {
     const pair = this.options.pairStore.getPair(pairId);
-    const compose = getUnifiedWorkerCompose(this.getWorkerClientAccess(), pair?.codexModel ?? null, effort, "auto");
+    const compose = getUnifiedWorkerCompose(this.getWorkerClientAccess(), pair?.worker?.model ?? pair?.codexModel ?? null, effort, "auto");
     const resolvedEffort = compose.effort;
     if (!pair?.worker) {
       if (resolvedEffort) await updateUnifiedWorkerCompose(this.getWorkerClientAccess(), { model: pair?.codexModel ?? null, effort: resolvedEffort as never, runtime: "auto" });
@@ -297,9 +321,8 @@ export class PairSessionManager {
     }
     if (resolvedEffort) {
       await updateWorkerThreadEffort(this.getWorkerClientAccess(), pair.worker.threadId, resolvedEffort as never);
-      await updateUnifiedWorkerCompose(this.getWorkerClientAccess(), { model: pair.codexModel ?? null, effort: resolvedEffort as never, runtime: "auto" });
     }
-    this.options.pairStore.updatePairComposeOverrides(pairId, { codexEffort: resolvedEffort });
+    this.options.pairStore.updateWorkerEffort(pairId, pair.worker.threadId, resolvedEffort);
     return this.getPairDetail(pairId, null, 120);
   }
 
@@ -312,12 +335,32 @@ export class PairSessionManager {
       throw new Error("Selected worker model is not available");
     }
     const effort = chooseEffortForModel(toPairModelOptions([model])[0] ?? null, pair.codexEffort ?? pair.worker?.requestedReasoningEffort ?? compose.effort ?? null);
-    if (pair.worker && effort) {
-      await updateWorkerThreadEffort(this.getWorkerClientAccess(), pair.worker.threadId, effort as never);
+    if (!pair.worker) {
+      await updateUnifiedWorkerCompose(this.getWorkerClientAccess(), { model: modelId, effort: effort as never, runtime: "auto" });
     }
-    await updateUnifiedWorkerCompose(this.getWorkerClientAccess(), { model: modelId, effort: effort as never, runtime: "auto" });
     this.options.pairStore.updatePairComposeOverrides(pairId, { codexModel: modelId, codexEffort: effort });
     return this.getPairDetail(pairId, null, 120);
+  }
+
+  async handoffWorker(pairId: string, modelId: string, requestedEffort: string | null): Promise<PairDetail | null> {
+    return this.runSerializedPairHandoff(pairId, async () => {
+      const pair = this.options.pairStore.getPair(pairId);
+      if (!pair) return null;
+      if (!pair.worker) throw new Error("No active worker is available to hand off");
+      if (pair.worker.model === modelId) throw new Error("That worker model is already active. Change Thinking directly.");
+      const compose = getUnifiedWorkerCompose(this.getWorkerClientAccess(), modelId, requestedEffort, "auto");
+      const model = compose.availableModels.find((entry) => entry.id === modelId);
+      if (!model) throw new Error("Selected worker model is not available");
+      const effort = chooseEffortForModel(toPairModelOptions([model])[0] ?? null, requestedEffort ?? compose.effort);
+      const service = await this.ensureService(pairId);
+      await service.handoffWorker({
+        sourceThreadId: pair.worker.threadId,
+        model: modelId,
+        effort: effort as never,
+        butlerThreadId: pair.butlerSessionId
+      });
+      return this.getPairDetail(pairId, null, 120);
+    });
   }
 
   private resolveCompose(pair: PairChat, service: PairButlerService): PairComposeSettings {
@@ -455,19 +498,42 @@ export class PairSessionManager {
       memoryScheduler: this.options.memoryScheduler,
       systemPromptSuffix: pairSystemPrompt(pair.id),
       operatorSink: {
-        onDelegationAcknowledgement: ({ threadId, text, model, effort }) => {
+        onDelegationAcknowledgement: ({ threadId, text, runtime, provider, model, effort, replacesThreadId }) => {
           const thread = this.options.store.getThread(threadId);
+          const before = this.options.pairStore.getPair(pair.id);
+          const previousWorker: PairWorker | null = before?.worker ? {
+            ...before.worker,
+            handedOffFrom: before.worker.handedOffFrom ? { ...before.worker.handedOffFrom } : null
+          } : null;
+          const attached = this.options.pairStore.attachWorker(pair.id, {
+            threadId,
+            task: thread?.executionContract?.requestedTask ?? thread?.supervisor.latestUserPrompt ?? null,
+            cwd: thread?.cwd ?? null,
+            handoffPrompt: text,
+            runtime,
+            provider,
+            model,
+            effort,
+            replacesThreadId
+          });
+          if (attached?.worker?.threadId !== threadId) return { attached: false };
           this.options.pairStore.updatePairComposeOverrides(pair.id, {
             codexModel: model ?? null,
             codexEffort: effort ?? null
           });
-          this.options.pairStore.attachWorker(pair.id, {
-            threadId,
-            task: thread?.executionContract?.requestedTask ?? thread?.supervisor.latestUserPrompt ?? null,
-            cwd: thread?.cwd ?? null,
-            handoffPrompt: text
-          });
           this.syncPairSnapshot(pair.id);
+          return {
+            attached: true,
+            rollback: () => {
+              if (!this.options.pairStore.restoreWorkerIfCurrent(pair.id, threadId, previousWorker)) return false;
+              this.options.pairStore.updatePairComposeOverrides(pair.id, {
+                codexModel: before?.codexModel ?? null,
+                codexEffort: before?.codexEffort ?? null
+              });
+              this.syncPairSnapshot(pair.id);
+              return true;
+            }
+          };
         },
         onOperatorReply: () => this.syncPairSnapshot(pair.id)
       },

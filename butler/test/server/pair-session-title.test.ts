@@ -17,6 +17,10 @@ class FakeButlerService extends EventEmitter {
   startCount = 0;
   pending = false;
   trackedExternalThreads: string[] = [];
+  handoffs: Array<{ sourceThreadId: string; model: string; effort: string | null }> = [];
+  handoffDelayMs = 0;
+  concurrentHandoffs = 0;
+  maxConcurrentHandoffs = 0;
   retryReviewCount = 0;
   compose: {
     provider: string | null;
@@ -59,6 +63,17 @@ class FakeButlerService extends EventEmitter {
   retryBlockedCallbackReviews(): boolean {
     this.retryReviewCount += 1;
     return true;
+  }
+
+  async handoffWorker(input: { sourceThreadId: string; model: string; effort: string | null }): Promise<void> {
+    this.concurrentHandoffs += 1;
+    this.maxConcurrentHandoffs = Math.max(this.maxConcurrentHandoffs, this.concurrentHandoffs);
+    try {
+      this.handoffs.push(input);
+      if (this.handoffDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.handoffDelayMs));
+    } finally {
+      this.concurrentHandoffs -= 1;
+    }
   }
 
   setThinkingLevel(_level: never): void {}
@@ -268,9 +283,27 @@ test("createWorkerPair registers external work for Butler review", async () => {
   const { manager, service, store } = await createManager();
   store.upsertThreadSummary({ id: "external-worker", source: "appServer", status: "active", turns: [] });
 
-  await manager.createWorkerPair({ threadId: "external-worker", task: "Improve Manor" });
+  const detail = await manager.createWorkerPair({
+    threadId: "external-worker",
+    task: "Improve Manor",
+    runtime: "pi-rpc",
+    provider: "opencode-go",
+    model: "opencode-go/minimax-m3",
+    effort: "high"
+  });
 
   assert.deepEqual(service.trackedExternalThreads, ["external-worker"]);
+  assert.deepEqual({
+    runtime: detail.worker?.runtime,
+    provider: detail.worker?.provider,
+    model: detail.worker?.model,
+    effort: detail.worker?.requestedReasoningEffort
+  }, {
+    runtime: "pi-rpc",
+    provider: "opencode-go",
+    model: "opencode-go/minimax-m3",
+    effort: "high"
+  });
 });
 
 test("startup resumes Butler services for persisted active Worker sessions", async () => {
@@ -446,7 +479,7 @@ test("an empty Butler provider inventory blocks chat with a settings action mess
   await assert.rejects(() => manager.sendOperatorMessage({ pairId: pair.id, text: "Hello", imageReferenceIds: [], fileReferenceIds: [] }), /Open Settings/);
 });
 
-test("attached worker model switch skips thread effort update when target model has no effort", async () => {
+test("attached worker model selection changes only the next-worker default", async () => {
   const noEffortModel: ModelOption = {
     id: "gpt-chat",
     label: "GPT Chat",
@@ -464,6 +497,80 @@ test("attached worker model switch skips thread effort update when target model 
   await manager.setCodexModel(pair.id, "gpt-chat");
 
   assert.deepEqual(threadEffortUpdates, []);
-  assert.deepEqual(codexUpdates, [{ model: "gpt-chat", effort: null }]);
+  assert.deepEqual(codexUpdates, []);
   assert.equal(pairStore.getPair(pair.id)?.codexEffort, null);
+});
+
+test("handoffWorker resolves the target model without mutating the active worker", async () => {
+  const current: ModelOption = {
+    id: "gpt-5.4", label: "GPT-5.4", provider: null, supportsReasoning: true,
+    supportedThinkingLevels: ["medium", "high"], supportedReasoningEfforts: ["medium", "high"], defaultReasoningEffort: "medium"
+  };
+  const target: ModelOption = {
+    id: "gpt-5.5", label: "GPT-5.5", provider: null, supportsReasoning: true,
+    supportedThinkingLevels: ["high", "xhigh"], supportedReasoningEfforts: ["high", "xhigh"], defaultReasoningEffort: "high"
+  };
+  const { manager, pairStore, service, store } = await createManager(null, undefined, { codexModels: [current, target] });
+  const pair = await manager.createPair();
+  store.upsertThreadSummary({ id: "worker-current", source: "appServer", status: "idle", turns: [] });
+  pairStore.attachWorker(pair.id, { threadId: "worker-current", runtime: "openai", provider: "openai-codex", model: current.id, effort: "medium" });
+
+  await manager.handoffWorker(pair.id, target.id, "xhigh");
+
+  assert.deepEqual(service.handoffs, [{ sourceThreadId: "worker-current", model: target.id, effort: "xhigh", butlerThreadId: "fake-session" }]);
+  assert.equal(pairStore.getPair(pair.id)?.worker?.model, current.id);
+});
+
+test("handoffWorker serializes competing replacements for one pair", async () => {
+  const current: ModelOption = {
+    id: "gpt-current", label: "Current", provider: null, supportsReasoning: true,
+    supportedThinkingLevels: ["high"], supportedReasoningEfforts: ["high"], defaultReasoningEffort: "high"
+  };
+  const firstTarget = { ...current, id: "gpt-first", label: "First" };
+  const secondTarget = { ...current, id: "gpt-second", label: "Second" };
+  const { manager, pairStore, service, store } = await createManager(null, undefined, { codexModels: [current, firstTarget, secondTarget] });
+  const pair = await manager.createPair();
+  store.upsertThreadSummary({ id: "worker-current", source: "appServer", status: "idle", turns: [] });
+  pairStore.attachWorker(pair.id, { threadId: "worker-current", runtime: "openai", provider: "openai-codex", model: current.id, effort: "high" });
+  service.handoffDelayMs = 20;
+
+  await Promise.all([
+    manager.handoffWorker(pair.id, firstTarget.id, "high"),
+    manager.handoffWorker(pair.id, secondTarget.id, "high")
+  ]);
+
+  assert.equal(service.maxConcurrentHandoffs, 1);
+  assert.deepEqual(service.handoffs.map((handoff) => handoff.model), [firstTarget.id, secondTarget.id]);
+});
+
+test("pair attachment acknowledgement uses compare-and-swap and exposes an exact rollback", async () => {
+  let serviceOptions: {
+    operatorSink?: {
+      onDelegationAcknowledgement?: (input: Record<string, unknown>) => { attached: boolean; rollback?: () => boolean } | void;
+    };
+  } | null = null;
+  const { manager, pairStore, store } = await createManager(null, (options) => {
+    serviceOptions = options as typeof serviceOptions;
+  });
+  const pair = await manager.createPair();
+  store.upsertThreadSummary({ id: "worker-old", source: "appServer", status: "idle", turns: [] });
+  store.upsertThreadSummary({ id: "worker-new", source: "pi-rpc", status: "idle", turns: [] });
+  pairStore.attachWorker(pair.id, { threadId: "worker-old", runtime: "openai", provider: "openai-codex", model: "gpt-old", effort: "high", task: "Original" });
+  const original = structuredClone(pairStore.getPair(pair.id)?.worker ?? null);
+
+  const accepted = serviceOptions?.operatorSink?.onDelegationAcknowledgement?.({
+    threadId: "worker-new", text: "Switched", at: Date.now(), runtime: "pi-rpc", provider: "opencode-go",
+    model: "opencode-go/minimax-m3", effort: "medium", replacesThreadId: "worker-old"
+  });
+  assert.equal(accepted?.attached, true);
+  assert.equal(pairStore.getPair(pair.id)?.worker?.threadId, "worker-new");
+  assert.equal(accepted?.rollback?.(), true);
+  assert.deepEqual(pairStore.getPair(pair.id)?.worker, original);
+
+  const stale = serviceOptions?.operatorSink?.onDelegationAcknowledgement?.({
+    threadId: "worker-new", text: "Stale", at: Date.now(), runtime: "pi-rpc", provider: "opencode-go",
+    model: "opencode-go/minimax-m3", effort: "medium", replacesThreadId: "worker-someone-else"
+  });
+  assert.equal(stale?.attached, false);
+  assert.deepEqual(pairStore.getPair(pair.id)?.worker, original);
 });

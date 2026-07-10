@@ -146,6 +146,39 @@ test("a send that completes after stop is interrupted without updating thread st
   }
 });
 
+test("a Codex worker follow-up stays on its thread model when the global default changes", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-codex-pinned-follow-up-"));
+  try {
+    const threadId = "thread-pinned-follow-up";
+    const store = await createStore(dir);
+    store.upsertThreadSummary({ id: threadId, cwd: dir, status: "idle", turns: [] });
+    store.setThreadRequestedReasoningEffort(threadId, "high");
+    let sentParams: Record<string, unknown> | null = null;
+    const client = new CodexAppServerClient("ws://127.0.0.1:1", store, dir) as unknown as {
+      selectedModel: string | null;
+      codexProviderAdapter: {
+        sendTurn: (threadId: string, input: Record<string, unknown>) => Promise<unknown>;
+      };
+      directControlThreadIds: Set<string>;
+      sendMessage: (threadId: string, input: string) => Promise<{ threadId: string; turnId: string | null }>;
+    };
+    client.selectedModel = "different-global-default";
+    client.directControlThreadIds.add(threadId);
+    client.codexProviderAdapter = {
+      sendTurn: async (_id, params) => {
+        sentParams = params;
+        return { threadId, turnId: "pinned-turn", turn: { id: "pinned-turn", status: "inProgress", items: [] } };
+      }
+    };
+
+    assert.deepEqual(await client.sendMessage(threadId, "Continue"), { threadId, turnId: "pinned-turn" });
+    assert.equal(sentParams?.model, undefined);
+    assert.equal(sentParams?.effort, "high");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a newer send supersedes an older pending send", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "manor-codex-send-supersession-"));
   try {
@@ -496,6 +529,165 @@ test("a stopped initial Codex start rejects and removes the phantom thread", asy
 
     await assert.rejects(starting, StaleWorkerOperationError);
     assert.equal(sendCalls, 0);
+    assert.equal(store.getThread(threadId), undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed Codex worker payload factory removes its thread and capability", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-codex-input-failure-"));
+  try {
+    const threadId = "thread-input-failure";
+    const store = await createStore(dir);
+    const lifecycle: string[] = [];
+    let sendCalls = 0;
+    const client = new CodexAppServerClient("ws://127.0.0.1:1", store, dir, {
+      onThreadCapabilityReady: async () => { lifecycle.push("ready"); },
+      onThreadCapabilityRemoved: async () => {
+        assert.ok(store.getThread(threadId));
+        lifecycle.push("removed");
+      }
+    }) as unknown as {
+      codexProviderAdapter: {
+        startThread: () => Promise<unknown>;
+        sendTurn: () => Promise<unknown>;
+        unsubscribeThread: () => Promise<void>;
+      };
+      startThread: (options: { task: string; cwd: string; input: () => Promise<string> }) => Promise<unknown>;
+    };
+    client.codexProviderAdapter = {
+      startThread: async () => ({ threadId, thread: { id: threadId, cwd: dir, status: "idle", turns: [] } }),
+      sendTurn: async () => { sendCalls += 1; return { threadId }; },
+      unsubscribeThread: async () => {
+        assert.equal(store.getThread(threadId), undefined);
+        lifecycle.push("unsubscribed");
+      }
+    };
+
+    await assert.rejects(() => client.startThread({
+      task: "Build payload",
+      cwd: dir,
+      input: async () => { throw new Error("payload factory failed"); }
+    }), /payload factory failed/);
+
+    assert.deepEqual(lifecycle, ["ready", "removed", "unsubscribed"]);
+    assert.equal(sendCalls, 0);
+    assert.equal(store.getThread(threadId), undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("failed Codex start capability revocation preserves the durable thread and subscription", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-codex-revoke-failure-"));
+  try {
+    const threadId = "thread-revoke-failure";
+    const store = await createStore(dir);
+    let capabilityReadyCalls = 0;
+    let unsubscribeCalls = 0;
+    const client = new CodexAppServerClient("ws://127.0.0.1:1", store, dir, {
+      onThreadCapabilityReady: async () => { capabilityReadyCalls += 1; },
+      onThreadCapabilityRemoved: async () => { throw new Error("capability revoke failed"); }
+    }) as unknown as {
+      codexProviderAdapter: {
+        startThread: () => Promise<unknown>;
+        sendTurn: () => Promise<unknown>;
+        unsubscribeThread: () => Promise<void>;
+      };
+      startThread: (options: { task: string; cwd: string; input: () => Promise<string> }) => Promise<unknown>;
+    };
+    client.codexProviderAdapter = {
+      startThread: async () => ({ threadId, thread: { id: threadId, cwd: dir, status: "idle", turns: [] } }),
+      sendTurn: async () => ({ threadId }),
+      unsubscribeThread: async () => { unsubscribeCalls += 1; }
+    };
+
+    await assert.rejects(() => client.startThread({
+      task: "Build payload",
+      cwd: dir,
+      input: async () => { throw new Error("payload factory failed"); }
+    }), /capability revoke failed/);
+
+    assert.ok(store.getThread(threadId));
+    assert.equal(store.listDeletedCodexThreadIds().includes(threadId), false);
+    assert.equal(capabilityReadyCalls, 2);
+    assert.equal(unsubscribeCalls, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("failed Codex start persistence restores capability, thread, and subscription state", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-codex-cleanup-persist-failure-"));
+  try {
+    const threadId = "thread-cleanup-persist-failure";
+    const store = await createStore(dir);
+    let capabilityReadyCalls = 0;
+    let capabilityRemovalCalls = 0;
+    let unsubscribeCalls = 0;
+    const client = new CodexAppServerClient("ws://127.0.0.1:1", store, dir, {
+      onThreadCapabilityReady: async () => { capabilityReadyCalls += 1; },
+      onThreadCapabilityRemoved: async () => { capabilityRemovalCalls += 1; }
+    }) as unknown as {
+      codexProviderAdapter: {
+        startThread: () => Promise<unknown>;
+        sendTurn: () => Promise<unknown>;
+        unsubscribeThread: () => Promise<void>;
+      };
+      startThread: (options: { task: string; cwd: string; input: () => Promise<string> }) => Promise<unknown>;
+    };
+    client.codexProviderAdapter = {
+      startThread: async () => ({ threadId, thread: { id: threadId, cwd: dir, status: "idle", turns: [] } }),
+      sendTurn: async () => ({ threadId }),
+      unsubscribeThread: async () => { unsubscribeCalls += 1; }
+    };
+    (store as unknown as { removeThreadDurably(threadId: string): Promise<boolean> }).removeThreadDurably = async () => {
+      throw new Error("state persistence failed");
+    };
+
+    await assert.rejects(() => client.startThread({
+      task: "Build payload",
+      cwd: dir,
+      input: async () => { throw new Error("payload factory failed"); }
+    }), /state persistence failed/);
+
+    assert.ok(store.getThread(threadId));
+    assert.equal(store.listDeletedCodexThreadIds().includes(threadId), false);
+    assert.equal(capabilityRemovalCalls, 1);
+    assert.equal(capabilityReadyCalls, 2);
+    assert.equal(unsubscribeCalls, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed initial Codex turn removes its thread and capability", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-codex-turn-failure-"));
+  try {
+    const threadId = "thread-turn-failure";
+    const store = await createStore(dir);
+    let capabilityRemovals = 0;
+    const client = new CodexAppServerClient("ws://127.0.0.1:1", store, dir, {
+      onThreadCapabilityReady: async () => undefined,
+      onThreadCapabilityRemoved: async () => { capabilityRemovals += 1; }
+    }) as unknown as {
+      codexProviderAdapter: {
+        startThread: () => Promise<unknown>;
+        sendTurn: () => Promise<unknown>;
+        unsubscribeThread: () => Promise<void>;
+      };
+      startThread: (options: { task: string; cwd: string }) => Promise<unknown>;
+    };
+    client.codexProviderAdapter = {
+      startThread: async () => ({ threadId, thread: { id: threadId, cwd: dir, status: "idle", turns: [] } }),
+      sendTurn: async () => { throw new Error("initial turn failed"); },
+      unsubscribeThread: async () => undefined
+    };
+
+    await assert.rejects(() => client.startThread({ task: "Dispatch", cwd: dir }), /initial turn failed/);
+
+    assert.equal(capabilityRemovals, 1);
     assert.equal(store.getThread(threadId), undefined);
   } finally {
     await rm(dir, { recursive: true, force: true });

@@ -82,6 +82,29 @@ export function registerPairRoutes(access: PairRouteAccess): void {
     }
   });
 
+  app.post("/api/pairs/:pairId/worker/handoff", async (request, response) => {
+    const model = readString(request.body?.model);
+    const effort = readString(request.body?.effort);
+    if (!model) {
+      response.status(400).json({ error: "model is required" });
+      return;
+    }
+    if (effort && !isKnownReasoningEffort(effort)) {
+      response.status(400).json({ error: "effort must be one of: none, minimal, low, medium, high, xhigh, max" });
+      return;
+    }
+    try {
+      const pair = await pairSessions.handoffWorker(request.params.pairId, model, effort || null);
+      if (!pair) {
+        response.status(404).json({ error: "Butler session not found" });
+        return;
+      }
+      response.status(201).json({ pair });
+    } catch (error) {
+      response.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.patch("/api/pairs/:pairId", (request, response) => {
     const title = readString(request.body?.title);
     if (!title) {

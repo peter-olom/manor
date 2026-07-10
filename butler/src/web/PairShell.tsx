@@ -1,10 +1,4 @@
-import {
-  startTransition,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState
-} from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getJson, patchJson, postJson, type FileReference } from "./api";
 import manorLogoLight from "./assets/manor-logo.svg";
@@ -91,6 +85,12 @@ type WorkerThreadReport = {
 
 type RuntimeProofSnapshot = {
   previewProofsByThreadId?: Record<string, WorkerProofRecord[]>;
+};
+
+type WorkerHandoffUiState = {
+  requestId: number;
+  pending: boolean;
+  error: string | null;
 };
 
 const PAGE_SIZE = 120;
@@ -777,6 +777,9 @@ export function PairShell() {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [butlerComposePending, setButlerComposePending] = useState(0);
+  const [workerHandoffByPairId, setWorkerHandoffByPairId] = useState<Record<string, WorkerHandoffUiState>>({});
+  const workerHandoffRequestCounter = useRef(0);
+  const latestWorkerHandoffRequestByPairId = useRef(new Map<string, number>());
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -799,6 +802,7 @@ export function PairShell() {
 
   const manorSurface = manorSurfaceForView(viewMode);
   const activePair = pair?.id === selectedPairId ? pair : null;
+  const activeWorkerHandoff = activePair ? workerHandoffByPairId[activePair.id] ?? null : null;
   const shouldLoadWorkerThread = manorSurface === "sessions" && viewMode !== "butler" && Boolean(activePair?.worker);
   const activeWorkerPairId = shouldLoadWorkerThread ? activePair?.id ?? null : null;
   const activeWorkerThreadId = shouldLoadWorkerThread ? activePair?.worker?.threadId ?? null : null;
@@ -1202,7 +1206,11 @@ export function PairShell() {
     async (effort: string) => {
       if (!activePair) return;
       const previous = activePair;
-      setPair((current) => (current ? { ...current, codexEffort: effort, compose: { ...current.compose, worker: { ...current.compose.worker, effort }, codex: { ...current.compose.codex, effort } } } : current));
+      setPair((current) => (current ? {
+        ...current,
+        ...(current.worker ? { worker: { ...current.worker, requestedReasoningEffort: effort } } : { codexEffort: effort }),
+        compose: { ...current.compose, worker: { ...current.compose.worker, effort }, codex: { ...current.compose.codex, effort } }
+      } : current));
       try {
         const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(activePair.id)}/settings`, { target: "worker", effort });
         setPair(payload.pair);
@@ -1234,6 +1242,44 @@ export function PairShell() {
     },
     [activePair]
   );
+
+  const onWorkerHandoff = useCallback(async (model: string, effort: string | null): Promise<boolean> => {
+    if (!activePair?.worker) return false;
+    const pairId = activePair.id;
+    const sourceThreadId = activePair.worker.threadId;
+    const requestId = ++workerHandoffRequestCounter.current;
+    latestWorkerHandoffRequestByPairId.current.set(pairId, requestId);
+    setWorkerHandoffByPairId((current) => ({
+      ...current,
+      [pairId]: { requestId, pending: true, error: null }
+    }));
+    try {
+      const payload = await postJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(pairId)}/worker/handoff`, { model, effort });
+      if (latestWorkerHandoffRequestByPairId.current.get(pairId) !== requestId) return false;
+      setPair((current) => {
+        if (!current || current.id !== pairId) return current;
+        const currentThreadId = current.worker?.threadId ?? null;
+        const responseThreadId = payload.pair.worker?.threadId ?? null;
+        if (currentThreadId && currentThreadId !== sourceThreadId && currentThreadId !== responseThreadId) return current;
+        return payload.pair;
+      });
+      await loadPairs().catch(() => undefined);
+      return true;
+    } catch (err) {
+      if (latestWorkerHandoffRequestByPairId.current.get(pairId) === requestId) {
+        setWorkerHandoffByPairId((current) => current[pairId]?.requestId === requestId
+          ? { ...current, [pairId]: { requestId, pending: false, error: err instanceof Error ? err.message : String(err) } }
+          : current);
+      }
+      return false;
+    } finally {
+      if (latestWorkerHandoffRequestByPairId.current.get(pairId) === requestId) {
+        setWorkerHandoffByPairId((current) => current[pairId]?.requestId === requestId
+          ? { ...current, [pairId]: { ...current[pairId], pending: false } }
+          : current);
+      }
+    }
+  }, [activePair, loadPairs]);
 
   const workerVisible = manorSurface === "sessions" && viewMode !== "butler" && Boolean(activePair) && (activePair?.worker || viewMode === "worker");
   const butlerVisible = manorSurface === "sessions" && viewMode !== "worker" && Boolean(activePair);
@@ -1369,6 +1415,9 @@ export function PairShell() {
                     proofRecords={workerProofRecords}
                     onCodexModelChange={(model) => void onCodexModelChange(model)}
                     onCodexEffortChange={(effort) => void onCodexEffortChange(effort)}
+                    handoffPending={activeWorkerHandoff?.pending ?? false}
+                    handoffError={activeWorkerHandoff?.error ?? null}
+                    onHandoff={onWorkerHandoff}
                     onOpenProviderSettings={() => selectSettingsSection("providers")}
                     onAttachAnnotatedProof={(payload) => attachAnnotatedProof(payload)}
                   />

@@ -379,6 +379,83 @@ export function buildJobPayload(input: {
   return finalizePayload(payload);
 }
 
+export function remapJobPayloadForWorkerHandoff(
+  payload: JobPayloadView,
+  input: {
+    threadId: string;
+    butlerThreadId?: string | null;
+    parentThreadId: string;
+    contract: CodexThreadExecutionContractView;
+  }
+): JobPayloadView {
+  const now = Date.now();
+  const attempt = payload.protocol.attempt + 1;
+  const remapped: JobPayloadView = {
+    ...payload,
+    payloadId: `payload-${input.threadId}`,
+    threadId: input.threadId,
+    protocol: {
+      ...payload.protocol,
+      butlerThreadId: input.butlerThreadId ?? payload.protocol.butlerThreadId,
+      workerThreadId: input.threadId,
+      currentAttemptId: `attempt-${input.threadId}-${attempt}`,
+      attempt,
+      version: payload.protocol.version + 1,
+      parentThreadId: input.parentThreadId,
+      reportChannel: "manor-harness"
+    },
+    status: "active",
+    updatedAt: now,
+    workspace: {
+      cwd: input.contract.workspaceCwd,
+      branch: input.contract.branch
+    },
+    project: {
+      id: input.contract.projectId,
+      label: input.contract.projectLabel
+    },
+    display: {
+      ...payload.display,
+      tags: [...payload.display.tags]
+    },
+    checklist: payload.checklist.map((item) => ({ ...item })),
+    proof: [...payload.proof],
+    constraints: [...payload.constraints],
+    notes: [...payload.notes],
+    attachments: {
+      images: [...payload.attachments.images],
+      files: [...payload.attachments.files]
+    },
+    nodes: payload.nodes.map((node) => ({
+      ...node,
+      imageReferenceIds: [...node.imageReferenceIds],
+      fileReferenceIds: [...node.fileReferenceIds]
+    })),
+    snapshots: payload.snapshots.map((snapshot) => ({
+      ...snapshot,
+      display: { ...snapshot.display, tags: [...snapshot.display.tags] },
+      checklist: snapshot.checklist.map((item) => ({ ...item })),
+      proof: [...snapshot.proof],
+      constraints: [...snapshot.constraints],
+      notes: [...snapshot.notes],
+      delivery: {
+        ...snapshot.delivery,
+        threadId: input.threadId
+      }
+    })),
+    delivery: {
+      threadId: input.threadId,
+      turnId: null,
+      messageId: null
+    },
+    report: payload.report
+      ? { ...payload.report, evidence: [...payload.report.evidence] }
+      : null,
+    executionContract: input.contract
+  };
+  return finalizePayload(remapped);
+}
+
 export function updateJobPayload(payload: JobPayloadView, input: JobPayloadUpdateInput): JobPayloadView {
   const now = input.createdAt ?? Date.now();
   const contract = input.contract ?? payload.executionContract ?? null;

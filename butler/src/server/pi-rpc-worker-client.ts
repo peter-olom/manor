@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -29,6 +30,8 @@ type PiWorkerSession = {
   mapper: PiProviderRuntimeMapper;
   unsubscribe: (() => void) | null;
   cwd: string;
+  provider: string;
+  model: string;
   activityVersion: number;
   acceptedEventVersion: number | null;
   eventStreamVersion: number | null;
@@ -86,7 +89,22 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
   private selectedEffort: ReasoningEffort | null = null;
   private lastError: string | null = null;
 
-  constructor(private readonly options: { store: ButlerStateStore; piAuthPath: string; sessionRootDir: string; cliPath?: string | null }) {
+  constructor(private readonly options: {
+    store: ButlerStateStore;
+    piAuthPath: string;
+    sessionRootDir: string;
+    cliPath?: string | null;
+    codexHomeDir?: string | null;
+    butlerBaseUrl?: string | null;
+    onThreadCapabilityReady?: (threadId: string, cwd: string) => Promise<unknown>;
+    onThreadCapabilityRemoved?: (threadId: string) => Promise<unknown>;
+    onThreadDeleting?: (context: {
+      threadId: string;
+      stacks: Array<{ id: string; retainsVolumes: boolean; status: string }>;
+      previews: Array<{ id: string; stackId: string | null; status: string }>;
+      services: Array<{ id: string; stackId: string | null; runtimeKind: string; status: string }>;
+    }) => Promise<unknown>;
+  }) {
     super();
   }
 
@@ -124,16 +142,40 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     let cleanupError: unknown;
     if (this.sessions.get(session.threadId) === session && session.acceptedEventVersion === null) {
       try {
-        await this.options.store.removeThreadDurably(session.threadId);
-        session.unsubscribe?.();
-        this.sessions.delete(session.threadId);
-        await session.client.stop();
-        this.emit("change");
+        await this.cleanupStartedSession(session);
       } catch (error) {
         cleanupError = error;
       }
     }
     throw new StaleWorkerOperationError(session.threadId, cleanupError);
+  }
+
+  private async cleanupStartedSession(session: PiWorkerSession): Promise<void> {
+    if (this.sessions.get(session.threadId) !== session) return;
+    await this.removeThreadDurably(session.threadId);
+    session.pendingPromptGenerations = [];
+    session.unsubscribe?.();
+    this.sessions.delete(session.threadId);
+    let stopError: unknown;
+    try {
+      await session.client.stop();
+    } catch (error) {
+      stopError = error;
+    }
+    await this.removeSessionDirectory(session.threadId);
+    this.emit("change");
+    if (stopError) throw stopError;
+  }
+
+  private async rejectFailedStartedSession(session: PiWorkerSession, startError: unknown): Promise<never> {
+    try {
+      await this.cleanupStartedSession(session);
+    } catch (cleanupError) {
+      const startMessage = startError instanceof Error ? startError.message : String(startError);
+      const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      throw new AggregateError([startError, cleanupError], `Pi Worker start failed: ${startMessage}; cleanup failed: ${cleanupMessage}`);
+    }
+    throw startError;
   }
 
   private async promptSession(session: PiWorkerSession, generation: number, text: string): Promise<void> {
@@ -188,6 +230,8 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     input?: CodexInputItem[] | ((threadId: string) => CodexInputItem[] | Promise<CodexInputItem[]>);
     cwd?: string | null;
     developerInstructions?: string | null;
+    provider?: string | null;
+    model?: string | null;
     effort?: ReasoningEffort | null;
     openWindow?: boolean;
   }): Promise<{ threadId: string; turnId: string | null }> {
@@ -195,26 +239,48 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     if (!task) throw new Error("task is required");
     const threadId = `pi-${crypto.randomUUID()}`;
     const cwd = options.cwd?.trim() || "/repos";
-    const session = await this.createSession(threadId, cwd);
+    const selected = this.availableModels.find((entry) =>
+      entry.id === options.model || `${entry.provider}/${entry.id}` === options.model
+    ) ?? this.availableModels.find((entry) => entry.id === this.selectedModel && entry.provider === this.selectedProvider) ?? null;
+    if (!selected?.provider) throw new Error("Selected Pi RPC worker model is not available");
+    if (options.provider && options.provider !== selected.provider) throw new Error("Selected Pi RPC worker provider does not match its model");
+    const session = await this.createSession(threadId, cwd, selected.provider, selected.id);
     this.options.store.upsertThreadSummary({
       id: threadId,
       name: task.slice(0, 120),
       cwd,
       source: "pi-rpc",
+      modelProvider: selected.provider,
       status: { type: "active" },
       createdAt: Date.now(),
       updatedAt: Date.now()
     });
+    try {
+      await this.options.onThreadCapabilityReady?.(threadId, cwd);
+    } catch (error) {
+      return this.rejectFailedStartedSession(session, error);
+    }
     if (options.openWindow !== false) this.options.store.openWindow(threadId);
     const preflightGeneration = session.activityVersion;
-    const resolvedInput = typeof options.input === "function" ? await options.input(threadId) : (options.input ?? [{ type: "text", text: task } as CodexInputItem]);
+    let resolvedInput: CodexInputItem[];
+    try {
+      resolvedInput = typeof options.input === "function" ? await options.input(threadId) : (options.input ?? [{ type: "text", text: task } as CodexInputItem]);
+    } catch (error) {
+      if (!this.isSessionGenerationCurrent(session, preflightGeneration)) return this.rejectStaleStartedSession(session);
+      return this.rejectFailedStartedSession(session, error);
+    }
     if (!this.isSessionGenerationCurrent(session, preflightGeneration)) return this.rejectStaleStartedSession(session);
     const prompt = [options.developerInstructions?.trim() ? `Developer instructions:\n${options.developerInstructions.trim()}` : null, inputItemsToText(resolvedInput)].filter(Boolean).join("\n\n");
-    if (options.effort ?? this.selectedEffort) {
-      const requestedEffort = (options.effort ?? this.selectedEffort) as ReasoningEffort;
-      await session.client.setThinkingLevel(piThinkingLevelForEffort(requestedEffort) as never);
+    const requestedEffort = options.effort === undefined ? this.selectedEffort : options.effort;
+    if (requestedEffort) {
+      try {
+        await session.client.setThinkingLevel(piThinkingLevelForEffort(requestedEffort) as never);
+      } catch (error) {
+        if (!this.isSessionGenerationCurrent(session, preflightGeneration)) return this.rejectStaleStartedSession(session);
+        return this.rejectFailedStartedSession(session, error);
+      }
       if (!this.isSessionGenerationCurrent(session, preflightGeneration)) return this.rejectStaleStartedSession(session);
-      this.options.store.setThreadRequestedReasoningEffort(threadId, (options.effort ?? this.selectedEffort) as never);
+      this.options.store.setThreadRequestedReasoningEffort(threadId, requestedEffort);
     }
     const operationGeneration = this.beginSessionOperation(session);
     try {
@@ -222,7 +288,7 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     } catch (error) {
       if (!this.isSessionGenerationCurrent(session, operationGeneration)) return this.rejectStaleStartedSession(session);
       this.invalidateSessionGenerationIfCurrent(session, operationGeneration);
-      throw error;
+      return this.rejectFailedStartedSession(session, error);
     }
     if (!this.isSessionGenerationCurrent(session, operationGeneration)) return this.rejectStaleStartedSession(session);
     this.emit("change");
@@ -276,6 +342,7 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     if (!session) {
       if (!this.options.store.getThread(threadId)) return false;
       await this.removeThreadDurably(threadId);
+      await this.removeSessionDirectory(threadId);
       this.emit("change");
       return true;
     }
@@ -283,18 +350,61 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     await this.removeThreadDurably(threadId);
     session.pendingPromptGenerations = [];
     session.unsubscribe?.();
-    void session.client.stop().catch(() => undefined);
+    await session.client.stop().catch(() => undefined);
     this.sessions.delete(threadId);
+    await this.removeSessionDirectory(threadId);
     this.emit("change");
     return true;
   }
 
+  private async removeSessionDirectory(threadId: string): Promise<void> {
+    await rm(path.join(this.options.sessionRootDir, threadId), { recursive: true, force: true }).catch(() => undefined);
+  }
+
   private async removeThreadDurably(threadId: string): Promise<void> {
+    const cwd = this.sessions.get(threadId)?.cwd ?? this.options.store.getThread(threadId)?.cwd ?? "/repos";
+    let capabilityRevoked = false;
     try {
-      await this.options.store.removeThreadDurably(threadId);
+      await this.options.onThreadDeleting?.({
+        threadId,
+        stacks: this.options.store.listStackLeases().filter((lease) => lease.threadId === threadId).map((lease) => ({ id: lease.id, retainsVolumes: Boolean(lease.retainsVolumes), status: lease.status })),
+        previews: this.options.store.listPreviewLeases().filter((lease) => lease.threadId === threadId).map((lease) => ({ id: lease.id, stackId: lease.stackId, status: lease.status })),
+        services: this.options.store.listServiceLeases().filter((lease) => lease.threadId === threadId).map((lease) => ({ id: lease.id, stackId: lease.stackId, runtimeKind: lease.runtimeKind, status: lease.status }))
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Pi Worker deletion could not be persisted: ${message}`);
+    }
+
+    if (this.options.onThreadCapabilityRemoved) {
+      try {
+        await this.options.onThreadCapabilityRemoved(threadId);
+        capabilityRevoked = true;
+      } catch (error) {
+        const restoreError = await this.restoreThreadCapability(threadId, cwd);
+        const message = error instanceof Error ? error.message : String(error);
+        const suffix = restoreError ? `; capability restore failed: ${restoreError}` : "";
+        throw new Error(`Pi Worker deletion could not be persisted: ${message}${suffix}`);
+      }
+    }
+
+    try {
+      await this.options.store.removeThreadDurably(threadId);
+    } catch (error) {
+      const restoreError = capabilityRevoked ? await this.restoreThreadCapability(threadId, cwd) : null;
+      const message = error instanceof Error ? error.message : String(error);
+      const suffix = restoreError ? `; capability restore failed: ${restoreError}` : "";
+      throw new Error(`Pi Worker deletion could not be persisted: ${message}${suffix}`);
+    }
+  }
+
+  private async restoreThreadCapability(threadId: string, cwd: string): Promise<string | null> {
+    if (!this.options.onThreadCapabilityReady) return null;
+    try {
+      await this.options.onThreadCapabilityReady(threadId, cwd);
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
     }
   }
 
@@ -312,29 +422,42 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     this.emit("change");
   }
 
-  private async createSession(threadId: string, cwd: string): Promise<PiWorkerSession> {
+  private async createSession(threadId: string, cwd: string, provider: string, model: string): Promise<PiWorkerSession> {
     await syncManorPiModelsJson(this.options.piAuthPath);
-    const modelRef = this.selectedModel ?? undefined;
-    const extensionArgs = await this.webToolsExtensionArgs();
+    const extensionArgs = await this.webToolsExtensionArgs(provider);
+    const codexHomeDir = this.options.codexHomeDir ?? process.env.CODEX_HOME ?? null;
+    const harnessRegistryPath = process.env.MANOR_HARNESS_REGISTRY_PATH
+      ?? (codexHomeDir ? path.join(codexHomeDir, "manor", "harness-capabilities.json") : null);
     const client = new RpcClient({
       cwd,
       cliPath: this.options.cliPath ?? defaultPiCliPath(),
       env: {
         PI_AGENT_DIR: path.dirname(this.options.piAuthPath),
-        PI_CODING_AGENT_DIR: path.dirname(this.options.piAuthPath)
+        PI_CODING_AGENT_DIR: path.dirname(this.options.piAuthPath),
+        ...(harnessRegistryPath ? { MANOR_HARNESS_REGISTRY_PATH: harnessRegistryPath } : {}),
+        MANOR_BUTLER_BASE_URL: this.options.butlerBaseUrl ?? "http://127.0.0.1:8080",
+        MANOR_THREAD_ID: threadId
       },
-      ...(this.selectedProvider ? { provider: this.selectedProvider } : {}),
-      ...(modelRef ? { model: modelRef } : {}),
+      provider,
+      model,
       args: [...extensionArgs, "--session-dir", path.join(this.options.sessionRootDir, threadId)]
     });
     const mapper = new PiProviderRuntimeMapper(threadId);
-    await client.start();
+    try {
+      await client.start();
+    } catch (error) {
+      await client.stop().catch(() => undefined);
+      await this.removeSessionDirectory(threadId);
+      throw error;
+    }
     const session: PiWorkerSession = {
       threadId,
       client,
       mapper,
       unsubscribe: null,
       cwd,
+      provider,
+      model,
       activityVersion: 0,
       acceptedEventVersion: null,
       eventStreamVersion: null,
@@ -348,8 +471,8 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     return session;
   }
 
-  private async webToolsExtensionArgs(): Promise<string[]> {
-    return webToolsExtensionArgsForProvider(this.selectedProvider);
+  private async webToolsExtensionArgs(provider: string | null = this.selectedProvider): Promise<string[]> {
+    return webToolsExtensionArgsForProvider(provider);
   }
 
   private handleSessionEvent(session: PiWorkerSession, event: Parameters<RpcEventListener>[0]): void {

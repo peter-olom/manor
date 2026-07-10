@@ -57,6 +57,9 @@ export type PairMessage = {
 
 export type PairWorker = {
   threadId: string;
+  runtime?: "openai" | "pi-rpc" | null;
+  provider?: string | null;
+  model?: string | null;
   status: "starting" | "running" | "idle" | "blocked" | "unknown";
   task: string;
   cwd: string | null;
@@ -68,6 +71,12 @@ export type PairWorker = {
   lastReportSummary: string | null;
   lastReviewedReportAt: number | null;
   requestedReasoningEffort?: string | null;
+  handedOffFrom?: {
+    threadId: string;
+    runtime: "openai" | "pi-rpc" | null;
+    provider: string | null;
+    model: string | null;
+  } | null;
 };
 
 export type PairModelOption = {

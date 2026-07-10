@@ -40,7 +40,7 @@ import {
   type SupervisionSmokePlan
 } from "./butler-agent-helpers.js";
 import { buildButlerCodexTools } from "./butler-agent-codex-tools.js";
-import type { ButlerAgentDefaults, ButlerAgentServiceOptions, ButlerOperatorSink, ButlerWorkerDefaults } from "./butler-agent-options.js";
+import type { ButlerAgentDefaults, ButlerAgentServiceOptions, ButlerDelegationAttachmentAcknowledgement, ButlerOperatorSink, ButlerWorkerDefaults } from "./butler-agent-options.js";
 import { clearPendingOperatorPrompts, createOrRefreshButlerSession, getButlerLiveSnapshot, getButlerMessagePage, getButlerShellSnapshot, getButlerSnapshot, keepPendingOperatorPromptsBefore, promptButler, promptButlerInternal, registerPendingOperatorPrompt, removePendingOperatorPrompt, stopButlerPrompt, restoreButlerCompactionState, sanitizeButlerSessionMessages, sanitizePersistedButlerSessions, updateButlerComposeSettings } from "./butler-agent-session.js";
 import { clearButlerSessionChat, deleteButlerSessionChatFromLocated, keepOperatorMessagesBefore, locateButlerSessionDeletePoint, locateButlerSessionDeletePointBeforeTimestamp } from "./butler-agent-chat-hygiene.js";
 import { buildButlerDelegationContract } from "./butler-agent-delegation-contract-builder.js";
@@ -82,6 +82,7 @@ import { assertCallbackReviewCurrent, getCallbackReviewExecution, runButlerJobMu
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import { createManorModelRegistry, modelToModelOption } from "./model-provider-config.js";
 import { loadWorkerThread, sendWorkerMessage, type WorkerClientAccess } from "./worker-client-router.js";
+import { handoffWorkerAtomically } from "./worker-handoff.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
 import { ensureTaskWorktree, resolveExistingWorkspaceCwd, resolveWorkspaceBranchName, resolveWorkspaceProjectInfo, taskRequiresManagedWorktree } from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
@@ -109,6 +110,7 @@ import type {
   CodexThreadExecutionContractView,
   JobMemoryPromotionCandidateView,
   ModelOption,
+  ReasoningEffort,
   SupervisionChecklistView
 } from "./types.js";
 import { ButlerStateStore } from "./state-store.js";
@@ -359,16 +361,38 @@ export class ButlerAgentService extends EventEmitter {
       : "Butler registered an operator closeout obligation.");
     await this.saveCallbackState();
   }); }
-
-  private queueDelegationAcknowledgement(threadId: string, text: string, selection: { provider?: string | null; model?: string | null; effort?: string | null } = {}): void {
-    const at = Date.now();
+  private attachDelegationAcknowledgement(threadId: string, text: string, at: number, selection: {
+    runtime?: "openai" | "pi-rpc" | null;
+    provider?: string | null;
+    model?: string | null;
+    effort?: string | null;
+    replacesThreadId?: string | null;
+  }): ButlerDelegationAttachmentAcknowledgement | void {
+    const acknowledgement = this.operatorSink?.onDelegationAcknowledgement?.({ threadId, text, at, ...selection });
+    if (selection.replacesThreadId && acknowledgement?.attached !== true) {
+      throw new Error("The active worker changed before the handoff could be attached.");
+    }
+    return acknowledgement;
+  }
+  private postDelegationAcknowledgement(threadId: string, text: string, at: number): void {
     const messageId = `delegation-ack-${threadId}`;
     upsertOperatorMessage(this.operatorMessages, messageId, text, at);
-    this.operatorSink?.onDelegationAcknowledgement?.({ threadId, text, at, ...selection });
     this.noteThreadFocus(threadId, "delegation");
     this.store.addEvent(threadId, "butler.acknowledgement.posted", "Butler posted the operator-facing delegation acknowledgement.");
     void this.saveOperatorMessageState();
     this.emit("change");
+  }
+  private queueDelegationAcknowledgement(threadId: string, text: string, selection: {
+    runtime?: "openai" | "pi-rpc" | null;
+    provider?: string | null;
+    model?: string | null;
+    effort?: string | null;
+    replacesThreadId?: string | null;
+  } = {}): ButlerDelegationAttachmentAcknowledgement | void {
+    const at = Date.now();
+    const acknowledgement = this.attachDelegationAcknowledgement(threadId, text, at, selection);
+    this.postDelegationAcknowledgement(threadId, text, at);
+    return acknowledgement;
   }
 
   private async postOperatorQuestion(input: {
@@ -1424,7 +1448,24 @@ export class ButlerAgentService extends EventEmitter {
     await this.registerPendingChatCallback(threadId, { requestedAt: this.store.getThread(threadId)?.createdAt ?? Date.now() }); this.store.noteButlerSteer(threadId);
   }); }
   async ensureExternalWorkerDelegation(threadId: string): Promise<void> { const callback = this.pendingChatCallbacks.get(threadId); if (callback && isCallbackOutstanding(callback)) return; const thread = this.store.getThread(threadId); const latestTurnId = getFallbackTurnId(thread); if (latestTurnId) { const closeoutId = buildCloseoutId(threadId, latestTurnId); if (this.deliveredCloseoutIds.has(closeoutId) || this.operatorMessages.some((message) => message.id === `callback-${closeoutId}` || message.id === `callback-fallback-${closeoutId}`)) return; } const latestWorkAt = Math.max(this.store.getWorkerReport(threadId)?.updatedAt ?? 0, thread?.turns.at(-1)?.startedAt ?? 0); if (callback && latestWorkAt <= (callback.closedAt ?? callback.updatedAt)) return; await this.trackExternalWorkerDelegation(threadId); }
-  async removeExternalWorkerDelegation(threadId: string): Promise<void> { await runSerializedCallbackReplacement(threadId, async () => { if (!this.pendingChatCallbacks.delete(threadId)) return; this.callbackReviewFailureCount.delete(threadId); this.callbackReviewNotBefore.delete(threadId); this.supervisionSmokePlans.delete(threadId); await this.saveCallbackState(); this.emit("change"); }); }
+  async handoffWorker(input: { sourceThreadId: string; model: string; effort: ReasoningEffort | null; butlerThreadId?: string | null }) {
+    return handoffWorkerAtomically({
+      access: this.getWorkerClientAccess(),
+      sourceThreadId: input.sourceThreadId,
+      targetModel: input.model,
+      targetEffort: input.effort,
+      artifactsDir: this.artifactsDir,
+      butlerThreadId: input.butlerThreadId ?? this.session?.sessionId ?? null,
+      trackCallback: (threadId) => this.trackExternalWorkerDelegation(threadId),
+      removeCallback: (threadId) => this.removeExternalWorkerDelegation(threadId),
+      attach: (result, text, at) => this.attachDelegationAcknowledgement(result.threadId, text, at, {
+        runtime: result.runtime, provider: result.provider, model: result.model,
+        effort: result.effort, replacesThreadId: input.sourceThreadId
+      }),
+      post: (threadId, text, at) => this.postDelegationAcknowledgement(threadId, text, at)
+    });
+  }
+  async removeExternalWorkerDelegation(threadId: string): Promise<void> { await runSerializedCallbackReplacement(threadId, async () => { const callback = this.pendingChatCallbacks.get(threadId); if (!callback) return; const failureCount = this.callbackReviewFailureCount.get(threadId); const notBefore = this.callbackReviewNotBefore.get(threadId); const smokePlan = this.supervisionSmokePlans.get(threadId); this.pendingChatCallbacks.delete(threadId); this.callbackReviewFailureCount.delete(threadId); this.callbackReviewNotBefore.delete(threadId); this.supervisionSmokePlans.delete(threadId); try { await this.saveCallbackState(); } catch (error) { this.pendingChatCallbacks.set(threadId, callback); if (failureCount !== undefined) this.callbackReviewFailureCount.set(threadId, failureCount); if (notBefore !== undefined) this.callbackReviewNotBefore.set(threadId, notBefore); if (smokePlan) this.supervisionSmokePlans.set(threadId, smokePlan); throw error; } this.emit("change"); }); }
   private async promptOperatorTurn(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer"; displayText?: string | null } = {}): Promise<void> {
     const guard = buildOperatorThreadGuard(this.store, text, this.getRecentFocusedThreadId());
     this.activeOperatorThreadGuard = guard;

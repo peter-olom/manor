@@ -402,6 +402,56 @@ test("Codex startThread stores delegated xhigh effort locally and sends it in tu
   assert.equal(store.getThreadDetail(result.threadId)?.turns[0]?.requestedReasoningEffort, "xhigh");
 });
 
+test("an exact Codex worker start preserves an explicit null effort", async () => {
+  const { store, dir } = await createStore("manor-codex-null-effort-");
+  let turnParams: Record<string, unknown> | null = null;
+  const client = new CodexAppServerClient("ws://127.0.0.1:1", store, dir, {
+    onThreadCapabilityReady: async () => undefined
+  });
+  const clientState = client as unknown as {
+    availableModels: ModelOption[];
+    selectedModel: string | null;
+    selectedEffort: ReasoningEffort | null;
+    codexProviderAdapter: {
+      startThread: (params: Record<string, unknown>) => Promise<{ threadId: string; thread: Record<string, unknown> }>;
+      sendTurn: (threadId: string, params: Record<string, unknown>) => Promise<{ threadId: string; turnId: string; turn: Record<string, unknown> }>;
+    };
+  };
+  clientState.availableModels = [{
+    id: "gpt-test",
+    label: "GPT Test",
+    provider: null,
+    supportsReasoning: true,
+    supportedThinkingLevels: ["low", "medium", "high"],
+    supportedReasoningEfforts: ["low", "medium", "high"],
+    defaultReasoningEffort: "medium"
+  }];
+  clientState.selectedModel = "gpt-test";
+  clientState.selectedEffort = "high";
+  clientState.codexProviderAdapter = {
+    startThread: async () => ({
+      threadId: "thread-null-effort",
+      thread: { id: "thread-null-effort", cwd: dir, status: "active", turns: [] }
+    }),
+    sendTurn: async (threadId, params) => {
+      turnParams = params;
+      return { threadId, turnId: "turn-null-effort", turn: { id: "turn-null-effort", status: "in_progress", items: [] } };
+    }
+  };
+
+  const result = await client.startThread({
+    task: "Use provider defaults",
+    cwd: dir,
+    model: "gpt-test",
+    effort: null,
+    openWindow: false
+  });
+
+  assert.equal(turnParams && "effort" in turnParams, false);
+  assert.equal(client.getConnectionState().compose.effort, "high");
+  assert.equal(store.getThreadDetail(result.threadId)?.requestedReasoningEffort, null);
+});
+
 test("Codex thread settings update sends selected model and compatible effort", async () => {
   const { store, dir } = await createStore("manor-codex-model-test-");
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];

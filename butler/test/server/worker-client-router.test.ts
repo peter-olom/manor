@@ -55,7 +55,7 @@ function access(overrides: Record<string, unknown> = {}) {
   const codexUpdates: Array<{ model: string; effort: string | null }> = [];
   const piUpdates: Array<{ model: string; effort: string | null }> = [];
   const started: string[] = [];
-  const piStarts: Array<{ effort?: string | null }> = [];
+  const piStarts: Array<{ provider?: string | null; model?: string | null; effort?: string | null }> = [];
   const affinityRecords: Array<{ provider: string; model: string; effort?: string | null }> = [];
   return {
     codexUpdates,
@@ -87,7 +87,8 @@ function access(overrides: Record<string, unknown> = {}) {
         async updateComposeSettings(model: string, effort: string | null) {
           codexUpdates.push({ model, effort });
         },
-        async startThread() {
+        async startThread(options: { provider?: string | null; model?: string | null; effort?: string | null } = {}) {
+          piStarts.push({ provider: options.provider, model: options.model, effort: options.effort });
           started.push("codex");
           return { threadId: "codex-thread", turnId: "turn-1" };
         },
@@ -109,8 +110,8 @@ function access(overrides: Record<string, unknown> = {}) {
         async updateComposeSettings(model: string, effort: string | null) {
           piUpdates.push({ model, effort });
         },
-        async startThread(options: { effort?: string | null }) {
-          piStarts.push({ effort: options.effort ?? null });
+        async startThread(options: { provider?: string | null; model?: string | null; effort?: string | null }) {
+          piStarts.push({ provider: options.provider, model: options.model, effort: options.effort });
           started.push("pi-rpc");
           return { threadId: "pi-thread", turnId: null };
         },
@@ -427,11 +428,37 @@ test("startWorkerThread applies Ollama Cloud model before starting Pi RPC", asyn
       model: "ollama-cloud/glm-5.2",
       effort: "high"
     });
-    assert.deepEqual(ctx.piUpdates, [{ model: "ollama-cloud/glm-5.2", effort: "high" }]);
-    assert.deepEqual(ctx.piStarts, [{ effort: "high" }]);
+    assert.deepEqual(ctx.piUpdates, []);
+    assert.deepEqual(ctx.piStarts, [{ provider: "ollama-cloud", model: "ollama-cloud/glm-5.2", effort: "high" }]);
     assert.deepEqual(ctx.started, ["pi-rpc"]);
     assert.deepEqual(ctx.affinityRecords, [{ provider: "ollama-cloud", model: "ollama-cloud/glm-5.2", effort: "high" }]);
   });
+});
+
+test("startWorkerThread preserves an explicit null effort through unified routing", async () => {
+  const ctx = access();
+  const result = await startWorkerThread(ctx.access, {
+    task: "Use provider defaults",
+    runtime: "pi-rpc",
+    model: "ollama-cloud/glm-5.2",
+    effort: null
+  });
+
+  assert.equal(result.effort, null);
+  assert.deepEqual(ctx.piStarts, [{ provider: "ollama-cloud", model: "ollama-cloud/glm-5.2", effort: null }]);
+  assert.deepEqual(ctx.affinityRecords, [{ provider: "ollama-cloud", model: "ollama-cloud/glm-5.2", effort: null }]);
+});
+
+test("startWorkerThread can defer provider affinity until a larger transaction commits", async () => {
+  const ctx = access();
+  await startWorkerThread(ctx.access, {
+    task: "Prepare a transactional handoff",
+    runtime: "pi-rpc",
+    model: "ollama-cloud/glm-5.2",
+    recordSelection: false
+  });
+
+  assert.deepEqual(ctx.affinityRecords, []);
 });
 
 test("startWorkerThread auto routes around unauthenticated Codex and reports the actual selection", async () => {
@@ -449,7 +476,8 @@ test("startWorkerThread auto routes around unauthenticated Codex and reports the
       effort: "high"
     });
     assert.deepEqual(ctx.codexUpdates, []);
-    assert.deepEqual(ctx.piUpdates, [{ model: "ollama-cloud/glm-5.2", effort: "high" }]);
+    assert.deepEqual(ctx.piUpdates, []);
+    assert.deepEqual(ctx.piStarts, [{ provider: "ollama-cloud", model: "ollama-cloud/glm-5.2", effort: "high" }]);
     assert.deepEqual(ctx.started, ["pi-rpc"]);
   });
 });
@@ -471,8 +499,8 @@ test("startWorkerThread sends manifest-supported xhigh for regular OpenAI GPT wh
       async updateComposeSettings(model: string, effort: string | null) {
         ctx.codexUpdates.push({ model, effort });
       },
-      async startThread(options: { effort?: string | null }) {
-        ctx.piStarts.push({ effort: options.effort ?? null });
+      async startThread(options: { provider?: string | null; model?: string | null; effort?: string | null }) {
+        ctx.piStarts.push({ provider: options.provider, model: options.model, effort: options.effort });
         ctx.started.push("codex");
         return { threadId: "codex-thread", turnId: "turn-1" };
       },
@@ -490,8 +518,8 @@ test("startWorkerThread sends manifest-supported xhigh for regular OpenAI GPT wh
       model: "gpt-5.5",
       effort: "xhigh"
     });
-    assert.deepEqual(ctx.codexUpdates, [{ model: "gpt-5.5", effort: "xhigh" }]);
-    assert.deepEqual(ctx.piStarts, [{ effort: "xhigh" }]);
+    assert.deepEqual(ctx.codexUpdates, []);
+    assert.deepEqual(ctx.piStarts, [{ provider: "openai-codex", model: "gpt-5.5", effort: "xhigh" }]);
     assert.deepEqual(ctx.started, ["codex"]);
   });
 });
@@ -501,8 +529,8 @@ test("startWorkerThread applies forced Pi RPC default model and effort before st
   await withEnvAsync({ MANOR_WORKER_MODEL: undefined }, async () => {
     const result = await startWorkerThread(ctx.access, { task: "Use forced Pi", runtime: "pi-rpc" });
     assert.equal(result.runtime, "pi-rpc");
-    assert.deepEqual(ctx.piUpdates, [{ model: "ollama-cloud/glm-5.2", effort: "high" }]);
-    assert.deepEqual(ctx.piStarts, [{ effort: "high" }]);
+    assert.deepEqual(ctx.piUpdates, []);
+    assert.deepEqual(ctx.piStarts, [{ provider: "ollama-cloud", model: "ollama-cloud/glm-5.2", effort: "high" }]);
     assert.deepEqual(ctx.codexUpdates, []);
     assert.deepEqual(ctx.started, ["pi-rpc"]);
   });
@@ -527,8 +555,8 @@ test("startWorkerThread uses the provider default on first forced Pi RPC use", a
     async updateComposeSettings(model: string, effort: string | null) {
       ctx.piUpdates.push({ model, effort });
     },
-    async startThread(options: { effort?: string | null }) {
-      ctx.piStarts.push({ effort: options.effort ?? null });
+    async startThread(options: { provider?: string | null; model?: string | null; effort?: string | null }) {
+      ctx.piStarts.push({ provider: options.provider, model: options.model, effort: options.effort });
       ctx.started.push("pi-rpc");
       return { threadId: "pi-thread", turnId: null };
     },
@@ -537,8 +565,8 @@ test("startWorkerThread uses the provider default on first forced Pi RPC use", a
   await withEnvAsync({ MANOR_WORKER_MODEL: undefined }, async () => {
     const result = await startWorkerThread(ctx.access, { task: "Use selected Pi", runtime: "pi-rpc" });
     assert.equal(result.runtime, "pi-rpc");
-    assert.deepEqual(ctx.piUpdates, [{ model: "ollama-cloud/glm-5.2", effort: "high" }]);
-    assert.deepEqual(ctx.piStarts, [{ effort: "high" }]);
+    assert.deepEqual(ctx.piUpdates, []);
+    assert.deepEqual(ctx.piStarts, [{ provider: "ollama-cloud", model: "ollama-cloud/glm-5.2", effort: "high" }]);
     assert.deepEqual(ctx.codexUpdates, []);
     assert.deepEqual(ctx.started, ["pi-rpc"]);
   });
@@ -549,8 +577,8 @@ test("startWorkerThread resolves stale configured model against forced runtime b
   await withEnvAsync({ MANOR_WORKER_MODEL: "gpt-5-codex" }, async () => {
     const result = await startWorkerThread(ctx.access, { task: "Use forced Pi runtime", runtime: "pi-rpc" });
     assert.equal(result.runtime, "pi-rpc");
-    assert.deepEqual(ctx.piUpdates, [{ model: "ollama-cloud/glm-5.2", effort: "high" }]);
-    assert.deepEqual(ctx.piStarts, [{ effort: "high" }]);
+    assert.deepEqual(ctx.piUpdates, []);
+    assert.deepEqual(ctx.piStarts, [{ provider: "ollama-cloud", model: "ollama-cloud/glm-5.2", effort: "high" }]);
     assert.deepEqual(ctx.codexUpdates, []);
     assert.deepEqual(ctx.started, ["pi-rpc"]);
   });

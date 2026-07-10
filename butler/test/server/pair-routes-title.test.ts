@@ -52,8 +52,10 @@ function makePair(overrides: Partial<PairDetail> = {}): PairDetail {
 function createFakePairSessions(initialPair: PairDetail = makePair()) {
   const pairs = new Map<string, PairDetail>([[initialPair.id, initialPair]]);
   const sentMessages: Array<{ pairId: string; text: string; imageReferenceIds: string[]; fileReferenceIds: string[] }> = [];
+  const handoffs: Array<{ pairId: string; model: string; effort: string | null }> = [];
   return {
     sentMessages,
+    handoffs,
     manager: {
       async listSummaries(): Promise<PairSummary[]> {
         return [...pairs.values()].map(({ messages: _messages, loadedStart: _loadedStart, hasMore: _hasMore, ...pair }) => pair);
@@ -85,6 +87,12 @@ function createFakePairSessions(initialPair: PairDetail = makePair()) {
       },
       async retryBlockedReview(pairId: string): Promise<PairDetail | null> {
         return pairs.get(pairId) ?? null;
+      },
+      async handoffWorker(pairId: string, model: string, effort: string | null): Promise<PairDetail | null> {
+        const pair = pairs.get(pairId);
+        if (!pair) return null;
+        handoffs.push({ pairId, model, effort });
+        return pair;
       },
       async setButlerThinkingLevel(pairId: string, level: string): Promise<PairDetail | null> {
         const pair = pairs.get(pairId);
@@ -497,6 +505,23 @@ test("POST /api/pairs/:pairId/retry-review retries a paused adversarial review",
     assert.equal(res.status, 200);
     const body = (await res.json()) as { pair: { id: string } };
     assert.equal(body.pair.id, "pair-1");
+  } finally {
+    await close();
+  }
+});
+
+test("POST /api/pairs/:pairId/worker/handoff starts an explicit model handoff", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/worker/handoff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "opencode-go/minimax-m3", effort: "high" })
+    });
+    assert.equal(res.status, 201);
+    assert.deepEqual(fake.handoffs, [{ pairId: "pair-1", model: "opencode-go/minimax-m3", effort: "high" }]);
   } finally {
     await close();
   }

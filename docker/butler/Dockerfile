@@ -76,11 +76,12 @@ COPY docker/butler/chatgpt-login.mjs /usr/local/bin/butler-chatgpt-login.mjs
 COPY docker/butler/terminal-shell.sh /usr/local/bin/start-butler-shell
 COPY docker/codex-auto-update.sh /usr/local/bin/manor-codex-auto-update
 COPY docker/pi-auto-update.sh /usr/local/bin/manor-pi-auto-update
+COPY docker/codex-box/manor-harness.mjs /usr/local/bin/manor-harness
 COPY docker/butler/zshrc /home/butler/.zshrc
 COPY docker/butler/zprofile /home/butler/.zprofile
 
-RUN sed -i 's/\r$//' /usr/local/bin/start-butler /usr/local/bin/butler-auth /usr/local/bin/butler-chatgpt-login.mjs /usr/local/bin/start-butler-shell /usr/local/bin/manor-codex-auto-update /usr/local/bin/manor-pi-auto-update /home/butler/.zshrc /home/butler/.zprofile \
-  && chmod +x /usr/local/bin/start-butler /usr/local/bin/butler-auth /usr/local/bin/butler-chatgpt-login.mjs /usr/local/bin/start-butler-shell /usr/local/bin/manor-codex-auto-update /usr/local/bin/manor-pi-auto-update \
+RUN sed -i 's/\r$//' /usr/local/bin/start-butler /usr/local/bin/butler-auth /usr/local/bin/butler-chatgpt-login.mjs /usr/local/bin/start-butler-shell /usr/local/bin/manor-codex-auto-update /usr/local/bin/manor-pi-auto-update /usr/local/bin/manor-harness /home/butler/.zshrc /home/butler/.zprofile \
+  && chmod +x /usr/local/bin/start-butler /usr/local/bin/butler-auth /usr/local/bin/butler-chatgpt-login.mjs /usr/local/bin/start-butler-shell /usr/local/bin/manor-codex-auto-update /usr/local/bin/manor-pi-auto-update /usr/local/bin/manor-harness \
   && rm -rf /tmp/* /var/tmp/*
 
 EXPOSE 8080 7682

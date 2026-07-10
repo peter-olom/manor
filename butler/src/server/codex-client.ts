@@ -10,6 +10,7 @@ import { CodexOperationGuard } from "./codex-operation-guard.js";
 import { StaleWorkerOperationError } from "./stale-worker-operation-error.js";
 import { ButlerStateStore } from "./state-store.js";
 import { CodexAppServerTransport, type JsonRpcMessage } from "./codex-app-server-transport.js";
+import { cleanupFailedCodexStart, rejectFailedCodexStart } from "./codex-failed-start-cleanup.js";
 import { CodexProviderAdapter } from "./codex-provider-adapter.js";
 import { ProviderRuntimeIngestion } from "./provider-runtime-ingestion.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
@@ -346,18 +347,29 @@ export class CodexAppServerClient extends EventEmitter {
     let cleanupError: unknown;
     if (!this.deletedThreadIds.has(threadId) && !this.operationGuard.hasCurrentAcceptedOperation(threadId)) {
       try {
-        await this.store.removeThreadDurably(threadId);
-        this.markThreadDeleted(threadId);
-        this.clearThreadOperationState(threadId);
-        await this.store.flushSave();
-        await this.onThreadCapabilityRemoved?.(threadId);
-        await this.unsubscribeThread(threadId);
-        this.emit("change");
+        await this.cleanupStartedThread(threadId);
       } catch (error) {
         cleanupError = error;
       }
     }
     throw new StaleWorkerOperationError(threadId, cleanupError);
+  }
+  private cleanupStartedThread(threadId: string): Promise<void> {
+    const cwd = this.store.getThread(threadId)?.cwd ?? null;
+    return cleanupFailedCodexStart({
+      revokeCapability: this.onThreadCapabilityRemoved ? () => this.onThreadCapabilityRemoved!(threadId) : null,
+      restoreCapability: this.onThreadCapabilityReady ? () => this.onThreadCapabilityReady!(threadId, cwd) : null,
+      markDeleted: () => this.markThreadDeleted(threadId),
+      restoreDeleted: () => { this.restoreDeletedThread(threadId); },
+      removeThreadDurably: () => this.store.removeThreadDurably(threadId),
+      flushState: () => this.store.flushSave(),
+      clearOperationState: () => this.clearThreadOperationState(threadId),
+      unsubscribe: () => this.unsubscribeThread(threadId),
+      emitChange: () => this.emit("change")
+    });
+  }
+  private rejectFailedStartedThread(threadId: string, startError: unknown): Promise<never> {
+    return rejectFailedCodexStart(startError, () => this.cleanupStartedThread(threadId));
   }
 
   private bindTurnToOperation(threadId: string, turnId: string, generation: number): void {
@@ -794,6 +806,7 @@ export class CodexAppServerClient extends EventEmitter {
     cwd?: string | null;
     developerInstructions?: string | null;
     serviceName?: string | null;
+    model?: string | null;
   }): Record<string, unknown> {
     const params: Record<string, unknown> = {
       cwd: overrides?.cwd ?? this.defaultCwd,
@@ -802,8 +815,9 @@ export class CodexAppServerClient extends EventEmitter {
       serviceName: overrides?.serviceName ?? "Butler"
     };
 
-    if (this.selectedModel) {
-      params.model = this.selectedModel;
+    const model = overrides?.model ?? this.selectedModel;
+    if (model) {
+      params.model = model;
     }
 
     if (overrides?.developerInstructions) {
@@ -972,6 +986,8 @@ export class CodexAppServerClient extends EventEmitter {
     input?: CodexInputItem[] | ((threadId: string) => CodexInputItem[] | Promise<CodexInputItem[]>);
     cwd?: string | null;
     developerInstructions?: string | null;
+    provider?: string | null;
+    model?: string | null;
     effort?: ReasoningEffort | null;
     openWindow?: boolean;
   }): Promise<{ threadId: string; turnId: string | null }> {
@@ -984,7 +1000,8 @@ export class CodexAppServerClient extends EventEmitter {
 
     const started = await this.codexProviderAdapter.startThread(this.buildThreadStartConfig({
       cwd: threadCwd ?? this.defaultCwd,
-      developerInstructions: options.developerInstructions ?? null
+      developerInstructions: options.developerInstructions ?? null,
+      model: options.model ?? null
     }));
 
     const thread = started.thread && typeof started.thread === "object" ? (started.thread as Record<string, unknown>) : null;
@@ -994,13 +1011,22 @@ export class CodexAppServerClient extends EventEmitter {
     if (thread) {
       this.store.upsertThreadSummary(thread);
     }
-    await this.onThreadCapabilityReady?.(threadId, threadCwd ?? (thread && typeof thread.cwd === "string" ? thread.cwd : null));
+    try {
+      await this.onThreadCapabilityReady?.(threadId, threadCwd ?? (thread && typeof thread.cwd === "string" ? thread.cwd : null));
+    } catch (error) {
+      return this.rejectFailedStartedThread(threadId, error);
+    }
     this.resumedThreadIds.add(threadId);
     this.directControlThreadIds.add(threadId);
     const operationGeneration = this.beginThreadOperation(threadId);
 
-    const resolvedInput =
-      typeof options.input === "function" ? await options.input(threadId) : (options.input ?? task);
+    let resolvedInput: CodexInputItem[] | string;
+    try {
+      resolvedInput = typeof options.input === "function" ? await options.input(threadId) : (options.input ?? task);
+    } catch (error) {
+      if (!this.isThreadOperationCurrent(threadId, operationGeneration)) return this.rejectStaleStartedThread(threadId);
+      return this.rejectFailedStartedThread(threadId, error);
+    }
     if (!this.isThreadOperationCurrent(threadId, operationGeneration)) {
       return this.rejectStaleStartedThread(threadId);
     }
@@ -1013,15 +1039,19 @@ export class CodexAppServerClient extends EventEmitter {
       params.cwd = threadCwd;
     }
 
-    if (this.selectedModel) {
-      params.model = this.selectedModel;
+    const targetModelId = options.model ?? this.selectedModel;
+    if (targetModelId) {
+      params.model = targetModelId;
     }
 
-    const selectedModel = this.availableModels.find((entry) => entry.id === this.selectedModel) ?? null;
-    const requestedEffort = selectedModel
-      ? this.resolveEffort(selectedModel, options.effort ?? this.selectedEffort)
-      : options.effort ?? this.selectedEffort;
-    this.selectedEffort = requestedEffort;
+    const selectedModel = this.availableModels.find((entry) => entry.id === targetModelId) ?? null;
+    const requestedEffortInput = options.effort === undefined ? this.selectedEffort : options.effort;
+    const requestedEffort = requestedEffortInput === null
+      ? null
+      : selectedModel
+        ? this.resolveEffort(selectedModel, requestedEffortInput)
+        : requestedEffortInput;
+    if (!options.model) this.selectedEffort = requestedEffort;
     if (requestedEffort) {
       params.effort = requestedEffort;
       this.store.setThreadRequestedReasoningEffort(threadId, requestedEffort);
@@ -1034,7 +1064,7 @@ export class CodexAppServerClient extends EventEmitter {
       if (!this.isThreadOperationCurrent(threadId, operationGeneration)) {
         return this.rejectStaleStartedThread(threadId);
       }
-      throw error;
+      return this.rejectFailedStartedThread(threadId, error);
     }
     let turnId: string | null = turnResult.turnId ?? null;
     const turn = turnResult.turn && typeof turnResult.turn === "object"
@@ -1117,12 +1147,9 @@ export class CodexAppServerClient extends EventEmitter {
       params.cwd = threadWorkspace;
     }
 
-    if (this.selectedModel) {
-      params.model = this.selectedModel;
-    }
-
-    if (this.selectedEffort) {
-      params.effort = this.selectedEffort;
+    const threadEffort = this.store.getThread(targetThreadId)?.requestedReasoningEffort ?? null;
+    if (threadEffort) {
+      params.effort = threadEffort;
     }
 
     let result;

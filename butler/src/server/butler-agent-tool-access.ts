@@ -10,6 +10,7 @@ import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-t
 import type { ButlerStateStore } from "./state-store.js";
 import type { JobPayloadView } from "./job-payload-types.js";
 import type { JobPayloadKind } from "./job-instruction-artifacts.js";
+import type { ButlerDelegationAttachmentAcknowledgement } from "./butler-agent-options.js";
 import type {
   AppSnapshot,
   ButlerActivityTurnView,
@@ -180,7 +181,13 @@ export type ButlerAgentToolAccess = {
     fileReferenceIds?: string[];
   }): Promise<JobPayloadView>;
   bindJobPayloadDelivery(threadId: string, delivery: { turnId?: string | null; messageId?: string | null }): Promise<JobPayloadView | null>;
-  queueDelegationAcknowledgement(threadId: string, text: string, selection?: { provider?: string | null; model?: string | null; effort?: string | null }): void;
+  queueDelegationAcknowledgement(threadId: string, text: string, selection?: {
+    runtime?: "openai" | "pi-rpc" | null;
+    provider?: string | null;
+    model?: string | null;
+    effort?: string | null;
+    replacesThreadId?: string | null;
+  }): ButlerDelegationAttachmentAcknowledgement | void;
   registerPendingChatCallback(
     threadId: string,
     options?: { privateSteerText?: string | null; preservePrivateSteer?: boolean; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null }

@@ -9,8 +9,22 @@ import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { ServiceTemplateRegistry } from "./service-templates.js";
 import type { ButlerStateStore } from "./state-store.js";
 
+export type ButlerDelegationAttachmentAcknowledgement = {
+  attached: boolean;
+  rollback?: () => boolean;
+};
+
 export type ButlerOperatorSink = {
-  onDelegationAcknowledgement?: (input: { threadId: string; text: string; at: number; provider?: string | null; model?: string | null; effort?: string | null }) => void;
+  onDelegationAcknowledgement?: (input: {
+    threadId: string;
+    text: string;
+    at: number;
+    runtime?: "openai" | "pi-rpc" | null;
+    provider?: string | null;
+    model?: string | null;
+    effort?: string | null;
+    replacesThreadId?: string | null;
+  }) => ButlerDelegationAttachmentAcknowledgement | void;
   onOperatorReply?: (input: { threadId: string; text: string; at: number }) => void;
 };
 

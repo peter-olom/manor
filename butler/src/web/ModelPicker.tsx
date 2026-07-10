@@ -193,15 +193,17 @@ export const ModelPicker = memo(function ModelPicker({
     };
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
         close();
         triggerRef.current?.focus();
       }
     };
     document.addEventListener("mousedown", onPointer);
-    document.addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
     return () => {
       document.removeEventListener("mousedown", onPointer);
-      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onKey, true);
     };
   }, [open, close]);
 

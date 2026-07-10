@@ -9,11 +9,16 @@ import { ButlerStateStore } from "../../src/server/state-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
 import { deleteWorkerThread } from "../../src/server/worker-client-router.js";
 
-function createClient(store: ButlerStateStore, dir: string): PiRpcWorkerClient {
+function createClient(store: ButlerStateStore, dir: string, lifecycle: {
+  onThreadDeleting?: (context: { threadId: string }) => Promise<unknown>;
+  onThreadCapabilityReady?: (threadId: string, cwd: string) => Promise<unknown>;
+  onThreadCapabilityRemoved?: (threadId: string) => Promise<unknown>;
+} = {}): PiRpcWorkerClient {
   return new PiRpcWorkerClient({
     store,
     piAuthPath: path.join(dir, "agent", "auth.json"),
-    sessionRootDir: path.join(dir, "sessions")
+    sessionRootDir: path.join(dir, "sessions"),
+    ...lifecycle
   });
 }
 
@@ -29,6 +34,100 @@ test("Pi thread deletion is durable before it reports success", async () => {
   const restarted = new ButlerStateStore(statePath);
   await restarted.load();
   assert.equal(restarted.getThread(threadId), undefined);
+});
+
+test("Pi deletion cleans runtime resources before revoking its harness capability", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-delete-lifecycle-"));
+  const statePath = path.join(dir, "state.json");
+  const threadId = "pi-delete-lifecycle";
+  const sessionDir = path.join(dir, "sessions", threadId);
+  const store = new ButlerStateStore(statePath);
+  store.upsertThreadSummary({ id: threadId, source: "pi-rpc", cwd: "/workspace", status: "idle", turns: [] });
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(path.join(sessionDir, "session.jsonl"), "{}\n", "utf8");
+  await store.flushSave();
+  const events: string[] = [];
+
+  const client = createClient(store, dir, {
+    onThreadDeleting: async ({ threadId: deletingThreadId }) => {
+      assert.equal(deletingThreadId, threadId);
+      assert.ok(store.getThread(threadId));
+      events.push("cleanup");
+    },
+    onThreadCapabilityRemoved: async (removedThreadId) => {
+      assert.equal(removedThreadId, threadId);
+      assert.ok(store.getThread(threadId));
+      events.push("revoke");
+    }
+  });
+
+  assert.equal(await client.deleteThread(threadId), true);
+  assert.deepEqual(events, ["cleanup", "revoke"]);
+  assert.equal(store.getThread(threadId), undefined);
+  await assert.rejects(() => stat(sessionDir));
+});
+
+test("failed Pi capability revocation keeps the durable thread and loaded session live", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-delete-revoke-failure-"));
+  const threadId = "pi-delete-revoke-failure";
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  store.upsertThreadSummary({ id: threadId, source: "pi-rpc", cwd: "/workspace", status: "idle", turns: [] });
+  await store.flushSave();
+  let restoreCalls = 0;
+  let stopCalls = 0;
+  const client = createClient(store, dir, {
+    onThreadCapabilityRemoved: async () => {
+      throw new Error("capability save failed");
+    },
+    onThreadCapabilityReady: async (restoredThreadId, cwd) => {
+      assert.equal(restoredThreadId, threadId);
+      assert.equal(cwd, "/workspace");
+      restoreCalls += 1;
+    }
+  });
+  const session = {
+    threadId,
+    client: { stop: async () => { stopCalls += 1; } },
+    mapper: {},
+    unsubscribe: null,
+    cwd: "/workspace",
+    provider: "ollama-cloud",
+    model: "glm-5.2",
+    activityVersion: 0,
+    acceptedEventVersion: null,
+    eventStreamVersion: null,
+    pendingPromptGenerations: []
+  };
+  const sessions = (client as unknown as { sessions: Map<string, unknown> }).sessions;
+  sessions.set(threadId, session);
+
+  await assert.rejects(() => client.deleteThread(threadId), /capability save failed/);
+
+  assert.ok(store.getThread(threadId));
+  assert.equal(sessions.get(threadId), session);
+  assert.equal(stopCalls, 0);
+  assert.equal(restoreCalls, 1);
+});
+
+test("failed Pi runtime cleanup keeps the worker and its capability live", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-delete-cleanup-failure-"));
+  const threadId = "pi-delete-cleanup-failure";
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  store.upsertThreadSummary({ id: threadId, source: "pi-rpc", cwd: "/workspace", status: "idle", turns: [] });
+  await store.flushSave();
+  let capabilityRemovalCalls = 0;
+  const client = createClient(store, dir, {
+    onThreadDeleting: async () => {
+      throw new Error("runtime cleanup failed");
+    },
+    onThreadCapabilityRemoved: async () => {
+      capabilityRemovalCalls += 1;
+    }
+  });
+
+  await assert.rejects(() => client.deleteThread(threadId), /runtime cleanup failed/);
+  assert.ok(store.getThread(threadId));
+  assert.equal(capabilityRemovalCalls, 0);
 });
 
 test("failed Pi deletion persistence restores the live thread and preserves its baseline", async () => {
@@ -64,16 +163,27 @@ test("failed Pi deletion persistence restores the live thread and preserves its 
     await originalFlush();
   };
   let cleanupCalls = 0;
+  let capabilityRemovalCalls = 0;
+  let capabilityRestoreCalls = 0;
   await assert.rejects(() => deleteWorkerThread({
     store,
     codexClient: {} as never,
-    piRpcWorkerClient: createClient(store, dir),
+    piRpcWorkerClient: createClient(store, dir, {
+      onThreadCapabilityRemoved: async () => { capabilityRemovalCalls += 1; },
+      onThreadCapabilityReady: async (restoredThreadId, cwd) => {
+        assert.equal(restoredThreadId, threadId);
+        assert.equal(cwd, "/workspace");
+        capabilityRestoreCalls += 1;
+      }
+    }),
     cleanupReviewBaseline: async () => { cleanupCalls += 1; }
   }, threadId), /Pi Worker deletion could not be persisted: state save failed/);
 
   assert.ok(store.getThread(threadId));
   assert.ok(store.getOpenWindowIds().includes(threadId));
   assert.equal(cleanupCalls, 0);
+  assert.equal(capabilityRemovalCalls, 1);
+  assert.equal(capabilityRestoreCalls, 1);
   assert.equal(milestones.latestStartedTurnIds.get(threadId), "started-before-delete");
   assert.equal(milestones.latestCompletedTurnIds.get(threadId), "completed-before-delete");
   assert.equal(milestones.latestBlockedTurnIds.get(threadId), "blocked-before-delete");

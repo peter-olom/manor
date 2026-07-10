@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 
 import { readJsonStateFile, writeJsonStateFileAtomic } from "./json-state-file.js";
 import type { ButlerStateStore } from "./state-store.js";
-import type { PairChat, PairMessage, PairStatus, PairSummary } from "../shared/pairing.js";
+import type { PairChat, PairMessage, PairStatus, PairSummary, PairWorker } from "../shared/pairing.js";
 
 type PersistedPairState = {
   pairs: PairChat[];
@@ -106,6 +106,20 @@ function normalizeText(value: string | null | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
 }
 
+function normalizeWorkerRuntime(value: unknown, threadId: string, source?: string | null): "openai" | "pi-rpc" | null {
+  if (value === "pi-rpc" || value === "openai") return value;
+  if (source === "pi-rpc" || threadId.startsWith("pi-")) return "pi-rpc";
+  if (source === "appServer" || source === "cli" || source === "vscode") return "openai";
+  return null;
+}
+
+function clonePairWorker(worker: PairWorker | null): PairWorker | null {
+  return worker ? {
+    ...worker,
+    handedOffFrom: worker.handedOffFrom ? { ...worker.handedOffFrom } : null
+  } : null;
+}
+
 function titleFromText(text: string): string {
   const normalized = normalizeText(text);
   if (!normalized) {
@@ -185,8 +199,21 @@ function normalizePair(raw: Partial<PairChat> & { id?: string }, store: ButlerSt
   pair.butlerPending = raw.butlerPending === true;
   pair.butlerPendingReason = typeof raw.butlerPendingReason === "string" && raw.butlerPendingReason.trim() ? raw.butlerPendingReason : null;
   pair.butlerLastError = typeof raw.butlerLastError === "string" && raw.butlerLastError.trim() ? raw.butlerLastError : null;
+  const workerThread = raw.worker ? store.getThread(raw.worker.threadId) : null;
   pair.worker = raw.worker ? {
     ...raw.worker,
+    runtime: normalizeWorkerRuntime(raw.worker.runtime, raw.worker.threadId, workerThread?.source),
+    provider: normalizeText(raw.worker.provider) || workerThread?.modelProvider || null,
+    model: normalizeText(raw.worker.model) || null,
+    requestedReasoningEffort: normalizeText(raw.worker.requestedReasoningEffort) || workerThread?.requestedReasoningEffort || null,
+    handedOffFrom: raw.worker.handedOffFrom && typeof raw.worker.handedOffFrom.threadId === "string"
+      ? {
+          threadId: raw.worker.handedOffFrom.threadId,
+          runtime: raw.worker.handedOffFrom.runtime === "openai" || raw.worker.handedOffFrom.runtime === "pi-rpc" ? raw.worker.handedOffFrom.runtime : null,
+          provider: normalizeText(raw.worker.handedOffFrom.provider) || null,
+          model: normalizeText(raw.worker.handedOffFrom.model) || null
+        }
+      : null,
     lastReviewedReportAt:
       typeof raw.worker.lastReviewedReportAt === "number" && Number.isFinite(raw.worker.lastReviewedReportAt)
         ? raw.worker.lastReviewedReportAt
@@ -394,12 +421,27 @@ export class PairStore extends EventEmitter {
     return this.getPair(pair.id);
   }
 
-  attachWorker(pairId: string, input: { threadId: string; task?: string | null; cwd?: string | null; handoffPrompt?: string | null }): PairChat | null {
+  attachWorker(pairId: string, input: {
+    threadId: string;
+    task?: string | null;
+    cwd?: string | null;
+    handoffPrompt?: string | null;
+    runtime?: "openai" | "pi-rpc" | null;
+    provider?: string | null;
+    model?: string | null;
+    effort?: string | null;
+    replacesThreadId?: string | null;
+  }): PairChat | null {
     const pair = this.pairs.get(pairId);
     if (!pair) {
       return null;
     }
-    if (pair.worker && pair.worker.threadId !== input.threadId) {
+    const expectedThreadId = normalizeText(input.replacesThreadId) || null;
+    if (
+      expectedThreadId
+        ? pair.worker?.threadId !== expectedThreadId && pair.worker?.threadId !== input.threadId
+        : Boolean(pair.worker && pair.worker.threadId !== input.threadId)
+    ) {
       pair.updatedAt = Date.now();
       this.queueSave();
       this.emit("change");
@@ -407,22 +449,66 @@ export class PairStore extends EventEmitter {
     }
     const thread = this.store.getThread(input.threadId);
     const now = Date.now();
+    const sameWorker = pair.worker?.threadId === input.threadId ? pair.worker : null;
+    const previousWorker = pair.worker?.threadId === expectedThreadId ? pair.worker : null;
     pair.worker = {
       threadId: input.threadId,
+      runtime: input.runtime === undefined
+        ? sameWorker?.runtime ?? normalizeWorkerRuntime(null, input.threadId, thread?.source)
+        : normalizeWorkerRuntime(input.runtime, input.threadId, thread?.source),
+      provider: input.provider === undefined
+        ? sameWorker?.provider ?? thread?.modelProvider ?? null
+        : normalizeText(input.provider) || null,
+      model: input.model === undefined
+        ? sameWorker?.model ?? null
+        : normalizeText(input.model) || null,
       status: thread?.status === "active" ? "running" : thread?.status === "idle" ? "idle" : "starting",
-      task: normalizeText(input.task) || thread?.executionContract?.requestedTask || thread?.supervisor.latestUserPrompt || "Delegated Codex job",
-      cwd: normalizeText(input.cwd) || thread?.cwd || null,
-      handoffPrompt: normalizeText(input.handoffPrompt) || thread?.executionContract?.requestedTask || "",
-      startedAt: now,
-      lastRevertAt: null,
-      lastReportAt: null,
-      lastReportStatus: null,
-      lastReportSummary: null,
-      lastReviewedReportAt: null
+      task: normalizeText(input.task) || sameWorker?.task || thread?.executionContract?.requestedTask || thread?.supervisor.latestUserPrompt || "Delegated Codex job",
+      cwd: normalizeText(input.cwd) || sameWorker?.cwd || thread?.cwd || null,
+      handoffPrompt: normalizeText(input.handoffPrompt) || sameWorker?.handoffPrompt || thread?.executionContract?.requestedTask || "",
+      startedAt: sameWorker?.startedAt ?? now,
+      lastRevertAt: sameWorker?.lastRevertAt ?? null,
+      lastReportAt: sameWorker?.lastReportAt ?? null,
+      lastReportStatus: sameWorker?.lastReportStatus ?? null,
+      lastReportSummary: sameWorker?.lastReportSummary ?? null,
+      lastReviewedReportAt: sameWorker?.lastReviewedReportAt ?? null,
+      requestedReasoningEffort: input.effort === undefined
+        ? sameWorker?.requestedReasoningEffort ?? thread?.requestedReasoningEffort ?? null
+        : normalizeText(input.effort) || null,
+      handedOffFrom: sameWorker?.handedOffFrom
+        ? { ...sameWorker.handedOffFrom }
+        : previousWorker ? {
+            threadId: previousWorker.threadId,
+            runtime: previousWorker.runtime ?? null,
+            provider: previousWorker.provider ?? null,
+            model: previousWorker.model ?? null
+          } : null
     };
     pair.lastHandoffPrompt = pair.worker.handoffPrompt || null;
     pair.updatedAt = now;
     pair.status = deriveStatus(pair, this.store);
+    this.queueSave();
+    this.emit("change");
+    return this.getPair(pair.id);
+  }
+
+  restoreWorkerIfCurrent(pairId: string, expectedThreadId: string, worker: PairWorker | null): boolean {
+    const pair = this.pairs.get(pairId);
+    if (!pair || pair.worker?.threadId !== expectedThreadId) return false;
+    pair.worker = clonePairWorker(worker);
+    pair.lastHandoffPrompt = pair.worker?.handoffPrompt || null;
+    pair.updatedAt = Date.now();
+    pair.status = deriveStatus(pair, this.store);
+    this.queueSave();
+    this.emit("change");
+    return true;
+  }
+
+  updateWorkerEffort(pairId: string, threadId: string, effort: string | null): PairChat | null {
+    const pair = this.pairs.get(pairId);
+    if (!pair?.worker || pair.worker.threadId !== threadId) return pair ? this.getPair(pair.id) : null;
+    pair.worker.requestedReasoningEffort = normalizeText(effort) || null;
+    pair.updatedAt = Date.now();
     this.queueSave();
     this.emit("change");
     return this.getPair(pair.id);

@@ -201,7 +201,15 @@ test("approval creates a visible session linked to the self-improvement request"
   const app = express();
   app.use(express.json());
   const created = state.create(requestInput());
-  const createdPairs: Array<{ threadId: string; cwd: string | null; task: string | null }> = [];
+  const createdPairs: Array<{
+    threadId: string;
+    cwd: string | null;
+    task: string | null;
+    runtime: string | null;
+    provider: string | null;
+    model: string | null;
+    effort: string | null;
+  }> = [];
   registerSelfImprovementRoutes({
     app,
     requests: state,
@@ -226,7 +234,15 @@ test("approval creates a visible session linked to the self-improvement request"
     recordSuccessfulWorkerSelection: () => undefined,
     pairSessions: {
       createWorkerPair: async (input) => {
-        createdPairs.push({ threadId: input.threadId, cwd: input.cwd ?? null, task: input.task ?? null });
+        createdPairs.push({
+          threadId: input.threadId,
+          cwd: input.cwd ?? null,
+          task: input.task ?? null,
+          runtime: input.runtime ?? null,
+          provider: input.provider ?? null,
+          model: input.model ?? null,
+          effort: input.effort ?? null
+        });
         return { id: "pair-approved" };
       }
     } as never,
@@ -247,6 +263,17 @@ test("approval creates a visible session linked to the self-improvement request"
     assert.equal(state.get(created.id)?.pairId, "pair-approved");
     assert.equal(createdPairs.length, 1);
     assert.equal(createdPairs[0]?.threadId, "thread-approved");
+    assert.deepEqual({
+      runtime: createdPairs[0]?.runtime,
+      provider: createdPairs[0]?.provider,
+      model: createdPairs[0]?.model,
+      effort: createdPairs[0]?.effort
+    }, {
+      runtime: "openai",
+      provider: "openai-codex",
+      model: "gpt-5-codex",
+      effort: "high"
+    });
   } finally {
     await server.close();
     if (previous === undefined) {

@@ -111,7 +111,11 @@ export function registerSelfImprovementRoutes(access: RouteAccess): void {
             threadId: result.threadId,
             task,
             cwd: workspace.cwd,
-            handoffPrompt: task
+            handoffPrompt: task,
+            runtime: result.runtime,
+            provider: result.provider,
+            model: result.model,
+            effort: result.effort
           })
         : null;
       const completedDelegation = delegation as Awaited<ReturnType<typeof buildButlerDelegationContract>> | null;

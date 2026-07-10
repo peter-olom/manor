@@ -1258,7 +1258,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         access.queueDelegationAcknowledgement(
           result.threadId,
           `Accepted. I delegated this to the ${result.provider ?? "selected"} worker using ${result.model ?? "its default model"} in job ${result.threadId} and will return here with the result.`,
-          { provider: result.provider, model: result.model, effort: result.effort }
+          { runtime: result.runtime, provider: result.provider, model: result.model, effort: result.effort }
         );
         await access.registerPendingChatCallback(result.threadId);
         const supervision = access.store.noteButlerSteer(result.threadId);
@@ -1351,7 +1351,8 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         access.noteThreadFocus(result.threadId, "run_supervision_smoke_test");
         access.queueDelegationAcknowledgement(
           result.threadId,
-          `Accepted. I started a supervision smoke test in ${result.runtime === "pi-rpc" ? "Pi RPC" : "Codex"} job ${result.threadId}. I will return here when it completes.`
+          `Accepted. I started a supervision smoke test in ${result.runtime === "pi-rpc" ? "Pi RPC" : "Codex"} job ${result.threadId}. I will return here when it completes.`,
+          { runtime: result.runtime, provider: result.provider, model: result.model, effort: result.effort }
         );
         await access.registerPendingChatCallback(result.threadId);
         access.store.setThreadSupervisionLimit(result.threadId, totalFollowUps + 2);
