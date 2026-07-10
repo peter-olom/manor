@@ -145,7 +145,7 @@ test("worker compose resolves auto runtime from the selected Pi RPC model", () =
   });
 });
 
-test("successful worker affinity wins over the configured first-run default", () => {
+test("configured worker default wins over previous worker affinity", () => {
   const ctx = access({
     getWorkerAffinity: () => ({
       hasSuccessfulDelegation: true,
@@ -157,9 +157,9 @@ test("successful worker affinity wins over the configured first-run default", ()
   });
   withEnv({ MANOR_WORKER_MODEL: "gpt-5-codex" }, () => {
     const compose = getUnifiedWorkerCompose(ctx.access);
-    assert.equal(compose.runtime, "pi-rpc");
-    assert.equal(compose.model, "ollama-cloud/glm-5.2");
-    assert.equal(compose.effort, "xhigh");
+    assert.equal(compose.runtime, "openai");
+    assert.equal(compose.model, "gpt-5-codex");
+    assert.equal(compose.effort, "medium");
   });
 });
 

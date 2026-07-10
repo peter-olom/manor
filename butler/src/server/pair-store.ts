@@ -200,7 +200,8 @@ function normalizePair(raw: Partial<PairChat> & { id?: string }, store: ButlerSt
   pair.butlerPendingReason = typeof raw.butlerPendingReason === "string" && raw.butlerPendingReason.trim() ? raw.butlerPendingReason : null;
   pair.butlerLastError = typeof raw.butlerLastError === "string" && raw.butlerLastError.trim() ? raw.butlerLastError : null;
   const workerThread = raw.worker ? store.getThread(raw.worker.threadId) : null;
-  pair.worker = raw.worker ? {
+  const droppedMissingWorker = Boolean(raw.worker && !workerThread);
+  pair.worker = raw.worker && workerThread ? {
     ...raw.worker,
     runtime: normalizeWorkerRuntime(raw.worker.runtime, raw.worker.threadId, workerThread?.source),
     provider: normalizeText(raw.worker.provider) || workerThread?.modelProvider || null,
@@ -220,13 +221,13 @@ function normalizePair(raw: Partial<PairChat> & { id?: string }, store: ButlerSt
         : null
   } : null;
   pair.memoryQuery = typeof raw.memoryQuery === "string" && raw.memoryQuery.trim() ? raw.memoryQuery : null;
-  pair.lastHandoffPrompt = typeof raw.lastHandoffPrompt === "string" && raw.lastHandoffPrompt.trim() ? raw.lastHandoffPrompt : null;
+  pair.lastHandoffPrompt = pair.worker && typeof raw.lastHandoffPrompt === "string" && raw.lastHandoffPrompt.trim() ? raw.lastHandoffPrompt : null;
   pair.messageCount = typeof raw.messageCount === "number" && Number.isFinite(raw.messageCount) ? Math.max(0, Math.trunc(raw.messageCount)) : 0;
   pair.lastMessage = raw.lastMessage ?? null;
     pair.butlerThinkingLevel = typeof raw.butlerThinkingLevel === "string" && raw.butlerThinkingLevel.trim() ? raw.butlerThinkingLevel : null;
     pair.butlerModel = typeof raw.butlerModel === "string" && raw.butlerModel.trim() ? raw.butlerModel : null;
-    pair.codexModel = typeof raw.codexModel === "string" && raw.codexModel.trim() ? raw.codexModel : null;
-    pair.codexEffort = typeof raw.codexEffort === "string" && raw.codexEffort.trim() ? raw.codexEffort : null;
+    pair.codexModel = !droppedMissingWorker && typeof raw.codexModel === "string" && raw.codexModel.trim() ? raw.codexModel : null;
+    pair.codexEffort = !droppedMissingWorker && typeof raw.codexEffort === "string" && raw.codexEffort.trim() ? raw.codexEffort : null;
   pair.status = deriveStatus(pair, store);
   return pair;
 }
@@ -521,6 +522,16 @@ export class PairStore extends EventEmitter {
         continue;
       }
       const thread = this.store.getThread(pair.worker.threadId);
+      if (!thread) {
+        pair.worker = null;
+        pair.lastHandoffPrompt = null;
+        pair.codexModel = null;
+        pair.codexEffort = null;
+        pair.updatedAt = Date.now();
+        pair.status = deriveStatus(pair, this.store);
+        changed = true;
+        continue;
+      }
       const report = this.store.getWorkerReport(pair.worker.threadId);
       const nextStatus = thread?.status === "active" ? "running" : thread?.status === "idle" ? "idle" : thread?.status === "unknown" ? "unknown" : pair.worker.status;
       if (pair.worker.status !== nextStatus) {

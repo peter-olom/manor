@@ -564,6 +564,8 @@ test("pair attachment acknowledgement uses compare-and-swap and exposes an exact
   });
   assert.equal(accepted?.attached, true);
   assert.equal(pairStore.getPair(pair.id)?.worker?.threadId, "worker-new");
+  assert.equal(pairStore.getPair(pair.id)?.codexModel, null);
+  assert.equal(pairStore.getPair(pair.id)?.codexEffort, null);
   assert.equal(accepted?.rollback?.(), true);
   assert.deepEqual(pairStore.getPair(pair.id)?.worker, original);
 
@@ -573,4 +575,13 @@ test("pair attachment acknowledgement uses compare-and-swap and exposes an exact
   });
   assert.equal(stale?.attached, false);
   assert.deepEqual(pairStore.getPair(pair.id)?.worker, original);
+
+  store.removeThread("worker-old");
+  pairStore.syncWorkerReports();
+  const replacement = serviceOptions?.operatorSink?.onDelegationAcknowledgement?.({
+    threadId: "worker-new", text: "Fresh delegation", at: Date.now(), runtime: "pi-rpc", provider: "opencode-go",
+    model: "opencode-go/minimax-m3", effort: "medium"
+  });
+  assert.equal(replacement?.attached, true);
+  assert.equal(pairStore.getPair(pair.id)?.worker?.threadId, "worker-new");
 });

@@ -1281,7 +1281,7 @@ export function PairShell() {
     }
   }, [activePair, loadPairs]);
 
-  const workerVisible = manorSurface === "sessions" && viewMode !== "butler" && Boolean(activePair) && (activePair?.worker || viewMode === "worker");
+  const workerVisible = manorSurface === "sessions" && viewMode !== "butler" && Boolean(activePair);
   const butlerVisible = manorSurface === "sessions" && viewMode !== "worker" && Boolean(activePair);
   const cliVisible = viewMode === "cli";
   const selectTerminalTarget = useCallback((target: TerminalTarget) => {

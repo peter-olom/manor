@@ -342,6 +342,71 @@ test("active workers with an interim blocked report stay running", async () => {
   assert.equal(pairStore.getPair(created.id)?.status, "worker_running");
 });
 
+test("deleted attached workers return the pair to the default worker state", async () => {
+  const { pairStore, store } = await createPairHarness();
+  const created = pairStore.createPair();
+  store.upsertThreadSummary({
+    id: "thread-deleted",
+    status: "active",
+    cwd: "/workspace",
+    turns: [{ id: "turn-active", status: "inProgress", items: [] }]
+  });
+  pairStore.attachWorker(created.id, {
+    threadId: "thread-deleted",
+    model: "ollama-cloud/devstral-small-2:24b",
+    effort: "high",
+    task: "Build the requested app",
+    handoffPrompt: "Primary job"
+  });
+  pairStore.updatePairComposeOverrides(created.id, {
+    codexModel: "ollama-cloud/devstral-small-2:24b",
+    codexEffort: "high"
+  });
+
+  store.removeThread("thread-deleted");
+  pairStore.syncWorkerReports();
+
+  const updated = pairStore.getPair(created.id);
+  assert.equal(updated?.worker, null);
+  assert.equal(updated?.status, "idle");
+  assert.equal(updated?.lastHandoffPrompt, null);
+  assert.equal(updated?.codexModel, null);
+  assert.equal(updated?.codexEffort, null);
+});
+
+test("loading persisted state drops an attachment whose worker no longer exists", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-missing-worker-reload-test-"));
+  const statePath = path.join(dir, "state.json");
+  const pairPath = path.join(dir, "pairs.json");
+  const store = new ButlerStateStore(statePath);
+  const pairStore = new PairStore(pairPath, store);
+  await pairStore.load();
+  const created = pairStore.createPair();
+  store.upsertThreadSummary({ id: "thread-missing-after-reload", status: "active", turns: [] });
+  pairStore.attachWorker(created.id, {
+    threadId: "thread-missing-after-reload",
+    model: "ollama-cloud/devstral-small-2:24b",
+    task: "Build the requested app",
+    handoffPrompt: "Primary job"
+  });
+  pairStore.updatePairComposeOverrides(created.id, {
+    codexModel: "ollama-cloud/devstral-small-2:24b",
+    codexEffort: "high"
+  });
+  await pairStore.flushPendingSave();
+  store.removeThread("thread-missing-after-reload");
+
+  const reloaded = new PairStore(pairPath, store);
+  await reloaded.load();
+
+  const repaired = reloaded.getPair(created.id);
+  assert.equal(repaired?.worker, null);
+  assert.equal(repaired?.status, "idle");
+  assert.equal(repaired?.lastHandoffPrompt, null);
+  assert.equal(repaired?.codexModel, null);
+  assert.equal(repaired?.codexEffort, null);
+});
+
 test("completed worker report returns to idle after Butler posts the callback", async () => {
   const { pairStore, store } = await createPairHarness();
   const created = pairStore.createPair();

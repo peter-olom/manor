@@ -517,19 +517,11 @@ export class PairSessionManager {
             replacesThreadId
           });
           if (attached?.worker?.threadId !== threadId) return { attached: false };
-          this.options.pairStore.updatePairComposeOverrides(pair.id, {
-            codexModel: model ?? null,
-            codexEffort: effort ?? null
-          });
           this.syncPairSnapshot(pair.id);
           return {
             attached: true,
             rollback: () => {
               if (!this.options.pairStore.restoreWorkerIfCurrent(pair.id, threadId, previousWorker)) return false;
-              this.options.pairStore.updatePairComposeOverrides(pair.id, {
-                codexModel: before?.codexModel ?? null,
-                codexEffort: before?.codexEffort ?? null
-              });
               this.syncPairSnapshot(pair.id);
               return true;
             }

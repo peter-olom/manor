@@ -167,6 +167,9 @@ function resolveWorkerModel(
   const explicit = resolveAvailableModelId(overrideModel, availableModels);
   if (explicit) return explicit;
 
+  const configured = resolveAvailableModelId(configuredModel, availableModels);
+  if (configured) return configured;
+
   const groups = new Map<string, ModelOption[]>();
   for (const model of availableModels) {
     const provider = workerProviderKey(model);
@@ -188,8 +191,6 @@ function resolveWorkerModel(
         ?? lastProviderModels[0]!.id;
     }
 
-    const configured = resolveAvailableModelId(configuredModel, availableModels);
-    if (configured) return configured;
     for (const provider of providerPriority) {
       const models = groups.get(provider);
       if (!models) continue;
@@ -207,8 +208,6 @@ function resolveWorkerModel(
   }
 
   if (groups.size > 1) {
-    const configured = resolveAvailableModelId(configuredModel, availableModels);
-    if (configured) return configured;
     for (const provider of providerPriority) {
       const providerDefault = groups.get(provider)?.[0]?.id;
       if (providerDefault) return providerDefault;
