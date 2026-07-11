@@ -16,6 +16,12 @@ services:
       MANOR_HARNESS_REGISTRY_PATH: /harness-state/harness-capabilities.json
       MANOR_HARNESS_ACCESS_FILE: /state/harness-broker-access.json
       PI_AGENT_DIR: /home/butler/.pi/agent
+      WORKER_PI_AGENT_DIR: /worker-pi/agent
+      WORKER_PI_SESSION_ROOT: /worker-pi/sessions
+      WORKER_PI_RPC_CLI_PATH: /usr/local/bin/worker-pi-rpc-proxy.mjs
+      WORKER_PI_RPC_SOCKET: /worker-runtime/pi-rpc.sock
+      WORKER_PI_EXTENSION_DIR: /opt/manor/worker/dist/server
+      WORKER_BUTLER_BASE_URL: http://butler:8080
       MANOR_IMAGE_REFERENCE_DIR: /artifacts/manor-images
       BUTLER_PORT: 8080
       BUTLER_PUBLIC_PORT: ${BUTLER_HOST_PORT:-8180}
@@ -100,7 +106,7 @@ services:
       HTTP_PROXY: http://egress:3128
       HTTPS_PROXY: http://egress:3128
       ALL_PROXY: http://egress:3128
-      NODE_OPTIONS: --use-env-proxy
+      NODE_USE_ENV_PROXY: "1"
       http_proxy: http://egress:3128
       https_proxy: http://egress:3128
       all_proxy: http://egress:3128
@@ -114,12 +120,16 @@ services:
       - butler-state:/state
       - butler-home:/home/butler/.codex
       - butler-pi:/home/butler/.pi
+      - worker-pi:/worker-pi
+      - worker-runtime:/worker-runtime
       - codex-home:/codex-home
       - codex-config:/codex-config:ro
       - harness-state:/harness-state
       - repos:/repos
       - artifacts:/artifacts
     depends_on:
+      codex-box:
+        condition: service_healthy
       egress:
         condition: service_healthy
       runtime-broker:
@@ -178,26 +188,32 @@ services:
       - control
       - internet
 
-  # Codex-specific harness host. Worker is the shared product role; Pi-backed
-  # Workers run through Butler and do not use this service as their transport.
+  # Shared Worker environment. Codex app-server and Pi RPC Worker harnesses
+  # execute here; Butler keeps only its own Pi-backed supervisor agent.
   codex-box:
     image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-codex-box:${MANOR_IMAGE_TAG:-latest}"
     container_name: manor-codex-box
-    hostname: manor-codex
+    hostname: manor-worker
     command: ["/usr/local/bin/start-codex-app-server"]
     working_dir: /repos
     environment:
-      MANOR_ROLE: codex-box
+      MANOR_ROLE: worker
       MANOR_STATE_DIR: /state
       MANOR_BUTLER_BASE_URL: http://butler:8080
       MANOR_RUNTIME_BROKER_URL: http://runtime-broker:8090
       MANOR_HARNESS_HOME: /harness-state
       MANOR_HARNESS_REGISTRY_PATH: /harness-state/harness-capabilities.json
-      HOME: /home/codex
-      CODEX_HOME: /home/codex/.codex
+      HOME: /home/worker
+      CODEX_HOME: /home/worker/.codex
+      PI_AGENT_DIR: /worker-pi/agent
+      PI_CODING_AGENT_DIR: /worker-pi/agent
+      WORKER_PI_SESSION_ROOT: /worker-pi/sessions
+      WORKER_PI_RPC_SOCKET: /worker-runtime/pi-rpc.sock
+      WORKER_REPOS_ROOT: /repos
+      NODE_USE_ENV_PROXY: "1"
       CODEX_APP_SERVER_LISTEN: ws://0.0.0.0:8080
       CODEX_APP_SERVER_WS_AUTH: capability-token
-      CODEX_APP_SERVER_WS_TOKEN_FILE: /home/codex/.config/manor/codex-app-server-token
+      CODEX_APP_SERVER_WS_TOKEN_FILE: /home/worker/.config/manor/codex-app-server-token
       CODEX_PERSONALITY: ${CODEX_PERSONALITY:-pragmatic}
       CODEX_SERVICE_TIER: ${CODEX_SERVICE_TIER:-auto}
       CODEX_MODEL_INSTRUCTIONS_FILE: ${CODEX_MODEL_INSTRUCTIONS_FILE:-/opt/manor/config/codex-model-instructions.md}
@@ -205,27 +221,60 @@ services:
       CODEX_FORCED_LOGIN_METHOD: ${CODEX_FORCED_LOGIN_METHOD:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_API_KEY_FILE: ${OPENAI_API_KEY_FILE:-}
+      OLLAMA_LOCAL_API_KEY: ${OLLAMA_LOCAL_API_KEY:-}
+      OLLAMA_LOCAL_API_KEY_FILE: ${OLLAMA_LOCAL_API_KEY_FILE:-}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+      OLLAMA_API_KEY_FILE: ${OLLAMA_API_KEY_FILE:-}
       OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}
       OPENCODE_API_KEY_FILE: ${OPENCODE_API_KEY_FILE:-}
+      MANOR_OLLAMA_LOCAL_ENABLED: ${MANOR_OLLAMA_LOCAL_ENABLED:-1}
+      MANOR_OLLAMA_LOCAL_PROVIDER_ID: ${MANOR_OLLAMA_LOCAL_PROVIDER_ID:-ollama-local}
+      MANOR_OLLAMA_LOCAL_BASE_URL: ${MANOR_OLLAMA_LOCAL_BASE_URL:-http://ollama:11434/v1}
+      MANOR_OLLAMA_LOCAL_NATIVE_BASE_URL: ${MANOR_OLLAMA_LOCAL_NATIVE_BASE_URL:-http://ollama:11434}
+      MANOR_OLLAMA_LOCAL_API: ${MANOR_OLLAMA_LOCAL_API:-openai-completions}
+      MANOR_OLLAMA_LOCAL_MODELS: ${MANOR_OLLAMA_LOCAL_MODELS:-}
+      MANOR_OLLAMA_LOCAL_CONTEXT_WINDOW: ${MANOR_OLLAMA_LOCAL_CONTEXT_WINDOW:-65536}
+      MANOR_OLLAMA_LOCAL_MAX_TOKENS: ${MANOR_OLLAMA_LOCAL_MAX_TOKENS:-16384}
+      MANOR_OLLAMA_LOCAL_REASONING: ${MANOR_OLLAMA_LOCAL_REASONING:-1}
+      MANOR_OLLAMA_CLOUD_ENABLED: ${MANOR_OLLAMA_CLOUD_ENABLED:-1}
+      MANOR_OLLAMA_CLOUD_PROVIDER_ID: ${MANOR_OLLAMA_CLOUD_PROVIDER_ID:-ollama-cloud}
+      MANOR_OLLAMA_CLOUD_BASE_URL: ${MANOR_OLLAMA_CLOUD_BASE_URL:-https://ollama.com/v1}
+      MANOR_OLLAMA_CLOUD_API: ${MANOR_OLLAMA_CLOUD_API:-openai-completions}
+      MANOR_OLLAMA_CLOUD_MODELS: ${MANOR_OLLAMA_CLOUD_MODELS:-gpt-oss:120b,glm-5.2,kimi-k2.6,qwen3.5,deepseek-v4-flash,minimax-m3}
+      MANOR_OLLAMA_CLOUD_CONTEXT_WINDOW: ${MANOR_OLLAMA_CLOUD_CONTEXT_WINDOW:-131072}
+      MANOR_OLLAMA_CLOUD_MAX_TOKENS: ${MANOR_OLLAMA_CLOUD_MAX_TOKENS:-32768}
+      MANOR_OLLAMA_WEB_TOOLS_ENABLED: ${MANOR_OLLAMA_WEB_TOOLS_ENABLED:-1}
+      MANOR_OLLAMA_WEB_TOOLS_BASE_URL: ${MANOR_OLLAMA_WEB_TOOLS_BASE_URL:-https://ollama.com/api}
+      MANOR_OLLAMA_WEB_SEARCH_MAX_RESULTS: ${MANOR_OLLAMA_WEB_SEARCH_MAX_RESULTS:-5}
+      MANOR_OLLAMA_WEB_TOOLS_TIMEOUT_MS: ${MANOR_OLLAMA_WEB_TOOLS_TIMEOUT_MS:-30000}
+      MANOR_OLLAMA_WEB_TOOLS_MAX_CONTENT_CHARS: ${MANOR_OLLAMA_WEB_TOOLS_MAX_CONTENT_CHARS:-12000}
+      MANOR_OLLAMA_WEB_TOOLS_FOR_ALL_PI_MODELS: ${MANOR_OLLAMA_WEB_TOOLS_FOR_ALL_PI_MODELS:-0}
+      MANOR_OPENCODE_GO_ENABLED: ${MANOR_OPENCODE_GO_ENABLED:-0}
+      MANOR_OPENCODE_GO_BASE_URL: ${MANOR_OPENCODE_GO_BASE_URL:-https://opencode.ai/zen/go/v1}
+      OPENCODE_ENABLE_EXA: ${OPENCODE_ENABLE_EXA:-1}
       HTTP_PROXY: http://egress:3128
       HTTPS_PROXY: http://egress:3128
       ALL_PROXY: http://egress:3128
       http_proxy: http://egress:3128
       https_proxy: http://egress:3128
       all_proxy: http://egress:3128
-      NO_PROXY: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
-      no_proxy: localhost,127.0.0.1,codex-box,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
+      NO_PROXY: localhost,127.0.0.1,ollama,codex-box,manor-worker,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
+      no_proxy: localhost,127.0.0.1,ollama,codex-box,manor-worker,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
     depends_on:
       egress:
         condition: service_healthy
     volumes:
       - codex-state:/state
-      - codex-home:/home/codex/.codex
-      - codex-config:/home/codex/.config
+      - codex-home:/home/worker/.codex
+      - codex-config:/home/worker/.config
       - harness-state:/harness-state
+      - worker-pi:/worker-pi
+      - worker-runtime:/worker-runtime
+      - butler-state:/legacy-butler-state:ro
       - ./config/codex-model-instructions.md:/opt/manor/config/codex-model-instructions.md:ro
       - repos:/repos
       - artifacts:/artifacts
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "node", "/opt/manor/codex-box/healthcheck.mjs"]
       interval: 10s
@@ -283,7 +332,7 @@ services:
       MANOR_ROLE: runtime-broker
       RUNTIME_BROKER_PORT: 8090
       RUNTIME_HARNESS_ACCESS_FILE: /state/harness-broker-access.json
-      RUNTIME_WORKSPACE_CONTAINER: manor-butler
+      RUNTIME_WORKSPACE_CONTAINER: manor-codex-box
       RUNTIME_STACK_BINDINGS_FILE: /runtime-state/stack-thread-bindings.json
       RUNTIME_PREVIEW_NETWORK: manor_preview
       RUNTIME_PREVIEW_EGRESS_CONFIG: /opt/manor/config/preview-egress-profiles.json
@@ -520,6 +569,8 @@ volumes:
   artifacts:
   butler-home:
   butler-pi:
+  worker-pi:
+  worker-runtime:
   butler-state:
   codex-config:
   codex-home:

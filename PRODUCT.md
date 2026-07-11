@@ -16,6 +16,8 @@ The main product promise is async leverage. The operator should give intent, the
 
 A Worker is Manor's product role across providers. Manor can run it through the Codex app-server harness for OpenAI/Codex models or the Pi RPC harness for supported Ollama and OpenCode Go models. Butler keeps the job contract and review model consistent across them.
 
+Manor has two agent environments. Butler contains the Pi-backed supervisor. The Worker environment contains both Worker harnesses and exposes one Worker CLI regardless of which harness a job uses.
+
 ## Brand Personality
 
 Direct, careful, and work-focused. The interface should feel like an honest control room: compact, explicit, and calm under operational pressure.

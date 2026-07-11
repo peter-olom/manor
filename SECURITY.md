@@ -13,8 +13,9 @@ Manor assumes:
 - the Docker host is trusted by the operator
 - Butler is not exposed directly to the public internet
 - Butler, every Worker harness, and every configured model provider are trusted for the work assigned to them
-- the Codex app-server host and Butler run as separate services inside the same trusted appliance boundary
-- Pi RPC Worker sessions run from Butler and share Butler's container boundary
+- the Worker host and Butler run as separate services inside the same trusted appliance boundary
+- Butler contains only its own Pi-backed supervisor agent
+- Codex app-server and Pi RPC Worker sessions share the Worker host boundary
 - the runtime broker is trusted to manage Docker resources
 - previews and disposable services are isolated for operational hygiene, not as a complete security sandbox
 

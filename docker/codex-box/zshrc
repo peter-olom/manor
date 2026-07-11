@@ -34,7 +34,7 @@ setopt EXTENDED_GLOB
 
 zstyle ':omz:update' mode disabled
 
-PROMPT='%F{blue}%n@%F{cyan}%m%f:%F{green}%~%f %# '
+PROMPT='%F{blue}worker@%F{cyan}%m%f:%F{green}%~%f %# '
 RPROMPT=''
 
 alias ll='ls -lah'

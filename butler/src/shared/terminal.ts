@@ -1,17 +1,20 @@
-export type TerminalTarget = "butler" | "codex";
+export type TerminalTarget = "butler" | "worker";
 
-export const TERMINAL_TARGETS: TerminalTarget[] = ["butler", "codex"];
+export const DEFAULT_TERMINAL_TARGET: TerminalTarget = "worker";
+export const TERMINAL_TARGETS: TerminalTarget[] = ["butler", "worker"];
 
 export const TERMINAL_LABELS: Record<TerminalTarget, string> = {
   butler: "Butler CLI",
-  codex: "Codex CLI"
+  worker: "Worker CLI"
 };
 
 export const TERMINAL_URLS: Record<TerminalTarget, string> = {
   butler: "/butler-terminal/",
-  codex: "/terminal/"
+  worker: "/terminal/"
 };
 
 export function readInitialTerminalTarget(value: string | null): TerminalTarget | null {
-  return value === "butler" || value === "codex" ? value : null;
+  if (value === "butler") return "butler";
+  if (value === "worker" || value === "codex" || value === "pi") return "worker";
+  return null;
 }

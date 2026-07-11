@@ -479,7 +479,7 @@ function settingsEqual(a: ManorSettings, b: ManorSettings): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-export function SettingsDashboard({ activeSection }: { activeSection: SettingsSectionId }) {
+export function SettingsDashboard({ active, activeSection }: { active: boolean; activeSection: SettingsSectionId }) {
   const [payload, setPayload] = useState<SettingsResponse | null>(null);
   const [draft, setDraft] = useState<ManorSettings | null>(null);
   const [saving, setSaving] = useState(false);
@@ -529,11 +529,11 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
   }, [load]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || !active || activeSection !== "providers") return;
     const url = new URL(window.location.href);
     url.searchParams.set("provider", providerTab === "ollamaLocal" ? "ollama-local" : providerTab);
     window.history.replaceState(null, "", url.toString());
-  }, [providerTab]);
+  }, [active, activeSection, providerTab]);
 
   useEffect(() => {
     if (payload?.providerAvailability["ollama-local"].enabled && !ollamaLocalModels && !ollamaLocalModelsLoading) {

@@ -737,10 +737,7 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onWo
   const activeModel = workerModelForRoute(worker.availableModels, pair.worker.model, pair.worker.harness);
   const options = activeModel?.supportedReasoningEfforts ?? [];
   const route = `${workerProviderLabel(pair.worker.provider)} · ${workerModelLabel(worker.availableModels, pair.worker.model, pair.worker.harness)} · ${workerHarnessLabel(pair.worker.harness)}`;
-  const handoffOrigin = pair.worker.handedOffFrom;
-  const handoffOriginRoute = handoffOrigin
-    ? `${workerProviderLabel(handoffOrigin.provider)} · ${workerModelLabel(worker.availableModels, handoffOrigin.model, handoffOrigin.harness)} · ${workerHarnessLabel(handoffOrigin.harness)}`
-    : null;
+  const workerSummary = `${pair.worker.status} · ${route}`;
   const hasAlternativeModel = worker.availableModels.some((model) => !isSameWorkerRoute(model, pair.worker?.model, pair.worker?.harness));
   const switchDisabled = busy || handoffPending || !hasAlternativeModel;
   const switchTitle = busy
@@ -753,12 +750,10 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onWo
 
   return (
     <section className="pane" aria-label="Worker lane">
-      <div className="pane-head">
-          <div className="pane-head-info">
-            <h2>Worker · {shortId(pair.worker.threadId)}</h2>
-          <span className="pane-sub">{pair.worker.status}</span>
-          <span className="worker-active-route" title={route}>{route}</span>
-          {handoffOriginRoute ? <span className="worker-handoff-origin" title={handoffOriginRoute}>Handed off from {handoffOriginRoute}</span> : null}
+      <div className="pane-head worker-pane-head">
+        <div className="pane-head-info">
+          <h2>Worker · {shortId(pair.worker.threadId)}</h2>
+          <span className="pane-sub worker-summary" title={workerSummary}>{workerSummary}</span>
         </div>
         <div className="worker-controls" aria-label="Worker settings">
           {options.length > 0 ? (

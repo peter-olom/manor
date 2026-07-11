@@ -43,10 +43,30 @@ type TestClient = {
   stopThread: (threadId: string) => Promise<boolean>;
   deleteThread: (threadId: string) => Promise<boolean>;
   loadThread: (threadId: string) => Promise<void>;
+  webToolsExtensionArgs: (provider?: string | null) => Promise<string[]>;
   handleSessionEvent: (session: FakeSession, event: Record<string, unknown>) => void;
   applyPatch: (session: FakeSession, generation: number | null, patch: ProviderRuntimeLivePatch) => void;
   on: (event: "threadPatch", listener: (patch: ProviderRuntimeLivePatch) => void) => void;
 };
+
+test("Worker Pi extensions use compiled runtime paths across the environment bridge", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-worker-extension-"));
+  try {
+    const client = new PiRpcWorkerClient({
+      store: await createStore(dir),
+      piAuthPath: path.join(dir, "auth.json"),
+      sessionRootDir: path.join(dir, "sessions"),
+      extensionDir: "/opt/manor/worker/dist/server"
+    }) as unknown as TestClient;
+
+    assert.deepEqual(await client.webToolsExtensionArgs("opencode-go"), [
+      "--extension",
+      "/opt/manor/worker/dist/server/pi-opencode-web-tools-extension.js"
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("Pi resumes one persisted session after restart and reconciles the interrupted turn", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-resume-"));
@@ -100,6 +120,140 @@ test("Pi resumes one persisted session after restart and reconciles the interrup
     assert.equal(store.getThread(threadId)?.status, "idle");
     assert.equal(store.getThread(threadId)?.turns[0]?.status, "interrupted");
     assert.match(store.getThread(threadId)?.turns[0]?.error ?? "", /restarted/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an idle Worker transport restart evicts and resumes the Pi session on the next follow-up", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-transport-resume-"));
+  try {
+    const threadId = "pi-transport-resume";
+    const cwd = path.join(dir, "workspace");
+    const sessionDir = path.join(dir, "sessions", threadId);
+    const sessionPath = path.join(sessionDir, "2026-07-11T00-00-00-000Z_session.jsonl");
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(path.join(sessionDir, "manor-session.json"), JSON.stringify({
+      threadId,
+      cwd,
+      provider: "ollama-cloud",
+      model: "glm-5.2"
+    }), "utf8");
+    await writeFile(sessionPath, JSON.stringify({ type: "session", cwd }), "utf8");
+    const store = await createStore(dir);
+    store.upsertThreadSummary({
+      id: threadId,
+      cwd,
+      source: "pi-rpc",
+      modelProvider: "ollama-cloud",
+      status: { type: "active" },
+      turns: [{ id: "turn-restarting", status: "in_progress", items: [] }]
+    });
+    let unsubscribeCalls = 0;
+    const staleSession: FakeSession = {
+      threadId,
+      client: {
+        getState: async () => ({ isStreaming: false }), prompt: async () => undefined, steer: async () => undefined,
+        abort: async () => undefined, stop: async () => undefined
+      },
+      mapper: new PiProviderRuntimeMapper(threadId), unsubscribe: () => { unsubscribeCalls += 1; }, cwd,
+      provider: "ollama-cloud", model: "glm-5.2", activityVersion: 1, acceptedEventVersion: null,
+      eventStreamVersion: null, pendingPromptGenerations: []
+    };
+    const client = new PiRpcWorkerClient({
+      store,
+      piAuthPath: path.join(dir, "auth.json"),
+      sessionRootDir: path.join(dir, "sessions")
+    }) as unknown as TestClient;
+    client.sessions.set(threadId, staleSession);
+    let createCalls = 0;
+    let promptCalls = 0;
+    client.createSession = async (id, sessionCwd, provider, model, persistedPath) => {
+      createCalls += 1;
+      assert.deepEqual(
+        { id, sessionCwd, provider, model, persistedPath },
+        { id: threadId, sessionCwd: cwd, provider: "ollama-cloud", model: "glm-5.2", persistedPath: sessionPath }
+      );
+      const resumed: FakeSession = {
+        threadId,
+        client: {
+          getState: async () => ({ isStreaming: false }),
+          prompt: async () => { promptCalls += 1; },
+          steer: async () => undefined,
+          abort: async () => undefined,
+          stop: async () => undefined
+        },
+        mapper: new PiProviderRuntimeMapper(threadId), unsubscribe: null, cwd, provider, model,
+        activityVersion: 0, acceptedEventVersion: null, eventStreamVersion: null, pendingPromptGenerations: []
+      };
+      client.sessions.set(threadId, resumed);
+      return resumed;
+    };
+
+    client.handleSessionEvent(staleSession, { type: "manor_transport_closed", reason: "Worker restarted." });
+
+    assert.equal(unsubscribeCalls, 1);
+    assert.equal(client.sessions.has(threadId), false);
+    assert.equal(store.getThread(threadId)?.status, "idle");
+    assert.equal(store.getThread(threadId)?.turns[0]?.status, "interrupted");
+    await client.sendMessage(threadId, "Continue after restart");
+    assert.equal(createCalls, 1);
+    assert.equal(promptCalls, 1);
+    await store.flushSave();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("transport loss during the initial Pi prompt removes the unreturned thread", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-start-transport-close-"));
+  try {
+    const store = await createStore(dir);
+    const lifecycle: string[] = [];
+    let stopped = 0;
+    let startedThreadId = "";
+    let client!: TestClient;
+    const implementation = new PiRpcWorkerClient({
+      store,
+      piAuthPath: path.join(dir, "auth.json"),
+      sessionRootDir: path.join(dir, "sessions"),
+      onThreadCapabilityReady: async () => { lifecycle.push("ready"); },
+      onThreadCapabilityRemoved: async () => { lifecycle.push("removed"); }
+    });
+    client = implementation as unknown as TestClient;
+    client.availableModels = [{ id: "glm-5.2", provider: "ollama-cloud" }];
+    client.createSession = async (threadId, cwd, provider, model) => {
+      startedThreadId = threadId;
+      const session: FakeSession = {
+        threadId,
+        client: {
+          getState: async () => ({ isStreaming: false }),
+          prompt: async () => {
+            client.handleSessionEvent(session, { type: "manor_transport_closed", reason: "Worker restarted." });
+            throw new Error("transport closed");
+          },
+          steer: async () => undefined,
+          abort: async () => undefined,
+          stop: async () => { stopped += 1; }
+        },
+        mapper: new PiProviderRuntimeMapper(threadId), unsubscribe: null, cwd, provider, model,
+        activityVersion: 0, acceptedEventVersion: null, eventStreamVersion: null, pendingPromptGenerations: []
+      };
+      client.sessions.set(threadId, session);
+      return session;
+    };
+
+    await assert.rejects(() => client.startThread({
+      task: "Never return this thread",
+      cwd: dir,
+      provider: "ollama-cloud",
+      model: "ollama-cloud/glm-5.2"
+    }), StaleWorkerOperationError);
+
+    assert.deepEqual(lifecycle, ["ready", "removed"]);
+    assert.equal(stopped, 1);
+    assert.equal(client.sessions.has(startedThreadId), false);
+    assert.equal(store.getThread(startedThreadId), undefined);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -14,10 +14,23 @@ ensure_writable_dir() {
 
 config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
 
-mkdir -p "${CODEX_HOME:-$HOME/.codex}" /state /repos /artifacts
+mkdir -p "${CODEX_HOME:-$HOME/.codex}" "${PI_AGENT_DIR:-/worker-pi/agent}" "${WORKER_PI_SESSION_ROOT:-/worker-pi/sessions}" /worker-runtime /state /repos /artifacts
 ensure_writable_dir "${config_home}"
 ensure_writable_dir "${config_home}/gh"
 ensure_writable_dir "${config_home}/manor"
+ensure_writable_dir "${PI_AGENT_DIR:-/worker-pi/agent}"
+ensure_writable_dir "${WORKER_PI_SESSION_ROOT:-/worker-pi/sessions}"
+ensure_writable_dir /worker-runtime
+
+legacy_pi_sessions="/legacy-butler-state/pi-worker-sessions"
+worker_pi_sessions="${WORKER_PI_SESSION_ROOT:-/worker-pi/sessions}"
+worker_pi_migration_marker="${worker_pi_sessions}/.legacy-migrated"
+if [[ ! -e "${worker_pi_migration_marker}" ]]; then
+  if [[ -d "${legacy_pi_sessions}" ]]; then
+    cp -R "${legacy_pi_sessions}/." "${worker_pi_sessions}/"
+  fi
+  touch "${worker_pi_migration_marker}"
+fi
 
 /usr/local/bin/codex-bootstrap-tools
 
@@ -36,6 +49,7 @@ ttyd_port="${CODEX_TTYD_PORT:-7681}"
 ttyd_base_path="${CODEX_TTYD_BASE_PATH:-/terminal/}"
 ttyd_pid=""
 codex_pid=""
+worker_pi_bridge_pid=""
 
 cleanup() {
   local exit_code=$?
@@ -48,8 +62,13 @@ cleanup() {
     kill "${ttyd_pid}" 2>/dev/null || true
   fi
 
+  if [[ -n "${worker_pi_bridge_pid}" ]] && kill -0 "${worker_pi_bridge_pid}" 2>/dev/null; then
+    kill "${worker_pi_bridge_pid}" 2>/dev/null || true
+  fi
+
   wait "${codex_pid}" 2>/dev/null || true
   wait "${ttyd_pid}" 2>/dev/null || true
+  wait "${worker_pi_bridge_pid}" 2>/dev/null || true
 
   exit "${exit_code}"
 }
@@ -204,10 +223,13 @@ ttyd \
   bash -lc 'exec zsh -li' &
 ttyd_pid=$!
 
+node /opt/manor/codex-box/worker-pi-rpc-bridge.mjs &
+worker_pi_bridge_pid=$!
+
 /usr/local/bin/codex-auth bootstrap
 ensure_capability_token_file
 
 codex "${args[@]}" &
 codex_pid=$!
 
-wait -n "${ttyd_pid}" "${codex_pid}"
+wait -n "${ttyd_pid}" "${codex_pid}" "${worker_pi_bridge_pid}"

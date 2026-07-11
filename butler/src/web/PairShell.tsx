@@ -45,8 +45,7 @@ import type {
   PairWorkerThreadResponse
 } from "../shared/pairing";
 import {
-  TERMINAL_LABELS,
-  TERMINAL_URLS,
+  DEFAULT_TERMINAL_TARGET,
   readInitialTerminalTarget,
   type TerminalTarget
 } from "../shared/terminal";
@@ -138,18 +137,22 @@ function syncUrlState(viewMode: PairViewMode, terminalTarget: TerminalTarget, se
   const url = new URL(window.location.href);
   if (viewMode === "settings") {
     url.pathname = `/settings/${settingsSection}`;
+    url.searchParams.delete("view");
+    url.searchParams.delete("terminal");
+    if (settingsSection !== "providers") url.searchParams.delete("provider");
     window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
     return;
   }
   if (url.pathname === "/settings" || url.pathname.startsWith("/settings/")) {
     url.pathname = "/";
   }
+  url.searchParams.delete("provider");
   if (viewMode === "butler") {
     url.searchParams.delete("view");
   } else {
     url.searchParams.set("view", viewMode);
   }
-  if (viewMode === "cli" && terminalTarget !== "butler") {
+  if (viewMode === "cli" && terminalTarget !== DEFAULT_TERMINAL_TARGET) {
     url.searchParams.set("terminal", terminalTarget);
   } else {
     url.searchParams.delete("terminal");
@@ -773,7 +776,7 @@ export function PairShell() {
   });
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>(() => readInitialSettingsSection());
   const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>(
-    () => readInitialTerminalTarget(new URLSearchParams(window.location.search).get("terminal")) ?? "butler"
+    () => readInitialTerminalTarget(new URLSearchParams(window.location.search).get("terminal")) ?? DEFAULT_TERMINAL_TARGET
   );
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -809,7 +812,6 @@ export function PairShell() {
   const activeWorkerThreadId = shouldLoadWorkerThread ? activePair?.worker?.threadId ?? null : null;
   const activeWorkerThread = workerThreadPairId === activeWorkerPairId ? workerThread : null;
   const activeWorkerThreadLoading = Boolean(activeWorkerPairId && (workerThreadPairId !== activeWorkerPairId || workerThreadLoading));
-
   const applyRuntimeSnapshot = useCallback((runtime: unknown) => {
     const typed = runtime as RuntimeProofSnapshot | null;
     if (!typed || typeof typed !== "object" || !typed.previewProofsByThreadId) return;
@@ -908,7 +910,7 @@ export function PairShell() {
     const onPopState = () => {
       setViewMode(readInitialViewMode());
       setSettingsSection(readInitialSettingsSection());
-      setTerminalTarget(readInitialTerminalTarget(new URLSearchParams(window.location.search).get("terminal")) ?? "butler");
+      setTerminalTarget(readInitialTerminalTarget(new URLSearchParams(window.location.search).get("terminal")) ?? DEFAULT_TERMINAL_TARGET);
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -1477,15 +1479,9 @@ export function PairShell() {
               />
             </div>
             <div className={`workspace-view is-settings ${viewMode === "settings" ? "is-active" : ""}`}>
-              <SettingsDashboard activeSection={settingsSection} />
+              <SettingsDashboard active={viewMode === "settings"} activeSection={settingsSection} />
             </div>
-            <TerminalPane
-              active={cliVisible}
-              target={terminalTarget}
-              onTarget={selectTerminalTarget}
-              labels={TERMINAL_LABELS}
-              urls={TERMINAL_URLS}
-            />
+            <TerminalPane active={cliVisible} target={terminalTarget} onTarget={selectTerminalTarget} />
           </div>
         )}
       </section>

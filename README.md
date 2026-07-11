@@ -128,7 +128,7 @@ Manor runs as one Docker Compose project with these services:
 
 - `butler`: the always-on supervisor and web app
 - `butler-gateway`: the host-facing reverse proxy for the Butler UI
-- `codex-box`: the trusted Codex app-server host used for OpenAI/Codex Worker sessions
+- `codex-box`: the compatibility-named service for the Worker host, which runs Codex app-server and Pi RPC Worker sessions
 - `runtime-broker`: the Docker control plane for previews, stack leases, and disposable services
 - `host-controller`: the narrow restart/update sidecar that survives Manor appliance restarts
 - `egress`: the restricted outbound proxy for Butler and Worker execution
@@ -143,7 +143,7 @@ The official installer and launcher build from the active source checkout. Publi
 Pushes to `main` and version tags publish these images to GHCR:
 
 - `ghcr.io/peter-olom/manor-butler`
-- `ghcr.io/peter-olom/manor-codex-box` (the Codex app-server host)
+- `ghcr.io/peter-olom/manor-codex-box` (the compatibility-named Worker image)
 - `ghcr.io/peter-olom/manor-egress`
 - `ghcr.io/peter-olom/manor-preview-egress`
 - `ghcr.io/peter-olom/manor-runtime-broker`
@@ -227,29 +227,30 @@ Today it provides:
 - a web UI on `http://127.0.0.1:8180`
 - a unified Butler chat
 - a jobs sidebar and per-job windows
-- a Worker workstream, with an operational shell for the Codex app-server host
+- a Worker workstream, with one operational Worker CLI for both harnesses
 - runtime visibility for stacks, previews, and services
 - image-reference tracking for visual tasks
 - tool-driven delegation into provider-backed Worker jobs
 
-Butler is built on the Pi agent framework. It supervises OpenAI/Codex Workers through the Codex app server and supported Ollama and OpenCode Go Workers through Pi RPC.
+Butler is built on the Pi agent framework. Its own Pi-backed agent stays in the Butler environment. OpenAI/Codex Workers use the Codex app server, while supported Ollama and OpenCode Go Workers use Pi RPC; both Worker harnesses execute in the separate Worker environment.
 
 ### Worker Harnesses
 
 Workers share one supervision and runtime contract even though their transports differ.
 
-The Codex app-server harness provides:
+The Worker environment provides:
 
 - the official Codex CLI
 - Codex app-server mode
-- a direct shell through `ttyd`
+- the Pi RPC Worker runtime
+- one direct Worker CLI through `ttyd`
 - repo and worktree access through a dedicated Docker volume mounted at `/repos`
 - shared runtime state through dedicated Docker volumes
 - local helper access through `manor-harness`
 
-The Pi RPC harness provides Worker sessions for Manor's supported Ollama Local, Ollama Cloud, and OpenCode Go providers. These sessions receive the same job payload, workspace access, harness capabilities, reporting contract, and Butler review.
+The Pi RPC harness provides Worker sessions for Manor's supported Ollama Local, Ollama Cloud, and OpenCode Go providers. These sessions execute in the Worker environment and receive the same job payload, workspace access, harness capabilities, reporting contract, and Butler review.
 
-The `codex-box` service and `manor-codex-box` image keep their existing names because they are specifically the Codex app-server host. Those deployment identifiers describe that harness surface. Manor labels the agent role across every harness as Worker.
+The `codex-box` service, `manor-codex-box` container, and published image keep their existing deployment names for compatibility. The runtime identity is `worker@manor-worker`, and it hosts the complete Worker environment. The UI exposes exactly two agent CLIs: Butler CLI and Worker CLI.
 
 Workers own repository work. Butler and the broker own runtime lifecycle and policy.
 
@@ -383,8 +384,9 @@ Manor is a trusted personal worker appliance, not a multi-tenant sandbox.
 
 Current trust boundaries:
 
-- Butler and the Codex app-server host are separate services
-- Pi RPC Worker sessions run from the Butler service and share its container boundary
+- Butler and the Worker host are separate services
+- Butler contains only its own Pi-backed supervisor agent
+- Codex app-server and Pi RPC Worker sessions both execute in the Worker host
 - Worker execution does not get direct internet access
 - external outbound traffic from Butler and Worker execution goes through the restricted `egress` proxy; local Ollama traffic stays inside the appliance
 - preview runtimes keep private runtime networking and get direct outbound internet by default
@@ -434,7 +436,7 @@ For contribution workflow and validation expectations, see the [contributing gui
 - `config/`: optional preview egress profiles and Codex app-server model instructions
 - `docker/butler/`: Butler image and auth helpers
 - `docker/butler-gateway/`: Butler reverse proxy
-- `docker/codex-box/`: Codex app-server host image and shared harness CLI
+- `docker/codex-box/`: compatibility-named Worker image for Codex app-server, Pi RPC, and the Worker CLI
 - `docker/egress/`: restricted outbound proxy
 - `docker/host-controller/`: restart/update controller with its own scoped token
 - `docker/preview-egress/`: optional restrictive preview egress control plane

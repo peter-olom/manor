@@ -12,6 +12,8 @@
 
 ## Butler Model Providers And Harnesses
 
+- Treat Butler and Worker as the two agent environments. Butler contains only Butler's Pi-backed supervisor agent. The compatibility-named `codex-box` service runs the shared Worker host with both the Codex app-server and Pi RPC Worker harnesses. Its runtime account and hostname are `worker` and `manor-worker`.
+- Keep the built-in CLI targets aligned with those environments: `Butler CLI` and `Worker CLI`. Do not expose Codex or Pi as top-level CLI environments.
 - Treat OpenAI Codex as a Codex app-server provider. Route Codex sessions through the Codex app server, and build the Codex model picker from the app server's served models rather than Pi's registry or a generic provider list.
 - Keep Codex model cleanup strict. Do not leave fallback providers, stale compatibility paths, or dead registry code when the intended route is the Codex app server.
 - Pi is the harness for Ollama Cloud and OpenCode Go. Use Pi for those sessions, but do not assume Pi's registry is complete or current for subscription-backed providers.

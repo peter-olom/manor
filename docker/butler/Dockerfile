@@ -74,12 +74,13 @@ COPY docker/butler/start.sh /usr/local/bin/start-butler
 COPY docker/butler/auth.sh /usr/local/bin/butler-auth
 COPY docker/butler/chatgpt-login.mjs /usr/local/bin/butler-chatgpt-login.mjs
 COPY docker/butler/terminal-shell.sh /usr/local/bin/start-butler-shell
+COPY docker/butler/worker-pi-rpc-proxy.mjs /usr/local/bin/worker-pi-rpc-proxy.mjs
 COPY docker/codex-box/manor-harness.mjs /usr/local/bin/manor-harness
 COPY docker/butler/zshrc /home/butler/.zshrc
 COPY docker/butler/zprofile /home/butler/.zprofile
 
-RUN sed -i 's/\r$//' /usr/local/bin/start-butler /usr/local/bin/butler-auth /usr/local/bin/butler-chatgpt-login.mjs /usr/local/bin/start-butler-shell /usr/local/bin/manor-harness /home/butler/.zshrc /home/butler/.zprofile \
-  && chmod +x /usr/local/bin/start-butler /usr/local/bin/butler-auth /usr/local/bin/butler-chatgpt-login.mjs /usr/local/bin/start-butler-shell /usr/local/bin/manor-harness \
+RUN sed -i 's/\r$//' /usr/local/bin/start-butler /usr/local/bin/butler-auth /usr/local/bin/butler-chatgpt-login.mjs /usr/local/bin/start-butler-shell /usr/local/bin/worker-pi-rpc-proxy.mjs /usr/local/bin/manor-harness /home/butler/.zshrc /home/butler/.zprofile \
+  && chmod +x /usr/local/bin/start-butler /usr/local/bin/butler-auth /usr/local/bin/butler-chatgpt-login.mjs /usr/local/bin/start-butler-shell /usr/local/bin/worker-pi-rpc-proxy.mjs /usr/local/bin/manor-harness \
   && rm -rf /tmp/* /var/tmp/*
 
 EXPOSE 8080 7682

@@ -56,6 +56,8 @@ const port = Number(process.env.BUTLER_PORT ?? "8080");
 const codexBaseUrl = process.env.CODEX_BASE_URL ?? "ws://codex-box:8080";
 const codexAppServerAuthTokenFile = process.env.CODEX_APP_SERVER_AUTH_TOKEN_FILE ?? null;
 const piAgentDir = process.env.PI_AGENT_DIR ?? "/home/butler/.pi/agent";
+const workerPiAgentDir = process.env.WORKER_PI_AGENT_DIR ?? piAgentDir; const workerPiSessionRoot = process.env.WORKER_PI_SESSION_ROOT ?? path.join(process.env.MANOR_STATE_DIR ?? "/state", "pi-worker-sessions");
+const workerPiRpcCliPath = process.env.WORKER_PI_RPC_CLI_PATH ?? null; const workerPiExtensionDir = process.env.WORKER_PI_EXTENSION_DIR ?? null; const workerButlerBaseUrl = process.env.WORKER_BUTLER_BASE_URL ?? `http://127.0.0.1:${port}`;
 const stateDir = process.env.MANOR_STATE_DIR ?? "/state";
 const codexHomeDir = process.env.CODEX_SHARED_HOME_DIR ?? "/codex-home";
 const harnessRegistryPath = process.env.MANOR_HARNESS_REGISTRY_PATH ?? path.join(stateDir, "harness-capabilities.json");
@@ -122,7 +124,7 @@ let sseHub!: ButlerSseHub;
 const selfImprovementRequests = new SelfImprovementRequestState(path.join(stateDir, "self-improvement-requests.json"), () => sseHub?.schedule(), (error) => console.error("Self-improvement queue save failed", error));
 await selfImprovementRequests.load();
 configureSelfImprovementRequestState(selfImprovementRequests);
-const piAuthPath = path.join(piAgentDir, "auth.json"); const codexAuthPath = path.join(codexHomeDir, "auth.json");
+const piAuthPath = path.join(piAgentDir, "auth.json"); const workerPiAuthPath = path.join(workerPiAgentDir, "auth.json"); const codexAuthPath = path.join(codexHomeDir, "auth.json");
 const modelTasks = new ManorModelTaskRunner({ stateDir, codexHomeDir, piAuthPath });
 const sessionTitleGenerator = new ManorSessionTitleGenerator({
   ...readSessionTitleConfig(),
@@ -156,10 +158,13 @@ await harnessService.load();
 await harnessService.reconcileThreadCapabilities();
 const piRpcWorkerClient = new PiRpcWorkerClient({
   store,
-  piAuthPath,
-  sessionRootDir: path.join(stateDir, "pi-worker-sessions"),
+  piAuthPath: workerPiAuthPath,
+  sessionRootDir: workerPiSessionRoot,
+  cliPath: workerPiRpcCliPath,
+  extensionDir: workerPiExtensionDir,
+  manageSessionDirectories: workerPiRpcCliPath === null,
   codexHomeDir,
-  butlerBaseUrl: `http://127.0.0.1:${port}`,
+  butlerBaseUrl: workerButlerBaseUrl,
   onThreadCapabilityReady: async (threadId, cwd) => {
     await harnessService.ensureThreadCapability(threadId, cwd);
   },
@@ -269,7 +274,8 @@ runtimeAccess = {
 sseHub = new ButlerSseHub(runtimeAccess);
 
 await fs.mkdir(stateDir, { recursive: true });
-await fs.mkdir(piAgentDir, { recursive: true });
+await fs.mkdir(piAgentDir, { recursive: true }); await fs.mkdir(workerPiAgentDir, { recursive: true });
+await fs.mkdir(workerPiSessionRoot, { recursive: true });
 
 await butlerAgent.start();
 codexClient.start();
