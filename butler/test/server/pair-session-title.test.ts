@@ -577,6 +577,13 @@ test("pair attachment acknowledgement uses compare-and-swap and exposes an exact
   assert.equal(stale?.attached, false);
   assert.deepEqual(pairStore.getPair(pair.id)?.worker, original);
 
+  const automaticReplacement = serviceOptions?.operatorSink?.onDelegationAcknowledgement?.({
+    threadId: "worker-new", text: "Recovered with a replacement", at: Date.now(), runtime: "pi-rpc",
+    provider: "opencode-go", model: "opencode-go/minimax-m3", effort: "medium"
+  });
+  assert.equal(automaticReplacement?.attached, false);
+  assert.deepEqual(pairStore.getPair(pair.id)?.worker, original);
+
   store.removeThread("worker-old");
   pairStore.syncWorkerReports();
   const replacement = serviceOptions?.operatorSink?.onDelegationAcknowledgement?.({

@@ -36,6 +36,7 @@ export type ButlerAgentDefaults = {
 
 export type ButlerWorkerDefaults = {
   runtime: "auto" | "openai" | "pi-rpc" | null;
+  threadId?: string | null;
   harness?: string | null;
   model?: string | null;
   effort?: string | null;

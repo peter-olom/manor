@@ -615,6 +615,15 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
           refreshChecklist?: boolean;
           nextWorkerReportAction?: "review" | "reply_to_operator";
         };
+        const workerDefaults = access.getWorkerDefaults?.();
+        const attachedWorkerThreadId = workerDefaults?.threadId;
+        if (workerDefaults && attachedWorkerThreadId !== undefined && attachedWorkerThreadId !== typedParams.threadId) {
+          throw new Error(
+            attachedWorkerThreadId
+              ? `Job ${typedParams.threadId} belongs to another Butler session. This session can only steer its attached Worker ${attachedWorkerThreadId}.`
+              : `Job ${typedParams.threadId} belongs to another Butler session. Delegate a new Worker in this session instead.`
+          );
+        }
         const activeGuard = access.getActiveOperatorThreadGuard();
         if (activeGuard) {
           if (activeGuard.explicitThreadIds.length > 0 && !activeGuard.explicitThreadIds.includes(typedParams.threadId)) {

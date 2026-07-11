@@ -544,6 +544,7 @@ export class PairSessionManager {
         const current = this.options.pairStore.getPair(pair.id);
         return {
           runtime: "auto",
+          threadId: current?.worker?.threadId ?? null,
           harness: current?.workerHarness ?? current?.worker?.harness ?? null,
           model: current?.workerModel ?? current?.worker?.model ?? null,
           effort: current?.workerEffort ?? null

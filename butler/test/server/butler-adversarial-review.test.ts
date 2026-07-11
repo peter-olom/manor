@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { ensureButlerAdversarialReview, validateAdversarialReviewOutput } from "../../src/server/butler-adversarial-review.js";
+import { createPiReviewSubmissionTool, ensureButlerAdversarialReview, validateAdversarialReviewOutput, waitForPiReviewSubmission } from "../../src/server/butler-adversarial-review.js";
 import { getOrchestrationCloseoutBlocker } from "../../src/server/butler-orchestration.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
@@ -153,6 +153,39 @@ test("adversarial review rejects malformed clean-looking output", () => {
   assert.throws(() => validateAdversarialReviewOutput({ findings: [], error: "review failed" }), /unsupported root fields/);
   assert.throws(() => validateAdversarialReviewOutput({ findings: [{ severity: "high", findingSummary: "Missing proof", blocking: true }] }), /linked claim ids/);
   assert.deepEqual(validateAdversarialReviewOutput({ findings: [] }), { findings: [] });
+});
+
+test("Pi adversarial review submission tool captures only schema-valid findings", async () => {
+  let submitted: ReturnType<typeof validateAdversarialReviewOutput> | null = null;
+  const tool = createPiReviewSubmissionTool((review) => { submitted = review; });
+  await tool.execute("call-1", {
+    findings: [{ severity: "high", findingSummary: "The recovery path drops the worker.", blocking: true, linkedClaimIds: ["claim-1"] }]
+  });
+  assert.deepEqual(submitted, {
+    findings: [{ severity: "high", findingSummary: "The recovery path drops the worker.", blocking: true, linkedClaimIds: ["claim-1"] }]
+  });
+  const invalidTool = createPiReviewSubmissionTool(() => undefined);
+  await assert.rejects(
+    () => invalidTool.execute("call-2", { findings: [{ severity: "high", findingSummary: "Missing fields" }] } as never),
+    /blocking value/
+  );
+  await assert.rejects(
+    () => tool.execute("call-3", { findings: [] }),
+    /already submitted/
+  );
+});
+
+test("Pi adversarial review stops as soon as a valid submission arrives", async () => {
+  let abortCalls = 0;
+  const review = { findings: [{ severity: "low", findingSummary: "Minor issue", blocking: false, linkedClaimIds: [] }] };
+  const result = await waitForPiReviewSubmission({
+    prompt: new Promise<void>(() => undefined),
+    submission: Promise.resolve(review),
+    abort: async () => { abortCalls += 1; },
+    timeoutMs: 50
+  });
+  assert.deepEqual(result, review);
+  assert.equal(abortCalls, 1);
 });
 
 test("overlapping Workers stay isolated after the other baseline has been cleaned", async () => {

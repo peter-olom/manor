@@ -3,13 +3,14 @@ import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import type { Api, Model } from "@mariozechner/pi-ai";
+import { Type, type Api, type Model } from "@mariozechner/pi-ai";
 import {
   AuthStorage,
   createAgentSession,
   DefaultResourceLoader,
   SessionManager,
   SettingsManager,
+  defineTool,
   type ExtensionAPI,
   type ModelRegistry
 } from "@mariozechner/pi-coding-agent";
@@ -50,6 +51,57 @@ export const ADVERSARIAL_REVIEW_OUTPUT_SCHEMA = {
 };
 
 const REVIEW_SEVERITIES = new Set(["info", "low", "medium", "high", "critical"]);
+const PI_REVIEW_SUBMISSION_SCHEMA = Type.Object({
+  findings: Type.Array(Type.Object({
+    severity: Type.Union([Type.Literal("info"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("critical")]),
+    findingSummary: Type.String({ minLength: 1, maxLength: 600 }),
+    blocking: Type.Boolean(),
+    linkedClaimIds: Type.Array(Type.String({ maxLength: 100 }), { maxItems: 20 })
+  }, { additionalProperties: false }), { maxItems: 12 })
+}, { additionalProperties: false });
+
+export function createPiReviewSubmissionTool(onSubmit: (review: ReturnType<typeof validateAdversarialReviewOutput>) => void) {
+  let accepted = false;
+  return defineTool({
+    name: "submit_review",
+    label: "Submit review",
+    description: "Submit the final structured adversarial review. Call this exactly once after inspecting the work.",
+    parameters: PI_REVIEW_SUBMISSION_SCHEMA,
+    execute: async (_toolCallId, params) => {
+      if (accepted) throw new Error("Adversarial review was already submitted.");
+      const review = validateAdversarialReviewOutput(params);
+      accepted = true;
+      onSubmit(review);
+      return {
+        content: [{ type: "text" as const, text: "Review submitted. End the review now." }],
+        details: { submitted: true }
+      };
+    }
+  });
+}
+
+export async function waitForPiReviewSubmission(input: {
+  prompt: Promise<void>;
+  submission: Promise<ReturnType<typeof validateAdversarialReviewOutput>>;
+  abort: () => Promise<unknown>;
+  timeoutMs: number;
+}): Promise<ReturnType<typeof validateAdversarialReviewOutput> | null> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const outcome = await Promise.race([
+      input.prompt.then(() => ({ kind: "prompt" as const })),
+      input.submission.then((review) => ({ kind: "submission" as const, review })),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error("adversarial review timed out")), input.timeoutMs);
+      })
+    ]);
+    if (outcome.kind === "prompt") return null;
+    await input.abort().catch(() => undefined);
+    return outcome.review;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
 
 export function validateAdversarialReviewOutput(raw: unknown): { findings: Array<{ severity: string; findingSummary: string; blocking: boolean; linkedClaimIds: string[] }> } {
   if (!raw || typeof raw !== "object" || !Array.isArray((raw as { findings?: unknown }).findings)) {
@@ -173,6 +225,13 @@ async function runCodexReview(input: ProviderAdversarialReviewInput): Promise<un
 }
 
 async function runPiReview(input: ProviderAdversarialReviewInput): Promise<unknown> {
+  let submitted: unknown = null;
+  let resolveSubmission!: (review: ReturnType<typeof validateAdversarialReviewOutput>) => void;
+  const submission = new Promise<ReturnType<typeof validateAdversarialReviewOutput>>((resolve) => { resolveSubmission = resolve; });
+  const submitReview = createPiReviewSubmissionTool((review) => {
+    submitted = review;
+    resolveSubmission(review);
+  });
   const settingsManager = SettingsManager.inMemory();
   const resourceLoader = new DefaultResourceLoader({
     cwd: input.cwd,
@@ -184,7 +243,8 @@ async function runPiReview(input: ProviderAdversarialReviewInput): Promise<unkno
       "You are Manor's isolated adversarial code reviewer.",
       "Inspect the supplied change and related files with read-only tools.",
       "Find actionable correctness, regression, safety, proof, and task-fit issues.",
-      "Do not modify files. Return valid JSON matching the requested schema and no other prose."
+      "Do not modify files.",
+      "You must finish by calling submit_review exactly once. Do not return the review as prose or raw JSON."
     ].join("\n")
   });
   await resourceLoader.reload();
@@ -194,19 +254,21 @@ async function runPiReview(input: ProviderAdversarialReviewInput): Promise<unkno
     modelRegistry: input.modelRegistry,
     model: input.selection.model,
     thinkingLevel: piThinkingLevelForModelOption(input.selection.thinkingLevel, modelToModelOption(input.selection.model)),
-    tools: ["read", "grep", "find", "ls"],
+    tools: ["read", "grep", "find", "ls", "submit_review"],
+    customTools: [submitReview],
     sessionManager: SessionManager.inMemory(input.cwd),
     settingsManager,
     resourceLoader
   });
-  let timeout: ReturnType<typeof setTimeout> | null = null;
   try {
-    await Promise.race([
-      session.prompt(`${input.prompt}\n\nOutput schema:\n${JSON.stringify(ADVERSARIAL_REVIEW_OUTPUT_SCHEMA)}`),
-      new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new Error("adversarial review timed out")), input.timeoutMs);
-      })
-    ]);
+    const earlySubmission = await waitForPiReviewSubmission({
+      prompt: session.prompt(`${input.prompt}\n\nInspect the work, then call submit_review exactly once with the final findings.`),
+      submission,
+      abort: () => session.abort(),
+      timeoutMs: input.timeoutMs
+    });
+    if (earlySubmission) return earlySubmission;
+    if (submitted) return submitted;
     const message = [...session.messages].reverse().find((entry) => entry.role === "assistant");
     const text = message && "content" in message ? contentToText(message.content).trim() : "";
     if (!text) throw new Error("adversarial reviewer returned no result");
@@ -215,7 +277,6 @@ async function runPiReview(input: ProviderAdversarialReviewInput): Promise<unkno
     await session.abort().catch(() => {});
     throw error;
   } finally {
-    if (timeout) clearTimeout(timeout);
     session.dispose();
   }
 }
@@ -256,11 +317,11 @@ export function buildAdversarialReviewPrompt(input: {
     input.reviewBrief?.trim() ? `Current Butler review brief:\n${clip(input.reviewBrief.trim(), 12_000)}` : "Current Butler review brief: none.",
     `Worker summary: ${input.report.summary}`,
     `Worker details: ${input.report.details ?? ""}`,
-    `Worker claims: ${JSON.stringify(input.report.claims ?? null)}`,
-    `Worker evidence: ${JSON.stringify(input.report.evidence ?? [])}`,
+    `Worker claims: ${clip(JSON.stringify(input.report.claims ?? null), 16_000)}`,
+    `Worker evidence: ${clip(JSON.stringify(input.report.evidence ?? []), 16_000)}`,
     "",
     "Workspace change snapshot:",
-    clip(input.workspaceSnapshot, 120_000)
+    clip(input.workspaceSnapshot, 60_000)
   ].join("\n");
 }
 

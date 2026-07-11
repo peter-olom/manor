@@ -144,7 +144,7 @@ function normalizeWorkerRuntime(value: unknown, threadId: string, source?: strin
 }
 
 function normalizeWorkerHarness(value: unknown, runtime: "openai" | "pi-rpc" | null): string | null {
-  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "string" && value.trim()) return value.trim().toLowerCase();
   if (runtime === "pi-rpc") return "pi";
   if (runtime === "openai") return "codex";
   return null;

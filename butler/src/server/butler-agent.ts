@@ -392,7 +392,7 @@ export class ButlerAgentService extends EventEmitter {
     replacesThreadId?: string | null;
   } = {}): ButlerDelegationAttachmentAcknowledgement | void {
     const at = Date.now();
-    const acknowledgement = this.attachDelegationAcknowledgement(threadId, text, at, selection);
+    const acknowledgement = this.attachDelegationAcknowledgement(threadId, text, at, selection); if (acknowledgement?.attached === false) return acknowledgement;
     this.postDelegationAcknowledgement(threadId, text, at);
     return acknowledgement;
   }

@@ -11,7 +11,7 @@ import { buildThreadExecutionContract } from "../../src/server/thread-contract.j
 import type { ButlerAgentToolAccess } from "../../src/server/butler-agent-tool-access.js";
 import type { JobPayloadView } from "../../src/server/job-payload-types.js";
 
-async function createHarness() {
+async function createHarness(options: { attachedWorkerThreadId?: string | null } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-codex-instruction-tools-"));
   const store = new ButlerStateStore(path.join(dir, "state.json"));
   await store.load();
@@ -67,6 +67,10 @@ async function createHarness() {
       return payload;
     },
     getActiveOperatorThreadGuard: () => null,
+    getWorkerDefaults: () => ({
+      runtime: "auto",
+      threadId: options.attachedWorkerThreadId === undefined ? threadId : options.attachedWorkerThreadId
+    }),
     getThreadBudgetLimitMessage: () => null,
     bindJobPayloadDelivery: async (threadId: string) => store.getThreadJobPayload(threadId),
     registerPendingChatCallback: () => undefined,
@@ -75,6 +79,20 @@ async function createHarness() {
   const tools = buildButlerCodexTools(access);
   return { store, threadId, sent, payloads, tools };
 }
+
+test("message_job cannot steer a Worker attached to another Butler session", async () => {
+  const { threadId, sent, tools } = await createHarness({ attachedWorkerThreadId: null });
+  const accessTool = tool(tools, "message_job");
+
+  await assert.rejects(
+    () => accessTool.execute("call-cross-session", {
+      threadId,
+      text: "Reuse this idle Worker for an unrelated session."
+    }),
+    /another Butler session/
+  );
+  assert.equal(sent.length, 0);
+});
 
 function tool(tools: unknown[], name: string) {
   return tools.find((entry) => (entry as { name?: string }).name === name) as {

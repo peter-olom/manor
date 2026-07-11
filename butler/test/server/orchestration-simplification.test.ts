@@ -163,6 +163,44 @@ test("delegation starts worker directly with deterministic routing metadata", as
   assert.doesNotMatch(acknowledgement, /Codex worker/i);
 });
 
+test("delegation cleans up a Worker when the occupied pair rejects attachment", async () => {
+  const store = await createStore();
+  let deletedThreadId: string | null = null;
+  let callbackRegistrations = 0;
+  const tool = buildButlerDelegationTools({
+    defineButlerTool: (definition) => definition,
+    getToolUiEffects: () => [],
+    prepareDelegationWorkspace: async () => ({ cwd: "/workspace", branchName: null }),
+    buildDelegationDeveloperInstructions: async () => "",
+    buildDelegationContract: async (input: { threadId: string }) => ({
+      text: "brief",
+      contract: makeContract({ threadId: input.threadId, workspaceCwd: "/workspace" })
+    }),
+    codexClient: {
+      getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "medium", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["medium"], supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium" }] } }),
+      updateComposeSettings: async () => undefined,
+      startThread: async (input: { input: (threadId: string) => Promise<unknown> }) => {
+        await input.input("thread-rejected");
+        return { threadId: "thread-rejected" };
+      },
+      deleteThread: async (threadId: string) => { deletedThreadId = threadId; return true; }
+    },
+    imageStore: { resolveViews: () => [], getFilePath: () => null },
+    fileStore: { resolveViews: () => [], getFilePath: () => null },
+    store,
+    getCodexAuthStatus: () => ({ loggedIn: true }),
+    noteThreadFocus: () => undefined,
+    queueDelegationAcknowledgement: () => ({ attached: false }),
+    registerPendingChatCallback: () => { callbackRegistrations += 1; }
+  } as never).find((entry) => entry.name === "delegate_to_worker") as {
+    execute: (toolCallId: string, params: Record<string, unknown>) => Promise<unknown>;
+  };
+
+  await assert.rejects(() => tool.execute("call-occupied", { task: "Start duplicate work" }), /already has a Worker/);
+  assert.equal(deletedThreadId, "thread-rejected");
+  assert.equal(callbackRegistrations, 0);
+});
+
 test("delegation contract receives the resolved workspace cwd", async () => {
   const store = await createStore();
   let capturedWorkspace: { cwd: string; branchName: string | null } | null = null;

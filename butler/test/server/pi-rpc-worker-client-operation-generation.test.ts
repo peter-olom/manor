@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -37,15 +37,126 @@ type TestClient = {
   selectedProvider: string | null;
   selectedModel: string | null;
   selectedEffort: "low" | "medium" | "high" | "xhigh" | null;
-  createSession: (threadId: string, cwd: string, provider: string, model: string) => Promise<FakeSession>;
+  createSession: (threadId: string, cwd: string, provider: string, model: string, sessionPath?: string) => Promise<FakeSession>;
   startThread: (options: { task: string; cwd?: string; provider?: string; model?: string; effort?: "low" | "medium" | "high" | "xhigh" | null; input?: (threadId: string) => Promise<string> }) => Promise<{ threadId: string; turnId: string | null }>;
   sendMessage: (threadId: string, input: string) => Promise<{ threadId: string; turnId: string | null }>;
   stopThread: (threadId: string) => Promise<boolean>;
   deleteThread: (threadId: string) => Promise<boolean>;
+  loadThread: (threadId: string) => Promise<void>;
   handleSessionEvent: (session: FakeSession, event: Record<string, unknown>) => void;
   applyPatch: (session: FakeSession, generation: number | null, patch: ProviderRuntimeLivePatch) => void;
   on: (event: "threadPatch", listener: (patch: ProviderRuntimeLivePatch) => void) => void;
 };
+
+test("Pi resumes one persisted session after restart and reconciles the interrupted turn", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-resume-"));
+  try {
+    const threadId = "pi-resume-thread";
+    const cwd = path.join(dir, "workspace");
+    const sessionDir = path.join(dir, "sessions", threadId);
+    const sessionPath = path.join(sessionDir, "2026-07-11T00-00-00-000Z_session.jsonl");
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(sessionPath, [
+      JSON.stringify({ type: "session", cwd }),
+      JSON.stringify({ type: "model_change", provider: "ollama-cloud", modelId: "glm-5.2" })
+    ].join("\n"), "utf8");
+    const store = await createStore(dir);
+    store.upsertThreadSummary({
+      id: threadId,
+      cwd,
+      source: "pi-rpc",
+      modelProvider: "ollama-cloud",
+      status: { type: "active" },
+      turns: [{ id: "turn-interrupted", status: "in_progress", items: [] }]
+    });
+    const client = new PiRpcWorkerClient({
+      store,
+      piAuthPath: path.join(dir, "auth.json"),
+      sessionRootDir: path.join(dir, "sessions")
+    }) as unknown as TestClient;
+    let createCount = 0;
+    let resumedWith: string | undefined;
+    client.createSession = async (id, sessionCwd, provider, model, persistedPath) => {
+      createCount += 1;
+      resumedWith = persistedPath;
+      assert.deepEqual({ id, sessionCwd, provider, model }, { id: threadId, sessionCwd: cwd, provider: "ollama-cloud", model: "glm-5.2" });
+      const session: FakeSession = {
+        threadId,
+        client: {
+          getState: async () => ({ isStreaming: false }), prompt: async () => undefined, steer: async () => undefined,
+          abort: async () => undefined, stop: async () => undefined
+        },
+        mapper: new PiProviderRuntimeMapper(threadId), unsubscribe: null, cwd, provider, model,
+        activityVersion: 0, acceptedEventVersion: null, eventStreamVersion: null, pendingPromptGenerations: []
+      };
+      client.sessions.set(threadId, session);
+      return session;
+    };
+
+    await Promise.all([client.loadThread(threadId), client.loadThread(threadId)]);
+
+    assert.equal(createCount, 1);
+    assert.equal(resumedWith, sessionPath);
+    assert.equal(store.getThread(threadId)?.status, "idle");
+    assert.equal(store.getThread(threadId)?.turns[0]?.status, "interrupted");
+    assert.match(store.getThread(threadId)?.turns[0]?.error ?? "", /restarted/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("deleting a Pi job while it resumes cannot resurrect the session", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-resume-delete-"));
+  try {
+    const threadId = "pi-resume-delete-thread";
+    const cwd = path.join(dir, "workspace");
+    const sessionDir = path.join(dir, "sessions", threadId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(path.join(sessionDir, "2026-07-11T00-00-00-000Z_session.jsonl"), [
+      JSON.stringify({ type: "session", cwd }),
+      JSON.stringify({ type: "model_change", provider: "ollama-cloud", modelId: "glm-5.2" })
+    ].join("\n"), "utf8");
+    const store = await createStore(dir);
+    store.upsertThreadSummary({ id: threadId, cwd, source: "pi-rpc", modelProvider: "ollama-cloud", status: "idle", turns: [] });
+    const client = new PiRpcWorkerClient({
+      store,
+      piAuthPath: path.join(dir, "auth.json"),
+      sessionRootDir: path.join(dir, "sessions")
+    }) as unknown as TestClient;
+    const created = deferred<FakeSession>();
+    let createStarted = false;
+    let stopCalls = 0;
+    client.createSession = async () => {
+      createStarted = true;
+      const session = await created.promise;
+      client.sessions.set(threadId, session);
+      return session;
+    };
+    const session: FakeSession = {
+      threadId,
+      client: {
+        getState: async () => ({ isStreaming: false }), prompt: async () => undefined, steer: async () => undefined,
+        abort: async () => undefined, stop: async () => { stopCalls += 1; }
+      },
+      mapper: new PiProviderRuntimeMapper(threadId), unsubscribe: null, cwd, provider: "ollama-cloud", model: "glm-5.2",
+      activityVersion: 0, acceptedEventVersion: null, eventStreamVersion: null, pendingPromptGenerations: []
+    };
+
+    const resuming = client.loadThread(threadId);
+    const rejectedResume = assert.rejects(resuming, /deleted while it was resuming/);
+    await waitFor(() => createStarted);
+    const deleting = client.deleteThread(threadId);
+    created.resolve(session);
+
+    await rejectedResume;
+    assert.equal(await deleting, true);
+    assert.equal(stopCalls, 1);
+    assert.equal(client.sessions.has(threadId), false);
+    assert.equal(store.getThread(threadId), undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;

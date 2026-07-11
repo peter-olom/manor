@@ -12,7 +12,7 @@ import { assertCallbackReviewCurrent } from "./butler-job-mutation-guard.js";
 import { isSharedShellRepoBootstrapTask } from "./thread-contract.js";
 import { applyWorkspacePreviewDefaults, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 import type { ButlerRoutingDecisionView } from "./types.js";
-import { startWorkerThread } from "./worker-client-router.js";
+import { deleteWorkerThread, startWorkerThread } from "./worker-client-router.js";
 
 function workerHarnessLabel(harness: string): string {
   if (harness === "codex") return "Codex";
@@ -1273,11 +1273,15 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         access.store.setThreadExecutionContract(result.threadId, delegationContract.contract);
         access.store.addEvent(result.threadId, "butler.delegation.created", "Butler created the job brief for this delegated job.");
         access.noteThreadFocus(result.threadId, name);
-        access.queueDelegationAcknowledgement(
+        const acknowledgement = access.queueDelegationAcknowledgement(
           result.threadId,
           `Accepted. I delegated this to a Worker using provider ${result.provider ?? "selected"}, model ${result.model ?? "default"}, and the ${workerHarnessLabel(result.harness)} harness in job ${result.threadId}. I will return here with the result.`,
           { runtime: result.runtime, harness: result.harness, provider: result.provider, model: result.model, effort: result.effort }
         );
+        if (acknowledgement?.attached === false) {
+          await deleteWorkerThread(access, result.threadId).catch(() => false);
+          throw new Error("This session already has a Worker. Continue it with message_job or use Switch worker for an atomic handoff.");
+        }
         await access.registerPendingChatCallback(result.threadId);
         const supervision = access.store.noteButlerSteer(result.threadId);
 

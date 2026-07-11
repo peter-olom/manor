@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { rm } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -37,6 +37,15 @@ type PiWorkerSession = {
   eventStreamVersion: number | null;
   pendingPromptGenerations: number[];
 };
+
+type PiWorkerSessionMetadata = {
+  threadId: string;
+  cwd: string;
+  provider: string;
+  model: string;
+};
+
+const PI_WORKER_METADATA_FILE = "manor-session.json";
 
 function inputItemsToText(input: string | CodexInputItem[]): string {
   if (typeof input === "string") return input.trim();
@@ -83,6 +92,8 @@ export async function webToolsExtensionArgsForProvider(provider: string | null |
 
 export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
   private readonly sessions = new Map<string, PiWorkerSession>();
+  private readonly loadingSessions = new Map<string, Promise<void>>();
+  private readonly deletingSessions = new Set<string>();
   private availableModels: ModelOption[] = [];
   private selectedProvider: string | null = null;
   private selectedModel: string | null = null;
@@ -332,29 +343,109 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
   }
 
   async loadThread(threadId: string): Promise<void> {
-    if (!this.sessions.has(threadId)) {
-      throw new Error("Pi RPC worker session is not loaded in this process");
+    if (this.sessions.has(threadId)) return;
+    if (this.deletingSessions.has(threadId)) throw new Error(`Pi RPC worker job ${threadId} is being deleted`);
+    const existingLoad = this.loadingSessions.get(threadId);
+    if (existingLoad) return existingLoad;
+    const loading = this.resumeThread(threadId).finally(() => this.loadingSessions.delete(threadId));
+    this.loadingSessions.set(threadId, loading);
+    return loading;
+  }
+
+  private async resumeThread(threadId: string): Promise<void> {
+    const thread = this.options.store.getThread(threadId);
+    if (!thread || thread.source !== "pi-rpc") throw new Error(`Pi RPC worker job ${threadId} was not found`);
+    const metadata = await this.readSessionMetadata(threadId, thread.cwd ?? "/repos", thread.modelProvider);
+    const session = await this.createSession(threadId, metadata.cwd, metadata.provider, metadata.model, metadata.sessionPath);
+    if (this.deletingSessions.has(threadId)) {
+      session.unsubscribe?.();
+      this.sessions.delete(threadId);
+      await session.client.stop().catch(() => undefined);
+      throw new Error(`Pi RPC worker job ${threadId} was deleted while it was resuming`);
     }
+    const state = await session.client.getState().catch(() => null);
+    const lastTurn = thread.turns.at(-1);
+    if (lastTurn?.status === "in_progress") {
+      this.options.store.updateTurn(threadId, {
+        id: lastTurn.id,
+        status: "interrupted",
+        error: "Worker process restarted before this turn completed."
+      });
+    }
+    this.options.store.setThreadStatus(threadId, { type: state?.isStreaming ? "active" : "idle" });
+    this.emit("change");
+  }
+
+  private async readSessionMetadata(threadId: string, fallbackCwd: string, fallbackProvider: string | null): Promise<PiWorkerSessionMetadata & { sessionPath: string }> {
+    const sessionDir = path.join(this.options.sessionRootDir, threadId);
+    const metadataPath = path.join(sessionDir, PI_WORKER_METADATA_FILE);
+    try {
+      const metadata = JSON.parse(await readFile(metadataPath, "utf8")) as Partial<PiWorkerSessionMetadata>;
+      if (metadata.threadId === threadId && metadata.cwd && metadata.provider && metadata.model) {
+        const sessionPath = await this.latestSessionPath(sessionDir);
+        return { threadId, cwd: metadata.cwd, provider: metadata.provider, model: metadata.model, sessionPath };
+      }
+    } catch {
+      // Older sessions predate Manor's sidecar metadata. Recover their identity from Pi's JSONL.
+    }
+
+    const sessionPath = await this.latestSessionPath(sessionDir);
+    const entries = (await readFile(sessionPath, "utf8")).trim().split(/\r?\n/).reverse();
+    let provider = fallbackProvider;
+    let model: string | null = null;
+    let cwd = fallbackCwd;
+    for (const line of entries) {
+      try {
+        const entry = JSON.parse(line) as Record<string, unknown>;
+        if (entry.type === "session" && typeof entry.cwd === "string" && entry.cwd.trim()) cwd = entry.cwd;
+        if (entry.type === "model_change") {
+          provider = typeof entry.provider === "string" ? entry.provider : provider;
+          model = typeof entry.modelId === "string" ? entry.modelId : model;
+        }
+        const message = entry.message && typeof entry.message === "object" ? entry.message as Record<string, unknown> : null;
+        provider = typeof message?.provider === "string" ? message.provider : provider;
+        model = typeof message?.model === "string" ? message.model : model;
+      } catch {
+        // Ignore a partial final line left by an interrupted process.
+      }
+      if (provider && model) break;
+    }
+    if (!provider || !model) throw new Error(`Persisted Pi RPC worker job ${threadId} is missing its provider or model identity`);
+    return { threadId, cwd, provider, model, sessionPath };
+  }
+
+  private async latestSessionPath(sessionDir: string): Promise<string> {
+    const files = (await readdir(sessionDir)).filter((name) => name.endsWith(".jsonl")).sort();
+    const latest = files.at(-1);
+    if (!latest) throw new Error("Persisted Pi RPC worker session was not found");
+    return path.join(sessionDir, latest);
   }
 
   async deleteThread(threadId: string): Promise<boolean> {
-    const session = this.sessions.get(threadId);
-    if (!session) {
-      if (!this.options.store.getThread(threadId)) return false;
+    if (this.deletingSessions.has(threadId)) return false;
+    this.deletingSessions.add(threadId);
+    try {
+      await this.loadingSessions.get(threadId)?.catch(() => undefined);
+      const session = this.sessions.get(threadId);
+      if (!session) {
+        if (!this.options.store.getThread(threadId)) return false;
+        await this.removeThreadDurably(threadId);
+        await this.removeSessionDirectory(threadId);
+        this.emit("change");
+        return true;
+      }
+      this.invalidateSessionOperations(session);
       await this.removeThreadDurably(threadId);
+      session.pendingPromptGenerations = [];
+      session.unsubscribe?.();
+      await session.client.stop().catch(() => undefined);
+      this.sessions.delete(threadId);
       await this.removeSessionDirectory(threadId);
       this.emit("change");
       return true;
+    } finally {
+      this.deletingSessions.delete(threadId);
     }
-    this.invalidateSessionOperations(session);
-    await this.removeThreadDurably(threadId);
-    session.pendingPromptGenerations = [];
-    session.unsubscribe?.();
-    await session.client.stop().catch(() => undefined);
-    this.sessions.delete(threadId);
-    await this.removeSessionDirectory(threadId);
-    this.emit("change");
-    return true;
   }
 
   private async removeSessionDirectory(threadId: string): Promise<void> {
@@ -422,7 +513,7 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     this.emit("change");
   }
 
-  private async createSession(threadId: string, cwd: string, provider: string, model: string): Promise<PiWorkerSession> {
+  private async createSession(threadId: string, cwd: string, provider: string, model: string, sessionPath?: string): Promise<PiWorkerSession> {
     await syncManorPiModelsJson(this.options.piAuthPath);
     const extensionArgs = await this.webToolsExtensionArgs(provider);
     const codexHomeDir = this.options.codexHomeDir ?? process.env.CODEX_HOME ?? null;
@@ -440,14 +531,25 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
       },
       provider,
       model,
-      args: [...extensionArgs, "--session-dir", path.join(this.options.sessionRootDir, threadId)]
+      args: [
+        ...extensionArgs,
+        "--session-dir", path.join(this.options.sessionRootDir, threadId),
+        ...(sessionPath ? ["--session", sessionPath] : [])
+      ]
     });
     const mapper = new PiProviderRuntimeMapper(threadId);
     try {
+      await mkdir(path.join(this.options.sessionRootDir, threadId), { recursive: true });
       await client.start();
+      await writeFile(path.join(this.options.sessionRootDir, threadId, PI_WORKER_METADATA_FILE), JSON.stringify({
+        threadId,
+        cwd,
+        provider,
+        model
+      } satisfies PiWorkerSessionMetadata, null, 2), "utf8");
     } catch (error) {
       await client.stop().catch(() => undefined);
-      await this.removeSessionDirectory(threadId);
+      if (!sessionPath) await this.removeSessionDirectory(threadId);
       throw error;
     }
     const session: PiWorkerSession = {
