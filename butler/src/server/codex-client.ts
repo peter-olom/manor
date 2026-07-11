@@ -198,7 +198,7 @@ function modelOptionFromCodexEntry(entry: Record<string, unknown>): ModelOption 
   return {
     id,
     label: normalizeModelLabel(codexModelEntryLabel(entry, id), id),
-    provider: null,
+    provider: "openai-codex",
     supportsReasoning: supportedReasoningEfforts.length > 0,
     supportedThinkingLevels: supportedReasoningEfforts,
     supportedReasoningEfforts,

@@ -6,13 +6,15 @@ product
 
 ## Users
 
-Manor is used by one trusted operator who supervises Butler and Codex while they build, verify, and maintain projects inside a local Docker appliance.
+Manor is used by one trusted operator who supervises Butler and provider-backed Workers while they build, verify, and maintain projects inside a local Docker appliance.
 
 ## Product Purpose
 
 Manor keeps long-running agent work organized, observable, and contained. Success means the operator can delegate work, inspect evidence, and make high-risk runtime decisions without guessing what the agents or containers are doing.
 
-The main product promise is async leverage. The operator should give intent, then Butler and Codex should do the investigation, execution, verification, and proof gathering with very little hand-holding.
+The main product promise is async leverage. The operator should give intent, then Butler and the active Worker should do the investigation, execution, verification, and proof gathering with very little hand-holding.
+
+A Worker is Manor's product role across providers. Manor can run it through the Codex app-server harness for OpenAI/Codex models or the Pi RPC harness for supported Ollama and OpenCode Go models. Butler keeps the job contract and review model consistent across them.
 
 ## Brand Personality
 
@@ -33,6 +35,8 @@ Do not make Manor feel like a hosted multi-tenant SaaS dashboard, a decorative A
 - Treat taste, intent fit, and verification quality as part of completion, especially for UI, API, writing, and operator-facing workflows.
 - Make Butler acceptance adversarial: the worker submits evidence, Butler decides whether it is good enough.
 - Give the operator a compact proof dossier so they can trust the result without reading the full worker transcript.
+- Show the active Worker provider, model, and reasoning option where that identity affects a decision.
+- Treat provider or harness changes as explicit cold handoffs that preserve the job record without implying hidden state transfer.
 
 ## Accessibility & Inclusion
 

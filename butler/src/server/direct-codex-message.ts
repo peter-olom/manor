@@ -266,7 +266,7 @@ export function buildDirectCodexMessagePingSummary(input: DirectCodexMessagePing
     return text;
   }
 
-  const lead = text || "Operator sent a direct Codex message with attachments or selected context.";
+  const lead = text || "Operator sent a direct Worker message with attachments or selected context.";
   return `${lead}\n\nDirect-message context: ${contextParts.join(", ")}.`;
 }
 
@@ -298,8 +298,8 @@ export async function notifyDirectCodexMessage(
     } else {
       await access.markPendingChatCallbackDispatched(input.threadId, requestedAt);
     }
-    access.noteThreadFocus(input.threadId, "direct_codex_message");
-    access.store.addEvent(input.threadId, "butler.direct_message.pinged", "Butler was pinged for an operator direct message to Codex.");
+    access.noteThreadFocus(input.threadId, "direct_worker_message");
+    access.store.addEvent(input.threadId, "butler.direct_message.pinged", "Butler was pinged for an operator direct message to a Worker.");
     await access.saveCallbackState();
     access.emit("change");
   });

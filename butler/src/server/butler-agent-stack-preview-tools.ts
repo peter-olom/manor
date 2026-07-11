@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { Type } from "@sinclair/typebox";
 
 import { decoratePreviewVerification } from "./preview-verification.js";
-import { buildCodexInputWithReferences } from "./reference-inputs.js";
+import { buildWorkerInputWithReferences } from "./reference-inputs.js";
 import { buildButlerStackTools } from "./butler-agent-stack-tools.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
 import type { PreviewProofReviewView, ReasoningEffort } from "./types.js";
@@ -13,6 +13,18 @@ import { isSharedShellRepoBootstrapTask } from "./thread-contract.js";
 import { applyWorkspacePreviewDefaults, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 import type { ButlerRoutingDecisionView } from "./types.js";
 import { startWorkerThread } from "./worker-client-router.js";
+
+function workerHarnessLabel(harness: string): string {
+  if (harness === "codex") return "Codex";
+  if (harness === "pi") return "Pi";
+  return harness;
+}
+
+export function workerProviderModelRoute(provider: string | null, model: string | null): string {
+  const providerLabel = provider?.trim() || "the selected provider";
+  const modelLabel = model?.trim() || "default";
+  return provider && modelLabel.startsWith(`${provider}/`) ? modelLabel : `${providerLabel}/${modelLabel}`;
+}
 
 function normalizeLeaseTtlMs(leaseTtlMinutes: unknown): number | null {
   const numeric = typeof leaseTtlMinutes === "number" ? leaseTtlMinutes : Number(leaseTtlMinutes);
@@ -675,7 +687,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       label: "Start desktop session",
       description: "Start a headed desktop proof session for an Electron or native desktop command.",
       promptSnippet:
-        "start_desktop_session: launch Electron/native desktop commands in the shared headed desktop sidecar so they are visible in noVNC. For delegated Codex work, pass that threadId so the runtime anchors to the job and gets a per-thread workspace. Use interactive=true when the operator should keep using it; stop the session to persist screenshots and logs.",
+        "start_desktop_session: launch Electron/native desktop commands in the shared headed desktop sidecar so they are visible in noVNC. For delegated Worker jobs, pass that threadId so the runtime anchors to the job and gets a per-thread workspace. Use interactive=true when the operator should keep using it; stop the session to persist screenshots and logs.",
       parameters: Type.Object({
         threadId: Type.Optional(Type.String()),
         attachedThreadIds: Type.Optional(Type.Array(Type.String())),
@@ -1181,22 +1193,27 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
 }
 
 export function buildButlerDelegationTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
-  return [
+  const delegationParameters = Type.Object({
+    task: Type.String({ minLength: 1 }),
+    goal: Type.Optional(Type.String({ minLength: 1 })),
+    cwd: Type.Optional(Type.String()),
+    imageReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+    fileReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 })))
+  });
+  const defineDelegationTool = (name: "delegate_to_worker" | "delegate_to_codex"): ButlerCustomTool =>
     access.defineButlerTool({
-      name: "delegate_to_codex",
-      label: "Delegate to worker",
+      name,
+      label: name === "delegate_to_worker" ? "Delegate to worker" : "Delegate to worker (compatibility)",
       description:
-        "Start a new worker workstream using the operator's selected worker model or Manor's authenticated-provider default.",
+        name === "delegate_to_worker"
+          ? "Start a new worker workstream using the operator's selected worker model or Manor's authenticated-provider default."
+          : "Compatibility alias for delegate_to_worker. Use delegate_to_worker for new delegation calls.",
       promptSnippet:
-        "delegate_to_codex: start execution, coding, shell work, repo setup, app build, file generation, or other task delivery. Manor chooses the authenticated provider, model, runtime, and thinking from operator preferences and defaults.",
-      parameters: Type.Object({
-        task: Type.String({ minLength: 1 }),
-        goal: Type.Optional(Type.String({ minLength: 1 })),
-        cwd: Type.Optional(Type.String()),
-        imageReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-        fileReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 })))
-      }),
-      uiEffects: access.getToolUiEffects("delegate_to_codex"),
+        name === "delegate_to_worker"
+          ? "delegate_to_worker: start execution, coding, shell work, repo setup, app build, file generation, or other task delivery. Manor chooses the authenticated provider, model, harness, runtime, and thinking from operator preferences and defaults."
+          : "delegate_to_codex: legacy compatibility alias for delegate_to_worker; use delegate_to_worker for new calls.",
+      parameters: delegationParameters,
+      uiEffects: access.getToolUiEffects("delegate_to_worker"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as {
           task: string;
@@ -1229,7 +1246,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
                   extraNotes,
                   orchestration
                 });
-            return buildCodexInputWithReferences({
+            return buildWorkerInputWithReferences({
               text: preparedContract.text,
               imageStore: access.imageStore,
               imageReferenceIds: typedParams.imageReferenceIds ?? [],
@@ -1242,6 +1259,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           effort: workerEffort,
           openWindow: true,
           runtime: "auto",
+          harness: workerDefaults?.harness ?? null,
           model: workerDefaults?.model ?? null
         });
         const delegationContract = preparedContract ?? await access.buildDelegationContract({
@@ -1254,11 +1272,11 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         });
         access.store.setThreadExecutionContract(result.threadId, delegationContract.contract);
         access.store.addEvent(result.threadId, "butler.delegation.created", "Butler created the job brief for this delegated job.");
-        access.noteThreadFocus(result.threadId, "delegate_to_codex");
+        access.noteThreadFocus(result.threadId, name);
         access.queueDelegationAcknowledgement(
           result.threadId,
-          `Accepted. I delegated this to the ${result.provider ?? "selected"} worker using ${result.model ?? "its default model"} in job ${result.threadId} and will return here with the result.`,
-          { runtime: result.runtime, provider: result.provider, model: result.model, effort: result.effort }
+          `Accepted. I delegated this to a Worker using provider ${result.provider ?? "selected"}, model ${result.model ?? "default"}, and the ${workerHarnessLabel(result.harness)} harness in job ${result.threadId}. I will return here with the result.`,
+          { runtime: result.runtime, harness: result.harness, provider: result.provider, model: result.model, effort: result.effort }
         );
         await access.registerPendingChatCallback(result.threadId);
         const supervision = access.store.noteButlerSteer(result.threadId);
@@ -1267,12 +1285,13 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           content: [
             {
               type: "text",
-              text: `Delegated the task to ${result.provider ?? "the selected provider"}/${result.model ?? "default"} in job ${result.threadId} from ${workspace.cwd}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}.`
+              text: `Delegated the task to ${workerProviderModelRoute(result.provider, result.model)} in job ${result.threadId} from ${workspace.cwd}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}.`
             }
           ],
           details: {
             threadId: result.threadId,
             runtime: result.runtime,
+            workerHarness: result.harness,
             workerProvider: result.provider,
             workerModel: result.model,
             thinkingBudget: result.effort,
@@ -1283,12 +1302,16 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           }
         };
       }
-    }),
+    });
+
+  return [
+    defineDelegationTool("delegate_to_worker"),
+    defineDelegationTool("delegate_to_codex"),
     access.defineButlerTool({
       name: "run_supervision_smoke_test",
       label: "Run supervision smoke test",
       description:
-        "Start a synthetic Codex job that exists only to verify Butler can privately steer a worker through supervisor callbacks.",
+        "Start a synthetic worker job that exists only to verify Butler can privately steer a worker through supervisor callbacks.",
       promptSnippet:
         "run_supervision_smoke_test: intentionally test Butler's own supervision loop. Use only when you decide the operator is asking to verify Butler supervision itself, not for ordinary implementation tasks that need tests or smoke verification.",
       parameters: Type.Object({
@@ -1320,7 +1343,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         const result = await startWorkerThread(access, {
           task: delegatedTask,
           input: async (threadId: string) =>
-            buildCodexInputWithReferences({
+            buildWorkerInputWithReferences({
               text: (
                 await access.buildDelegationContract({
                   threadId,
@@ -1351,8 +1374,8 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         access.noteThreadFocus(result.threadId, "run_supervision_smoke_test");
         access.queueDelegationAcknowledgement(
           result.threadId,
-          `Accepted. I started a supervision smoke test in ${result.runtime === "pi-rpc" ? "Pi RPC" : "Codex"} job ${result.threadId}. I will return here when it completes.`,
-          { runtime: result.runtime, provider: result.provider, model: result.model, effort: result.effort }
+          `Accepted. I started a supervision smoke test in Worker job ${result.threadId} using provider ${result.provider ?? "selected"} and the ${workerHarnessLabel(result.harness)} harness. I will return here when it completes.`,
+          { runtime: result.runtime, harness: result.harness, provider: result.provider, model: result.model, effort: result.effort }
         );
         await access.registerPendingChatCallback(result.threadId);
         access.store.setThreadSupervisionLimit(result.threadId, totalFollowUps + 2);
@@ -1372,6 +1395,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           ],
           details: {
             threadId: result.threadId,
+            workerHarness: result.harness,
             totalFollowUps,
             thinkingBudget: typedParams.thinkingBudget ?? null,
             supervision,

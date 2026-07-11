@@ -407,10 +407,10 @@ export function createBrokerBrowserController(options) {
   function buildAnnotationTargets(scope) {
     const targets = [{ id: "butler", label: "Butler" }];
     if (scope.kind === "preview" && scope.threadId) {
-      targets.push({ id: `thread:${scope.threadId}`, label: "Codex job" });
+      targets.push({ id: `thread:${scope.threadId}`, label: "Worker job" });
     }
     if (scope.kind === "browser" && scope.threadId) {
-      targets.push({ id: `thread:${scope.threadId}`, label: "Codex job" });
+      targets.push({ id: `thread:${scope.threadId}`, label: "Worker job" });
     }
     return targets;
   }

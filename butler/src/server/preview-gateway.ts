@@ -131,7 +131,7 @@ function buildPreviewAnnotationTargets(access: RuntimeServerAccess, leaseId: str
   const targets = [{ id: "butler", label: "Butler" }];
   const lease = access.store.getPreviewLease(leaseId);
   if (lease?.threadId) {
-    targets.push({ id: `thread:${lease.threadId}`, label: "Codex job" });
+    targets.push({ id: `thread:${lease.threadId}`, label: "Worker job" });
   }
   return targets;
 }

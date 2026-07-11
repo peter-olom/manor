@@ -7,7 +7,7 @@ import { getActiveManorSettings } from "./manor-settings-runtime.js";
 import { cleanupGitReviewBaseline } from "./git-review-scope.js";
 import type { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
-import type { WorkerProviderAffinity } from "./pair-store.js";
+import { workerAffinityRouteKey, type WorkerProviderAffinity } from "./pair-store.js";
 import type { ButlerStateStore } from "./state-store.js";
 import { assertCallbackReviewCurrent, monitorCallbackReviewCurrent } from "./butler-job-mutation-guard.js";
 import type { ModelOption, ReasoningEffort } from "./types.js";
@@ -17,6 +17,7 @@ import { isWorkerReviewBaselineReferenced } from "./worker-review-baseline.js";
 
 export type WorkerRuntime = "openai" | "pi-rpc";
 export type WorkerRuntimePreference = WorkerRuntime | "auto";
+export type WorkerHarness = "codex" | "pi" | (string & {});
 
 export type WorkerClientAccess = {
   store: ButlerStateStore;
@@ -24,7 +25,7 @@ export type WorkerClientAccess = {
   piRpcWorkerClient?: PiRpcWorkerClient | null;
   getCodexAuthStatus?: () => { loggedIn: boolean };
   getWorkerAffinity?: () => WorkerProviderAffinity | null;
-  recordSuccessfulWorkerSelection?: (input: { provider: string; model: string; effort?: string | null }) => unknown;
+  recordSuccessfulWorkerSelection?: (input: { harness: string; provider: string; model: string; effort?: string | null }) => unknown;
   cleanupReviewBaseline?: typeof cleanupGitReviewBaseline;
 };
 
@@ -36,12 +37,14 @@ type WorkerStartOptions = {
   effort?: ReasoningEffort | null;
   openWindow?: boolean;
   runtime?: WorkerRuntimePreference | null;
+  harness?: WorkerHarness | null;
   model?: string | null;
   recordSelection?: boolean;
 };
 
 export type UnifiedWorkerCompose = {
   runtime: WorkerRuntimePreference;
+  harness: WorkerHarness | null;
   provider: string | null;
   model: string | null;
   effort: ReasoningEffort | null;
@@ -53,6 +56,7 @@ export type WorkerThreadStartResult = {
   threadId: string;
   turnId: string | null;
   runtime: WorkerRuntime;
+  harness: WorkerHarness;
   provider: string | null;
   model: string | null;
   effort: ReasoningEffort | null;
@@ -103,6 +107,10 @@ function configuredWorkerModel(): string | null {
   return getActiveManorSettings().worker.defaultModel;
 }
 
+function configuredWorkerHarness(): WorkerHarness | null {
+  return getActiveManorSettings().worker.defaultHarness;
+}
+
 function configuredWorkerEffort(): ReasoningEffort | null {
   return getActiveManorSettings().worker.defaultEffort as ReasoningEffort | null;
 }
@@ -125,14 +133,19 @@ function workerProviderKey(model: ModelOption): string {
 }
 
 function providerQualifiedModel(model: ModelOption): string {
-  return model.provider ? `${model.provider}/${model.id}` : model.id;
+  return model.provider && !model.id.startsWith(`${model.provider}/`) ? `${model.provider}/${model.id}` : model.id;
 }
 
-function qualifyModelOption(model: ModelOption): ModelOption {
+function qualifyModelOption(model: ModelOption, harness: WorkerHarness): ModelOption {
   return {
     ...model,
-    id: providerQualifiedModel(model)
+    id: providerQualifiedModel(model),
+    harness
   };
+}
+
+function workerModelRouteKey(model: ModelOption): string {
+  return `${model.harness ?? "unknown"}\u001f${workerProviderKey(model)}\u001f${model.id}`;
 }
 
 function isPiWorkerModel(model: ModelOption): boolean {
@@ -144,11 +157,11 @@ function isPiWorkerModel(model: ModelOption): boolean {
   ]).has(model.provider ?? "") && shouldExposeManorModel(model);
 }
 
-function resolveAvailableModelId(modelRef: string | null | undefined, availableModels: ModelOption[]): string | null {
+function resolveAvailableModel(modelRef: string | null | undefined, harness: WorkerHarness | null | undefined, availableModels: ModelOption[]): ModelOption | null {
   const trimmed = modelRef?.trim() || null;
   if (!trimmed) return null;
-  if (availableModels.some((entry) => entry.id === trimmed)) return trimmed;
-  return null;
+  const matches = availableModels.filter((entry) => entry.id === trimmed && (!harness || entry.harness === harness));
+  return matches.length === 1 ? matches[0]! : null;
 }
 
 function resolveEffortForModel(model: ModelOption | null, requested: ReasoningEffort | null): ReasoningEffort | null {
@@ -158,16 +171,26 @@ function resolveEffortForModel(model: ModelOption | null, requested: ReasoningEf
   return model.defaultReasoningEffort ?? model.supportedReasoningEfforts[0] ?? null;
 }
 
+function configuredWorkerProviderKey(): string {
+  const settings = getActiveManorSettings();
+  if (settings.overview.workerProvider === "ollama-local") return settings.providers.ollamaLocal.providerId;
+  if (settings.overview.workerProvider === "ollama-cloud") return settings.providers.ollamaCloud.providerId;
+  if (settings.overview.workerProvider === "opencode-go") return settings.providers.opencodeGo.providerId;
+  return "openai-codex";
+}
+
 function resolveWorkerModel(
   availableModels: ModelOption[],
   overrideModel: string | null | undefined,
+  overrideHarness: WorkerHarness | null | undefined,
   configuredModel: string | null,
+  configuredHarness: WorkerHarness | null,
   affinity: WorkerProviderAffinity | null
-): string | null {
-  const explicit = resolveAvailableModelId(overrideModel, availableModels);
+): ModelOption | null {
+  const explicit = resolveAvailableModel(overrideModel, overrideHarness, availableModels);
   if (explicit) return explicit;
 
-  const configured = resolveAvailableModelId(configuredModel, availableModels);
+  const configured = resolveAvailableModel(configuredModel, configuredHarness, availableModels);
   if (configured) return configured;
 
   const groups = new Map<string, ModelOption[]>();
@@ -177,43 +200,56 @@ function resolveWorkerModel(
   }
   if (groups.size === 0) return null;
   const settings = getActiveManorSettings();
-  const providerPriority = [
+  const configuredProvider = configuredWorkerProviderKey();
+  const providerPriority = [...new Set([
+    configuredProvider,
     "openai-codex",
     settings.providers.opencodeGo.providerId,
     settings.providers.ollamaCloud.providerId,
     settings.providers.ollamaLocal.providerId
-  ];
+  ])];
 
   if (affinity?.hasSuccessfulDelegation && affinity.lastProvider) {
-    const lastProviderModels = groups.get(affinity.lastProvider);
+    const lastProviderModels = (groups.get(affinity.lastProvider) ?? [])
+      .filter((model) => !affinity.lastHarness || model.harness === affinity.lastHarness);
     if (lastProviderModels?.length) {
-      return resolveAvailableModelId(affinity.modelByProvider[affinity.lastProvider], lastProviderModels)
-        ?? lastProviderModels[0]!.id;
+      const route = affinity.lastHarness ? workerAffinityRouteKey(affinity.lastHarness, affinity.lastProvider) : null;
+      return resolveAvailableModel(
+        route ? affinity.modelByRoute?.[route] : affinity.modelByProvider[affinity.lastProvider],
+        affinity.lastHarness,
+        lastProviderModels
+      ) ?? lastProviderModels[0]!;
     }
 
     for (const provider of providerPriority) {
       const models = groups.get(provider);
       if (!models) continue;
-      const remembered = resolveAvailableModelId(affinity.modelByProvider[provider], models);
+      const remembered = resolveAvailableModel(affinity.modelByProvider[provider], null, models);
       if (remembered) return remembered;
     }
     for (const [provider, models] of groups) {
-      const remembered = resolveAvailableModelId(affinity.modelByProvider[provider], models);
+      const remembered = resolveAvailableModel(affinity.modelByProvider[provider], null, models);
       if (remembered) return remembered;
     }
-    for (const provider of providerPriority) {
-      const providerDefault = groups.get(provider)?.[0]?.id;
-      if (providerDefault) return providerDefault;
-    }
+  }
+
+  if (configuredHarness) {
+    const configuredHarnessDefault = availableModels.find((model) => model.harness === configuredHarness);
+    if (configuredHarnessDefault) return configuredHarnessDefault;
+  }
+
+  const configuredProviderModels = groups.get(configuredProvider);
+  if (configuredProviderModels?.length) {
+    return configuredProviderModels[0]!;
   }
 
   if (groups.size > 1) {
     for (const provider of providerPriority) {
-      const providerDefault = groups.get(provider)?.[0]?.id;
+      const providerDefault = groups.get(provider)?.[0];
       if (providerDefault) return providerDefault;
     }
   }
-  return groups.values().next().value?.[0]?.id ?? null;
+  return groups.values().next().value?.[0] ?? null;
 }
 
 export function resolveThreadWorkerRuntime(access: WorkerClientAccess, threadId: string): WorkerRuntime {
@@ -222,15 +258,28 @@ export function resolveThreadWorkerRuntime(access: WorkerClientAccess, threadId:
   return "openai";
 }
 
-export function resolveNewWorkerRuntime(access: WorkerClientAccess, input: { runtime?: WorkerRuntimePreference | null; model?: string | null } = {}): WorkerRuntime {
+export function resolveNewWorkerRuntime(access: WorkerClientAccess, input: { runtime?: WorkerRuntimePreference | null; harness?: WorkerHarness | null; model?: string | null } = {}): WorkerRuntime {
   const preference = input.runtime ?? configuredWorkerRuntime();
+  const harnessRuntime = input.harness === "codex" ? "openai" : input.harness === "pi" ? "pi-rpc" : null;
+  if (input.harness && !harnessRuntime) throw new Error(`Worker harness ${input.harness} is not available`);
+  if (harnessRuntime && preference !== "auto" && preference !== harnessRuntime) {
+    throw new Error(`Worker harness ${input.harness} is incompatible with runtime ${preference}`);
+  }
+  if (harnessRuntime === "pi-rpc") {
+    if (!access.piRpcWorkerClient) throw new Error("Pi RPC worker runtime is not available");
+    return "pi-rpc";
+  }
+  if (harnessRuntime === "openai") {
+    if (!codexWorkerIsAuthenticated(access)) throw new Error("The Codex harness is not connected for Worker jobs. Open Settings → Providers → OpenAI / Codex and sign in, then retry.");
+    return "openai";
+  }
   if (preference === "pi-rpc") {
     if (!access.piRpcWorkerClient) throw new Error("Pi RPC worker runtime is not available");
     return "pi-rpc";
   }
   if (preference === "openai") {
     if (!codexWorkerIsAuthenticated(access)) {
-      throw new Error("Codex is not connected for Worker jobs. Open Settings → Providers → OpenAI / Codex and sign in, then retry.");
+      throw new Error("The Codex harness is not connected for Worker jobs. Open Settings → Providers → OpenAI / Codex and sign in, then retry.");
     }
     return "openai";
   }
@@ -238,8 +287,8 @@ export function resolveNewWorkerRuntime(access: WorkerClientAccess, input: { run
   const piState = access.piRpcWorkerClient && typeof access.piRpcWorkerClient.getConnectionState === "function"
     ? access.piRpcWorkerClient.getConnectionState()
     : null;
-  const piModels = piState?.compose.availableModels.map(qualifyModelOption).filter(isPiWorkerModel) ?? [];
-  if (selectedModel && resolveAvailableModelId(selectedModel, piModels)) {
+  const piModels = piState?.compose.availableModels.map((model) => qualifyModelOption(model, "pi")).filter(isPiWorkerModel) ?? [];
+  if (selectedModel && resolveAvailableModel(selectedModel, "pi", piModels)) {
     if (!access.piRpcWorkerClient) throw new Error(`Model ${selectedModel} requires Pi RPC, but Pi RPC worker runtime is not available`);
     return "pi-rpc";
   }
@@ -250,7 +299,7 @@ export function resolveNewWorkerRuntime(access: WorkerClientAccess, input: { run
   return "openai";
 }
 
-export function getUnifiedWorkerCompose(access: WorkerClientAccess, overrideModel?: string | null, overrideEffort?: string | null, overrideRuntime?: WorkerRuntimePreference | null): UnifiedWorkerCompose {
+export function getUnifiedWorkerCompose(access: WorkerClientAccess, overrideModel?: string | null, overrideEffort?: string | null, overrideRuntime?: WorkerRuntimePreference | null, overrideHarness?: WorkerHarness | null): UnifiedWorkerCompose {
   const codexState = typeof access.codexClient.getConnectionState === "function"
     ? access.codexClient.getConnectionState()
     : null;
@@ -260,16 +309,18 @@ export function getUnifiedWorkerCompose(access: WorkerClientAccess, overrideMode
   const codexCompose = codexState?.compose ?? { model: null, effort: null, availableModels: [] };
   const piCompose = piState?.compose ?? null;
   const codexModels = codexWorkerIsAuthenticated(access)
-    ? codexCompose.availableModels.filter((model) => model.provider !== "opencode")
+    ? codexCompose.availableModels.filter((model) => model.provider !== "opencode").map((model) => ({ ...model, provider: "openai-codex", harness: "codex" as const }))
     : [];
-  const piModels = piCompose?.availableModels.map(qualifyModelOption).filter(isPiWorkerModel) ?? [];
+  const piModels = piCompose?.availableModels.map((model) => qualifyModelOption(model, "pi")).filter(isPiWorkerModel) ?? [];
   const seen = new Set<string>();
   const availableModels = [...codexModels, ...piModels].filter((model) => {
-    if (seen.has(model.id)) return false;
-    seen.add(model.id);
+    const route = workerModelRouteKey(model);
+    if (seen.has(route)) return false;
+    seen.add(route);
     return true;
   });
   const configuredModel = configuredWorkerModel();
+  const configuredHarness = configuredWorkerHarness();
   const runtimePreference = overrideRuntime ?? configuredWorkerRuntime();
   const selectableModels = runtimePreference === "pi-rpc"
     ? piModels
@@ -277,22 +328,27 @@ export function getUnifiedWorkerCompose(access: WorkerClientAccess, overrideMode
       ? codexModels
       : availableModels;
   const affinity = access.getWorkerAffinity?.() ?? null;
-  const model = resolveWorkerModel(selectableModels, overrideModel, configuredModel, affinity);
-  const selected = selectableModels.find((entry) => entry.id === model) ?? null;
+  const selected = resolveWorkerModel(selectableModels, overrideModel, overrideHarness, configuredModel, configuredHarness, affinity);
+  const model = selected?.id ?? null;
   const selectedProvider = selected ? workerProviderKey(selected) : null;
-  const affinityEffort = selectedProvider && affinity?.modelByProvider[selectedProvider] === model
-    ? affinity.effortByProvider[selectedProvider] as ReasoningEffort | null | undefined
-    : null;
+  const harness = selected?.harness ?? null;
+  const affinityRoute = selectedProvider && harness ? workerAffinityRouteKey(harness, selectedProvider) : null;
+  const affinityEffort = affinityRoute && affinity?.modelByRoute?.[affinityRoute] === model
+    ? affinity.effortByRoute?.[affinityRoute] as ReasoningEffort | null | undefined
+    : selectedProvider && affinity?.modelByProvider[selectedProvider] === model
+      ? affinity.effortByProvider[selectedProvider] as ReasoningEffort | null | undefined
+      : null;
   const effort = resolveEffortForModel(
     selected,
     (overrideEffort as ReasoningEffort | null) ?? affinityEffort ?? configuredWorkerEffort() ?? selected?.defaultReasoningEffort ?? null
   );
   const availableEfforts = Array.from(new Set((selected ? selected.supportedReasoningEfforts : selectableModels.flatMap((entry) => entry.supportedReasoningEfforts)) as ReasoningEffort[]));
   const runtime = runtimePreference === "auto" && model
-    ? resolveNewWorkerRuntime(access, { runtime: runtimePreference, model })
+    ? resolveNewWorkerRuntime(access, { runtime: runtimePreference, harness, model })
     : runtimePreference;
   return {
     runtime,
+    harness,
     provider: selectedProvider,
     model,
     effort,
@@ -301,12 +357,14 @@ export function getUnifiedWorkerCompose(access: WorkerClientAccess, overrideMode
   };
 }
 
-export async function updateUnifiedWorkerCompose(access: WorkerClientAccess, input: { model?: string | null; effort?: ReasoningEffort | null; runtime?: WorkerRuntimePreference | null }): Promise<{ model: string | null; effort: ReasoningEffort | null; runtime: WorkerRuntime; provider: string | null }> {
-  const compose = getUnifiedWorkerCompose(access, input.model ?? null, input.effort ?? null, input.runtime ?? null);
-  const model = resolveAvailableModelId(input.model, compose.availableModels) ?? compose.model;
+export async function updateUnifiedWorkerCompose(access: WorkerClientAccess, input: { model?: string | null; effort?: ReasoningEffort | null; runtime?: WorkerRuntimePreference | null; harness?: WorkerHarness | null }): Promise<{ model: string | null; effort: ReasoningEffort | null; runtime: WorkerRuntime; harness: WorkerHarness; provider: string | null }> {
+  const compose = getUnifiedWorkerCompose(access, input.model ?? null, input.effort ?? null, input.runtime ?? null, input.harness ?? null);
+  const selected = resolveAvailableModel(input.model, input.harness, compose.availableModels)
+    ?? resolveAvailableModel(compose.model, compose.harness, compose.availableModels);
+  const model = selected?.id ?? null;
   const effort = compose.effort;
-  const runtime = resolveNewWorkerRuntime(access, { model, runtime: input.runtime ?? "auto" });
-  const selected = compose.availableModels.find((entry) => entry.id === model) ?? null;
+  const runtime = resolveNewWorkerRuntime(access, { model, harness: selected?.harness ?? input.harness, runtime: input.runtime ?? "auto" });
+  const harness = selected?.harness ?? (runtime === "pi-rpc" ? "pi" : "codex");
   const provider = runtime === "openai" ? selected?.provider ?? "openai-codex" : selected?.provider ?? null;
   if (runtime === "pi-rpc") {
     if (!access.piRpcWorkerClient) throw new Error("Pi RPC worker runtime is not available");
@@ -315,13 +373,13 @@ export async function updateUnifiedWorkerCompose(access: WorkerClientAccess, inp
     await access.codexClient.updateComposeSettings(model, effort ?? null);
   } else if (effort) {
     if (typeof access.codexClient.getConnectionState !== "function") {
-      return { model, effort, runtime, provider };
+      return { model, effort, runtime, harness, provider };
     }
     const current = access.codexClient.getConnectionState().compose.model;
-    if (!current) throw new Error("No Codex worker model is selected");
+    if (!current) throw new Error("No Codex harness model is selected");
     await access.codexClient.updateComposeSettings(current, effort);
   }
-  return { model, effort, runtime, provider };
+  return { model, effort, runtime, harness, provider };
 }
 
 export async function startWorkerThread(access: WorkerClientAccess, options: WorkerStartOptions): Promise<WorkerThreadStartResult> {
@@ -332,21 +390,31 @@ export async function startWorkerThread(access: WorkerClientAccess, options: Wor
       provider = "openai-codex";
       resolveNewWorkerRuntime(access, { runtime: runtimePreference, model: options.model });
     }
-    const preview = getUnifiedWorkerCompose(access, options.model ?? null, options.effort ?? null, options.runtime ?? null);
+    const preview = getUnifiedWorkerCompose(access, options.model ?? null, options.effort ?? null, options.runtime ?? null, options.harness ?? null);
+    if (options.model?.trim()) {
+      const requested = preview.availableModels.filter((model) =>
+        model.id === options.model!.trim() && (!options.harness || model.harness === options.harness)
+      );
+      if (requested.length !== 1) {
+        const suffix = requested.length > 1 && !options.harness ? " Include the Worker harness to disambiguate it." : "";
+        throw new Error(`Selected Worker model ${options.model.trim()} is not available.${suffix}`);
+      }
+    }
     provider = preview.provider;
     if (!preview.model || !preview.provider) {
       throw new Error("No connected Worker model is available. Open Settings → Providers to connect or repair a provider, then retry.");
     }
-    const runtime = resolveNewWorkerRuntime(access, { ...options, model: preview.model });
+    const runtime = resolveNewWorkerRuntime(access, { ...options, harness: preview.harness, model: preview.model });
     const compose = {
       runtime,
+      harness: preview.harness ?? (runtime === "pi-rpc" ? "pi" : "codex"),
       provider: preview.provider,
       model: preview.model,
       effort: options.effort === null ? null : preview.effort
     };
     const client = runtime === "pi-rpc" ? access.piRpcWorkerClient : access.codexClient;
     if (!client) throw new Error("Pi RPC worker runtime is not available");
-    const { runtime: _runtime, recordSelection: _recordSelection, ...clientOptions } = options;
+    const { runtime: _runtime, harness: _harness, recordSelection: _recordSelection, ...clientOptions } = options;
     const result = await client.startThread({
       ...clientOptions,
       provider: compose.provider,
@@ -354,11 +422,12 @@ export async function startWorkerThread(access: WorkerClientAccess, options: Wor
       effort: compose.effort
     });
     if (options.recordSelection !== false && compose.provider && compose.model) {
-      access.recordSuccessfulWorkerSelection?.({ provider: compose.provider, model: compose.model, effort: compose.effort });
+      access.recordSuccessfulWorkerSelection?.({ harness: compose.harness, provider: compose.provider, model: compose.model, effort: compose.effort });
     }
     return {
       ...result,
       runtime,
+      harness: compose.harness,
       provider: compose.provider,
       model: compose.model,
       effort: compose.effort

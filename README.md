@@ -1,8 +1,8 @@
 # Manor
 
-Manor is a Docker-first personal agent harness.
+Manor is a Docker-first personal agent workspace.
 
-It keeps Codex on a warm worker, puts Butler in charge of supervision, and gives each job private previews, disposable services, and stack-scoped runtime state without exposing raw app ports on the host.
+It puts Butler in charge of supervision, routes work to provider-backed Workers, and gives each job private previews, disposable services, and stack-scoped runtime state without exposing raw app ports on the host.
 
 ## Contents
 
@@ -17,6 +17,7 @@ It keeps Codex on a warm worker, puts Butler in charge of supervision, and gives
 - [Runtime Surfaces](#runtime-surfaces)
 - [Auth](#auth)
 - [Trust and Security Model](#trust-and-security-model)
+- [Worker Configuration](#worker-configuration)
 - [Development](#development)
 - [License](#license)
 
@@ -37,7 +38,7 @@ The example project Butler was given to build in the screenshots below is [peter
 <p align="center">
   <a href="docs/assets/readme/manor-delegation-contract.jpg"><img src="docs/assets/readme/manor-delegation-contract.jpg" alt="Manor job contract view" width="205"></a>
   <a href="docs/assets/readme/manor-checklist-timeline.jpg"><img src="docs/assets/readme/manor-checklist-timeline.jpg" alt="Manor checklist and timeline panels" width="205"></a>
-  <a href="docs/assets/readme/manor-codex-workstream.jpg"><img src="docs/assets/readme/manor-codex-workstream.jpg" alt="Manor Codex workstream with generated design artifact" width="205"></a>
+  <a href="docs/assets/readme/manor-codex-workstream.jpg"><img src="docs/assets/readme/manor-codex-workstream.jpg" alt="Manor Worker workstream with generated design artifact" width="205"></a>
   <a href="docs/assets/readme/manor-proof-review.jpg"><img src="docs/assets/readme/manor-proof-review.jpg" alt="Manor proof review list" width="205"></a>
 </p>
 
@@ -63,8 +64,8 @@ That bias is intentional. Manor is not trying to be neutral infrastructure for e
 Prerequisites:
 
 - Docker with Compose support
-- OpenAI API-key auth, ChatGPT device-code login, or a local Ollama chat model
-- GitHub auth in the Codex box if repo cloning or fresh project setup is needed
+- at least one supported Worker provider: OpenAI/Codex, Ollama Local, Ollama Cloud, or OpenCode Go
+- GitHub auth in the Codex app-server host when that Worker needs repo cloning or fresh project setup
 
 Run the guided installer:
 
@@ -74,7 +75,7 @@ Run the guided installer:
 
 The installer checks Docker and Compose, writes local Compose settings, generates a local runtime broker token, and can start Manor.
 
-By default, the installer builds Manor from the local checkout and mounts that source into Butler and the worker container. This source-first mode is required for approval-gated self-improvement execution.
+By default, the installer builds Manor from the local checkout and mounts that source into the active execution services. This source-first mode is required for approval-gated self-improvement execution.
 
 To use packaged images instead:
 
@@ -122,6 +123,9 @@ Interactive defaults:
 - Codex auto-update on reboot: off
 - Codex auto-update target: `latest`
 - require Codex auto-update before startup: off
+- Pi auto-update on reboot: off
+- Pi auto-update target: `latest`
+- require Pi auto-update before startup: off
 - start Manor after install: yes
 
 ## What Ships Today
@@ -130,10 +134,10 @@ Manor runs as one Docker Compose project with these services:
 
 - `butler`: the always-on supervisor and web app
 - `butler-gateway`: the host-facing reverse proxy for the Butler UI
-- `codex-box`: the trusted worker container that owns repos, tools, and long-running work
+- `codex-box`: the trusted Codex app-server host used for OpenAI/Codex Worker sessions
 - `runtime-broker`: the Docker control plane for previews, stack leases, and disposable services
 - `host-controller`: the narrow restart/update sidecar that survives Manor appliance restarts
-- `egress`: the restricted outbound proxy for Butler and Codex
+- `egress`: the restricted outbound proxy for Butler and Worker execution
 - `preview-egress`: the separate outbound path for preview runtimes
 - `playwright`: the browser automation sidecar
 - `desktop-proof`: optional headed desktop proof sidecar for Electron/native app smoke checks
@@ -145,7 +149,7 @@ Source-first installs are the primary path. Packaged images remain available for
 Pushes to `main` and version tags publish these images to GHCR:
 
 - `ghcr.io/peter-olom/manor-butler`
-- `ghcr.io/peter-olom/manor-codex-box`
+- `ghcr.io/peter-olom/manor-codex-box` (the Codex app-server host)
 - `ghcr.io/peter-olom/manor-egress`
 - `ghcr.io/peter-olom/manor-preview-egress`
 - `ghcr.io/peter-olom/manor-runtime-broker`
@@ -167,23 +171,33 @@ The working model is:
 
 - one operator
 - one Butler supervisor
-- one warm Codex worker
+- one active Worker per Butler pair
+- one selected harness, provider, model, and reasoning option for that Worker
 - one Docker host
 - many jobs
 
+Worker names the product role across model providers and CLIs. Manor currently runs Workers through two harnesses:
+
+- Codex app server for OpenAI/Codex models
+- Pi RPC for Ollama Local, Ollama Cloud, and OpenCode Go models
+
+The provider supplies models and authentication. The harness owns the session and transport behavior. Butler keeps the supervision, job contract, proof, and runtime policy consistent across both.
+
 The default job shape is:
 
-- one job maps to one Codex thread
+- one job maps to one provider-backed Worker session
 - one repo task should use one dedicated worktree
 - one job may own one isolated stack lease
 - sticky stack and preview leases can be reused by later jobs when warm runtime state is intentional
 - previews and disposable services attach to that stack when needed
 
+Switching an active Worker to another provider, model, or harness starts a cold handoff. Manor carries forward the task, workspace, acceptance state, proof context, and lineage. Provider caches and hidden reasoning state do not transfer.
+
 ## Execution Rule
 
 Manor keeps repository work and runtime work separate on purpose.
 
-- do repository, git, and edit work in the warm Codex worker
+- do repository, git, and edit work in the active Worker
 - do package installs, app startup, builds, and browser checks in previews
 - use snapshot previews for app startup, builds, and disposable smoke runs
 - use sticky stack or preview leases when the operator wants a warm reusable runtime across jobs
@@ -202,7 +216,7 @@ For delegated implementation, investigation, debugging, UI, API, deploy, and ver
 - expected evidence for each row
 - Butler-owned acceptance after the worker reports back
 
-Codex submits evidence. Butler accepts, rejects, or waives it.
+The Worker submits evidence. Butler accepts, rejects, or waives it.
 
 Weak reports are expected to be pushed back privately. UI work needs screenshot or video proof plus responsive, accessibility, and taste review. API work needs request-level smoke evidence, failure-path evidence, and log or runtime review. Final operator closeout should read like a compact proof dossier: what changed, what Butler accepted, what proof was reviewed, and what risk remains.
 
@@ -219,18 +233,18 @@ Today it provides:
 - a web UI on `http://127.0.0.1:8180`
 - a unified Butler chat
 - a jobs sidebar and per-job windows
-- a dedicated Codex terminal surface
+- a Worker workstream, with an operational shell for the Codex app-server host
 - runtime visibility for stacks, previews, and services
 - image-reference tracking for visual tasks
-- tool-driven delegation into Codex workstreams
+- tool-driven delegation into provider-backed Worker jobs
 
-Butler is built on the Pi agent framework and supervises Codex through the Codex app server.
+Butler is built on the Pi agent framework. It supervises OpenAI/Codex Workers through the Codex app server and supported Ollama and OpenCode Go Workers through Pi RPC.
 
-### Codex Box
+### Worker Harnesses
 
-The Codex box is the trusted worker.
+Workers share one supervision and runtime contract even though their transports differ.
 
-Today it provides:
+The Codex app-server harness provides:
 
 - the official Codex CLI
 - Codex app-server mode
@@ -239,7 +253,11 @@ Today it provides:
 - shared runtime state through dedicated Docker volumes
 - local helper access through `manor-harness`
 
-Codex owns repository work. Butler and the broker own runtime lifecycle and policy.
+The Pi RPC harness provides Worker sessions for Manor's supported Ollama Local, Ollama Cloud, and OpenCode Go providers. These sessions receive the same job payload, workspace access, harness capabilities, reporting contract, and Butler review.
+
+The `codex-box` service and `manor-codex-box` image keep their existing names because they are specifically the Codex app-server host. Those deployment identifiers describe that harness surface. Manor labels the agent role across every harness as Worker.
+
+Workers own repository work. Butler and the broker own runtime lifecycle and policy.
 
 ### Previews
 
@@ -303,7 +321,7 @@ Built-in dependency templates:
 
 Container-backed templates run as disposable private-network services. SQLite is provisioned directly in the selected worktree as an embedded file.
 
-If a dependency is missing, Butler or Codex can register a new template on first use and persist it for later jobs.
+If a dependency is missing, Butler or a Worker can register a new template on first use and persist it for later jobs.
 
 ### Headed Desktop Proof
 
@@ -346,10 +364,9 @@ The important constraint is unchanged:
 
 ## Auth
 
-Both Butler and Codex support:
+OpenAI/Codex Workers use Codex authentication. Butler and the Codex app-server host support ChatGPT device-code login and OpenAI API-key login.
 
-- ChatGPT device-code login
-- API key login
+Ollama Local does not need external provider credentials. Ollama Cloud and OpenCode Go use their provider API keys. Configure and validate every enabled provider in Settings before assigning it Worker jobs.
 
 Useful commands:
 
@@ -372,9 +389,10 @@ Manor is a trusted personal worker appliance, not a multi-tenant sandbox.
 
 Current trust boundaries:
 
-- Butler and Codex are separated into different services
-- Codex does not get direct internet access
-- Butler and Codex go out through the restricted `egress` proxy
+- Butler and the Codex app-server host are separate services
+- Pi RPC Worker sessions run from the Butler service and share its container boundary
+- Worker execution does not get direct internet access
+- external outbound traffic from Butler and Worker execution goes through the restricted `egress` proxy; local Ollama traffic stays inside the appliance
 - preview runtimes keep private runtime networking and get direct outbound internet by default
 - optional preview egress profiles remain available for stricter outbound control
 - the runtime broker talks to the Docker socket for scoped preview, stack, service, browser, and proof capabilities
@@ -387,19 +405,24 @@ This is an architecture-first containment model, not a claim of full internal sa
 
 For vulnerability reporting and remote-use hardening, see the [security policy](SECURITY.md).
 
-## Codex Personalization
+## Worker Configuration
 
-- Codex worker model instructions are mounted from `config/codex-model-instructions.md`
+Butler builds the shared delegation, runtime, proof, and reporting instructions for every Worker.
+
+The Codex-specific configuration remains separate because it belongs to the Codex app-server transport:
+
+- Codex app-server model instructions are mounted from `config/codex-model-instructions.md`
 - `compose.yml` passes that markdown file into the Codex CLI through `CODEX_MODEL_INSTRUCTIONS_FILE`
-- `CODEX_PERSONALITY` remains available for Codex's built-in preset personalities (`none`, `friendly`, `pragmatic`)
-- edit the markdown if you want to change default worker tone or reporting behavior without teaching Butler a new prompt rule
+- `CODEX_PERSONALITY` selects Codex's built-in preset personality (`none`, `friendly`, or `pragmatic`)
+
+Provider availability, model discovery, and reasoning options come from the selected provider and harness. OpenAI/Codex models come from the Codex app server. Ollama and OpenCode Go models come through Pi and their provider-specific discovery and transform rules.
 
 ## Development
 
 Current local development assumptions:
 
 - the default stack is deployment-safe and persists core state in named Docker volumes
-- source-first installs build local images and mount the active checkout into Butler and worker containers
+- source-first installs build local images and mount the active checkout into the relevant execution services
 - packaged image installs are still supported for rollback and simpler setups
 - Butler source hot reload is opt-in through the development overlay
 - local hot-reload with source images runs use `docker compose -f compose.yml -f compose.build.yml -f compose.dev.yml up -d --build`
@@ -414,10 +437,10 @@ For contribution workflow and validation expectations, see the [contributing gui
 - `compose.build.yml`: optional local source-build overlay
 - `compose.dev.yml`: optional local Butler hot-reload overlay
 - `butler/`: Butler backend and web app
-- `config/`: optional preview egress profiles and Codex model instructions
+- `config/`: optional preview egress profiles and Codex app-server model instructions
 - `docker/butler/`: Butler image and auth helpers
 - `docker/butler-gateway/`: Butler reverse proxy
-- `docker/codex-box/`: Codex worker image and harness CLI
+- `docker/codex-box/`: Codex app-server host image and shared harness CLI
 - `docker/egress/`: restricted outbound proxy
 - `docker/host-controller/`: restart/update controller with its own scoped token
 - `docker/preview-egress/`: optional restrictive preview egress control plane

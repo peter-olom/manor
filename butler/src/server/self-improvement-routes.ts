@@ -11,7 +11,7 @@ import type { HostControllerClient } from "./host-controller-client.js";
 import type { ImageReferenceStore } from "./image-store.js";
 import { bindJobPayloadDelivery, jobPayloadsRoot, persistJobPayload } from "./job-instruction-artifacts.js";
 import type { PairSessionManager } from "./pair-session-manager.js";
-import { buildCodexInputWithReferences } from "./reference-inputs.js";
+import { buildWorkerInputWithReferences } from "./reference-inputs.js";
 import { cleanupManagedWorktree, ensureTaskWorktree } from "./repo-worktree.js";
 import { commitSelfImprovementRequest, discardSelfImprovementRequest, openSelfImprovementPullRequest } from "./self-improvement-actions.js";
 import { resolveSelfImprovementEligibility } from "./self-improvement-eligibility.js";
@@ -90,7 +90,7 @@ export function registerSelfImprovementRoutes(access: RouteAccess): void {
           await persistJobPayload(jobPayloadsRoot(artifactsDir), delegation.payload);
           store.setThreadJobPayload(delegation.payload);
           store.setThreadExecutionContract(threadId, delegation.contract);
-          return buildCodexInputWithReferences({
+          return buildWorkerInputWithReferences({
             text: delegation.text,
             imageStore,
             imageReferenceIds: [],
@@ -113,6 +113,7 @@ export function registerSelfImprovementRoutes(access: RouteAccess): void {
             cwd: workspace.cwd,
             handoffPrompt: task,
             runtime: result.runtime,
+            harness: result.harness,
             provider: result.provider,
             model: result.model,
             effort: result.effort

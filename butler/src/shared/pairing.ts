@@ -2,6 +2,8 @@ export type PairRole = "user" | "butler" | "worker" | "system";
 export type PairLane = "butler" | "worker";
 export type PairStatus = "idle" | "butler_running" | "worker_running" | "needs_butler_review" | "blocked";
 export type PairViewMode = "butler" | "worker" | "split" | "memory" | "improve" | "settings" | "cli";
+export type PairWorkerRuntime = "openai" | "pi-rpc";
+export type PairWorkerHarness = "codex" | "pi" | (string & {});
 
 export const DEFAULT_THINKING_LEVELS: readonly string[] = ["low", "medium", "high", "xhigh"];
 export const BUTLER_THINKING_LEVELS: readonly string[] = ["off", "default", "none", "minimal", ...DEFAULT_THINKING_LEVELS, "max", "thinking"];
@@ -57,7 +59,8 @@ export type PairMessage = {
 
 export type PairWorker = {
   threadId: string;
-  runtime?: "openai" | "pi-rpc" | null;
+  runtime?: PairWorkerRuntime | null;
+  harness?: PairWorkerHarness | null;
   provider?: string | null;
   model?: string | null;
   status: "starting" | "running" | "idle" | "blocked" | "unknown";
@@ -73,7 +76,8 @@ export type PairWorker = {
   requestedReasoningEffort?: string | null;
   handedOffFrom?: {
     threadId: string;
-    runtime: "openai" | "pi-rpc" | null;
+    runtime: PairWorkerRuntime | null;
+    harness: PairWorkerHarness | null;
     provider: string | null;
     model: string | null;
   } | null;
@@ -83,13 +87,12 @@ export type PairModelOption = {
   id: string;
   label: string;
   provider: string | null;
+  harness?: PairWorkerHarness | null;
   supportsReasoning?: boolean;
   supportedThinkingLevels?: string[];
   supportedReasoningEfforts: string[];
   defaultReasoningEffort: string | null;
 };
-
-export type PairCodexModelOption = PairModelOption;
 
 export type PairChat = {
   id: string;
@@ -112,9 +115,9 @@ export type PairChat = {
   lastMessage: PairMessage | null;
   butlerThinkingLevel?: string | null;
   butlerModel?: string | null;
-  codexModel?: string | null;
-  codexEffort?: string | null;
-  codexAvailableEfforts?: string[] | null;
+  workerHarness?: PairWorkerHarness | null;
+  workerModel?: string | null;
+  workerEffort?: string | null;
 };
 
 export type PairSummary = PairChat;
@@ -128,17 +131,12 @@ export type PairComposeSettings = {
     availableThinkingLevels: string[];
   };
   worker: {
-    runtime: "auto" | "openai" | "pi-rpc";
+    runtime: "auto" | PairWorkerRuntime;
+    harness: PairWorkerHarness | null;
     provider: string | null;
     model: string | null;
     effort: string | null;
-    availableModels: PairCodexModelOption[];
-    availableEfforts: string[];
-  };
-  codex: {
-    model: string | null;
-    effort: string | null;
-    availableModels: PairCodexModelOption[];
+    availableModels: PairModelOption[];
     availableEfforts: string[];
   };
 };

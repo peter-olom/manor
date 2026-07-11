@@ -414,7 +414,7 @@ export function buildSupervisorSummary(projects: CodexProjectSummaryView[], thre
     updatedAt: leadProject?.updatedAt ?? Date.now(),
     summary:
       threads.length === 0
-        ? "No Codex workstreams are active yet."
+        ? "No worker workstreams are active yet."
         : `${activeThreads} active, ${blockedThreads} blocked, ${completedThreads} idle across ${formatWorkstreamGroupCounts(projectCount, workspaceCount)}. ${leadProject ? `Most recent group: ${leadProject.label}.` : ""}`.trim()
   };
 }

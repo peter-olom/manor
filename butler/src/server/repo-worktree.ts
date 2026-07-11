@@ -135,7 +135,7 @@ export async function ensureManagedWorktreeWritableForWorker(
     await chownTree(worktreePath, ownership);
   } catch (error) {
     throw new Error(
-      `Managed worktree ${worktreePath} is not ready for the Codex worker ${ownership.label}: ` +
+      `Managed worktree ${worktreePath} is not ready for the Worker ${ownership.label}: ` +
         `could not repair ownership recursively. ${error instanceof Error ? error.message : String(error)}`
     );
   }
@@ -144,7 +144,7 @@ export async function ensureManagedWorktreeWritableForWorker(
     await assertWritableByCurrentProcess(worktreePath);
   } catch (error) {
     throw new Error(
-      `Managed worktree ${worktreePath} is not writable after ownership repair for the Codex worker ${ownership.label}. ` +
+      `Managed worktree ${worktreePath} is not writable after ownership repair for the Worker ${ownership.label}. ` +
         `${error instanceof Error ? error.message : String(error)}`
     );
   }

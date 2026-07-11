@@ -12,7 +12,9 @@ import {
   normalizeEnv,
   normalizeHeartbeatKind,
   normalizePositiveInteger,
-  normalizeStringArray
+  normalizeStringArray,
+  readHarnessRegistryText,
+  resolveHarnessStoragePaths
 } from "./codex-harness-helpers.js";
 import { formatHarnessExecutionContract, formatHarnessRuntimeModel } from "./codex-harness-format.js";
 import { normalizeReportEvidence, normalizeWorkerClaimsReport, validateCompletedWorkerEvidence } from "./codex-harness-report-validation.js";
@@ -63,9 +65,11 @@ function mentionsNativeDesktopTarget(thread: CodexThreadRecord): boolean {
   return /\b(electron|native|desktop|headed|vnc|novnc)\b/.test(text);
 }
 
-export class CodexHarnessService {
+export class HarnessService {
   private readonly registryPath: string;
+  private readonly legacyRegistryPath: string | null;
   private readonly brokerAccessPath: string;
+  private readonly legacyBrokerAccessPath: string;
   private readonly artifactsDir: string;
   private readonly store: ButlerStateStore;
   private readonly runtimeBroker: RuntimeBrokerClient;
@@ -73,9 +77,12 @@ export class CodexHarnessService {
   private readonly memoryReview: CodexExecMemoryReviewService | null;
   private readonly memoryScheduler: MemoryUpdateScheduler | null;
   private readonly capabilities = new Map<string, HarnessCapability>();
-  constructor(options: { codexHomeDir: string; stateDir: string; artifactsDir: string; store: ButlerStateStore; runtimeBroker: RuntimeBrokerClient; serviceTemplateRegistry: ServiceTemplateRegistry; memoryReview?: CodexExecMemoryReviewService | null; memoryScheduler?: MemoryUpdateScheduler | null }) {
-    this.registryPath = path.join(options.codexHomeDir, "manor", "harness-capabilities.json");
-    this.brokerAccessPath = path.join(options.stateDir, "codex-broker-access.json");
+  constructor(options: { codexHomeDir?: string; harnessRegistryPath?: string | null; harnessAccessPath?: string | null; stateDir: string; artifactsDir: string; store: ButlerStateStore; runtimeBroker: RuntimeBrokerClient; serviceTemplateRegistry: ServiceTemplateRegistry; memoryReview?: CodexExecMemoryReviewService | null; memoryScheduler?: MemoryUpdateScheduler | null }) {
+    const storagePaths = resolveHarnessStoragePaths(options);
+    this.registryPath = storagePaths.registryPath;
+    this.legacyRegistryPath = storagePaths.legacyRegistryPath;
+    this.brokerAccessPath = storagePaths.brokerAccessPath;
+    this.legacyBrokerAccessPath = storagePaths.legacyBrokerAccessPath;
     this.artifactsDir = options.artifactsDir;
     this.store = options.store;
     this.runtimeBroker = options.runtimeBroker;
@@ -93,7 +100,7 @@ export class CodexHarnessService {
   async load(): Promise<void> {
     await fs.mkdir(path.dirname(this.registryPath), { recursive: true });
     await fs.mkdir(path.dirname(this.brokerAccessPath), { recursive: true });
-    const raw = await fs.readFile(this.registryPath, "utf8").catch(() => "");
+    const { raw, fromLegacy } = await readHarnessRegistryText(this.registryPath, this.legacyRegistryPath);
     if (!raw) {
       await this.save();
       return;
@@ -119,12 +126,17 @@ export class CodexHarnessService {
         });
       }
     }
+    if (fromLegacy) await this.save();
   }
   private async save(): Promise<void> {
     const payload: HarnessRegistryPayload = { capabilities: [...this.capabilities.values()].sort((left, right) => left.createdAt - right.createdAt) };
     const brokerAccessPayload: BrokerAccessRegistryPayload = { grants: payload.capabilities.map((capability) => ({ token: capability.token, threadId: capability.threadId, createdAt: capability.createdAt, updatedAt: capability.updatedAt })) };
-    await atomicWriteJson(this.registryPath, payload);
-    await atomicWriteJson(this.brokerAccessPath, brokerAccessPayload);
+    const registryPaths = [this.registryPath, this.legacyRegistryPath].filter((entry): entry is string => Boolean(entry));
+    const brokerAccessPaths = [...new Set([this.brokerAccessPath, this.legacyBrokerAccessPath])];
+    await Promise.all([
+      ...registryPaths.map((registryPath) => atomicWriteJson(registryPath, payload)),
+      ...brokerAccessPaths.map((brokerAccessPath) => atomicWriteJson(brokerAccessPath, brokerAccessPayload))
+    ]);
   }
   async ensureThreadCapability(threadId: string, cwd: string | null | undefined): Promise<HarnessCapability | null> {
     const normalizedCwd = normalizeString(cwd);
@@ -155,7 +167,7 @@ export class CodexHarnessService {
       .listThreads()
       .map((thread) => this.store.getThread(thread.id))
       .filter((thread): thread is NonNullable<ReturnType<ButlerStateStore["getThread"]>> => Boolean(thread));
-    if (activeThreads.length === 0 && this.capabilities.size > 0) { console.warn("Skipping Codex harness capability prune because no threads are currently visible."); return; }
+    if (activeThreads.length === 0 && this.capabilities.size > 0) { console.warn("Skipping harness capability prune because no threads are currently visible."); return; }
     const activeThreadIds = new Set(activeThreads.map((thread) => thread.id));
     let changed = false;
     for (const threadId of [...this.capabilities.keys()]) {
@@ -208,14 +220,14 @@ export class CodexHarnessService {
   }
   private requireCapability(token: string): HarnessCapability {
     const capability = this.getCapabilityByToken(token);
-    if (!capability) throw new Error("Invalid Codex harness token");
+    if (!capability) throw new Error("Invalid harness token");
     const thread = this.store.getThread(capability.threadId);
-    if (!thread) throw new Error("Codex harness capability references an unknown thread");
+    if (!thread) throw new Error("Harness capability references an unknown thread");
     return capability;
   }
   private getThreadContext(capability: HarnessCapability) {
     const thread = this.store.getThread(capability.threadId);
-    if (!thread) throw new Error("Codex thread is no longer available");
+    if (!thread) throw new Error("Worker thread is no longer available");
     return thread;
   }
   private listThreadProofs(threadId: string) { return this.store.listPreviewProofs().filter((proof) => proof.threadId === threadId); }
@@ -301,7 +313,7 @@ export class CodexHarnessService {
   }
   private resolveWorkspaceProject(
     cwd: string | null | undefined,
-    thread: ReturnType<CodexHarnessService["getThreadContext"]>
+    thread: ReturnType<HarnessService["getThreadContext"]>
   ) {
     const project = resolveWorkspaceProjectInfo(cwd || thread.cwd);
     if (project.id === "unknown") {
@@ -574,7 +586,7 @@ export class CodexHarnessService {
         responseLines.push(`Use the existing stack ${activeStack.id} for the preview unless you have a reason to split the runtime.`);
       }
       responseLines.push("Previews now default to normal outbound internet access. Use an explicit egress mode only when you need to block or restrict outbound traffic.");
-      responseLines.push("Use Codex-shell for repo work. Move into Manor runtime only when you actually need it.");
+      responseLines.push("Use the worker shell for repo work. Move into Manor runtime only when you actually need it.");
       if (previewDefaults.bootstrapHint) {
         responseLines.push(`Preview bootstrap hint: ${previewDefaults.bootstrapHint}.`);
       }
@@ -595,7 +607,7 @@ export class CodexHarnessService {
           "This job has UI implications. Persist and surface screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are not enough."
         );
       }
-      responseLines.push("Do not use `corepack enable` in Codex-shell for preview-oriented runtime setup. If repo-local instructions explicitly require a root-level install step, follow the repo guidance instead.");
+      responseLines.push("Do not use `corepack enable` in the worker shell for preview-oriented runtime setup. If repo-local instructions explicitly require a root-level install step, follow the repo guidance instead.");
       responseLines.push("Only report the job blocked when you can say what you tried and why the next sensible step still cannot proceed.");
       if (question) {
         responseLines.push(`Requested help: ${question}`);
@@ -1482,6 +1494,7 @@ export class CodexHarnessService {
       };
     }
 
-    throw new Error(`Unknown Codex harness action: ${action}`);
+    throw new Error(`Unknown harness action: ${action}`);
   }
 }
+export { HarnessService as CodexHarnessService };

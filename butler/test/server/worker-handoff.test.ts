@@ -8,7 +8,7 @@ import { buildButlerDelegationContract } from "../../src/server/butler-agent-del
 import { buildJobPayload, parseJobPayload, remapJobPayloadForWorkerHandoff, updateJobPayload } from "../../src/server/job-instruction-artifacts.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
-import { buildWorkerHandoffNotes, buildWorkerHandoffPrompt, handoffWorkerAtomically } from "../../src/server/worker-handoff.js";
+import { buildWorkerHandoffNotes, buildWorkerHandoffPrompt, handoffWorkerAtomically, startWorkerHandoff } from "../../src/server/worker-handoff.js";
 
 test("a cold handoff prompt carries the task boundary even when the latest directive is only progress", () => {
   const prompt = buildWorkerHandoffPrompt({
@@ -165,6 +165,41 @@ test("handoff notes include a worker reply that is newer than the last report", 
   }
 });
 
+test("a Pi to Codex handoff repairs workspace ownership before replacement", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-worker-handoff-ownership-"));
+  try {
+    const store = new ButlerStateStore(path.join(dir, "state.json"));
+    store.upsertThreadSummary({ id: "pi-source", source: "pi-rpc", status: "idle", cwd: dir, turns: [] });
+    store.setThreadExecutionContract("pi-source", buildThreadExecutionContract({
+      threadId: "pi-source",
+      workspaceCwd: dir,
+      projectId: "project",
+      projectLabel: "Project",
+      branch: null,
+      taskText: "Continue the implementation",
+      notes: []
+    }));
+    const repaired: string[] = [];
+
+    await assert.rejects(() => startWorkerHandoff({
+      access: { store } as never,
+      sourceThreadId: "pi-source",
+      targetHarness: "codex",
+      targetModel: "gpt-5.4",
+      targetEffort: "high",
+      artifactsDir: dir,
+      repairWorkspaceOwnership: async (cwd) => {
+        repaired.push(cwd);
+        throw new Error("ownership repair sentinel");
+      }
+    }), /ownership repair sentinel/);
+
+    assert.deepEqual(repaired, [dir]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a failed attachment rolls back the pair and removes the replacement callback and worker", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "manor-worker-handoff-atomic-"));
   try {
@@ -179,6 +214,7 @@ test("a failed attachment rolls back the pair and removes the replacement callba
     await assert.rejects(() => handoffWorkerAtomically({
       access: { store } as never,
       sourceThreadId: "source-worker",
+      targetHarness: "pi",
       targetModel: "opencode-go/minimax-m3",
       targetEffort: "medium",
       artifactsDir: dir,
@@ -186,6 +222,7 @@ test("a failed attachment rolls back the pair and removes the replacement callba
         threadId: "replacement-worker",
         turnId: "turn-new",
         runtime: "pi-rpc",
+        harness: "pi",
         provider: "opencode-go",
         model: "opencode-go/minimax-m3",
         effort: "medium"
@@ -196,7 +233,7 @@ test("a failed attachment rolls back the pair and removes the replacement callba
         if (threadId === "source-worker") throw new Error("callback state save failed");
       },
       attach: (_result, text) => {
-        assert.match(text, /to opencode-go\/minimax-m3 in job replacement-worker/);
+        assert.match(text, /Switched Worker .* to opencode-go\/minimax-m3 using the Pi harness in job replacement-worker/);
         calls.push("attach");
         return { attached: true, rollback: () => { calls.push("rollback"); return true; } };
       },
@@ -235,6 +272,7 @@ test("a failure after source callback removal restores source supervision", asyn
         recordSuccessfulWorkerSelection: (selection: unknown) => { affinity.push(selection); }
       } as never,
       sourceThreadId: "source-worker",
+      targetHarness: "pi",
       targetModel: "ollama-cloud/glm-5.2",
       targetEffort: null,
       artifactsDir: dir,
@@ -242,6 +280,7 @@ test("a failure after source callback removal restores source supervision", asyn
         threadId: "replacement-worker",
         turnId: "turn-new",
         runtime: "pi-rpc",
+        harness: "pi",
         provider: "ollama-cloud",
         model: "ollama-cloud/glm-5.2",
         effort: null
@@ -281,6 +320,7 @@ test("a committed handoff records its provider affinity after callback and pair 
         recordSuccessfulWorkerSelection: () => { calls.push("record"); }
       } as never,
       sourceThreadId: "source-worker",
+      targetHarness: "pi",
       targetModel: "ollama-cloud/glm-5.2",
       targetEffort: "high",
       artifactsDir: dir,
@@ -288,6 +328,7 @@ test("a committed handoff records its provider affinity after callback and pair 
         threadId: "replacement-worker",
         turnId: "turn-new",
         runtime: "pi-rpc",
+        harness: "pi",
         provider: "ollama-cloud",
         model: "ollama-cloud/glm-5.2",
         effort: "high"
@@ -299,6 +340,42 @@ test("a committed handoff records its provider affinity after callback and pair 
     });
 
     assert.deepEqual(calls, ["track:replacement-worker", "attach", "remove:source-worker", "post", "record"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a handoff acknowledgement distinguishes duplicate provider and model routes by harness", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-worker-handoff-route-"));
+  try {
+    const store = new ButlerStateStore(path.join(dir, "state.json"));
+    store.upsertThreadSummary({ id: "source-worker", status: "idle", turns: [] });
+    const messages: string[] = [];
+
+    await handoffWorkerAtomically({
+      access: { store } as never,
+      sourceThreadId: "source-worker",
+      targetHarness: "pi",
+      targetModel: "openai-codex/shared-model",
+      targetEffort: "high",
+      artifactsDir: dir,
+      startHandoff: async () => ({
+        threadId: "replacement-worker",
+        turnId: "turn-new",
+        runtime: "pi-rpc",
+        harness: "pi",
+        provider: "openai-codex",
+        model: "openai-codex/shared-model",
+        effort: "high"
+      }),
+      trackCallback: async () => undefined,
+      removeCallback: async () => undefined,
+      attach: (_result, text) => { messages.push(text); return { attached: true }; },
+      post: (_threadId, text) => { messages.push(text); }
+    });
+
+    assert.equal(messages.length, 2);
+    assert.ok(messages.every((message) => message.includes("openai-codex/shared-model using the Pi harness")));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

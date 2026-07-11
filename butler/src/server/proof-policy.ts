@@ -7,7 +7,7 @@ const UI_SURFACE_PATTERN =
   /\b(ui|user interface|web app|browser|screen|page|view|component|layout|styling|style|css|responsive|mobile|desktop|modal|dialog|form|button|navigation|nav|dashboard|toast|panel|drawer|composer|surface|timeline|visual|screenshot|video)\b/i;
 
 const MANOR_CHAT_PATTERN =
-  /\b(operator-facing|butler chat|codex thread|chat responses?|callback closeouts?|final responses?|message rendering|reply footer|timing footer)\b/i;
+  /\b(operator-facing|butler chat|worker thread|codex thread|chat responses?|callback closeouts?|final responses?|message rendering|reply footer|timing footer)\b/i;
 
 export function taskHasUiImplication(text: string | null | undefined): boolean {
   const normalized = (text ?? "").replace(/\s+/g, " ").trim();

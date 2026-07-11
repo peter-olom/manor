@@ -18,7 +18,7 @@ test("maps Codex assistant deltas to canonical content deltas", () => {
 
   assert.equal(events.length, 1);
   assert.equal(events[0]?.type, "content.delta");
-  assert.equal(events[0]?.provider, "codex");
+  assert.equal(events[0]?.harness, "codex");
   assert.equal(events[0]?.threadId, "thread-1");
   assert.equal(events[0]?.turnId, "turn-1");
   assert.equal(events[0]?.itemId, "item-1");

@@ -58,7 +58,7 @@ function turnResult(threadId: string, result: Record<string, unknown>): Provider
 }
 
 export class CodexProviderAdapter extends EventEmitter<CodexProviderAdapterEvents> implements ProviderRuntimeAdapter {
-  readonly provider = "codex";
+  readonly harness = "codex";
 
   constructor(private readonly transport: CodexAppServerTransport) {
     super();

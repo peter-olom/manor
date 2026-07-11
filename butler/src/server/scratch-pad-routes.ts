@@ -9,7 +9,7 @@ import { type ImageReferenceStore } from "./image-store.js";
 import { bindJobPayloadDelivery, buildJobPayload, formatJobPayloadMessage, jobPayloadsRoot, persistJobPayload } from "./job-instruction-artifacts.js";
 import { captureGitReviewBaseline, resolveGitRoot } from "./git-review-scope.js";
 import { runSerializedJobMutation } from "./butler-job-mutation-guard.js";
-import { buildCodexInputWithReferences } from "./reference-inputs.js";
+import { buildWorkerInputWithReferences } from "./reference-inputs.js";
 import {
   cleanupManagedWorktree,
   ensureTaskWorktree,
@@ -194,7 +194,7 @@ async function buildScratchInput(
   });
   await persistJobPayload(jobPayloadsRoot(access.artifactsDir), payload);
   access.store.setThreadJobPayload(payload);
-  return buildCodexInputWithReferences({
+  return buildWorkerInputWithReferences({
     text: formatJobPayloadMessage("delegation", threadId, payload.requestedTask, payload.display.summary),
     imageStore: access.imageStore,
     imageReferenceIds,
@@ -210,7 +210,7 @@ function buildDeveloperInstructions(workspace: ScratchWorkspace): string {
     workspace.workspaceMode === "managed_worktree"
       ? `Work inside the isolated scratch-pad worktree at ${workspace.cwd}.`
       : `Work inside ${workspace.cwd} unless the scratch idea clearly requires finding or creating another workspace under /repos.`,
-    "Use Codex-shell for repository, git, and code-editing work.",
+    "Use the worker shell for repository, git, and code-editing work.",
     "Inspect scratch-pad attachments directly when they matter; do not depend on Butler transcript context for attached files.",
     "Read memory before acting when the idea depends on prior work, project conventions, unresolved outcomes, or attribution.",
     "Preserve the operator's intent from the scratch idea and attached context. Do not shrink a broad idea into the easiest literal subtask.",

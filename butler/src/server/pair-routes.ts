@@ -84,6 +84,7 @@ export function registerPairRoutes(access: PairRouteAccess): void {
 
   app.post("/api/pairs/:pairId/worker/handoff", async (request, response) => {
     const model = readString(request.body?.model);
+    const harness = readString(request.body?.harness);
     const effort = readString(request.body?.effort);
     if (!model) {
       response.status(400).json({ error: "model is required" });
@@ -94,7 +95,7 @@ export function registerPairRoutes(access: PairRouteAccess): void {
       return;
     }
     try {
-      const pair = await pairSessions.handoffWorker(request.params.pairId, model, effort || null);
+      const pair = await pairSessions.handoffWorker(request.params.pairId, model, harness || null, effort || null);
       if (!pair) {
         response.status(404).json({ error: "Butler session not found" });
         return;
@@ -133,7 +134,7 @@ export function registerPairRoutes(access: PairRouteAccess): void {
     const imageReferenceIds = readImageReferenceIds(request.body);
     const fileReferenceIds = readFileReferenceIds(request.body);
     if (target === "worker") {
-      response.status(409).json({ error: "Message Butler. Butler controls the Codex worker for this session." });
+      response.status(409).json({ error: "Message Butler. Butler controls the worker for this session." });
       return;
     }
     if (!text && imageReferenceIds.length === 0 && fileReferenceIds.length === 0) {
@@ -187,6 +188,7 @@ export function registerPairRoutes(access: PairRouteAccess): void {
         return;
       }
       const model = readString(request.body?.model);
+      const harness = readString(request.body?.harness);
       const effort = readString(request.body?.effort);
       if (!model && !effort) {
         response.status(400).json({ error: "model or effort is required" });
@@ -199,9 +201,9 @@ export function registerPairRoutes(access: PairRouteAccess): void {
       try {
         let pair: PairDetail | null = null;
         if (model) {
-          pair = await pairSessions.setCodexModel(request.params.pairId, model);
+          pair = await pairSessions.setWorkerModel(request.params.pairId, model, harness || null);
         } else if (effort) {
-          pair = await pairSessions.setCodexEffort(request.params.pairId, effort);
+          pair = await pairSessions.setWorkerEffort(request.params.pairId, effort);
         }
         if (!pair) {
           response.status(404).json({ error: "Butler session not found" });

@@ -7,13 +7,22 @@ import { JumpToLatest } from "./JumpToLatest";
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
 import { WorkerSwitchDialog } from "./WorkerSwitchDialog";
-import { workerModelLabel, workerProviderLabel, workerRuntimeLabel } from "./worker-route";
+import {
+  isSameWorkerRoute,
+  workerHarnessLabel,
+  workerModelForRoute,
+  workerModelForSelection,
+  workerModelLabel,
+  workerModelPickerOption,
+  workerModelSelectionValue,
+  workerProviderLabel
+} from "./worker-route";
 import {
   ChevronDownIcon,
   ChevronRightIcon
 } from "./icons";
 
-import type { PairDetail } from "../shared/pairing";
+import type { PairDetail, PairWorkerHarness } from "../shared/pairing";
 import type { FileReference } from "./api";
 
 export type WorkerItem = {
@@ -135,11 +144,11 @@ type WorkerPaneProps = {
   timeline: WorkerTimeline;
   loading?: boolean;
   proofRecords: WorkerProofRecord[];
-  onCodexModelChange: (model: string) => void;
-  onCodexEffortChange: (effort: string) => void;
+  onWorkerModelChange: (model: string, harness: PairWorkerHarness | null) => void;
+  onWorkerEffortChange: (effort: string) => void;
   handoffPending?: boolean;
   handoffError?: string | null;
-  onHandoff: (model: string, effort: string | null) => Promise<boolean>;
+  onHandoff: (model: string, harness: PairWorkerHarness | null, effort: string | null) => Promise<boolean>;
   onOpenProviderSettings: () => void;
   onAttachAnnotatedProof: (payload: { attachment: FileReference; text: string }) => Promise<void>;
 };
@@ -663,7 +672,7 @@ const FallbackRow = memo(function FallbackRow({ row }: { row: WorkerItem }) {
   );
 });
 
-export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCodexModelChange, onCodexEffortChange, handoffPending = false, handoffError = null, onHandoff, onOpenProviderSettings, onAttachAnnotatedProof }: WorkerPaneProps) {
+export function WorkerPane({ pair, timeline, loading = false, proofRecords, onWorkerModelChange, onWorkerEffortChange, handoffPending = false, handoffError = null, onHandoff, onOpenProviderSettings, onAttachAnnotatedProof }: WorkerPaneProps) {
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [switchOpen, setSwitchOpen] = useState(false);
@@ -673,9 +682,11 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCo
   }, [pair.id, pair.worker?.threadId]);
 
   if (!pair.worker) {
-    const worker = pair.compose?.worker ?? pair.compose?.codex ?? { model: null, effort: null, availableModels: [], availableEfforts: [] };
+    const worker = pair.compose.worker;
     const options = worker.availableEfforts;
-    const model = worker.model ?? worker.availableModels[0]?.id ?? null;
+    const pickerModels = worker.availableModels.map(workerModelPickerOption);
+    const configuredModel = workerModelForRoute(worker.availableModels, worker.model, worker.harness) ?? worker.availableModels[0] ?? null;
+    const model = configuredModel ? workerModelSelectionValue(worker.availableModels, configuredModel.id, configuredModel.harness) : null;
     const effort = worker.effort ?? null;
     return (
       <section className="pane" aria-label="Worker lane">
@@ -690,11 +701,14 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCo
               <ModelPicker
                 label="Model"
                 value={model}
-                options={worker.availableModels}
+                options={pickerModels}
                 compact
                 anchor="below"
                 className="worker-model"
-                onChange={onCodexModelChange}
+                onChange={(selectionId) => {
+                  const selected = workerModelForSelection(worker.availableModels, selectionId);
+                  if (selected) onWorkerModelChange(selected.id, selected.harness ?? null);
+                }}
               />
             ) : null}
             {options.length > 0 ? (
@@ -702,7 +716,7 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCo
                 label="Thinking"
                 value={effort}
                 options={options}
-                onChange={onCodexEffortChange}
+                onChange={onWorkerEffortChange}
                 className="worker-budget"
               />
             ) : null}
@@ -717,24 +731,24 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCo
     );
   }
 
-  const worker = pair.compose?.worker ?? pair.compose?.codex ?? { model: null, effort: null, availableModels: [], availableEfforts: [] };
+  const worker = pair.compose.worker;
   const busy = pair.worker.status === "starting" || pair.worker.status === "running";
   const effort = pair.worker.requestedReasoningEffort ?? worker.effort ?? null;
-  const activeModel = worker.availableModels.find((model) => model.id === pair.worker?.model) ?? null;
+  const activeModel = workerModelForRoute(worker.availableModels, pair.worker.model, pair.worker.harness);
   const options = activeModel?.supportedReasoningEfforts ?? [];
-  const route = `${workerProviderLabel(pair.worker.provider)} · ${workerModelLabel(worker.availableModels, pair.worker.model)} · ${workerRuntimeLabel(pair.worker.runtime)}`;
+  const route = `${workerProviderLabel(pair.worker.provider)} · ${workerModelLabel(worker.availableModels, pair.worker.model, pair.worker.harness)} · ${workerHarnessLabel(pair.worker.harness)}`;
   const handoffOrigin = pair.worker.handedOffFrom;
   const handoffOriginRoute = handoffOrigin
-    ? `${workerProviderLabel(handoffOrigin.provider)} · ${workerModelLabel(worker.availableModels, handoffOrigin.model)} · ${workerRuntimeLabel(handoffOrigin.runtime)}`
+    ? `${workerProviderLabel(handoffOrigin.provider)} · ${workerModelLabel(worker.availableModels, handoffOrigin.model, handoffOrigin.harness)} · ${workerHarnessLabel(handoffOrigin.harness)}`
     : null;
-  const hasAlternativeModel = worker.availableModels.some((model) => model.id !== pair.worker?.model);
+  const hasAlternativeModel = worker.availableModels.some((model) => !isSameWorkerRoute(model, pair.worker?.model, pair.worker?.harness));
   const switchDisabled = busy || handoffPending || !hasAlternativeModel;
   const switchTitle = busy
     ? "Available after the current worker turn finishes."
     : handoffPending
       ? "Worker switch in progress."
       : !hasAlternativeModel
-        ? "No other worker model is available."
+        ? "No other Worker route is available."
         : "Start a new worker with a handoff.";
 
   return (
@@ -753,7 +767,7 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCo
               value={effort}
               options={options}
               disabled={busy}
-              onChange={onCodexEffortChange}
+              onChange={onWorkerEffortChange}
               className="worker-budget"
             />
           ) : null}
@@ -783,12 +797,13 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onCo
         activeWorker={pair.worker}
         models={worker.availableModels}
         initialModel={worker.model}
+        initialHarness={worker.harness}
         initialEffort={worker.effort}
         pending={handoffPending}
         error={handoffError}
         onClose={() => setSwitchOpen(false)}
-        onConfirm={(model, nextEffort) => {
-          void onHandoff(model, nextEffort).then((switched) => {
+        onConfirm={(model, harness, nextEffort) => {
+          void onHandoff(model, harness, nextEffort).then((switched) => {
             if (switched) setSwitchOpen(false);
           });
         }}

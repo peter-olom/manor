@@ -2,7 +2,8 @@ import crypto from "node:crypto";
 import path from "node:path";
 
 export function createBrokerStorage(context, deps = {}) {
-  const { previewNetwork, previewOutboundNetwork, sharedWorkNetwork, previewImage, routeBase, previewEgressConfigPath, previewEgressAdminUrl, brokerToken, codexAccessRegistryPath, stackBindingRegistryPath, internalOperatorBaseUrl, codexWorkspaceContainerName, butlerContainerName, butlerArtifactsRootDir, playwrightContainerName, runtimeBrokerContainerName, previewEgressContainerName, playwrightArtifactsScratchDir, stackNetworkPrefix, stackVolumePrefix, stackInfraReconnectIntervalMs, docker, leaseTransitions, leaseBootstrapStates, activeLeaseBootstrapMonitors, pendingPreviewLeases, retainedPreviewLeases, noHeartbeatReadyDelayMs } = context;
+  const { previewNetwork, previewOutboundNetwork, sharedWorkNetwork, previewImage, routeBase, previewEgressConfigPath, previewEgressAdminUrl, brokerToken, harnessAccessRegistryPath, stackBindingRegistryPath, internalOperatorBaseUrl, workspaceContainerName: configuredWorkspaceContainerName, butlerContainerName, butlerArtifactsRootDir, playwrightContainerName, runtimeBrokerContainerName, previewEgressContainerName, playwrightArtifactsScratchDir, stackNetworkPrefix, stackVolumePrefix, stackInfraReconnectIntervalMs, docker, leaseTransitions, leaseBootstrapStates, activeLeaseBootstrapMonitors, pendingPreviewLeases, retainedPreviewLeases, noHeartbeatReadyDelayMs } = context;
+  const workspaceContainerName = configuredWorkspaceContainerName ?? context.codexWorkspaceContainerName;
   const {
     ensureImage,
     ensureVolumeIsIdle,
@@ -20,10 +21,10 @@ export function createBrokerStorage(context, deps = {}) {
     toManagedVolumeName
   } = deps;
 
-async function resolveCodexWorkspaceMounts(options = {}) {
+async function resolveWorkspaceMounts(options = {}) {
   const readOnly = options.readOnly === true;
-  const codexContainer = docker.getContainer(codexWorkspaceContainerName);
-  const inspection = await codexContainer.inspect();
+  const workspaceContainer = docker.getContainer(workspaceContainerName);
+  const inspection = await workspaceContainer.inspect();
   const mounts = Array.isArray(inspection.Mounts) ? inspection.Mounts : [];
   const workspaceMounts = mounts
     .filter((mount) => mount?.Destination === "/repos")
@@ -49,15 +50,15 @@ async function resolveCodexWorkspaceMounts(options = {}) {
     .filter(Boolean);
 
   if (workspaceMounts.length === 0) {
-    throw new Error(`Could not resolve /repos mount from ${codexWorkspaceContainerName}`);
+    throw new Error(`Could not resolve /repos mount from ${workspaceContainerName}`);
   }
 
   return workspaceMounts;
 }
 
-async function resolveCodexWorkspaceUser() {
-  const codexContainer = docker.getContainer(codexWorkspaceContainerName);
-  const inspection = await codexContainer.inspect();
+async function resolveWorkspaceUser() {
+  const workspaceContainer = docker.getContainer(workspaceContainerName);
+  const inspection = await workspaceContainer.inspect();
   const configuredUser = normalizeString(inspection?.Config?.User || "");
   if (/^\d+:\d+$/.test(configuredUser)) {
     return configuredUser;
@@ -66,23 +67,23 @@ async function resolveCodexWorkspaceUser() {
     return `${configuredUser}:${configuredUser}`;
   }
 
-  const exec = await codexContainer.exec({
+  const exec = await workspaceContainer.exec({
     AttachStdout: true,
     AttachStderr: true,
     Cmd: ["sh", "-c", "printf '%s:%s' \"$(id -u)\" \"$(id -g)\""],
     Tty: false
   });
-  const output = await collectExecOutput(codexContainer, exec);
+  const output = await collectExecOutput(workspaceContainer, exec);
   if (output.exitCode !== 0) {
     throw new Error(
       output.stderr.trim() ||
         output.stdout.trim() ||
-        `Could not resolve workspace user from ${codexWorkspaceContainerName}`
+        `Could not resolve workspace user from ${workspaceContainerName}`
     );
   }
   const user = output.stdout.trim();
   if (!/^\d+:\d+$/.test(user)) {
-    throw new Error(`Unexpected workspace user from ${codexWorkspaceContainerName}: ${user || "(empty)"}`);
+    throw new Error(`Unexpected workspace user from ${workspaceContainerName}: ${user || "(empty)"}`);
   }
   return user;
 }
@@ -571,8 +572,10 @@ async function persistVerificationArtifacts(containerRef, verification, remoteOu
 }
 
   return {
-    resolveCodexWorkspaceMounts,
-    resolveCodexWorkspaceUser,
+    resolveWorkspaceMounts,
+    resolveWorkspaceUser,
+    resolveCodexWorkspaceMounts: resolveWorkspaceMounts,
+    resolveCodexWorkspaceUser: resolveWorkspaceUser,
     listStackMemberContainers,
     listManagedServiceContainersByVolume,
     ensureManagedStackVolume,

@@ -4,6 +4,7 @@ import { ChevronDownIcon, CloseIcon, SearchIcon } from "./icons";
 
 export type ModelPickerOption = {
   id: string;
+  selectionId?: string;
   label: string;
   provider: string | null;
   hint?: string | null;
@@ -40,20 +41,28 @@ type FlatEntry = {
 };
 
 export function modelOptionValue(option: ModelPickerOption): string {
+  if (option.selectionId) return option.selectionId;
   return option.provider && !option.id.startsWith(`${option.provider}/`) ? `${option.provider}/${option.id}` : option.id;
+}
+
+export function modelOptionSelectionValue(option: ModelPickerOption): string {
+  return option.selectionId ?? option.id;
 }
 
 function findOptionValue(options: readonly ModelPickerOption[], value: string | null): string | null {
   if (!value) return null;
-  const direct = options.find((option) => option.id === value);
-  if (direct) return direct.id;
-  const byQualified = options.find((option) => modelOptionValue(option) === value);
-  return byQualified ? byQualified.id : null;
+  const bySelection = options.find((option) => option.selectionId === value);
+  if (bySelection) return modelOptionSelectionValue(bySelection);
+  const direct = options.filter((option) => option.id === value);
+  if (direct.length === 1) return modelOptionSelectionValue(direct[0]);
+  const qualified = options.filter((option) => modelOptionValue(option) === value);
+  if (qualified.length === 1) return modelOptionSelectionValue(qualified[0]);
+  return null;
 }
 
 function resolveSelectedLabel(options: readonly ModelPickerOption[], value: string | null, placeholder: string): string {
   if (!value) return placeholder;
-  const match = options.find((option) => option.id === value);
+  const match = options.find((option) => modelOptionSelectionValue(option) === value);
   if (!match) return placeholder;
   return match.label;
 }
@@ -221,7 +230,7 @@ export const ModelPicker = memo(function ModelPicker({
     }
     if (activeIndex < 0 || activeIndex >= filtered.length) {
       const selectedIndex = selectedValue
-        ? filtered.findIndex((entry) => entry.option.id === selectedValue)
+        ? filtered.findIndex((entry) => modelOptionSelectionValue(entry.option) === selectedValue)
         : -1;
       setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
     }
@@ -246,7 +255,7 @@ export const ModelPicker = memo(function ModelPicker({
       event.preventDefault();
       if (open) {
         const entry = filtered[activeIndex];
-        if (entry && !entry.option.disabled) choose(entry.option.id);
+        if (entry && !entry.option.disabled) choose(modelOptionSelectionValue(entry.option));
       } else {
         setOpen(true);
       }
@@ -272,7 +281,7 @@ export const ModelPicker = memo(function ModelPicker({
     if (event.key === "Enter") {
       event.preventDefault();
       const entry = filtered[activeIndex];
-      if (entry) choose(entry.option.id);
+      if (entry && !entry.option.disabled) choose(modelOptionSelectionValue(entry.option));
       return;
     }
     if (event.key === "Tab") {
@@ -361,7 +370,7 @@ export const ModelPicker = memo(function ModelPicker({
             ) : (
               filtered.map((entry, filteredIndex) => {
                 const optionValue = modelOptionValue(entry.option);
-                const isSelected = entry.option.id === selectedValue;
+                const isSelected = modelOptionSelectionValue(entry.option) === selectedValue;
                 const isActive = filteredIndex === activeIndex;
                 const previous = filtered[filteredIndex - 1];
                 const showGroupHeader = (!previous || previous.groupLabel !== entry.groupLabel) && entry.groupLabel !== "default";
@@ -381,7 +390,7 @@ export const ModelPicker = memo(function ModelPicker({
                       title={entry.option.disabledReason ?? entry.option.hint ?? entry.option.label}
                       onClick={() => {
                         if (entry.option.disabled) return;
-                        choose(entry.option.id);
+                        choose(modelOptionSelectionValue(entry.option));
                       }}
                       onMouseEnter={() => setActiveIndex(filteredIndex)}
                     >

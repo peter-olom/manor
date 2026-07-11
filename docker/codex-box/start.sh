@@ -28,9 +28,8 @@ if gh auth status --hostname "${github_host}" >/dev/null 2>&1; then
   gh auth setup-git --hostname "${github_host}" >/dev/null 2>&1 || true
 fi
 
-# Keep the interactive browser terminal on zsh, but force the Codex worker
-# itself onto a plain shell so app-server command execution does not try to
-# launch zsh.
+# Keep the interactive browser terminal on zsh, but force the Codex app-server
+# process onto a plain shell so command execution does not try to launch zsh.
 export SHELL=/usr/bin/bash
 export TERM="${TERM:-xterm-256color}"
 

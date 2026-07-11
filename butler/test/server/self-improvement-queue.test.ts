@@ -206,6 +206,7 @@ test("approval creates a visible session linked to the self-improvement request"
     cwd: string | null;
     task: string | null;
     runtime: string | null;
+    harness: string | null;
     provider: string | null;
     model: string | null;
     effort: string | null;
@@ -239,6 +240,7 @@ test("approval creates a visible session linked to the self-improvement request"
           cwd: input.cwd ?? null,
           task: input.task ?? null,
           runtime: input.runtime ?? null,
+          harness: input.harness ?? null,
           provider: input.provider ?? null,
           model: input.model ?? null,
           effort: input.effort ?? null
@@ -265,11 +267,13 @@ test("approval creates a visible session linked to the self-improvement request"
     assert.equal(createdPairs[0]?.threadId, "thread-approved");
     assert.deepEqual({
       runtime: createdPairs[0]?.runtime,
+      harness: createdPairs[0]?.harness,
       provider: createdPairs[0]?.provider,
       model: createdPairs[0]?.model,
       effort: createdPairs[0]?.effort
     }, {
       runtime: "openai",
+      harness: "codex",
       provider: "openai-codex",
       model: "gpt-5-codex",
       effort: "high"

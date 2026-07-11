@@ -1,5 +1,7 @@
 # Deep Async Verification Dogfood Report
 
+> Historical dogfood record. This report describes the Codex-only Worker path that was tested at the time. Current Manor applies the shared supervision and proof contract across Workers running through Codex app server and Pi RPC. The original observations below are preserved as test history.
+
 ## Human Job
 
 A Manor operator needs to delegate non-trivial work and trust the closeout while staying out of the worker transcript.

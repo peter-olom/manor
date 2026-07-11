@@ -113,6 +113,7 @@ test("delegation routing is derived from Butler's explicit tool call", () => {
 test("delegation starts worker directly with deterministic routing metadata", async () => {
   const store = await createStore();
   let capturedOrchestration: ButlerRoutingDecisionView | null = null;
+  let acknowledgement = "";
   let postedQuestions = 0;
   const tool = buildButlerDelegationTools({
     defineButlerTool: (definition) => definition,
@@ -145,9 +146,9 @@ test("delegation starts worker directly with deterministic routing metadata", as
     store,
     getCodexAuthStatus: () => ({ loggedIn: true }),
     noteThreadFocus: () => undefined,
-    queueDelegationAcknowledgement: () => undefined,
+    queueDelegationAcknowledgement: (_threadId: string, text: string) => { acknowledgement = text; },
     registerPendingChatCallback: () => undefined
-  } as never).find((entry) => entry.name === "delegate_to_codex") as {
+  } as never).find((entry) => entry.name === "delegate_to_worker") as {
     execute: (toolCallId: string, params: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>;
   };
 
@@ -157,6 +158,9 @@ test("delegation starts worker directly with deterministic routing metadata", as
   assert.equal(capturedOrchestration?.reviewRecommendation.required, true);
   assert.equal(capturedOrchestration?.fallbackReason, null);
   assert.equal(postedQuestions, 0);
+  assert.match(acknowledgement, /delegated this to a Worker/);
+  assert.match(acknowledgement, /Codex harness/);
+  assert.doesNotMatch(acknowledgement, /Codex worker/i);
 });
 
 test("delegation contract receives the resolved workspace cwd", async () => {
@@ -194,7 +198,7 @@ test("delegation contract receives the resolved workspace cwd", async () => {
     noteThreadFocus: () => undefined,
     queueDelegationAcknowledgement: () => undefined,
     registerPendingChatCallback: () => undefined
-  } as never).find((entry) => entry.name === "delegate_to_codex") as {
+  } as never).find((entry) => entry.name === "delegate_to_worker") as {
     execute: (toolCallId: string, params: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>;
   };
 
@@ -231,7 +235,7 @@ test("shared repository bootstrap delegation keeps the bootstrap note", async ()
     noteThreadFocus: () => undefined,
     queueDelegationAcknowledgement: () => undefined,
     registerPendingChatCallback: () => undefined
-  } as never).find((entry) => entry.name === "delegate_to_codex") as {
+  } as never).find((entry) => entry.name === "delegate_to_worker") as {
     execute: (toolCallId: string, params: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>;
   };
 

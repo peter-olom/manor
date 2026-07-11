@@ -266,7 +266,7 @@ test("late Codex events from an unresolved send cannot pollute a newer operation
     };
     const emitRuntimeEvent = (event: Record<string, unknown>) => client.codexProviderAdapter.emit("runtimeEvent", {
       id: `event-${Math.random()}`,
-      provider: "codex",
+      harness: "codex",
       threadId,
       at: Date.now(),
       ...event
@@ -362,7 +362,7 @@ test("initial Codex turn events are released when startThread binds the provider
     client.codexProviderAdapter.emit("runtimeEvent", {
       id: "initial-turn-start",
       type: "turn.started",
-      provider: "codex",
+      harness: "codex",
       threadId,
       turnId: "initial-turn",
       at: Date.now(),
@@ -371,7 +371,7 @@ test("initial Codex turn events are released when startThread binds the provider
     client.codexProviderAdapter.emit("runtimeEvent", {
       id: "initial-item-start",
       type: "item.started",
-      provider: "codex",
+      harness: "codex",
       threadId,
       turnId: "initial-turn",
       itemId: "initial-item",
@@ -436,7 +436,7 @@ test("Codex preflight does not suppress live events from the active turn", async
     client.codexProviderAdapter.emit("runtimeEvent", {
       id: "preflight-live-item",
       type: "item.started",
-      provider: "codex",
+      harness: "codex",
       threadId,
       turnId: "active-turn",
       itemId: "live-item",

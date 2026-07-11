@@ -12,13 +12,13 @@ import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-too
 import { formatJobPayloadMessage } from "./job-instruction-artifacts.js";
 import { assertCallbackReviewCurrent, runSerializedJobMutations } from "./butler-job-mutation-guard.js";
 import { classifyManorBlocker } from "./butler-self-improvement.js";
-import { buildCodexInputWithReferences } from "./reference-inputs.js";
+import { buildWorkerInputWithReferences } from "./reference-inputs.js";
 import { commitSelfImprovementRequest, discardSelfImprovementRequest, openSelfImprovementPullRequest } from "./self-improvement-actions.js";
 import { getSelfImprovementRequestState } from "./self-improvement-request-state.js";
 import { listWorkspaceProjectDirectories } from "./repo-worktree.js";
 import { deleteAllWorkerThreads, deleteWorkerThread, loadWorkerThread, sendWorkerMessage } from "./worker-client-router.js";
 
-export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
+export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
   return [
     access.defineButlerTool({
       name: "list_jobs",
@@ -570,7 +570,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         }
         const thread = access.store.getThread(typedParams.threadId);
         if (!thread || !thread.cwd || thread.source === "unknown" || thread.turnCount === 0) {
-          throw new Error(`Job ${typedParams.threadId} is not a valid reusable Codex workstream.`);
+          throw new Error(`Job ${typedParams.threadId} is not a valid reusable worker workstream.`);
         }
         if (thread.status !== "active") {
           throw new Error(`Job ${typedParams.threadId} is not active. Answer directly or use message_job if the worker needs a new turn.`);
@@ -635,7 +635,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         const thread = access.store.getThread(typedParams.threadId);
         if (!thread || !thread.cwd || thread.source === "unknown" || thread.turnCount === 0) {
           throw new Error(
-            `Job ${typedParams.threadId} is not a valid reusable worker workstream. Start a fresh worker job with delegate_to_codex instead.`
+            `Job ${typedParams.threadId} is not a valid reusable worker workstream. Start a fresh worker job with delegate_to_worker instead.`
           );
         }
         const limitMessage = access.getThreadBudgetLimitMessage(typedParams.threadId);
@@ -663,7 +663,7 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
         const sent = await sendWorkerMessage(
           access,
           typedParams.threadId,
-          buildCodexInputWithReferences({
+          buildWorkerInputWithReferences({
             text: formatJobPayloadMessage("steering", payload.threadId, payload.workerDirective, payload.display.summary),
             imageStore: access.imageStore,
             imageReferenceIds: typedParams.imageReferenceIds ?? [],
@@ -778,3 +778,6 @@ export function buildButlerCodexTools(access: ButlerAgentToolAccess): ButlerCust
     })
   ];
 }
+
+/** @deprecated Use buildButlerWorkerTools for provider-neutral worker tools. */
+export const buildButlerCodexTools = buildButlerWorkerTools;

@@ -11,7 +11,7 @@ import { directWorkerDispatchMarker } from "./butler-callback-state.js";
 import { runSerializedJobMutation, runSerializedJobMutations } from "./butler-job-mutation-guard.js";
 import { createBackgroundModelServices } from "./background-model-services.js";
 import { CodexAppServerClient } from "./codex-client.js";
-import { CodexHarnessService } from "./codex-harness.js";
+import { HarnessService } from "./codex-harness.js";
 import { FileReferenceStore, MAX_FILE_BYTES } from "./file-store.js";
 import { HostControllerClient } from "./host-controller-client.js";
 import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
@@ -28,7 +28,7 @@ import { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import { registerPairRoutes } from "./pair-routes.js";
 import { registerPreviewAnnotationRoutes } from "./preview-annotation-routes.js";
 import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-routes.js";
-import { buildCodexInputWithReferences, buildComposerInputItemsPrompt, buildReferencePromptText } from "./reference-inputs.js";
+import { buildComposerInputItemsPrompt, buildReferencePromptText, buildWorkerInputWithReferences } from "./reference-inputs.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { registerScratchPadRoutes } from "./scratch-pad-routes.js";
 import { registerRuntimeResourceRoutes } from "./runtime-resource-routes.js";
@@ -57,6 +57,8 @@ const codexAppServerAuthTokenFile = process.env.CODEX_APP_SERVER_AUTH_TOKEN_FILE
 const piAgentDir = process.env.PI_AGENT_DIR ?? "/home/butler/.pi/agent";
 const stateDir = process.env.MANOR_STATE_DIR ?? "/state";
 const codexHomeDir = process.env.CODEX_SHARED_HOME_DIR ?? "/codex-home";
+const harnessRegistryPath = process.env.MANOR_HARNESS_REGISTRY_PATH ?? path.join(stateDir, "harness-capabilities.json");
+const harnessAccessPath = process.env.MANOR_HARNESS_ACCESS_FILE ?? path.join(stateDir, "harness-broker-access.json");
 const codexConfigDir = process.env.CODEX_SHARED_CONFIG_DIR ?? "/codex-config";
 const runtimeBrokerUrl = process.env.RUNTIME_BROKER_URL ?? "http://runtime-broker:8090";
 const runtimeBrokerToken = process.env.RUNTIME_BROKER_TOKEN ?? null;
@@ -126,8 +128,10 @@ const { memoryReview, memoryScheduler, memoryPromotion, memoryEmbeddings, memory
   modelTasks
 });
 store.setMemoryUpdateObserver(memoryScheduler);
-const codexHarness = new CodexHarnessService({
+const harnessService = new HarnessService({
   codexHomeDir,
+  harnessRegistryPath,
+  harnessAccessPath,
   stateDir,
   artifactsDir,
   store,
@@ -141,8 +145,8 @@ memoryScheduler.start();
 memoryPromotion.start();
 memoryEmbeddings.start();
 memorySemanticEdges.start();
-await codexHarness.load();
-await codexHarness.reconcileThreadCapabilities();
+await harnessService.load();
+await harnessService.reconcileThreadCapabilities();
 const piRpcWorkerClient = new PiRpcWorkerClient({
   store,
   piAuthPath,
@@ -150,10 +154,10 @@ const piRpcWorkerClient = new PiRpcWorkerClient({
   codexHomeDir,
   butlerBaseUrl: `http://127.0.0.1:${port}`,
   onThreadCapabilityReady: async (threadId, cwd) => {
-    await codexHarness.ensureThreadCapability(threadId, cwd);
+    await harnessService.ensureThreadCapability(threadId, cwd);
   },
   onThreadCapabilityRemoved: async (threadId) => {
-    await codexHarness.revokeThreadCapability(threadId);
+    await harnessService.revokeThreadCapability(threadId);
   },
   onThreadDeleting: async (context) => {
     await cleanupThreadRuntimeResources(runtimeAccess, context);
@@ -161,7 +165,7 @@ const piRpcWorkerClient = new PiRpcWorkerClient({
 });
 const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, {
   onThreadCapabilityReady: async (threadId, cwd) => {
-    await codexHarness.ensureThreadCapability(threadId, cwd);
+    await harnessService.ensureThreadCapability(threadId, cwd);
   },
   onThreadDeleting: async (context) => {
     await cleanupThreadRuntimeResources(runtimeAccess, context);
@@ -171,7 +175,7 @@ const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, 
   },
   memoryScheduler,
   onThreadCapabilityRemoved: async (threadId) => {
-    await codexHarness.revokeThreadCapability(threadId);
+    await harnessService.revokeThreadCapability(threadId);
   },
   artifactsDir,
   authTokenFile: codexAppServerAuthTokenFile
@@ -705,23 +709,25 @@ app.get("/api/chat/history", (request, response) => {
   response.json(butlerAgent.getMessagePage(before, limit));
 });
 
-app.post("/api/codex-harness/action", async (request, response) => {
-  const token = typeof request.body?.token === "string" ? request.body.token : "";
-  const action = typeof request.body?.action === "string" ? request.body.action : "";
-  const params = request.body?.params && typeof request.body.params === "object" ? (request.body.params as Record<string, unknown>) : {};
+for (const route of ["/api/harness/action", "/api/codex-harness/action"]) {
+  app.post(route, async (request, response) => {
+    const token = typeof request.body?.token === "string" ? request.body.token : "";
+    const action = typeof request.body?.action === "string" ? request.body.action : "";
+    const params = request.body?.params && typeof request.body.params === "object" ? (request.body.params as Record<string, unknown>) : {};
 
-  if (!token || !action) {
-    response.status(400).json({ error: "token and action are required" });
-    return;
-  }
+    if (!token || !action) {
+      response.status(400).json({ error: "token and action are required" });
+      return;
+    }
 
-  try {
-    const result = await codexHarness.handleAction({ token, action, params });
-    response.json({ ok: true, ...result });
-  } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+    try {
+      const result = await harnessService.handleAction({ token, action, params });
+      response.json({ ok: true, ...result });
+    } catch (error) {
+      response.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+}
 
 app.get("/api/events", (request, response) => {
   response.setHeader("Content-Type", "text/event-stream");
@@ -889,7 +895,7 @@ app.post("/api/threads/messages", async (request, response) => {
       const reservation = await butlerAgent.reserveDirectCodexMessage(directInput);
       let sent = false;
       try {
-        const workerInput = buildCodexInputWithReferences({ text, imageStore, imageReferenceIds, fileStore, fileReferenceIds, extraInputItems: inputItems });
+        const workerInput = buildWorkerInputWithReferences({ text, imageStore, imageReferenceIds, fileStore, fileReferenceIds, extraInputItems: inputItems });
         workerInput.push({ type: "text", text: directWorkerDispatchMarker(threadId, requestedAt) });
         await sendWorkerMessage(
           { store, codexClient, piRpcWorkerClient },

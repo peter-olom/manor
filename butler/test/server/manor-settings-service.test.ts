@@ -18,6 +18,7 @@ test("buildManorSettingsFromEnv parses and clamps seed values", () => {
     MANOR_OLLAMA_LOCAL_NATIVE_BASE_URL: "http://localhost:11434",
     MANOR_OLLAMA_CLOUD_MODELS: "glm-5.2,kimi-k2.6",
     MANOR_OLLAMA_WEB_SEARCH_MAX_RESULTS: "99",
+    MANOR_WORKER_HARNESS: "pi",
     MANOR_WORKER_EFFORT: "xhigh",
     MANOR_MEMORY_SYNTHESIS_MAX_CANDIDATES: "99",
     OLLAMA_API_KEY_FILE: "/run/secrets/ollama",
@@ -29,11 +30,52 @@ test("buildManorSettingsFromEnv parses and clamps seed values", () => {
   assert.deepEqual(settings.providers.ollamaLocal.apiKeySource, { type: "file", pathEnv: "OLLAMA_LOCAL_API_KEY_FILE" });
   assert.deepEqual(settings.providers.ollamaCloud.models, ["glm-5.2", "kimi-k2.6"]);
   assert.equal(settings.providers.ollamaCloud.webTools.maxResults, 10);
+  assert.equal(settings.worker.defaultHarness, "pi");
   assert.equal(settings.worker.defaultEffort, "xhigh");
   assert.equal(settings.memory.synthesisMaxCandidatesPerRun, 50);
   assert.deepEqual(settings.providers.ollamaCloud.apiKeySource, { type: "file", pathEnv: "OLLAMA_API_KEY_FILE" });
   assert.equal(provenance["providers.ollamaLocal"], "env_seed");
   assert.equal(provenance["providers.ollamaCloud"], "env_seed");
+});
+
+test("blank Worker compose seeds do not mark worker settings as env seeded", () => {
+  const { settings, provenance } = buildManorSettingsFromEnv({
+    MANOR_WORKER_HARNESS: "",
+    MANOR_WORKER_MODEL: "",
+    MANOR_WORKER_EFFORT: ""
+  } as NodeJS.ProcessEnv);
+
+  assert.equal(settings.worker.defaultHarness, null);
+  assert.equal(settings.worker.defaultModel, null);
+  assert.equal(settings.worker.defaultEffort, null);
+  assert.equal(provenance.worker, "default");
+});
+
+test("blank Worker provider seed falls back to the legacy provider seed", () => {
+  const legacy = buildManorSettingsFromEnv({
+    MANOR_WORKER_PROVIDER: "",
+    MANOR_CODEX_PROVIDER: "ollama-cloud"
+  } as NodeJS.ProcessEnv);
+  const current = buildManorSettingsFromEnv({
+    MANOR_WORKER_PROVIDER: "opencode-go",
+    MANOR_CODEX_PROVIDER: "ollama-cloud"
+  } as NodeJS.ProcessEnv);
+
+  assert.equal(legacy.settings.overview.workerProvider, "ollama-cloud");
+  assert.equal(legacy.provenance.overview, "env_seed");
+  assert.equal(current.settings.overview.workerProvider, "opencode-go");
+});
+
+test("blank provider seeds do not mark overview settings as env seeded", () => {
+  const { settings, provenance } = buildManorSettingsFromEnv({
+    MANOR_BUTLER_PROVIDER: "",
+    MANOR_WORKER_PROVIDER: "",
+    MANOR_CODEX_PROVIDER: ""
+  } as NodeJS.ProcessEnv);
+
+  assert.equal(settings.overview.butlerProvider, "openai-codex");
+  assert.equal(settings.overview.workerProvider, "openai-codex");
+  assert.equal(provenance.overview, "default");
 });
 
 test("Ollama Local defaults to disabled without a secret source outside env seed", () => {
@@ -111,6 +153,23 @@ test("ManorSettingsService seeds env once and preserves UI edits", async () => {
     const bytes = await readFile(dbPath);
     assert.equal(bytes.includes(Buffer.from("super-secret-value")), false);
     assert.equal(bytes.includes(Buffer.from("another-secret")), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ManorSettingsService translates legacy Codex provider patches", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-settings-provider-patch-"));
+  const dbPath = path.join(dir, "settings.sqlite");
+  try {
+    const service = new ManorSettingsService(dbPath, {} as NodeJS.ProcessEnv);
+    await service.load();
+
+    await service.patch({ overview: { codexProvider: "ollama-cloud" } } as never);
+    assert.equal(service.getSettings().overview.workerProvider, "ollama-cloud");
+
+    await service.patch({ overview: { workerProvider: "opencode-go", codexProvider: "ollama-local" } } as never);
+    assert.equal(service.getSettings().overview.workerProvider, "opencode-go");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

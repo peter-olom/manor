@@ -20,6 +20,7 @@ export type ButlerOperatorSink = {
     text: string;
     at: number;
     runtime?: "openai" | "pi-rpc" | null;
+    harness?: string | null;
     provider?: string | null;
     model?: string | null;
     effort?: string | null;
@@ -35,6 +36,7 @@ export type ButlerAgentDefaults = {
 
 export type ButlerWorkerDefaults = {
   runtime: "auto" | "openai" | "pi-rpc" | null;
+  harness?: string | null;
   model?: string | null;
   effort?: string | null;
 };
@@ -60,5 +62,5 @@ export type ButlerAgentServiceOptions = {
   getButlerDefaults?: () => ButlerAgentDefaults | null;
   getWorkerDefaults?: () => ButlerWorkerDefaults | null;
   getWorkerAffinity?: () => WorkerProviderAffinity | null;
-  recordSuccessfulWorkerSelection?: (input: { provider: string; model: string; effort?: string | null }) => unknown;
+  recordSuccessfulWorkerSelection?: (input: { harness: string; provider: string; model: string; effort?: string | null }) => unknown;
 };

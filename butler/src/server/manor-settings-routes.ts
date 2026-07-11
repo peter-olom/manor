@@ -182,7 +182,7 @@ async function runValidation(access: SettingsRouteAccess, target: SettingsValida
   try {
     if (target === "codex") {
       const state = access.codexClient.getConnectionState();
-      return state.connected ? result("ok", "Codex worker connection is active.") : result("failed", state.lastError ?? "Codex worker is not connected.");
+      return state.connected ? result("ok", "Codex app-server harness connection is active.") : result("failed", state.lastError ?? "Codex app-server harness is not connected.");
     }
     if (target === "piRpc") {
       const state = access.piRpcWorkerClient.getConnectionState();

@@ -39,7 +39,7 @@ import {
   type ResolvedPreviewProof,
   type SupervisionSmokePlan
 } from "./butler-agent-helpers.js";
-import { buildButlerCodexTools } from "./butler-agent-codex-tools.js";
+import { buildButlerWorkerTools } from "./butler-agent-codex-tools.js";
 import type { ButlerAgentDefaults, ButlerAgentServiceOptions, ButlerDelegationAttachmentAcknowledgement, ButlerOperatorSink, ButlerWorkerDefaults } from "./butler-agent-options.js";
 import { clearPendingOperatorPrompts, createOrRefreshButlerSession, getButlerLiveSnapshot, getButlerMessagePage, getButlerShellSnapshot, getButlerSnapshot, keepPendingOperatorPromptsBefore, promptButler, promptButlerInternal, registerPendingOperatorPrompt, removePendingOperatorPrompt, stopButlerPrompt, restoreButlerCompactionState, sanitizeButlerSessionMessages, sanitizePersistedButlerSessions, updateButlerComposeSettings } from "./butler-agent-session.js";
 import { clearButlerSessionChat, deleteButlerSessionChatFromLocated, keepOperatorMessagesBefore, locateButlerSessionDeletePoint, locateButlerSessionDeletePointBeforeTimestamp } from "./butler-agent-chat-hygiene.js";
@@ -66,7 +66,7 @@ import { backfillDirectCodexMessagesFromSessionFiles, buildDirectCodexMessagePin
 import { type FileReferenceStore } from "./file-store.js";
 import { HostControllerClient } from "./host-controller-client.js";
 import { ManorRestartRequestState } from "./manor-restart-state.js";
-import { buildOnboardingView } from "./onboarding-status.js";
+import { buildOnboardingView, codexHarnessOnboardingRequired } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
 import {
   bindJobPayloadDelivery as bindStoredJobPayloadDelivery,
@@ -363,6 +363,7 @@ export class ButlerAgentService extends EventEmitter {
   }); }
   private attachDelegationAcknowledgement(threadId: string, text: string, at: number, selection: {
     runtime?: "openai" | "pi-rpc" | null;
+    harness?: string | null;
     provider?: string | null;
     model?: string | null;
     effort?: string | null;
@@ -384,6 +385,7 @@ export class ButlerAgentService extends EventEmitter {
   }
   private queueDelegationAcknowledgement(threadId: string, text: string, selection: {
     runtime?: "openai" | "pi-rpc" | null;
+    harness?: string | null;
     provider?: string | null;
     model?: string | null;
     effort?: string | null;
@@ -675,7 +677,8 @@ export class ButlerAgentService extends EventEmitter {
     const nextOnboarding = await buildOnboardingView({
       butlerAuth: this.auth,
       codexAuth: this.codexAuth,
-      codexConfigDir: this.codexConfigDir
+      codexConfigDir: this.codexConfigDir,
+      codexHarnessRequired: codexHarnessOnboardingRequired(this.getWorkerDefaults(), getActiveManorSettings())
     });
 
     if (JSON.stringify(nextOnboarding) !== JSON.stringify(this.onboarding) || authChanged || clearedStaleAuthError) {
@@ -686,7 +689,6 @@ export class ButlerAgentService extends EventEmitter {
     await this.reconcilePendingChatCallbacks();
     this.callbackReviewScheduler.schedule();
   }
-
   // This is the single discoverable registry for Butler actions and their UI
   // side effects. Keep agent tool definitions aligned with this catalog.
   private buildToolCatalog(): ButlerToolView[] {
@@ -735,7 +737,7 @@ export class ButlerAgentService extends EventEmitter {
   getButlerDefaults(): ButlerAgentDefaults | null { return this.options.getButlerDefaults?.() ?? null; }
   getWorkerDefaults(): ButlerWorkerDefaults | null { return this.options.getWorkerDefaults?.() ?? null; }
   getWorkerAffinity() { return this.options.getWorkerAffinity?.() ?? null; }
-  recordSuccessfulWorkerSelection(input: { provider: string; model: string; effort?: string | null }) { return this.options.recordSuccessfulWorkerSelection?.(input); }
+  recordSuccessfulWorkerSelection(input: { harness: string; provider: string; model: string; effort?: string | null }) { return this.options.recordSuccessfulWorkerSelection?.(input); }
 
   resolveMemoryPromotion(candidateId: string, accepted: boolean): { candidate: JobMemoryPromotionCandidateView; projectMemory: ProjectMemoryView | null } | null {
     const candidate = this.store.resolvePromotionCandidate(candidateId, accepted);
@@ -1407,7 +1409,7 @@ export class ButlerAgentService extends EventEmitter {
 
   private buildCustomTools() {
     const toolAccess = this.getToolAccess();
-    const tools = [...buildButlerStackPreviewTools(toolAccess), ...buildButlerFilesystemTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerManorTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerOperatorTools(toolAccess), ...buildButlerCodexTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
+    const tools = [...buildButlerStackPreviewTools(toolAccess), ...buildButlerFilesystemTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerManorTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerOperatorTools(toolAccess), ...buildButlerWorkerTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
     tools.push(...buildButlerProviderWebTools(() => this.session?.model?.provider));
     return tools;
   }
@@ -1448,10 +1450,10 @@ export class ButlerAgentService extends EventEmitter {
     await this.registerPendingChatCallback(threadId, { requestedAt: this.store.getThread(threadId)?.createdAt ?? Date.now() }); this.store.noteButlerSteer(threadId);
   }); }
   async ensureExternalWorkerDelegation(threadId: string): Promise<void> { const callback = this.pendingChatCallbacks.get(threadId); if (callback && isCallbackOutstanding(callback)) return; const thread = this.store.getThread(threadId); const latestTurnId = getFallbackTurnId(thread); if (latestTurnId) { const closeoutId = buildCloseoutId(threadId, latestTurnId); if (this.deliveredCloseoutIds.has(closeoutId) || this.operatorMessages.some((message) => message.id === `callback-${closeoutId}` || message.id === `callback-fallback-${closeoutId}`)) return; } const latestWorkAt = Math.max(this.store.getWorkerReport(threadId)?.updatedAt ?? 0, thread?.turns.at(-1)?.startedAt ?? 0); if (callback && latestWorkAt <= (callback.closedAt ?? callback.updatedAt)) return; await this.trackExternalWorkerDelegation(threadId); }
-  async handoffWorker(input: { sourceThreadId: string; model: string; effort: ReasoningEffort | null; butlerThreadId?: string | null }) {
+  async handoffWorker(input: { sourceThreadId: string; harness: string; model: string; effort: ReasoningEffort | null; butlerThreadId?: string | null }) {
     return handoffWorkerAtomically({
       access: this.getWorkerClientAccess(),
-      sourceThreadId: input.sourceThreadId,
+      sourceThreadId: input.sourceThreadId, targetHarness: input.harness,
       targetModel: input.model,
       targetEffort: input.effort,
       artifactsDir: this.artifactsDir,
@@ -1459,7 +1461,7 @@ export class ButlerAgentService extends EventEmitter {
       trackCallback: (threadId) => this.trackExternalWorkerDelegation(threadId),
       removeCallback: (threadId) => this.removeExternalWorkerDelegation(threadId),
       attach: (result, text, at) => this.attachDelegationAcknowledgement(result.threadId, text, at, {
-        runtime: result.runtime, provider: result.provider, model: result.model,
+        runtime: result.runtime, harness: result.harness, provider: result.provider, model: result.model,
         effort: result.effort, replacesThreadId: input.sourceThreadId
       }),
       post: (threadId, text, at) => this.postDelegationAcknowledgement(threadId, text, at)

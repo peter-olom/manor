@@ -2,6 +2,8 @@
 
 Date: 2026-06-21
 
+> Historical design record. This document describes the Codex-only Worker model in use on the date above. Current Manor supports provider-backed Workers through Codex app server and Pi RPC. The terminology below is preserved so the original decisions remain readable in context.
+
 ## Docker Instance Review
 
 I reviewed the running Docker Manor instance on `127.0.0.1:8180`. The live surface showed one global Butler chat, a long Codex thread drawer, dense job contracts/checklists, memory promotion events, proof dossiers, model/effort controls, scratch-pad driven async jobs, and old window-style thread switching. The page bootstrap also returned a very large global shell payload with historical thread summaries and open thread details, which explains degraded long-session responsiveness.

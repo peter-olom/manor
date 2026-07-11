@@ -277,7 +277,7 @@ export class CodexExecMemoryReviewService {
 
     const prompt = this.buildPrompt(context);
     this.markReviewPending(context);
-    this.store.addEvent(report.threadId, "memory/review/started", "Started Codex memory review for worker report.");
+    this.store.addEvent(report.threadId, "memory/review/started", "Started Codex CLI memory review for Worker report.");
     let output: MemoryReviewOutput | null = null;
     const decisions: MemoryDebugTraceDecision[] = [];
     const persisted = { observationIds: [] as string[], candidateIds: [] as string[], entityIds: [] as string[], relationshipIds: [] as string[], jobEntryIds: [reviewPendingSourceId(report)] };
@@ -285,7 +285,7 @@ export class CodexExecMemoryReviewService {
       output = await this.runner({ cwd: context.cwd, prompt, timeoutMs: this.timeoutMs });
       decisions.push(...(output.parseDecisions ?? []));
       if (this.isStaleReview(report)) {
-        this.store.addEvent(report.threadId, "memory/review/stale", "Skipped stale Codex memory review for worker report.");
+        this.store.addEvent(report.threadId, "memory/review/stale", "Skipped stale Codex CLI memory review for Worker report.");
         const completedAt = Date.now();
         recordMemoryDebugTrace(this.store, {
           kind: "review",

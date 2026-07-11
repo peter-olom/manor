@@ -4,7 +4,7 @@ import path from "node:path";
 
 import type { ImageContent } from "@mariozechner/pi-ai";
 
-export type CodexInputItem =
+export type WorkerInputItem =
   | {
       type: "text";
       text: string;
@@ -23,6 +23,9 @@ export type CodexInputItem =
       name?: string;
       path: string;
     };
+
+/** @deprecated Use WorkerInputItem for provider-neutral worker input. */
+export type CodexInputItem = WorkerInputItem;
 
 type PersistedImageReference = {
   id: string;

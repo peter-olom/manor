@@ -12,7 +12,9 @@ services:
       CODEX_HOME: /home/butler/.codex
       CODEX_SHARED_HOME_DIR: /codex-home
       CODEX_SHARED_CONFIG_DIR: /codex-config
-      MANOR_HARNESS_REGISTRY_PATH: /codex-home/manor/harness-capabilities.json
+      MANOR_HARNESS_HOME: /harness-state
+      MANOR_HARNESS_REGISTRY_PATH: /harness-state/harness-capabilities.json
+      MANOR_HARNESS_ACCESS_FILE: /state/harness-broker-access.json
       PI_AGENT_DIR: /home/butler/.pi/agent
       MANOR_IMAGE_REFERENCE_DIR: /artifacts/manor-images
       BUTLER_PORT: 8080
@@ -37,10 +39,14 @@ services:
       MANOR_PI_AUTO_UPDATE_VERSION: ${MANOR_PI_AUTO_UPDATE_VERSION:-latest}
       MANOR_PI_AUTO_UPDATE_REQUIRED: ${MANOR_PI_AUTO_UPDATE_REQUIRED:-0}
       MANOR_SETTINGS_RESEED: ${MANOR_SETTINGS_RESEED:-0}
+      MANOR_WORKER_HARNESS: ${MANOR_WORKER_HARNESS:-}
       MANOR_WORKER_MODEL: ${MANOR_WORKER_MODEL:-}
       MANOR_WORKER_EFFORT: ${MANOR_WORKER_EFFORT:-}
+      MANOR_WORKER_PROVIDER: ${MANOR_WORKER_PROVIDER:-}
+      MANOR_CODEX_PROVIDER: ${MANOR_CODEX_PROVIDER:-}
       MANOR_BUTLER_MODEL: ${MANOR_BUTLER_MODEL:-}
       MANOR_BUTLER_THINKING_LEVEL: ${MANOR_BUTLER_THINKING_LEVEL:-medium}
+      MANOR_BUTLER_PROVIDER: ${MANOR_BUTLER_PROVIDER:-}
       MANOR_MEMORY_SYNTHESIS_ENABLED: ${MANOR_MEMORY_SYNTHESIS_ENABLED:-1}
       MANOR_MEMORY_SYNTHESIS_MODEL: ${MANOR_MEMORY_SYNTHESIS_MODEL:-openai-codex/gpt-5.4-mini}
       MANOR_MEMORY_SYNTHESIS_EFFORT: ${MANOR_MEMORY_SYNTHESIS_EFFORT:-}
@@ -116,11 +122,10 @@ services:
       - butler-pi:/home/butler/.pi
       - codex-home:/codex-home
       - codex-config:/codex-config:ro
+      - harness-state:/harness-state
       - repos:/repos
       - artifacts:/artifacts
     depends_on:
-      codex-box:
-        condition: service_healthy
       egress:
         condition: service_healthy
       runtime-broker:
@@ -179,6 +184,8 @@ services:
       - control
       - internet
 
+  # Codex-specific harness host. Worker is the shared product role; Pi-backed
+  # Workers run through Butler and do not use this service as their transport.
   codex-box:
     image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-codex-box:${MANOR_IMAGE_TAG:-latest}"
     container_name: manor-codex-box
@@ -190,6 +197,8 @@ services:
       MANOR_STATE_DIR: /state
       MANOR_BUTLER_BASE_URL: http://butler:8080
       MANOR_RUNTIME_BROKER_URL: http://runtime-broker:8090
+      MANOR_HARNESS_HOME: /harness-state
+      MANOR_HARNESS_REGISTRY_PATH: /harness-state/harness-capabilities.json
       HOME: /home/codex
       CODEX_HOME: /home/codex/.codex
       CODEX_APP_SERVER_LISTEN: ws://0.0.0.0:8080
@@ -222,6 +231,7 @@ services:
       - codex-state:/state
       - codex-home:/home/codex/.codex
       - codex-config:/home/codex/.config
+      - harness-state:/harness-state
       - ./config/codex-model-instructions.md:/opt/manor/config/codex-model-instructions.md:ro
       - repos:/repos
       - artifacts:/artifacts
@@ -281,7 +291,8 @@ services:
     environment:
       MANOR_ROLE: runtime-broker
       RUNTIME_BROKER_PORT: 8090
-      RUNTIME_CODEX_ACCESS_FILE: /state/codex-broker-access.json
+      RUNTIME_HARNESS_ACCESS_FILE: /state/harness-broker-access.json
+      RUNTIME_WORKSPACE_CONTAINER: manor-butler
       RUNTIME_STACK_BINDINGS_FILE: /runtime-state/stack-thread-bindings.json
       RUNTIME_PREVIEW_NETWORK: manor_preview
       RUNTIME_PREVIEW_EGRESS_CONFIG: /opt/manor/config/preview-egress-profiles.json
@@ -304,8 +315,6 @@ services:
     depends_on:
       preview-egress:
         condition: service_healthy
-      codex-box:
-        condition: service_started
       playwright:
         condition: service_healthy
     restart: unless-stopped
@@ -431,6 +440,7 @@ volumes:
   codex-state:
   desktop-proof-state:
   egress-state:
+  harness-state:
   playwright-state:
   preview-egress-state:
   repos:

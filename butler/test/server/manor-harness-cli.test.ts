@@ -12,6 +12,7 @@ type HarnessRequest = {
   token?: string;
   action?: string;
   params?: Record<string, unknown>;
+  requestPath?: string;
 };
 
 async function readJsonBody(request: IncomingMessage): Promise<HarnessRequest> {
@@ -22,14 +23,15 @@ async function readJsonBody(request: IncomingMessage): Promise<HarnessRequest> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as HarnessRequest;
 }
 
-async function captureHarnessAction(args: string[], options: { cwd?: string } = {}): Promise<HarnessRequest> {
+async function captureHarnessAction(args: string[], options: { cwd?: string; route?: "generic" | "legacy" } = {}): Promise<HarnessRequest> {
   const root = await mkdtemp(path.join(tmpdir(), "manor-harness-cli-test-"));
   const cwd = options.cwd ?? path.join(root, "workspace");
-  const codexHome = path.join(root, "codex-home");
-  await mkdir(path.join(codexHome, "manor"), { recursive: true });
+  const harnessHome = path.join(root, "harness-home");
+  const registryPath = path.join(harnessHome, "harness-capabilities.json");
+  await mkdir(harnessHome, { recursive: true });
   await mkdir(cwd, { recursive: true });
   await writeFile(
-    path.join(codexHome, "manor", "harness-capabilities.json"),
+    registryPath,
     `${JSON.stringify({
       capabilities: [
         {
@@ -47,11 +49,13 @@ async function captureHarnessAction(args: string[], options: { cwd?: string } = 
 
   let received: HarnessRequest | null = null;
   const server = createServer(async (request, response) => {
-    if (request.url !== "/api/codex-harness/action") {
+    const expectedPath = options.route === "legacy" ? "/api/codex-harness/action" : "/api/harness/action";
+    if (request.url !== expectedPath) {
       response.writeHead(404).end();
       return;
     }
     received = await readJsonBody(request);
+    received.requestPath = request.url;
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ ok: true, text: "ok", data: {} }));
   });
@@ -65,7 +69,8 @@ async function captureHarnessAction(args: string[], options: { cwd?: string } = 
         cwd,
         env: {
           ...process.env,
-          CODEX_HOME: codexHome,
+          MANOR_HARNESS_HOME: harnessHome,
+          MANOR_HARNESS_REGISTRY_PATH: registryPath,
           MANOR_BUTLER_BASE_URL: `http://127.0.0.1:${address.port}`
         },
         stdio: ["ignore", "pipe", "pipe"]
@@ -105,6 +110,7 @@ test("manor-harness resolves lifecycle cwd flags before forwarding broker reques
     "--port", "3000"
   ], { cwd: workspace });
   assert.equal(previewStart.action, "preview.start");
+  assert.equal(previewStart.requestPath, "/api/harness/action");
   assert.equal(previewStart.params?.cwd, expectedCwd);
 
   const serviceStart = await captureHarnessAction([
@@ -170,6 +176,12 @@ test("manor-harness preserves service exec cwd as an in-container path", async (
 test("manor-harness forwards payload current requests", async () => {
   const request = await captureHarnessAction(["--thread", "thread-1", "payload", "current"]);
   assert.equal(request.action, "payload.current");
+});
+
+test("manor-harness falls back to the legacy Butler action route", async () => {
+  const request = await captureHarnessAction(["--thread", "thread-1", "payload", "current"], { route: "legacy" });
+  assert.equal(request.action, "payload.current");
+  assert.equal(request.requestPath, "/api/codex-harness/action");
 });
 
 test("manor-harness requires explicit thread binding for payload requests", async () => {

@@ -183,6 +183,7 @@ export type ButlerAgentToolAccess = {
   bindJobPayloadDelivery(threadId: string, delivery: { turnId?: string | null; messageId?: string | null }): Promise<JobPayloadView | null>;
   queueDelegationAcknowledgement(threadId: string, text: string, selection?: {
     runtime?: "openai" | "pi-rpc" | null;
+    harness?: string | null;
     provider?: string | null;
     model?: string | null;
     effort?: string | null;
@@ -209,6 +210,7 @@ export type ButlerAgentToolAccess = {
   getCodexAuthStatus(): ButlerAuthStatus;
   getWorkerDefaults?: () => {
     runtime: "auto" | "openai" | "pi-rpc" | null;
+    harness?: string | null;
     model?: string | null;
     effort?: string | null;
   } | null;

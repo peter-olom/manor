@@ -3,7 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 export function createBrokerCore(context, deps = {}) {
-  const { previewNetwork, previewOutboundNetwork, sharedWorkNetwork, previewImage, routeBase, previewEgressConfigPath, previewEgressAdminUrl, brokerToken, codexAccessRegistryPath, stackBindingRegistryPath, internalOperatorBaseUrl, playwrightContainerName, runtimeBrokerContainerName, previewEgressContainerName, artifactsRootDir, playwrightArtifactsScratchDir, stackNetworkPrefix, stackVolumePrefix, stackInfraReconnectIntervalMs, docker, leaseTransitions, leaseBootstrapStates, activeLeaseBootstrapMonitors, pendingPreviewLeases, retainedPreviewLeases, noHeartbeatReadyDelayMs } = context;
+  const { previewNetwork, previewOutboundNetwork, sharedWorkNetwork, previewImage, routeBase, previewEgressConfigPath, previewEgressAdminUrl, brokerToken, harnessAccessRegistryPath: configuredHarnessAccessRegistryPath, legacyHarnessAccessRegistryPath, stackBindingRegistryPath, internalOperatorBaseUrl, playwrightContainerName, runtimeBrokerContainerName, previewEgressContainerName, artifactsRootDir, playwrightArtifactsScratchDir, stackNetworkPrefix, stackVolumePrefix, stackInfraReconnectIntervalMs, docker, leaseTransitions, leaseBootstrapStates, activeLeaseBootstrapMonitors, pendingPreviewLeases, retainedPreviewLeases, noHeartbeatReadyDelayMs } = context;
+  const harnessAccessRegistryPath = configuredHarnessAccessRegistryPath ?? context.codexAccessRegistryPath;
   const {
     listStackMemberContainers,
     listManagedServiceContainersByVolume,
@@ -75,23 +76,33 @@ function hasBrokerAccess(request) {
   return !brokerToken || request.header("x-manor-broker-token") === brokerToken;
 }
 
-function loadCodexAccessRegistry() {
-  try {
-    const raw = fs.readFileSync(codexAccessRegistryPath, "utf8");
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed?.grants) ? parsed.grants : [];
-  } catch {
-    return [];
+function loadHarnessAccessRegistry() {
+  const registryPaths = [...new Set([harnessAccessRegistryPath, legacyHarnessAccessRegistryPath].filter(Boolean))];
+  for (const registryPath of registryPaths) {
+    let raw;
+    try {
+      raw = fs.readFileSync(registryPath, "utf8");
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      return [];
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed?.grants) ? parsed.grants : [];
+    } catch {
+      return [];
+    }
   }
+  return [];
 }
 
-function getCodexGrant(request) {
-  const token = request.header("x-manor-codex-token");
+function getHarnessGrant(request) {
+  const token = request.header("x-manor-harness-token") || request.header("x-manor-codex-token");
   if (!token) {
     return null;
   }
 
-  const grants = loadCodexAccessRegistry();
+  const grants = loadHarnessAccessRegistry();
   const grant = grants.find(
     (entry) => entry && typeof entry.token === "string" && typeof entry.threadId === "string" && entry.token === token
   );
@@ -103,14 +114,14 @@ function authorizeScopedThread(request, response, threadId) {
     return true;
   }
 
-  const grant = getCodexGrant(request);
+  const grant = getHarnessGrant(request);
   if (!grant) {
     response.status(403).json({ error: "Forbidden" });
     return false;
   }
 
   if (!threadId || grant.threadId !== threadId) {
-    response.status(403).json({ error: "Lease is not attached to this Codex job" });
+    response.status(403).json({ error: "Lease is not attached to this worker job" });
     return false;
   }
 
@@ -1114,8 +1125,10 @@ async function listManagedContainers(filter) {
     setStackThreadBinding,
     clearStackThreadBinding,
     hasBrokerAccess,
-    loadCodexAccessRegistry,
-    getCodexGrant,
+    loadHarnessAccessRegistry,
+    getHarnessGrant,
+    loadCodexAccessRegistry: loadHarnessAccessRegistry,
+    getCodexGrant: getHarnessGrant,
     authorizeScopedThread,
     toContainerName,
     toServiceContainerName,

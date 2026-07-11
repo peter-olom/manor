@@ -21,7 +21,7 @@ async function createHarness() {
 function baseEvent(overrides: Partial<ProviderRuntimeEvent>): ProviderRuntimeEvent {
   return {
     id: "event-1",
-    provider: "codex",
+    harness: "codex",
     threadId: "thread-1",
     at: 100,
     type: "thread.started",

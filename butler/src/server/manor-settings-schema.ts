@@ -49,7 +49,7 @@ export const DEFAULT_MANOR_SETTINGS: ManorSettings = {
   overview: {
     operatorName: "",
     butlerProvider: "openai-codex",
-    codexProvider: "openai-codex"
+    workerProvider: "openai-codex"
   },
   providers: {
     ollamaLocal: {
@@ -112,6 +112,7 @@ export const DEFAULT_MANOR_SETTINGS: ManorSettings = {
     }
   },
   worker: {
+    defaultHarness: null,
     defaultModel: null,
     defaultEffort: null
   },
@@ -297,6 +298,10 @@ function reasoningEffort(value: unknown): SettingsReasoningEffort | null {
   return value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" ? value : null;
 }
 
+function workerHarness(value: unknown): ManorSettings["worker"]["defaultHarness"] {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 function thinkingLevel(value: unknown): SettingsThinkingLevel {
   return value === "off" || value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" ? value : "medium";
 }
@@ -333,7 +338,7 @@ export function normalizeManorSettings(value: unknown): ManorSettings {
     overview: {
       operatorName: typeof overview.operatorName === "string" ? overview.operatorName.trim() : "",
       butlerProvider: providerKey(overview.butlerProvider, DEFAULT_MANOR_SETTINGS.overview.butlerProvider),
-      codexProvider: providerKey(overview.codexProvider, DEFAULT_MANOR_SETTINGS.overview.codexProvider)
+      workerProvider: providerKey(overview.workerProvider ?? overview.codexProvider, DEFAULT_MANOR_SETTINGS.overview.workerProvider)
     },
     providers: {
       ollamaLocal: {
@@ -388,6 +393,7 @@ export function normalizeManorSettings(value: unknown): ManorSettings {
       }
     },
     worker: {
+      defaultHarness: workerHarness(worker.defaultHarness),
       defaultModel: nullableText(worker.defaultModel),
       defaultEffort: reasoningEffort(worker.defaultEffort)
     },
@@ -460,8 +466,19 @@ export function buildManorSettingsFromEnv(env: NodeJS.ProcessEnv = process.env):
   };
 
   apply("overview", "MANOR_OPERATOR_NAME", (value) => { settings.overview.operatorName = value.trim(); });
-  apply("overview", "MANOR_BUTLER_PROVIDER", (value) => { settings.overview.butlerProvider = providerKey(value, settings.overview.butlerProvider); });
-  apply("overview", "MANOR_CODEX_PROVIDER", (value) => { settings.overview.codexProvider = providerKey(value, settings.overview.codexProvider); });
+  if (hasEnv(env, "MANOR_BUTLER_PROVIDER")) {
+    markEnvGroup(envGroups, "overview");
+    settings.overview.butlerProvider = providerKey(env.MANOR_BUTLER_PROVIDER, settings.overview.butlerProvider);
+  }
+  const workerProviderSeed = hasEnv(env, "MANOR_WORKER_PROVIDER")
+    ? env.MANOR_WORKER_PROVIDER
+    : hasEnv(env, "MANOR_CODEX_PROVIDER")
+      ? env.MANOR_CODEX_PROVIDER
+      : undefined;
+  if (workerProviderSeed !== undefined) {
+    markEnvGroup(envGroups, "overview");
+    settings.overview.workerProvider = providerKey(workerProviderSeed, settings.overview.workerProvider);
+  }
 
   apply("providers.ollamaLocal", "MANOR_OLLAMA_LOCAL_ENABLED", (value) => { settings.providers.ollamaLocal.enabled = bool(value, settings.providers.ollamaLocal.enabled); });
   apply("providers.ollamaLocal", "MANOR_OLLAMA_LOCAL_PROVIDER_ID", (value) => { settings.providers.ollamaLocal.providerId = text(value, settings.providers.ollamaLocal.providerId); });
@@ -528,8 +545,18 @@ export function buildManorSettingsFromEnv(env: NodeJS.ProcessEnv = process.env):
     settings.providers.opencodeGo.apiKeySource = opencodeEnvSource(env);
   }
 
-  apply("worker", "MANOR_WORKER_MODEL", (value) => { settings.worker.defaultModel = nullableText(value); });
-  apply("worker", "MANOR_WORKER_EFFORT", (value) => { settings.worker.defaultEffort = reasoningEffort(value); });
+  if (hasEnv(env, "MANOR_WORKER_HARNESS")) {
+    markEnvGroup(envGroups, "worker");
+    settings.worker.defaultHarness = workerHarness(env.MANOR_WORKER_HARNESS);
+  }
+  if (hasEnv(env, "MANOR_WORKER_MODEL")) {
+    markEnvGroup(envGroups, "worker");
+    settings.worker.defaultModel = nullableText(env.MANOR_WORKER_MODEL);
+  }
+  if (hasEnv(env, "MANOR_WORKER_EFFORT")) {
+    markEnvGroup(envGroups, "worker");
+    settings.worker.defaultEffort = reasoningEffort(env.MANOR_WORKER_EFFORT);
+  }
   apply("butler", "MANOR_BUTLER_MODEL", (value) => { settings.butler.defaultModel = nullableText(value); });
   apply("butler", "MANOR_BUTLER_THINKING_LEVEL", (value) => { settings.butler.defaultThinkingLevel = thinkingLevel(value); });
 
@@ -581,7 +608,14 @@ export function groupValue(settings: ManorSettings, key: SettingsGroupKey): unkn
 export function applyGroupValue(settings: ManorSettings, key: SettingsGroupKey, value: unknown): ManorSettings {
   const next = cloneManorSettings(settings);
   switch (key) {
-    case "overview": next.overview = { ...next.overview, ...(isRecord(value) ? value : {}) } as never; break;
+    case "overview": {
+      const patch = isRecord(value) ? { ...value } : {};
+      if (!Object.hasOwn(patch, "workerProvider") && Object.hasOwn(patch, "codexProvider")) {
+        patch.workerProvider = patch.codexProvider;
+      }
+      next.overview = { ...next.overview, ...patch } as never;
+      break;
+    }
     case "providers.ollamaLocal": next.providers.ollamaLocal = { ...next.providers.ollamaLocal, ...(isRecord(value) ? value : {}) } as never; break;
     case "providers.ollamaCloud": next.providers.ollamaCloud = { ...next.providers.ollamaCloud, ...(isRecord(value) ? value : {}) } as never; break;
     case "providers.opencodeGo": next.providers.opencodeGo = { ...next.providers.opencodeGo, ...(isRecord(value) ? value : {}) } as never; break;

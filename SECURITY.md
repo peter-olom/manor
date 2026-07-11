@@ -12,7 +12,9 @@ Manor assumes:
 
 - the Docker host is trusted by the operator
 - Butler is not exposed directly to the public internet
-- Codex and Butler run inside the same trusted appliance boundary
+- Butler, every Worker harness, and every configured model provider are trusted for the work assigned to them
+- the Codex app-server host and Butler run as separate services inside the same trusted appliance boundary
+- Pi RPC Worker sessions run from Butler and share Butler's container boundary
 - the runtime broker is trusted to manage Docker resources
 - previews and disposable services are isolated for operational hygiene, not as a complete security sandbox
 
@@ -25,6 +27,8 @@ Manor does not currently claim:
 - safe execution of arbitrary untrusted code
 
 Use private ingress, local binding, VPN, tailnet, or similar controls when accessing Manor remotely.
+
+The selected model provider is also a data boundary. Prompts, attachments, tool results, and job context sent to a remote provider leave the Docker host and are handled under that provider's terms. Local Ollama inference stays inside the appliance unless the job uses an external tool or service.
 
 ## Reporting a Vulnerability
 
@@ -52,6 +56,7 @@ For remote use:
 
 - keep Butler behind private access controls
 - restrict inbound host ports
+- enable only the Worker providers you intend to trust with job data
 - keep Docker and base images updated
 - review runtime logs when debugging suspicious behavior
 - prefer short-lived test credentials inside previews

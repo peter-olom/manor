@@ -596,7 +596,7 @@ export function assertJobPayloadWorkerAuthority(payload: JobPayloadView, workerT
     payload.protocol.workerThreadId !== workerThreadId ||
     payload.delivery.threadId !== workerThreadId
   ) {
-    throw new Error("Manor job payload is not bound to this Codex worker thread.");
+    throw new Error("Manor job payload is not bound to this worker thread.");
   }
 }
 

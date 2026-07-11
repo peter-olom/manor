@@ -661,7 +661,7 @@ test("operator thread guard only treats tracked ids as authoritative jobs", asyn
   const referenceGuard = buildOperatorThreadGuard(store, `Use ${imageReferenceId} and fix it`, trackedThreadId);
   assert.deepEqual(referenceGuard.explicitThreadIds, []);
   assert.equal(referenceGuard.lockedThreadId, trackedThreadId);
-  assert.match(referenceGuard.contextPrompt ?? "", /none resolve to tracked Codex jobs/);
+  assert.match(referenceGuard.contextPrompt ?? "", /none resolve to tracked worker jobs/);
 
   const contextGuard = buildOperatorThreadGuard(store, "Actually use the staging account I just found.", trackedThreadId);
   assert.equal(contextGuard.lockedThreadId, trackedThreadId);
@@ -840,10 +840,11 @@ test("system prompt routes direct Manor improvement requests to normal work", as
   assert.match(prompt, /request_self_improvement/);
   assert.match(prompt, /request_manor_restart/);
   assert.match(prompt, /read_manor_restart_status/);
-  assert.match(prompt, /direct operator requests to improve Manor, Butler, Codex worker behavior, preview, runtime broker, supervision, restart-controller, or dogfooding/);
-  assert.match(prompt, /start normal work with delegate_to_codex/);
+  assert.match(prompt, /direct operator requests to improve Manor, Butler, worker behavior, preview, runtime broker, supervision, restart-controller, or dogfooding/);
+  assert.match(prompt, /start normal work with delegate_to_worker/);
   assert.match(prompt, /self-improvement queue is only for blocked worker reports/);
   assert.match(prompt, /missing credentials, operator approval, external outages, or app-specific bugs outside Manor/);
+  assert.doesNotMatch(prompt, /Codex worker behavior|delegate_to_codex|Codex workstream|Codex job/);
   assert.match(task, /If the change has any UI implication/);
   assert.match(task, /screenshot or video proof/);
   assert.match(task, /Do not restart, deploy, commit, push, open a pull request/);

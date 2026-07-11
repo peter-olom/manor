@@ -37,6 +37,7 @@ export function createManorSettingsApplyHandler(input: {
       getCodexAuthStatus: () => input.butlerAgent.getCodexAuthStatus(),
       getWorkerAffinity: () => input.butlerAgent.getWorkerAffinity()
     }, {
+      harness: worker.defaultHarness,
       model: worker.defaultModel,
       effort: worker.defaultEffort as never
     }).catch((error) => console.warn("Worker compose refresh failed after settings update", error));

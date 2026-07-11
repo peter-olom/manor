@@ -162,7 +162,7 @@ async function runCodexReview(input: ProviderAdversarialReviewInput): Promise<un
       child.on("error", (error) => { clearTimeout(timeout); reject(error); });
       child.on("close", (code) => {
         clearTimeout(timeout);
-        code === 0 ? resolve() : reject(new Error(`Codex adversarial review exited with ${code}: ${stderr || stdout}`.trim()));
+        code === 0 ? resolve() : reject(new Error(`Codex CLI adversarial review exited with ${code}: ${stderr || stdout}`.trim()));
       });
       child.stdin.end(input.prompt);
     });

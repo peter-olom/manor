@@ -10,6 +10,7 @@ services:
     volumes:
       - ${MANOR_HOST_PROJECT_SOURCE_DIR:-${PWD:-.}}:/repos/manor
 
+  # Local build of the Codex app-server harness host.
   codex-box:
     build:
       context: .

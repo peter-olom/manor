@@ -38,7 +38,7 @@ export async function cleanupFailedCodexStart(options: FailedStartCleanupOptions
       capabilityRevoked = true;
     } catch (error) {
       const restoreError = await attemptRollback(options.restoreCapability);
-      throw cleanupError(error, restoreError ? [restoreError] : [], "Codex capability revocation failed");
+      throw cleanupError(error, restoreError ? [restoreError] : [], "Codex harness capability revocation failed");
     }
   }
 
@@ -55,7 +55,7 @@ export async function cleanupFailedCodexStart(options: FailedStartCleanupOptions
       const capabilityRestoreError = await attemptRollback(options.restoreCapability);
       if (capabilityRestoreError) rollbackErrors.push(capabilityRestoreError);
     }
-    throw cleanupError(error, rollbackErrors, "Codex durable start cleanup failed");
+    throw cleanupError(error, rollbackErrors, "Codex harness durable start cleanup failed");
   }
 
   options.clearOperationState();
@@ -69,7 +69,7 @@ export async function rejectFailedCodexStart(startError: unknown, cleanup: () =>
   } catch (cleanupFailure) {
     throw new AggregateError(
       [startError, cleanupFailure],
-      `Codex Worker start failed: ${errorMessage(startError)}; cleanup failed: ${errorMessage(cleanupFailure)}`
+      `Worker start through the Codex harness failed: ${errorMessage(startError)}; cleanup failed: ${errorMessage(cleanupFailure)}`
     );
   }
   throw startError;

@@ -4,8 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 
-const codeXHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
-const registryPath = process.env.MANOR_HARNESS_REGISTRY_PATH || path.join(codeXHome, "manor", "harness-capabilities.json");
+const legacyCodexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+const harnessHome = process.env.MANOR_HARNESS_HOME || "";
+const registryPath = process.env.MANOR_HARNESS_REGISTRY_PATH
+  || (harnessHome ? path.join(harnessHome, "harness-capabilities.json") : path.join(legacyCodexHome, "manor", "harness-capabilities.json"));
 const butlerBaseUrl = process.env.MANOR_BUTLER_BASE_URL || "http://butler:8080";
 const runtimeBrokerBaseUrl = process.env.MANOR_RUNTIME_BROKER_URL || "http://runtime-broker:8090";
 
@@ -48,7 +50,7 @@ Preview defaults:
   heartbeat-kind=http
   heartbeat-target=/
   workspace-mode=snapshot
-  runtime rule: do repo and git work in Codex-shell; do installs, app startup, builds, and browser checks in previews
+  runtime rule: do repo and git work in the worker shell; do installs, app startup, builds, and browser checks in previews
   preview commands start in the job worktree; prefer relative paths there or the contract cwd under /repos
   preview lifecycle is broker-managed; install, start, and debug the app explicitly with preview exec/logs/processes
   manor-harness preview inspect <previewSelector>
@@ -97,7 +99,7 @@ Proof tips:
   File proof is for cases where the durable evidence is an existing generated file, PDF, Office file, archive, report, export, log, or saved artifact.
   UI-impacting work must surface screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are insufficient.
   Do not create a private Xvfb display when the operator asked for a VNC-visible desktop app.
-  Do not use direct curl or fetch from the shared Codex shell to judge live-site browser reachability. That shell is behind restricted egress by design.
+  Do not use direct curl or fetch from the shared worker shell to judge live-site browser reachability. That shell is behind restricted egress by design.
   Example:
     manor-harness browser use start --url https://example.com/dashboard --mode headful --session-cookie buyer-token --json
     manor-harness browser use action <sessionId> --type screenshot --label "Dashboard after login" --file-name dashboard-after-login.png --json
@@ -216,20 +218,26 @@ function resolveWorkspaceProjectId(cwd) {
 }
 
 async function callHarness(token, action, params = {}) {
-  const response = await fetch(new URL("/api/codex-harness/action", butlerBaseUrl), {
+  const request = {
     method: "POST",
     headers: {
       "content-type": "application/json"
     },
     body: JSON.stringify({ token, action, params })
-  });
-
-  const payload = await response.json().catch(() => ({ error: "Harness request failed" }));
-  if (!response.ok || payload?.ok === false) {
-    throw new Error(payload?.error || `Harness request failed with ${response.status}`);
+  };
+  const actionPaths = ["/api/harness/action", "/api/codex-harness/action"];
+  for (const [index, actionPath] of actionPaths.entries()) {
+    const response = await fetch(new URL(actionPath, butlerBaseUrl), request);
+    const payload = await response.json().catch(() => ({ error: "Harness request failed" }));
+    if (response.status === 404 && index < actionPaths.length - 1) {
+      continue;
+    }
+    if (!response.ok || payload?.ok === false) {
+      throw new Error(payload?.error || `Harness request failed with ${response.status}`);
+    }
+    return payload;
   }
-
-  return payload;
+  throw new Error("Harness action endpoint is unavailable");
 }
 
 function formatFetchError(error) {

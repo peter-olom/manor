@@ -4,6 +4,13 @@ import type { ReactNode } from "react";
 import { getJson, patchJson, postJson } from "./api";
 import { ModelPicker, modelOptionValue, type ModelPickerGroup, type ModelPickerOption } from "./ModelPicker";
 import { WarningIcon } from "./icons";
+import {
+  workerHarnessLabel,
+  workerModelForRoute,
+  workerModelForSelection,
+  workerModelPickerOption,
+  workerModelSelectionId
+} from "./worker-route";
 import type {
   ManorSettings,
   ManorSettingsProvenance,
@@ -11,10 +18,11 @@ import type {
   SettingsProviderAvailabilityMap,
   SettingsSecretSource,
   SettingsValidationKey,
-  SettingsValidationMap
+  SettingsValidationMap,
+  SettingsWorkerHarness
 } from "../shared/settings";
 
-type ModelOption = { id: string; label: string; provider: string | null };
+type ModelOption = { id: string; label: string; provider: string | null; harness?: SettingsWorkerHarness | null };
 type AuthStatusView = { mode: "chatgpt" | "api" | "none" | "unknown"; loggedIn: boolean; validationError: string | null; lastValidatedAt: number | null };
 type OllamaPullEvent = { status?: string; digest?: string; total?: number; completed?: number; error?: string; warning?: boolean; done?: boolean };
 type SettingsResponse = {
@@ -27,7 +35,7 @@ type SettingsResponse = {
     ollamaLocal: ModelOption[];
     opencodeGo: ModelOption[];
     modelTasks: ModelOption[];
-    worker: { availableModels: ModelOption[] };
+    worker: { harness: SettingsWorkerHarness | null; model: string | null; availableModels: ModelOption[] };
   };
   providerAvailability: SettingsProviderAvailabilityMap;
   modelTaskProviderAvailability: SettingsProviderAvailabilityMap;
@@ -61,7 +69,7 @@ const VALIDATION_TARGETS: SettingsValidationKey[] = [
 ];
 
 const VALIDATION_LABELS: Record<SettingsValidationKey, string> = {
-  codex: "OpenAI / Codex runtime",
+  codex: "Codex app-server harness",
   piRpc: "Pi RPC",
   ollamaLocal: "Ollama Local",
   ollamaCloud: "Ollama Cloud",
@@ -311,6 +319,74 @@ function ModelSelectField({
         <span className="settings-field-warning" role="status">
           This saved model is unavailable. {unavailableReason ?? "Reconnect its provider or choose another model."}{" "}
           <a href={unavailableProviderTab ? `/settings/providers?provider=${unavailableProviderTab}` : "/settings/providers"}>Open provider settings</a>
+        </span>
+      ) : null}
+    </Field>
+  );
+}
+
+export function resolveWorkerSettingsSelection(selectionId: string | null, models: ModelOption[]): { defaultModel: string | null; defaultHarness: SettingsWorkerHarness | null } | null {
+  if (!selectionId) return { defaultModel: null, defaultHarness: null };
+  const selected = workerModelForSelection(models, selectionId);
+  return selected ? { defaultModel: selected.id, defaultHarness: selected.harness ?? null } : null;
+}
+
+function WorkerModelSelectField({
+  value,
+  harness,
+  models,
+  onChange
+}: {
+  value: string | null;
+  harness: SettingsWorkerHarness | null;
+  models: ModelOption[];
+  onChange: (model: string | null, harness: SettingsWorkerHarness | null) => void;
+}) {
+  const selected = workerModelForRoute(models, value, harness);
+  const unavailableSelectionId = value ? `unavailable|${encodeURIComponent(harness ?? "")}|${encodeURIComponent(value)}` : null;
+  const pickerOptions = useMemo<ModelPickerOption[]>(() => {
+    const available = models.map(workerModelPickerOption);
+    if (!value || selected) return available;
+    return [{
+      id: value,
+      selectionId: unavailableSelectionId ?? value,
+      label: `Unavailable · ${value}`,
+      provider: value.includes("/") ? value.slice(0, value.indexOf("/")) : null,
+      hint: `${workerHarnessLabel(harness)} harness`,
+      disabled: true,
+      disabledReason: "Reconnect its provider or choose another Worker route."
+    }, ...available];
+  }, [harness, models, selected, unavailableSelectionId, value]);
+  const groups = useMemo<ModelPickerGroup[]>(
+    () => groupModelsByProvider(pickerOptions).map((group) => ({
+      provider: group.provider,
+      label: providerLabel(group.provider),
+      options: group.options
+    })),
+    [pickerOptions]
+  );
+  const selectedValue = selected ? workerModelSelectionId(selected) : unavailableSelectionId;
+
+  return (
+    <Field label="Default worker model" hint="Used for the first delegation when more than one Worker route is available. The selection includes harness, provider, and model.">
+      <ModelPicker
+        label="Default worker model"
+        value={selectedValue}
+        options={pickerOptions}
+        groups={groups}
+        placeholder="Automatic"
+        disabled={models.length === 0 && !value}
+        disabledPlaceholder="No authenticated models"
+        allowClear
+        clearLabel="Use automatic selection"
+        onChange={(selectionId) => {
+          const next = resolveWorkerSettingsSelection(selectionId, models);
+          if (next) onChange(next.defaultModel, next.defaultHarness);
+        }}
+      />
+      {value && !selected ? (
+        <span className="settings-field-warning" role="status">
+          This saved Worker route is unavailable. Reconnect its provider or choose another route. <a href="/settings/providers">Open provider settings</a>
         </span>
       ) : null}
     </Field>
@@ -783,13 +859,13 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
                   </button>
                 </div>
               ) : null}
-              <Field label="Codex worker auth" hint="Codex worker's OpenAI/Codex connection status.">
+              <Field label="Codex harness auth" hint="Connection status for the Codex app-server harness.">
                 <input readOnly value={formatAuthSummary(payload.openaiCodexAuth?.codex)} />
               </Field>
               {!payload.openaiCodexAuth?.codex.loggedIn ? (
                 <div className="settings-auth-actions">
                   <button className="button is-primary" type="button" onClick={() => void startAuth("codex")} disabled={authPending !== null}>
-                    {authPending === "codex" ? "Starting…" : "Sign in Codex worker with ChatGPT"}
+                    {authPending === "codex" ? "Starting…" : "Connect Codex harness with ChatGPT"}
                   </button>
                 </div>
               ) : null}
@@ -985,13 +1061,14 @@ export function SettingsDashboard({ activeSection }: { activeSection: SettingsSe
           </SubGroup>
           <SubGroup title="Worker defaults">
             <FieldGrid>
-              <ModelSelectField
-                label="Default worker model"
-                hint="Used for the first delegation when more than one provider is connected. If unset, Manor prefers Codex, OpenCode Go, Ollama Cloud, then Ollama Local."
-                value={draft.worker.defaultModel ?? payload.availableModels.worker.model}
+              <WorkerModelSelectField
+                value={draft.worker.defaultModel}
+                harness={draft.worker.defaultHarness}
                 models={workerModels}
-                available={null}
-                onChange={(next) => update((s) => { s.worker.defaultModel = next; })}
+                onChange={(model, harness) => update((s) => {
+                  s.worker.defaultModel = model;
+                  s.worker.defaultHarness = harness;
+                })}
               />
             </FieldGrid>
           </SubGroup>

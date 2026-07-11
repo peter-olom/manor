@@ -184,7 +184,7 @@ test("runtime broker starts preview containers before attaching outbound network
 test("runtime broker can resolve source workspace mounts as read-only", async () => {
   const docker = {
     getContainer(name: string) {
-      assert.equal(name, "codex-box");
+      assert.equal(name, "worker-host");
       return {
         async inspect() {
           return {
@@ -208,11 +208,11 @@ test("runtime broker can resolve source workspace mounts as read-only", async ()
     }
   };
   const storage = createBrokerStorage({
-    codexWorkspaceContainerName: "codex-box",
+    workspaceContainerName: "worker-host",
     docker
   });
 
-  assert.deepEqual(await storage.resolveCodexWorkspaceMounts(), [
+  assert.deepEqual(await storage.resolveWorkspaceMounts(), [
     {
       Type: "volume",
       Source: "manor_repos",
@@ -220,7 +220,7 @@ test("runtime broker can resolve source workspace mounts as read-only", async ()
       ReadOnly: false
     }
   ]);
-  assert.deepEqual(await storage.resolveCodexWorkspaceMounts({ readOnly: true }), [
+  assert.deepEqual(await storage.resolveWorkspaceMounts({ readOnly: true }), [
     {
       Type: "volume",
       Source: "manor_repos",
@@ -228,6 +228,78 @@ test("runtime broker can resolve source workspace mounts as read-only", async ()
       ReadOnly: true
     }
   ]);
+});
+
+test("runtime broker accepts neutral harness tokens and legacy Codex token headers", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "manor-harness-access-"));
+  const registryPath = path.join(root, "harness-broker-access.json");
+  const egressConfigPath = path.join(root, "preview-egress.json");
+  fs.writeFileSync(egressConfigPath, '{"profiles":[]}\n', "utf8");
+  fs.writeFileSync(registryPath, JSON.stringify({
+    grants: [{ token: "worker-token", threadId: "thread-1" }]
+  }), "utf8");
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const broker = createBrokerCore({
+    brokerToken: "operator-token",
+    harnessAccessRegistryPath: registryPath,
+    previewEgressConfigPath: egressConfigPath
+  });
+  const response = () => ({
+    statusCode: 200,
+    body: null as unknown,
+    status(code: number) {
+      this.statusCode = code;
+      return this;
+    },
+    json(payload: unknown) {
+      this.body = payload;
+      return this;
+    }
+  });
+  const request = (headers: Record<string, string>) => ({
+    header(name: string) {
+      return headers[name] || "";
+    }
+  });
+
+  assert.equal(broker.authorizeScopedThread(request({ "x-manor-harness-token": "worker-token" }), response(), "thread-1"), true);
+  assert.equal(broker.authorizeScopedThread(request({ "x-manor-codex-token": "worker-token" }), response(), "thread-1"), true);
+  const rejected = response();
+  assert.equal(broker.authorizeScopedThread(request({ "x-manor-harness-token": "worker-token" }), rejected, "thread-2"), false);
+  assert.deepEqual(rejected.body, { error: "Lease is not attached to this worker job" });
+});
+
+test("runtime broker falls back to the legacy access registry during migration", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "manor-legacy-harness-access-"));
+  const registryPath = path.join(root, "harness-broker-access.json");
+  const legacyRegistryPath = path.join(root, "codex-broker-access.json");
+  const egressConfigPath = path.join(root, "preview-egress.json");
+  fs.writeFileSync(egressConfigPath, '{"profiles":[]}\n', "utf8");
+  fs.writeFileSync(legacyRegistryPath, JSON.stringify({
+    grants: [{ token: "legacy-token", threadId: "thread-1" }]
+  }), "utf8");
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const broker = createBrokerCore({
+    brokerToken: "operator-token",
+    harnessAccessRegistryPath: registryPath,
+    legacyHarnessAccessRegistryPath: legacyRegistryPath,
+    previewEgressConfigPath: egressConfigPath
+  });
+  const request = {
+    header(name: string) {
+      return name === "x-manor-codex-token" ? "legacy-token" : "";
+    }
+  };
+  const response = {
+    status() { return this; },
+    json() { return this; }
+  };
+
+  assert.equal(broker.authorizeScopedThread(request, response, "thread-1"), true);
+  fs.writeFileSync(registryPath, "{malformed", "utf8");
+  assert.equal(broker.authorizeScopedThread(request, response, "thread-1"), false);
 });
 
 test("runtime broker preview proxy routes keep request bodies streamable", async (t) => {

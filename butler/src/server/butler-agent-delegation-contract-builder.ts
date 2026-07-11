@@ -38,7 +38,7 @@ export async function buildButlerDelegationContract(options: {
   }
 
   if (options.extraNotes?.length) notes.push(...options.extraNotes);
-  if (options.orchestration?.goalRecommendation.mode === "native_goal") notes.push("Use native Codex goal mode for this long or multi-phase job when the worker surface supports it.");
+  if (options.orchestration?.goalRecommendation.mode === "native_goal") notes.push("Use harness-native goal mode for this long or multi-phase job when the worker surface supports it.");
   else if (options.orchestration?.goalRecommendation.mode === "contract_fallback") notes.push(`Use the goal recommendation as a compact worker contract: ${options.orchestration.goalRecommendation.fallbackReason ?? "native goal mode was not available"}.`);
   if (options.orchestration?.reviewRecommendation.required) notes.push(`Butler will run an isolated adversarial review before acceptance: ${options.orchestration.reviewRecommendation.reason ?? "review required"}.`);
   if (options.orchestration?.subAgentRoles.length) notes.push(`Run sub-agents inside the worker thread for these roles and return only distilled summaries: ${options.orchestration.subAgentRoles.join(", ")}.`);

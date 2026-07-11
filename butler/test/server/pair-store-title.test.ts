@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -47,10 +47,11 @@ test("worker affinity records successful selections without treating picker chan
   await pairStore.load();
   const pair = pairStore.createPair();
 
-  pairStore.updatePairComposeOverrides(pair.id, { codexModel: "ollama-cloud/preview" });
+  pairStore.updatePairComposeOverrides(pair.id, { workerModel: "ollama-cloud/preview" });
   assert.equal(pairStore.getWorkerAffinity(), null);
 
   pairStore.recordSuccessfulWorkerSelection({
+    harness: "pi",
     provider: "ollama-cloud",
     model: "ollama-cloud/glm-5.2",
     effort: "high"
@@ -58,16 +59,22 @@ test("worker affinity records successful selections without treating picker chan
   assert.deepEqual(pairStore.getWorkerAffinity(), {
     hasSuccessfulDelegation: true,
     lastProvider: "ollama-cloud",
+    lastHarness: "pi",
     modelByProvider: { "ollama-cloud": "ollama-cloud/glm-5.2" },
     effortByProvider: { "ollama-cloud": "high" },
+    modelByRoute: { ["pi\u001follama-cloud"]: "ollama-cloud/glm-5.2" },
+    effortByRoute: { ["pi\u001follama-cloud"]: "high" },
     updatedAt: pairStore.getWorkerAffinity()?.updatedAt ?? null
   });
-  assert.equal(pairStore.createPair().codexModel, null);
+  assert.equal(pairStore.getLastUsedCompose()?.workerHarness, "pi");
+  assert.equal(pairStore.createPair().workerModel, null);
 
   await pairStore.flushPendingSave();
   const reloaded = new PairStore(pairPath, store);
   await reloaded.load();
   assert.equal(reloaded.getWorkerAffinity()?.modelByProvider["ollama-cloud"], "ollama-cloud/glm-5.2");
+  assert.equal(reloaded.getWorkerAffinity()?.lastHarness, "pi");
+  assert.equal(reloaded.getLastUsedCompose()?.workerHarness, "pi");
 });
 
 test("updatePairTitle renames the session", async () => {
@@ -296,6 +303,7 @@ test("attachWorker replaces only the named worker and preserves handoff identity
   assert.deepEqual(updated?.worker && {
     threadId: updated.worker.threadId,
     runtime: updated.worker.runtime,
+    harness: updated.worker.harness,
     provider: updated.worker.provider,
     model: updated.worker.model,
     effort: updated.worker.requestedReasoningEffort,
@@ -303,12 +311,14 @@ test("attachWorker replaces only the named worker and preserves handoff identity
   }, {
     threadId: "thread-pi",
     runtime: "pi-rpc",
+    harness: "pi",
     provider: "opencode-go",
     model: "opencode-go/minimax-m3",
     effort: "medium",
     handedOffFrom: {
       threadId: "thread-codex",
       runtime: "openai",
+      harness: "codex",
       provider: "openai-codex",
       model: "gpt-5.4"
     }
@@ -359,8 +369,8 @@ test("deleted attached workers return the pair to the default worker state", asy
     handoffPrompt: "Primary job"
   });
   pairStore.updatePairComposeOverrides(created.id, {
-    codexModel: "ollama-cloud/devstral-small-2:24b",
-    codexEffort: "high"
+    workerModel: "ollama-cloud/devstral-small-2:24b",
+    workerEffort: "high"
   });
 
   store.removeThread("thread-deleted");
@@ -370,8 +380,8 @@ test("deleted attached workers return the pair to the default worker state", asy
   assert.equal(updated?.worker, null);
   assert.equal(updated?.status, "idle");
   assert.equal(updated?.lastHandoffPrompt, null);
-  assert.equal(updated?.codexModel, null);
-  assert.equal(updated?.codexEffort, null);
+  assert.equal(updated?.workerModel, null);
+  assert.equal(updated?.workerEffort, null);
 });
 
 test("loading persisted state drops an attachment whose worker no longer exists", async () => {
@@ -390,8 +400,8 @@ test("loading persisted state drops an attachment whose worker no longer exists"
     handoffPrompt: "Primary job"
   });
   pairStore.updatePairComposeOverrides(created.id, {
-    codexModel: "ollama-cloud/devstral-small-2:24b",
-    codexEffort: "high"
+    workerModel: "ollama-cloud/devstral-small-2:24b",
+    workerEffort: "high"
   });
   await pairStore.flushPendingSave();
   store.removeThread("thread-missing-after-reload");
@@ -403,8 +413,36 @@ test("loading persisted state drops an attachment whose worker no longer exists"
   assert.equal(repaired?.worker, null);
   assert.equal(repaired?.status, "idle");
   assert.equal(repaired?.lastHandoffPrompt, null);
-  assert.equal(repaired?.codexModel, null);
-  assert.equal(repaired?.codexEffort, null);
+  assert.equal(repaired?.workerModel, null);
+  assert.equal(repaired?.workerEffort, null);
+});
+
+test("loading persisted state migrates legacy Codex compose fields to Worker fields", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-worker-field-migration-test-"));
+  const statePath = path.join(dir, "state.json");
+  const pairPath = path.join(dir, "pairs.json");
+  const store = new ButlerStateStore(statePath);
+  store.upsertThreadSummary({ id: "legacy-thread", source: "pi-rpc", status: "idle", turns: [] });
+  await writeFile(pairPath, JSON.stringify({
+    pairs: [{
+      id: "legacy-pair",
+      title: "Legacy pair",
+      worker: { threadId: "legacy-thread", runtime: "pi-rpc", provider: "ollama-cloud", model: "ollama-cloud/glm-5.2", status: "idle" },
+      codexModel: "ollama-cloud/glm-5.2",
+      codexEffort: "high"
+    }]
+  }));
+
+  const pairStore = new PairStore(pairPath, store);
+  await pairStore.load();
+
+  const migrated = pairStore.getPair("legacy-pair");
+  assert.equal(migrated?.workerModel, "ollama-cloud/glm-5.2");
+  assert.equal(migrated?.workerHarness, "pi");
+  assert.equal(migrated?.workerEffort, "high");
+  assert.equal(migrated?.worker?.harness, "pi");
+  assert.equal("codexModel" in (migrated ?? {}), false);
+  assert.equal("codexEffort" in (migrated ?? {}), false);
 });
 
 test("completed worker report returns to idle after Butler posts the callback", async () => {

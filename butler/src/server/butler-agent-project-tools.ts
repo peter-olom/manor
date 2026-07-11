@@ -110,7 +110,7 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
     access.defineButlerTool({
       name: "memory_diagnostics",
       label: "Memory diagnostics",
-      description: "Summarize Butler and Codex memory ingestion, synthesis, promotion candidates, accepted entries, and stale or failed memory work.",
+      description: "Summarize Butler and worker memory ingestion, synthesis, promotion candidates, accepted entries, and stale or failed memory work.",
       promptSnippet:
         "memory_diagnostics: use this when memory behavior looks wrong or the operator asks how many memory items were ingested, synthesized, proposed, accepted, rejected, pending, or failed. Use from/to for date-bounded checks and includeSamples for recent records.",
       parameters: Type.Object({
@@ -517,7 +517,7 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
     access.defineButlerTool({
       name: "remember_project_policy",
       label: "Remember project policy",
-      description: "Create or update a durable project policy bundle that gives Butler or Codex reusable instructions plus artifacts.",
+      description: "Create or update a durable project policy bundle that gives Butler or workers reusable instructions plus artifacts.",
       promptSnippet: "remember_project_policy: use this when the operator wants Butler to remember durable guidance or actions that should be reusable across later work.",
       parameters: Type.Object({
         title: Type.String({ minLength: 1 }),
@@ -568,7 +568,7 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
       name: "invoke_project_policy",
       label: "Invoke project policy",
       description: "Load or execute one remembered policy directly by id, title, or alias.",
-      promptSnippet: "invoke_project_policy: use this when the operator explicitly tells Butler or Codex to run or load a remembered policy now.",
+      promptSnippet: "invoke_project_policy: use this when the operator explicitly tells Butler or a worker to run or load a remembered policy now.",
       parameters: Type.Object({
         selector: Type.String({ minLength: 1 }),
         projectId: Type.Optional(Type.String()),

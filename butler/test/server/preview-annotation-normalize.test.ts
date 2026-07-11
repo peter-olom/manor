@@ -56,7 +56,7 @@ function baseVerification(): PreviewVerificationView {
 test("preview verification normalization preserves structured browser annotation batches", () => {
   const verification = baseVerification();
   verification.annotations = {
-    targets: [{ id: "butler", label: "Butler" }, { id: "thread:abc", label: "Codex job" }],
+    targets: [{ id: "butler", label: "Butler" }, { id: "thread:abc", label: "Worker job" }],
     batches: [
       {
         id: "batch-1",
@@ -69,7 +69,7 @@ test("preview verification normalization preserves structured browser annotation
         ]
       }
     ],
-    insertions: [{ batchId: "batch-1", at: 1240, ok: true, target: { id: "thread:abc", label: "Codex job" } }]
+    insertions: [{ batchId: "batch-1", at: 1240, ok: true, target: { id: "thread:abc", label: "Worker job" } }]
   };
 
   const normalized = normalizePreviewVerification(verification, 60_000);

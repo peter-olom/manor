@@ -41,6 +41,7 @@ import type {
   PairStatus,
   PairSummary,
   PairViewMode,
+  PairWorkerHarness,
   PairWorkerThreadResponse
 } from "../shared/pairing";
 import {
@@ -684,7 +685,7 @@ function Topbar({
             </button>
           )}
           {pair?.status === "worker_running" && !isGlobalSurface ? (
-            <span className="topbar-worker-loader" aria-label="Codex is working">
+            <span className="topbar-worker-loader" aria-label="Worker is working">
               <SandSpinner />
             </span>
           ) : null}
@@ -1202,14 +1203,14 @@ export function PairShell() {
     [activePair]
   );
 
-  const onCodexEffortChange = useCallback(
+  const onWorkerEffortChange = useCallback(
     async (effort: string) => {
       if (!activePair) return;
       const previous = activePair;
       setPair((current) => (current ? {
         ...current,
-        ...(current.worker ? { worker: { ...current.worker, requestedReasoningEffort: effort } } : { codexEffort: effort }),
-        compose: { ...current.compose, worker: { ...current.compose.worker, effort }, codex: { ...current.compose.codex, effort } }
+        ...(current.worker ? { worker: { ...current.worker, requestedReasoningEffort: effort } } : { workerEffort: effort }),
+        compose: { ...current.compose, worker: { ...current.compose.worker, effort } }
       } : current));
       try {
         const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(activePair.id)}/settings`, { target: "worker", effort });
@@ -1222,18 +1223,18 @@ export function PairShell() {
     [activePair]
   );
 
-  const onCodexModelChange = useCallback(
-    async (model: string) => {
+  const onWorkerModelChange = useCallback(
+    async (model: string, harness: PairWorkerHarness | null) => {
       if (!activePair) return;
       const previous = activePair;
-      const workerCompose = activePair.compose.worker ?? activePair.compose.codex;
-      const selected = workerCompose.availableModels.find((entry) => entry.id === model) ?? null;
+      const workerCompose = activePair.compose.worker;
+      const selected = workerCompose.availableModels.find((entry) => entry.id === model && (entry.harness ?? null) === harness) ?? null;
       const effort = selected && workerCompose.effort && !selected.supportedReasoningEfforts.includes(workerCompose.effort)
         ? selected.defaultReasoningEffort ?? selected.supportedReasoningEfforts[0] ?? workerCompose.effort
         : workerCompose.effort;
-      setPair((current) => (current ? { ...current, codexModel: model, codexEffort: effort, compose: { ...current.compose, worker: { ...current.compose.worker, model, effort, provider: selected?.provider ?? current.compose.worker.provider }, codex: { ...current.compose.codex, model, effort } } } : current));
+      setPair((current) => (current ? { ...current, workerHarness: harness, workerModel: model, workerEffort: effort, compose: { ...current.compose, worker: { ...current.compose.worker, harness, model, effort, provider: selected?.provider ?? current.compose.worker.provider } } } : current));
       try {
-        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(activePair.id)}/settings`, { target: "worker", model });
+        const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(activePair.id)}/settings`, { target: "worker", model, harness });
         setPair(payload.pair);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -1243,7 +1244,7 @@ export function PairShell() {
     [activePair]
   );
 
-  const onWorkerHandoff = useCallback(async (model: string, effort: string | null): Promise<boolean> => {
+  const onWorkerHandoff = useCallback(async (model: string, harness: PairWorkerHarness | null, effort: string | null): Promise<boolean> => {
     if (!activePair?.worker) return false;
     const pairId = activePair.id;
     const sourceThreadId = activePair.worker.threadId;
@@ -1254,7 +1255,7 @@ export function PairShell() {
       [pairId]: { requestId, pending: true, error: null }
     }));
     try {
-      const payload = await postJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(pairId)}/worker/handoff`, { model, effort });
+      const payload = await postJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(pairId)}/worker/handoff`, { model, harness, effort });
       if (latestWorkerHandoffRequestByPairId.current.get(pairId) !== requestId) return false;
       setPair((current) => {
         if (!current || current.id !== pairId) return current;
@@ -1374,7 +1375,7 @@ export function PairShell() {
               <img src={manorLogoDark} alt="Manor" />
             </picture>
             <h2>Welcome to Manor</h2>
-            <p>Create a new session to start a scoped conversation with one Codex worker.</p>
+            <p>Create a new session to start a scoped conversation with one Worker.</p>
             <button className="button is-primary" type="button" onClick={createPair} disabled={busy}>
               <PlusIcon />
               <span>New session</span>
@@ -1413,8 +1414,8 @@ export function PairShell() {
                     timeline={workerTimeline}
                     loading={activeWorkerThreadLoading}
                     proofRecords={workerProofRecords}
-                    onCodexModelChange={(model) => void onCodexModelChange(model)}
-                    onCodexEffortChange={(effort) => void onCodexEffortChange(effort)}
+                    onWorkerModelChange={(model, harness) => void onWorkerModelChange(model, harness)}
+                    onWorkerEffortChange={(effort) => void onWorkerEffortChange(effort)}
                     handoffPending={activeWorkerHandoff?.pending ?? false}
                     handoffError={activeWorkerHandoff?.error ?? null}
                     onHandoff={onWorkerHandoff}

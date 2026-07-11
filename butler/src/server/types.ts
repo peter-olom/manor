@@ -1193,7 +1193,7 @@ export interface ButlerTraceMetaView {
 export interface ModelOption {
   id: string;
   label: string;
-  provider: string | null;
+  provider: string | null; harness?: "codex" | "pi" | (string & {}) | null;
   supportsReasoning: boolean;
   supportedThinkingLevels: ButlerThinkingLevel[];
   supportedReasoningEfforts: ReasoningEffort[];

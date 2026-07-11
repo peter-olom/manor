@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { CodexHarnessService } from "../../src/server/codex-harness.js";
+import { CodexHarnessService, HarnessService } from "../../src/server/codex-harness.js";
 import {
   buildJobPayload,
   jobPayloadsRoot,
@@ -19,6 +19,7 @@ test("harness reconciliation does not erase existing capabilities when thread in
   const root = await mkdtemp(path.join(tmpdir(), "manor-harness-reconcile-"));
   const stateDir = path.join(root, "state");
   const codexHomeDir = path.join(root, "codex-home");
+  const harnessRegistryPath = path.join(root, "harness-state", "harness-capabilities.json");
   const registryPath = path.join(codexHomeDir, "manor", "harness-capabilities.json");
   await mkdir(stateDir, { recursive: true });
   await mkdir(path.dirname(registryPath), { recursive: true });
@@ -42,8 +43,9 @@ test("harness reconciliation does not erase existing capabilities when thread in
 
   const store = new ButlerStateStore(path.join(stateDir, "butler-ui.json"));
   await store.load();
-  const harness = new CodexHarnessService({
+  const harness = new HarnessService({
     codexHomeDir,
+    harnessRegistryPath,
     stateDir,
     artifactsDir: path.join(root, "artifacts"),
     store,
@@ -55,7 +57,11 @@ test("harness reconciliation does not erase existing capabilities when thread in
   await harness.reconcileThreadCapabilities();
 
   const saved = JSON.parse(await readFile(registryPath, "utf8")) as { capabilities?: Array<{ threadId?: string; token?: string }> };
+  const migrated = JSON.parse(await readFile(harnessRegistryPath, "utf8")) as { capabilities?: Array<{ threadId?: string; token?: string }> };
+  const access = JSON.parse(await readFile(path.join(stateDir, "harness-broker-access.json"), "utf8")) as { grants?: Array<{ threadId?: string; token?: string }> };
   assert.deepEqual(saved.capabilities?.map((entry) => [entry.threadId, entry.token]), [["thread-1", "token-1"]]);
+  assert.deepEqual(migrated.capabilities?.map((entry) => [entry.threadId, entry.token]), [["thread-1", "token-1"]]);
+  assert.deepEqual(access.grants?.map((entry) => [entry.threadId, entry.token]), [["thread-1", "token-1"]]);
 });
 
 test("harness reads and updates the current payload for the bound thread", async () => {
@@ -162,7 +168,7 @@ test("harness rejects payload writes when the stored protocol targets another wo
       action: "payload.update",
       params: { status: "completed", summary: "Wrong worker" }
     }),
-    /not bound to this Codex worker thread/
+    /not bound to this worker thread/
   );
 });
 

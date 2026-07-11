@@ -23,6 +23,35 @@ export type BrokerAccessRegistryPayload = {
   }>;
 };
 
+export function resolveHarnessStoragePaths(options: {
+  stateDir: string;
+  codexHomeDir?: string;
+  harnessRegistryPath?: string | null;
+  harnessAccessPath?: string | null;
+}) {
+  const legacyRegistryPath = options.codexHomeDir
+    ? path.join(options.codexHomeDir, "manor", "harness-capabilities.json")
+    : null;
+  const registryPath = normalizeString(options.harnessRegistryPath)
+    || normalizeString(process.env.MANOR_HARNESS_REGISTRY_PATH)
+    || path.join(options.stateDir, "harness-capabilities.json");
+  return {
+    registryPath,
+    legacyRegistryPath: legacyRegistryPath === registryPath ? null : legacyRegistryPath,
+    brokerAccessPath: normalizeString(options.harnessAccessPath)
+      || normalizeString(process.env.MANOR_HARNESS_ACCESS_FILE)
+      || path.join(options.stateDir, "harness-broker-access.json"),
+    legacyBrokerAccessPath: path.join(options.stateDir, "codex-broker-access.json")
+  };
+}
+
+export async function readHarnessRegistryText(primaryPath: string, legacyPath: string | null) {
+  const primary = await fs.readFile(primaryPath, "utf8").catch(() => "");
+  if (primary || !legacyPath) return { raw: primary, fromLegacy: false };
+  const legacy = await fs.readFile(legacyPath, "utf8").catch(() => "");
+  return { raw: legacy, fromLegacy: Boolean(legacy) };
+}
+
 export async function atomicWriteJson(filePath: string, payload: unknown): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;

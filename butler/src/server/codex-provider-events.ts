@@ -72,7 +72,7 @@ function baseEvent(
 
   return {
     id: input.eventId ?? crypto.randomUUID(),
-    provider: "codex",
+    harness: "codex",
     ...(input.providerInstanceId ? { providerInstanceId: input.providerInstanceId } : {}),
     threadId,
     ...(turnId ? { turnId } : {}),

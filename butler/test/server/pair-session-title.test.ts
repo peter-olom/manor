@@ -17,7 +17,7 @@ class FakeButlerService extends EventEmitter {
   startCount = 0;
   pending = false;
   trackedExternalThreads: string[] = [];
-  handoffs: Array<{ sourceThreadId: string; model: string; effort: string | null }> = [];
+  handoffs: Array<{ sourceThreadId: string; harness: string; model: string; effort: string | null; butlerThreadId?: string | null }> = [];
   handoffDelayMs = 0;
   concurrentHandoffs = 0;
   maxConcurrentHandoffs = 0;
@@ -65,7 +65,7 @@ class FakeButlerService extends EventEmitter {
     return true;
   }
 
-  async handoffWorker(input: { sourceThreadId: string; model: string; effort: string | null }): Promise<void> {
+  async handoffWorker(input: { sourceThreadId: string; harness: string; model: string; effort: string | null; butlerThreadId?: string | null }): Promise<void> {
     this.concurrentHandoffs += 1;
     this.maxConcurrentHandoffs = Math.max(this.maxConcurrentHandoffs, this.concurrentHandoffs);
     try {
@@ -123,7 +123,7 @@ class FakeButlerService extends EventEmitter {
   }
 }
 
-async function createManager(generator: SessionTitleGenerator | null = null, onCreateService?: (options: unknown) => void, runtime?: { codexModels?: ModelOption[] }): Promise<{
+async function createManager(generator: SessionTitleGenerator | null = null, onCreateService?: (options: unknown) => void, runtime?: { workerModels?: ModelOption[] }): Promise<{
   manager: PairSessionManager;
   pairStore: PairStore;
   service: FakeButlerService;
@@ -138,12 +138,12 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
   const service = new FakeButlerService();
   const codexUpdates: Array<{ model: string; effort: ReasoningEffort | null }> = [];
   const threadEffortUpdates: Array<{ threadId: string; effort: ReasoningEffort }> = [];
-  const codexModels = runtime?.codexModels ?? [];
+  const workerModels = runtime?.workerModels ?? [];
   const manager = new PairSessionManager({
     pairStore,
     store,
     codexClient: {
-      getConnectionState: () => ({ connected: true, lastError: null, compose: { model: null, effort: null, availableModels: codexModels } }),
+      getConnectionState: () => ({ connected: true, lastError: null, compose: { model: null, effort: null, availableModels: workerModels } }),
       updateComposeSettings: async (model: string, effort: ReasoningEffort | null) => {
         codexUpdates.push({ model, effort });
       },
@@ -359,7 +359,7 @@ test("retryBlockedReview delegates recovery to the pair Butler", async () => {
 });
 
 test("loaded pair services read current worker compose defaults", async () => {
-  let serviceOptions: { getWorkerDefaults?: () => { runtime: string | null; model?: string | null; effort?: string | null } | null } | null = null;
+  let serviceOptions: { getWorkerDefaults?: () => { runtime: string | null; harness?: string | null; model?: string | null; effort?: string | null } | null } | null = null;
   const model: ModelOption = {
     id: "gpt-5-codex",
     label: "GPT-5 Codex",
@@ -371,14 +371,15 @@ test("loaded pair services read current worker compose defaults", async () => {
   };
   const { manager } = await createManager(null, (options) => {
     serviceOptions = options as typeof serviceOptions;
-  }, { codexModels: [model] });
+  }, { workerModels: [model] });
   const pair = await manager.createPair();
 
-  await manager.setCodexModel(pair.id, "gpt-5-codex");
-  await manager.setCodexEffort(pair.id, "xhigh");
+  await manager.setWorkerModel(pair.id, "gpt-5-codex");
+  await manager.setWorkerEffort(pair.id, "xhigh");
 
   assert.deepEqual(serviceOptions?.getWorkerDefaults?.(), {
     runtime: "auto",
+    harness: "codex",
     model: "gpt-5-codex",
     effort: "xhigh"
   });
@@ -489,16 +490,16 @@ test("attached worker model selection changes only the next-worker default", asy
     supportedReasoningEfforts: [],
     defaultReasoningEffort: null
   };
-  const { manager, pairStore, store, codexUpdates, threadEffortUpdates } = await createManager(null, undefined, { codexModels: [noEffortModel] });
+  const { manager, pairStore, store, codexUpdates, threadEffortUpdates } = await createManager(null, undefined, { workerModels: [noEffortModel] });
   const pair = await manager.createPair();
   store.upsertThreadSummary({ id: "worker-thread", source: "appServer", status: "idle", turns: [] });
   pairStore.attachWorker(pair.id, { threadId: "worker-thread" });
 
-  await manager.setCodexModel(pair.id, "gpt-chat");
+  await manager.setWorkerModel(pair.id, "gpt-chat");
 
   assert.deepEqual(threadEffortUpdates, []);
   assert.deepEqual(codexUpdates, []);
-  assert.equal(pairStore.getPair(pair.id)?.codexEffort, null);
+  assert.equal(pairStore.getPair(pair.id)?.workerEffort, null);
 });
 
 test("handoffWorker resolves the target model without mutating the active worker", async () => {
@@ -510,14 +511,14 @@ test("handoffWorker resolves the target model without mutating the active worker
     id: "gpt-5.5", label: "GPT-5.5", provider: null, supportsReasoning: true,
     supportedThinkingLevels: ["high", "xhigh"], supportedReasoningEfforts: ["high", "xhigh"], defaultReasoningEffort: "high"
   };
-  const { manager, pairStore, service, store } = await createManager(null, undefined, { codexModels: [current, target] });
+  const { manager, pairStore, service, store } = await createManager(null, undefined, { workerModels: [current, target] });
   const pair = await manager.createPair();
   store.upsertThreadSummary({ id: "worker-current", source: "appServer", status: "idle", turns: [] });
   pairStore.attachWorker(pair.id, { threadId: "worker-current", runtime: "openai", provider: "openai-codex", model: current.id, effort: "medium" });
 
-  await manager.handoffWorker(pair.id, target.id, "xhigh");
+  await manager.handoffWorker(pair.id, target.id, "codex", "xhigh");
 
-  assert.deepEqual(service.handoffs, [{ sourceThreadId: "worker-current", model: target.id, effort: "xhigh", butlerThreadId: "fake-session" }]);
+  assert.deepEqual(service.handoffs, [{ sourceThreadId: "worker-current", harness: "codex", model: target.id, effort: "xhigh", butlerThreadId: "fake-session" }]);
   assert.equal(pairStore.getPair(pair.id)?.worker?.model, current.id);
 });
 
@@ -528,15 +529,15 @@ test("handoffWorker serializes competing replacements for one pair", async () =>
   };
   const firstTarget = { ...current, id: "gpt-first", label: "First" };
   const secondTarget = { ...current, id: "gpt-second", label: "Second" };
-  const { manager, pairStore, service, store } = await createManager(null, undefined, { codexModels: [current, firstTarget, secondTarget] });
+  const { manager, pairStore, service, store } = await createManager(null, undefined, { workerModels: [current, firstTarget, secondTarget] });
   const pair = await manager.createPair();
   store.upsertThreadSummary({ id: "worker-current", source: "appServer", status: "idle", turns: [] });
   pairStore.attachWorker(pair.id, { threadId: "worker-current", runtime: "openai", provider: "openai-codex", model: current.id, effort: "high" });
   service.handoffDelayMs = 20;
 
   await Promise.all([
-    manager.handoffWorker(pair.id, firstTarget.id, "high"),
-    manager.handoffWorker(pair.id, secondTarget.id, "high")
+    manager.handoffWorker(pair.id, firstTarget.id, "codex", "high"),
+    manager.handoffWorker(pair.id, secondTarget.id, "codex", "high")
   ]);
 
   assert.equal(service.maxConcurrentHandoffs, 1);
@@ -564,8 +565,8 @@ test("pair attachment acknowledgement uses compare-and-swap and exposes an exact
   });
   assert.equal(accepted?.attached, true);
   assert.equal(pairStore.getPair(pair.id)?.worker?.threadId, "worker-new");
-  assert.equal(pairStore.getPair(pair.id)?.codexModel, null);
-  assert.equal(pairStore.getPair(pair.id)?.codexEffort, null);
+  assert.equal(pairStore.getPair(pair.id)?.workerModel, null);
+  assert.equal(pairStore.getPair(pair.id)?.workerEffort, null);
   assert.equal(accepted?.rollback?.(), true);
   assert.deepEqual(pairStore.getPair(pair.id)?.worker, original);
 

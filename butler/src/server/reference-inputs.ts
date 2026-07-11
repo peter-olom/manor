@@ -1,5 +1,5 @@
 import type { FileReferenceStore } from "./file-store.js";
-import type { CodexInputItem, ImageReferenceStore } from "./image-store.js";
+import type { ImageReferenceStore, WorkerInputItem } from "./image-store.js";
 
 const DEFAULT_IMAGE_PROMPT = "Use the attached reference image for this request.";
 const DEFAULT_IMAGES_PROMPT = "Use the attached reference images for this request.";
@@ -45,7 +45,7 @@ export function buildReferencePromptText(input: {
   if (images.length > 0) {
     sections.push(input.includeIds ? "Stored reference images:" : "Attached reference images:");
     if (input.includeIds) {
-      sections.push("Pass these ids in imageReferenceIds when delegating to Codex.");
+      sections.push("Pass these ids in imageReferenceIds when delegating to a Worker.");
     }
     for (const image of images) {
       sections.push(input.includeIds ? `- ${image.id} | ${image.name}` : `- ${image.name}`);
@@ -55,7 +55,7 @@ export function buildReferencePromptText(input: {
   if (files.length > 0) {
     sections.push(input.includeIds ? "Stored reference files:" : "Attached reference files:");
     if (input.includeIds) {
-      sections.push("Pass these ids in fileReferenceIds when delegating to Codex.");
+      sections.push("Pass these ids in fileReferenceIds when delegating to a Worker.");
     }
     sections.push("Use shell tools to inspect these files when needed. Use the URL if local path access fails.");
     for (const file of files) {
@@ -100,17 +100,17 @@ export function buildComposerInputItemsPrompt(inputItems: unknown[]): string {
     return "";
   }
 
-  return ["Selected composer context:", "Use these selected Codex context items when delegating or reasoning about the operator request.", ...lines].join("\n");
+  return ["Selected composer context:", "Use these selected Worker context items when delegating or reasoning about the operator request.", ...lines].join("\n");
 }
 
-export function buildCodexInputWithReferences(input: {
+export function buildWorkerInputWithReferences(input: {
   text: string;
   imageStore: ImageReferenceStore;
   imageReferenceIds: string[];
   fileStore: FileReferenceStore;
   fileReferenceIds: string[];
   extraInputItems?: unknown[];
-}): CodexInputItem[] {
+}): WorkerInputItem[] {
   const promptText = buildReferencePromptText({
     text: input.text,
     imageStore: input.imageStore,
@@ -121,7 +121,7 @@ export function buildCodexInputWithReferences(input: {
     includeFilePaths: true
   });
   const images = input.imageStore.resolveViews(input.imageReferenceIds);
-  const output: CodexInputItem[] = [];
+  const output: WorkerInputItem[] = [];
 
   if (promptText) {
     output.push({ type: "text", text: promptText });
@@ -169,3 +169,6 @@ export function buildCodexInputWithReferences(input: {
 
   return normalized;
 }
+
+/** @deprecated Use buildWorkerInputWithReferences for provider-neutral worker input. */
+export const buildCodexInputWithReferences = buildWorkerInputWithReferences;

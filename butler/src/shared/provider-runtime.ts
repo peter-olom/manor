@@ -1,4 +1,4 @@
-export type ProviderRuntimeProvider = "codex" | "pi-rpc" | (string & {});
+export type ProviderRuntimeHarness = "codex" | "pi" | (string & {});
 
 export type ProviderRuntimeContentStreamKind =
   | "assistant_text"
@@ -57,7 +57,7 @@ export type ProviderRuntimeRefs = {
 export type ProviderRuntimeBaseEvent = {
   id: string;
   type: string;
-  provider: ProviderRuntimeProvider;
+  harness: ProviderRuntimeHarness;
   providerInstanceId?: string;
   threadId: string;
   turnId?: string;
@@ -239,7 +239,7 @@ export type ProviderRuntimeTurnResult = {
 };
 
 export type ProviderRuntimeAdapter = {
-  provider: ProviderRuntimeProvider;
+  harness: ProviderRuntimeHarness;
   startThread(input: Record<string, unknown>): Promise<ProviderRuntimeThreadResult>;
   resumeThread(threadId: string, input?: Record<string, unknown>): Promise<ProviderRuntimeThreadResult>;
   loadThread(threadId: string, input?: Record<string, unknown>): Promise<ProviderRuntimeThreadSnapshot>;

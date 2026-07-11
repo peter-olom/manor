@@ -1,23 +1,35 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { PairCodexModelOption, PairWorker } from "../shared/pairing";
+import type { PairModelOption, PairWorker, PairWorkerHarness } from "../shared/pairing";
 import { BudgetSegmented } from "./BudgetSegmented";
 import { ModelPicker } from "./ModelPicker";
-import { workerModelLabel, workerProviderForModelLabel, workerProviderLabel, workerRuntimeForModel, workerRuntimeLabel } from "./worker-route";
+import {
+  isSameWorkerRoute,
+  workerHarnessForModel,
+  workerHarnessLabel,
+  workerModelForRoute,
+  workerModelForSelection,
+  workerModelLabel,
+  workerModelPickerOption,
+  workerModelSelectionId,
+  workerProviderForModelLabel,
+  workerProviderLabel
+} from "./worker-route";
 
 type WorkerSwitchDialogProps = {
   open: boolean;
   activeWorker: PairWorker;
-  models: PairCodexModelOption[];
+  models: PairModelOption[];
   initialModel: string | null;
+  initialHarness: PairWorkerHarness | null;
   initialEffort: string | null;
   pending: boolean;
   error: string | null;
   onClose: () => void;
-  onConfirm: (model: string, effort: string | null) => void;
+  onConfirm: (model: string, harness: PairWorkerHarness | null, effort: string | null) => void;
 };
 
-function effortForModel(model: PairCodexModelOption | null, requested: string | null): string | null {
+function effortForModel(model: PairModelOption | null, requested: string | null): string | null {
   if (!model || model.supportedReasoningEfforts.length === 0) return null;
   if (requested && model.supportedReasoningEfforts.includes(requested)) return requested;
   return model.defaultReasoningEffort ?? model.supportedReasoningEfforts[0] ?? null;
@@ -34,6 +46,7 @@ export function WorkerSwitchDialog({
   activeWorker,
   models,
   initialModel,
+  initialHarness,
   initialEffort,
   pending,
   error,
@@ -48,9 +61,10 @@ export function WorkerSwitchDialog({
   const onCloseRef = useRef(onClose);
   pendingRef.current = pending;
   onCloseRef.current = onClose;
-  const [modelId, setModelId] = useState<string | null>(initialModel);
+  const [selectionId, setSelectionId] = useState<string | null>(null);
   const [effort, setEffort] = useState<string | null>(initialEffort);
-  const selected = useMemo(() => models.find((model) => model.id === modelId) ?? models[0] ?? null, [modelId, models]);
+  const pickerModels = useMemo(() => models.map(workerModelPickerOption), [models]);
+  const selected = useMemo(() => workerModelForSelection(models, selectionId) ?? models[0] ?? null, [models, selectionId]);
   const selectedEffort = effortForModel(selected, effort);
 
   useEffect(() => {
@@ -60,11 +74,13 @@ export function WorkerSwitchDialog({
     }
     if (initializedOpenRef.current) return;
     initializedOpenRef.current = true;
-    const configuredModel = models.find((model) => model.id === initialModel && model.id !== activeWorker.model);
-    const nextModel = configuredModel ?? models.find((model) => model.id !== activeWorker.model) ?? models[0] ?? null;
-    setModelId(nextModel?.id ?? null);
+    const configuredModel = workerModelForRoute(models, initialModel, initialHarness);
+    const nextModel = configuredModel && !isSameWorkerRoute(configuredModel, activeWorker.model, activeWorker.harness)
+      ? configuredModel
+      : models.find((model) => !isSameWorkerRoute(model, activeWorker.model, activeWorker.harness)) ?? models[0] ?? null;
+    setSelectionId(nextModel ? workerModelSelectionId(nextModel) : null);
     setEffort(effortForModel(nextModel, initialEffort));
-  }, [activeWorker.model, initialEffort, initialModel, models, open]);
+  }, [activeWorker.harness, activeWorker.model, initialEffort, initialHarness, initialModel, models, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -115,9 +131,9 @@ export function WorkerSwitchDialog({
   }, [open]);
 
   if (!open) return null;
-  const nextRuntime = selected ? workerRuntimeForModel(selected) : null;
-  const sameModel = selected?.id === activeWorker.model;
-  const hasAlternativeModel = models.some((model) => model.id !== activeWorker.model);
+  const nextHarness = selected ? workerHarnessForModel(selected) : null;
+  const sameModel = selected ? isSameWorkerRoute(selected, activeWorker.model, activeWorker.harness) : false;
+  const hasAlternativeModel = models.some((model) => !isSameWorkerRoute(model, activeWorker.model, activeWorker.harness));
 
   return (
     <div className="modal-backdrop worker-switch-backdrop" onMouseDown={(event) => {
@@ -132,20 +148,20 @@ export function WorkerSwitchDialog({
           <button ref={closeRef} className="icon-button" type="button" aria-label="Close worker switch" disabled={pending} onClick={onClose}>×</button>
         </header>
         <div className="worker-switch-route" aria-label="Worker route change">
-          <div><span>Active</span><strong>{workerProviderLabel(activeWorker.provider)} · {workerModelLabel(models, activeWorker.model)} · {workerRuntimeLabel(activeWorker.runtime)}</strong></div>
-          <div><span>Next</span><strong>{selected ? `${workerProviderForModelLabel(selected)} · ${selected.label} · ${workerRuntimeLabel(nextRuntime)}` : "No worker available"}</strong></div>
+          <div><span>Active</span><strong>{workerProviderLabel(activeWorker.provider)} · {workerModelLabel(models, activeWorker.model, activeWorker.harness)} · {workerHarnessLabel(activeWorker.harness)}</strong></div>
+          <div><span>Next</span><strong>{selected ? `${workerProviderForModelLabel(selected)} · ${selected.label} · ${workerHarnessLabel(nextHarness)}` : "No worker available"}</strong></div>
         </div>
         <div className="worker-switch-fields">
           <ModelPicker
             label="Next worker model"
-            value={selected?.id ?? null}
-            options={models}
+            value={selected ? workerModelSelectionId(selected) : null}
+            options={pickerModels}
             anchor="below"
             className="worker-switch-model"
             disabled={pending}
             onChange={(next) => {
-              const nextModel = models.find((model) => model.id === next) ?? null;
-              setModelId(nextModel?.id ?? null);
+              const nextModel = workerModelForSelection(models, next);
+              setSelectionId(nextModel ? workerModelSelectionId(nextModel) : null);
               setEffort(effortForModel(nextModel, effort));
             }}
           />
@@ -153,12 +169,12 @@ export function WorkerSwitchDialog({
             <BudgetSegmented label="Thinking" value={selectedEffort} options={selected.supportedReasoningEfforts} disabled={pending} onChange={setEffort} />
           ) : <div className="worker-switch-na"><span>Thinking</span><strong>N/A</strong></div>}
         </div>
-        <p id="worker-switch-cache-note" className="worker-switch-note">The new provider cache starts cold. The previous worker remains in history.</p>
-        {!hasAlternativeModel ? <p className="worker-switch-warning">No other worker model is available.</p> : sameModel ? <p className="worker-switch-warning">Choose a different model. Thinking can be changed on the active worker.</p> : null}
+        <p id="worker-switch-cache-note" className="worker-switch-note">The new Worker session starts cold. Provider cache and hidden reasoning do not transfer. The previous Worker remains in history.</p>
+        {!hasAlternativeModel ? <p className="worker-switch-warning">No other Worker route is available.</p> : sameModel ? <p className="worker-switch-warning">Choose a different Worker route. Thinking can be changed on the active worker.</p> : null}
         {error ? <div className="error worker-switch-error" role="alert">{error}</div> : null}
         <footer>
           <button className="button" type="button" disabled={pending} onClick={onClose}>Cancel</button>
-          <button className="button is-primary" type="button" disabled={pending || !selected || sameModel || !hasAlternativeModel} onClick={() => selected && onConfirm(selected.id, selectedEffort)}>
+          <button className="button is-primary" type="button" disabled={pending || !selected || sameModel || !hasAlternativeModel} onClick={() => selected && onConfirm(selected.id, selected.harness ?? null, selectedEffort)}>
             {pending ? "Switching…" : "Switch with handoff"}
           </button>
         </footer>

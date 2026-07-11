@@ -304,7 +304,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "list_jobs",
     label: "List jobs",
-    description: "List Codex jobs/threads across statuses, including active and inactive jobs.",
+    description: "List worker jobs/threads across statuses, including active and inactive jobs.",
     uiEffects: [{ kind: "refreshThreads", description: "Keeps the run list current." }]
   },
   {
@@ -316,7 +316,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "read_job",
     label: "Read job",
-    description: "Read one specific Codex job/thread in detail by thread id.",
+    description: "Read one specific worker job/thread in detail by thread id.",
     uiEffects: [{ kind: "refreshThread", description: "Loads the latest run transcript into Butler." }]
   },
   {
@@ -328,22 +328,22 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "read_project",
     label: "Read group",
-    description: "Read the current summary for one workstream group and its tracked Codex threads.",
+    description: "Read the current summary for one workstream group and its tracked worker threads.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while inspecting one workstream group." }]
   },
   {
     name: "supervisor_overview",
     label: "Supervisor overview",
-    description: "Return the top-level supervisor summary across all tracked Codex workstream groups and threads.",
+    description: "Return the top-level supervisor summary across all tracked worker workstream groups and threads.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler anchored in the main supervisor thread." }]
   },
   {
-    name: "delegate_to_codex",
+    name: "delegate_to_worker",
     label: "Delegate to worker",
     description: "Start a worker workstream using the operator's authenticated-provider model selection and defaults.",
     uiEffects: [
-      { kind: "openWindow", description: "Opens the delegated Codex workstream as a tab." },
-      { kind: "focusWindow", description: "Moves focus into the new Codex workstream." }
+      { kind: "openWindow", description: "Opens the delegated worker workstream as a tab." },
+      { kind: "focusWindow", description: "Moves focus into the new worker workstream." }
     ]
   },
   {
@@ -385,16 +385,16 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "run_supervision_smoke_test",
     label: "Run supervision smoke test",
-    description: "Start a synthetic Codex job to verify Butler can privately steer worker callbacks.",
+    description: "Start a synthetic worker job to verify Butler can privately steer worker callbacks.",
     uiEffects: [
-      { kind: "openWindow", description: "Opens the synthetic Codex workstream as a tab." },
-      { kind: "focusWindow", description: "Moves focus into the synthetic Codex workstream." }
+      { kind: "openWindow", description: "Opens the synthetic worker workstream as a tab." },
+      { kind: "focusWindow", description: "Moves focus into the synthetic worker workstream." }
     ]
   },
   {
     name: "open_job_window",
     label: "Open job window",
-    description: "Open a focused job window in the Butler UI for a specific Codex job.",
+    description: "Open a focused job window in the Butler UI for a specific worker job.",
     uiEffects: [
       { kind: "openWindow", description: "Opens the selected run as a tab." },
       { kind: "focusWindow", description: "Moves Butler focus into that run." }
@@ -439,7 +439,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "message_job",
     label: "Message job",
-    description: "Privately send a non-checklist follow-up instruction into one Codex job thread, optionally refreshing a completed checklist for new work, and explicitly decide how the next worker report should be handled.",
+    description: "Privately send a non-checklist follow-up instruction into one worker job thread, optionally refreshing a completed checklist for new work, and explicitly decide how the next worker report should be handled.",
     uiEffects: [{ kind: "refreshThread", description: "Refreshes the target run after Butler steers it." }]
   },
   {
@@ -451,7 +451,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "delete_job",
     label: "Delete job",
-    description: "Permanently delete one Codex job thread and its local session artifacts.",
+    description: "Permanently delete one worker job thread and its local session artifacts.",
     uiEffects: [
       { kind: "removeThread", description: "Removes the run from the list." },
       { kind: "removeThreads", description: "Closes any open tab tied to that run." }
@@ -460,7 +460,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "delete_all_jobs",
     label: "Delete all jobs",
-    description: "Permanently delete all Codex job threads and their local session artifacts.",
+    description: "Permanently delete all worker job threads and their local session artifacts.",
     uiEffects: [
       { kind: "removeThreads", description: "Clears the run list and closes all run tabs." },
       { kind: "focusButler", description: "Returns the UI to Butler after cleanup." }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { cleanupFailedCodexStart } from "../../src/server/codex-failed-start-cleanup.js";
+import { cleanupFailedCodexStart, rejectFailedCodexStart } from "../../src/server/codex-failed-start-cleanup.js";
 
 function cleanupOptions(events: string[]) {
   return {
@@ -53,4 +53,16 @@ test("failed Codex durable cleanup restores the tombstone and capability before 
     "flush-state",
     "restore-capability"
   ]);
+});
+
+test("failed Codex harness start errors keep Worker as the execution role", async () => {
+  await assert.rejects(
+    () => rejectFailedCodexStart(new Error("start failed"), async () => { throw new Error("cleanup failed"); }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.match(error.message, /Worker start through the Codex harness failed/);
+      assert.doesNotMatch(error.message, /Codex Worker/);
+      return true;
+    }
+  );
 });

@@ -56,7 +56,7 @@ function access(overrides: Record<string, unknown> = {}) {
   const piUpdates: Array<{ model: string; effort: string | null }> = [];
   const started: string[] = [];
   const piStarts: Array<{ provider?: string | null; model?: string | null; effort?: string | null }> = [];
-  const affinityRecords: Array<{ provider: string; model: string; effort?: string | null }> = [];
+  const affinityRecords: Array<{ harness: string; provider: string; model: string; effort?: string | null }> = [];
   return {
     codexUpdates,
     piUpdates,
@@ -118,7 +118,7 @@ function access(overrides: Record<string, unknown> = {}) {
         async loadThread() {}
       },
       getCodexAuthStatus: () => ({ loggedIn: true }),
-      recordSuccessfulWorkerSelection(selection: { provider: string; model: string; effort?: string | null }) {
+      recordSuccessfulWorkerSelection(selection: { harness: string; provider: string; model: string; effort?: string | null }) {
         affinityRecords.push(selection);
       },
       ...overrides
@@ -136,12 +136,138 @@ test("worker compose defaults to Pi RPC models when Pi runtime is forced", () =>
   });
 });
 
+test("worker compose does not repeat an already provider-qualified Pi model", () => {
+  const ctx = access({
+    piRpcWorkerClient: {
+      getConnectionState() {
+        return {
+          compose: {
+            provider: "ollama-cloud",
+            model: "ollama-cloud/glm-5.2",
+            effort: "high",
+            availableModels: [
+              { id: "ollama-cloud/glm-5.2", label: "GLM 5.2", provider: "ollama-cloud", supportsReasoning: true, supportedThinkingLevels: ["high"], supportedReasoningEfforts: ["high"], defaultReasoningEffort: "high" }
+            ]
+          }
+        };
+      }
+    }
+  });
+
+  const compose = getUnifiedWorkerCompose(ctx.access, null, null, "pi-rpc");
+
+  assert.equal(compose.model, "ollama-cloud/glm-5.2");
+  assert.deepEqual(compose.availableModels.map((model) => model.id), ["ollama-cloud/glm-5.2"]);
+});
+
+test("duplicate provider and model routes stay selectable by explicit harness", async () => {
+  const starts: string[] = [];
+  const duplicate = "openai-codex/shared-model";
+  const ctx = access({
+    codexClient: {
+      getConnectionState() {
+        return {
+          compose: {
+            model: duplicate,
+            effort: "high",
+            availableModels: [
+              { id: duplicate, label: "Shared model", provider: null, supportsReasoning: true, supportedThinkingLevels: ["high"], supportedReasoningEfforts: ["high"], defaultReasoningEffort: "high" }
+            ]
+          }
+        };
+      },
+      async startThread() {
+        starts.push("codex");
+        return { threadId: "codex-shared", turnId: "codex-turn" };
+      }
+    },
+    piRpcWorkerClient: {
+      getConnectionState() {
+        return {
+          compose: {
+            provider: "openai-codex",
+            model: duplicate,
+            effort: "high",
+            availableModels: [
+              { id: duplicate, label: "Shared model", provider: "openai-codex", supportsReasoning: true, supportedThinkingLevels: ["high"], supportedReasoningEfforts: ["high"], defaultReasoningEffort: "high" }
+            ]
+          }
+        };
+      },
+      async startThread() {
+        starts.push("pi");
+        return { threadId: "pi-shared", turnId: "pi-turn" };
+      }
+    }
+  });
+
+  await withEnvAsync({ MANOR_OLLAMA_CLOUD_PROVIDER_ID: "openai-codex", MANOR_WORKER_MODEL: undefined, MANOR_WORKER_HARNESS: undefined }, async () => {
+    const compose = getUnifiedWorkerCompose(ctx.access);
+    assert.deepEqual(compose.availableModels.map((model) => [model.harness, model.provider, model.id]), [
+      ["codex", "openai-codex", duplicate],
+      ["pi", "openai-codex", duplicate]
+    ]);
+
+    await assert.rejects(
+      () => startWorkerThread(ctx.access, { task: "Ambiguous", model: duplicate }),
+      /Include the Worker harness/
+    );
+    const codex = await startWorkerThread(ctx.access, { task: "Use Codex", harness: "codex", model: duplicate });
+    const pi = await startWorkerThread(ctx.access, { task: "Use Pi", harness: "pi", model: duplicate });
+
+    assert.equal(codex.harness, "codex");
+    assert.equal(pi.harness, "pi");
+    assert.deepEqual(starts, ["codex", "pi"]);
+  });
+});
+
 test("worker compose resolves auto runtime from the selected Pi RPC model", () => {
   const ctx = access();
   withEnv({ MANOR_WORKER_MODEL: "ollama-cloud/glm-5.2" }, () => {
     const compose = getUnifiedWorkerCompose(ctx.access);
     assert.equal(compose.runtime, "pi-rpc");
     assert.equal(compose.model, "ollama-cloud/glm-5.2");
+  });
+});
+
+test("configured Worker provider selects its provider default for first choice", () => {
+  const ctx = access();
+  withEnv({ MANOR_WORKER_PROVIDER: "ollama-cloud", MANOR_WORKER_MODEL: undefined }, () => {
+    const compose = getUnifiedWorkerCompose(ctx.access);
+    assert.equal(compose.runtime, "pi-rpc");
+    assert.equal(compose.harness, "pi");
+    assert.equal(compose.provider, "ollama-cloud");
+    assert.equal(compose.model, "ollama-cloud/glm-5.2");
+  });
+});
+
+test("configured Worker harness selects its harness default when no model is configured", () => {
+  const ctx = access();
+  withEnv({ MANOR_WORKER_HARNESS: "pi", MANOR_WORKER_PROVIDER: "openai-codex", MANOR_WORKER_MODEL: undefined }, () => {
+    const compose = getUnifiedWorkerCompose(ctx.access);
+    assert.equal(compose.runtime, "pi-rpc");
+    assert.equal(compose.harness, "pi");
+    assert.equal(compose.provider, "ollama-cloud");
+    assert.equal(compose.model, "ollama-cloud/glm-5.2");
+  });
+});
+
+test("successful Worker affinity stays ahead of the configured provider default", () => {
+  const ctx = access({
+    getWorkerAffinity: () => ({
+      hasSuccessfulDelegation: true,
+      lastProvider: "openai-codex",
+      modelByProvider: { "openai-codex": "gpt-5-codex" },
+      effortByProvider: { "openai-codex": "medium" },
+      updatedAt: 1
+    })
+  });
+  withEnv({ MANOR_WORKER_HARNESS: "pi", MANOR_WORKER_PROVIDER: "ollama-cloud", MANOR_WORKER_MODEL: undefined }, () => {
+    const compose = getUnifiedWorkerCompose(ctx.access);
+    assert.equal(compose.runtime, "openai");
+    assert.equal(compose.harness, "codex");
+    assert.equal(compose.provider, "openai-codex");
+    assert.equal(compose.model, "gpt-5-codex");
   });
 });
 
@@ -424,6 +550,7 @@ test("startWorkerThread applies Ollama Cloud model before starting Pi RPC", asyn
       threadId: "pi-thread",
       turnId: null,
       runtime: "pi-rpc",
+      harness: "pi",
       provider: "ollama-cloud",
       model: "ollama-cloud/glm-5.2",
       effort: "high"
@@ -431,7 +558,7 @@ test("startWorkerThread applies Ollama Cloud model before starting Pi RPC", asyn
     assert.deepEqual(ctx.piUpdates, []);
     assert.deepEqual(ctx.piStarts, [{ provider: "ollama-cloud", model: "ollama-cloud/glm-5.2", effort: "high" }]);
     assert.deepEqual(ctx.started, ["pi-rpc"]);
-    assert.deepEqual(ctx.affinityRecords, [{ provider: "ollama-cloud", model: "ollama-cloud/glm-5.2", effort: "high" }]);
+    assert.deepEqual(ctx.affinityRecords, [{ harness: "pi", provider: "ollama-cloud", model: "ollama-cloud/glm-5.2", effort: "high" }]);
   });
 });
 
@@ -446,7 +573,7 @@ test("startWorkerThread preserves an explicit null effort through unified routin
 
   assert.equal(result.effort, null);
   assert.deepEqual(ctx.piStarts, [{ provider: "ollama-cloud", model: "ollama-cloud/glm-5.2", effort: null }]);
-  assert.deepEqual(ctx.affinityRecords, [{ provider: "ollama-cloud", model: "ollama-cloud/glm-5.2", effort: null }]);
+  assert.deepEqual(ctx.affinityRecords, [{ harness: "pi", provider: "ollama-cloud", model: "ollama-cloud/glm-5.2", effort: null }]);
 });
 
 test("startWorkerThread can defer provider affinity until a larger transaction commits", async () => {
@@ -471,6 +598,7 @@ test("startWorkerThread auto routes around unauthenticated Codex and reports the
       threadId: "pi-thread",
       turnId: null,
       runtime: "pi-rpc",
+      harness: "pi",
       provider: "ollama-cloud",
       model: "ollama-cloud/glm-5.2",
       effort: "high"
@@ -514,6 +642,7 @@ test("startWorkerThread sends manifest-supported xhigh for regular OpenAI GPT wh
       threadId: "codex-thread",
       turnId: "turn-1",
       runtime: "openai",
+      harness: "codex",
       provider: "openai-codex",
       model: "gpt-5.5",
       effort: "xhigh"

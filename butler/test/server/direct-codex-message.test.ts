@@ -762,7 +762,7 @@ test("direct Codex transcript backfill pairs hidden follow-up callbacks to prior
   assert.equal(messages[0]?.at, Date.parse("2026-06-15T13:00:00.500Z") + 1);
 });
 
-test("delegated Codex instructions define memory read and write boundaries", async () => {
+test("delegated worker instructions define provider-neutral memory and shell boundaries", async () => {
   const store = await createStore();
   const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-session-"));
   const agent = createButlerAgent(store, sessionDir) as unknown as {
@@ -783,4 +783,6 @@ test("delegated Codex instructions define memory read and write boundaries", asy
   assert.match(instructions, /Skip memory reads for clearly self-contained mechanical work/);
   assert.match(instructions, /Write memory only when it will help a future worker/);
   assert.match(instructions, /Do not write routine progress/);
+  assert.match(instructions, /worker shell/);
+  assert.doesNotMatch(instructions, /Codex worker|Codex-shell/);
 });

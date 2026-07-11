@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ModelOption } from "../../src/server/types.js";
-import { resolveProviderSettingsParam, resolveSettingsModelValue } from "../../src/web/SettingsDashboard.js";
+import { resolveProviderSettingsParam, resolveSettingsModelValue, resolveWorkerSettingsSelection } from "../../src/web/SettingsDashboard.js";
+import { workerModelPickerOption } from "../../src/web/worker-route.js";
 
-function model(id: string, provider: string): ModelOption {
+function model(id: string, provider: string, harness: "codex" | "pi" | null = null): ModelOption {
   return {
     id,
     label: id,
     provider,
+    harness,
     supportsReasoning: false,
     supportedThinkingLevels: [],
     supportedReasoningEfforts: [],
@@ -43,4 +45,19 @@ test("settings preserves an exact provider-qualified model", () => {
 test("settings maps custom provider ids to their provider remediation tab", () => {
   assert.equal(resolveProviderSettingsParam("custom-go", { "custom-go": "opencode" }), "opencode");
   assert.equal(resolveProviderSettingsParam("unknown", {}), null);
+});
+
+test("Worker defaults preserve the harness when provider and model are duplicated", () => {
+  const codex = model("openai-codex/shared-model", "openai-codex", "codex");
+  const pi = model("openai-codex/shared-model", "openai-codex", "pi");
+  const piOption = workerModelPickerOption(pi);
+
+  assert.deepEqual(resolveWorkerSettingsSelection(piOption.selectionId, [codex, pi]), {
+    defaultModel: "openai-codex/shared-model",
+    defaultHarness: "pi"
+  });
+  assert.deepEqual(resolveWorkerSettingsSelection(null, [codex, pi]), {
+    defaultModel: null,
+    defaultHarness: null
+  });
 });

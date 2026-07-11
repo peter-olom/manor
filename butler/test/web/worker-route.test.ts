@@ -1,15 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { workerProviderForModelLabel, workerProviderLabel, workerRuntimeForModel, workerRuntimeLabel } from "../../src/web/worker-route";
+import { modelOptionSelectionValue, modelOptionValue } from "../../src/web/ModelPicker";
+import {
+  isSameWorkerRoute,
+  workerHarnessForModel,
+  workerHarnessLabel,
+  workerModelForRoute,
+  workerModelForSelection,
+  workerModelLabel,
+  workerModelPickerOption,
+  workerModelSelectionId,
+  workerProviderForModelLabel,
+  workerProviderLabel
+} from "../../src/web/worker-route";
 
-import type { PairCodexModelOption } from "../../src/shared/pairing";
+import type { PairModelOption, PairWorkerHarness } from "../../src/shared/pairing";
 
-function model(provider: string | null): PairCodexModelOption {
+function model(provider: string | null, harness: PairWorkerHarness | null, label = "Model"): PairModelOption {
   return {
     id: "model",
-    label: "Model",
+    label,
     provider,
+    harness,
     supportedReasoningEfforts: [],
     defaultReasoningEffort: null
   };
@@ -17,15 +30,41 @@ function model(provider: string | null): PairCodexModelOption {
 
 test("missing persisted worker identity stays visibly unknown", () => {
   assert.equal(workerProviderLabel(null), "Unknown provider");
-  assert.equal(workerRuntimeLabel(null), "Unknown harness");
+  assert.equal(workerHarnessLabel(null), "Unknown harness");
 });
 
-test("Codex maps explicitly while configured non-OpenAI worker provider ids use Pi", () => {
-  assert.equal(workerProviderForModelLabel(model(null)), "OpenAI / Codex");
-  assert.equal(workerRuntimeForModel(model(null)), "openai");
-  assert.equal(workerRuntimeForModel(model("openai-codex")), "openai");
-  assert.equal(workerRuntimeForModel(model("ollama-local")), "pi-rpc");
-  assert.equal(workerRuntimeForModel(model("ollama-cloud")), "pi-rpc");
-  assert.equal(workerRuntimeForModel(model("opencode-go")), "pi-rpc");
-  assert.equal(workerRuntimeForModel(model("custom-ollama-cloud")), "pi-rpc");
+test("duplicate provider and model ids remain distinct across Worker harnesses", () => {
+  const codex = model("openai-codex", "codex", "Model through Codex");
+  const pi = model("openai-codex", "pi", "Model through Pi");
+  const models = [codex, pi];
+  const codexOption = workerModelPickerOption(codex);
+  const piOption = workerModelPickerOption(pi);
+
+  assert.notEqual(workerModelSelectionId(codex), workerModelSelectionId(pi));
+  assert.notEqual(modelOptionValue(codexOption), modelOptionValue(piOption));
+  assert.equal(modelOptionSelectionValue(piOption), piOption.selectionId);
+  assert.equal(workerModelForSelection(models, modelOptionValue(piOption)), pi);
+  assert.equal(workerModelForRoute(models, "model", "codex"), codex);
+  assert.equal(workerModelForRoute([pi], "model", "codex"), null);
+  assert.equal(workerModelLabel(models, "model", "pi"), "Model through Pi");
+  assert.equal(isSameWorkerRoute(pi, "model", "codex"), false);
+  assert.equal(codexOption.hint, "Codex harness");
+  assert.equal(piOption.hint, "Pi harness");
+});
+
+test("picker selection ids do not change legacy option values", () => {
+  const option = { id: "model", label: "Model", provider: "openai-codex" };
+  assert.equal(modelOptionValue(option), "openai-codex/model");
+  assert.equal(modelOptionSelectionValue(option), "model");
+});
+
+test("worker harness identity is explicit and independent from provider", () => {
+  assert.equal(workerProviderForModelLabel(model(null, "codex")), "Unknown provider");
+  assert.equal(workerHarnessForModel(model("openai-codex", "codex")), "codex");
+  assert.equal(workerHarnessForModel(model("openai-codex", "pi")), "pi");
+  assert.equal(workerHarnessForModel(model("ollama-cloud", "pi")), "pi");
+  assert.equal(workerHarnessForModel(model("custom-provider", "custom-harness")), "custom-harness");
+  assert.equal(workerHarnessForModel(model("ollama-cloud", null)), null);
+  assert.equal(workerHarnessLabel("codex"), "Codex");
+  assert.equal(workerHarnessLabel("pi"), "Pi");
 });

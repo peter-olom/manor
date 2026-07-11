@@ -12,13 +12,15 @@ import {
   remapJobPayloadForWorkerHandoff
 } from "./job-instruction-artifacts.js";
 import type { ButlerDelegationAttachmentAcknowledgement } from "./butler-agent-options.js";
-import { resolveWorkspaceBranchName } from "./repo-worktree.js";
+import { ensureManagedWorktreeWritableForWorker, resolveWorkspaceBranchName } from "./repo-worktree.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { CodexThreadExecutionContractView, ReasoningEffort } from "./types.js";
-import { deleteWorkerThread, startWorkerThread, type WorkerClientAccess, type WorkerThreadStartResult } from "./worker-client-router.js";
+import { deleteWorkerThread, resolveThreadWorkerRuntime, startWorkerThread, type WorkerClientAccess, type WorkerRuntime, type WorkerThreadStartResult } from "./worker-client-router.js";
 import { workerFileChangeAttribution } from "./worker-review-attribution.js";
 
 const HANDOFF_TEXT_LIMIT = 4_000;
+
+type WorkspaceOwnershipRepair = (cwd: string) => Promise<void>;
 
 function bounded(value: unknown, limit = HANDOFF_TEXT_LIMIT): string {
   if (value === null || value === undefined) return "";
@@ -32,6 +34,22 @@ function latestWorkerReplyAt(source: ReturnType<ButlerStateStore["getThread"]>):
     if (item.type === "agentMessage" && item.text.trim() && Number.isFinite(item.at)) latest = Math.max(latest ?? 0, item.at);
   }
   return latest;
+}
+
+function workerHarnessDisplayName(harness: string): string {
+  if (harness === "codex") return "Codex";
+  if (harness === "pi") return "Pi";
+  return harness;
+}
+
+async function prepareWorkerHandoffWorkspace(input: {
+  sourceRuntime: WorkerRuntime;
+  targetHarness: string;
+  cwd: string;
+  repairOwnership?: WorkspaceOwnershipRepair;
+}): Promise<void> {
+  if (input.sourceRuntime !== "pi-rpc" || input.targetHarness !== "codex") return;
+  await (input.repairOwnership ?? ensureManagedWorktreeWritableForWorker)(input.cwd);
 }
 
 export function buildWorkerHandoffNotes(store: ButlerStateStore, sourceThreadId: string): string[] {
@@ -90,9 +108,11 @@ export async function startWorkerHandoff(input: {
   access: WorkerClientAccess;
   sourceThreadId: string;
   targetModel: string;
+  targetHarness: string;
   targetEffort: ReasoningEffort | null;
   artifactsDir: string;
   butlerThreadId?: string | null;
+  repairWorkspaceOwnership?: WorkspaceOwnershipRepair;
 }): Promise<WorkerThreadStartResult> {
   const source = input.access.store.getThread(input.sourceThreadId);
   if (!source) throw new Error("The active worker job no longer exists");
@@ -108,6 +128,12 @@ export async function startWorkerHandoff(input: {
   let candidateThreadId: string | null = null;
 
   try {
+    await prepareWorkerHandoffWorkspace({
+      sourceRuntime: resolveThreadWorkerRuntime(input.access, input.sourceThreadId),
+      targetHarness: input.targetHarness,
+      cwd,
+      repairOwnership: input.repairWorkspaceOwnership
+    });
     const result = await startWorkerThread(input.access, {
       task,
       input: async (threadId) => {
@@ -157,6 +183,7 @@ export async function startWorkerHandoff(input: {
       effort: input.targetEffort,
       openWindow: true,
       runtime: "auto",
+      harness: input.targetHarness,
       model: input.targetModel,
       recordSelection: false
     });
@@ -185,6 +212,7 @@ export async function handoffWorkerAtomically(input: {
   access: WorkerClientAccess;
   sourceThreadId: string;
   targetModel: string;
+  targetHarness: string;
   targetEffort: ReasoningEffort | null;
   artifactsDir: string;
   butlerThreadId?: string | null;
@@ -211,22 +239,23 @@ export async function handoffWorkerAtomically(input: {
         access: input.access,
         sourceThreadId: input.sourceThreadId,
         targetModel: input.targetModel,
+        targetHarness: input.targetHarness,
         targetEffort: input.targetEffort,
         artifactsDir: input.artifactsDir,
         butlerThreadId: input.butlerThreadId ?? null
       });
       await input.trackCallback(result.threadId);
       const route = result.model?.startsWith(`${result.provider}/`) ? result.model : `${result.provider ?? "the selected provider"}/${result.model ?? "default"}`;
-      const text = `Switched worker ${input.sourceThreadId} to ${route} in job ${result.threadId}. The previous work and review baseline were handed over.`;
+      const text = `Switched Worker ${input.sourceThreadId} to ${route} using the ${workerHarnessDisplayName(result.harness)} harness in job ${result.threadId}. The previous work and review baseline were handed over.`;
       const at = Date.now();
       attachment = input.attach(result, text, at);
       await input.removeCallback(input.sourceThreadId);
       sourceCallbackRemoved = true;
       input.post(result.threadId, text, at);
-      input.access.store.addEvent(input.sourceThreadId, "butler.worker.handed_off", `Handed off to worker ${result.threadId}.`);
-      input.access.store.addEvent(result.threadId, "butler.worker.handoff_started", `Continued worker ${input.sourceThreadId}.`);
+      input.access.store.addEvent(input.sourceThreadId, "butler.worker.handed_off", `Handed off to Worker ${result.threadId}.`);
+      input.access.store.addEvent(result.threadId, "butler.worker.handoff_started", `Continued Worker ${input.sourceThreadId}.`);
       if (result.provider && result.model) {
-        input.access.recordSuccessfulWorkerSelection?.({ provider: result.provider, model: result.model, effort: result.effort });
+        input.access.recordSuccessfulWorkerSelection?.({ harness: result.harness, provider: result.provider, model: result.model, effort: result.effort });
       }
       return result;
     } catch (error) {

@@ -34,7 +34,7 @@ export function formatHarnessExecutionContract(thread: CodexThreadRecord): strin
 
 export function formatHarnessRuntimeModel(): string[] {
   return [
-    "Runtime model: use Codex-shell for repository and code work; use manor-harness only when the task needs a running app, disposable dependency, browser interaction, or durable proof.",
+    "Runtime model: use the Worker shell for repository and code work; use manor-harness only when the task needs a running app, disposable dependency, browser interaction, or durable proof.",
     "Previews run app code. Services provide supporting infrastructure such as databases, queues, object storage, or mail capture.",
     "Browser-use sessions already capture tracing, video, a ready screenshot, a final screenshot, and per-action screenshots unless you disable auto-capture.",
     "Any job with UI implications must surface visual feedback. Record screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are not enough.",
