@@ -16,7 +16,7 @@ import { buildWorkerInputWithReferences } from "./reference-inputs.js";
 import { commitSelfImprovementRequest, discardSelfImprovementRequest, openSelfImprovementPullRequest } from "./self-improvement-actions.js";
 import { getSelfImprovementRequestState } from "./self-improvement-request-state.js";
 import { listWorkspaceProjectDirectories } from "./repo-worktree.js";
-import { deleteAllWorkerThreads, deleteWorkerThread, loadWorkerThread, sendWorkerMessage } from "./worker-client-router.js";
+import { deleteAllWorkerThreads, deleteWorkerThread, loadWorkerThread, sendWorkerMessage, stopWorkerThread } from "./worker-client-router.js";
 
 export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
   return [
@@ -199,6 +199,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
           sourceProjectLabel: sourceThread?.supervisor.projectLabel ?? null,
           createdBy: "butler"
         });
+        await requestState.flush();
         if (sourceThread) {
           access.store.addEvent(sourceThread.id, "butler.self_improvement.requested", `Queued self-improvement request ${request.id}.`);
         }
@@ -220,10 +221,10 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
     }),
     access.defineButlerTool({
       name: "discard_self_improvement",
-      label: "Discard self-improvement",
-      description: "Discard an approved self-improvement session and remove its isolated local changes after an explicit operator request.",
+      label: "Close self-improvement",
+      description: "Stop tracking an approved self-improvement session while leaving the active source checkout unchanged.",
       promptSnippet:
-        "discard_self_improvement: use only when the operator explicitly asks to discard a self-improvement request's local changes. Requires the request id.",
+        "discard_self_improvement: use only when the operator explicitly asks to close a self-improvement request. This stops its Worker and closes the request without reverting source changes. Requires the request id.",
       parameters: Type.Object({
         requestId: Type.String({ minLength: 1 })
       }),
@@ -231,9 +232,9 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       execute: async (_toolCallId, params) => {
         const typedParams = params as { requestId: string };
         const request = await discardSelfImprovementRequest(getSelfImprovementRequestState(), access, typedParams.requestId.trim());
-        if (request.threadId) access.store.addEvent(request.threadId, "butler.self_improvement.discarded", `Discarded self-improvement request ${request.id}.`);
+        if (request.threadId) access.store.addEvent(request.threadId, "butler.self_improvement.discarded", `Closed self-improvement request ${request.id}.`);
         return {
-          content: [{ type: "text", text: `Discarded self-improvement request ${request.id}.` }],
+          content: [{ type: "text", text: `Closed self-improvement request ${request.id}. Source changes were left untouched.` }],
           details: { request }
         };
       }
@@ -241,9 +242,9 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
     access.defineButlerTool({
       name: "commit_self_improvement",
       label: "Commit self-improvement",
-      description: "Commit approved self-improvement local changes after an explicit operator request.",
+      description: "Commit all current changes in the active Manor checkout after an explicit operator request.",
       promptSnippet:
-        "commit_self_improvement: use only when the operator explicitly asks to commit approved self-improvement changes locally. Requires the request id and commit message.",
+        "commit_self_improvement: use only when the operator explicitly asks to commit the active Manor checkout. This stages every current checkout change. Requires the request id and commit message.",
       parameters: Type.Object({
         requestId: Type.String({ minLength: 1 }),
         message: Type.String({ minLength: 1 })
@@ -736,6 +737,27 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
             thread: access.store.getThread(typedParams.threadId) ?? null,
             supervision: access.store.getThreadSupervision(typedParams.threadId)
           }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "stop_job",
+      label: "Stop job",
+      description: "Immediately stop one active Worker job without deleting its thread or starting a replacement.",
+      promptSnippet: "stop_job: when the operator says stop, cancel, interrupt, or pause a Worker, call this immediately before inspecting or reporting the job. Do not send another Worker message or start a replacement unless the operator asks.",
+      parameters: Type.Object({
+        threadId: Type.String()
+      }),
+      uiEffects: access.getToolUiEffects("stop_job"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as { threadId: string };
+        const stopped = await stopWorkerThread(access, typedParams.threadId);
+        await access.removeExternalWorkerDelegation?.(typedParams.threadId);
+        access.store.addEvent(typedParams.threadId, "butler.worker.stopped_by_operator", stopped ? "Stopped at the operator's request." : "The operator requested a stop after the Worker was already idle.");
+        await access.store.flushSave();
+        return {
+          content: [{ type: "text", text: stopped ? `Stopped job ${typedParams.threadId}.` : `Job ${typedParams.threadId} was already stopped.` }],
+          details: { stopped, thread: access.store.getThread(typedParams.threadId) ?? null }
         };
       }
     }),

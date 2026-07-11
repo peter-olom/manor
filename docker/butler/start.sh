@@ -4,9 +4,6 @@ set -euo pipefail
 
 mkdir -p "${CODEX_HOME:-$HOME/.codex}" "${PI_AGENT_DIR:-$HOME/.pi/agent}" /state /repos /artifacts
 
-/usr/local/bin/manor-codex-auto-update
-/usr/local/bin/manor-pi-auto-update
-
 /usr/local/bin/butler-auth bootstrap
 
 ttyd_port="${BUTLER_TTYD_PORT:-7682}"
@@ -74,7 +71,8 @@ ttyd_pid=$!
 
 if [ "${BUTLER_HOT_RELOAD:-1}" = "1" ]; then
   if [ ! -d node_modules ] || [ ! -x node_modules/.bin/tsx ] || [ ! -x node_modules/.bin/vite ]; then
-    npm install --include=dev --no-package-lock
+    echo "Butler development dependencies are missing. Rebuild Manor from source." >&2
+    exit 70
   fi
 
   setsid npm run dev:start &

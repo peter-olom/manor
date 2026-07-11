@@ -6,9 +6,23 @@ import test from "node:test";
 
 import { buildButlerDelegationContract } from "../../src/server/butler-agent-delegation-contract-builder.js";
 import { buildJobPayload, parseJobPayload, remapJobPayloadForWorkerHandoff, updateJobPayload } from "../../src/server/job-instruction-artifacts.js";
+import { configureSelfImprovementRequestState, isClosedSelfImprovementWorkerThread, SelfImprovementRequestState } from "../../src/server/self-improvement-request-state.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
 import { buildWorkerHandoffNotes, buildWorkerHandoffPrompt, handoffWorkerAtomically, startWorkerHandoff } from "../../src/server/worker-handoff.js";
+
+function selfImprovementInput() {
+  return {
+    trigger: "Worker handoff needs repair.",
+    symptoms: "The active self-improvement Worker cannot switch harnesses.",
+    logs: "source checkout reservation rejected replacement Worker",
+    observations: "The reservation remains bound to the previous Worker thread.",
+    suspectedCause: "Worker handoff does not transfer checkout ownership.",
+    proposedChange: "Transfer the reservation as part of the atomic handoff.",
+    risk: "A failed handoff could leave the reservation on the wrong Worker.",
+    desiredOutcome: "The replacement Worker exclusively owns the source checkout."
+  };
+}
 
 test("a cold handoff prompt carries the task boundary even when the latest directive is only progress", () => {
   const prompt = buildWorkerHandoffPrompt({
@@ -195,7 +209,250 @@ test("a Pi to Codex handoff repairs workspace ownership before replacement", asy
     }), /ownership repair sentinel/);
 
     assert.deepEqual(repaired, [dir]);
+    await store.flushSave();
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a self-improvement handoff transfers the source reservation to the replacement Worker", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-worker-handoff-self-improvement-"));
+  const requestState = new SelfImprovementRequestState(path.join(dir, "requests.json"), () => undefined, () => undefined);
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  let requestId: string | null = null;
+  try {
+    await requestState.load();
+    configureSelfImprovementRequestState(requestState);
+    store.upsertThreadSummary({ id: "source-worker", status: "idle", cwd: dir, turns: [] });
+    store.setThreadExecutionContract("source-worker", buildThreadExecutionContract({
+      threadId: "source-worker",
+      workspaceCwd: dir,
+      projectId: "manor",
+      projectLabel: "Manor",
+      branch: "main",
+      taskText: "Repair Manor Worker handoff",
+      notes: []
+    }));
+    const request = requestState.create(selfImprovementInput());
+    requestId = request.id;
+    requestState.update(request.id, {
+      status: "changes_ready",
+      threadId: "source-worker",
+      pairId: "self-improvement-pair",
+      workspaceCwd: dir,
+      completedAt: 123,
+      commitSha: "old-commit",
+      pullRequestUrl: "https://example.test/old-pr"
+    });
+    await requestState.flush();
+    let replacementWasAuthorized = false;
+    let pairAttachmentFlushed = false;
+
+    const result = await handoffWorkerAtomically({
+      access: { store } as never,
+      sourceThreadId: "source-worker",
+      targetHarness: "pi",
+      targetModel: "ollama-cloud/glm-5.2",
+      targetEffort: "high",
+      artifactsDir: dir,
+      startHandoff: (handoffInput) => startWorkerHandoff({
+        ...handoffInput,
+        startWorker: async (_access, options) => {
+          replacementWasAuthorized = options.ownsManorSourceCheckoutReservation === true;
+          const threadId = "replacement-worker";
+          store.upsertThreadSummary({ id: threadId, status: "idle", cwd: dir, turns: [] });
+          if (typeof options.input === "function") await options.input(threadId);
+          return {
+            threadId,
+            turnId: "replacement-turn",
+            runtime: "pi-rpc",
+            harness: "pi",
+            provider: "ollama-cloud",
+            model: "ollama-cloud/glm-5.2",
+            effort: "high"
+          };
+        }
+      }),
+      trackCallback: async () => undefined,
+      removeCallback: async (threadId) => {
+        if (threadId === "source-worker") assert.equal(pairAttachmentFlushed, true);
+      },
+      attach: () => ({
+        attached: true,
+        flush: async () => { pairAttachmentFlushed = true; }
+      }),
+      post: () => undefined
+    });
+
+    assert.equal(result.threadId, "replacement-worker");
+    assert.equal(replacementWasAuthorized, true);
+    assert.equal(requestState.get(request.id)?.status, "running");
+    assert.equal(requestState.get(request.id)?.threadId, "replacement-worker");
+    assert.equal(requestState.get(request.id)?.pairId, "self-improvement-pair");
+    assert.equal(requestState.get(request.id)?.completedAt, null);
+    assert.equal(requestState.get(request.id)?.commitSha, null);
+    assert.equal(requestState.get(request.id)?.pullRequestUrl, null);
+    assert.equal(store.isWorkerThreadRetired("source-worker"), true);
+    requestState.update(request.id, { status: "discarded" });
+    await requestState.flush();
+    assert.equal(isClosedSelfImprovementWorkerThread("source-worker"), true);
+    assert.equal(isClosedSelfImprovementWorkerThread("replacement-worker"), true);
+  } finally {
+    if (requestId && requestState.get(requestId)) {
+      requestState.update(requestId, { status: "discarded" });
+      await requestState.flush();
+    }
+    await store.flushSave();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed reservation save restores the source Worker before handoff cleanup", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-worker-handoff-reservation-save-"));
+  const requestState = new SelfImprovementRequestState(path.join(dir, "requests.json"), () => undefined, () => undefined);
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  let requestId: string | null = null;
+  try {
+    await requestState.load();
+    configureSelfImprovementRequestState(requestState);
+    store.upsertThreadSummary({ id: "source-worker", status: "idle", cwd: dir, turns: [] });
+    const request = requestState.create(selfImprovementInput());
+    requestId = request.id;
+    requestState.update(request.id, {
+      status: "changes_ready",
+      threadId: "source-worker",
+      pairId: "self-improvement-pair",
+      workspaceCwd: dir,
+      completedAt: 789,
+      commitSha: "source-commit"
+    });
+    await requestState.flush();
+    const durableFlush = requestState.flush.bind(requestState);
+    let rejectNextFlush = true;
+    requestState.flush = async () => {
+      if (rejectNextFlush) {
+        rejectNextFlush = false;
+        throw new Error("reservation persistence failed");
+      }
+      await durableFlush();
+    };
+    const calls: string[] = [];
+
+    await assert.rejects(() => handoffWorkerAtomically({
+      access: { store } as never,
+      sourceThreadId: "source-worker",
+      targetHarness: "pi",
+      targetModel: "ollama-cloud/glm-5.2",
+      targetEffort: "high",
+      artifactsDir: dir,
+      startHandoff: async () => ({
+        threadId: "replacement-worker",
+        turnId: "turn-new",
+        runtime: "pi-rpc",
+        harness: "pi",
+        provider: "ollama-cloud",
+        model: "ollama-cloud/glm-5.2",
+        effort: "high"
+      }),
+      trackCallback: async (threadId) => { calls.push(`track:${threadId}`); },
+      removeCallback: async (threadId) => { calls.push(`remove:${threadId}`); },
+      attach: () => ({ attached: true, rollback: () => { calls.push("rollback"); return true; } }),
+      post: () => { calls.push("post"); },
+      deleteWorker: async (_access, threadId) => { calls.push(`delete:${threadId}`); return {}; }
+    }), /reservation persistence failed/);
+
+    assert.equal(requestState.get(request.id)?.status, "changes_ready");
+    assert.equal(requestState.get(request.id)?.threadId, "source-worker");
+    assert.equal(requestState.get(request.id)?.completedAt, 789);
+    assert.equal(requestState.get(request.id)?.commitSha, "source-commit");
+    assert.deepEqual(calls, [
+      "track:replacement-worker",
+      "rollback",
+      "remove:replacement-worker",
+      "delete:replacement-worker"
+    ]);
+  } finally {
+    if (requestId && requestState.get(requestId)) {
+      requestState.update(requestId, { status: "discarded" });
+      await requestState.flush();
+    }
+    await store.flushSave();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed pair save restores both the source reservation and pair attachment", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-worker-handoff-pair-save-"));
+  const requestState = new SelfImprovementRequestState(path.join(dir, "requests.json"), () => undefined, () => undefined);
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  let requestId: string | null = null;
+  try {
+    await requestState.load();
+    configureSelfImprovementRequestState(requestState);
+    store.upsertThreadSummary({ id: "source-worker", status: "idle", cwd: dir, turns: [] });
+    const request = requestState.create(selfImprovementInput());
+    requestId = request.id;
+    requestState.update(request.id, {
+      status: "changes_ready",
+      threadId: "source-worker",
+      pairId: "self-improvement-pair",
+      workspaceCwd: dir,
+      completedAt: 987,
+      commitSha: "source-commit"
+    });
+    await requestState.flush();
+    const calls: string[] = [];
+    let flushCount = 0;
+
+    await assert.rejects(() => handoffWorkerAtomically({
+      access: { store } as never,
+      sourceThreadId: "source-worker",
+      targetHarness: "pi",
+      targetModel: "ollama-cloud/glm-5.2",
+      targetEffort: "high",
+      artifactsDir: dir,
+      startHandoff: async () => ({
+        threadId: "replacement-worker",
+        turnId: "turn-new",
+        runtime: "pi-rpc",
+        harness: "pi",
+        provider: "ollama-cloud",
+        model: "ollama-cloud/glm-5.2",
+        effort: "high"
+      }),
+      trackCallback: async (threadId) => { calls.push(`track:${threadId}`); },
+      removeCallback: async (threadId) => { calls.push(`remove:${threadId}`); },
+      attach: () => ({
+        attached: true,
+        rollback: () => { calls.push("rollback"); return true; },
+        flush: async () => {
+          flushCount += 1;
+          calls.push(`flush:${flushCount}`);
+          if (flushCount === 1) throw new Error("pair persistence failed");
+        }
+      }),
+      post: () => { calls.push("post"); },
+      deleteWorker: async (_access, threadId) => { calls.push(`delete:${threadId}`); return {}; }
+    }), /pair persistence failed/);
+
+    assert.equal(requestState.get(request.id)?.status, "changes_ready");
+    assert.equal(requestState.get(request.id)?.threadId, "source-worker");
+    assert.equal(requestState.get(request.id)?.completedAt, 987);
+    assert.equal(requestState.get(request.id)?.commitSha, "source-commit");
+    assert.deepEqual(calls, [
+      "track:replacement-worker",
+      "flush:1",
+      "rollback",
+      "flush:2",
+      "remove:replacement-worker",
+      "delete:replacement-worker"
+    ]);
+  } finally {
+    if (requestId && requestState.get(requestId)) {
+      requestState.update(requestId, { status: "discarded" });
+      await requestState.flush();
+    }
+    await store.flushSave();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -254,15 +511,71 @@ test("a failed attachment rolls back the pair and removes the replacement callba
   }
 });
 
+test("a rejected pair attachment removes the replacement instead of orphaning it", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-worker-handoff-rejected-attachment-"));
+  try {
+    const store = new ButlerStateStore(path.join(dir, "state.json"));
+    store.upsertThreadSummary({ id: "source-worker", status: "idle", turns: [] });
+    const calls: string[] = [];
+
+    await assert.rejects(() => handoffWorkerAtomically({
+      access: { store } as never,
+      sourceThreadId: "source-worker",
+      targetHarness: "pi",
+      targetModel: "ollama-cloud/glm-5.2",
+      targetEffort: "high",
+      artifactsDir: dir,
+      startHandoff: async () => ({
+        threadId: "replacement-worker",
+        turnId: "turn-new",
+        runtime: "pi-rpc",
+        harness: "pi",
+        provider: "ollama-cloud",
+        model: "ollama-cloud/glm-5.2",
+        effort: "high"
+      }),
+      trackCallback: async (threadId) => { calls.push(`track:${threadId}`); },
+      removeCallback: async (threadId) => { calls.push(`remove:${threadId}`); },
+      attach: () => { calls.push("attach:rejected"); return { attached: false }; },
+      post: () => { calls.push("post"); },
+      deleteWorker: async (_access, threadId) => { calls.push(`delete:${threadId}`); return {}; }
+    }), /session changed before the replacement Worker could be attached/);
+
+    assert.deepEqual(calls, [
+      "track:replacement-worker",
+      "attach:rejected",
+      "remove:replacement-worker",
+      "delete:replacement-worker"
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a failure after source callback removal restores source supervision", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "manor-worker-handoff-late-rollback-"));
+  const requestState = new SelfImprovementRequestState(path.join(dir, "requests.json"), () => undefined, () => undefined);
+  let requestId: string | null = null;
   try {
+    await requestState.load();
+    configureSelfImprovementRequestState(requestState);
     const store = new ButlerStateStore(path.join(dir, "state.json"));
     store.upsertThreadSummary({
       id: "source-worker",
       status: "idle",
       turns: [{ id: "turn-source", status: "completed", items: [] }]
     });
+    const request = requestState.create(selfImprovementInput());
+    requestId = request.id;
+    requestState.update(request.id, {
+      status: "changes_ready",
+      threadId: "source-worker",
+      pairId: "self-improvement-pair",
+      workspaceCwd: dir,
+      completedAt: 456,
+      commitSha: "restored-commit"
+    });
+    await requestState.flush();
     const calls: string[] = [];
     const affinity: unknown[] = [];
 
@@ -302,7 +615,16 @@ test("a failure after source callback removal restores source supervision", asyn
       "track:source-worker"
     ]);
     assert.deepEqual(affinity, []);
+    assert.equal(store.isWorkerThreadRetired("source-worker"), false);
+    assert.equal(requestState.get(request.id)?.status, "changes_ready");
+    assert.equal(requestState.get(request.id)?.threadId, "source-worker");
+    assert.equal(requestState.get(request.id)?.completedAt, 456);
+    assert.equal(requestState.get(request.id)?.commitSha, "restored-commit");
   } finally {
+    if (requestId && requestState.get(requestId)) {
+      requestState.update(requestId, { status: "discarded" });
+      await requestState.flush();
+    }
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -340,6 +662,11 @@ test("a committed handoff records its provider affinity after callback and pair 
     });
 
     assert.deepEqual(calls, ["track:replacement-worker", "attach", "remove:source-worker", "post", "record"]);
+    assert.equal(store.isWorkerThreadRetired("source-worker"), true);
+    await store.flushSave();
+    const reloaded = new ButlerStateStore(path.join(dir, "state.json"));
+    await reloaded.load();
+    assert.equal(reloaded.isWorkerThreadRetired("source-worker"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

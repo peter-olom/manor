@@ -22,6 +22,7 @@ const MUTATING_JOB_TOOLS = new Set([
   "request_self_improvement",
   "hold_job_context",
   "message_job",
+  "stop_job",
   "reply_to_operator",
   "delete_job"
 ]);

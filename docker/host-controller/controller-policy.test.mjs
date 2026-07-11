@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   detectRuntimeRestartMode,
   normalizeRestartDelayMs,
+  normalizeRestartWaitTimeoutSeconds,
   safeTokenMatch,
   shouldBuildSourceImages,
   validateImageTag,
@@ -65,13 +66,13 @@ test("runtime mode detection requires explicit source mode", () => {
   assert.equal(detectRuntimeRestartMode(""), "image");
 });
 
-test("source builds are opt-in for current restart and default on for updates", () => {
-  assert.equal(shouldBuildSourceImages({ target: "current", update: false }), false);
-  assert.equal(shouldBuildSourceImages({ target: "current", update: false, build: true }), true);
-  assert.equal(shouldBuildSourceImages({ target: "current", update: false, build: false, gitRef: "main" }), false);
-  assert.equal(shouldBuildSourceImages({ target: "latest", update: false }), true);
-  assert.equal(shouldBuildSourceImages({ target: "current", update: true }), true);
-  assert.equal(shouldBuildSourceImages({ target: "current", update: false, gitRef: "main" }), true);
+test("source restarts build current source by default", () => {
+  assert.equal(shouldBuildSourceImages({ mode: "source", target: "current", update: false }), true);
+  assert.equal(shouldBuildSourceImages({ mode: "source", target: "current", update: false, build: true }), true);
+  assert.equal(shouldBuildSourceImages({ mode: "source", target: "current", update: false, build: false }), false);
+  assert.equal(shouldBuildSourceImages({ mode: "source", target: "latest", update: false }), true);
+  assert.equal(shouldBuildSourceImages({ mode: "source", target: "current", update: true }), true);
+  assert.equal(shouldBuildSourceImages({ mode: "source", target: "current", update: false, gitRef: "main" }), true);
 });
 
 test("restart policy only accepts image tags, not image references", () => {
@@ -94,4 +95,11 @@ test("restart delay is bounded", () => {
   assert.equal(normalizeRestartDelayMs("-10"), 0);
   assert.equal(normalizeRestartDelayMs("999999"), 30000);
   assert.equal(normalizeRestartDelayMs("bad"), 2500);
+});
+
+test("restart health wait is bounded", () => {
+  assert.equal(normalizeRestartWaitTimeoutSeconds("300"), 300);
+  assert.equal(normalizeRestartWaitTimeoutSeconds("1"), 30);
+  assert.equal(normalizeRestartWaitTimeoutSeconds("9999"), 900);
+  assert.equal(normalizeRestartWaitTimeoutSeconds("bad"), 300);
 });

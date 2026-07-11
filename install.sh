@@ -4,9 +4,6 @@ set -euo pipefail
 
 yes_mode=0
 start_after=1
-build_from_source_mode=""
-image_registry_arg=""
-image_tag_arg=""
 
 usage() {
   cat <<'EOF'
@@ -14,13 +11,9 @@ Usage:
   ./install.sh [options]
 
 Options:
-  -y, --yes             Use defaults and do not prompt.
-  --no-start            Write configuration and validate Docker, but do not start Manor.
-  --build-from-source   Build local images from this checkout. This is the default.
-  --use-images          Use packaged images instead of building from source.
-  --image-registry <r>  Packaged image registry namespace. Default: ghcr.io/peter-olom.
-  --image-tag <tag>     Packaged image tag to pull. Default: latest.
-  -h, --help            Show this help.
+  -y, --yes           Use defaults and do not prompt.
+  --no-start          Write and validate configuration without starting Manor.
+  -h, --help          Show this help.
 EOF
 }
 
@@ -33,26 +26,7 @@ while [[ $# -gt 0 ]]; do
       start_after=0
       ;;
     --build-from-source|--source)
-      build_from_source_mode="1"
-      ;;
-    --use-images|--packaged)
-      build_from_source_mode="0"
-      ;;
-    --image-registry)
-      if [[ -z "${2:-}" ]]; then
-        echo "--image-registry requires a value." >&2
-        exit 64
-      fi
-      image_registry_arg="$2"
-      shift
-      ;;
-    --image-tag)
-      if [[ -z "${2:-}" ]]; then
-        echo "--image-tag requires a value." >&2
-        exit 64
-      fi
-      image_tag_arg="$2"
-      shift
+      # Retained as a compatibility no-op. Source builds are always used.
       ;;
     -h|--help)
       usage
@@ -196,10 +170,8 @@ is_placeholder_secret() {
   esac
 }
 
-write_env() {
-  local temp_file=""
-
-  temp_file="$(mktemp)"
+render_env() {
+  local output_file="$1"
 
   if [[ -f "${env_file}" ]]; then
     awk '
@@ -226,7 +198,9 @@ write_env() {
           print
         }
       }
-    ' "${env_file}" > "${temp_file}"
+    ' "${env_file}" > "${output_file}"
+  else
+    : > "${output_file}"
   fi
 
   {
@@ -235,21 +209,10 @@ write_env() {
     if [[ -n "${host_project_source_dir}" ]]; then
       printf 'MANOR_HOST_PROJECT_SOURCE_DIR=%s\n' "${host_project_source_dir}"
     fi
-    printf 'MANOR_BUILD_FROM_SOURCE=%s\n' "${build_from_source}"
-    printf 'MANOR_IMAGE_REGISTRY=%s\n' "${image_registry}"
-    printf 'MANOR_IMAGE_TAG=%s\n' "${image_tag}"
     printf 'CODEX_SERVICE_TIER=%s\n' "${codex_service_tier}"
-    printf 'MANOR_CODEX_AUTO_UPDATE=%s\n' "${codex_auto_update}"
-    printf 'MANOR_CODEX_AUTO_UPDATE_VERSION=%s\n' "${codex_auto_update_version}"
-    printf 'MANOR_CODEX_AUTO_UPDATE_REQUIRED=%s\n' "${codex_auto_update_required}"
-    printf 'MANOR_PI_AUTO_UPDATE=%s\n' "${pi_auto_update}"
-    printf 'MANOR_PI_AUTO_UPDATE_VERSION=%s\n' "${pi_auto_update_version}"
-    printf 'MANOR_PI_AUTO_UPDATE_REQUIRED=%s\n' "${pi_auto_update_required}"
     printf 'RUNTIME_BROKER_TOKEN=%s\n' "${runtime_broker_token}"
     printf 'MANOR_HOST_CONTROLLER_TOKEN=%s\n' "${host_controller_token}"
-  } >> "${temp_file}"
-
-  mv "${temp_file}" "${env_file}"
+  } >> "${output_file}"
 }
 
 require_docker
@@ -271,66 +234,8 @@ else
   host_project_dir="/host-project"
 fi
 
-build_from_source_default="${MANOR_BUILD_FROM_SOURCE:-$(env_value MANOR_BUILD_FROM_SOURCE || true)}"
-build_from_source_default="${build_from_source_mode:-${build_from_source_default:-1}}"
-if [[ -n "${build_from_source_mode}" ]]; then
-  build_from_source="${build_from_source_mode}"
-else
-  build_from_source="$(prompt_bool "Build images from source instead of pulling published images" "${build_from_source_default}")"
-fi
-
-image_registry_default="${MANOR_IMAGE_REGISTRY:-$(env_value MANOR_IMAGE_REGISTRY || true)}"
-image_registry_default="${image_registry_arg:-${image_registry_default:-ghcr.io/peter-olom}}"
-image_tag_default="${MANOR_IMAGE_TAG:-$(env_value MANOR_IMAGE_TAG || true)}"
-image_tag_default="${image_tag_arg:-${image_tag_default:-latest}}"
-
-if [[ "${build_from_source}" = "1" ]]; then
-  image_registry="${image_registry_default}"
-  image_tag="${image_tag_default}"
-else
-  image_registry="$(prompt_value "Image registry namespace" "${image_registry_default}")"
-  image_tag="$(prompt_value "Image tag" "${image_tag_default}")"
-fi
-
-if [[ -z "${image_registry}" || -z "${image_tag}" ]]; then
-  echo "Image registry and tag must not be empty." >&2
-  exit 1
-fi
-
-codex_auto_update_default="${MANOR_CODEX_AUTO_UPDATE:-$(env_value MANOR_CODEX_AUTO_UPDATE || true)}"
-codex_auto_update_default="${codex_auto_update_default:-0}"
-codex_auto_update="$(prompt_bool "Auto-update Codex on Manor reboot" "${codex_auto_update_default}")"
-
 codex_service_tier="${CODEX_SERVICE_TIER:-$(env_value CODEX_SERVICE_TIER || true)}"
 codex_service_tier="${codex_service_tier:-auto}"
-
-codex_auto_update_version="${MANOR_CODEX_AUTO_UPDATE_VERSION:-$(env_value MANOR_CODEX_AUTO_UPDATE_VERSION || true)}"
-codex_auto_update_version="${codex_auto_update_version:-latest}"
-codex_auto_update_required="${MANOR_CODEX_AUTO_UPDATE_REQUIRED:-$(env_value MANOR_CODEX_AUTO_UPDATE_REQUIRED || true)}"
-codex_auto_update_required="${codex_auto_update_required:-0}"
-
-if [[ "${codex_auto_update}" = "1" ]]; then
-  codex_auto_update_version="$(prompt_value "Codex auto-update target" "${codex_auto_update_version}")"
-  codex_auto_update_required="$(prompt_bool "Require Codex auto-update to succeed before startup" "${codex_auto_update_required}")"
-else
-  codex_auto_update_required="0"
-fi
-
-pi_auto_update_default="${MANOR_PI_AUTO_UPDATE:-$(env_value MANOR_PI_AUTO_UPDATE || true)}"
-pi_auto_update_default="${pi_auto_update_default:-0}"
-pi_auto_update="$(prompt_bool "Auto-update PI on Manor reboot" "${pi_auto_update_default}")"
-
-pi_auto_update_version="${MANOR_PI_AUTO_UPDATE_VERSION:-$(env_value MANOR_PI_AUTO_UPDATE_VERSION || true)}"
-pi_auto_update_version="${pi_auto_update_version:-latest}"
-pi_auto_update_required="${MANOR_PI_AUTO_UPDATE_REQUIRED:-$(env_value MANOR_PI_AUTO_UPDATE_REQUIRED || true)}"
-pi_auto_update_required="${pi_auto_update_required:-0}"
-
-if [[ "${pi_auto_update}" = "1" ]]; then
-  pi_auto_update_version="$(prompt_value "PI auto-update target" "${pi_auto_update_version}")"
-  pi_auto_update_required="$(prompt_bool "Require PI auto-update to succeed before startup" "${pi_auto_update_required}")"
-else
-  pi_auto_update_required="0"
-fi
 
 if [[ "${start_after}" -eq 1 ]]; then
   start_after="$(prompt_bool "Start Manor after install" "1")"
@@ -350,31 +255,16 @@ else
   host_controller_token="${host_controller_token_default}"
 fi
 
-write_env
+env_candidate="$(mktemp "${env_file}.tmp.XXXXXX")"
+trap 'rm -f "${env_candidate}"' EXIT
+render_env "${env_candidate}"
 
-compose_args=(-f compose.yml)
-if [[ "${build_from_source}" = "1" ]]; then
-  compose_args+=(-f compose.build.yml)
-fi
-
-run_compose() {
-  docker compose "${compose_args[@]}" "$@"
-}
-
-run_compose config >/dev/null
+docker compose --env-file "${env_candidate}" -f compose.yml -f compose.build.yml config >/dev/null
+mv "${env_candidate}" "${env_file}"
+trap - EXIT
 
 if [[ "${start_after}" -eq 1 ]]; then
-  if [[ "${build_from_source}" = "1" ]]; then
-    run_compose up -d --build
-  else
-    run_compose pull
-    run_compose up -d
-  fi
-  echo "Manor is running on http://127.0.0.1:${butler_host_port}"
+  ./manor-start start
 else
-  if [[ "${build_from_source}" = "1" ]]; then
-    echo "Configuration written. Start Manor with: ./manor.sh start --build"
-  else
-    echo "Configuration written. Start Manor with: ./manor.sh start"
-  fi
+  echo "Configuration written. Start Manor with: ./manor-start"
 fi

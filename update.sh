@@ -43,6 +43,21 @@ require_controller() {
   fi
 }
 
+env_value() {
+  local key="$1"
+  if [[ -f ".env" ]]; then
+    awk -F= -v key="${key}" '
+      $0 !~ /^[[:space:]]*#/ && $1 == key {
+        sub(/^[^=]*=/, "")
+        print
+        found = 1
+        exit
+      }
+      END { if (!found) exit 1 }
+    ' ".env" 2>/dev/null || true
+  fi
+}
+
 json_string() {
   local value="$1"
   value="${value//\\/\\\\}"
@@ -54,8 +69,19 @@ json_string() {
 
 json_field() {
   local json="$1"
-  local field="$2"
-  printf '%s' "${json}" | sed -n "s/.*\"${field}\":\"\\([^\"]*\\)\".*/\\1/p" | head -n 1
+  local field_path="$2"
+  printf '%s' "${json}" | docker exec -i manor-host-controller node -e '
+    let input = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { input += chunk; });
+    process.stdin.on("end", () => {
+      try {
+        let value = JSON.parse(input);
+        for (const key of process.argv[1].split(".")) value = value?.[key];
+        if (value !== undefined && value !== null) process.stdout.write(String(value));
+      } catch {}
+    });
+  ' "${field_path}" 2>/dev/null || true
 }
 
 controller_curl() {
@@ -64,14 +90,14 @@ controller_curl() {
   local payload="${3:-}"
   if [[ -n "${payload}" ]]; then
     docker exec -e MANOR_RESTART_PAYLOAD="${payload}" manor-host-controller sh -lc \
-      "curl --silent --show-error --fail-with-body -X ${method} \
+      "curl --silent --show-error --fail-with-body --connect-timeout 2 --max-time 5 -X ${method} \
         -H 'content-type: application/json' \
         -H \"x-manor-host-controller-token: \${MANOR_HOST_CONTROLLER_TOKEN:?missing}\" \
         --data-binary \"\${MANOR_RESTART_PAYLOAD}\" \
         \"http://127.0.0.1:\${MANOR_HOST_CONTROLLER_PORT:-8092}${path}\""
   else
     docker exec manor-host-controller sh -lc \
-      "curl --silent --show-error --fail-with-body -X ${method} \
+      "curl --silent --show-error --fail-with-body --connect-timeout 2 --max-time 5 -X ${method} \
         -H \"x-manor-host-controller-token: \${MANOR_HOST_CONTROLLER_TOKEN:?missing}\" \
         \"http://127.0.0.1:\${MANOR_HOST_CONTROLLER_PORT:-8092}${path}\""
   fi
@@ -160,36 +186,66 @@ if [[ -n "${build}" ]]; then
 fi
 payload+="}"
 
+wait_timeout=""
+if [[ "${wait_for_finish}" == true ]]; then
+  wait_timeout="${MANOR_UPDATE_WAIT_TIMEOUT:-$(env_value MANOR_UPDATE_WAIT_TIMEOUT || true)}"
+  wait_timeout="${wait_timeout:-900}"
+  if [[ ! "${wait_timeout}" =~ ^[0-9]+$ ]] || (( wait_timeout < 30 || wait_timeout > 3600 )); then
+    echo "MANOR_UPDATE_WAIT_TIMEOUT must be between 30 and 3600 seconds." >&2
+    exit 64
+  fi
+fi
+
 require_docker
 require_controller
 
 response="$(controller_curl POST /restart "${payload}")"
-run_id="$(json_field "${response}" id)"
-echo "Manor restart accepted: ${run_id:-unknown run}"
+run_id="$(json_field "${response}" run.id)"
+if [[ -z "${run_id}" ]]; then
+  echo "Manor restart was accepted without a run ID; refusing to follow an unrelated run." >&2
+  exit 1
+fi
+echo "Manor restart accepted: ${run_id}"
 
 if [[ "${wait_for_finish}" != true ]]; then
   exit 0
 fi
 
+deadline=$((SECONDS + wait_timeout))
+
 while true; do
-  status_response="$(controller_curl GET /status)"
-  status="$(json_field "${status_response}" status)"
+  status_response="$(controller_curl GET /status 2>/dev/null || true)"
+  latest_run_id="$(json_field "${status_response}" latestRun.id)"
+  status="$(json_field "${status_response}" latestRun.status)"
+
+  if [[ -n "${latest_run_id}" && "${latest_run_id}" != "${run_id}" ]]; then
+    echo "Manor restart result was replaced by another run (${latest_run_id}); expected ${run_id}." >&2
+    exit 1
+  fi
+  if [[ -z "${latest_run_id}" ]]; then
+    status=""
+  fi
+
   case "${status}" in
     completed)
       echo "Manor restart completed."
       exit 0
       ;;
     failed)
-      error="$(json_field "${status_response}" error)"
+      error="$(json_field "${status_response}" latestRun.error)"
       echo "Manor restart failed: ${error:-no error detail reported}" >&2
       exit 1
       ;;
     running|"")
-      sleep 2
       ;;
     *)
       echo "Manor restart status: ${status}"
-      sleep 2
       ;;
   esac
+
+  if (( SECONDS >= deadline )); then
+    echo "Timed out after ${wait_timeout} seconds waiting for Manor restart ${run_id}." >&2
+    exit 1
+  fi
+  sleep 2
 done

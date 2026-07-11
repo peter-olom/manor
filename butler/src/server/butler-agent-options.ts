@@ -12,6 +12,7 @@ import type { ButlerStateStore } from "./state-store.js";
 export type ButlerDelegationAttachmentAcknowledgement = {
   attached: boolean;
   rollback?: () => boolean;
+  flush?: () => Promise<void>;
 };
 
 export type ButlerOperatorSink = {

@@ -38,6 +38,7 @@ import { registerDeviceAuthRoutes } from "./device-auth-routes.js";
 import { ManorSessionTitleGenerator, readSessionTitleConfig } from "./session-title-generator.js";
 import { ManorModelTaskRunner } from "./model-task-runner.js";
 import { configureSelfImprovementRequestState, SelfImprovementRequestState } from "./self-improvement-request-state.js";
+import { configureSelfImprovementPairCleanup, reconcileInterruptedSelfImprovementRequests } from "./self-improvement-actions.js";
 import { registerSelfImprovementRoutes } from "./self-improvement-routes.js";
 import { retrieveButlerMemoryWithEmbeddings } from "./memory-retrieval.js";
 import { registerManorRestartRoutes } from "./manor-restart-routes.js";
@@ -100,6 +101,12 @@ const store = new ButlerStateStore(uiStatePath, {
 await store.load();
 const pairStore = new PairStore(pairStatePath, store);
 await pairStore.load();
+let recoveredRetiredWorkers = false;
+for (const pair of pairStore.listSummaries()) {
+  const predecessorThreadId = pair.worker?.handedOffFrom?.threadId ?? null;
+  if (predecessorThreadId && store.markWorkerThreadRetired(predecessorThreadId)) recoveredRetiredWorkers = true;
+}
+if (recoveredRetiredWorkers) await store.flushSave();
 const scratchPadStore = new ScratchPadStore(scratchPadStatePath);
 await scratchPadStore.load();
 const serviceTemplateRegistry = new ServiceTemplateRegistry(path.join(stateDir, "service-templates.json"));
@@ -234,6 +241,18 @@ const pairSessions = new PairSessionManager({
   getCodexAuthStatus: () => butlerAgent.getCodexAuthStatus(),
   onButlerPatch: (payload) => sseHub?.broadcastButlerPatch(payload)
 });
+configureSelfImprovementPairCleanup(pairSessions);
+let selfImprovementReconciliation = Promise.resolve();
+const reconcileSelfImprovementAfterRestart = (canConcludeThreadMissing: (threadId: string) => boolean) => {
+  const current = selfImprovementReconciliation.then(() =>
+    reconcileInterruptedSelfImprovementRequests(selfImprovementRequests, store, pairStore, pairSessions, canConcludeThreadMissing)
+  );
+  selfImprovementReconciliation = current.catch((error) => {
+    console.error(`Self-improvement restart recovery failed: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  return selfImprovementReconciliation;
+};
+codexClient.on("threadsSeeded", () => { void reconcileSelfImprovementAfterRestart(() => true); });
 
 const applyManagedSettingsChange = createManorSettingsApplyHandler({ settingsService, applyBackgroundSettings, sessionTitleGenerator, piRpcWorkerClient, butlerAgent, pairSessions, store, codexClient, getSseHub: () => sseHub });
 runtimeAccess = {
@@ -255,6 +274,7 @@ await fs.mkdir(piAgentDir, { recursive: true });
 await butlerAgent.start();
 codexClient.start();
 await piRpcWorkerClient.start();
+await reconcileSelfImprovementAfterRestart((threadId) => threadId.startsWith("pi-"));
 await pairSessions.startSupervisedSessions();
 
 const app = express();

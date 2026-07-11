@@ -809,6 +809,9 @@ test("system prompt advises focused checklist refresh for new work", async () =>
   assert.match(prompt, /ask_operator: Butler-only tool/);
   assert.match(prompt, /Ask 1-3 concise structured questions/);
   assert.match(prompt, /Do not use ask_operator for work-depth selection/);
+  assert.match(prompt, /explicit authorization for stop_job/);
+  assert.match(prompt, /Call stop_job immediately/);
+  assert.match(prompt, /do not message that Worker or start a replacement/);
 });
 
 test("Butler callback state startup tolerates empty persisted files", () => {
@@ -842,12 +845,16 @@ test("system prompt routes direct Manor improvement requests to normal work", as
   assert.match(prompt, /read_manor_restart_status/);
   assert.match(prompt, /direct operator requests to improve Manor, Butler, worker behavior, preview, runtime broker, supervision, restart-controller, or dogfooding/);
   assert.match(prompt, /start normal work with delegate_to_worker/);
+  assert.match(prompt, /delegate_to_worker in \/repos\/manor/);
+  assert.match(prompt, /existing checkout and leave changes uncommitted/);
   assert.match(prompt, /self-improvement queue is only for blocked worker reports/);
   assert.match(prompt, /missing credentials, operator approval, external outages, or app-specific bugs outside Manor/);
   assert.doesNotMatch(prompt, /Codex worker behavior|delegate_to_codex|Codex workstream|Codex job/);
   assert.match(task, /If the change has any UI implication/);
   assert.match(task, /screenshot or video proof/);
-  assert.match(task, /Do not restart, deploy, commit, push, open a pull request/);
+  assert.match(task, /Do not restart Manor directly/);
+  assert.match(task, /Leave changes uncommitted/);
+  assert.match(task, /Do not deploy, commit, push, or open a pull request/);
 });
 
 test("callback helper only treats owed non-closed callbacks as outstanding", () => {

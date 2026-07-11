@@ -1472,7 +1472,7 @@ export interface AppBootstrapSnapshot {
 }
 export interface PersistedUiState {
   threads?: CodexThreadDetailView[];
-  deletedCodexThreadIds?: string[];
+  deletedCodexThreadIds?: string[]; retiredWorkerThreadIds?: string[];
   windows: ButlerWindow[];
   focusedWindowId: string | null;
   stackLeases?: StackLeaseView[];

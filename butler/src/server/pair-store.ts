@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 
 import { readJsonStateFile, writeJsonStateFileAtomic } from "./json-state-file.js";
 import type { ButlerStateStore } from "./state-store.js";
+import { workerThreadIsRunning } from "./worker-thread-status.js";
 import type { PairChat, PairMessage, PairStatus, PairSummary, PairWorker } from "../shared/pairing.js";
 
 type LegacyPairFields = { codexModel?: string | null; codexEffort?: string | null };
@@ -169,11 +170,6 @@ export function pairTitleIsDefault(title: string | null | undefined): boolean {
   return titleFromText(title ?? DEFAULT_TITLE) === DEFAULT_TITLE;
 }
 
-function threadIsStillRunning(thread: ReturnType<ButlerStateStore["getThread"]>): boolean {
-  const latestTurn = thread?.turns.at(-1);
-  return thread?.status === "active" || latestTurn?.status === "inProgress" || latestTurn?.status === "started";
-}
-
 function reportCloseoutMessageId(threadId: string, turnId: string): string {
   return `callback-${threadId}:${turnId}`;
 }
@@ -286,18 +282,18 @@ function deriveStatus(pair: PairChat, store: ButlerStateStore): PairStatus {
   if (pair.worker) {
     const report = store.getWorkerReport(pair.worker.threadId);
     const thread = store.getThread(pair.worker.threadId);
-    if (report?.status === "blocked" && !threadIsStillRunning(thread)) {
+    if (report?.status === "blocked" && !workerThreadIsRunning(thread)) {
       return "blocked";
     }
     const reportNeedsReview =
       report &&
-      (report.status === "completed" || !threadIsStillRunning(thread)) &&
+      (report.status === "completed" || !workerThreadIsRunning(thread)) &&
       (!pair.worker.lastRevertAt || report.updatedAt > pair.worker.lastRevertAt) &&
       (!pair.worker.lastReviewedReportAt || report.updatedAt > pair.worker.lastReviewedReportAt);
     if (reportNeedsReview) {
       return "needs_butler_review";
     }
-    if (threadIsStillRunning(thread) || pair.worker.status === "running" || pair.worker.status === "starting") {
+    if (workerThreadIsRunning(thread) || pair.worker.status === "running" || pair.worker.status === "starting") {
       return "worker_running";
     }
   }
@@ -383,6 +379,13 @@ export class PairStore extends EventEmitter {
   getPair(pairId: string): PairChat | null {
     const pair = this.pairs.get(pairId);
     return pair ? { ...pair, status: deriveStatus(pair, this.store) } : null;
+  }
+
+  findPairByWorkerThread(threadId: string): PairChat | null {
+    for (const pair of this.pairs.values()) {
+      if (pair.worker?.threadId === threadId) return this.getPair(pair.id);
+    }
+    return null;
   }
 
   createPair(input: { title?: string | null; defaultCwd?: string | null } = {}): PairChat {
@@ -635,6 +638,13 @@ export class PairStore extends EventEmitter {
       this.emit("change");
     }
     return deleted;
+  }
+
+  restorePairAfterFailedDelete(pair: PairChat): void {
+    if (this.pairs.has(pair.id)) return;
+    this.pairs.set(pair.id, pair);
+    this.queueSave();
+    this.emit("change");
   }
 
   async flushPendingSave(): Promise<void> {

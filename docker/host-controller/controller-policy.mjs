@@ -63,6 +63,14 @@ export function normalizeRestartDelayMs(value) {
   return Math.max(0, Math.min(30_000, Math.trunc(parsed)));
 }
 
+export function normalizeRestartWaitTimeoutSeconds(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 300;
+  }
+  return Math.max(30, Math.min(900, Math.trunc(parsed)));
+}
+
 export function detectRuntimeRestartMode(buildFromSource) {
   if (sourceModeEnvValues.has(String(buildFromSource ?? "").trim().toLowerCase())) {
     return "source";
@@ -76,6 +84,9 @@ export function shouldBuildSourceImages(payload) {
   }
   if (payload.build === false) {
     return false;
+  }
+  if (payload.mode === "source") {
+    return true;
   }
   return payload.update === true || payload.target === "latest" || Boolean(payload.gitRef);
 }

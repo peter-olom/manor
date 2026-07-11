@@ -172,21 +172,24 @@ export function buildSelfImprovementTask(input: {
     "",
     "Execution requirements:",
     "- Work on Manor itself.",
-    "- Work only in the isolated self-improvement worktree Butler prepared for this request.",
+    "- Work directly in the active Manor source checkout prepared for this request.",
+    "- Leave changes uncommitted so the operator can inspect, test, continue editing, or commit later.",
+    "- Stay in the existing checkout. Do not create or switch branches unless the operator explicitly asks.",
     "- Inspect the current implementation before editing.",
     "- Keep the fix small, explicit, and production-friendly.",
     "- Add focused regression coverage for the behavior.",
     "- Run the relevant tests and the Butler build when practical.",
     "- If the change has any UI implication, capture and surface screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are insufficient.",
-    "- Do not restart, deploy, commit, push, open a pull request, or mutate the live Manor stack unless the operator explicitly asks after reviewing the local result.",
+    "- Do not restart Manor directly. Report whether a source restart is needed so Butler can request operator authorization.",
+    "- Do not deploy, commit, push, or open a pull request unless the operator explicitly asks after reviewing the local result.",
     "- Do not include secrets, tokens, private URLs, or sensitive proof artifacts in the branch or pull request.",
     "",
     "Report back with:",
     "- What changed.",
     "- Tests and build checks run.",
-    "- The local workspace and branch.",
+    "- The active source checkout and branch.",
     "- Any remaining risk or live-restart requirement.",
-    "- Whether the result should be committed, discarded, or reviewed further."
+    "- Whether the result should stay open, be closed, be committed, or receive more review."
   ].filter((entry): entry is string => Boolean(entry));
 
   return sections.join("\n");

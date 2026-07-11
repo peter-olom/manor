@@ -20,6 +20,12 @@ type RequestInput = {
 
 let configuredState: SelfImprovementRequestState | null = null;
 
+export type SelfImprovementCheckoutTransfer = {
+  requestId: string;
+  nextThreadId: string;
+  previous: Pick<SelfImprovementRequestView, "status" | "threadId" | "workerThreadIds" | "startedAt" | "completedAt" | "commitSha" | "pullRequestUrl">;
+};
+
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -41,6 +47,13 @@ function normalizeStatus(value: unknown): SelfImprovementRequestStatus {
     : "pending";
 }
 
+function ownsSourceCheckout(request: SelfImprovementRequestView): boolean {
+  return request.status === "approved" ||
+    request.status === "running" ||
+    request.status === "changes_ready" ||
+    request.status === "committed";
+}
+
 function normalizeRequest(raw: Partial<SelfImprovementRequestView> & { id?: string }): SelfImprovementRequestView | null {
   const trigger = text(raw.trigger);
   const symptoms = text(raw.symptoms);
@@ -51,6 +64,11 @@ function normalizeRequest(raw: Partial<SelfImprovementRequestView> & { id?: stri
   if (!raw.id || !trigger || !symptoms || !observations || !suspectedCause || !proposedChange || !risk) return null;
   const requestedAt = typeof raw.requestedAt === "number" && Number.isFinite(raw.requestedAt) ? raw.requestedAt : Date.now();
   const updatedAt = typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : requestedAt;
+  const threadId = nullableText(raw.threadId);
+  const workerThreadIds = [...new Set([
+    ...(Array.isArray(raw.workerThreadIds) ? raw.workerThreadIds.map(text).filter(Boolean) : []),
+    ...(threadId ? [threadId] : [])
+  ])];
   return {
     id: raw.id,
     status: normalizeStatus(raw.status),
@@ -72,7 +90,8 @@ function normalizeRequest(raw: Partial<SelfImprovementRequestView> & { id?: stri
     approvedAt: typeof raw.approvedAt === "number" ? raw.approvedAt : null,
     startedAt: typeof raw.startedAt === "number" ? raw.startedAt : null,
     completedAt: typeof raw.completedAt === "number" ? raw.completedAt : null,
-    threadId: nullableText(raw.threadId),
+    threadId,
+    workerThreadIds,
     pairId: nullableText(raw.pairId),
     workspaceCwd: nullableText(raw.workspaceCwd),
     branchName: nullableText(raw.branchName),
@@ -102,6 +121,14 @@ export class SelfImprovementRequestState {
 
   get(id: string): SelfImprovementRequestView | null {
     return this.requests.get(id) ?? null;
+  }
+
+  hasSourceCheckoutOwner(excludingRequestId: string | null = null): boolean {
+    return this.list().some((request) => request.id !== excludingRequestId && ownsSourceCheckout(request));
+  }
+
+  hasSourceCheckoutOwnerForOtherThread(threadId: string): boolean {
+    return this.list().some((request) => ownsSourceCheckout(request) && request.threadId !== threadId);
   }
 
   hasOpenSourceRequest(sourceThreadId: string | null): boolean {
@@ -151,13 +178,17 @@ export class SelfImprovementRequestState {
     return this.update(id, { status: "dismissed", dismissedAt: now, dismissedReason: reason });
   }
 
+  async flush(): Promise<void> {
+    await this.saveQueue;
+  }
+
   private persist(): void {
     const snapshot = { requests: this.list() };
     this.saveQueue = this.saveQueue
       .catch(() => undefined)
       .then(() => writeJsonStateFileAtomic(this.statePath, snapshot))
-      .then(() => this.onChange())
-      .catch((error) => this.onError(error));
+      .then(() => this.onChange());
+    void this.saveQueue.catch((error) => this.onError(error));
   }
 }
 
@@ -168,4 +199,83 @@ export function configureSelfImprovementRequestState(state: SelfImprovementReque
 export function getSelfImprovementRequestState(): SelfImprovementRequestState {
   if (!configuredState) throw new Error("Self-improvement request state is not configured.");
   return configuredState;
+}
+
+export function isSelfImprovementSourceCheckoutReserved(): boolean {
+  return configuredState?.hasSourceCheckoutOwner() ?? false;
+}
+
+export function isSelfImprovementSourceCheckoutReservedByOtherThread(threadId: string): boolean {
+  return configuredState?.hasSourceCheckoutOwnerForOtherThread(threadId) ?? false;
+}
+
+export function isClosedSelfImprovementWorkerThread(threadId: string): boolean {
+  return configuredState?.list().some((request) => request.status === "discarded" && request.workerThreadIds.includes(threadId)) ?? false;
+}
+
+export function getSelfImprovementSourceCheckoutRequestId(threadId: string): string | null {
+  return configuredState?.list().find((request) => ownsSourceCheckout(request) && request.threadId === threadId)?.id ?? null;
+}
+
+export function isSelfImprovementSourceCheckoutOwnedByThread(threadId: string): boolean {
+  const owners = configuredState?.list().filter(ownsSourceCheckout) ?? [];
+  return owners.length === 1 && owners[0]?.threadId === threadId;
+}
+
+export async function transferSelfImprovementSourceCheckout(
+  sourceThreadId: string,
+  nextThreadId: string
+): Promise<SelfImprovementCheckoutTransfer | null> {
+  const requestId = getSelfImprovementSourceCheckoutRequestId(sourceThreadId);
+  const request = requestId ? configuredState?.get(requestId) : null;
+  if (!configuredState || !request) return null;
+  const transfer: SelfImprovementCheckoutTransfer = {
+    requestId: request.id,
+    nextThreadId,
+    previous: {
+      status: request.status,
+      threadId: request.threadId,
+      workerThreadIds: [...request.workerThreadIds],
+      startedAt: request.startedAt,
+      completedAt: request.completedAt,
+      commitSha: request.commitSha,
+      pullRequestUrl: request.pullRequestUrl
+    }
+  };
+  configuredState.update(request.id, {
+    status: "running",
+    threadId: nextThreadId,
+    startedAt: Date.now(),
+    completedAt: null,
+    commitSha: null,
+    pullRequestUrl: null
+  });
+  try {
+    await configuredState.flush();
+    return transfer;
+  } catch (error) {
+    try {
+      const current = configuredState.get(request.id);
+      if (!current || current.threadId !== nextThreadId) {
+        throw new Error("the checkout reservation changed before it could be restored");
+      }
+      configuredState.update(request.id, transfer.previous);
+      await configuredState.flush();
+    } catch (rollbackError) {
+      throw new Error(
+        `Self-improvement checkout transfer failed and rollback could not be persisted: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+        { cause: error }
+      );
+    }
+    throw error;
+  }
+}
+
+export async function rollbackSelfImprovementSourceCheckout(transfer: SelfImprovementCheckoutTransfer): Promise<boolean> {
+  if (!configuredState) return false;
+  const current = configuredState.get(transfer.requestId);
+  if (!current || current.threadId !== transfer.nextThreadId) return false;
+  configuredState.update(transfer.requestId, transfer.previous);
+  await configuredState.flush();
+  return true;
 }

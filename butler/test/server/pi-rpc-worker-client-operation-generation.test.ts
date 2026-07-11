@@ -105,6 +105,65 @@ test("Pi resumes one persisted session after restart and reconciles the interrup
   }
 });
 
+test("Pi stop surfaces abort failure and keeps the active turn supervised", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-stop-failure-"));
+  try {
+    const threadId = "pi-stop-failure";
+    const store = await createStore(dir);
+    store.upsertThreadSummary({ id: threadId, cwd: dir, source: "pi-rpc", status: { type: "active" }, turns: [{ id: "turn-active", status: "in_progress", items: [] }] });
+    const session: FakeSession = {
+      threadId,
+      client: {
+        getState: async () => ({ isStreaming: true }), prompt: async () => undefined, steer: async () => undefined,
+        abort: async () => { throw new Error("abort failed"); }, stop: async () => undefined
+      },
+      mapper: new PiProviderRuntimeMapper(threadId), unsubscribe: null, cwd: dir,
+      activityVersion: 4, acceptedEventVersion: 4, eventStreamVersion: 4, pendingPromptGenerations: []
+    };
+    const client = new PiRpcWorkerClient({ store, piAuthPath: path.join(dir, "auth.json"), sessionRootDir: path.join(dir, "sessions") }) as unknown as TestClient;
+    client.sessions.set(threadId, session);
+
+    await assert.rejects(() => client.stopThread(threadId), /abort failed/);
+    assert.equal(store.getThread(threadId)?.status, "active");
+    assert.equal(store.getThread(threadId)?.turns[0]?.status, "in_progress");
+    assert.deepEqual({ activity: session.activityVersion, accepted: session.acceptedEventVersion, stream: session.eventStreamVersion }, { activity: 4, accepted: 4, stream: 4 });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Pi stop terminalizes and durably saves the current turn", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-stop-terminal-"));
+  try {
+    const threadId = "pi-stop-terminal";
+    const store = await createStore(dir);
+    store.upsertThreadSummary({ id: threadId, cwd: dir, source: "pi-rpc", status: { type: "active" }, turns: [{ id: "turn-active", status: "in_progress", items: [] }] });
+    const session: FakeSession = {
+      threadId,
+      client: {
+        getState: async () => ({ isStreaming: true }), prompt: async () => undefined, steer: async () => undefined,
+        abort: async () => undefined, stop: async () => undefined
+      },
+      mapper: new PiProviderRuntimeMapper(threadId), unsubscribe: null, cwd: dir,
+      activityVersion: 2, acceptedEventVersion: 2, eventStreamVersion: 2, pendingPromptGenerations: [2]
+    };
+    const client = new PiRpcWorkerClient({ store, piAuthPath: path.join(dir, "auth.json"), sessionRootDir: path.join(dir, "sessions") }) as unknown as TestClient;
+    client.sessions.set(threadId, session);
+
+    assert.equal(await client.stopThread(threadId), true);
+    const stopped = store.getThread(threadId);
+    assert.equal(stopped?.status, "idle");
+    assert.equal(stopped?.turns[0]?.status, "interrupted");
+    assert.ok(Number.isFinite(stopped?.turns[0]?.completedAt));
+    assert.equal(session.eventStreamVersion, null);
+
+    const reloaded = await createStore(dir);
+    assert.equal(reloaded.getThread(threadId)?.turns[0]?.status, "interrupted");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("deleting a Pi job while it resumes cannot resurrect the session", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-resume-delete-"));
   try {

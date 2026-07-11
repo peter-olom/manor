@@ -20,7 +20,6 @@ ensure_writable_dir "${config_home}/gh"
 ensure_writable_dir "${config_home}/manor"
 
 /usr/local/bin/codex-bootstrap-tools
-/usr/local/bin/manor-codex-auto-update
 
 github_host="${GITHUB_HOST:-github.com}"
 

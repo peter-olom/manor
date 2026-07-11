@@ -17,14 +17,16 @@ Use Docker as the default runtime.
 For the normal stack:
 
 ```bash
-docker compose up -d --build
+./manor-start
 ```
 
 For local Butler hot reload:
 
 ```bash
-docker compose -f compose.yml -f compose.dev.yml up -d --build
+./manor-start start --dev
 ```
+
+Use the canonical launcher for lifecycle work so source builds, health checks, and any gitignored machine-local override are applied consistently.
 
 When working through Manor itself, do package installs, app startup, builds, and browser checks inside previews. Keep repository edits in the active Worker.
 

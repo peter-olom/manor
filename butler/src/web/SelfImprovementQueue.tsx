@@ -10,6 +10,7 @@ export function formatSelfImprovementTime(value: number | null | undefined): str
 }
 
 export function selfImprovementStatusLabel(status: string): string {
+  if (status === "discarded") return "closed";
   return status.replace(/_/g, " ");
 }
 
@@ -83,6 +84,7 @@ export function SelfImprovementQueue({
 
   const requests = data?.requests ?? [];
   const eligibility = data?.eligibility;
+  const actionInProgress = busyAction !== null;
 
   return (
     <section className="improve-panel is-detail-only">
@@ -99,9 +101,9 @@ export function SelfImprovementQueue({
                   <p>{formatSelfImprovementTime(selected.requestedAt)}</p>
                 </div>
                 <div className="improve-actions">
-                  {selected.threadId || selected.pairId ? <button className="button" type="button" disabled={busyAction === "open"} onClick={() => void openSession(selected)}>Open session</button> : null}
-                  {selected.status === "pending" ? <button className="button is-primary" type="button" disabled={!eligibility?.enabled || busyAction === "approve"} onClick={() => void runAction("approve")}>Approve</button> : null}
-                  {selected.status === "running" || selected.status === "changes_ready" || selected.status === "committed" ? <button className="button is-danger" type="button" disabled={busyAction === "discard"} onClick={() => void runAction("discard")}>Discard</button> : null}
+                  {selected.threadId || selected.pairId ? <button className="button" type="button" disabled={actionInProgress} onClick={() => void openSession(selected)}>Open session</button> : null}
+                  {selected.status === "pending" ? <button className="button is-primary" type="button" disabled={!eligibility?.enabled || actionInProgress} onClick={() => void runAction("approve")}>Approve</button> : null}
+                  {selected.status === "approved" || selected.status === "running" || selected.status === "changes_ready" || selected.status === "committed" ? <button className="button" type="button" disabled={actionInProgress} onClick={() => void runAction("discard")}>Close request</button> : null}
                 </div>
               </div>
 
@@ -129,21 +131,21 @@ export function SelfImprovementQueue({
               {selected.status === "pending" ? (
                 <div className="improve-form">
                   <input value={dismissReason} onChange={(event) => setDismissReason(event.target.value)} placeholder="Dismiss reason" />
-                  <button className="button" type="button" disabled={busyAction === "dismiss"} onClick={() => void runAction("dismiss", { reason: dismissReason })}>Dismiss</button>
+                  <button className="button" type="button" disabled={actionInProgress} onClick={() => void runAction("dismiss", { reason: dismissReason })}>Dismiss</button>
                 </div>
               ) : null}
 
               {selected.status === "changes_ready" ? (
                 <div className="improve-form">
                   <input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="Commit message" />
-                  <button className="button is-primary" type="button" disabled={!commitMessage.trim() || busyAction === "commit"} onClick={() => void runAction("commit", { message: commitMessage })}>Commit locally</button>
+                  <button className="button is-primary" type="button" disabled={!commitMessage.trim() || actionInProgress} onClick={() => void runAction("commit", { message: commitMessage })}>Commit current checkout</button>
                 </div>
               ) : null}
 
               {selected.status === "committed" ? (
                 <div className="improve-form">
                   <input value={prTitle} onChange={(event) => setPrTitle(event.target.value)} placeholder="PR title" />
-                  <button className="button is-primary" type="button" disabled={!prTitle.trim() || busyAction === "pr"} onClick={() => void runAction("pr", { title: prTitle })}>Open draft PR</button>
+                  <button className="button is-primary" type="button" disabled={!prTitle.trim() || actionInProgress} onClick={() => void runAction("pr", { title: prTitle })}>Open draft PR</button>
                 </div>
               ) : null}
             </>

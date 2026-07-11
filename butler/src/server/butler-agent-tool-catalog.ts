@@ -354,14 +354,14 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   },
   {
     name: "discard_self_improvement",
-    label: "Discard self-improvement",
-    description: "Discard an approved self-improvement session and remove its isolated local changes after explicit operator request.",
-    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while discarding self-improvement changes." }]
+    label: "Close self-improvement",
+    description: "Close an approved self-improvement session without reverting the active source checkout.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while closing the self-improvement request." }]
   },
   {
     name: "commit_self_improvement",
     label: "Commit self-improvement",
-    description: "Commit approved self-improvement local changes after explicit operator request.",
+    description: "Commit the current active checkout after an explicit operator request.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while committing self-improvement changes." }]
   },
   {
@@ -447,6 +447,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     label: "Reply to operator",
     description: "Post the single operator-visible closeout for one delegated job and close its pending reply obligation.",
     uiEffects: [{ kind: "focusButler", description: "Keeps the main Butler chat aligned with the delegated job outcome." }]
+  },
+  {
+    name: "stop_job",
+    label: "Stop job",
+    description: "Immediately stop one active Worker job without deleting its thread or starting a replacement.",
+    uiEffects: [{ kind: "refreshThread", description: "Refreshes the Worker after an operator-requested stop." }]
   },
   {
     name: "delete_job",

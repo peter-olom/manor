@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { ensureManagedWorktreeWritableForWorker, resolveCodexWorkerOwnership } from "../../src/server/repo-worktree.js";
+import { ensureManagedWorktreeWritableForWorker, resolveCodexWorkerOwnership, taskRequiresManagedWorktree } from "../../src/server/repo-worktree.js";
 
 test("resolveCodexWorkerOwnership defaults to the codex container uid and gid", () => {
   assert.deepEqual(resolveCodexWorkerOwnership({}), {
@@ -19,6 +19,12 @@ test("resolveCodexWorkerOwnership rejects invalid worker uid diagnostics", () =>
     () => resolveCodexWorkerOwnership({ MANOR_CODEX_WORKER_UID: "root" }),
     /MANOR_CODEX_WORKER_UID must be a non-negative integer/
   );
+});
+
+test("taskRequiresManagedWorktree respects explicit existing-checkout instructions", () => {
+  assert.equal(taskRequiresManagedWorktree("Stay in the existing checkout. Do not create a branch or worktree."), false);
+  assert.equal(taskRequiresManagedWorktree("Implement this without a new branch."), false);
+  assert.equal(taskRequiresManagedWorktree("Create an isolated worktree for this task."), true);
 });
 
 test("ensureManagedWorktreeWritableForWorker recursively prepares writable worktrees", async () => {

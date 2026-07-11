@@ -301,6 +301,7 @@ export class CodexAppServerClient extends EventEmitter {
         this.emit("change");
         await this.loadModels();
         await this.seedThreads();
+        this.emit("threadsSeeded");
         this.store.enableMilestones();
       },
       onClosed: () => {
@@ -1187,16 +1188,15 @@ export class CodexAppServerClient extends EventEmitter {
   async stopThread(threadId: string): Promise<boolean> {
     this.invalidateThreadOperations(threadId);
     const operationGeneration = this.currentThreadOperationGeneration(threadId);
-    const activeTurnId = this.activeTurnIds.get(threadId);
-    if (!activeTurnId) {
-      return false;
-    }
-
+    const persistedLatestTurn = this.store.getThread(threadId)?.turns.at(-1);
+    const activeTurnId = this.activeTurnIds.get(threadId) ?? (["inProgress", "in_progress", "started"].includes(persistedLatestTurn?.status ?? "") ? persistedLatestTurn?.id : undefined);
+    if (!activeTurnId) return false;
     await this.codexProviderAdapter.interruptTurn(threadId, activeTurnId);
     if (!this.isThreadOperationCurrent(threadId, operationGeneration)) return true;
-    if (this.activeTurnIds.get(threadId) !== activeTurnId) return true;
+    if (this.activeTurnIds.has(threadId) && this.activeTurnIds.get(threadId) !== activeTurnId) return true;
     this.activeTurnIds.delete(threadId);
-    this.store.setThreadStatus(threadId, "idle");
+    this.store.updateTurn(threadId, { id: activeTurnId, status: "interrupted", error: "Worker turn stopped by operator." });
+    this.store.setThreadStatus(threadId, { type: "idle" });
     this.store.addEvent(threadId, "turn/interrupt", "Turn interrupted by operator");
     this.emit("change");
     return true;

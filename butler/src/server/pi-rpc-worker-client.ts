@@ -333,11 +333,31 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
   async stopThread(threadId: string): Promise<boolean> {
     const session = this.sessions.get(threadId);
     if (!session) return false;
+    const previousActivityVersion = session.activityVersion;
+    const previousAcceptedEventVersion = session.acceptedEventVersion;
     const activityVersion = this.invalidateSessionOperations(session);
-    await session.client.abort().catch(() => undefined);
+    try {
+      await session.client.abort();
+    } catch (error) {
+      if (this.isSessionGenerationCurrent(session, activityVersion)) {
+        session.activityVersion = previousActivityVersion;
+        session.acceptedEventVersion = previousAcceptedEventVersion;
+      }
+      throw error;
+    }
     session.pendingPromptGenerations = session.pendingPromptGenerations.filter((generation) => generation > activityVersion);
     if (!this.isSessionGenerationCurrent(session, activityVersion)) return true;
+    session.eventStreamVersion = null;
+    const latestTurn = this.options.store.getThread(threadId)?.turns.at(-1);
+    if (latestTurn && ["inProgress", "in_progress", "started"].includes(latestTurn.status)) {
+      this.options.store.updateTurn(threadId, {
+        id: latestTurn.id,
+        status: "interrupted",
+        error: "Worker turn stopped by operator."
+      });
+    }
     this.options.store.setThreadStatus(threadId, { type: "idle" });
+    await this.options.store.flushSave();
     this.emit("change");
     return true;
   }

@@ -34,6 +34,8 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null }
   });
   store.setThreadExecutionContract(threadId, contract);
   const sent: unknown[] = [];
+  const stopped: string[] = [];
+  const removedCallbacks: string[] = [];
   const payloads: JobPayloadView[] = [];
   const access = {
     defineButlerTool: (definition: unknown) => definition,
@@ -41,6 +43,11 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null }
     store,
     codexClient: {
       loadThread: async () => undefined,
+      stopThread: async (_threadId: string) => {
+        stopped.push(_threadId);
+        store.upsertThreadSummary({ id: _threadId, status: "idle" });
+        return true;
+      },
       sendMessage: async (_threadId: string, input: unknown) => {
         sent.push(input);
         return { threadId: _threadId, turnId: "turn-sent" };
@@ -74,10 +81,11 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null }
     getThreadBudgetLimitMessage: () => null,
     bindJobPayloadDelivery: async (threadId: string) => store.getThreadJobPayload(threadId),
     registerPendingChatCallback: () => undefined,
+    removeExternalWorkerDelegation: async (workerThreadId: string) => { removedCallbacks.push(workerThreadId); },
     noteThreadFocus: () => undefined
   } as unknown as ButlerAgentToolAccess;
   const tools = buildButlerCodexTools(access);
-  return { store, threadId, sent, payloads, tools };
+  return { store, threadId, sent, stopped, removedCallbacks, payloads, tools };
 }
 
 test("message_job cannot steer a Worker attached to another Butler session", async () => {
@@ -148,6 +156,18 @@ test("hold_job_context persists held context in the payload without sending a tu
 
   assert.equal(payloads[0]?.kind, "held_context");
   assert.equal(sent.length, 0);
+});
+
+test("stop_job immediately stops the Worker and removes its pending callback", async () => {
+  const { threadId, stopped, removedCallbacks, tools } = await createHarness();
+  const definition = tools.find((entry) => entry.name === "stop_job");
+  assert.match(definition?.promptSnippet ?? "", /operator says stop, cancel, interrupt, or pause/);
+
+  const result = await tool(tools, "stop_job").execute("call-stop", { threadId });
+
+  assert.deepEqual(stopped, [threadId]);
+  assert.deepEqual(removedCallbacks, [threadId]);
+  assert.match(JSON.stringify(result), /Stopped job thread-tools/);
 });
 
 test("partial delete all removes Butler callbacks only for deleted Workers", async () => {

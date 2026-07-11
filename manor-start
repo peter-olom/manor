@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_dir="$(cd "$(dirname "$0")" && pwd -P)"
+local_launcher="${repo_dir}/manor-start.local"
+
+if [[ "${MANOR_START_BYPASS_LOCAL:-0}" != "1" && -e "${local_launcher}" ]]; then
+  if [[ ! -x "${local_launcher}" ]]; then
+    echo "manor-start.local exists but is not executable. Run: chmod +x manor-start.local" >&2
+    exit 1
+  fi
+
+  exec env MANOR_START_BYPASS_LOCAL=1 "${local_launcher}" "$@"
+fi
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./manor-start                         Start Manor from the current source checkout.
+  ./manor-start install [options]       Configure Manor, then start it.
+  ./manor-start start [options]         Build, start, and wait for Manor to become healthy.
+  ./manor-start stop [options]
+  ./manor-start restart [options]
+  ./manor-start dev-restart [options]
+  ./manor-start status [options]
+  ./manor-start logs [options] [service ...]
+  ./manor-start desktop <command> [options]
+
+An executable, gitignored manor-start.local is run first when present. It can
+inject machine-local environment before calling this launcher again.
+EOF
+}
+
+command="${1:-start}"
+
+case "${command}" in
+  install)
+    shift
+    exec "${repo_dir}/install.sh" "$@"
+    ;;
+  start|stop|restart|dev-restart|status|logs|desktop)
+    if [[ "$#" -eq 0 ]]; then
+      exec "${repo_dir}/manor.sh" start
+    fi
+    exec "${repo_dir}/manor.sh" "$@"
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  -*)
+    exec "${repo_dir}/manor.sh" start "$@"
+    ;;
+  *)
+    echo "Unknown command: ${command}" >&2
+    usage >&2
+    exit 64
+    ;;
+esac

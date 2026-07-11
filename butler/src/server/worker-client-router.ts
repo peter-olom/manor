@@ -9,11 +9,17 @@ import type { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import { workerAffinityRouteKey, type WorkerProviderAffinity } from "./pair-store.js";
 import type { ButlerStateStore } from "./state-store.js";
-import { assertCallbackReviewCurrent, monitorCallbackReviewCurrent } from "./butler-job-mutation-guard.js";
+import { assertCallbackReviewCurrent, monitorCallbackReviewCurrent, runSerializedJobMutation } from "./butler-job-mutation-guard.js";
 import type { ModelOption, ReasoningEffort } from "./types.js";
 import { workerExecutionEndAt } from "./worker-execution-window.js";
 import { workerFileChangeAttribution } from "./worker-review-attribution.js";
 import { isWorkerReviewBaselineReferenced } from "./worker-review-baseline.js";
+import { workerThreadIsRunning } from "./worker-thread-status.js";
+import {
+  isClosedSelfImprovementWorkerThread,
+  isSelfImprovementSourceCheckoutReserved,
+  isSelfImprovementSourceCheckoutReservedByOtherThread
+} from "./self-improvement-request-state.js";
 
 export type WorkerRuntime = "openai" | "pi-rpc";
 export type WorkerRuntimePreference = WorkerRuntime | "auto";
@@ -40,6 +46,7 @@ type WorkerStartOptions = {
   harness?: WorkerHarness | null;
   model?: string | null;
   recordSelection?: boolean;
+  ownsManorSourceCheckoutReservation?: boolean;
 };
 
 export type UnifiedWorkerCompose = {
@@ -382,7 +389,7 @@ export async function updateUnifiedWorkerCompose(access: WorkerClientAccess, inp
   return { model, effort, runtime, harness, provider };
 }
 
-export async function startWorkerThread(access: WorkerClientAccess, options: WorkerStartOptions): Promise<WorkerThreadStartResult> {
+async function startWorkerThreadUnlocked(access: WorkerClientAccess, options: WorkerStartOptions): Promise<WorkerThreadStartResult> {
   let provider: string | null = null;
   try {
     const runtimePreference = options.runtime ?? configuredWorkerRuntime();
@@ -414,7 +421,13 @@ export async function startWorkerThread(access: WorkerClientAccess, options: Wor
     };
     const client = runtime === "pi-rpc" ? access.piRpcWorkerClient : access.codexClient;
     if (!client) throw new Error("Pi RPC worker runtime is not available");
-    const { runtime: _runtime, harness: _harness, recordSelection: _recordSelection, ...clientOptions } = options;
+    const {
+      runtime: _runtime,
+      harness: _harness,
+      recordSelection: _recordSelection,
+      ownsManorSourceCheckoutReservation: _ownsManorSourceCheckoutReservation,
+      ...clientOptions
+    } = options;
     const result = await client.startThread({
       ...clientOptions,
       provider: compose.provider,
@@ -435,6 +448,55 @@ export async function startWorkerThread(access: WorkerClientAccess, options: Wor
   } catch (error) {
     throw workerProviderError(error, provider);
   }
+}
+
+let manorSourceStartLock: Promise<void> = Promise.resolve();
+
+function isManorSourceCheckout(cwd: string | null | undefined): boolean {
+  if (!cwd?.trim()) return false;
+  const configured = process.env.MANOR_SELF_IMPROVEMENT_SOURCE_CWD?.trim() || "/repos/manor";
+  const sourceRoot = path.resolve(configured);
+  const candidate = path.resolve(cwd);
+  const relative = path.relative(sourceRoot, candidate);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+function activeManorSourceWorker(access: WorkerClientAccess, excludingThreadId: string | null = null): string | null {
+  for (const summary of access.store.listThreads()) {
+    if (summary.id === excludingThreadId) continue;
+    const thread = access.store.getThread(summary.id);
+    if (!isManorSourceCheckout(thread?.executionContract?.workspaceCwd ?? thread?.cwd ?? summary.cwd)) continue;
+    if (thread && workerExecutionEndAt(thread) === Number.POSITIVE_INFINITY) return summary.id;
+  }
+  return null;
+}
+
+async function withManorSourceStartLock<T>(operation: () => Promise<T>): Promise<T> {
+  const previous = manorSourceStartLock;
+  let release: () => void = () => undefined;
+  manorSourceStartLock = new Promise<void>((resolve) => { release = resolve; });
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
+
+export async function startWorkerThread(access: WorkerClientAccess, options: WorkerStartOptions): Promise<WorkerThreadStartResult> {
+  if (!isManorSourceCheckout(options.cwd)) {
+    return startWorkerThreadUnlocked(access, options);
+  }
+  return withManorSourceStartLock(async () => {
+    const activeThreadId = activeManorSourceWorker(access);
+    if (activeThreadId) {
+      throw new Error(`The active Manor source checkout is already in use by Worker ${activeThreadId}. Continue that Worker or wait for it to finish.`);
+    }
+    if (!options.ownsManorSourceCheckoutReservation && isSelfImprovementSourceCheckoutReserved()) {
+      throw new Error("The active Manor source checkout is reserved by an open self-improvement request. Close that request before delegating another Manor Worker.");
+    }
+    return startWorkerThreadUnlocked(access, options);
+  });
 }
 
 export async function loadWorkerThread(access: WorkerClientAccess, threadId: string): Promise<void> {
@@ -474,7 +536,7 @@ async function stopWorkerMessageBounded(client: { stopThread(threadId: string): 
   }
 }
 
-export async function sendWorkerMessage(access: WorkerClientAccess, threadId: string, input: string | CodexInputItem[]): Promise<{ threadId: string; turnId: string | null }> {
+async function sendWorkerMessageUnlocked(access: WorkerClientAccess, threadId: string, input: string | CodexInputItem[]): Promise<{ threadId: string; turnId: string | null }> {
   assertCallbackReviewCurrent(threadId);
   const runtime = resolveThreadWorkerRuntime(access, threadId);
   const client = runtime === "pi-rpc" ? access.piRpcWorkerClient : access.codexClient;
@@ -511,6 +573,31 @@ export async function sendWorkerMessage(access: WorkerClientAccess, threadId: st
   return result;
 }
 
+export async function sendWorkerMessage(access: WorkerClientAccess, threadId: string, input: string | CodexInputItem[]): Promise<{ threadId: string; turnId: string | null }> {
+  return runSerializedJobMutation(threadId, async () => {
+    if (access.store.isWorkerThreadRetired?.(threadId)) {
+      throw new Error("This Worker was retired by a handoff. Continue with the replacement Worker instead.");
+    }
+    if (isClosedSelfImprovementWorkerThread(threadId)) {
+      throw new Error("This self-improvement Worker is closed. Start or approve a new request before continuing source work.");
+    }
+    const thread = access.store.getThread(threadId);
+    if (!isManorSourceCheckout(thread?.executionContract?.workspaceCwd ?? thread?.cwd)) {
+      return sendWorkerMessageUnlocked(access, threadId, input);
+    }
+    return withManorSourceStartLock(async () => {
+      const activeThreadId = activeManorSourceWorker(access, threadId);
+      if (activeThreadId) {
+        throw new Error(`The active Manor source checkout is already in use by Worker ${activeThreadId}. Continue that Worker or wait for it to finish.`);
+      }
+      if (isSelfImprovementSourceCheckoutReservedByOtherThread(threadId)) {
+        throw new Error("The active Manor source checkout is reserved by another self-improvement Worker. Continue that Worker or close its request first.");
+      }
+      return sendWorkerMessageUnlocked(access, threadId, input);
+    });
+  });
+}
+
 export async function updateWorkerThreadEffort(access: WorkerClientAccess, threadId: string, effort: ReasoningEffort): Promise<void> {
   const runtime = resolveThreadWorkerRuntime(access, threadId);
   if (runtime === "pi-rpc") {
@@ -521,13 +608,33 @@ export async function updateWorkerThreadEffort(access: WorkerClientAccess, threa
   await access.codexClient.updateThreadReasoningEffort(threadId, effort);
 }
 
-export async function stopWorkerThread(access: WorkerClientAccess, threadId: string): Promise<boolean> {
+async function stopWorkerThreadUnlocked(access: WorkerClientAccess, threadId: string): Promise<boolean> {
   const runtime = resolveThreadWorkerRuntime(access, threadId);
+  const threadStillRunning = () => workerThreadIsRunning(access.store.getThread(threadId));
   if (runtime === "pi-rpc") {
     if (!access.piRpcWorkerClient) throw new Error("Pi RPC worker runtime is not available");
-    return access.piRpcWorkerClient.stopThread(threadId);
+    const stopped = await access.piRpcWorkerClient.stopThread(threadId);
+    if (stopped || !threadStillRunning()) return stopped;
+    await access.piRpcWorkerClient.loadThread(threadId);
+    const retried = await access.piRpcWorkerClient.stopThread(threadId);
+    if (!retried && threadStillRunning()) throw new Error("The active Worker could not be stopped.");
+    return retried;
   }
-  return access.codexClient.stopThread(threadId);
+  const stopped = await access.codexClient.stopThread(threadId);
+  if (stopped) {
+    await access.store.flushSave();
+    return true;
+  }
+  if (!threadStillRunning()) return false;
+  await access.codexClient.loadThread(threadId);
+  const retried = await access.codexClient.stopThread(threadId);
+  if (!retried && threadStillRunning()) throw new Error("The active Worker could not be stopped.");
+  if (retried) await access.store.flushSave();
+  return retried;
+}
+
+export async function stopWorkerThread(access: WorkerClientAccess, threadId: string): Promise<boolean> {
+  return runSerializedJobMutation(threadId, () => stopWorkerThreadUnlocked(access, threadId));
 }
 
 export async function deleteWorkerThread(access: WorkerClientAccess, threadId: string, options?: { waitForCleanup?: boolean }): Promise<unknown> {

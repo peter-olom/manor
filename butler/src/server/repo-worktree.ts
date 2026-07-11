@@ -328,6 +328,13 @@ export function taskRequiresManagedWorktree(taskText: string): boolean {
   if (/\b(read-only|report only|question only|no code changes|do not code|do not edit|do not modify)\b/.test(normalized)) {
     return false;
   }
+  if (
+    /\b(?:do not|don't|never) (?:create|use|make)(?: a| an| the)?(?: new| managed| isolated)? (?:branch|worktree)\b/.test(normalized) ||
+    /\b(?:no|without)(?: a| an)?(?: new| managed| isolated)? (?:branch|worktree)\b/.test(normalized) ||
+    /\bstay (?:on|in) (?:the )?(?:current|existing) checkout\b/.test(normalized)
+  ) {
+    return false;
+  }
 
   return /\b(dedicated branch|isolated branch|branch isolation|isolated worktree|managed worktree|parallel jobs|parallel workstreams|checkout|new branch|create branch|switch branch|worktree)\b/.test(
     normalized

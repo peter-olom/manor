@@ -146,6 +146,38 @@ test("a send that completes after stop is interrupted without updating thread st
   }
 });
 
+test("stopThread interrupts a persisted active turn after client restart", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-codex-persisted-stop-"));
+  try {
+    const threadId = "thread-persisted-stop";
+    const store = await createStore(dir);
+    store.upsertThreadSummary({
+      id: threadId,
+      cwd: dir,
+      status: "active",
+      turns: [{ id: "persisted-turn", status: "inProgress", items: [] }]
+    });
+    const interrupted: Array<{ threadId: string; turnId?: string }> = [];
+    const client = new CodexAppServerClient("ws://127.0.0.1:1", store, dir) as unknown as {
+      codexProviderAdapter: { interruptTurn: (threadId: string, turnId?: string) => Promise<void> };
+      stopThread: (threadId: string) => Promise<boolean>;
+    };
+    client.codexProviderAdapter.interruptTurn = async (id, turnId) => {
+      interrupted.push({ threadId: id, turnId });
+    };
+
+    assert.equal(await client.stopThread(threadId), true);
+    assert.deepEqual(interrupted, [{ threadId, turnId: "persisted-turn" }]);
+    const stoppedThread = store.getThread(threadId);
+    assert.equal(stoppedThread?.status, "idle");
+    assert.equal(stoppedThread?.turns.at(-1)?.status, "interrupted");
+    assert.equal(stoppedThread?.turns.at(-1)?.error, "Worker turn stopped by operator.");
+    assert.notEqual(stoppedThread?.turns.at(-1)?.completedAt, null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a Codex worker follow-up stays on its thread model when the global default changes", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "manor-codex-pinned-follow-up-"));
   try {

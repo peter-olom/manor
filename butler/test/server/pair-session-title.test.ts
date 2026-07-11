@@ -22,6 +22,8 @@ class FakeButlerService extends EventEmitter {
   concurrentHandoffs = 0;
   maxConcurrentHandoffs = 0;
   retryReviewCount = 0;
+  stopCount = 0;
+  disposeCount = 0;
   compose: {
     provider: string | null;
     model: string | null;
@@ -47,14 +49,14 @@ class FakeButlerService extends EventEmitter {
 
   async start(): Promise<void> { this.startCount += 1; }
 
-  dispose(): void {}
+  dispose(): void { this.disposeCount += 1; }
 
   async refreshModelSettings(): Promise<void> {
     this.refreshCount += 1;
     this.emit("change");
   }
 
-  async stopPrompt(): Promise<void> {}
+  async stopPrompt(): Promise<void> { this.stopCount += 1; }
 
   ensureExternalWorkerDelegation(threadId: string): void {
     if (!this.trackedExternalThreads.includes(threadId)) this.trackedExternalThreads.push(threadId);
@@ -306,6 +308,95 @@ test("createWorkerPair registers external work for Butler review", async () => {
   });
 });
 
+test("deletePair waits for durable pair-store deletion", async () => {
+  const { manager, pairStore } = await createManager();
+  const pair = pairStore.createPair({ title: "Delete durably" });
+  await pairStore.flushPendingSave();
+  const order: string[] = [];
+  const deletePair = pairStore.deletePair.bind(pairStore);
+  const flushPendingSave = pairStore.flushPendingSave.bind(pairStore);
+  pairStore.deletePair = ((pairId: string) => {
+    order.push("delete");
+    return deletePair(pairId);
+  }) as typeof pairStore.deletePair;
+  pairStore.flushPendingSave = (async () => {
+    await flushPendingSave();
+    order.push("flush");
+  }) as typeof pairStore.flushPendingSave;
+
+  assert.equal(await manager.deletePair(pair.id), true);
+  assert.deepEqual(order, ["delete", "flush"]);
+});
+
+test("deletePair stops active Butler work before removing supervision", async () => {
+  const { manager, service } = await createManager();
+  const pair = await manager.createPair({ title: "Stop before delete" });
+
+  assert.equal(await manager.deletePair(pair.id), true);
+  assert.equal(service.stopCount, 1);
+  assert.equal(service.disposeCount, 1);
+});
+
+test("quiesced pairs cannot restart supervision until explicitly resumed", async () => {
+  const { manager, service } = await createManager();
+  const pair = await manager.createPair({ title: "Pause before worker stop" });
+
+  assert.equal(await manager.quiescePair(pair.id), true);
+  assert.equal(service.stopCount, 1);
+  assert.equal(service.disposeCount, 1);
+  await assert.rejects(() => manager.getPairDetail(pair.id, null, 120), /session is closing/);
+
+  assert.equal(await manager.resumePair(pair.id), true);
+  assert.equal(service.startCount, 2);
+});
+
+test("deletePair restores the live pair when durable deletion fails", async () => {
+  const { manager, pairStore, service } = await createManager();
+  const pair = await manager.createPair({ title: "Retain on failure" });
+  pairStore.flushPendingSave = (async () => {
+    throw new Error("pair state write failed");
+  }) as typeof pairStore.flushPendingSave;
+
+  await assert.rejects(() => manager.deletePair(pair.id), /pair state write failed/);
+  assert.equal(pairStore.getPair(pair.id)?.id, pair.id);
+  assert.equal(service.stopCount, 1);
+  assert.equal(service.disposeCount, 1);
+  assert.equal(service.startCount, 2);
+});
+
+test("failed deletion queues a durable restore behind an already queued delete save", async () => {
+  const { manager, pairStore, service } = await createManager();
+  const pair = await manager.createPair({ title: "Restore after queued delete" });
+  const snapshots: string[][] = [];
+  let markFirstSaveStarted!: () => void;
+  let releaseFirstSave!: () => void;
+  const firstSaveStarted = new Promise<void>((resolve) => { markFirstSaveStarted = resolve; });
+  const firstSaveRelease = new Promise<void>((resolve) => { releaseFirstSave = resolve; });
+  const internals = pairStore as unknown as { flushSave: () => Promise<void>; saveQueued: boolean };
+  internals.flushSave = async () => {
+    internals.saveQueued = false;
+    snapshots.push(pairStore.listSummaries().map((entry) => entry.id));
+    if (snapshots.length === 1) {
+      markFirstSaveStarted();
+      await firstSaveRelease;
+      throw new Error("first pair save failed");
+    }
+  };
+
+  pairStore.updatePairTitle(pair.id, "Start an in-flight save");
+  await firstSaveStarted;
+  const deleting = manager.deletePair(pair.id);
+  while (pairStore.getPair(pair.id)) await new Promise<void>((resolve) => setImmediate(resolve));
+  releaseFirstSave();
+
+  await assert.rejects(deleting, /first pair save failed/);
+  await pairStore.flushPendingSave();
+  assert.deepEqual(snapshots.slice(0, 2), [[pair.id], []]);
+  assert.deepEqual(snapshots.at(-1), [pair.id]);
+  assert.equal(pairStore.getPair(pair.id)?.id, pair.id);
+  assert.equal(service.startCount, 2);
+});
+
 test("startup resumes Butler services for persisted active Worker sessions", async () => {
   const { manager, pairStore, service, store } = await createManager();
   store.upsertThreadSummary({ id: "persisted-worker", source: "appServer", status: "active", turns: [] });
@@ -381,7 +472,8 @@ test("loaded pair services read current worker compose defaults", async () => {
     runtime: "auto",
     harness: "codex",
     model: "gpt-5-codex",
-    effort: "xhigh"
+    effort: "xhigh",
+    threadId: null
   });
 });
 

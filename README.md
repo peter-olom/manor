@@ -70,23 +70,15 @@ Prerequisites:
 Run the guided installer:
 
 ```bash
-./install.sh
+./manor-start install
 ```
 
-The installer checks Docker and Compose, writes local Compose settings, generates a local runtime broker token, and can start Manor.
-
-By default, the installer builds Manor from the local checkout and mounts that source into the active execution services. This source-first mode is required for approval-gated self-improvement execution.
-
-To use packaged images instead:
-
-```bash
-./install.sh --use-images --image-tag sha-<commit>
-```
+The installer checks Docker and Compose, validates configuration before replacing the local settings file, generates local control tokens, builds Manor from the current checkout, and waits for the stack to become healthy. Source builds are the supported lifecycle path so Manor can restart directly from its own working tree, including uncommitted experiments.
 
 For the default non-interactive setup:
 
 ```bash
-./install.sh -y
+./manor-start install -y
 ```
 
 Then open:
@@ -96,11 +88,22 @@ Then open:
 Daily control:
 
 ```bash
-./manor.sh start
-./manor.sh stop
-./manor.sh status
-./manor.sh logs
+./manor-start
+./manor-start stop
+./manor-start status
+./manor-start logs
 ```
+
+`manor-start` is the canonical launcher. Before every command it checks for an executable, gitignored `manor-start.local`. Use that file for machine-specific environment or secret-manager injection without committing private configuration:
+
+```bash
+cp manor-start.local.example manor-start.local
+chmod +x manor-start.local
+```
+
+The local launcher should finish by calling `manor-start` again. The included example uses the recursion-safe bypass automatically.
+
+Self-improvement also uses the active checkout. Manor leaves changes uncommitted, rebuilds directly from the working tree when a restart is authorized, and never resets or cleans user files. If the changed source cannot start, the host controller rebuilds clean `HEAD` and brings Manor back while leaving the experiment in place for troubleshooting.
 
 Restart the current stack through the host controller:
 
@@ -117,15 +120,6 @@ Update to the latest configured image or source target before restarting:
 Interactive defaults:
 
 - host port: `8180`
-- image registry: `ghcr.io/peter-olom`
-- image tag: `latest`
-- build from source: off
-- Codex auto-update on reboot: off
-- Codex auto-update target: `latest`
-- require Codex auto-update before startup: off
-- Pi auto-update on reboot: off
-- Pi auto-update target: `latest`
-- require Pi auto-update before startup: off
 - start Manor after install: yes
 
 ## What Ships Today
@@ -144,7 +138,7 @@ Manor runs as one Docker Compose project with these services:
 
 ## Image Distribution
 
-Source-first installs are the primary path. Packaged images remain available for rollback, simpler installs, and environments that should not let Manor edit its own checkout.
+The official installer and launcher build from the active source checkout. Published images remain release artifacts, but they are not a separate install mode.
 
 Pushes to `main` and version tags publish these images to GHCR:
 
@@ -162,7 +156,7 @@ Published tags include `latest` for the default branch, release tags, branch tag
 Local source builds use the source-build overlay:
 
 ```bash
-./manor.sh start --build
+./manor-start
 ```
 
 ## Core Model
@@ -330,15 +324,15 @@ Electron and native desktop checks use a separate opt-in sidecar instead of the 
 Start it only when needed:
 
 ```bash
-./manor.sh desktop start --build
+./manor-start desktop start
 ```
 
 Daily desktop proof control:
 
 ```bash
-./manor.sh desktop start
-./manor.sh desktop stop
-./manor.sh desktop status
+./manor-start desktop start
+./manor-start desktop stop
+./manor-start desktop status
 ```
 
 The sidecar runs a virtual display, window manager, x11vnc, noVNC, screenshot capture, simple desktop input tooling, and a persistent desktop home under the sidecar state volume. Browser proof remains on the lighter Playwright sidecar.
@@ -422,10 +416,10 @@ Provider availability, model discovery, and reasoning options come from the sele
 Current local development assumptions:
 
 - the default stack is deployment-safe and persists core state in named Docker volumes
-- source-first installs build local images and mount the active checkout into the relevant execution services
-- packaged image installs are still supported for rollback and simpler setups
+- the official launcher builds local images and mounts the active checkout into the relevant execution services
+- an executable `manor-start.local` is always consulted first for machine-local environment injection
 - Butler source hot reload is opt-in through the development overlay
-- local hot-reload with source images runs use `docker compose -f compose.yml -f compose.build.yml -f compose.dev.yml up -d --build`
+- local hot reload runs use `./manor-start start --dev`
 - older host-side `state`, `artifacts`, and `repos` directories are not mounted by default anymore
 - runtime broker operations affect live Docker resources on the host
 
@@ -434,7 +428,7 @@ For contribution workflow and validation expectations, see the [contributing gui
 ## Repo Layout
 
 - `compose.yml`: deployment-safe Manor stack with named Docker volumes
-- `compose.build.yml`: optional local source-build overlay
+- `compose.build.yml`: source-build overlay used by the official launcher
 - `compose.dev.yml`: optional local Butler hot-reload overlay
 - `butler/`: Butler backend and web app
 - `config/`: optional preview egress profiles and Codex app-server model instructions

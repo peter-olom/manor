@@ -107,7 +107,7 @@ export class ButlerStateStore extends EventEmitter {
   private readonly serviceLeases = new Map<string, ServiceLeaseView>();
   private readonly desktopSessions = new Map<string, DesktopSessionView>();
   private readonly runtimeCleanupTasks = new Map<string, RuntimeCleanupTaskView>();
-  private readonly deletedCodexThreadIds = new Set<string>();
+  private readonly deletedCodexThreadIds = new Set<string>(); private readonly retiredWorkerThreadIds = new Set<string>();
   private readonly previewProofs = new Map<string, PreviewProofRecordView>();
   private readonly persistedSupervisionByThreadId = new Map<string, { butlerTurnsUsed: number; maxButlerTurns: number | null }>();
   private readonly persistedWorkerReportsByThreadId = new Map<string, CodexWorkerReportView[]>();
@@ -296,6 +296,7 @@ export class ButlerStateStore extends EventEmitter {
   isCodexThreadDeleted(threadId: string): boolean { return this.deletedCodexThreadIds.has(threadId); }
   markCodexThreadDeleted(threadId: string): void { const normalized = threadId.trim(); if (!normalized || this.deletedCodexThreadIds.has(normalized)) return; this.deletedCodexThreadIds.add(normalized); this.queueSave(); this.emitChange(); }
   restoreDeletedCodexThread(threadId: string): boolean { if (!this.deletedCodexThreadIds.delete(threadId)) return false; this.queueSave(); this.emitChange(); return true; }
+  isWorkerThreadRetired(threadId: string): boolean { return this.retiredWorkerThreadIds.has(threadId); } markWorkerThreadRetired(threadId: string): boolean { const normalized = threadId.trim(); if (!normalized || this.retiredWorkerThreadIds.has(normalized)) return false; this.retiredWorkerThreadIds.add(normalized); this.queueSave(); this.emitChange(); return true; } restoreRetiredWorkerThread(threadId: string): boolean { if (!this.retiredWorkerThreadIds.delete(threadId)) return false; this.queueSave(); this.emitChange(); return true; }
 
   listProjectPolicies(projectId?: string | null): ProjectPolicyView[] { return listStateStoreProjectPolicies(this.getInternalAccess(), projectId); }
   getProjectPolicy(projectId: string, policyId: string): ProjectPolicyView | null { return getStateStoreProjectPolicy(this.getInternalAccess(), projectId, policyId); }

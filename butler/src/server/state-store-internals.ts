@@ -103,7 +103,7 @@ export type StateStoreInternalAccess = {
   persistedMemorySynthesisQueueIdsByKey: Map<string, string>;
   persistedProjectArtifactsByProjectId: Map<string, ProjectArtifactView[]>;
   persistedProjectPoliciesByProjectId: Map<string, ProjectPolicyView[]>;
-  deletedCodexThreadIds: Set<string>; latestStartedTurnIds: Map<string, string>; latestCompletedTurnIds: Map<string, string>; latestBlockedTurnIds: Map<string, string>;
+  deletedCodexThreadIds: Set<string>; retiredWorkerThreadIds: Set<string>; latestStartedTurnIds: Map<string, string>; latestCompletedTurnIds: Map<string, string>; latestBlockedTurnIds: Map<string, string>;
   windows: ButlerWindow[];
   focusedWindowId: string | null;
   saveTimer: NodeJS.Timeout | null;
@@ -660,8 +660,8 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     const data = JSON.parse(raw) as PersistedUiState;
     access.threadInventoryReady = false;
     access.threads.clear();
-    access.deletedCodexThreadIds.clear();
-    for (const threadId of Array.isArray(data.deletedCodexThreadIds) ? data.deletedCodexThreadIds : []) if (typeof threadId === "string" && threadId.trim()) access.deletedCodexThreadIds.add(threadId.trim());
+    access.deletedCodexThreadIds.clear(); access.retiredWorkerThreadIds.clear();
+    for (const threadId of Array.isArray(data.deletedCodexThreadIds) ? data.deletedCodexThreadIds : []) if (typeof threadId === "string" && threadId.trim()) access.deletedCodexThreadIds.add(threadId.trim()); for (const threadId of Array.isArray(data.retiredWorkerThreadIds) ? data.retiredWorkerThreadIds : []) if (typeof threadId === "string" && threadId.trim()) access.retiredWorkerThreadIds.add(threadId.trim());
     access.windows = Array.isArray(data.windows)
       ? data.windows
           .filter((window): window is ButlerWindow => Boolean(window && typeof window.threadId === "string" && !access.deletedCodexThreadIds.has(window.threadId)))
@@ -1204,8 +1204,7 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
       }
     }
   } catch {
-    access.threads.clear();
-    access.deletedCodexThreadIds.clear();
+    access.threads.clear(); access.deletedCodexThreadIds.clear(); access.retiredWorkerThreadIds.clear();
     access.windows = [];
     access.focusedWindowId = null;
     access.stackLeases.clear();
@@ -1239,7 +1238,7 @@ export async function persistStateStoreNow(access: StateStoreInternalAccess): Pr
   access.windows = access.windows.map((window) => normalizeWindow(window, access.threads.get(window.threadId)));
   const payload: PersistedUiState = {
     threads: access.listThreads().map((thread) => access.toThreadDetailView(access.threads.get(thread.id) ?? access.getOrCreateThread(thread.id))),
-    deletedCodexThreadIds: [...access.deletedCodexThreadIds].sort(),
+    deletedCodexThreadIds: [...access.deletedCodexThreadIds].sort(), retiredWorkerThreadIds: [...access.retiredWorkerThreadIds].sort(),
     windows: access.windows,
     focusedWindowId: access.focusedWindowId,
     stackLeases: [...access.stackLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),

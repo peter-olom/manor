@@ -1,9 +1,14 @@
 ## Local Development
 
 - Use the Docker workflow by default.
-- For Butler UI work, run the stack with the dev compose overlay so the Butler container has source mounts, `BUTLER_HOT_RELOAD=1`, and Vite middleware enabled.
-- Before relying on hot reload, confirm the running Butler container reports hot reload mode. If it is in static mode, restart it with the dev overlay instead of rebuilding the image.
+- Use `./manor-start` for install and lifecycle commands. Do not use raw Compose for normal starts or restarts.
+- Before starting or restarting Manor, check whether the gitignored `manor-start.local` exists and is executable. The official launcher runs it first so machine-local environment and secret injection are preserved.
+- Keep machine-specific startup behavior in `manor-start.local`, based on `manor-start.local.example`. Never add secrets or personal environment values to the committed launcher.
+- For Butler UI work, run `./manor-start start --dev` so the Butler container has source mounts, `BUTLER_HOT_RELOAD=1`, and Vite middleware enabled.
+- Before relying on hot reload, confirm the running Butler container reports hot reload mode. If it is in static mode, run `./manor-start restart --dev`.
 - On Docker Desktop, if UI edits do not appear, prefer enabling polling for the dev server watcher before doing a full image rebuild.
+- Manor self-improvement uses the active checkout. Do not create a branch, worktree, or commit unless the operator explicitly asks.
+- Leave experiments uncommitted. A source restart builds the working tree; if startup fails, Manor retries from clean `HEAD` without resetting or cleaning the user's files.
 
 ## Butler Model Providers And Harnesses
 

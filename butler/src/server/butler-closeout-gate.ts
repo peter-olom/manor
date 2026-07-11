@@ -2,11 +2,7 @@ import type { ButlerStateStore } from "./state-store.js";
 import { getOrchestrationCloseoutBlocker } from "./butler-orchestration.js";
 import { evaluateOperatorCloseoutGate } from "./supervision-checklist.js";
 import type { ButlerCallbackResolutionState, ButlerThreadCallbackView, CodexThreadRecord, CodexWorkerReportView } from "./types.js";
-
-function isThreadStillRunning(thread: CodexThreadRecord | null | undefined): boolean {
-  const latestTurn = thread?.turns.at(-1);
-  return thread?.status === "active" || latestTurn?.status === "inProgress" || latestTurn?.status === "started";
-}
+import { workerThreadIsRunning } from "./worker-thread-status.js";
 
 export function relevantTerminalWorkerReport(
   thread: CodexThreadRecord | null | undefined,
@@ -15,7 +11,7 @@ export function relevantTerminalWorkerReport(
 ): CodexWorkerReportView | null {
   if (!report || report.updatedAt < requestedAt) return null;
   if (report.status === "completed") return report;
-  return isThreadStillRunning(thread) ? null : report;
+  return workerThreadIsRunning(thread) ? null : report;
 }
 
 export function getOperatorCloseoutBlocker(

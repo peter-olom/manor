@@ -20,6 +20,7 @@ import { DEFAULT_THINKING_LEVELS } from "../shared/pairing.js";
 import { pairTitleIsDefault } from "./pair-store.js";
 import { getUnifiedWorkerCompose, loadWorkerThread, updateUnifiedWorkerCompose, updateWorkerThreadEffort, type WorkerClientAccess } from "./worker-client-router.js";
 import { parseProviderModelRef } from "./model-provider-config.js";
+import { workerThreadIsRunning } from "./worker-thread-status.js";
 
 type PairButlerService = Pick<
   ButlerAgentService,
@@ -153,15 +154,21 @@ function pairNeedsSupervision(pair: PairChat, store: ButlerStateStore): boolean 
   if (!pair.worker) return false;
   const thread = store.getThread(pair.worker.threadId);
   const report = store.getWorkerReport(pair.worker.threadId);
-  if (threadIsStillRunningForSupervision(thread) || pair.worker.status === "running" || pair.worker.status === "starting") return true;
+  if (workerThreadIsRunning(thread) || pair.worker.status === "running" || pair.worker.status === "starting") return true;
   if (!report) return true;
   if ((thread?.turns.at(-1)?.startedAt ?? 0) > report.updatedAt) return true;
   return !pair.worker.lastReviewedReportAt || report.updatedAt > pair.worker.lastReviewedReportAt;
 }
 
-function threadIsStillRunningForSupervision(thread: ReturnType<ButlerStateStore["getThread"]>): boolean {
-  const latestTurn = thread?.turns.at(-1);
-  return thread?.status === "active" || latestTurn?.status === "inProgress" || latestTurn?.status === "started";
+async function awaitPairShutdown<T>(operation: Promise<T>, label: string, timeoutMs = 10_000): Promise<T> {
+  return await new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out.`)), timeoutMs);
+    timer.unref?.();
+    operation.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); }
+    );
+  });
 }
 
 export class PairSessionManager {
@@ -169,6 +176,7 @@ export class PairSessionManager {
   private readonly titleInFlight = new Set<string>();
   private readonly titleAttempted = new Set<string>();
   private readonly handoffTails = new Map<string, Promise<void>>();
+  private readonly quiescedPairs = new Set<string>();
 
   constructor(private readonly options: PairSessionManagerOptions) {}
 
@@ -210,6 +218,7 @@ export class PairSessionManager {
 
   async createPair(input: { title?: string | null; defaultCwd?: string | null } = {}): Promise<PairDetail> {
     const pair = this.options.pairStore.createPair(input);
+    await this.options.pairStore.flushPendingSave();
     await this.ensureService(pair.id);
     return this.getPairDetail(pair.id, null, 120) as Promise<PairDetail>;
   }
@@ -228,20 +237,35 @@ export class PairSessionManager {
     effort?: string | null;
   }): Promise<PairDetail> {
     const pair = this.options.pairStore.createPair({ title: input.title, defaultCwd: input.defaultCwd });
-    this.options.pairStore.attachWorker(pair.id, {
-      threadId: input.threadId,
-      task: input.task,
-      cwd: input.cwd,
-      handoffPrompt: input.handoffPrompt,
-      runtime: input.runtime,
-      harness: input.harness,
-      provider: input.provider,
-      model: input.model,
-      effort: input.effort
-    });
-    const service = await this.ensureService(pair.id);
-    await service.ensureExternalWorkerDelegation(input.threadId);
-    return this.getPairDetail(pair.id, null, 120) as Promise<PairDetail>;
+    try {
+      this.options.pairStore.attachWorker(pair.id, {
+        threadId: input.threadId,
+        task: input.task,
+        cwd: input.cwd,
+        handoffPrompt: input.handoffPrompt,
+        runtime: input.runtime,
+        harness: input.harness,
+        provider: input.provider,
+        model: input.model,
+        effort: input.effort
+      });
+      await this.options.pairStore.flushPendingSave();
+      const service = await this.ensureService(pair.id);
+      await service.ensureExternalWorkerDelegation(input.threadId);
+      return this.getPairDetail(pair.id, null, 120) as Promise<PairDetail>;
+    } catch (error) {
+      try {
+        await this.deletePair(pair.id);
+      } catch (cleanupError) {
+        const failure = new Error(
+          `Worker pair setup failed and pair cleanup could not be persisted: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+          { cause: error }
+        ) as Error & { pairId: string };
+        failure.pairId = pair.id;
+        throw failure;
+      }
+      throw error;
+    }
   }
 
   async getPairDetail(pairId: string, before: number | null, limit: number): Promise<PairDetail | null> {
@@ -400,13 +424,72 @@ export class PairSessionManager {
     };
   }
 
-  async deletePair(pairId: string): Promise<boolean> {
+  async quiescePair(pairId: string): Promise<boolean> {
+    const existing = this.options.pairStore.getPair(pairId);
+    if (!existing) return false;
+    this.quiescedPairs.add(pairId);
     const loaded = this.services.get(pairId);
-    if (loaded) {
-      loaded.service.dispose();
-      this.services.delete(pairId);
+    try {
+      if (loaded) {
+        await awaitPairShutdown(loaded.started, "Butler pair startup");
+        await awaitPairShutdown(loaded.service.stopPrompt(), "Butler pair shutdown");
+        loaded.service.dispose();
+        this.services.delete(pairId);
+      }
+    } catch (error) {
+      this.quiescedPairs.delete(pairId);
+      throw error;
     }
-    return this.options.pairStore.deletePair(pairId);
+    return true;
+  }
+
+  async resumePair(pairId: string): Promise<boolean> {
+    if (!this.options.pairStore.getPair(pairId)) {
+      this.quiescedPairs.delete(pairId);
+      return false;
+    }
+    this.quiescedPairs.delete(pairId);
+    await this.ensureService(pairId);
+    return true;
+  }
+
+  async deletePair(pairId: string): Promise<boolean> {
+    const existing = this.options.pairStore.getPair(pairId);
+    await this.quiescePair(pairId);
+    const deleted = this.options.pairStore.deletePair(pairId);
+    try {
+      await this.options.pairStore.flushPendingSave();
+    } catch (error) {
+      let restoreError: unknown = null;
+      if (existing) {
+        this.options.pairStore.restorePairAfterFailedDelete(existing);
+        try {
+          await this.options.pairStore.flushPendingSave();
+        } catch (caught) {
+          restoreError = caught;
+        }
+      }
+      this.quiescedPairs.delete(pairId);
+      if (existing) {
+        try {
+          await this.ensureService(pairId);
+        } catch (resumeError) {
+          throw new Error(
+            `Pair deletion could not be persisted and Butler supervision could not be resumed: ${resumeError instanceof Error ? resumeError.message : String(resumeError)}`,
+            { cause: error }
+          );
+        }
+      }
+      if (restoreError) {
+        throw new Error(
+          `Pair deletion failed and the durable pair could not be restored: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`,
+          { cause: error }
+        );
+      }
+      throw error;
+    }
+    this.quiescedPairs.delete(pairId);
+    return deleted;
   }
 
   async stopButler(pairId: string): Promise<boolean> {
@@ -477,6 +560,7 @@ export class PairSessionManager {
   }
 
   private async ensureService(pairId: string): Promise<PairButlerService> {
+    if (this.quiescedPairs.has(pairId)) throw new Error("Butler session is closing.");
     const existing = this.services.get(pairId);
     if (existing) {
       await existing.started;
@@ -531,6 +615,7 @@ export class PairSessionManager {
           this.syncPairSnapshot(pair.id);
           return {
             attached: true,
+            flush: () => this.options.pairStore.flushPendingSave(),
             rollback: () => {
               if (!this.options.pairStore.restoreWorkerIfCurrent(pair.id, threadId, previousWorker)) return false;
               this.syncPairSnapshot(pair.id);

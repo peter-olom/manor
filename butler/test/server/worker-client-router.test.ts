@@ -9,13 +9,16 @@ import {
   deleteAllWorkerThreads,
   deleteWorkerThread,
   loadWorkerThread,
+  sendWorkerMessage,
   startWorkerThread,
+  stopWorkerThread,
   updateUnifiedWorkerCompose
 } from "../../src/server/worker-client-router.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { StaleWorkerOperationError } from "../../src/server/stale-worker-operation-error.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
 import { runWithCallbackReviewGuard } from "../../src/server/butler-job-mutation-guard.js";
+import { configureSelfImprovementRequestState, SelfImprovementRequestState } from "../../src/server/self-improvement-request-state.js";
 
 function withEnv<T>(patch: Record<string, string | undefined>, fn: () => T): T {
   const previous = new Map<string, string | undefined>();
@@ -718,6 +721,88 @@ test("Pi RPC thread load fails clearly when Pi runtime is unavailable", async ()
   await assert.rejects(() => loadWorkerThread(ctx.access, "pi-thread"), /Pi RPC worker runtime is not available/);
 });
 
+test("stopWorkerThread rehydrates an active Pi Worker before retrying stop", async () => {
+  const calls: string[] = [];
+  const thread = { id: "pi-rehydrated-stop", source: "pi-rpc", status: "unknown", turns: [{ id: "turn-active", status: "in_progress", items: [] }] };
+  let stopCalls = 0;
+  const stopped = await stopWorkerThread({
+    store: { getThread: () => thread },
+    codexClient: {},
+    piRpcWorkerClient: {
+      stopThread: async () => {
+        stopCalls += 1;
+        calls.push(`stop:${stopCalls}`);
+        if (stopCalls === 2) thread.status = "idle";
+        return stopCalls === 2;
+      },
+      loadThread: async () => { calls.push("load"); }
+    }
+  } as never, thread.id);
+
+  assert.equal(stopped, true);
+  assert.deepEqual(calls, ["stop:1", "load", "stop:2"]);
+});
+
+test("a direct Worker stop waits for an in-flight follow-up before aborting", async () => {
+  const calls: string[] = [];
+  let noteSendStarted!: () => void;
+  const sendStarted = new Promise<void>((resolve) => { noteSendStarted = resolve; });
+  let releaseSend!: () => void;
+  const sendCanFinish = new Promise<void>((resolve) => { releaseSend = resolve; });
+  const thread = { id: "serialized-stop", source: "appServer", status: "idle", cwd: "/workspace", turns: [] };
+  const workerAccess = {
+    store: {
+      getThread: () => thread,
+      flushSave: async () => undefined
+    },
+    codexClient: {
+      sendMessage: async () => {
+        calls.push("send:start");
+        noteSendStarted();
+        await sendCanFinish;
+        calls.push("send:end");
+        return { threadId: thread.id, turnId: "follow-up-turn" };
+      },
+      stopThread: async () => {
+        calls.push("stop");
+        return true;
+      }
+    }
+  } as never;
+
+  const sending = sendWorkerMessage(workerAccess, thread.id, "Continue.");
+  await sendStarted;
+  const stopping = stopWorkerThread(workerAccess, thread.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, ["send:start"]);
+  releaseSend();
+  await sending;
+  assert.equal(await stopping, true);
+  assert.deepEqual(calls, ["send:start", "send:end", "stop"]);
+});
+
+test("a retired handoff predecessor cannot receive another message", async () => {
+  let sends = 0;
+  const workerAccess = {
+    store: {
+      isWorkerThreadRetired: () => true,
+      getThread: () => ({ id: "retired-worker", source: "appServer", status: "idle", cwd: "/workspace", turns: [] })
+    },
+    codexClient: {
+      sendMessage: async () => {
+        sends += 1;
+        return { threadId: "retired-worker", turnId: "late-turn" };
+      }
+    }
+  } as never;
+
+  await assert.rejects(
+    () => sendWorkerMessage(workerAccess, "retired-worker", "Resume the old Worker."),
+    /retired by a handoff/
+  );
+  assert.equal(sends, 0);
+});
+
 test("a superseded Codex load invalidates the late concrete operation", async () => {
   let current = true;
   let invalidations = 0;
@@ -955,6 +1040,187 @@ test("partial bulk deletion cleans only baselines for Workers actually removed",
     await assert.rejects(() => stat(objectDirs.get(deletedId)!), /ENOENT/);
     assert.ok(await stat(objectDirs.get(failedId)!));
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("direct Manor Worker starts are serialized on the active source checkout", async () => {
+  const sourceCwd = "/repos/manor-lock-test";
+  let active = false;
+  let releaseStart: () => void = () => undefined;
+  let noteStart: () => void = () => undefined;
+  const startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
+  const started = new Promise<void>((resolve) => { noteStart = resolve; });
+  let startCount = 0;
+  const ctx = access({
+    store: {
+      listThreads: () => active ? [{ id: "manor-worker-1", cwd: sourceCwd }] : [],
+      getThread: () => active ? {
+        id: "manor-worker-1",
+        cwd: sourceCwd,
+        status: "active",
+        createdAt: 1,
+        turns: [{ id: "turn-1", startedAt: 1, completedAt: null }]
+      } : null
+    },
+    codexClient: {
+      getConnectionState: () => ({
+        compose: {
+          model: "gpt-5-codex",
+          effort: "medium",
+          availableModels: [
+            { id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["medium"], supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium" }
+          ]
+        }
+      }),
+      startThread: async () => {
+        startCount += 1;
+        noteStart();
+        await startGate;
+        active = true;
+        return { threadId: "manor-worker-1", turnId: "turn-1" };
+      }
+    }
+  });
+
+  await withEnvAsync({ MANOR_SELF_IMPROVEMENT_SOURCE_CWD: sourceCwd }, async () => {
+    const first = startWorkerThread(ctx.access, { task: "First Manor change", cwd: sourceCwd });
+    await started;
+    const second = startWorkerThread(ctx.access, { task: "Second Manor change", cwd: path.join(sourceCwd, "butler") });
+    const secondRejected = assert.rejects(second, /already in use by Worker manor-worker-1/);
+    releaseStart();
+
+    await first;
+    await secondRejected;
+    await startWorkerThread(ctx.access, { task: "Unrelated sibling change", cwd: `${sourceCwd}-sibling` });
+    assert.equal(startCount, 2);
+  });
+});
+
+test("direct Manor Workers respect an open self-improvement checkout reservation", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-source-reservation-"));
+  const sourceCwd = "/repos/manor-reservation-test";
+  const requests = new SelfImprovementRequestState(path.join(dir, "requests.json"), () => undefined, () => undefined);
+  configureSelfImprovementRequestState(requests);
+  const request = requests.create({
+    trigger: "Improve Manor",
+    symptoms: "A source issue exists.",
+    observations: "The change belongs in Manor.",
+    suspectedCause: "Current implementation.",
+    proposedChange: "Update the source.",
+    risk: "Concurrent edits."
+  });
+  requests.update(request.id, { status: "changes_ready", workspaceCwd: sourceCwd });
+  const ctx = access();
+
+  try {
+    await withEnvAsync({ MANOR_SELF_IMPROVEMENT_SOURCE_CWD: sourceCwd }, async () => {
+      await assert.rejects(
+        () => startWorkerThread(ctx.access, { task: "Another Manor change", cwd: sourceCwd }),
+        /reserved by an open self-improvement request/
+      );
+    });
+  } finally {
+    requests.update(request.id, { status: "discarded" });
+    await requests.flush();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a Manor Worker follow-up is blocked while another Worker owns the source checkout", async () => {
+  const sourceCwd = "/repos/manor-follow-up-lock-test";
+  const threads = new Map([
+    ["idle-worker", {
+      id: "idle-worker",
+      source: "appServer",
+      cwd: sourceCwd,
+      status: "idle",
+      createdAt: 1,
+      turns: [{ id: "idle-turn", startedAt: 1, completedAt: 2 }]
+    }],
+    ["active-worker", {
+      id: "active-worker",
+      source: "appServer",
+      cwd: sourceCwd,
+      status: "active",
+      createdAt: 3,
+      turns: [{ id: "active-turn", startedAt: 3, completedAt: null }]
+    }]
+  ]);
+  let sends = 0;
+  const ctx = access({
+    store: {
+      listThreads: () => [...threads.values()],
+      getThread: (threadId: string) => threads.get(threadId) ?? null
+    },
+    codexClient: {
+      sendMessage: async (threadId: string) => {
+        sends += 1;
+        return { threadId, turnId: "follow-up-turn" };
+      }
+    }
+  });
+
+  await withEnvAsync({ MANOR_SELF_IMPROVEMENT_SOURCE_CWD: sourceCwd }, async () => {
+    await assert.rejects(
+      () => sendWorkerMessage(ctx.access, "idle-worker", "Continue the work."),
+      /already in use by Worker active-worker/
+    );
+    assert.equal(sends, 0);
+  });
+});
+
+test("a self-improvement checkout reservation only allows follow-ups to its owning Worker", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-follow-up-reservation-"));
+  const sourceCwd = "/repos/manor-follow-up-reservation-test";
+  const requests = new SelfImprovementRequestState(path.join(dir, "requests.json"), () => undefined, () => undefined);
+  configureSelfImprovementRequestState(requests);
+  const request = requests.create({
+    trigger: "Improve Manor",
+    symptoms: "A source issue exists.",
+    observations: "The change belongs in Manor.",
+    suspectedCause: "Current implementation.",
+    proposedChange: "Update the source.",
+    risk: "Concurrent edits."
+  });
+  requests.update(request.id, { status: "changes_ready", workspaceCwd: sourceCwd, threadId: "owner-worker" });
+  const threads = new Map(["owner-worker", "other-worker"].map((threadId) => [threadId, {
+    id: threadId,
+    source: "appServer",
+    cwd: sourceCwd,
+    status: "idle",
+    createdAt: 1,
+    turns: [{ id: `${threadId}-turn`, startedAt: 1, completedAt: 2 }]
+  }]));
+  const sends: string[] = [];
+  const ctx = access({
+    store: {
+      listThreads: () => [...threads.values()],
+      getThread: (threadId: string) => threads.get(threadId) ?? null
+    },
+    codexClient: {
+      sendMessage: async (threadId: string) => {
+        sends.push(threadId);
+        return { threadId, turnId: "follow-up-turn" };
+      }
+    }
+  });
+
+  try {
+    await withEnvAsync({ MANOR_SELF_IMPROVEMENT_SOURCE_CWD: sourceCwd }, async () => {
+      await assert.rejects(
+        () => sendWorkerMessage(ctx.access, "other-worker", "Change Manor too."),
+        /reserved by another self-improvement Worker/
+      );
+      assert.deepEqual(sends, []);
+
+      const sent = await sendWorkerMessage(ctx.access, "owner-worker", "Continue the approved change.");
+      assert.deepEqual(sent, { threadId: "owner-worker", turnId: "follow-up-turn" });
+      assert.deepEqual(sends, ["owner-worker"]);
+    });
+  } finally {
+    requests.update(request.id, { status: "discarded" });
+    await requests.flush();
     await rm(dir, { recursive: true, force: true });
   }
 });

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_dir="$(cd "$(dirname "$0")" && pwd -P)"
+
+# Add machine-local exports here, or wrap the command below with your secret
+# manager. Never put secret values in the committed launcher.
+# export OLLAMA_API_KEY="..."
+
+exec env MANOR_START_BYPASS_LOCAL=1 "${repo_dir}/manor-start" "$@"

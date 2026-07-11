@@ -13,10 +13,19 @@ import {
 } from "./job-instruction-artifacts.js";
 import type { ButlerDelegationAttachmentAcknowledgement } from "./butler-agent-options.js";
 import { ensureManagedWorktreeWritableForWorker, resolveWorkspaceBranchName } from "./repo-worktree.js";
+import { runSerializedSelfImprovementAction } from "./self-improvement-actions.js";
+import {
+  getSelfImprovementSourceCheckoutRequestId,
+  isSelfImprovementSourceCheckoutOwnedByThread,
+  rollbackSelfImprovementSourceCheckout,
+  transferSelfImprovementSourceCheckout,
+  type SelfImprovementCheckoutTransfer
+} from "./self-improvement-request-state.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { CodexThreadExecutionContractView, ReasoningEffort } from "./types.js";
 import { deleteWorkerThread, resolveThreadWorkerRuntime, startWorkerThread, type WorkerClientAccess, type WorkerRuntime, type WorkerThreadStartResult } from "./worker-client-router.js";
 import { workerFileChangeAttribution } from "./worker-review-attribution.js";
+import { workerThreadIsRunning } from "./worker-thread-status.js";
 
 const HANDOFF_TEXT_LIMIT = 4_000;
 
@@ -113,6 +122,7 @@ export async function startWorkerHandoff(input: {
   artifactsDir: string;
   butlerThreadId?: string | null;
   repairWorkspaceOwnership?: WorkspaceOwnershipRepair;
+  startWorker?: typeof startWorkerThread;
 }): Promise<WorkerThreadStartResult> {
   const source = input.access.store.getThread(input.sourceThreadId);
   if (!source) throw new Error("The active worker job no longer exists");
@@ -134,7 +144,7 @@ export async function startWorkerHandoff(input: {
       cwd,
       repairOwnership: input.repairWorkspaceOwnership
     });
-    const result = await startWorkerThread(input.access, {
+    const result = await (input.startWorker ?? startWorkerThread)(input.access, {
       task,
       input: async (threadId) => {
         candidateThreadId = threadId;
@@ -185,7 +195,8 @@ export async function startWorkerHandoff(input: {
       runtime: "auto",
       harness: input.targetHarness,
       model: input.targetModel,
-      recordSelection: false
+      recordSelection: false,
+      ownsManorSourceCheckoutReservation: isSelfImprovementSourceCheckoutOwnedByThread(input.sourceThreadId)
     });
 
     const preparedPayload = input.access.store.getThreadJobPayload(result.threadId);
@@ -223,67 +234,121 @@ export async function handoffWorkerAtomically(input: {
   startHandoff?: typeof startWorkerHandoff;
   deleteWorker?: typeof deleteWorkerThread;
 }): Promise<WorkerThreadStartResult> {
+  const observedSelfImprovementRequestId = getSelfImprovementSourceCheckoutRequestId(input.sourceThreadId);
   return runSerializedJobMutation(input.sourceThreadId, async () => {
-    const source = input.access.store.getThread(input.sourceThreadId);
-    const latestTurn = source?.turns.at(-1);
-    if (!source) throw new Error("The active worker job no longer exists");
-    if (source.status === "active" || latestTurn?.status === "inProgress" || latestTurn?.status === "started") {
-      throw new Error("Wait for the current worker turn to finish before switching workers.");
+    const currentSelfImprovementRequestId = getSelfImprovementSourceCheckoutRequestId(input.sourceThreadId);
+    if (observedSelfImprovementRequestId && currentSelfImprovementRequestId !== observedSelfImprovementRequestId) {
+      throw new Error("The self-improvement request is no longer active for this Worker.");
     }
+    const selfImprovementRequestId = observedSelfImprovementRequestId ?? currentSelfImprovementRequestId;
+    const execute = async (): Promise<WorkerThreadStartResult> => {
+      if (selfImprovementRequestId && getSelfImprovementSourceCheckoutRequestId(input.sourceThreadId) !== selfImprovementRequestId) {
+        throw new Error("The self-improvement request is no longer active for this Worker.");
+      }
+      const source = input.access.store.getThread(input.sourceThreadId);
+      if (!source) throw new Error("The active worker job no longer exists");
+      if (input.access.store.isWorkerThreadRetired(input.sourceThreadId)) {
+        throw new Error("This Worker was already retired by a handoff.");
+      }
+      if (workerThreadIsRunning(source)) {
+        throw new Error("Wait for the current worker turn to finish before switching workers.");
+      }
 
-    let result: WorkerThreadStartResult | null = null;
-    let attachment: ButlerDelegationAttachmentAcknowledgement | void = undefined;
-    let sourceCallbackRemoved = false;
-    try {
-      result = await (input.startHandoff ?? startWorkerHandoff)({
-        access: input.access,
-        sourceThreadId: input.sourceThreadId,
-        targetModel: input.targetModel,
-        targetHarness: input.targetHarness,
-        targetEffort: input.targetEffort,
-        artifactsDir: input.artifactsDir,
-        butlerThreadId: input.butlerThreadId ?? null
-      });
-      await input.trackCallback(result.threadId);
-      const route = result.model?.startsWith(`${result.provider}/`) ? result.model : `${result.provider ?? "the selected provider"}/${result.model ?? "default"}`;
-      const text = `Switched Worker ${input.sourceThreadId} to ${route} using the ${workerHarnessDisplayName(result.harness)} harness in job ${result.threadId}. The previous work and review baseline were handed over.`;
-      const at = Date.now();
-      attachment = input.attach(result, text, at);
-      await input.removeCallback(input.sourceThreadId);
-      sourceCallbackRemoved = true;
-      input.post(result.threadId, text, at);
-      input.access.store.addEvent(input.sourceThreadId, "butler.worker.handed_off", `Handed off to Worker ${result.threadId}.`);
-      input.access.store.addEvent(result.threadId, "butler.worker.handoff_started", `Continued Worker ${input.sourceThreadId}.`);
-      if (result.provider && result.model) {
-        input.access.recordSuccessfulWorkerSelection?.({ harness: result.harness, provider: result.provider, model: result.model, effort: result.effort });
-      }
-      return result;
-    } catch (error) {
-      const rollbackErrors: string[] = [];
+      let result: WorkerThreadStartResult | null = null;
+      let attachment: ButlerDelegationAttachmentAcknowledgement | void = undefined;
+      let checkoutTransfer: SelfImprovementCheckoutTransfer | null = null;
+      let sourceRetired = false;
+      let sourceCallbackRemoved = false;
       try {
-        if (attachment?.attached && attachment.rollback && !attachment.rollback()) {
-          rollbackErrors.push("pair attachment rollback was rejected");
+        result = await (input.startHandoff ?? startWorkerHandoff)({
+          access: input.access,
+          sourceThreadId: input.sourceThreadId,
+          targetModel: input.targetModel,
+          targetHarness: input.targetHarness,
+          targetEffort: input.targetEffort,
+          artifactsDir: input.artifactsDir,
+          butlerThreadId: input.butlerThreadId ?? null
+        });
+        await input.trackCallback(result.threadId);
+        const route = result.model?.startsWith(`${result.provider}/`) ? result.model : `${result.provider ?? "the selected provider"}/${result.model ?? "default"}`;
+        const text = `Switched Worker ${input.sourceThreadId} to ${route} using the ${workerHarnessDisplayName(result.harness)} harness in job ${result.threadId}. The previous work and review baseline were handed over.`;
+        const at = Date.now();
+        attachment = input.attach(result, text, at);
+        if (attachment?.attached !== true) {
+          throw new Error("The Butler session changed before the replacement Worker could be attached.");
         }
-      } catch (failure) {
-        rollbackErrors.push(`pair attachment rollback failed: ${failure instanceof Error ? failure.message : String(failure)}`);
+        if (selfImprovementRequestId) {
+          checkoutTransfer = await transferSelfImprovementSourceCheckout(input.sourceThreadId, result.threadId);
+          if (!checkoutTransfer) throw new Error("The self-improvement checkout reservation could not be transferred.");
+        }
+        await attachment.flush?.();
+        sourceRetired = input.access.store.markWorkerThreadRetired(input.sourceThreadId);
+        if (!sourceRetired) throw new Error("The source Worker could not be retired after handoff.");
+        await input.access.store.flushSave();
+        await input.removeCallback(input.sourceThreadId);
+        sourceCallbackRemoved = true;
+        input.post(result.threadId, text, at);
+        input.access.store.addEvent(input.sourceThreadId, "butler.worker.handed_off", `Handed off to Worker ${result.threadId}.`);
+        input.access.store.addEvent(result.threadId, "butler.worker.handoff_started", `Continued Worker ${input.sourceThreadId}.`);
+        if (result.provider && result.model) {
+          input.access.recordSuccessfulWorkerSelection?.({ harness: result.harness, provider: result.provider, model: result.model, effort: result.effort });
+        }
+        return result;
+      } catch (error) {
+        const rollbackErrors: string[] = [];
+        if (checkoutTransfer) {
+          await rollbackSelfImprovementSourceCheckout(checkoutTransfer)
+            .then((rolledBack) => {
+              if (!rolledBack) rollbackErrors.push("self-improvement checkout rollback was rejected");
+            })
+            .catch((failure) => {
+              rollbackErrors.push(`self-improvement checkout rollback failed: ${failure instanceof Error ? failure.message : String(failure)}`);
+            });
+        }
+        if (sourceRetired) {
+          try {
+            if (!input.access.store.restoreRetiredWorkerThread(input.sourceThreadId)) {
+              rollbackErrors.push("source Worker retirement rollback was rejected");
+            } else {
+              await input.access.store.flushSave();
+            }
+          } catch (failure) {
+            rollbackErrors.push(`source Worker retirement rollback failed: ${failure instanceof Error ? failure.message : String(failure)}`);
+          }
+        }
+        try {
+          if (attachment?.attached && attachment.rollback && !attachment.rollback()) {
+            rollbackErrors.push("pair attachment rollback was rejected");
+          } else if (attachment?.attached && !attachment.rollback) {
+            rollbackErrors.push("pair attachment rollback is unavailable");
+          } else if (attachment?.attached) {
+            await attachment.flush?.();
+          }
+        } catch (failure) {
+          rollbackErrors.push(`pair attachment rollback failed: ${failure instanceof Error ? failure.message : String(failure)}`);
+        }
+        if (result) {
+          await input.removeCallback(result.threadId).catch((failure) => {
+            rollbackErrors.push(`callback cleanup failed: ${failure instanceof Error ? failure.message : String(failure)}`);
+          });
+          await (input.deleteWorker ?? deleteWorkerThread)(input.access, result.threadId, { waitForCleanup: true }).catch((failure) => {
+            rollbackErrors.push(`worker cleanup failed: ${failure instanceof Error ? failure.message : String(failure)}`);
+          });
+        }
+        if (sourceCallbackRemoved) {
+          await input.trackCallback(input.sourceThreadId).catch((failure) => {
+            rollbackErrors.push(`source callback restore failed: ${failure instanceof Error ? failure.message : String(failure)}`);
+          });
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(rollbackErrors.length > 0
+          ? `${message} Handoff rollback was incomplete: ${rollbackErrors.join("; ")}.`
+          : message);
       }
-      if (result) {
-        await input.removeCallback(result.threadId).catch((failure) => {
-          rollbackErrors.push(`callback cleanup failed: ${failure instanceof Error ? failure.message : String(failure)}`);
-        });
-        await (input.deleteWorker ?? deleteWorkerThread)(input.access, result.threadId, { waitForCleanup: true }).catch((failure) => {
-          rollbackErrors.push(`worker cleanup failed: ${failure instanceof Error ? failure.message : String(failure)}`);
-        });
-      }
-      if (sourceCallbackRemoved) {
-        await input.trackCallback(input.sourceThreadId).catch((failure) => {
-          rollbackErrors.push(`source callback restore failed: ${failure instanceof Error ? failure.message : String(failure)}`);
-        });
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(rollbackErrors.length > 0
-        ? `${message} Handoff rollback was incomplete: ${rollbackErrors.join("; ")}.`
-        : message);
-    }
+    };
+
+    return selfImprovementRequestId
+      ? runSerializedSelfImprovementAction(selfImprovementRequestId, execute)
+      : execute();
   });
 }
