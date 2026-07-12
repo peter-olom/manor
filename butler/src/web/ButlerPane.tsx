@@ -10,6 +10,7 @@ import { SandSpinner } from "./SandSpinner";
 import { ThinkingTrace, traceDisclosureLabel } from "./ThinkingTrace";
 import { useAnchoredScroll } from "./useAnchoredScroll";
 import { useLiveButlerTurn, type CompletedTrace } from "./useLiveButlerTurn";
+import { providerModelRef } from "./worker-route";
 
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
 import type { PairButlerActivityOutcome, PairDetail, PairMessage, PairModelOption, PairReviewActivity, PairTraceItem } from "../shared/pairing";
@@ -71,9 +72,11 @@ function workLoaderMessage(pair: PairDetail): PairMessage {
   };
 }
 
-function shouldShowWorkLoader(pair: PairDetail): boolean {
-  if (pair.butlerPendingReason) return false;
-  return pair.butlerPending || pair.status === "butler_running" || pair.status === "worker_running";
+export function pendingActivityOwner(pair: Pick<PairDetail, "butlerPending" | "butlerPendingReason" | "status">): "butler" | "worker" | null {
+  if (pair.butlerPendingReason) return null;
+  if (pair.butlerPending || pair.status === "butler_running") return "butler";
+  if (pair.status === "worker_running") return "worker";
+  return null;
 }
 
 function useAutoGrow(value: string, minHeight = 56) {
@@ -242,7 +245,6 @@ const TraceDisclosure = memo(function TraceDisclosure({ items, defaultOpen = fal
   return (
     <details className="bubble-disclosure" {...(defaultOpen ? { open: true } : {})}>
       <summary>
-        <span className="bubble-disclosure-icon" aria-hidden="true" />
         <span>{summary}</span>
       </summary>
       <ThinkingTrace items={items} />
@@ -272,6 +274,20 @@ export function durableActivitySupersedesLive(
     (outcome.completedAt ?? 0) >= (liveStartedAt ?? 0);
 }
 
+export function persistedButlerMessageCoversLive(
+  message: PairMessage | undefined,
+  assistantText: string,
+  startedAt: number | null,
+  completedAt: number | null
+): boolean {
+  if (message?.role !== "butler") return false;
+  if (completedAt !== null && message.at >= completedAt) return true;
+  const liveText = assistantText.trim();
+  return liveText.length > 0 &&
+    message.at >= (startedAt ?? 0) &&
+    message.text.trim() === liveText;
+}
+
 export const ActivityOnlyBubble = memo(function ActivityOnlyBubble({
   trace,
   outcome
@@ -298,7 +314,7 @@ type LiveBubbleProps = {
   pending: boolean;
 };
 
-const LiveBubble = memo(function LiveBubble({ text, items, pending }: LiveBubbleProps) {
+export const LiveBubble = memo(function LiveBubble({ text, items, pending }: LiveBubbleProps) {
   const traceItems = useMemo(() => [...items.values()].sort((a, b) => a.at - b.at), [items]);
   const trace = useMemo(() => ({
     messageId: "live",
@@ -307,21 +323,25 @@ const LiveBubble = memo(function LiveBubble({ text, items, pending }: LiveBubble
     startedAt: 0,
     completedAt: 0
   }), [traceItems]);
-  return (
+  const message = (
     <article className={`bubble is-butler ${pending ? "is-live" : "is-live-complete"}`}>
       <header className="bubble-head">
         <span>Butler</span>
         <time className="bubble-time">{pending ? "thinking" : "writing"}</time>
       </header>
-      {traceItems.length > 0 ? (
-        pending ? (
-          <TraceDisclosure items={traceItems} defaultOpen label={liveActivityLabel(traceItems)} />
-        ) : (
-          <CompletedTraceBubble trace={trace} />
-        )
-      ) : null}
       {text ? <Markdown className="bubble-body" text={text} /> : null}
     </article>
+  );
+  if (traceItems.length === 0) return message;
+  return (
+    <div className="butler-turn">
+      {pending ? (
+        <TraceDisclosure items={traceItems} defaultOpen label={liveActivityLabel(traceItems)} />
+      ) : (
+        <CompletedTraceBubble trace={trace} />
+      )}
+      {message}
+    </div>
   );
 });
 
@@ -347,7 +367,7 @@ export const WorkLoaderBubble = memo(function WorkLoaderBubble({ items, failed =
   }, [failed, startedAt]);
   const staleFor = lastUpdateAt ? Math.max(0, now - lastUpdateAt) : 0;
   return (
-    <article className={`bubble is-butler is-loader${failed ? " is-failed" : ""}`} aria-label={failed ? "Butler stopped with an error" : "Butler is working"}>
+    <div className={`butler-activity-indicator${failed ? " is-failed" : ""}`} aria-label={failed ? "Butler stopped with an error" : "Butler is working"}>
       <span className="working-indicator" aria-live="polite">
         <span className="working-indicator-label">{failed ? "Butler stopped with an error" : "Butler"}</span>
         {failed ? null : <SandSpinner />}
@@ -367,7 +387,34 @@ export const WorkLoaderBubble = memo(function WorkLoaderBubble({ items, failed =
       {items.length > 0 ? (
         <TraceDisclosure items={items} defaultOpen label={failed ? "Activity and tool details" : liveActivityLabel(items)} />
       ) : null}
-    </article>
+    </div>
+  );
+});
+
+export const WorkerWaitIndicator = memo(function WorkerWaitIndicator({
+  worker,
+  startedAt
+}: {
+  worker: PairDetail["worker"];
+  startedAt: number;
+}) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const route = providerModelRef(worker?.provider, worker?.model);
+  return (
+    <div className="worker-wait-indicator" role="status" aria-label="Worker is working">
+      <SandSpinner />
+      <div className="worker-wait-copy">
+        <strong>Worker is working</strong>
+        {worker?.task ? <span className="worker-wait-task">{worker.task}</span> : null}
+      </div>
+      <span className="worker-wait-meta">
+        {route ? `${route} · ` : ""}{shortDuration(now - startedAt)}
+      </span>
+    </div>
   );
 });
 
@@ -416,7 +463,7 @@ export const ReviewActivityBubble = memo(function ReviewActivityBubble({ review,
         <strong>{REVIEW_STAGE_LABELS[review.stage]}</strong>
         {retryRemaining !== null ? <span aria-hidden="true">retrying in {retryRemaining}s</span> : null}
       </div>
-      <p className="review-activity-model">{[review.modelProvider, review.modelId, review.thinkingLevel].filter(Boolean).join(" · ")}</p>
+      <p className="review-activity-model">{[providerModelRef(review.modelProvider, review.modelId), review.thinkingLevel].filter(Boolean).join(" · ")}</p>
       {review.lastActivity ? (
         <p className="review-activity-last">
           {review.lastActivity}
@@ -443,7 +490,7 @@ type BubbleProps = {
   activeQuestionMessageId: string | null;
 };
 
-const Bubble = memo(function Bubble({ message, liveTrace, pairId, onPairUpdate, activeQuestionMessageId }: BubbleProps) {
+export const Bubble = memo(function Bubble({ message, liveTrace, pairId, onPairUpdate, activeQuestionMessageId }: BubbleProps) {
   const role = message.role === "user" ? "user" : message.role === "worker" ? "worker" : message.role === "butler" ? "butler" : "system";
   if (message.metadata.kind === "work-loader") {
     return <WorkLoaderBubble items={[]} />;
@@ -452,13 +499,12 @@ const Bubble = memo(function Bubble({ message, liveTrace, pairId, onPairUpdate, 
     ? { messageId: message.id, items: message.trace, durationMs: 0, startedAt: message.at, completedAt: message.at }
     : null;
   const trace = liveTrace ?? persistedTrace;
-  return (
+  const messageBubble = (
     <article className={`bubble is-${role}${message.question ? " has-question" : ""}`}>
       <header className="bubble-head">
         <span>{roleLabel(message.role)}</span>
         <time className="bubble-time">{formatTime(message.at)}</time>
       </header>
-      {trace ? <CompletedTraceBubble trace={trace} /> : null}
       {message.question ? (
         <OperatorQuestionCard pairId={pairId} messageId={message.id} question={message.question} onPairUpdate={onPairUpdate} active={message.id === activeQuestionMessageId} />
       ) : (
@@ -466,6 +512,13 @@ const Bubble = memo(function Bubble({ message, liveTrace, pairId, onPairUpdate, 
       )}
       {message.sourceThreadId ? <footer className="bubble-foot">thread {shortId(message.sourceThreadId)}</footer> : null}
     </article>
+  );
+  if (!trace) return messageBubble;
+  return (
+    <div className="butler-turn">
+      <CompletedTraceBubble trace={trace} />
+      {messageBubble}
+    </div>
   );
 });
 
@@ -531,7 +584,9 @@ export function ButlerPane({
 
   const lastMessageId = pair.messages.at(-1)?.id ?? null;
   const lastMessageAt = pair.messages.at(-1)?.at ?? 0;
-  const showLoader = shouldShowWorkLoader(pair) && !pair.review;
+  const activityOwner = pendingActivityOwner(pair);
+  const showLoader = activityOwner === "butler" && !pair.review;
+  const workerWaitCandidate = activityOwner === "worker" && Boolean(pair.worker) && !pair.review;
   const showBlockedCloseout = Boolean(pair.butlerPendingReason) && !pair.review;
   const liveHasTurn = live.state.status !== "idle";
   const persistedOutcomeSupersedesLive = durableActivitySupersedesLive(live.state.status, live.state.startedAt, pair.butlerActivityOutcome);
@@ -547,11 +602,12 @@ export function ButlerPane({
     : pair.butlerActivityOutcome;
   const liveHasAssistantText = live.state.assistantText.trim().length > 0;
   const lastMessage = pair.messages.at(-1);
-  const lastMessageIsButler = lastMessage?.role === "butler";
-  const lastMessageCoversLive = lastMessageIsButler
-    && live.state.completedAt !== null
-    && lastMessage !== undefined
-    && lastMessage.at >= live.state.completedAt;
+  const lastMessageCoversLive = persistedButlerMessageCoversLive(
+    lastMessage,
+    live.state.assistantText,
+    live.state.startedAt,
+    live.state.completedAt
+  );
   const liveItems = useMemo(() => [...live.state.items.values()].sort((a, b) => a.at - b.at), [live.state.items]);
   const visibleActivityItems = activityUsesLive && liveItems.length > 0 ? liveItems : pair.butlerActivity;
   const activityFailed = activityOutcome?.status === "failed";
@@ -562,7 +618,10 @@ export function ButlerPane({
     activityOutcome?.completedAt ?? activityStartedAt ?? 0
   ) || null;
   const showLiveBubble = activityUsesLive && liveHasAssistantText && !lastMessageCoversLive;
-  const showWorkBubble = showLoader || activityFailed || (liveStreaming && visibleActivityItems.length > 0 && !showLiveBubble && !lastMessageCoversLive);
+  const showWorkBubble = activityFailed ||
+    (showLoader && !showLiveBubble && !lastMessageCoversLive) ||
+    (liveStreaming && visibleActivityItems.length > 0 && !showLiveBubble && !lastMessageCoversLive);
+  const showWorkerWait = workerWaitCandidate && !showWorkBubble && !showLiveBubble && !showBlockedCloseout;
   const traceAttachment = useMemo<{ messageId: string; trace: CompletedTrace } | null>(() => {
     const lastButlerIndex = (() => {
       for (let i = pair.messages.length - 1; i >= 0; i -= 1) {
@@ -612,7 +671,7 @@ export function ButlerPane({
   const orphanActivityOutcome = !hasButlerReplyAfterLastUser && !liveStreaming && !activityFailed && activityOutcome && (orphanActivityTrace || activityStopped)
     ? activityOutcome
     : null;
-  const totalCount = pair.messages.length + (showWorkBubble ? 1 : 0) + (showBlockedCloseout ? 1 : 0) + (showLiveBubble ? 1 : 0) + (pair.review ? 1 : 0) + (orphanActivityOutcome ? 1 : 0);
+  const totalCount = pair.messages.length + (showWorkBubble ? 1 : 0) + (showWorkerWait ? 1 : 0) + (showBlockedCloseout ? 1 : 0) + (showLiveBubble ? 1 : 0) + (pair.review ? 1 : 0) + (orphanActivityOutcome ? 1 : 0);
   const bottomKey = `${lastMessageId}:${totalCount}:${live.state.assistantText.length}:${live.state.items.size}:${lastMessageAt}`;
 
   const { ref, onScroll, isPinned, unreadCount, scrollToBottom } = useAnchoredScroll<HTMLDivElement>({ bottomKey, resetKey: pair.id });
@@ -659,6 +718,7 @@ export function ButlerPane({
         ) : null}
         {pair.review ? <ReviewActivityBubble review={pair.review} blockedReason={pair.butlerPendingReason} busy={busy} onRetry={onRetryReview} onStop={onStopReview} /> : null}
         {showWorkBubble ? <WorkLoaderBubble items={showLiveBubble ? [] : visibleActivityItems} failed={activityFailed} detail={activityOutcome?.detail} startedAt={activityStartedAt} lastUpdateAt={activityLastUpdateAt} /> : null}
+        {showWorkerWait ? <WorkerWaitIndicator worker={pair.worker} startedAt={pair.worker?.startedAt ?? pair.updatedAt} /> : null}
         {orphanActivityOutcome ? <ActivityOnlyBubble trace={orphanActivityTrace} outcome={orphanActivityOutcome} /> : null}
         <JumpToLatest
           count={unreadCount}

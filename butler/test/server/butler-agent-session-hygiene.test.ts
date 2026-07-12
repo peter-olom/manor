@@ -9,6 +9,7 @@ import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import {
   BUTLER_BACKGROUND_PROMPT_PREFIX,
   BUTLER_EPHEMERAL_BACKGROUND_PROMPT_PREFIX,
+  collapseCallbackDuplicateMessages,
   contentAttachmentSummary,
   sanitizeHistoryMessages,
   serializeMessages,
@@ -24,6 +25,7 @@ import {
   getVisibleButlerMessages,
   keepPendingOperatorPromptsBefore,
   applyManagedButlerDefaults,
+  attachCompletedActivityTraceToDelegationAcknowledgement,
   registerPendingOperatorPrompt,
   removeCommittedPendingOperatorPrompt,
   removePendingOperatorPrompt,
@@ -757,6 +759,78 @@ test("provider history suppresses duplicate durable provider replies", () => {
 
   assert.equal(messages.length, 1);
   assert.equal(messages[0].id, "message-0");
+});
+
+test("delegation acknowledgement inherits the hidden provider reply trace", () => {
+  const traceItem = {
+    id: "tool-1",
+    type: "dynamic_tool_call" as const,
+    status: "completed" as const,
+    title: "delegate_to_worker",
+    text: "Delegated to Worker",
+    at: 110,
+    completedAt: 119
+  };
+  const messages = collapseCallbackDuplicateMessages([{
+    id: "delegation-ack-worker-1",
+    role: "assistant",
+    text: "Accepted. I delegated this to a Worker.",
+    at: 120,
+    taskDurationMs: null,
+    kind: "message"
+  }, {
+    id: "operator-session-reply-1",
+    role: "assistant",
+    text: "The Worker is running.",
+    at: 121,
+    taskDurationMs: null,
+    kind: "message",
+    trace: [traceItem],
+    traceMeta: {
+      turnId: "turn-1",
+      startedAt: 100,
+      completedAt: 121,
+      items: [traceItem]
+    }
+  }]);
+
+  assert.equal(messages.length, 1);
+  assert.deepEqual(messages[0]?.trace, [traceItem]);
+  assert.equal(messages[0]?.traceMeta?.turnId, "turn-1");
+});
+
+test("completed Butler activity attaches directly to a delegation acknowledgement", () => {
+  const access = pendingAccess();
+  access.operatorMessages.push({
+    id: "delegation-ack-worker-1",
+    role: "assistant",
+    text: "Accepted. I delegated this to a Worker.",
+    at: 120,
+    taskDurationMs: null,
+    kind: "message"
+  });
+  access.activityTurns = [{
+    id: "turn-1",
+    status: "completed",
+    startedAt: 100,
+    completedAt: 130,
+    detail: null,
+    items: [{
+      id: "thinking-1",
+      kind: "thinking",
+      status: "completed",
+      title: "Thinking",
+      text: "Delegating the task.",
+      at: 105,
+      updatedAt: 125,
+      contentIndex: null,
+      toolCallId: null
+    }]
+  }];
+
+  assert.equal(attachCompletedActivityTraceToDelegationAcknowledgement(access as never), true);
+  assert.equal(access.operatorMessages[0]?.trace?.[0]?.text, "Delegating the task.");
+  assert.equal(access.operatorMessages[0]?.traceMeta?.turnId, "turn-1");
 });
 
 test("provider history retains the durable trace when suppressing a duplicate reply", () => {

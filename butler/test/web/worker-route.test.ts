@@ -4,6 +4,7 @@ import test from "node:test";
 import { modelOptionSelectionValue, modelOptionValue } from "../../src/web/ModelPicker";
 import {
   isSameWorkerRoute,
+  providerModelRef,
   workerHarnessForModel,
   workerHarnessLabel,
   workerModelForRoute,
@@ -31,6 +32,12 @@ function model(provider: string | null, harness: PairWorkerHarness | null, label
 test("missing persisted worker identity stays visibly unknown", () => {
   assert.equal(workerProviderLabel(null), "Unknown provider");
   assert.equal(workerHarnessLabel(null), "Unknown harness");
+});
+
+test("provider-qualified model references never repeat their provider", () => {
+  assert.equal(providerModelRef("ollama-cloud", "glm-5.2"), "ollama-cloud/glm-5.2");
+  assert.equal(providerModelRef("ollama-cloud", "ollama-cloud/glm-5.2"), "ollama-cloud/glm-5.2");
+  assert.equal(providerModelRef(null, "gpt-5.5"), "gpt-5.5");
 });
 
 test("duplicate provider and model ids remain distinct across Worker harnesses", () => {

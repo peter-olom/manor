@@ -1291,7 +1291,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         access.noteThreadFocus(result.threadId, name);
         const acknowledgement = access.queueDelegationAcknowledgement(
           result.threadId,
-          `Accepted. I delegated this to a Worker using provider ${result.provider ?? "selected"}, model ${result.model ?? "default"}, and the ${workerHarnessLabel(result.harness)} harness in job ${result.threadId}. I will return here with the result.`,
+          `Accepted. I delegated this to a Worker using ${workerProviderModelRoute(result.provider, result.model)} via the ${workerHarnessLabel(result.harness)} harness in job ${result.threadId}. I will return here with the result.`,
           { runtime: result.runtime, harness: result.harness, provider: result.provider, model: result.model, effort: result.effort }
         );
         if (acknowledgement?.attached === false) {

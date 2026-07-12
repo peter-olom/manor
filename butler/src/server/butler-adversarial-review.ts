@@ -16,7 +16,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 
 import { contentToText } from "./butler-agent-helpers.js";
-import { modelToModelOption } from "./model-provider-config.js";
+import { formatProviderModelRef, modelToModelOption } from "./model-provider-config.js";
 import { normalizeWorkerReviewResults } from "./butler-orchestration.js";
 import { applyOpencodeGoNativeThinkingPayload } from "./pi-opencode-web-tools-extension.js";
 import { piThinkingLevelForModelOption } from "./pi-thinking-levels.js";
@@ -196,7 +196,7 @@ function reviewDiagnosticText(value: unknown): string {
 
 function reviewTimeoutError(input: ProviderAdversarialReviewInput, lastProgress: AdversarialReviewProgress | null): Error {
   const seconds = Math.round(input.timeoutMs / 1000);
-  const model = `${input.selection.model.provider}/${input.selection.model.id}`;
+  const model = formatProviderModelRef({ provider: input.selection.model.provider, model: input.selection.model.id }) ?? input.selection.model.id;
   const last = lastProgress
     ? ` Last activity ${Math.max(0, Math.round((Date.now() - lastProgress.at) / 1000))}s ago: ${lastProgress.message}`
     : " No reviewer activity was received.";
@@ -705,7 +705,7 @@ export async function ensureButlerAdversarialReview(input: {
     if (input.isCurrent?.() === false) return [];
     const rawMessage = error instanceof Error ? error.message : String(error);
     const message = /auth|log.?in|sign.?in|unauthori[sz]ed|\b401\b|\b403\b/i.test(rawMessage)
-      ? `Adversarial review could not authenticate ${model.provider}/${model.id}. Open Settings → Providers and reconnect that provider, then retry.`
+      ? `Adversarial review could not authenticate ${formatProviderModelRef({ provider: model.provider, model: model.id }) ?? model.id}. Open Settings → Providers and reconnect that provider, then retry.`
       : rawMessage.slice(0, 800);
     input.store.addEvent(input.threadId, "adversarial/review/failed", `Adversarial review failed: ${message}`);
     throw new Error(message);

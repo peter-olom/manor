@@ -19,6 +19,12 @@ export function workerProviderLabel(provider: string | null | undefined): string
   return provider ? PROVIDER_LABELS[provider] ?? provider : "Unknown provider";
 }
 
+export function providerModelRef(provider: string | null | undefined, model: string | null | undefined): string {
+  if (!model) return provider ?? "";
+  if (!provider || model.startsWith(`${provider}/`)) return model;
+  return `${provider}/${model}`;
+}
+
 export function workerProviderForModelLabel(model: WorkerModelIdentity): string {
   return workerProviderLabel(model.provider);
 }

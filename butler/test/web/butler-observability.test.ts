@@ -4,7 +4,7 @@ import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { ActivityOnlyBubble, durableActivitySupersedesLive, ReviewActivityBubble, WorkLoaderBubble } from "../../src/web/ButlerPane.js";
+import { ActivityOnlyBubble, Bubble, durableActivitySupersedesLive, LiveBubble, pendingActivityOwner, persistedButlerMessageCoversLive, ReviewActivityBubble, WorkerWaitIndicator, WorkLoaderBubble } from "../../src/web/ButlerPane.js";
 import { ThinkingTrace } from "../../src/web/ThinkingTrace.js";
 import { applyPatchToState, type LiveTurnState } from "../../src/web/useLiveButlerTurn.js";
 
@@ -101,6 +101,92 @@ test("failed tool traces expand their exact diagnostics", () => {
   assert.match(markup, /Schema validation failed: questions\[0\]\.options is required/);
 });
 
+test("completed trace renders above and outside the final Butler message", () => {
+  const markup = renderToStaticMarkup(React.createElement(Bubble, {
+    message: {
+      id: "message-1",
+      role: "butler",
+      lane: "butler",
+      text: "There are 9 floating files.",
+      at: 200,
+      sourceThreadId: null,
+      memoryObservationId: null,
+      metadata: {},
+      trace: [{
+        id: "tool-1",
+        type: "dynamic_tool_call",
+        status: "completed",
+        title: "inspect_filesystem",
+        text: "Listed /repos",
+        at: 100,
+        completedAt: 150
+      }]
+    },
+    pairId: "pair-1",
+    onPairUpdate: () => undefined,
+    activeQuestionMessageId: null
+  }));
+
+  assert.match(markup, /^<div class="butler-turn"><details class="bubble-disclosure"/);
+  assert.ok(markup.indexOf("bubble-disclosure") < markup.indexOf("bubble is-butler"));
+  assert.doesNotMatch(markup, /<article class="bubble is-butler"[^>]*>[\s\S]*bubble-disclosure/);
+  assert.doesNotMatch(markup, /bubble-disclosure-icon/);
+});
+
+test("live trace stays expanded above the streaming Butler message", () => {
+  const markup = renderToStaticMarkup(React.createElement(LiveBubble, {
+    text: "There are 9 floating files.",
+    pending: true,
+    items: [{
+      id: "tool-1",
+      type: "dynamic_tool_call",
+      status: "in_progress",
+      title: "inspect_filesystem",
+      text: "Listing /repos",
+      at: 100
+    }]
+  }));
+
+  assert.match(markup, /^<div class="butler-turn"><details class="bubble-disclosure" open=""/);
+  assert.ok(markup.indexOf("bubble-disclosure") < markup.indexOf("bubble is-butler is-live"));
+});
+
+test("completed live trace collapses above the completed Butler message", () => {
+  const markup = renderToStaticMarkup(React.createElement(LiveBubble, {
+    text: "There are 9 floating files.",
+    pending: false,
+    items: [{
+      id: "tool-1",
+      type: "dynamic_tool_call",
+      status: "completed",
+      title: "inspect_filesystem",
+      text: "Listed /repos",
+      at: 100,
+      completedAt: 150
+    }]
+  }));
+
+  assert.match(markup, /^<div class="butler-turn"><details class="bubble-disclosure">/);
+  assert.doesNotMatch(markup, /<details class="bubble-disclosure" open/);
+  assert.ok(markup.indexOf("bubble-disclosure") < markup.indexOf("bubble is-butler is-live-complete"));
+});
+
+test("persisted Butler reply suppresses its live duplicate before turn completion", () => {
+  const message = {
+    id: "message-1",
+    role: "butler",
+    lane: "butler",
+    text: "There are 9 floating files.",
+    at: 200,
+    sourceThreadId: null,
+    memoryObservationId: null,
+    metadata: {}
+  } as const;
+
+  assert.equal(persistedButlerMessageCoversLive(message, "There are 9 floating files.", 100, null), true);
+  assert.equal(persistedButlerMessageCoversLive(message, "Still drafting.", 100, null), false);
+});
+
 test("durable failed Butler activity renders its terminal state and exact detail", () => {
   const markup = renderToStaticMarkup(React.createElement(WorkLoaderBubble, {
     failed: true,
@@ -122,6 +208,57 @@ test("durable failed Butler activity renders its terminal state and exact detail
   assert.match(markup, /Exact failure details/);
   assert.match(markup, /Provider rejected the tool schema/);
   assert.match(markup, /questions\[0\]\.options is required/);
+  assert.doesNotMatch(markup, /class="bubble(?:\s|")/);
+});
+
+test("active Butler activity is flat instead of a message bubble", () => {
+  const markup = renderToStaticMarkup(React.createElement(WorkLoaderBubble, {
+    startedAt: Date.now(),
+    lastUpdateAt: Date.now(),
+    items: [{
+      id: "thinking-1",
+      type: "reasoning",
+      status: "in_progress",
+      title: "Thinking",
+      text: "Checking the current state.",
+      at: Date.now()
+    }]
+  }));
+
+  assert.match(markup, /class="butler-activity-indicator"/);
+  assert.match(markup, /aria-label="Butler is working"/);
+  assert.doesNotMatch(markup, /class="bubble(?:\s|")/);
+});
+
+test("worker-running state uses a dedicated Worker indicator", () => {
+  assert.equal(pendingActivityOwner({ status: "worker_running", butlerPending: false, butlerPendingReason: null }), "worker");
+  assert.equal(pendingActivityOwner({ status: "butler_running", butlerPending: true, butlerPendingReason: null }), "butler");
+  assert.equal(pendingActivityOwner({ status: "worker_running", butlerPending: true, butlerPendingReason: null }), "butler");
+
+  const markup = renderToStaticMarkup(React.createElement(WorkerWaitIndicator, {
+    worker: {
+      threadId: "worker-1",
+      status: "running",
+      task: "Delete the floating files",
+      cwd: "/repos",
+      handoffPrompt: "Delete the floating files",
+      startedAt: Date.now(),
+      lastRevertAt: null,
+      lastReportAt: null,
+      lastReportStatus: null,
+      lastReportSummary: null,
+      lastReviewedReportAt: null,
+      provider: "ollama-cloud",
+      model: "ollama-cloud/glm-5.2"
+    },
+    startedAt: Date.now()
+  }));
+  assert.match(markup, /ollama-cloud\/glm-5\.2/);
+  assert.doesNotMatch(markup, /ollama-cloud · ollama-cloud\/glm-5\.2/);
+
+  assert.match(markup, /aria-label="Worker is working"/);
+  assert.match(markup, /Delete the floating files/);
+  assert.doesNotMatch(markup, /bubble is-butler|Reasoning and tool trace/);
 });
 
 test("durable interrupted Butler activity renders as stopped after reload", () => {

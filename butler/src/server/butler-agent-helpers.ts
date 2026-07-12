@@ -1169,6 +1169,11 @@ export function collapseCallbackDuplicateMessages(messages: ButlerMessageView[])
     }
 
     if ((delegationAcknowledged || callbackDelivered) && message.kind === "message" && message.role === "assistant") {
+      const target = collapsed.at(-1);
+      if (target && message.trace?.length && !target.trace?.length) {
+        target.trace = message.trace;
+        if (message.traceMeta) target.traceMeta = message.traceMeta;
+      }
       continue;
     }
 

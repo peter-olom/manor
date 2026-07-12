@@ -361,8 +361,10 @@ export function upsertOperatorMessage(messages: ButlerMessageView[], id: string,
   const role = options.role ?? "assistant";
   const displayText = options.displayText?.trim() || null;
   const question = options.question ? normalizeOperatorQuestion(options.question) : null;
-  const trace = options.trace ?? null;
-  const traceMeta = options.traceMeta ?? null;
+  const updatesTrace = Object.prototype.hasOwnProperty.call(options, "trace");
+  const updatesTraceMeta = Object.prototype.hasOwnProperty.call(options, "traceMeta");
+  const trace = updatesTrace ? options.trace ?? null : existingMessage?.trace ?? null;
+  const traceMeta = updatesTraceMeta ? options.traceMeta ?? null : existingMessage?.traceMeta ?? null;
   let changed = false;
   if (existingMessage) {
     changed =
@@ -382,10 +384,14 @@ export function upsertOperatorMessage(messages: ButlerMessageView[], id: string,
     else delete existingMessage.displayText;
     if (question) existingMessage.question = question;
     else delete existingMessage.question;
-    if (trace && trace.length > 0) existingMessage.trace = trace;
-    else delete existingMessage.trace;
-    if (traceMeta) existingMessage.traceMeta = traceMeta;
-    else delete existingMessage.traceMeta;
+    if (updatesTrace) {
+      if (trace && trace.length > 0) existingMessage.trace = trace;
+      else delete existingMessage.trace;
+    }
+    if (updatesTraceMeta) {
+      if (traceMeta) existingMessage.traceMeta = traceMeta;
+      else delete existingMessage.traceMeta;
+    }
   } else {
     changed = true;
     const next: ButlerMessageView = {
@@ -416,13 +422,14 @@ export function upsertProviderBackedOperatorMessage(
   options: ProviderBackedOperatorMessageOptions = {}
 ): boolean {
   const existingId = matchingProviderBackedOperatorMessageId(messages, role, text, at) ?? id;
-  let changed = upsertOperatorMessage(messages, existingId, text, at, null, {
+  const operatorOptions: OperatorMessageOptions = {
     role,
     displayText,
-    trace: options.trace ?? null,
-    traceMeta: options.traceMeta ?? null,
     normalize: options.normalize
-  });
+  };
+  if (Object.prototype.hasOwnProperty.call(options, "trace")) operatorOptions.trace = options.trace ?? null;
+  if (Object.prototype.hasOwnProperty.call(options, "traceMeta")) operatorOptions.traceMeta = options.traceMeta ?? null;
+  let changed = upsertOperatorMessage(messages, existingId, text, at, null, operatorOptions);
   const stored = messages.find((message) => message.id === existingId);
   if (stored && stored.providerBacked !== true) { stored.providerBacked = true; changed = true; }
   if (stored && role === "assistant" && stored.providerSucceeded !== (options.providerSucceeded !== false)) { stored.providerSucceeded = options.providerSucceeded !== false; changed = true; }

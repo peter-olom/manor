@@ -20,6 +20,7 @@ import type { SettingsGroupKey } from "../shared/settings.js";
 import { assertOllamaLocalBaseUrl, fetchOllamaLocalModels, nativeOllamaBaseUrl, normalizeOllamaModelName, type OllamaLocalModelInfo } from "./ollama-local-models.js";
 import { fetchOllamaCloudModelsCached } from "./ollama-cloud-models.js";
 import { fetchOpencodeGoModelsCached } from "./opencode-go-models.js";
+import { formatProviderModelRef } from "./model-provider-config.js";
 
 type SettingsRouteAccess = {
   app: Express;
@@ -98,7 +99,7 @@ async function validateOllamaLocal(settings: ManorSettings): Promise<SettingsVal
     })
   }, 30_000);
   return response.ok
-    ? result("ok", `Completion check reached ${config.providerId}/${modelId}.`)
+    ? result("ok", `Completion check reached ${formatProviderModelRef({ provider: config.providerId, model: modelId }) ?? modelId}.`)
     : result("failed", `Completion check failed with HTTP ${response.status}: ${redactMessage(response.text)}`);
 }
 
@@ -128,7 +129,7 @@ async function validateOllamaCloud(settings: ManorSettings): Promise<SettingsVal
     })
   }, 30_000);
   return response.ok
-    ? result("ok", `Completion check reached ${config.providerId}/${modelId}.`)
+    ? result("ok", `Completion check reached ${formatProviderModelRef({ provider: config.providerId, model: modelId }) ?? modelId}.`)
     : result("failed", `Completion check failed with HTTP ${response.status}: ${redactMessage(response.text)}`);
 }
 

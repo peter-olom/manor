@@ -7,7 +7,7 @@ import { ensureButlerAdversarialReview, type AdversarialReviewProgress } from ".
 import { getButlerShellSnapshot } from "./butler-agent-session.js";
 import { isolatedModelResourceOptions } from "./isolated-model-resources.js";
 import { runSerializedJobMutation, runWithCallbackReviewGuard } from "./butler-job-mutation-guard.js";
-import { modelToModelOption } from "./model-provider-config.js";
+import { formatProviderModelRef, modelToModelOption } from "./model-provider-config.js";
 import { applyOpencodeGoNativeThinkingPayload } from "./pi-opencode-web-tools-extension.js";
 import { piThinkingLevelForModelOption } from "./pi-thinking-levels.js";
 import type { ButlerStateStore } from "./state-store.js";
@@ -388,7 +388,7 @@ export async function runCallbackAdversarialReview(input: {
           if (inactiveFor >= supervisorTimeoutMs) {
             attemptActive = false;
             void session.abort();
-            const modelLabel = `${model.provider}/${model.id}`;
+            const modelLabel = formatProviderModelRef({ provider: model.provider, model: model.id }) ?? model.id;
             reject(new Error(`Isolated Butler supervision was inactive for ${Math.round(supervisorTimeoutMs / 1000)}s using ${modelLabel}. Last activity ${Math.max(0, Math.round(inactiveFor / 1000))}s ago: ${lastProgress.message}`));
             return;
           }
@@ -404,7 +404,7 @@ export async function runCallbackAdversarialReview(input: {
         }, 50);
       })
     ]);
-    assertCallbackSupervisorPromptSucceeded(session.messages, completedSupervisorAction, `${model.provider}/${model.id}`);
+    assertCallbackSupervisorPromptSucceeded(session.messages, completedSupervisorAction, formatProviderModelRef({ provider: model.provider, model: model.id }) ?? model.id);
   } finally {
     attemptActive = false;
     if (timeout) clearTimeout(timeout);

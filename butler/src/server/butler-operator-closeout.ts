@@ -8,6 +8,7 @@ import type { ButlerStateStore } from "./state-store.js";
 import { elapsedTaskDurationMs } from "./task-timing.js";
 import type { ButlerMessageView, ButlerTraceItemView } from "./types.js";
 import { rotateWorkerReviewBaseline } from "./worker-review-baseline.js";
+import { formatProviderModelRef } from "./model-provider-config.js";
 
 export type OperatorJobReplyAccess = {
   store: ButlerStateStore;
@@ -46,7 +47,7 @@ function callbackReviewTrace(callback: PendingChatCallback, completedAt: number)
     type: "reasoning",
     status: "completed",
     title: "Adversarial review",
-    text: `Completed attempt ${Math.max(1, callback.reviewAttempt ?? 1)} with ${callback.reviewModelProvider ?? "unknown provider"}/${callback.reviewModelId ?? "unknown model"}.`,
+    text: `Completed attempt ${Math.max(1, callback.reviewAttempt ?? 1)} with ${formatProviderModelRef({ provider: callback.reviewModelProvider ?? "unknown provider", model: callback.reviewModelId ?? "unknown model" })}.`,
     at: callback.reviewStartedAt ?? callback.requestedAt,
     completedAt
   }];

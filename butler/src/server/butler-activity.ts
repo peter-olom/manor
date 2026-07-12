@@ -6,7 +6,6 @@ import { redactSensitiveText } from "./redact-sensitive-text.js";
 
 const MAX_ACTIVITY_TURNS = 20;
 const MAX_ACTIVITY_TEXT = 3000;
-const REDACTED_THINKING_SUMMARY = "Thinking update recorded.";
 const TOOL_MAIN_DATA_KEYS = [
   "message",
   "text",
@@ -153,7 +152,7 @@ function summarizeActivityTurn(turn: ButlerActivityTurnView): ButlerActivityTurn
     detail: turn.detail ? clipText(turn.detail) : null,
     items: turn.items.map((item) => ({
       ...item,
-      text: item.kind === "thinking" ? REDACTED_THINKING_SUMMARY : formatPersistedActivityText(item)
+      text: formatPersistedActivityText(item)
     }))
   };
 }
@@ -164,7 +163,7 @@ function formatPersistedActivityText(item: ButlerActivityItemView): string {
   }
 
   if (item.kind === "thinking") {
-    return item.status === "completed" ? REDACTED_THINKING_SUMMARY : clipText(item.text);
+    return clipText(item.text);
   }
 
   try {
@@ -581,7 +580,7 @@ export function normalizeButlerActivitySummaryTurns(turns: unknown): ButlerActiv
             kind,
             status: itemStatus,
             title,
-            text: kind === "thinking" ? REDACTED_THINKING_SUMMARY : clipText(typeof record.text === "string" ? record.text : ""),
+            text: clipText(typeof record.text === "string" ? record.text : ""),
             at: typeof record.at === "number" && Number.isFinite(record.at) ? record.at : startedAt,
             updatedAt: typeof record.updatedAt === "number" && Number.isFinite(record.updatedAt) ? record.updatedAt : completedAt,
             contentIndex: typeof record.contentIndex === "number" && Number.isFinite(record.contentIndex) ? record.contentIndex : null,

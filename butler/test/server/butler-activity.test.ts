@@ -76,7 +76,7 @@ test("Butler activity captures thinking updates and tool calls without final tex
   assert.equal(turns[0]?.items.length, 2);
   assert.equal(turns[0]?.items[0]?.kind, "thinking");
   assert.equal(turns[0]?.items[0]?.text.includes("\\n"), false);
-  assert.equal(turns[0]?.items[0]?.text, "Thinking update recorded.");
+  assert.equal(turns[0]?.items[0]?.text, "Inspecting the workspace.");
   assert.equal(turns[0]?.items[1]?.kind, "tool");
   assert.equal(turns[0]?.items[1]?.title, "list_jobs");
   assert.equal(turns[0]?.items[1]?.status, "completed");
@@ -263,10 +263,36 @@ test("Butler activity strips markdown thinking and humanizes tool content", () =
   recordButlerActivityEvent(access, { type: "agent_end", messages: [] } as never);
 
   turns = getButlerActivityTurns(access);
-  assert.equal(turns[0]?.items[0]?.text, "Thinking update recorded.");
+  assert.equal(turns[0]?.items[0]?.text, "Considering options for the plan.");
   assert.equal(turns[0]?.items[1]?.title, "remember_insight");
   assert.equal(turns[0]?.items[1]?.text, "Remembered: Agent Slidev desktop app direction");
-  assert.equal(access.activitySummaryTurns[0]?.items[0]?.text, "Thinking update recorded.");
+  assert.equal(access.activitySummaryTurns[0]?.items[0]?.text, "Considering options for the plan.");
+});
+
+test("completed thinking persists its redacted text across reload", () => {
+  const access = makeAccess();
+  const assistantMessage = {
+    role: "assistant",
+    content: [{ type: "thinking", thinking: "Checking **provider state** with Authorization: Bearer opaque-token-123456" }],
+    timestamp: Date.now()
+  };
+
+  recordButlerActivityEvent(access, { type: "agent_start" } as never);
+  recordButlerActivityEvent(access, {
+    type: "message_update",
+    message: assistantMessage,
+    assistantMessageEvent: {
+      type: "thinking_delta",
+      contentIndex: 0,
+      delta: "provider state",
+      partial: assistantMessage
+    }
+  } as never);
+  recordButlerActivityEvent(access, { type: "message_end", message: assistantMessage } as never);
+  recordButlerActivityEvent(access, { type: "agent_end", messages: [assistantMessage] } as never);
+
+  const reloaded = normalizeButlerActivitySummaryTurns(JSON.parse(JSON.stringify(access.activitySummaryTurns)));
+  assert.equal(reloaded[0]?.items[0]?.text, "Checking provider state with Authorization: Bearer [REDACTED]");
 });
 
 test("Butler activity normalizes persisted item text when read back", () => {
@@ -282,7 +308,7 @@ test("Butler activity normalizes persisted item text when read back", () => {
         kind: "thinking",
         status: "completed",
         title: "Thinking",
-        text: "**Considering user insight storage** with `markdown`.",
+        text: "**Considering user insight storage** with `markdown`. Authorization: Bearer opaque-token-123456",
         at: Date.now(),
         updatedAt: Date.now(),
         contentIndex: null,
@@ -306,7 +332,7 @@ test("Butler activity normalizes persisted item text when read back", () => {
   });
 
   const turns = getButlerActivityTurns(access);
-  assert.equal(turns[0]?.items[0]?.text, "Thinking update recorded.");
+  assert.equal(turns[0]?.items[0]?.text, "Considering user insight storage with markdown. Authorization: Bearer [REDACTED]");
   assert.equal(turns[0]?.items[1]?.text, "Remembered: Agent Slidev desktop app direction");
 });
 

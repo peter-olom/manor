@@ -263,8 +263,12 @@ export function BrainIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
       <path
-        d="M6 2.5c-1.4 0-2.5 1.1-2.5 2.5v.4c-.9.3-1.5 1.1-1.5 2.1 0 .5.2 1 .5 1.4-.3.4-.5.9-.5 1.4 0 1 .6 1.8 1.5 2.1v.4c0 1.4 1.1 2.5 2.5 2.5.4 0 .7-.1 1-.2.3.1.6.2 1 .2 1.4 0 2.5-1.1 2.5-2.5v-.4c.9-.3 1.5-1.1 1.5-2.1 0-.5-.2-1-.5-1.4.3-.4.5-.9.5-1.4 0-1-.6-1.8-1.5-2.1V5c0-1.4-1.1-2.5-2.5-2.5-.4 0-.7.1-1 .2-.3-.1-.6-.2-1-.2Zm0 1.2c.3 0 .5.1.7.2v8.2c-.2-.1-.4-.2-.7-.2-.8 0-1.5.7-1.5 1.5v.4c-.7 0-1.3-.6-1.3-1.3v-.6l-.4-.2c-.5-.2-.8-.7-.8-1.2 0-.4.2-.7.4-1l.5-.5-.5-.5c-.2-.3-.4-.6-.4-1 0-.5.3-1 .8-1.2l.4-.2V5.7c0-.7.6-1.3 1.3-1.3.3 0 .5.1.7.2V12c.2.1.4.2.7.2Zm2 0c.2-.1.4-.2.7-.2.7 0 1.3.6 1.3 1.3v.6l.4.2c.5.2.8.7.8 1.2 0 .4-.2.7-.4 1l-.5.5.5.5c.2.3.4.6.4 1 0 .5-.3 1-.8 1.2l-.4.2v.6c0 .7-.6 1.3-1.3 1.3v-.4c0-.8-.7-1.5-1.5-1.5-.3 0-.5.1-.7.2V3.9Z"
-        fill="currentColor"
+        d="M8 3.7A2.3 2.3 0 0 0 3.7 5v.7a2.2 2.2 0 0 0-.4 3.8 2.2 2.2 0 0 0 1.9 3.3c1.2 0 2.2-1 2.2-2.2V3.9M8 3.7A2.3 2.3 0 0 1 12.3 5v.7a2.2 2.2 0 0 1 .4 3.8 2.2 2.2 0 0 1-1.9 3.3c-1.2 0-2.2-1-2.2-2.2V3.9M3.8 6.2h1.4M10.8 6.2h1.4M3.6 10h1.6M10.8 10h1.6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   );
@@ -288,8 +292,12 @@ export function CommandIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
       <path
-        d="M3 5.5C3 4.7 3.7 4 4.5 4h7c.8 0 1.5.7 1.5 1.5v5c0 .8-.7 1.5-1.5 1.5h-7C3.7 12 3 11.3 3 10.5v-5Zm1.2.5v4l1.6-1.2 1.4 1 1.4-1 1.4 1 1.4-1 1.6 1.2V6H4.2Z"
-        fill="currentColor"
+        d="M2.5 3.5h11v9h-11zM5 6.2 7.2 8 5 9.8M8.5 9.8h2.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   );
@@ -299,8 +307,12 @@ export function FileChangeIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
       <path
-        d="M3 2.5h7l3 3v8c0 .8-.7 1.5-1.5 1.5h-8.5C2.7 15 2 14.3 2 13.5v-9.5c0-.8.7-1.5 1.5-1.5H3Zm.2 1.2v9.6h8.6V6.3H9.2V3.7H3.2Zm7 0v1.6h1.6L10.2 3.7Z"
-        fill="currentColor"
+        d="M3 2.5h6.5L13 6v7.5H3zM9.5 2.5V6H13M5.2 9h5.6M5.2 11.3h3.6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   );
@@ -310,8 +322,12 @@ export function ToolIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
       <path
-        d="M9.5 2.5a3.5 3.5 0 0 0-3.4 4.3l-4 4a1.4 1.4 0 0 0 2 2l4-4a3.5 3.5 0 0 0 4.3-3.4 3.5 3.5 0 0 0-.6-2l-2 2H7.6V3.1a3.5 3.5 0 0 0 1.9-.6Z"
-        fill="currentColor"
+        d="M10.2 2.7a3.2 3.2 0 0 0-3.1 4l-4.3 4.2a1.4 1.4 0 1 0 2 2l4.2-4.3a3.2 3.2 0 0 0 4-3.1l-2 1.2-1.7-.4-.4-1.7z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   );

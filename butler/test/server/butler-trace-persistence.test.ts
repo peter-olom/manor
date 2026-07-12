@@ -96,3 +96,21 @@ test("ButlerTraceBuffer round-trips through the operator message persistence fil
   assert.equal(restored.items.length, 1);
   assert.equal(restored.items[0]?.type, "command_execution");
 });
+
+test("provider history refresh preserves an existing Butler trace", () => {
+  const trace = [{
+    id: "tool-1",
+    type: "dynamic_tool_call" as const,
+    status: "completed" as const,
+    text: "Delegated to Worker",
+    title: "delegate_to_worker",
+    at: 100,
+    completedAt: 110
+  }];
+  const messages: ButlerMessageView[] = [];
+  upsertProviderBackedOperatorMessage(messages, "operator-session-assistant-1", "Accepted. I delegated this to a Worker.", 120, "assistant", null, { trace });
+
+  upsertProviderBackedOperatorMessage(messages, "operator-session-assistant-1", "Accepted. I delegated this to a Worker.", 120, "assistant");
+
+  assert.deepEqual(messages[0]?.trace, trace);
+});

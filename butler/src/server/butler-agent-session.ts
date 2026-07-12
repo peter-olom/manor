@@ -39,6 +39,7 @@ import type {
   ButlerLiveSnapshot,
   ButlerMessageView,
   ButlerMessagePageView,
+  ButlerTraceItemView,
   ButlerThinkingLevel
 } from "./types.js";
 
@@ -50,6 +51,37 @@ function fallbackThinkingLevel(levels: readonly ButlerThinkingLevel[], defaultRe
 
 function registerOpencodeGoRequestTransforms(pi: ExtensionAPI): void {
   pi.on("before_provider_request", (event) => applyOpencodeGoNativeThinkingPayload(event.payload));
+}
+
+function activityTraceItems(turn: ReturnType<typeof getButlerActivityTurns>[number]): ButlerTraceItemView[] {
+  return turn.items.map((item) => ({
+    id: item.id,
+    type: item.kind === "thinking" ? "reasoning" : "dynamic_tool_call",
+    status: item.status === "active" ? "in_progress" : item.status === "error" ? "failed" : item.status === "stopped" ? "declined" : "completed",
+    text: item.text,
+    title: item.title,
+    at: item.at,
+    completedAt: item.status === "active" ? null : item.updatedAt
+  }));
+}
+
+export function attachCompletedActivityTraceToDelegationAcknowledgement(access: ButlerAgentSessionAccess): boolean {
+  const turn = [...getButlerActivityTurns(access)].reverse().find((entry) => entry.status !== "active" && entry.items.length > 0);
+  if (!turn) return false;
+  const acknowledgement = [...access.operatorMessages].reverse().find((message) =>
+    message.id.startsWith("delegation-ack-") &&
+    (message.at ?? 0) >= turn.startedAt &&
+    (message.at ?? 0) <= (turn.completedAt ?? Number.POSITIVE_INFINITY));
+  if (!acknowledgement || acknowledgement.trace?.length) return false;
+  const trace = activityTraceItems(turn);
+  acknowledgement.trace = trace;
+  acknowledgement.traceMeta = {
+    turnId: turn.id,
+    startedAt: turn.startedAt,
+    completedAt: turn.completedAt ?? turn.startedAt,
+    items: trace
+  };
+  return true;
 }
 
 export async function createOrRefreshButlerSession(access: ButlerAgentSessionAccess): Promise<void> {
@@ -112,8 +144,10 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
   }
   access.unsubscribeSession = access.session.subscribe((event) => {
     recordButlerActivityEvent(access, event);
+    let operatorMessageChanged = event.type === "agent_end"
+      ? attachCompletedActivityTraceToDelegationAcknowledgement(access)
+      : false;
     const patches = runtimeMapper.map(event, access.session!);
-    let operatorMessageChanged = false;
     for (const patch of patches) {
       if (patch.kind === "turn-lifecycle" && patch.status === "started") {
         traceBuffer.startTurn(patch.turnId, patch.at);
