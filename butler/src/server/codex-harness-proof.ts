@@ -49,7 +49,7 @@ function contentTypeForFile(fileName: string): string {
 
 function defaultTextProofFileName(title: string): string {
   const stem = title.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "proof-note";
-  return `${stem}.txt`;
+  return `${stem}.md`;
 }
 
 function emptyVerification(runId: string, now: number, title: string, artifact: PreviewVerificationView["artifacts"][number]): PreviewVerificationView {
@@ -137,10 +137,10 @@ export async function handleHarnessProofAction(input: {
 
   if (input.action === "proof.text") {
     if (!requestedTitle) {
-      throw new Error("proof.text requires title");
+      throw new Error("proof text requires --title \"<title>\". Run `manor-harness proof text --help` for examples.");
     }
     if (!text.trim()) {
-      throw new Error("proof.text requires text");
+      throw new Error("proof text requires content from piped stdin or --body \"<text>\". Run `manor-harness proof text --help` for examples.");
     }
     fileName = safeFileName(normalizeString(input.params.fileName) || defaultTextProofFileName(requestedTitle));
     targetPath = path.join(targetDir, fileName);
@@ -150,7 +150,7 @@ export async function handleHarnessProofAction(input: {
   } else {
     const rawFilePath = normalizeString(input.params.filePath);
     if (!rawFilePath) {
-      throw new Error("proof.file requires filePath");
+      throw new Error("proof file requires a file path. Run `manor-harness proof file --help` for usage.");
     }
 
     const sourcePath = path.resolve(input.capability.cwd, rawFilePath);

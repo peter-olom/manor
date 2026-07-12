@@ -15,6 +15,7 @@ import {
   buildProjectInventorySummary,
   buildSystemPrompt,
   isCallbackOutstanding,
+  mergeThreadProofBundles,
   selectReviewableProofArtifacts
 } from "../../src/server/butler-agent-helpers.js";
 import { buildJobPayload } from "../../src/server/job-instruction-artifacts.js";
@@ -206,6 +207,18 @@ test("thread proof maps keep concise reviewable evidence in useful order", () =>
     "Download trace",
     "Download rendered html",
     "Download manifest"
+  ]);
+
+  const merged = mergeThreadProofBundles(mapped["thread-1"] ?? []);
+  assert.equal(merged?.previewTitle, "Worker proof bundle");
+  assert.deepEqual(selectReviewableProofArtifacts(merged!.verification).map((artifact) => artifact.fileName), [
+    "updated.png",
+    "video.webm",
+    "brief.pdf",
+    "brief.md",
+    "trace.zip",
+    "page.html",
+    "manifest.json"
   ]);
 });
 
@@ -476,7 +489,7 @@ test("proof review verdicts persist on proof records", async () => {
   assert.equal(store.getPreviewProofById(recorded.id)?.proofReviews[0]?.visibleState, "The final screen is visible.");
 });
 
-test("completed deep reports require evidence for every worker-owned matrix row", async () => {
+test("completed deep reports may use unstructured proof selected by the Worker", async () => {
   const store = await createStore();
   const contract = makeContract({
     proofExpectation: "none",
@@ -486,22 +499,11 @@ test("completed deep reports require evidence for every worker-owned matrix row"
   const thread = store.getThread(contract.threadId);
   assert.ok(thread);
 
-  assert.throws(
-    () => validateCompletedWorkerEvidence({ thread, evidence: [], threadProofs: [] }),
-    /point-specific evidence/
-  );
-  assert.throws(
-    () =>
-      validateCompletedWorkerEvidence({
-        thread,
-        evidence: [workerEvidence("build", { pointId: "point-1", matrixRowId: "row-1" })],
-        threadProofs: []
-      }),
-    /missing evidence for point-2/
-  );
+  assert.doesNotThrow(() => validateCompletedWorkerEvidence({ thread, evidence: [], threadProofs: [] }));
+  assert.doesNotThrow(() => validateCompletedWorkerEvidence({ thread, evidence: [workerEvidence("build", { pointId: "point-1", matrixRowId: "row-1" })], threadProofs: [] }));
 });
 
-test("completed rejected-checklist follow-up reports only require evidence for rejected points", async () => {
+test("completed rejected-checklist follow-ups are reviewed by Butler instead of harness proof gates", async () => {
   const store = await createStore();
   const contract = makeContract({
     proofExpectation: "none",
@@ -518,15 +520,11 @@ test("completed rejected-checklist follow-up reports only require evidence for r
   const thread = store.getThread(contract.threadId);
   assert.ok(thread);
 
-  assert.throws(
-    () =>
-      validateCompletedWorkerEvidence({
-        thread,
-        evidence: [workerEvidence("intent_review", { pointId: "point-1", matrixRowId: "row-1" })],
-        threadProofs: []
-      }),
-    /missing evidence for point-2/
-  );
+  assert.doesNotThrow(() => validateCompletedWorkerEvidence({
+    thread,
+    evidence: [workerEvidence("intent_review", { pointId: "point-1", matrixRowId: "row-1" })],
+    threadProofs: []
+  }));
   assert.doesNotThrow(() =>
     validateCompletedWorkerEvidence({
       thread,
@@ -536,7 +534,7 @@ test("completed rejected-checklist follow-up reports only require evidence for r
   );
 });
 
-test("completed API reports require smoke, failure-path, and runtime evidence", async () => {
+test("completed API reports accept the Worker-selected evidence format", async () => {
   const store = await createStore();
   const contract = makeContract({
     acceptancePoints: ["Add endpoint"],
@@ -548,24 +546,8 @@ test("completed API reports require smoke, failure-path, and runtime evidence", 
   const thread = store.getThread(contract.threadId);
   assert.ok(thread);
 
-  assert.throws(
-    () =>
-      validateCompletedWorkerEvidence({
-        thread,
-        evidence: [workerEvidence("api_smoke")],
-        threadProofs: []
-      }),
-    /failure-path evidence/
-  );
-  assert.throws(
-    () =>
-      validateCompletedWorkerEvidence({
-        thread,
-        evidence: [workerEvidence("api_smoke"), workerEvidence("negative_case")],
-        threadProofs: []
-      }),
-    /log or runtime review evidence/
-  );
+  assert.doesNotThrow(() => validateCompletedWorkerEvidence({ thread, evidence: [workerEvidence("api_smoke")], threadProofs: [] }));
+  assert.doesNotThrow(() => validateCompletedWorkerEvidence({ thread, evidence: [workerEvidence("api_smoke"), workerEvidence("negative_case")], threadProofs: [] }));
   assert.doesNotThrow(() =>
     validateCompletedWorkerEvidence({
       thread,
@@ -575,7 +557,7 @@ test("completed API reports require smoke, failure-path, and runtime evidence", 
   );
 });
 
-test("completed UI reports require visual proof plus responsive accessibility and taste evidence", async () => {
+test("completed UI reports accept proof for Butler to review independently", async () => {
   const store = await createStore();
   const contract = buildThreadExecutionContract({
     threadId: "thread-ui-validation",
@@ -610,14 +592,8 @@ test("completed UI reports require visual proof plus responsive accessibility an
     threadId: contract.threadId
   });
 
-  assert.throws(
-    () => validateCompletedWorkerEvidence({ thread, evidence, threadProofs: [] }),
-    /This job asked for proof/
-  );
-  assert.throws(
-    () => validateCompletedWorkerEvidence({ thread, evidence, threadProofs: [textProof] }),
-    /Capture persisted screenshot or video proof/
-  );
+  assert.doesNotThrow(() => validateCompletedWorkerEvidence({ thread, evidence, threadProofs: [] }));
+  assert.doesNotThrow(() => validateCompletedWorkerEvidence({ thread, evidence, threadProofs: [textProof] }));
   assert.doesNotThrow(() => validateCompletedWorkerEvidence({ thread, evidence, threadProofs: [proof] }));
 });
 
@@ -908,8 +884,8 @@ test("system prompt routes direct Manor improvement requests to normal work", as
   assert.match(prompt, /self-improvement queue is only for blocked worker reports/);
   assert.match(prompt, /missing credentials, operator approval, external outages, or app-specific bugs outside Manor/);
   assert.doesNotMatch(prompt, /Codex worker behavior|delegate_to_codex|Codex workstream|Codex job/);
-  assert.match(task, /If the change has any UI implication/);
-  assert.match(task, /screenshot or video proof/);
+  assert.match(task, /Choose proof that directly demonstrates the change/);
+  assert.match(task, /Frontend work usually needs screenshots or video plus test output/);
   assert.match(task, /Do not restart Manor directly/);
   assert.match(task, /Leave changes uncommitted/);
   assert.match(task, /Do not deploy, commit, push, or open a pull request/);
@@ -1089,11 +1065,13 @@ test("callback review prompt keeps proof-required jobs behind evidence review", 
   assert.match(prompt, /Reject completion if proof is only described in text/);
   assert.match(prompt, /Operator question policy: Ask only if the proof target is ambiguous/);
   assert.match(prompt, /review_preview_proof/);
+  assert.match(prompt, /Recorded proof artifacts live in Manor storage/);
+  assert.match(prompt, /optional structured evidence array may be empty/);
   assert.match(prompt, /If any acceptance point lacks convincing evidence/);
   assert.match(prompt, /Use reply_to_operator only when all acceptance points are accepted/);
 });
 
-test("UI-impacting contracts require visual proof", () => {
+test("UI-impacting contracts guide Butler review without adding proof scaffolding", () => {
   const contract = buildThreadExecutionContract({
     threadId: "thread-ui",
     workspaceCwd: "/workspace",
@@ -1107,10 +1085,28 @@ test("UI-impacting contracts require visual proof", () => {
   });
 
   assert.equal(taskHasUiImplication(contract.requestedTask), true);
-  assert.equal(contract.proofExpectation, "requested");
+  assert.equal(contract.proofExpectation, "none");
   assert.equal(contractRequiresVisualProof(contract), true);
-  assert.match(contract.acceptancePoints.join("\n"), /Capture and surface visual proof/);
-  assert.match(contract.notes.join("\n"), /UI-impacting work requires visual proof/);
+  assert.doesNotMatch(contract.acceptancePoints.join("\n"), /Capture and surface visual proof/);
+  assert.doesNotMatch(contract.notes.join("\n"), /UI-impacting work requires visual proof/);
+});
+
+test("simple filesystem operations stay standard without inferred proof requirements", () => {
+  const contract = buildThreadExecutionContract({
+    threadId: "thread-files",
+    workspaceCwd: "/repos",
+    projectId: "workspace:shared",
+    projectLabel: "Shared workspace",
+    branch: null,
+    taskText: "Delete the listed files from /repos and verify they are gone: report.md, screenshot.png",
+    requestedTask: "Delete the listed files from /repos and verify they are gone.",
+    notes: ["Run inside the worker thread." ]
+  });
+
+  assert.equal(contract.taskCategory, "unknown");
+  assert.equal(contract.inferredWorkDepth, "standard");
+  assert.equal(contract.proofExpectation, "none");
+  assert.equal(contractRequiresVisualProof(contract), false);
 });
 
 test("visual proof policy rejects text-only file evidence", () => {
@@ -1121,7 +1117,7 @@ test("visual proof policy rejects text-only file evidence", () => {
   assert.equal(hasVisualProof([textOnlyProof, screenshotProof]), true);
 });
 
-test("callback review prompt requires visual feedback for UI work", async () => {
+test("callback review prompt asks Butler to inspect suitable UI proof", async () => {
   const store = await createStore();
   const contract = buildThreadExecutionContract({
     threadId: "thread-ui-review",
@@ -1168,9 +1164,9 @@ test("callback review prompt requires visual feedback for UI work", async () => 
     updatedAt: Date.now()
   });
 
-  assert.match(prompt, /Visual proof requirement: this job has UI implications/);
-  assert.match(prompt, /screenshot or video proof/);
-  assert.match(prompt, /Text-only proof can support the report, but cannot replace visual proof/);
+  assert.match(prompt, /Proof review hint: visual behavior is relevant/);
+  assert.match(prompt, /inspect the submitted screenshots or video evidence alongside tests and the code change/);
+  assert.match(prompt, /Proof format is chosen by the Worker/);
 });
 
 test("callback review prompt includes held operator context", async () => {

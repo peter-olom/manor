@@ -97,7 +97,7 @@ Proof tips:
   Desktop proof is optional/profile-gated. Use it only when desktop status says it is ready.
   Text proof is for simple read-only notes and inspection summaries; it stores the note directly in Manor artifacts without creating side files under /repos.
   File proof is for cases where the durable evidence is an existing generated file, PDF, Office file, archive, report, export, log, or saved artifact.
-  UI-impacting work must surface screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are insufficient.
+  Choose the proof format that most directly demonstrates the result. Frontend work usually benefits from screenshots or video plus test output. Simple operational work is often best shown with a Markdown command transcript.
   Do not create a private Xvfb display when the operator asked for a VNC-visible desktop app.
   Do not use direct curl or fetch from the shared worker shell to judge live-site browser reachability. That shell is behind restricted egress by design.
   Example:
@@ -107,12 +107,31 @@ Proof tips:
 
 Add --json to print the Butler response payload as JSON.
 Blocked reports require --details that explain what failed, what was tried, and the next sensible action.
-Deep work reports should include point-specific evidence, for example:
+Complex reports may include optional point-specific evidence, for example:
   --evidence "point-1|build|npm test passed"
   --evidence-json '{"pointId":"point-2","kind":"browser_flow","summary":"Recorded browser proof","proofRunId":"run-id"}'
-Completed orchestrated reports must include strict JSON claims, for example:
+Complex reports may include optional structured claims, for example:
   --claims-json '{"version":1,"changed_work_summary":"Implemented requested behavior","claims":[{"claim_id":"claim-1","status":"completed","summary":"Build passes","evidence_pointer":"npm run build","proof_id":null,"risk_note":null,"reviewer_target":"qa"}],"risks":[],"unresolved_items":[],"sub_agent_summaries":[]}'
 Set MANOR_THREAD_ID or pass --thread <jobId> to bind the harness explicitly when you are outside the job workspace.`);
+}
+
+function printProofHelp(subcommand = "") {
+  if (subcommand === "text") {
+    console.log(`Usage:
+  command-producing-output | manor-harness [--thread <jobId>] proof text --title "<title>" [--file-name <name.md>] [--label <text>] [--content-type <mime>]
+  manor-harness [--thread <jobId>] proof text --title "<title>" --body "<text>" [--file-name <name.md>] [--label <text>] [--content-type <mime>]
+
+Text proof accepts either piped stdin or --body. Markdown is the default format. Pipe live command output while the work runs instead of reconstructing the transcript afterward.`);
+    return;
+  }
+  if (subcommand === "file") {
+    console.log(`Usage:
+  manor-harness [--thread <jobId>] proof file <filePath> [--title <text>] [--label <text>] [--content-type <mime>]`);
+    return;
+  }
+  console.log(`Usage:
+  manor-harness [--thread <jobId>] proof text --title "<title>" [--body "<text>" | piped stdin] [--file-name <name.md>]
+  manor-harness [--thread <jobId>] proof file <filePath> [--title <text>] [--label <text>] [--content-type <mime>]`);
 }
 
 async function loadCapabilities() {
@@ -408,7 +427,11 @@ async function readScriptValue(args) {
 async function readJsonSpec(args, fileFlag, jsonFlag) {
   const inlineJson = readFlag(args, jsonFlag, "");
   if (inlineJson) {
-    return JSON.parse(inlineJson);
+    try {
+      return JSON.parse(inlineJson);
+    } catch (error) {
+      throw new Error(`${jsonFlag} contains invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   const filePath = readFlag(args, fileFlag, "");
@@ -417,8 +440,14 @@ async function readJsonSpec(args, fileFlag, jsonFlag) {
   }
 
   const resolvedPath = path.resolve(process.cwd(), filePath);
-  const raw = await fs.readFile(resolvedPath, "utf8");
-  return JSON.parse(raw);
+  const raw = await fs.readFile(resolvedPath, "utf8").catch((error) => {
+    throw new Error(`${fileFlag} could not read ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`${fileFlag} contains invalid JSON in ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 async function main() {
@@ -437,6 +466,11 @@ async function main() {
 
   if (args.length === 0 || args[0] === "help" || args[0] === "--help" || args[0] === "-h") {
     printHelp();
+    return;
+  }
+
+  if (args[0] === "proof" && (args.includes("--help") || args.includes("-h") || args[1] === "help")) {
+    printProofHelp(args[1] === "help" ? "" : args[1]);
     return;
   }
 

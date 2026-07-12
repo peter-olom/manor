@@ -189,28 +189,14 @@ export function normalizeWorkerClaimsReport(raw: unknown): WorkerClaimsReportVie
   };
 }
 
-export function requiresStrictWorkerClaims(thread: CodexThreadRecord): boolean {
-  return Boolean(thread.executionContract?.orchestration);
-}
-
 export function getOrchestrationCloseoutBlocker(input: {
   thread: CodexThreadRecord | null | undefined;
   workerReport: CodexWorkerReportView | null | undefined;
 }): string | null {
   const contract = input.thread?.executionContract;
-  const orchestration = contract?.orchestration;
   if (!contract) return null;
   const report = input.workerReport;
   if (report?.status !== "completed") return null;
-  if (orchestration && (!report.claims || report.claims.claims.length === 0)) {
-    return "Completed worker reports must include strict JSON claims with proof pointers before Butler can close the job.";
-  }
-  if (orchestration && report.claims?.claims.some((claim) => claim.status !== "completed")) {
-    return "Completed worker reports cannot close while any strict claim is partial or blocked.";
-  }
-  if (orchestration && report.claims?.unresolvedItems.length) {
-    return "Completed worker report still lists unresolved items. Butler must resolve, rework, or waive them before closeout.";
-  }
   const currentResults = (contract.reviewResults ?? []).filter((result) => result.turnId === report.turnId && result.reportUpdatedAt === report.updatedAt);
   const completedResults = currentResults.filter((result) => result.automationFailure !== true);
   if (completedResults.length === 0) {

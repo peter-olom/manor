@@ -23,6 +23,7 @@ import {
   isCallbackOutstanding,
   latestCompletedAgentMessageAt,
   MAX_HISTORY_PAGE_SIZE,
+  mergeThreadProofBundles,
   mergeVisibleMessages,
   normalizeNoticeText,
   parseProofScreenshotReview,
@@ -1315,7 +1316,7 @@ export class ButlerAgentService extends EventEmitter {
       preview
         ? this.store.getLatestPreviewProofForPreview(preview.id)
         : params.threadId
-          ? getVisibleThreadProofs(this.store.listPreviewProofs()).find((proof) => proof.threadId === params.threadId?.trim()) ?? null
+          ? mergeThreadProofBundles(getVisibleThreadProofs(this.store.listPreviewProofs()).filter((proof) => proof.threadId === params.threadId?.trim()))
           : null;
 
     if (previewProof) {

@@ -23,7 +23,7 @@ async function readJsonBody(request: IncomingMessage): Promise<HarnessRequest> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as HarnessRequest;
 }
 
-async function captureHarnessAction(args: string[], options: { cwd?: string; route?: "generic" | "legacy" } = {}): Promise<HarnessRequest> {
+async function captureHarnessAction(args: string[], options: { cwd?: string; route?: "generic" | "legacy"; stdin?: string } = {}): Promise<HarnessRequest> {
   const root = await mkdtemp(path.join(tmpdir(), "manor-harness-cli-test-"));
   const cwd = options.cwd ?? path.join(root, "workspace");
   const harnessHome = path.join(root, "harness-home");
@@ -73,8 +73,9 @@ async function captureHarnessAction(args: string[], options: { cwd?: string; rou
           MANOR_HARNESS_REGISTRY_PATH: registryPath,
           MANOR_BUTLER_BASE_URL: `http://127.0.0.1:${address.port}`
         },
-        stdio: ["ignore", "pipe", "pipe"]
+        stdio: ["pipe", "pipe", "pipe"]
       });
+      child.stdin.end(options.stdin ?? "");
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
       child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
@@ -95,6 +96,52 @@ async function captureHarnessAction(args: string[], options: { cwd?: string; rou
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }
+
+test("manor-harness records piped Markdown proof and a simple report", async () => {
+  const proof = await captureHarnessAction(
+    ["--thread", "thread-1", "proof", "text", "--title", "Directory listing", "--file-name", "directory-listing.md"],
+    { stdin: "$ ls -la\ntotal 0\n" }
+  );
+  assert.equal(proof.action, "proof.text");
+  assert.deepEqual(proof.params, {
+    title: "Directory listing",
+    label: "",
+    fileName: "directory-listing.md",
+    contentType: "",
+    text: "$ ls -la\ntotal 0\n"
+  });
+
+  const report = await captureHarnessAction([
+    "--thread", "thread-1", "report", "--status", "completed", "--summary", "Removed the requested files."
+  ]);
+  assert.equal(report.action, "report");
+  assert.equal(report.params?.status, "completed");
+  assert.equal(report.params?.summary, "Removed the requested files.");
+  assert.equal(report.params?.claims, null);
+  assert.deepEqual(report.params?.evidence, []);
+});
+
+test("manor-harness proof subcommand help is available without a job binding", async () => {
+  const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn(process.execPath, [harnessPath.pathname, "proof", "text", "--help"], {
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
+    child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+    child.on("error", reject);
+    child.on("close", (status) => resolve({
+      status,
+      stdout: Buffer.concat(stdout).toString("utf8"),
+      stderr: Buffer.concat(stderr).toString("utf8")
+    }));
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /piped stdin or --body/);
+  assert.match(result.stdout, /Markdown is the default format/);
+});
 
 test("manor-harness resolves lifecycle cwd flags before forwarding broker requests", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "manor-harness-cwd-test-"));

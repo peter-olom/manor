@@ -179,7 +179,7 @@ export function buildSelfImprovementTask(input: {
     "- Keep the fix small, explicit, and production-friendly.",
     "- Add focused regression coverage for the behavior.",
     "- Run the relevant tests and the Butler build when practical.",
-    "- If the change has any UI implication, capture and surface screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are insufficient.",
+    "- Choose proof that directly demonstrates the change. Frontend work usually needs screenshots or video plus test output; operational work may be better shown with command transcripts, logs, or diffs.",
     "- Do not restart Manor directly. Report whether a source restart is needed so Butler can request operator authorization.",
     "- Do not deploy, commit, push, or open a pull request unless the operator explicitly asks after reviewing the local result.",
     "- Do not include secrets, tokens, private URLs, or sensitive proof artifacts in the branch or pull request.",

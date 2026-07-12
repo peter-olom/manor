@@ -329,16 +329,13 @@ test("shared repository bootstrap delegation keeps the bootstrap note", async ()
   assert.ok(capturedNotes?.some((note) => /shared \/repos workspace/.test(note)));
 });
 
-test("completed orchestrated reports require strict JSON claims", async () => {
+test("completed orchestrated reports accept simple summaries without claims", async () => {
   const store = await createStore();
   const contract = makeContract();
   createThread(store, contract);
   const thread = store.getThread(contract.threadId)!;
 
-  assert.throws(
-    () => validateCompletedWorkerEvidence({ thread, evidence: [], threadProofs: [] }),
-    /strict JSON claims/
-  );
+  assert.doesNotThrow(() => validateCompletedWorkerEvidence({ thread, evidence: [], threadProofs: [] }));
   assert.doesNotThrow(() => validateCompletedWorkerEvidence({ thread, evidence: [], threadProofs: [], claims: claims() }));
 });
 

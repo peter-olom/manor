@@ -893,8 +893,8 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     contract ? `Proof expectation: ${contract.proofExpectationLabel}` : "Proof expectation: unknown",
     contract ? `Internal task category: ${contract.taskCategory}. Internal depth: ${contract.inferredWorkDepth}. Do not expose depth to the operator; use it only to decide how hard to verify.` : "",
     visualProofRequired
-      ? "Visual proof requirement: this job has UI implications. Require screenshot or video proof showing the relevant UI state; text logs or TXT/file proof alone are insufficient."
-      : "Visual proof requirement: none inferred.",
+      ? "Proof review hint: visual behavior is relevant, so inspect the submitted screenshots or video evidence alongside tests and the code change."
+      : "Proof review hint: judge the submitted evidence by how directly it demonstrates the requested outcome.",
     callback.reviewReason === "thread_recovery"
       ? "Review source: Butler did not get a worker callback and recovered the job from thread state."
       : "Review source: Butler received a worker callback and must decide what to do next.",
@@ -908,7 +908,7 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     "Use nextWorkerReportAction=review when Butler should inspect the next worker report before deciding what to surface.",
     "Use nextWorkerReportAction=reply_to_operator only for no-checklist jobs, blocked reports, or operator-input reports. Completed checklist work must still go through Butler review.",
     "Decide from the job context and thread state, not from worker phrasing heuristics.",
-    "Review the worker report and available proof against every acceptance point.",
+    "Review the worker report, submitted artifacts, code diff, and relevant runtime state independently against every acceptance point.",
     "Use the isolated adversarial review findings without exposing the reviewer transcript or internal review machinery to the operator.",
     "A blocking reviewer finding must become a rejected checklist point and one batched worker follow-up unless Butler can disprove it from stronger evidence.",
     "Review the mission intent and taste notes before accepting. A technically complete worker report can still fail if it misses the desired outcome or quality bar.",
@@ -916,13 +916,14 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     "Run the mission critic checks before accepting. If a critic check fails, convert it into a rejected checklist point or one batched rework instruction.",
     "Follow the operator question policy. Ask only when the missing choice materially changes the outcome and no safe default exists.",
     "If the next move depends on a missing operator product, taste, permission, or priority choice, use reply_to_operator to ask for that input instead of pretending the job is complete.",
-    "Review the verification matrix, not just the worker's wording. Evidence should map to the claimed point or row.",
+    "Use the verification matrix as review context, not as a required Worker submission schema. Judge whether the available evidence is convincing for the actual task.",
     "Ask whether the worker preserved the operator's real intent, investigated enough, chose a practical maintainable route, and produced a tasteful result.",
     "Use review_acceptance_point to record accepted, rejected, or waived decisions in the structured checklist. Workers only submit evidence; Butler owns acceptance.",
     "Worker reports are evidence, not acceptance. Do not post a completed closeout until Butler has accepted or waived every checklist point.",
     "For each rejected point, include nextInstruction. If multiple points are rejected, mark them all first, then use flush_rejected_acceptance_points once to send one batched worker follow-up.",
-    "Use review_preview_proof when proof is available or when the worker references screenshots, video, trace, browser proof, desktop proof, logs, or file proof.",
-    "For UI-impacting work, reject completion unless screenshot or video proof shows the operator-visible result. Text-only proof can support the report, but cannot replace visual proof.",
+    "Use review_preview_proof whenever the Worker recorded screenshots, video, browser proof, desktop proof, or a proof file. Read text evidence, inspect visual artifacts, and compare them with the code diff or runtime checks before accepting the claim.",
+    "Recorded proof artifacts live in Manor storage and may not exist under /repos. Never infer that proof is missing from a workspace search; use review_preview_proof to inspect the stored bundles. The optional structured evidence array may be empty even when durable proof exists.",
+    "Proof format is chosen by the Worker. Reject completion only when the submitted evidence and Butler's independent checks do not convincingly demonstrate the requested outcome.",
     "Reject weak intent fit, shallow investigation, weak route choice, missing negative checks, missing logs, or weak taste with a concrete nextInstruction.",
     "If any acceptance point lacks convincing evidence or appears incomplete, reject it with nextInstruction instead of writing the rejected-point steering directly in operator chat.",
     "Use reply_to_operator only when all acceptance points are accepted, the job is genuinely blocked, or operator input is needed.",
@@ -1023,7 +1024,7 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Workers may operate inside attached isolates through manor-harness for inspect, logs, processes, and shell exec, but Butler still owns isolate lifecycle and policy.",
     "When the operator provides reference images or files, keep track of the stored reference ids so you can pass them to the worker later and reuse them during verification.",
     "Use the image reference tools whenever visual requirements depend on an uploaded image.",
-    "For any task with UI implications, require visual feedback: screenshot or video proof of the relevant UI state must be captured and surfaced. Text logs or TXT/file proof alone are insufficient.",
+    "For frontend work, expect useful visual evidence such as screenshots or video alongside relevant test output. For operational work, command transcripts, logs, diffs, or generated files may be stronger proof.",
     "When proof of frontend execution is requested, do not accept artifact existence alone as proof. Run headed verification when needed, inspect the screenshot with the proof review tool, and make sure the recorded session was persisted for later review.",
     "For Electron, native app, or VNC-visible headed proof, steer the worker to the desktop proof tools. Do not let a worker satisfy that request with a private Xvfb display that the operator cannot see.",
     "The headed desktop is one shared sidecar. Do not create or request another sidecar for isolation; attach the relevant worker thread id to the session and use that thread id as the visible desktop workspace label.",
@@ -1251,6 +1252,20 @@ export function getVisibleThreadProofs(proofs: PreviewProofRecordView[]): Previe
   return [...byThread.values()]
     .flatMap((threadProofs) => collapseSupersededThreadProofs(threadProofs))
     .sort(compareProofDisplayOrder);
+}
+
+export function mergeThreadProofBundles(proofs: PreviewProofRecordView[]): PreviewProofRecordView | null {
+  if (proofs.length === 0) return null;
+  if (proofs.length === 1) return proofs[0]!;
+  const base = proofs[0]!;
+  return {
+    ...base,
+    previewTitle: "Worker proof bundle",
+    verification: {
+      ...base.verification,
+      artifacts: proofs.flatMap((proof) => proof.verification.artifacts)
+    }
+  };
 }
 
 function collapseSupersededThreadProofs(threadProofs: PreviewProofRecordView[]): PreviewProofRecordView[] {

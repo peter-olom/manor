@@ -400,6 +400,28 @@ test("isolated review tools stop when a newer callback replaces the attempt", as
   assert.equal(executions, 1);
 });
 
+test("callback proof review injects its job selector when the model omits it", async () => {
+  const target = callback("worker-proof", 1);
+  let received: Record<string, unknown> | null = null;
+  const tools = buildGuardedCallbackReviewTools({
+    callback: target,
+    isCurrent: () => true,
+    tools: [{
+      name: "review_preview_proof",
+      label: "Review proof",
+      description: "",
+      parameters: {} as never,
+      execute: async (_id, params) => {
+        received = params as Record<string, unknown>;
+        return { content: [{ type: "text", text: "reviewed" }], details: {} };
+      }
+    }] as never
+  });
+
+  await tools[0]!.execute("call-proof", {} as never);
+  assert.equal(received?.threadId, target.threadId);
+});
+
 test("a stale review waiting on a job mutation cannot send after replacement", async () => {
   let current = true;
   let releaseFirst!: () => void;

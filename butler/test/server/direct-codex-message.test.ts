@@ -784,5 +784,8 @@ test("delegated worker instructions define provider-neutral memory and shell bou
   assert.match(instructions, /Write memory only when it will help a future worker/);
   assert.match(instructions, /Do not write routine progress/);
   assert.match(instructions, /worker shell/);
+  assert.match(instructions, /pipe the actual commands and their output into Markdown while the work runs/);
+  assert.match(instructions, /do not reconstruct a transcript afterward/);
+  assert.doesNotMatch(instructions, /strict JSON claims/);
   assert.doesNotMatch(instructions, /Codex worker|Codex-shell/);
 });

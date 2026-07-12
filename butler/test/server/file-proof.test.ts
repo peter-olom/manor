@@ -92,8 +92,8 @@ test("harness text proof stores simple notes without writing side files into /re
   const artifact = proof.verification.artifacts[0];
   assert.equal(artifact?.kind, "file");
   assert.equal(artifact?.label, "feature-inspection");
-  assert.equal(artifact?.fileName, "feature-inspection.txt");
-  assert.equal(artifact?.contentType, "text/plain; charset=utf-8");
+  assert.equal(artifact?.fileName, "feature-inspection.md");
+  assert.equal(artifact?.contentType, "text/markdown; charset=utf-8");
   assert.equal(artifact?.sizeBytes, Buffer.byteLength("Read-only inspection summary.", "utf8"));
   assert.equal(path.dirname(artifact!.filePath).startsWith(path.resolve(artifactsDir)), true);
   await stat(artifact!.filePath);

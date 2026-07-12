@@ -1,5 +1,4 @@
 import type { CodexThreadRecord } from "./types.js";
-import { threadRequiresVisualProof } from "./proof-policy.js";
 
 export function formatHarnessExecutionContract(thread: CodexThreadRecord): string[] {
   const contract = thread.executionContract;
@@ -20,13 +19,9 @@ export function formatHarnessExecutionContract(thread: CodexThreadRecord): strin
             `Orchestration: class=${contract.orchestration.taskClass} risk=${contract.orchestration.riskLevel}`,
             `Goal mode: ${contract.orchestration.goalRecommendation.mode}`,
             `Adversarial review required: ${contract.orchestration.reviewRecommendation.required ? "yes" : "no"}`,
-            contract.orchestration.subAgentRoles.length > 0 ? `Sub-agent roles: ${contract.orchestration.subAgentRoles.join(", ")}` : null,
-            "Completed reports require strict JSON claims with proof pointers."
+            contract.orchestration.subAgentRoles.length > 0 ? `Sub-agent roles: ${contract.orchestration.subAgentRoles.join(", ")}` : null
           ].filter(Boolean).join("\n")
         ]
-      : []),
-    ...(threadRequiresVisualProof(thread)
-      ? ["Visual proof requirement: capture and surface screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are insufficient."]
       : []),
     ...(contract.notes.length > 0 ? [`Job notes:\n${contract.notes.map((note, index) => `${index + 1}. ${note}`).join("\n")}`] : [])
   ];
@@ -37,7 +32,7 @@ export function formatHarnessRuntimeModel(): string[] {
     "Runtime model: use the Worker shell for repository and code work; use manor-harness only when the task needs a running app, disposable dependency, browser interaction, or durable proof.",
     "Previews run app code. Services provide supporting infrastructure such as databases, queues, object storage, or mail capture.",
     "Browser-use sessions already capture tracing, video, a ready screenshot, a final screenshot, and per-action screenshots unless you disable auto-capture.",
-    "Any job with UI implications must surface visual feedback. Record screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are not enough.",
+    "Choose proof that directly demonstrates the result. Frontend work usually benefits from screenshots or video plus test output; operational work is often best shown with a Markdown command transcript.",
     "Native Electron or VNC-visible desktop proof must use the desktop proof commands. Do not create a private Xvfb display when the operator needs to see the app in noVNC.",
     "For headed desktop work, list existing sessions first, attach the job thread id as the visible desktop workspace label, use current-screen before pointer actions, and use interactive/profile options when the operator needs a persistent desktop.",
     "If the browser proof sidecar is unavailable, retry briefly and then report the proof blocker through Manor. Do not install browsers or OS packages inside a preview as the default fallback.",

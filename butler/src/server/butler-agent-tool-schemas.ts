@@ -54,12 +54,10 @@ export function startPreviewSchema() {
 }
 
 export function reviewPreviewProofSchema() {
-  const optional = {
+  return Type.Object({
+    leaseId: Type.Optional(Type.String({ minLength: 1 })),
+    threadId: Type.Optional(Type.String({ minLength: 1 })),
     runId: Type.Optional(Type.String({ minLength: 1 })),
     expectedOutcome: Type.Optional(Type.String())
-  };
-  return Type.Union([
-    Type.Object({ leaseId: Type.String({ minLength: 1 }), threadId: Type.Optional(Type.String({ minLength: 1 })), ...optional }),
-    Type.Object({ leaseId: Type.Optional(Type.String({ minLength: 1 })), threadId: Type.String({ minLength: 1 }), ...optional })
-  ]);
+  });
 }

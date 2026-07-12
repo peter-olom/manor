@@ -217,8 +217,8 @@ test("runtime-control tool schemas expose only supported actions and required ca
   assert.equal(Value.Check(schema("review_preview_proof"), { leaseId: "preview-1" }), true);
   assert.equal(Value.Check(schema("review_preview_proof"), { threadId: "thread-1", runId: "run-1" }), true);
   assert.equal(Value.Check(schema("review_preview_proof"), { leaseId: "preview-1", threadId: "thread-1" }), true);
-  assert.equal(Value.Check(schema("review_preview_proof"), {}), false);
-  assert.equal(Value.Check(schema("review_preview_proof"), { runId: "run-1" }), false);
+  assert.equal(Value.Check(schema("review_preview_proof"), {}), true);
+  assert.equal(Value.Check(schema("review_preview_proof"), { runId: "run-1" }), true);
   assert.equal(Value.Check(schema("review_preview_proof"), { leaseId: "" }), false);
 });
 

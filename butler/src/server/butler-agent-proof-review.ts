@@ -51,8 +51,7 @@ async function resolveButlerProofReviewModel(access: ButlerProofReviewAccess, ne
   if (pinned?.id) {
     const pinnedModel = availableModels.find((model) => model.id === pinned.id && (!pinned.provider || model.provider === pinned.provider));
     if (!pinnedModel) throw new Error("The Butler model pinned for proof review is no longer available. Reconnect it in Settings → Providers, then retry.");
-    if (needsVision && !pinnedModel.input.includes("image")) throw new Error("The Butler model pinned for this review cannot inspect image proof. Select an image-capable model for the main session and retry.");
-    return pinnedModel;
+    if (!needsVision || pinnedModel.input.includes("image")) return pinnedModel;
   }
 
   const currentModel = access.session?.model;
@@ -109,6 +108,7 @@ export async function reviewButlerProofScreenshot(
     `Proof title: ${proof.preview.title}`,
     `Artifacts:\n${inspection.artifactSummary}`,
     imagePayloads.length > 0 ? `Image sequence: ${images.map((artifact) => artifact.label).join(", ")}` : "",
+    proof.video ? "A video recording is stored for operator playback. Review the accompanying screenshots as the visible checkpoints and do not claim unseen video moments." : "",
     inspection.textEvidence ? `Inspected artifact evidence:\n${inspection.textEvidence}` : "",
     `Verification mode: ${proof.verification.mode}`,
     `Verification status: ${proof.verification.status ?? "none"}`,

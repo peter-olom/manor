@@ -7,7 +7,7 @@ import type {
   VerificationCheckKind,
   VerificationMatrixRowView
 } from "./types.js";
-import { acceptancePointsNeedVisualProof, taskHasUiImplication, VISUAL_PROOF_REQUIREMENT } from "./proof-policy.js";
+import { taskHasUiImplication } from "./proof-policy.js";
 import { buildReviewPanel, summarizeReviewPanel } from "./review-panel.js";
 
 const MAX_ACCEPTANCE_POINTS = 24;
@@ -23,6 +23,7 @@ const DOCS_PATTERN = /\b(doc|docs|documentation|readme|markdown|pdf|deck|slides|
 const DATA_PATTERN = /\b(data|database|db|sql|migration|seed|analytics|metric|row|table|record|query)\b/i;
 const WRITING_PATTERN = /\b(copy|writing|rewrite|caption|post|article|voice|tone|wording|message)\b/i;
 const CODE_PATTERN = /\b(implement|build|fix|debug|test|refactor|code|component|function|bug|feature|land this|do the work)\b/i;
+const FILESYSTEM_OPERATION_PATTERN = /\b(delete|remove|rename|move|copy|list|inspect)\b[\s\S]{0,160}(?:\/repos\b|\/[\w.-]+|[\w.-]+\.(?:md|txt|log|json|html?|png|jpe?g|svg|pdf|csv|zip|js|ts|tsx|py))\b/i;
 const DEEP_INTENT_PATTERN = /\b(investigate|debug|fix|implement|build|test|verify|land this|do the work|thorough|deep|smoke|proof|ship|finish)\b/i;
 const READ_ONLY_PATTERN = /\b(explain|summarize|inspect|read|review|what is|what are|do you understand|can you tell|question)\b/i;
 const RESEARCH_PATTERN = /\b(research|investigate|explore|study|compare|survey|look into)\b/i;
@@ -233,8 +234,7 @@ export function deriveAcceptancePoints(taskText: string, requestedTask?: string 
 
 export function detectProofExpectation(taskText: string): CodexProofExpectation {
   const normalized = taskText.toLowerCase();
-  return /\b(proof|artifact|artifacts|screenshot|screenshots|video|videos|record|recording|trace|capture)\b/.test(normalized) ||
-    taskHasUiImplication(taskText)
+  return /\b(provide|capture|record|attach|include|show|submit|supply)\b.{0,48}\b(proof|evidence|artifact|artifacts|screenshot|screenshots|video|videos|recording|trace)\b/.test(normalized)
     ? "requested"
     : "none";
 }
@@ -247,6 +247,7 @@ export function inferTaskCategory(taskText: string): CodexTaskCategory {
   const normalized = taskText.replace(/\s+/g, " ").trim();
   if (!normalized) return "unknown";
   if (DEPLOY_PATTERN.test(normalized)) return "deploy";
+  if (FILESYSTEM_OPERATION_PATTERN.test(normalized)) return "unknown";
   if (taskHasUiImplication(normalized)) return "ui";
   if (API_PATTERN.test(normalized)) return "api";
   if (PROTOTYPE_PATTERN.test(normalized)) return "prototype";
@@ -265,6 +266,7 @@ export function inferWorkDepth(taskText: string, category: CodexTaskCategory): C
   const normalized = taskText.replace(/\s+/g, " ").trim();
   if (!normalized) return "standard";
   if (category === "deploy") return "incident";
+  if (FILESYSTEM_OPERATION_PATTERN.test(normalized)) return "standard";
   if (DEEP_INTENT_PATTERN.test(normalized)) return "deep";
   if (category === "ui" || category === "api" || category === "generic_code" || category === "prototype") return "deep";
   if (category === "read_only" && READ_ONLY_PATTERN.test(normalized)) return "standard";
@@ -387,16 +389,9 @@ export function buildThreadExecutionContract(input: {
   const operatorGoal = normalizeContractText(input.operatorGoal);
   const requestedTask = normalizeContractText(input.requestedTask) ?? deriveRequestedTask(input.taskText);
   const contractText = [requestedTask, operatorGoal, input.taskText].filter(Boolean).join("\n");
-  const needsVisualProof = taskHasUiImplication(contractText);
   const proofExpectation = detectProofExpectation(contractText);
   const acceptancePoints = deriveAcceptancePoints(input.taskText, requestedTask);
-  if (needsVisualProof && !acceptancePointsNeedVisualProof(acceptancePoints) && acceptancePoints.length < MAX_ACCEPTANCE_POINTS) {
-    acceptancePoints.push("Capture and surface visual proof of the relevant UI state");
-  }
   const notes = [...new Set(input.notes.map((note) => note.trim()).filter(Boolean))];
-  if (needsVisualProof) {
-    notes.push(VISUAL_PROOF_REQUIREMENT);
-  }
   const taskCategory = input.taskCategory ?? inferTaskCategory(contractText);
   const inferredWorkDepth = input.inferredWorkDepth ?? inferWorkDepth(contractText, taskCategory);
   const mission = buildMissionContract({

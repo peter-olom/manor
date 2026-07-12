@@ -200,14 +200,7 @@ function buildChecklist(
 }
 
 function buildProof(contract: CodexThreadExecutionContractView | null): string[] {
-  const requirements: string[] = [];
-  if (contract?.proofExpectation === "requested") {
-    requirements.push(contract.proofExpectationLabel);
-  }
-  for (const row of contract?.verificationMatrix ?? []) {
-    requirements.push(...row.expectedEvidence);
-  }
-  return normalizeList(requirements, 16);
+  return contract?.proofExpectation === "requested" ? [contract.proofExpectationLabel] : [];
 }
 
 function tagsFor(payload: Pick<JobPayloadView, "checklist" | "proof" | "constraints" | "notes"> & { report?: JobPayloadView["report"] | null }): string[] {

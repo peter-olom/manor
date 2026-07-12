@@ -1,8 +1,5 @@
 import type { CodexThreadExecutionContractView, CodexThreadRecord, PreviewProofRecordView } from "./types.js";
 
-export const VISUAL_PROOF_REQUIREMENT =
-  "UI-impacting work requires visual proof: capture and surface a screenshot or video of the relevant UI state; text logs or TXT/file proof alone are insufficient.";
-
 const UI_SURFACE_PATTERN =
   /\b(ui|user interface|web app|browser|screen|page|view|component|layout|styling|style|css|responsive|mobile|desktop|modal|dialog|form|button|navigation|nav|dashboard|toast|panel|drawer|composer|surface|timeline|visual|screenshot|video)\b/i;
 
@@ -25,12 +22,7 @@ export function contractRequiresVisualProof(contract: CodexThreadExecutionContra
   if (!contract) {
     return false;
   }
-  if (contract.notes.some((note) => note === VISUAL_PROOF_REQUIREMENT)) {
-    return true;
-  }
-  return taskHasUiImplication(
-    [contract.requestedTask, contract.operatorGoal, ...contract.acceptancePoints, ...contract.notes].filter(Boolean).join("\n")
-  );
+  return contract.taskCategory === "ui";
 }
 
 export function threadRequiresVisualProof(thread: CodexThreadRecord | null | undefined): boolean {

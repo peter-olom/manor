@@ -36,7 +36,6 @@ import {
   resolveHarnessThreadStack
 } from "./codex-harness-runtime.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
-import { threadRequiresVisualProof } from "./proof-policy.js";
 import { applyServiceStartedPolicies, formatProjectPolicyContextLines } from "./project-artifacts-policies.js";
 import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import { ButlerStateStore } from "./state-store.js";
@@ -515,8 +514,10 @@ export class HarnessService {
       const turnId = normalizeString(params.turnId) || null;
       const evidence = normalizeReportEvidence(params.evidence);
       const claims = normalizeWorkerClaimsReport(params.claims);
-      if ((status !== "completed" && status !== "blocked") || !summary) {
-        throw new Error("report requires status=completed|blocked and a non-empty summary");
+      if (status !== "completed" && status !== "blocked") throw new Error("report requires --status completed or --status blocked.");
+      if (!summary) throw new Error("report requires --summary \"<concise outcome>\".");
+      if (params.claims !== null && params.claims !== undefined && !claims) {
+        throw new Error("Optional claims must be a JSON object with changed_work_summary and a non-empty claims array. Each claim requires status, summary, and evidence_pointer.");
       }
       await this.validateWorkerReport(capability, { status, summary, details, evidence, claims });
       const report = this.store.recordWorkerReport(capability.threadId, { status, summary, details, turnId, evidence, claims });
@@ -597,13 +598,8 @@ export class HarnessService {
       if (thread.executionContract?.proofExpectation === "requested") {
         responseLines.push(
           mentionsNativeDesktopTarget(thread)
-            ? "This job asked for native headed proof. Use desktop status/start/action/stop so the app appears in the noVNC-visible desktop."
-            : "This job asked for proof. Browser-use sessions are the simplest way to capture durable browser artifacts."
-        );
-      }
-      if (threadRequiresVisualProof(thread)) {
-        responseLines.push(
-          "This job has UI implications. Persist and surface screenshot or video proof of the relevant UI state; text logs or TXT/file proof alone are not enough."
+            ? "This job explicitly asks for native headed proof. Use desktop status/start/action/stop so the app appears in the noVNC-visible desktop."
+            : "This job explicitly asks for proof. Choose the format that most directly demonstrates the result."
         );
       }
       responseLines.push("Do not use `corepack enable` in the worker shell for preview-oriented runtime setup. If repo-local instructions explicitly require a root-level install step, follow the repo guidance instead.");
