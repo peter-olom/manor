@@ -31,6 +31,7 @@ test("source restart preserves the working tree and retries from clean HEAD", as
   assert.doesNotMatch(source, /"git", \["reset", "--hard"\]/);
   assert.doesNotMatch(source, /"git", \["clean", "-fd"\]/);
   assert.doesNotMatch(source, /clearGitWorktree/);
+  assert.match(source, /const args = \["compose", "-f", "compose\.yml", "-f", "compose\.build\.yml"\]/);
 
   const restartBody = source.slice(
     source.indexOf("async function restartSourceAppliance"),

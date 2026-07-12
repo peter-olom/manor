@@ -25,15 +25,13 @@ async function pathWritable(directory: string): Promise<boolean> {
 export async function resolveSelfImprovementEligibility(hostController: HostControllerClient): Promise<SelfImprovementEligibilityView> {
   const source = sourceCwd();
   const reasons: string[] = [];
-  let mode: SelfImprovementEligibilityView["mode"] = "unknown";
 
   try {
-    mode = (await hostController.getStatus()).detectedMode;
+    await hostController.getStatus();
   } catch (error) {
     reasons.push(`Host controller status is unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  if (mode !== "source") reasons.push("Manor is not running in source-first mode.");
   try {
     await fs.access(source);
   } catch {
@@ -42,5 +40,5 @@ export async function resolveSelfImprovementEligibility(hostController: HostCont
   if (!await pathWritable(source)) reasons.push(`Mounted source is not writable at ${source}.`);
   if (!await resolveGitRoot(source)) reasons.push("Mounted source is not a Git checkout.");
 
-  return { enabled: mode === "source" && reasons.length === 0, mode, sourceCwd: source, reasons };
+  return { enabled: reasons.length === 0, sourceCwd: source, reasons };
 }

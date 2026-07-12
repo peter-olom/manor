@@ -6,12 +6,8 @@ import type { ManorRestartRequestView } from "./types.js";
 
 type ManorRestartRouteAgent = {
   requestManorRestartAuthorization(input: {
-    mode?: unknown;
     target?: unknown;
     gitRef?: unknown;
-    imageTag?: unknown;
-    targetCommit?: unknown;
-    targetTag?: unknown;
     includeDesktop?: unknown;
     build?: unknown;
     update?: unknown;

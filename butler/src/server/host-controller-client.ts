@@ -1,4 +1,3 @@
-export type ManorRestartMode = "auto" | "source" | "image";
 export type ManorRestartTarget = "current" | "latest";
 
 export interface ManorRestartRunStep {
@@ -14,10 +13,8 @@ export interface ManorRestartRunStep {
 export interface ManorRestartRun {
   id: string;
   status: "running" | "completed" | "failed";
-  mode: "source" | "image";
   target: ManorRestartTarget | string;
   gitRef: string | null;
-  imageTag: string | null;
   includeDesktop: boolean;
   update: boolean;
   startedAt: number;
@@ -31,7 +28,6 @@ export interface ManorRestartStatus {
   ok: true;
   active: ManorRestartRun | null;
   latestRun: ManorRestartRun | null;
-  detectedMode: "source" | "image";
 }
 
 export interface ManorRestartStartResult {
@@ -74,10 +70,8 @@ export class HostControllerClient {
   }
 
   restart(input: {
-    mode?: ManorRestartMode;
     target?: ManorRestartTarget;
     gitRef?: string | null;
-    imageTag?: string | null;
     includeDesktop?: boolean;
     build?: boolean;
     update?: boolean;

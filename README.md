@@ -10,7 +10,7 @@ It puts Butler in charge of supervision, routes work to provider-backed Workers,
 - [Screenshots](#screenshots)
 - [Opinionated by Design](#opinionated-by-design)
 - [Quick Start](#quick-start)
-- [Image Distribution](#image-distribution)
+- [Source Distribution](#source-distribution)
 - [Core Model](#core-model)
 - [Execution Rule](#execution-rule)
 - [Async Verification Model](#async-verification-model)
@@ -111,7 +111,7 @@ Restart the current stack through the host controller:
 ./update.sh
 ```
 
-Update to the latest configured image or source target before restarting:
+Update the current source branch before rebuilding and restarting:
 
 ```bash
 ./update.sh --latest
@@ -136,24 +136,9 @@ Manor runs as one Docker Compose project with these services:
 - `playwright`: the browser automation sidecar
 - `desktop-proof`: optional headed desktop proof sidecar for Electron/native app smoke checks
 
-## Image Distribution
+## Source Distribution
 
-The official installer and launcher build from the active source checkout. Published images remain release artifacts, but they are not a separate install mode.
-
-Pushes to `main` and version tags publish these images to GHCR:
-
-- `ghcr.io/peter-olom/manor-butler`
-- `ghcr.io/peter-olom/manor-codex-box` (the compatibility-named Worker image)
-- `ghcr.io/peter-olom/manor-egress`
-- `ghcr.io/peter-olom/manor-preview-egress`
-- `ghcr.io/peter-olom/manor-runtime-broker`
-- `ghcr.io/peter-olom/manor-host-controller`
-- `ghcr.io/peter-olom/manor-playwright`
-- `ghcr.io/peter-olom/manor-desktop-proof`
-
-Published tags include `latest` for the default branch, release tags, branch tags, and commit SHA tags.
-
-Local source builds use the source-build overlay:
+Manor is distributed as source. Clone or pull the repository, then use the official launcher to build the local container images from the active checkout:
 
 ```bash
 ./manor-start
@@ -250,7 +235,7 @@ The Worker environment provides:
 
 The Pi RPC harness provides Worker sessions for Manor's supported Ollama Local, Ollama Cloud, and OpenCode Go providers. These sessions execute in the Worker environment and receive the same job payload, workspace access, harness capabilities, reporting contract, and Butler review.
 
-The `codex-box` service, `manor-codex-box` container, and published image keep their existing deployment names for compatibility. The runtime identity is `worker@manor-worker`, and it hosts the complete Worker environment. The UI exposes exactly two agent CLIs: Butler CLI and Worker CLI.
+The `codex-box` service and `manor-codex-box` container keep their existing deployment names for compatibility. The runtime identity is `worker@manor-worker`, and it hosts the complete Worker environment. The UI exposes exactly two agent CLIs: Butler CLI and Worker CLI.
 
 Workers own repository work. Butler and the broker own runtime lifecycle and policy.
 

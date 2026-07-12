@@ -11,7 +11,7 @@ test("Host controller client uses only the scoped restart token header", async (
 
   globalThis.fetch = (async (_url, init) => {
     headers = init?.headers;
-    return new Response(JSON.stringify({ ok: true, active: null, latestRun: null, detectedMode: "source" }), {
+    return new Response(JSON.stringify({ ok: true, active: null, latestRun: null }), {
       status: 200,
       headers: { "content-type": "application/json" }
     });
@@ -43,15 +43,12 @@ test("Butler manor tools expose request and status restart surfaces only", async
     hostController: {
       getStatus: async () => ({
         ok: true,
-        detectedMode: "source",
         active: null,
         latestRun: {
           id: "restart-1",
           status: "completed",
-          mode: "source",
           target: "current",
           gitRef: null,
-          imageTag: null,
           includeDesktop: false,
           update: false,
           startedAt: 1_000,
@@ -83,15 +80,12 @@ test("Butler restart status tool reports active host-controller runs", async () 
     hostController: {
       getStatus: async () => ({
         ok: true,
-        detectedMode: "image",
         active: null,
         latestRun: {
           id: "restart-1",
           status: "completed",
-          mode: "image",
           target: "latest",
           gitRef: null,
-          imageTag: null,
           includeDesktop: false,
           update: true,
           startedAt: 1_000,
@@ -100,7 +94,7 @@ test("Butler restart status tool reports active host-controller runs", async () 
           error: null,
           steps: [
             {
-              label: "Pull Manor images",
+              label: "Build source images",
               status: "completed",
               startedAt: 1_000,
               completedAt: 66_000,
@@ -122,5 +116,5 @@ test("Butler restart status tool reports active host-controller runs", async () 
 
   assert.match(result.content[0]?.text ?? "", /Manor restart restart-1: completed/);
   assert.match(result.content[0]?.text ?? "", /Duration: 1m 5s/);
-  assert.match(result.content[0]?.text ?? "", /completed: Pull Manor images/);
+  assert.match(result.content[0]?.text ?? "", /completed: Build source images/);
 });

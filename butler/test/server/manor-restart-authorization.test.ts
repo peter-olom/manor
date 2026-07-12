@@ -12,24 +12,22 @@ import {
 
 test("restart authorization requests capture operator-facing details without magic phrases", () => {
   const request = createManorRestartRequest({
-    reason: "Update Manor to the published image.",
-    mode: "image",
+    reason: "Update Manor from source.",
     target: "current",
-    imageTag: "sha-14ed905",
+    gitRef: "main",
     includeDesktop: true,
     update: true,
-    details: "GHCR publish completed."
+    details: "Pull the current branch."
   });
 
   assert.equal(request.status, "pending");
   assert.equal(request.authorizedAt, null);
-  assert.equal(request.reason, "Update Manor to the published image.");
-  assert.equal(request.mode, "image");
+  assert.equal(request.reason, "Update Manor from source.");
   assert.equal(request.target, "current");
-  assert.equal(request.imageTag, "sha-14ed905");
+  assert.equal(request.gitRef, "main");
   assert.equal(request.includeDesktop, true);
   assert.equal(request.update, true);
-  assert.equal(request.details, "GHCR publish completed.");
+  assert.equal(request.details, "Pull the current branch.");
   assert.equal(isRestartAuthorizeAction("authorize_restart"), true);
   assert.equal(isRestartAuthorizeAction("RESTART MANOR"), false);
 });
@@ -37,7 +35,6 @@ test("restart authorization requests capture operator-facing details without mag
 test("authorized restart requests map to host-controller payloads", () => {
   const request = createManorRestartRequest({
     reason: "Update source checkout.",
-    mode: "source",
     target: "current",
     gitRef: "feature/restart-workflow",
     includeDesktop: true,
@@ -48,10 +45,8 @@ test("authorized restart requests map to host-controller payloads", () => {
 
   assert.deepEqual(buildAuthorizedManorRestartInput(authorized), {
     confirmation: "restart Manor",
-    mode: "source",
     target: "current",
     gitRef: "feature/restart-workflow",
-    imageTag: null,
     includeDesktop: true,
     build: false,
     update: true
@@ -68,10 +63,8 @@ test("authorized auto restart payloads preserve no-build intent", () => {
 
   assert.deepEqual(buildAuthorizedManorRestartInput(authorized), {
     confirmation: "restart Manor",
-    mode: "auto",
     target: "current",
     gitRef: null,
-    imageTag: null,
     includeDesktop: false,
     build: false,
     update: false
@@ -110,14 +103,12 @@ test("request_manor_restart opens an authorization dialog request instead of req
 
   const result = await restartTool.execute("tool-call-1", {
     reason: "Operator should approve the Manor update.",
-    mode: "image",
-    imageTag: "sha-14ed905"
+    gitRef: "main"
   });
 
   assert.deepEqual(requestedInput, {
     reason: "Operator should approve the Manor update.",
-    mode: "image",
-    imageTag: "sha-14ed905"
+    gitRef: "main"
   });
   assert.match(result.content[0]?.text ?? "", new RegExp("Opened a Manor restart/update authorization dialog"));
   assert.match(result.content[0]?.text ?? "", new RegExp("Request id:"));

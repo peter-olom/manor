@@ -152,12 +152,8 @@ export type ButlerAgentToolAccess = {
   getThreadBudgetLimitMessage(threadId: string): string | null;
   getOperatorCloseoutBlocker(threadId: string): string | null;
   requestManorRestartAuthorization(input: {
-    mode?: unknown;
     target?: unknown;
     gitRef?: unknown;
-    imageTag?: unknown;
-    targetCommit?: unknown;
-    targetTag?: unknown;
     includeDesktop?: unknown;
     build?: unknown;
     update?: unknown;

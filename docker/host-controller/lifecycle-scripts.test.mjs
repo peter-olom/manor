@@ -93,7 +93,7 @@ test("Manor-specific project names drive both Compose and the lifecycle lock", a
   await copyFile(lifecyclePath, path.join(fixture, "manor.sh"));
   const dockerMock = path.join(binDir, "docker");
   await writeFile(dockerMock, `#!/usr/bin/env bash
-printf '%s|%s|%s|%s\\n' "$COMPOSE_PROJECT_NAME" "$MANOR_COMPOSE_PROJECT_NAME" "$MANOR_BUILD_FROM_SOURCE" "$*" >> "$DOCKER_LOG"
+printf '%s|%s|%s\\n' "$COMPOSE_PROJECT_NAME" "$MANOR_COMPOSE_PROJECT_NAME" "$*" >> "$DOCKER_LOG"
 if [[ "$1" == "info" ]]; then exit 0; fi
 if [[ "$1" == "compose" && "$2" == "version" ]]; then exit 0; fi
 if [[ "$1" == "network" && "$2" == "create" ]]; then
@@ -107,7 +107,6 @@ if [[ "$1" == "compose" ]]; then exit 0; fi
 exit 1
 `, "utf8");
   await chmod(dockerMock, 0o755);
-  await writeFile(path.join(fixture, ".env"), "MANOR_BUILD_FROM_SOURCE=0\\n", "utf8");
   const env = {
     ...process.env,
     PATH: `${binDir}:${process.env.PATH}`,
@@ -121,7 +120,7 @@ exit 1
   assert.equal(result.status, 0, result.stderr);
   const calls = await readFile(logPath, "utf8");
   for (const line of calls.trim().split(/\r?\n/)) {
-    assert.match(line, /^custom-manor\|custom-manor\|1\|/);
+    assert.match(line, /^custom-manor\|custom-manor\|/);
   }
   assert.match(calls, /network create.*custom-manor_lifecycle-lock/);
   assert.match(calls, /compose -f compose\.yml -f compose\.build\.yml up/);

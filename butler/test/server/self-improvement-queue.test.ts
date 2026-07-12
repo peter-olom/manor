@@ -468,35 +468,6 @@ test("request_self_improvement rejects direct requests without a blocked source 
   }
 });
 
-test("approval is refused in image mode with an eligibility reason", async () => {
-  const { dir, state } = await createRequestState();
-  const app = express();
-  app.use(express.json());
-  const created = state.create(requestInput());
-  registerSelfImprovementRoutes({
-    app,
-    requests: state,
-    hostController: { getStatus: async () => ({ ok: true, active: null, latestRun: null, detectedMode: "image" }) } as never,
-    store: {} as never,
-    codexClient: {} as never,
-    imageStore: { resolveViews: () => [] } as never,
-    fileStore: { resolveViews: () => [] } as never,
-    artifactsDir: dir
-  });
-  const server = await listen(app);
-  try {
-    const response = await fetch(`${server.origin}/api/self-improvement/requests/${created.id}/approve`, { method: "POST" });
-    const payload = await response.json() as { error?: string };
-
-    assert.equal(response.status, 409);
-    assert.match(payload.error ?? "", /source-first mode/);
-    assert.equal(state.get(created.id)?.status, "pending");
-  } finally {
-    await server.close();
-    await removeTempDir(dir);
-  }
-});
-
 test("approval creates a visible session and preserves immediate Worker completion", async () => {
   const { dir: requestDir, state } = await createRequestState();
   const { dir: storeDir, store } = await createStore();
@@ -520,7 +491,7 @@ test("approval creates a visible session and preserves immediate Worker completi
   registerSelfImprovementRoutes({
     app,
     requests: state,
-    hostController: { getStatus: async () => ({ ok: true, active: null, latestRun: null, detectedMode: "source" }) } as never,
+    hostController: { getStatus: async () => ({ ok: true, active: null, latestRun: null }) } as never,
     store,
     codexClient: {
       getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "high", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["high"], supportedReasoningEfforts: ["high"], defaultReasoningEffort: "high" }] } }),
@@ -618,7 +589,7 @@ test("approval is serialized while another self-improvement worker owns the chec
   registerSelfImprovementRoutes({
     app,
     requests: state,
-    hostController: { getStatus: async () => ({ ok: true, active: null, latestRun: null, detectedMode: "source" }) } as never,
+    hostController: { getStatus: async () => ({ ok: true, active: null, latestRun: null }) } as never,
     store: {} as never,
     codexClient: { startThread: async () => { started = true; throw new Error("should not start"); } } as never,
     imageStore: { resolveViews: () => [] } as never,
@@ -673,7 +644,7 @@ test("approval deletes the Worker and pair when post-pair setup fails", async ()
   registerSelfImprovementRoutes({
     app,
     requests: state,
-    hostController: { getStatus: async () => ({ ok: true, active: null, latestRun: null, detectedMode: "source" }) } as never,
+    hostController: { getStatus: async () => ({ ok: true, active: null, latestRun: null }) } as never,
     store: routeStore,
     codexClient: {
       getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "high", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["high"], supportedReasoningEfforts: ["high"], defaultReasoningEffort: "high" }] } }),
@@ -751,22 +722,22 @@ test("approval deletes the Worker and pair when post-pair setup fails", async ()
   }
 });
 
-test("source-first eligibility requires source mode and a writable Git checkout", async () => {
+test("source-first eligibility requires controller status and a writable Git checkout", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-self-improvement-source-"));
   const previous = process.env.MANOR_SELF_IMPROVEMENT_SOURCE_CWD;
   process.env.MANOR_SELF_IMPROVEMENT_SOURCE_CWD = dir;
   try {
     await execFileAsync("git", ["init"], { cwd: dir });
     const enabled = await resolveSelfImprovementEligibility({
-      getStatus: async () => ({ ok: true, active: null, latestRun: null, detectedMode: "source" })
+      getStatus: async () => ({ ok: true, active: null, latestRun: null })
     } as never);
     const disabled = await resolveSelfImprovementEligibility({
-      getStatus: async () => ({ ok: true, active: null, latestRun: null, detectedMode: "image" })
+      getStatus: async () => { throw new Error("offline"); }
     } as never);
 
     assert.equal(enabled.enabled, true);
     assert.equal(disabled.enabled, false);
-    assert.match(disabled.reasons.join(" "), /source-first mode/);
+    assert.match(disabled.reasons.join(" "), /status is unavailable/);
   } finally {
     if (previous === undefined) {
       delete process.env.MANOR_SELF_IMPROVEMENT_SOURCE_CWD;

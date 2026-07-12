@@ -1,15 +1,11 @@
 import crypto from "node:crypto";
 
 import type { ManorRestartRequestView } from "./types.js";
-import type { ManorRestartMode, ManorRestartTarget } from "./host-controller-client.js";
+import type { ManorRestartTarget } from "./host-controller-client.js";
 
 export function createManorRestartRequest(input: {
-  mode?: unknown;
   target?: unknown;
   gitRef?: unknown;
-  imageTag?: unknown;
-  targetCommit?: unknown;
-  targetTag?: unknown;
   includeDesktop?: unknown;
   build?: unknown;
   update?: unknown;
@@ -17,18 +13,11 @@ export function createManorRestartRequest(input: {
   details?: unknown;
 }): ManorRestartRequestView {
   const gitRef = normalizeRestartText(input.gitRef);
-  const imageTag = normalizeRestartText(input.imageTag);
-  const targetCommit = normalizeRestartText(input.targetCommit);
-  const targetTag = normalizeRestartText(input.targetTag);
 
   return {
     id: crypto.randomUUID(),
-    mode: normalizeRestartMode(input.mode),
     target: normalizeRestartTarget(input.target),
-    gitRef: gitRef ?? targetCommit,
-    imageTag: imageTag ?? targetTag,
-    targetCommit,
-    targetTag,
+    gitRef,
     includeDesktop: input.includeDesktop === true,
     build: normalizeOptionalRestartBoolean(input.build),
     update: normalizeOptionalRestartBoolean(input.update),
@@ -43,10 +32,6 @@ export function createManorRestartRequest(input: {
 export function normalizeRestartText(value: unknown): string | null {
   const text = typeof value === "string" ? value.trim() : "";
   return text || null;
-}
-
-export function normalizeRestartMode(value: unknown): ManorRestartMode | null {
-  return value === "auto" || value === "source" || value === "image" ? value : null;
 }
 
 export function normalizeRestartTarget(value: unknown): ManorRestartTarget | null {
@@ -102,31 +87,31 @@ export function isManorRestartRequestWithStatus(
   if (!value || typeof value !== "object") {
     return false;
   }
+  const allowedKeys = new Set([
+    "id", "target", "gitRef", "includeDesktop", "build", "update", "reason", "details",
+    "requestedAt", "status", "authorizedAt"
+  ]);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    return false;
+  }
   const request = value as Partial<ManorRestartRequestView>;
   return typeof request.id === "string" && request.status === status;
 }
 
 export function buildAuthorizedManorRestartInput(request: ManorRestartRequestView): {
   confirmation: "restart Manor";
-  mode: ManorRestartMode;
   target: ManorRestartTarget;
   gitRef: string | null;
-  imageTag: string | null;
   includeDesktop: boolean;
   build?: boolean;
   update?: boolean;
 } {
-  const gitRef = request.gitRef ?? request.targetCommit;
-  const imageTag = request.imageTag ?? request.targetTag;
-  const mode = request.mode ?? (gitRef ? "source" : imageTag ? "image" : "auto");
   return {
     confirmation: "restart Manor",
-    mode,
     target: request.target ?? "current",
-    gitRef,
-    imageTag,
+    gitRef: request.gitRef,
     includeDesktop: request.includeDesktop === true,
-    build: mode === "source" || mode === "auto" ? request.build ?? undefined : undefined,
+    build: request.build ?? undefined,
     update: request.update ?? undefined
   };
 }

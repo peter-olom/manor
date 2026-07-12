@@ -12,12 +12,8 @@ import {
 import type { ManorRestartRequestView } from "./types.js";
 
 type RestartRequestInput = {
-  mode?: unknown;
   target?: unknown;
   gitRef?: unknown;
-  imageTag?: unknown;
-  targetCommit?: unknown;
-  targetTag?: unknown;
   includeDesktop?: unknown;
   build?: unknown;
   update?: unknown;

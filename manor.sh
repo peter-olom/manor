@@ -66,7 +66,6 @@ compose_project_name="${compose_project_name:-${COMPOSE_PROJECT_NAME:-$(env_valu
 compose_project_name="${compose_project_name:-manor}"
 export COMPOSE_PROJECT_NAME="${compose_project_name}"
 export MANOR_COMPOSE_PROJECT_NAME="${compose_project_name}"
-export MANOR_BUILD_FROM_SOURCE=1
 export MANOR_HOST_UID="${MANOR_HOST_UID:-$(id -u)}"
 export MANOR_HOST_GID="${MANOR_HOST_GID:-$(id -g)}"
 
@@ -104,9 +103,6 @@ follow_logs=0
 parse_common_options() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --build|--source|--build-from-source)
-        # Retained as a compatibility no-op. Source builds are always used.
-        ;;
       --dev)
         add_dev=1
         ;;

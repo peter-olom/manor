@@ -5,7 +5,7 @@ import test from 'node:test';
 const dockerfilePath = new URL('../../../docker/butler/Dockerfile', import.meta.url);
 const startScriptPath = new URL('../../../docker/butler/start.sh', import.meta.url);
 const packageJsonPath = new URL('../../package.json', import.meta.url);
-const workflowPath = new URL('../../../.github/workflows/publish-images.yml', import.meta.url);
+const composePath = new URL('../../../compose.yml', import.meta.url);
 
 test('Butler image contains locked development dependencies and never installs them at startup', async () => {
   const [dockerfile, startScript, packageJson] = await Promise.all([
@@ -27,9 +27,10 @@ test('Butler image contains locked development dependencies and never installs t
   assert.doesNotMatch(startScript, /manor-(?:codex|pi)-auto-update/);
 });
 
-test('Butler publish job keeps BuildKit cache enabled', async () => {
-  const workflow = await readFile(workflowPath, 'utf8');
+test('Manor appliance images are local source builds', async () => {
+  const compose = await readFile(composePath, 'utf8');
 
-  assert.match(workflow, /cache-from: type=gha,scope=\$\{\{ matrix\.image \}\}/);
-  assert.match(workflow, /cache-to: type=gha,mode=max,scope=\$\{\{ matrix\.image \}\}/);
+  assert.doesNotMatch(compose, /ghcr\.io\/peter-olom\/manor-/);
+  assert.doesNotMatch(compose, /MANOR_IMAGE_(?:REGISTRY|TAG)/);
+  assert.equal((compose.match(/image: manor-[a-z-]+:local/g) ?? []).length, 8);
 });

@@ -10,12 +10,8 @@ import type { ManorRestartRequestView } from "../../src/server/types.js";
 function makeAuthorizedRequest(id: string): ManorRestartRequestView {
   return {
     id,
-    mode: null,
     target: null,
     gitRef: null,
-    imageTag: null,
-    targetCommit: null,
-    targetTag: null,
     includeDesktop: false,
     build: false,
     update: false,
@@ -31,10 +27,8 @@ function makeRestartRun() {
   return {
     id: "run-1",
     status: "running" as const,
-    mode: "image" as const,
     target: "current",
     gitRef: null,
-    imageTag: null,
     includeDesktop: false,
     update: false,
     startedAt: 3,
@@ -80,7 +74,6 @@ test("restart authorize route starts the authorized request immediately", async 
       ok: true,
       active: null,
       latestRun: makeRestartRun(),
-      detectedMode: "image"
     })
   });
 
@@ -117,7 +110,6 @@ test("restart status route returns the host-controller run", async () => {
       ok: true,
       active: null,
       latestRun: run,
-      detectedMode: "image"
     })
   });
 
@@ -146,7 +138,6 @@ test("direct restart route is not registered", async () => {
       ok: true,
       active: null,
       latestRun: makeRestartRun(),
-      detectedMode: "image"
     })
   });
 

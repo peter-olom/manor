@@ -44,8 +44,6 @@ services:
       context: .
       dockerfile: docker/host-controller/Dockerfile
     image: manor-host-controller:local
-    environment:
-      MANOR_BUILD_FROM_SOURCE: "1"
 
   playwright:
     build:

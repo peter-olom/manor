@@ -12,10 +12,7 @@ Usage:
 Options:
   --latest       Update to the latest configured target before restarting.
   --current      Restart the currently configured Manor stack. Default.
-  --source       Force source restart mode.
-  --image        Force image restart mode.
-  --ref <ref>    Source ref for source mode.
-  --tag <tag>    Image tag for image mode.
+  --ref <ref>    Source ref to check out before rebuilding.
   --build        Build source images before restarting.
   --no-build     Do not build source images before restarting.
   --desktop      Include the desktop proof service.
@@ -104,9 +101,7 @@ controller_curl() {
 }
 
 target="current"
-mode=""
 git_ref=""
-image_tag=""
 include_desktop=false
 build=""
 wait_for_finish=true
@@ -119,26 +114,12 @@ while [[ $# -gt 0 ]]; do
     --current)
       target="current"
       ;;
-    --source)
-      mode="source"
-      ;;
-    --image)
-      mode="image"
-      ;;
     --ref)
       if [[ -z "${2:-}" ]]; then
         echo "--ref requires a value." >&2
         exit 64
       fi
       git_ref="$2"
-      shift
-      ;;
-    --tag)
-      if [[ -z "${2:-}" ]]; then
-        echo "--tag requires a value." >&2
-        exit 64
-      fi
-      image_tag="$2"
       shift
       ;;
     --build)
@@ -166,20 +147,9 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-if [[ -n "${git_ref}" && -n "${image_tag}" ]]; then
-  echo "Use either --ref or --tag, not both." >&2
-  exit 64
-fi
-
 payload="{\"confirmation\":\"restart Manor\",\"target\":$(json_string "${target}"),\"update\":$([[ "${target}" == "latest" ]] && echo true || echo false),\"includeDesktop\":${include_desktop}"
-if [[ -n "${mode}" ]]; then
-  payload+=",\"mode\":$(json_string "${mode}")"
-fi
 if [[ -n "${git_ref}" ]]; then
   payload+=",\"gitRef\":$(json_string "${git_ref}")"
-fi
-if [[ -n "${image_tag}" ]]; then
-  payload+=",\"imageTag\":$(json_string "${image_tag}")"
 fi
 if [[ -n "${build}" ]]; then
   payload+=",\"build\":${build}"

@@ -2,21 +2,16 @@ import crypto from "node:crypto";
 
 const restartKeys = new Set([
   "confirmation",
-  "mode",
   "target",
   "gitRef",
-  "imageTag",
   "includeDesktop",
   "hotReload",
   "build",
   "update"
 ]);
 
-const modeValues = new Set(["auto", "source", "image"]);
 const targetValues = new Set(["current", "latest"]);
 const gitRefPattern = /^[A-Za-z0-9][A-Za-z0-9._/@+-]{0,127}$/;
-const imageTagPattern = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
-const sourceModeEnvValues = new Set(["1", "true", "yes", "on"]);
 
 export function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -71,24 +66,8 @@ export function normalizeRestartWaitTimeoutSeconds(value) {
   return Math.max(30, Math.min(900, Math.trunc(parsed)));
 }
 
-export function detectRuntimeRestartMode(buildFromSource) {
-  if (sourceModeEnvValues.has(String(buildFromSource ?? "").trim().toLowerCase())) {
-    return "source";
-  }
-  return "image";
-}
-
 export function shouldBuildSourceImages(payload) {
-  if (payload.build === true) {
-    return true;
-  }
-  if (payload.build === false) {
-    return false;
-  }
-  if (payload.mode === "source") {
-    return true;
-  }
-  return payload.update === true || payload.target === "latest" || Boolean(payload.gitRef);
+  return payload.build !== false;
 }
 
 export function validateGitRef(value) {
@@ -110,10 +89,6 @@ export function validateGitRef(value) {
   return true;
 }
 
-export function validateImageTag(value) {
-  return imageTagPattern.test(value);
-}
-
 export function validateRestartPayload(payload) {
   if (!isPlainObject(payload)) {
     return { ok: false, error: "Restart request must be a JSON object." };
@@ -126,11 +101,6 @@ export function validateRestartPayload(payload) {
 
   if (payload.confirmation !== "restart Manor") {
     return { ok: false, error: "confirmation must be exactly: restart Manor" };
-  }
-
-  const requestedMode = normalizeString(payload.mode) || "auto";
-  if (!modeValues.has(requestedMode)) {
-    return { ok: false, error: "mode must be one of: auto, source, image" };
   }
 
   const target = normalizeString(payload.target) || "current";
@@ -146,20 +116,8 @@ export function validateRestartPayload(payload) {
     return { ok: false, error: "gitRef must be a safe branch, tag, or commit reference." };
   }
 
-  const imageTag = optionalString(payload.imageTag, "imageTag");
-  if (!imageTag.ok) {
-    return imageTag;
-  }
-  if (imageTag.value && !validateImageTag(imageTag.value)) {
-    return { ok: false, error: "imageTag must be a Docker image tag, not a full image reference." };
-  }
-
-  if (gitRef.value && imageTag.value) {
-    return { ok: false, error: "Specify gitRef for source mode or imageTag for image mode, not both." };
-  }
-
-  if ((gitRef.value || imageTag.value) && target === "latest") {
-    return { ok: false, error: "Use either target latest or a specific gitRef/imageTag, not both." };
+  if (gitRef.value && target === "latest") {
+    return { ok: false, error: "Use either target latest or a specific gitRef, not both." };
   }
 
   const includeDesktop = optionalBoolean(payload.includeDesktop, "includeDesktop");
@@ -185,30 +143,12 @@ export function validateRestartPayload(payload) {
   return {
     ok: true,
     value: {
-      requestedMode,
       target,
       gitRef: gitRef.value,
-      imageTag: imageTag.value,
       includeDesktop: includeDesktop.value === true,
       hotReload: hotReload.value,
       build: build.value,
       update: update.value === true
     }
   };
-}
-
-export function validateRestartModeScope(payload, mode) {
-  if (payload.gitRef && mode !== "source") {
-    return { ok: false, error: "gitRef is only allowed when the detected restart mode is source." };
-  }
-  if (payload.imageTag && mode !== "image") {
-    return { ok: false, error: "imageTag is only allowed when the detected restart mode is image." };
-  }
-  if (payload.build === true && mode !== "source") {
-    return { ok: false, error: "build true is only allowed when the detected restart mode is source." };
-  }
-  if (payload.hotReload === true && mode !== "source") {
-    return { ok: false, error: "hotReload true is only allowed when the detected restart mode is source." };
-  }
-  return { ok: true, value: { ...payload, mode } };
 }

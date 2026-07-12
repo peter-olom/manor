@@ -1,6 +1,6 @@
 services:
   butler:
-    image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-butler:${MANOR_IMAGE_TAG:-latest}"
+    image: manor-butler:local
     container_name: manor-butler
     hostname: manor-butler
     command: ["/usr/local/bin/start-butler"]
@@ -191,7 +191,7 @@ services:
   # Shared Worker environment. Codex app-server and Pi RPC Worker harnesses
   # execute here; Butler keeps only its own Pi-backed supervisor agent.
   codex-box:
-    image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-codex-box:${MANOR_IMAGE_TAG:-latest}"
+    image: manor-codex-box:local
     container_name: manor-codex-box
     hostname: manor-worker
     command: ["/usr/local/bin/start-codex-app-server"]
@@ -286,7 +286,7 @@ services:
       - work
 
   egress:
-    image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-egress:${MANOR_IMAGE_TAG:-latest}"
+    image: manor-egress:local
     container_name: manor-egress
     command: ["sh", "-lc", "rm -f /tmp/squid.pid && exec squid -N -f /etc/squid/squid.conf"]
     environment:
@@ -304,7 +304,7 @@ services:
       - internet
 
   preview-egress:
-    image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-preview-egress:${MANOR_IMAGE_TAG:-latest}"
+    image: manor-preview-egress:local
     container_name: manor-preview-egress
     environment:
       MANOR_ROLE: preview-egress
@@ -326,7 +326,7 @@ services:
       - internet
 
   runtime-broker:
-    image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-runtime-broker:${MANOR_IMAGE_TAG:-latest}"
+    image: manor-runtime-broker:local
     container_name: manor-runtime-broker
     environment:
       MANOR_ROLE: runtime-broker
@@ -375,7 +375,7 @@ services:
       - preview
 
   host-controller:
-    image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-host-controller:${MANOR_IMAGE_TAG:-latest}"
+    image: manor-host-controller:local
     container_name: manor-host-controller
     hostname: manor-host-controller
     environment:
@@ -391,7 +391,6 @@ services:
       CODEX_SERVICE_TIER: ${CODEX_SERVICE_TIER:-auto}
       CODEX_VERSION: ${CODEX_VERSION:-0.124.0}
       DESKTOP_PROOF_NOVNC_PORT: ${DESKTOP_PROOF_NOVNC_PORT:-6080}
-      MANOR_BUILD_FROM_SOURCE: ${MANOR_BUILD_FROM_SOURCE:-1}
       MANOR_BUTLER_MODEL: ${MANOR_BUTLER_MODEL:-}
       MANOR_BUTLER_PROVIDER: ${MANOR_BUTLER_PROVIDER:-}
       MANOR_BUTLER_THINKING_LEVEL: ${MANOR_BUTLER_THINKING_LEVEL:-medium}
@@ -406,8 +405,6 @@ services:
       MANOR_HOST_CONTROLLER_STATE_DIR: /state
       MANOR_HOST_BUTLER_HEALTH_URL: http://butler:8080/livez
       MANOR_HOST_CONTROLLER_TOKEN: "${MANOR_HOST_CONTROLLER_TOKEN:?Run ./install.sh or set MANOR_HOST_CONTROLLER_TOKEN in .env.}"
-      MANOR_IMAGE_REGISTRY: ${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}
-      MANOR_IMAGE_TAG: ${MANOR_IMAGE_TAG:-latest}
       MANOR_LEASE_REAP_GRACE_MS: ${MANOR_LEASE_REAP_GRACE_MS:-600000}
       MANOR_LEASE_SWEEP_INTERVAL_MS: ${MANOR_LEASE_SWEEP_INTERVAL_MS:-30000}
       MANOR_MEMORY_EMBEDDINGS_BACKFILL_BATCH_SIZE: ${MANOR_MEMORY_EMBEDDINGS_BACKFILL_BATCH_SIZE:-16}
@@ -496,7 +493,7 @@ services:
       - work
 
   playwright:
-    image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-playwright:${MANOR_IMAGE_TAG:-latest}"
+    image: manor-playwright:local
     container_name: manor-playwright
     environment:
       MANOR_ROLE: playwright
@@ -523,7 +520,7 @@ services:
 
   desktop-proof:
     profiles: ["desktop"]
-    image: "${MANOR_IMAGE_REGISTRY:-ghcr.io/peter-olom}/manor-desktop-proof:${MANOR_IMAGE_TAG:-latest}"
+    image: manor-desktop-proof:local
     container_name: manor-desktop-proof
     environment:
       MANOR_ROLE: desktop-proof

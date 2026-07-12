@@ -25,9 +25,6 @@ while [[ $# -gt 0 ]]; do
     --no-start)
       start_after=0
       ;;
-    --build-from-source|--source)
-      # Retained as a compatibility no-op. Source builds are always used.
-      ;;
     -h|--help)
       usage
       exit 0
@@ -179,9 +176,6 @@ render_env() {
         skip["BUTLER_HOST_PORT"] = 1
         skip["MANOR_HOST_PROJECT_DIR"] = 1
         skip["MANOR_HOST_PROJECT_SOURCE_DIR"] = 1
-        skip["MANOR_BUILD_FROM_SOURCE"] = 1
-        skip["MANOR_IMAGE_REGISTRY"] = 1
-        skip["MANOR_IMAGE_TAG"] = 1
         skip["CODEX_SERVICE_TIER"] = 1
         skip["MANOR_CODEX_AUTO_UPDATE"] = 1
         skip["MANOR_CODEX_AUTO_UPDATE_VERSION"] = 1

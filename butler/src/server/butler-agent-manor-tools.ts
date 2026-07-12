@@ -5,18 +5,13 @@ import type { ManorRestartRun } from "./host-controller-client.js";
 import { formatElapsedTaskTime } from "./task-timing.js";
 
 function formatRestartRequestTarget(request: {
-  mode: string | null;
   target: string | null;
   gitRef: string | null;
-  imageTag: string | null;
-  targetCommit: string | null;
-  targetTag: string | null;
 }): string {
   const parts = [
-    request.mode ? `mode ${request.mode}` : null,
+    "source",
     request.target ? `target ${request.target}` : null,
-    request.imageTag ?? request.targetTag,
-    request.gitRef ?? request.targetCommit
+    request.gitRef
   ].filter((part): part is string => Boolean(part));
   return parts.join(" / ") || "not specified";
 }
@@ -32,7 +27,7 @@ function formatRestartRun(run: ManorRestartRun): string {
 
   return [
     `Manor restart ${run.id}: ${run.status}`,
-    `Mode: ${run.mode}. Target: ${run.target}.`,
+    `Target: ${run.target}.`,
     durationMs !== null ? `${run.status === "running" ? "Elapsed" : "Duration"}: ${formatElapsedTaskTime(durationMs)}.` : null,
     run.error ? `Error: ${run.error}` : null,
     ...run.steps.map((step) => `${step.status}: ${step.label}${step.exitCode === null ? "" : ` (${step.exitCode})`}`)
@@ -49,32 +44,24 @@ export function buildButlerManorTools(access: ButlerAgentToolAccess): ButlerCust
       description:
         "Open an operator-facing Manor restart/update authorization dialog. This Butler tool does not directly restart or deploy the live Manor stack.",
       promptSnippet:
-        "request_manor_restart: use when a Manor restart or update needs explicit operator authorization. Provide clear target and reason details; for source restarts from a local commit, pass the exact commit SHA or local branch as gitRef/targetCommit instead of assuming the ref must be fetched. The operator must click the confirmation dialog. The approval route starts the authorized restart through the host controller; after Manor comes back, use read_manor_restart_status.",
+        "request_manor_restart: use when a Manor restart or update needs explicit operator authorization. Provide clear target and reason details; for restarts from a local commit, pass the exact commit SHA or local branch as gitRef instead of assuming the ref must be fetched. The operator must click the confirmation dialog. The approval route starts the authorized restart through the host controller; after Manor comes back, use read_manor_restart_status.",
       parameters: Type.Object({
         reason: Type.String({
           minLength: 1,
           description: "Plain-language reason shown to the operator before they authorize the restart or update."
         }),
-        mode: Type.Optional(Type.Union([Type.Literal("auto"), Type.Literal("source"), Type.Literal("image")])),
         target: Type.Optional(Type.Union([Type.Literal("current"), Type.Literal("latest")])),
         gitRef: Type.Optional(Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._/@+-]*$", description: "Local or remote source ref. Use the exact local commit SHA when the operator asks to restart from a local commit." })),
-        imageTag: Type.Optional(Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9_][A-Za-z0-9_.-]*$" })),
         includeDesktop: Type.Optional(Type.Boolean()),
         build: Type.Optional(Type.Boolean()),
         update: Type.Optional(Type.Boolean()),
-        targetCommit: Type.Optional(Type.String({ minLength: 7, description: "Optional target Manor commit SHA for the authorized source restart or update." })),
-        targetTag: Type.Optional(Type.String({ minLength: 1, description: "Optional target Manor image tag for the authorized update." })),
         details: Type.Optional(Type.String({ minLength: 1, description: "Optional extra restart/update details shown in the confirmation dialog." }))
       }),
       uiEffects: access.getToolUiEffects("request_manor_restart"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as {
-          mode?: unknown;
           target?: unknown;
           gitRef?: unknown;
-          imageTag?: unknown;
-          targetCommit?: unknown;
-          targetTag?: unknown;
           includeDesktop?: unknown;
           build?: unknown;
           update?: unknown;
@@ -109,7 +96,7 @@ export function buildButlerManorTools(access: ButlerAgentToolAccess): ButlerCust
       execute: async () => {
         const status = await access.hostController.getStatus();
         const run = status.active ?? status.latestRun;
-        const text = run ? formatRestartRun(run) : `No Manor restart has been recorded. Detected mode: ${status.detectedMode}.`;
+        const text = run ? formatRestartRun(run) : "No Manor restart has been recorded.";
         return {
           content: [{ type: "text", text }],
           details: { status }

@@ -4,12 +4,10 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import express from "express";
 import {
-  detectRuntimeRestartMode,
   normalizeRestartDelayMs,
   normalizeRestartWaitTimeoutSeconds,
   safeTokenMatch,
   shouldBuildSourceImages,
-  validateRestartModeScope,
   validateRestartPayload
 } from "./controller-policy.mjs";
 
@@ -75,10 +73,8 @@ function publicRun(run) {
   return {
     id: run.id,
     status: run.status,
-    mode: run.mode,
     target: run.target,
     gitRef: run.gitRef,
-    imageTag: run.imageTag,
     includeDesktop: run.includeDesktop,
     hotReload: run.hotReload,
     update: run.update,
@@ -133,48 +129,9 @@ async function loadState() {
   }
 }
 
-function readEnvValueFromText(text, key) {
-  for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) {
-      continue;
-    }
-    const index = trimmed.indexOf("=");
-    if (index < 0 || trimmed.slice(0, index) !== key) {
-      continue;
-    }
-    return trimmed.slice(index + 1).replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1");
-  }
-  return null;
-}
-
-async function readEnvValue(key) {
-  if (Object.prototype.hasOwnProperty.call(process.env, key)) {
-    return process.env[key] ?? null;
-  }
-  try {
-    return readEnvValueFromText(await fs.readFile(path.join(manorDir, ".env"), "utf8"), key);
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      return null;
-    }
-    throw error;
-  }
-}
-
-async function detectMode(requestedMode) {
-  if (requestedMode === "source" || requestedMode === "image") {
-    return requestedMode;
-  }
-  return detectRuntimeRestartMode(await readEnvValue("MANOR_BUILD_FROM_SOURCE"));
-}
-
-function composeArgs(mode, includeDesktop, hotReload = false) {
-  const args = ["compose", "-f", "compose.yml"];
-  if (mode === "source") {
-    args.push("-f", "compose.build.yml");
-  }
-  if (mode === "source" && hotReload) {
+function composeArgs(includeDesktop, hotReload = false) {
+  const args = ["compose", "-f", "compose.yml", "-f", "compose.build.yml"];
+  if (hotReload) {
     args.push("-f", "compose.dev.yml");
   }
   if (includeDesktop) {
@@ -188,8 +145,7 @@ function commandEnv(run) {
     ...process.env,
     COMPOSE_PROJECT_NAME: composeProjectName,
     MANOR_CODEX_AUTO_UPDATE: "0",
-    MANOR_PI_AUTO_UPDATE: "0",
-    ...(run.imageTag ? { MANOR_IMAGE_TAG: run.imageTag } : {})
+    MANOR_PI_AUTO_UPDATE: "0"
   };
 }
 
@@ -558,20 +514,12 @@ async function updateSource(run) {
   await runStep(run, "Fast-forward source branch", "git", ["merge", "--ff-only", `origin/${branch}`]);
 }
 
-async function updateImage(run) {
-  const wantsPull = run.update || run.imageTag || run.target === "latest";
-  if (!wantsPull) {
-    return;
-  }
-  await runStep(run, "Pull Manor images", "docker", [...composeArgs("image", run.includeDesktop), "pull", ...applianceServices]);
-}
-
 async function buildSourceImages(run) {
   if (run.build === false) {
     return;
   }
   await runStep(run, "Build source images", "docker", [
-    ...composeArgs("source", run.includeDesktop),
+    ...composeArgs(run.includeDesktop),
     "build",
     ...sourceBuildServices,
     ...(run.includeDesktop ? ["desktop-proof"] : [])
@@ -791,7 +739,7 @@ async function buildCleanHeadSourceImages(run, cleanHead) {
   );
 }
 
-async function restartAppliance(run, compose = composeArgs(run.mode, run.includeDesktop, run.hotReload), cwd = manorDir) {
+async function restartAppliance(run, compose = composeArgs(run.includeDesktop, run.hotReload), cwd = manorDir) {
   const services = [...applianceServices];
   if (run.includeDesktop) {
     services.push("desktop-proof");
@@ -855,7 +803,7 @@ async function scheduleHostControllerActivation(run, rollbackSource) {
     throw new Error("Could not resolve the running host controller image for rollback.");
   }
   const activationArgs = [
-    ...composeArgs("source", run.includeDesktop, run.hotReload),
+    ...composeArgs(run.includeDesktop, run.hotReload),
     "up",
     "-d",
     "--force-recreate",
@@ -1033,18 +981,12 @@ async function executeRun(run) {
     if (run.delayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, run.delayMs));
     }
-    if (run.mode === "source") {
-      await runStep(run, "Verify source checkout", "git", ["rev-parse", "--is-inside-work-tree"]);
-      if (run.build !== false) {
-        activationRollbackSource = await prepareControllerRollbackSource(run);
-      }
-      await updateSource(run);
-      activateHostController = await restartSourceAppliance(run, activationRollbackSource?.cleanDir ?? null);
-    } else {
-      await updateImage(run);
-      await restartAppliance(run);
-      await waitForButler(run);
+    await runStep(run, "Verify source checkout", "git", ["rev-parse", "--is-inside-work-tree"]);
+    if (run.build !== false) {
+      activationRollbackSource = await prepareControllerRollbackSource(run);
     }
+    await updateSource(run);
+    activateHostController = await restartSourceAppliance(run, activationRollbackSource?.cleanDir ?? null);
     if (activateHostController) {
       await scheduleHostControllerActivation(run, activationRollbackSource);
       activationScheduled = true;
@@ -1076,13 +1018,11 @@ function createRun(payload) {
   return {
     id: crypto.randomUUID(),
     status: "running",
-    mode: payload.mode,
     target: payload.target,
     gitRef: payload.gitRef,
-    imageTag: payload.imageTag,
     includeDesktop: payload.includeDesktop === true,
     hotReload: payload.hotReload === true,
-    update: payload.update === true || payload.target === "latest" || Boolean(payload.gitRef || payload.imageTag),
+    update: payload.update === true || payload.target === "latest" || Boolean(payload.gitRef),
     build: shouldBuildSourceImages(payload),
     delayMs: defaultDelayMs,
     startedAt: now(),
@@ -1371,7 +1311,6 @@ app.get("/status", authorize, async (_request, response) => {
     ok: true,
     active: publicRun(activeRun ?? (latestRun?.status === "running" ? latestRun : null)),
     latestRun: publicRun(latestRun),
-    detectedMode: await detectMode("auto")
   });
 });
 
@@ -1390,19 +1329,12 @@ app.post("/restart", authorize, async (request, response) => {
       return;
     }
 
-    const mode = await detectMode(parsed.value.requestedMode);
-    const scoped = validateRestartModeScope(parsed.value, mode);
-    if (!scoped.ok) {
-      response.status(400).json({ error: scoped.error });
-      return;
-    }
-
-    const hotReload = scoped.value.hotReload === true
+    const hotReload = parsed.value.hotReload === true
       ? true
-      : scoped.value.hotReload === false
+      : parsed.value.hotReload === false
         ? false
-        : mode === "source" && await detectRunningButlerHotReload();
-    const run = createRun(scoped.value);
+        : await detectRunningButlerHotReload();
+    const run = createRun(parsed.value);
     run.hotReload = hotReload;
     const previousLatestRun = latestRun;
     latestRun = run;

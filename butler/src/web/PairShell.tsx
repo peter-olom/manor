@@ -477,7 +477,6 @@ function Topbar({
   isMobileSidebarOpen,
   improveRequestCount,
   improveEligibilityBlocked,
-  improveEligibilityMode,
   memorySection,
   memorySearch,
   memoryProjectFilter,
@@ -505,7 +504,6 @@ function Topbar({
   isMobileSidebarOpen: boolean;
   improveRequestCount: number;
   improveEligibilityBlocked: boolean;
-  improveEligibilityMode: string | null;
   memorySection: MemorySection;
   memorySearch: string;
   memoryProjectFilter: string;
@@ -623,7 +621,7 @@ function Topbar({
         {viewMode === "improve" && improveEligibilityBlocked ? (
           <span className="improve-gate">
             <WarningIcon />
-            {improveEligibilityMode === "image" ? "Image mode" : "Disabled"}
+            Disabled
           </span>
         ) : null}
         {!isGlobalSurface ? (
@@ -1307,7 +1305,6 @@ export function PairShell() {
           isMobileSidebarOpen={mobileSidebarOpen}
           improveRequestCount={improveQueue?.requests.length ?? 0}
           improveEligibilityBlocked={Boolean(improveQueue?.eligibility && !improveQueue.eligibility.enabled)}
-          improveEligibilityMode={improveQueue?.eligibility.mode ?? null}
           memorySection={memorySection}
           memorySearch={memorySearch}
           memoryProjectFilter={memoryProjectFilter}

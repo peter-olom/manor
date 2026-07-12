@@ -1359,12 +1359,8 @@ export interface ButlerOnboardingView {
 
 export interface ManorRestartRequestView {
   id: string;
-  mode: "auto" | "source" | "image" | null;
   target: "current" | "latest" | null;
   gitRef: string | null;
-  imageTag: string | null;
-  targetCommit: string | null;
-  targetTag: string | null;
   includeDesktop: boolean;
   build: boolean | null;
   update: boolean | null;

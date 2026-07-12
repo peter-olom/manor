@@ -40,7 +40,6 @@ export interface SelfImprovementRequestView {
 
 export interface SelfImprovementEligibilityView {
   enabled: boolean;
-  mode: "source" | "image" | "unknown";
   sourceCwd: string;
   reasons: string[];
 }
