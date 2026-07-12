@@ -43,6 +43,7 @@ import { registerSelfImprovementRoutes } from "./self-improvement-routes.js";
 import { retrieveButlerMemoryWithEmbeddings } from "./memory-retrieval.js";
 import { registerManorRestartRoutes } from "./manor-restart-routes.js";
 import { proxyPreviewRoute, registerPreviewProxyResponseRewriter, resolvePreviewRefererRouteUrl, resolvePreviewRouteUrl } from "./preview-gateway.js";
+import { preserveMissingPreviewLeaseTombstones } from "./preview-lease-reconciliation.js";
 import { reconcileDesktopSessions, registerDesktopSessionRoutes } from "./server-desktop-routes.js";
 import { ButlerSseHub, cleanupThreadRuntimeResources, currentBootstrapSnapshot, pruneEmptyArtifactParents, readImageReferenceIds, readFileReferenceIds, removeStackArtifactsFromStore, resolvePreviewProxyTarget, shouldAllowLocalThreadWindow, type RuntimeServerAccess } from "./server-runtime-helpers.js";
 import { ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
@@ -1317,11 +1318,7 @@ async function reconcilePreviewLeases(): Promise<void> {
     const brokerLeaseIds = new Set(brokerLeases.map((lease) => lease.id));
     const storedLeases = store.listPreviewLeases().filter((lease) => lease.status !== "stopped");
 
-    for (const lease of storedLeases) {
-      if (!brokerLeaseIds.has(lease.id)) {
-        store.removePreviewLease(lease.id);
-      }
-    }
+    preserveMissingPreviewLeaseTombstones(store, brokerLeaseIds, storedLeases);
 
     for (const lease of brokerLeases) {
       store.upsertPreviewLease(lease);

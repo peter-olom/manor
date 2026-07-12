@@ -266,6 +266,20 @@ function deriveJobStorageKey(payload, stackId) {
   return `project-${projectToken}-job-${jobToken}`;
 }
 
+function projectStackStoragePrefix(projectId) {
+  return `project-${sanitizeStorageToken(projectId, "stack")}-`;
+}
+
+function assertProjectStackStorageLineage(projectId, keys) {
+  const prefix = projectStackStoragePrefix(projectId);
+  for (const [name, value] of keys) {
+    const normalized = normalizeString(value);
+    if (normalized && !normalized.startsWith(prefix)) {
+      throw new Error(`${name} is outside the resolved project storage namespace.`);
+    }
+  }
+}
+
 function normalizeStringArray(value) {
   if (!Array.isArray(value)) {
     return [];
@@ -721,13 +735,23 @@ function buildLease(payload) {
 function buildStack(payload) {
   const id = payload.stackId || crypto.randomUUID();
   const now = Date.now();
+  const project = resolveWorktreeProjectInfo(payload.worktreePath, payload.projectId, payload.projectLabel);
+  const resolvedPayload = {
+    ...payload,
+    projectId: project.id,
+    projectLabel: project.label
+  };
   const explicitStorageKey = normalizeString(payload.storageKey);
   const explicitCloneFromStorageKey = normalizeString(payload.cloneFromStorageKey);
+  assertProjectStackStorageLineage(project.id, [
+    ["storageKey", explicitStorageKey],
+    ["cloneFromStorageKey", explicitCloneFromStorageKey]
+  ]);
   const requestedStorageMode = normalizeStackStorageMode(payload.storageMode);
   const storageMode =
     requestedStorageMode ||
     (normalizeBoolean(payload.retainsVolumes) || explicitStorageKey || explicitCloneFromStorageKey ? "custom" : "ephemeral");
-  const derivedBaseStorageKey = deriveProjectStorageKey(payload);
+  const derivedBaseStorageKey = deriveProjectStorageKey(resolvedPayload);
   let retainsVolumes = false;
   let baseStorageKey = derivedBaseStorageKey;
   let storageKey = "";
@@ -737,7 +761,7 @@ function buildStack(payload) {
   if (storageMode === "job") {
     retainsVolumes = true;
     baseStorageKey = explicitCloneFromStorageKey || derivedBaseStorageKey;
-    storageKey = explicitStorageKey || deriveJobStorageKey(payload, id);
+    storageKey = explicitStorageKey || deriveJobStorageKey(resolvedPayload, id);
     cloneFromStorageKey = baseStorageKey && baseStorageKey !== storageKey ? baseStorageKey : "";
     defaultPromoteTargetStorageKey = cloneFromStorageKey;
   } else if (storageMode === "base") {
@@ -748,7 +772,7 @@ function buildStack(payload) {
       explicitCloneFromStorageKey && explicitCloneFromStorageKey !== storageKey ? explicitCloneFromStorageKey : "";
   } else if (storageMode === "custom") {
     retainsVolumes = normalizeBoolean(payload.retainsVolumes) || Boolean(explicitStorageKey || explicitCloneFromStorageKey);
-    storageKey = retainsVolumes ? explicitStorageKey || normalizeString(payload.threadId) || id : "";
+    storageKey = retainsVolumes ? explicitStorageKey || deriveJobStorageKey(resolvedPayload, id) : "";
     cloneFromStorageKey =
       retainsVolumes && explicitCloneFromStorageKey && explicitCloneFromStorageKey !== storageKey ? explicitCloneFromStorageKey : "";
     baseStorageKey = cloneFromStorageKey || (storageKey ? storageKey : derivedBaseStorageKey);
@@ -760,8 +784,8 @@ function buildStack(payload) {
   return {
     id,
     threadId: payload.threadId ?? null,
-    projectId: payload.projectId || "unknown",
-    projectLabel: payload.projectLabel || payload.projectId || "Unknown",
+    projectId: project.id,
+    projectLabel: project.label,
     title: payload.title || `Stack ${id.slice(0, 8)}`,
     worktreePath: normalizeString(payload.worktreePath) || null,
     networkName: toStackNetworkName(id),
@@ -900,18 +924,54 @@ function clearLeaseBootstrapState(leaseId) {
   leaseBootstrapStates.delete(leaseId);
 }
 
+function parseContainerTimestamp(value) {
+  if (typeof value !== "string" || !value || value.startsWith("0001-01-01")) {
+    return null;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function serializeContainerRuntimeState(state = {}) {
+  return {
+    running: Boolean(state.Running),
+    status: typeof state.Status === "string" && state.Status ? state.Status : state.Running ? "running" : "unknown",
+    startedAt: parseContainerTimestamp(state.StartedAt),
+    finishedAt: parseContainerTimestamp(state.FinishedAt),
+    exitCode: typeof state.ExitCode === "number" && Number.isFinite(state.ExitCode) ? Math.trunc(state.ExitCode) : null,
+    oomKilled: state.OOMKilled === true,
+    error: typeof state.Error === "string" && state.Error.trim() ? state.Error.trim() : null
+  };
+}
+
+function formatPreviewRuntimeFailure(leaseId, runtime) {
+  const finishedAt = Number.isFinite(runtime.finishedAt) ? new Date(runtime.finishedAt).toISOString() : "unknown";
+  return [
+    `Preview ${leaseId} exited unexpectedly.`,
+    `exitCode=${runtime.exitCode ?? "unknown"}`,
+    `oomKilled=${runtime.oomKilled === true ? "true" : "false"}`,
+    `error=${runtime.error ?? "none"}`,
+    `finishedAt=${finishedAt}`
+  ].join(" ");
+}
+
 function retainPreviewLease(lease, runtime = {}) {
+  const hasFinishedAt = Object.prototype.hasOwnProperty.call(runtime, "finishedAt");
+  const hasRuntimeError = Object.prototype.hasOwnProperty.call(runtime, "error");
+  const running = runtime.running === true;
   retainedPreviewLeases.set(lease.id, {
     lease: {
       ...lease,
       updatedAt: Date.now()
     },
     runtime: {
-      running: false,
+      running,
       status: runtime.status || lease.status || "failed",
       startedAt: runtime.startedAt ?? null,
-      finishedAt: runtime.finishedAt ?? Date.now(),
-      error: runtime.error ?? lease.lastError ?? null
+      finishedAt: hasFinishedAt ? runtime.finishedAt : running ? null : Date.now(),
+      exitCode: runtime.exitCode ?? null,
+      oomKilled: runtime.oomKilled === true,
+      error: hasRuntimeError ? runtime.error : lease.lastError ?? null
     }
   });
 }
@@ -959,6 +1019,32 @@ async function requireContainer(leaseId, response) {
   return { containerName, containerRef: docker.getContainer(containerName), container };
 }
 
+async function requireAuthorizedPreviewResource(request, response, leaseId) {
+  const retained = getRetainedPreviewLease(leaseId);
+  const containerName = toContainerName(leaseId);
+  const container = await inspectContainer(containerName);
+  const ownerThreadId = retained?.lease?.threadId
+    ?? container?.Config?.Labels?.["manor.thread-id"]
+    ?? null;
+  const ownerStackId = retained?.lease?.stackId
+    ?? container?.Config?.Labels?.["manor.stack-id"]
+    ?? null;
+  const effectiveThreadId = await resolveAttachedThreadId(ownerThreadId, ownerStackId);
+  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
+    return null;
+  }
+  if (!retained && !container) {
+    response.status(404).json({ error: "Lease not found" });
+    return null;
+  }
+  return {
+    retained,
+    required: container
+      ? { containerName, containerRef: docker.getContainer(containerName), container }
+      : null
+  };
+}
+
 function getLeaseTransition(leaseId) {
   return leaseTransitions.get(leaseId) ?? null;
 }
@@ -969,6 +1055,14 @@ function setLeaseTransition(leaseId, state) {
 
 function clearLeaseTransition(leaseId) {
   leaseTransitions.delete(leaseId);
+}
+
+function clearLeaseTransitionIfIdle(leaseId) {
+  if (pendingPreviewLeases?.has(leaseId) || activeLeaseBootstrapMonitors?.has(leaseId)) {
+    return false;
+  }
+  clearLeaseTransition(leaseId);
+  return true;
 }
 
 function decodeDockerLogPayload(payload) {
@@ -1034,6 +1128,9 @@ function resolveLeaseStatus(containerState, leaseId) {
   if (transition?.state === "starting") {
     return "starting";
   }
+  if (containerState === "failed") {
+    return "failed";
+  }
   return containerState === "running" ? "running" : "stopped";
 }
 
@@ -1051,7 +1148,8 @@ function rejectIfLeaseStopping(leaseId, response) {
 }
 
 function rejectIfLeaseUnavailable(required, leaseId, response) {
-  if (getLeaseTransition(leaseId)?.state === "stopping") {
+  const transitionState = getLeaseTransition(leaseId)?.state ?? null;
+  if (transitionState === "stopping") {
     response.status(409).json({
       error: `Preview ${leaseId} is stopping. Retry in a moment.`,
       retryable: true,
@@ -1060,11 +1158,22 @@ function rejectIfLeaseUnavailable(required, leaseId, response) {
     return true;
   }
 
-  if (!required.container.State?.Running) {
+  if (transitionState === "starting") {
     response.status(409).json({
       error: `Preview ${leaseId} is still starting. Retry in a moment.`,
       retryable: true,
       state: "starting"
+    });
+    return true;
+  }
+
+  if (!required.container.State?.Running) {
+    const runtime = serializeContainerRuntimeState(required.container.State);
+    response.status(409).json({
+      error: formatPreviewRuntimeFailure(leaseId, runtime),
+      retryable: false,
+      state: "failed",
+      runtime
     });
     return true;
   }
@@ -1096,6 +1205,25 @@ function rejectIfLeaseRetainedFailed(leaseId, response) {
 async function requireServiceContainer(serviceId, response) {
   const containerName = toServiceContainerName(serviceId);
   const container = await inspectContainer(containerName);
+  if (!container) {
+    response.status(404).json({ error: "Service not found" });
+    return null;
+  }
+  return { containerName, containerRef: docker.getContainer(containerName), container };
+}
+
+async function requireAuthorizedServiceResource(request, response, serviceId) {
+  const containerName = toServiceContainerName(serviceId);
+  const container = await inspectContainer(containerName);
+  const effectiveThreadId = container
+    ? await resolveAttachedThreadId(
+        container.Config?.Labels?.["manor.thread-id"] || null,
+        container.Config?.Labels?.["manor.stack-id"] || null
+      )
+    : null;
+  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
+    return null;
+  }
   if (!container) {
     response.status(404).json({ error: "Service not found" });
     return null;
@@ -1144,6 +1272,8 @@ async function listManagedContainers(filter) {
     resolveWorktreeProjectInfo,
     deriveProjectStorageKey,
     deriveJobStorageKey,
+    projectStackStoragePrefix,
+    assertProjectStackStorageLineage,
     normalizeStringArray,
     normalizeBoolean,
     parseAliases,
@@ -1197,20 +1327,26 @@ async function listManagedContainers(filter) {
     setLeaseBootstrapState,
     mergeLeaseBootstrapState,
     clearLeaseBootstrapState,
+    parseContainerTimestamp,
+    serializeContainerRuntimeState,
+    formatPreviewRuntimeFailure,
     retainPreviewLease,
     getRetainedPreviewLease,
     clearRetainedPreviewLease,
     retainFailedLease,
     inspectContainer,
     requireContainer,
+    requireAuthorizedPreviewResource,
     getLeaseTransition,
     setLeaseTransition,
     clearLeaseTransition,
+    clearLeaseTransitionIfIdle,
     resolveLeaseStatus,
     rejectIfLeaseStopping,
     rejectIfLeaseUnavailable,
     rejectIfLeaseRetainedFailed,
     requireServiceContainer,
+    requireAuthorizedServiceResource,
     listManagedContainers,
     decodeDockerLogPayload,
     collectDockerLogs

@@ -1,14 +1,126 @@
 import crypto from "node:crypto";
-import { promises as fs } from "node:fs";
+import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
 
 import { Type } from "@sinclair/typebox";
 
 import { applyServiceStartedPolicies } from "./project-artifacts-policies.js";
+import { assertRuntimeResourceOwned, getRuntimeStartThreadId, isRuntimeResourceOwned } from "./butler-runtime-tool-ownership.js";
 import { toServiceLeaseView } from "./service-templates.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import { stringMapSchema } from "./butler-agent-tool-schemas.js";
+
+const DEFAULT_SERVICE_WORKSPACE_ROOTS = ["/repos"];
+
+function isInsideRoot(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function serviceWorkspaceRoots(raw = process.env.MANOR_BUTLER_SERVICE_WORKSPACE_ROOTS): string[] {
+  const configured = (raw ?? "").split(path.delimiter).map((entry) => entry.trim()).filter(Boolean);
+  return (configured.length > 0 ? configured : DEFAULT_SERVICE_WORKSPACE_ROOTS).map((entry) => path.resolve(entry));
+}
+
+async function assertNoSymlinkComponents(root: string, candidate: string): Promise<void> {
+  const relative = path.relative(root, candidate);
+  if (!isInsideRoot(candidate, root)) throw new Error(`Path ${candidate} is outside workspace ${root}.`);
+  let current = root;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    const stats = await fs.lstat(current).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!stats) break;
+    if (stats.isSymbolicLink()) throw new Error(`Embedded service path cannot traverse symlink ${current}.`);
+  }
+}
+
+export async function resolveEmbeddedServiceFilePath(worktreePath: string, fileName: string): Promise<string> {
+  const requestedWorkspace = path.resolve(worktreePath);
+  const roots = await Promise.all(serviceWorkspaceRoots().map(async (root) => ({ root, realRoot: await fs.realpath(root).catch(() => root) })));
+  const realWorkspace = await fs.realpath(requestedWorkspace).catch(() => {
+    throw new Error(`Embedded service workspace does not exist: ${requestedWorkspace}.`);
+  });
+  const approved = roots.find(({ root, realRoot }) => isInsideRoot(requestedWorkspace, root) && isInsideRoot(realWorkspace, realRoot));
+  if (!approved) throw new Error(`Embedded service workspace ${requestedWorkspace} is outside approved roots: ${roots.map(({ root }) => root).join(", ")}.`);
+  const workspaceStats = await fs.stat(realWorkspace);
+  if (!workspaceStats.isDirectory()) throw new Error(`Embedded service workspace is not a directory: ${requestedWorkspace}.`);
+  await assertNoSymlinkComponents(approved.root, requestedWorkspace);
+
+  const normalizedFileName = fileName.trim();
+  if (!normalizedFileName || path.isAbsolute(normalizedFileName)) throw new Error("Embedded service fileName must be a relative path inside its workspace.");
+  const segments = normalizedFileName.replace(/\\/g, "/").split("/");
+  if (segments.some((segment) => segment === "..")) throw new Error("Embedded service fileName cannot contain path traversal segments.");
+  const filePath = path.resolve(realWorkspace, normalizedFileName);
+  if (filePath === realWorkspace || !isInsideRoot(filePath, realWorkspace)) throw new Error("Embedded service fileName must resolve to a file inside its workspace.");
+  await assertNoSymlinkComponents(realWorkspace, filePath);
+  return filePath;
+}
+
+async function provisionEmbeddedServiceFile(worktreePath: string, fileName: string): Promise<string> {
+  const filePath = await resolveEmbeddedServiceFilePath(worktreePath, fileName);
+  const parent = path.dirname(filePath);
+  await fs.mkdir(parent, { recursive: true });
+  await assertNoSymlinkComponents(await fs.realpath(worktreePath), filePath);
+  const parentReal = await fs.realpath(parent);
+  const workspaceReal = await fs.realpath(worktreePath);
+  if (!isInsideRoot(parentReal, workspaceReal)) throw new Error("Embedded service file parent resolves outside its workspace.");
+  const existing = await fs.lstat(filePath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (existing && !existing.isFile()) throw new Error(`Embedded service target is not a regular file: ${filePath}.`);
+  const handle = await fs.open(filePath, fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600);
+  await handle.close();
+  return filePath;
+}
+
+function isSafeEmbeddedTemplateFileName(value: unknown): value is string {
+  if (typeof value !== "string" || !value.trim() || path.isAbsolute(value.trim())) return false;
+  return !value.trim().replace(/\\/g, "/").split("/").some((segment) => segment === "..");
+}
 
 export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
+  const connectionSchema = Type.Optional(Type.Object({
+    databaseEnv: Type.Optional(Type.String()),
+    databaseValue: Type.Optional(Type.String()),
+    usernameEnv: Type.Optional(Type.String()),
+    usernameValue: Type.Optional(Type.String()),
+    passwordEnv: Type.Optional(Type.String()),
+    passwordValue: Type.Optional(Type.String()),
+    uriTemplate: Type.Optional(Type.String()),
+    notes: Type.Optional(Type.String())
+  }));
+  const commonTemplateProperties = {
+    id: Type.String({ minLength: 1 }),
+    label: Type.String({ minLength: 1 }),
+    description: Type.String({ minLength: 1 }),
+    engine: Type.String({ minLength: 1 }),
+    notes: Type.Optional(Type.String()),
+    command: Type.Optional(Type.String()),
+    workingDir: Type.Optional(Type.String()),
+    envDefaults: Type.Optional(stringMapSchema()),
+    stackVolumePath: Type.Optional(Type.String()),
+    connection: connectionSchema
+  };
+  const registerServiceTemplateSchema = Type.Union([
+    Type.Object({
+      ...commonTemplateProperties,
+      runtimeKind: Type.Literal("container"),
+      image: Type.String({ minLength: 1 }),
+      port: Type.Integer({ minimum: 1, maximum: 65535 }),
+      fileName: Type.Optional(Type.String())
+    }),
+    Type.Object({
+      ...commonTemplateProperties,
+      runtimeKind: Type.Literal("embedded"),
+      image: Type.Optional(Type.String({ minLength: 1 })),
+      port: Type.Optional(Type.Literal(0)),
+      fileName: Type.String({ minLength: 1 })
+    })
+  ]);
   return [
     access.defineButlerTool({
       name: "list_service_templates",
@@ -37,33 +149,7 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
       description: "Persist one reusable dependency service template for future jobs.",
       promptSnippet:
         "register_service_template: use this when a required dependency is missing from the current template list so Butler can define it once and reuse it later.",
-      parameters: Type.Object({
-        id: Type.String({ minLength: 1 }),
-        label: Type.String({ minLength: 1 }),
-        description: Type.String({ minLength: 1 }),
-        runtimeKind: Type.Union([Type.Literal("container"), Type.Literal("embedded")]),
-        engine: Type.String({ minLength: 1 }),
-        image: Type.Optional(Type.String({ minLength: 1 })),
-        port: Type.Optional(Type.Number()),
-        notes: Type.Optional(Type.String()),
-        command: Type.Optional(Type.String()),
-        workingDir: Type.Optional(Type.String()),
-        envDefaults: Type.Optional(Type.Record(Type.String(), Type.String())),
-        fileName: Type.Optional(Type.String()),
-        stackVolumePath: Type.Optional(Type.String()),
-        connection: Type.Optional(
-          Type.Object({
-            databaseEnv: Type.Optional(Type.String()),
-            databaseValue: Type.Optional(Type.String()),
-            usernameEnv: Type.Optional(Type.String()),
-            usernameValue: Type.Optional(Type.String()),
-            passwordEnv: Type.Optional(Type.String()),
-            passwordValue: Type.Optional(Type.String()),
-            uriTemplate: Type.Optional(Type.String()),
-            notes: Type.Optional(Type.String())
-          })
-        )
-      }),
+      parameters: registerServiceTemplateSchema,
       uiEffects: access.getToolUiEffects("register_service_template"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as {
@@ -91,6 +177,15 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
             notes?: string;
           };
         };
+        if (typedParams.runtimeKind === "container") {
+          if (!typedParams.image?.trim()) throw new Error("Container service template image is required.");
+          if (!Number.isInteger(typedParams.port) || (typedParams.port ?? 0) < 1 || (typedParams.port ?? 0) > 65535) {
+            throw new Error("Container service template port must be an integer from 1 to 65535.");
+          }
+        } else {
+          if (typedParams.port !== undefined && typedParams.port !== 0) throw new Error("Embedded service template port must be 0 when provided.");
+          if (!isSafeEmbeddedTemplateFileName(typedParams.fileName)) throw new Error("Embedded service template fileName must be a safe relative path.");
+        }
         const template = await access.serviceTemplateRegistry.upsert({
           id: typedParams.id,
           label: typedParams.label,
@@ -131,7 +226,7 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
         cwd: Type.Optional(Type.String()),
         stackId: Type.Optional(Type.String()),
         aliases: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-        env: Type.Optional(Type.Record(Type.String(), Type.String()))
+        env: Type.Optional(stringMapSchema())
       }),
       uiEffects: access.getToolUiEffects("start_service"),
       execute: async (_toolCallId, params) => {
@@ -145,8 +240,10 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
           env?: Record<string, string>;
         };
         const template = access.getServiceTemplate(typedParams.templateId);
-        const thread = typedParams.threadId ? access.store.getThread(typedParams.threadId) ?? null : null;
-        const stack = access.getValidatedStack(typedParams.stackId?.trim() || null, typedParams.threadId ?? null);
+        const threadId = getRuntimeStartThreadId(access, typedParams.threadId, "start_service");
+        const thread = access.store.getThread(threadId) ?? null;
+        const stack = access.getValidatedStack(typedParams.stackId?.trim() || null, threadId);
+        if (stack) assertRuntimeResourceOwned(access, stack, `Stack ${stack.id}`);
         const mergedEnv = {
           ...template.envDefaults,
           ...access.normalizeServiceEnv(typedParams.env)
@@ -161,13 +258,10 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
         );
 
         if (template.runtimeKind === "embedded") {
-          const filePath = `${worktreePath}/${template.fileName ?? ".manor/sqlite/app.db"}`.replace(/\/+/g, "/");
-          await fs.mkdir(path.dirname(filePath), { recursive: true });
-          const handle = await fs.open(filePath, "a");
-          await handle.close();
+          const filePath = await provisionEmbeddedServiceFile(worktreePath, template.fileName ?? ".manor/sqlite/app.db");
           const lease = toServiceLeaseView({
             id: serviceId,
-            threadId: typedParams.threadId ?? null,
+            threadId,
             projectId: project.id,
             projectLabel: project.label,
             title: effectiveTitle,
@@ -200,7 +294,7 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
 
         const service = await access.runtimeBroker.createService({
           serviceId,
-          threadId: typedParams.threadId ?? null,
+          threadId,
           projectId: project.id,
           projectLabel: project.label,
           title: effectiveTitle,
@@ -269,14 +363,14 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
       uiEffects: access.getToolUiEffects("list_services"),
       execute: async () => {
         const syncError = await access.refreshRuntimeInventoryIfAvailable();
-        const services = access.store.listServiceLeases();
+        const services = access.store.listServiceLeases().filter((service) => isRuntimeResourceOwned(access, service));
         const summary =
           services.length === 0
             ? "No disposable services are active."
             : services
                 .map(
                   (service, index) =>
-                    `${index + 1}. ${service.title} | template=${service.templateId} | status=${service.status} | storage=${service.storageKind}${service.volumeName ? `(${service.volumeName})` : ""} | host=${service.connection.host} | port=${service.connection.port} | uri=${service.connection.uri ?? "(none)"}`
+                    `${index + 1}. ${service.title} | id=${service.id} | template=${service.templateId} | status=${service.status} | storage=${service.storageKind}${service.volumeName ? `(${service.volumeName})` : ""} | host=${service.connection.host} | port=${service.connection.port} | uri=${service.connection.uri ?? "(none)"}`
                 )
                 .join("\n");
         const text = syncError ? `Live runtime sync failed; showing cached state. ${syncError}\n${summary}` : summary;
@@ -292,12 +386,13 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
       description: "Inspect one service runtime and return its current state.",
       promptSnippet: "inspect_service: use this before debugging a dependency so you know whether it is running and how to reach it.",
       parameters: Type.Object({
-        serviceId: Type.String()
+        serviceId: Type.String({ minLength: 1 })
       }),
       uiEffects: access.getToolUiEffects("inspect_service"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as { serviceId: string };
         const existing = access.requireValidatedService(typedParams.serviceId, null);
+        assertRuntimeResourceOwned(access, existing, `Service ${existing.id}`);
         if (existing.runtimeKind === "embedded") {
           access.store.noteServiceLeaseActivity(existing.id);
           return {
@@ -306,6 +401,7 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
           };
         }
         const inspected = await access.runtimeBroker.inspectService(existing.id);
+        assertRuntimeResourceOwned(access, inspected, `Service ${inspected.id}`);
         const template = access.getServiceTemplate(inspected.templateId);
         const lease = toServiceLeaseView({
           id: inspected.id,
@@ -349,13 +445,14 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
       description: "Read recent logs from one container-backed service runtime.",
       promptSnippet: "service_logs: use this when a dependency boot or health check is failing and you need recent container output.",
       parameters: Type.Object({
-        serviceId: Type.String(),
+        serviceId: Type.String({ minLength: 1 }),
         tail: Type.Optional(Type.Number({ minimum: 1, maximum: 1000 }))
       }),
       uiEffects: access.getToolUiEffects("service_logs"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as { serviceId: string; tail?: number };
         const service = access.requireValidatedService(typedParams.serviceId, null);
+        assertRuntimeResourceOwned(access, service, `Service ${service.id}`);
         if (service.runtimeKind !== "container") {
           access.store.noteServiceLeaseActivity(service.id);
           return {
@@ -377,7 +474,7 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
       description: "Run one shell command inside a container-backed dependency service.",
       promptSnippet: "exec_service: use this when Butler needs to inspect or patch one dependency service directly.",
       parameters: Type.Object({
-        serviceId: Type.String(),
+        serviceId: Type.String({ minLength: 1 }),
         command: Type.String({ minLength: 1 }),
         cwd: Type.Optional(Type.String())
       }),
@@ -385,6 +482,7 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
       execute: async (_toolCallId, params) => {
         const typedParams = params as { serviceId: string; command: string; cwd?: string };
         const service = access.requireValidatedService(typedParams.serviceId, null);
+        assertRuntimeResourceOwned(access, service, `Service ${service.id}`);
         if (service.runtimeKind !== "container") {
           throw new Error(`${service.title} is embedded and does not support container exec`);
         }
@@ -413,12 +511,13 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
       description: "Stop one disposable dependency service and release its lease.",
       promptSnippet: "stop_service: use this when a disposable dependency is no longer needed for the job.",
       parameters: Type.Object({
-        serviceId: Type.String()
+        serviceId: Type.String({ minLength: 1 })
       }),
       uiEffects: access.getToolUiEffects("stop_service"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as { serviceId: string };
         const service = access.requireValidatedService(typedParams.serviceId, null);
+        assertRuntimeResourceOwned(access, service, `Service ${service.id}`);
         if (service.runtimeKind === "container") {
           await access.runtimeBroker.stopService(service.id);
         }

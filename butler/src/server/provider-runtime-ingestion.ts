@@ -8,6 +8,7 @@ import type {
   ProviderRuntimeItemType,
   ProviderRuntimeLivePatch
 } from "../shared/provider-runtime.js";
+import { redactLiveReasoningPreview, redactLiveReasoningText, redactSensitiveText } from "./redact-sensitive-text.js";
 
 type ProviderRuntimeIngestionEvents = {
   runtimePatch: [ProviderRuntimeLivePatch];
@@ -43,7 +44,23 @@ function storeTurnStatus(): string {
 }
 
 function storeThreadStatus(state: string): { type: "active" | "idle" } {
-  return { type: state === "idle" ? "idle" : "active" };
+  return { type: state === "active" ? "active" : "idle" };
+}
+
+function providerErrorDetail(detail: unknown, fallback: string): string {
+  if (typeof detail === "string" && detail.trim()) return redactSensitiveText(detail.trim()).slice(0, 3000);
+  if (detail && typeof detail === "object") {
+    const record = detail as Record<string, unknown>;
+    for (const key of ["message", "error", "reason", "detail"]) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim()) return redactSensitiveText(value.trim()).slice(0, 3000);
+      if (value && typeof value === "object") {
+        const nested = providerErrorDetail(value, "");
+        if (nested) return nested;
+      }
+    }
+  }
+  return fallback;
 }
 
 function eventText(event: Extract<ProviderRuntimeEvent, { type: "item.started" | "item.updated" | "item.completed" }>): string {
@@ -76,13 +93,23 @@ function threadSummaryPayload(event: Extract<ProviderRuntimeEvent, { type: "thre
 
 export class ProviderRuntimeIngestion extends EventEmitter<ProviderRuntimeIngestionEvents> {
   private queue: Promise<void> = Promise.resolve();
+  private readonly contentStreams = new Map<string, {
+    raw: string;
+    emitted: string;
+    threadId: string;
+    turnId: string;
+    itemId: string;
+    itemType: ProviderRuntimeItemType;
+    streamKind: ProviderRuntimeContentStreamKind;
+    at: number;
+  }>();
 
   constructor(private readonly store: ButlerStateStore) {
     super();
   }
 
   ingest(event: ProviderRuntimeEvent, shouldApply: () => boolean = () => true): Promise<void> {
-    this.queue = this.queue.then(() => shouldApply() ? this.apply(event) : undefined);
+    this.queue = this.queue.catch(() => undefined).then(() => shouldApply() ? this.apply(event) : undefined);
     return this.queue;
   }
 
@@ -96,11 +123,19 @@ export class ProviderRuntimeIngestion extends EventEmitter<ProviderRuntimeIngest
         this.store.upsertThreadSummary(threadSummaryPayload(event));
         return;
       case "thread.state.changed":
+        if (event.payload.state !== "active") {
+          this.flushThreadStreams(event.threadId, event.at);
+        }
         this.store.upsertThreadSummary({
           id: event.threadId,
           status: storeThreadStatus(event.payload.state),
           source: "appServer"
         });
+        if (event.payload.state === "error") {
+          const detail = providerErrorDetail(event.payload.detail, "Codex thread entered a system error state.");
+          const turnId = this.terminalizeLatestTurn(event.threadId, "failed", detail, event.at);
+          this.recordRuntimeMessage(event.threadId, "error", detail, event.at, turnId);
+        }
         this.store.setThreadStatus(event.threadId, storeThreadStatus(event.payload.state));
         this.emit("runtimePatch", {
           kind: "thread-state",
@@ -108,6 +143,24 @@ export class ProviderRuntimeIngestion extends EventEmitter<ProviderRuntimeIngest
           state: event.payload.state,
           at: event.at
         });
+        if (event.payload.state !== "active") await this.store.flushSave();
+        return;
+      case "session.state.changed":
+        if (event.payload.state === "stopped" || event.payload.state === "error") {
+          this.flushThreadStreams(event.threadId, event.at);
+          await this.store.flushSave();
+        }
+        return;
+      case "session.exited":
+        this.flushThreadStreams(event.threadId, event.at);
+        {
+          const detail = providerErrorDetail(event.payload.reason, "Codex provider session exited before the turn completed.");
+          const turnId = this.terminalizeLatestTurn(event.threadId, "interrupted", detail, event.at);
+          if (turnId) this.recordRuntimeMessage(event.threadId, "error", detail, event.at, turnId);
+          this.store.setThreadStatus(event.threadId, { type: "idle" });
+          this.emit("runtimePatch", { kind: "thread-state", threadId: event.threadId, state: "idle", at: event.at });
+          await this.store.flushSave();
+        }
         return;
       case "thread.metadata.updated":
         this.store.upsertThreadSummary({
@@ -157,10 +210,12 @@ export class ProviderRuntimeIngestion extends EventEmitter<ProviderRuntimeIngest
         if (!event.turnId) {
           return;
         }
+        this.flushTurnStreams(event.threadId, event.turnId, event.at);
+        const turnError = event.payload.errorMessage ? redactSensitiveText(event.payload.errorMessage).slice(0, 3000) : null;
         this.store.updateTurn(event.threadId, {
           id: event.turnId,
           status: event.payload.state,
-          error: event.payload.errorMessage ?? null
+          error: turnError
         });
         this.emit("runtimePatch", {
           kind: "turn-lifecycle",
@@ -169,6 +224,23 @@ export class ProviderRuntimeIngestion extends EventEmitter<ProviderRuntimeIngest
           status: event.payload.state,
           at: event.at
         });
+        await this.store.flushSave();
+        return;
+      case "turn.aborted":
+        if (!event.turnId) return;
+        this.flushTurnStreams(event.threadId, event.turnId, event.at);
+        {
+          const detail = providerErrorDetail(event.payload.reason, "Codex turn was aborted.");
+          this.store.updateTurn(event.threadId, { id: event.turnId, status: "interrupted", error: detail });
+          this.emit("runtimePatch", {
+            kind: "turn-lifecycle",
+            threadId: event.threadId,
+            turnId: event.turnId,
+            status: "interrupted",
+            at: event.at
+          });
+          await this.store.flushSave();
+        }
         return;
       case "item.started":
       case "item.updated":
@@ -180,14 +252,38 @@ export class ProviderRuntimeIngestion extends EventEmitter<ProviderRuntimeIngest
         return;
       case "runtime.warning":
       case "runtime.error":
-        this.store.addEvent(event.threadId, event.type, event.payload.message);
-        this.emit("runtimePatch", {
-          kind: "runtime-message",
-          threadId: event.threadId,
-          tone: event.type === "runtime.error" ? "error" : "warning",
-          message: event.payload.message,
-          at: event.at
-        });
+        if (event.type === "runtime.error") {
+          if (event.turnId) this.flushTurnStreams(event.threadId, event.turnId, event.at);
+          else this.flushThreadStreams(event.threadId, event.at);
+        }
+        this.recordRuntimeMessage(
+          event.threadId,
+          event.type === "runtime.error" ? "error" : "warning",
+          event.payload.message,
+          event.at,
+          event.turnId
+        );
+        if (event.type === "runtime.error") await this.store.flushSave();
+        return;
+      case "request.opened":
+        this.recordRuntimeMessage(
+          event.threadId,
+          "error",
+          `Direct Worker provider request is unsupported (${event.payload.requestType})${event.payload.detail ? `: ${event.payload.detail}` : "."}`,
+          event.at,
+          event.turnId
+        );
+        await this.store.flushSave();
+        return;
+      case "userInput.requested":
+        this.recordRuntimeMessage(
+          event.threadId,
+          "error",
+          "Direct Worker requested operator input through an unsupported provider prompt. Ask the operator through Butler instead.",
+          event.at,
+          event.turnId
+        );
+        await this.store.flushSave();
         return;
       default:
         return;
@@ -201,9 +297,16 @@ export class ProviderRuntimeIngestion extends EventEmitter<ProviderRuntimeIngest
       return;
     }
 
-    const status = event.type === "item.completed" ? "completed" : "started";
-    const itemStatus = lifecycleStatus(event.payload.status, status === "completed" ? "completed" : "in_progress");
-    const text = eventText(event);
+    if (event.type === "item.completed") {
+      this.flushItemStream(event.threadId, event.turnId, event.itemId, event.at);
+    }
+
+    const itemStatus = lifecycleStatus(
+      event.payload.status,
+      event.type === "item.completed" ? "completed" : "in_progress"
+    );
+    const persistedStatus = itemStatus === "in_progress" ? "started" : itemStatus;
+    const text = redactSensitiveText(eventText(event));
     this.store.updateItem(
       event.threadId,
       event.turnId,
@@ -214,7 +317,7 @@ export class ProviderRuntimeIngestion extends EventEmitter<ProviderRuntimeIngest
         command: text,
         status: itemStatus
       },
-      status
+      persistedStatus
     );
     this.emit("runtimePatch", {
       kind: "item-lifecycle",
@@ -235,11 +338,27 @@ export class ProviderRuntimeIngestion extends EventEmitter<ProviderRuntimeIngest
     }
 
     const itemType = itemTypeFromStream(event.payload.streamKind);
+    const key = this.contentStreamKey(event.threadId, event.turnId, event.itemId);
+    const current = this.contentStreams.get(key) ?? {
+      raw: "",
+      emitted: "",
+      threadId: event.threadId,
+      turnId: event.turnId,
+      itemId: event.itemId,
+      itemType,
+      streamKind: event.payload.streamKind,
+      at: event.at
+    };
+    const raw = current.raw + event.payload.delta;
+    const preview = redactLiveReasoningPreview(raw);
+    const safeDelta = preview.startsWith(current.emitted) ? preview.slice(current.emitted.length) : "";
+    this.contentStreams.set(key, { ...current, raw, emitted: safeDelta ? preview : current.emitted, at: event.at });
+    if (!safeDelta) return;
     this.store.appendItemDelta(
       event.threadId,
       event.turnId,
       event.itemId,
-      event.payload.delta,
+      safeDelta,
       storeItemType(itemType, event.payload.streamKind),
       { emitChange: false }
     );
@@ -254,10 +373,80 @@ export class ProviderRuntimeIngestion extends EventEmitter<ProviderRuntimeIngest
       itemId: event.itemId,
       itemType,
       streamKind: event.payload.streamKind,
-      delta: event.payload.delta,
-      itemTextLength: item?.text.length ?? event.payload.delta.length,
+      delta: safeDelta,
+      itemTextLength: item?.text.length ?? safeDelta.length,
       at: event.at
     });
+  }
+
+  private contentStreamKey(threadId: string, turnId: string, itemId: string): string {
+    return `${threadId}\u0000${turnId}\u0000${itemId}`;
+  }
+
+  private flushItemStream(threadId: string, turnId: string, itemId: string, at: number): void {
+    const key = this.contentStreamKey(threadId, turnId, itemId);
+    const stream = this.contentStreams.get(key);
+    if (!stream) return;
+    this.contentStreams.delete(key);
+    const finalText = redactLiveReasoningText(stream.raw);
+    if (!finalText.startsWith(stream.emitted)) return;
+    const delta = finalText.slice(stream.emitted.length);
+    if (!delta) return;
+    this.store.appendItemDelta(threadId, turnId, itemId, delta, storeItemType(stream.itemType, stream.streamKind), { emitChange: false });
+    const item = this.store.getThread(threadId)?.turns.find((turn) => turn.id === turnId)?.items.find((entry) => entry.id === itemId);
+    this.emit("runtimePatch", {
+      kind: "content-delta",
+      threadId,
+      turnId,
+      itemId,
+      itemType: stream.itemType,
+      streamKind: stream.streamKind,
+      delta,
+      itemTextLength: item?.text.length ?? finalText.length,
+      at
+    });
+  }
+
+  private flushTurnStreams(threadId: string, turnId: string, at: number): void {
+    for (const stream of [...this.contentStreams.values()]) {
+      if (stream.threadId === threadId && stream.turnId === turnId) {
+        this.flushItemStream(threadId, turnId, stream.itemId, at);
+      }
+    }
+  }
+
+  private flushThreadStreams(threadId: string, at: number): void {
+    for (const stream of [...this.contentStreams.values()]) {
+      if (stream.threadId === threadId) {
+        this.flushItemStream(threadId, stream.turnId, stream.itemId, at);
+      }
+    }
+  }
+
+  private terminalizeLatestTurn(
+    threadId: string,
+    status: "failed" | "interrupted",
+    detail: string,
+    at: number
+  ): string | undefined {
+    const turn = [...(this.store.getThread(threadId)?.turns ?? [])].reverse().find((entry) =>
+      !["completed", "failed", "interrupted", "cancelled"].includes(entry.status));
+    if (!turn) return undefined;
+    this.store.updateTurn(threadId, { id: turn.id, status, error: detail });
+    this.emit("runtimePatch", { kind: "turn-lifecycle", threadId, turnId: turn.id, status, at });
+    return turn.id;
+  }
+
+  private recordRuntimeMessage(
+    threadId: string,
+    tone: "warning" | "error",
+    message: string,
+    at: number,
+    turnId?: string
+  ): void {
+    const detail = redactSensitiveText(message).slice(0, 3000);
+    this.store.addEvent(threadId, tone === "error" ? "runtime.error" : "runtime.warning", detail);
+    this.emit("runtimePatch", { kind: "runtime-message", threadId, ...(turnId ? { turnId } : {}), tone, message: detail, at });
   }
 }
 

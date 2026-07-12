@@ -38,6 +38,7 @@ export type ButlerAgentDefaults = {
 export type ButlerWorkerDefaults = {
   runtime: "auto" | "openai" | "pi-rpc" | null;
   threadId?: string | null;
+  runtimeOwnerThreadIds?: string[];
   harness?: string | null;
   model?: string | null;
   effort?: string | null;
@@ -57,6 +58,7 @@ export type ButlerAgentServiceOptions = {
   codexConfigDir: string;
   sessionDir: string;
   artifactsDir: string;
+  runtimeThreadId?: string;
   refreshRuntimeInventory?: () => Promise<void>;
   memoryScheduler?: MemoryUpdateScheduler | null;
   systemPromptSuffix?: string | null;

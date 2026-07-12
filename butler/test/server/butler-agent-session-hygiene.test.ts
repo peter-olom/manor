@@ -12,7 +12,8 @@ import {
   contentAttachmentSummary,
   sanitizeHistoryMessages,
   serializeMessages,
-  summarizeToolResultDetails
+  summarizeToolResultDetails,
+  type PendingChatCallback
 } from "../../src/server/butler-agent-helpers.js";
 import { ButlerAgentService } from "../../src/server/butler-agent.js";
 import {
@@ -32,6 +33,7 @@ import {
 } from "../../src/server/butler-agent-session.js";
 import { registerManorProviders } from "../../src/server/model-provider-config.js";
 import { getActiveManorSettings, setActiveManorSettings } from "../../src/server/manor-settings-runtime.js";
+import { runSerializedJobMutation } from "../../src/server/butler-job-mutation-guard.js";
 import {
   backfillOperatorMessagesFromSessionFiles,
   normalizeOperatorMessages,
@@ -55,6 +57,141 @@ function pendingAccess() {
     }
   };
 }
+
+function reviewCallback(
+  threadId: string,
+  reviewState: PendingChatCallback["reviewState"],
+  blockedCloseoutReason: string | null = null
+): PendingChatCallback {
+  return {
+    threadId,
+    callbackState: "received_worker_callback",
+    resolutionState: "received_worker_callback",
+    requestedAt: 1,
+    lastEventAt: 1,
+    lastWorkerStatusSeen: "idle",
+    lastTerminalReportAt: 1,
+    lastPrivateSteerText: null,
+    lastPrivateSteerAt: null,
+    nextWorkerReportAction: "review",
+    operatorCloseoutStatus: "owed",
+    owesOperatorReply: true,
+    closeoutChannel: "none",
+    reviewState,
+    reviewReason: "worker_callback",
+    blockedCloseoutReason,
+    blockedCloseoutReportAt: blockedCloseoutReason ? 1 : null,
+    closedAt: null,
+    updatedAt: 1
+  };
+}
+
+test("model settings refresh preserves paused adversarial reviews", async (t) => {
+  setActiveManorSettings(getActiveManorSettings({} as NodeJS.ProcessEnv));
+  t.after(() => setActiveManorSettings(null));
+
+  const automatic = reviewCallback("automatic", "blocked", "Adversarial review paused after 3 failed attempts: timeout");
+  const operator = reviewCallback("operator", "blocked", "Adversarial review stopped by the operator. Retry when ready.");
+  const service = Object.create(ButlerAgentService.prototype) as ButlerAgentService;
+  const internals = service as unknown as {
+    piAuthPath: string;
+    pendingChatCallbacks: Map<string, PendingChatCallback>;
+    callbackReviewFailureCount: Map<string, number>;
+    callbackReviewNotBefore: Map<string, number>;
+    buildToolCatalog(): [];
+    createOrRefreshSession(): Promise<void>;
+    emit(event: string): boolean;
+  };
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-settings-refresh-"));
+  internals.piAuthPath = path.join(dir, "auth.json");
+  internals.pendingChatCallbacks = new Map([[automatic.threadId, automatic], [operator.threadId, operator]]);
+  internals.callbackReviewFailureCount = new Map([[automatic.threadId, 3], [operator.threadId, 1]]);
+  internals.callbackReviewNotBefore = new Map([[automatic.threadId, 100], [operator.threadId, 200]]);
+  internals.buildToolCatalog = () => [];
+  internals.createOrRefreshSession = async () => {};
+  internals.emit = () => true;
+
+  await service.refreshModelSettings();
+
+  assert.equal(automatic.reviewState, "blocked");
+  assert.equal(operator.reviewState, "blocked");
+  assert.deepEqual([...internals.callbackReviewFailureCount], [[automatic.threadId, 3], [operator.threadId, 1]]);
+  assert.deepEqual([...internals.callbackReviewNotBefore], [[automatic.threadId, 100], [operator.threadId, 200]]);
+});
+
+test("pair shutdown drains active mutations and stops every callback review", async () => {
+  const running = reviewCallback("running", "running");
+  const queued = reviewCallback("queued", "queued");
+  const service = Object.create(ButlerAgentService.prototype) as ButlerAgentService;
+  let saves = 0;
+  let schedulerDisposed = false;
+  let storeListenerRemoved = false;
+  const internals = service as unknown as {
+    pendingChatCallbacks: Map<string, PendingChatCallback>;
+    callbackReviewFailureCount: Map<string, number>;
+    callbackReviewNotBefore: Map<string, number>;
+    store: { getWorkerReport(threadId: string): { updatedAt: number }; off(event: string, listener: () => void): void };
+    storeChangeHandler: () => void;
+    callbackReviewScheduler: { dispose(): void };
+    quiescing: boolean;
+    saveCallbackState(): Promise<void>;
+    emit(event: string): boolean;
+  };
+  internals.pendingChatCallbacks = new Map([[running.threadId, running], [queued.threadId, queued]]);
+  internals.callbackReviewFailureCount = new Map([[running.threadId, 1], [queued.threadId, 2]]);
+  internals.callbackReviewNotBefore = new Map([[running.threadId, 100], [queued.threadId, 200]]);
+  internals.storeChangeHandler = () => undefined;
+  internals.store = {
+    getWorkerReport: () => ({ updatedAt: 42 }),
+    off: () => { storeListenerRemoved = true; }
+  };
+  internals.callbackReviewScheduler = { dispose: () => { schedulerDisposed = true; } };
+  internals.quiescing = false;
+  internals.saveCallbackState = async () => { saves += 1; };
+  internals.emit = () => true;
+
+  let releaseMutation!: () => void;
+  let markMutationStarted!: () => void;
+  const mutationStarted = new Promise<void>((resolve) => { markMutationStarted = resolve; });
+  const mutationRelease = new Promise<void>((resolve) => { releaseMutation = resolve; });
+  const mutation = runSerializedJobMutation(running.threadId, async () => {
+    markMutationStarted();
+    await mutationRelease;
+  });
+  await mutationStarted;
+  let cancellationFinished = false;
+  const cancellation = service.quiesceCallbackReviews().then(() => {
+    cancellationFinished = true;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(cancellationFinished, false);
+  assert.equal(internals.quiescing, true);
+  releaseMutation();
+  await mutation;
+
+  await cancellation;
+  assert.equal(running.reviewState, "blocked");
+  assert.equal(queued.reviewState, "blocked");
+  assert.match(running.blockedCloseoutReason ?? "", /stopped by the operator/);
+  assert.match(queued.blockedCloseoutReason ?? "", /stopped by the operator/);
+  assert.equal(internals.callbackReviewFailureCount.size, 0);
+  assert.equal(internals.callbackReviewNotBefore.size, 0);
+  assert.equal(saves, 1);
+  assert.equal(schedulerDisposed, true);
+  assert.equal(storeListenerRemoved, true);
+});
+
+test("quiescing rejects late callback registration and reconciliation", async () => {
+  const service = Object.create(ButlerAgentService.prototype) as ButlerAgentService;
+  const internals = service as unknown as {
+    quiescing: boolean;
+    reconcilePendingChatCallbacks(): Promise<void>;
+  };
+  internals.quiescing = true;
+
+  await assert.rejects(service.trackExternalWorkerDelegation("late-worker"), /session is closing/);
+  await internals.reconcilePendingChatCallbacks();
+});
 
 test("Butler live thinking setter preserves exact supported level", () => {
   const calls: string[] = [];
@@ -561,6 +698,48 @@ test("provider history suppresses duplicate durable provider replies", () => {
 
   assert.equal(messages.length, 1);
   assert.equal(messages[0].id, "message-0");
+});
+
+test("provider history retains the durable trace when suppressing a duplicate reply", () => {
+  const access = pendingAccess();
+  const traceItem = {
+    id: "tool-1",
+    type: "dynamic_tool_call" as const,
+    status: "failed" as const,
+    title: "inspect_preview",
+    text: "Preview container exited with code 1.",
+    at: 110,
+    completedAt: 119
+  };
+  access.operatorMessages.push({
+    id: "operator-session-reply-1",
+    role: "assistant",
+    text: "The preview failed.",
+    at: 120,
+    taskDurationMs: null,
+    kind: "message",
+    trace: [traceItem],
+    traceMeta: {
+      turnId: "turn-1",
+      startedAt: 100,
+      completedAt: 120,
+      items: [traceItem]
+    }
+  });
+  access.session = {
+    sessionId: "session-1",
+    messages: [
+      { role: "assistant", content: [{ type: "text", text: "The preview failed." }], timestamp: 121 }
+    ]
+  };
+
+  const messages = getVisibleButlerMessages(access as never);
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].id, "message-0");
+  assert.deepEqual(messages[0].trace, [traceItem]);
+  assert.equal(messages[0].traceMeta?.turnId, "turn-1");
+  assert.deepEqual(messages[0].traceMeta?.items, [traceItem]);
 });
 
 test("provider user history suppresses duplicate durable operator prompts", () => {

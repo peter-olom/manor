@@ -79,7 +79,7 @@ async function openDb(dbPath: string): Promise<SqlJsDatabase> {
 
 async function saveDb(dbPath: string, db: SqlJsDatabase): Promise<void> {
   await fs.mkdir(path.dirname(dbPath), { recursive: true });
-  const tmpPath = `${dbPath}.${process.pid}.${Date.now()}.tmp`;
+  const tmpPath = `${dbPath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
   try {
     await fs.writeFile(tmpPath, Buffer.from(db.export()));
     await fs.rename(tmpPath, dbPath);

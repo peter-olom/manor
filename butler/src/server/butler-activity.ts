@@ -1,7 +1,8 @@
 import type { AgentSessionEvent } from "@mariozechner/pi-coding-agent";
 
 import type { ButlerAgentSessionAccess } from "./butler-agent-tool-access.js";
-import type { ButlerActivityItemView, ButlerActivityTurnView } from "./types.js";
+import type { ButlerActivityItemView, ButlerActivityTurnStatus, ButlerActivityTurnView } from "./types.js";
+import { redactSensitiveText } from "./redact-sensitive-text.js";
 
 const MAX_ACTIVITY_TURNS = 20;
 const MAX_ACTIVITY_TEXT = 3000;
@@ -38,7 +39,7 @@ function stripMarkdownFormatting(text: string): string {
 }
 
 function clipText(text: string): string {
-  const normalized = stripMarkdownFormatting(text).replace(/\\n/g, " ").replace(/\s+/g, " ").trim();
+  const normalized = redactSensitiveText(stripMarkdownFormatting(text)).replace(/\\n/g, " ").replace(/\s+/g, " ").trim();
   if (normalized.length <= MAX_ACTIVITY_TEXT) {
     return normalized;
   }
@@ -148,11 +149,10 @@ function formatToolData(value: unknown): string {
 function summarizeActivityTurn(turn: ButlerActivityTurnView): ButlerActivityTurnView {
   return {
     ...turn,
-    status: "completed",
     completedAt: turn.completedAt ?? Date.now(),
+    detail: turn.detail ? clipText(turn.detail) : null,
     items: turn.items.map((item) => ({
       ...item,
-      status: item.status === "active" ? "completed" : item.status,
       text: item.kind === "thinking" ? REDACTED_THINKING_SUMMARY : formatPersistedActivityText(item)
     }))
   };
@@ -186,6 +186,7 @@ function ensureActivityTurn(access: ButlerAgentSessionAccess, at = Date.now()): 
     status: "active",
     startedAt: at,
     completedAt: null,
+    detail: null,
     items: []
   };
   access.activityTurns.push(turn);
@@ -198,19 +199,62 @@ function ensureActivityTurn(access: ButlerAgentSessionAccess, at = Date.now()): 
   return turn;
 }
 
-function completeActivityTurn(access: ButlerAgentSessionAccess, at = Date.now()): void {
-  const turn = access.activityTurns.find((entry) => entry.id === access.activeActivityTurnId);
+type TerminalActivityStatus = Exclude<ButlerActivityTurnStatus, "active">;
+
+function terminalActivityOutcome(messages: unknown[]): { status: TerminalActivityStatus; detail: string | null } {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || typeof message !== "object" || (message as { role?: unknown }).role !== "assistant") continue;
+    const stopReason = (message as { stopReason?: unknown }).stopReason;
+    const rawError = (message as { errorMessage?: unknown }).errorMessage;
+    const error = typeof rawError === "string" && rawError.trim() ? clipText(rawError) : null;
+    if (stopReason === "error") return { status: "failed", detail: error ?? "Butler request failed." };
+    if (stopReason === "aborted") return { status: "interrupted", detail: error ?? "Butler was stopped before the turn finished." };
+    return { status: "completed", detail: null };
+  }
+  return { status: "completed", detail: null };
+}
+
+export function finalizeButlerActivityTurn(
+  access: ButlerAgentSessionAccess,
+  status: TerminalActivityStatus,
+  detail: string | null = null,
+  at = Date.now(),
+  startedAt = at
+): void {
+  const terminalAt = Number.isFinite(at) ? at : Date.now();
+  const requestedStartedAt = Number.isFinite(startedAt) ? Math.min(startedAt, terminalAt) : terminalAt;
+  const activityTurns = Array.isArray(access.activityTurns) ? access.activityTurns : [];
+  let turn = activityTurns.find((entry) => entry.id === access.activeActivityTurnId);
   if (!turn) {
     access.activeActivityTurnId = null;
-    return;
+    if (status !== "failed" || !Array.isArray(access.activityTurns)) return;
+    turn = [...activityTurns].reverse().find((entry) =>
+      entry.status !== "active" && entry.startedAt >= requestedStartedAt && (entry.completedAt ?? 0) >= requestedStartedAt);
+    if (!turn) {
+      access.activitySequence = Number.isFinite(access.activitySequence) ? access.activitySequence + 1 : 1;
+      turn = {
+        id: `butler-activity-${requestedStartedAt}-${access.activitySequence}`,
+        status: "failed",
+        startedAt: requestedStartedAt,
+        completedAt: terminalAt,
+        detail: clipText(detail || "Butler request failed before activity started."),
+        items: []
+      };
+      activityTurns.push(turn);
+      if (activityTurns.length > MAX_ACTIVITY_TURNS) {
+        activityTurns.splice(0, activityTurns.length - MAX_ACTIVITY_TURNS);
+      }
+    }
   }
 
-  turn.status = "completed";
-  turn.completedAt = at;
+  turn.status = status;
+  turn.completedAt = terminalAt;
+  turn.detail = detail ? clipText(detail) : null;
   for (const item of turn.items) {
     if (item.status === "active") {
-      item.status = "completed";
-      item.updatedAt = at;
+      item.status = status === "completed" ? "completed" : status === "failed" ? "error" : "stopped";
+      item.updatedAt = terminalAt;
     }
   }
   if (typeof access.persistActivitySummaryTurn === "function") {
@@ -257,7 +301,7 @@ function findToolItem(turn: ButlerActivityTurnView, contentIndex: number | null,
     turn.items.find(
       (item) =>
         item.kind === "tool" &&
-        ((toolCallId && item.toolCallId === toolCallId) || (contentIndex !== null && item.contentIndex === contentIndex))
+        (toolCallId ? item.toolCallId === toolCallId : contentIndex !== null && item.contentIndex === contentIndex)
     ) ?? null
   );
 }
@@ -396,8 +440,31 @@ export function recordButlerActivityEvent(access: ButlerAgentSessionAccess, even
     return;
   }
 
+  if (event.type === "auto_retry_start") {
+    upsertToolItem(ensureActivityTurn(access, at), {
+      title: "Provider retry",
+      text: event.errorMessage,
+      status: "active",
+      toolCallId: "provider-auto-retry",
+      at
+    });
+    return;
+  }
+
+  if (event.type === "auto_retry_end") {
+    upsertToolItem(ensureActivityTurn(access, at), {
+      title: "Provider retry",
+      text: event.success ? "Provider retry succeeded." : event.finalError ?? "Provider retry failed.",
+      status: event.success ? "completed" : "error",
+      toolCallId: "provider-auto-retry",
+      at
+    });
+    return;
+  }
+
   if (event.type === "agent_end") {
-    completeActivityTurn(access, at);
+    const outcome = terminalActivityOutcome(event.messages);
+    finalizeButlerActivityTurn(access, outcome.status, outcome.detail, at);
   }
 }
 
@@ -419,7 +486,7 @@ export function getButlerActivityTurns(
   }
 
   const turns = [...turnsById.values()]
-    .filter((turn) => turn.status === "active" || turn.items.length > 0)
+    .filter((turn) => turn.status !== "completed" || turn.items.length > 0)
     .sort((left, right) => left.startedAt - right.startedAt);
   const maxCompletedTurns = options.maxCompletedTurns ?? MAX_ACTIVITY_TURNS;
   const selectedTurns = maxCompletedTurns >= MAX_ACTIVITY_TURNS
@@ -485,7 +552,12 @@ export function normalizeButlerActivitySummaryTurns(turns: unknown): ButlerActiv
       if (!id || startedAt === null || !Array.isArray(entry.items)) {
         return [];
       }
+      const status: TerminalActivityStatus =
+        entry.status === "failed" || entry.status === "interrupted" || entry.status === "cancelled"
+          ? entry.status
+          : "completed";
       const completedAt = typeof entry.completedAt === "number" && Number.isFinite(entry.completedAt) ? entry.completedAt : startedAt;
+      const detail = typeof entry.detail === "string" && entry.detail.trim() ? clipText(entry.detail) : null;
       const items = entry.items.flatMap((item): ButlerActivityItemView[] => {
         if (!item || typeof item !== "object") {
           return [];
@@ -497,11 +569,17 @@ export function normalizeButlerActivitySummaryTurns(turns: unknown): ButlerActiv
         if (!kind || !itemId) {
           return [];
         }
+        const itemStatus: ButlerActivityItemView["status"] =
+          record.status === "error" ? "error" :
+            record.status === "stopped" ? "stopped" :
+              record.status === "completed" ? "completed" :
+                status === "failed" ? "error" :
+                  status === "interrupted" || status === "cancelled" ? "stopped" : "completed";
         return [
           {
             id: itemId,
             kind,
-            status: record.status === "error" ? "error" : "completed",
+            status: itemStatus,
             title,
             text: kind === "thinking" ? REDACTED_THINKING_SUMMARY : clipText(typeof record.text === "string" ? record.text : ""),
             at: typeof record.at === "number" && Number.isFinite(record.at) ? record.at : startedAt,
@@ -511,7 +589,7 @@ export function normalizeButlerActivitySummaryTurns(turns: unknown): ButlerActiv
           }
         ];
       });
-      return items.length > 0 ? [{ id, status: "completed", startedAt, completedAt, items }] : [];
+      return items.length > 0 || status !== "completed" ? [{ id, status, startedAt, completedAt, detail, items }] : [];
     })
     .sort((left, right) => left.startedAt - right.startedAt)
     .slice(-MAX_ACTIVITY_TURNS);

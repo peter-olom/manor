@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { PiProviderRuntimeMapper } from "../../src/server/pi-provider-events.js";
 import { PiRpcWorkerClient } from "../../src/server/pi-rpc-worker-client.js";
+import { buildJobDetail } from "../../src/server/butler-job-detail.js";
 import { StaleWorkerOperationError } from "../../src/server/stale-worker-operation-error.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import type { ProviderRuntimeLivePatch } from "../../src/shared/provider-runtime.js";
@@ -29,6 +30,7 @@ type FakeSession = {
   acceptedEventVersion: number | null;
   eventStreamVersion: number | null;
   pendingPromptGenerations: number[];
+  transportClosed?: boolean;
 };
 
 type TestClient = {
@@ -166,6 +168,8 @@ test("an idle Worker transport restart evicts and resumes the Pi session on the 
       sessionRootDir: path.join(dir, "sessions")
     }) as unknown as TestClient;
     client.sessions.set(threadId, staleSession);
+    const patches: ProviderRuntimeLivePatch[] = [];
+    client.on("threadPatch", (patch) => patches.push(patch));
     let createCalls = 0;
     let promptCalls = 0;
     client.createSession = async (id, sessionCwd, provider, model, persistedPath) => {
@@ -190,12 +194,20 @@ test("an idle Worker transport restart evicts and resumes the Pi session on the 
       return resumed;
     };
 
-    client.handleSessionEvent(staleSession, { type: "manor_transport_closed", reason: "Worker restarted." });
+    client.handleSessionEvent(staleSession, {
+      type: "manor_transport_closed",
+      reason: "Ollama Cloud socket closed Authorization: Bearer pi-close-secret-123456"
+    });
 
     assert.equal(unsubscribeCalls, 1);
     assert.equal(client.sessions.has(threadId), false);
     assert.equal(store.getThread(threadId)?.status, "idle");
     assert.equal(store.getThread(threadId)?.turns[0]?.status, "interrupted");
+    assert.equal(store.getThread(threadId)?.turns[0]?.error, "Ollama Cloud socket closed Authorization: Bearer [REDACTED]");
+    assert.equal(store.getThread(threadId)?.eventLog[0]?.summary, "Ollama Cloud socket closed Authorization: Bearer [REDACTED]");
+    assert.equal(patches.some((patch) => patch.kind === "runtime-message" && patch.message.includes("[REDACTED]")), true);
+    assert.equal(patches.some((patch) => patch.kind === "turn-lifecycle" && patch.status === "interrupted"), true);
+    assert.doesNotMatch(JSON.stringify(patches), /pi-close-secret/);
     await client.sendMessage(threadId, "Continue after restart");
     assert.equal(createCalls, 1);
     assert.equal(promptCalls, 1);
@@ -395,6 +407,94 @@ async function createStore(dir: string): Promise<ButlerStateStore> {
   await store.load();
   return store;
 }
+
+test("Pi persists failed items and redacted runtime errors across reload", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-failure-persistence-"));
+  try {
+    const threadId = "pi-failed-item";
+    const store = await createStore(dir);
+    store.upsertThreadSummary({ id: threadId, cwd: dir, source: "pi-rpc", status: { type: "active" }, turns: [] });
+    const session: FakeSession = {
+      threadId,
+      client: {
+        getState: async () => ({ isStreaming: false }),
+        prompt: async () => undefined,
+        steer: async () => undefined,
+        abort: async () => undefined,
+        stop: async () => undefined
+      },
+      mapper: new PiProviderRuntimeMapper(threadId),
+      unsubscribe: null,
+      cwd: dir,
+      provider: "ollama-cloud",
+      model: "glm-5.2",
+      activityVersion: 1,
+      acceptedEventVersion: 1,
+      eventStreamVersion: 1,
+      pendingPromptGenerations: [],
+      transportClosed: false
+    };
+    const client = new PiRpcWorkerClient({
+      store,
+      piAuthPath: path.join(dir, "auth.json"),
+      sessionRootDir: path.join(dir, "sessions")
+    }) as unknown as TestClient;
+    client.sessions.set(threadId, session);
+    const patches: ProviderRuntimeLivePatch[] = [];
+    client.on("threadPatch", (patch) => patches.push(patch));
+
+    client.applyPatch(session, 1, {
+      kind: "turn-lifecycle",
+      threadId,
+      turnId: "turn-failed",
+      status: "started",
+      at: 100
+    });
+    client.applyPatch(session, 1, {
+      kind: "item-lifecycle",
+      threadId,
+      turnId: "turn-failed",
+      itemId: "tool-failed",
+      itemType: "dynamic_tool_call",
+      status: "failed",
+      text: "Tool execution failed",
+      at: 110
+    });
+    client.applyPatch(session, 1, {
+      kind: "runtime-message",
+      threadId,
+      turnId: "turn-failed",
+      tone: "error",
+      message: "Provider rejected Authorization: Bearer pi-secret-token-123456",
+      at: 120
+    });
+    client.applyPatch(session, 1, {
+      kind: "turn-lifecycle",
+      threadId,
+      turnId: "turn-failed",
+      status: "failed",
+      at: 130
+    });
+
+    const liveError = patches.find((patch) => patch.kind === "runtime-message");
+    assert.equal(liveError?.kind, "runtime-message");
+    assert.match(liveError?.kind === "runtime-message" ? liveError.message : "", /Bearer \[REDACTED\]/);
+    assert.doesNotMatch(liveError?.kind === "runtime-message" ? liveError.message : "", /pi-secret-token/);
+    await store.flushSave();
+
+    const reloaded = await createStore(dir);
+    const thread = reloaded.getThread(threadId);
+    assert.equal(thread?.turns[0]?.items[0]?.status, "failed");
+    assert.match(thread?.eventLog[0]?.summary ?? "", /Bearer \[REDACTED\]/);
+    assert.doesNotMatch(thread?.eventLog[0]?.summary ?? "", /pi-secret-token/);
+    const detail = buildJobDetail(reloaded, threadId);
+    assert.match(detail, /dynamic_tool_call \(failed\) Tool execution failed/);
+    assert.match(detail, /runtime_error@.*Bearer \[REDACTED\]/);
+    assert.doesNotMatch(detail, /pi-secret-token/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("stopped Pi operations reject late events while a newer operation remains live", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-operation-generation-"));

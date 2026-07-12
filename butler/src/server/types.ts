@@ -72,11 +72,9 @@ export type ButlerOperatorCloseoutStatus = "not_required" | "owed" | "posted";
 export type ButlerCloseoutChannel = "none" | "main_chat";
 export type ButlerNextWorkerReportAction = "review" | "reply_to_operator";
 export type ButlerCallbackReviewState = "idle" | "queued" | "running" | "blocked";
-export type ButlerCallbackReviewReason = "worker_callback" | "thread_recovery" | null;
-export type ReviewPanelRole = "intent" | "qa" | "ui_taste" | "api" | "ops" | "product";
-export type ReviewPanelVerdict = "pending" | "passed" | "concern" | "failed" | "blocked";
+export type ButlerCallbackReviewReason = "worker_callback" | "thread_recovery" | null; export type ButlerCallbackReviewStage = "queued" | "preparing" | "reviewing_changes" | "supervising_closeout" | "retry_wait" | "blocked";
+export type ReviewPanelRole = "intent" | "qa" | "ui_taste" | "api" | "ops" | "product"; export type ReviewPanelVerdict = "pending" | "passed" | "concern" | "failed" | "blocked";
 export type ReviewPanelSummaryStatus = "pending" | "passed" | "concerns" | "blocked";
-
 export interface ReviewPanelRunView {
   id: string;
   role: ReviewPanelRole;
@@ -174,6 +172,8 @@ export interface ButlerThreadCallbackView {
   reviewModelProvider?: string | null;
   reviewModelId?: string | null;
   reviewReasoningLevel?: ButlerThinkingLevel | null;
+  reviewStage?: ButlerCallbackReviewStage | null; reviewAttempt?: number; reviewStartedAt?: number | null; reviewDeadlineAt?: number | null;
+  reviewNextAttemptAt?: number | null; reviewLastActivityAt?: number | null; reviewLastActivity?: string | null; reviewLastTool?: string | null; reviewLastError?: string | null; reviewErrors?: Array<{ at: number; stage: ButlerCallbackReviewStage; tool: string | null; message: string }>;
   blockedCloseoutReason?: string | null; blockedCloseoutReportAt?: number | null;
   closedAt: number | null;
   updatedAt: number;
@@ -188,7 +188,7 @@ export interface CodexEventEntry {
 export interface CodexItemRecord {
   id: string;
   type: string;
-  status: "started" | "completed";
+  status: "started" | "completed" | "failed" | "declined";
   text: string;
   at: number;
   raw: Record<string, unknown>;
@@ -224,7 +224,6 @@ export interface CodexSupervisionView {
 }
 
 export type CodexWorkerReportStatus = "completed" | "blocked";
-
 export interface CodexWorkerReportView {
   threadId: string;
   turnId: string;
@@ -1124,7 +1123,7 @@ export interface CodexThreadRecord extends CodexThreadSummary {
 export interface CodexItemView {
   id: string;
   type: string;
-  status: "started" | "completed";
+  status: "started" | "completed" | "failed" | "declined";
   text: string;
   at: number;
   taskDurationMs: number | null;
@@ -1237,8 +1236,8 @@ export interface ButlerOperatorQuestionItemView {
 
 export interface ButlerOperatorQuestionView extends ButlerOperatorQuestionItemView { questions?: ButlerOperatorQuestionItemView[]; deliveryState?: "idle" | "pending" | "delivered" | "failed"; deliveryError?: string | null; }
 export type ButlerActivityItemKind = "thinking" | "tool";
-export type ButlerActivityItemStatus = "active" | "completed" | "error";
-export type ButlerActivityTurnStatus = "active" | "completed";
+export type ButlerActivityItemStatus = "active" | "completed" | "error" | "stopped";
+export type ButlerActivityTurnStatus = "active" | "completed" | "failed" | "interrupted" | "cancelled";
 
 export interface ButlerActivityItemView {
   id: string;
@@ -1257,6 +1256,7 @@ export interface ButlerActivityTurnView {
   status: ButlerActivityTurnStatus;
   startedAt: number;
   completedAt: number | null;
+  detail?: string | null;
   items: ButlerActivityItemView[];
 }
 

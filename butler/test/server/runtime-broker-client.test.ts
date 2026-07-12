@@ -3,7 +3,22 @@ import type { AddressInfo } from "node:net";
 import http from "node:http";
 import test from "node:test";
 
-import { RuntimeBrokerClient } from "../../src/server/runtime-broker-client.js";
+import { formatPreviewRuntimeDiagnostics, RuntimeBrokerClient } from "../../src/server/runtime-broker-client.js";
+
+test("preview runtime diagnostics include every terminal field", () => {
+  assert.equal(
+    formatPreviewRuntimeDiagnostics({
+      running: false,
+      status: "exited",
+      startedAt: Date.parse("2026-07-12T06:00:00.000Z"),
+      finishedAt: Date.parse("2026-07-12T06:01:00.000Z"),
+      exitCode: 137,
+      oomKilled: true,
+      error: "container process was killed"
+    }),
+    "runtimeStatus=exited exitCode=137 oomKilled=true error=container process was killed finishedAt=2026-07-12T06:01:00.000Z"
+  );
+});
 
 test("runtime broker client rejects failed browser action payloads", async (t) => {
   const server = http.createServer((request, response) => {

@@ -19,7 +19,7 @@ import {
   emptyThreadSupervisor,
   formatFallbackJobLabel,
   formatWindowTitle,
-  inferPersistedThreadExecutionContract, isVisibleCodexWorkstream,
+  inferPersistedThreadExecutionContract, isTerminalCodexTurnStatus, isVisibleCodexWorkstream,
   MAX_EVENT_LOG,
   normalizeItem,
   normalizePreviewVerification,
@@ -113,7 +113,7 @@ export class ButlerStateStore extends EventEmitter {
   private readonly persistedWorkerReportsByThreadId = new Map<string, CodexWorkerReportView[]>();
   private windows: ButlerWindow[] = [];
   private focusedWindowId: string | null = null;
-  private saveTimer: NodeJS.Timeout | null = null;
+  private saveTimer: NodeJS.Timeout | null = null; private saveTail: Promise<void> = Promise.resolve();
   private readonly latestStartedTurnIds = new Map<string, string>();
   private readonly latestCompletedTurnIds = new Map<string, string>();
   private readonly latestBlockedTurnIds = new Map<string, string>();
@@ -228,7 +228,7 @@ export class ButlerStateStore extends EventEmitter {
 
       merged.set(item.id, {
         ...existing,
-        status: existing.status === "completed" ? existing.status : item.status,
+        status: existing.status === "started" ? item.status : existing.status,
         text: existing.text || item.text,
         at: Math.min(existing.at, item.at)
       });
@@ -437,7 +437,7 @@ export class ButlerStateStore extends EventEmitter {
       if (latestTurn.status === "completed") {
         this.latestCompletedTurnIds.set(thread.id, latestTurn.id);
       }
-      if (latestTurn.status === "failed" || latestTurn.status === "interrupted" || latestTurn.error) {
+      if (latestTurn.status === "failed" || latestTurn.status === "interrupted" || latestTurn.status === "cancelled" || latestTurn.error) {
         this.latestBlockedTurnIds.set(thread.id, latestTurn.id);
       }
     }
@@ -456,7 +456,7 @@ export class ButlerStateStore extends EventEmitter {
     if (latestTurn.status === "completed") {
       this.latestCompletedTurnIds.set(threadId, latestTurn.id);
     }
-    if (latestTurn.status === "failed" || latestTurn.status === "interrupted" || latestTurn.error) {
+    if (latestTurn.status === "failed" || latestTurn.status === "interrupted" || latestTurn.status === "cancelled" || latestTurn.error) {
       this.latestBlockedTurnIds.set(threadId, latestTurn.id);
     }
   }
@@ -523,7 +523,7 @@ export class ButlerStateStore extends EventEmitter {
       target.requestedReasoningEffort = requestedReasoningEffort;
       record.requestedReasoningEffort = requestedReasoningEffort;
     }
-    if (target.status === "completed" || target.status === "failed" || target.status === "interrupted") {
+    if (isTerminalCodexTurnStatus(target.status)) {
       target.completedAt = target.completedAt ?? Date.now();
     } else if (!target.startedAt) {
       target.startedAt = Date.now();
@@ -531,13 +531,13 @@ export class ButlerStateStore extends EventEmitter {
     record.updatedAt = Date.now();
     record.turnCount = record.turns.length;
     this.refreshDerivedThreadState(record);
-    if (target.status === "completed" || target.status === "failed" || target.status === "interrupted") {
+    if (isTerminalCodexTurnStatus(target.status)) {
       this.noteThreadLeaseActivity(threadId, target.completedAt ?? Date.now());
     }
     this.emitChange();
   }
 
-  updateItem(threadId: string, turnId: string, item: Record<string, unknown>, status: "started" | "completed"): void {
+  updateItem(threadId: string, turnId: string, item: Record<string, unknown>, status: "started" | "completed" | "failed" | "declined"): void {
     const turn = this.getOrCreateTurn(threadId, turnId);
     const normalized = normalizeItem(item, status);
     const activityAt = normalized.at;
@@ -564,7 +564,7 @@ export class ButlerStateStore extends EventEmitter {
     }
 
     const thread = this.getOrCreateThread(threadId);
-    if (normalized.type !== "agentMessage" || status === "completed") {
+    if (normalized.type !== "agentMessage" || status !== "started") {
       thread.updatedAt = Math.max(thread.updatedAt, activityAt);
     }
     thread.turnCount = thread.turns.length;
@@ -655,7 +655,7 @@ export class ButlerStateStore extends EventEmitter {
         active = true;
       }
 
-      if (turn.status !== "completed" && turn.status !== "failed" && turn.status !== "interrupted") {
+      if (!isTerminalCodexTurnStatus(turn.status)) {
         active = true;
       }
     }

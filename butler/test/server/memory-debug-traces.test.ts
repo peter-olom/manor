@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { listMemoryDebugTraces } from "../../src/server/memory-debug-traces.js";
+import {
+  formatMemoryDebugTrace,
+  getMemoryDebugTrace,
+  listMemoryDebugTraces,
+  recordMemoryDebugTrace
+} from "../../src/server/memory-debug-traces.js";
 import { CodexExecMemoryReviewService } from "../../src/server/memory-review.js";
 import { MemoryUpdateScheduler } from "../../src/server/memory-update-scheduler.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
@@ -129,4 +134,56 @@ test("memory review writes trace with raw output, low-confidence drop, and submi
   assert.equal(trace.persisted.jobEntryIds.some((entry) => entry.includes("review-state")), true);
   assert.equal(trace.decisions.some((entry) => entry.outcome === "dropped" && entry.reason === "low_confidence:low"), true);
   assert.deepEqual(trace.rawOutput, { parsed: { candidates: [{ summary: "raw candidate" }] }, text: null });
+});
+
+test("memory debug traces expose bounded diagnostics with nested secrets redacted", async () => {
+  const stateDir = await mkdtemp(path.join(tmpdir(), "manor-memory-debug-trace-"));
+  const store = new ButlerStateStore(path.join(stateDir, "state.json"));
+  const recorded = recordMemoryDebugTrace(store, {
+    kind: "review",
+    status: "failed",
+    projectId: "project-1",
+    projectLabel: "Project One",
+    threadId: "thread-1",
+    sourceId: "source-1",
+    reason: "Inspect failed review output",
+    promptVersion: "v1",
+    model: "test-model",
+    createdAt: 1,
+    completedAt: 2,
+    durationMs: 1,
+    prompt: `${"A".repeat(10_000)}\napi_key=prompt-secret`,
+    input: { nested: { api_key: "input-secret" }, ordinary: "visible input" },
+    rawOutput: { Authorization: "Bearer opaque-token-123456", result: "visible raw output" },
+    normalizedOutput: { password: "normalized-secret", result: "visible normalized output" },
+    decisions: [{
+      stage: "normalize",
+      outcome: "dropped",
+      summary: "Dropped malformed candidate",
+      reason: "password=decision-secret",
+      inputIndex: 0
+    }],
+    persisted: { observationIds: [], candidateIds: [], entityIds: [], relationshipIds: [], jobEntryIds: [] },
+    error: "Authorization: Bearer error-token-123456",
+    warnings: ["client_secret=warning-secret"]
+  });
+
+  const trace = getMemoryDebugTrace(store, recorded.id);
+  assert.ok(trace);
+  const serialized = JSON.stringify(trace);
+  assert.doesNotMatch(serialized, /prompt-secret|input-secret|opaque-token|normalized-secret|decision-secret|error-token|warning-secret/);
+
+  const formatted = formatMemoryDebugTrace(trace);
+  assert.match(formatted, /Prompt:/);
+  assert.match(formatted, /Input:/);
+  assert.match(formatted, /visible input/);
+  assert.match(formatted, /Raw output:/);
+  assert.match(formatted, /visible raw output/);
+  assert.match(formatted, /Normalized output:/);
+  assert.match(formatted, /visible normalized output/);
+  assert.match(formatted, /Decision details:/);
+  assert.match(formatted, /Dropped malformed candidate/);
+  assert.match(formatted, /\[REDACTED\]/);
+  assert.match(formatted, /\.\.\.\[truncated\]/);
+  assert.ok(formatted.length < 45_000);
 });

@@ -1,5 +1,6 @@
 import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import { inferThreadExecutionContract } from "./thread-contract.js";
+import { redactSensitiveText } from "./redact-sensitive-text.js";
 import type {
   ButlerSupervisorSummaryView,
   ButlerWindow,
@@ -298,7 +299,8 @@ export function buildThreadSupervisor(thread: CodexThreadRecord): CodexThreadSup
   const blocked =
     Boolean(latestTurn?.error) ||
     latestTurn?.status === "failed" ||
-    latestTurn?.status === "interrupted";
+    latestTurn?.status === "interrupted" ||
+    latestTurn?.status === "cancelled";
   const memorySummary = summarizeJobMemory(thread.jobMemory, thread.status);
 
   let summary = "No supervisor summary yet.";
@@ -829,14 +831,17 @@ export function summarizeItem(item: Record<string, unknown>): string {
   return "";
 }
 
-export function normalizeItem(item: Record<string, unknown>, status: "started" | "completed"): CodexItemRecord {
+export function normalizeItem(
+  item: Record<string, unknown>,
+  status: "started" | "completed" | "failed" | "declined"
+): CodexItemRecord {
   const id = typeof item.id === "string" ? item.id : crypto.randomUUID();
   const at = typeof item.at === "number" && Number.isFinite(item.at) ? item.at : Date.now();
   return {
     id,
     type: typeof item.type === "string" ? item.type : "unknown",
     status,
-    text: summarizeItem(item),
+    text: redactSensitiveText(summarizeItem(item)),
     at,
     raw: item
   };
@@ -891,16 +896,30 @@ export function normalizeReasoningEffort(value: unknown): ReasoningEffort | null
   return value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" ? value : null;
 }
 
+function normalizeCodexItemStatus(value: unknown): CodexItemRecord["status"] {
+  if (value === "started" || value === "in_progress") return "started";
+  if (value === "failed" || value === "declined") return value;
+  return "completed";
+}
+
+export function isTerminalCodexTurnStatus(value: unknown): boolean {
+  return value === "completed" || value === "failed" || value === "interrupted" || value === "cancelled";
+}
+
 export function normalizeTurn(turn: Record<string, unknown>): CodexTurnRecord {
   const rawItems = Array.isArray(turn.items) ? (turn.items as Record<string, unknown>[]) : [];
+  const status = typeof turn.status === "string" ? turn.status : "unknown";
+  const startedAt = typeof turn.startedAt === "number" && Number.isFinite(turn.startedAt) ? turn.startedAt : Date.now();
   return {
     id: typeof turn.id === "string" ? turn.id : crypto.randomUUID(),
     requestedReasoningEffort: normalizeReasoningEffort(turn.requestedReasoningEffort),
-    status: typeof turn.status === "string" ? turn.status : "unknown",
-    error: typeof turn.error === "string" ? turn.error : null,
-    startedAt: Date.now(),
-    completedAt: typeof turn.status === "string" && turn.status === "completed" ? Date.now() : null,
-    items: rawItems.map((item) => normalizeItem(item, "completed"))
+    status,
+    error: typeof turn.error === "string" ? redactSensitiveText(turn.error) : null,
+    startedAt,
+    completedAt: typeof turn.completedAt === "number" && Number.isFinite(turn.completedAt)
+      ? turn.completedAt
+      : isTerminalCodexTurnStatus(status) ? Date.now() : null,
+    items: rawItems.map((item) => normalizeItem(item, normalizeCodexItemStatus(item.status)))
   };
 }
 
@@ -911,11 +930,12 @@ export function restorePersistedItem(item: {
   text?: unknown;
   at?: unknown;
 }): CodexItemRecord {
+  const status = normalizeCodexItemStatus(item.status);
   return {
     id: typeof item.id === "string" ? item.id : crypto.randomUUID(),
     type: typeof item.type === "string" ? item.type : "unknown",
-    status: item.status === "started" ? "started" : "completed",
-    text: typeof item.text === "string" ? item.text : "",
+    status,
+    text: typeof item.text === "string" ? redactSensitiveText(item.text) : "",
     at: typeof item.at === "number" && Number.isFinite(item.at) ? item.at : Date.now(),
     raw: {}
   };
@@ -934,7 +954,7 @@ export function restorePersistedTurn(turn: {
     id: typeof turn.id === "string" ? turn.id : crypto.randomUUID(),
     requestedReasoningEffort: normalizeReasoningEffort(turn.requestedReasoningEffort),
     status: typeof turn.status === "string" ? turn.status : "unknown",
-    error: typeof turn.error === "string" ? turn.error : null,
+    error: typeof turn.error === "string" ? redactSensitiveText(turn.error) : null,
     startedAt: typeof turn.startedAt === "number" && Number.isFinite(turn.startedAt) ? turn.startedAt : Date.now(),
     completedAt: typeof turn.completedAt === "number" && Number.isFinite(turn.completedAt) ? turn.completedAt : null,
     items: Array.isArray(turn.items) ? turn.items.map((item) => restorePersistedItem((item ?? {}) as Record<string, unknown>)) : []

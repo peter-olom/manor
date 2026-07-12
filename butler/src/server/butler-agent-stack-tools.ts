@@ -3,53 +3,22 @@ import crypto from "node:crypto";
 import { Type } from "@sinclair/typebox";
 
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
-import { normalizeStackStorageMode } from "./stack-storage.js";
-
-function normalizeLeaseTtlMs(leaseTtlMinutes: unknown): number | null {
-  const numeric = typeof leaseTtlMinutes === "number" ? leaseTtlMinutes : Number(leaseTtlMinutes);
-  if (!Number.isFinite(numeric) || numeric <= 0) {
-    return null;
-  }
-  return Math.max(60_000, Math.trunc(numeric * 60_000));
-}
-
-function resolveStickyFlag(input: { sticky?: boolean; pinned?: boolean }): boolean | undefined {
-  if (typeof input.sticky === "boolean") {
-    return input.sticky;
-  }
-  if (typeof input.pinned === "boolean") {
-    return input.pinned;
-  }
-  return undefined;
-}
-
-function withRequestedLeaseLifecycle<T extends object>(
-  lease: T,
-  input: { sticky?: boolean; pinned?: boolean; leaseTtlMinutes?: number }
-): T & { pinned?: boolean; leaseTtlMs?: number | null } {
-  const pinned = resolveStickyFlag(input);
-  const leaseTtlMs = normalizeLeaseTtlMs(input.leaseTtlMinutes);
-  return {
-    ...lease,
-    ...(typeof pinned === "boolean" ? { pinned } : {}),
-    ...(leaseTtlMs !== null ? { leaseTtlMs } : {})
-  };
-}
-
-function formatLeaseLifecycle(lease: {
-  pinned?: boolean;
-  lifecycleState?: string;
-  leaseTtlMs?: number | null;
-  expiresAt?: number | null;
-} & object): string {
-  const state = lease.pinned ? "sticky" : lease.lifecycleState ?? "active";
-  const ttlMinutes =
-    typeof lease.leaseTtlMs === "number" && Number.isFinite(lease.leaseTtlMs)
-      ? Math.max(1, Math.round(lease.leaseTtlMs / 60_000))
-      : null;
-  const expiry = typeof lease.expiresAt === "number" && Number.isFinite(lease.expiresAt) ? ` expires=${new Date(lease.expiresAt).toISOString()}` : "";
-  return `lease=${state}${ttlMinutes ? ` ttl=${ttlMinutes}m` : ""}${expiry}`;
-}
+import {
+  assertRuntimeResourceOwned,
+  getRuntimeStartThreadId,
+  isRuntimeResourceOwned
+} from "./butler-runtime-tool-ownership.js";
+import {
+  formatLeaseLifecycle,
+  normalizeLeaseTtlMs,
+  resolveStickyFlag,
+  withRequestedLeaseLifecycle
+} from "./butler-runtime-lease-tool-helpers.js";
+import {
+  assertProjectStackStorageLineage,
+  normalizeStackStorageMode,
+  resolveStackPromotionTarget
+} from "./stack-storage.js";
 
 export function buildButlerStackTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
   return [
@@ -59,7 +28,7 @@ export function buildButlerStackTools(access: ButlerAgentToolAccess): ButlerCust
       description: "Create an explicitly requested isolated branch and worktree for one repo task.",
       promptSnippet: "prepare_worktree: use this only when the operator explicitly wants branch or worktree isolation.",
       parameters: Type.Object({
-        cwd: Type.String(),
+        cwd: Type.String({ minLength: 1 }),
         task: Type.String({ minLength: 1 })
       }),
       uiEffects: access.getToolUiEffects("prepare_worktree"),
@@ -87,14 +56,14 @@ export function buildButlerStackTools(access: ButlerAgentToolAccess): ButlerCust
       parameters: Type.Object({}),
       uiEffects: access.getToolUiEffects("list_stacks"),
       execute: async () => {
-        const stacks = access.store.listStackLeases();
+        const stacks = access.store.listStackLeases().filter((stack) => isRuntimeResourceOwned(access, stack));
         const text =
           stacks.length === 0
             ? "No stack leases are active."
             : stacks
                 .map(
                   (stack, index) =>
-                    `${index + 1}. ${stack.title} | thread=${stack.threadId ?? "(none)"} | status=${stack.status} | ${formatLeaseLifecycle(stack)} | network=${stack.networkName} | ${access.describeStackStorage(stack)} | previews=${stack.previewIds.length} | services=${stack.serviceIds.length}`
+                    `${index + 1}. ${stack.title} | id=${stack.id} | thread=${stack.threadId ?? "(none)"} | status=${stack.status} | ${formatLeaseLifecycle(stack)} | network=${stack.networkName} | ${access.describeStackStorage(stack)} | previews=${stack.previewIds.length} | services=${stack.serviceIds.length}`
                 )
                 .join("\n");
         return {
@@ -144,24 +113,31 @@ export function buildButlerStackTools(access: ButlerAgentToolAccess): ButlerCust
           sticky?: boolean;
           leaseTtlMinutes?: number;
         };
-        const thread = typedParams.threadId ? access.store.getThread(typedParams.threadId) ?? null : null;
+        const threadId = getRuntimeStartThreadId(access, typedParams.threadId, "start_stack");
+        const thread = access.store.getThread(threadId) ?? null;
         const worktreePath = typedParams.cwd?.trim() || thread?.cwd || null;
         const project = access.resolveWorkspaceProject(
           worktreePath,
           thread?.supervisor.projectId ?? "stack",
           thread?.supervisor.projectLabel ?? "stack"
         );
+        const storageKey = typedParams.storageKey?.trim() || null;
+        const cloneFromStorageKey = typedParams.cloneFromStorageKey?.trim() || null;
+        assertProjectStackStorageLineage(project.id, [
+          { name: "storageKey", value: storageKey },
+          { name: "cloneFromStorageKey", value: cloneFromStorageKey }
+        ]);
         const stack = withRequestedLeaseLifecycle(await access.runtimeBroker.createStack({
           stackId: crypto.randomUUID(),
-          threadId: typedParams.threadId ?? null,
+          threadId,
           projectId: project.id,
           projectLabel: project.label,
           title: typedParams.title.trim(),
           worktreePath,
           storageMode: normalizeStackStorageMode(typedParams.storageMode) ?? null,
           retainsVolumes: Boolean(typedParams.retainsVolumes),
-          storageKey: typedParams.storageKey?.trim() || null,
-          cloneFromStorageKey: typedParams.cloneFromStorageKey?.trim() || null
+          storageKey,
+          cloneFromStorageKey
         }), typedParams);
         access.store.upsertStackLease(stack);
         return {
@@ -181,12 +157,16 @@ export function buildButlerStackTools(access: ButlerAgentToolAccess): ButlerCust
       description: "Inspect one stack lease and return its current state.",
       promptSnippet: "inspect_stack: use this to confirm what a multi-container environment already contains before changing it.",
       parameters: Type.Object({
-        stackId: Type.String()
+        stackId: Type.String({ minLength: 1 })
       }),
       uiEffects: access.getToolUiEffects("inspect_stack"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as { stackId: string };
-        const inspected = await access.runtimeBroker.inspectStack(typedParams.stackId);
+        const selected = access.getValidatedStack(typedParams.stackId?.trim() || null, null);
+        if (!selected) throw new Error("Stack selector is required");
+        assertRuntimeResourceOwned(access, selected, `Stack ${selected.id}`);
+        const inspected = await access.runtimeBroker.inspectStack(selected.id);
+        assertRuntimeResourceOwned(access, inspected, `Stack ${inspected.id}`);
         access.store.upsertStackLease(inspected);
         const stack = access.store.noteStackLeaseActivity(inspected.id) ?? access.store.getStackLease(inspected.id) ?? inspected;
         return {
@@ -207,7 +187,7 @@ export function buildButlerStackTools(access: ButlerAgentToolAccess): ButlerCust
       promptSnippet:
         "set_stack_lease: use sticky=true when a stack should remain available for later jobs; use sticky=false or leaseTtlMinutes to return it to normal cleanup.",
       parameters: Type.Object({
-        stackId: Type.String(),
+        stackId: Type.String({ minLength: 1 }),
         sticky: Type.Optional(Type.Boolean()),
         leaseTtlMinutes: Type.Optional(Type.Number({ minimum: 1 })),
         refresh: Type.Optional(Type.Boolean())
@@ -219,6 +199,7 @@ export function buildButlerStackTools(access: ButlerAgentToolAccess): ButlerCust
         if (!current) {
           throw new Error("Stack selector is required");
         }
+        assertRuntimeResourceOwned(access, current, `Stack ${current.id}`);
         const stack = access.store.setStackLeaseLifecycle(current.id, {
           pinned: resolveStickyFlag(typedParams),
           leaseTtlMs: typedParams.leaseTtlMinutes === undefined ? undefined : normalizeLeaseTtlMs(typedParams.leaseTtlMinutes),
@@ -239,19 +220,32 @@ export function buildButlerStackTools(access: ButlerAgentToolAccess): ButlerCust
       description: "Copy a stack's retained volumes into another storage namespace.",
       promptSnippet: "promote_stack: use this when one job's retained database or object-store state should become the new shared base.",
       parameters: Type.Object({
-        stackId: Type.String(),
-        targetStorageKey: Type.Optional(Type.String())
+        stackId: Type.String({ minLength: 1 }),
+        targetStorageKey: Type.Optional(Type.String()),
+        confirmTargetStorageKey: Type.String({
+          minLength: 1,
+          description: "Repeat the exact target storage key to confirm the destructive overwrite."
+        })
       }),
       uiEffects: access.getToolUiEffects("promote_stack"),
       execute: async (_toolCallId, params) => {
-        const typedParams = params as { stackId: string; targetStorageKey?: string };
+        const typedParams = params as { stackId: string; targetStorageKey?: string; confirmTargetStorageKey: string };
+        const stackBefore = access.getValidatedStack(typedParams.stackId?.trim() || null, null);
+        if (!stackBefore) throw new Error("Stack selector is required");
+        assertRuntimeResourceOwned(access, stackBefore, `Stack ${stackBefore.id}`);
+        const targetStorageKey = resolveStackPromotionTarget(
+          stackBefore,
+          typedParams.targetStorageKey,
+          typedParams.confirmTargetStorageKey
+        );
         const promotion = await access.runtimeBroker.promoteStack({
-          stackId: typedParams.stackId,
-          targetStorageKey: typedParams.targetStorageKey?.trim() || null
+          stackId: stackBefore.id,
+          targetStorageKey
         });
-        const stack = await access.runtimeBroker.inspectStack(typedParams.stackId);
+        const stack = await access.runtimeBroker.inspectStack(stackBefore.id);
+        assertRuntimeResourceOwned(access, stack, `Stack ${stack.id}`);
         access.store.upsertStackLease(stack);
-        access.store.noteStackLeaseActivity(typedParams.stackId);
+        access.store.noteStackLeaseActivity(stackBefore.id);
         return {
           content: [
             {
@@ -267,25 +261,31 @@ export function buildButlerStackTools(access: ButlerAgentToolAccess): ButlerCust
       name: "stop_stack",
       label: "Stop stack",
       description: "Stop one stack lease, remove its members, and release its network.",
-      promptSnippet: "stop_stack: use this to tear down a whole multi-container environment once the job is done.",
+      promptSnippet:
+        "stop_stack: use this to tear down a whole multi-container environment once the job is done. Retained volumes are preserved unless the operator explicitly asks to drop them.",
       parameters: Type.Object({
-        stackId: Type.String(),
-        dropVolumes: Type.Optional(Type.Boolean())
+        stackId: Type.String({ minLength: 1 }),
+        dropVolumes: Type.Optional(
+          Type.Boolean({ description: "Destructively remove retained stack volumes. Defaults to false." })
+        )
       }),
       uiEffects: access.getToolUiEffects("stop_stack"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as { stackId: string; dropVolumes?: boolean };
-        const dropVolumes = typedParams.dropVolumes !== false;
-        await access.runtimeBroker.stopStack(typedParams.stackId, { dropVolumes });
-        access.removeStackArtifacts(typedParams.stackId);
+        const stack = access.getValidatedStack(typedParams.stackId?.trim() || null, null);
+        if (!stack) throw new Error("Stack selector is required");
+        assertRuntimeResourceOwned(access, stack, `Stack ${stack.id}`);
+        const dropVolumes = typedParams.dropVolumes === true;
+        await access.runtimeBroker.stopStack(stack.id, { dropVolumes });
+        access.removeStackArtifacts(stack.id);
         return {
           content: [
             {
               type: "text",
-              text: `Stopped stack ${typedParams.stackId}.${dropVolumes ? " Dropped retained volumes." : ""}`
+              text: `Stopped stack ${stack.id}.${dropVolumes ? " Dropped retained volumes." : " Retained stack volumes."}`
             }
           ],
-          details: { stackId: typedParams.stackId, dropVolumes }
+          details: { stackId: stack.id, dropVolumes }
         };
       }
     })

@@ -3,18 +3,21 @@ import { AuthStorage, createAgentSession, DefaultResourceLoader, SessionManager,
 
 import type { ButlerAgentSessionAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
 import { buildCallbackReviewPrompt, isCallbackOutstanding, type PendingChatCallback } from "./butler-agent-helpers.js";
-import { ensureButlerAdversarialReview } from "./butler-adversarial-review.js";
+import { ensureButlerAdversarialReview, type AdversarialReviewProgress } from "./butler-adversarial-review.js";
 import { getButlerShellSnapshot } from "./butler-agent-session.js";
 import { isolatedModelResourceOptions } from "./isolated-model-resources.js";
-import { runWithCallbackReviewGuard } from "./butler-job-mutation-guard.js";
+import { runSerializedJobMutation, runWithCallbackReviewGuard } from "./butler-job-mutation-guard.js";
 import { modelToModelOption } from "./model-provider-config.js";
 import { applyOpencodeGoNativeThinkingPayload } from "./pi-opencode-web-tools-extension.js";
 import { piThinkingLevelForModelOption } from "./pi-thinking-levels.js";
 import type { ButlerStateStore } from "./state-store.js";
+import { redactSensitiveText } from "./redact-sensitive-text.js";
+import { assertIsolatedPromptSucceeded } from "./isolated-prompt-outcome.js";
 
 const CALLBACK_REVIEW_RETRY_MS = 30_000;
 const CALLBACK_REVIEW_MAX_ATTEMPTS = 3;
 const CALLBACK_REVIEW_PAUSED_PREFIX = "Adversarial review paused";
+const CALLBACK_REVIEW_OPERATOR_STOPPED_PREFIX = "Adversarial review stopped by the operator";
 const CALLBACK_SUPERVISOR_TIMEOUT_MS = 90_000;
 const CALLBACK_REVIEW_TOOL_NAMES = new Set([
   "read_job",
@@ -27,6 +30,95 @@ const CALLBACK_REVIEW_TOOL_NAMES = new Set([
   "message_job",
   "reply_to_operator"
 ]);
+const CALLBACK_SUPERVISOR_COMPLETION_TOOLS = new Set(["flush_rejected_acceptance_points", "message_job", "reply_to_operator"]);
+
+export function assertCallbackSupervisorPromptSucceeded(
+  messages: readonly unknown[],
+  completedAction: boolean,
+  modelLabel: string
+): void {
+  assertIsolatedPromptSucceeded(messages, "Isolated Butler supervision");
+  if (!completedAction) {
+    throw new Error(`Isolated Butler supervision ended without completing a closeout or Worker follow-up action using ${modelLabel}.`);
+  }
+}
+
+export function beginCallbackReviewAttempt(callback: PendingChatCallback, priorFailures: number, now = Date.now()): void {
+  callback.reviewState = "running";
+  callback.reviewStage = "preparing";
+  callback.reviewAttempt = priorFailures + 1;
+  callback.reviewStartedAt = now;
+  callback.reviewDeadlineAt = now + 120_000;
+  callback.reviewNextAttemptAt = null;
+  callback.reviewLastActivityAt = now;
+  callback.reviewLastActivity = "Preparing adversarial review.";
+  callback.reviewLastTool = null;
+  callback.reviewLastError = null;
+  callback.updatedAt = now;
+}
+
+function appendCallbackReviewError(callback: PendingChatCallback, input: { at: number; stage?: PendingChatCallback["reviewStage"]; tool?: string | null; message: string }): void {
+  const message = input.message.trim().slice(0, 2000);
+  if (!message) return;
+  const next = { at: input.at, stage: input.stage ?? callback.reviewStage ?? "blocked", tool: input.tool?.trim().slice(0, 200) || null, message };
+  const retained = callback.reviewErrors ?? [];
+  const latest = retained.at(-1);
+  callback.reviewErrors = latest && latest.message === next.message && latest.tool === next.tool ? retained : [...retained, next].slice(-12);
+}
+
+export function applyCallbackReviewProgress(callback: PendingChatCallback, progress: AdversarialReviewProgress): void {
+  callback.reviewStage = progress.stage;
+  callback.reviewLastActivityAt = progress.at;
+  callback.reviewLastActivity = redactSensitiveText(progress.message).slice(0, 800);
+  callback.reviewLastTool = progress.toolName?.slice(0, 200) ?? callback.reviewLastTool ?? null;
+  callback.reviewLastError = progress.error ? redactSensitiveText(progress.error).slice(0, 2000) : null;
+  if (progress.error) appendCallbackReviewError(callback, { at: progress.at, stage: progress.stage, tool: progress.toolName, message: redactSensitiveText(progress.error) });
+  if (progress.deadlineAt !== undefined) callback.reviewDeadlineAt = progress.deadlineAt;
+  callback.updatedAt = progress.at;
+}
+
+export function persistCallbackReviewProgress(input: {
+  attempted: PendingChatCallback;
+  progress: AdversarialReviewProgress;
+  getCurrent: () => PendingChatCallback | undefined;
+  save: () => Promise<void>;
+  emit: () => void;
+}): Promise<void> {
+  return runSerializedJobMutation(input.attempted.threadId, async () => {
+    const current = input.getCurrent();
+    if (current !== input.attempted || current.reviewState !== "running" || !isCallbackOutstanding(current)) return;
+    applyCallbackReviewProgress(current, input.progress);
+    await input.save();
+    input.emit();
+  });
+}
+
+export function prepareCallbackReviewRetry(
+  callback: PendingChatCallback,
+  selection: { provider: string | null; model: string | null; thinkingLevel: import("./types.js").ButlerThinkingLevel },
+  now = Date.now()
+): void {
+  callback.reviewModelProvider = selection.provider;
+  callback.reviewModelId = selection.model;
+  callback.reviewReasoningLevel = selection.thinkingLevel;
+  callback.reviewAttempt = 0;
+  callback.reviewLastError = null;
+  callback.reviewLastActivity = "Retry requested with the current Butler model.";
+  callback.reviewLastActivityAt = now;
+}
+
+export function pauseCallbackReview(callback: PendingChatCallback, reportUpdatedAt: number | null, now = Date.now()): void {
+  callback.reviewState = "blocked";
+  callback.reviewStage = "blocked";
+  callback.reviewStartedAt = null;
+  callback.reviewDeadlineAt = null;
+  callback.reviewNextAttemptAt = null;
+  callback.reviewLastActivityAt = now;
+  callback.reviewLastActivity = "Review stopped by the operator.";
+  callback.blockedCloseoutReason = `${CALLBACK_REVIEW_OPERATOR_STOPPED_PREFIX}. Retry with the current Butler model when ready.`;
+  callback.blockedCloseoutReportAt = reportUpdatedAt;
+  callback.updatedAt = now;
+}
 
 function registerOpencodeGoRequestTransforms(pi: ExtensionAPI): void {
   pi.on("before_provider_request", (event) => applyOpencodeGoNativeThinkingPayload(event.payload));
@@ -37,7 +129,8 @@ export function buildCallbackAdversarialReviewBrief(store: ButlerStateStore, cal
   const payload = store.getThreadJobPayload(callback.threadId);
   const heldContext = thread?.eventLog
     .filter((entry) => entry.method === "butler.context.held" && entry.at >= callback.requestedAt - 1000)
-    .slice(-5)
+    .slice(0, 5)
+    .reverse()
     .map((entry) => entry.summary) ?? [];
   const unresolvedChecklist = thread?.supervisionChecklist?.items
     .filter((item) => item.status === "pending" || item.status === "rejected" || Boolean(item.queuedInstruction))
@@ -62,7 +155,7 @@ export function isCurrentCallbackReview(attempted: PendingChatCallback, current:
 }
 
 export function shouldIgnoreCallbackReviewFailure(attempted: PendingChatCallback, current: PendingChatCallback | undefined): boolean {
-  return !isCurrentCallbackReview(attempted, current) || !isCallbackOutstanding(current);
+  return !isCurrentCallbackReview(attempted, current) || current.reviewState !== "running" || !isCallbackOutstanding(current);
 }
 
 export function buildGuardedCallbackReviewTools(input: {
@@ -101,12 +194,14 @@ export function buildGuardedCallbackReviewTools(input: {
 export class CallbackReviewScheduler {
   private inFlight = false;
   private queued = false;
+  private disposed = false;
   private retryTimer: NodeJS.Timeout | null = null;
   private retryAt: number | null = null;
 
   constructor(private readonly run: () => Promise<void>, private readonly onError: (error: unknown) => void) {}
 
   schedule(): void {
+    if (this.disposed) return;
     if (this.inFlight) {
       this.queued = true;
       return;
@@ -122,6 +217,7 @@ export class CallbackReviewScheduler {
   }
 
   scheduleAt(at: number): void {
+    if (this.disposed) return;
     if (this.retryTimer && this.retryAt !== null && this.retryAt <= at) return;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryAt = at;
@@ -133,6 +229,8 @@ export class CallbackReviewScheduler {
   }
 
   dispose(): void {
+    this.disposed = true;
+    this.queued = false;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = null;
     this.retryAt = null;
@@ -166,6 +264,7 @@ export async function runCallbackAdversarialReview(input: {
   codexAuthenticated: boolean;
   isCurrent?: () => boolean;
   supervisorTimeoutMs?: number;
+  onProgress?: (progress: AdversarialReviewProgress) => void;
 }): Promise<void> {
   const { callback, sessionAccess } = input;
   let attemptActive = true;
@@ -192,9 +291,21 @@ export async function runCallbackAdversarialReview(input: {
     minimumReportUpdatedAt: callback.requestedAt,
     reviewBrief: buildCallbackAdversarialReviewBrief(input.store, callback),
     codexAuthenticated: input.codexAuthenticated,
-    isCurrent
+    isCurrent,
+    onProgress: input.onProgress
   });
   if (!isCurrent()) return;
+
+  const supervisorTimeoutMs = input.supervisorTimeoutMs ?? CALLBACK_SUPERVISOR_TIMEOUT_MS;
+  const supervisorStartedAt = Date.now();
+  const nextSupervisorDeadlineAt = (activityAt = Date.now()) => activityAt + supervisorTimeoutMs;
+  let lastProgress: AdversarialReviewProgress = {
+    stage: "supervising_closeout",
+    message: "Adversarial findings are ready. Butler is deciding the closeout action.",
+    at: supervisorStartedAt,
+    deadlineAt: nextSupervisorDeadlineAt(supervisorStartedAt)
+  };
+  input.onProgress?.(lastProgress);
 
   const settingsManager = SettingsManager.inMemory();
   const resourceLoader = new DefaultResourceLoader({
@@ -223,17 +334,67 @@ export async function runCallbackAdversarialReview(input: {
     settingsManager,
     resourceLoader
   });
+  let lastReasoningReportAt = 0;
+  let completedSupervisorAction = false;
+  const unsubscribe = session.subscribe((event) => {
+    if (event.type === "tool_execution_start") {
+      const at = Date.now();
+      lastProgress = {
+        ...lastProgress,
+        message: `Running ${event.toolName}.`,
+        at,
+        deadlineAt: nextSupervisorDeadlineAt(at),
+        toolName: event.toolName,
+        error: null
+      };
+      input.onProgress?.(lastProgress);
+      return;
+    }
+    if (event.type === "tool_execution_end") {
+      if (!event.isError && CALLBACK_SUPERVISOR_COMPLETION_TOOLS.has(event.toolName)) {
+        completedSupervisorAction = true;
+      }
+      let detail = "";
+      if (event.isError) {
+        try { detail = redactSensitiveText(JSON.stringify(event.result)).replace(/\s+/g, " ").slice(0, 1200); } catch { detail = redactSensitiveText(String(event.result)).slice(0, 1200); }
+      }
+      const at = Date.now();
+      lastProgress = {
+        ...lastProgress,
+        message: event.isError ? `Failed ${event.toolName}${detail ? `: ${detail}` : "."}` : `Finished ${event.toolName}.`,
+        at,
+        deadlineAt: nextSupervisorDeadlineAt(at),
+        toolName: event.toolName,
+        error: event.isError ? detail || `${event.toolName} failed.` : null
+      };
+      input.onProgress?.(lastProgress);
+      return;
+    }
+    if (event.type === "message_update" && Date.now() - lastReasoningReportAt >= 1000) {
+      lastReasoningReportAt = Date.now();
+      lastProgress = { ...lastProgress, message: "Butler is reasoning over the review findings.", at: lastReasoningReportAt, deadlineAt: nextSupervisorDeadlineAt(lastReasoningReportAt) };
+      input.onProgress?.(lastProgress);
+    }
+  });
   let timeout: ReturnType<typeof setTimeout> | null = null;
   let superseded: ReturnType<typeof setInterval> | null = null;
   try {
     await Promise.race([
       session.prompt(buildCallbackReviewPrompt(input.store, callback)),
       new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => {
-          attemptActive = false;
-          void session.abort();
-          reject(new Error("Isolated Butler supervision timed out."));
-        }, input.supervisorTimeoutMs ?? CALLBACK_SUPERVISOR_TIMEOUT_MS);
+        const check = () => {
+          const now = Date.now();
+          const inactiveFor = now - lastProgress.at;
+          if (inactiveFor >= supervisorTimeoutMs) {
+            attemptActive = false;
+            void session.abort();
+            const modelLabel = `${model.provider}/${model.id}`;
+            reject(new Error(`Isolated Butler supervision was inactive for ${Math.round(supervisorTimeoutMs / 1000)}s using ${modelLabel}. Last activity ${Math.max(0, Math.round(inactiveFor / 1000))}s ago: ${lastProgress.message}`));
+            return;
+          }
+          timeout = setTimeout(check, Math.max(1, Math.min(supervisorTimeoutMs - inactiveFor, 1_000)));
+        };
+        timeout = setTimeout(check, Math.min(supervisorTimeoutMs, 1_000));
       }),
       new Promise<never>((_resolve, reject) => {
         superseded = setInterval(() => {
@@ -243,10 +404,12 @@ export async function runCallbackAdversarialReview(input: {
         }, 50);
       })
     ]);
+    assertCallbackSupervisorPromptSucceeded(session.messages, completedSupervisorAction, `${model.provider}/${model.id}`);
   } finally {
     attemptActive = false;
     if (timeout) clearTimeout(timeout);
     if (superseded) clearInterval(superseded);
+    unsubscribe();
     session.dispose();
   }
 }
@@ -260,15 +423,26 @@ export function applyCallbackReviewFailure(input: {
 }): void {
   const { callback } = input;
   const failures = (input.failureCount.get(callback.threadId) ?? 0) + 1;
+  const failureMessage = redactSensitiveText(input.error instanceof Error ? input.error.message : String(input.error));
+  appendCallbackReviewError(callback, { at: Date.now(), message: failureMessage });
   input.failureCount.set(callback.threadId, failures);
   if (failures >= CALLBACK_REVIEW_MAX_ATTEMPTS) {
-    const message = input.error instanceof Error ? input.error.message : String(input.error);
+    const message = failureMessage;
     callback.reviewState = "blocked";
+    callback.reviewStage = "blocked";
+    callback.reviewLastError = message.slice(0, 2000);
+    callback.reviewNextAttemptAt = null;
+    callback.reviewDeadlineAt = null;
     callback.blockedCloseoutReason = `${CALLBACK_REVIEW_PAUSED_PREFIX} after ${failures} failed attempts: ${message}`.slice(0, 800);
     callback.blockedCloseoutReportAt = input.store.getWorkerReport(callback.threadId)?.updatedAt ?? null;
   } else {
     callback.reviewState = "queued";
-    input.notBefore.set(callback.threadId, Date.now() + CALLBACK_REVIEW_RETRY_MS * 2 ** (failures - 1));
+    callback.reviewStage = "retry_wait";
+    callback.reviewLastError = failureMessage.slice(0, 2000);
+    callback.reviewDeadlineAt = null;
+    const nextAttemptAt = Date.now() + CALLBACK_REVIEW_RETRY_MS * 2 ** (failures - 1);
+    callback.reviewNextAttemptAt = nextAttemptAt;
+    input.notBefore.set(callback.threadId, nextAttemptAt);
   }
   callback.updatedAt = Date.now();
 }
@@ -277,4 +451,14 @@ export function isCallbackReviewAutomationPause(callback: PendingChatCallback, r
   return callback.reviewState === "blocked" &&
     callback.blockedCloseoutReason?.startsWith(CALLBACK_REVIEW_PAUSED_PREFIX) === true &&
     (reportUpdatedAt === undefined || callback.blockedCloseoutReportAt === reportUpdatedAt);
+}
+
+export function isCallbackReviewOperatorPause(callback: PendingChatCallback, reportUpdatedAt?: number | null): boolean {
+  return callback.reviewState === "blocked" &&
+    callback.blockedCloseoutReason?.startsWith(CALLBACK_REVIEW_OPERATOR_STOPPED_PREFIX) === true &&
+    (reportUpdatedAt === undefined || callback.blockedCloseoutReportAt === reportUpdatedAt);
+}
+
+export function isCallbackReviewRetryablePause(callback: PendingChatCallback, reportUpdatedAt?: number | null): boolean {
+  return isCallbackReviewAutomationPause(callback, reportUpdatedAt) || isCallbackReviewOperatorPause(callback, reportUpdatedAt);
 }

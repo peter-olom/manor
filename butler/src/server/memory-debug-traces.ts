@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 
+import { redactSensitiveText } from "./redact-sensitive-text.js";
 import type { ButlerStateStore } from "./state-store.js";
 
 export type MemoryDebugTraceKind = "review" | "synthesis";
@@ -59,7 +60,10 @@ export type MemoryDebugTraceFilters = {
 const TRACE_PAYLOAD_KIND = "memory_debug_trace";
 const MAX_PROMPT_CHARS = 80_000;
 const MAX_JSON_CHARS = 80_000;
-const SECRET_PATTERN = /\b(sk-[A-Za-z0-9_-]{8,}|bearer\s+[A-Za-z0-9._-]+|api[_-]?key|password|secret|token)\b/gi;
+const MAX_DECISIONS = 100;
+const MAX_DECISION_TEXT_CHARS = 2_000;
+const MAX_FORMAT_FIELD_CHARS = 8_000;
+const MAX_FORMAT_DECISIONS_CHARS = 12_000;
 
 function parseTime(value: string | number | null | undefined): number | null {
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
@@ -80,19 +84,51 @@ function normalizeText(value: unknown, fallback = ""): string {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
-function redactText(value: string): string {
-  return value.replace(SECRET_PATTERN, "[redacted]");
+function boundedText(value: string, limit: number): string {
+  const redacted = redactSensitiveText(value);
+  return redacted.length > limit ? `${redacted.slice(0, limit)}\n...[truncated]` : redacted;
 }
 
 function boundedValue(value: unknown): unknown {
-  if (typeof value === "string") return redactText(value).slice(0, MAX_JSON_CHARS);
   try {
     const serialized = JSON.stringify(value);
-    if (serialized.length <= MAX_JSON_CHARS) return value;
-    return { truncated: true, preview: redactText(serialized.slice(0, MAX_JSON_CHARS)) };
+    if (typeof serialized !== "string") return null;
+    const redacted = redactSensitiveText(serialized);
+    if (redacted.length > MAX_JSON_CHARS) {
+      return { truncated: true, preview: `${redacted.slice(0, MAX_JSON_CHARS)}\n...[truncated]` };
+    }
+    try {
+      return JSON.parse(redacted) as unknown;
+    } catch {
+      return redacted;
+    }
   } catch {
-    return String(value).slice(0, MAX_JSON_CHARS);
+    return boundedText(String(value), MAX_JSON_CHARS);
   }
+}
+
+function normalizeDecision(value: unknown): MemoryDebugTraceDecision | null {
+  if (!value || typeof value !== "object") return null;
+  const decision = value as Partial<MemoryDebugTraceDecision>;
+  const outcome = ["submitted", "dropped", "deduped", "normalized", "saved", "skipped"].includes(decision.outcome ?? "")
+    ? decision.outcome as MemoryDebugTraceDecision["outcome"]
+    : null;
+  if (!outcome || typeof decision.summary !== "string") return null;
+  return {
+    stage: boundedText(normalizeText(decision.stage, "unknown"), MAX_DECISION_TEXT_CHARS),
+    outcome,
+    summary: boundedText(decision.summary, MAX_DECISION_TEXT_CHARS),
+    reason: typeof decision.reason === "string" ? boundedText(decision.reason, MAX_DECISION_TEXT_CHARS) : null,
+    sourceEntryId: typeof decision.sourceEntryId === "string" ? boundedText(decision.sourceEntryId, MAX_DECISION_TEXT_CHARS) : null,
+    persistedId: typeof decision.persistedId === "string" ? boundedText(decision.persistedId, MAX_DECISION_TEXT_CHARS) : null,
+    inputIndex: typeof decision.inputIndex === "number" && Number.isFinite(decision.inputIndex) ? decision.inputIndex : null
+  };
+}
+
+function normalizeStringList(value: unknown, limit = 1_000): string[] {
+  return Array.isArray(value)
+    ? value.slice(0, limit).filter((entry): entry is string => typeof entry === "string").map((entry) => boundedText(entry, MAX_DECISION_TEXT_CHARS))
+    : [];
 }
 
 function normalizeTrace(value: unknown): MemoryDebugTraceView | null {
@@ -109,38 +145,37 @@ function normalizeTrace(value: unknown): MemoryDebugTraceView | null {
     projectLabel: normalizeText(trace.projectLabel, normalizeText(trace.projectId, "unknown")),
     threadId: normalizeText(trace.threadId, "") || null,
     sourceId: normalizeText(trace.sourceId, trace.id),
-    reason: normalizeText(trace.reason, "memory debug trace"),
-    promptVersion: normalizeText(trace.promptVersion, "unknown"),
-    model: normalizeText(trace.model, "") || null,
+    reason: boundedText(normalizeText(trace.reason, "memory debug trace"), MAX_DECISION_TEXT_CHARS),
+    promptVersion: boundedText(normalizeText(trace.promptVersion, "unknown"), MAX_DECISION_TEXT_CHARS),
+    model: normalizeText(trace.model, "") ? boundedText(normalizeText(trace.model), MAX_DECISION_TEXT_CHARS) : null,
     createdAt: typeof trace.createdAt === "number" ? trace.createdAt : Date.now(),
     completedAt: typeof trace.completedAt === "number" ? trace.completedAt : Date.now(),
     durationMs: typeof trace.durationMs === "number" ? trace.durationMs : null,
-    prompt: typeof trace.prompt === "string" ? trace.prompt : null,
-    input: trace.input ?? null,
-    rawOutput: trace.rawOutput ?? null,
-    normalizedOutput: trace.normalizedOutput ?? null,
-    decisions: Array.isArray(trace.decisions) ? trace.decisions.filter((entry): entry is MemoryDebugTraceDecision => Boolean(entry && typeof entry === "object" && typeof entry.summary === "string")) : [],
+    prompt: typeof trace.prompt === "string" ? boundedText(trace.prompt, MAX_PROMPT_CHARS) : null,
+    input: boundedValue(trace.input),
+    rawOutput: boundedValue(trace.rawOutput),
+    normalizedOutput: boundedValue(trace.normalizedOutput),
+    decisions: Array.isArray(trace.decisions)
+      ? trace.decisions.slice(0, MAX_DECISIONS).map(normalizeDecision).filter((entry): entry is MemoryDebugTraceDecision => Boolean(entry))
+      : [],
     persisted: {
-      observationIds: Array.isArray(trace.persisted?.observationIds) ? trace.persisted.observationIds.filter((entry): entry is string => typeof entry === "string") : [],
-      candidateIds: Array.isArray(trace.persisted?.candidateIds) ? trace.persisted.candidateIds.filter((entry): entry is string => typeof entry === "string") : [],
-      entityIds: Array.isArray(trace.persisted?.entityIds) ? trace.persisted.entityIds.filter((entry): entry is string => typeof entry === "string") : [],
-      relationshipIds: Array.isArray(trace.persisted?.relationshipIds) ? trace.persisted.relationshipIds.filter((entry): entry is string => typeof entry === "string") : [],
-      jobEntryIds: Array.isArray(trace.persisted?.jobEntryIds) ? trace.persisted.jobEntryIds.filter((entry): entry is string => typeof entry === "string") : []
+      observationIds: normalizeStringList(trace.persisted?.observationIds),
+      candidateIds: normalizeStringList(trace.persisted?.candidateIds),
+      entityIds: normalizeStringList(trace.persisted?.entityIds),
+      relationshipIds: normalizeStringList(trace.persisted?.relationshipIds),
+      jobEntryIds: normalizeStringList(trace.persisted?.jobEntryIds)
     },
-    error: typeof trace.error === "string" && trace.error.trim() ? trace.error.trim() : null,
-    warnings: Array.isArray(trace.warnings) ? trace.warnings.filter((entry): entry is string => typeof entry === "string") : []
+    error: typeof trace.error === "string" && trace.error.trim() ? boundedText(trace.error.trim(), MAX_JSON_CHARS) : null,
+    warnings: normalizeStringList(trace.warnings, 100)
   };
 }
 
 export function recordMemoryDebugTrace(store: ButlerStateStore, input: Omit<MemoryDebugTraceView, "id"> & { id?: string }): MemoryDebugTraceView {
-  const trace: MemoryDebugTraceView = {
+  const trace = normalizeTrace({
     ...input,
-    id: input.id || `memtrace-${crypto.randomUUID()}`,
-    prompt: input.prompt ? redactText(input.prompt).slice(0, MAX_PROMPT_CHARS) : null,
-    input: boundedValue(input.input),
-    rawOutput: boundedValue(input.rawOutput),
-    normalizedOutput: boundedValue(input.normalizedOutput)
-  };
+    id: input.id || `memtrace-${crypto.randomUUID()}`
+  });
+  if (!trace) throw new Error("Invalid memory debug trace");
   store.recordMemoryObservation({
     idempotencyKey: `memory-debug-trace:${trace.id}`,
     projectId: trace.projectId,
@@ -190,6 +225,10 @@ export function formatMemoryDebugTrace(trace: MemoryDebugTraceView): string {
     return counts;
   }, {});
   const outcomeText = Object.entries(outcomes).map(([key, value]) => `${key}=${value}`).join(", ") || "none";
+  const formatField = (value: unknown, limit = MAX_FORMAT_FIELD_CHARS): string => {
+    const text = typeof value === "string" ? value : JSON.stringify(value, null, 2) ?? "null";
+    return boundedText(text, limit);
+  };
   return [
     `Memory debug trace ${trace.id}`,
     `Kind: ${trace.kind}`,
@@ -199,6 +238,11 @@ export function formatMemoryDebugTrace(trace: MemoryDebugTraceView): string {
     `Model: ${trace.model ?? "unknown"}`,
     `Prompt version: ${trace.promptVersion}`,
     `Decisions: ${outcomeText}`,
+    `Prompt:\n${formatField(trace.prompt)}`,
+    `Input:\n${formatField(trace.input)}`,
+    `Raw output:\n${formatField(trace.rawOutput)}`,
+    `Normalized output:\n${formatField(trace.normalizedOutput)}`,
+    `Decision details:\n${formatField(trace.decisions, MAX_FORMAT_DECISIONS_CHARS)}`,
     `Persisted: observations=${trace.persisted.observationIds.length}, candidates=${trace.persisted.candidateIds.length}, entities=${trace.persisted.entityIds.length}, relationships=${trace.persisted.relationshipIds.length}, job_entries=${trace.persisted.jobEntryIds.length}`,
     trace.error ? `Error: ${trace.error}` : "Error: none",
     trace.warnings.length > 0 ? `Warnings: ${trace.warnings.join(" ")}` : "Warnings: none"

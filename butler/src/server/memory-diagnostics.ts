@@ -1,4 +1,5 @@
 import type { ButlerStateStore } from "./state-store.js";
+import { redactSensitiveText } from "./redact-sensitive-text.js";
 import type {
   JobMemoryEntryKind,
   JobMemoryPromotionCandidateStatus,
@@ -397,6 +398,27 @@ function formatAge(ms: number | null): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
+function formatSampleLine(value: string): string {
+  const redacted = redactSensitiveText(value).replace(/\s+/g, " ").trim();
+  return redacted.length > 500 ? `${redacted.slice(0, 500)}...[truncated]` : redacted;
+}
+
+function formatMemoryDiagnosticSamples(samples: NonNullable<MemoryDiagnosticsView["samples"]> | undefined): string[] {
+  if (!samples) return [];
+  return [
+    "Samples:",
+    samples.recentObservations.length > 0
+      ? `Recent observations:\n${samples.recentObservations.map((entry, index) => `${index + 1}. ${formatSampleLine(`${entry.id} | ${entry.sourceKind} | ${entry.observedAt} | ${entry.summary}`)}`).join("\n")}`
+      : "Recent observations: none",
+    samples.recentSynthesis.length > 0
+      ? `Recent synthesis:\n${samples.recentSynthesis.map((entry, index) => `${index + 1}. ${formatSampleLine(`${entry.id} | ${entry.status} | ${entry.updatedAt} | ${entry.reason}${entry.lastError ? ` | error=${entry.lastError}` : ""}`)}`).join("\n")}`
+      : "Recent synthesis: none",
+    samples.recentCandidates.length > 0
+      ? `Recent candidates:\n${samples.recentCandidates.map((entry, index) => `${index + 1}. ${formatSampleLine(`${entry.id} | ${entry.status} | ${entry.kind} | ${entry.source} | ${entry.updatedAt} | ${entry.summary}`)}`).join("\n")}`
+      : "Recent candidates: none"
+  ];
+}
+
 export function formatMemoryDiagnostics(view: MemoryDiagnosticsView): string {
   const scope = [
     view.filters.projectId ? `project=${view.filters.projectId}` : null,
@@ -416,6 +438,7 @@ export function formatMemoryDiagnostics(view: MemoryDiagnosticsView): string {
     `Butler memory: total=${view.butlerMemory.total}, sources=${formatCounts(view.butlerMemory.bySource)}`,
     `Embeddings: total=${view.embeddings.total}, models=${formatCounts(view.embeddings.byModel)}, stale=${view.embeddings.stale}`,
     `Graph: entities=${view.graph.entities}, memory_nodes=${view.graph.memoryNodes}, relationships=${view.graph.relationships}, predicates=${formatCounts(view.graph.byPredicate)}, proposed_semantic_edges=${view.graph.proposedSemanticEdges}, confirmed_semantic_edges=${view.graph.confirmedSemanticEdges}, model_reviewed_pairs=${view.graph.modelReviewedPairs}, contradicted=${view.graph.contradicted}, superseded=${view.graph.superseded}, embeddings_missing_graph_nodes=${view.graph.embeddingsMissingGraphNodes}, graph_nodes_missing_embeddings=${view.graph.graphNodesMissingEmbeddings}, tasks=${view.graph.tasks}, task_events=${view.graph.taskEvents}`,
+    ...formatMemoryDiagnosticSamples(view.samples),
     view.warnings.length > 0 ? `Warnings: ${view.warnings.join(" ")}` : "Warnings: none"
   ].join("\n");
 }

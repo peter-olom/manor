@@ -55,9 +55,10 @@ import { buildButlerDelegationTools, buildButlerStackPreviewTools } from "./butl
 import { reviewButlerProofScreenshot } from "./butler-agent-proof-review.js";
 import type { ButlerAgentSessionAccess, ButlerAgentToolAccess } from "./butler-agent-tool-access.js";
 import { BUTLER_TOOL_CATALOG } from "./butler-agent-tool-catalog.js";
-import { keepButlerActivityBefore, normalizeButlerActivitySummaryTurns } from "./butler-activity.js";
+import { keepButlerActivityBefore } from "./butler-activity.js";
+import { ButlerActivitySummaryState } from "./butler-activity-summary-state.js";
 import { loadButlerCallbackState, reconcileReservedCallbackDispatch, saveButlerCallbackState } from "./butler-callback-state.js";
-import { applyCallbackReviewFailure, CallbackReviewScheduler, isCallbackReviewAutomationPause, isCurrentCallbackReview, runCallbackAdversarialReview, selectRunnableCallbackReviews, shouldIgnoreCallbackReviewFailure } from "./butler-callback-review-runner.js";
+import { applyCallbackReviewFailure, beginCallbackReviewAttempt, CallbackReviewScheduler, isCallbackReviewAutomationPause, isCallbackReviewRetryablePause, isCurrentCallbackReview, pauseCallbackReview, persistCallbackReviewProgress, prepareCallbackReviewRetry, runCallbackAdversarialReview, selectRunnableCallbackReviews, shouldIgnoreCallbackReviewFailure } from "./butler-callback-review-runner.js";
 import { blockCloseoutReview, getOperatorCloseoutBlocker as getCloseoutBlocker, idleCloseoutReview, isSameBlockedCloseout, queueCloseoutReview, recordGatedCloseout, relevantTerminalWorkerReport } from "./butler-closeout-gate.js";
 import { backfillOperatorMessagesFromSessionFiles, normalizeOperatorMessages, normalizeOperatorQuestion, removeOperatorMessage, upsertOperatorMessage } from "./butler-operator-messages.js";
 import { postOperatorJobReply as deliverOperatorJobReply, type OperatorJobReplyAccess } from "./butler-operator-closeout.js";
@@ -77,7 +78,8 @@ import {
   updateJobPayload,
   type JobPayloadKind
 } from "./job-instruction-artifacts.js";
-import { readJsonStateFile, writeJsonStateFileAtomic } from "./json-state-file.js";
+import { writeJsonStateFileAtomic } from "./json-state-file.js";
+import { redactSensitiveText } from "./redact-sensitive-text.js";
 import { assertCallbackReviewCurrent, getCallbackReviewExecution, runButlerJobMutationGuardedTool, runOutsideJobMutationContext, runSerializedCallbackReplacement, runSerializedJobMutation, runSerializedJobMutations } from "./butler-job-mutation-guard.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import { createManorModelRegistry, modelToModelOption } from "./model-provider-config.js";
@@ -118,7 +120,6 @@ import { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { PreviewLeaseView, PreviewProofRecordView, PreviewVerificationArtifactView, PreviewVerificationView, ProjectMemoryView } from "./types.js";
 const CALLBACK_RECOVERY_TIMEOUT_MS = 30_000;
-
 import { readPersistedTrace, readPersistedTraceMeta } from "./butler-trace-persistence.js";
 
 function isButlerAuthRecoveryError(message: string | null): boolean {
@@ -142,8 +143,9 @@ export class ButlerAgentService extends EventEmitter {
   private readonly codexConfigDir: string;
   private readonly sessionDir: string;
   private readonly artifactsDir: string;
+  private readonly runtimeThreadId: string;
   private readonly operatorMessageStatePath: string;
-  private readonly activitySummaryStatePath: string;
+  private readonly activitySummaryState: ButlerActivitySummaryState;
   private readonly callbackStatePath: string;
   private readonly refreshRuntimeInventory: (() => Promise<void>) | null;
   private readonly manorRestartRequests: ManorRestartRequestState;
@@ -182,7 +184,7 @@ export class ButlerAgentService extends EventEmitter {
   private readonly storeChangeHandler = () => this.handleStoreChange();
   private recentThreadFocus: Array<{ threadId: string; notedAt: number; reason: string | null }> = [];
   private activeOperatorThreadGuard: ButlerOperatorThreadGuard | null = null;
-  private smokeReactionInFlight = false;
+  private smokeReactionInFlight = false; private quiescing = false;
   private smokeReactionQueued = false;
   private readonly callbackReviewScheduler: CallbackReviewScheduler;
   private readonly callbackReviewNotBefore = new Map<string, number>();
@@ -211,12 +213,17 @@ export class ButlerAgentService extends EventEmitter {
     this.codexConfigDir = options.codexConfigDir;
     this.sessionDir = options.sessionDir;
     this.artifactsDir = options.artifactsDir;
+    this.runtimeThreadId = options.runtimeThreadId?.trim() || "butler";
     this.refreshRuntimeInventory = options.refreshRuntimeInventory ?? null;
     this.memoryScheduler = options.memoryScheduler ?? null;
     this.systemPromptSuffix = options.systemPromptSuffix?.trim() || null;
     this.operatorSink = options.operatorSink ?? null;
     this.operatorMessageStatePath = path.join(this.sessionDir, "operator-messages.json");
-    this.activitySummaryStatePath = path.join(this.sessionDir, "activity-summaries.json");
+    this.activitySummaryState = new ButlerActivitySummaryState(path.join(this.sessionDir, "activity-summaries.json"), this.activitySummaryTurns, (error) => {
+      this.lastError = `Butler activity history could not be saved: ${redactSensitiveText(error instanceof Error ? error.message : String(error))}`;
+      console.warn(this.lastError);
+      this.emit("change");
+    });
     this.callbackStatePath = path.join(this.sessionDir, "chat-callbacks.json");
     this.callbackReviewScheduler = new CallbackReviewScheduler(
       () => this.processCallbackReviews(),
@@ -288,21 +295,11 @@ export class ButlerAgentService extends EventEmitter {
 
   async saveOperatorMessageState(): Promise<void> { normalizeOperatorMessages(this.operatorMessages); await writeJsonStateFileAtomic(this.operatorMessageStatePath, this.operatorMessages); }
 
-  private async loadActivitySummaryState(): Promise<void> {
-    const parsed = await readJsonStateFile(this.activitySummaryStatePath, []);
-    this.activitySummaryTurns.splice(0, this.activitySummaryTurns.length, ...normalizeButlerActivitySummaryTurns(parsed));
-  }
+  private loadActivitySummaryState(): Promise<void> { return this.activitySummaryState.load(); }
 
-  private async saveActivitySummaryState(): Promise<void> { await writeJsonStateFileAtomic(this.activitySummaryStatePath, this.activitySummaryTurns); }
+  private saveActivitySummaryState(): Promise<void> { return this.activitySummaryState.save(); }
 
-  private persistActivitySummaryTurn(turn: ButlerActivityTurnView): void {
-    const nextTurns = normalizeButlerActivitySummaryTurns([
-      ...this.activitySummaryTurns.filter((entry) => entry.id !== turn.id),
-      turn
-    ]);
-    this.activitySummaryTurns.splice(0, this.activitySummaryTurns.length, ...nextTurns);
-    void this.saveActivitySummaryState();
-  }
+  private persistActivitySummaryTurn(turn: ButlerActivityTurnView): void { void this.activitySummaryState.persistTurn(turn); }
 
   private saveCallbackState(): Promise<void> {
     const save = this.callbackStateSaveTail.catch(() => {}).then(() => saveButlerCallbackState({
@@ -318,9 +315,9 @@ export class ButlerAgentService extends EventEmitter {
 
   async notifyDirectCodexMessage(input: DirectCodexMessagePingInput & { threadId: string }): Promise<void> { await notifyDirectCodexMessage(this as unknown as DirectCodexMessageAccess, input); }
   async reserveDirectCodexMessage(input: DirectCodexMessagePingInput & { threadId: string; requestedAt: number }): Promise<{ callback: PendingChatCallback | null; failureCount: number | null; notBefore: number | null }> { const callback = this.pendingChatCallbacks.get(input.threadId); const reservation = { callback: callback ? { ...callback } : null, failureCount: this.callbackReviewFailureCount.get(input.threadId) ?? null, notBefore: this.callbackReviewNotBefore.get(input.threadId) ?? null }; await this.registerPendingChatCallback(input.threadId, { privateSteerText: buildDirectCodexMessagePingSummary(input), nextWorkerReportAction: "review", requestedAt: input.requestedAt, dispatchState: "reserving" }); return reservation; }
-  async markPendingChatCallbackDispatched(threadId: string, requestedAt: number): Promise<void> { await runSerializedCallbackReplacement(threadId, async () => { const callback = this.pendingChatCallbacks.get(threadId); if (!callback || callback.requestedAt !== requestedAt) return; callback.dispatchState = "ready"; callback.updatedAt = Date.now(); await this.saveCallbackState(); this.emit("change"); }); }
-  async rollbackDirectCodexMessage(threadId: string, requestedAt: number, reservation: { callback: PendingChatCallback | null; failureCount: number | null; notBefore: number | null }): Promise<void> { const resume = await runSerializedCallbackReplacement(threadId, async () => { if (this.pendingChatCallbacks.get(threadId)?.requestedAt !== requestedAt) return false; const callback = reservation.callback?.reviewState === "running" ? { ...reservation.callback, reviewState: "queued" as const, updatedAt: Date.now() } : reservation.callback; if (callback) this.pendingChatCallbacks.set(threadId, callback); else this.pendingChatCallbacks.delete(threadId); if (reservation.failureCount === null) this.callbackReviewFailureCount.delete(threadId); else this.callbackReviewFailureCount.set(threadId, reservation.failureCount); if (reservation.notBefore === null) this.callbackReviewNotBefore.delete(threadId); else this.callbackReviewNotBefore.set(threadId, reservation.notBefore); await this.saveCallbackState(); this.emit("change"); return callback?.reviewState === "queued"; }); if (resume) runOutsideJobMutationContext(() => this.callbackReviewScheduler.schedule()); }
-  private async registerPendingChatCallback(threadId: string, options?: { privateSteerText?: string | null; preservePrivateSteer?: boolean; nextWorkerReportAction?: "review" | "reply_to_operator"; requestedAt?: number | null; dispatchState?: "ready" | "reserving" }): Promise<void> { await runSerializedCallbackReplacement(threadId, async () => { assertCallbackReviewCurrent(threadId);
+  async markPendingChatCallbackDispatched(threadId: string, requestedAt: number): Promise<void> { if (this.quiescing) return; await runSerializedCallbackReplacement(threadId, async () => { if (this.quiescing) return; const callback = this.pendingChatCallbacks.get(threadId); if (!callback || callback.requestedAt !== requestedAt) return; callback.dispatchState = "ready"; callback.updatedAt = Date.now(); await this.saveCallbackState(); this.emit("change"); }); }
+  async rollbackDirectCodexMessage(threadId: string, requestedAt: number, reservation: { callback: PendingChatCallback | null; failureCount: number | null; notBefore: number | null }): Promise<void> { if (this.quiescing) return; const resume = await runSerializedCallbackReplacement(threadId, async () => { if (this.quiescing || this.pendingChatCallbacks.get(threadId)?.requestedAt !== requestedAt) return false; const callback = reservation.callback?.reviewState === "running" ? { ...reservation.callback, reviewState: "queued" as const, updatedAt: Date.now() } : reservation.callback; if (callback) this.pendingChatCallbacks.set(threadId, callback); else this.pendingChatCallbacks.delete(threadId); if (reservation.failureCount === null) this.callbackReviewFailureCount.delete(threadId); else this.callbackReviewFailureCount.set(threadId, reservation.failureCount); if (reservation.notBefore === null) this.callbackReviewNotBefore.delete(threadId); else this.callbackReviewNotBefore.set(threadId, reservation.notBefore); await this.saveCallbackState(); this.emit("change"); return callback?.reviewState === "queued"; }); if (resume) runOutsideJobMutationContext(() => this.callbackReviewScheduler.schedule()); }
+  private async registerPendingChatCallback(threadId: string, options?: { privateSteerText?: string | null; preservePrivateSteer?: boolean; nextWorkerReportAction?: "review" | "reply_to_operator"; requestedAt?: number | null; dispatchState?: "ready" | "reserving" }): Promise<void> { if (this.quiescing) throw new Error("Butler session is closing."); await runSerializedCallbackReplacement(threadId, async () => { assertCallbackReviewCurrent(threadId); if (this.quiescing) throw new Error("Butler session is closing.");
     const now = Date.now();
     const requestedAt = typeof options?.requestedAt === "number" && Number.isFinite(options.requestedAt) ? options.requestedAt : now;
     const existing = this.pendingChatCallbacks.get(threadId);
@@ -434,19 +431,19 @@ export class ButlerAgentService extends EventEmitter {
   private describePendingCallbacks(): string {
     return describePendingCallbacks(this.store, [...this.pendingChatCallbacks.values()]);
   }
-  private async reconcilePendingChatCallbacks(): Promise<void> {
+  private async reconcilePendingChatCallbacks(): Promise<void> { if (this.quiescing) return;
     const outstandingCallbacks = [...this.pendingChatCallbacks.values()].filter(isCallbackOutstanding);
     if (outstandingCallbacks.length === 0) {
       return;
     }
     let changed = false;
     await Promise.allSettled(outstandingCallbacks.map((callback) => runSerializedJobMutation(callback.threadId, async () => {
-      if (this.pendingChatCallbacks.get(callback.threadId) !== callback || !isCallbackOutstanding(callback)) return;
+      if (this.quiescing || this.pendingChatCallbacks.get(callback.threadId) !== callback || !isCallbackOutstanding(callback)) return;
       const now = Date.now();
       callback.updatedAt = now;
       try {
-        await loadWorkerThread(this.getWorkerClientAccess(), callback.threadId);
-      } catch {
+        await loadWorkerThread(this.getWorkerClientAccess(), callback.threadId); if (this.quiescing) return;
+      } catch { if (this.quiescing) return;
         if (!this.store.getThread(callback.threadId)) { await this.removeExternalWorkerDelegation(callback.threadId); return; }
         callback.lastWorkerStatusSeen = "unknown";
         changed = true;
@@ -498,7 +495,7 @@ export class ButlerAgentService extends EventEmitter {
         callback.updatedAt = now;
         changed = true;
       }
-    })));
+    }))); if (this.quiescing) return;
 
     if (changed) {
       await this.saveCallbackState();
@@ -507,7 +504,7 @@ export class ButlerAgentService extends EventEmitter {
     await this.processPendingChatCallbacks();
   }
 
-  private async processPendingChatCallbacks(): Promise<boolean> { return runSerializedJobMutations([...this.pendingChatCallbacks.values()].filter((callback) => isCallbackOutstanding(callback) && callback.dispatchState !== "reserving").map((callback) => callback.threadId), async () => {
+  private async processPendingChatCallbacks(): Promise<boolean> { if (this.quiescing) return false; return runSerializedJobMutations([...this.pendingChatCallbacks.values()].filter((callback) => isCallbackOutstanding(callback) && callback.dispatchState !== "reserving").map((callback) => callback.threadId), async () => { if (this.quiescing) return false;
     const outstandingCallbacks = [...this.pendingChatCallbacks.values()].filter((callback) => isCallbackOutstanding(callback) && callback.dispatchState !== "reserving");
     if (outstandingCallbacks.length === 0) {
       return false;
@@ -530,7 +527,7 @@ export class ButlerAgentService extends EventEmitter {
         callback.lastEventAt = relevantWorkerReport.updatedAt;
         callback.lastWorkerStatusSeen = thread.status;
         if (callback.reviewState === "blocked") {
-          if (isCallbackReviewAutomationPause(callback, relevantWorkerReport.updatedAt)) continue;
+          if (isCallbackReviewRetryablePause(callback, relevantWorkerReport.updatedAt)) continue;
           const closeoutBlocker = getCloseoutBlocker(this.store, callback.threadId, { thread, workerReport: relevantWorkerReport });
           if (closeoutBlocker && !closeoutBlocker.startsWith("Adversarial review must finish") && isSameBlockedCloseout(callback, { reason: closeoutBlocker, workerReportUpdatedAt: relevantWorkerReport.updatedAt })) continue;
           queueCloseoutReview(callback, "worker_callback");
@@ -594,6 +591,7 @@ export class ButlerAgentService extends EventEmitter {
   }); }
 
   private handleStoreChange(): void {
+    if (this.quiescing) return;
     runOutsideJobMutationContext(() => { void (async () => {
       await this.processPendingChatCallbacks();
       this.callbackReviewScheduler.schedule();
@@ -630,6 +628,7 @@ export class ButlerAgentService extends EventEmitter {
   }
 
   dispose(): void {
+    this.quiescing = true;
     if (this.statusRefreshTimer) clearInterval(this.statusRefreshTimer);
     this.callbackReviewScheduler.dispose();
     this.statusRefreshTimer = null;
@@ -638,17 +637,16 @@ export class ButlerAgentService extends EventEmitter {
     this.unsubscribeSession = null;
   }
 
-  async refreshModelSettings(): Promise<void> {
-    this.resetCallbackReviewFailures();
-    this.modelRegistry = await createManorModelRegistry(this.piAuthPath);
+  async refreshModelSettings(): Promise<void> { if (this.quiescing) return;
+    this.modelRegistry = await createManorModelRegistry(this.piAuthPath); if (this.quiescing) return;
     this.toolCatalog = this.buildToolCatalog();
-    await this.createOrRefreshSession();
+    await this.createOrRefreshSession(); if (this.quiescing) return;
     this.emit("change");
   }
 
-  private async refreshExternalStatus(): Promise<void> {
+  private async refreshExternalStatus(): Promise<void> { if (this.quiescing) return;
     const nextAuth = await readButlerAuthStatus(this.piAuthPath);
-    const nextCodexAuth = await readCodexAuthStatus(this.codexAuthPath);
+    const nextCodexAuth = await readCodexAuthStatus(this.codexAuthPath); if (this.quiescing) return;
     const clearedStaleAuthError = nextAuth.loggedIn && isButlerAuthRecoveryError(this.lastError);
     const authChanged =
       nextAuth.mode !== this.auth.mode ||
@@ -666,7 +664,7 @@ export class ButlerAgentService extends EventEmitter {
     if (butlerAuthChanged) {
       this.auth = nextAuth;
       this.modelRegistry = await createManorModelRegistry(this.piAuthPath);
-      await this.createOrRefreshSession();
+      await this.createOrRefreshSession(); if (this.quiescing) return;
     }
     if (authChanged) this.resetCallbackReviewFailures();
     if (clearedStaleAuthError) {
@@ -679,14 +677,14 @@ export class ButlerAgentService extends EventEmitter {
       codexAuth: this.codexAuth,
       codexConfigDir: this.codexConfigDir,
       codexHarnessRequired: codexHarnessOnboardingRequired(this.getWorkerDefaults(), getActiveManorSettings())
-    });
+    }); if (this.quiescing) return;
 
     if (JSON.stringify(nextOnboarding) !== JSON.stringify(this.onboarding) || authChanged || clearedStaleAuthError) {
       this.onboarding = nextOnboarding;
       this.emit("change");
     }
 
-    await this.reconcilePendingChatCallbacks();
+    await this.reconcilePendingChatCallbacks(); if (this.quiescing) return;
     this.callbackReviewScheduler.schedule();
   }
   // This is the single discoverable registry for Butler actions and their UI
@@ -891,6 +889,7 @@ export class ButlerAgentService extends EventEmitter {
   }); }
 
   private async processCallbackReviews(): Promise<void> {
+    if (this.quiescing) return;
     const now = Date.now();
     const { pendingReviews, retryAt } = selectRunnableCallbackReviews(
       this.pendingChatCallbacks.values(),
@@ -907,8 +906,7 @@ export class ButlerAgentService extends EventEmitter {
       const liveCallback = await runSerializedJobMutation(callback.threadId, async () => {
         const current = this.pendingChatCallbacks.get(callback.threadId);
         if (!current || !isCallbackOutstanding(current) || current.reviewState !== "queued") return null;
-        current.reviewState = "running";
-        current.updatedAt = Date.now();
+        beginCallbackReviewAttempt(current, this.callbackReviewFailureCount.get(current.threadId) ?? 0);
         await this.saveCallbackState();
         this.emit("change");
         return current;
@@ -924,7 +922,8 @@ export class ButlerAgentService extends EventEmitter {
           piAuthPath: this.piAuthPath,
           scratchDir: path.join(this.sessionDir, "adversarial-review"),
           codexAuthenticated: this.codexAuth.loggedIn || Boolean(process.env.OPENAI_API_KEY?.trim()),
-          isCurrent: () => this.pendingChatCallbacks.get(liveCallback.threadId) === liveCallback && liveCallback.reviewState === "running" && isCallbackOutstanding(liveCallback)
+          isCurrent: () => !this.quiescing && this.pendingChatCallbacks.get(liveCallback.threadId) === liveCallback && liveCallback.reviewState === "running" && isCallbackOutstanding(liveCallback),
+          onProgress: (progress) => { void persistCallbackReviewProgress({ attempted: liveCallback, progress, getCurrent: () => this.pendingChatCallbacks.get(liveCallback.threadId), save: () => this.saveCallbackState(), emit: () => this.emit("change") }).catch((error) => { this.lastError = `Adversarial review progress could not be saved: ${redactSensitiveText(error instanceof Error ? error.message : String(error))}`; this.emit("change"); }); }
         });
       } catch (error) {
         let failureApplied = false;
@@ -972,8 +971,7 @@ export class ButlerAgentService extends EventEmitter {
           return;
         }
 
-        nextCallback.reviewState = "idle";
-        nextCallback.updatedAt = Date.now();
+        idleCloseoutReview(nextCallback);
         await this.saveCallbackState();
         this.emit("change");
       });
@@ -1438,16 +1436,17 @@ export class ButlerAgentService extends EventEmitter {
     access.lastError = null;
     access.emit("change");
   }
-
   getButlerAuthStatus(): ButlerAuthStatus { return this.auth; }
   getCodexAuthStatus(): ButlerAuthStatus { return this.codexAuth; }
-  retryBlockedCallbackReviews(threadId?: string): boolean { const callback = threadId ? this.pendingChatCallbacks.get(threadId) : [...this.pendingChatCallbacks.values()].find(isCallbackReviewAutomationPause); if (!callback || !isCallbackReviewAutomationPause(callback)) return false; this.resetCallbackReviewFailures(callback.threadId); void this.saveCallbackState(); this.callbackReviewScheduler.schedule(); this.emit("change"); return true; }
+  async retryBlockedCallbackReviews(threadId?: string): Promise<boolean> { const callback = threadId ? this.pendingChatCallbacks.get(threadId) : [...this.pendingChatCallbacks.values()].find(isCallbackReviewRetryablePause); if (!callback || !isCallbackReviewRetryablePause(callback)) return false; const model = this.session?.model ?? null; prepareCallbackReviewRetry(callback, { provider: model?.provider ?? null, model: model?.id ?? null, thinkingLevel: getButlerShellSnapshot(this.getSessionAccess()).compose?.thinkingLevel ?? "off" }); this.resetCallbackReviewFailures(callback.threadId); if (callback.reviewState === "blocked") queueCloseoutReview(callback, callback.reviewReason ?? "worker_callback"); await this.saveCallbackState(); this.callbackReviewScheduler.schedule(); this.emit("change"); return true; }
+  async quiesceCallbackReviews(): Promise<void> { if (this.quiescing) return; this.quiescing = true; try { await this.cancelCallbackReview(); } catch (error) { this.quiescing = false; throw error; } this.callbackReviewScheduler.dispose(); this.store.off("change", this.storeChangeHandler); }
+  async cancelCallbackReview(threadId?: string): Promise<boolean> { const threadIds = threadId ? [threadId] : [...this.pendingChatCallbacks.keys()]; return runSerializedJobMutations(threadIds, async () => { const callbacks = threadId ? [this.pendingChatCallbacks.get(threadId)] : [...this.pendingChatCallbacks.values()]; const active = callbacks.filter((callback): callback is PendingChatCallback => Boolean(callback && (callback.reviewState === "running" || callback.reviewState === "queued"))); if (active.length === 0) return false; for (const callback of active) { this.callbackReviewNotBefore.delete(callback.threadId); this.callbackReviewFailureCount.delete(callback.threadId); pauseCallbackReview(callback, this.store.getWorkerReport(callback.threadId)?.updatedAt ?? null); } await this.saveCallbackState(); this.emit("change"); return true; }); }
   async trackScratchPadDelegation(threadId: string): Promise<void> {
     this.queueDelegationAcknowledgement(threadId, `Added to the scratch pad. I started a deeper async pass in job ${threadId} and will return here with the result.`);
     await this.trackExternalWorkerDelegation(threadId);
   }
-  async trackExternalWorkerDelegation(threadId: string): Promise<void> { await runSerializedCallbackReplacement(threadId, async () => {
-    await this.registerPendingChatCallback(threadId, { requestedAt: this.store.getThread(threadId)?.createdAt ?? Date.now() }); this.store.noteButlerSteer(threadId);
+  async trackExternalWorkerDelegation(threadId: string): Promise<void> { if (this.quiescing) throw new Error("Butler session is closing."); await runSerializedCallbackReplacement(threadId, async () => {
+    if (this.quiescing) throw new Error("Butler session is closing."); await this.registerPendingChatCallback(threadId, { requestedAt: this.store.getThread(threadId)?.createdAt ?? Date.now() }); this.store.noteButlerSteer(threadId);
   }); }
   async ensureExternalWorkerDelegation(threadId: string): Promise<void> { const callback = this.pendingChatCallbacks.get(threadId); if (callback && isCallbackOutstanding(callback)) return; const thread = this.store.getThread(threadId); const latestTurnId = getFallbackTurnId(thread); if (latestTurnId) { const closeoutId = buildCloseoutId(threadId, latestTurnId); if (this.deliveredCloseoutIds.has(closeoutId) || this.operatorMessages.some((message) => message.id === `callback-${closeoutId}` || message.id === `callback-fallback-${closeoutId}`)) return; } const latestWorkAt = Math.max(this.store.getWorkerReport(threadId)?.updatedAt ?? 0, thread?.turns.at(-1)?.startedAt ?? 0); if (callback && latestWorkAt <= (callback.closedAt ?? callback.updatedAt)) return; await this.trackExternalWorkerDelegation(threadId); }
   async handoffWorker(input: { sourceThreadId: string; harness: string; model: string; effort: ReasoningEffort | null; butlerThreadId?: string | null }) {

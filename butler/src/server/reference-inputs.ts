@@ -130,7 +130,8 @@ export function buildWorkerInputWithReferences(input: {
   for (const image of images) {
     output.push({
       type: "localImage",
-      path: input.imageStore.getFilePath(image.id) ?? ""
+      path: input.imageStore.getFilePath(image.id) ?? "",
+      mimeType: image.mimeType
     });
   }
 

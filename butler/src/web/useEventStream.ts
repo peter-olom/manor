@@ -44,11 +44,13 @@ const RECONNECT_MAX_MS = 30_000;
 
 export type UseEventStreamResult = {
   connected: boolean;
+  hasConnected: boolean;
   lastEventAt: number | null;
 };
 
 export function useEventStream(handlers: EventStreamHandlers): UseEventStreamResult {
   const [connected, setConnected] = useState(false);
+  const [hasConnected, setHasConnected] = useState(false);
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
   const handlersRef = useRef(handlers);
 
@@ -69,6 +71,7 @@ export function useEventStream(handlers: EventStreamHandlers): UseEventStreamRes
       source.addEventListener("open", () => {
         attempt = 0;
         setConnected(true);
+        setHasConnected(true);
       });
 
       const handlePatch = (event: MessageEvent, channel: "butlerPatch" | "threadPatch") => {
@@ -139,5 +142,5 @@ export function useEventStream(handlers: EventStreamHandlers): UseEventStreamRes
     };
   }, []);
 
-  return { connected, lastEventAt };
+  return { connected, hasConnected, lastEventAt };
 }

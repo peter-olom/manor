@@ -5,7 +5,7 @@ import path from "node:path";
 import WebSocket, { type RawData } from "ws";
 
 export type JsonRpcMessage = {
-  id?: number;
+  id?: number | string;
   method?: string;
   params?: Record<string, unknown>;
   result?: Record<string, unknown>;
@@ -43,7 +43,7 @@ export class CodexAppServerTransport extends EventEmitter {
     private readonly options?: {
       authTokenFile?: string | null;
       onReady?: () => Promise<void>;
-      onClosed?: () => void;
+      onClosed?: (reason: string) => void;
     }
   ) {
     super();
@@ -264,10 +264,9 @@ export class CodexAppServerTransport extends EventEmitter {
       }
       this.pending.clear();
 
-      if (!this.lastError) {
-        this.lastError = "Codex app-server connection closed";
-      }
-      this.options?.onClosed?.();
+      const closeReason = this.lastError || "Codex app-server connection closed";
+      this.lastError = closeReason;
+      this.options?.onClosed?.(closeReason);
       this.scheduleReconnect();
       this.emit("change");
     });
@@ -283,6 +282,19 @@ export class CodexAppServerTransport extends EventEmitter {
   }
 
   private handleMessage(message: JsonRpcMessage): void {
+    if (message.method && (typeof message.id === "number" || typeof message.id === "string")) {
+      this.emit("notification", message);
+      this.socket?.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id: message.id,
+        error: {
+          code: -32601,
+          message: "Interactive Codex app-server requests are unsupported for direct Manor Workers."
+        }
+      }));
+      return;
+    }
+
     if (typeof message.id === "number") {
       const pending = this.pending.get(message.id);
       if (!pending) {

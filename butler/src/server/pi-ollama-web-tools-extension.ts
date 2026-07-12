@@ -18,8 +18,8 @@ const webSearchTool = defineTool({
     "Cite URLs from search or fetch results when they materially support the final answer."
   ],
   parameters: Type.Object({
-    query: Type.String({ description: "The web search query." }),
-    max_results: Type.Optional(Type.Number({ description: "Maximum number of results to return. Defaults to Manor's configured value; max 10." }))
+    query: Type.String({ minLength: 1, description: "The web search query." }),
+    max_results: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, description: "Maximum number of results to return. Defaults to Manor's configured value; max 10." }))
   }),
   async execute(_toolCallId, params) {
     const config = await readOllamaWebToolsConfig();
@@ -40,7 +40,7 @@ const webFetchTool = defineTool({
     "Use web_fetch only for specific URLs that need more detail than the search snippet provides."
   ],
   parameters: Type.Object({
-    url: Type.String({ description: "The URL to fetch." })
+    url: Type.String({ minLength: 1, description: "The URL to fetch." })
   }),
   async execute(_toolCallId, params) {
     const config = await readOllamaWebToolsConfig();

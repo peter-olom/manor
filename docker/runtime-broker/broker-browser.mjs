@@ -284,6 +284,16 @@ export function createBrokerBrowserController(options) {
 
     const routeTarget = parsePreviewRouteTarget(requestedTargetUrl);
     if (!routeTarget) {
+      const parsed = new URL(requestedTargetUrl);
+      const allowedHosts = new Set(
+        [targetHost, reachableHost, browserHost, input.containerName, ...(input.aliases ?? [])]
+          .map((value) => normalizeString(value).toLowerCase())
+          .filter(Boolean)
+      );
+      const requestedPort = Number(parsed.port || (parsed.protocol === "https:" ? 443 : 80));
+      if (!allowedHosts.has(parsed.hostname.toLowerCase()) || requestedPort !== input.targetPort) {
+        throw new Error(`Requested targetUrl does not belong to preview ${input.leaseId}.`);
+      }
       return {
         targetHost,
         reachableHost,
@@ -753,6 +763,7 @@ export function createBrokerBrowserController(options) {
     registerRoutes,
     inspectPlaywrightSidecar,
     closePlaywrightBrowserUseSession,
-    listPreviewSessionIdsForLease
+    listPreviewSessionIdsForLease,
+    resolvePreviewBrowserTarget
   };
 }

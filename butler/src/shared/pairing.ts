@@ -41,7 +41,36 @@ export type PairTraceItem = {
   text: string;
   title?: string;
   at: number;
+  updatedAt?: number;
   completedAt?: number | null;
+};
+
+export type PairButlerActivityOutcome = {
+  status: "active" | "completed" | "failed" | "interrupted" | "cancelled";
+  startedAt: number;
+  completedAt: number | null;
+  detail: string | null;
+};
+
+export type PairReviewStage = "queued" | "preparing" | "reviewing_changes" | "supervising_closeout" | "retry_wait" | "blocked";
+
+export type PairReviewActivity = {
+  state: "queued" | "running" | "blocked";
+  stage: PairReviewStage;
+  attempt: number;
+  maxAttempts: number;
+  startedAt: number | null;
+  deadlineAt: number | null;
+  nextAttemptAt: number | null;
+  lastActivityAt: number | null;
+  lastActivity: string | null;
+  lastTool: string | null;
+  lastError: string | null;
+  errors: Array<{ at: number; stage: PairReviewStage; tool: string | null; message: string }>;
+  modelProvider: string | null;
+  modelId: string | null;
+  thinkingLevel: string | null;
+  retryable: boolean;
 };
 
 export type PairOperatorQuestionOption = {
@@ -82,6 +111,15 @@ export type PairMessage = {
   question?: PairOperatorQuestion;
 };
 
+export type PairWorkerHandoff = {
+  threadId: string;
+  runtime: PairWorkerRuntime | null;
+  harness: PairWorkerHarness | null;
+  provider: string | null;
+  model: string | null;
+  handedOffFrom?: PairWorkerHandoff | null;
+};
+
 export type PairWorker = {
   threadId: string;
   runtime?: PairWorkerRuntime | null;
@@ -99,13 +137,7 @@ export type PairWorker = {
   lastReportSummary: string | null;
   lastReviewedReportAt: number | null;
   requestedReasoningEffort?: string | null;
-  handedOffFrom?: {
-    threadId: string;
-    runtime: PairWorkerRuntime | null;
-    harness: PairWorkerHarness | null;
-    provider: string | null;
-    model: string | null;
-  } | null;
+  handedOffFrom?: PairWorkerHandoff | null;
 };
 
 export type PairModelOption = {
@@ -168,6 +200,9 @@ export type PairComposeSettings = {
 
 export type PairDetail = PairChat & {
   messages: PairMessage[];
+  butlerActivity: PairTraceItem[];
+  butlerActivityOutcome: PairButlerActivityOutcome | null;
+  review: PairReviewActivity | null;
   loadedStart: number;
   hasMore: boolean;
   compose: PairComposeSettings;

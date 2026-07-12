@@ -15,16 +15,18 @@ import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-t
 import type { SessionTitleGenerator } from "./session-title-generator.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { ButlerMessageView, ButlerLivePatchView, ModelOption } from "./types.js";
-import type { PairChat, PairModelOption, PairDetail, PairMessage, PairComposeSettings, PairSummary, PairWorker } from "../shared/pairing.js";
+import type { PairButlerActivityOutcome, PairChat, PairModelOption, PairDetail, PairMessage, PairComposeSettings, PairReviewActivity, PairSummary, PairTraceItem, PairWorker } from "../shared/pairing.js";
 import { DEFAULT_THINKING_LEVELS } from "../shared/pairing.js";
 import { pairTitleIsDefault } from "./pair-store.js";
 import { getUnifiedWorkerCompose, loadWorkerThread, updateUnifiedWorkerCompose, updateWorkerThreadEffort, type WorkerClientAccess } from "./worker-client-router.js";
 import { parseProviderModelRef } from "./model-provider-config.js";
+import { isCallbackReviewRetryablePause } from "./butler-callback-review-runner.js";
+import { redactSensitiveText } from "./redact-sensitive-text.js";
 import { workerThreadIsRunning } from "./worker-thread-status.js";
 
 type PairButlerService = Pick<
   ButlerAgentService,
-  "answerOperatorQuestion" | "dispose" | "ensureExternalWorkerDelegation" | "getMessagePage" | "getShellSnapshot" | "handoffWorker" | "on" | "prompt" | "refreshModelSettings" | "retryBlockedCallbackReviews" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings"
+  "answerOperatorQuestion" | "cancelCallbackReview" | "dispose" | "ensureExternalWorkerDelegation" | "getLiveSnapshot" | "getMessagePage" | "getShellSnapshot" | "handoffWorker" | "on" | "prompt" | "quiesceCallbackReviews" | "refreshModelSettings" | "retryBlockedCallbackReviews" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings"
 >;
 
 type PairSessionManagerOptions = {
@@ -131,6 +133,77 @@ function blockedCloseoutReason(shell: ReturnType<ButlerAgentService["getShellSna
     entry.blockedCloseoutReason.trim()
   );
   return callback?.blockedCloseoutReason ? `Closeout blocked: ${callback.blockedCloseoutReason}` : null;
+}
+
+function mapButlerActivity(
+  service: PairButlerService,
+  messages: ButlerMessageView[] = []
+): { items: PairTraceItem[]; outcome: PairButlerActivityOutcome | null } {
+  const getLiveSnapshot = (service as Partial<PairButlerService>).getLiveSnapshot;
+  if (typeof getLiveSnapshot !== "function") return { items: [], outcome: null };
+  const turns = [...getLiveSnapshot.call(service).activityTurns].reverse();
+  const latestUserAt = messages.reduce((latest, message) =>
+    message.role === "user" || message.role === "user-with-attachments" ? Math.max(latest, message.at ?? 0) : latest, 0);
+  const selectedTurn =
+    turns.find((turn) => turn.status === "active") ??
+    turns.find((turn) => (turn.status !== "completed" || turn.items.length > 0) && turn.startedAt >= latestUserAt - 1_000);
+  if (!selectedTurn) return { items: [], outcome: null };
+  const representedIds = new Set(messages.flatMap((message) => message.trace?.map((item) => item.id) ?? []));
+  const items = selectedTurn.items.filter((item) => !representedIds.has(item.id)).map((item): PairTraceItem => ({
+    id: item.id,
+    type: item.kind === "thinking" ? "reasoning" : "dynamic_tool_call",
+    status: item.status === "active" ? "in_progress" : item.status === "error" ? "failed" : item.status === "stopped" ? "declined" : "completed",
+    text: item.text,
+    title: item.title,
+    at: item.at,
+    updatedAt: item.updatedAt,
+    completedAt: item.status === "active" ? null : item.updatedAt
+  }));
+  return {
+    items,
+    outcome: {
+      status: selectedTurn.status,
+      startedAt: selectedTurn.startedAt,
+      completedAt: selectedTurn.completedAt,
+      detail: selectedTurn.detail ? redactSensitiveText(selectedTurn.detail) : null
+    }
+  };
+}
+
+function mapReviewActivity(
+  pair: PairChat,
+  shell: ReturnType<ButlerAgentService["getShellSnapshot"]>
+): PairReviewActivity | null {
+  const callback = shell.supervision.callbacks.find((entry) =>
+    entry.owesOperatorReply &&
+    entry.callbackState !== "closed" &&
+    (!pair.worker?.threadId || entry.threadId === pair.worker.threadId) &&
+    (entry.reviewState === "queued" || entry.reviewState === "running" || entry.reviewState === "blocked")
+  );
+  if (!callback || callback.reviewState === "idle") return null;
+  const stage = callback.reviewStage ?? (
+    callback.reviewState === "running" ? "preparing" :
+      callback.reviewState === "blocked" ? "blocked" : "queued"
+  );
+  const lastActivity = callback.reviewLastActivity?.replace(/^(Finished [^:]+):[\s\S]*$/, "$1.") ?? null;
+  return {
+    state: callback.reviewState,
+    stage,
+    attempt: Math.max(0, callback.reviewAttempt ?? 0),
+    maxAttempts: 3,
+    startedAt: callback.reviewStartedAt ?? null,
+    deadlineAt: callback.reviewDeadlineAt ?? null,
+    nextAttemptAt: callback.reviewNextAttemptAt ?? null,
+    lastActivityAt: callback.reviewLastActivityAt ?? null,
+    lastActivity: lastActivity ? redactSensitiveText(lastActivity) : null,
+    lastTool: callback.reviewLastTool ?? null,
+    lastError: callback.reviewLastError ? redactSensitiveText(callback.reviewLastError) : null,
+    errors: (callback.reviewErrors ?? []).map((error) => ({ ...error, message: redactSensitiveText(error.message) })),
+    modelProvider: callback.reviewModelProvider ?? null,
+    modelId: callback.reviewModelId ?? null,
+    thinkingLevel: callback.reviewReasoningLevel ?? null,
+    retryable: isCallbackReviewRetryablePause(callback)
+  };
 }
 
 function butlerModelMatchesReference(model: ModelOption, reference: string): boolean {
@@ -278,10 +351,15 @@ export class PairSessionManager {
     const refreshed = this.options.pairStore.getPair(pairId);
     if (!refreshed) return null;
     const page = service.getMessagePage(before, limit);
+    const shell = service.getShellSnapshot();
+    const activity = mapButlerActivity(service, page.messages);
     this.maybeGenerateTitleFromPage(refreshed, page.messages);
     return {
       ...refreshed,
       messages: page.messages.map(mapButlerMessage),
+      butlerActivity: activity.items,
+      butlerActivityOutcome: activity.outcome,
+      review: mapReviewActivity(refreshed, shell),
       messageCount: page.totalCount,
       loadedStart: page.startIndex,
       hasMore: page.hasMore,
@@ -294,9 +372,14 @@ export class PairSessionManager {
     if (!updated) return null;
     const service = this.services.get(pairId)?.service;
     const page = service?.getMessagePage(null, 120);
+    const shell = service?.getShellSnapshot();
+    const activity = service ? mapButlerActivity(service, page?.messages ?? []) : { items: [], outcome: null };
     return {
       ...updated,
       messages: page?.messages.map(mapButlerMessage) ?? [],
+      butlerActivity: activity.items,
+      butlerActivityOutcome: activity.outcome,
+      review: service && shell ? mapReviewActivity(updated, shell) : null,
       messageCount: page?.totalCount ?? updated.messageCount,
       loadedStart: page?.startIndex ?? 0,
       hasMore: page?.hasMore ?? false,
@@ -434,6 +517,7 @@ export class PairSessionManager {
       if (loaded) {
         await awaitPairShutdown(loaded.started, "Butler pair startup");
         await awaitPairShutdown(loaded.service.stopPrompt(), "Butler pair shutdown");
+        await awaitPairShutdown(loaded.service.quiesceCallbackReviews(), "Adversarial review shutdown");
         loaded.service.dispose();
         this.services.delete(pairId);
       }
@@ -575,7 +659,15 @@ export class PairSessionManager {
     const pair = this.options.pairStore.getPair(pairId);
     if (!pair) return null;
     const service = await this.ensureService(pairId);
-    if (!service.retryBlockedCallbackReviews(pair.worker?.threadId)) throw new Error("No paused adversarial review is waiting to retry.");
+    if (!await service.retryBlockedCallbackReviews(pair.worker?.threadId)) throw new Error("No paused adversarial review is waiting to retry.");
+    return this.getPairDetail(pairId, null, 120);
+  }
+
+  async stopReview(pairId: string): Promise<PairDetail | null> {
+    const pair = this.options.pairStore.getPair(pairId);
+    if (!pair) return null;
+    const service = await this.ensureService(pairId);
+    if (!await service.cancelCallbackReview(pair.worker?.threadId)) throw new Error("No active adversarial review is running.");
     return this.getPairDetail(pairId, null, 120);
   }
 
@@ -608,6 +700,7 @@ export class PairSessionManager {
       codexConfigDir: this.options.codexConfigDir,
       sessionDir,
       artifactsDir: this.options.artifactsDir,
+      runtimeThreadId: `butler:${pair.id}`,
       refreshRuntimeInventory: this.options.refreshRuntimeInventory,
       memoryScheduler: this.options.memoryScheduler,
       systemPromptSuffix: pairSystemPrompt(pair.id),
@@ -647,9 +740,17 @@ export class PairSessionManager {
       },
       getWorkerDefaults: () => {
         const current = this.options.pairStore.getPair(pair.id);
+        const runtimeOwnerThreadIds: string[] = [];
+        if (current?.worker?.threadId) runtimeOwnerThreadIds.push(current.worker.threadId);
+        let predecessor = current?.worker?.handedOffFrom ?? null;
+        while (predecessor) {
+          runtimeOwnerThreadIds.push(predecessor.threadId);
+          predecessor = predecessor.handedOffFrom ?? null;
+        }
         return {
           runtime: "auto",
           threadId: current?.worker?.threadId ?? null,
+          ...(runtimeOwnerThreadIds.length > 0 ? { runtimeOwnerThreadIds } : {}),
           harness: current?.workerHarness ?? current?.worker?.harness ?? null,
           model: current?.workerModel ?? current?.worker?.model ?? null,
           effort: current?.workerEffort ?? null
@@ -677,7 +778,7 @@ export class PairSessionManager {
       this.options.pairStore.updatePairSnapshot(pair.id, {
         butlerReady: false,
         butlerPending: false,
-        butlerLastError: error instanceof Error ? error.message : String(error)
+        butlerLastError: redactSensitiveText(error instanceof Error ? error.message : String(error))
       });
       throw error;
     });
@@ -740,7 +841,7 @@ export class PairSessionManager {
       butlerReady: shell.ready,
       butlerPending: shell.pending || shell.isStreaming,
       butlerPendingReason: blockedCloseoutReason(shell),
-      butlerLastError: (pair ? butlerModelAvailabilityError(pair, shell) : null) ?? shell.lastError,
+      butlerLastError: redactSensitiveText((pair ? butlerModelAvailabilityError(pair, shell) : null) ?? shell.lastError ?? "") || null,
       messageCount: messageCount ?? latestPage?.totalCount ?? 0,
       lastMessage: latestMessage ? mapButlerMessage(latestMessage) : null,
       updatedAt: latestMessage?.at ?? Date.now()

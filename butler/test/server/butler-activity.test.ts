@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { getButlerActivityTurns, keepButlerActivityBefore, recordButlerActivityEvent } from "../../src/server/butler-activity.js";
+import { finalizeButlerActivityTurn, getButlerActivityTurns, keepButlerActivityBefore, normalizeButlerActivitySummaryTurns, recordButlerActivityEvent } from "../../src/server/butler-activity.js";
 import type { ButlerAgentSessionAccess } from "../../src/server/butler-agent-tool-access.js";
 
 function makeAccess(): ButlerAgentSessionAccess {
@@ -81,6 +81,145 @@ test("Butler activity captures thinking updates and tool calls without final tex
   assert.equal(turns[0]?.items[1]?.title, "list_jobs");
   assert.equal(turns[0]?.items[1]?.status, "completed");
   assert.equal(turns[0]?.items[1]?.text, "count: 3");
+});
+
+test("failed Butler turns persist their failure and do not complete active tools", () => {
+  const access = makeAccess();
+  recordButlerActivityEvent(access, { type: "agent_start" } as never);
+  recordButlerActivityEvent(access, {
+    type: "tool_execution_start",
+    toolCallId: "tool-failed",
+    toolName: "inspect_filesystem",
+    args: { path: "/repos" }
+  } as never);
+  recordButlerActivityEvent(access, {
+    type: "agent_end",
+    messages: [{
+      role: "assistant",
+      stopReason: "error",
+      errorMessage: "Provider failed with Authorization: Bearer opaque-token-123456"
+    }]
+  } as never);
+
+  const persisted = access.activitySummaryTurns[0];
+  assert.equal(persisted?.status, "failed");
+  assert.equal(persisted?.items[0]?.status, "error");
+  assert.equal(persisted?.detail, "Provider failed with Authorization: Bearer [REDACTED]");
+
+  const reloaded = normalizeButlerActivitySummaryTurns(JSON.parse(JSON.stringify(access.activitySummaryTurns)));
+  assert.equal(reloaded[0]?.status, "failed");
+  assert.equal(reloaded[0]?.items[0]?.status, "error");
+  assert.equal(reloaded[0]?.detail, "Provider failed with Authorization: Bearer [REDACTED]");
+});
+
+test("immediate provider failures persist even when no activity item started", () => {
+  const access = makeAccess();
+  recordButlerActivityEvent(access, { type: "agent_start" } as never);
+  recordButlerActivityEvent(access, {
+    type: "agent_end",
+    messages: [{ role: "assistant", stopReason: "error", errorMessage: "Provider connection closed before streaming." }]
+  } as never);
+
+  const reloaded = normalizeButlerActivitySummaryTurns(JSON.parse(JSON.stringify(access.activitySummaryTurns)));
+  assert.equal(reloaded.length, 1);
+  assert.equal(reloaded[0]?.status, "failed");
+  assert.equal(reloaded[0]?.items.length, 0);
+  assert.equal(getButlerActivityTurns({ ...access, activityTurns: [], activitySummaryTurns: reloaded } as never)[0]?.detail, "Provider connection closed before streaming.");
+});
+
+test("pre-agent attachment failures create a durable zero-item turn", () => {
+  const access = makeAccess();
+
+  finalizeButlerActivityTurn(access, "failed", "Attachment image-1 could not be decoded.", 250, 100);
+
+  const snapshot = getButlerActivityTurns(access);
+  assert.equal(snapshot.length, 1);
+  assert.deepEqual(snapshot[0], {
+    id: "butler-activity-100-1",
+    status: "failed",
+    startedAt: 100,
+    completedAt: 250,
+    detail: "Attachment image-1 could not be decoded.",
+    items: []
+  });
+
+  const reloaded = normalizeButlerActivitySummaryTurns(JSON.parse(JSON.stringify(access.activitySummaryTurns)));
+  assert.equal(reloaded.length, 1);
+  assert.equal(reloaded[0]?.status, "failed");
+  assert.equal(reloaded[0]?.detail, "Attachment image-1 could not be decoded.");
+  assert.deepEqual(reloaded[0]?.items, []);
+});
+
+test("prompt rejection reuses a failure already finalized by agent_end", () => {
+  const access = makeAccess();
+  recordButlerActivityEvent(access, { type: "agent_start" } as never);
+  recordButlerActivityEvent(access, {
+    type: "agent_end",
+    messages: [{ role: "assistant", stopReason: "error", errorMessage: "Provider stream failed." }]
+  } as never);
+  const existingId = access.activityTurns[0]?.id;
+
+  finalizeButlerActivityTurn(access, "failed", "Provider prompt rejected.", Date.now() + 10, 0);
+
+  assert.equal(access.activityTurns.length, 1);
+  assert.equal(access.activityTurns[0]?.id, existingId);
+  assert.equal(access.activityTurns[0]?.status, "failed");
+  assert.equal(access.activityTurns[0]?.detail, "Provider prompt rejected.");
+});
+
+test("interrupted Butler turns remain stopped after persistence reload", () => {
+  const access = makeAccess();
+  recordButlerActivityEvent(access, { type: "agent_start" } as never);
+  recordButlerActivityEvent(access, {
+    type: "tool_execution_start",
+    toolCallId: "tool-stopped",
+    toolName: "web_fetch",
+    args: { url: "https://example.com" }
+  } as never);
+  recordButlerActivityEvent(access, {
+    type: "agent_end",
+    messages: [{ role: "assistant", stopReason: "aborted" }]
+  } as never);
+
+  const reloaded = normalizeButlerActivitySummaryTurns(JSON.parse(JSON.stringify(access.activitySummaryTurns)));
+  assert.equal(reloaded[0]?.status, "interrupted");
+  assert.equal(reloaded[0]?.items[0]?.status, "stopped");
+  assert.equal(reloaded[0]?.detail, "Butler was stopped before the turn finished.");
+});
+
+test("Butler activity keeps distinct tool calls that reuse a provider content index", () => {
+  const access = makeAccess();
+  recordButlerActivityEvent(access, { type: "agent_start" } as never);
+  recordButlerActivityEvent(access, {
+    type: "message_update",
+    message: { role: "assistant", content: [] },
+    assistantMessageEvent: {
+      type: "toolcall_end",
+      contentIndex: 0,
+      toolCall: { type: "toolCall", id: "tool-1", name: "inspect_filesystem", arguments: { path: "/repos" } },
+      partial: { role: "assistant", content: [] }
+    }
+  } as never);
+  recordButlerActivityEvent(access, { type: "tool_execution_start", toolCallId: "tool-1", toolName: "inspect_filesystem", args: { path: "/repos" } } as never);
+  recordButlerActivityEvent(access, { type: "tool_execution_end", toolCallId: "tool-1", toolName: "inspect_filesystem", result: { type: "directory" }, isError: false } as never);
+  recordButlerActivityEvent(access, {
+    type: "message_update",
+    message: { role: "assistant", content: [] },
+    assistantMessageEvent: {
+      type: "toolcall_end",
+      contentIndex: 0,
+      toolCall: { type: "toolCall", id: "tool-2", name: "ask_operator", arguments: { questions: [] } },
+      partial: { role: "assistant", content: [] }
+    }
+  } as never);
+  recordButlerActivityEvent(access, { type: "tool_execution_end", toolCallId: "tool-2", toolName: "ask_operator", result: { posted: true }, isError: false } as never);
+  recordButlerActivityEvent(access, { type: "agent_end", messages: [] } as never);
+
+  const tools = getButlerActivityTurns(access)[0]?.items.filter((item) => item.kind === "tool") ?? [];
+  assert.deepEqual(tools.map((item) => [item.toolCallId, item.title]), [
+    ["tool-1", "inspect_filesystem"],
+    ["tool-2", "ask_operator"]
+  ]);
 });
 
 test("Butler activity strips markdown thinking and humanizes tool content", () => {

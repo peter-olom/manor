@@ -90,7 +90,7 @@ export function useLiveButlerTurn(threadId: string): UseLiveButlerTurnResult {
   return { state, completedTraces, reset, applyPatch };
 }
 
-function applyPatchToState(
+export function applyPatchToState(
   current: LiveTurnState,
   patch: ProviderRuntimeLivePatch,
   setCompletedTraces: React.Dispatch<React.SetStateAction<CompletedTrace[]>>
@@ -141,8 +141,8 @@ function applyPatchToState(
     }
     case "item-lifecycle": {
       if (!patch.turnId || !patch.itemId) return current;
-      if (current.turnId === null) {
-        return {
+      const base = current.turnId === null
+        ? {
           ...current,
           turnId: patch.turnId,
           items: new Map(),
@@ -151,17 +151,17 @@ function applyPatchToState(
           status: "streaming",
           startedAt: patch.at,
           completedAt: null
-        };
-      }
-      if (patch.turnId !== current.turnId) return current;
+        }
+        : current;
+      if (patch.turnId !== base.turnId) return current;
       if (patch.itemType === "assistant_message") {
         return {
-          ...current,
+          ...base,
           assistantItemId: patch.itemId,
-          assistantText: patch.text || current.assistantText
+          assistantText: patch.text || base.assistantText
         };
       }
-      const next = new Map(current.items);
+      const next = new Map(base.items);
       const existing = next.get(patch.itemId);
       next.set(patch.itemId, {
         id: patch.itemId,
@@ -170,33 +170,34 @@ function applyPatchToState(
         text: patch.text,
         title: patch.title,
         at: existing?.at ?? patch.at,
+        updatedAt: patch.at,
         completedAt: patch.status === "completed" ? patch.at : null
       });
-      return { ...current, items: next };
+      return { ...base, items: next };
     }
     case "content-delta": {
       if (!patch.turnId || !patch.itemId) return current;
-      if (current.turnId === null) {
-        return {
+      const base = current.turnId === null
+        ? {
           ...current,
           turnId: patch.turnId,
           items: new Map(),
-          assistantItemId: patch.itemType === "assistant_message" ? patch.itemId : null,
-          assistantText: patch.itemType === "assistant_message" ? patch.delta : "",
+          assistantItemId: null,
+          assistantText: "",
           status: "streaming",
           startedAt: patch.at,
           completedAt: null
-        };
-      }
-      if (patch.turnId !== current.turnId) return current;
+        }
+        : current;
+      if (patch.turnId !== base.turnId) return current;
       if (patch.itemType === "assistant_message" || patch.streamKind === "assistant_text") {
         return {
-          ...current,
+          ...base,
           assistantItemId: patch.itemId,
-          assistantText: current.assistantText + patch.delta
+          assistantText: base.assistantText + patch.delta
         };
       }
-      const next = new Map(current.items);
+      const next = new Map(base.items);
       const existing = next.get(patch.itemId);
       const type = toTraceItemType(patch.itemType);
       next.set(patch.itemId, {
@@ -206,9 +207,30 @@ function applyPatchToState(
         text: (existing?.text ?? "") + patch.delta,
         title: existing?.title,
         at: existing?.at ?? patch.at,
+        updatedAt: patch.at,
         completedAt: existing?.completedAt ?? null
       });
-      return { ...current, items: next };
+      return { ...base, items: next };
+    }
+    case "runtime-message": {
+      const next = new Map(current.items);
+      const itemId = `runtime-message-${patch.at}`;
+      next.set(itemId, {
+        id: itemId,
+        type: "error",
+        status: patch.tone === "error" ? "failed" : "completed",
+        text: patch.message,
+        title: patch.tone === "error" ? "Runtime error" : "Runtime warning",
+        at: patch.at,
+        updatedAt: patch.at,
+        completedAt: patch.at
+      });
+      return {
+        ...current,
+        items: next,
+        status: patch.tone === "error" ? "failed" : current.status,
+        completedAt: patch.tone === "error" ? patch.at : current.completedAt
+      };
     }
     default:
       return current;

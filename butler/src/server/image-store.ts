@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import type { ImageContent } from "@mariozechner/pi-ai";
+import { loadPiImageFiles } from "./pi-image-loader.js";
 
 export type WorkerInputItem =
   | {
@@ -12,6 +13,7 @@ export type WorkerInputItem =
   | {
       type: "localImage";
       path: string;
+      mimeType?: string;
     }
   | {
       type: "skill";
@@ -251,7 +253,8 @@ export class ImageReferenceStore {
     for (const reference of references) {
       input.push({
         type: "localImage",
-        path: reference.filePath
+        path: reference.filePath,
+        mimeType: reference.mimeType
       });
     }
 
@@ -264,10 +267,9 @@ export class ImageReferenceStore {
 
   async loadPiImages(imageReferenceIds: string[]): Promise<ImageContent[]> {
     const references = this.resolveRecords(imageReferenceIds);
-    return Promise.all(
-      references.map(async (reference) => ({
-        type: "image" as const,
-        data: (await fs.readFile(reference.filePath)).toString("base64"),
+    return loadPiImageFiles(
+      references.map((reference) => ({
+        path: reference.filePath,
         mimeType: reference.mimeType
       }))
     );

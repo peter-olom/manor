@@ -8,8 +8,7 @@ export function registerBrokerServiceRoutes(options) {
     sharedWorkNetwork,
     hasBrokerAccess,
     authorizeScopedThread,
-    requireServiceContainer,
-    resolveAttachedThreadId,
+    requireAuthorizedServiceResource,
     findStackNetwork,
     normalizeString,
     normalizeStringArray,
@@ -267,34 +266,16 @@ export function registerBrokerServiceRoutes(options) {
   });
 
   app.get("/services/:serviceId", async (request, response) => {
-    const required = await requireServiceContainer(request.params.serviceId, response);
-    if (!required) {
-      return;
-    }
+    const required = await requireAuthorizedServiceResource(request, response, request.params.serviceId);
+    if (!required) return;
     const { containerName, container } = required;
-    const effectiveThreadId = await resolveAttachedThreadId(
-      container.Config?.Labels?.["manor.thread-id"] || null,
-      container.Config?.Labels?.["manor.stack-id"] || null
-    );
-    if (!authorizeScopedThread(request, response, effectiveThreadId)) {
-      return;
-    }
 
     response.json(await serializeInspectedService(containerName, container));
   });
 
   app.get("/services/:serviceId/processes", async (request, response) => {
-    const required = await requireServiceContainer(request.params.serviceId, response);
-    if (!required) {
-      return;
-    }
-    const effectiveThreadId = await resolveAttachedThreadId(
-      required.container.Config?.Labels?.["manor.thread-id"] || null,
-      required.container.Config?.Labels?.["manor.stack-id"] || null
-    );
-    if (!authorizeScopedThread(request, response, effectiveThreadId)) {
-      return;
-    }
+    const required = await requireAuthorizedServiceResource(request, response, request.params.serviceId);
+    if (!required) return;
 
     try {
       const top = await required.containerRef.top();
@@ -308,17 +289,8 @@ export function registerBrokerServiceRoutes(options) {
   });
 
   app.get("/services/:serviceId/logs", async (request, response) => {
-    const required = await requireServiceContainer(request.params.serviceId, response);
-    if (!required) {
-      return;
-    }
-    const effectiveThreadId = await resolveAttachedThreadId(
-      required.container.Config?.Labels?.["manor.thread-id"] || null,
-      required.container.Config?.Labels?.["manor.stack-id"] || null
-    );
-    if (!authorizeScopedThread(request, response, effectiveThreadId)) {
-      return;
-    }
+    const required = await requireAuthorizedServiceResource(request, response, request.params.serviceId);
+    if (!required) return;
 
     const tailRaw = Number(request.query.tail ?? "200");
     const tail = Number.isFinite(tailRaw) && tailRaw > 0 ? Math.min(Math.trunc(tailRaw), 1000) : 200;
@@ -342,17 +314,8 @@ export function registerBrokerServiceRoutes(options) {
   });
 
   app.post("/services/:serviceId/exec", async (request, response) => {
-    const required = await requireServiceContainer(request.params.serviceId, response);
-    if (!required) {
-      return;
-    }
-    const effectiveThreadId = await resolveAttachedThreadId(
-      required.container.Config?.Labels?.["manor.thread-id"] || null,
-      required.container.Config?.Labels?.["manor.stack-id"] || null
-    );
-    if (!authorizeScopedThread(request, response, effectiveThreadId)) {
-      return;
-    }
+    const required = await requireAuthorizedServiceResource(request, response, request.params.serviceId);
+    if (!required) return;
 
     const command = typeof request.body?.command === "string" ? request.body.command.trim() : "";
     const commandArgs = normalizeExecArgs(request.body?.commandArgs);

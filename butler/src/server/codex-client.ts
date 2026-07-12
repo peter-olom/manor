@@ -13,6 +13,7 @@ import { CodexAppServerTransport, type JsonRpcMessage } from "./codex-app-server
 import { cleanupFailedCodexStart, rejectFailedCodexStart } from "./codex-failed-start-cleanup.js";
 import { CodexProviderAdapter } from "./codex-provider-adapter.js";
 import { ProviderRuntimeIngestion } from "./provider-runtime-ingestion.js";
+import { persistCodexTransportCloseFailures } from "./codex-transport-close.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import type { CodexThreadPatchView, ModelOption, ReasoningEffort, RuntimeCleanupTaskView } from "./types.js";
 import type { ProviderRuntimeEvent, ProviderRuntimeLivePatch } from "../shared/provider-runtime.js";
@@ -304,11 +305,11 @@ export class CodexAppServerClient extends EventEmitter {
         this.emit("threadsSeeded");
         this.store.enableMilestones();
       },
-      onClosed: () => {
-        this.resumedThreadIds.clear();
-        this.directControlThreadIds.clear();
-        this.activeTurnIds.clear();
-        this.operationGuard.clear();
+      onClosed: (reason) => {
+        persistCodexTransportCloseFailures({ reason, activeTurns: [...this.activeTurnIds], ingestion: this.providerRuntimeIngestion,
+          onError: (message) => { this.lastError = message; this.emit("change"); }
+        });
+        this.resumedThreadIds.clear(); this.directControlThreadIds.clear(); this.activeTurnIds.clear(); this.operationGuard.clear();
       }
     });
     this.codexProviderAdapter = new CodexProviderAdapter(this.transport);

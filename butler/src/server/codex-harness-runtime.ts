@@ -3,6 +3,7 @@ import { ButlerStateStore } from "./state-store.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import type { PreviewLeaseView, ServiceLeaseView, StackLeaseView } from "./types.js";
+import { preserveMissingPreviewLeaseTombstones } from "./preview-lease-reconciliation.js";
 
 type HarnessRuntimeAccess = {
   store: ButlerStateStore;
@@ -161,11 +162,7 @@ export async function reconcileHarnessThreadPreviews(access: HarnessRuntimeAcces
     .listPreviewLeases()
     .filter((lease) => lease.status !== "stopped" && isLeaseVisibleToThread(access.store, lease, threadId));
 
-  for (const lease of storedLeases) {
-    if (!brokerLeaseMap.has(lease.id)) {
-      access.store.removePreviewLease(lease.id);
-    }
-  }
+  preserveMissingPreviewLeaseTombstones(access.store, new Set(brokerLeaseMap.keys()), storedLeases);
 
   for (const lease of brokerLeases) {
     access.store.upsertPreviewLease(lease);

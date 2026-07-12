@@ -52,6 +52,7 @@ export type ButlerToolDefiner = <TParams extends Record<string, unknown>>(defini
 }) => ButlerCustomTool;
 
 export type ButlerAgentToolAccess = {
+  runtimeThreadId: string;
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;
   piRpcWorkerClient: PiRpcWorkerClient | null;
@@ -87,6 +88,8 @@ export type ButlerAgentToolAccess = {
   ): {
     id: string;
     threadId: string | null;
+    projectId: string;
+    projectLabel: string;
     worktreePath: string | null;
     title: string;
     networkName: string;
@@ -126,6 +129,7 @@ export type ButlerAgentToolAccess = {
     threadId: string | null
   ): {
     id: string;
+    threadId: string | null;
     title: string;
     runtimeKind: "container" | "embedded";
     connection: { host: string; port: number; uri: string | null };
@@ -211,6 +215,7 @@ export type ButlerAgentToolAccess = {
   getWorkerDefaults?: () => {
     runtime: "auto" | "openai" | "pi-rpc" | null;
     threadId?: string | null;
+    runtimeOwnerThreadIds?: string[];
     harness?: string | null;
     model?: string | null;
     effort?: string | null;
@@ -243,6 +248,7 @@ export type ButlerAgentSessionAccess = {
   codexAuthPath: string;
   codexConfigDir: string;
   sessionDir: string;
+  runtimeThreadId: string;
   operatorMessages: ButlerMessageView[];
   pendingOperatorMessages: ButlerMessageView[];
   pendingOperatorMessageSequence: number;

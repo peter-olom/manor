@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { matchHarnessThreadPreview, matchHarnessThreadStack } from "../../src/server/codex-harness-runtime.js";
+import {
+  matchHarnessThreadPreview,
+  matchHarnessThreadStack,
+  reconcileHarnessThreadPreviews
+} from "../../src/server/codex-harness-runtime.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import type { PreviewLeaseView, StackLeaseView } from "../../src/server/types.js";
 
@@ -101,4 +105,28 @@ test("non-sticky job-owned leases stay scoped to their owning Codex job", async 
 
   assert.equal(matchHarnessThreadStack(store, "next-thread", "Warm stack"), null);
   assert.equal(matchHarnessThreadPreview(store, "next-thread", "warm"), null);
+});
+
+test("preview reconciliation preserves a failed tombstone when the broker loses a runtime", async () => {
+  const store = await createStore();
+  store.upsertPreviewLease(previewLease());
+
+  const leases = await reconcileHarnessThreadPreviews(
+    {
+      store,
+      runtimeBroker: {
+        async listLeases() {
+          return [];
+        }
+      },
+      serviceTemplateRegistry: {}
+    } as any,
+    "owner-thread"
+  );
+
+  const retained = store.getPreviewLease("preview-1");
+  assert.ok(retained);
+  assert.equal(retained.status, "failed");
+  assert.match(retained.lastError ?? "", /disappeared from the runtime broker/);
+  assert.equal(leases.some((lease) => lease.id === "preview-1"), true);
 });

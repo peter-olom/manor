@@ -173,6 +173,20 @@ test("manor-harness preserves service exec cwd as an in-container path", async (
   assert.equal(serviceAbsoluteExec.params?.cwd, "/data");
 });
 
+test("manor-harness forwards explicit stack promotion confirmation", async () => {
+  const request = await captureHarnessAction([
+    "stack", "promote", "stack-alpha",
+    "--to", "project-alpha-base",
+    "--confirm-target", "project-alpha-base"
+  ]);
+  assert.equal(request.action, "stack.promote");
+  assert.deepEqual(request.params, {
+    stackId: "stack-alpha",
+    targetStorageKey: "project-alpha-base",
+    confirmTargetStorageKey: "project-alpha-base"
+  });
+});
+
 test("manor-harness forwards payload current requests", async () => {
   const request = await captureHarnessAction(["--thread", "thread-1", "payload", "current"]);
   assert.equal(request.action, "payload.current");

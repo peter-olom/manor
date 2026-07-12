@@ -12,6 +12,7 @@ import { ButlerStateStore } from "./state-store.js";
 import { elapsedTaskDurationMs } from "./task-timing.js";
 import { BUTLER_BACKGROUND_PROMPT_PREFIX, isButlerBackgroundPromptText, stripEphemeralButlerTurns } from "./butler-background-context.js";
 export { BUTLER_BACKGROUND_PROMPT_PREFIX, BUTLER_EPHEMERAL_BACKGROUND_PROMPT_PREFIX, isButlerBackgroundPromptText } from "./butler-background-context.js";
+export { buildJobDetail } from "./butler-job-detail.js";
 import type { WorkspaceProjectDirectory } from "./repo-worktree.js";
 import type {
   ButlerThreadCallbackView,
@@ -67,10 +68,6 @@ export const MAX_HISTORY_PAGE_SIZE = 1000;
 const MAX_BACKGROUND_HISTORY_TEXT_CHARS = 20_000;
 const MAX_HISTORY_TEXT_PART_CHARS = 80_000;
 const MAX_TOOL_RESULT_TEXT_CHARS = 40_000;
-const JOB_DETAIL_MAX_TURNS = 12;
-const JOB_DETAIL_MAX_ITEMS_PER_TURN = 30;
-const JOB_DETAIL_ITEM_TEXT_CHARS = 2_000;
-const JOB_DETAIL_MAX_CHARS = 50_000;
 const TOOL_RESULT_DETAIL_KEY_LIMIT = 16;
 const THREAD_ID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const ATTACHMENT_SUMMARY_TEXT_PATTERN = /^Attached \d+ (?:image|images|file|files|attachment|attachments)(?:, \d+ (?:image|images|file|files|attachment|attachments))*$/;
@@ -577,63 +574,6 @@ export function shouldAllowLocalThreadFallback(store: ButlerStateStore, threadId
   const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
   const retryable = message.includes("failed to locate rollout") || message.includes("thread not found") || message.includes("thread not loaded");
   return retryable && Boolean(store.getThread(threadId));
-}
-
-export function buildJobDetail(store: ButlerStateStore, threadId: string): string {
-  const thread = store.getThread(threadId);
-  if (!thread) {
-    return `Job ${threadId} was not found.`;
-  }
-  const lease = store.getThreadPreviewLease(threadId);
-  const jobMemory = store.getJobMemory(threadId);
-  const checklist = store.getSupervisionChecklist(threadId);
-  const checklistSummary = checklist
-    ? checklist.items.map((item) => `${item.id}:${item.status}:${item.text}`).join(" | ")
-    : "(none)";
-
-  const omittedTurnCount = Math.max(0, thread.turns.length - JOB_DETAIL_MAX_TURNS);
-  const selectedTurns = thread.turns.slice(-JOB_DETAIL_MAX_TURNS);
-  let omittedItemCount = 0;
-  const turns = selectedTurns
-    .map((turn, turnIndex) => {
-      const selectedItems = turn.items.slice(-JOB_DETAIL_MAX_ITEMS_PER_TURN);
-      const omittedItemsForTurn = Math.max(0, turn.items.length - selectedItems.length);
-      omittedItemCount += omittedItemsForTurn;
-      const items = selectedItems
-        .map((item, itemIndex) => {
-          const text = truncateText(item.text, JOB_DETAIL_ITEM_TEXT_CHARS, "job item text").text;
-          return `${omittedTurnCount + turnIndex + 1}.${omittedItemsForTurn + itemIndex + 1} ${item.type} (${item.status}) ${text}`.trim();
-        })
-        .join("\n");
-      const omittedItems = omittedItemsForTurn > 0 ? `\n[${omittedItemsForTurn} earlier items omitted from this turn.]` : "";
-      return `Turn ${omittedTurnCount + turnIndex + 1} | id=${turn.id} | status=${turn.status}${omittedItems}\n${items}`;
-    })
-    .join("\n\n");
-
-  const detail = [
-    `Job ${thread.id}`,
-    `project=${thread.supervisor.projectLabel}`,
-    `status=${thread.status}`,
-    `source=${thread.source}`,
-    `task=${thread.supervisor.latestUserPrompt ?? thread.executionContract?.requestedTask ?? "(empty)"}`,
-    `contract=${thread.executionContract ? "present" : "none"}`,
-    `checklist=${checklistSummary}`,
-    lease ? `operator_preview=${lease.operatorUrl}` : "operator_preview=(none)",
-    `summary=${thread.supervisor.summary}`,
-    jobMemory?.latestCheckpoint ? `latest_checkpoint=${jobMemory.latestCheckpoint}` : "latest_checkpoint=(none)",
-    jobMemory?.nextAction ? `next_action=${jobMemory.nextAction}` : "next_action=(none)",
-    jobMemory && jobMemory.blockers.length > 0 ? `blockers=${jobMemory.blockers.join(" | ")}` : "blockers=(none)",
-    jobMemory && jobMemory.promotionCandidates.length > 0
-      ? `promotion_candidates=${jobMemory.promotionCandidates
-          .map((candidate) => `${candidate.kind}:${candidate.status}:${candidate.summary}`)
-          .join(" | ")}`
-      : "promotion_candidates=(none)",
-    omittedTurnCount > 0 ? `omitted_earlier_turns=${omittedTurnCount}` : null,
-    omittedItemCount > 0 ? `omitted_earlier_items=${omittedItemCount}` : null,
-    turns || "No turn details loaded yet."
-  ].filter((entry): entry is string => typeof entry === "string").join("\n");
-
-  return truncateText(detail, JOB_DETAIL_MAX_CHARS, "job detail").text;
 }
 
 export function buildProjectsSummary(store: ButlerStateStore, limit: number): string {

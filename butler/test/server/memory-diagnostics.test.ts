@@ -179,8 +179,13 @@ test("memory diagnostics summarizes pipeline counts and date filtering", async (
   assert.equal(diagnostics.graph.confirmedSemanticEdges, 1);
   assert.equal(diagnostics.graph.modelReviewedPairs, 1);
   assert.equal(diagnostics.samples?.recentCandidates.length, 2);
-  assert.match(formatMemoryDiagnostics(diagnostics), /Candidates: total=2/);
-  assert.match(formatMemoryDiagnostics(diagnostics), /confirmed_semantic_edges=1/);
+  const formatted = formatMemoryDiagnostics(diagnostics);
+  assert.match(formatted, /Candidates: total=2/);
+  assert.match(formatted, /confirmed_semantic_edges=1/);
+  assert.match(formatted, /Samples:/);
+  assert.match(formatted, /Recent observations:/);
+  assert.match(formatted, /failed synthesis/);
+  assert.match(formatted, /Pending review candidate/);
 });
 
 test("harness memory diagnostics returns the shared structured report", async () => {

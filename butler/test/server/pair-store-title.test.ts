@@ -325,6 +325,39 @@ test("attachWorker replaces only the named worker and preserves handoff identity
   });
 });
 
+test("attachWorker preserves the full Worker lineage across repeated handoffs", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-pair-lineage-test-"));
+  const pairPath = path.join(dir, "pairs.json");
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  for (const id of ["thread-first", "thread-second", "thread-third"]) {
+    store.upsertThreadSummary({ id, source: "appServer", status: "idle", turns: [] });
+  }
+  const pairStore = new PairStore(pairPath, store);
+  await pairStore.load();
+  const created = pairStore.createPair();
+  pairStore.attachWorker(created.id, { threadId: "thread-first", runtime: "openai" });
+  pairStore.attachWorker(created.id, {
+    threadId: "thread-second",
+    runtime: "pi-rpc",
+    replacesThreadId: "thread-first"
+  });
+
+  const updated = pairStore.attachWorker(created.id, {
+    threadId: "thread-third",
+    runtime: "openai",
+    replacesThreadId: "thread-second"
+  });
+
+  assert.equal(updated?.worker?.threadId, "thread-third");
+  assert.equal(updated?.worker?.handedOffFrom?.threadId, "thread-second");
+  assert.equal(updated?.worker?.handedOffFrom?.handedOffFrom?.threadId, "thread-first");
+
+  await pairStore.flushPendingSave();
+  const reloaded = new PairStore(pairPath, store);
+  await reloaded.load();
+  assert.equal(reloaded.getPair(created.id)?.worker?.handedOffFrom?.handedOffFrom?.threadId, "thread-first");
+});
+
 test("active workers with an interim blocked report stay running", async () => {
   const { pairStore, store } = await createPairHarness();
   const created = pairStore.createPair();

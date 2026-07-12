@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { applyCallbackReviewFailure, buildCallbackAdversarialReviewBrief, buildGuardedCallbackReviewTools, isCallbackReviewAutomationPause, isCurrentCallbackReview, selectRunnableCallbackReviews, shouldIgnoreCallbackReviewFailure } from "../../src/server/butler-callback-review-runner.js";
+import { applyCallbackReviewFailure, applyCallbackReviewProgress, assertCallbackSupervisorPromptSucceeded, buildCallbackAdversarialReviewBrief, buildGuardedCallbackReviewTools, CallbackReviewScheduler, isCallbackReviewAutomationPause, isCallbackReviewOperatorPause, isCallbackReviewRetryablePause, isCurrentCallbackReview, pauseCallbackReview, prepareCallbackReviewRetry, selectRunnableCallbackReviews, shouldIgnoreCallbackReviewFailure } from "../../src/server/butler-callback-review-runner.js";
+import { blockCloseoutReview } from "../../src/server/butler-closeout-gate.js";
 import type { PendingChatCallback } from "../../src/server/butler-agent-helpers.js";
 import { loadButlerCallbackState } from "../../src/server/butler-callback-state.js";
 import { buildJobPayload } from "../../src/server/job-instruction-artifacts.js";
@@ -53,6 +54,30 @@ test("callback review queue waits for backoff and keeps ready work ordered", () 
   assert.equal(selected.retryAt, now + 5_000);
 });
 
+test("disposed callback review scheduler drops queued and future runs", async () => {
+  let runs = 0;
+  let release!: () => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const scheduler = new CallbackReviewScheduler(async () => {
+    runs += 1;
+    markStarted();
+    await blocked;
+  }, () => undefined);
+
+  scheduler.schedule();
+  await started;
+  scheduler.schedule();
+  scheduler.dispose();
+  release();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  scheduler.schedule();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(runs, 1);
+});
+
 test("callback review failures back off twice and then block closeout", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-review-retry-"));
   const store = new ButlerStateStore(path.join(dir, "state.json"));
@@ -62,6 +87,9 @@ test("callback review failures back off twice and then block closeout", async ()
 
   applyCallbackReviewFailure({ callback: target, error: new Error("provider unavailable"), store, failureCount, notBefore });
   assert.equal(target.reviewState, "queued");
+  assert.equal(target.reviewStage, "retry_wait");
+  assert.equal(target.reviewLastError, "provider unavailable");
+  assert.equal(target.reviewNextAttemptAt, notBefore.get(target.threadId));
   assert.ok((notBefore.get(target.threadId) ?? 0) > Date.now());
 
   applyCallbackReviewFailure({ callback: target, error: new Error("provider unavailable"), store, failureCount, notBefore });
@@ -69,21 +97,160 @@ test("callback review failures back off twice and then block closeout", async ()
 
   applyCallbackReviewFailure({ callback: target, error: new Error("provider unavailable"), store, failureCount, notBefore });
   assert.equal(target.reviewState, "blocked");
+  assert.equal(target.reviewStage, "blocked");
+  assert.equal(target.reviewLastError, "provider unavailable");
+  assert.equal(target.reviewNextAttemptAt, null);
   assert.match(target.blockedCloseoutReason ?? "", /paused after 3 failed attempts/);
   assert.equal(isCallbackReviewAutomationPause(target, target.blockedCloseoutReportAt), true);
 });
 
-test("callback review interrupted by restart resumes from the queue", async () => {
+test("a later timeout preserves the exact earlier review tool failure", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-review-history-"));
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  const target = callback("worker", Date.now());
+  target.reviewState = "running";
+  target.reviewStage = "reviewing_changes";
+  applyCallbackReviewProgress(target, {
+    stage: "reviewing_changes",
+    message: "Failed find: fd is unavailable",
+    at: Date.now(),
+    toolName: "find",
+    error: "fd is unavailable",
+    deadlineAt: Date.now() + 120_000
+  });
+
+  applyCallbackReviewFailure({ callback: target, error: new Error("review was inactive for 120s"), store, failureCount: new Map(), notBefore: new Map() });
+
+  assert.deepEqual(target.reviewErrors?.map((error) => ({ tool: error.tool, message: error.message })), [
+    { tool: "find", message: "fd is unavailable" },
+    { tool: null, message: "review was inactive for 120s" }
+  ]);
+});
+
+test("review recovery and a later closeout blocker clear stale current errors", () => {
+  const target = callback("worker", Date.now());
+  target.reviewState = "running";
+  target.reviewStage = "reviewing_changes";
+  applyCallbackReviewProgress(target, {
+    stage: "reviewing_changes",
+    message: "Failed read_job",
+    at: 100,
+    toolName: "read_job",
+    error: "temporary tool failure",
+    deadlineAt: 1_000
+  });
+  assert.equal(target.reviewLastError, "temporary tool failure");
+
+  applyCallbackReviewProgress(target, {
+    stage: "supervising_closeout",
+    message: "Review recovered and reached closeout checks.",
+    at: 200,
+    toolName: null,
+    deadlineAt: 1_000
+  });
+  assert.equal(target.reviewLastError, null);
+  assert.equal(target.reviewErrors?.[0]?.message, "temporary tool failure");
+
+  target.reviewLastError = "stale failure";
+  blockCloseoutReview(target, {
+    reason: "Acceptance point api-proof still needs request evidence.",
+    reviewReason: "worker_callback",
+    workerReportUpdatedAt: 300
+  });
+  assert.equal(target.reviewLastError, null);
+  assert.equal(target.blockedCloseoutReason, "Acceptance point api-proof still needs request evidence.");
+});
+
+test("review progress clears preparation deadlines and rolls inactivity deadlines forward", () => {
+  const target = callback("worker", 1);
+  target.reviewState = "running";
+  target.reviewDeadlineAt = 120_000;
+
+  applyCallbackReviewProgress(target, {
+    stage: "preparing",
+    message: "Preparing an isolated workspace.",
+    at: 240_001,
+    deadlineAt: null
+  });
+  assert.equal(target.reviewState, "running");
+  assert.equal(target.reviewDeadlineAt, null);
+
+  applyCallbackReviewProgress(target, {
+    stage: "reviewing_changes",
+    message: "Reviewer is still active.",
+    at: 300_000,
+    deadlineAt: 420_000
+  });
+  assert.equal(target.reviewState, "running");
+  assert.equal(target.reviewDeadlineAt, 420_000);
+});
+
+test("isolated supervisor rejects provider errors and incomplete closeout decisions", () => {
+  assert.throws(() => assertCallbackSupervisorPromptSucceeded([{
+    role: "assistant",
+    stopReason: "error",
+    errorMessage: "Supervisor provider failed with api_key=sk-abcdefghijklmnop"
+  }], false, "ollama-cloud/glm-5.2"), (error: unknown) => {
+    assert.equal((error as Error).message, "Supervisor provider failed with api_key=[REDACTED]");
+    return true;
+  });
+
+  assert.throws(() => assertCallbackSupervisorPromptSucceeded([{
+    role: "assistant",
+    stopReason: "stop",
+    content: [{ type: "text", text: "I reviewed the report." }]
+  }], false, "ollama-cloud/glm-5.2"), /without completing a closeout or Worker follow-up action/);
+
+  assert.doesNotThrow(() => assertCallbackSupervisorPromptSucceeded([{
+    role: "assistant",
+    stopReason: "stop",
+    content: []
+  }], true, "ollama-cloud/glm-5.2"));
+});
+
+test("manual retry repins the review to the current Butler model", () => {
+  const target = callback("worker", Date.now());
+  target.reviewModelProvider = "opencode-go";
+  target.reviewModelId = "glm-5.2";
+  target.reviewReasoningLevel = "high";
+  target.reviewAttempt = 3;
+
+  prepareCallbackReviewRetry(target, { provider: "openai-codex", model: "gpt-5.5", thinkingLevel: "medium" }, 200);
+
+  assert.equal(target.reviewModelProvider, "openai-codex");
+  assert.equal(target.reviewModelId, "gpt-5.5");
+  assert.equal(target.reviewReasoningLevel, "medium");
+  assert.equal(target.reviewAttempt, 0);
+  assert.equal(target.reviewLastActivityAt, 200);
+});
+
+test("callback review interrupted by restart pauses for explicit retry", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-review-restart-"));
   const callbackStatePath = path.join(dir, "callbacks.json");
   const persisted = callback("worker", Date.now());
   persisted.reviewState = "running";
+  persisted.reviewStage = "reviewing_changes";
+  persisted.reviewAttempt = 2;
+  persisted.reviewStartedAt = Date.now();
+  persisted.reviewDeadlineAt = Date.now() + 120_000;
+  persisted.reviewLastActivity = "Running grep.";
+  persisted.reviewLastActivityAt = Date.now();
+  persisted.reviewLastError = "grep failed: rg unavailable";
+  persisted.reviewErrors = [{ at: Date.now(), stage: "reviewing_changes", tool: "grep", message: "rg unavailable" }];
   await writeFile(callbackStatePath, JSON.stringify({ callbackRecords: [persisted] }), "utf8");
   const callbacks = new Map<string, PendingChatCallback>();
 
   await loadButlerCallbackState({ callbackStatePath, pendingChatCallbacks: callbacks, deliveredCloseoutIds: new Set() });
 
-  assert.equal(callbacks.get("worker")?.reviewState, "queued");
+  assert.equal(callbacks.get("worker")?.reviewState, "blocked");
+  assert.equal(callbacks.get("worker")?.reviewStage, "blocked");
+  assert.equal(callbacks.get("worker")?.reviewAttempt, 2);
+  assert.equal(callbacks.get("worker")?.reviewStartedAt, null);
+  assert.equal(callbacks.get("worker")?.reviewDeadlineAt, null);
+  assert.equal(callbacks.get("worker")?.reviewLastActivity, "Running grep.");
+  assert.equal(callbacks.get("worker")?.reviewLastError, "grep failed: rg unavailable");
+  assert.equal(callbacks.get("worker")?.reviewErrors?.[0]?.message, "rg unavailable");
+  assert.match(callbacks.get("worker")?.blockedCloseoutReason ?? "", /paused after restart/);
   assert.equal(callbacks.get("worker")?.reviewModelId, "gpt-5-codex");
   assert.equal(callbacks.get("worker")?.reviewReasoningLevel, "high");
 
@@ -92,8 +259,17 @@ test("callback review interrupted by restart resumes from the queue", async () =
   persisted.blockedCloseoutReportAt = persisted.updatedAt;
   await writeFile(callbackStatePath, JSON.stringify({ callbackRecords: [persisted] }), "utf8");
   await loadButlerCallbackState({ callbackStatePath, pendingChatCallbacks: callbacks, deliveredCloseoutIds: new Set() });
-  assert.equal(callbacks.get("worker")?.reviewState, "queued");
-  assert.equal(callbacks.get("worker")?.blockedCloseoutReason, null);
+  assert.equal(callbacks.get("worker")?.reviewState, "blocked");
+  assert.match(callbacks.get("worker")?.blockedCloseoutReason ?? "", /expired token/);
+
+  persisted.reviewState = "queued";
+  persisted.reviewStage = "retry_wait";
+  persisted.blockedCloseoutReason = null;
+  persisted.reviewNextAttemptAt = Date.now() + 30_000;
+  await writeFile(callbackStatePath, JSON.stringify({ callbackRecords: [persisted] }), "utf8");
+  await loadButlerCallbackState({ callbackStatePath, pendingChatCallbacks: callbacks, deliveredCloseoutIds: new Set() });
+  assert.equal(callbacks.get("worker")?.reviewState, "blocked");
+  assert.match(callbacks.get("worker")?.blockedCloseoutReason ?? "", /paused after restart/);
 });
 
 test("adversarial review brief carries Butler's latest steering and unresolved decisions", async () => {
@@ -127,7 +303,9 @@ test("adversarial review brief carries Butler's latest steering and unresolved d
     note: "No negative-path proof.",
     nextInstruction: "Add an exhausted-retry assertion."
   });
-  store.addEvent(target.threadId, "butler.context.held", "The operator needs the original error preserved.");
+  for (let index = 1; index <= 7; index += 1) {
+    store.addEvent(target.threadId, "butler.context.held", `Held correction ${index}.`);
+  }
   store.recordWorkerReviewResults(target.threadId, [{
     id: "finding-old",
     reviewSource: "adversarial_review",
@@ -149,7 +327,10 @@ test("adversarial review brief carries Butler's latest steering and unresolved d
   const brief = buildCallbackAdversarialReviewBrief(store, target);
   assert.match(brief, /Check the timeout recovery path/);
   assert.match(brief, /not sent to the Worker/);
-  assert.match(brief, /original error preserved/);
+  assert.match(brief, /original error for the operator/);
+  assert.doesNotMatch(brief, /Held correction [12]\./);
+  for (const index of [3, 4, 5, 6, 7]) assert.match(brief, new RegExp(`Held correction ${index}\\.`));
+  assert.ok(brief.indexOf("Held correction 3.") < brief.indexOf("Held correction 7."));
   assert.match(brief, /Add an exhausted-retry assertion/);
   assert.match(brief, /retry loop hides the original error/);
 });
@@ -162,6 +343,17 @@ test("a replacement callback is a new review generation", () => {
   assert.equal(shouldIgnoreCallbackReviewFailure(attempted, replacement), true);
   attempted.callbackState = "closed";
   attempted.owesOperatorReply = false;
+  assert.equal(shouldIgnoreCallbackReviewFailure(attempted, attempted), true);
+});
+
+test("an operator-stopped review stays stopped and ignores its in-flight failure", () => {
+  const attempted = callback("worker", 1);
+  attempted.reviewState = "running";
+  pauseCallbackReview(attempted, 10, 20);
+
+  assert.equal(isCallbackReviewAutomationPause(attempted), false);
+  assert.equal(isCallbackReviewOperatorPause(attempted, 10), true);
+  assert.equal(isCallbackReviewRetryablePause(attempted, 10), true);
   assert.equal(shouldIgnoreCallbackReviewFailure(attempted, attempted), true);
 });
 

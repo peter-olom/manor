@@ -66,7 +66,7 @@ import type {
 
 async function atomicWriteText(filePath: string, content: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
   try {
     await fs.writeFile(tmpPath, content, "utf8");
     await fs.rename(tmpPath, filePath);
@@ -106,7 +106,7 @@ export type StateStoreInternalAccess = {
   deletedCodexThreadIds: Set<string>; retiredWorkerThreadIds: Set<string>; latestStartedTurnIds: Map<string, string>; latestCompletedTurnIds: Map<string, string>; latestBlockedTurnIds: Map<string, string>;
   windows: ButlerWindow[];
   focusedWindowId: string | null;
-  saveTimer: NodeJS.Timeout | null;
+  saveTimer: NodeJS.Timeout | null; saveTail: Promise<void>;
   threadInventoryReady: boolean;
   previewLeaseTtlMs: number;
   stackLeaseTtlMs: number;
@@ -1234,7 +1234,7 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     access.threadInventoryReady = false;
   }
 }
-export async function persistStateStoreNow(access: StateStoreInternalAccess): Promise<void> {
+async function persistStateStoreSnapshot(access: StateStoreInternalAccess): Promise<void> {
   access.windows = access.windows.map((window) => normalizeWindow(window, access.threads.get(window.threadId)));
   const payload: PersistedUiState = {
     threads: access.listThreads().map((thread) => access.toThreadDetailView(access.threads.get(thread.id) ?? access.getOrCreateThread(thread.id))),
@@ -1268,6 +1268,7 @@ export async function persistStateStoreNow(access: StateStoreInternalAccess): Pr
   await atomicWriteText(access.uiStatePath, JSON.stringify(payload, null, 2));
   await persistStateStoreSqliteMemory(access);
 }
+export function persistStateStoreNow(access: StateStoreInternalAccess): Promise<void> { const save = access.saveTail.catch(() => undefined).then(() => persistStateStoreSnapshot(access)); access.saveTail = save; return save; }
 
 export async function flushStateStoreSave(access: StateStoreInternalAccess): Promise<void> {
   if (access.saveTimer) {
@@ -1284,7 +1285,7 @@ export function queueStateStoreSave(access: StateStoreInternalAccess): void {
 
   access.saveTimer = setTimeout(() => {
     access.saveTimer = null;
-    void persistStateStoreNow(access);
+    void persistStateStoreNow(access).catch((error) => console.error("Butler state save failed", error));
   }, 150);
 }
 

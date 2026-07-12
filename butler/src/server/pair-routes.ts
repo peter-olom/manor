@@ -82,6 +82,19 @@ export function registerPairRoutes(access: PairRouteAccess): void {
     }
   });
 
+  app.post("/api/pairs/:pairId/stop-review", async (request, response) => {
+    try {
+      const pair = await pairSessions.stopReview(request.params.pairId);
+      if (!pair) {
+        response.status(404).json({ error: "Butler session not found" });
+        return;
+      }
+      response.json({ pair });
+    } catch (error) {
+      response.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.post("/api/pairs/:pairId/worker/handoff", async (request, response) => {
     const model = readString(request.body?.model);
     const harness = readString(request.body?.harness);

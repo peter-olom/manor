@@ -4,73 +4,36 @@ import { Type } from "@sinclair/typebox";
 
 import { decoratePreviewVerification } from "./preview-verification.js";
 import { buildWorkerInputWithReferences } from "./reference-inputs.js";
+import { formatPreviewRuntimeDiagnostics } from "./runtime-broker-client.js";
+import { observeStartedPreview } from "./butler-preview-bootstrap-observer.js";
 import { buildButlerStackTools } from "./butler-agent-stack-tools.js";
+import { normalizeBrowserSessionCookies } from "./butler-browser-tool-input.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import { reviewPreviewProofSchema, startPreviewSchema, stringMapSchema } from "./butler-agent-tool-schemas.js";
+import { formatButlerToolOutput } from "./butler-tool-output.js";
+import {
+  assertRuntimeAttachedThreadsOwned,
+  assertRuntimeResourceOwned,
+  getRuntimeOwnerThreadIds,
+  getRuntimeStartThreadId,
+  isRuntimeResourceOwned
+} from "./butler-runtime-tool-ownership.js";
+import {
+  formatLeaseLifecycle,
+  normalizeLeaseTtlMs,
+  requireCaptureMetadata,
+  resolveStickyFlag,
+  withRequestedLeaseLifecycle
+} from "./butler-runtime-lease-tool-helpers.js";
 import type { PreviewProofReviewView, ReasoningEffort } from "./types.js";
 import { buildDelegationRoutingDecision } from "./butler-delegation-routing.js";
 import { assertCallbackReviewCurrent } from "./butler-job-mutation-guard.js";
 import { isSharedShellRepoBootstrapTask } from "./thread-contract.js";
 import { applyWorkspacePreviewDefaults, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 import type { ButlerRoutingDecisionView } from "./types.js";
-import { deleteWorkerThread, startWorkerThread } from "./worker-client-router.js";
-
-function workerHarnessLabel(harness: string): string {
-  if (harness === "codex") return "Codex";
-  if (harness === "pi") return "Pi";
-  return harness;
-}
-
-export function workerProviderModelRoute(provider: string | null, model: string | null): string {
-  const providerLabel = provider?.trim() || "the selected provider";
-  const modelLabel = model?.trim() || "default";
-  return provider && modelLabel.startsWith(`${provider}/`) ? modelLabel : `${providerLabel}/${modelLabel}`;
-}
-
-function normalizeLeaseTtlMs(leaseTtlMinutes: unknown): number | null {
-  const numeric = typeof leaseTtlMinutes === "number" ? leaseTtlMinutes : Number(leaseTtlMinutes);
-  if (!Number.isFinite(numeric) || numeric <= 0) {
-    return null;
-  }
-  return Math.max(60_000, Math.trunc(numeric * 60_000));
-}
-
-function resolveStickyFlag(input: { sticky?: boolean; pinned?: boolean }): boolean | undefined {
-  if (typeof input.sticky === "boolean") {
-    return input.sticky;
-  }
-  if (typeof input.pinned === "boolean") {
-    return input.pinned;
-  }
-  return undefined;
-}
-
-function withRequestedLeaseLifecycle<T extends object>(
-  lease: T,
-  input: { sticky?: boolean; pinned?: boolean; leaseTtlMinutes?: number }
-): T & { pinned?: boolean; leaseTtlMs?: number | null } {
-  const pinned = resolveStickyFlag(input);
-  const leaseTtlMs = normalizeLeaseTtlMs(input.leaseTtlMinutes);
-  return {
-    ...lease,
-    ...(typeof pinned === "boolean" ? { pinned } : {}),
-    ...(leaseTtlMs !== null ? { leaseTtlMs } : {})
-  };
-}
-
-function formatLeaseLifecycle(lease: {
-  pinned?: boolean;
-  lifecycleState?: string;
-  leaseTtlMs?: number | null;
-  expiresAt?: number | null;
-} & object): string {
-  const state = lease.pinned ? "sticky" : lease.lifecycleState ?? "active";
-  const ttlMinutes =
-    typeof lease.leaseTtlMs === "number" && Number.isFinite(lease.leaseTtlMs)
-      ? Math.max(1, Math.round(lease.leaseTtlMs / 60_000))
-      : null;
-  const expiry = typeof lease.expiresAt === "number" && Number.isFinite(lease.expiresAt) ? ` expires=${new Date(lease.expiresAt).toISOString()}` : "";
-  return `lease=${state}${ttlMinutes ? ` ttl=${ttlMinutes}m` : ""}${expiry}`;
-}
+import { deleteWorkerThread, startWorkerThread, stopWorkerThread } from "./worker-client-router.js";
+import { workerHarnessLabel, workerProviderModelRoute } from "./butler-worker-tool-format.js";
+export { workerProviderModelRoute } from "./butler-worker-tool-format.js";
 
 export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
   return [
@@ -84,14 +47,14 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       uiEffects: access.getToolUiEffects("list_previews"),
       execute: async () => {
         const syncError = await access.refreshRuntimeInventoryIfAvailable();
-        const leases = access.store.listPreviewLeases();
+        const leases = access.store.listPreviewLeases().filter((lease) => isRuntimeResourceOwned(access, lease));
         const summary =
           leases.length === 0
             ? "No preview leases are active."
             : leases
                 .map(
                   (lease, index) =>
-                    `${index + 1}. ${lease.title} | thread=${lease.threadId ?? "(none)"} | status=${lease.status}/${lease.bootstrap.phase} | ${formatLeaseLifecycle(lease)} | route=${lease.operatorUrl}`
+                    `${index + 1}. ${lease.title} | id=${lease.id} | thread=${lease.threadId ?? "(none)"} | status=${lease.status}/${lease.bootstrap.phase} | ${formatLeaseLifecycle(lease)} | route=${lease.operatorUrl}`
                 )
                 .join("\n");
         const text = syncError ? `Live runtime sync failed; showing cached state. ${syncError}\n${summary}` : summary;
@@ -106,74 +69,9 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       label: "Start preview",
       description: "Start a disposable preview runtime on the internal Manor network and expose it through a stable route.",
       promptSnippet: "start_preview: use this when a job needs a live reviewable app preview instead of a raw host port.",
-      parameters: Type.Object({
-        threadId: Type.Optional(Type.String()),
-        cwd: Type.Optional(Type.String()),
-        title: Type.String({ minLength: 1 }),
-        command: Type.String({ minLength: 1 }),
-        port: Type.Number({ minimum: 1, maximum: 65535 }),
-        stackId: Type.Optional(Type.String()),
-        aliases: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-        env: Type.Optional(Type.Record(Type.String(), Type.String())),
-        image: Type.Optional(Type.String()),
-        egressProfile: Type.Optional(
-          Type.String({
-            minLength: 1,
-            description: "Defaults to direct internet access. Use 'none' to block outbound traffic or a named preview egress profile such as 'web' to restrict it."
-          })
-        ),
-        egressDomains: Type.Optional(
-          Type.Array(
-            Type.String({
-              minLength: 1,
-              description: "Explicit domain allowlist for this preview only, such as api.openrouter.ai or .cloudflare.com."
-            })
-          )
-        ),
-        bootstrapWaitSeconds: Type.Optional(
-          Type.Number({
-            minimum: 1,
-            description: "How long the preview may spend bootstrapping before the heartbeat is treated as failed."
-          })
-        ),
-        bootstrapHint: Type.Optional(
-          Type.String({
-            minLength: 1,
-            description: "Short hint like 'installing deps' or 'running migrations'."
-          })
-        ),
-        heartbeatKind: Type.Optional(
-          Type.String({
-            minLength: 1,
-            description: "Heartbeat type: none, http, tcp, or command. Defaults to http for previews."
-          })
-        ),
-        heartbeatTarget: Type.Optional(
-          Type.String({
-            minLength: 1,
-            description: "Heartbeat target such as /health, 127.0.0.1:3000, or a shell command. Defaults to / when the heartbeat kind is omitted."
-          })
-        ),
-        heartbeatIntervalSeconds: Type.Optional(
-          Type.Number({
-            minimum: 1,
-            description: "How often Manor should retry the heartbeat during bootstrap."
-          })
-        ),
-        sticky: Type.Optional(
-          Type.Boolean({
-            description: "Keep this preview lease across automatic cleanup so later jobs can reuse it."
-          })
-        ),
-        leaseTtlMinutes: Type.Optional(
-          Type.Number({
-            minimum: 1,
-            description: "Override the cleanup TTL for this preview lease when sticky is false."
-          })
-        )
-      }),
+      parameters: startPreviewSchema(),
       uiEffects: access.getToolUiEffects("start_preview"),
-      execute: async (_toolCallId, params) => {
+      execute: async (_toolCallId, params, signal) => {
         const typedParams = params as {
           threadId?: string;
           cwd: string;
@@ -188,15 +86,17 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           egressDomains?: string[];
           bootstrapWaitSeconds?: number;
           bootstrapHint?: string;
-          heartbeatKind?: string;
+          heartbeatKind?: "none" | "http" | "tcp" | "command";
           heartbeatTarget?: string;
           heartbeatIntervalSeconds?: number;
           sticky?: boolean;
           leaseTtlMinutes?: number;
         };
 
-        const thread = typedParams.threadId ? access.store.getThread(typedParams.threadId) ?? null : null;
-        const stack = access.getValidatedStack(typedParams.stackId?.trim() || null, typedParams.threadId ?? null);
+        const threadId = getRuntimeStartThreadId(access, typedParams.threadId, "start_preview");
+        const thread = access.store.getThread(threadId) ?? null;
+        const stack = access.getValidatedStack(typedParams.stackId?.trim() || null, null);
+        if (stack) assertRuntimeResourceOwned(access, stack, `Stack ${stack.id}`);
         const leaseId = crypto.randomUUID();
         const worktreePath = typedParams.cwd?.trim() || stack?.worktreePath || thread?.cwd || "";
         const project = access.resolveWorkspaceProject(
@@ -220,16 +120,16 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           workspaceBootstrap
         );
 
-        const lease = withRequestedLeaseLifecycle(await access.runtimeBroker.createLease({
+        let lease = withRequestedLeaseLifecycle(await access.runtimeBroker.createLease({
           leaseId,
-          threadId: typedParams.threadId ?? null,
+          threadId,
           projectId: project.id,
           projectLabel: project.label,
           title: typedParams.title,
           stackId: stack?.id ?? null,
           aliases: access.normalizeStringArray(typedParams.aliases),
           worktreePath,
-          branchName: thread?.cwd === typedParams.cwd ? null : null,
+          branchName: thread && worktreePath === thread.cwd ? thread.executionContract?.branch ?? null : null,
           targetPort: typedParams.port,
           command: typedParams.command,
           workspaceMode: "snapshot",
@@ -238,12 +138,33 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           egressDomains: previewDefaults.egressDomains ?? [],
           bootstrapWaitSeconds: typedParams.bootstrapWaitSeconds,
           bootstrapHint: previewDefaults.bootstrapHint,
-          heartbeatKind: typedParams.heartbeatKind as "none" | "http" | "tcp" | "command" | undefined,
+          heartbeatKind: typedParams.heartbeatKind,
           heartbeatTarget: typedParams.heartbeatTarget,
           heartbeatIntervalSeconds: typedParams.heartbeatIntervalSeconds,
           env: access.normalizeServiceEnv(typedParams.env)
         }), typedParams);
         access.store.upsertPreviewLease(lease);
+
+        const observation = await observeStartedPreview({
+          access,
+          lease,
+          lifecycle: typedParams,
+          bootstrapWaitSeconds: typedParams.bootstrapWaitSeconds,
+          signal
+        });
+        lease = observation.lease;
+        if (observation.pending) {
+          const heartbeat = lease.bootstrap.lastHeartbeatError ? ` Last bootstrap signal: ${lease.bootstrap.lastHeartbeatError}.` : "";
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Preview ${lease.title} is still starting at ${lease.operatorUrl}. Bootstrap=${lease.bootstrap.phase}.${heartbeat} Use inspect_preview with lease id ${lease.id} for the terminal result.`
+              }
+            ],
+            details: { lease, runtime: observation.runtime, pending: true, workspaceBootstrap, previewDefaults }
+          };
+        }
 
         return {
           content: [
@@ -262,17 +183,26 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       description: "Stop a preview runtime and release its lease.",
       promptSnippet: "stop_preview: use this when preview work is done or a stale preview should be cleaned up.",
       parameters: Type.Object({
-        leaseId: Type.String()
+        leaseId: Type.String({ minLength: 1 })
       }),
       uiEffects: access.getToolUiEffects("stop_preview"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as { leaseId: string };
-        access.store.markPreviewLeaseStopping(typedParams.leaseId);
-        await access.runtimeBroker.stopLease(typedParams.leaseId);
-        access.store.removePreviewLease(typedParams.leaseId);
+        const preview = access.requireValidatedPreview(typedParams.leaseId, null);
+        assertRuntimeResourceOwned(access, preview, `Preview ${preview.id}`);
+        const cached = access.store.getPreviewLease(preview.id);
+        if (!cached) throw new Error(`Preview ${preview.id} is not present in cached runtime state.`);
+        access.store.markPreviewLeaseStopping(preview.id);
+        try {
+          await access.runtimeBroker.stopLease(preview.id);
+        } catch (error) {
+          access.store.upsertPreviewLease(cached);
+          throw error;
+        }
+        access.store.removePreviewLease(preview.id);
         return {
-          content: [{ type: "text", text: `Stopped preview ${typedParams.leaseId}.` }],
-          details: { leaseId: typedParams.leaseId }
+          content: [{ type: "text", text: `Stopped preview ${preview.id}.` }],
+          details: { leaseId: preview.id }
         };
       }
     }),
@@ -283,7 +213,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       promptSnippet:
         "set_preview_lease: use sticky=true when a preview should stay warm for later jobs; use sticky=false or leaseTtlMinutes to return it to normal cleanup.",
       parameters: Type.Object({
-        leaseId: Type.String(),
+        leaseId: Type.String({ minLength: 1 }),
         sticky: Type.Optional(Type.Boolean()),
         leaseTtlMinutes: Type.Optional(Type.Number({ minimum: 1 })),
         refresh: Type.Optional(Type.Boolean())
@@ -292,6 +222,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       execute: async (_toolCallId, params) => {
         const typedParams = params as { leaseId: string; sticky?: boolean; leaseTtlMinutes?: number; refresh?: boolean };
         const current = access.requireValidatedPreview(typedParams.leaseId, null);
+        assertRuntimeResourceOwned(access, current, `Preview ${current.id}`);
         const lease = access.store.setPreviewLeaseLifecycle(current.id, {
           pinned: resolveStickyFlag(typedParams),
           leaseTtlMs: typedParams.leaseTtlMinutes === undefined ? undefined : normalizeLeaseTtlMs(typedParams.leaseTtlMinutes),
@@ -312,20 +243,26 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       description: "Inspect one preview isolate and summarize its current runtime state.",
       promptSnippet: "inspect_preview: use this before diagnosing a preview so you know whether it is running, what route it has, and what egress policy it carries.",
       parameters: Type.Object({
-        leaseId: Type.String()
+        leaseId: Type.String({ minLength: 1 })
       }),
       uiEffects: access.getToolUiEffects("inspect_preview"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as { leaseId: string };
-        const inspected = await access.runtimeBroker.inspectLease(typedParams.leaseId);
+        const selected = access.requireValidatedPreview(typedParams.leaseId, null);
+        assertRuntimeResourceOwned(access, selected, `Preview ${selected.id}`);
+        const inspected = await access.runtimeBroker.inspectLease(selected.id);
+        assertRuntimeResourceOwned(access, inspected, `Preview ${inspected.id}`);
         access.store.upsertPreviewLease(inspected);
         const lease = access.store.notePreviewLeaseActivity(inspected.id) ?? access.store.getPreviewLease(inspected.id) ?? inspected;
         const domains = lease.egressDomains.length > 0 ? lease.egressDomains.join(", ") : "(none)";
+        const runtimeSummary = inspected.runtime.running
+          ? `runtimeStatus=${inspected.runtime.status}`
+          : formatPreviewRuntimeDiagnostics(inspected.runtime);
         return {
           content: [
             {
               type: "text",
-              text: `${lease.title} is ${inspected.runtime.status}. Bootstrap=${lease.bootstrap.phase}. Workspace=${lease.workspaceMode}. ${formatLeaseLifecycle(lease)}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}. Domains=${domains}.`
+              text: `${lease.title} is ${lease.status}. ${runtimeSummary}. Bootstrap=${lease.bootstrap.phase}. Workspace=${lease.workspaceMode}. ${formatLeaseLifecycle(lease)}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}. Domains=${domains}.`
             }
           ],
           details: { lease, runtime: inspected.runtime }
@@ -339,15 +276,15 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       promptSnippet:
         "start_preview_browser_session: open a live browser session for a preview. The timer and recording begin immediately; stop the session later to persist proof.",
       parameters: Type.Object({
-        leaseId: Type.String(),
+        leaseId: Type.String({ minLength: 1 }),
         mode: Type.Optional(Type.Union([Type.Literal("headless"), Type.Literal("headful")])),
         resolution: Type.Optional(Type.Union([Type.Literal("1080p"), Type.Literal("2k"), Type.Literal("1440p")])),
         path: Type.Optional(Type.String()),
         targetUrl: Type.Optional(Type.String()),
         waitForSelector: Type.Optional(Type.String()),
         postLoadWaitMs: Type.Optional(Type.Number({ minimum: 0 })),
-        headers: Type.Optional(Type.Record(Type.String(), Type.String())),
-        cookies: Type.Optional(Type.Record(Type.String(), Type.String())),
+        headers: Type.Optional(stringMapSchema()),
+        cookies: Type.Optional(stringMapSchema()),
         sessionCookie: Type.Optional(Type.String())
       }),
       uiEffects: access.getToolUiEffects("start_preview_browser_session"),
@@ -365,14 +302,8 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           sessionCookie?: string;
         };
         const preview = access.requireValidatedPreview(typedParams.leaseId, null);
-        const cookieEntries = Object.entries(typedParams.cookies ?? {})
-          .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
-          .map(([name, value]) => [name.trim(), value.trim()] as const)
-          .filter(([name, value]) => name.length > 0 && value.length > 0);
-        const sessionCookie = typeof typedParams.sessionCookie === "string" ? typedParams.sessionCookie.trim() : "";
-        if (sessionCookie) {
-          cookieEntries.push(["better-auth.session_token", sessionCookie]);
-        }
+        assertRuntimeResourceOwned(access, preview, `Preview ${preview.id}`);
+        const cookies = normalizeBrowserSessionCookies(typedParams.cookies, typedParams.sessionCookie);
         const session = await access.runtimeBroker.startPreviewBrowserSession({
           leaseId: preview.id,
           mode: typedParams.mode === "headful" ? "headful" : "headless",
@@ -385,7 +316,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
               ? Math.max(0, Math.trunc(typedParams.postLoadWaitMs))
               : undefined,
           headers: typedParams.headers && Object.keys(typedParams.headers).length > 0 ? typedParams.headers : undefined,
-          cookies: cookieEntries.length > 0 ? cookieEntries.map(([name, value]) => ({ name, value })) : undefined
+          cookies: cookies.length > 0 ? cookies : undefined
         });
         access.store.notePreviewLeaseActivity(preview.id);
 
@@ -415,8 +346,8 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         title: Type.Optional(Type.String()),
         mode: Type.Optional(Type.Union([Type.Literal("headless"), Type.Literal("headful")])),
         resolution: Type.Optional(Type.Union([Type.Literal("1080p"), Type.Literal("2k"), Type.Literal("1440p")])),
-        headers: Type.Optional(Type.Record(Type.String(), Type.String())),
-        cookies: Type.Optional(Type.Record(Type.String(), Type.String())),
+        headers: Type.Optional(stringMapSchema()),
+        cookies: Type.Optional(stringMapSchema()),
         sessionCookie: Type.Optional(Type.String()),
         waitForSelector: Type.Optional(Type.String()),
         postLoadWaitMs: Type.Optional(Type.Number({ minimum: 0 }))
@@ -435,24 +366,17 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           waitForSelector?: string;
           postLoadWaitMs?: number;
         };
-        const threadId = typedParams.threadId?.trim() || null;
-        const thread = threadId ? access.store.getThread(threadId) ?? null : null;
+        const threadId = getRuntimeStartThreadId(access, typedParams.threadId, "start_browser_session");
+        const thread = access.store.getThread(threadId) ?? null;
         const cwd = thread?.cwd || "";
         const project = access.resolveWorkspaceProject(
           cwd,
           thread?.supervisor.projectId ?? "browser",
           thread?.supervisor.projectLabel ?? "browser"
         );
-        const cookieEntries = Object.entries(typedParams.cookies ?? {})
-          .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
-          .map(([name, value]) => [name.trim(), value.trim()] as const)
-          .filter(([name, value]) => name.length > 0 && value.length > 0);
-        const sessionCookie = typeof typedParams.sessionCookie === "string" ? typedParams.sessionCookie.trim() : "";
-        if (sessionCookie) {
-          cookieEntries.push(["better-auth.session_token", sessionCookie]);
-        }
+        const cookies = normalizeBrowserSessionCookies(typedParams.cookies, typedParams.sessionCookie);
         const session = await access.runtimeBroker.startBrowserSession({
-          threadId: threadId ?? "browser",
+          threadId,
           projectId: project.id,
           projectLabel: project.label,
           title: typedParams.title?.trim() || typedParams.targetUrl.trim(),
@@ -460,7 +384,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           mode: typedParams.mode === "headful" ? "headful" : "headless",
           resolution: typedParams.resolution?.trim() || undefined,
           headers: typedParams.headers && Object.keys(typedParams.headers).length > 0 ? typedParams.headers : undefined,
-          cookies: cookieEntries.length > 0 ? cookieEntries.map(([name, value]) => ({ name, value })) : undefined,
+          cookies: cookies.length > 0 ? cookies : undefined,
           waitForSelector: typedParams.waitForSelector?.trim() || undefined,
           postLoadWaitMs:
             typeof typedParams.postLoadWaitMs === "number" && Number.isFinite(typedParams.postLoadWaitMs)
@@ -493,6 +417,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       execute: async (_toolCallId, params) => {
         const typedParams = params as { sessionId: string };
         const result = await access.runtimeBroker.inspectBrowserSession(typedParams.sessionId.trim());
+        assertRuntimeResourceOwned(access, result.tracked, `Browser session ${typedParams.sessionId.trim()}`);
         return {
           content: [
             {
@@ -509,10 +434,24 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       label: "Browser session action",
       description: "Run one explicit action in an active browser session, including manual screenshots.",
       promptSnippet:
-        "browser_session_action: use this for stepwise browser control. Whenever a screenshot will be captured, provide a specific label and .png fileName chosen for that evidence; set autoCapture=false only when no screenshot should be stored.",
+        "browser_session_action: use this for stepwise browser control. Always provide a specific evidence label and .png fileName; set autoCapture=false only when no screenshot should be stored.",
       parameters: Type.Object({
         sessionId: Type.String({ minLength: 1 }),
-        actionType: Type.String({ minLength: 1 }),
+        actionType: Type.Union([
+          Type.Literal("click"),
+          Type.Literal("fill"),
+          Type.Literal("type"),
+          Type.Literal("press"),
+          Type.Literal("hover"),
+          Type.Literal("select"),
+          Type.Literal("check"),
+          Type.Literal("uncheck"),
+          Type.Literal("scroll"),
+          Type.Literal("wait_for"),
+          Type.Literal("navigate"),
+          Type.Literal("evaluate"),
+          Type.Literal("screenshot")
+        ]),
         selector: Type.Optional(Type.String()),
         value: Type.Optional(Type.String()),
         values: Type.Optional(Type.Array(Type.String())),
@@ -526,8 +465,8 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         y: Type.Optional(Type.Number()),
         delayMs: Type.Optional(Type.Number({ minimum: 0 })),
         timeoutMs: Type.Optional(Type.Number({ minimum: 0 })),
-        label: Type.Optional(Type.String()),
-        fileName: Type.Optional(Type.String()),
+        label: Type.String({ minLength: 1, description: "Evidence label for this action." }),
+        fileName: Type.String({ minLength: 1, pattern: "^[^/\\\\]+\\.[pP][nN][gG]$", description: "Evidence screenshot file name for this action." }),
         autoCapture: Type.Optional(Type.Boolean())
       }),
       uiEffects: access.getToolUiEffects("browser_session_action"),
@@ -548,11 +487,14 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           y?: number;
           delayMs?: number;
           timeoutMs?: number;
-          label?: string;
-          fileName?: string;
+          label: string;
+          fileName: string;
           autoCapture?: boolean;
         };
 
+        requireCaptureMetadata(typedParams.label, typedParams.fileName, `Browser ${typedParams.actionType} action`);
+        const sessionState = await access.runtimeBroker.inspectBrowserSession(typedParams.sessionId.trim());
+        assertRuntimeResourceOwned(access, sessionState.tracked, `Browser session ${typedParams.sessionId.trim()}`);
         const result = await access.runtimeBroker.runBrowserSessionAction(typedParams.sessionId.trim(), {
           type: typedParams.actionType.trim(),
           selector: typedParams.selector?.trim() || undefined,
@@ -581,15 +523,19 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           fileName: typedParams.fileName?.trim() || undefined,
           autoCapture: typedParams.autoCapture
         });
+        const output = formatButlerToolOutput(result.action.output);
 
         return {
           content: [
             {
               type: "text",
-              text: `Browser action ${result.action.type} completed. URL=${result.state.url}. Actions=${result.state.actionCount}.`
+              text: `Browser action ${result.action.type} completed. URL=${result.state.url}. Actions=${result.state.actionCount}.${output ? `\nOutput:\n${output}` : ""}`
             }
           ],
-          details: result
+          details: {
+            ...result,
+            action: { ...result.action, output: output || null }
+          }
         };
       }
     }),
@@ -612,10 +558,28 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           leaseId?: string;
         };
 
+        const sessionState = await access.runtimeBroker.inspectBrowserSession(typedParams.sessionId.trim());
+        assertRuntimeResourceOwned(access, sessionState.tracked, `Browser session ${typedParams.sessionId.trim()}`);
+        const requestedLeaseId = typedParams.leaseId?.trim() || null;
+        if (requestedLeaseId) {
+          const preview = access.requireValidatedPreview(requestedLeaseId, null);
+          assertRuntimeResourceOwned(access, preview, `Preview ${preview.id}`);
+          if (sessionState.tracked?.kind !== "preview" || sessionState.tracked.leaseId !== preview.id) {
+            throw new Error(`Browser session ${typedParams.sessionId.trim()} is not attached to preview ${preview.id}.`);
+          }
+        }
+
         const result = await access.runtimeBroker.stopBrowserSession(
           typedParams.sessionId.trim(),
           typedParams.reason?.trim() || undefined
         );
+        assertRuntimeResourceOwned(access, result.tracked, `Browser session ${typedParams.sessionId.trim()}`);
+        if (
+          requestedLeaseId &&
+          (result.tracked?.kind !== "preview" || result.tracked.leaseId !== requestedLeaseId)
+        ) {
+          throw new Error(`Stopped browser session did not belong to preview ${requestedLeaseId}.`);
+        }
         const verification = decoratePreviewVerification(result.verification);
 
         if (result.browserProof) {
@@ -628,7 +592,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           });
         } else {
           const effectivePreviewLeaseId =
-            typedParams.leaseId?.trim() || (result.tracked?.kind === "preview" ? result.tracked.leaseId : null);
+            requestedLeaseId || (result.tracked?.kind === "preview" ? result.tracked.leaseId : null);
           if (effectivePreviewLeaseId) {
             access.store.recordPreviewLeaseVerification(effectivePreviewLeaseId, verification);
             access.store.notePreviewLeaseActivity(effectivePreviewLeaseId);
@@ -696,7 +660,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         command: Type.String({ minLength: 1 }),
         title: Type.Optional(Type.String()),
         cwd: Type.Optional(Type.String()),
-        env: Type.Optional(Type.Record(Type.String(), Type.String())),
+        env: Type.Optional(stringMapSchema()),
         interactive: Type.Optional(Type.Boolean()),
         owner: Type.Optional(Type.String()),
         profileKey: Type.Optional(Type.String()),
@@ -718,14 +682,15 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           profileKey?: string;
           waitMs?: number;
         };
-        const threadId = typedParams.threadId?.trim() || null;
+        const threadId = getRuntimeStartThreadId(access, typedParams.threadId, "start_desktop_session");
+        assertRuntimeAttachedThreadsOwned(access, typedParams.attachedThreadIds, "start_desktop_session");
         const attachedThreadIds = access.normalizeStringArray(typedParams.attachedThreadIds);
         if (threadId && !attachedThreadIds.includes(threadId)) {
           attachedThreadIds.unshift(threadId);
         }
         const workspaceKey = typedParams.workspaceKey?.trim() || threadId || attachedThreadIds[0] || "desktop";
         const workspaceName = typedParams.workspaceName?.trim() || workspaceKey;
-        const thread = threadId ? access.store.getThread(threadId) ?? null : null;
+        const thread = access.store.getThread(threadId) ?? null;
         const cwd = typedParams.cwd?.trim() || thread?.cwd || "";
         const project = access.resolveWorkspaceProject(
           cwd,
@@ -733,7 +698,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           thread?.supervisor.projectLabel ?? "desktop"
         );
         const session = await access.runtimeBroker.startDesktopSession({
-          threadId: threadId ?? "desktop",
+          threadId,
           projectId: project.id,
           projectLabel: project.label,
           title: typedParams.title?.trim() || typedParams.command.trim(),
@@ -773,7 +738,10 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       uiEffects: access.getToolUiEffects("list_desktop_sessions"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as { threadId?: string };
-        const sessions = await access.runtimeBroker.listDesktopSessions(typedParams.threadId?.trim() || null);
+        if (typedParams.threadId) getRuntimeStartThreadId(access, typedParams.threadId, "list_desktop_sessions");
+        const sessions = (await access.runtimeBroker.listDesktopSessions(null)).filter((session) =>
+          isRuntimeResourceOwned(access, session.tracked)
+        );
         return {
           content: [
             {
@@ -805,6 +773,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       execute: async (_toolCallId, params) => {
         const typedParams = params as { sessionId: string };
         const result = await access.runtimeBroker.inspectDesktopSession(typedParams.sessionId.trim());
+        assertRuntimeResourceOwned(access, result.tracked, `Desktop session ${typedParams.sessionId.trim()}`);
         return {
           content: [
             {
@@ -824,12 +793,14 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         "desktop_current_screen: use this before clicking in a headed desktop session and whenever the operator asks what is visible. Provide a specific label and .png fileName chosen for that evidence.",
       parameters: Type.Object({
         sessionId: Type.String({ minLength: 1 }),
-        label: Type.Optional(Type.String()),
-        fileName: Type.Optional(Type.String())
+        label: Type.String({ minLength: 1 }),
+        fileName: Type.String({ minLength: 1, pattern: "^[^/\\\\]+\\.[pP][nN][gG]$" })
       }),
       uiEffects: access.getToolUiEffects("desktop_current_screen"),
       execute: async (_toolCallId, params) => {
-        const typedParams = params as { sessionId: string; label?: string; fileName?: string };
+        const typedParams = params as { sessionId: string; label: string; fileName: string };
+        const sessionState = await access.runtimeBroker.inspectDesktopSession(typedParams.sessionId.trim());
+        assertRuntimeResourceOwned(access, sessionState.tracked, `Desktop session ${typedParams.sessionId.trim()}`);
         const result = await access.runtimeBroker.runDesktopSessionAction(typedParams.sessionId.trim(), {
           type: "current_screen",
           actor: "agent",
@@ -840,14 +811,18 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           result.action.output && typeof result.action.output === "object" && Array.isArray((result.action.output as { windows?: unknown }).windows)
             ? ((result.action.output as { windows: unknown[] }).windows.length)
             : 0;
+        const output = formatButlerToolOutput(result.action.output);
         return {
           content: [
             {
               type: "text",
-              text: `Captured current desktop screen. Windows=${windowCount}. Actions=${result.state.actionCount}.`
+              text: `Captured current desktop screen. Windows=${windowCount}. Actions=${result.state.actionCount}.${output ? `\nOutput:\n${output}` : ""}`
             }
           ],
-          details: result
+          details: {
+            ...result,
+            action: { ...result.action, output: output || null }
+          }
         };
       }
     }),
@@ -856,14 +831,33 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       label: "Desktop session action",
       description: "Run one action in a headed desktop session, such as screenshot, wait, click, drag, key, type, window control, or clipboard control.",
       promptSnippet:
-        "desktop_session_action: use screenshot checkpoints, window listing/focus, clipboard, and simple desktop input while native Electron proof is running. For screenshot/current_screen actions, provide a specific label and .png fileName chosen for that evidence.",
+        "desktop_session_action: use screenshot checkpoints, window listing/focus, clipboard, and simple desktop input while native Electron proof is running. Always provide a specific evidence label and .png fileName.",
       parameters: Type.Object({
         sessionId: Type.String({ minLength: 1 }),
-        actionType: Type.String({ minLength: 1 }),
+        actionType: Type.Union([
+          Type.Literal("lock"),
+          Type.Literal("unlock"),
+          Type.Literal("screenshot"),
+          Type.Literal("current_screen"),
+          Type.Literal("calibrate"),
+          Type.Literal("wait"),
+          Type.Literal("click"),
+          Type.Literal("click_text"),
+          Type.Literal("drag"),
+          Type.Literal("key"),
+          Type.Literal("type"),
+          Type.Literal("window_list"),
+          Type.Literal("focus_window"),
+          Type.Literal("close_window"),
+          Type.Literal("clipboard_set"),
+          Type.Literal("clipboard_get"),
+          Type.Literal("cdp_targets"),
+          Type.Literal("cdp_accessibility")
+        ]),
         actor: Type.Optional(Type.String()),
         force: Type.Optional(Type.Boolean()),
-        label: Type.Optional(Type.String()),
-        fileName: Type.Optional(Type.String()),
+        label: Type.String({ minLength: 1, description: "Evidence label for this action." }),
+        fileName: Type.String({ minLength: 1, pattern: "^[^/\\\\]+\\.[pP][nN][gG]$", description: "Evidence screenshot file name for this action." }),
         ms: Type.Optional(Type.Number({ minimum: 0 })),
         ttlMs: Type.Optional(Type.Number({ minimum: 0 })),
         x: Type.Optional(Type.Number()),
@@ -887,8 +881,8 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           actionType: string;
           actor?: string;
           force?: boolean;
-          label?: string;
-          fileName?: string;
+          label: string;
+          fileName: string;
           ms?: number;
           ttlMs?: number;
           x?: number;
@@ -905,6 +899,9 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           cdpPort?: number;
           delayMs?: number;
         };
+        requireCaptureMetadata(typedParams.label, typedParams.fileName, `Desktop ${typedParams.actionType} action`);
+        const sessionState = await access.runtimeBroker.inspectDesktopSession(typedParams.sessionId.trim());
+        assertRuntimeResourceOwned(access, sessionState.tracked, `Desktop session ${typedParams.sessionId.trim()}`);
         const result = await access.runtimeBroker.runDesktopSessionAction(typedParams.sessionId.trim(), {
           type: typedParams.actionType.trim(),
           actor: typedParams.actor?.trim() || "agent",
@@ -942,14 +939,18 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
               ? Math.max(0, Math.trunc(typedParams.delayMs))
               : undefined
         });
+        const output = formatButlerToolOutput(result.action.output);
         return {
           content: [
             {
               type: "text",
-              text: `Desktop action ${result.action.type} completed. Actions=${result.state.actionCount}.`
+              text: `Desktop action ${result.action.type} completed. Actions=${result.state.actionCount}.${output ? `\nOutput:\n${output}` : ""}`
             }
           ],
-          details: result
+          details: {
+            ...result,
+            action: { ...result.action, output: output || null }
+          }
         };
       }
     }),
@@ -969,10 +970,13 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           sessionId: string;
           reason?: string;
         };
+        const sessionState = await access.runtimeBroker.inspectDesktopSession(typedParams.sessionId.trim());
+        assertRuntimeResourceOwned(access, sessionState.tracked, `Desktop session ${typedParams.sessionId.trim()}`);
         const result = await access.runtimeBroker.stopDesktopSession(
           typedParams.sessionId.trim(),
           typedParams.reason?.trim() || undefined
         );
+        assertRuntimeResourceOwned(access, result.tracked, `Desktop session ${typedParams.sessionId.trim()}`);
         const verification = decoratePreviewVerification(result.verification);
         if (result.desktopProof) {
           access.store.recordBrowserVerification({
@@ -1006,12 +1010,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       description: "Inspect the latest proof bundle for one preview or job and decide whether the recorded artifacts are convincing.",
       promptSnippet:
         "review_preview_proof: use this when proof is demanded. It can review browser, desktop, and file proof bundles. For UI-impacting work, screenshot or video proof must show the relevant state.",
-      parameters: Type.Object({
-        leaseId: Type.Optional(Type.String()),
-        threadId: Type.Optional(Type.String()),
-        runId: Type.Optional(Type.String()),
-        expectedOutcome: Type.Optional(Type.String())
-      }),
+      parameters: reviewPreviewProofSchema(),
       uiEffects: access.getToolUiEffects("review_preview_proof"),
       execute: async (_toolCallId, params, signal?: AbortSignal) => {
         const typedParams = params as {
@@ -1020,6 +1019,17 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           runId?: string;
           expectedOutcome?: string;
         };
+
+        if (typedParams.leaseId) {
+          const preview = access.requireValidatedPreview(typedParams.leaseId.trim(), null);
+          assertRuntimeResourceOwned(access, preview, `Preview ${preview.id}`);
+        }
+        if (typedParams.threadId) {
+          const threadId = typedParams.threadId.trim();
+          if (!getRuntimeOwnerThreadIds(access).includes(threadId)) {
+            throw new Error(`Proof for job ${threadId} belongs to another Butler session.`);
+          }
+        }
 
         const proof = access.resolvePreviewProof({
           leaseId: typedParams.leaseId?.trim(),
@@ -1099,13 +1109,15 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       description: "List processes running inside one preview isolate.",
       promptSnippet: "preview_processes: use this when a preview seems stuck and you need to see the running process table.",
       parameters: Type.Object({
-        leaseId: Type.String()
+        leaseId: Type.String({ minLength: 1 })
       }),
       uiEffects: access.getToolUiEffects("preview_processes"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as { leaseId: string };
-        const result = await access.runtimeBroker.listProcesses(typedParams.leaseId);
-        access.store.notePreviewLeaseActivity(typedParams.leaseId);
+        const preview = access.requireValidatedPreview(typedParams.leaseId, null);
+        assertRuntimeResourceOwned(access, preview, `Preview ${preview.id}`);
+        const result = await access.runtimeBroker.listProcesses(preview.id);
+        access.store.notePreviewLeaseActivity(preview.id);
         const rows =
           result.processes.length === 0
             ? "No processes were reported."
@@ -1122,14 +1134,16 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       description: "Read recent logs from one preview isolate.",
       promptSnippet: "preview_logs: use this when a preview boot or app route is failing and you need the recent container output.",
       parameters: Type.Object({
-        leaseId: Type.String(),
+        leaseId: Type.String({ minLength: 1 }),
         tail: Type.Optional(Type.Number({ minimum: 1, maximum: 1000 }))
       }),
       uiEffects: access.getToolUiEffects("preview_logs"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as { leaseId: string; tail?: number };
-        const result = await access.runtimeBroker.readLogs(typedParams.leaseId, typedParams.tail ?? 200);
-        access.store.notePreviewLeaseActivity(typedParams.leaseId);
+        const preview = access.requireValidatedPreview(typedParams.leaseId, null);
+        assertRuntimeResourceOwned(access, preview, `Preview ${preview.id}`);
+        const result = await access.runtimeBroker.readLogs(preview.id, typedParams.tail ?? 200);
+        access.store.notePreviewLeaseActivity(preview.id);
         return {
           content: [{ type: "text", text: result.logs || "No logs were returned." }],
           details: result
@@ -1143,7 +1157,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       promptSnippet:
         "exec_preview: use this when Butler needs to inspect, smoke test, run code, or patch a preview isolate directly. Prefer commandArgs for exact argv execution; use command for shell snippets; set stdinProvided when sending stdin.",
       parameters: Type.Object({
-        leaseId: Type.String(),
+        leaseId: Type.String({ minLength: 1 }),
         command: Type.Optional(Type.String({ minLength: 1 })),
         commandArgs: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
         cwd: Type.Optional(Type.String()),
@@ -1167,15 +1181,17 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         if (!command && commandArgs.length === 0) {
           throw new Error("exec_preview requires command or commandArgs");
         }
+        const preview = access.requireValidatedPreview(typedParams.leaseId, null);
+        assertRuntimeResourceOwned(access, preview, `Preview ${preview.id}`);
         const result = await access.runtimeBroker.execInLease({
-          leaseId: typedParams.leaseId,
+          leaseId: preview.id,
           command,
           commandArgs,
           cwd: typedParams.cwd?.trim() || undefined,
           stdin: typedParams.stdin,
           stdinProvided: typedParams.stdinProvided === true || typeof typedParams.stdin === "string"
         });
-        access.store.notePreviewLeaseActivity(typedParams.leaseId);
+        access.store.notePreviewLeaseActivity(preview.id);
         const stdout = result.stdout.trim();
         const stderr = result.stderr.trim();
         const body =
@@ -1376,11 +1392,27 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         access.store.setThreadExecutionContract(result.threadId, delegationContract.contract);
         access.store.addEvent(result.threadId, "butler.delegation.created", "Butler created a synthetic supervision smoke job.");
         access.noteThreadFocus(result.threadId, "run_supervision_smoke_test");
-        access.queueDelegationAcknowledgement(
+        const acknowledgement = access.queueDelegationAcknowledgement(
           result.threadId,
           `Accepted. I started a supervision smoke test in Worker job ${result.threadId} using provider ${result.provider ?? "selected"} and the ${workerHarnessLabel(result.harness)} harness. I will return here when it completes.`,
           { runtime: result.runtime, harness: result.harness, provider: result.provider, model: result.model, effort: result.effort }
         );
+        if (acknowledgement?.attached === false) {
+          const cleanupErrors: string[] = [];
+          await stopWorkerThread(access, result.threadId).catch((error) => {
+            cleanupErrors.push(`stop failed: ${error instanceof Error ? error.message : String(error)}`);
+            return false;
+          });
+          await deleteWorkerThread(access, result.threadId).catch((error) => {
+            cleanupErrors.push(`delete failed: ${error instanceof Error ? error.message : String(error)}`);
+            return false;
+          });
+          access.supervisionSmokePlans.delete(result.threadId);
+          if (cleanupErrors.length > 0) {
+            throw new Error(`This session already has a Worker. Supervision smoke cleanup was attempted but did not finish cleanly: ${cleanupErrors.join("; ")}.`);
+          }
+          throw new Error("This session already has a Worker, so the supervision smoke Worker was stopped and deleted.");
+        }
         await access.registerPendingChatCallback(result.threadId);
         access.store.setThreadSupervisionLimit(result.threadId, totalFollowUps + 2);
         access.supervisionSmokePlans.set(result.threadId, {

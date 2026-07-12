@@ -36,8 +36,8 @@ export const OLLAMA_WEB_SEARCH_TOOL: Tool = {
   name: OLLAMA_WEB_SEARCH_TOOL_NAME,
   description: "Search the web using Ollama Cloud web search. Use this for current facts, recent events, prices, schedules, docs, or external sources.",
   parameters: Type.Object({
-    query: Type.String({ description: "The web search query." }),
-    max_results: Type.Optional(Type.Number({ description: "Maximum number of results to return. Defaults to Manor's configured value; max 10." }))
+    query: Type.String({ minLength: 1, description: "The web search query." }),
+    max_results: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, description: "Maximum number of results to return. Defaults to Manor's configured value; max 10." }))
   }) as never
 };
 
@@ -45,7 +45,7 @@ export const OLLAMA_WEB_FETCH_TOOL: Tool = {
   name: OLLAMA_WEB_FETCH_TOOL_NAME,
   description: "Fetch a web page through Ollama Cloud web fetch after a search result looks relevant.",
   parameters: Type.Object({
-    url: Type.String({ description: "The URL to fetch." })
+    url: Type.String({ minLength: 1, description: "The URL to fetch." })
   }) as never
 };
 

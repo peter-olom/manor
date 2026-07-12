@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createPiReviewSubmissionTool, ensureButlerAdversarialReview, validateAdversarialReviewOutput, waitForPiReviewSubmission } from "../../src/server/butler-adversarial-review.js";
+import { assertPiReviewerPromptSucceeded, createPiReviewSubmissionTool, ensureButlerAdversarialReview, runProviderAdversarialReview, validateAdversarialReviewOutput, waitForPiReviewSubmission } from "../../src/server/butler-adversarial-review.js";
 import { getOrchestrationCloseoutBlocker } from "../../src/server/butler-orchestration.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
@@ -41,6 +41,7 @@ test("isolated adversarial review stores only compact findings and reuses the ex
   const model = { provider: "openai-codex", id: "gpt-5.5" } as never;
   let runs = 0;
   let reviewerPrompt = "";
+  const progress: string[] = [];
   const review = () => ensureButlerAdversarialReview({
     store,
     threadId,
@@ -50,6 +51,7 @@ test("isolated adversarial review stores only compact findings and reuses the ex
     piAuthPath: path.join(dir, "auth.json"),
     scratchDir: path.join(dir, "reviews"),
     thinkingLevel: "high",
+    onProgress: (entry) => progress.push(entry.stage),
     reviewBrief: "Latest Butler steer: verify the retry exhaustion path.",
     buildWorkspaceSnapshot: async () => "diff --git a/retry.ts b/retry.ts",
     runReview: async (input) => {
@@ -70,6 +72,7 @@ test("isolated adversarial review stores only compact findings and reuses the ex
   const second = await review();
 
   assert.equal(runs, 1);
+  assert.deepEqual(progress, ["preparing", "reviewing_changes"]);
   assert.deepEqual(second, first);
   assert.match(reviewerPrompt, /Fix the retry path/);
   assert.match(reviewerPrompt, /verify the retry exhaustion path/);
@@ -175,6 +178,17 @@ test("Pi adversarial review submission tool captures only schema-valid findings"
   );
 });
 
+test("Pi adversarial reviewer surfaces the exact redacted terminal provider error", () => {
+  assert.throws(() => assertPiReviewerPromptSucceeded([{
+    role: "assistant",
+    stopReason: "error",
+    errorMessage: "Provider rejected Authorization: Bearer opaque-token-123456"
+  }]), (error: unknown) => {
+    assert.equal((error as Error).message, "Provider rejected Authorization: Bearer [REDACTED]");
+    return true;
+  });
+});
+
 test("Pi adversarial review stops as soon as a valid submission arrives", async () => {
   let abortCalls = 0;
   const review = { findings: [{ severity: "low", findingSummary: "Minor issue", blocking: false, linkedClaimIds: [] }] };
@@ -186,6 +200,118 @@ test("Pi adversarial review stops as soon as a valid submission arrives", async 
   });
   assert.deepEqual(result, review);
   assert.equal(abortCalls, 1);
+});
+
+test("Pi adversarial review can outlive the former hard maximum while activity continues", async () => {
+  let lastActivityAt = Date.now();
+  const review = { findings: [] };
+  const activity = setInterval(() => { lastActivityAt = Date.now(); }, 10);
+  try {
+    const result = await waitForPiReviewSubmission({
+      prompt: new Promise<void>(() => undefined),
+      submission: new Promise<typeof review>((resolve) => setTimeout(() => resolve(review), 130)),
+      abort: async () => undefined,
+      timeoutMs: 50,
+      lastActivityAt: () => lastActivityAt
+    });
+    assert.deepEqual(result, review);
+  } finally {
+    clearInterval(activity);
+  }
+});
+
+test("Pi adversarial review still stops after sustained inactivity", async () => {
+  await assert.rejects(() => waitForPiReviewSubmission({
+    prompt: new Promise<void>(() => undefined),
+    submission: new Promise<{ findings: [] }>(() => undefined),
+    abort: async () => undefined,
+    timeoutMs: 20,
+    lastActivityAt: () => Date.now() - 20
+  }), /timed out/);
+});
+
+test("Pi adversarial review stops promptly when the callback is cancelled", async () => {
+  let current = true;
+  setTimeout(() => { current = false; }, 10);
+  const startedAt = Date.now();
+
+  await assert.rejects(() => waitForPiReviewSubmission({
+    prompt: new Promise<void>(() => undefined),
+    submission: new Promise(() => undefined),
+    abort: async () => undefined,
+    timeoutMs: 500,
+    isCurrent: () => current
+  }), /superseded/);
+  assert.ok(Date.now() - startedAt < 300);
+});
+
+test("native Codex review can outlive the former hard maximum while output continues", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-review-active-child-"));
+  const binDir = path.join(dir, "bin");
+  const scratchDir = path.join(dir, "scratch");
+  await mkdir(binDir, { recursive: true });
+  const executable = path.join(binDir, "codex");
+  await writeFile(executable, [
+    "#!/usr/bin/env node",
+    "const fs = require('node:fs');",
+    "const outputIndex = process.argv.indexOf('--output-last-message') + 1;",
+    "process.stderr.write('.');",
+    "const heartbeat = setInterval(() => process.stderr.write('.'), 100);",
+    "setTimeout(() => {",
+    "  clearInterval(heartbeat);",
+    "  fs.writeFileSync(process.argv[outputIndex], JSON.stringify({ findings: [] }));",
+    "  process.exit(0);",
+    "}, 3200);"
+  ].join("\n"), "utf8");
+  await chmod(executable, 0o755);
+  const result = await runProviderAdversarialReview({
+    cwd: dir,
+    codexHomeDir: dir,
+    piAuthPath: path.join(dir, "pi-auth.json"),
+    scratchDir,
+    modelRegistry: {} as never,
+    selection: { model: { provider: "openai-codex", id: "gpt-5.5" } as never, thinkingLevel: "high" },
+    codexNativeAvailable: true,
+    codexExecutable: executable,
+    prompt: "Review the change.",
+    timeoutMs: 1_500
+  });
+
+  assert.deepEqual(result, { findings: [] });
+  assert.deepEqual(await readdir(scratchDir), []);
+});
+
+test("native Codex review force-kills a child that ignores SIGTERM before cleanup", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-review-stubborn-child-"));
+  const binDir = path.join(dir, "bin");
+  const scratchDir = path.join(dir, "scratch");
+  const pidFile = path.join(dir, "reviewer.pid");
+  await mkdir(binDir, { recursive: true });
+  const executable = path.join(binDir, "codex");
+  await writeFile(executable, [
+    "#!/usr/bin/env node",
+    "const fs = require('node:fs');",
+    `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
+    "process.on('SIGTERM', () => {});",
+    "setInterval(() => {}, 1000);"
+  ].join("\n"), "utf8");
+  await chmod(executable, 0o755);
+  await assert.rejects(runProviderAdversarialReview({
+    cwd: dir,
+    codexHomeDir: dir,
+    piAuthPath: path.join(dir, "pi-auth.json"),
+    scratchDir,
+    modelRegistry: {} as never,
+    selection: { model: { provider: "openai-codex", id: "gpt-5.5" } as never, thinkingLevel: "high" },
+    codexNativeAvailable: true,
+    codexExecutable: executable,
+    prompt: "Review the change.",
+    timeoutMs: 1_000
+  }), /Adversarial review/);
+
+  const pid = Number(await readFile(pidFile, "utf8"));
+  assert.throws(() => process.kill(pid, 0), (error: unknown) => (error as NodeJS.ErrnoException).code === "ESRCH");
+  assert.deepEqual(await readdir(scratchDir), []);
 });
 
 test("overlapping Workers stay isolated after the other baseline has been cleaned", async () => {

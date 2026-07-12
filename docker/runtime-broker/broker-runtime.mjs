@@ -5,6 +5,7 @@ export function createBrokerRuntime(context, deps = {}) {
   const { previewNetwork, previewOutboundNetwork, sharedWorkNetwork, previewImage, routeBase, previewEgressConfigPath, previewEgressAdminUrl, brokerToken, harnessAccessRegistryPath, stackBindingRegistryPath, internalOperatorBaseUrl, playwrightContainerName, runtimeBrokerContainerName, previewEgressContainerName, artifactsRootDir, playwrightArtifactsScratchDir, stackNetworkPrefix, stackVolumePrefix, stackInfraReconnectIntervalMs, docker, leaseTransitions, leaseBootstrapStates, activeLeaseBootstrapMonitors, pendingPreviewLeases, retainedPreviewLeases, noHeartbeatReadyDelayMs } = context;
   const {
     buildShellCommand,
+    clearLeaseTransitionIfIdle,
     collectExecOutput,
     getLeaseBootstrapState,
     getLeaseTransition,
@@ -15,10 +16,24 @@ export function createBrokerRuntime(context, deps = {}) {
     resolveLeaseStatus,
     resolveTargetHost,
     resolveWorktreeProjectInfo,
+    serializeContainerRuntimeState,
+    formatPreviewRuntimeFailure,
     retainFailedLease,
     retainPreviewLease,
     serializeBootstrapState
   } = deps;
+
+function isLeaseStopping(leaseId) {
+  return getLeaseTransition(leaseId)?.state === "stopping";
+}
+
+async function retainFailedLeaseWithCurrentRuntime(lease, message) {
+  const container = await inspectContainer(lease.containerName);
+  if (isLeaseStopping(lease.id)) {
+    return;
+  }
+  retainFailedLease(lease, message, container ? serializeContainerRuntimeState(container.State) : {});
+}
 
 async function ensureImage(imageName) {
   try {
@@ -143,12 +158,13 @@ async function monitorLeaseBootstrap(lease) {
     const stableAt = Date.now() + delayMs;
 
     while (Date.now() <= deadline) {
-      if (getLeaseTransition(lease.id)?.state === "stopping") {
+      if (isLeaseStopping(lease.id)) {
         return;
       }
 
       const container = await inspectContainer(lease.containerName);
       if (!container) {
+        if (isLeaseStopping(lease.id)) return;
         const state = mergeLeaseBootstrapState(lease.id, {
           phase: "failed",
           lastHeartbeatError: "Preview container disappeared during bootstrap."
@@ -158,14 +174,14 @@ async function monitorLeaseBootstrap(lease) {
       }
 
       if (!container.State?.Running) {
+        if (isLeaseStopping(lease.id)) return;
+        const runtime = serializeContainerRuntimeState(container.State);
+        const failure = formatPreviewRuntimeFailure(lease.id, runtime);
         const state = mergeLeaseBootstrapState(lease.id, {
           phase: "failed",
-          lastHeartbeatError: container.State?.Error || `Preview stopped before becoming ready (${container.State?.Status || "unknown"}).`
+          lastHeartbeatError: failure
         });
-        retainFailedLease(lease, state?.lastHeartbeatError, {
-          startedAt: container.State?.StartedAt ? new Date(container.State.StartedAt).getTime() : null,
-          finishedAt: container.State?.FinishedAt ? new Date(container.State.FinishedAt).getTime() : Date.now()
-        });
+        retainFailedLease(lease, state?.lastHeartbeatError, runtime);
         return;
       }
 
@@ -191,11 +207,12 @@ async function monitorLeaseBootstrap(lease) {
       await sleep(500);
     }
 
+    if (isLeaseStopping(lease.id)) return;
     mergeLeaseBootstrapState(lease.id, {
       phase: "failed",
       lastHeartbeatError: `Bootstrap timed out after ${bootstrap.waitSeconds}s. Preview port was not reachable on the shared network (bind to 0.0.0.0).`
     });
-    retainFailedLease(
+    await retainFailedLeaseWithCurrentRuntime(
       lease,
       `Bootstrap timed out after ${bootstrap.waitSeconds}s. Preview port was not reachable on the shared network (bind to 0.0.0.0).`
     );
@@ -209,12 +226,13 @@ async function monitorLeaseBootstrap(lease) {
 
   const deadline = Date.now() + bootstrap.waitSeconds * 1000;
   while (Date.now() <= deadline) {
-    if (getLeaseTransition(lease.id)?.state === "stopping") {
+    if (isLeaseStopping(lease.id)) {
       return;
     }
 
     const container = await inspectContainer(lease.containerName);
     if (!container) {
+      if (isLeaseStopping(lease.id)) return;
       const state = mergeLeaseBootstrapState(lease.id, {
         phase: "failed",
         lastHeartbeatError: "Preview container disappeared during bootstrap."
@@ -224,14 +242,14 @@ async function monitorLeaseBootstrap(lease) {
     }
 
     if (!container.State?.Running) {
+      if (isLeaseStopping(lease.id)) return;
+      const runtime = serializeContainerRuntimeState(container.State);
+      const failure = formatPreviewRuntimeFailure(lease.id, runtime);
       const state = mergeLeaseBootstrapState(lease.id, {
         phase: "failed",
-        lastHeartbeatError: container.State?.Error || `Preview stopped before becoming ready (${container.State?.Status || "unknown"}).`
+        lastHeartbeatError: failure
       });
-      retainFailedLease(lease, state?.lastHeartbeatError, {
-        startedAt: container.State?.StartedAt ? new Date(container.State.StartedAt).getTime() : null,
-        finishedAt: container.State?.FinishedAt ? new Date(container.State.FinishedAt).getTime() : Date.now()
-      });
+      retainFailedLease(lease, state?.lastHeartbeatError, runtime);
       return;
     }
 
@@ -255,11 +273,12 @@ async function monitorLeaseBootstrap(lease) {
     await sleep(bootstrap.heartbeatIntervalSeconds * 1000);
   }
 
+  if (isLeaseStopping(lease.id)) return;
   const state = mergeLeaseBootstrapState(lease.id, {
     phase: "failed",
     lastHeartbeatError: `Bootstrap heartbeat timed out after ${bootstrap.waitSeconds}s.`
   });
-  retainFailedLease(lease, state?.lastHeartbeatError);
+  await retainFailedLeaseWithCurrentRuntime(lease, state?.lastHeartbeatError);
 }
 
 function scheduleLeaseBootstrapMonitor(lease) {
@@ -270,6 +289,7 @@ function scheduleLeaseBootstrapMonitor(lease) {
   activeLeaseBootstrapMonitors.add(lease.id);
   void monitorLeaseBootstrap(lease)
     .catch((error) => {
+      if (isLeaseStopping(lease.id)) return;
       const bootstrapState = mergeLeaseBootstrapState(lease.id, {
         phase: "failed",
         lastHeartbeatError: error instanceof Error ? error.message : String(error)
@@ -289,6 +309,7 @@ function scheduleLeaseBootstrapMonitor(lease) {
     })
     .finally(() => {
       activeLeaseBootstrapMonitors.delete(lease.id);
+      if (isLeaseStopping(lease.id)) clearLeaseTransitionIfIdle(lease.id);
     });
 }
 
@@ -328,9 +349,31 @@ async function serializeLiveLeaseFromSummary(containerSummary) {
   );
   const aliases = parseAliases(labels["manor.aliases"]);
   const containerName = containerSummary.Names?.[0]?.replace(/^\//, "") || "";
-  return serializeLease(
+  if (containerSummary.State !== "running" && containerName) {
+    const inspected = await inspectContainer(containerName);
+    if (inspected) {
+      return serializeInspectedLease(containerName, inspected);
+    }
+  }
+
+  const leaseId = labels["manor.lease-id"] || "";
+  const transitionState = getLeaseTransition(leaseId)?.state ?? null;
+  const terminal = containerSummary.State !== "running" && transitionState !== "starting" && transitionState !== "stopping";
+  const exitCodeMatch = typeof containerSummary.Status === "string" ? containerSummary.Status.match(/Exited \((-?\d+)\)/i) : null;
+  const runtime = terminal
+    ? {
+        running: false,
+        status: containerSummary.State || "unknown",
+        startedAt: null,
+        finishedAt: null,
+        exitCode: exitCodeMatch ? Number(exitCodeMatch[1]) : null,
+        oomKilled: false,
+        error: null
+      }
+    : null;
+  const lease = serializeLease(
     {
-      id: labels["manor.lease-id"] || "",
+      id: leaseId,
       threadId: effectiveThreadId,
       projectId: project.id,
       projectLabel: project.label,
@@ -338,7 +381,7 @@ async function serializeLiveLeaseFromSummary(containerSummary) {
       stackId,
       aliases,
       worktreePath,
-      branchName: null,
+      branchName: labels["manor.branch-name"] || null,
       containerName,
       targetHost: resolveTargetHost(containerName, aliases),
       targetPort: Number(labels["manor.target-port"] || labels["manor.port"] || "3000"),
@@ -356,34 +399,40 @@ async function serializeLiveLeaseFromSummary(containerSummary) {
           ?.split(",")
           .map((value) => value.trim())
           .filter(Boolean) || [],
-      status: containerSummary.State,
+      status: terminal ? "failed" : containerSummary.State,
       createdAt: typeof containerSummary.Created === "number" ? containerSummary.Created * 1000 : Date.now(),
       updatedAt: Date.now(),
-      lastError: null
+      lastError: runtime ? formatPreviewRuntimeFailure(leaseId, runtime) : null
     },
     {
       labels,
-      containerState: containerSummary.State,
+      containerState: terminal ? "failed" : containerSummary.State,
       containerRunning: containerSummary.State === "running"
     }
   );
+  return runtime ? { ...lease, runtime } : lease;
 }
 
 async function serializeInspectedLease(containerName, container) {
   const labels = container.Config?.Labels || {};
+  const leaseId = labels["manor.lease-id"] || "";
   const stackId = labels["manor.stack-id"] || null;
   const effectiveThreadId = await resolveAttachedThreadId(labels["manor.thread-id"] || null, stackId);
-  const worktreePath = container.Config?.WorkingDir || "/repos";
+  const worktreePath = labels["manor.worktree-path"] || container.Config?.WorkingDir || "/repos";
   const project = resolveWorktreeProjectInfo(
     worktreePath,
     labels["manor.project-id"] || "unknown",
     labels["manor.project-label"] || labels["manor.project-id"] || "Unknown"
   );
   const aliases = parseAliases(labels["manor.aliases"]);
+  const runtime = serializeContainerRuntimeState(container.State);
+  const transitionState = getLeaseTransition(leaseId)?.state ?? null;
+  const terminal = !runtime.running && transitionState !== "starting" && transitionState !== "stopping";
+  const runtimeError = terminal ? formatPreviewRuntimeFailure(leaseId, runtime) : runtime.error;
   return {
     ...serializeLease(
       {
-        id: labels["manor.lease-id"] || "",
+        id: leaseId,
         threadId: effectiveThreadId,
         projectId: project.id,
         projectLabel: project.label,
@@ -391,7 +440,7 @@ async function serializeInspectedLease(containerName, container) {
         stackId,
         aliases,
         worktreePath,
-        branchName: null,
+        branchName: labels["manor.branch-name"] || null,
         containerName,
         targetHost: resolveTargetHost(containerName, aliases),
         targetPort: Number(container.Config?.Env?.find((entry) => entry.startsWith("PORT="))?.slice(5) || "3000"),
@@ -411,24 +460,18 @@ async function serializeInspectedLease(containerName, container) {
             ?.split(",")
             .map((value) => value.trim())
             .filter(Boolean) || [],
-        status: container.State?.Running ? "running" : "stopped",
+        status: terminal ? "failed" : runtime.running ? "running" : transitionState || "stopped",
         createdAt: new Date(container.Created).getTime(),
         updatedAt: Date.now(),
-        lastError: container.State?.Error || null
+        lastError: runtimeError
       },
       {
         labels,
-        containerState: container.State?.Running ? "running" : "stopped",
-        containerRunning: Boolean(container.State?.Running)
+        containerState: terminal ? "failed" : runtime.running ? "running" : transitionState || "stopped",
+        containerRunning: runtime.running
       }
     ),
-    runtime: {
-      running: Boolean(container.State?.Running),
-      status: container.State?.Status || "unknown",
-      startedAt: container.State?.StartedAt ? new Date(container.State.StartedAt).getTime() : null,
-      finishedAt: container.State?.FinishedAt ? new Date(container.State.FinishedAt).getTime() : null,
-      error: container.State?.Error || null
-    }
+    runtime
   };
 }
 

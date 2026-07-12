@@ -46,7 +46,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       description: "Read one specific worker job/thread in detail by thread id, including loaded turns and messages.",
       promptSnippet: "read_job: use after you have a specific thread id and need that job's transcript, supervisor state, or details.",
       parameters: Type.Object({
-        threadId: Type.String()
+        threadId: Type.String({ minLength: 1 })
       }),
       uiEffects: access.getToolUiEffects("read_job"),
       execute: async (_toolCallId, params) => {
@@ -102,7 +102,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       description: "Read the tracked summary and thread list for one workstream group.",
       promptSnippet: "read_project: inspect one project or workspace bucket and its jobs before delegating or following up.",
       parameters: Type.Object({
-        projectId: Type.String()
+        projectId: Type.String({ minLength: 1 })
       }),
       uiEffects: access.getToolUiEffects("read_project"),
       execute: async (_toolCallId, params) => {
@@ -334,7 +334,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       description: "Open a focused job window in the Butler UI for a specific worker job.",
       promptSnippet: "open_job_window: open a deeper UI window for a job the operator wants to inspect.",
       parameters: Type.Object({
-        threadId: Type.String()
+        threadId: Type.String({ minLength: 1 })
       }),
       uiEffects: access.getToolUiEffects("open_job_window"),
       execute: async (_toolCallId, params) => {
@@ -393,7 +393,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       description: "Read the structured Butler supervision checklist for one delegated worker job.",
       promptSnippet: "read_supervision_checklist: inspect acceptance points, worker evidence, Butler decisions, and heartbeat for one job.",
       parameters: Type.Object({
-        threadId: Type.String()
+        threadId: Type.String({ minLength: 1 })
       }),
       uiEffects: access.getToolUiEffects("read_supervision_checklist"),
       execute: async (_toolCallId, params) => {
@@ -423,8 +423,8 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       promptSnippet:
         "review_acceptance_point: mark one acceptance point accepted, rejected, or waived after Butler reviews evidence; rejected points require nextInstruction.",
       parameters: Type.Object({
-        threadId: Type.String(),
-        pointId: Type.String(),
+        threadId: Type.String({ minLength: 1 }),
+        pointId: Type.String({ minLength: 1 }),
         status: Type.Union([Type.Literal("accepted"), Type.Literal("rejected"), Type.Literal("waived")]),
         note: Type.Optional(Type.String()),
         nextInstruction: Type.Optional(Type.String())
@@ -461,8 +461,8 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       description: "Resolve one isolated blocking review finding only when stronger concrete evidence proves it is a false positive.",
       promptSnippet: "disprove_review_finding: waive a blocking adversarial finding only when you can cite stronger concrete evidence that disproves it; otherwise reject the affected acceptance point and steer the worker.",
       parameters: Type.Object({
-        threadId: Type.String(),
-        findingId: Type.String(),
+        threadId: Type.String({ minLength: 1 }),
+        findingId: Type.String({ minLength: 1 }),
         evidence: Type.String({ minLength: 1 })
       }),
       uiEffects: access.getToolUiEffects("disprove_review_finding"),
@@ -497,7 +497,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       description: "Send one private worker follow-up containing all queued rejected acceptance-point instructions.",
       promptSnippet: "flush_rejected_acceptance_points: after marking all rejected points, batch-send the queued fixes to the worker once.",
       parameters: Type.Object({
-        threadId: Type.String()
+        threadId: Type.String({ minLength: 1 })
       }),
       uiEffects: access.getToolUiEffects("flush_rejected_acceptance_points"),
       execute: async (_toolCallId, params) => {
@@ -554,7 +554,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       promptSnippet:
         "hold_job_context: use when the operator gives newer context for an active job, but the worker can finish the current turn before Butler decides whether to steer, accept, reject, or close.",
       parameters: Type.Object({
-        threadId: Type.String(),
+        threadId: Type.String({ minLength: 1 }),
         text: Type.String({ minLength: 1 })
       }),
       uiEffects: access.getToolUiEffects("hold_job_context"),
@@ -599,7 +599,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       promptSnippet:
         "message_job: steer, continue, retry, stop, clean up, or ask an existing valid worker job when this is not rejected-checklist steering.",
       parameters: Type.Object({
-        threadId: Type.String(),
+        threadId: Type.String({ minLength: 1 }),
         text: Type.String({ minLength: 1 }),
         imageReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
         fileReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
@@ -713,7 +713,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       promptSnippet:
         "reply_to_operator: use this only when Butler has decided the delegated job is finished, blocked, or needs operator input now.",
       parameters: Type.Object({
-        threadId: Type.String(),
+        threadId: Type.String({ minLength: 1 }),
         text: Type.String({ minLength: 1 })
       }),
       uiEffects: access.getToolUiEffects("reply_to_operator"),
@@ -746,7 +746,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       description: "Immediately stop one active Worker job without deleting its thread or starting a replacement.",
       promptSnippet: "stop_job: when the operator says stop, cancel, interrupt, or pause a Worker, call this immediately before inspecting or reporting the job. Do not send another Worker message or start a replacement unless the operator asks.",
       parameters: Type.Object({
-        threadId: Type.String()
+        threadId: Type.String({ minLength: 1 })
       }),
       uiEffects: access.getToolUiEffects("stop_job"),
       execute: async (_toolCallId, params) => {
@@ -767,7 +767,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       description: "Permanently delete one worker job thread and its local session artifacts.",
       promptSnippet: "delete_job: remove one worker job thread when the operator explicitly asks for deletion.",
       parameters: Type.Object({
-        threadId: Type.String()
+        threadId: Type.String({ minLength: 1 })
       }),
       uiEffects: access.getToolUiEffects("delete_job"),
       execute: async (_toolCallId, params) => {

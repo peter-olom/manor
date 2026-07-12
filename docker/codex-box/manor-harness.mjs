@@ -40,7 +40,7 @@ function printHelp() {
   manor-harness [--thread <jobId>] stack start [--title <title>] [--cwd <path>] [--stateful] [--storage-mode ephemeral|job|base|custom] [--retain-volumes] [--storage-key <key>] [--clone-from <key>] [--sticky] [--lease-ttl-minutes <n>]
   manor-harness [--thread <jobId>] stack inspect <stackSelector>
   manor-harness [--thread <jobId>] stack lease <stackSelector> [--sticky|--unsticky] [--lease-ttl-minutes <n>] [--no-refresh]
-  manor-harness [--thread <jobId>] stack promote <stackSelector> [--to <storageKey>]
+  manor-harness [--thread <jobId>] stack promote <stackSelector> [--to <storageKey>] --confirm-target <storageKey>
   manor-harness [--thread <jobId>] stack stop <stackSelector> [--drop-volumes]
   manor-harness [--thread <jobId>] preview list
   manor-harness [--thread <jobId>] preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--stack <stackSelector>] [--alias <name> ...] [--env KEY=VALUE ...] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>] [--sticky] [--lease-ttl-minutes <n>]
@@ -936,7 +936,11 @@ async function main() {
       };
     } else if (subcommand === "promote" && args[2]) {
       action = "stack.promote";
-      params = { stackId: args[2], targetStorageKey: readFlag(args, "--to") };
+      params = {
+        stackId: args[2],
+        targetStorageKey: readFlag(args, "--to"),
+        confirmTargetStorageKey: readFlag(args, "--confirm-target")
+      };
     } else if (subcommand === "stop" && args[2]) {
       action = "stack.stop";
       params = { stackId: args[2], dropVolumes: args.includes("--drop-volumes") };

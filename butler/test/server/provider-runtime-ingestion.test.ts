@@ -15,7 +15,7 @@ async function createHarness() {
   const ingestion = new ProviderRuntimeIngestion(store);
   const patches: ProviderRuntimeLivePatch[] = [];
   ingestion.on("runtimePatch", (patch) => patches.push(patch));
-  return { store, ingestion, patches };
+  return { dir, store, ingestion, patches };
 }
 
 function baseEvent(overrides: Partial<ProviderRuntimeEvent>): ProviderRuntimeEvent {
@@ -46,14 +46,14 @@ test("provider runtime ingestion projects content deltas and emits narrow patche
     itemId: "item-1",
     payload: {
       streamKind: "assistant_text",
-      delta: "Working"
+      delta: "Working "
     }
   }));
 
   const thread = store.getThreadDetail("thread-1");
   assert.equal(thread?.turns[0]?.id, "turn-1");
   assert.equal(thread?.turns[0]?.items[0]?.type, "agentMessage");
-  assert.equal(thread?.turns[0]?.items[0]?.text, "Working");
+  assert.equal(thread?.turns[0]?.items[0]?.text, "Working ");
   assert.deepEqual(patches.at(-1), {
     kind: "content-delta",
     threadId: "thread-1",
@@ -61,10 +61,166 @@ test("provider runtime ingestion projects content deltas and emits narrow patche
     itemId: "item-1",
     itemType: "assistant_message",
     streamKind: "assistant_text",
-    delta: "Working",
-    itemTextLength: "Working".length,
+    delta: "Working ",
+    itemTextLength: "Working ".length,
     at: 100
   });
+});
+
+test("provider runtime ingestion redacts credentials split across live deltas", async () => {
+  const { store, ingestion, patches } = await createHarness();
+  await ingestion.ingest(baseEvent({ type: "turn.started", turnId: "turn-secret", payload: {} }));
+  await ingestion.ingest(baseEvent({
+    id: "delta-1",
+    type: "content.delta",
+    turnId: "turn-secret",
+    itemId: "reasoning-secret",
+    payload: { streamKind: "reasoning_text", delta: "Checking sk-abc" }
+  }));
+  await ingestion.ingest(baseEvent({
+    id: "delta-2",
+    type: "content.delta",
+    turnId: "turn-secret",
+    itemId: "reasoning-secret",
+    payload: { streamKind: "reasoning_text", delta: "defghijklmnop done" }
+  }));
+  await ingestion.ingest(baseEvent({
+    id: "turn-secret-complete",
+    type: "turn.completed",
+    turnId: "turn-secret",
+    payload: { state: "completed" }
+  }));
+
+  const livePayload = JSON.stringify(patches);
+  assert.doesNotMatch(livePayload, /sk-abc/);
+  assert.match(livePayload, /\[REDACTED\]/);
+  assert.equal(store.getThreadDetail("thread-1")?.turns[0]?.items[0]?.text, "Checking [REDACTED] done");
+});
+
+test("provider runtime ingestion flushes and clears buffered text on abrupt failures", async () => {
+  const { store, ingestion, patches } = await createHarness();
+  await ingestion.ingest(baseEvent({ type: "turn.started", turnId: "turn-abrupt", payload: {} }));
+  await ingestion.ingest(baseEvent({
+    id: "delta-abrupt",
+    type: "content.delta",
+    turnId: "turn-abrupt",
+    itemId: "reasoning-abrupt",
+    payload: { streamKind: "reasoning_text", delta: "Checking sk-abcdefghijklmnop" }
+  }));
+  await ingestion.ingest(baseEvent({
+    id: "runtime-abrupt",
+    type: "runtime.error",
+    turnId: "turn-abrupt",
+    payload: { message: "Provider transport closed" }
+  }));
+
+  assert.equal(store.getThreadDetail("thread-1")?.turns[0]?.items[0]?.text, "Checking [REDACTED]");
+  assert.doesNotMatch(JSON.stringify(patches), /sk-abcdefghijklmnop/);
+  assert.equal((ingestion as unknown as { contentStreams: Map<string, unknown> }).contentStreams.size, 0);
+
+  await ingestion.ingest(baseEvent({
+    id: "delta-transport-close",
+    type: "content.delta",
+    turnId: "turn-transport-close",
+    itemId: "assistant-transport-close",
+    payload: { streamKind: "assistant_text", delta: "Last buffered response" }
+  }));
+  await ingestion.ingest(baseEvent({
+    id: "session-exited",
+    type: "session.exited",
+    payload: { reason: "transport closed" }
+  }));
+
+  const transportTurn = store.getThreadDetail("thread-1")?.turns.find((turn) => turn.id === "turn-transport-close");
+  assert.equal(transportTurn?.items[0]?.text, "Last buffered response");
+  assert.equal((ingestion as unknown as { contentStreams: Map<string, unknown> }).contentStreams.size, 0);
+});
+
+test("provider runtime ingestion terminalizes aborted and cancelled turns", async () => {
+  const { dir, store, ingestion, patches } = await createHarness();
+  await ingestion.ingest(baseEvent({ type: "turn.started", turnId: "turn-aborted", payload: {} }));
+  await ingestion.ingest(baseEvent({
+    id: "delta-before-abort",
+    type: "content.delta",
+    turnId: "turn-aborted",
+    itemId: "reasoning-before-abort",
+    payload: { streamKind: "reasoning_text", delta: "Last diagnostic token" }
+  }));
+  await ingestion.ingest(baseEvent({
+    id: "turn-aborted",
+    type: "turn.aborted",
+    turnId: "turn-aborted",
+    payload: { reason: "Provider aborted Authorization: Bearer abort-secret-123456" }
+  }));
+  await ingestion.ingest(baseEvent({ type: "turn.started", turnId: "turn-cancelled", payload: {} }));
+  await ingestion.ingest(baseEvent({
+    id: "turn-cancelled",
+    type: "turn.completed",
+    turnId: "turn-cancelled",
+    payload: { state: "cancelled" }
+  }));
+
+  const [aborted, cancelled] = store.getThreadDetail("thread-1")?.turns ?? [];
+  assert.equal(aborted?.status, "interrupted");
+  assert.equal(aborted?.error, "Provider aborted Authorization: Bearer [REDACTED]");
+  assert.equal(aborted?.items[0]?.text, "Last diagnostic token");
+  assert.equal(cancelled?.status, "cancelled");
+  assert.equal(cancelled?.completedAt === null, false);
+  assert.equal(store.getThread("thread-1")?.supervisor.blocked, true);
+  assert.equal(patches.some((patch) => patch.kind === "turn-lifecycle" && patch.status === "interrupted"), true);
+  assert.doesNotMatch(JSON.stringify(patches), /abort-secret/);
+
+  await store.flushSave();
+  const reloaded = new ButlerStateStore(path.join(dir, "state.json"));
+  await reloaded.load();
+  assert.equal(reloaded.getThread("thread-1")?.turns[1]?.status, "cancelled");
+  assert.equal(reloaded.getThread("thread-1")?.turns[1]?.completedAt === null, false);
+});
+
+test("provider system errors become idle, visible, terminal Worker failures", async () => {
+  const { store, ingestion, patches } = await createHarness();
+  await ingestion.ingest(baseEvent({ type: "turn.started", turnId: "turn-system-error", payload: {} }));
+  await ingestion.ingest(baseEvent({
+    id: "system-error",
+    type: "thread.state.changed",
+    payload: {
+      state: "error",
+      detail: { type: "systemError", error: { message: "Gateway crashed api_key=sk-system-error-abcdefghijklmnop" } }
+    }
+  }));
+
+  const thread = store.getThread("thread-1");
+  assert.equal(thread?.status, "idle");
+  assert.equal(thread?.turns[0]?.status, "failed");
+  assert.equal(thread?.turns[0]?.error, "Gateway crashed api_key=[REDACTED]");
+  assert.equal(thread?.turns[0]?.completedAt === null, false);
+  assert.equal(thread?.eventLog[0]?.summary, "Gateway crashed api_key=[REDACTED]");
+  assert.equal(patches.some((patch) => patch.kind === "thread-state" && patch.state === "error"), true);
+  assert.equal(patches.some((patch) => patch.kind === "runtime-message" && patch.message.includes("[REDACTED]")), true);
+  assert.doesNotMatch(JSON.stringify(patches), /sk-system-error/);
+});
+
+test("unsupported direct Worker prompts and approvals are visible runtime errors", async () => {
+  const { store, ingestion, patches } = await createHarness();
+  await ingestion.ingest(baseEvent({ type: "turn.started", turnId: "turn-request", payload: {} }));
+  await ingestion.ingest(baseEvent({
+    id: "approval-request",
+    type: "request.opened",
+    turnId: "turn-request",
+    requestId: "approval-1",
+    payload: { requestType: "command_execution_approval", detail: "run release check" }
+  }));
+  await ingestion.ingest(baseEvent({
+    id: "operator-question",
+    type: "userInput.requested",
+    turnId: "turn-request",
+    requestId: "question-1",
+    payload: { questions: [] }
+  }));
+
+  assert.match(store.getThread("thread-1")?.eventLog[0]?.summary ?? "", /requested operator input.*unsupported provider prompt/i);
+  assert.match(store.getThread("thread-1")?.eventLog[1]?.summary ?? "", /unsupported.*command_execution_approval/i);
+  assert.equal(patches.filter((patch) => patch.kind === "runtime-message" && patch.tone === "error").length, 2);
 });
 
 test("provider runtime ingestion projects lifecycle and token usage events", async () => {
@@ -113,6 +269,28 @@ test("provider runtime ingestion projects lifecycle and token usage events", asy
   assert.equal(patches.some((patch) => patch.kind === "token-usage"), true);
   assert.equal(patches.some((patch) => patch.kind === "item-lifecycle"), true);
   assert.equal(patches.some((patch) => patch.kind === "turn-lifecycle"), true);
+});
+
+test("provider runtime ingestion persists exact redacted no-item turn failures", async () => {
+  const { store, ingestion } = await createHarness();
+  await ingestion.ingest(baseEvent({ type: "turn.started", turnId: "turn-failed", payload: {} }));
+  await ingestion.ingest(baseEvent({
+    id: "runtime-error",
+    type: "runtime.error",
+    payload: { message: "Gateway rejected api_key=sk-abcdefghijklmnop" }
+  }));
+  await ingestion.ingest(baseEvent({
+    id: "turn-failed-complete",
+    type: "turn.completed",
+    turnId: "turn-failed",
+    payload: { state: "failed", errorMessage: "Provider failed Authorization: Bearer opaque-token-123456" }
+  }));
+
+  const thread = store.getThreadDetail("thread-1");
+  assert.equal(thread?.turns[0]?.status, "failed");
+  assert.equal(thread?.turns[0]?.error, "Provider failed Authorization: Bearer [REDACTED]");
+  assert.deepEqual(thread?.turns[0]?.items, []);
+  assert.equal(thread?.eventLog.at(-1)?.summary, "Gateway rejected api_key=[REDACTED]");
 });
 
 test("provider runtime ingestion keeps completed turn time stable across repeated lifecycle events", async () => {
@@ -244,6 +422,12 @@ test("provider runtime ingestion serializes async event application", async () =
     }))
   ]);
   await ingestion.drain();
+  await ingestion.ingest(baseEvent({
+    id: "event-complete",
+    type: "turn.completed",
+    turnId: "turn-1",
+    payload: { state: "completed" }
+  }));
 
   assert.equal(store.getThreadDetail("thread-1")?.turns[0]?.items[0]?.text, "AB");
 });

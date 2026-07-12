@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { readJsonStateFile, writeJsonStateFileAtomic } from "./json-state-file.js";
 import type { ButlerStateStore } from "./state-store.js";
 import { workerThreadIsRunning } from "./worker-thread-status.js";
-import type { PairChat, PairMessage, PairStatus, PairSummary, PairWorker } from "../shared/pairing.js";
+import type { PairChat, PairMessage, PairStatus, PairSummary, PairWorker, PairWorkerHandoff } from "../shared/pairing.js";
 
 type LegacyPairFields = { codexModel?: string | null; codexEffort?: string | null };
 type PersistedPairState = {
@@ -151,10 +151,37 @@ function normalizeWorkerHarness(value: unknown, runtime: "openai" | "pi-rpc" | n
   return null;
 }
 
+function cloneWorkerHandoff(handoff: PairWorkerHandoff | null | undefined): PairWorkerHandoff | null {
+  if (!handoff) return null;
+  const predecessor = cloneWorkerHandoff(handoff.handedOffFrom);
+  return {
+    threadId: handoff.threadId,
+    runtime: handoff.runtime,
+    harness: handoff.harness,
+    provider: handoff.provider,
+    model: handoff.model,
+    ...(predecessor ? { handedOffFrom: predecessor } : {})
+  };
+}
+
+function normalizeWorkerHandoff(raw: PairWorkerHandoff | null | undefined): PairWorkerHandoff | null {
+  if (!raw || typeof raw.threadId !== "string" || !raw.threadId.trim()) return null;
+  const runtime = raw.runtime === "openai" || raw.runtime === "pi-rpc" ? raw.runtime : null;
+  const predecessor = normalizeWorkerHandoff(raw.handedOffFrom);
+  return {
+    threadId: raw.threadId.trim(),
+    runtime,
+    harness: normalizeWorkerHarness(raw.harness, runtime),
+    provider: normalizeText(raw.provider) || null,
+    model: normalizeText(raw.model) || null,
+    ...(predecessor ? { handedOffFrom: predecessor } : {})
+  };
+}
+
 function clonePairWorker(worker: PairWorker | null): PairWorker | null {
   return worker ? {
     ...worker,
-    handedOffFrom: worker.handedOffFrom ? { ...worker.handedOffFrom } : null
+    handedOffFrom: cloneWorkerHandoff(worker.handedOffFrom)
   } : null;
 }
 
@@ -243,15 +270,7 @@ function normalizePair(raw: Partial<PairChat> & LegacyPairFields & { id?: string
     provider: normalizeText(raw.worker.provider) || workerThread?.modelProvider || null,
     model: normalizeText(raw.worker.model) || null,
     requestedReasoningEffort: normalizeText(raw.worker.requestedReasoningEffort) || workerThread?.requestedReasoningEffort || null,
-    handedOffFrom: raw.worker.handedOffFrom && typeof raw.worker.handedOffFrom.threadId === "string"
-      ? {
-          threadId: raw.worker.handedOffFrom.threadId,
-          runtime: raw.worker.handedOffFrom.runtime === "openai" || raw.worker.handedOffFrom.runtime === "pi-rpc" ? raw.worker.handedOffFrom.runtime : null,
-          harness: normalizeWorkerHarness(raw.worker.handedOffFrom.harness, raw.worker.handedOffFrom.runtime ?? null),
-          provider: normalizeText(raw.worker.handedOffFrom.provider) || null,
-          model: normalizeText(raw.worker.handedOffFrom.model) || null
-        }
-      : null,
+    handedOffFrom: normalizeWorkerHandoff(raw.worker.handedOffFrom),
     lastReviewedReportAt:
       typeof raw.worker.lastReviewedReportAt === "number" && Number.isFinite(raw.worker.lastReviewedReportAt)
         ? raw.worker.lastReviewedReportAt
@@ -543,13 +562,14 @@ export class PairStore extends EventEmitter {
         ? sameWorker?.requestedReasoningEffort ?? thread?.requestedReasoningEffort ?? null
         : normalizeText(input.effort) || null,
       handedOffFrom: sameWorker?.handedOffFrom
-        ? { ...sameWorker.handedOffFrom }
+        ? cloneWorkerHandoff(sameWorker.handedOffFrom)
         : previousWorker ? {
             threadId: previousWorker.threadId,
             runtime: previousWorker.runtime ?? null,
             harness: previousWorker.harness ?? null,
             provider: previousWorker.provider ?? null,
-            model: previousWorker.model ?? null
+            model: previousWorker.model ?? null,
+            ...(previousWorker.handedOffFrom ? { handedOffFrom: cloneWorkerHandoff(previousWorker.handedOffFrom) } : {})
           } : null
     };
     pair.lastHandoffPrompt = pair.worker.handoffPrompt || null;

@@ -109,14 +109,23 @@ type ServiceInspectPayload = ServicePayload & {
   };
 };
 
+export type PreviewRuntimeState = {
+  running: boolean;
+  status: string;
+  startedAt: number | null;
+  finishedAt: number | null;
+  exitCode: number | null;
+  oomKilled: boolean;
+  error: string | null;
+};
+
+export function formatPreviewRuntimeDiagnostics(runtime: PreviewRuntimeState): string {
+  const finishedAt = Number.isFinite(runtime.finishedAt) ? new Date(runtime.finishedAt as number).toISOString() : "unknown";
+  return `runtimeStatus=${runtime.status} exitCode=${runtime.exitCode ?? "unknown"} oomKilled=${runtime.oomKilled ? "true" : "false"} error=${runtime.error ?? "none"} finishedAt=${finishedAt}`;
+}
+
 type LeaseInspectPayload = LeasePayload & {
-  runtime: {
-    running: boolean;
-    status: string;
-    startedAt: number | null;
-    finishedAt: number | null;
-    error: string | null;
-  };
+  runtime: PreviewRuntimeState;
 };
 
 type LeaseProcessesPayload = {
@@ -196,6 +205,7 @@ type BrowserSessionActionPayload = {
     type: string;
     durationMs: number;
     status?: "completed" | "failed";
+    output?: unknown;
   };
   state: {
     title: string;

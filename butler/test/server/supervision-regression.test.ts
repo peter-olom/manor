@@ -271,6 +271,64 @@ test("job detail output stays bounded for large loaded transcripts", async () =>
   assert.match(detail, /characters omitted from job item text/);
 });
 
+test("job detail exposes redacted failed-turn and runtime diagnostics", async () => {
+  const store = await createStore();
+  const now = Date.now();
+  store.upsertThreadSummary({
+    id: "thread-provider-failure",
+    status: "idle",
+    cwd: "/workspace",
+    turns: [{
+      id: "turn-failed",
+      status: "failed",
+      error: "Provider rejected Authorization: Bearer opaque-token-123456",
+      startedAt: now - 100,
+      completedAt: now,
+      items: [{
+        id: "provider-error",
+        type: "error",
+        status: "failed",
+        text: "Provider echoed OPENAI_API_KEY=sk-item-secret-abcdefghijklmnop"
+      }]
+    }]
+  });
+  store.addEvent("thread-provider-failure", "runtime.error", "Gateway rejected api_key=sk-abcdefghijklmnop");
+
+  const detail = buildJobDetail(store, "thread-provider-failure");
+
+  assert.match(detail, /Turn 1 \| id=turn-failed \| status=failed/);
+  assert.match(detail, /turn_error=Provider rejected Authorization: Bearer \[REDACTED\]/);
+  assert.match(detail, /runtime_error@.*Gateway rejected api_key=\[REDACTED\]/);
+  assert.match(detail, /Provider echoed OPENAI_API_KEY=\[REDACTED\]/);
+  assert.doesNotMatch(detail, /opaque-token|sk-abcdefghijklmnop|sk-item-secret/);
+});
+
+test("job detail keeps the newest runtime errors in chronological display order", async () => {
+  const store = await createStore();
+  const originalNow = Date.now;
+  let now = 1_000;
+  Date.now = () => now;
+  try {
+    store.upsertThreadSummary({ id: "thread-error-order", status: "active", cwd: "/workspace", turns: [] });
+    store.updateTurn("thread-error-order", { id: "turn-error-order", status: "in_progress" });
+    for (let index = 1; index <= 6; index += 1) {
+      now += 1_000;
+      store.addEvent("thread-error-order", "runtime.error", `runtime failure ${index}`);
+    }
+    now += 1_000;
+    store.updateTurn("thread-error-order", { id: "turn-error-order", status: "failed" });
+
+    const detail = buildJobDetail(store, "thread-error-order");
+    assert.doesNotMatch(detail, /runtime failure [12]/);
+    for (const index of [3, 4, 5, 6]) assert.match(detail, new RegExp(`runtime failure ${index}`));
+    assert.ok(detail.indexOf("runtime failure 3") < detail.indexOf("runtime failure 4"));
+    assert.ok(detail.indexOf("runtime failure 4") < detail.indexOf("runtime failure 5"));
+    assert.ok(detail.indexOf("runtime failure 5") < detail.indexOf("runtime failure 6"));
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test("implementation contracts infer internal depth and category verification rows", () => {
   const contract = buildThreadExecutionContract({
     threadId: "thread-ui",

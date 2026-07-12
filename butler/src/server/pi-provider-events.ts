@@ -17,6 +17,7 @@ import type {
   ProviderRuntimeThreadState,
   ProviderRuntimeTurnState
 } from "../shared/provider-runtime.js";
+import { redactLiveReasoningPreview, redactLiveReasoningText, redactSensitiveText } from "./redact-sensitive-text.js";
 
 const BUTLER_RUNTIME_THREAD_ID = "butler";
 
@@ -67,7 +68,7 @@ function messageText(message: unknown): string {
     }
   }
 
-  return typeof message.errorMessage === "string" ? message.errorMessage : "";
+  return typeof message.errorMessage === "string" ? redactSensitiveText(message.errorMessage) : "";
 }
 
 function messageAt(message: unknown, fallback: number): number {
@@ -79,7 +80,7 @@ function summarizeValue(value: unknown): string {
     return "";
   }
   if (typeof value === "string") {
-    return value;
+    return redactSensitiveText(value);
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return String(value);
@@ -98,14 +99,14 @@ function summarizeValue(value: unknown): string {
       .filter(Boolean)
       .join("\n");
     if (text.trim()) {
-      return text;
+      return redactSensitiveText(text);
     }
   }
 
   for (const key of ["message", "text", "content", "summary", "description", "command", "cmd", "path", "url", "status"]) {
     const entry = value[key];
     if (typeof entry === "string" && entry.trim()) {
-      return `${key}: ${entry}`;
+      return `${key}: ${redactSensitiveText(entry)}`;
     }
     if (entry && typeof entry === "object") {
       const nested = summarizeValue(entry);
@@ -116,7 +117,7 @@ function summarizeValue(value: unknown): string {
   }
 
   try {
-    return JSON.stringify(value);
+    return redactSensitiveText(JSON.stringify(value));
   } catch {
     return String(value);
   }
@@ -181,6 +182,7 @@ export class PiProviderRuntimeMapper {
   private hideNextAssistantReply = false;
   private pendingOperatorQuestionReply = false;
   private pendingOperatorQuestionAssistant: { itemId: string; turnId: string; at: number } | null = null;
+  private readonly reasoningStreams = new Map<string, { raw: string; emitted: string }>();
 
   constructor(private readonly threadId = BUTLER_RUNTIME_THREAD_ID) {}
 
@@ -196,6 +198,7 @@ export class PiProviderRuntimeMapper {
         this.currentUserItemId = null;
         this.pendingOperatorQuestionReply = false;
         this.pendingOperatorQuestionAssistant = null;
+        this.reasoningStreams.clear();
         return [this.threadState("idle", at)];
       case "turn_start": {
         const turnId = this.startTurn(session, at);
@@ -216,6 +219,7 @@ export class PiProviderRuntimeMapper {
         this.hideNextAssistantReply = false;
         this.pendingOperatorQuestionReply = false;
         this.pendingOperatorQuestionAssistant = null;
+        this.reasoningStreams.clear();
         return [{
           kind: "turn-lifecycle",
           threadId: this.threadId,
@@ -289,7 +293,7 @@ export class PiProviderRuntimeMapper {
           itemType: "context_compaction",
           title: "Compaction",
           status: event.errorMessage ? "failed" : "completed",
-          text: event.errorMessage ?? event.reason,
+          text: redactSensitiveText(event.errorMessage ?? event.reason),
           at
         })];
       }
@@ -297,16 +301,18 @@ export class PiProviderRuntimeMapper {
         return [{
           kind: "runtime-message",
           threadId: this.threadId,
+          turnId: this.ensureTurn(session, at),
           tone: "warning",
-          message: event.errorMessage,
+          message: redactSensitiveText(event.errorMessage),
           at
         }];
       case "auto_retry_end":
         return event.success ? [] : [{
           kind: "runtime-message",
           threadId: this.threadId,
+          turnId: this.ensureTurn(session, at),
           tone: "error",
-          message: event.finalError ?? "Retry failed.",
+          message: redactSensitiveText(event.finalError ?? "Retry failed."),
           at
         }];
       default:
@@ -425,6 +431,25 @@ export class PiProviderRuntimeMapper {
 
     const turnId = this.ensureTurn(session, at);
     const assistantEvent = event.assistantMessageEvent;
+    if (assistantEvent.type === "thinking_delta") {
+      const itemId = this.thinkingItemId(assistantEvent.contentIndex);
+      const current = this.reasoningStreams.get(itemId) ?? { raw: "", emitted: "" };
+      const raw = current.raw + assistantEvent.delta;
+      const preview = redactLiveReasoningPreview(raw);
+      this.reasoningStreams.set(itemId, { raw, emitted: preview.startsWith(current.emitted) ? preview : current.emitted });
+      if (!preview.startsWith(current.emitted) || preview.length === current.emitted.length) return [];
+      return [{
+        kind: "content-delta",
+        threadId: this.threadId,
+        turnId,
+        itemId,
+        itemType: "reasoning",
+        streamKind: "reasoning_text",
+        delta: preview.slice(current.emitted.length),
+        itemTextLength: preview.length,
+        at
+      }];
+    }
     const delta = assistantTextDelta(event);
     if (delta) {
       const itemId = delta.streamKind === "assistant_text"
@@ -455,6 +480,7 @@ export class PiProviderRuntimeMapper {
     }
 
     if (assistantEvent.type === "thinking_start") {
+      this.reasoningStreams.set(this.thinkingItemId(assistantEvent.contentIndex), { raw: "", emitted: "" });
       return [this.itemLifecycle({
         threadId: this.threadId,
         turnId,
@@ -468,13 +494,16 @@ export class PiProviderRuntimeMapper {
     }
 
     if (assistantEvent.type === "thinking_end") {
+      const itemId = this.thinkingItemId(assistantEvent.contentIndex);
+      const buffered = this.reasoningStreams.get(itemId);
+      this.reasoningStreams.delete(itemId);
       return [this.itemLifecycle({
         threadId: this.threadId,
         turnId,
-        itemId: this.thinkingItemId(assistantEvent.contentIndex),
+        itemId,
         itemType: "reasoning",
         status: "completed",
-        text: assistantContentText(event, "thinking_end"),
+        text: redactLiveReasoningText(assistantContentText(event, "thinking_end") || buffered?.raw || ""),
         at,
         title: "Thinking"
       })];

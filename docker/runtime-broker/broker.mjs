@@ -113,12 +113,14 @@ storageHelpers = createBrokerStorage(brokerContext, {
 });
 const {
   appendPreviewRoutePath,
+  assertProjectStackStorageLineage,
   authorizeScopedThread,
   buildLease,
   buildShellCommand,
   buildStack,
   clearLeaseBootstrapState,
   clearLeaseTransition,
+  clearLeaseTransitionIfIdle,
   clearRetainedPreviewLease,
   clearStackThreadBinding,
   cloneManagedStackVolume,
@@ -136,6 +138,7 @@ const {
   getLeaseTransition,
   getRetainedPreviewLease,
   getStackCloneSourceKeyFromLabels,
+  getStackBaseStorageKeyFromLabels,
   getStackPromoteTargetKeyFromLabels,
   getStackScopeKeyFromLabels,
   hasBrokerAccess,
@@ -168,7 +171,8 @@ const {
   rejectIfLeaseStopping,
   rejectIfLeaseUnavailable,
   requireContainer,
-  requireServiceContainer,
+  requireAuthorizedPreviewResource,
+  requireAuthorizedServiceResource,
   requireStackNetwork,
   resolveAttachedThreadId,
   resolveContainerExecWorkingDir,
@@ -270,6 +274,12 @@ function formatErrorMessage(error) {
     return error.message;
   }
   return String(error);
+}
+
+function throwIfPreviewCreationCancelled(leaseId) {
+  if (getLeaseTransition(leaseId)?.state === "stopping") {
+    throw new Error("Preview creation was cancelled.");
+  }
 }
 
 function isRetryableRuntimeError(error) {
@@ -468,7 +478,13 @@ app.post("/stacks", async (request, response) => {
     return;
   }
 
-  const stack = buildStack(payload);
+  let stack;
+  try {
+    stack = buildStack(payload);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    return;
+  }
 
   try {
     const existing = await inspectNetwork(stack.networkName);
@@ -532,12 +548,15 @@ app.get("/stacks", async (request, response) => {
 });
 
 app.get("/stacks/:stackId", async (request, response) => {
-  const stack = await requireStackNetwork(request.params.stackId, response);
-  if (!stack) {
+  const stack = await findStackNetwork(request.params.stackId);
+  const effectiveThreadId = stack
+    ? await resolveStackThreadId(request.params.stackId, stack.Labels?.["manor.thread-id"] || null)
+    : null;
+  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
     return;
   }
-  const effectiveThreadId = await resolveStackThreadId(request.params.stackId, stack.Labels?.["manor.thread-id"] || null);
-  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
+  if (!stack) {
+    response.status(404).json({ error: "Stack not found" });
     return;
   }
 
@@ -606,6 +625,7 @@ app.post("/stacks/:stackId/promote", async (request, response) => {
   const sourceStorageKey = getStackScopeKeyFromLabels(stack.Labels);
   const defaultTargetStorageKey = getStackPromoteTargetKeyFromLabels(stack.Labels) || getStackCloneSourceKeyFromLabels(stack.Labels);
   const targetStorageKey = normalizeString(request.body?.targetStorageKey) || defaultTargetStorageKey;
+  const projectId = normalizeString(stack.Labels?.["manor.project-id"]) || "unknown";
   if (!retainsVolumes || !sourceStorageKey) {
     response.status(400).json({ error: "Stack does not retain volumes" });
     return;
@@ -616,6 +636,21 @@ app.post("/stacks/:stackId/promote", async (request, response) => {
   }
   if (targetStorageKey === sourceStorageKey) {
     response.status(400).json({ error: "targetStorageKey must differ from the stack storage key" });
+    return;
+  }
+  const safeTargets = new Set([
+    defaultTargetStorageKey,
+    getStackBaseStorageKeyFromLabels(stack.Labels),
+    getStackCloneSourceKeyFromLabels(stack.Labels)
+  ].filter(Boolean));
+  if (!safeTargets.has(targetStorageKey)) {
+    response.status(400).json({ error: "The target storage key is outside this stack's project storage lineage." });
+    return;
+  }
+  try {
+    assertProjectStackStorageLineage(projectId, [["targetStorageKey", targetStorageKey]]);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : String(error) });
     return;
   }
 
@@ -871,9 +906,7 @@ app.post("/leases", async (request, response) => {
     mergeLeaseBootstrapState(lease.id, { phase: "pulling_image" });
     await ensureImage(lease.image);
 
-    if (getLeaseTransition(lease.id)?.state === "stopping") {
-      throw new Error("Preview creation was cancelled before the container started.");
-    }
+    throwIfPreviewCreationCancelled(lease.id);
 
     mergeLeaseBootstrapState(lease.id, { phase: "starting_container" });
 
@@ -904,6 +937,7 @@ app.post("/leases", async (request, response) => {
         "manor.stack-id": lease.stackId ?? "",
         "manor.aliases": lease.aliases.join(","),
         "manor.worktree-path": lease.worktreePath,
+        "manor.branch-name": lease.branchName ?? "",
         "manor.worktree-source-path": sourceWorktreePath,
         "manor.worktree-runtime-path": runtimeWorktreePath,
         "manor.workspace-mode": "snapshot",
@@ -923,7 +957,7 @@ app.post("/leases", async (request, response) => {
         "manor.bootstrap-heartbeat-interval": String(lease.bootstrap.heartbeatIntervalSeconds)
       },
       HostConfig: {
-        AutoRemove: true,
+        AutoRemove: false,
         NetworkMode: networkName,
         Mounts: workspaceMounts
       },
@@ -939,16 +973,21 @@ app.post("/leases", async (request, response) => {
       }
     });
 
+    throwIfPreviewCreationCancelled(lease.id);
     await runtimeContainer.start();
+    throwIfPreviewCreationCancelled(lease.id);
     if (isDirectPreviewInternet(lease.egressProfile, lease.egressDomains)) {
       await ensurePreviewOutboundNetwork();
       await ensureNetworkConnection(previewOutboundNetwork, lease.containerName);
+      throwIfPreviewCreationCancelled(lease.id);
     }
     await ensureNetworkConnection(sharedWorkNetwork, lease.containerName, aliases);
+    throwIfPreviewCreationCancelled(lease.id);
     const container = await inspectContainer(lease.containerName);
     if (!container) {
       throw new Error("Preview container did not start");
     }
+    throwIfPreviewCreationCancelled(lease.id);
 
     pendingPreviewLeases.delete(lease.id);
     scheduleLeaseBootstrapMonitor(lease);
@@ -969,14 +1008,26 @@ app.post("/leases", async (request, response) => {
       updatedAt: Date.now()
     });
   } catch (error) {
-    pendingPreviewLeases.delete(lease.id);
+    if (dynamicPolicyName) {
+      await dropPreviewEgressLeasePolicy(lease.id).catch(() => {});
+    }
+    if (getLeaseTransition(lease.id)?.state === "stopping") {
+      await docker.getContainer(lease.containerName).remove({ force: true }).catch(() => {});
+      clearLeaseBootstrapState(lease.id);
+      clearRetainedPreviewLease(lease.id);
+      response.status(409).json({
+        ...lease,
+        status: "stopped",
+        updatedAt: Date.now(),
+        lastError: "Preview creation was cancelled.",
+        error: "Preview creation was cancelled."
+      });
+      return;
+    }
     const bootstrapState = mergeLeaseBootstrapState(lease.id, {
       phase: "failed",
       lastHeartbeatError: error instanceof Error ? error.message : String(error)
     });
-    if (dynamicPolicyName) {
-      await dropPreviewEgressLeasePolicy(lease.id).catch(() => {});
-    }
     retainPreviewLease(
       {
         ...lease,
@@ -1006,7 +1057,12 @@ app.post("/leases", async (request, response) => {
       error: error instanceof Error ? error.message : String(error)
     });
   } finally {
-    clearLeaseTransition(lease.id);
+    pendingPreviewLeases.delete(lease.id);
+    if (getLeaseTransition(lease.id)?.state === "starting") {
+      clearLeaseTransition(lease.id);
+    } else {
+      clearLeaseTransitionIfIdle(lease.id);
+    }
   }
 });
 
@@ -1124,9 +1180,28 @@ app.get("/leases/:leaseId", async (request, response) => {
         status: "starting",
         startedAt: null,
         finishedAt: null,
+        exitCode: null,
+        oomKilled: false,
         error: null
       }
     });
+    return;
+  }
+
+  const containerName = toContainerName(request.params.leaseId);
+  const container = await inspectContainer(containerName);
+  if (container) {
+    const effectiveThreadId = await resolveAttachedThreadId(
+      container.Config?.Labels?.["manor.thread-id"] || null,
+      container.Config?.Labels?.["manor.stack-id"] || null
+    );
+    if (!authorizeScopedThread(request, response, effectiveThreadId)) {
+      return;
+    }
+    if (rejectIfLeaseStopping(request.params.leaseId, response)) {
+      return;
+    }
+    response.json(await serializeInspectedLease(containerName, container));
     return;
   }
 
@@ -1152,7 +1227,7 @@ app.get("/leases/:leaseId", async (request, response) => {
         },
         {
           containerState: retainedLease.runtime.status === "failed" ? "failed" : retainedLease.lease.status,
-          containerRunning: false
+          containerRunning: retainedLease.runtime.running
         }
       ),
       runtime: retainedLease.runtime
@@ -1160,40 +1235,20 @@ app.get("/leases/:leaseId", async (request, response) => {
     return;
   }
 
-  const required = await requireContainer(request.params.leaseId, response);
-  if (!required) {
-    return;
-  }
-  if (rejectIfLeaseStopping(request.params.leaseId, response)) {
-    return;
-  }
-  const { containerName, container } = required;
-  const effectiveThreadId = await resolveAttachedThreadId(
-    container.Config?.Labels?.["manor.thread-id"] || null,
-    container.Config?.Labels?.["manor.stack-id"] || null
-  );
-  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
-    return;
-  }
-  response.json(await serializeInspectedLease(containerName, container));
+  if (!authorizeScopedThread(request, response, null)) return;
+  response.status(404).json({ error: "Lease not found" });
 });
 
 app.get("/leases/:leaseId/processes", async (request, response) => {
-  if (rejectIfLeaseRetainedFailed(request.params.leaseId, response)) {
-    return;
-  }
-  const required = await requireContainer(request.params.leaseId, response);
+  const resource = await requireAuthorizedPreviewResource(request, response, request.params.leaseId);
+  if (!resource) return;
+  if (rejectIfLeaseRetainedFailed(request.params.leaseId, response)) return;
+  const required = resource.required;
   if (!required) {
+    response.status(404).json({ error: "Lease not found" });
     return;
   }
   if (rejectIfLeaseUnavailable(required, request.params.leaseId, response)) {
-    return;
-  }
-  const effectiveThreadId = await resolveAttachedThreadId(
-    required.container.Config?.Labels?.["manor.thread-id"] || null,
-    required.container.Config?.Labels?.["manor.stack-id"] || null
-  );
-  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
     return;
   }
 
@@ -1209,21 +1264,11 @@ app.get("/leases/:leaseId/processes", async (request, response) => {
 });
 
 app.get("/leases/:leaseId/logs", async (request, response) => {
-  if (rejectIfLeaseRetainedFailed(request.params.leaseId, response)) {
-    return;
-  }
-  const required = await requireContainer(request.params.leaseId, response);
+  const resource = await requireAuthorizedPreviewResource(request, response, request.params.leaseId);
+  if (!resource) return;
+  const required = resource.required;
   if (!required) {
-    return;
-  }
-  if (rejectIfLeaseUnavailable(required, request.params.leaseId, response)) {
-    return;
-  }
-  const effectiveThreadId = await resolveAttachedThreadId(
-    required.container.Config?.Labels?.["manor.thread-id"] || null,
-    required.container.Config?.Labels?.["manor.stack-id"] || null
-  );
-  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
+    response.status(404).json({ error: "Lease not found" });
     return;
   }
 
@@ -1249,21 +1294,15 @@ app.get("/leases/:leaseId/logs", async (request, response) => {
 });
 
 app.post("/leases/:leaseId/exec", async (request, response) => {
-  if (rejectIfLeaseRetainedFailed(request.params.leaseId, response)) {
-    return;
-  }
-  const required = await requireContainer(request.params.leaseId, response);
+  const resource = await requireAuthorizedPreviewResource(request, response, request.params.leaseId);
+  if (!resource) return;
+  if (rejectIfLeaseRetainedFailed(request.params.leaseId, response)) return;
+  const required = resource.required;
   if (!required) {
+    response.status(404).json({ error: "Lease not found" });
     return;
   }
   if (rejectIfLeaseUnavailable(required, request.params.leaseId, response)) {
-    return;
-  }
-  const effectiveThreadId = await resolveAttachedThreadId(
-    required.container.Config?.Labels?.["manor.thread-id"] || null,
-    required.container.Config?.Labels?.["manor.stack-id"] || null
-  );
-  if (!authorizeScopedThread(request, response, effectiveThreadId)) {
     return;
   }
 
@@ -1308,9 +1347,6 @@ app.delete("/leases/:leaseId", async (request, response) => {
   }
   const containerName = toContainerName(request.params.leaseId);
   setLeaseTransition(request.params.leaseId, "stopping");
-  if (pendingPreviewLeases.has(request.params.leaseId)) {
-    pendingPreviewLeases.delete(request.params.leaseId);
-  }
 
   try {
     await docker.getContainer(containerName).remove({ force: true });
@@ -1319,13 +1355,13 @@ app.delete("/leases/:leaseId", async (request, response) => {
   }
 
   await dropPreviewEgressLeasePolicy(request.params.leaseId).catch(() => {});
-  clearLeaseTransition(request.params.leaseId);
   clearLeaseBootstrapState(request.params.leaseId);
   clearRetainedPreviewLease(request.params.leaseId);
   const previewSessionIds = browserController.listPreviewSessionIdsForLease(request.params.leaseId);
   for (const sessionId of previewSessionIds) {
     await browserController.closePlaywrightBrowserUseSession(sessionId, "preview stopped").catch(() => undefined);
   }
+  clearLeaseTransitionIfIdle(request.params.leaseId);
   response.json({ ok: true, leaseId: request.params.leaseId });
 });
 registerBrokerServiceRoutes({
@@ -1335,8 +1371,7 @@ registerBrokerServiceRoutes({
   sharedWorkNetwork,
   hasBrokerAccess,
   authorizeScopedThread,
-  requireServiceContainer,
-  resolveAttachedThreadId,
+  requireAuthorizedServiceResource,
   findStackNetwork,
   normalizeString,
   normalizeStringArray,

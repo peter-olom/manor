@@ -528,7 +528,7 @@ const WorkerCompactRow = memo(function WorkerCompactRow({ item }: WorkerCompactR
   const label = itemTypeLabel(item.type);
   const preview = shortText(item.text, 140);
   return (
-    <details className={`worker-row-compact ${statusBadgeClass(item.status)}`}>
+    <details className={`worker-row-compact ${statusBadgeClass(item.status)}`} {...(item.status === "failed" ? { open: true } : {})}>
       <summary>
         <span className="worker-row-chevron" aria-hidden="true">
           <span className="worker-row-chevron-closed"><ChevronRightIcon /></span>
@@ -612,13 +612,16 @@ const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, pay
   const leadingMessages = finalItem ? visibleMessages.filter((item) => item.id !== finalItem.id) : visibleMessages;
   const durationMs = resolveTurnDurationMs(turn, finalItem, sorted);
   const activityLabel = summarizeActivity(supporting, 0);
-  const defaultOpen = !finalItem;
+  const failed = turn.status === "failed";
+  const stopped = turn.status === "interrupted" || turn.status === "cancelled";
+  const terminalLabel = failed ? "failed" : stopped ? "stopped" : "complete";
+  const defaultOpen = failed || stopped || !finalItem;
 
   return (
-    <section className="worker-turn is-complete" aria-label={`Worker turn ${index + 1} complete`}>
+    <section className={`worker-turn is-complete${failed || stopped ? " is-failed" : ""}`} aria-label={`Worker turn ${index + 1} ${terminalLabel}`}>
       <header className="worker-turn-head">
         <span className="worker-turn-title">Worker turn {index + 1}</span>
-        <span className="worker-turn-status is-done">complete</span>
+        <span className={`worker-turn-status ${failed || stopped ? "is-failed" : "is-done"}`}>{terminalLabel}</span>
         <time className="worker-turn-time">{formatTime(turn.startedAt)}</time>
         {durationMs > 0 ? <span className="worker-turn-duration">{formatDuration(durationMs)}</span> : null}
       </header>
@@ -637,7 +640,7 @@ const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, pay
   );
 });
 
-const WorkerTurnView = memo(function WorkerTurnView({
+export const WorkerTurnView = memo(function WorkerTurnView({
   turn,
   index,
   payload,

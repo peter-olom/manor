@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { Type } from "@sinclair/typebox";
 
 import {
@@ -17,12 +19,52 @@ import {
   readProjectArtifactContent
 } from "./project-artifacts-policies.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import { stringMapSchema } from "./butler-agent-tool-schemas.js";
 import { formatMemoryDebugTrace, formatMemoryDebugTraceList, getMemoryDebugTrace, listMemoryDebugTraces } from "./memory-debug-traces.js";
 import { buildMemoryDiagnostics, formatMemoryDiagnostics } from "./memory-diagnostics.js";
 import { formatButlerMemoryRetrieval, retrieveButlerMemoryWithEmbeddings } from "./memory-retrieval.js";
 
 function hasOwnField(value: unknown, key: string): boolean {
   return Boolean(value) && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function approvedProjectFileRoots(artifactsDir: string): string[] {
+  const configured = (process.env.MANOR_BUTLER_FILE_SHARE_ROOTS ?? process.env.MANOR_BUTLER_FS_INSPECTION_ROOTS ?? "")
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return [...new Set(["/repos", artifactsDir, ...configured])];
+}
+
+function assertMatchingMemoryScopes(access: ButlerAgentToolAccess, projectId: string | null, threadId: string | null): void {
+  if (!projectId || !threadId) return;
+  const thread = access.store.getThread(threadId);
+  const scopedProjectId =
+    thread?.executionContract?.projectId ||
+    access.store.getJobMemory(threadId)?.projectId ||
+    thread?.supervisor.projectId ||
+    null;
+  if (scopedProjectId && scopedProjectId !== projectId) {
+    throw new Error(`Project scope ${projectId} does not match job ${threadId}, which belongs to project ${scopedProjectId}`);
+  }
+}
+
+function resolveRequestedProject(
+  access: ButlerAgentToolAccess,
+  input: {
+    cwd: string;
+    projectId?: unknown;
+    projectLabel?: unknown;
+    fallbackId: string;
+    fallbackLabel: string;
+  }
+): { id: string; label: string } {
+  const projectId = typeof input.projectId === "string" ? input.projectId.trim() : "";
+  const projectLabel = typeof input.projectLabel === "string" ? input.projectLabel.trim() : "";
+  if (projectId) {
+    return { id: projectId, label: projectLabel || projectId };
+  }
+  return access.resolveWorkspaceProject(input.cwd, input.fallbackId, projectLabel || input.fallbackLabel);
 }
 
 export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifactsDir: string): ButlerCustomTool[] {
@@ -67,9 +109,12 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
       }),
       uiEffects: access.getToolUiEffects("retrieve_memory"),
       execute: async (_toolCallId, params) => {
+        const projectId = typeof params.projectId === "string" && params.projectId.trim() ? params.projectId.trim() : null;
+        const threadId = typeof params.threadId === "string" && params.threadId.trim() ? params.threadId.trim() : null;
+        assertMatchingMemoryScopes(access, projectId, threadId);
         const retrieval = await retrieveButlerMemoryWithEmbeddings(access.store, {
-          projectId: typeof params.projectId === "string" ? params.projectId : null,
-          threadId: typeof params.threadId === "string" ? params.threadId : null,
+          projectId,
+          threadId,
           query: typeof params.query === "string" ? params.query : null,
           limit: typeof params.limit === "number" ? params.limit : null,
           includeGlobal: typeof params.includeGlobal === "boolean" ? params.includeGlobal : false,
@@ -224,7 +269,12 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
         const text =
           artifacts.length === 0
             ? "No durable project artifacts are stored."
-            : artifacts.map((artifact, index) => `${index + 1}. ${artifact.kind} | ${formatProjectArtifactAccessLine(artifact)} | ${artifact.sizeBytes} bytes`).join("\n");
+            : artifacts
+                .map(
+                  (artifact, index) =>
+                    `${index + 1}. project=${artifact.projectId} | ${artifact.kind} | ${formatProjectArtifactAccessLine(artifact)} | ${artifact.sizeBytes} bytes`
+                )
+                .join("\n");
         return {
           content: [{ type: "text", text }],
           details: { artifacts: artifacts.map((artifact) => decorateProjectArtifactWithAccess(artifact)) }
@@ -257,18 +307,20 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
         fileName: Type.Optional(Type.String()),
         contentType: Type.Optional(Type.String()),
         tags: Type.Optional(Type.Array(Type.String())),
-        metadata: Type.Optional(Type.Record(Type.String(), Type.String()))
+        metadata: Type.Optional(stringMapSchema())
       }),
       uiEffects: access.getToolUiEffects("save_project_artifact"),
       execute: async (_toolCallId, params) => {
         const threadId = typeof params.threadId === "string" ? params.threadId.trim() : "";
         const thread = threadId ? access.store.getThread(threadId) ?? null : null;
         const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : thread?.cwd ?? "/repos";
-        const project = access.resolveWorkspaceProject(
+        const project = resolveRequestedProject(access, {
           cwd,
-          (typeof params.projectId === "string" && params.projectId.trim()) || thread?.supervisor.projectId || "project",
-          (typeof params.projectLabel === "string" && params.projectLabel.trim()) || thread?.supervisor.projectLabel || "project"
-        );
+          projectId: params.projectId,
+          projectLabel: params.projectLabel,
+          fallbackId: thread?.supervisor.projectId || "project",
+          fallbackLabel: thread?.supervisor.projectLabel || "project"
+        });
         const artifact = await createProjectArtifactFromText({
           artifactsDir,
           projectId: project.id,
@@ -323,7 +375,7 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
         fileName: Type.Optional(Type.String()),
         contentType: Type.Optional(Type.String()),
         tags: Type.Optional(Type.Array(Type.String())),
-        metadata: Type.Optional(Type.Record(Type.String(), Type.String()))
+        metadata: Type.Optional(stringMapSchema())
       }),
       uiEffects: access.getToolUiEffects("share_project_file"),
       execute: async (_toolCallId, params) => {
@@ -331,11 +383,13 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
         const thread = threadId ? access.store.getThread(threadId) ?? null : null;
         const sourceFilePath = (params.sourceFilePath as string).trim();
         const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : thread?.cwd ?? sourceFilePath;
-        const project = access.resolveWorkspaceProject(
+        const project = resolveRequestedProject(access, {
           cwd,
-          (typeof params.projectId === "string" && params.projectId.trim()) || thread?.supervisor.projectId || "project",
-          (typeof params.projectLabel === "string" && params.projectLabel.trim()) || thread?.supervisor.projectLabel || "project"
-        );
+          projectId: params.projectId,
+          projectLabel: params.projectLabel,
+          fallbackId: thread?.supervisor.projectId || "project",
+          fallbackLabel: thread?.supervisor.projectLabel || "project"
+        });
         const fileName = typeof params.fileName === "string" && params.fileName.trim() ? params.fileName.trim() : null;
         const artifact = await createProjectArtifactFromFile({
           artifactsDir,
@@ -356,6 +410,7 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
               : fileName || sourceFilePath.split("/").filter(Boolean).at(-1) || "File download",
           description: typeof params.description === "string" ? params.description : null,
           sourceFilePath,
+          approvedRoots: approvedProjectFileRoots(artifactsDir),
           fileName,
           contentType: typeof params.contentType === "string" ? params.contentType : null,
           tags: Array.isArray(params.tags) ? params.tags : [],
@@ -402,18 +457,20 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
         fileName: Type.Optional(Type.String()),
         contentType: Type.Optional(Type.String()),
         tags: Type.Optional(Type.Array(Type.String())),
-        metadata: Type.Optional(Type.Record(Type.String(), Type.String()))
+        metadata: Type.Optional(stringMapSchema())
       }),
       uiEffects: access.getToolUiEffects("download_project_artifact"),
       execute: async (_toolCallId, params) => {
         const threadId = typeof params.threadId === "string" ? params.threadId.trim() : "";
         const thread = threadId ? access.store.getThread(threadId) ?? null : null;
         const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : thread?.cwd ?? "/repos";
-        const project = access.resolveWorkspaceProject(
+        const project = resolveRequestedProject(access, {
           cwd,
-          (typeof params.projectId === "string" && params.projectId.trim()) || thread?.supervisor.projectId || "project",
-          (typeof params.projectLabel === "string" && params.projectLabel.trim()) || thread?.supervisor.projectLabel || "project"
-        );
+          projectId: params.projectId,
+          projectLabel: params.projectLabel,
+          fallbackId: thread?.supervisor.projectId || "project",
+          fallbackLabel: thread?.supervisor.projectLabel || "project"
+        });
         const artifact = await createProjectArtifactFromUrl({
           artifactsDir,
           projectId: project.id,
@@ -459,11 +516,13 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
         const threadId = typeof params.threadId === "string" ? params.threadId.trim() : "";
         const thread = threadId ? access.store.getThread(threadId) ?? null : null;
         const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : thread?.cwd ?? "/repos";
-        const project = access.resolveWorkspaceProject(
+        const project = resolveRequestedProject(access, {
           cwd,
-          (typeof params.projectId === "string" && params.projectId.trim()) || thread?.supervisor.projectId || "project",
-          (typeof params.projectLabel === "string" && params.projectLabel.trim()) || thread?.supervisor.projectLabel || "project"
-        );
+          projectId: params.projectId,
+          projectLabel: params.projectLabel,
+          fallbackId: thread?.supervisor.projectId || "project",
+          fallbackLabel: thread?.supervisor.projectLabel || "project"
+        });
         const artifact = access.store.getProjectArtifact(project.id, (params.artifactId as string).trim());
         if (!artifact) {
           return {
@@ -490,7 +549,7 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
     access.defineButlerTool({
       name: "list_project_policies",
       label: "List project policies",
-      description: "List durable project policies Butler can surface or apply when matching events happen.",
+      description: "List durable project policies Butler can surface as context when matching events happen.",
       promptSnippet: "list_project_policies: use this before creating a new remembered rule so Butler reuses or updates an existing policy.",
       parameters: Type.Object({
         projectId: Type.Optional(Type.String())
@@ -535,11 +594,13 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
         const threadId = typeof params.threadId === "string" ? params.threadId.trim() : "";
         const thread = threadId ? access.store.getThread(threadId) ?? null : null;
         const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : thread?.cwd ?? "/repos";
-        const project = access.resolveWorkspaceProject(
+        const project = resolveRequestedProject(access, {
           cwd,
-          (typeof params.projectId === "string" && params.projectId.trim()) || thread?.supervisor.projectId || "project",
-          (typeof params.projectLabel === "string" && params.projectLabel.trim()) || thread?.supervisor.projectLabel || "project"
-        );
+          projectId: params.projectId,
+          projectLabel: params.projectLabel,
+          fallbackId: thread?.supervisor.projectId || "project",
+          fallbackLabel: thread?.supervisor.projectLabel || "project"
+        });
         const existingId = typeof params.policyId === "string" && params.policyId.trim() ? params.policyId.trim() : "";
         const existing = existingId ? access.store.getProjectPolicy(project.id, existingId) : null;
         const artifacts = resolveProjectPolicyArtifactIds({
@@ -567,8 +628,9 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
     access.defineButlerTool({
       name: "invoke_project_policy",
       label: "Invoke project policy",
-      description: "Load or execute one remembered policy directly by id, title, or alias.",
-      promptSnippet: "invoke_project_policy: use this when the operator explicitly tells Butler or a worker to run or load a remembered policy now.",
+      description: "Load one remembered policy as instruction and artifact context. This does not execute commands or mutate a service.",
+      promptSnippet:
+        "invoke_project_policy: use this when the operator explicitly asks to load remembered policy context. It returns instructions and artifact references; it does not execute commands or mutate services.",
       parameters: Type.Object({
         selector: Type.String({ minLength: 1 }),
         projectId: Type.Optional(Type.String()),
@@ -582,11 +644,13 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
         const threadId = typeof params.threadId === "string" ? params.threadId.trim() : "";
         const thread = threadId ? access.store.getThread(threadId) ?? null : null;
         const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : thread?.cwd ?? "/repos";
-        const project = access.resolveWorkspaceProject(
+        const project = resolveRequestedProject(access, {
           cwd,
-          (typeof params.projectId === "string" && params.projectId.trim()) || thread?.supervisor.projectId || "project",
-          (typeof params.projectLabel === "string" && params.projectLabel.trim()) || thread?.supervisor.projectLabel || "project"
-        );
+          projectId: params.projectId,
+          projectLabel: params.projectLabel,
+          fallbackId: thread?.supervisor.projectId || "project",
+          fallbackLabel: thread?.supervisor.projectLabel || "project"
+        });
         const policy = findProjectPolicyBySelector({
           store: access.store,
           projectId: project.id,
@@ -598,10 +662,12 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
             details: { policy: null }
           };
         }
-        const service =
-          typeof params.serviceId === "string" && params.serviceId.trim()
-            ? access.store.getServiceLease(params.serviceId.trim()) ?? null
-            : null;
+        const serviceId = typeof params.serviceId === "string" ? params.serviceId.trim() : "";
+        const service = serviceId ? access.store.getServiceLease(serviceId) ?? null : null;
+        if (serviceId && !service) throw new Error(`Service ${serviceId} was not found`);
+        if (service && service.projectId !== project.id) {
+          throw new Error(`Service ${service.id} belongs to project ${service.projectId}, not ${project.id}`);
+        }
         const stack = service?.stackId ? access.store.getStackLease(service.stackId) ?? null : null;
         const result = await invokeProjectPolicy({
           store: access.store,

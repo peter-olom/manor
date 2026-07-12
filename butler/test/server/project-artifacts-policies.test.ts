@@ -1,10 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Readable, Writable } from "node:stream";
 
-import { createProjectArtifactFromFile, readProjectArtifactContent } from "../../src/server/project-artifacts-policies.js";
+import {
+  createProjectArtifactFromFile,
+  createProjectArtifactFromUrl,
+  isPublicProjectArtifactAddress,
+  pipeProjectArtifactStreamWithinLimit,
+  readProjectArtifactContent,
+  resolveApprovedProjectFilePath,
+  sanitizeProjectArtifactProvenanceUrl
+} from "../../src/server/project-artifacts-policies.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 
 test("project artifacts can be created from local HTML files", async () => {
@@ -33,6 +42,100 @@ test("project artifacts can be created from local HTML files", async () => {
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+});
+
+test("shared project files stay within approved real roots", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "manor-project-artifact-root-"));
+  try {
+    const approved = path.join(tempDir, "approved");
+    const outside = path.join(tempDir, "outside");
+    await mkdir(approved);
+    await mkdir(outside);
+    const allowedFile = path.join(approved, "allowed.txt");
+    const outsideFile = path.join(outside, "private.txt");
+    await writeFile(allowedFile, "allowed", "utf8");
+    await writeFile(outsideFile, "private", "utf8");
+    await symlink(outsideFile, path.join(approved, "file-link.txt"));
+    await symlink(outside, path.join(approved, "directory-link"));
+
+    assert.equal(await resolveApprovedProjectFilePath(allowedFile, [approved]), await realpath(allowedFile));
+    await assert.rejects(resolveApprovedProjectFilePath(outsideFile, [approved]), /outside approved roots/);
+    await assert.rejects(resolveApprovedProjectFilePath(path.join(approved, "file-link.txt"), [approved]), /symbolic link/);
+    await assert.rejects(resolveApprovedProjectFilePath(path.join(approved, "directory-link", "private.txt"), [approved]), /resolves outside approved root/);
+
+    const artifact = await createProjectArtifactFromFile({
+      artifactsDir: path.join(tempDir, "artifacts"),
+      projectId: "alpha",
+      projectLabel: "Alpha",
+      kind: "download",
+      title: "Allowed",
+      sourceFilePath: allowedFile,
+      approvedRoots: [approved]
+    });
+    assert.equal((await readProjectArtifactContent(artifact)).content, "allowed");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("project artifact downloads reject unsafe URL destinations before connecting", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "manor-project-artifact-url-"));
+  const download = (url: string) => createProjectArtifactFromUrl({
+    artifactsDir: tempDir,
+    projectId: "alpha",
+    projectLabel: "Alpha",
+    kind: "download",
+    title: "Remote artifact",
+    url
+  });
+  try {
+    await assert.rejects(download("file:///etc/passwd"), /HTTP or HTTPS/);
+    await assert.rejects(download("http://user:password@8.8.8.8/file"), /cannot include credentials/);
+    await assert.rejects(download("http://127.0.0.1/file"), /non-public network address/);
+    await assert.rejects(download("http://169.254.169.254/latest/meta-data"), /non-public network address/);
+    await assert.rejects(download("http://[::1]/file"), /non-public network address/);
+    assert.equal(isPublicProjectArtifactAddress("8.8.8.8"), true);
+    assert.equal(isPublicProjectArtifactAddress("2606:4700:4700::1111"), true);
+    assert.equal(isPublicProjectArtifactAddress("10.0.0.1"), false);
+    assert.equal(isPublicProjectArtifactAddress("fe80::1"), false);
+    assert.equal(isPublicProjectArtifactAddress("::ffff:127.0.0.1"), false);
+    assert.equal(isPublicProjectArtifactAddress("2002:7f00:1::"), false);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("project artifact URL provenance redacts signed query credentials", () => {
+  const sanitized = sanitizeProjectArtifactProvenanceUrl(
+    "https://storage.example/report.pdf?view=compact&sig=short-secret&Authorization=Bearer%20opaque-secret&X-Amz-Signature=aws-secret"
+  );
+
+  assert.equal(
+    sanitized,
+    "https://storage.example/report.pdf?view=compact&sig=[REDACTED]&Authorization=[REDACTED]&X-Amz-Signature=[REDACTED]"
+  );
+  assert.doesNotMatch(sanitized, /short-secret|opaque-secret|aws-secret/);
+  assert.equal(sanitizeProjectArtifactProvenanceUrl(" https://storage.example/public.pdf?view=compact "), "https://storage.example/public.pdf?view=compact");
+});
+
+test("project artifact stream copy enforces the byte limit after an earlier size check", async () => {
+  const written: Buffer[] = [];
+  const destination = new Writable({
+    write(chunk: Buffer, _encoding, callback) {
+      written.push(Buffer.from(chunk));
+      callback();
+    }
+  });
+
+  await assert.rejects(
+    pipeProjectArtifactStreamWithinLimit({
+      source: Readable.from([Buffer.from("small"), Buffer.from("-then-grew")]),
+      destination,
+      maxBytes: 10
+    }),
+    /Artifact exceeds 10 bytes/
+  );
+  assert.equal(Buffer.concat(written).toString("utf8"), "small");
 });
 
 test("project artifacts are backfilled into the sqlite search index", async () => {

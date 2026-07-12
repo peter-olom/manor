@@ -238,6 +238,12 @@ function normalizeNullableString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function normalizeEmbeddedFileName(value: unknown): string | null {
+  const fileName = normalizeNullableString(value);
+  if (!fileName || path.isAbsolute(fileName)) return null;
+  return fileName.replace(/\\/g, "/").split("/").some((segment) => segment === "..") ? null : fileName;
+}
+
 function normalizeTemplateInput(input: ServiceTemplateInput): LoadedServiceTemplate | null {
   if (
     typeof input.id !== "string" ||
@@ -269,11 +275,13 @@ function normalizeTemplateInput(input: ServiceTemplateInput): LoadedServiceTempl
       : input.defaultPort;
   const defaultPort =
     typeof rawPort === "number" && Number.isFinite(rawPort)
-      ? Math.max(0, Math.trunc(rawPort))
+      ? rawPort
       : input.runtimeKind === "embedded"
         ? 0
         : NaN;
-  if (!id || !label || !description || !engine || !image || !Number.isFinite(defaultPort)) {
+  const validPort = Number.isInteger(defaultPort) && defaultPort >= 0 && defaultPort <= 65535 && (input.runtimeKind !== "container" || defaultPort > 0);
+  const fileName = input.runtimeKind === "embedded" ? normalizeEmbeddedFileName(input.fileName) : normalizeNullableString(input.fileName);
+  if (!id || !label || !description || !engine || !image || !validPort || (input.runtimeKind === "embedded" && !fileName)) {
     return null;
   }
 
@@ -290,7 +298,7 @@ function normalizeTemplateInput(input: ServiceTemplateInput): LoadedServiceTempl
     command: normalizeNullableString(input.command),
     workingDir: normalizeNullableString(input.workingDir),
     envDefaults: normalizeRecord(input.envDefaults),
-    fileName: normalizeNullableString(input.fileName),
+    fileName,
     connection: {
       databaseEnv: normalizeNullableString(input.connection?.databaseEnv),
       databaseValue: normalizeNullableString(input.connection?.databaseValue),
@@ -382,7 +390,7 @@ export class ServiceTemplateRegistry {
   async upsert(input: ServiceTemplateInput): Promise<LoadedServiceTemplate> {
     const normalized = normalizeTemplateInput(input);
     if (!normalized) {
-      throw new Error("Invalid service template: id, label, description, runtimeKind, engine, image, and port/defaultPort are required.");
+      throw new Error("Invalid service template: containers require an image and port 1-65535; embedded templates require a safe relative fileName and port 0.");
     }
 
     this.persisted.set(normalized.id, normalized);

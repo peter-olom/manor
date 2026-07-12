@@ -201,6 +201,51 @@ test("delegation cleans up a Worker when the occupied pair rejects attachment", 
   assert.equal(callbackRegistrations, 0);
 });
 
+test("supervision smoke test stops and deletes a Worker when pair attachment is rejected", async () => {
+  const store = await createStore();
+  const stopped: string[] = [];
+  const deleted: string[] = [];
+  let callbackRegistrations = 0;
+  const smokePlans = new Map();
+  const tool = buildButlerDelegationTools({
+    runtimeThreadId: "butler:pair-1",
+    defineButlerTool: (definition) => definition,
+    getToolUiEffects: () => [],
+    buildSupervisionSmokeTask: () => "Run synthetic supervision smoke",
+    buildDelegationDeveloperInstructions: async () => "",
+    buildDelegationContract: async (input: { threadId: string }) => ({
+      text: "brief",
+      contract: makeContract({ threadId: input.threadId, workspaceCwd: "/repos" })
+    }),
+    codexClient: {
+      getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "medium", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["medium"], supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium" }] } }),
+      updateComposeSettings: async () => undefined,
+      startThread: async (input: { input: (threadId: string) => Promise<unknown> }) => {
+        await input.input("thread-smoke-rejected");
+        return { threadId: "thread-smoke-rejected" };
+      },
+      stopThread: async (threadId: string) => { stopped.push(threadId); return true; },
+      deleteThread: async (threadId: string) => { deleted.push(threadId); store.removeThread(threadId); return true; }
+    },
+    imageStore: { resolveViews: () => [], getFilePath: () => null },
+    fileStore: { resolveViews: () => [], getFilePath: () => null },
+    store,
+    getCodexAuthStatus: () => ({ loggedIn: true }),
+    noteThreadFocus: () => undefined,
+    queueDelegationAcknowledgement: () => ({ attached: false }),
+    registerPendingChatCallback: () => { callbackRegistrations += 1; },
+    supervisionSmokePlans: smokePlans
+  } as never).find((entry) => entry.name === "run_supervision_smoke_test") as {
+    execute: (toolCallId: string, params: Record<string, unknown>) => Promise<unknown>;
+  };
+
+  await assert.rejects(() => tool.execute("smoke-occupied", { totalFollowUps: 2 }), /stopped and deleted/);
+  assert.deepEqual(stopped, ["thread-smoke-rejected"]);
+  assert.deepEqual(deleted, ["thread-smoke-rejected"]);
+  assert.equal(callbackRegistrations, 0);
+  assert.equal(smokePlans.size, 0);
+});
+
 test("delegation contract receives the resolved workspace cwd", async () => {
   const store = await createStore();
   let capturedWorkspace: { cwd: string; branchName: string | null } | null = null;

@@ -22,8 +22,12 @@ class FakeButlerService extends EventEmitter {
   concurrentHandoffs = 0;
   maxConcurrentHandoffs = 0;
   retryReviewCount = 0;
+  cancelReviewCount = 0;
+  lifecycleEvents: string[] = [];
   stopCount = 0;
   disposeCount = 0;
+  activityTurns: Array<Record<string, unknown>> = [];
+  callbacks: Array<Record<string, unknown>> = [];
   compose: {
     provider: string | null;
     model: string | null;
@@ -49,22 +53,32 @@ class FakeButlerService extends EventEmitter {
 
   async start(): Promise<void> { this.startCount += 1; }
 
-  dispose(): void { this.disposeCount += 1; }
+  dispose(): void { this.disposeCount += 1; this.lifecycleEvents.push("dispose"); }
 
   async refreshModelSettings(): Promise<void> {
     this.refreshCount += 1;
     this.emit("change");
   }
 
-  async stopPrompt(): Promise<void> { this.stopCount += 1; }
+  async stopPrompt(): Promise<void> { this.stopCount += 1; this.lifecycleEvents.push("stop-prompt"); }
 
   ensureExternalWorkerDelegation(threadId: string): void {
     if (!this.trackedExternalThreads.includes(threadId)) this.trackedExternalThreads.push(threadId);
   }
 
-  retryBlockedCallbackReviews(): boolean {
+  async retryBlockedCallbackReviews(): Promise<boolean> {
     this.retryReviewCount += 1;
     return true;
+  }
+
+  async cancelCallbackReview(): Promise<boolean> {
+    this.cancelReviewCount += 1;
+    this.lifecycleEvents.push("cancel-review");
+    return true;
+  }
+
+  async quiesceCallbackReviews(): Promise<void> {
+    await this.cancelCallbackReview();
   }
 
   async handoffWorker(input: { sourceThreadId: string; harness: string; model: string; effort: string | null; butlerThreadId?: string | null }): Promise<void> {
@@ -112,6 +126,10 @@ class FakeButlerService extends EventEmitter {
     };
   }
 
+  getLiveSnapshot(): Record<string, unknown> {
+    return { messages: this.messages, messageCount: this.messages.length, activityTurns: this.activityTurns };
+  }
+
   getShellSnapshot(): Record<string, unknown> {
     return {
       sessionId: "fake-session",
@@ -120,7 +138,7 @@ class FakeButlerService extends EventEmitter {
       isStreaming: false,
       lastError: null,
       compose: this.compose,
-      supervision: { callbacks: [] }
+      supervision: { callbacks: this.callbacks }
     };
   }
 }
@@ -172,6 +190,118 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
   } as never);
   return { manager, pairStore, service, store, codexUpdates, threadEffortUpdates };
 }
+
+test("pair Butler services receive a pair-scoped runtime thread id", async () => {
+  const runtimeThreadIds: unknown[] = [];
+  const { manager } = await createManager(null, (options) => {
+    runtimeThreadIds.push((options as { runtimeThreadId?: unknown }).runtimeThreadId);
+  });
+
+  const first = await manager.createPair();
+  const second = await manager.createPair();
+
+  assert.deepEqual(runtimeThreadIds, [`butler:${first.id}`, `butler:${second.id}`]);
+});
+
+test("pair Butler services expose the complete persisted Worker handoff lineage", async () => {
+  let getWorkerDefaults: (() => { runtimeOwnerThreadIds?: string[] }) | undefined;
+  const { manager, pairStore } = await createManager(null, (options) => {
+    getWorkerDefaults = (options as { getWorkerDefaults?: () => { runtimeOwnerThreadIds?: string[] } }).getWorkerDefaults;
+  });
+  const pair = await manager.createPair();
+  pairStore.attachWorker(pair.id, { threadId: "thread-first", runtime: "openai" });
+  pairStore.attachWorker(pair.id, { threadId: "thread-second", runtime: "pi-rpc", replacesThreadId: "thread-first" });
+  pairStore.attachWorker(pair.id, { threadId: "thread-third", runtime: "openai", replacesThreadId: "thread-second" });
+
+  assert.deepEqual(getWorkerDefaults?.().runtimeOwnerThreadIds, ["thread-third", "thread-second", "thread-first"]);
+});
+
+test("pair detail exposes active Butler tools and adversarial review progress", async () => {
+  const { manager, service } = await createManager();
+  const pair = await manager.createPair();
+  service.activityTurns = [{
+    id: "activity-1",
+    status: "active",
+    startedAt: 100,
+    completedAt: null,
+    items: [{ id: "tool-1", kind: "tool", status: "error", title: "inspect_preview", text: "container exited 1", at: 100, updatedAt: 200, contentIndex: null, toolCallId: "call-1" }]
+  }];
+  service.callbacks = [{
+    threadId: "worker-1",
+    callbackState: "received_worker_callback",
+    owesOperatorReply: true,
+    reviewState: "running",
+    reviewStage: "reviewing_changes",
+    reviewAttempt: 2,
+    reviewStartedAt: 100,
+    reviewDeadlineAt: 120_100,
+    reviewNextAttemptAt: null,
+    reviewLastActivityAt: 200,
+    reviewLastActivity: "Failed inspect_preview: container exited 1",
+    reviewLastTool: "inspect_preview",
+    reviewLastError: "container exited 1",
+    reviewModelProvider: "ollama-cloud",
+    reviewModelId: "glm-5.2",
+    reviewReasoningLevel: "high"
+  }];
+
+  const detail = await manager.getPairDetail(pair.id, null, 120);
+
+  assert.deepEqual(detail?.butlerActivity.map((item) => ({ type: item.type, status: item.status, text: item.text })), [{
+    type: "dynamic_tool_call",
+    status: "failed",
+    text: "container exited 1"
+  }]);
+  assert.equal(detail?.butlerActivityOutcome?.status, "active");
+  assert.equal(detail?.review?.stage, "reviewing_changes");
+  assert.equal(detail?.review?.attempt, 2);
+  assert.equal(detail?.review?.lastTool, "inspect_preview");
+  assert.equal(detail?.review?.modelId, "glm-5.2");
+});
+
+test("pair detail retains completed Butler activity when no assistant message represents it", async () => {
+  const { manager, service } = await createManager();
+  const pair = await manager.createPair();
+  service.activityTurns = [{
+    id: "activity-1",
+    status: "completed",
+    startedAt: 100,
+    completedAt: 200,
+    items: [{ id: "tool-1", kind: "tool", status: "completed", title: "ask_operator", text: "Question card posted", at: 100, updatedAt: 200, contentIndex: null, toolCallId: "call-1" }]
+  }];
+
+  const detail = await manager.getPairDetail(pair.id, null, 120);
+
+  assert.deepEqual(detail?.butlerActivity.map((item) => ({ title: item.title, status: item.status, text: item.text })), [{
+    title: "ask_operator",
+    status: "completed",
+    text: "Question card posted"
+  }]);
+  assert.equal(detail?.butlerActivityOutcome?.status, "completed");
+});
+
+test("pair detail retains an immediate Butler failure with no activity items", async () => {
+  const { manager, service } = await createManager();
+  const pair = await manager.createPair();
+  service.activityTurns = [{
+    id: "activity-failed",
+    status: "failed",
+    startedAt: 100,
+    completedAt: 120,
+    detail: "Provider connection closed before streaming.",
+    items: []
+  }];
+
+  const detail = await manager.getPairDetail(pair.id, null, 120);
+
+  assert.deepEqual(detail?.butlerActivity, []);
+  assert.deepEqual(detail?.butlerActivityOutcome, {
+    status: "failed",
+    startedAt: 100,
+    completedAt: 120,
+    detail: "Provider connection closed before streaming."
+  });
+});
 
 test("sendOperatorMessage starts automatic title generation for the first text prompt", async () => {
   const calls: string[] = [];
@@ -333,8 +463,10 @@ test("deletePair stops active Butler work before removing supervision", async ()
   const pair = await manager.createPair({ title: "Stop before delete" });
 
   assert.equal(await manager.deletePair(pair.id), true);
+  assert.equal(service.cancelReviewCount, 1);
   assert.equal(service.stopCount, 1);
   assert.equal(service.disposeCount, 1);
+  assert.deepEqual(service.lifecycleEvents, ["stop-prompt", "cancel-review", "dispose"]);
 });
 
 test("quiesced pairs cannot restart supervision until explicitly resumed", async () => {
@@ -342,6 +474,7 @@ test("quiesced pairs cannot restart supervision until explicitly resumed", async
   const pair = await manager.createPair({ title: "Pause before worker stop" });
 
   assert.equal(await manager.quiescePair(pair.id), true);
+  assert.equal(service.cancelReviewCount, 1);
   assert.equal(service.stopCount, 1);
   assert.equal(service.disposeCount, 1);
   await assert.rejects(() => manager.getPairDetail(pair.id, null, 120), /session is closing/);
@@ -447,6 +580,16 @@ test("retryBlockedReview delegates recovery to the pair Butler", async () => {
   await manager.retryBlockedReview(pair.id);
 
   assert.equal(service.retryReviewCount, 1);
+});
+
+test("stopReview cancels the isolated review through the pair Butler", async () => {
+  const { manager, service } = await createManager();
+  const pair = await manager.createPair();
+
+  const detail = await manager.stopReview(pair.id);
+
+  assert.equal(detail?.id, pair.id);
+  assert.equal(service.cancelReviewCount, 1);
 });
 
 test("loaded pair services read current worker compose defaults", async () => {

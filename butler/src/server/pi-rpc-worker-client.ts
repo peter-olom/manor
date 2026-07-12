@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { RpcClient, type RpcEventListener } from "@mariozechner/pi-coding-agent";
+import type { ImageContent } from "@mariozechner/pi-ai";
 
 import { createManorModelRegistry, modelToModelOption, shouldExposeManorModel, syncManorPiModelsJson } from "./model-provider-config.js";
 import { readButlerAuthStatus } from "./auth-status.js";
@@ -14,6 +15,8 @@ import { selectProviderWebToolSource } from "./provider-web-tools.js";
 import { PiProviderRuntimeMapper } from "./pi-provider-events.js";
 import { piThinkingLevelForEffort } from "./pi-thinking-levels.js";
 import { StaleWorkerOperationError } from "./stale-worker-operation-error.js";
+import { loadPiImageFiles, type PiImageFile } from "./pi-image-loader.js";
+import { redactSensitiveText } from "./redact-sensitive-text.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { CodexInputItem } from "./image-store.js";
 import type { CodexThreadPatchView, ModelOption, ReasoningEffort } from "./types.js";
@@ -49,13 +52,26 @@ type PiWorkerSessionMetadata = {
 const PI_WORKER_METADATA_FILE = "manor-session.json";
 const PI_TRANSPORT_CLOSED_EVENT = "manor_transport_closed";
 
-function inputItemsToText(input: string | CodexInputItem[]): string {
-  if (typeof input === "string") return input.trim();
-  return input
-    .map((item) => item.type === "text" ? item.text : `Attached ${item.type}: ${item.path}`)
-    .filter(Boolean)
-    .join("\n")
-    .trim();
+export async function resolvePiWorkerInput(input: string | CodexInputItem[]): Promise<{ text: string; images: ImageContent[] }> {
+  if (typeof input === "string") return { text: input.trim(), images: [] };
+  const text: string[] = [];
+  const imageFiles: PiImageFile[] = [];
+  for (const item of input) {
+    if (item.type === "text") {
+      if (item.text.trim()) text.push(item.text.trim());
+    } else if (item.type === "localImage") {
+      imageFiles.push({ path: item.path, mimeType: item.mimeType });
+    } else if (item.type === "skill") {
+      text.push(`Selected skill: ${item.name} (${item.path})`);
+    } else if (item.type === "mention") {
+      text.push(`Selected app: ${item.name?.trim() || item.path} (${item.path})`);
+    }
+  }
+  const images = await loadPiImageFiles(imageFiles);
+  return {
+    text: text.join("\n").trim() || (images.length > 0 ? "Use the attached image for this request." : ""),
+    images
+  };
 }
 
 function storeItemType(patch: Extract<ProviderRuntimeLivePatch, { kind: "item-lifecycle" | "content-delta" }>): string {
@@ -199,10 +215,10 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     throw startError;
   }
 
-  private async promptSession(session: PiWorkerSession, generation: number, text: string): Promise<void> {
+  private async promptSession(session: PiWorkerSession, generation: number, text: string, images: ImageContent[] = []): Promise<void> {
     session.pendingPromptGenerations.push(generation);
     try {
-      await session.client.prompt(text);
+      await session.client.prompt(text, images.length > 0 ? images : undefined);
     } finally {
       const pendingIndex = session.pendingPromptGenerations.indexOf(generation);
       if (pendingIndex >= 0) session.pendingPromptGenerations.splice(pendingIndex, 1);
@@ -291,15 +307,16 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     }
     if (options.openWindow !== false) this.options.store.openWindow(threadId);
     const preflightGeneration = session.activityVersion;
-    let resolvedInput: CodexInputItem[];
+    let resolvedInput: { text: string; images: ImageContent[] };
     try {
-      resolvedInput = typeof options.input === "function" ? await options.input(threadId) : (options.input ?? [{ type: "text", text: task } as CodexInputItem]);
+      const inputItems = typeof options.input === "function" ? await options.input(threadId) : (options.input ?? [{ type: "text", text: task } as CodexInputItem]);
+      resolvedInput = await resolvePiWorkerInput(inputItems);
     } catch (error) {
       if (!this.isSessionGenerationCurrent(session, preflightGeneration)) return this.rejectStaleStartedSession(session);
       return this.rejectFailedStartedSession(session, error);
     }
     if (!this.isSessionGenerationCurrent(session, preflightGeneration)) return this.rejectStaleStartedSession(session);
-    const prompt = [options.developerInstructions?.trim() ? `Developer instructions:\n${options.developerInstructions.trim()}` : null, inputItemsToText(resolvedInput)].filter(Boolean).join("\n\n");
+    const prompt = [options.developerInstructions?.trim() ? `Developer instructions:\n${options.developerInstructions.trim()}` : null, resolvedInput.text].filter(Boolean).join("\n\n");
     const requestedEffort = options.effort === undefined ? this.selectedEffort : options.effort;
     if (requestedEffort) {
       try {
@@ -313,7 +330,7 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     }
     const operationGeneration = this.beginSessionOperation(session);
     try {
-      await this.promptSession(session, operationGeneration, prompt);
+      await this.promptSession(session, operationGeneration, prompt, resolvedInput.images);
     } catch (error) {
       if (!this.isSessionGenerationCurrent(session, operationGeneration)) return this.rejectStaleStartedSession(session);
       this.invalidateSessionGenerationIfCurrent(session, operationGeneration);
@@ -329,17 +346,18 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     if (!this.sessions.has(threadId)) await this.loadThread(threadId);
     const session = this.sessions.get(threadId);
     if (!session) throw new Error("Pi RPC worker thread is not loaded");
-    const text = inputItemsToText(input);
     const preflightGeneration = session.activityVersion;
+    const resolvedInput = await resolvePiWorkerInput(input);
+    if (!this.isSessionGenerationCurrent(session, preflightGeneration)) throw this.staleOperation(threadId);
     const state = await session.client.getState().catch(() => null);
     if (!this.isSessionGenerationCurrent(session, preflightGeneration)) throw this.staleOperation(threadId);
     const operationGeneration = this.beginSessionOperation(session);
     try {
       if (state?.isStreaming) {
         session.eventStreamVersion = operationGeneration;
-        await session.client.steer(text);
+        await session.client.steer(resolvedInput.text, resolvedInput.images.length > 0 ? resolvedInput.images : undefined);
       } else {
-        await this.promptSession(session, operationGeneration, text);
+        await this.promptSession(session, operationGeneration, resolvedInput.text, resolvedInput.images);
       }
     } catch (error) {
       if (!this.isSessionGenerationCurrent(session, operationGeneration)) throw this.staleOperation(threadId);
@@ -657,7 +675,8 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     this.invalidateSessionOperations(session);
     session.pendingPromptGenerations = [];
     session.eventStreamVersion = null;
-    this.lastError = reason;
+    const detail = redactSensitiveText(reason || "Worker Pi transport closed.").slice(0, 3000);
+    this.lastError = detail;
     if (isStarting) {
       this.emit("change");
       return;
@@ -669,8 +688,24 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
       this.options.store.updateTurn(session.threadId, {
         id: latestTurn.id,
         status: "interrupted",
-        error: "Worker environment restarted before this turn completed."
+        error: detail
       });
+      this.options.store.addEvent(session.threadId, "runtime.error", detail);
+      this.emit("threadPatch", {
+        kind: "runtime-message",
+        threadId: session.threadId,
+        turnId: latestTurn.id,
+        tone: "error",
+        message: detail,
+        at: Date.now()
+      } satisfies CodexThreadPatchView);
+      this.emit("threadPatch", {
+        kind: "turn-lifecycle",
+        threadId: session.threadId,
+        turnId: latestTurn.id,
+        status: "interrupted",
+        at: Date.now()
+      } satisfies CodexThreadPatchView);
     }
     this.options.store.setThreadStatus(session.threadId, { type: "idle" });
     this.pendingTransportStateSave = this.pendingTransportStateSave
@@ -691,15 +726,22 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
         status: patch.status === "started" ? "in_progress" : patch.status
       });
     } else if (patch.kind === "item-lifecycle") {
+      const persistedStatus = patch.status === "in_progress" ? "started" : patch.status;
       this.options.store.updateItem(patch.threadId, patch.turnId, {
         id: patch.itemId,
         type: storeItemType(patch),
-        status: patch.status === "completed" ? "completed" : "started",
+        status: persistedStatus,
         text: patch.text,
         command: patch.text
-      }, patch.status === "completed" ? "completed" : "started");
+      }, persistedStatus);
     } else if (patch.kind === "content-delta") {
       this.options.store.appendItemDelta(patch.threadId, patch.turnId, patch.itemId, patch.delta, storeItemType(patch), { emitChange: false });
+    } else if (patch.kind === "runtime-message") {
+      const message = redactSensitiveText(patch.message);
+      this.options.store.addEvent(patch.threadId, patch.tone === "error" ? "runtime.error" : "runtime.warning", message);
+      this.emit("threadPatch", { ...patch, message } satisfies CodexThreadPatchView);
+      this.emit("change");
+      return;
     }
     this.emit("threadPatch", patch satisfies CodexThreadPatchView);
     this.emit("change");

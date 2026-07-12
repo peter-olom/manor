@@ -225,6 +225,21 @@ test("maps thread and turn lifecycle events", () => {
   assert.equal(completed[0]?.payload.errorMessage, "boom");
 });
 
+test("maps Codex systemError thread status without treating it as active", () => {
+  const events = mapCodexProviderEvent({
+    eventId: "event-system-error",
+    method: "thread/status/changed",
+    params: {
+      threadId: "thread-system-error",
+      status: { type: "systemError", error: { message: "provider crashed" } }
+    }
+  });
+
+  assert.equal(events[0]?.type, "thread.state.changed");
+  assert.equal(events[0]?.payload.state, "error");
+  assert.deepEqual(events[0]?.payload.detail, { type: "systemError", error: { message: "provider crashed" } });
+});
+
 test("maps token usage to current context usage", () => {
   const events = mapCodexProviderEvent({
     eventId: "event-usage",

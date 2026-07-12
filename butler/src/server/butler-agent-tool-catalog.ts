@@ -40,7 +40,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "stop_stack",
     label: "Stop stack",
-    description: "Stop one stack lease, remove its members, and release its isolated network.",
+    description: "Stop one stack lease, remove its members, and release its isolated network while retaining volumes unless explicitly dropped.",
     uiEffects: [{ kind: "refreshThreads", description: "Removes stale stack state from the supervised job." }]
   },
   {
@@ -113,6 +113,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     name: "list_desktop_sessions",
     label: "List desktop sessions",
     description: "List active headed desktop sessions, attached threads, and workspace labels visible in noVNC.",
+    uiEffects: [{ kind: "refreshThreads", description: "Keeps desktop session state current." }]
+  },
+  {
+    name: "desktop_session_state",
+    label: "Desktop session state",
+    description: "Inspect one active headed desktop proof session.",
     uiEffects: [{ kind: "refreshThreads", description: "Keeps desktop session state current." }]
   },
   {
@@ -238,7 +244,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "list_project_policies",
     label: "List project policies",
-    description: "List durable project policies Butler can surface or apply when matching events happen.",
+    description: "List durable project policies Butler can surface as context when matching events happen.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while reviewing remembered rules." }]
   },
   {
@@ -250,8 +256,8 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "invoke_project_policy",
     label: "Invoke project policy",
-    description: "Load or execute one remembered policy directly by id, title, or alias.",
-    uiEffects: [{ kind: "focusButler", description: "Keeps Butler supervising while a remembered policy is applied or loaded." }]
+    description: "Load one remembered policy as instruction and artifact context by id or exact title. This does not execute commands or mutate services.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while remembered policy context is loaded." }]
   },
   {
     name: "register_service_template",
@@ -312,6 +318,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     label: "List image references",
     description: "List stored image references Butler can reuse for delegation and verification.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while choosing stored reference images." }]
+  },
+  {
+    name: "list_file_references",
+    label: "List file references",
+    description: "List stored non-image file references Butler can reuse for delegation and analysis.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while choosing stored reference files." }]
   },
   {
     name: "read_job",

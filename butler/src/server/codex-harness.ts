@@ -40,9 +40,9 @@ import { threadRequiresVisualProof } from "./proof-policy.js";
 import { applyServiceStartedPolicies, formatProjectPolicyContextLines } from "./project-artifacts-policies.js";
 import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import { ButlerStateStore } from "./state-store.js";
-import { RuntimeBrokerClient } from "./runtime-broker-client.js";
+import { formatPreviewRuntimeDiagnostics, RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
-import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
+import { assertProjectStackStorageLineage, formatStackStorageSummary, normalizeStackStorageMode, resolveStackPromotionTarget } from "./stack-storage.js";
 import {
   applyWorkspacePreviewDefaults,
   formatWorkspaceBootstrapLines,
@@ -64,7 +64,6 @@ function mentionsNativeDesktopTarget(thread: CodexThreadRecord): boolean {
     .toLowerCase();
   return /\b(electron|native|desktop|headed|vnc|novnc)\b/.test(text);
 }
-
 export class HarnessService {
   private readonly registryPath: string;
   private readonly legacyRegistryPath: string | null;
@@ -671,6 +670,7 @@ export class HarnessService {
       const retainsVolumes = params.retainsVolumes === true;
       const storageKey = normalizeString(params.storageKey) || null;
       const cloneFromStorageKey = normalizeString(params.cloneFromStorageKey) || null;
+      assertProjectStackStorageLineage(project.id, [{ name: "storageKey", value: storageKey }, { name: "cloneFromStorageKey", value: cloneFromStorageKey }]);
       const leaseTtlMinutes = normalizePositiveInteger(params.leaseTtlMinutes);
       const stack = await this.runtimeBroker.createStack({
         stackId: crypto.randomUUID(),
@@ -725,7 +725,7 @@ export class HarnessService {
     }
     if (action === "stack.promote") {
       const stack = await this.resolveThreadStack(capability, normalizeString(params.stackId));
-      const targetStorageKey = normalizeString(params.targetStorageKey) || null;
+      const targetStorageKey = resolveStackPromotionTarget(stack, params.targetStorageKey, params.confirmTargetStorageKey);
       const promotion = await this.runtimeBroker.promoteStack({
         stackId: stack.id,
         targetStorageKey
@@ -831,7 +831,7 @@ export class HarnessService {
       const proofs = this.listThreadProofs(capability.threadId).filter((proof) => proof.previewId === lease.id).slice(0, 3);
       return {
         text: [
-          `${lease.title} is ${inspected.runtime.status}. Bootstrap=${lease.bootstrap.phase}. ${this.formatLeaseLifecycle(lease)}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}.`,
+          `${lease.title} is ${lease.status}. ${inspected.runtime.running ? `runtimeStatus=${inspected.runtime.status}` : formatPreviewRuntimeDiagnostics(inspected.runtime)}. Bootstrap=${lease.bootstrap.phase}. ${this.formatLeaseLifecycle(lease)}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}.`,
           `Workspace mode: ${lease.workspaceMode}`,
           `Aliases: ${lease.aliases.join(", ") || "(none)"}`,
           `Target: ${lease.targetHost}:${lease.targetPort}`,
@@ -846,7 +846,7 @@ export class HarnessService {
         ]
           .filter(Boolean)
           .join("\n"),
-        data: { lease, proofs }
+        data: { lease, runtime: inspected.runtime, proofs }
       };
     }
     if (action === "preview.lease") {

@@ -107,3 +107,21 @@ test("ButlerTraceBuffer clamps overly long text", () => {
   assert.ok(meta);
   assert.ok(meta.items[0].text.length <= 4001);
 });
+
+test("ButlerTraceBuffer redacts credentials before persisting tool diagnostics", () => {
+  const buffer = new ButlerTraceBuffer();
+  buffer.startTurn("turn-1", 1);
+  buffer.setAssistantItem("turn-1", "assistant-1", 3);
+  buffer.upsertItem({
+    turnId: "turn-1",
+    itemId: "tool-1",
+    type: "dynamic_tool_call",
+    status: "completed",
+    text: "Authorization: Bearer opaque-token-123456",
+    at: 2,
+    completedAt: 3
+  });
+
+  const trace = buffer.consumeForAssistantItem("assistant-1");
+  assert.equal(trace?.items[0]?.text, "Authorization: Bearer [REDACTED]");
+});

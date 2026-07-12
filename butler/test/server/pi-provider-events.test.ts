@@ -53,6 +53,53 @@ test("Pi text deltas map to Butler assistant runtime content patches", () => {
   assert.equal(deltaPatch.itemTextLength, 3);
 });
 
+test("Pi reasoning deltas redact credentials split across provider events", () => {
+  const mapper = new PiProviderRuntimeMapper();
+  const fakeSession = session();
+  mapper.map({ type: "turn_start" } as never, fakeSession as never);
+  mapper.map({
+    type: "message_update",
+    message: { role: "assistant", content: [{ type: "thinking", thinking: "" }] },
+    assistantMessageEvent: { type: "thinking_start", contentIndex: 0 }
+  } as never, fakeSession as never);
+
+  const first = mapper.map({
+    type: "message_update",
+    message: { role: "assistant", content: [{ type: "thinking", thinking: "Checking sk-abc" }] },
+    assistantMessageEvent: {
+      type: "thinking_delta",
+      contentIndex: 0,
+      delta: "Checking sk-abc",
+      partial: { role: "assistant", content: [{ type: "thinking", thinking: "Checking sk-abc" }] }
+    }
+  } as never, fakeSession as never);
+  const second = mapper.map({
+    type: "message_update",
+    message: { role: "assistant", content: [{ type: "thinking", thinking: "Checking sk-abcdefghijklmnop " }] },
+    assistantMessageEvent: {
+      type: "thinking_delta",
+      contentIndex: 0,
+      delta: "defghijklmnop ",
+      partial: { role: "assistant", content: [{ type: "thinking", thinking: "Checking sk-abcdefghijklmnop " }] }
+    }
+  } as never, fakeSession as never);
+  const [end] = mapper.map({
+    type: "message_update",
+    message: { role: "assistant", content: [{ type: "thinking", thinking: "Checking sk-abcdefghijklmnop before continuing." }] },
+    assistantMessageEvent: {
+      type: "thinking_end",
+      contentIndex: 0,
+      content: "Checking sk-abcdefghijklmnop before continuing."
+    }
+  } as never, fakeSession as never);
+
+  const livePayload = JSON.stringify([...first, ...second]);
+  assert.doesNotMatch(livePayload, /sk-abc/);
+  assert.match(livePayload, /\[REDACTED\]/);
+  assert.equal(end.kind, "item-lifecycle");
+  assert.equal(end.text, "Checking [REDACTED] before continuing.");
+});
+
 test("Pi background prompts do not leak assistant patches", () => {
   const mapper = new PiProviderRuntimeMapper();
   const fakeSession = session();
@@ -413,4 +460,48 @@ test("Pi tool execution maps to runtime item lifecycle patches", () => {
   } as never, fakeSession as never);
   assert.equal(editPatch.itemType, "file_change");
   assert.match(editPatch.text, /src\/app\.ts/);
+});
+
+test("Pi tool result content arrays redact credentials before live delivery", () => {
+  const mapper = new PiProviderRuntimeMapper();
+  const fakeSession = session();
+  mapper.map({ type: "turn_start" } as never, fakeSession as never);
+
+  const [patch] = mapper.map({
+    type: "tool_execution_end",
+    toolCallId: "call-secret",
+    toolName: "web_fetch",
+    result: {
+      content: [{
+        type: "text",
+        text: "Authorization: Bearer opaque-token-123456\nhttps://operator:password@example.com/private"
+      }]
+    },
+    isError: false
+  } as never, fakeSession as never);
+
+  assert.equal(patch.kind, "item-lifecycle");
+  assert.match(patch.text, /Authorization: Bearer \[REDACTED\]/);
+  assert.match(patch.text, /https:\/\/\[REDACTED\]@example\.com\/private/);
+  assert.doesNotMatch(patch.text, /opaque-token|operator:password/);
+});
+
+test("Pi failed assistant messages redact provider credential echoes", () => {
+  const mapper = new PiProviderRuntimeMapper();
+  const fakeSession = session();
+  mapper.map({ type: "turn_start" } as never, fakeSession as never);
+
+  const [patch] = mapper.map({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      stopReason: "error",
+      errorMessage: "Provider rejected api_key=sk-abcdefghijklmnop",
+      content: []
+    }
+  } as never, fakeSession as never);
+
+  assert.equal(patch.kind, "item-lifecycle");
+  assert.equal(patch.status, "failed");
+  assert.equal(patch.text, "Provider rejected api_key=[REDACTED]");
 });

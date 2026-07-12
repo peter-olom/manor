@@ -22,7 +22,7 @@ import {
 } from "./butler-agent-helpers.js";
 import type { ButlerAgentSessionAccess } from "./butler-agent-tool-access.js";
 import { readButlerAuthStatus } from "./auth-status.js";
-import { getButlerActivityTurns, recordButlerActivityEvent } from "./butler-activity.js";
+import { finalizeButlerActivityTurn, getButlerActivityTurns, recordButlerActivityEvent } from "./butler-activity.js";
 import { backfillOperatorMessagesFromSessionFiles, isPersistableProviderOperatorMessage, removeTrivialOperatorQuestionConfirmations, upsertProviderBackedOperatorMessage } from "./butler-operator-messages.js";
 import { PiProviderRuntimeMapper } from "./pi-provider-events.js";
 import { getActiveManorSettings, isSecretSourceAvailable } from "./manor-settings-runtime.js";
@@ -105,7 +105,7 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
   };
   restoreButlerCompactionState(access);
 
-  const runtimeMapper = new PiProviderRuntimeMapper();
+  const runtimeMapper = new PiProviderRuntimeMapper(access.runtimeThreadId);
   const traceBuffer = access.traceBuffer;
   if (typeof traceBuffer.reset === "function") {
     traceBuffer.reset();
@@ -142,6 +142,18 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
           status: "in_progress",
           text: patch.delta,
           at: patch.at
+        });
+      }
+      if (patch.kind === "runtime-message" && patch.turnId) {
+        traceBuffer.upsertItem({
+          turnId: patch.turnId,
+          itemId: `${patch.turnId}:runtime:${patch.at}`,
+          type: "error",
+          status: patch.tone === "error" ? "failed" : "completed",
+          text: patch.message,
+          title: patch.tone === "error" ? "Runtime error" : "Runtime warning",
+          at: patch.at,
+          completedAt: patch.at
         });
       }
       if (patch.kind === "item-lifecycle" && patch.itemType === "user_message" && patch.text.trim()) {
@@ -503,6 +515,21 @@ function matchesProviderBackedMessage(sessionMessage: ButlerMessageView, message
   return sessionMessage.text === message.text || (sessionAt >= messageAt - 1000 && Math.abs(sessionAt - messageAt) <= 30_000);
 }
 
+function preserveDurableAssistantTrace(providerMessage: ButlerMessageView, durableMessage: ButlerMessageView): void {
+  if (providerMessage.role !== "assistant" || durableMessage.role !== "assistant") {
+    return;
+  }
+  if (providerMessage.trace === undefined && durableMessage.trace !== undefined) {
+    providerMessage.trace = durableMessage.trace.map((item) => ({ ...item }));
+  }
+  if (providerMessage.traceMeta === undefined && durableMessage.traceMeta !== undefined) {
+    providerMessage.traceMeta = {
+      ...durableMessage.traceMeta,
+      items: durableMessage.traceMeta.items.map((item) => ({ ...item }))
+    };
+  }
+}
+
 function filterProviderBackedServerOperatorMessages(sessionMessages: ButlerMessageView[], messages: ButlerMessageView[]): ButlerMessageView[] {
   const consumedSessionMessageIds = new Set<string>();
   return messages.filter((message) => {
@@ -519,6 +546,7 @@ function filterProviderBackedServerOperatorMessages(sessionMessages: ButlerMessa
     if (!providerMessage) {
       return true;
     }
+    preserveDurableAssistantTrace(providerMessage, message);
     consumedSessionMessageIds.add(providerMessage.id);
     return false;
   });
@@ -804,6 +832,8 @@ export async function stopButlerPrompt(access: ButlerAgentSessionAccess, options
     await access.session.abort();
   }
 
+  finalizeButlerActivityTurn(access, "interrupted", "Butler was stopped by the operator.");
+
   access.emit("change");
   return active;
 }
@@ -856,6 +886,7 @@ async function queueButlerPrompt(
   }
 
   const execute = async () => {
+    const promptStartedAt = Date.now();
     let ok = true;
     try {
       const nextAuth = await readButlerAuthStatus(access.piAuthPath);
@@ -880,10 +911,14 @@ async function queueButlerPrompt(
       }
       access.lastError = null;
     } catch (error) {
-      if (!options.background && hasBlockingStopRequest(access, acceptedStopRequestSequence)) {
+      const stopped = !options.background && hasBlockingStopRequest(access, acceptedStopRequestSequence);
+      const detail = error instanceof Error ? error.message : String(error);
+      if (stopped) {
         access.lastError = null;
+        finalizeButlerActivityTurn(access, "interrupted", "Butler was stopped by the operator.");
       } else {
-        access.lastError = error instanceof Error ? error.message : String(error);
+        access.lastError = detail;
+        finalizeButlerActivityTurn(access, "failed", detail, Date.now(), promptStartedAt);
       }
       if (!options.background) {
         removePendingOperatorPrompt(access, options.pendingOperatorMessageId);

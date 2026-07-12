@@ -28,7 +28,8 @@ import { SettingsDashboard, SETTINGS_SECTIONS, type SettingsSectionId } from "./
 import { TerminalPane } from "./TerminalPane";
 import { useEventStream } from "./useEventStream";
 import { WorkerPane } from "./WorkerPane";
-import type { WorkerChecklistItem, WorkerItem, WorkerJobPayload, WorkerProofRecord, WorkerTimeline, WorkerTurnGroup } from "./WorkerPane";
+import type { WorkerProofRecord, WorkerTimeline } from "./WorkerPane";
+import { shapeWorkerTimeline, type WorkerThread } from "./worker-timeline";
 
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
 import type { MemorySection } from "../shared/memory";
@@ -50,39 +51,6 @@ import {
   type TerminalTarget
 } from "../shared/terminal";
 
-type WorkerThread = {
-  id: string;
-  status: string;
-  preview?: string;
-  supervisor?: { latestAgentReply?: string | null; summary?: string | null };
-  turns?: {
-    id: string;
-    status: string;
-    startedAt?: number;
-    completedAt?: number | null;
-    items: WorkerItem[];
-  }[];
-  workerReport?: WorkerThreadReport | null;
-  workerReports?: WorkerThreadReport[];
-  jobPayload?: WorkerJobPayload | null;
-  supervisionChecklist?: {
-    items?: Array<{ id: string; text: string; status: string; butlerNote?: string | null; queuedInstruction?: string | null }>;
-  } | null;
-};
-
-type WorkerThreadReport = {
-  turnId: string;
-  status: string;
-  summary: string;
-  details: string | null;
-  evidence?: Array<{ proofRunId?: string | null; artifactId?: string | null }>;
-  claims?: {
-    claims?: Array<{ proofId?: string | null }>;
-  } | null;
-  createdAt?: number;
-  updatedAt: number;
-};
-
 type RuntimeProofSnapshot = {
   previewProofsByThreadId?: Record<string, WorkerProofRecord[]>;
 };
@@ -92,11 +60,8 @@ type WorkerHandoffUiState = {
   pending: boolean;
   error: string | null;
 };
-
 const PAGE_SIZE = 120;
 const PAIR_LIST_ROW = 64;
-const BUTLER_PATCH_THREAD_ID = "butler";
-
 const VIEW_LABELS: Record<PairViewMode, string> = {
   butler: "Butler",
   worker: "Worker",
@@ -106,7 +71,6 @@ const VIEW_LABELS: Record<PairViewMode, string> = {
   settings: "Settings",
   cli: "CLI"
 };
-
 const VIEW_MODES = new Set<PairViewMode>(["butler", "worker", "split", "memory", "improve", "settings", "cli"]);
 type WorkstreamViewMode = Exclude<PairViewMode, "memory" | "improve" | "settings">;
 type ManorSurface = "sessions" | "memory" | "improve" | "settings";
@@ -192,85 +156,6 @@ function statusLabel(status: PairStatus | null | undefined): string {
     default:
       return "Idle";
   }
-}
-
-function workerReportFromWire(report: WorkerThreadReport): WorkerTimeline["reports"][number] {
-  return {
-    turnId: report.turnId,
-    status: report.status,
-    summary: report.summary,
-    details: report.details,
-    evidence: report.evidence,
-    claims: report.claims,
-    updatedAt: report.updatedAt
-  };
-}
-
-function shapeWorkerTimeline(thread: WorkerThread | null): WorkerTimeline {
-  if (!thread) return { turns: [], report: null, reports: [], payload: null, checklist: null, fallback: [] };
-  const checklist: WorkerChecklistItem[] | null = thread.supervisionChecklist?.items?.length
-    ? thread.supervisionChecklist.items.map((item) => ({
-        id: item.id,
-        text: item.text,
-        status: item.status,
-        note: item.butlerNote ?? item.queuedInstruction ?? null
-      }))
-    : null;
-  const reportsByTurnId = new Map<string, WorkerTimeline["reports"][number]>();
-  for (const rawReport of thread.workerReports ?? []) {
-    const report = workerReportFromWire(rawReport);
-    if (report.turnId) reportsByTurnId.set(report.turnId, report);
-  }
-  if (thread.workerReport) {
-    const report = workerReportFromWire(thread.workerReport);
-    if (report.turnId) reportsByTurnId.set(report.turnId, report);
-  }
-  const reports = [...reportsByTurnId.values()].sort((left, right) => left.updatedAt - right.updatedAt);
-  const report = reports.at(-1) ?? null;
-  const turns: WorkerTurnGroup[] = (thread.turns ?? [])
-    .map((turn) => {
-      const items = (turn.items ?? [])
-        .map((item) => ({ ...item, id: `${turn.id}:${item.id}`, status: item.status || turn.status }))
-        .filter((item) => item.text?.trim());
-      const turnReport = reportsByTurnId.get(turn.id) ?? null;
-      if (turnReport) {
-        items.push({
-          id: `${turn.id}:worker-report:${turnReport.updatedAt}`,
-          type: "assistant_message",
-          status: "completed",
-          text: `${turnReport.summary}${turnReport.details ? `\n\n${turnReport.details}` : ""}`,
-          at: turnReport.updatedAt
-        });
-      }
-      items.sort((left, right) => left.at - right.at);
-      const completedAt = turn.completedAt ?? null;
-      let finalIndex: number | null = null;
-      if (completedAt !== null) {
-        for (let i = items.length - 1; i >= 0; i -= 1) {
-          if (items[i]?.type === "agentMessage" || items[i]?.type === "assistant_message") {
-            finalIndex = i;
-            break;
-          }
-        }
-      }
-      return {
-        id: turn.id,
-        status: turn.status,
-        startedAt: turn.startedAt ?? items[0]?.at ?? 0,
-        completedAt,
-        items,
-        finalIndex
-      };
-    })
-    .filter((turn) => turn.items.length > 0 || turn.completedAt === null);
-  return {
-    turns,
-    report: report && !turns.some((turn) => turn.id === report.turnId) ? report : null,
-    reports,
-    payload: thread.jobPayload ?? null,
-    checklist,
-    fallback: []
-  };
 }
 
 function Sidebar({
@@ -779,7 +664,7 @@ export function PairShell() {
     () => readInitialTerminalTarget(new URLSearchParams(window.location.search).get("terminal")) ?? DEFAULT_TERMINAL_TARGET
   );
   const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(false); const [stoppingButler, setStoppingButler] = useState(false);
   const [butlerComposePending, setButlerComposePending] = useState(0);
   const [workerHandoffByPairId, setWorkerHandoffByPairId] = useState<Record<string, WorkerHandoffUiState>>({});
   const workerHandoffRequestCounter = useRef(0);
@@ -792,6 +677,8 @@ export function PairShell() {
   const [savingTitle, setSavingTitle] = useState(false);
   const [titleError, setTitleError] = useState<string | null>(null);
   const [butlerPatchHandler, setButlerPatchHandler] = useState<((patch: ProviderRuntimeLivePatch) => void) | null>(null);
+  const workerRefreshRef = useRef<(() => void) | null>(null);
+  const workerRefreshTimerRef = useRef<number | null>(null);
   const [improvePendingCount, setImprovePendingCount] = useState(0);
   const [improveQueue, setImproveQueue] = useState<SelfImprovementQueueResponse | null>(null);
   const [selectedImproveRequestId, setSelectedImproveRequestId] = useState<string | null>(null);
@@ -803,7 +690,6 @@ export function PairShell() {
   const [composerAttachments, setComposerAttachments] = useState<FileReference[]>([]);
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
-
   const manorSurface = manorSurfaceForView(viewMode);
   const activePair = pair?.id === selectedPairId ? pair : null;
   const activeWorkerHandoff = activePair ? workerHandoffByPairId[activePair.id] ?? null : null;
@@ -818,10 +704,27 @@ export function PairShell() {
     setProofsByThreadId(typed.previewProofsByThreadId);
   }, []);
 
-  useEventStream({
+  const eventStream = useEventStream({
     onButlerPatch: (patch) => {
-      if (patch.threadId !== BUTLER_PATCH_THREAD_ID) return;
+      if (!activePair || patch.threadId !== `butler:${activePair.id}`) return;
       butlerPatchHandler?.(patch);
+    },
+    onThreadPatch: (patch) => {
+      if (!activeWorkerThreadId || patch.threadId !== activeWorkerThreadId) return;
+      const urgent = (patch.kind === "turn-lifecycle" && patch.status !== "started") ||
+        (patch.kind === "runtime-message" && patch.tone === "error");
+      if (workerRefreshTimerRef.current !== null) {
+        window.clearTimeout(workerRefreshTimerRef.current);
+        workerRefreshTimerRef.current = null;
+      }
+      if (urgent) {
+        workerRefreshRef.current?.();
+        return;
+      }
+      workerRefreshTimerRef.current = window.setTimeout(() => {
+        workerRefreshTimerRef.current = null;
+        workerRefreshRef.current?.();
+      }, 50);
     },
     onComposerPrefill: (payload) => {
       if (!activePair) return;
@@ -1008,13 +911,20 @@ export function PairShell() {
         }
       }
     };
+    const requestRefresh = () => { void refresh(); };
+    workerRefreshRef.current = requestRefresh;
     void refresh();
     const interval = window.setInterval(() => void refresh(), 5000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
+      if (workerRefreshRef.current === requestRefresh) workerRefreshRef.current = null;
     };
   }, [activeWorkerPairId, activeWorkerThreadId, loadWorker]);
+
+  useEffect(() => () => {
+    if (workerRefreshTimerRef.current !== null) window.clearTimeout(workerRefreshTimerRef.current);
+  }, []);
 
   const workerTimeline = useMemo<WorkerTimeline>(() => {
     if (!activePair?.worker) return { turns: [], report: null, reports: [], payload: null, checklist: null, fallback: [] };
@@ -1140,12 +1050,12 @@ export function PairShell() {
     }
   }
 
-  async function retryBlockedReview() {
+  async function updateReview(action: "retry-review" | "stop-review") {
     if (!activePair) return;
     setBusy(true);
     setError(null);
     try {
-      const payload = await postJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(activePair.id)}/retry-review`, {});
+      const payload = await postJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(activePair.id)}/${action}`, {});
       setPair(payload.pair);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1154,6 +1064,15 @@ export function PairShell() {
     }
   }
 
+  async function stopButler() {
+    if (!activePair || stoppingButler) return;
+    setStoppingButler(true); setError(null);
+    try {
+      await postJson<{ ok: true }>(`/api/pairs/${encodeURIComponent(activePair.id)}/stop`, {});
+      setPair((await getJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(activePair.id)}?limit=${PAGE_SIZE}`)).pair);
+    } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    finally { setStoppingButler(false); }
+  }
   async function attachAnnotatedProof(payload: { attachment: FileReference; text: string }) {
     setDraft((current) => (current.trim() ? `${current.trimEnd()}\n\n${payload.text}` : payload.text));
     setComposerAttachments((current) =>
@@ -1399,7 +1318,10 @@ export function PairShell() {
                     onButlerPatch={onButlerPatchRef}
                     onThinkingLevelChange={(level) => void onThinkingLevelChange(level)}
                     onButlerModelChange={(model) => void onButlerModelChange(model)}
-                    onRetryReview={() => void retryBlockedReview()}
+                    onRetryReview={() => void updateReview("retry-review")}
+                    onStopReview={() => void updateReview("stop-review")}
+                    onStopButler={() => void stopButler()}
+                    stoppingButler={stoppingButler} liveConnected={eventStream.connected} liveHasConnected={eventStream.hasConnected}
                     onOpenProviderSettings={() => selectSettingsSection("providers")}
                     attachments={composerAttachments}
                     onRemoveAttachment={(attachmentId) => setComposerAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId))}

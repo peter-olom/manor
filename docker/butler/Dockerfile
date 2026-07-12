@@ -44,11 +44,14 @@ RUN apt-get update \
     bash \
     ca-certificates \
     curl \
+    fd-find \
     git \
+    ripgrep \
     zsh \
     zsh-autosuggestions \
     zsh-syntax-highlighting \
   && rm -rf /var/lib/apt/lists/* \
+  && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
   && arch="$(dpkg --print-architecture)" \
   && case "$arch" in \
     arm64) ttyd_arch="aarch64" ;; \

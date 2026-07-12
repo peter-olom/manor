@@ -35,9 +35,20 @@ type SemanticEdgeReviewOutput = {
   decisions: SemanticEdgeDecision[];
   rawOutput?: unknown;
   rawText?: string;
+  validationIssues?: string[];
 };
 
-type SemanticEdgeReviewRunner = (input: { prompt: string; cwd: string; timeoutMs: number; config: MemorySynthesisConfig }) => Promise<SemanticEdgeReviewOutput>;
+type SemanticEdgeReviewRunner = (input: { prompt: string; cwd: string; timeoutMs: number; config: MemorySynthesisConfig }) => Promise<unknown>;
+
+class SemanticEdgeReviewOutputError extends Error {
+  readonly issues: string[];
+
+  constructor(issues: string[]) {
+    super(`Invalid semantic edge review output: ${issues.join("; ")}`);
+    this.name = "SemanticEdgeReviewOutputError";
+    this.issues = issues;
+  }
+}
 
 export const SEMANTIC_EDGE_REVIEW_OUTPUT_SCHEMA = {
   type: "object",
@@ -69,6 +80,71 @@ function hash(value: string): string {
 
 function clean(value: string | null | undefined, limit = 1_500): string {
   return (value ?? "").replace(/\s+/g, " ").trim().slice(0, limit);
+}
+
+function valueKind(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `array(length=${value.length})`;
+  return typeof value;
+}
+
+function normalizeDecision(value: unknown, index: number, issues: string[]): SemanticEdgeDecision | null {
+  const path = `output.decisions[${index}]`;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    issues.push(`${path} must be an object; received ${valueKind(value)}`);
+    return null;
+  }
+  const decision = value as Record<string, unknown>;
+  const pairId = typeof decision.pairId === "string" ? clean(decision.pairId, 200) : "";
+  const reason = typeof decision.reason === "string"
+    ? clean(decision.reason, 600)
+    : typeof decision.rationale === "string"
+      ? clean(decision.rationale, 600)
+      : "";
+  if (!pairId) issues.push(`${path}.pairId must be a non-empty string; received ${valueKind(decision.pairId)}`);
+  if (!reason) issues.push(`${path}.reason must be a non-empty string; received ${valueKind(decision.reason)}`);
+  else if (typeof decision.reason !== "string") issues.push(`${path}.reason was missing; used ${path}.rationale`);
+  if (decision.predicate !== "supports" && decision.predicate !== "contradicts" && decision.predicate !== "supersedes" && decision.predicate !== "none") {
+    issues.push(`${path}.predicate must be supports, contradicts, supersedes, or none; received ${valueKind(decision.predicate)}`);
+  }
+  if (decision.sourceSide !== "left" && decision.sourceSide !== "right") {
+    issues.push(`${path}.sourceSide must be left or right; received ${valueKind(decision.sourceSide)}`);
+  }
+  if (typeof decision.confidence !== "number" || !Number.isFinite(decision.confidence) || decision.confidence < 0 || decision.confidence > 1) {
+    issues.push(`${path}.confidence must be a finite number from 0 to 1; received ${valueKind(decision.confidence)}`);
+  }
+  if (!pairId || !reason) return null;
+  if (decision.predicate !== "supports" && decision.predicate !== "contradicts" && decision.predicate !== "supersedes" && decision.predicate !== "none") return null;
+  if (decision.sourceSide !== "left" && decision.sourceSide !== "right") return null;
+  if (typeof decision.confidence !== "number" || !Number.isFinite(decision.confidence) || decision.confidence < 0 || decision.confidence > 1) return null;
+  return { pairId, predicate: decision.predicate, sourceSide: decision.sourceSide, confidence: decision.confidence, reason };
+}
+
+function normalizeOutput(value: unknown): SemanticEdgeReviewOutput {
+  if (!value || typeof value !== "object") {
+    throw new SemanticEdgeReviewOutputError([`output must be an object; received ${valueKind(value)}`]);
+  }
+  const topLevelArray = Array.isArray(value);
+  const output = topLevelArray ? { decisions: value } : value as Record<string, unknown>;
+  if (!Array.isArray(output.decisions)) {
+    const keys = Object.keys(output).sort().slice(0, 12);
+    throw new SemanticEdgeReviewOutputError([
+      `output.decisions must be an array; received ${valueKind(output.decisions)}${keys.length > 0 ? ` (output keys: ${keys.join(", ")})` : ""}`
+    ]);
+  }
+  if (output.decisions.length > 100) {
+    throw new SemanticEdgeReviewOutputError([`output.decisions must contain at most 100 items; received ${output.decisions.length}`]);
+  }
+  const issues: string[] = topLevelArray ? ["output was an array; treated it as output.decisions"] : [];
+  const decisions = output.decisions
+    .map((entry, index) => normalizeDecision(entry, index, issues))
+    .filter((entry): entry is SemanticEdgeDecision => Boolean(entry));
+  return {
+    decisions,
+    rawOutput: !topLevelArray && Object.prototype.hasOwnProperty.call(output, "rawOutput") ? output.rawOutput : value,
+    rawText: typeof output.rawText === "string" ? output.rawText : undefined,
+    validationIssues: issues.slice(0, 12)
+  };
 }
 
 function sourceKey(memory: Pick<EmbeddableMemory, "sourceKind" | "sourceId">): string {
@@ -181,16 +257,8 @@ export function collectSemanticEdgeReviewPairs(store: ButlerStateStore, limit = 
 }
 
 function parseOutput(text: string): SemanticEdgeReviewOutput {
-  const parsed = JSON.parse(text) as Partial<SemanticEdgeReviewOutput>;
-  const decisions = (Array.isArray(parsed.decisions) ? parsed.decisions : []).flatMap((entry): SemanticEdgeDecision[] => {
-    const decision = entry as Partial<SemanticEdgeDecision>;
-    if (!decision.pairId || !decision.reason) return [];
-    if (decision.predicate !== "supports" && decision.predicate !== "contradicts" && decision.predicate !== "supersedes" && decision.predicate !== "none") return [];
-    const sourceSide = decision.sourceSide === "right" ? "right" : "left";
-    const confidence = Number.isFinite(Number(decision.confidence)) ? Math.max(0, Math.min(1, Number(decision.confidence))) : 0;
-    return [{ pairId: decision.pairId, predicate: decision.predicate, sourceSide, confidence, reason: clean(decision.reason, 600) }];
-  });
-  return { decisions, rawOutput: parsed, rawText: text };
+  const output = normalizeOutput(JSON.parse(text));
+  return { ...output, rawText: text };
 }
 
 function directedDecisionMemories(pair: MemorySemanticEdgeReviewPair, decision: SemanticEdgeDecision): { source: EmbeddableMemory; target: EmbeddableMemory } {
@@ -298,12 +366,16 @@ export class MemorySemanticEdgeReviewService {
   async reviewNextBatch(reason = "manual"): Promise<{ reviewed: number; relationships: number }> {
     if (this.inFlight || !this.config.enabled || !this.config.semanticEdgeReviewEnabled) return { reviewed: 0, relationships: 0 };
     this.inFlight = true;
+    const startedAt = Date.now();
+    let pairs: MemorySemanticEdgeReviewPair[] = [];
+    let prompt: string | null = null;
+    let rawOutput: unknown = null;
     try {
-      const pairs = collectSemanticEdgeReviewPairs(this.store, this.config.semanticEdgeReviewBatchSize);
+      pairs = collectSemanticEdgeReviewPairs(this.store, this.config.semanticEdgeReviewBatchSize);
       if (pairs.length === 0) return { reviewed: 0, relationships: 0 };
-      const startedAt = Date.now();
-      const prompt = this.buildPrompt(pairs);
-      const output = await this.runner({ prompt, cwd: process.cwd(), timeoutMs: this.config.timeoutMs, config: this.config });
+      prompt = this.buildPrompt(pairs);
+      rawOutput = await this.runner({ prompt, cwd: process.cwd(), timeoutMs: this.config.timeoutMs, config: this.config });
+      const output = normalizeOutput(rawOutput);
       const applied = this.applyOutput(pairs, output);
       const completedAt = Date.now();
       recordMemoryDebugTrace(this.store, {
@@ -321,17 +393,42 @@ export class MemorySemanticEdgeReviewService {
         durationMs: completedAt - startedAt,
         prompt,
         input: { pairs: pairs.map((pair) => pair.pairId), config: this.config },
-        rawOutput: output.rawOutput ?? output.rawText ?? output,
+        rawOutput: output.rawOutput ?? output.rawText ?? rawOutput,
         normalizedOutput: output,
         decisions: applied.decisions,
         persisted: { observationIds: applied.observationIds, candidateIds: [], entityIds: [], relationshipIds: applied.relationshipIds, jobEntryIds: [] },
         error: null,
-        warnings: []
+        warnings: output.validationIssues ?? []
       });
       const result = { reviewed: pairs.length, relationships: applied.relationshipIds.length };
       this.onResult?.(result, reason);
       return result;
     } catch (error) {
+      const completedAt = Date.now();
+      if (pairs.length > 0 && prompt) {
+        recordMemoryDebugTrace(this.store, {
+          kind: "synthesis",
+          status: "failed",
+          projectId: pairs[0]?.projectId ?? "global",
+          projectLabel: pairs[0]?.projectId ?? "global",
+          threadId: null,
+          sourceId: `semantic-edge-review:${startedAt}`,
+          reason: `semantic edge review ${reason}`,
+          promptVersion: "memory-semantic-edge-review-v1",
+          model: this.config.model,
+          createdAt: startedAt,
+          completedAt,
+          durationMs: completedAt - startedAt,
+          prompt,
+          input: { pairs: pairs.map((pair) => pair.pairId), config: this.config },
+          rawOutput: rawOutput ?? null,
+          normalizedOutput: null,
+          decisions: [],
+          persisted: { observationIds: [], candidateIds: [], entityIds: [], relationshipIds: [], jobEntryIds: [] },
+          error: error instanceof Error ? error.message : String(error),
+          warnings: error instanceof SemanticEdgeReviewOutputError ? error.issues : []
+        });
+      }
       this.onError?.(error, reason);
       return { reviewed: 0, relationships: 0 };
     } finally {

@@ -12,11 +12,9 @@ import { useAnchoredScroll } from "./useAnchoredScroll";
 import { useLiveButlerTurn, type CompletedTrace } from "./useLiveButlerTurn";
 
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
-import type { PairDetail, PairMessage, PairModelOption, PairTraceItem } from "../shared/pairing";
+import type { PairButlerActivityOutcome, PairDetail, PairMessage, PairModelOption, PairReviewActivity, PairTraceItem } from "../shared/pairing";
 import type { FileReference } from "./api";
 import type { PreviewMedia } from "./ImagePreviewModal";
-
-const BUTLER_THREAD_ID = "butler";
 
 type ButlerPaneProps = {
   pair: PairDetail;
@@ -30,6 +28,11 @@ type ButlerPaneProps = {
   onThinkingLevelChange: (level: string) => void;
   onButlerModelChange: (model: string) => void;
   onRetryReview: () => void;
+  onStopReview: () => void;
+  onStopButler: () => void;
+  stoppingButler: boolean;
+  liveConnected: boolean;
+  liveHasConnected: boolean;
   onOpenProviderSettings: () => void;
   attachments: FileReference[];
   onRemoveAttachment: (attachmentId: string) => void;
@@ -251,6 +254,44 @@ const CompletedTraceBubble = memo(function CompletedTraceBubble({ trace, default
   return <TraceDisclosure items={trace.items} defaultOpen={defaultOpen} />;
 });
 
+function completedTraceFromItems(messageId: string, items: PairTraceItem[]): CompletedTrace | null {
+  if (items.length === 0) return null;
+  const startedAt = items.reduce((earliest, item) => Math.min(earliest, item.at), items[0]!.at);
+  const completedAt = items.reduce((latest, item) => Math.max(latest, item.updatedAt ?? item.completedAt ?? item.at), startedAt);
+  return { messageId, items, durationMs: Math.max(0, completedAt - startedAt), startedAt, completedAt };
+}
+
+export function durableActivitySupersedesLive(
+  liveStatus: ReturnType<typeof useLiveButlerTurn>["state"]["status"],
+  liveStartedAt: number | null,
+  outcome: PairButlerActivityOutcome | null
+): boolean {
+  return liveStatus !== "idle" &&
+    outcome !== null &&
+    outcome.status !== "active" &&
+    (outcome.completedAt ?? 0) >= (liveStartedAt ?? 0);
+}
+
+export const ActivityOnlyBubble = memo(function ActivityOnlyBubble({
+  trace,
+  outcome
+}: {
+  trace: CompletedTrace | null;
+  outcome: PairButlerActivityOutcome;
+}) {
+  const stopped = outcome.status === "interrupted" || outcome.status === "cancelled";
+  return (
+    <article className="bubble is-butler is-live-complete" aria-label={stopped ? "Stopped Butler activity" : "Completed Butler activity"}>
+      <header className="bubble-head">
+        <span>Butler</span>
+        <time className="bubble-time">{stopped ? "stopped" : "complete"}</time>
+      </header>
+      {outcome.detail ? <Markdown className="bubble-body" text={outcome.detail} /> : null}
+      {trace ? <CompletedTraceBubble trace={trace} defaultOpen={stopped} /> : null}
+    </article>
+  );
+});
+
 type LiveBubbleProps = {
   text: string;
   items: PairTraceItem[];
@@ -286,18 +327,110 @@ const LiveBubble = memo(function LiveBubble({ text, items, pending }: LiveBubble
 
 type WorkLoaderBubbleProps = {
   items: PairTraceItem[];
+  failed?: boolean;
+  detail?: string | null;
+  startedAt?: number | null;
+  lastUpdateAt?: number | null;
 };
 
-const WorkLoaderBubble = memo(function WorkLoaderBubble({ items }: WorkLoaderBubbleProps) {
+function shortDuration(milliseconds: number): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+}
+
+export const WorkLoaderBubble = memo(function WorkLoaderBubble({ items, failed = false, detail = null, startedAt = null, lastUpdateAt = null }: WorkLoaderBubbleProps) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (failed || !startedAt) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [failed, startedAt]);
+  const staleFor = lastUpdateAt ? Math.max(0, now - lastUpdateAt) : 0;
   return (
-    <article className="bubble is-butler is-loader" aria-label="Butler is working">
+    <article className={`bubble is-butler is-loader${failed ? " is-failed" : ""}`} aria-label={failed ? "Butler stopped with an error" : "Butler is working"}>
       <span className="working-indicator" aria-live="polite">
-        <span className="working-indicator-label">Butler</span>
-        <SandSpinner />
+        <span className="working-indicator-label">{failed ? "Butler stopped with an error" : "Butler"}</span>
+        {failed ? null : <SandSpinner />}
       </span>
-      {items.length > 0 ? (
-        <TraceDisclosure items={items} defaultOpen label={liveActivityLabel(items)} />
+      {startedAt ? (
+        <span className={`working-timing${staleFor >= 30_000 ? " is-stale" : ""}`}>
+          {failed ? `Stopped after ${shortDuration((lastUpdateAt ?? now) - startedAt)}` : `Working for ${shortDuration(now - startedAt)}`}
+          {!failed && lastUpdateAt ? ` · last update ${shortDuration(staleFor)} ago` : ""}
+        </span>
       ) : null}
+      {failed && detail ? (
+        <details className="review-diagnostics" open>
+          <summary>Exact failure details</summary>
+          <Markdown className="trace-body" text={detail} />
+        </details>
+      ) : null}
+      {items.length > 0 ? (
+        <TraceDisclosure items={items} defaultOpen label={failed ? "Activity and tool details" : liveActivityLabel(items)} />
+      ) : null}
+    </article>
+  );
+});
+
+const REVIEW_STAGE_LABELS: Record<PairReviewActivity["stage"], string> = {
+  queued: "Review queued",
+  preparing: "Preparing isolated review",
+  reviewing_changes: "Reviewing the Worker change",
+  supervising_closeout: "Deciding the closeout action",
+  retry_wait: "Waiting to retry review",
+  blocked: "Review blocked"
+};
+
+type ReviewActivityBubbleProps = {
+  review: PairReviewActivity;
+  blockedReason: string | null;
+  busy: boolean;
+  onRetry: () => void;
+  onStop: () => void;
+};
+
+export const ReviewActivityBubble = memo(function ReviewActivityBubble({ review, blockedReason, busy, onRetry, onStop }: ReviewActivityBubbleProps) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (review.stage !== "retry_wait") return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [review.stage]);
+  const attemptLabel = review.attempt > 0 ? `Attempt ${review.attempt} of ${review.maxAttempts}` : "Waiting to start";
+  const retryRemaining = review.stage === "retry_wait" && review.nextAttemptAt
+    ? Math.max(0, Math.ceil((review.nextAttemptAt - now) / 1000))
+    : null;
+  const currentBlocker = review.state === "blocked" ? blockedReason : null;
+  const diagnosticHistory = [
+    currentBlocker ? `Current blocker\n${currentBlocker}` : null,
+    review.lastError && review.lastError !== currentBlocker ? `Latest review failure\n${review.lastError}` : null,
+    ...review.errors.map((error) => `${formatTime(error.at)} · ${error.stage}${error.tool ? ` · ${error.tool}` : ""}\n${error.message}`)
+  ].filter((entry): entry is string => Boolean(entry)).join("\n\n");
+  return (
+    <article className={`bubble is-butler review-activity is-${review.state}`} aria-label="Adversarial review activity">
+      <header className="bubble-head">
+        <span>Butler review</span>
+        <time className="bubble-time">{attemptLabel}</time>
+      </header>
+      <div className="review-activity-status" role="status">
+        {review.state !== "blocked" ? <SandSpinner /> : null}
+        <strong>{REVIEW_STAGE_LABELS[review.stage]}</strong>
+        {retryRemaining !== null ? <span aria-hidden="true">retrying in {retryRemaining}s</span> : null}
+      </div>
+      <p className="review-activity-model">{[review.modelProvider, review.modelId, review.thinkingLevel].filter(Boolean).join(" · ")}</p>
+      {review.lastActivity ? (
+        <p className="review-activity-last">
+          {review.lastActivity}
+          {review.lastActivityAt ? <time> · {formatTime(review.lastActivityAt)}</time> : null}
+        </p>
+      ) : null}
+      {diagnosticHistory ? (
+        <details className="review-diagnostics" open={review.state === "blocked"}>
+          <summary>{review.state === "blocked" ? "Why review stopped" : "Review failure history"}</summary>
+          <Markdown className="trace-body" text={diagnosticHistory} />
+        </details>
+      ) : null}
+      {review.state === "blocked" && review.retryable ? <button className="button" type="button" disabled={busy} onClick={onRetry}>Retry with current model</button> : null}
+      {review.state !== "blocked" ? <button className="button is-ghost" type="button" disabled={busy} onClick={onStop}>Stop review</button> : null}
     </article>
   );
 });
@@ -348,13 +481,18 @@ export function ButlerPane({
   onThinkingLevelChange,
   onButlerModelChange,
   onRetryReview,
+  onStopReview,
+  onStopButler,
+  stoppingButler,
+  liveConnected,
+  liveHasConnected,
   onOpenProviderSettings,
   attachments,
   onRemoveAttachment,
   onPreviewImage,
   onPairUpdate
 }: ButlerPaneProps) {
-  const live = useLiveButlerTurn(BUTLER_THREAD_ID);
+  const live = useLiveButlerTurn(`butler:${pair.id}`);
   const [completedTraces, setCompletedTraces] = useState<Map<string, CompletedTrace>>(new Map());
   const lastTraceKeyRef = useRef<string>("");
 
@@ -369,7 +507,7 @@ export function ButlerPane({
     const last = pair.messages.at(-1);
     if (!last) return;
     if (last.role !== "user") return;
-    if (live.state.status === "idle" || live.state.status === "streaming") return;
+    if (live.state.status !== "completed") return;
     live.reset();
     setCompletedTraces(new Map());
   }, [pair.messages, live]);
@@ -393,9 +531,20 @@ export function ButlerPane({
 
   const lastMessageId = pair.messages.at(-1)?.id ?? null;
   const lastMessageAt = pair.messages.at(-1)?.at ?? 0;
-  const showLoader = shouldShowWorkLoader(pair);
-  const showBlockedCloseout = Boolean(pair.butlerPendingReason);
-  const liveStreaming = live.state.status === "streaming" || live.state.status === "completed";
+  const showLoader = shouldShowWorkLoader(pair) && !pair.review;
+  const showBlockedCloseout = Boolean(pair.butlerPendingReason) && !pair.review;
+  const liveHasTurn = live.state.status !== "idle";
+  const persistedOutcomeSupersedesLive = durableActivitySupersedesLive(live.state.status, live.state.startedAt, pair.butlerActivityOutcome);
+  const activityUsesLive = liveHasTurn && !persistedOutcomeSupersedesLive;
+  const liveStreaming = activityUsesLive && live.state.status === "streaming";
+  const activityOutcome: PairButlerActivityOutcome | null = activityUsesLive
+    ? {
+        status: live.state.status === "streaming" ? "active" : live.state.status,
+        startedAt: live.state.startedAt ?? pair.butlerActivityOutcome?.startedAt ?? pair.updatedAt,
+        completedAt: live.state.completedAt,
+        detail: null
+      }
+    : pair.butlerActivityOutcome;
   const liveHasAssistantText = live.state.assistantText.trim().length > 0;
   const lastMessage = pair.messages.at(-1);
   const lastMessageIsButler = lastMessage?.role === "butler";
@@ -404,32 +553,42 @@ export function ButlerPane({
     && lastMessage !== undefined
     && lastMessage.at >= live.state.completedAt;
   const liveItems = useMemo(() => [...live.state.items.values()].sort((a, b) => a.at - b.at), [live.state.items]);
-  const showLiveBubble = liveStreaming && liveHasAssistantText && !lastMessageCoversLive;
-  const showWorkBubble = showLoader || (liveStreaming && liveItems.length > 0 && !showLiveBubble && !lastMessageCoversLive);
-  const liveTraceForMessage = useMemo<CompletedTrace | undefined>(() => {
-    if (live.completedTraces.length === 0) return undefined;
+  const visibleActivityItems = activityUsesLive && liveItems.length > 0 ? liveItems : pair.butlerActivity;
+  const activityFailed = activityOutcome?.status === "failed";
+  const activityStopped = activityOutcome?.status === "interrupted" || activityOutcome?.status === "cancelled";
+  const activityStartedAt = activityOutcome?.startedAt ?? visibleActivityItems[0]?.at ?? (showLoader ? pair.lastMessage?.at ?? pair.updatedAt : null);
+  const activityLastUpdateAt = visibleActivityItems.reduce(
+    (latest, item) => Math.max(latest, item.updatedAt ?? item.completedAt ?? item.at),
+    activityOutcome?.completedAt ?? activityStartedAt ?? 0
+  ) || null;
+  const showLiveBubble = activityUsesLive && liveHasAssistantText && !lastMessageCoversLive;
+  const showWorkBubble = showLoader || activityFailed || (liveStreaming && visibleActivityItems.length > 0 && !showLiveBubble && !lastMessageCoversLive);
+  const traceAttachment = useMemo<{ messageId: string; trace: CompletedTrace } | null>(() => {
     const lastButlerIndex = (() => {
       for (let i = pair.messages.length - 1; i >= 0; i -= 1) {
         if (pair.messages[i]?.role === "butler") return i;
       }
       return -1;
     })();
-    if (lastButlerIndex < 0) return undefined;
+    if (lastButlerIndex < 0) return null;
     const target = pair.messages[lastButlerIndex];
-    if (!target) return undefined;
+    if (!target) return null;
+    const latestUserAt = pair.messages.reduce((latest, message) => message.role === "user" ? Math.max(latest, message.at) : latest, 0);
+    if (target.at < latestUserAt) return null;
     const hasPersistedTrace = (target.trace?.length ?? 0) > 0;
-    if (hasPersistedTrace) return undefined;
-    return live.completedTraces[live.completedTraces.length - 1];
-  }, [pair.messages, live.completedTraces]);
+    if (hasPersistedTrace) return null;
+    const liveTrace = live.completedTraces.at(-1);
+    if (liveTrace) return { messageId: target.id, trace: liveTrace };
+    const trace = completedTraceFromItems(target.id, pair.butlerActivity);
+    return trace ? { messageId: target.id, trace } : null;
+  }, [pair.messages, pair.butlerActivity, live.completedTraces]);
   const liveTraceByMessageId = useMemo(() => {
     const map = new Map<string, CompletedTrace>();
-    if (liveTraceForMessage && lastMessage && lastMessage.role === "butler") {
-      map.set(lastMessage.id, liveTraceForMessage);
+    if (traceAttachment) {
+      map.set(traceAttachment.messageId, traceAttachment.trace);
     }
     return map;
-  }, [liveTraceForMessage, lastMessage]);
-  const totalCount = pair.messages.length + (showWorkBubble ? 1 : 0) + (showBlockedCloseout ? 1 : 0) + (showLiveBubble ? 1 : 0);
-  const bottomKey = `${lastMessageId}:${totalCount}:${live.state.assistantText.length}:${live.state.items.size}:${lastMessageAt}`;
+  }, [traceAttachment]);
   let lastUserMessageIndex = -1;
   for (let index = pair.messages.length - 1; index >= 0; index -= 1) {
     if (pair.messages[index]?.role === "user") {
@@ -446,6 +605,15 @@ export function ButlerPane({
     }
   }
   const hasOpenQuestion = Boolean(activeQuestionMessageId);
+  const hasButlerReplyAfterLastUser = pair.messages.slice(lastUserMessageIndex + 1).some((message) => message.role === "butler");
+  const orphanActivityTrace = !hasButlerReplyAfterLastUser && !liveStreaming && !activityFailed
+    ? live.completedTraces.at(-1) ?? completedTraceFromItems(`activity-${pair.id}`, pair.butlerActivity)
+    : null;
+  const orphanActivityOutcome = !hasButlerReplyAfterLastUser && !liveStreaming && !activityFailed && activityOutcome && (orphanActivityTrace || activityStopped)
+    ? activityOutcome
+    : null;
+  const totalCount = pair.messages.length + (showWorkBubble ? 1 : 0) + (showBlockedCloseout ? 1 : 0) + (showLiveBubble ? 1 : 0) + (pair.review ? 1 : 0) + (orphanActivityOutcome ? 1 : 0);
+  const bottomKey = `${lastMessageId}:${totalCount}:${live.state.assistantText.length}:${live.state.items.size}:${lastMessageAt}`;
 
   const { ref, onScroll, isPinned, unreadCount, scrollToBottom } = useAnchoredScroll<HTMLDivElement>({ bottomKey, resetKey: pair.id });
 
@@ -456,8 +624,14 @@ export function ButlerPane({
           <h2>Butler</h2>
           <span className="pane-sub">{pair.messages.length} messages · {shortId(pair.id)}</span>
         </div>
+        {pair.butlerPending && !pair.review ? (
+          <button className="button is-ghost" type="button" disabled={stoppingButler} onClick={onStopButler}>
+            {stoppingButler ? "Stopping…" : "Stop Butler"}
+          </button>
+        ) : null}
       </div>
       <div className="transcript" ref={ref} onScroll={onScroll} data-count={totalCount}>
+        {liveHasConnected && !liveConnected ? <div className="live-connection-warning" role="status">Live updates disconnected. Polling continues.</div> : null}
         {pair.hasMore ? (
           <button className="button is-ghost load-more" type="button" onClick={onLoadOlder}>
             Load older
@@ -480,10 +654,12 @@ export function ButlerPane({
               <time className="bubble-time">blocked</time>
             </header>
             <Markdown className="bubble-body" text={pair.butlerPendingReason ?? ""} />
-            {pair.butlerPendingReason?.includes("Adversarial review paused") ? <button className="button" type="button" disabled={busy} onClick={onRetryReview}>Retry review</button> : null}
+            {pair.butlerPendingReason?.includes("Adversarial review paused") ? <button className="button" type="button" disabled={busy} onClick={onRetryReview}>Retry with current model</button> : null}
           </article>
         ) : null}
-        {showWorkBubble ? <WorkLoaderBubble items={showLiveBubble ? [] : liveItems} /> : null}
+        {pair.review ? <ReviewActivityBubble review={pair.review} blockedReason={pair.butlerPendingReason} busy={busy} onRetry={onRetryReview} onStop={onStopReview} /> : null}
+        {showWorkBubble ? <WorkLoaderBubble items={showLiveBubble ? [] : visibleActivityItems} failed={activityFailed} detail={activityOutcome?.detail} startedAt={activityStartedAt} lastUpdateAt={activityLastUpdateAt} /> : null}
+        {orphanActivityOutcome ? <ActivityOnlyBubble trace={orphanActivityTrace} outcome={orphanActivityOutcome} /> : null}
         <JumpToLatest
           count={unreadCount}
           onClick={() => {

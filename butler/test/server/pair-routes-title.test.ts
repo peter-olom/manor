@@ -28,6 +28,9 @@ function makePair(overrides: Partial<PairDetail> = {}): PairDetail {
     messageCount: 0,
     lastMessage: null,
     messages: [],
+    butlerActivity: [],
+    butlerActivityOutcome: null,
+    review: null,
     loadedStart: 0,
     hasMore: false,
     compose: {
@@ -91,6 +94,9 @@ function createFakePairSessions(initialPair: PairDetail = makePair()) {
         return pairs.get(pairId)?.worker ? { id: pairs.get(pairId)?.worker?.threadId } : null;
       },
       async retryBlockedReview(pairId: string): Promise<PairDetail | null> {
+        return pairs.get(pairId) ?? null;
+      },
+      async stopReview(pairId: string): Promise<PairDetail | null> {
         return pairs.get(pairId) ?? null;
       },
       async handoffWorker(pairId: string, model: string, harness: string | null, effort: string | null): Promise<PairDetail | null> {
@@ -559,6 +565,19 @@ test("POST /api/pairs/:pairId/retry-review retries a paused adversarial review",
     assert.equal(res.status, 200);
     const body = (await res.json()) as { pair: { id: string } };
     assert.equal(body.pair.id, "pair-1");
+  } finally {
+    await close();
+  }
+});
+
+test("POST /api/pairs/:pairId/stop-review stops an active adversarial review", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/stop-review`, { method: "POST" });
+    assert.equal(res.status, 200);
+    assert.equal(((await res.json()) as { pair: PairDetail }).pair.id, "pair-1");
   } finally {
     await close();
   }

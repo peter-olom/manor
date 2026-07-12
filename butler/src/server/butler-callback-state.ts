@@ -5,6 +5,7 @@ import { writeJsonStateFileAtomic } from "./json-state-file.js";
 import type { CodexThreadRecord } from "./types.js";
 
 const RESERVED_CALLBACK_RECOVERY_GRACE_MS = 5 * 60_000;
+const REVIEW_STAGES = new Set(["queued", "preparing", "reviewing_changes", "supervising_closeout", "retry_wait", "blocked"]);
 
 export function directWorkerDispatchMarker(threadId: string, requestedAt: number): string {
   return `<!-- manor-direct-dispatch:${threadId}:${requestedAt} -->`;
@@ -49,15 +50,28 @@ function normalizeCallbackEntry(entry: PendingChatCallback): PendingChatCallback
         ? "thread_recovery"
         : null;
   const interruptedAutomationReview = entry.reviewState === "running" ||
+    (entry.reviewState === "queued" && entry.reviewStage === "retry_wait") ||
     (entry.reviewState === "blocked" && entry.blockedCloseoutReason?.startsWith("Adversarial review paused") === true);
   const reviewState =
     interruptedAutomationReview
-      ? "queued"
+      ? "blocked"
       : entry.reviewState === "blocked" || entry.reviewState === "queued" || entry.reviewState === "idle"
       ? entry.reviewState
       : normalizedReviewReason
         ? "queued"
         : "idle";
+  const reviewStage = reviewState === "queued"
+    ? (entry.reviewStage === "retry_wait" ? "retry_wait" : "queued")
+    : reviewState === "blocked"
+      ? "blocked"
+      : null;
+  const reviewErrors = Array.isArray(entry.reviewErrors)
+    ? entry.reviewErrors.flatMap((error) => {
+        if (!error || typeof error !== "object" || typeof error.message !== "string" || !error.message.trim()) return [];
+        const stage = typeof error.stage === "string" && REVIEW_STAGES.has(error.stage) ? error.stage as NonNullable<PendingChatCallback["reviewStage"]> : "blocked";
+        return [{ at: typeof error.at === "number" && Number.isFinite(error.at) ? error.at : updatedAt, stage, tool: typeof error.tool === "string" && error.tool.trim() ? error.tool.trim().slice(0, 200) : null, message: error.message.trim().slice(0, 2000) }];
+      }).slice(-12)
+    : [];
 
   return {
     threadId: entry.threadId,
@@ -99,14 +113,27 @@ function normalizeCallbackEntry(entry: PendingChatCallback): PendingChatCallback
     reviewModelProvider: typeof entry.reviewModelProvider === "string" && entry.reviewModelProvider.trim() ? entry.reviewModelProvider.trim() : null,
     reviewModelId: typeof entry.reviewModelId === "string" && entry.reviewModelId.trim() ? entry.reviewModelId.trim() : null,
     reviewReasoningLevel: typeof entry.reviewReasoningLevel === "string" ? entry.reviewReasoningLevel : null,
-    blockedCloseoutReason:
-      reviewState === "blocked" && typeof entry.blockedCloseoutReason === "string" && entry.blockedCloseoutReason.trim()
+    reviewStage,
+    reviewAttempt: typeof entry.reviewAttempt === "number" && Number.isFinite(entry.reviewAttempt) ? Math.max(0, Math.floor(entry.reviewAttempt)) : 0,
+    reviewStartedAt: null,
+    reviewDeadlineAt: null,
+    reviewNextAttemptAt: reviewState === "queued" && typeof entry.reviewNextAttemptAt === "number" && Number.isFinite(entry.reviewNextAttemptAt) ? entry.reviewNextAttemptAt : null,
+    reviewLastActivityAt: typeof entry.reviewLastActivityAt === "number" && Number.isFinite(entry.reviewLastActivityAt) ? entry.reviewLastActivityAt : null,
+    reviewLastActivity: typeof entry.reviewLastActivity === "string" && entry.reviewLastActivity.trim() ? entry.reviewLastActivity.trim().slice(0, 800) : null,
+    reviewLastTool: typeof entry.reviewLastTool === "string" && entry.reviewLastTool.trim() ? entry.reviewLastTool.trim().slice(0, 200) : null,
+    reviewLastError: typeof entry.reviewLastError === "string" && entry.reviewLastError.trim() ? entry.reviewLastError.trim().slice(0, 2000) : null,
+    reviewErrors,
+    blockedCloseoutReason: reviewState === "blocked"
+      ? typeof entry.blockedCloseoutReason === "string" && entry.blockedCloseoutReason.trim()
         ? entry.blockedCloseoutReason
-        : null,
+        : `Adversarial review paused after restart during attempt ${Math.max(1, entry.reviewAttempt ?? 1)}. Retry with the current Butler model when ready.`
+      : null,
     blockedCloseoutReportAt:
       reviewState === "blocked" && typeof entry.blockedCloseoutReportAt === "number" && Number.isFinite(entry.blockedCloseoutReportAt)
         ? entry.blockedCloseoutReportAt
-        : null,
+        : reviewState === "blocked" && typeof entry.lastTerminalReportAt === "number" && Number.isFinite(entry.lastTerminalReportAt)
+          ? entry.lastTerminalReportAt
+          : null,
     closedAt: typeof entry.closedAt === "number" && Number.isFinite(entry.closedAt) ? entry.closedAt : null,
     updatedAt
   };

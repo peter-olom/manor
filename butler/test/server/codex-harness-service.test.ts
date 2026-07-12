@@ -268,3 +268,120 @@ test("harness assist responses persist structured instruction artifacts", async 
   assert.match(result.text, /Butler guidance/);
   assert.equal((read.data?.payload as { kind?: string } | undefined)?.kind, "assist_context");
 });
+
+test("Worker stack actions reject cross-project storage and require exact promotion confirmation", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-harness-stack-lineage-"));
+  const stateDir = path.join(root, "state");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "butler-ui.json"), JSON.stringify({ windows: [], focusedWindowId: null }), "utf8");
+  const store = new ButlerStateStore(path.join(stateDir, "butler-ui.json"));
+  await store.load();
+  store.upsertThreadSummary({ id: "thread-alpha", cwd: "/repos/alpha", status: "active", source: "codex" });
+  const now = Date.now();
+  const stack = {
+    id: "stack-alpha",
+    threadId: "thread-alpha",
+    projectId: "alpha",
+    projectLabel: "Alpha",
+    title: "Alpha stack",
+    worktreePath: "/repos/alpha",
+    networkName: "manor-stack-alpha",
+    status: "running" as const,
+    storageMode: "job" as const,
+    retainsVolumes: true,
+    baseStorageKey: "project-alpha-base",
+    storageKey: "project-alpha-job-thread-alpha",
+    cloneFromStorageKey: "project-alpha-base",
+    defaultPromoteTargetStorageKey: "project-alpha-base",
+    volumeNames: [],
+    createdAt: now,
+    updatedAt: now,
+    lastError: null,
+    previewIds: [],
+    serviceIds: []
+  };
+  store.upsertStackLease(stack);
+  let createCount = 0;
+  const promotions: Array<{ stackId: string; targetStorageKey?: string | null }> = [];
+  const runtimeBroker = {
+    listStacks: async () => [],
+    createStack: async () => {
+      createCount += 1;
+      return stack;
+    },
+    promoteStack: async (input: { stackId: string; targetStorageKey?: string | null }) => {
+      promotions.push(input);
+      return {
+        ok: true as const,
+        stackId: input.stackId,
+        sourceStorageKey: stack.storageKey,
+        targetStorageKey: input.targetStorageKey ?? "",
+        promotedVolumes: []
+      };
+    },
+    inspectStack: async () => stack
+  } as unknown as RuntimeBrokerClient;
+  const harness = new HarnessService({
+    stateDir,
+    artifactsDir: path.join(root, "artifacts"),
+    store,
+    runtimeBroker,
+    serviceTemplateRegistry: { list: () => [], get: () => undefined } as unknown as ServiceTemplateRegistry
+  });
+  await harness.load();
+  const capability = await harness.ensureThreadCapability("thread-alpha", "/repos/alpha");
+  assert.ok(capability);
+
+  await assert.rejects(
+    () => harness.handleAction({
+      token: capability.token,
+      action: "stack.start_stateful",
+      params: { title: "Guessed stack", storageKey: "project-beta-job-thread-beta" }
+    }),
+    /storageKey is outside the resolved project storage namespace/
+  );
+  await assert.rejects(
+    () => harness.handleAction({
+      token: capability.token,
+      action: "stack.start_stateful",
+      params: { title: "Cloned stack", cloneFromStorageKey: "project-beta-base" }
+    }),
+    /cloneFromStorageKey is outside the resolved project storage namespace/
+  );
+  await assert.rejects(
+    () => harness.handleAction({
+      token: capability.token,
+      action: "stack.promote",
+      params: {
+        stackId: stack.id,
+        targetStorageKey: "project-beta-base",
+        confirmTargetStorageKey: "project-beta-base"
+      }
+    }),
+    /outside this stack's project storage lineage/
+  );
+  await assert.rejects(
+    () => harness.handleAction({
+      token: capability.token,
+      action: "stack.promote",
+      params: {
+        stackId: stack.id,
+        targetStorageKey: stack.baseStorageKey,
+        confirmTargetStorageKey: "wrong-key"
+      }
+    }),
+    /must exactly match/
+  );
+  await harness.handleAction({
+    token: capability.token,
+    action: "stack.promote",
+    params: {
+      stackId: stack.id,
+      targetStorageKey: stack.baseStorageKey,
+      confirmTargetStorageKey: stack.baseStorageKey
+    }
+  });
+
+  assert.equal(createCount, 0);
+  assert.deepEqual(promotions, [{ stackId: stack.id, targetStorageKey: stack.baseStorageKey }]);
+});

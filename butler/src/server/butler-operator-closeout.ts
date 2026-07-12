@@ -6,7 +6,7 @@ import { upsertOperatorMessage } from "./butler-operator-messages.js";
 import type { ButlerOperatorSink } from "./butler-agent-options.js";
 import type { ButlerStateStore } from "./state-store.js";
 import { elapsedTaskDurationMs } from "./task-timing.js";
-import type { ButlerMessageView } from "./types.js";
+import type { ButlerMessageView, ButlerTraceItemView } from "./types.js";
 import { rotateWorkerReviewBaseline } from "./worker-review-baseline.js";
 
 export type OperatorJobReplyAccess = {
@@ -28,6 +28,28 @@ async function rotateAcceptedBaseline(access: OperatorJobReplyAccess, threadId: 
   if (!await rotateWorkerReviewBaseline(access.store, threadId, access.artifactsDir)) {
     throw new Error("Butler could not persist the accepted Worker baseline. Closeout will retry before the next Worker turn.");
   }
+}
+
+function callbackReviewTrace(callback: PendingChatCallback, completedAt: number): ButlerTraceItemView[] {
+  if (!callback.reviewStartedAt && !callback.reviewAttempt && !(callback.reviewErrors?.length)) return [];
+  const errors: ButlerTraceItemView[] = (callback.reviewErrors ?? []).map((error, index) => ({
+    id: `review-error-${error.at}-${index}`,
+    type: "error",
+    status: "failed",
+    title: error.tool ? `Review tool: ${error.tool}` : "Review attempt",
+    text: error.message,
+    at: error.at,
+    completedAt: error.at
+  }));
+  return [...errors, {
+    id: `review-complete-${completedAt}`,
+    type: "reasoning",
+    status: "completed",
+    title: "Adversarial review",
+    text: `Completed attempt ${Math.max(1, callback.reviewAttempt ?? 1)} with ${callback.reviewModelProvider ?? "unknown provider"}/${callback.reviewModelId ?? "unknown model"}.`,
+    at: callback.reviewStartedAt ?? callback.requestedAt,
+    completedAt
+  }];
 }
 
 export async function postOperatorJobReply(access: OperatorJobReplyAccess, threadId: string, text: string): Promise<void> {
@@ -65,7 +87,7 @@ export async function postOperatorJobReply(access: OperatorJobReplyAccess, threa
     }
     await rotateAcceptedBaseline(access, threadId, relevantWorkerReport?.status === "completed");
     const closeoutText = buildOperatorCloseoutText({ store: access.store, thread, workerReport: relevantWorkerReport, text });
-    upsertOperatorMessage(access.operatorMessages, messageId, closeoutText, at, elapsedTaskDurationMs(callback.requestedAt, completedAt));
+    upsertOperatorMessage(access.operatorMessages, messageId, closeoutText, at, elapsedTaskDurationMs(callback.requestedAt, completedAt), { trace: callbackReviewTrace(callback, completedAt) });
     await access.saveOperatorMessageState();
     access.operatorSink?.onOperatorReply?.({ threadId, text: closeoutText, at });
     access.noteThreadFocus(threadId, "closeout");

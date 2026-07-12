@@ -26,6 +26,8 @@ import type { ButlerStateStore } from "./state-store.js";
 import type { ButlerThinkingLevel, CodexThreadRecord, CodexWorkerReportView, WorkerReviewResultRecordView } from "./types.js";
 import { workerExecutionEndAt } from "./worker-execution-window.js";
 import { workerFileChangeAttribution, workerFileChangePaths } from "./worker-review-attribution.js";
+import { redactSensitiveText } from "./redact-sensitive-text.js";
+import { assertIsolatedPromptSucceeded } from "./isolated-prompt-outcome.js";
 
 export const ADVERSARIAL_REVIEW_OUTPUT_SCHEMA = {
   type: "object",
@@ -51,6 +53,7 @@ export const ADVERSARIAL_REVIEW_OUTPUT_SCHEMA = {
 };
 
 const REVIEW_SEVERITIES = new Set(["info", "low", "medium", "high", "critical"]);
+const CODEX_REVIEW_TERMINATION_GRACE_MS = 250;
 const PI_REVIEW_SUBMISSION_SCHEMA = Type.Object({
   findings: Type.Array(Type.Object({
     severity: Type.Union([Type.Literal("info"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("critical")]),
@@ -85,15 +88,33 @@ export async function waitForPiReviewSubmission(input: {
   submission: Promise<ReturnType<typeof validateAdversarialReviewOutput>>;
   abort: () => Promise<unknown>;
   timeoutMs: number;
+  lastActivityAt?: () => number;
+  isCurrent?: () => boolean;
 }): Promise<ReturnType<typeof validateAdversarialReviewOutput> | null> {
   let timeout: ReturnType<typeof setTimeout> | null = null;
   try {
+    const startedAt = Date.now();
+    const timeoutOutcome = new Promise<never>((_resolve, reject) => {
+      const check = () => {
+        const now = Date.now();
+        if (input.isCurrent?.() === false) {
+          reject(new Error("adversarial review was superseded"));
+          return;
+        }
+        const inactiveFor = now - (input.lastActivityAt?.() ?? startedAt);
+        if (inactiveFor >= input.timeoutMs) {
+          reject(new Error("adversarial review timed out"));
+          return;
+        }
+        const untilInactive = Math.max(1, input.timeoutMs - inactiveFor);
+        timeout = setTimeout(check, Math.min(untilInactive, input.isCurrent ? 100 : Number.POSITIVE_INFINITY));
+      };
+      timeout = setTimeout(check, Math.min(input.timeoutMs, input.isCurrent ? 100 : Number.POSITIVE_INFINITY));
+    });
     const outcome = await Promise.race([
       input.prompt.then(() => ({ kind: "prompt" as const })),
       input.submission.then((review) => ({ kind: "submission" as const, review })),
-      new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new Error("adversarial review timed out")), input.timeoutMs);
-      })
+      timeoutOutcome
     ]);
     if (outcome.kind === "prompt") return null;
     await input.abort().catch(() => undefined);
@@ -138,7 +159,49 @@ export type ProviderAdversarialReviewInput = {
   codexNativeAvailable: boolean;
   prompt: string;
   timeoutMs: number;
+  codexExecutable?: string;
+  onProgress?: (progress: AdversarialReviewProgress) => void;
+  isCurrent?: () => boolean;
 };
+
+export type AdversarialReviewProgress = {
+  stage: "preparing" | "reviewing_changes" | "supervising_closeout";
+  message: string;
+  at: number;
+  toolName?: string | null;
+  error?: string | null;
+  deadlineAt?: number | null;
+};
+
+function reportReviewProgress(
+  input: Pick<ProviderAdversarialReviewInput, "onProgress">,
+  progress: Omit<AdversarialReviewProgress, "at">
+): AdversarialReviewProgress {
+  const next = { ...progress, at: Date.now() };
+  input.onProgress?.(next);
+  return next;
+}
+
+function reviewDiagnosticText(value: unknown): string {
+  let text = "";
+  if (value && typeof value === "object" && Array.isArray((value as { content?: unknown }).content)) {
+    text = contentToText((value as { content: unknown[] }).content);
+  } else if (typeof value === "string") {
+    text = value;
+  } else if (value !== undefined) {
+    try { text = JSON.stringify(value); } catch { text = String(value); }
+  }
+  return redactSensitiveText(text).replace(/\s+/g, " ").trim().slice(0, 1200);
+}
+
+function reviewTimeoutError(input: ProviderAdversarialReviewInput, lastProgress: AdversarialReviewProgress | null): Error {
+  const seconds = Math.round(input.timeoutMs / 1000);
+  const model = `${input.selection.model.provider}/${input.selection.model.id}`;
+  const last = lastProgress
+    ? ` Last activity ${Math.max(0, Math.round((Date.now() - lastProgress.at) / 1000))}s ago: ${lastProgress.message}`
+    : " No reviewer activity was received.";
+  return new Error(`Adversarial review was inactive for ${seconds}s using ${model}.${last}`);
+}
 
 function registerOpencodeGoRequestTransforms(pi: ExtensionAPI): void {
   pi.on("before_provider_request", (event) => applyOpencodeGoNativeThinkingPayload(event.payload));
@@ -191,6 +254,13 @@ async function runCodexReview(input: ProviderAdversarialReviewInput): Promise<un
   await fs.writeFile(schemaPath, JSON.stringify(ADVERSARIAL_REVIEW_OUTPUT_SCHEMA, null, 2), "utf8");
 
   try {
+    let lastActivityAt = Date.now();
+    const nextDeadlineAt = () => lastActivityAt + input.timeoutMs;
+    let lastProgress = reportReviewProgress(input, {
+      stage: "reviewing_changes",
+      message: "Codex reviewer started.",
+      deadlineAt: nextDeadlineAt()
+    });
     const args = buildCodexAdversarialReviewArgs({
       schemaPath,
       outputPath,
@@ -198,23 +268,72 @@ async function runCodexReview(input: ProviderAdversarialReviewInput): Promise<un
       thinkingLevel: input.selection.thinkingLevel
     });
     await new Promise<void>((resolve, reject) => {
-      const child = spawn("codex", args, {
+      const child = spawn(input.codexExecutable ?? "codex", args, {
         cwd: input.cwd,
         env: { ...process.env, CODEX_HOME: input.codexHomeDir, NO_COLOR: "1" },
         stdio: ["pipe", "pipe", "pipe"]
       });
       let stderr = "";
       let stdout = "";
-      const timeout = setTimeout(() => {
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+      let forceKill: ReturnType<typeof setTimeout> | null = null;
+      let superseded: ReturnType<typeof setInterval> | null = null;
+      let shutdownError: Error | null = null;
+      let settled = false;
+      const clearWatchers = () => {
+        if (timeout) clearTimeout(timeout);
+        if (superseded) clearInterval(superseded);
+        timeout = null;
+        superseded = null;
+      };
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearWatchers();
+        if (forceKill) clearTimeout(forceKill);
+        error ? reject(error) : resolve();
+      };
+      const shutdown = (error: Error) => {
+        if (shutdownError || settled) return;
+        shutdownError = error;
+        clearWatchers();
         child.kill("SIGTERM");
-        reject(new Error("adversarial review timed out"));
-      }, input.timeoutMs);
-      child.stdout.on("data", (chunk: Buffer) => { stdout = `${stdout}${chunk.toString("utf8")}`.slice(-16_000); });
-      child.stderr.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16_000); });
-      child.on("error", (error) => { clearTimeout(timeout); reject(error); });
+        forceKill = setTimeout(() => child.kill("SIGKILL"), CODEX_REVIEW_TERMINATION_GRACE_MS);
+      };
+      const checkTimeout = () => {
+        const now = Date.now();
+        const inactiveFor = now - lastActivityAt;
+        if (inactiveFor >= input.timeoutMs) {
+          shutdown(reviewTimeoutError(input, lastProgress));
+          return;
+        }
+        timeout = setTimeout(checkTimeout, Math.max(1, Math.min(input.timeoutMs - inactiveFor, 1_000)));
+      };
+      timeout = setTimeout(checkTimeout, Math.min(input.timeoutMs, 1_000));
+      superseded = input.isCurrent ? setInterval(() => {
+        if (input.isCurrent?.() !== false) return;
+        shutdown(new Error("adversarial review was superseded"));
+      }, 100) : null;
+      let lastOutputReportAt = 0;
+      const noteOutput = (stream: "stdout" | "stderr", chunk: Buffer) => {
+        const now = Date.now();
+        lastActivityAt = now;
+        if (now - lastOutputReportAt < 1000) return;
+        lastOutputReportAt = now;
+        if (chunk.length === 0) return;
+        lastProgress = reportReviewProgress(input, {
+          stage: "reviewing_changes",
+          message: `Codex reviewer produced ${stream} output.`,
+          deadlineAt: nextDeadlineAt()
+        });
+      };
+      child.stdout.on("data", (chunk: Buffer) => { stdout = `${stdout}${chunk.toString("utf8")}`.slice(-16_000); noteOutput("stdout", chunk); });
+      child.stderr.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16_000); noteOutput("stderr", chunk); });
+      child.on("error", (error) => child.pid ? shutdown(error) : finish(error));
       child.on("close", (code) => {
-        clearTimeout(timeout);
-        code === 0 ? resolve() : reject(new Error(`Codex CLI adversarial review exited with ${code}: ${stderr || stdout}`.trim()));
+        if (shutdownError) finish(shutdownError);
+        else if (code === 0) finish();
+        else finish(new Error(`Codex CLI adversarial review exited with ${code}: ${redactSensitiveText(stderr || stdout)}`.trim()));
       });
       child.stdin.end(input.prompt);
     });
@@ -225,6 +344,12 @@ async function runCodexReview(input: ProviderAdversarialReviewInput): Promise<un
 }
 
 async function runPiReview(input: ProviderAdversarialReviewInput): Promise<unknown> {
+  const nextDeadlineAt = () => Date.now() + input.timeoutMs;
+  let lastProgress = reportReviewProgress(input, {
+    stage: "reviewing_changes",
+    message: "Reviewer session is starting.",
+    deadlineAt: nextDeadlineAt()
+  });
   let submitted: unknown = null;
   let resolveSubmission!: (review: ReturnType<typeof validateAdversarialReviewOutput>) => void;
   const submission = new Promise<ReturnType<typeof validateAdversarialReviewOutput>>((resolve) => { resolveSubmission = resolve; });
@@ -260,14 +385,48 @@ async function runPiReview(input: ProviderAdversarialReviewInput): Promise<unkno
     settingsManager,
     resourceLoader
   });
+  let lastReasoningReportAt = 0;
+  const unsubscribe = session.subscribe((event) => {
+    if (event.type === "tool_execution_start") {
+      lastProgress = reportReviewProgress(input, {
+        stage: "reviewing_changes",
+        message: `Running ${event.toolName}.`,
+        toolName: event.toolName,
+        deadlineAt: nextDeadlineAt()
+      });
+      return;
+    }
+    if (event.type === "tool_execution_end") {
+      const detail = event.isError ? reviewDiagnosticText(event.result) : "";
+      lastProgress = reportReviewProgress(input, {
+        stage: "reviewing_changes",
+        message: event.isError ? `Failed ${event.toolName}${detail ? `: ${detail}` : "."}` : `Finished ${event.toolName}.`,
+        toolName: event.toolName,
+        error: event.isError ? detail || `${event.toolName} failed.` : null,
+        deadlineAt: nextDeadlineAt()
+      });
+      return;
+    }
+    if (event.type === "message_update" && Date.now() - lastReasoningReportAt >= 5000) {
+      lastReasoningReportAt = Date.now();
+      lastProgress = reportReviewProgress(input, {
+        stage: "reviewing_changes",
+        message: "Reviewer is reasoning over the change.",
+        deadlineAt: nextDeadlineAt()
+      });
+    }
+  });
   try {
     const earlySubmission = await waitForPiReviewSubmission({
       prompt: session.prompt(`${input.prompt}\n\nInspect the work, then call submit_review exactly once with the final findings.`),
       submission,
       abort: () => session.abort(),
-      timeoutMs: input.timeoutMs
+      timeoutMs: input.timeoutMs,
+      lastActivityAt: () => lastProgress.at,
+      isCurrent: input.isCurrent
     });
     if (earlySubmission) return earlySubmission;
+    assertPiReviewerPromptSucceeded(session.messages);
     if (submitted) return submitted;
     const message = [...session.messages].reverse().find((entry) => entry.role === "assistant");
     const text = message && "content" in message ? contentToText(message.content).trim() : "";
@@ -275,10 +434,18 @@ async function runPiReview(input: ProviderAdversarialReviewInput): Promise<unkno
     return JSON.parse(extractJson(text));
   } catch (error) {
     await session.abort().catch(() => {});
+    if (error instanceof Error && error.message === "adversarial review timed out") {
+      throw reviewTimeoutError(input, lastProgress);
+    }
     throw error;
   } finally {
+    unsubscribe();
     session.dispose();
   }
+}
+
+export function assertPiReviewerPromptSucceeded(messages: readonly unknown[]): void {
+  assertIsolatedPromptSucceeded(messages, "Adversarial reviewer");
 }
 
 export async function runProviderAdversarialReview(input: ProviderAdversarialReviewInput): Promise<unknown> {
@@ -366,6 +533,7 @@ export async function ensureButlerAdversarialReview(input: {
   buildWorkspaceSnapshot?: (cwd: string, baselineSha?: string | null, baselineTreeSha?: string | null, baselineObjectDir?: string | null) => Promise<string>;
   createScopedWorkspace?: typeof createScopedReviewWorkspace;
   isCurrent?: () => boolean;
+  onProgress?: (progress: AdversarialReviewProgress) => void;
 }): Promise<WorkerReviewResultRecordView[]> {
   const thread = input.store.getThread(input.threadId);
   const report = input.store.getWorkerReport(input.threadId);
@@ -391,6 +559,13 @@ export async function ensureButlerAdversarialReview(input: {
   if (thread.executionContract?.reviewBaselineCaptureFailed) {
     throw new Error("Worker review isolation was not captured at delegation. Butler will retry instead of reviewing an unsafe shared checkout.");
   }
+
+  input.onProgress?.({
+    stage: "preparing",
+    message: "Preparing an isolated workspace for adversarial review.",
+    at: Date.now(),
+    deadlineAt: null
+  });
 
   const preferredCwd = thread.executionContract?.workspaceCwd || thread.cwd || process.cwd();
   const workerAttribution = workerFileChangeAttribution(thread);
@@ -450,6 +625,12 @@ export async function ensureButlerAdversarialReview(input: {
     if (input.isCurrent?.() === false) return [];
     const workspaceSnapshot = scopedReview ? `${scopedReview.scopeNote}\n\n${rawWorkspaceSnapshot}` : rawWorkspaceSnapshot;
     const prompt = buildAdversarialReviewPrompt({ thread, report, workspaceSnapshot, reviewBrief: input.reviewBrief });
+    input.onProgress?.({
+      stage: "reviewing_changes",
+      message: "Workspace snapshot is ready. Starting the adversarial reviewer.",
+      at: Date.now(),
+      deadlineAt: Date.now() + (input.timeoutMs ?? 120_000)
+    });
     const raw = validateAdversarialReviewOutput(await (input.runReview ?? runProviderAdversarialReview)({
       cwd: effectiveReviewCwd,
       codexHomeDir: input.codexHomeDir,
@@ -459,7 +640,9 @@ export async function ensureButlerAdversarialReview(input: {
       selection: { model, thinkingLevel: input.thinkingLevel },
       codexNativeAvailable: input.codexAuthenticated !== false,
       prompt,
-      timeoutMs: input.timeoutMs ?? 120_000
+      timeoutMs: input.timeoutMs ?? 120_000,
+      onProgress: input.onProgress,
+      isCurrent: input.isCurrent
     }));
     if (input.isCurrent?.() === false) return [];
     let results = normalizeWorkerReviewResults({

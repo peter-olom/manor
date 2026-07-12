@@ -63,14 +63,15 @@ const TraceItemView = memo(function TraceItemView({ item }: TraceItemViewProps) 
   }
 
   return (
-    <article className={`trace-item is-tool ${statusClass}`}>
-      <header className="trace-head">
+    <details className={`trace-item is-tool ${statusClass}`} open={item.status === "failed"}>
+      <summary className="trace-head">
         <span className="trace-icon">{icon}</span>
         <span className="trace-label">{label}</span>
         {item.text ? <span className="trace-summary">{shortText(item.text, 200)}</span> : null}
         <span className="trace-status">{item.status === "in_progress" ? "running" : item.status}</span>
-      </header>
-    </article>
+      </summary>
+      {item.text ? <Markdown className="trace-body" text={item.text} /> : null}
+    </details>
   );
 });
 

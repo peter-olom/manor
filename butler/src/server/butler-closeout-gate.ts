@@ -39,7 +39,12 @@ export function recordGatedCloseout(store: ButlerStateStore, threadId: string, r
 export function queueCloseoutReview(callback: ButlerThreadCallbackView, reason: "worker_callback" | "thread_recovery"): void {
   callback.nextWorkerReportAction = "review";
   callback.reviewState = "queued";
+  callback.reviewStage = "queued";
   callback.reviewReason = reason;
+  callback.reviewStartedAt = null;
+  callback.reviewDeadlineAt = null;
+  callback.reviewNextAttemptAt = null;
+  callback.reviewLastError = null;
   callback.blockedCloseoutReason = null;
   callback.blockedCloseoutReportAt = null;
   callback.updatedAt = Date.now();
@@ -47,6 +52,11 @@ export function queueCloseoutReview(callback: ButlerThreadCallbackView, reason: 
 
 export function idleCloseoutReview(callback: ButlerThreadCallbackView): void {
   callback.reviewState = "idle";
+  callback.reviewStage = null;
+  callback.reviewStartedAt = null;
+  callback.reviewDeadlineAt = null;
+  callback.reviewNextAttemptAt = null;
+  callback.reviewLastError = null;
   callback.blockedCloseoutReason = null;
   callback.blockedCloseoutReportAt = null;
   callback.updatedAt = Date.now();
@@ -62,6 +72,10 @@ export function blockCloseoutReview(
 ): void {
   callback.nextWorkerReportAction = "review";
   callback.reviewState = "blocked";
+  callback.reviewStage = "blocked";
+  callback.reviewDeadlineAt = null;
+  callback.reviewNextAttemptAt = null;
+  callback.reviewLastError = null;
   callback.reviewReason = input.reviewReason;
   callback.blockedCloseoutReason = input.reason;
   callback.blockedCloseoutReportAt = input.workerReportUpdatedAt;

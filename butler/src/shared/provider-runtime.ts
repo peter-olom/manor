@@ -216,6 +216,7 @@ export type ProviderRuntimeLivePatch =
   | ({
       kind: "runtime-message";
       threadId: string;
+      turnId?: string;
       tone: "warning" | "error";
       message: string;
       at: number;

@@ -1,4 +1,5 @@
 import type { ButlerTraceItemView, ButlerTraceMetaView } from "./types.js";
+import { redactSensitiveText } from "./redact-sensitive-text.js";
 
 export type ButlerTraceBufferHooks = {
   onTracePersisted?: (input: { messageId: string; trace: ButlerTraceItemView[]; meta: ButlerTraceMetaView }) => void;
@@ -8,8 +9,9 @@ const TRACE_ITEM_LIMIT = 80;
 const TRACE_TEXT_LIMIT = 4000;
 
 function clampText(value: string): string {
-  if (value.length <= TRACE_TEXT_LIMIT) return value;
-  return `${value.slice(0, TRACE_TEXT_LIMIT)}…`;
+  const redacted = redactSensitiveText(value);
+  if (redacted.length <= TRACE_TEXT_LIMIT) return redacted;
+  return `${redacted.slice(0, TRACE_TEXT_LIMIT)}…`;
 }
 
 function asTraceItem(input: {
