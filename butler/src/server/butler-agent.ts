@@ -614,7 +614,7 @@ export class ButlerAgentService extends EventEmitter {
     await this.manorRestartRequests.load();
     this.auth = await readButlerAuthStatus(this.piAuthPath);
     this.codexAuth = await readCodexAuthStatus(this.codexAuthPath);
-    this.modelRegistry = await createManorModelRegistry(this.piAuthPath);
+    this.modelRegistry = await createManorModelRegistry(this.piAuthPath, process.env, { preferredModelRef: this.getButlerDefaults()?.model });
     await this.createOrRefreshSession();
     await this.refreshExternalStatus();
     this.store.on("change", this.storeChangeHandler);
@@ -638,7 +638,7 @@ export class ButlerAgentService extends EventEmitter {
   }
 
   async refreshModelSettings(): Promise<void> { if (this.quiescing) return;
-    this.modelRegistry = await createManorModelRegistry(this.piAuthPath); if (this.quiescing) return;
+    this.modelRegistry = await createManorModelRegistry(this.piAuthPath, process.env, { preferredModelRef: this.getButlerDefaults()?.model }); if (this.quiescing) return;
     this.toolCatalog = this.buildToolCatalog();
     await this.createOrRefreshSession(); if (this.quiescing) return;
     this.emit("change");
@@ -663,7 +663,7 @@ export class ButlerAgentService extends EventEmitter {
 
     if (butlerAuthChanged) {
       this.auth = nextAuth;
-      this.modelRegistry = await createManorModelRegistry(this.piAuthPath);
+      this.modelRegistry = await createManorModelRegistry(this.piAuthPath, process.env, { preferredModelRef: this.getButlerDefaults()?.model });
       await this.createOrRefreshSession(); if (this.quiescing) return;
     }
     if (authChanged) this.resetCallbackReviewFailures();
@@ -732,7 +732,7 @@ export class ButlerAgentService extends EventEmitter {
 
   private getSessionAccess(): ButlerAgentSessionAccess { return this as unknown as ButlerAgentSessionAccess; }
 
-  getButlerDefaults(): ButlerAgentDefaults | null { return this.options.getButlerDefaults?.() ?? null; }
+  getButlerDefaults(): ButlerAgentDefaults | null { return this.options?.getButlerDefaults?.() ?? null; }
   getWorkerDefaults(): ButlerWorkerDefaults | null { return this.options.getWorkerDefaults?.() ?? null; }
   getWorkerAffinity() { return this.options.getWorkerAffinity?.() ?? null; }
   recordSuccessfulWorkerSelection(input: { harness: string; provider: string; model: string; effort?: string | null }) { return this.options.recordSuccessfulWorkerSelection?.(input); }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -31,7 +31,8 @@ import {
   syncOperatorMessagesFromSessionFiles,
   updateButlerComposeSettings
 } from "../../src/server/butler-agent-session.js";
-import { registerManorProviders } from "../../src/server/model-provider-config.js";
+import { createManorModelRegistry, registerManorProviders } from "../../src/server/model-provider-config.js";
+import { clearOllamaCloudModelsCache } from "../../src/server/ollama-cloud-models.js";
 import { getActiveManorSettings, setActiveManorSettings } from "../../src/server/manor-settings-runtime.js";
 import { runSerializedJobMutation } from "../../src/server/butler-job-mutation-guard.js";
 import {
@@ -385,6 +386,64 @@ test("Butler compose settings accepts provider-qualified local model ids", async
   assert.equal(session.model?.provider, "ollama-local");
   assert.equal(session.model?.id, "qwen3:8b");
   assert.equal(emitted, true);
+});
+
+test("saved Ollama Cloud model becomes the active compose model after slow discovery", async (t) => {
+  clearOllamaCloudModelsCache();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL) => {
+    if (String(input).endsWith("/api/tags")) {
+      await new Promise((resolve) => setTimeout(resolve, 1_600));
+      return Response.json({ models: [{ name: "glm-5.2" }] });
+    }
+    return Response.json({ capabilities: ["completion", "thinking"], model_info: {} });
+  }) as typeof fetch;
+  const env = {
+    MANOR_OLLAMA_LOCAL_ENABLED: "0",
+    MANOR_OLLAMA_CLOUD_ENABLED: "1",
+    MANOR_OLLAMA_CLOUD_PROVIDER_ID: "ollama-cloud",
+    MANOR_OLLAMA_CLOUD_BASE_URL: "https://ollama.example/v1",
+    MANOR_OLLAMA_CLOUD_MODELS: "",
+    MANOR_OLLAMA_WEB_TOOLS_BASE_URL: "https://ollama.example/api",
+    OLLAMA_API_KEY: "test-key"
+  } as NodeJS.ProcessEnv;
+  const previousApiKey = process.env.OLLAMA_API_KEY;
+  process.env.OLLAMA_API_KEY = "test-key";
+  setActiveManorSettings(getActiveManorSettings(env));
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-slow-compose-"));
+  t.after(async () => {
+    globalThis.fetch = originalFetch;
+    clearOllamaCloudModelsCache();
+    setActiveManorSettings(null);
+    if (previousApiKey === undefined) delete process.env.OLLAMA_API_KEY;
+    else process.env.OLLAMA_API_KEY = previousApiKey;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const modelRegistry = await createManorModelRegistry(path.join(dir, "auth.json"), env, {
+    preferredModelRef: "ollama-cloud/glm-5.2",
+    recoveryTimeoutMs: 500
+  });
+  const session = {
+    model: null as { provider?: string | null; id?: string | null } | null,
+    async setModel(model: { provider?: string | null; id?: string | null }) { session.model = model; },
+    setThinkingLevel() {},
+    getActiveToolNames() { return []; },
+    setActiveToolsByName() {}
+  };
+  const access = {
+    session,
+    modelRegistry,
+    auth: { mode: "api" },
+    lastError: "previous availability error",
+    emit() { return true; }
+  } as never;
+
+  await updateButlerComposeSettings(access, "ollama-cloud", "ollama-cloud/glm-5.2", "high");
+
+  assert.equal(session.model?.provider, "ollama-cloud");
+  assert.equal(session.model?.id, "glm-5.2");
+  assert.equal((access as { lastError: string | null }).lastError, null);
 });
 
 test("Butler defaults preserve current model when no default model is configured", async (t) => {

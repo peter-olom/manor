@@ -165,7 +165,11 @@ export class ManorModelTaskRunner implements ModelTaskRunner {
   }
 
   private async resolvePiModel(ref: ProviderModelRef, deadline: number, purpose: string): Promise<{ model: Model<Api>; auth: Extract<PiModelAuth, { ok: true }> }> {
-    const registry = await withinDeadline(createManorModelRegistry(this.piAuthPath), deadline, purpose);
+    const preferredModelRef = ref.provider && ref.model ? `${ref.provider}/${ref.model}` : ref.model;
+    const registry = await withinDeadline(createManorModelRegistry(this.piAuthPath, process.env, {
+      preferredModelRef,
+      recoveryTimeoutMs: Math.max(1, Math.min(10_000, deadline - Date.now()))
+    }), deadline, purpose);
     const available = registry.getAvailable();
     return selectAuthenticatedPiModel(
       available,

@@ -219,7 +219,7 @@ function butlerModelAvailabilityError(pair: PairChat, shell: ReturnType<ButlerAg
   const available = shell.compose?.availableModels ?? [];
   if (available.length === 0) return "No connected Butler model is available. Open Settings → Providers to connect or repair a provider.";
   if (pair.butlerModel && !available.some((model) => butlerModelMatchesReference(model, pair.butlerModel!))) {
-    return `The chosen Butler model ${pair.butlerModel} is unavailable. Open Settings → Providers to reconnect it, or choose another Butler model.`;
+    return `The chosen Butler model ${pair.butlerModel} is not in the current model inventory. Retry the provider check in Settings → Providers or choose another Butler model.`;
   }
   return null;
 }

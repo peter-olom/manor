@@ -18,6 +18,12 @@ import {
 } from "./icons";
 import { MemoryDashboard, type MemoryDashboardSummary, type MemoryProjectOption } from "./MemoryDashboard";
 import { ImagePreviewModal, type PreviewMedia } from "./ImagePreviewModal";
+import {
+  canBeginPairDeletion,
+  reconcileSelectedPairId,
+  shouldClearDeletedPairSelection,
+  shouldReportPairDetailError
+} from "./pair-selection";
 import { SandSpinner } from "./SandSpinner";
 import {
   SelfImprovementQueue,
@@ -670,6 +676,13 @@ export function PairShell() {
   const workerHandoffRequestCounter = useRef(0);
   const latestWorkerHandoffRequestByPairId = useRef(new Map<string, number>());
   const [error, setError] = useState<string | null>(null);
+  const selectedPairIdRef = useRef<string | null>(null);
+  const suppressedPairDetailErrorsRef = useRef(new Set<string>());
+  const pairListRequestRef = useRef(0);
+  const selectPairId = useCallback((pairId: string | null) => {
+    selectedPairIdRef.current = pairId;
+    setSelectedPairId(pairId);
+  }, []);
   const [search, setSearch] = useState("");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -793,12 +806,14 @@ export function PairShell() {
   }, [activePair, titleDraft]);
 
   const loadPairs = useCallback(async () => {
+    const requestId = ++pairListRequestRef.current;
     const payload = await getJson<PairListResponse>("/api/pairs");
+    if (requestId !== pairListRequestRef.current) return;
     startTransition(() => {
       setPairs(payload.pairs);
-      setSelectedPairId((current) => current ?? payload.pairs[0]?.id ?? null);
+      selectPairId(reconcileSelectedPairId(selectedPairIdRef.current, payload.pairs));
     });
-  }, []);
+  }, [selectPairId]);
 
   const loadWorker = useCallback(async (pairId: string): Promise<WorkerThread | null> => {
     const payload = await getJson<PairWorkerThreadResponse>(`/api/pairs/${encodeURIComponent(pairId)}/worker-thread`);
@@ -863,14 +878,19 @@ export function PairShell() {
       return;
     }
     let cancelled = false;
+    const pairId = selectedPairId;
     const refresh = async () => {
       try {
-        const payload = await getJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(selectedPairId)}?limit=${PAGE_SIZE}`);
+        const payload = await getJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(pairId)}?limit=${PAGE_SIZE}`);
         if (!cancelled) {
           startTransition(() => setPair(payload.pair));
         }
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled && shouldReportPairDetailError(
+          pairId,
+          selectedPairIdRef.current,
+          suppressedPairDetailErrorsRef.current
+        )) {
           setError(err instanceof Error ? err.message : String(err));
         }
       }
@@ -966,7 +986,7 @@ export function PairShell() {
     try {
       const payload = await postJson<PairDetailResponse>("/api/pairs", { title: "New session" });
       await loadPairs();
-      setSelectedPairId(payload.pair.id);
+      selectPairId(payload.pair.id);
       setPair(payload.pair);
       setViewMode("butler");
       setMobileSidebarOpen(false);
@@ -981,24 +1001,33 @@ export function PairShell() {
   }
 
   async function deletePair(pairId: string) {
+    if (!canBeginPairDeletion(pairId, suppressedPairDetailErrorsRef.current)) return;
     if (!window.confirm("Delete this session? This cannot be undone.")) return;
+    suppressedPairDetailErrorsRef.current.add(pairId);
     try {
       const response = await fetch(`/api/pairs/${encodeURIComponent(pairId)}`, { method: "DELETE" });
       if (!response.ok) {
         throw new Error(`Delete failed with ${response.status}`);
       }
     } catch (err) {
+      suppressedPairDetailErrorsRef.current.delete(pairId);
       setError(err instanceof Error ? err.message : String(err));
       return;
     }
-    if (selectedPairId === pairId) {
-      setSelectedPairId(null);
+    if (shouldClearDeletedPairSelection(pairId, selectedPairIdRef.current)) {
+      selectPairId(null);
       setPair(null);
       setEditingTitle(false);
       setTitleDraft("");
       setTitleError(null);
     }
-    await loadPairs();
+    try {
+      await loadPairs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      suppressedPairDetailErrorsRef.current.delete(pairId);
+    }
   }
 
   async function loadOlder() {
@@ -1011,7 +1040,7 @@ export function PairShell() {
     if (request.pairId) {
       await loadPairs();
       const payload = await getJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(request.pairId)}?limit=${PAGE_SIZE}`);
-      setSelectedPairId(payload.pair.id);
+      selectPairId(payload.pair.id);
       setPair(payload.pair);
       setViewMode("worker");
       setLastWorkstreamMode("worker");
@@ -1234,7 +1263,7 @@ export function PairShell() {
         memorySummary={memorySummary}
         settingsSection={settingsSection}
         onSelect={(id) => {
-          setSelectedPairId(id);
+          selectPairId(id);
           setViewMode(lastWorkstreamMode);
           setMobileSidebarOpen(false);
           setEditingTitle(false);

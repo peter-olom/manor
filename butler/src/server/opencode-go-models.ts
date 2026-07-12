@@ -103,7 +103,7 @@ function cacheKey(settings: ManorSettings, apiKey: string): string {
   return `${config.baseUrl.replace(/\/$/, "")}:${keyHash}`;
 }
 
-export async function fetchOpencodeGoModelsCached(settings: ManorSettings, options: { force?: boolean; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): Promise<OpencodeGoModelInfo[]> {
+export async function fetchOpencodeGoModelsCached(settings: ManorSettings, options: { force?: boolean; env?: NodeJS.ProcessEnv; timeoutMs?: number; requestTimeoutMs?: number } = {}): Promise<OpencodeGoModelInfo[]> {
   const apiKey = await readSecretSourceValue(settings.providers.opencodeGo.apiKeySource, options.env ?? process.env);
   if (!apiKey) throw new Error("No OpenCode Go API key is available from the configured secret source.");
   const key = cacheKey(settings, apiKey);
@@ -113,10 +113,14 @@ export async function fetchOpencodeGoModelsCached(settings: ManorSettings, optio
     return entry.models;
   }
   if (entry?.inFlight) {
-    return options.timeoutMs ? withTimeout(entry.inFlight, options.timeoutMs) : entry.inFlight;
+    if (!options.timeoutMs) return entry.inFlight;
+    return withTimeout(entry.inFlight, options.timeoutMs).catch((error) => {
+      if (entry.models.length) return entry.models;
+      throw error;
+    });
   }
   const generation = cacheGeneration;
-  const inFlight = fetchOpencodeGoModelsOnce(settings, apiKey, options.timeoutMs)
+  const inFlight = fetchOpencodeGoModelsOnce(settings, apiKey, options.requestTimeoutMs)
     .then((models) => {
       if (generation === cacheGeneration) {
         cache.set(key, { models, fetchedAt: Date.now(), inFlight: null });
@@ -127,10 +131,15 @@ export async function fetchOpencodeGoModelsCached(settings: ManorSettings, optio
       if (generation === cacheGeneration) {
         cache.set(key, { models: entry?.models ?? [], fetchedAt: entry?.fetchedAt ?? 0, inFlight: null });
       }
+      if ((entry?.models.length ?? 0) > 0) return entry!.models;
       throw error;
     });
   cache.set(key, { models: entry?.models ?? [], fetchedAt: entry?.fetchedAt ?? 0, inFlight });
-  return options.timeoutMs ? withTimeout(inFlight, options.timeoutMs) : inFlight;
+  if (!options.timeoutMs) return inFlight;
+  return withTimeout(inFlight, options.timeoutMs).catch((error) => {
+    if (entry?.models.length) return entry.models;
+    throw error;
+  });
 }
 
 export function clearOpencodeGoModelsCache(): void {

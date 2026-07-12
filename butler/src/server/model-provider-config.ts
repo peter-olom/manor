@@ -427,9 +427,44 @@ export async function registerManorProviders(registry: ModelRegistry, env: NodeJ
   await registerOpencodeGoProvider(registry, settings.providers.opencodeGo as CloudLikeProvider, env);
 }
 
-export async function createManorModelRegistry(piAuthPath: string, env: NodeJS.ProcessEnv = process.env): Promise<ModelRegistry> {
-  const registry = ModelRegistry.inMemory(AuthStorage.create(piAuthPath));
-  await registerManorProviders(registry, env);
+function registryHasModel(registry: ModelRegistry, reference: string): boolean {
+  const ref = parseProviderModelRef(reference);
+  if (!ref.model) return true;
+  return registry.getAvailable().some((model) =>
+    model.id === ref.model && (!ref.provider || model.provider === ref.provider));
+}
+
+async function recoverPreferredDynamicModel(
+  reference: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number
+): Promise<void> {
+  const ref = parseProviderModelRef(reference);
+  if (!ref.provider || !ref.model) return;
+  const settings = getActiveManorSettings(env);
+  if (ref.provider === settings.providers.ollamaCloud.providerId) {
+    await fetchOllamaCloudModelsCached(settings, { env, timeoutMs }).catch(() => []);
+  } else if (ref.provider === settings.providers.opencodeGo.providerId) {
+    await fetchOpencodeGoModelsCached(settings, { env, timeoutMs }).catch(() => []);
+  }
+}
+
+export async function createManorModelRegistry(
+  piAuthPath: string,
+  env: NodeJS.ProcessEnv = process.env,
+  options: { preferredModelRef?: string | null; recoveryTimeoutMs?: number } = {}
+): Promise<ModelRegistry> {
+  const buildRegistry = async () => {
+    const registry = ModelRegistry.inMemory(AuthStorage.create(piAuthPath));
+    await registerManorProviders(registry, env);
+    return registry;
+  };
+  let registry = await buildRegistry();
+  const preferredModelRef = options.preferredModelRef?.trim() ?? "";
+  if (preferredModelRef && !registryHasModel(registry, preferredModelRef)) {
+    await recoverPreferredDynamicModel(preferredModelRef, env, options.recoveryTimeoutMs ?? 10_000);
+    registry = await buildRegistry();
+  }
   return registry;
 }
 

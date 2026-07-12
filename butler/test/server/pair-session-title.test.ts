@@ -692,15 +692,15 @@ test("Butler model and thinking changes wait for the active main-chat turn", asy
   await assert.rejects(() => manager.setButlerThinkingLevel(pair.id, "high"), /Wait for this turn to finish/);
 });
 
-test("an unavailable chosen Butler model blocks chat with provider remediation", async () => {
+test("an unavailable chosen Butler model blocks chat with inventory remediation", async () => {
   const { manager, pairStore, service } = await createManager();
   const pair = await manager.createPair();
   pairStore.updatePairComposeOverrides(pair.id, { butlerModel: "ollama-cloud/missing-model" });
 
   const detail = await manager.getPairDetail(pair.id, null, 120);
 
-  assert.match(detail?.butlerLastError ?? "", /chosen Butler model .* unavailable/i);
-  await assert.rejects(() => manager.sendOperatorMessage({ pairId: pair.id, text: "Hello", imageReferenceIds: [], fileReferenceIds: [] }), /reconnect it, or choose another/);
+  assert.match(detail?.butlerLastError ?? "", /chosen Butler model .* current model inventory/i);
+  await assert.rejects(() => manager.sendOperatorMessage({ pairId: pair.id, text: "Hello", imageReferenceIds: [], fileReferenceIds: [] }), /Retry the provider check/);
   assert.equal(service.messages.length, 0);
 });
 

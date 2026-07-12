@@ -96,32 +96,50 @@ type CacheEntry = {
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
 let cache: CacheEntry | null = null;
+let cacheGeneration = 0;
 
 export function getCachedOllamaCloudModels(): OllamaCloudModelInfo[] {
   return cache?.models ?? [];
 }
 
-export async function fetchOllamaCloudModelsCached(settings: ManorSettings, options: { force?: boolean; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): Promise<OllamaCloudModelInfo[]> {
+export async function fetchOllamaCloudModelsCached(settings: ManorSettings, options: { force?: boolean; env?: NodeJS.ProcessEnv; timeoutMs?: number; requestTimeoutMs?: number } = {}): Promise<OllamaCloudModelInfo[]> {
   const now = Date.now();
   if (!options.force && cache && now - cache.fetchedAt < CACHE_TTL_MS && cache.inFlight === null) {
     return cache.models;
   }
   if (cache?.inFlight) {
-    return options.timeoutMs ? withTimeout(cache.inFlight, options.timeoutMs) : cache.inFlight;
+    if (!options.timeoutMs) return cache.inFlight;
+    return withTimeout(cache.inFlight, options.timeoutMs).catch((error) => {
+      if (cache?.models.length) return cache.models;
+      throw error;
+    });
   }
-  const inFlight = fetchOllamaCloudModelsOnce(settings, options.env ?? process.env, options.timeoutMs)
+  const staleModels = cache?.models ?? [];
+  const staleFetchedAt = cache?.fetchedAt ?? 0;
+  const generation = cacheGeneration;
+  const inFlight = fetchOllamaCloudModelsOnce(settings, options.env ?? process.env, options.requestTimeoutMs)
     .then((models) => {
-      cache = { models, fetchedAt: Date.now(), inFlight: null };
+      if (generation === cacheGeneration) {
+        cache = { models, fetchedAt: Date.now(), inFlight: null };
+      }
       return models;
     })
     .catch((error) => {
-      cache = { models: cache?.models ?? [], fetchedAt: cache?.fetchedAt ?? 0, inFlight: null };
+      if (generation === cacheGeneration) {
+        cache = { models: staleModels, fetchedAt: staleFetchedAt, inFlight: null };
+      }
+      if (staleModels.length > 0) return staleModels;
       throw error;
     });
-  cache = { models: cache?.models ?? [], fetchedAt: cache?.fetchedAt ?? 0, inFlight };
-  return options.timeoutMs ? withTimeout(inFlight, options.timeoutMs) : inFlight;
+  cache = { models: staleModels, fetchedAt: staleFetchedAt, inFlight };
+  if (!options.timeoutMs) return inFlight;
+  return withTimeout(inFlight, options.timeoutMs).catch((error) => {
+    if (staleModels.length) return staleModels;
+    throw error;
+  });
 }
 
 export function clearOllamaCloudModelsCache(): void {
+  cacheGeneration += 1;
   cache = null;
 }
