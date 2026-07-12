@@ -44,6 +44,30 @@ export type PairTraceItem = {
   completedAt?: number | null;
 };
 
+export type PairOperatorQuestionOption = {
+  id: string;
+  label: string;
+  description: string | null;
+};
+
+export type PairOperatorQuestionItem = {
+  id: string;
+  prompt: string;
+  context: string | null;
+  options: PairOperatorQuestionOption[];
+  allowFreeform: boolean;
+  createdAt: number;
+  selectedOptionId?: string | null;
+  freeformAnswer?: string | null;
+  answeredAt?: number | null;
+};
+
+export type PairOperatorQuestion = PairOperatorQuestionItem & {
+  questions?: PairOperatorQuestionItem[];
+  deliveryState?: "idle" | "pending" | "delivered" | "failed";
+  deliveryError?: string | null;
+};
+
 export type PairMessage = {
   id: string;
   role: PairRole;
@@ -55,6 +79,7 @@ export type PairMessage = {
   metadata: Record<string, string>;
   pending?: boolean;
   trace?: PairTraceItem[];
+  question?: PairOperatorQuestion;
 };
 
 export type PairWorker = {

@@ -24,7 +24,7 @@ import { workerThreadIsRunning } from "./worker-thread-status.js";
 
 type PairButlerService = Pick<
   ButlerAgentService,
-  "dispose" | "ensureExternalWorkerDelegation" | "getMessagePage" | "getShellSnapshot" | "handoffWorker" | "on" | "prompt" | "refreshModelSettings" | "retryBlockedCallbackReviews" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings"
+  "answerOperatorQuestion" | "dispose" | "ensureExternalWorkerDelegation" | "getMessagePage" | "getShellSnapshot" | "handoffWorker" | "on" | "prompt" | "refreshModelSettings" | "retryBlockedCallbackReviews" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings"
 >;
 
 type PairSessionManagerOptions = {
@@ -106,7 +106,7 @@ function mapRole(role: string): PairMessage["role"] {
   return "system";
 }
 
-function mapButlerMessage(message: ButlerMessageView): PairMessage {
+export function mapButlerMessage(message: ButlerMessageView): PairMessage {
   return {
     id: message.id,
     role: mapRole(message.role),
@@ -117,6 +117,7 @@ function mapButlerMessage(message: ButlerMessageView): PairMessage {
     memoryObservationId: null,
     metadata: { sourceRole: message.role },
     pending: message.pending,
+    ...(message.question ? { question: message.question } : {}),
     ...(message.trace && message.trace.length > 0 ? { trace: message.trace } : {})
   };
 }
@@ -536,6 +537,25 @@ export class PairSessionManager {
     if (shouldGenerateTitle) {
       this.generateTitleAsync(input.pairId, input.text, pair.defaultCwd);
     }
+    this.syncPairSnapshot(input.pairId);
+    return this.getPairDetail(input.pairId, null, 120);
+  }
+
+  async answerOperatorQuestion(input: {
+    pairId: string;
+    messageId: string;
+    questionId: string;
+    optionId?: string;
+    freeformText?: string;
+  }): Promise<PairDetail | null> {
+    if (!this.options.pairStore.getPair(input.pairId)) return null;
+    const service = await this.ensureService(input.pairId);
+    await service.answerOperatorQuestion({
+      messageId: input.messageId,
+      questionId: input.questionId,
+      optionId: input.optionId,
+      freeformText: input.freeformText
+    });
     this.syncPairSnapshot(input.pairId);
     return this.getPairDetail(input.pairId, null, 120);
   }

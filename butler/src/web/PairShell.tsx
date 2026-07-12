@@ -1407,6 +1407,7 @@ export function PairShell() {
                       setPreviewError(null);
                       setPreviewMedia(media);
                     }}
+                    onPairUpdate={(updatedPair) => setPair(updatedPair)}
                   />
                 ) : null}
                 {viewMode === "split" ? <div className="divider" /> : null}

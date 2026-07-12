@@ -159,6 +159,34 @@ export function registerPairRoutes(access: PairRouteAccess): void {
     }
   });
 
+  app.post("/api/pairs/:pairId/operator-question-answer", async (request, response) => {
+    const messageId = readString(request.body?.messageId);
+    const questionId = readString(request.body?.questionId);
+    const optionId = readString(request.body?.optionId);
+    const freeformText = readString(request.body?.freeformText);
+    if (!messageId || !questionId || Boolean(optionId) === Boolean(freeformText)) {
+      response.status(400).json({ error: "messageId, questionId, and exactly one answer are required" });
+      return;
+    }
+
+    try {
+      const pair = await pairSessions.answerOperatorQuestion({
+        pairId: request.params.pairId,
+        messageId,
+        questionId,
+        optionId: optionId || undefined,
+        freeformText: freeformText || undefined
+      });
+      if (!pair) {
+        response.status(404).json({ error: "Butler session not found" });
+        return;
+      }
+      response.status(202).json({ pair });
+    } catch (error) {
+      response.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.patch("/api/pairs/:pairId/settings", async (request, response) => {
     const target = request.body?.target === "codex" || request.body?.target === "worker" ? "worker" : "butler";
     try {

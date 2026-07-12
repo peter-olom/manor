@@ -56,9 +56,11 @@ function createFakePairSessions(initialPair: PairDetail = makePair()) {
   const pairs = new Map<string, PairDetail>([[initialPair.id, initialPair]]);
   const sentMessages: Array<{ pairId: string; text: string; imageReferenceIds: string[]; fileReferenceIds: string[] }> = [];
   const handoffs: Array<{ pairId: string; harness: string | null; model: string; effort: string | null }> = [];
+  const questionAnswers: Array<{ pairId: string; messageId: string; questionId: string; optionId?: string; freeformText?: string }> = [];
   return {
     sentMessages,
     handoffs,
+    questionAnswers,
     manager: {
       async listSummaries(): Promise<PairSummary[]> {
         return [...pairs.values()].map(({ messages: _messages, loadedStart: _loadedStart, hasMore: _hasMore, ...pair }) => pair);
@@ -167,6 +169,12 @@ function createFakePairSessions(initialPair: PairDetail = makePair()) {
         };
         pairs.set(input.pairId, updated);
         return updated;
+      },
+      async answerOperatorQuestion(input: { pairId: string; messageId: string; questionId: string; optionId?: string; freeformText?: string }): Promise<PairDetail | null> {
+        const pair = pairs.get(input.pairId);
+        if (!pair) return null;
+        questionAnswers.push(input);
+        return pair;
       }
     }
   };
@@ -300,6 +308,46 @@ test("POST /api/pairs/:pairId/messages rejects direct worker messages", async ()
     });
     assert.equal(res.status, 409);
     assert.equal(fake.sentMessages.length, 0);
+  } finally {
+    await close();
+  }
+});
+
+test("POST /api/pairs/:pairId/operator-question-answer scopes an option answer to the pair", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/operator-question-answer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messageId: "question-message", questionId: "question-1", optionId: "simple" })
+    });
+    assert.equal(res.status, 202);
+    assert.deepEqual(fake.questionAnswers, [{ pairId: "pair-1", messageId: "question-message", questionId: "question-1", optionId: "simple", freeformText: undefined }]);
+  } finally {
+    await close();
+  }
+});
+
+test("POST /api/pairs/:pairId/operator-question-answer accepts exactly one freeform answer", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const accepted = await fetch(`${url}/api/pairs/pair-1/operator-question-answer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messageId: "question-message", questionId: "question-1", freeformText: "My own answer" })
+    });
+    assert.equal(accepted.status, 202);
+
+    const rejected = await fetch(`${url}/api/pairs/pair-1/operator-question-answer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messageId: "question-message", questionId: "question-1", optionId: "simple", freeformText: "Both" })
+    });
+    assert.equal(rejected.status, 400);
   } finally {
     await close();
   }

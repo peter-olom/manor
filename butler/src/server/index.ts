@@ -819,13 +819,14 @@ app.post("/api/chat/operator-question-answer", async (request, response) => {
   const messageId = typeof request.body?.messageId === "string" ? request.body.messageId.trim() : "";
   const questionId = typeof request.body?.questionId === "string" ? request.body.questionId.trim() : "";
   const optionId = typeof request.body?.optionId === "string" ? request.body.optionId.trim() : "";
-  if (!messageId || !questionId || !optionId) {
-    response.status(400).json({ error: "messageId, questionId, and optionId are required" });
+  const freeformText = typeof request.body?.freeformText === "string" ? request.body.freeformText.trim() : "";
+  if (!messageId || !questionId || Boolean(optionId) === Boolean(freeformText)) {
+    response.status(400).json({ error: "messageId, questionId, and exactly one answer are required" });
     return;
   }
 
   try {
-    const result = await butlerAgent.answerOperatorQuestion({ messageId, questionId, optionId });
+    const result = await butlerAgent.answerOperatorQuestion({ messageId, questionId, optionId: optionId || undefined, freeformText: freeformText || undefined });
     response.status(202).json({ ok: true, complete: result.complete, queued: result.queued, question: result.message.question });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });

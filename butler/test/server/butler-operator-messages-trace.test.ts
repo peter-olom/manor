@@ -25,6 +25,8 @@ test("upsertProviderBackedOperatorMessage persists and clears the trace", () => 
   );
   const stored = messages[0];
   assert.ok(stored?.trace);
+  assert.equal(stored?.providerBacked, true);
+  assert.equal(stored?.providerSucceeded, true);
   assert.equal(stored.trace?.length, 1);
   assert.equal(stored.trace?.[0]?.text, "thinking");
   assert.equal(stored.traceMeta?.turnId, "turn-1");

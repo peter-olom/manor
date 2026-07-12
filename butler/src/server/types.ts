@@ -1210,6 +1210,8 @@ export interface ButlerMessageView {
   taskDurationMs: number | null;
   kind: "message";
   pending?: boolean;
+  providerBacked?: boolean;
+  providerSucceeded?: boolean;
   question?: ButlerOperatorQuestionView;
   trace?: ButlerTraceItemView[];
   traceMeta?: ButlerTraceMetaView;
@@ -1229,13 +1231,11 @@ export interface ButlerOperatorQuestionItemView {
   allowFreeform: boolean;
   createdAt: number;
   selectedOptionId?: string | null;
+  freeformAnswer?: string | null;
   answeredAt?: number | null;
 }
 
-export interface ButlerOperatorQuestionView extends ButlerOperatorQuestionItemView {
-  questions?: ButlerOperatorQuestionItemView[];
-}
-
+export interface ButlerOperatorQuestionView extends ButlerOperatorQuestionItemView { questions?: ButlerOperatorQuestionItemView[]; deliveryState?: "idle" | "pending" | "delivered" | "failed"; deliveryError?: string | null; }
 export type ButlerActivityItemKind = "thinking" | "tool";
 export type ButlerActivityItemStatus = "active" | "completed" | "error";
 export type ButlerActivityTurnStatus = "active" | "completed";

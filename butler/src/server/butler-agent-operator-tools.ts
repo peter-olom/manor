@@ -21,21 +21,14 @@ export function buildButlerOperatorTools(access: ButlerAgentToolAccess): ButlerC
       label: "Ask operator",
       description: "Ask the operator one to three structured Butler-only questions with selectable options when missing decisions would materially change the work.",
       promptSnippet:
-        "ask_operator: Butler-only tool. Use when a product, taste, priority, permission, or irreversible execution choice would materially change the outcome. Ask 1-3 concise questions, put each recommended option first, and include 2-6 clear options per question. Do not use it for depth selection or questions Butler can resolve safely by inspecting state.",
-      parameters: Type.Union([
-        questionSchema,
-        Type.Object({
-          questions: Type.Array(questionSchema, { minItems: 1, maxItems: 3 })
-        })
-      ]),
+        "ask_operator: Butler-only tool. Use when a product, taste, priority, permission, or irreversible execution choice would materially change the outcome. Always pass a questions array containing 1-3 concise questions, put each recommended option first, and include 2-6 clear options per question. Do not use it for depth selection or questions Butler can resolve safely by inspecting state.",
+      parameters: Type.Object({
+        questions: Type.Array(questionSchema, { minItems: 1, maxItems: 3 })
+      }),
       uiEffects: access.getToolUiEffects("ask_operator"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as {
-          prompt?: string;
-          context?: string;
-          options?: Array<{ id?: string; label: string; description?: string }>;
-          allowFreeform?: boolean;
-          questions?: Array<{
+          questions: Array<{
             prompt: string;
             context?: string;
             options: Array<{ id?: string; label: string; description?: string }>;
@@ -43,10 +36,6 @@ export function buildButlerOperatorTools(access: ButlerAgentToolAccess): ButlerC
           }>;
         };
         const message = await access.postOperatorQuestion({
-          prompt: typedParams.prompt,
-          context: typedParams.context,
-          options: typedParams.options,
-          allowFreeform: typedParams.allowFreeform,
           questions: typedParams.questions
         });
         const questionCount = message.question.questions?.length ?? 1;

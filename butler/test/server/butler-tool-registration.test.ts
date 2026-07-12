@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { buildButlerWorkerTools } from "../../src/server/butler-agent-codex-tools.js";
 import { buildButlerManorTools } from "../../src/server/butler-agent-manor-tools.js";
+import { buildButlerOperatorTools } from "../../src/server/butler-agent-operator-tools.js";
 import { buildButlerProjectTools } from "../../src/server/butler-agent-project-tools.js";
 import { buildButlerServiceTools } from "../../src/server/butler-agent-service-tools.js";
 import { buildButlerDelegationTools, buildButlerStackPreviewTools, workerProviderModelRoute } from "../../src/server/butler-agent-stack-preview-tools.js";
@@ -34,6 +35,7 @@ test("Butler custom tool registration has unique tool names", () => {
   buildButlerStackPreviewTools(access);
   buildButlerServiceTools(access);
   buildButlerManorTools(access);
+  buildButlerOperatorTools(access);
   buildButlerProjectTools(access, "/artifacts");
   buildButlerWorkerTools(access);
   buildButlerDelegationTools(access);
@@ -49,6 +51,22 @@ test("Butler custom tool registration has unique tool names", () => {
   assert.equal(definitions.filter((definition) => definition.name === "discard_self_improvement").length, 1);
   assert.equal(definitions.filter((definition) => definition.name === "commit_self_improvement").length, 1);
   assert.equal(definitions.filter((definition) => definition.name === "open_self_improvement_pr").length, 1);
+});
+
+test("ask_operator exposes one provider-neutral questions-array schema", () => {
+  const tools = buildButlerOperatorTools({
+    defineButlerTool: (definition) => definition,
+    getToolUiEffects: () => []
+  } as unknown as ButlerAgentToolAccess);
+  const tool = tools.find((definition) => definition.name === "ask_operator") as { parameters?: Record<string, unknown> } | undefined;
+  const parameters = tool?.parameters;
+  const properties = parameters?.properties as Record<string, unknown> | undefined;
+
+  assert.ok(tool);
+  assert.equal(parameters?.anyOf, undefined);
+  assert.deepEqual(parameters?.required, ["questions"]);
+  assert.ok(properties?.questions);
+  assert.equal(properties?.prompt, undefined);
 });
 
 test("delegation tool schema keeps provider, model, and thinking selection out of Butler control", () => {

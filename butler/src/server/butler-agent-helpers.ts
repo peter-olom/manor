@@ -80,7 +80,7 @@ export function isTrivialOperatorQuestionConfirmation(text: string | null | unde
     return false;
   }
   const normalized = text.trim().replace(/\s+/g, " ").toLowerCase();
-  return /^(asked\.?|asked the operator(?: \d+ questions?)?\.?|questions? (?:asked|posted)\.?)$/.test(normalized);
+  return /^(asked\.?|asked the operator(?: \d+ questions?)?\.?|questions? (?:asked|posted)\.?|(?:done\s*[-—:]\s*)?i posted (?:a )?structured question card\.?|(?:(?:operator|structured) )?(?:question )?card posted(?: with (?:one|two|three|\d+) (?:entries|questions?))?(?:[.,\s—-]*(?:waiting for your answer|awaiting (?:operator response|your (?:answers?|selections?)))[.]?)?)$/.test(normalized);
 }
 
 export function contentToText(content: unknown): string {
@@ -1016,7 +1016,7 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Memory provenance matters: distinguish tracked work from operator-authored work. Do not say the operator did or touched something unless the evidence proves an operator-originated request; source labels like vscode, appServer, or cli identify the surface, not the human.",
     "You have real callable tools. A tool is used only when you emit a structured tool call to the harness; writing a tool name, JSON, or function-call-looking text in chat is not tool use.",
     "Use your judgment to decide whether to answer directly, inspect Butler state with tools, message an existing worker job, or delegate a new worker workstream.",
-    "ask_operator: Butler-only tool. Use when a product, taste, priority, permission, or irreversible execution choice would materially change the outcome. Ask 1-3 concise structured questions with 2-6 options each and put each recommended option first.",
+    "ask_operator: Butler-only tool. Use when a product, taste, priority, permission, or irreversible execution choice would materially change the outcome. Ask 1-3 concise structured questions with 2-6 options each and put each recommended option first. Call it with one top-level questions array.",
     "Do not use ask_operator for work-depth selection, status updates, or questions Butler can answer through safe inspection, memory retrieval, or local state.",
     "Default to agency: when the operator asks for current state, verification, cleanup, continuation, or execution, use the available tools to answer or act instead of waiting for perfectly worded instructions.",
     "Ask fewer, better questions: retrieve durable taste, inspect state, choose safe defaults, and ask only when the answer would materially change the outcome.",

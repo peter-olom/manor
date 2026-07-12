@@ -5,6 +5,7 @@ import { CloseIcon } from "./icons";
 import { JumpToLatest } from "./JumpToLatest";
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
+import { operatorQuestionNeedsAction, OperatorQuestionCard } from "./OperatorQuestionCard";
 import { SandSpinner } from "./SandSpinner";
 import { ThinkingTrace, traceDisclosureLabel } from "./ThinkingTrace";
 import { useAnchoredScroll } from "./useAnchoredScroll";
@@ -33,6 +34,7 @@ type ButlerPaneProps = {
   attachments: FileReference[];
   onRemoveAttachment: (attachmentId: string) => void;
   onPreviewImage: (media: PreviewMedia) => void;
+  onPairUpdate: (pair: PairDetail) => void;
 };
 
 function formatTime(value: number | null | undefined): string {
@@ -98,9 +100,10 @@ type ComposerProps = {
   attachments: FileReference[];
   onRemoveAttachment: (attachmentId: string) => void;
   onPreviewImage: (media: PreviewMedia) => void;
+  blockedReason: string | null;
 };
 
-const Composer = memo(function Composer({
+export const Composer = memo(function Composer({
   value,
   onChange,
   onSubmit,
@@ -114,11 +117,19 @@ const Composer = memo(function Composer({
   onThinkingLevelChange,
   attachments,
   onRemoveAttachment,
-  onPreviewImage
+  onPreviewImage,
+  blockedReason
 }: ComposerProps) {
   const ref = useAutoGrow(value);
   const canSubmit = Boolean(value.trim() || attachments.length > 0);
   const isMultilineDraft = value.includes("\n");
+  if (blockedReason) {
+    return (
+      <div className="composer">
+        <div className="composer-blocked" role="status">{blockedReason}</div>
+      </div>
+    );
+  }
   return (
     <div className="composer">
       {attachments.length > 0 ? (
@@ -294,9 +305,12 @@ const WorkLoaderBubble = memo(function WorkLoaderBubble({ items }: WorkLoaderBub
 type BubbleProps = {
   message: PairMessage;
   liveTrace?: CompletedTrace;
+  pairId: string;
+  onPairUpdate: (pair: PairDetail) => void;
+  activeQuestionMessageId: string | null;
 };
 
-const Bubble = memo(function Bubble({ message, liveTrace }: BubbleProps) {
+const Bubble = memo(function Bubble({ message, liveTrace, pairId, onPairUpdate, activeQuestionMessageId }: BubbleProps) {
   const role = message.role === "user" ? "user" : message.role === "worker" ? "worker" : message.role === "butler" ? "butler" : "system";
   if (message.metadata.kind === "work-loader") {
     return <WorkLoaderBubble items={[]} />;
@@ -306,13 +320,17 @@ const Bubble = memo(function Bubble({ message, liveTrace }: BubbleProps) {
     : null;
   const trace = liveTrace ?? persistedTrace;
   return (
-    <article className={`bubble is-${role}`}>
+    <article className={`bubble is-${role}${message.question ? " has-question" : ""}`}>
       <header className="bubble-head">
         <span>{roleLabel(message.role)}</span>
         <time className="bubble-time">{formatTime(message.at)}</time>
       </header>
       {trace ? <CompletedTraceBubble trace={trace} /> : null}
-      <Markdown className="bubble-body" text={message.text} />
+      {message.question ? (
+        <OperatorQuestionCard pairId={pairId} messageId={message.id} question={message.question} onPairUpdate={onPairUpdate} active={message.id === activeQuestionMessageId} />
+      ) : (
+        <Markdown className="bubble-body" text={message.text} />
+      )}
       {message.sourceThreadId ? <footer className="bubble-foot">thread {shortId(message.sourceThreadId)}</footer> : null}
     </article>
   );
@@ -333,7 +351,8 @@ export function ButlerPane({
   onOpenProviderSettings,
   attachments,
   onRemoveAttachment,
-  onPreviewImage
+  onPreviewImage,
+  onPairUpdate
 }: ButlerPaneProps) {
   const live = useLiveButlerTurn(BUTLER_THREAD_ID);
   const [completedTraces, setCompletedTraces] = useState<Map<string, CompletedTrace>>(new Map());
@@ -411,6 +430,22 @@ export function ButlerPane({
   }, [liveTraceForMessage, lastMessage]);
   const totalCount = pair.messages.length + (showWorkBubble ? 1 : 0) + (showBlockedCloseout ? 1 : 0) + (showLiveBubble ? 1 : 0);
   const bottomKey = `${lastMessageId}:${totalCount}:${live.state.assistantText.length}:${live.state.items.size}:${lastMessageAt}`;
+  let lastUserMessageIndex = -1;
+  for (let index = pair.messages.length - 1; index >= 0; index -= 1) {
+    if (pair.messages[index]?.role === "user") {
+      lastUserMessageIndex = index;
+      break;
+    }
+  }
+  let activeQuestionMessageId: string | null = null;
+  for (let index = pair.messages.length - 1; index > lastUserMessageIndex; index -= 1) {
+    const message = pair.messages[index];
+    if (message?.question && operatorQuestionNeedsAction(message.question)) {
+      activeQuestionMessageId = message.id;
+      break;
+    }
+  }
+  const hasOpenQuestion = Boolean(activeQuestionMessageId);
 
   const { ref, onScroll, isPinned, unreadCount, scrollToBottom } = useAnchoredScroll<HTMLDivElement>({ bottomKey, resetKey: pair.id });
 
@@ -429,7 +464,7 @@ export function ButlerPane({
           </button>
         ) : null}
         {pair.messages.map((message) => (
-          <Bubble key={message.id} message={message} liveTrace={liveTraceByMessageId.get(message.id)} />
+          <Bubble key={message.id} message={message} liveTrace={liveTraceByMessageId.get(message.id)} pairId={pair.id} onPairUpdate={onPairUpdate} activeQuestionMessageId={activeQuestionMessageId} />
         ))}
         {showLiveBubble ? (
           <LiveBubble
@@ -476,6 +511,7 @@ export function ButlerPane({
         attachments={attachments}
         onRemoveAttachment={onRemoveAttachment}
         onPreviewImage={onPreviewImage}
+        blockedReason={hasOpenQuestion ? "Answer Butler’s open question above to continue." : null}
       />}
     </section>
   );

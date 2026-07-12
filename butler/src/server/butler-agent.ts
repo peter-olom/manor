@@ -49,7 +49,7 @@ import { buildButlerFilesystemTools } from "./butler-agent-filesystem-tools.js";
 import { buildButlerServiceTools } from "./butler-agent-service-tools.js";
 import { buildButlerManorTools } from "./butler-agent-manor-tools.js";
 import { buildButlerOperatorTools } from "./butler-agent-operator-tools.js";
-import { answerOperatorQuestionMessage, postOperatorQuestionMessage, recordOperatorQuestionTasteMemory } from "./butler-agent-operator-question.js";
+import { answerOperatorQuestionMessage, postOperatorQuestionMessage, recordOperatorQuestionTasteMemory, recoverInterruptedOperatorQuestionDeliveries, settleOperatorQuestionDelivery } from "./butler-agent-operator-question.js";
 import { buildButlerProjectTools } from "./butler-agent-project-tools.js";
 import { buildButlerDelegationTools, buildButlerStackPreviewTools } from "./butler-agent-stack-preview-tools.js";
 import { reviewButlerProofScreenshot } from "./butler-agent-proof-review.js";
@@ -263,7 +263,7 @@ export class ButlerAgentService extends EventEmitter {
         const question = normalizeOperatorQuestion((item as Record<string, unknown>).question);
         const trace = readPersistedTrace((item as Record<string, unknown>).trace);
         const traceMeta = readPersistedTraceMeta((item as Record<string, unknown>).traceMeta);
-        const next: ButlerMessageView = { id, role, text, at, taskDurationMs, kind, ...(question ? { question } : {}) };
+        const next: ButlerMessageView = { id, role, text, at, taskDurationMs, kind, ...((item as Record<string, unknown>).providerBacked === true ? { providerBacked: true } : {}), ...(typeof (item as Record<string, unknown>).providerSucceeded === "boolean" ? { providerSucceeded: (item as Record<string, unknown>).providerSucceeded as boolean } : {}), ...(question ? { question } : {}) };
         if (trace && trace.length > 0) next.trace = trace;
         if (traceMeta) next.traceMeta = traceMeta;
         this.operatorMessages.push(next);
@@ -415,22 +415,21 @@ export class ButlerAgentService extends EventEmitter {
       emitChange: () => this.emit("change")
     }, input);
   }
-
-  async answerOperatorQuestion(input: { messageId: string; questionId: string; optionId: string }): Promise<{ complete: boolean; queued: boolean; message: ButlerMessageView & { question: ButlerOperatorQuestionView } }> {
-    const answer = await answerOperatorQuestionMessage({
-      messages: this.operatorMessages,
-      save: () => this.saveOperatorMessageState(),
-      emitChange: () => this.emit("change")
-    }, input);
-    if (answer.complete) {
-      recordOperatorQuestionTasteMemory(this.store, answer.message);
-    }
+  async answerOperatorQuestion(input: { messageId: string; questionId: string; optionId?: string; freeformText?: string }): Promise<{ complete: boolean; queued: boolean; message: ButlerMessageView & { question: ButlerOperatorQuestionView } }> {
+    const messageAccess = { messages: this.operatorMessages, save: () => this.saveOperatorMessageState(), emitChange: () => this.emit("change") };
+    const answer = await answerOperatorQuestionMessage(messageAccess, input);
+    if (answer.complete) recordOperatorQuestionTasteMemory(this.store, answer.message);
     if (answer.replyText) {
-      this.prompt(answer.replyText, [], { mode: "queue", displayText: answer.replyText });
+      const settle = (delivered: boolean, error: string | null = null) => settleOperatorQuestionDelivery(messageAccess, { messageId: answer.message.id, delivered, error });
+      try {
+        const delivery = await this.prepareOperatorTurn(answer.replyText, [], { mode: "queue", displayText: answer.replyText, removeOnFailure: true });
+        void delivery.completion
+          .then((delivered) => settle(delivered, delivered ? null : this.lastError), (error) => settle(false, error instanceof Error ? error.message : String(error)))
+          .catch((error) => { this.lastError = error instanceof Error ? error.message : String(error); this.emit("change"); });
+      } catch (error) { await settle(false, error instanceof Error ? error.message : String(error)); throw error; }
     }
     return { complete: answer.complete, queued: answer.queued, message: answer.message };
   }
-
   private async postOperatorJobReply(threadId: string, text: string): Promise<void> { await deliverOperatorJobReply(this as unknown as OperatorJobReplyAccess, threadId, text); }
   private describePendingCallbacks(): string {
     return describePendingCallbacks(this.store, [...this.pendingChatCallbacks.values()]);
@@ -610,6 +609,7 @@ export class ButlerAgentService extends EventEmitter {
     await this.loadOperatorMessageState();
     let operatorStateChanged = await backfillOperatorMessagesFromSessionFiles(this.operatorMessages, this.sessionDir);
     operatorStateChanged = await backfillDirectCodexMessagesFromSessionFiles(this.operatorMessages, process.env.CODEX_SHARED_HOME_DIR || "/codex-home") || operatorStateChanged;
+    operatorStateChanged = recoverInterruptedOperatorQuestionDeliveries(this.operatorMessages) || operatorStateChanged;
     if (operatorStateChanged) await this.saveOperatorMessageState();
     await this.loadActivitySummaryState();
     await this.loadCallbackState();
@@ -1468,12 +1468,10 @@ export class ButlerAgentService extends EventEmitter {
     });
   }
   async removeExternalWorkerDelegation(threadId: string): Promise<void> { await runSerializedCallbackReplacement(threadId, async () => { const callback = this.pendingChatCallbacks.get(threadId); if (!callback) return; const failureCount = this.callbackReviewFailureCount.get(threadId); const notBefore = this.callbackReviewNotBefore.get(threadId); const smokePlan = this.supervisionSmokePlans.get(threadId); this.pendingChatCallbacks.delete(threadId); this.callbackReviewFailureCount.delete(threadId); this.callbackReviewNotBefore.delete(threadId); this.supervisionSmokePlans.delete(threadId); try { await this.saveCallbackState(); } catch (error) { this.pendingChatCallbacks.set(threadId, callback); if (failureCount !== undefined) this.callbackReviewFailureCount.set(threadId, failureCount); if (notBefore !== undefined) this.callbackReviewNotBefore.set(threadId, notBefore); if (smokePlan) this.supervisionSmokePlans.set(threadId, smokePlan); throw error; } this.emit("change"); }); }
-  private async promptOperatorTurn(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer"; displayText?: string | null } = {}): Promise<void> {
+  private async prepareOperatorTurn(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer"; displayText?: string | null; removeOnFailure?: boolean } = {}): Promise<{ completion: Promise<boolean> }> {
     const guard = buildOperatorThreadGuard(this.store, text, this.getRecentFocusedThreadId());
     this.activeOperatorThreadGuard = guard;
-    if (guard.lockedThreadId && this.store.getThread(guard.lockedThreadId)) {
-      this.noteThreadFocus(guard.lockedThreadId, guard.explicitThreadIds.length > 0 ? "operator_reference" : "operator_follow_up");
-    }
+    if (guard.lockedThreadId && this.store.getThread(guard.lockedThreadId)) this.noteThreadFocus(guard.lockedThreadId, guard.explicitThreadIds.length > 0 ? "operator_reference" : "operator_follow_up");
     const thread = guard.lockedThreadId ? this.store.getThread(guard.lockedThreadId) : undefined;
     this.memoryScheduler?.observeOperatorMessage({ text, threadId: guard.lockedThreadId, projectId: thread?.supervisor.projectId ?? thread?.executionContract?.projectId ?? null, projectLabel: thread?.supervisor.projectLabel ?? thread?.executionContract?.projectLabel ?? null, at: Date.now() });
     let ignoreStopRequestSequence: number | null = null;
@@ -1481,20 +1479,21 @@ export class ButlerAgentService extends EventEmitter {
     const displayText = options.displayText?.trim() || text;
     const pendingOperatorMessageId = registerPendingOperatorPrompt(this.getSessionAccess(), text, displayText);
     const pendingOperatorMessageAt = this.pendingOperatorMessages.find((message) => message.id === pendingOperatorMessageId)?.at ?? Date.now();
-    upsertOperatorMessage(this.operatorMessages, pendingOperatorMessageId, text, pendingOperatorMessageAt, null, { role: "user", displayText: displayText !== text ? displayText : null }); void this.saveOperatorMessageState();
-
-    try {
-      if (options.mode === "steer") { await stopButlerPrompt(this.getSessionAccess(), { clearPendingOperatorMessages: false }); ignoreStopRequestSequence = this.stopRequestSequence; }
-      if (guard.contextPrompt) {
-        await promptButlerInternal(this.getSessionAccess(), ["This is hidden grounding for the next operator turn.", "Do not answer it directly.", "Use it to keep job references exact during the next operator turn only.", guard.contextPrompt].join("\n"));
-      }
-      await promptButler(this.getSessionAccess(), text, imageReferenceIds, { mode: options.mode === "steer" ? "queue" : options.mode, pendingOperatorMessageId, ignoreStopRequestSequence });
-    } catch (error) { removePendingOperatorPrompt(this.getSessionAccess(), pendingOperatorMessageId); if (removeOperatorMessage(this.operatorMessages, pendingOperatorMessageId)) void this.saveOperatorMessageState(); throw error; } finally {
-      this.activeOperatorThreadGuard = null;
-    }
+    upsertOperatorMessage(this.operatorMessages, pendingOperatorMessageId, text, pendingOperatorMessageAt, null, { role: "user", displayText: displayText !== text ? displayText : null });
+    try { await this.saveOperatorMessageState(); } catch (error) { removePendingOperatorPrompt(this.getSessionAccess(), pendingOperatorMessageId); removeOperatorMessage(this.operatorMessages, pendingOperatorMessageId); this.activeOperatorThreadGuard = null; throw error; }
+    const completion = (async () => {
+      try {
+        if (options.mode === "steer") { await stopButlerPrompt(this.getSessionAccess(), { clearPendingOperatorMessages: false }); ignoreStopRequestSequence = this.stopRequestSequence; }
+        if (guard.contextPrompt) await promptButlerInternal(this.getSessionAccess(), ["This is hidden grounding for the next operator turn.", "Do not answer it directly.", "Use it to keep job references exact during the next operator turn only.", guard.contextPrompt].join("\n"));
+        const delivered = await promptButler(this.getSessionAccess(), text, imageReferenceIds, { mode: options.mode === "steer" ? "queue" : options.mode, pendingOperatorMessageId, ignoreStopRequestSequence });
+        if (!delivered && options.removeOnFailure && removeOperatorMessage(this.operatorMessages, pendingOperatorMessageId)) await this.saveOperatorMessageState();
+        return delivered;
+      } catch (error) { removePendingOperatorPrompt(this.getSessionAccess(), pendingOperatorMessageId); if (removeOperatorMessage(this.operatorMessages, pendingOperatorMessageId)) await this.saveOperatorMessageState(); throw error; } finally { this.activeOperatorThreadGuard = null; }
+    })();
+    return { completion };
   }
+  private async promptOperatorTurn(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer"; displayText?: string | null } = {}): Promise<boolean> { return (await this.prepareOperatorTurn(text, imageReferenceIds, options)).completion; }
   prompt(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer"; displayText?: string | null } = {}): void { void this.promptOperatorTurn(text, imageReferenceIds, options); }
   async stopPrompt(): Promise<boolean> { return stopButlerPrompt(this.getSessionAccess()); }
-
   async updateComposeSettings(provider: string, modelId: string, thinkingLevel: ButlerThinkingLevel): Promise<void> { await updateButlerComposeSettings(this.getSessionAccess(), provider, modelId, thinkingLevel); this.toolCatalog = this.buildToolCatalog(); this.emit("change"); }
 }

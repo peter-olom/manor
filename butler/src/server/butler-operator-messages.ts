@@ -22,6 +22,7 @@ type OperatorMessageOptions = {
 
 type ProviderBackedOperatorMessageOptions = {
   normalize?: boolean;
+  providerSucceeded?: boolean;
   trace?: ButlerTraceItemView[] | null;
   traceMeta?: ButlerTraceMetaView | null;
 };
@@ -146,6 +147,10 @@ function normalizeQuestionItem(raw: unknown, index: number): ButlerOperatorQuest
     return null;
   }
   const selectedOptionId = normalizeAnsweredOption(record, options);
+  const freeformAnswer = record.allowFreeform === true && typeof record.freeformAnswer === "string" && record.freeformAnswer.trim()
+    ? record.freeformAnswer.trim()
+    : null;
+  const answered = Boolean(selectedOptionId || freeformAnswer);
   return {
     id: typeof record.id === "string" && record.id.trim() ? record.id.trim() : `question-${Date.now()}-${index + 1}`,
     prompt,
@@ -154,7 +159,8 @@ function normalizeQuestionItem(raw: unknown, index: number): ButlerOperatorQuest
     allowFreeform: record.allowFreeform === true,
     createdAt: typeof record.createdAt === "number" && Number.isFinite(record.createdAt) ? record.createdAt : Date.now(),
     selectedOptionId,
-    answeredAt: selectedOptionId && typeof record.answeredAt === "number" && Number.isFinite(record.answeredAt) ? record.answeredAt : null
+    freeformAnswer: selectedOptionId ? null : freeformAnswer,
+    answeredAt: answered && typeof record.answeredAt === "number" && Number.isFinite(record.answeredAt) ? record.answeredAt : null
   };
 }
 
@@ -168,11 +174,23 @@ export function normalizeOperatorQuestion(raw: unknown): ButlerOperatorQuestionV
   const questions = Array.isArray(record.questions)
     ? record.questions.map((question, index) => normalizeQuestionItem(question, index)).filter((question): question is ButlerOperatorQuestionItemView => Boolean(question))
     : [];
+  const items = questions.length > 1 ? questions : [base];
+  const answered = items.every((question) => Boolean(question.selectedOptionId || question.freeformAnswer));
+  const rawDeliveryState = record.deliveryState;
+  const deliveryState = !answered
+    ? "idle"
+    : rawDeliveryState === "pending" || rawDeliveryState === "failed" || rawDeliveryState === "delivered"
+      ? rawDeliveryState
+      : "delivered";
 
   return {
     ...base,
     id: typeof record.id === "string" && record.id.trim() ? record.id.trim() : base.id,
-    ...(questions.length > 1 ? { questions } : {})
+    ...(questions.length > 1 ? { questions } : {}),
+    deliveryState,
+    deliveryError: deliveryState === "failed" && typeof record.deliveryError === "string" && record.deliveryError.trim()
+      ? record.deliveryError.trim()
+      : null
   };
 }
 
@@ -398,13 +416,17 @@ export function upsertProviderBackedOperatorMessage(
   options: ProviderBackedOperatorMessageOptions = {}
 ): boolean {
   const existingId = matchingProviderBackedOperatorMessageId(messages, role, text, at) ?? id;
-  return upsertOperatorMessage(messages, existingId, text, at, null, {
+  let changed = upsertOperatorMessage(messages, existingId, text, at, null, {
     role,
     displayText,
     trace: options.trace ?? null,
     traceMeta: options.traceMeta ?? null,
     normalize: options.normalize
   });
+  const stored = messages.find((message) => message.id === existingId);
+  if (stored && stored.providerBacked !== true) { stored.providerBacked = true; changed = true; }
+  if (stored && role === "assistant" && stored.providerSucceeded !== (options.providerSucceeded !== false)) { stored.providerSucceeded = options.providerSucceeded !== false; changed = true; }
+  return changed;
 }
 
 export function removeOperatorMessage(messages: ButlerMessageView[], id: string | null | undefined): boolean {
@@ -454,7 +476,10 @@ export async function backfillOperatorMessagesFromSessionFiles(messages: ButlerM
         const text = persistedAssistantText(message);
         if (!isPersistableProviderOperatorMessage(role, text)) continue;
         const id = typeof parsed.id === "string" && parsed.id.trim() ? `operator-session-${parsed.id}` : `operator-session-${at}`;
-        changed = upsertProviderBackedOperatorMessage(messages, id, text, at, role, null, { normalize: false }) || changed;
+        changed = upsertProviderBackedOperatorMessage(messages, id, text, at, role, null, {
+          normalize: false,
+          providerSucceeded: message.stopReason !== "error" && message.stopReason !== "aborted"
+        }) || changed;
       }
     }
   }
