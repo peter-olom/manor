@@ -145,6 +145,10 @@ export type PairModelOption = {
   label: string;
   provider: string | null;
   harness?: PairWorkerHarness | null;
+  inputCapabilities?: {
+    image: "supported" | "unsupported" | "unknown";
+    source: "override" | "provider" | "manifest" | "unknown";
+  };
   supportsReasoning?: boolean;
   supportedThinkingLevels?: string[];
   supportedReasoningEfforts: string[];

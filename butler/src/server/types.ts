@@ -1101,6 +1101,7 @@ export interface CodexThreadSummary {
   updatedAt: number;
   status: CodexThreadStatus;
   modelProvider: string | null;
+  modelId?: string | null;
   turnCount: number;
   loaded: boolean;
   contextUsage: CodexContextUsageView;
@@ -1112,7 +1113,6 @@ export interface CodexThreadSummary {
   jobPayload?: import("./job-payload-types.js").JobPayloadView | null;
   jobMemory: JobMemoryView | null;
 }
-
 export interface CodexThreadRecord extends CodexThreadSummary {
   turns: CodexTurnRecord[];
   eventLog: CodexEventEntry[];
@@ -1188,11 +1188,11 @@ export interface ButlerTraceMetaView {
   completedAt: number;
   items: ButlerTraceItemView[];
 }
-
 export interface ModelOption {
   id: string;
   label: string;
   provider: string | null; harness?: "codex" | "pi" | (string & {}) | null;
+  inputCapabilities: { image: "supported" | "unsupported" | "unknown"; source: "override" | "provider" | "manifest" | "unknown" };
   supportsReasoning: boolean;
   supportedThinkingLevels: ButlerThinkingLevel[];
   supportedReasoningEfforts: ReasoningEffort[];

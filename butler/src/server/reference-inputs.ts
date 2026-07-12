@@ -117,7 +117,7 @@ export function buildWorkerInputWithReferences(input: {
     imageReferenceIds: input.imageReferenceIds,
     fileStore: input.fileStore,
     fileReferenceIds: input.fileReferenceIds,
-    includeIds: false,
+    includeIds: true,
     includeFilePaths: true
   });
   const images = input.imageStore.resolveViews(input.imageReferenceIds);

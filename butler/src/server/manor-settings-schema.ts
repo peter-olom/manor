@@ -27,6 +27,7 @@ export const SETTINGS_GROUP_KEYS: SettingsGroupKey[] = [
   "providers.opencodeGo",
   "worker",
   "butler",
+  "vision",
   "modelTasks",
   "memory",
   "embeddings"
@@ -119,6 +120,11 @@ export const DEFAULT_MANOR_SETTINGS: ManorSettings = {
   butler: {
     defaultModel: null,
     defaultThinkingLevel: "medium"
+  },
+  vision: {
+    enabled: true,
+    companionModel: null,
+    unavailableBehavior: "block"
   },
   modelTasks: {
     memorySynthesisModel: null,
@@ -331,6 +337,7 @@ export function normalizeManorSettings(value: unknown): ManorSettings {
   const worker = isRecord(raw.worker) ? raw.worker : {};
   const butler = isRecord(raw.butler) ? raw.butler : {};
   const modelTasks = isRecord(raw.modelTasks) ? raw.modelTasks : {};
+  const vision = isRecord(raw.vision) ? raw.vision : {};
   const memory = isRecord(raw.memory) ? raw.memory : {};
   const embeddings = isRecord(raw.embeddings) ? raw.embeddings : {};
 
@@ -400,6 +407,11 @@ export function normalizeManorSettings(value: unknown): ManorSettings {
     butler: {
       defaultModel: nullableText(butler.defaultModel),
       defaultThinkingLevel: thinkingLevel(butler.defaultThinkingLevel)
+    },
+    vision: {
+      enabled: bool(vision.enabled, DEFAULT_MANOR_SETTINGS.vision.enabled),
+      companionModel: nullableText(vision.companionModel),
+      unavailableBehavior: vision.unavailableBehavior === "continue" ? "continue" : "block"
     },
     modelTasks: {
       memorySynthesisModel: nullableText(modelTasks.memorySynthesisModel),
@@ -561,6 +573,9 @@ export function buildManorSettingsFromEnv(env: NodeJS.ProcessEnv = process.env):
   apply("butler", "MANOR_BUTLER_THINKING_LEVEL", (value) => { settings.butler.defaultThinkingLevel = thinkingLevel(value); });
 
   apply("modelTasks", "MANOR_MEMORY_SYNTHESIS_MODEL", (value) => { settings.modelTasks.memorySynthesisModel = nullableText(value); });
+  apply("vision", "MANOR_VISION_ENABLED", (value) => { settings.vision.enabled = bool(value, settings.vision.enabled); });
+  apply("vision", "MANOR_VISION_COMPANION_MODEL", (value) => { settings.vision.companionModel = nullableText(value); });
+  apply("vision", "MANOR_VISION_UNAVAILABLE_BEHAVIOR", (value) => { settings.vision.unavailableBehavior = value.trim().toLowerCase() === "continue" ? "continue" : "block"; });
   apply("modelTasks", "MANOR_MEMORY_REVIEW_MODEL", (value) => { settings.modelTasks.memorySynthesisModel ??= nullableText(value); });
   apply("modelTasks", "MANOR_SESSION_TITLE_MODEL", (value) => { settings.modelTasks.sessionTitleModel = nullableText(value); });
   apply("modelTasks", "MANOR_SESSION_TITLE_TIMEOUT_MS", (value) => { settings.modelTasks.sessionTitleTimeoutMs = integer(value, settings.modelTasks.sessionTitleTimeoutMs, 1_000, 60_000); });
@@ -599,6 +614,7 @@ export function groupValue(settings: ManorSettings, key: SettingsGroupKey): unkn
     case "providers.opencodeGo": return settings.providers.opencodeGo;
     case "worker": return settings.worker;
     case "butler": return settings.butler;
+    case "vision": return settings.vision;
     case "modelTasks": return settings.modelTasks;
     case "memory": return settings.memory;
     case "embeddings": return settings.embeddings;
@@ -621,6 +637,7 @@ export function applyGroupValue(settings: ManorSettings, key: SettingsGroupKey, 
     case "providers.opencodeGo": next.providers.opencodeGo = { ...next.providers.opencodeGo, ...(isRecord(value) ? value : {}) } as never; break;
     case "worker": next.worker = { ...next.worker, ...(isRecord(value) ? value : {}) } as never; break;
     case "butler": next.butler = { ...next.butler, ...(isRecord(value) ? value : {}) } as never; break;
+    case "vision": next.vision = { ...next.vision, ...(isRecord(value) ? value : {}) } as never; break;
     case "modelTasks": next.modelTasks = { ...next.modelTasks, ...(isRecord(value) ? value : {}) } as never; break;
     case "memory": next.memory = { ...next.memory, ...(isRecord(value) ? value : {}) } as never; break;
     case "embeddings": next.embeddings = { ...next.embeddings, ...(isRecord(value) ? value : {}) } as never; break;

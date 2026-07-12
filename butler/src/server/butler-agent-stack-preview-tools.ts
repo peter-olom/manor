@@ -1262,6 +1262,15 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
                   extraNotes,
                   orchestration
                 });
+            if (typeof access.createOrUpdateJobPayload === "function") {
+              await access.createOrUpdateJobPayload({
+                threadId,
+                kind: "delegation",
+                instruction: preparedContract.text,
+                imageReferenceIds: typedParams.imageReferenceIds ?? [],
+                fileReferenceIds: typedParams.fileReferenceIds ?? []
+              });
+            }
             return buildWorkerInputWithReferences({
               text: preparedContract.text,
               imageStore: access.imageStore,

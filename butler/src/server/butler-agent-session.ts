@@ -31,6 +31,7 @@ import { isChatGptSubscriptionModelAvailable, isOpenAiRuntimeProvider } from "./
 import { syncProviderWebToolsForSession } from "./provider-web-tools.js";
 import { displayThinkingLevelForModelOption, piThinkingLevelForModelOption } from "./pi-thinking-levels.js";
 import { applyOpencodeGoNativeThinkingPayload } from "./pi-opencode-web-tools-extension.js";
+import { syncVisionToolForSession } from "./butler-agent-vision-tools.js";
 import type {
   AppShellSnapshot,
   AppSnapshot,
@@ -124,7 +125,7 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
   sanitizeButlerSessionMessages(access);
   dropTrailingFailedButlerTurns(access);
   await applyManagedButlerDefaults(access);
-  if (access.session) await syncProviderWebToolsForSession(access.session);
+  if (access.session) { syncVisionToolForSession(access.session); await syncProviderWebToolsForSession(access.session); }
 
   access.compaction = {
     lastReason: null,
@@ -424,9 +425,23 @@ export async function runButlerPrompt(
   try {
     dropTrailingFailedButlerTurns(access);
     sanitizeButlerSessionMessages(access);
-    await access.session.prompt(text, {
+    const imageCapability = access.session.model ? modelToModelOption(access.session.model).inputCapabilities.image : "unknown";
+    const visionSettings = getActiveManorSettings().vision;
+    const needsVisionTool = imageReferenceIds.length > 0 && imageCapability !== "supported";
+    if (needsVisionTool && !visionSettings.enabled && visionSettings.unavailableBehavior === "block") {
+      throw new Error("The selected Butler model cannot see attached images and Vision assistance is disabled in Settings → Runtime.");
+    }
+    const promptText = needsVisionTool
+      ? [
+          access.imageStore.buildPromptText(text, imageReferenceIds, { includeIds: true }),
+          visionSettings.enabled
+            ? "The current model cannot receive image bytes. Use inspect_images with the reference ids above before making image-dependent claims."
+            : "The current model cannot receive image bytes and Vision assistance is disabled. Do not claim to have inspected these images."
+        ].join("\n\n")
+      : text;
+    await access.session.prompt(promptText, {
       ...(access.session.isStreaming ? { streamingBehavior: "followUp" as const } : {}),
-      images: await access.imageStore.loadPiImages(imageReferenceIds)
+      images: needsVisionTool ? [] : await access.imageStore.loadPiImages(imageReferenceIds)
     });
   } catch (error) {
     promptError = error;
@@ -1017,6 +1032,7 @@ export async function updateButlerComposeSettings(
     ? thinkingLevel
     : fallbackThinkingLevel(levels, option.defaultReasoningEffort as ButlerThinkingLevel | null | undefined);
   access.session.setThinkingLevel(piThinkingLevelForModelOption(nextThinkingLevel, option) as never);
+  syncVisionToolForSession(access.session);
   await syncProviderWebToolsForSession(access.session);
   access.lastError = null;
   access.emit("change");

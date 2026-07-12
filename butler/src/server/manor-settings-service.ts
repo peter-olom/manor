@@ -171,6 +171,7 @@ function patchGroupKeys(patch: Partial<ManorSettings>): SettingsGroupKey[] {
   if (patch.providers?.opencodeGo) keys.push("providers.opencodeGo");
   if (patch.worker) keys.push("worker");
   if (patch.butler) keys.push("butler");
+  if (patch.vision) keys.push("vision");
   if (patch.modelTasks) keys.push("modelTasks");
   if (patch.memory) keys.push("memory");
   if (patch.embeddings) keys.push("embeddings");
@@ -185,6 +186,7 @@ function patchGroupValue(patch: Partial<ManorSettings>, key: SettingsGroupKey): 
     case "providers.opencodeGo": return patch.providers?.opencodeGo;
     case "worker": return patch.worker;
     case "butler": return patch.butler;
+    case "vision": return patch.vision;
     case "modelTasks": return patch.modelTasks;
     case "memory": return patch.memory;
     case "embeddings": return patch.embeddings;

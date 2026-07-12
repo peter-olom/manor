@@ -7,6 +7,7 @@ export type SettingsGroupKey =
   | "providers.opencodeGo"
   | "worker"
   | "butler"
+  | "vision"
   | "modelTasks"
   | "memory"
   | "embeddings";
@@ -111,6 +112,11 @@ export type ManorSettings = {
   butler: {
     defaultModel: string | null;
     defaultThinkingLevel: SettingsThinkingLevel;
+  };
+  vision: {
+    enabled: boolean;
+    companionModel: string | null;
+    unavailableBehavior: "block" | "continue";
   };
   modelTasks: {
     memorySynthesisModel: string | null;

@@ -63,7 +63,6 @@ import type {
   StackLeaseView,
   SupervisionChecklistView
 } from "./types.js";
-
 async function atomicWriteText(filePath: string, content: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
@@ -75,7 +74,6 @@ async function atomicWriteText(filePath: string, content: string): Promise<void>
     throw error;
   }
 }
-
 export type StateStoreInternalAccess = {
   uiStatePath: string;
   threads: Map<string, CodexThreadRecord>;
@@ -1309,6 +1307,7 @@ export function restorePersistedStateStoreThread(access: StateStoreInternalAcces
   record.updatedAt = typeof thread.updatedAt === "number" && Number.isFinite(thread.updatedAt) ? thread.updatedAt : record.updatedAt;
   record.status = normalizeStatus(thread.status);
   record.modelProvider = typeof thread.modelProvider === "string" ? thread.modelProvider : record.modelProvider;
+  record.modelId = typeof thread.modelId === "string" ? thread.modelId : record.modelId;
   record.turnCount = typeof thread.turnCount === "number" && Number.isFinite(thread.turnCount) ? thread.turnCount : record.turnCount;
   record.loaded = Boolean(thread.loaded);
   record.contextUsage =
@@ -1400,6 +1399,7 @@ export function getOrCreateStateStoreThread(access: StateStoreInternalAccess, id
     updatedAt: Date.now(),
     status: "unknown",
     modelProvider: null,
+    modelId: null,
     turnCount: 0,
     loaded: false,
     contextUsage: emptyCodexContextUsage(),

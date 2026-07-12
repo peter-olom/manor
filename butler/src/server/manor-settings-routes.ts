@@ -231,6 +231,7 @@ function settingsPayload(access: SettingsRouteAccess) {
       ollamaLocal: collectOllamaLocalModels(butler.availableModels, settings),
       opencodeGo: collectOpencodeGoModels([...butler.availableModels, ...piRpc.compose.availableModels], settings),
       modelTasks: modelTaskModels,
+      vision: butler.availableModels.filter((model) => model.inputCapabilities?.image === "supported"),
       worker: workerCompose
     },
     providerAvailability,

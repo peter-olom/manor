@@ -16,6 +16,7 @@ import { ProviderRuntimeIngestion } from "./provider-runtime-ingestion.js";
 import { persistCodexTransportCloseFailures } from "./codex-transport-close.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
 import type { CodexThreadPatchView, ModelOption, ReasoningEffort, RuntimeCleanupTaskView } from "./types.js";
+import { codexModelEntryId, hasMissingChatGptOnlyCacheModel, modelOptionFromCodexEntry } from "./codex-model-options.js";
 import type { ProviderRuntimeEvent, ProviderRuntimeLivePatch } from "../shared/provider-runtime.js";
 
 type ThreadDeleteContext = {
@@ -87,138 +88,6 @@ function slugFromName(name: string): string {
   return name.trim().toLowerCase().replace(/[^a-z0-9:_-]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
-function normalizeModelLabel(rawLabel: string, id: string): string {
-  const source = rawLabel.trim() || id.trim();
-  if (!source) {
-    return id;
-  }
-
-  const normalized = source.replace(/\s+/g, "-");
-  const parts = normalized.split("-").filter(Boolean);
-  if (parts.length < 2) {
-    return source;
-  }
-
-  const head = parts[0]?.toLowerCase() === "gpt" ? "GPT" : parts[0];
-  const version = parts[1] ?? "";
-  const suffix = parts
-    .slice(2)
-    .map((part) => {
-      const lower = part.toLowerCase();
-      if (lower === "codex") {
-        return "Codex";
-      }
-      if (lower === "mini") {
-        return "Mini";
-      }
-      if (lower === "max") {
-        return "Max";
-      }
-      if (lower === "spark") {
-        return "Spark";
-      }
-      return part.length > 1 ? `${part[0]!.toUpperCase()}${part.slice(1).toLowerCase()}` : part.toUpperCase();
-    })
-    .join(" ");
-
-  return `${head}-${version}${suffix ? ` ${suffix}` : ""}`;
-}
-
-function isReasoningEffort(value: unknown): value is ReasoningEffort {
-  return value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max";
-}
-
-function codexModelEntryIsSelectable(entry: Record<string, unknown>): boolean {
-  if (entry.disabled === true || entry.isDisabled === true) return false;
-  if (entry.available === false || entry.isAvailable === false) return false;
-  if (entry.supported === false || entry.isSupported === false) return false;
-  if (entry.hidden === true || entry.showInPicker === false || entry.show_in_picker === false) return false;
-  if (typeof entry.visibility === "string" && entry.visibility !== "list") return false;
-  return true;
-}
-
-function codexModelEntryId(entry: Record<string, unknown>): string | null {
-  return typeof entry.id === "string"
-    ? entry.id
-    : typeof entry.model === "string"
-      ? entry.model
-      : typeof entry.slug === "string"
-        ? entry.slug
-        : null;
-}
-
-function codexModelEntryLabel(entry: Record<string, unknown>, id: string): string {
-  return typeof entry.displayName === "string"
-    ? entry.displayName
-    : typeof entry.display_name === "string"
-      ? entry.display_name
-      : id;
-}
-
-function codexSupportedReasoningEfforts(entry: Record<string, unknown>): ReasoningEffort[] {
-  const rawEfforts = Array.isArray(entry.supportedReasoningEfforts)
-    ? entry.supportedReasoningEfforts
-    : Array.isArray(entry.supported_reasoning_levels)
-      ? entry.supported_reasoning_levels
-      : [];
-
-  return rawEfforts
-    .map((option) => {
-      if (isReasoningEffort(option)) return option;
-      if (option && typeof option === "object" && "reasoningEffort" in option) {
-        const effort = (option as { reasoningEffort?: unknown }).reasoningEffort;
-        return isReasoningEffort(effort) ? effort : null;
-      }
-      if (option && typeof option === "object" && "effort" in option) {
-        const effort = (option as { effort?: unknown }).effort;
-        return isReasoningEffort(effort) ? effort : null;
-      }
-      return null;
-    })
-    .filter((value): value is ReasoningEffort => Boolean(value));
-}
-
-function codexDefaultReasoningEffort(entry: Record<string, unknown>): ReasoningEffort | null {
-  const value = typeof entry.defaultReasoningEffort === "string"
-    ? entry.defaultReasoningEffort
-    : typeof entry.default_reasoning_level === "string"
-      ? entry.default_reasoning_level
-      : null;
-  return isReasoningEffort(value) ? value : null;
-}
-
-function modelOptionFromCodexEntry(entry: Record<string, unknown>): ModelOption | null {
-  const id = codexModelEntryId(entry);
-  if (!id || !codexModelEntryIsSelectable(entry)) {
-    return null;
-  }
-
-  const supportedReasoningEfforts = codexSupportedReasoningEfforts(entry);
-  const declaredDefault = codexDefaultReasoningEffort(entry);
-
-  return {
-    id,
-    label: normalizeModelLabel(codexModelEntryLabel(entry, id), id),
-    provider: "openai-codex",
-    supportsReasoning: supportedReasoningEfforts.length > 0,
-    supportedThinkingLevels: supportedReasoningEfforts,
-    supportedReasoningEfforts,
-    defaultReasoningEffort: declaredDefault && supportedReasoningEfforts.includes(declaredDefault)
-      ? declaredDefault
-      : supportedReasoningEfforts.includes("medium")
-        ? "medium"
-        : supportedReasoningEfforts[0] ?? null
-  };
-}
-
-function hasMissingChatGptOnlyCacheModel(appServerEntries: Record<string, unknown>[], cacheEntries: Record<string, unknown>[]): boolean {
-  const appServerIds = new Set(appServerEntries.map(codexModelEntryId).filter((id): id is string => Boolean(id)));
-  return cacheEntries.some((entry) => {
-    const id = codexModelEntryId(entry);
-    return Boolean(id && !appServerIds.has(id) && codexModelEntryIsSelectable(entry) && (entry.supported_in_api === false || entry.supportedInApi === false));
-  });
-}
-
 function normalizeInputItems(input: string | CodexInputItem[]): CodexInputItem[] {
   if (typeof input === "string") {
     const message = input.trim();
@@ -251,6 +120,7 @@ export class CodexAppServerClient extends EventEmitter {
   private readonly resumedThreadIds = new Set<string>();
   private readonly directControlThreadIds = new Set<string>();
   private readonly activeTurnIds = new Map<string, string>();
+  private readonly threadModelIds = new Map<string, string>();
   private readonly deletedThreadIds = new Set<string>();
   private readonly operationGuard = new CodexOperationGuard((threadId) => this.deletedThreadIds.has(threadId));
   private lastError: string | null = null;
@@ -958,6 +828,8 @@ export class CodexAppServerClient extends EventEmitter {
         throw new Error("Selected Codex model is not available");
       }
       params.model = model.id;
+      this.threadModelIds.set(threadId, model.id);
+      this.store.upsertThreadSummary({ id: threadId, modelId: model.id });
     }
     if (settings.effort) {
       const resolvedEffort = model ? this.resolveEffort(model, settings.effort) : settings.effort;
@@ -1047,6 +919,8 @@ export class CodexAppServerClient extends EventEmitter {
     }
 
     const selectedModel = this.availableModels.find((entry) => entry.id === targetModelId) ?? null;
+    if (selectedModel) this.threadModelIds.set(threadId, selectedModel.id);
+    if (selectedModel) this.store.upsertThreadSummary({ id: threadId, modelId: selectedModel.id });
     const requestedEffortInput = options.effort === undefined ? this.selectedEffort : options.effort;
     const requestedEffort = requestedEffortInput === null
       ? null
@@ -1184,6 +1058,11 @@ export class CodexAppServerClient extends EventEmitter {
       this.store.updateTurn(targetThreadId, result.turn as Record<string, unknown>);
     }
     return { threadId: targetThreadId, turnId: result.turnId ?? null };
+  }
+
+  getThreadModelOption(threadId: string): ModelOption | null {
+    const modelId = this.threadModelIds.get(threadId) ?? this.store.getThread(threadId)?.modelId ?? this.selectedModel;
+    return this.availableModels.find((entry) => entry.id === modelId) ?? null;
   }
 
   async stopThread(threadId: string): Promise<boolean> {

@@ -15,6 +15,7 @@ import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-t
 import type { SessionTitleGenerator } from "./session-title-generator.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { ButlerMessageView, ButlerLivePatchView, ModelOption } from "./types.js";
+import type { VisionInspectionService } from "./vision-inspection.js";
 import type { PairButlerActivityOutcome, PairChat, PairModelOption, PairDetail, PairMessage, PairComposeSettings, PairReviewActivity, PairSummary, PairTraceItem, PairWorker } from "../shared/pairing.js";
 import { DEFAULT_THINKING_LEVELS } from "../shared/pairing.js";
 import { pairTitleIsDefault } from "./pair-store.js";
@@ -39,6 +40,7 @@ type PairSessionManagerOptions = {
   serviceTemplateRegistry: ServiceTemplateRegistry;
   imageStore: ImageReferenceStore;
   fileStore: FileReferenceStore;
+  visionInspection: VisionInspectionService;
   piAuthPath: string;
   codexAuthPath: string;
   codexConfigDir: string;
@@ -60,6 +62,7 @@ function toPairModelOptions(models: ReturnType<CodexAppServerClient["getConnecti
       label: model.label,
       provider: model.provider,
       harness: model.harness ?? null,
+      inputCapabilities: model.inputCapabilities,
       supportsReasoning: model.supportsReasoning,
       supportedThinkingLevels: [...model.supportedThinkingLevels],
       supportedReasoningEfforts: [...model.supportedReasoningEfforts],
@@ -695,6 +698,7 @@ export class PairSessionManager {
       serviceTemplateRegistry: this.options.serviceTemplateRegistry,
       imageStore: this.options.imageStore,
       fileStore: this.options.fileStore,
+      visionInspection: this.options.visionInspection,
       piAuthPath: this.options.piAuthPath,
       codexAuthPath: this.options.codexAuthPath,
       codexConfigDir: this.options.codexConfigDir,

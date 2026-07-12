@@ -10,6 +10,7 @@ import { assertOllamaLocalBaseUrl, fetchOllamaLocalModels } from "./ollama-local
 import { fetchOllamaCloudModelsCached } from "./ollama-cloud-models.js";
 import { fetchOpencodeGoModelsCached, opencodeGoModelToProviderInput } from "./opencode-go-models.js";
 import { compareModelIdsAscending } from "./model-id-sort.js";
+import { resolveModelInputCapabilities } from "./model-input-capabilities.js";
 import {
   getModelCapabilityMetadata,
   mergeThinkingLevelMaps,
@@ -135,10 +136,18 @@ export function modelToModelOption(model: Model<Api>): ModelOption {
   const supportedReasoningEfforts = exposesNativeThinkingVariants
     ? []
     : supportedThinkingLevels.filter(isReasoningEffort);
+  const registeredInputCapabilities = (model.compat as {
+    manorInputCapabilities?: ModelOption["inputCapabilities"];
+  } | undefined)?.manorInputCapabilities;
   return {
     id: model.id,
     label: model.name || model.id,
     provider: model.provider,
+    inputCapabilities: registeredInputCapabilities ?? resolveModelInputCapabilities({
+      modelId: model.id,
+      provider: model.provider,
+      providerInputModalities: model.input
+    }),
     supportsReasoning: model.reasoning,
     supportedThinkingLevels,
     supportedReasoningEfforts,
@@ -150,6 +159,7 @@ export function modelToModelOption(model: Model<Api>): ModelOption {
 type ProviderModelEntry = {
   id: string;
   api?: string | null;
+  input?: ("text" | "image")[] | null;
   reasoning?: boolean | null;
   contextWindow: number | null;
   thinkingLevelMap?: Partial<Record<ButlerThinkingLevel, string | null>>;
@@ -159,6 +169,7 @@ type ProviderModelEntry = {
 type ProviderModelInput = string | {
   id: string;
   api?: string | null;
+  input?: ("text" | "image")[] | null;
   reasoning?: boolean | null;
   contextWindow?: number | null;
   thinkingLevelMap?: Partial<Record<ButlerThinkingLevel, string | null>>;
@@ -180,6 +191,7 @@ function resolveModelEntry(entry: ProviderModelInput): ProviderModelEntry {
   return {
     id: entry.id,
     api: entry.api ?? null,
+    input: entry.input ?? null,
     reasoning: entry.reasoning ?? null,
     contextWindow: typeof entry.contextWindow === "number" && Number.isFinite(entry.contextWindow) ? entry.contextWindow : null,
     thinkingLevelMap: entry.thinkingLevelMap,
@@ -248,6 +260,11 @@ function buildProviderConfig(provider: CloudLikeProvider, apiKey: string, option
       const resolved = resolveModelEntry(entry);
       const builtIn = builtInModels.get(resolved.id);
       const capabilities = getModelCapabilityMetadata(resolved.id);
+      const inputCapabilities = resolveModelInputCapabilities({
+        modelId: resolved.id,
+        provider: provider.providerId,
+        providerInputModalities: resolved.input ?? builtIn?.input
+      });
       const thinkingLevelMap = mergeThinkingLevelMaps(
         builtIn?.thinkingLevelMap,
         capabilities?.thinkingLevelMap,
@@ -257,14 +274,15 @@ function buildProviderConfig(provider: CloudLikeProvider, apiKey: string, option
         ...(builtIn?.compat ?? {}),
         ...compat,
         ...(capabilities?.compat ?? {}),
-        ...(resolved.compat ?? {})
+        ...(resolved.compat ?? {}),
+        manorInputCapabilities: inputCapabilities
       };
       return {
         id: resolved.id,
         name: builtIn?.name ?? modelName(resolved.id),
         reasoning: resolved.reasoning ?? builtIn?.reasoning ?? capabilities?.reasoning ?? provider.reasoning,
         thinkingLevelMap,
-        input: builtIn?.input ?? ["text"],
+        input: inputCapabilities.image === "supported" ? ["text", "image"] : ["text"],
         contextWindow: resolved.contextWindow ?? builtIn?.contextWindow ?? capabilities?.contextWindow ?? provider.contextWindow,
         maxTokens: builtIn?.maxTokens ?? provider.maxTokens,
         cost: builtIn?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -294,6 +312,9 @@ async function resolveOllamaLocalProviderModels(provider: OllamaLocalProvider): 
     const metadata = ollamaOpenAiThinkingMetadata(model.capabilities);
     return {
       id: model.id,
+      input: model.capabilities.length > 0
+        ? model.capabilities.includes("vision") ? ["text", "image"] : ["text"]
+        : null,
       contextWindow: model.contextWindow,
       reasoning: metadata?.reasoning ?? null,
       thinkingLevelMap: metadata?.thinkingLevelMap,
@@ -364,6 +385,9 @@ async function buildOllamaCloudProviderConfig(provider: CloudLikeProvider, env: 
       : ollamaOpenAiThinkingMetadata(model.capabilities);
     return {
       id: model.id,
+      input: model.capabilities
+        ? model.capabilities.includes("vision") ? ["text", "image"] : ["text"]
+        : null,
       contextWindow: model.contextWindow,
       reasoning: metadata?.reasoning ?? null,
       thinkingLevelMap: metadata?.thinkingLevelMap,

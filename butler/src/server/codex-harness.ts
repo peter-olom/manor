@@ -42,12 +42,10 @@ import { ButlerStateStore } from "./state-store.js";
 import { formatPreviewRuntimeDiagnostics, RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { assertProjectStackStorageLineage, formatStackStorageSummary, normalizeStackStorageMode, resolveStackPromotionTarget } from "./stack-storage.js";
-import {
-  applyWorkspacePreviewDefaults,
-  formatWorkspaceBootstrapLines,
-  inspectWorkspaceBootstrap
-} from "./workspace-bootstrap.js";
+import { applyWorkspacePreviewDefaults, formatWorkspaceBootstrapLines, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 import type { CodexThreadRecord, CodexWorkerEvidenceView, PreviewLeaseView, PreviewVerificationView, WorkerClaimsReportView } from "./types.js";
+import type { VisionInspectionService } from "./vision-inspection.js";
+import { handleHarnessVisionAction } from "./codex-harness-vision.js";
 function mentionsNativeDesktopTarget(thread: CodexThreadRecord): boolean {
   const contract = thread.executionContract;
   const text = [
@@ -74,8 +72,9 @@ export class HarnessService {
   private readonly serviceTemplateRegistry: ServiceTemplateRegistry;
   private readonly memoryReview: CodexExecMemoryReviewService | null;
   private readonly memoryScheduler: MemoryUpdateScheduler | null;
+  private readonly visionInspection: VisionInspectionService;
   private readonly capabilities = new Map<string, HarnessCapability>();
-  constructor(options: { codexHomeDir?: string; harnessRegistryPath?: string | null; harnessAccessPath?: string | null; stateDir: string; artifactsDir: string; store: ButlerStateStore; runtimeBroker: RuntimeBrokerClient; serviceTemplateRegistry: ServiceTemplateRegistry; memoryReview?: CodexExecMemoryReviewService | null; memoryScheduler?: MemoryUpdateScheduler | null }) {
+  constructor(options: { codexHomeDir?: string; harnessRegistryPath?: string | null; harnessAccessPath?: string | null; stateDir: string; artifactsDir: string; store: ButlerStateStore; runtimeBroker: RuntimeBrokerClient; serviceTemplateRegistry: ServiceTemplateRegistry; memoryReview?: CodexExecMemoryReviewService | null; memoryScheduler?: MemoryUpdateScheduler | null; visionInspection: VisionInspectionService }) {
     const storagePaths = resolveHarnessStoragePaths(options);
     this.registryPath = storagePaths.registryPath;
     this.legacyRegistryPath = storagePaths.legacyRegistryPath;
@@ -87,6 +86,7 @@ export class HarnessService {
     this.serviceTemplateRegistry = options.serviceTemplateRegistry;
     this.memoryReview = options.memoryReview ?? null;
     this.memoryScheduler = options.memoryScheduler ?? null;
+    this.visionInspection = options.visionInspection;
   }
   private getRuntimeAccess() {
     return {
@@ -489,6 +489,8 @@ export class HarnessService {
         }
       };
     }
+    const visionResult = await handleHarnessVisionAction({ action, params, threadId: capability.threadId, store: this.store, visionInspection: this.visionInspection, allowedImageReferenceIds: thread.jobPayload?.attachments.images ?? [] });
+    if (visionResult) return visionResult;
     const proofResult = await handleHarnessProofAction({
       action,
       params,

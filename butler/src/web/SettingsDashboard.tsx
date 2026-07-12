@@ -22,7 +22,16 @@ import type {
   SettingsWorkerHarness
 } from "../shared/settings";
 
-type ModelOption = { id: string; label: string; provider: string | null; harness?: SettingsWorkerHarness | null };
+type ModelOption = {
+  id: string;
+  label: string;
+  provider: string | null;
+  harness?: SettingsWorkerHarness | null;
+  inputCapabilities?: {
+    image: "supported" | "unsupported" | "unknown";
+    source: "override" | "provider" | "manifest" | "unknown";
+  };
+};
 type AuthStatusView = { mode: "chatgpt" | "api" | "none" | "unknown"; loggedIn: boolean; validationError: string | null; lastValidatedAt: number | null };
 type OllamaPullEvent = { status?: string; digest?: string; total?: number; completed?: number; error?: string; warning?: boolean; done?: boolean };
 type SettingsResponse = {
@@ -35,6 +44,7 @@ type SettingsResponse = {
     ollamaLocal: ModelOption[];
     opencodeGo: ModelOption[];
     modelTasks: ModelOption[];
+    vision: ModelOption[];
     worker: { harness: SettingsWorkerHarness | null; model: string | null; availableModels: ModelOption[] };
   };
   providerAvailability: SettingsProviderAvailabilityMap;
@@ -50,6 +60,7 @@ const GROUP_LABELS: Record<SettingsGroupKey, string> = {
   "providers.opencodeGo": "OpenCode Go",
   worker: "Worker",
   butler: "Butler",
+  vision: "Vision assistance",
   modelTasks: "Model tasks",
   memory: "Memory",
   embeddings: "Embeddings"
@@ -83,7 +94,7 @@ const VALIDATION_LABELS: Record<SettingsValidationKey, string> = {
 
 export type SettingsSectionId = "runtime" | "providers" | "memory" | "diagnostics";
 export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; description: string }[] = [
-  { id: "runtime", label: "Runtime", description: "Operator, Worker, and titles" },
+  { id: "runtime", label: "Runtime", description: "Operator, Worker, vision, and titles" },
   { id: "providers", label: "Providers", description: "Model and tool access" },
   { id: "memory", label: "Memory", description: "Models, synthesis, and embeddings" },
   { id: "diagnostics", label: "Diagnostics", description: "Connection tests" }
@@ -91,7 +102,7 @@ export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; descript
 
 const SECTION_HELP: Record<SettingsSectionId, string> = {
   providers: "Configure the model providers (OpenAI/Codex, Ollama Local, Ollama Cloud, OpenCode Go) and web tools Butler can use.",
-  runtime: "Set the operator name, the first Worker default, and the model used for session titles. Session and Worker model picks carry over automatically.",
+  runtime: "Set operator and Worker defaults, choose the shared vision companion, and configure session titles.",
   memory: "Choose the models and behavior used to synthesize, promote, and connect memory.",
   diagnostics: "Run connection checks for the services Butler depends on."
 };
@@ -514,6 +525,7 @@ export function SettingsDashboard({ active, activeSection }: { active: boolean; 
   const [opencodeModelsError, setOpencodeModelsError] = useState<string | null>(null);
 
   const taskModels = useMemo(() => payload?.availableModels.modelTasks ?? [], [payload]);
+  const visionModels = useMemo(() => payload?.availableModels.vision ?? [], [payload]);
   const workerModels = useMemo(() => payload?.availableModels.worker.availableModels ?? [], [payload]);
 
   const dirty = Boolean(draft && payload && !settingsEqual(draft, payload.settings));
@@ -1071,6 +1083,46 @@ export function SettingsDashboard({ active, activeSection }: { active: boolean; 
                 })}
               />
             </FieldGrid>
+          </SubGroup>
+          <SubGroup title="Vision assistance">
+            <ToggleGrid>
+              <Toggle
+                label="Enabled"
+                hint="Let text-only Butler and Worker models inspect attached images through one shared companion"
+                checked={draft.vision.enabled}
+                onChange={(next) => update((s) => { s.vision.enabled = next; })}
+              />
+            </ToggleGrid>
+            {draft.vision.enabled ? (
+              <>
+                <div className="settings-subgroup-divider" />
+                <FieldGrid>
+                  <ModelSelectField
+                    label="Vision companion"
+                    hint={draft.vision.companionModel
+                      ? taskRouteHint(draft.vision.companionModel, visionModels, "Manor chooses an authenticated vision-capable model automatically.")
+                      : "Automatic chooses the first authenticated model confirmed to accept images."}
+                    value={draft.vision.companionModel}
+                    models={visionModels}
+                    available={payload.modelTaskProviderAvailability}
+                    providerSettingsTabs={providerSettingsTabs}
+                    onChange={(next) => update((s) => { s.vision.companionModel = next; })}
+                  />
+                </FieldGrid>
+                {visionModels.length === 0 ? <div className="settings-auth-error">No authenticated model is currently confirmed to accept images.</div> : null}
+                <details className="settings-advanced">
+                  <summary>Advanced</summary>
+                  <div className="settings-advanced-body">
+                    <Field label="When unavailable" hint="Choose whether an image-dependent turn should stop when the companion cannot run.">
+                      <select value={draft.vision.unavailableBehavior} onChange={(event) => update((s) => { s.vision.unavailableBehavior = event.target.value === "continue" ? "continue" : "block"; })}>
+                        <option value="block">Block and explain</option>
+                        <option value="continue">Continue without inspection</option>
+                      </select>
+                    </Field>
+                  </div>
+                </details>
+              </>
+            ) : null}
           </SubGroup>
           <SubGroup title="Session titles">
             <FieldGrid>

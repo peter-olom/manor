@@ -239,6 +239,19 @@ test("manor-harness forwards payload current requests", async () => {
   assert.equal(request.action, "payload.current");
 });
 
+test("manor-harness forwards scoped vision inspection requests", async () => {
+  const request = await captureHarnessAction([
+    "--thread", "thread-1", "vision", "inspect",
+    "--image", "image-1", "--image", "image-2",
+    "--question", "What error is visible?"
+  ]);
+  assert.equal(request.action, "vision.inspect");
+  assert.deepEqual(request.params, {
+    imageReferenceIds: ["image-1", "image-2"],
+    question: "What error is visible?"
+  });
+});
+
 test("manor-harness falls back to the legacy Butler action route", async () => {
   const request = await captureHarnessAction(["--thread", "thread-1", "payload", "current"], { route: "legacy" });
   assert.equal(request.action, "payload.current");

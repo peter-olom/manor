@@ -296,6 +296,7 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
       cwd,
       source: "pi-rpc",
       modelProvider: selected.provider,
+      modelId: selected.id,
       status: { type: "active" },
       createdAt: Date.now(),
       updatedAt: Date.now()
@@ -366,6 +367,15 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     }
     if (!this.isSessionGenerationCurrent(session, operationGeneration)) throw this.staleOperation(threadId);
     return { threadId, turnId: null };
+  }
+
+  getThreadModelOption(threadId: string): ModelOption | null {
+    const session = this.sessions.get(threadId);
+    if (!session) {
+      const thread = this.options.store.getThread(threadId);
+      return this.availableModels.find((entry) => entry.id === (thread?.modelId ?? this.selectedModel) && entry.provider === (thread?.modelProvider ?? this.selectedProvider)) ?? null;
+    }
+    return this.availableModels.find((entry) => entry.id === session.model && entry.provider === session.provider) ?? null;
   }
 
   async stopThread(threadId: string): Promise<boolean> {

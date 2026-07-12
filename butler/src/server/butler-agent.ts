@@ -41,6 +41,7 @@ import {
   type SupervisionSmokePlan
 } from "./butler-agent-helpers.js";
 import { buildButlerWorkerTools } from "./butler-agent-codex-tools.js";
+import { buildButlerVisionTools } from "./butler-agent-vision-tools.js";
 import type { ButlerAgentDefaults, ButlerAgentServiceOptions, ButlerDelegationAttachmentAcknowledgement, ButlerOperatorSink, ButlerWorkerDefaults } from "./butler-agent-options.js";
 import { clearPendingOperatorPrompts, createOrRefreshButlerSession, getButlerLiveSnapshot, getButlerMessagePage, getButlerShellSnapshot, getButlerSnapshot, keepPendingOperatorPromptsBefore, promptButler, promptButlerInternal, registerPendingOperatorPrompt, removePendingOperatorPrompt, stopButlerPrompt, restoreButlerCompactionState, sanitizeButlerSessionMessages, sanitizePersistedButlerSessions, updateButlerComposeSettings } from "./butler-agent-session.js";
 import { clearButlerSessionChat, deleteButlerSessionChatFromLocated, keepOperatorMessagesBefore, locateButlerSessionDeletePoint, locateButlerSessionDeletePointBeforeTimestamp } from "./butler-agent-chat-hygiene.js";
@@ -70,6 +71,7 @@ import { HostControllerClient } from "./host-controller-client.js";
 import { ManorRestartRequestState } from "./manor-restart-state.js";
 import { buildOnboardingView, codexHarnessOnboardingRequired } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
+import type { JobPayloadView } from "./job-payload-types.js";
 import {
   bindJobPayloadDelivery as bindStoredJobPayloadDelivery,
   buildJobPayload,
@@ -315,9 +317,9 @@ export class ButlerAgentService extends EventEmitter {
   async deleteChatFromMessage(messageId: string): Promise<void> { const syntheticMessage = this.pendingOperatorMessages.find((message) => message.id === messageId); const deletePoint = syntheticMessage ? locateButlerSessionDeletePointBeforeTimestamp(this.session, messageId, syntheticMessage.at) : locateButlerSessionDeletePoint(this.session, messageId); await this.memoryScheduler?.beforeButlerChatDeleteFrom({ messageId, deleteFromTimestamp: deletePoint.targetAt, messages: [...this.operatorMessages] }); const deleteFrom = deleteButlerSessionChatFromLocated(this.session, deletePoint); keepOperatorMessagesBefore(this.operatorMessages, deleteFrom); keepPendingOperatorPromptsBefore(this.getSessionAccess(), deleteFrom); const prunedActivity = keepButlerActivityBefore(this as unknown as ButlerAgentSessionAccess, deleteFrom); await Promise.all([this.saveOperatorMessageState(), ...(prunedActivity ? [this.saveActivitySummaryState()] : [])]); this.lastError = null; this.emit("change"); }
 
   async notifyDirectCodexMessage(input: DirectCodexMessagePingInput & { threadId: string }): Promise<void> { await notifyDirectCodexMessage(this as unknown as DirectCodexMessageAccess, input); }
-  async reserveDirectCodexMessage(input: DirectCodexMessagePingInput & { threadId: string; requestedAt: number }): Promise<{ callback: PendingChatCallback | null; failureCount: number | null; notBefore: number | null }> { const callback = this.pendingChatCallbacks.get(input.threadId); const reservation = { callback: callback ? { ...callback } : null, failureCount: this.callbackReviewFailureCount.get(input.threadId) ?? null, notBefore: this.callbackReviewNotBefore.get(input.threadId) ?? null }; await this.registerPendingChatCallback(input.threadId, { privateSteerText: buildDirectCodexMessagePingSummary(input), nextWorkerReportAction: "review", requestedAt: input.requestedAt, dispatchState: "reserving" }); return reservation; }
+  async reserveDirectCodexMessage(input: DirectCodexMessagePingInput & { threadId: string; requestedAt: number }): Promise<{ callback: PendingChatCallback | null; failureCount: number | null; notBefore: number | null; jobPayload: JobPayloadView | null }> { const callback = this.pendingChatCallbacks.get(input.threadId); const reservation = { callback: callback ? { ...callback } : null, failureCount: this.callbackReviewFailureCount.get(input.threadId) ?? null, notBefore: this.callbackReviewNotBefore.get(input.threadId) ?? null, jobPayload: this.store.getThread(input.threadId)?.jobPayload ?? null }; await this.registerPendingChatCallback(input.threadId, { privateSteerText: buildDirectCodexMessagePingSummary(input), nextWorkerReportAction: "review", requestedAt: input.requestedAt, dispatchState: "reserving" }); return reservation; }
   async markPendingChatCallbackDispatched(threadId: string, requestedAt: number): Promise<void> { if (this.quiescing) return; await runSerializedCallbackReplacement(threadId, async () => { if (this.quiescing) return; const callback = this.pendingChatCallbacks.get(threadId); if (!callback || callback.requestedAt !== requestedAt) return; callback.dispatchState = "ready"; callback.updatedAt = Date.now(); await this.saveCallbackState(); this.emit("change"); }); }
-  async rollbackDirectCodexMessage(threadId: string, requestedAt: number, reservation: { callback: PendingChatCallback | null; failureCount: number | null; notBefore: number | null }): Promise<void> { if (this.quiescing) return; const resume = await runSerializedCallbackReplacement(threadId, async () => { if (this.quiescing || this.pendingChatCallbacks.get(threadId)?.requestedAt !== requestedAt) return false; const callback = reservation.callback?.reviewState === "running" ? { ...reservation.callback, reviewState: "queued" as const, updatedAt: Date.now() } : reservation.callback; if (callback) this.pendingChatCallbacks.set(threadId, callback); else this.pendingChatCallbacks.delete(threadId); if (reservation.failureCount === null) this.callbackReviewFailureCount.delete(threadId); else this.callbackReviewFailureCount.set(threadId, reservation.failureCount); if (reservation.notBefore === null) this.callbackReviewNotBefore.delete(threadId); else this.callbackReviewNotBefore.set(threadId, reservation.notBefore); await this.saveCallbackState(); this.emit("change"); return callback?.reviewState === "queued"; }); if (resume) runOutsideJobMutationContext(() => this.callbackReviewScheduler.schedule()); }
+  async rollbackDirectCodexMessage(threadId: string, requestedAt: number, reservation: { callback: PendingChatCallback | null; failureCount: number | null; notBefore: number | null; jobPayload: JobPayloadView | null }): Promise<void> { if (this.quiescing) return; const resume = await runSerializedCallbackReplacement(threadId, async () => { if (this.quiescing || this.pendingChatCallbacks.get(threadId)?.requestedAt !== requestedAt) return false; const callback = reservation.callback?.reviewState === "running" ? { ...reservation.callback, reviewState: "queued" as const, updatedAt: Date.now() } : reservation.callback; if (callback) this.pendingChatCallbacks.set(threadId, callback); else this.pendingChatCallbacks.delete(threadId); if (reservation.failureCount === null) this.callbackReviewFailureCount.delete(threadId); else this.callbackReviewFailureCount.set(threadId, reservation.failureCount); if (reservation.notBefore === null) this.callbackReviewNotBefore.delete(threadId); else this.callbackReviewNotBefore.set(threadId, reservation.notBefore); if (reservation.jobPayload) { await persistJobPayload(jobPayloadsRoot(this.artifactsDir), reservation.jobPayload); this.store.setThreadJobPayload(reservation.jobPayload); } await this.saveCallbackState(); this.emit("change"); return callback?.reviewState === "queued"; }); if (resume) runOutsideJobMutationContext(() => this.callbackReviewScheduler.schedule()); }
   private async registerPendingChatCallback(threadId: string, options?: { privateSteerText?: string | null; preservePrivateSteer?: boolean; nextWorkerReportAction?: "review" | "reply_to_operator"; requestedAt?: number | null; dispatchState?: "ready" | "reserving" }): Promise<void> { if (this.quiescing) throw new Error("Butler session is closing."); await runSerializedCallbackReplacement(threadId, async () => { assertCallbackReviewCurrent(threadId); if (this.quiescing) throw new Error("Butler session is closing.");
     const now = Date.now();
     const requestedAt = typeof options?.requestedAt === "number" && Number.isFinite(options.requestedAt) ? options.requestedAt : now;
@@ -691,8 +693,9 @@ export class ButlerAgentService extends EventEmitter {
   // This is the single discoverable registry for Butler actions and their UI
   // side effects. Keep agent tool definitions aligned with this catalog.
   private buildToolCatalog(): ButlerToolView[] {
-    const base = [...BUTLER_TOOL_CATALOG];
     const activeTools = new Set(this.session?.getActiveToolNames() ?? []);
+    const base = BUTLER_TOOL_CATALOG.filter((tool) => tool.name !== "inspect_images" || activeTools.has(tool.name));
+    if (activeTools.has("inspect_images")) base.push({ name: "inspect_images", label: "Inspect images", description: "Inspect attached images through the configured vision companion.", uiEffects: [] });
     if (activeTools.has(PROVIDER_WEB_SEARCH_TOOL_NAME) && activeTools.has(PROVIDER_WEB_FETCH_TOOL_NAME)) {
       base.push(
         { name: PROVIDER_WEB_SEARCH_TOOL_NAME, label: "Web Search", description: "Search the web using the provider configured for the current Butler model.", uiEffects: [] },
@@ -701,7 +704,6 @@ export class ButlerAgentService extends EventEmitter {
     }
     return base;
   }
-
   private getToolUiEffects(name: string): ButlerToolUiEffect[] {
     return this.toolCatalog.find((tool) => tool.name === name)?.uiEffects ?? [];
   }
@@ -1393,7 +1395,6 @@ export class ButlerAgentService extends EventEmitter {
     if (!Array.isArray(value)) return [];
     return [...new Set(value.map((entry) => (typeof entry === "string" ? entry.trim() : "")).filter(Boolean))];
   }
-
   private describeStackStorage(stack: {
     storageMode: "ephemeral" | "job" | "base" | "custom";
     baseStorageKey: string | null;
@@ -1405,10 +1406,10 @@ export class ButlerAgentService extends EventEmitter {
   }): string { return formatStackStorageSummary(stack); }
 
   private async reviewProofScreenshot(proof: ResolvedPreviewProof, options?: { expectedOutcome?: string; signal?: AbortSignal }): Promise<ProofScreenshotReview> { return reviewButlerProofScreenshot(this.getSessionAccess(), proof, { ...options, ...getCallbackReviewExecution() }); }
-
   private buildCustomTools() {
     const toolAccess = this.getToolAccess();
     const tools = [...buildButlerStackPreviewTools(toolAccess), ...buildButlerFilesystemTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerManorTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerOperatorTools(toolAccess), ...buildButlerWorkerTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
+    tools.push(...buildButlerVisionTools(toolAccess, this.options.visionInspection));
     tools.push(...buildButlerProviderWebTools(() => this.session?.model?.provider));
     return tools;
   }

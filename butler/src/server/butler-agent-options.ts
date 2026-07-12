@@ -8,6 +8,7 @@ import type { WorkerProviderAffinity } from "./pair-store.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { ServiceTemplateRegistry } from "./service-templates.js";
 import type { ButlerStateStore } from "./state-store.js";
+import type { VisionInspectionService } from "./vision-inspection.js";
 
 export type ButlerDelegationAttachmentAcknowledgement = {
   attached: boolean;
@@ -53,6 +54,7 @@ export type ButlerAgentServiceOptions = {
   serviceTemplateRegistry: ServiceTemplateRegistry;
   imageStore: ImageReferenceStore;
   fileStore: FileReferenceStore;
+  visionInspection: VisionInspectionService;
   piAuthPath: string;
   codexAuthPath: string;
   codexConfigDir: string;

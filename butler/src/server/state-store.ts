@@ -169,7 +169,6 @@ export class ButlerStateStore extends EventEmitter {
   private normalizePreviewLease(lease: PreviewLeaseView, now = Date.now()): PreviewLeaseView {
     return normalizeStateStorePreviewLease(this.getInternalAccess(), lease, now);
   }
-
   private normalizeStackLease(lease: StackLeaseView, now = Date.now()): StackLeaseView {
     return normalizeStateStoreStackLease(this.getInternalAccess(), lease, now);
   }
@@ -378,6 +377,7 @@ export class ButlerStateStore extends EventEmitter {
     record.updatedAt = typeof thread.updatedAt === "number" ? thread.updatedAt * 1000 : record.updatedAt;
     record.status = normalizeStatus(thread.status);
     record.modelProvider = typeof thread.modelProvider === "string" ? thread.modelProvider : record.modelProvider;
+    if (Object.prototype.hasOwnProperty.call(thread, "modelId")) record.modelId = typeof thread.modelId === "string" ? thread.modelId : null;
     if (Array.isArray(thread.turns)) {
       const existingTurnsById = new Map(record.turns.map((turn) => [turn.id, turn]));
       const incomingTurns = (thread.turns as Record<string, unknown>[]).map((turn) => normalizeTurn(turn));

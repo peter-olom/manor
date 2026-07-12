@@ -37,6 +37,7 @@ import { registerServerAssetRoutes } from "./server-asset-routes.js";
 import { registerDeviceAuthRoutes } from "./device-auth-routes.js";
 import { ManorSessionTitleGenerator, readSessionTitleConfig } from "./session-title-generator.js";
 import { ManorModelTaskRunner } from "./model-task-runner.js";
+import { VisionInspectionService } from "./vision-inspection.js";
 import { configureSelfImprovementRequestState, SelfImprovementRequestState } from "./self-improvement-request-state.js";
 import { configureSelfImprovementPairCleanup, reconcileInterruptedSelfImprovementRequests } from "./self-improvement-actions.js";
 import { registerSelfImprovementRoutes } from "./self-improvement-routes.js";
@@ -126,7 +127,7 @@ const selfImprovementRequests = new SelfImprovementRequestState(path.join(stateD
 await selfImprovementRequests.load();
 configureSelfImprovementRequestState(selfImprovementRequests);
 const piAuthPath = path.join(piAgentDir, "auth.json"); const workerPiAuthPath = path.join(workerPiAgentDir, "auth.json"); const codexAuthPath = path.join(codexHomeDir, "auth.json");
-const modelTasks = new ManorModelTaskRunner({ stateDir, codexHomeDir, piAuthPath });
+const modelTasks = new ManorModelTaskRunner({ stateDir, codexHomeDir, piAuthPath }); const visionInspection = new VisionInspectionService({ imageStore, piAuthPath });
 const sessionTitleGenerator = new ManorSessionTitleGenerator({
   ...readSessionTitleConfig(),
   runner: async (input) => modelTasks.runText({ purpose: "session title", ...input })
@@ -137,8 +138,7 @@ const { memoryReview, memoryScheduler, memoryPromotion, memoryEmbeddings, memory
   codexHomeDir,
   modelTasks
 });
-store.setMemoryUpdateObserver(memoryScheduler);
-const harnessService = new HarnessService({
+store.setMemoryUpdateObserver(memoryScheduler); const harnessService = new HarnessService({
   codexHomeDir,
   harnessRegistryPath,
   harnessAccessPath,
@@ -148,7 +148,8 @@ const harnessService = new HarnessService({
   runtimeBroker,
   serviceTemplateRegistry,
   memoryReview,
-  memoryScheduler
+  memoryScheduler,
+  visionInspection
 });
 memoryReview.reviewPendingReportsAsync();
 memoryScheduler.start();
@@ -212,6 +213,7 @@ const butlerAgent = new ButlerAgentService({
   sessionDir,
   imageStore,
   fileStore,
+  visionInspection,
   artifactsDir,
   refreshRuntimeInventory: syncRuntimeInventory,
   systemPromptSuffix: buildOperatorPromptSuffix(),
@@ -236,6 +238,7 @@ const pairSessions = new PairSessionManager({
   serviceTemplateRegistry,
   imageStore,
   fileStore,
+  visionInspection,
   piAuthPath,
   codexAuthPath,
   codexConfigDir,
@@ -923,6 +926,7 @@ app.post("/api/threads/messages", async (request, response) => {
       const reservation = await butlerAgent.reserveDirectCodexMessage(directInput);
       let sent = false;
       try {
+        await butlerAgent.notifyDirectCodexMessage({ ...directInput, callbackAlreadyRegistered: true });
         const workerInput = buildWorkerInputWithReferences({ text, imageStore, imageReferenceIds, fileStore, fileReferenceIds, extraInputItems: inputItems });
         workerInput.push({ type: "text", text: directWorkerDispatchMarker(threadId, requestedAt) });
         await sendWorkerMessage(
@@ -931,7 +935,6 @@ app.post("/api/threads/messages", async (request, response) => {
           workerInput
         );
         sent = true;
-        await butlerAgent.notifyDirectCodexMessage({ ...directInput, callbackAlreadyRegistered: true });
       } catch (error) {
         if (!sent) await butlerAgent.rollbackDirectCodexMessage(threadId, requestedAt, reservation);
         throw error;

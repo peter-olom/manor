@@ -1,0 +1,82 @@
+{
+  "catalogVersion": "202607122224",
+  "providerCatalogs": {
+    "openai-codex": [
+      "gpt-5.1", "gpt-5.1-codex-max", "gpt-5.1-codex-mini", "gpt-5.2", "gpt-5.2-codex",
+      "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5"
+    ],
+    "ollama-cloud": [
+      "deepseek-v3.1:671b", "deepseek-v3.2", "deepseek-v4-flash", "deepseek-v4-pro", "devstral-2:123b",
+      "devstral-small-2:24b", "gemini-3-flash-preview", "gemma3:4b", "gemma3:12b", "gemma3:27b", "gemma4:31b",
+      "glm-4.7", "glm-5", "glm-5.1", "glm-5.2", "gpt-oss:20b", "gpt-oss:120b", "kimi-k2.5", "kimi-k2.6",
+      "kimi-k2.7-code", "minimax-m2.1", "minimax-m2.5", "minimax-m2.7", "minimax-m3", "ministral-3:3b",
+      "ministral-3:8b", "ministral-3:14b", "mistral-large-3:675b", "nemotron-3-nano:30b", "nemotron-3-super",
+      "nemotron-3-ultra", "qwen3-coder-next", "qwen3-coder:480b", "qwen3.5:397b"
+    ],
+    "ollama-local": ["qwen3.5:0.8b"],
+    "opencode-go": [
+      "deepseek-v4-flash", "deepseek-v4-pro", "glm-5", "glm-5.1", "glm-5.2", "hy3-preview", "kimi-k2.5",
+      "kimi-k2.6", "kimi-k2.7-code", "mimo-v2-omni", "mimo-v2-pro", "mimo-v2.5", "mimo-v2.5-pro",
+      "minimax-m2.5", "minimax-m2.7", "minimax-m3", "qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus"
+    ]
+  },
+  "models": {
+    "deepseek-v3.1:671b": { "input": ["text"] },
+    "deepseek-v3.2": { "input": ["text"] },
+    "deepseek-v4-flash": { "input": ["text"] },
+    "deepseek-v4-pro": { "input": ["text"] },
+    "devstral-2:123b": { "input": ["text"] },
+    "devstral-small-2:24b": { "input": ["text", "image"] },
+    "gemini-3-flash-preview": { "input": ["text", "image"] },
+    "gemma3:4b": { "input": ["text", "image"] },
+    "gemma3:12b": { "input": ["text", "image"] },
+    "gemma3:27b": { "input": ["text", "image"] },
+    "gemma4:31b": {
+      "aliases": ["gemma4", "gemma-4", "google/gemma-4"],
+      "input": ["text", "image"]
+    },
+    "glm-4.7": { "aliases": ["z-ai/glm-4.7"], "input": ["text"] },
+    "glm-5": { "aliases": ["z-ai/glm-5"], "input": ["text"] },
+    "glm-5.1": { "aliases": ["z-ai/glm-5.1"], "input": ["text"] },
+    "glm-5.2": { "aliases": ["z-ai/glm-5.2"], "input": ["text"] },
+    "gpt-5.1": { "input": ["text", "image"] },
+    "gpt-5.1-codex-max": { "input": ["text", "image"] },
+    "gpt-5.1-codex-mini": { "input": ["text", "image"] },
+    "gpt-5.2": { "input": ["text", "image"] },
+    "gpt-5.2-codex": { "input": ["text", "image"] },
+    "gpt-5.3-codex": { "input": ["text", "image"] },
+    "gpt-5.3-codex-spark": { "input": ["text"] },
+    "gpt-5.4": { "input": ["text", "image"] },
+    "gpt-5.4-mini": { "input": ["text", "image"] },
+    "gpt-5.5": { "input": ["text", "image"] },
+    "gpt-oss:20b": { "input": ["text"] },
+    "gpt-oss:120b": { "input": ["text"] },
+    "hy3-preview": { "aliases": ["tencent/hy3-preview"], "input": ["text"] },
+    "kimi-k2.5": { "input": ["text", "image"] },
+    "kimi-k2.6": { "input": ["text", "image"] },
+    "kimi-k2.7-code": { "input": ["text", "image", "video"] },
+    "mimo-v2-omni": { "input": ["text", "image"] },
+    "mimo-v2-pro": { "input": ["text"] },
+    "mimo-v2.5": { "input": ["text", "image"] },
+    "mimo-v2.5-pro": { "input": ["text"] },
+    "minimax-m2.1": { "input": ["text"] },
+    "minimax-m2.5": { "input": ["text"] },
+    "minimax-m2.7": { "input": ["text"] },
+    "minimax-m3": { "input": ["text", "image", "video"] },
+    "ministral-3:3b": { "input": ["text", "image"] },
+    "ministral-3:8b": { "input": ["text", "image"] },
+    "ministral-3:14b": { "input": ["text", "image"] },
+    "mistral-large-3:675b": { "input": ["text", "image"] },
+    "nemotron-3-nano:30b": { "input": ["text"] },
+    "nemotron-3-super": { "input": ["text"] },
+    "nemotron-3-ultra": { "input": ["text"] },
+    "qwen3-coder-next": { "input": ["text"] },
+    "qwen3-coder:480b": { "input": ["text"] },
+    "qwen3.5:0.8b": { "input": ["text", "image"] },
+    "qwen3.5:397b": { "input": ["text", "image"] },
+    "qwen3.5-plus": { "input": ["text", "image"] },
+    "qwen3.6-plus": { "input": ["text", "image"] },
+    "qwen3.7-max": { "input": ["text"] },
+    "qwen3.7-plus": { "input": ["text", "image"] }
+  }
+}

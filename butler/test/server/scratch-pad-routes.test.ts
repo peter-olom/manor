@@ -64,7 +64,7 @@ async function createServer(
       setThreadJobPayload: (payload: unknown) => options.jobPayloads?.push(payload)
     } as never,
     codexClient: {
-      getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "high", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["high"], supportedReasoningEfforts: ["high"], defaultReasoningEffort: "high" }] } }),
+      getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "high", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, inputCapabilities: { image: "supported", source: "provider" }, supportsReasoning: true, supportedThinkingLevels: ["high"], supportedReasoningEfforts: ["high"], defaultReasoningEffort: "high" }] } }),
       updateComposeSettings: async () => undefined,
       startThread: options.startThread ?? (async () => ({ threadId: "thread-started" })),
       deleteThread
@@ -265,9 +265,10 @@ test("scratch pad carries attachments and deep contract rows into worker input",
     ]);
     assert.match(promptText?.text ?? "", /I put the job details in Manor/);
     assert.doesNotMatch(promptText?.text ?? "", /MANOR INSTRUCTION/);
-    assert.match(promptText?.text ?? "", /Attached reference images:/);
+    assert.match(promptText?.text ?? "", /Stored reference images:/);
+    assert.match(promptText?.text ?? "", /img-1 \| screen\.png/);
     assert.match(promptText?.text ?? "", /screen.png/);
-    assert.match(promptText?.text ?? "", /notes.pdf \| \/tmp\/notes.pdf/);
+    assert.match(promptText?.text ?? "", /file-1 \| notes.pdf \| path: \/tmp\/notes.pdf/);
     assert.equal(localImage?.path, "/tmp/screen.png");
   } finally {
     await server.cleanup();
