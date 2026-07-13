@@ -1,3 +1,5 @@
+import type { ModelUsageSummary } from "./model-usage.js";
+
 export type WorkerSessionStats = {
   userMessages: number;
   assistantMessages: number;
@@ -11,6 +13,7 @@ export type WorkerSessionStats = {
     total: number;
   };
   cost: number;
+  usage: ModelUsageSummary;
   contextUsage: {
     tokens: number | null;
     contextWindow: number;

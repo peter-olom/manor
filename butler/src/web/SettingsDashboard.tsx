@@ -5,6 +5,7 @@ import { getJson, patchJson, postJson } from "./api";
 import { ModelPicker, modelOptionValue, type ModelPickerGroup, type ModelPickerOption } from "./ModelPicker";
 import { WarningIcon } from "./icons";
 import { SkillsDashboard } from "./SkillsDashboard";
+import { UsageDashboard } from "./UsageDashboard";
 import {
   workerHarnessLabel,
   workerModelForRoute,
@@ -93,10 +94,11 @@ const VALIDATION_LABELS: Record<SettingsValidationKey, string> = {
   memoryEmbeddings: "Embeddings"
 };
 
-export type SettingsSectionId = "runtime" | "providers" | "skills" | "memory" | "diagnostics";
+export type SettingsSectionId = "runtime" | "providers" | "usage" | "skills" | "memory" | "diagnostics";
 export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; description: string }[] = [
   { id: "runtime", label: "Runtime", description: "Operator, Worker, vision, and titles" },
   { id: "providers", label: "Providers", description: "Model and tool access" },
+  { id: "usage", label: "Usage", description: "Model tokens and estimated spend" },
   { id: "skills", label: "Skills", description: "Browse, install, and edit agent skills" },
   { id: "memory", label: "Memory", description: "Models, synthesis, and embeddings" },
   { id: "diagnostics", label: "Diagnostics", description: "Connection tests" }
@@ -104,6 +106,7 @@ export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; descript
 
 const SECTION_HELP: Record<SettingsSectionId, string> = {
   providers: "Configure the model providers (OpenAI/Codex, Ollama Local, Ollama Cloud, OpenCode Go) and web tools Butler can use.",
+  usage: "Review recorded model tokens, known costs, and subscription usage across Butler and Workers.",
   skills: "Browse and manage the skills available to Butler Pi, Worker Pi, and Worker Codex.",
   runtime: "Set operator and Worker defaults, choose the shared vision companion, and configure session titles.",
   memory: "Choose the models and behavior used to synthesize, promote, and connect memory.",
@@ -812,6 +815,7 @@ export function SettingsDashboard({ active, activeSection }: { active: boolean; 
   const unconfiguredCount = validationEntries.filter((entry) => entry.result?.status === "not_configured").length;
 
   if (activeSection === "skills") return <SkillsDashboard active={active} />;
+  if (activeSection === "usage") return <UsageDashboard active={active} />;
 
   if (!draft || !payload) {
     return (

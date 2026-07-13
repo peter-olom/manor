@@ -6,6 +6,7 @@ import { keepPendingOperatorPromptsBefore } from "./butler-agent-session.js";
 import { keepOperatorMessagesBefore } from "./butler-agent-chat-hygiene.js";
 import { keepButlerActivityBefore } from "./butler-activity.js";
 import type { ButlerAgentSessionAccess } from "./butler-agent-tool-access.js";
+import { summarizeUsage, usageSamplesFromPiEntries } from "./model-usage.js";
 import type { WorkerSessionControlAction, WorkerSessionControls } from "../shared/worker-session-controls.js";
 
 type SessionEntry = {
@@ -77,6 +78,13 @@ export function getButlerSessionControls(access: ButlerAgentSessionAccess): Work
     };
   }
   const stats = session.getSessionStats();
+  const pricingModels = access.modelRegistry?.getAvailable() ?? [];
+  const usage = summarizeUsage(usageSamplesFromPiEntries(
+    session.sessionManager.getEntries(),
+    session.sessionId,
+    pricingModels,
+    (model) => Boolean(access.modelRegistry?.isUsingOAuth(model as never))
+  ));
   return {
     supported: true,
     runtime: "pi",
@@ -91,7 +99,8 @@ export function getButlerSessionControls(access: ButlerAgentSessionAccess): Work
       toolCalls: stats.toolCalls,
       totalMessages: stats.totalMessages,
       tokens: { ...stats.tokens },
-      cost: stats.cost,
+      cost: usage.cost.total,
+      usage,
       contextUsage: stats.contextUsage ? { ...stats.contextUsage } : null
     },
     forkPoints: session.getUserMessagesForForking().map((point) => ({ entryId: point.entryId, text: point.text })),

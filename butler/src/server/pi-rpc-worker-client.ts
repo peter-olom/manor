@@ -4,7 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-import { RpcClient, type RpcEventListener } from "@earendil-works/pi-coding-agent";
+import { RpcClient, type ModelRegistry, type RpcEventListener } from "@earendil-works/pi-coding-agent";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
@@ -18,6 +18,7 @@ import { piThinkingLevelForEffort } from "./pi-thinking-levels.js";
 import { StaleWorkerOperationError } from "./stale-worker-operation-error.js";
 import { loadPiImageFiles, type PiImageFile } from "./pi-image-loader.js";
 import { redactSensitiveText } from "./redact-sensitive-text.js";
+import { summarizeUsage, usageSamplesFromPiEntries } from "./model-usage.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { CodexInputItem } from "./image-store.js";
 import type { CodexThreadPatchView, ModelOption, ReasoningEffort } from "./types.js";
@@ -119,6 +120,8 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
   private readonly startingSessions = new Set<string>();
   private pendingTransportStateSave: Promise<void> = Promise.resolve();
   private availableModels: ModelOption[] = [];
+  private pricingModels: ReturnType<ModelRegistry["getAvailable"]> = [];
+  private oauthPricingModels = new Set<string>();
   private selectedProvider: string | null = null;
   private selectedModel: string | null = null;
   private selectedEffort: ReasoningEffort | null = null;
@@ -301,13 +304,20 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
 
   async getSessionControls(threadId: string): Promise<WorkerSessionControls> {
     const session = await this.requireSession(threadId);
-    const [state, stats, forkPoints, tree] = await Promise.all([
+    const [state, stats, forkPoints, tree, entries] = await Promise.all([
       session.client.getState(),
       session.client.getSessionStats(),
       session.client.getForkMessages(),
-      session.client.getTree()
+      session.client.getTree(),
+      session.client.getEntries()
     ]);
     const contextUsage = stats.contextUsage;
+    const usage = summarizeUsage(usageSamplesFromPiEntries(
+      entries.entries,
+      session.threadId,
+      this.pricingModels,
+      (model) => this.oauthPricingModels.has(`${model.provider}/${model.id}`)
+    ));
     return {
       supported: true,
       runtime: "pi",
@@ -322,7 +332,8 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
         toolCalls: stats.toolCalls,
         totalMessages: stats.totalMessages,
         tokens: { ...stats.tokens },
-        cost: stats.cost,
+        cost: usage.cost.total,
+        usage,
         contextUsage: contextUsage ? { ...contextUsage } : null
       },
       forkPoints: forkPoints.map((point) => ({ entryId: point.entryId, text: point.text })),
@@ -694,7 +705,11 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     await syncManorPiModelsJson(this.options.piAuthPath);
     const registry = await createManorModelRegistry(this.options.piAuthPath);
     const auth = await readButlerAuthStatus(this.options.piAuthPath);
-    this.availableModels = registry.getAvailable()
+    this.pricingModels = registry.getAvailable();
+    this.oauthPricingModels = new Set(this.pricingModels
+      .filter((model) => registry.isUsingOAuth(model))
+      .map((model) => `${model.provider}/${model.id}`));
+    this.availableModels = this.pricingModels
       .filter((model) => shouldExposeManorModel(model))
       .filter((model) => auth.mode !== "chatgpt" || isChatGptSubscriptionModelAvailable(model))
       .map(modelToModelOption);

@@ -18,6 +18,7 @@ import { createManorSettingsApplyHandler } from "./manor-settings-apply.js";
 import { defaultManorSettingsPath, ManorSettingsService } from "./manor-settings-service.js";
 import { setActiveManorSettingsService, getActiveManorSettings } from "./manor-settings-runtime.js";
 import { registerManorSettingsRoutes } from "./manor-settings-routes.js";
+import { createModelUsageStore } from "./create-model-usage-store.js"; import { registerModelUsageRoutes } from "./model-usage-routes.js";
 import { normalizeMemoryCodexModelEnv } from "./memory-codex-model.js";
 import { getMemoryDebugTrace, listMemoryDebugTraces } from "./memory-debug-traces.js";
 import { buildMemoryDiagnostics } from "./memory-diagnostics.js";
@@ -92,7 +93,6 @@ const pairStatePath = path.join(stateDir, "butler-pairs-v2.json");
 const sessionDir = path.join(stateDir, "pi-sessions");
 const pairSessionDir = path.join(stateDir, "pi-pair-sessions");
 const staticDir = path.resolve(process.cwd(), "dist/web"); const indexTemplatePath = path.resolve(process.cwd(), "index.html");
-
 const settingsService = new ManorSettingsService(defaultManorSettingsPath(stateDir)); await settingsService.load(); setActiveManorSettingsService(settingsService);
 
 const store = new ButlerStateStore(uiStatePath, {
@@ -124,6 +124,7 @@ const selfImprovementRequests = new SelfImprovementRequestState(path.join(stateD
 await selfImprovementRequests.load();
 configureSelfImprovementRequestState(selfImprovementRequests);
 const piAuthPath = path.join(piAgentDir, "auth.json"); const workerPiAuthPath = path.join(workerPiAgentDir, "auth.json"); const codexAuthPath = path.join(codexHomeDir, "auth.json");
+const modelUsageStore = createModelUsageStore({ stateDir, butlerSessionRoots: [sessionDir, pairSessionDir], workerPiSessionRoot, codexHomeDir, piAuthPath });
 const modelTasks = new ManorModelTaskRunner({ stateDir, codexHomeDir, piAuthPath }); const visionInspection = new VisionInspectionService({ imageStore, piAuthPath });
 const sessionTitleGenerator = new ManorSessionTitleGenerator({
   ...readSessionTitleConfig(),
@@ -469,6 +470,7 @@ registerPreviewAnnotationRoutes({
 registerPairRoutes({ app, pairSessions });
 registerExtensionUiRoutes({ app, pairStore, broker: extensionUiBroker }); registerWorkerSessionControlRoutes({ app, pairStore, piRpcWorkerClient }); registerButlerSessionControlRoutes({ app, pairSessions });
 registerManorSettingsRoutes({ app, settingsService, store, codexClient, piRpcWorkerClient, butlerAgent, onSettingsChanged: applyManagedSettingsChange });
+registerModelUsageRoutes(app, modelUsageStore);
 registerSelfImprovementRoutes({
   app,
   requests: selfImprovementRequests,

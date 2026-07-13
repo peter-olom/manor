@@ -1,0 +1,73 @@
+{
+  "catalogVersion": "20260713",
+  "models": {
+    "glm-4.7": {
+      "aliases": ["z-ai/glm-4.7"],
+      "publisher": "Z.AI",
+      "rateModel": "GLM-4.7",
+      "asOf": "2026-07-13",
+      "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
+      "cachePolicy": "published",
+      "cost": { "input": 0.6, "output": 2.2, "cacheRead": 0.11, "cacheWrite": 0 }
+    },
+    "glm-5": {
+      "aliases": ["z-ai/glm-5"],
+      "publisher": "Z.AI",
+      "rateModel": "GLM-5",
+      "asOf": "2026-07-13",
+      "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
+      "cachePolicy": "published",
+      "cost": { "input": 1, "output": 3.2, "cacheRead": 0.2, "cacheWrite": 0 }
+    },
+    "glm-5.2": {
+      "aliases": ["z-ai/glm-5.2"],
+      "publisher": "Z.AI",
+      "rateModel": "GLM-5.2",
+      "asOf": "2026-07-13",
+      "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
+      "cost": { "input": 1.4, "output": 4.4, "cacheRead": 0.26, "cacheWrite": 0 }
+    },
+    "gemma4:31b": {
+      "aliases": ["gemma-4-31b-it", "google/gemma-4-31b-it"],
+      "publisher": "Google",
+      "rateModel": "Gemma 4 31B",
+      "asOf": "2026-07-13",
+      "sourceUrl": "https://ai.google.dev/gemini-api/docs/pricing",
+      "free": true,
+      "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+    },
+    "devstral-small-2:24b": {
+      "aliases": ["devstral-small-2", "labs-devstral-small-2512"],
+      "publisher": "Mistral AI",
+      "rateModel": "Devstral Small 2",
+      "asOf": "2026-07-13",
+      "sourceUrl": "https://mistral.ai/pricing/",
+      "cachePolicy": "input-rate",
+      "cost": { "input": 0.1, "output": 0.3, "cacheRead": 0.1, "cacheWrite": 0.1 }
+    },
+    "deepseek-v4-pro": {
+      "publisher": "DeepSeek",
+      "rateModel": "DeepSeek V4 Pro",
+      "asOf": "2026-07-13",
+      "sourceUrl": "https://api-docs.deepseek.com/quick_start/pricing",
+      "cost": { "input": 0.435, "output": 0.87, "cacheRead": 0.003625, "cacheWrite": 0.435 }
+    },
+    "minimax-m2.5": {
+      "aliases": ["MiniMax-M2.5"],
+      "publisher": "MiniMax",
+      "rateModel": "MiniMax M2.5",
+      "asOf": "2026-07-13",
+      "sourceUrl": "https://platform.minimax.io/docs/guides/pricing-paygo",
+      "cost": { "input": 0.3, "output": 1.2, "cacheRead": 0.03, "cacheWrite": 0.375 }
+    },
+    "minimax-m2.1": {
+      "aliases": ["MiniMax-M2.1"],
+      "publisher": "MiniMax",
+      "rateModel": "MiniMax M2.1",
+      "asOf": "2026-07-13",
+      "sourceUrl": "https://platform.minimax.io/docs/guides/pricing-paygo",
+      "cachePolicy": "published",
+      "cost": { "input": 0.3, "output": 1.2, "cacheRead": 0.03, "cacheWrite": 0.375 }
+    }
+  }
+}

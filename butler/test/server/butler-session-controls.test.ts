@@ -16,6 +16,7 @@ function createAccess(options: { idle?: boolean; forkPoints?: Array<{ entryId: s
   ];
   const access = {
     session: {
+      sessionId: "butler-test",
       isIdle: options.idle ?? true,
       isCompacting: false,
       isStreaming: false,
@@ -36,12 +37,14 @@ function createAccess(options: { idle?: boolean; forkPoints?: Array<{ entryId: s
         { entryId: "user-2", text: "Second" }
       ],
       sessionManager: {
+        getEntries: () => [],
         getBranch: () => branch,
         createBranchedSession: (entryId: string) => { createdBranches.push(entryId); return "/sessions/fork.jsonl"; },
         buildSessionContext: () => ({ messages: [{ role: "user", content: "kept" }] })
       },
       agent: { state: { messages: [] as unknown[] } }
     },
+    modelRegistry: null,
     pending: false,
     pendingChatCallbacks: new Map(),
     operatorMessages: [
@@ -72,6 +75,7 @@ test("Butler controls expose the embedded Pi session tree and stats", () => {
   assert.equal(controls.runtime, "pi");
   assert.equal(controls.sessionName, "Butler test");
   assert.equal(controls.stats?.tokens.total, 15);
+  assert.equal(controls.stats?.usage.requests, 0);
   assert.deepEqual(controls.forkPoints.map((point) => point.entryId), ["user-1", "user-2"]);
   assert.equal(controls.leafId, "assistant-2");
 });
