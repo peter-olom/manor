@@ -98,6 +98,20 @@ export function ThreadsIcon() {
   );
 }
 
+export function FilesIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d="M2.5 4h4l1.3 1.5h5.7v7h-11z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinejoin="miter"
+      />
+    </svg>
+  );
+}
+
 export function SetupTabIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">

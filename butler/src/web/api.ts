@@ -1,3 +1,5 @@
+import type { ReferenceLibraryItem, ReferenceLibraryResponse } from "../shared/references";
+
 export type FileReference = {
   id: string;
   name: string;
@@ -6,6 +8,8 @@ export type FileReference = {
   createdAt: number;
   url: string;
 };
+
+export type StoredReference = ReferenceLibraryItem;
 
 const VISION_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 const VISION_IMAGE_EXTENSION_MIME_TYPES = new Map([
@@ -120,4 +124,16 @@ export async function uploadAttachment(file: File): Promise<FileReference> {
     throw new Error("Upload failed");
   }
   return uploaded;
+}
+
+export async function listStoredReferences(): Promise<StoredReference[]> {
+  const payload = await getJson<ReferenceLibraryResponse>("/api/references");
+  return Array.isArray(payload.items) ? payload.items : [];
+}
+
+export async function deleteStoredReference(id: string): Promise<void> {
+  const response = await fetch(`/api/references/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
 }

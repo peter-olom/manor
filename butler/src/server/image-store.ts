@@ -3,7 +3,9 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import type { ImageContent } from "@earendil-works/pi-ai";
+import { writeJsonStateFileAtomic } from "./json-state-file.js";
 import { loadPiImageFiles } from "./pi-image-loader.js";
+import { ReferenceMutationQueue } from "./reference-mutation-queue.js";
 
 export type WorkerInputItem =
   | {
@@ -106,7 +108,11 @@ export class ImageReferenceStore {
   private readonly indexPath: string;
   private readonly publicBasePath: string;
 
-  constructor(rootDir: string, publicBasePath = "/api/images") {
+  constructor(
+    rootDir: string,
+    publicBasePath = "/api/images",
+    private readonly mutations = new ReferenceMutationQueue()
+  ) {
     this.rootDir = rootDir;
     this.filesDir = path.join(rootDir, "files");
     this.indexPath = path.join(rootDir, "index.json");
@@ -202,6 +208,34 @@ export class ImageReferenceStore {
   }
 
   async createFromBuffer(input: { name: string; mimeType: string; buffer: Buffer; sizeBytes?: number; sourceReferenceId?: string; version?: number }): Promise<ImageReferenceView> {
+    return this.mutations.run(() => this.createFromBufferNow(input));
+  }
+
+  async delete(id: string): Promise<boolean> {
+    return this.mutations.run(async () => {
+      const record = this.records.get(id);
+      if (!record) return false;
+
+      this.records.delete(id);
+      try {
+        await this.save();
+      } catch (error) {
+        this.records.set(id, record);
+        throw error;
+      }
+
+      try {
+        await fs.rm(record.filePath, { force: true });
+        return true;
+      } catch (error) {
+        this.records.set(id, record);
+        await this.save();
+        throw error;
+      }
+    });
+  }
+
+  private async createFromBufferNow(input: { name: string; mimeType: string; buffer: Buffer; sizeBytes?: number; sourceReferenceId?: string; version?: number }): Promise<ImageReferenceView> {
     const mimeType = ensureImageMimeType(input.mimeType);
     const buffer = input.buffer;
 
@@ -236,7 +270,13 @@ export class ImageReferenceStore {
     await fs.writeFile(filePath, buffer, { mode: 0o444 });
     await fs.chmod(filePath, 0o444);
     this.records.set(id, record);
-    await this.save();
+    try {
+      await this.save();
+    } catch (error) {
+      this.records.delete(id);
+      await fs.rm(filePath, { force: true }).catch(() => undefined);
+      throw error;
+    }
     return this.toView(record);
   }
 
@@ -329,6 +369,7 @@ export class ImageReferenceStore {
 
   private async save(): Promise<void> {
     const payload = [...this.records.values()].sort((left, right) => right.createdAt - left.createdAt);
-    await fs.writeFile(this.indexPath, JSON.stringify(payload, null, 2), "utf8");
+    await writeJsonStateFileAtomic(this.indexPath, payload);
   }
+
 }

@@ -298,11 +298,11 @@ export function ImagePreviewModal({
               <button className="modal-icon-action" type="button" onClick={() => setAnnotationMode(false)} disabled={busy} aria-label="Preview image" title="Preview image">
                 <ImageIcon />
               </button>
-            ) : (
+            ) : attachTargetLabel ? (
               <button className="modal-icon-action" type="button" onClick={() => setAnnotationMode(true)} disabled={busy} aria-label="Annotate image" title="Annotate image">
                 <PencilIcon />
               </button>
-            )}
+            ) : null}
             {!annotationMode ? (
               <div className="modal-zoom-controls" aria-label="Image zoom">
                 <button className="modal-icon-action" type="button" onClick={() => setImageZoomIndex((current) => Math.max(0, current - 1))} disabled={busy || imageZoomIndex === 0} aria-label="Zoom out" title="Zoom out">

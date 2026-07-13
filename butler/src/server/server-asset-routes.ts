@@ -7,12 +7,16 @@ import type { Express, Request, RequestHandler } from "express";
 import { resolveProofBundleKey } from "./butler-agent-helpers.js";
 import { type FileReferenceStore } from "./file-store.js";
 import { type ImageReferenceStore } from "./image-store.js";
+import { deleteReference, listReferenceLibrary, ReferenceHasChildrenError } from "./reference-library.js";
+import type { ReferenceMutationQueue } from "./reference-mutation-queue.js";
 import {
   decodeArtifactRelativePath,
   pruneEmptyArtifactParents,
   sendUnavailableArtifactResponse
 } from "./server-runtime-helpers.js";
 import { ButlerStateStore } from "./state-store.js";
+
+const INLINE_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"]);
 
 function readHeaderValue(value: string | string[] | undefined): string {
   if (Array.isArray(value)) {
@@ -104,6 +108,7 @@ export function registerServerAssetRoutes(options: {
   store: ButlerStateStore;
   imageStore: ImageReferenceStore;
   fileStore: FileReferenceStore;
+  referenceMutations: ReferenceMutationQueue;
   imageUploadBinaryParser: RequestHandler;
   fileUploadBinaryParser: RequestHandler;
 }): void {
@@ -113,6 +118,7 @@ export function registerServerAssetRoutes(options: {
     store,
     imageStore,
     fileStore,
+    referenceMutations,
     imageUploadBinaryParser,
     fileUploadBinaryParser
   } = options;
@@ -161,7 +167,16 @@ export function registerServerAssetRoutes(options: {
       return;
     }
 
+    const downloadRequested = Array.isArray(request.query.download)
+      ? request.query.download[0] === "1"
+      : request.query.download === "1";
     response.setHeader("Cache-Control", "private, max-age=31536000, immutable");
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    if (downloadRequested || !INLINE_IMAGE_MIME_TYPES.has(image.mimeType)) {
+      response.download(filePath, image.name);
+      return;
+    }
+    response.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
     response.type(image.mimeType);
     response.sendFile(filePath);
   });
@@ -213,6 +228,28 @@ export function registerServerAssetRoutes(options: {
     response.setHeader("Cache-Control", "private, max-age=31536000, immutable");
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.download(filePath, file.name);
+  });
+
+  app.get("/api/references", (_request, response) => {
+    response.json(listReferenceLibrary(imageStore, fileStore));
+  });
+
+  app.delete("/api/references/:referenceId", async (request, response) => {
+    const referenceId = typeof request.params.referenceId === "string" ? request.params.referenceId : "";
+    try {
+      const deleted = await deleteReference(referenceId, imageStore, fileStore, referenceMutations);
+      if (!deleted) {
+        response.status(404).json({ error: "File was not found" });
+        return;
+      }
+      response.status(204).end();
+    } catch (error) {
+      if (error instanceof ReferenceHasChildrenError) {
+        response.status(409).json({ error: error.message });
+        return;
+      }
+      response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   app.get(/^\/api\/artifacts\/(.+)$/, (request, response) => {

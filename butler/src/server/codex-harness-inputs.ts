@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { MAX_FILE_BYTES, type FileReferenceStore, type FileReferenceView } from "./file-store.js";
 import { MAX_IMAGE_BYTES, type ImageReferenceStore, type ImageReferenceView } from "./image-store.js";
+import type { ReferenceMutationQueue } from "./reference-mutation-queue.js";
 import type { ButlerStateStore } from "./state-store.js";
 import { normalizeString } from "./codex-harness-helpers.js";
 
@@ -9,6 +10,7 @@ export type HarnessInputActionAccess = {
   outputsDir: string;
   fileStore: FileReferenceStore;
   imageStore: ImageReferenceStore;
+  referenceMutations: ReferenceMutationQueue;
 };
 
 const lineageLocks = new Map<string, Promise<void>>();
@@ -114,20 +116,23 @@ export async function handleHarnessInputAction(input: {
   const mimeType = normalizeString(input.params.contentType) || inferredMimeType(name) || source.mimeType || "application/octet-stream";
   const maxBytes = mimeType.startsWith("image/") ? MAX_IMAGE_BYTES : MAX_FILE_BYTES;
   if (stats.size > maxBytes) throw new Error(`Published output exceeds the ${maxBytes / (1024 * 1024)} MB ${mimeType.startsWith("image/") ? "image" : "file"} limit`);
-  const rootId = lineageRoot(source, input);
-  return withLineageLock(rootId, async () => {
-    const version = nextLineageVersion(rootId, input);
-    const buffer = await readBoundedFile(realOutputPath, maxBytes);
-    const reference = mimeType.startsWith("image/")
-      ? await input.imageStore.createFromBuffer({ name, mimeType, buffer, sourceReferenceId, version })
-      : await input.fileStore.createFromBuffer({ name, mimeType, buffer, sourceReferenceId, version });
-    const immutablePath = mimeType.startsWith("image/")
-      ? input.imageStore.getFilePath(reference.id)
-      : input.fileStore.getFilePath(reference.id);
-    input.store.addEvent(input.threadId, "harness/input/published", `Published ${reference.name} as version ${version} of ${sourceReferenceId}`);
-    return {
-      text: `Published ${reference.name} as immutable input ${reference.id}, version ${version} of ${sourceReferenceId}. Path: ${immutablePath}.`,
-      data: { reference, immutablePath, sourceReferenceId, version, kind: mimeType.startsWith("image/") ? "image" : "file" }
-    };
+  const buffer = await readBoundedFile(realOutputPath, maxBytes);
+  return input.referenceMutations.run(async () => {
+    const currentSource = sourceReference({ sourceReferenceId, fileStore: input.fileStore, imageStore: input.imageStore });
+    const rootId = lineageRoot(currentSource, input);
+    return withLineageLock(rootId, async () => {
+      const version = nextLineageVersion(rootId, input);
+      const reference = mimeType.startsWith("image/")
+        ? await input.imageStore.createFromBuffer({ name, mimeType, buffer, sourceReferenceId, version })
+        : await input.fileStore.createFromBuffer({ name, mimeType, buffer, sourceReferenceId, version });
+      const immutablePath = mimeType.startsWith("image/")
+        ? input.imageStore.getFilePath(reference.id)
+        : input.fileStore.getFilePath(reference.id);
+      input.store.addEvent(input.threadId, "harness/input/published", `Published ${reference.name} as version ${version} of ${sourceReferenceId}`);
+      return {
+        text: `Published ${reference.name} as immutable input ${reference.id}, version ${version} of ${sourceReferenceId}. Path: ${immutablePath}.`,
+        data: { reference, immutablePath, sourceReferenceId, version, kind: mimeType.startsWith("image/") ? "image" : "file" }
+      };
+    });
   });
 }

@@ -4,8 +4,10 @@ import { getJson, isVisionImageFile, patchJson, postJson, uploadAttachment, type
 import manorLogoLight from "./assets/manor-logo.svg";
 import manorLogoDark from "./assets/manor-logo-dark.svg";
 import { ButlerPane } from "./ButlerPane";
+import { FileExplorer } from "./FileExplorer";
 import {
   ChevronLeftIcon,
+  FilesIcon,
   MenuIcon,
   PencilIcon,
   PlusIcon,
@@ -13,10 +15,10 @@ import {
   SetupTabIcon,
   StatusIcon,
   ThreadsIcon,
-  TrashIcon,
   WarningIcon
 } from "./icons";
 import { MemoryDashboard, type MemoryDashboardSummary, type MemoryProjectOption } from "./MemoryDashboard";
+import { PairRow } from "./PairRow";
 import { ImagePreviewModal, type PreviewMedia } from "./ImagePreviewModal";
 import {
   canBeginPairDeletion,
@@ -72,19 +74,20 @@ const VIEW_LABELS: Record<PairViewMode, string> = {
   butler: "Butler",
   worker: "Worker",
   split: "Both",
+  files: "Files",
   memory: "Memory",
   improve: "Improve",
   settings: "Settings",
   cli: "CLI"
 };
-const VIEW_MODES = new Set<PairViewMode>(["butler", "worker", "split", "memory", "improve", "settings", "cli"]);
-type WorkstreamViewMode = Exclude<PairViewMode, "memory" | "improve" | "settings">;
-type ManorSurface = "sessions" | "memory" | "improve" | "settings";
+const VIEW_MODES = new Set<PairViewMode>(["butler", "worker", "split", "files", "memory", "improve", "settings", "cli"]);
+type WorkstreamViewMode = Exclude<PairViewMode, "files" | "memory" | "improve" | "settings">;
+type ManorSurface = "sessions" | "files" | "memory" | "improve" | "settings";
 const WORKSTREAM_MODES: WorkstreamViewMode[] = ["butler", "worker", "split", "cli"];
 const SETTINGS_SECTION_IDS = new Set<SettingsSectionId>(SETTINGS_SECTIONS.map((section) => section.id));
 
 function manorSurfaceForView(viewMode: PairViewMode): ManorSurface {
-  if (viewMode === "memory" || viewMode === "improve" || viewMode === "settings") return viewMode;
+  if (viewMode === "files" || viewMode === "memory" || viewMode === "improve" || viewMode === "settings") return viewMode;
   return "sessions";
 }
 
@@ -133,14 +136,6 @@ function syncUrlState(viewMode: PairViewMode, terminalTarget: TerminalTarget, se
 function formatTime(value: number | null | undefined): string {
   if (!value) return "—";
   return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function formatDay(value: number): string {
-  const date = new Date(value);
-  const now = new Date();
-  const sameDay = date.toDateString() === now.toDateString();
-  if (sameDay) return formatTime(value);
-  return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 function shortId(value: string | null | undefined): string {
@@ -237,6 +232,17 @@ function Sidebar({
             <span>Sessions</span>
           </button>
           <button
+            className={`sidebar-nav-item ${manorSurface === "files" ? "is-selected" : ""}`}
+            type="button"
+            aria-label="Files"
+            aria-current={manorSurface === "files" ? "page" : undefined}
+            onClick={() => onSelectManor("files")}
+            title="Files"
+          >
+            <FilesIcon />
+            <span>Files</span>
+          </button>
+          <button
             className={`sidebar-nav-item ${manorSurface === "memory" ? "is-selected" : ""}`}
             type="button"
             aria-label="Memory"
@@ -306,6 +312,16 @@ function Sidebar({
                 ))
               )}
             </div>
+          </>
+        ) : null}
+        {manorSurface === "files" ? (
+          <>
+            <div className="sidebar-surface-head">
+              <div className="sidebar-surface-title">
+                <span className="sidebar-surface-label">Files</span>
+              </div>
+            </div>
+            <div className="sidebar-surface-note">Durable inputs shared across sessions and Workers.</div>
           </>
         ) : null}
         {manorSurface === "memory" ? (
@@ -413,52 +429,6 @@ function Sidebar({
   );
 }
 
-function PairRow({
-  pair,
-  isActive,
-  onSelect,
-  onDelete
-}: {
-  pair: PairSummary;
-  isActive: boolean;
-  onSelect: () => void;
-  onDelete: () => void;
-}) {
-  return (
-    <div
-      className={`pair-item ${isActive ? "is-active" : ""}`}
-      role="button"
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
-    >
-      <span className={`pair-dot is-${pair.status}`} aria-hidden="true" />
-      <div className="pair-title">{pair.title}</div>
-      <div className="pair-preview">{pair.lastMessage?.text ?? "No messages yet"}</div>
-      <div className="pair-meta">
-        <span className="pair-meta-time">{formatDay(pair.updatedAt)}</span>
-        <span>{pair.messageCount}</span>
-      </div>
-      <button
-        className="icon-button pair-delete"
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          onDelete();
-        }}
-        aria-label={`Delete ${pair.title}`}
-      >
-        <TrashIcon />
-      </button>
-    </div>
-  );
-}
-
 function Topbar({
   pair,
   viewMode,
@@ -514,11 +484,13 @@ function Topbar({
   onMemorySearch: (value: string) => void;
   onMemoryProjectFilter: (value: string) => void;
 }) {
-  const isGlobalSurface = viewMode === "memory" || viewMode === "improve" || viewMode === "settings";
-  const surfaceTitle = viewMode === "memory" ? "Memory" : viewMode === "improve" ? "Self-improvement" : viewMode === "settings" ? "Settings" : null;
+  const isGlobalSurface = viewMode === "files" || viewMode === "memory" || viewMode === "improve" || viewMode === "settings";
+  const surfaceTitle = viewMode === "files" ? "Files" : viewMode === "memory" ? "Memory" : viewMode === "improve" ? "Self-improvement" : viewMode === "settings" ? "Settings" : null;
   const settingsSectionLabel = SETTINGS_SECTIONS.find((section) => section.id === settingsSection)?.label ?? "Runtime";
   const surfaceMeta =
-    viewMode === "memory"
+    viewMode === "files"
+      ? "Durable storage"
+      : viewMode === "memory"
       ? `${memoryActiveCount} of ${memoryTotalCount} ${memorySection}`
       : viewMode === "improve"
         ? `${improveRequestCount} requests`
@@ -661,7 +633,7 @@ export function PairShell() {
   const [viewMode, setViewMode] = useState<PairViewMode>(() => readInitialViewMode());
   const [lastWorkstreamMode, setLastWorkstreamMode] = useState<WorkstreamViewMode>(() => {
     const initial = readInitialViewMode();
-    return initial === "memory" || initial === "improve" || initial === "settings" ? "butler" : initial;
+    return initial === "files" || initial === "memory" || initial === "improve" || initial === "settings" ? "butler" : initial;
   });
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>(() => readInitialSettingsSection());
   const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>(
@@ -835,7 +807,7 @@ export function PairShell() {
   }, []);
 
   useEffect(() => {
-    if (viewMode !== "memory" && viewMode !== "improve" && viewMode !== "settings") setLastWorkstreamMode(viewMode);
+    if (viewMode !== "files" && viewMode !== "memory" && viewMode !== "improve" && viewMode !== "settings") setLastWorkstreamMode(viewMode);
   }, [viewMode]);
 
   useEffect(() => {
@@ -1359,7 +1331,7 @@ export function PairShell() {
           onMemorySearch={setMemorySearch}
           onMemoryProjectFilter={setMemoryProjectFilter}
         />
-        {!activePair && viewMode !== "memory" && viewMode !== "improve" && viewMode !== "settings" && viewMode !== "cli" ? (
+        {!activePair && viewMode !== "files" && viewMode !== "memory" && viewMode !== "improve" && viewMode !== "settings" && viewMode !== "cli" ? (
           <div className="empty-state">
             <picture className="empty-logo">
               <source srcSet={manorLogoLight} media="(prefers-color-scheme: light)" />
@@ -1465,6 +1437,9 @@ export function PairShell() {
                 onProjectFilterChange={setMemoryProjectFilter}
                 onSummaryChange={setMemorySummary}
               />
+            </div>
+            <div className={`workspace-view is-files ${viewMode === "files" ? "is-active" : ""}`}>
+              <FileExplorer active={viewMode === "files"} />
             </div>
             <div className={`workspace-view is-improve ${viewMode === "improve" ? "is-active" : ""}`}>
               <SelfImprovementQueue

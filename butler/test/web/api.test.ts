@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { uploadAttachment, type FileReference } from "../../src/web/api.js";
+import {
+  deleteStoredReference,
+  listStoredReferences,
+  uploadAttachment,
+  type FileReference,
+  type StoredReference
+} from "../../src/web/api.js";
 
 const uploaded: FileReference = {
   id: "reference-1",
@@ -35,4 +41,27 @@ test("uploadAttachment routes general files and inferred images correctly", asyn
   assert.equal(requests[0]?.headers.get("content-type"), "application/pdf");
   assert.equal(requests[1]?.url, "/api/images/upload");
   assert.equal(requests[1]?.headers.get("content-type"), "image/png");
+});
+
+test("stored reference API lists and deletes durable files", async () => {
+  const originalFetch = globalThis.fetch;
+  const item: StoredReference = { ...uploaded, kind: "file", downloadUrl: uploaded.url, version: 1, hasChildren: false };
+  const requests: Array<{ url: string; method: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    requests.push({ url: String(input), method: init?.method ?? "GET" });
+    if (init?.method === "DELETE") return new Response(null, { status: 204 });
+    return Response.json({ items: [item] });
+  };
+
+  try {
+    assert.deepEqual(await listStoredReferences(), [item]);
+    await deleteStoredReference(item.id);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(requests, [
+    { url: "/api/references", method: "GET" },
+    { url: "/api/references/reference-1", method: "DELETE" }
+  ]);
 });

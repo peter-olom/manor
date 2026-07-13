@@ -54,3 +54,20 @@ test("legacy durable uploads migrate into the immutable input store", async (t) 
   assert.equal(await fs.readFile(migratedPath, "utf8"), "existing upload");
   assert.equal((await fs.stat(migratedPath)).mode & 0o777, 0o444);
 });
+
+test("concurrent file uploads persist every reference", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "manor-file-concurrency-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const store = new FileReferenceStore(root);
+  await store.load();
+
+  await Promise.all(Array.from({ length: 12 }, (_, index) => store.createFromBuffer({
+    name: `file-${index}.txt`,
+    mimeType: "text/plain",
+    buffer: Buffer.from(`content-${index}`)
+  })));
+
+  const reloaded = new FileReferenceStore(root);
+  await reloaded.load();
+  assert.equal(reloaded.list(20).length, 12);
+});

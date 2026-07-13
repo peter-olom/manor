@@ -33,6 +33,7 @@ import { registerScratchPadRoutes } from "./scratch-pad-routes.js";
 import { registerRuntimeResourceRoutes } from "./runtime-resource-routes.js";
 import { ScratchPadStore } from "./scratch-pad-store.js";
 import { registerServerAssetRoutes } from "./server-asset-routes.js";
+import { isBinaryUploadRequest, shouldParseJsonRequest } from "./upload-request.js";
 import { registerDeviceAuthRoutes } from "./device-auth-routes.js";
 import { ManorSessionTitleGenerator, readSessionTitleConfig } from "./session-title-generator.js";
 import { ManorModelTaskRunner } from "./model-task-runner.js";
@@ -114,7 +115,7 @@ const scratchPadStore = new ScratchPadStore(scratchPadStatePath);
 await scratchPadStore.load();
 const serviceTemplateRegistry = new ServiceTemplateRegistry(path.join(stateDir, "service-templates.json"));
 await serviceTemplateRegistry.load();
-const { imageStore, fileStore } = await loadReferenceStores({ artifactsDir, imageReferenceDir, fileReferenceDir });
+const { imageStore, fileStore, referenceMutations } = await loadReferenceStores({ artifactsDir, imageReferenceDir, fileReferenceDir });
 const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerToken);
 const hostController = new HostControllerClient(hostControllerUrl, hostControllerToken);
 let runtimeAccess!: RuntimeServerAccess;
@@ -145,7 +146,7 @@ store.setMemoryUpdateObserver(memoryScheduler); const harnessService = new Harne
   serviceTemplateRegistry,
   memoryReview,
   memoryScheduler,
-  visionInspection, inputActionAccess: { fileStore, imageStore, outputsDir: process.env.MANOR_OUTPUTS_DIR ?? "/outputs" }
+  visionInspection, inputActionAccess: { fileStore, imageStore, referenceMutations, outputsDir: process.env.MANOR_OUTPUTS_DIR ?? "/outputs" }
 });
 memoryReview.reviewPendingReportsAsync();
 memoryScheduler.start();
@@ -294,11 +295,11 @@ registerPreviewProxyResponseRewriter(previewProxy, runtimeAccess);
 
 let viteDevServer: import("vite").ViteDevServer | null = null;
 const imageUploadBinaryParser = express.raw({
-  type: (request) => typeof request.headers["x-manor-upload-name"] === "string",
+  type: isBinaryUploadRequest,
   limit: imageUploadBinaryLimit
 });
 const fileUploadBinaryParser = express.raw({
-  type: (request) => typeof request.headers["x-manor-upload-name"] === "string",
+  type: isBinaryUploadRequest,
   limit: fileUploadBinaryLimit
 });
 
@@ -325,7 +326,7 @@ app.use((request, response, next) => {
   proxyPreviewRoute(runtimeAccess, previewProxy, previewRoute, request, response);
 });
 
-app.use(express.json({ limit: jsonBodyLimit }));
+app.use(express.json({ limit: jsonBodyLimit, type: shouldParseJsonRequest }));
 
 const { applyServiceStartedPoliciesForServer } = registerProjectArtifactPolicyRoutes({
   app,
@@ -339,6 +340,7 @@ registerServerAssetRoutes({
   store,
   imageStore,
   fileStore,
+  referenceMutations,
   imageUploadBinaryParser,
   fileUploadBinaryParser
 });

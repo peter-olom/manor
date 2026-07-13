@@ -1,7 +1,7 @@
 export type PairRole = "user" | "butler" | "worker" | "system";
 export type PairLane = "butler" | "worker";
 export type PairStatus = "idle" | "butler_running" | "worker_running" | "needs_butler_review" | "blocked";
-export type PairViewMode = "butler" | "worker" | "split" | "memory" | "improve" | "settings" | "cli";
+export type PairViewMode = "butler" | "worker" | "split" | "files" | "memory" | "improve" | "settings" | "cli";
 export type PairWorkerRuntime = "openai" | "pi-rpc";
 export type PairWorkerHarness = "codex" | "pi" | (string & {});
 
