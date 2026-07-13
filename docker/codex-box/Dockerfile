@@ -100,7 +100,7 @@ COPY docker/codex-box/zprofile /home/worker/.zprofile
 
 ENV MANOR_REAL_PATH="/home/worker/.local/bin:/home/worker/.local/share/mise/shims:/home/worker/.local/share/mise/bin:/opt/manor/npm-global/bin:${PATH}"
 ENV PATH="/opt/manor/codex-box/install-guard-bin:${MANOR_REAL_PATH}"
-ENV WORKER_PI_CLI_PATH="/opt/manor/worker/node_modules/@mariozechner/pi-coding-agent/dist/cli.js"
+ENV WORKER_PI_CLI_PATH="/opt/manor/worker/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
 ENV WORKER_PI_RPC_SOCKET="/worker-runtime/pi-rpc.sock"
 
 RUN mkdir -p /opt/manor/codex-box/install-guard-bin \

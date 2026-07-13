@@ -1,8 +1,8 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import type { Api, Model } from "@mariozechner/pi-ai";
-import { AuthStorage, createAgentSession, DefaultResourceLoader, SessionManager, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import { AuthStorage, createAgentSession, DefaultResourceLoader, SessionManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import {
   BUTLER_BACKGROUND_PROMPT_PREFIX,

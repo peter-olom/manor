@@ -1,8 +1,8 @@
 import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { getModel } from "@mariozechner/pi-ai";
-import { defineTool, type AgentSession, type ModelRegistry } from "@mariozechner/pi-coding-agent";
+import { getModel } from "@earendil-works/pi-ai/compat";
+import { defineTool, type AgentSession, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "@sinclair/typebox";
 import {
   buildChatCallbackText,

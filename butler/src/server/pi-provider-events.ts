@@ -1,5 +1,5 @@
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { AgentSession, AgentSessionEvent } from "@mariozechner/pi-coding-agent";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
 import {
   BUTLER_BACKGROUND_PROMPT_PREFIX,

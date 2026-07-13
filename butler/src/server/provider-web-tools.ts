@@ -1,5 +1,5 @@
-import { Type, type Tool, type ToolCall, type ToolResultMessage } from "@mariozechner/pi-ai";
-import { defineTool } from "@mariozechner/pi-coding-agent";
+import { Type, type Tool, type ToolCall, type ToolResultMessage } from "@earendil-works/pi-ai";
+import { defineTool } from "@earendil-works/pi-coding-agent";
 
 import {
   formatOllamaWebToolResult,

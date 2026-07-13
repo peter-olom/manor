@@ -1,4 +1,4 @@
-import { Type, type Message, type Tool, type ToolCall, type ToolResultMessage } from "@mariozechner/pi-ai";
+import { Type, type Message, type Tool, type ToolCall, type ToolResultMessage } from "@earendil-works/pi-ai";
 
 import { getActiveManorSettings, readSecretSourceValue } from "./manor-settings-runtime.js";
 

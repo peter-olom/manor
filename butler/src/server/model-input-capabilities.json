@@ -1,9 +1,10 @@
 {
-  "catalogVersion": "202607122224",
+  "catalogVersion": "202607130154",
   "providerCatalogs": {
     "openai-codex": [
       "gpt-5.1", "gpt-5.1-codex-max", "gpt-5.1-codex-mini", "gpt-5.2", "gpt-5.2-codex",
-      "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5"
+      "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
+      "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"
     ],
     "ollama-cloud": [
       "deepseek-v3.1:671b", "deepseek-v3.2", "deepseek-v4-flash", "deepseek-v4-pro", "devstral-2:123b",
@@ -49,6 +50,9 @@
     "gpt-5.4": { "input": ["text", "image"] },
     "gpt-5.4-mini": { "input": ["text", "image"] },
     "gpt-5.5": { "input": ["text", "image"] },
+    "gpt-5.6-luna": { "input": ["text", "image"] },
+    "gpt-5.6-sol": { "input": ["text", "image"] },
+    "gpt-5.6-terra": { "input": ["text", "image"] },
     "gpt-oss:20b": { "input": ["text"] },
     "gpt-oss:120b": { "input": ["text"] },
     "hy3-preview": { "aliases": ["tencent/hy3-preview"], "input": ["text"] },

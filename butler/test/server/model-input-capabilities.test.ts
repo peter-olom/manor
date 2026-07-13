@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
-import { getModels } from "@mariozechner/pi-ai";
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { getModels } from "@earendil-works/pi-ai/compat";
 import manifest from "../../src/server/model-input-capabilities.json" with { type: "json" };
 
 import {
@@ -13,7 +13,7 @@ import { modelToModelOption, registerManorProviders } from "../../src/server/mod
 import { clearOllamaCloudModelsCache } from "../../src/server/ollama-cloud-models.js";
 
 test("the bundled manifest resolves provider-qualified aliases", () => {
-  assert.equal(modelInputCapabilityCatalogVersion(), "202607122224");
+  assert.equal(modelInputCapabilityCatalogVersion(), "202607130154");
   assert.deepEqual(resolveModelInputCapabilities({
     modelId: "ollama-cloud/google/gemma-4",
     provider: "ollama-cloud"

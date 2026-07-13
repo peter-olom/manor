@@ -4,8 +4,8 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-import { RpcClient, type RpcEventListener } from "@mariozechner/pi-coding-agent";
-import type { ImageContent } from "@mariozechner/pi-ai";
+import { RpcClient, type RpcEventListener } from "@earendil-works/pi-coding-agent";
+import type { ImageContent } from "@earendil-works/pi-ai";
 
 import { createManorModelRegistry, modelToModelOption, shouldExposeManorModel, syncManorPiModelsJson } from "./model-provider-config.js";
 import { readButlerAuthStatus } from "./auth-status.js";
@@ -84,7 +84,7 @@ function storeItemType(patch: Extract<ProviderRuntimeLivePatch, { kind: "item-li
 }
 
 function defaultPiCliPath(): string {
-  return path.join(path.dirname(fileURLToPath(import.meta.resolve("@mariozechner/pi-coding-agent"))), "cli.js");
+  return path.join(path.dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "cli.js");
 }
 
 export function defaultOllamaWebToolsExtensionPath(): string {

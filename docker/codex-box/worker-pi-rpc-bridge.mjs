@@ -6,7 +6,7 @@ import net from "node:net";
 import path from "node:path";
 
 const socketPath = process.env.WORKER_PI_RPC_SOCKET ?? "/worker-runtime/pi-rpc.sock";
-const cliPath = process.env.WORKER_PI_CLI_PATH ?? "/opt/manor/worker/node_modules/@mariozechner/pi-coding-agent/dist/cli.js";
+const cliPath = process.env.WORKER_PI_CLI_PATH ?? "/opt/manor/worker/node_modules/@earendil-works/pi-coding-agent/dist/cli.js";
 const reposRoot = realpathSync(process.env.WORKER_REPOS_ROOT ?? "/repos");
 const sessionRoot = path.resolve(process.env.WORKER_PI_SESSION_ROOT ?? "/worker-pi/sessions");
 const extensionRoot = path.resolve(process.env.WORKER_PI_EXTENSION_DIR ?? "/opt/manor/worker/dist/server");

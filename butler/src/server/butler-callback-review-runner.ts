@@ -1,5 +1,5 @@
 import path from "node:path";
-import { AuthStorage, createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { AuthStorage, createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import type { ButlerAgentSessionAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
 import { buildCallbackReviewPrompt, isCallbackOutstanding, type PendingChatCallback } from "./butler-agent-helpers.js";

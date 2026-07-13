@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 
 import {
   formatProviderModelRef,
@@ -727,7 +727,7 @@ test("syncManorPiModelsJson writes live OpenCode Go models with OpenCode transfo
   assert.equal(glmModel.reasoning, true);
   assert.equal(glmModel.thinkingLevelMap.high, "high");
   assert.equal(glmModel.thinkingLevelMap.xhigh, "max");
-  assert.equal(glmModel.thinkingLevelMap.max, undefined);
+  assert.equal(glmModel.thinkingLevelMap.max, "max");
   const qwenModel = provider.models.find((model: { id: string }) => model.id === "qwen3.7-max");
   assert.equal(qwenModel.reasoning, true);
   assert.deepEqual(qwenModel.thinkingLevelMap, {

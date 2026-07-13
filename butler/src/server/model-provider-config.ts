@@ -1,9 +1,9 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
-import type { Api, Model } from "@mariozechner/pi-ai";
-import { getModels } from "@mariozechner/pi-ai";
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import { getModels } from "@earendil-works/pi-ai/compat";
 
 import { getActiveManorSettings, readSecretSourceValue } from "./manor-settings-runtime.js";
 import { assertOllamaLocalBaseUrl, fetchOllamaLocalModels } from "./ollama-local-models.js";

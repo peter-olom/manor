@@ -1,5 +1,5 @@
-import type { AgentSession, ModelRegistry } from "@mariozechner/pi-coding-agent";
-import { defineTool } from "@mariozechner/pi-coding-agent";
+import type { AgentSession, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "@sinclair/typebox";
 
 import type { FileReferenceStore } from "./file-store.js";

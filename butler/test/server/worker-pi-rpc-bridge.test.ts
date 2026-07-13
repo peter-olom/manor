@@ -6,7 +6,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import test from "node:test";
 
-import { RpcClient } from "@mariozechner/pi-coding-agent";
+import { RpcClient } from "@earendil-works/pi-coding-agent";
 
 const bridgePath = new URL("../../../docker/codex-box/worker-pi-rpc-bridge.mjs", import.meta.url);
 const proxyPath = new URL("../../../docker/butler/worker-pi-rpc-proxy.mjs", import.meta.url);

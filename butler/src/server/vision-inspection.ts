@@ -1,4 +1,4 @@
-import { complete, type Api, type Model } from "@mariozechner/pi-ai";
+import { complete, type Api, type Model } from "@earendil-works/pi-ai/compat";
 
 import type { ImageReferenceStore } from "./image-store.js";
 import { contentToText } from "./butler-agent-helpers.js";

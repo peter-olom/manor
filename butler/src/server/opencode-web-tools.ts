@@ -1,4 +1,4 @@
-import { Type, type Tool } from "@mariozechner/pi-ai";
+import { Type, type Tool } from "@earendil-works/pi-ai";
 
 import { getActiveManorSettings } from "./manor-settings-runtime.js";
 

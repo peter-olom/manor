@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { Type, type Api, type Model } from "@mariozechner/pi-ai";
+import { Type, type Api, type Model } from "@earendil-works/pi-ai";
 import {
   AuthStorage,
   createAgentSession,
@@ -13,7 +13,7 @@ import {
   defineTool,
   type ExtensionAPI,
   type ModelRegistry
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 import { contentToText } from "./butler-agent-helpers.js";
 import { formatProviderModelRef, modelToModelOption } from "./model-provider-config.js";

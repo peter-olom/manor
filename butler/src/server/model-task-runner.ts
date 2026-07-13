@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { complete, type Api, type Message, type Model, type ToolCall } from "@mariozechner/pi-ai";
+import { complete, type Api, type Message, type Model, type ToolCall } from "@earendil-works/pi-ai/compat";
 import { readCodexAuthStatus } from "./auth-status.js";
 import { contentToText } from "./butler-agent-helpers.js";
 import { memoryCodexModelArgs } from "./memory-codex-model.js";

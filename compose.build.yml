@@ -5,7 +5,7 @@ services:
       dockerfile: docker/butler/Dockerfile
       args:
         CODEX_VERSION: ${CODEX_VERSION:-0.144.1}
-        PI_VERSION: ${PI_VERSION:-0.73.1}
+        PI_VERSION: ${PI_VERSION:-0.80.6}
     image: manor-butler:local
     volumes:
       - ${MANOR_HOST_PROJECT_SOURCE_DIR:-${PWD:-.}}:/repos/manor

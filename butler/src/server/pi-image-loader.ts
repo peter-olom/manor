@@ -1,7 +1,7 @@
 import { open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
-import type { ImageContent } from "@mariozechner/pi-ai";
+import type { ImageContent } from "@earendil-works/pi-ai";
 
 const PI_MAX_IMAGE_BYTES = 3 * 1024 * 1024;
 const PI_MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024;

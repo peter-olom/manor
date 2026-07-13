@@ -1,4 +1,4 @@
-import type { AgentSessionEvent } from "@mariozechner/pi-coding-agent";
+import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
 import type { ButlerAgentSessionAccess } from "./butler-agent-tool-access.js";
 import type { ButlerActivityItemView, ButlerActivityTurnStatus, ButlerActivityTurnView } from "./types.js";

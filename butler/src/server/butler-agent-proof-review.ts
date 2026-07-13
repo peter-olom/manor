@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 
-import { complete, type Model } from "@mariozechner/pi-ai";
-import type { AgentSession, ModelRegistry } from "@mariozechner/pi-coding-agent";
+import { complete, type Model } from "@earendil-works/pi-ai/compat";
+import type { AgentSession, ModelRegistry } from "@earendil-works/pi-coding-agent";
 
 import { contentToText, parseProofScreenshotReview, type ProofScreenshotReview, type ResolvedPreviewProof } from "./butler-agent-helpers.js";
 import { modelToModelOption } from "./model-provider-config.js";
