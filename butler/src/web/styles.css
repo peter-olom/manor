@@ -449,6 +449,7 @@ a:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
   min-height: 36px;
   padding: 0 12px 8px;
@@ -4757,6 +4758,14 @@ a:hover {
   width: min(94vw, 1500px);
 }
 
+.modal-card-image.modal-card-file {
+  width: min(92vw, 1180px);
+}
+
+.modal-card-image.modal-card-file.modal-card-annotation {
+  width: min(94vw, 1500px);
+}
+
 .image-preview-head {
   display: flex;
   align-items: center;
@@ -4778,6 +4787,229 @@ a:hover {
   line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.file-preview-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.file-preview-title h2 {
+  min-width: 0;
+}
+
+.file-preview-title > span {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.file-preview-modes button {
+  min-height: 30px;
+  padding: 4px 9px;
+  font-size: 10.5px;
+}
+
+.file-preview-shell {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: color-mix(in srgb, var(--bg) 94%, #000 6%);
+}
+
+.file-preview-shell.is-pdf {
+  overflow: hidden;
+}
+
+.pdf-preview {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  background: #2f3339;
+}
+
+.pdf-preview-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 42px;
+  border-bottom: 1px solid rgb(255 255 255 / 12%);
+  background: rgb(27 30 35 / 94%);
+  color: #f4f6f8;
+  font-size: 11.5px;
+  backdrop-filter: blur(8px);
+}
+
+.pdf-preview-toolbar button {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 6%);
+  color: inherit;
+}
+
+.pdf-preview-toolbar button:disabled {
+  opacity: 0.35;
+}
+
+.pdf-preview-page {
+  display: flex;
+  justify-content: center;
+  min-height: 100%;
+  padding: 16px;
+}
+
+.pdf-preview-canvas-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+.pdf-preview-page canvas {
+  display: block;
+  align-self: flex-start;
+  max-width: 100%;
+  background: #fff;
+  box-shadow: 0 4px 18px rgb(0 0 0 / 30%);
+}
+
+.pdf-annotation-layout .pdf-preview-page {
+  min-height: calc(100% - 42px);
+}
+
+.pdf-annotation-layout .proof-annotation-overlay {
+  z-index: 1;
+}
+
+.pdf-preview > .file-preview-state {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: #2f3339;
+  color: #f4f6f8;
+}
+
+.file-preview-notice {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 11.5px;
+  text-align: center;
+}
+
+.file-preview-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 260px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.file-preview-state.is-error {
+  flex-direction: column;
+  padding: 28px;
+  color: var(--danger);
+  text-align: center;
+}
+
+.file-preview-state.is-error svg {
+  width: 20px;
+  height: 20px;
+}
+
+.file-preview-state.is-error span {
+  max-width: 560px;
+  color: var(--text-muted);
+}
+
+.file-preview-text {
+  width: min(100%, 1040px);
+  min-height: 100%;
+  margin: 0 auto;
+  padding: 28px 32px 52px;
+  color: var(--text);
+  font: 12.5px/1.65 var(--font-mono);
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.file-preview-markdown {
+  width: min(100%, 880px);
+  min-height: 100%;
+  margin: 0 auto;
+  padding: 30px 38px 58px;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.file-preview-markdown > :first-child { margin-top: 0; }
+.file-preview-markdown > :last-child { margin-bottom: 0; }
+.file-preview-markdown h1,
+.file-preview-markdown h2,
+.file-preview-markdown h3 {
+  margin: 1.5em 0 0.55em;
+  color: var(--text);
+  line-height: 1.25;
+}
+.file-preview-markdown h1 { padding-bottom: 0.35em; border-bottom: 1px solid var(--border); font-size: 1.8em; }
+.file-preview-markdown h2 { padding-bottom: 0.3em; border-bottom: 1px solid var(--border); font-size: 1.4em; }
+.file-preview-markdown h3 { font-size: 1.15em; }
+.file-preview-markdown p,
+.file-preview-markdown ul,
+.file-preview-markdown ol,
+.file-preview-markdown blockquote { margin: 0.8em 0; }
+.file-preview-markdown blockquote { padding-left: 14px; border-left: 3px solid var(--border-strong); color: var(--text-muted); }
+.file-preview-markdown code { padding: 0.15em 0.35em; border-radius: 4px; background: var(--surface-raised); font: 0.9em/1.5 var(--font-mono); }
+.file-preview-markdown pre { overflow: auto; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.file-preview-markdown pre code { padding: 0; background: transparent; }
+.file-preview-markdown table { width: 100%; border-collapse: collapse; }
+.file-preview-markdown th,
+.file-preview-markdown td { padding: 7px 9px; border: 1px solid var(--border); text-align: left; }
+.file-preview-markdown a { color: var(--accent-hover); }
+.file-preview-markdown .md-image-omitted { display: inline-flex; padding: 4px 7px; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-subtle); font-size: 11px; }
+
+.file-preview-html {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  background: #fff;
+}
+
+.file-preview-pdf {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  background: #fff;
 }
 
 .modal-head-actions,
@@ -4866,9 +5098,20 @@ a:hover {
 }
 
 .proof-annotation-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 9px 12px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 82%, var(--accent) 18%);
+}
+
+.proof-annotation-hint .button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 5px 9px;
+  font-size: 11px;
 }
 
 .proof-annotation-hint p,
@@ -6085,6 +6328,10 @@ a:hover {
   .modal-card-image.modal-card-annotation {
     width: calc(100vw - 20px);
     height: min(92dvh, 920px);
+  }
+
+  .modal-card-image.modal-card-file.modal-card-annotation {
+    width: calc(100vw - 20px);
   }
 
   .image-preview-head {

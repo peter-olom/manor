@@ -15,6 +15,7 @@ type PersistedFileReference = {
   filePath: string;
   sourceReferenceId?: string;
   version?: number;
+  lineageVersionHighWater?: number;
 };
 
 export type FileReferenceView = {
@@ -167,6 +168,27 @@ export class FileReferenceStore {
     return this.mutations.run(() => this.createFromBufferNow(input));
   }
 
+  async createVersionFromBuffer(input: { name: string; mimeType: string; buffer: Buffer; sizeBytes?: number; sourceReferenceId: string }): Promise<FileReferenceView> {
+    return this.mutations.run(() => {
+      const source = this.records.get(input.sourceReferenceId);
+      if (!source) throw new Error("Source file reference was not found");
+      const rootId = this.lineageRootId(source);
+      const root = this.records.get(rootId) ?? source;
+      const liveMaximum = [...this.records.values()].reduce(
+        (maximum, record) => this.lineageRootId(record) === rootId ? Math.max(maximum, record.version ?? 1) : maximum,
+        1
+      );
+      const previousHighWater = root.lineageVersionHighWater;
+      const version = Math.max(previousHighWater ?? 1, liveMaximum) + 1;
+      root.lineageVersionHighWater = version;
+      return this.createFromBufferNow({ ...input, version }).catch((error) => {
+        if (previousHighWater === undefined) delete root.lineageVersionHighWater;
+        else root.lineageVersionHighWater = previousHighWater;
+        throw error;
+      });
+    });
+  }
+
   async delete(id: string): Promise<boolean> {
     return this.mutations.run(async () => {
       const record = this.records.get(id);
@@ -232,6 +254,18 @@ export class FileReferenceStore {
       throw error;
     }
     return this.toView(record);
+  }
+
+  private lineageRootId(record: PersistedFileReference): string {
+    let current = record;
+    const seen = new Set<string>();
+    while (current.sourceReferenceId && !seen.has(current.sourceReferenceId)) {
+      seen.add(current.id);
+      const parent = this.records.get(current.sourceReferenceId);
+      if (!parent) break;
+      current = parent;
+    }
+    return current.id;
   }
 
   resolveViews(fileReferenceIds: string[]): FileReferenceView[] {

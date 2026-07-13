@@ -10,6 +10,7 @@ export type FileReference = {
 };
 
 export type StoredReference = ReferenceLibraryItem;
+export type TextPreviewResponse = { text: string; truncated: boolean };
 
 const VISION_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 const VISION_IMAGE_EXTENSION_MIME_TYPES = new Map([
@@ -126,9 +127,31 @@ export async function uploadAttachment(file: File): Promise<FileReference> {
   return uploaded;
 }
 
+export async function uploadFileVersion(file: File, sourceReferenceId: string): Promise<FileReference> {
+  const response = await fetch("/api/files/upload", {
+    method: "POST",
+    headers: {
+      "Content-Type": file.type || "application/octet-stream",
+      "X-Manor-Upload-Name": encodeURIComponent(file.name),
+      "X-Manor-Upload-Size": String(file.size),
+      "X-Manor-Upload-Mime-Type": file.type || "application/octet-stream",
+      "X-Manor-Source-Reference-Id": sourceReferenceId
+    },
+    body: file
+  });
+  if (!response.ok) throw new Error(await readErrorMessage(response));
+  const payload = (await response.json().catch(() => undefined)) as { file?: FileReference } | undefined;
+  if (!payload?.file) throw new Error("Version upload failed");
+  return payload.file;
+}
+
 export async function listStoredReferences(): Promise<StoredReference[]> {
   const payload = await getJson<ReferenceLibraryResponse>("/api/references");
   return Array.isArray(payload.items) ? payload.items : [];
+}
+
+export async function getStoredTextPreview(previewUrl: string, signal?: AbortSignal): Promise<TextPreviewResponse> {
+  return getJson<TextPreviewResponse>(previewUrl, { signal });
 }
 
 export async function deleteStoredReference(id: string): Promise<void> {

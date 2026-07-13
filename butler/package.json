@@ -24,7 +24,9 @@
     "highlight.js": "^11.11.1",
     "http-proxy": "^1.18.1",
     "jszip": "^3.10.1",
+    "pdf-lib": "^1.17.1",
     "pdf-parse": "^2.4.5",
+    "pdfjs-dist": "^5.4.296",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-markdown": "^10.1.0",
@@ -49,6 +51,7 @@
     "@types/react-dom": "^19.2.2",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.4.1",
+    "linkedom": "^0.18.13",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "vite": "^6.4.2"

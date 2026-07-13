@@ -1,4 +1,10 @@
-import { lazy, memo, Suspense } from "react";
+import { lazy, memo, Suspense, type ComponentProps } from "react";
+
+export function MarkdownImage({ allowRemoteImages, alt, ...rest }: ComponentProps<"img"> & { allowRemoteImages: boolean }) {
+  return allowRemoteImages
+    ? <img alt={alt ?? ""} {...rest} />
+    : <span className="md-image-omitted">{alt ? `Image omitted: ${alt}` : "Remote image omitted"}</span>;
+}
 
 const ReactMarkdown = lazy(async () => {
   const [{ default: Markdown }, remarkGfmModule, rehypeHighlightModule] = await Promise.all([
@@ -7,7 +13,7 @@ const ReactMarkdown = lazy(async () => {
     import("rehype-highlight")
   ]);
   return {
-    default: ({ text, className }: { text: string; className?: string }) => (
+    default: ({ text, className, allowRemoteImages = true }: { text: string; className?: string; allowRemoteImages?: boolean }) => (
       <Markdown
         className={className}
         remarkPlugins={[remarkGfmModule.default]}
@@ -22,7 +28,8 @@ const ReactMarkdown = lazy(async () => {
             <div className="md-table-wrap">
               <table>{children}</table>
             </div>
-          )
+          ),
+          img: ({ alt, ...rest }) => <MarkdownImage allowRemoteImages={allowRemoteImages} alt={alt ?? ""} {...rest} />
         }}
       >
         {text}
@@ -42,15 +49,16 @@ const Fallback = memo(function Fallback({ text, className }: { text: string; cla
 type MarkdownProps = {
   text: string;
   className?: string;
+  allowRemoteImages?: boolean;
 };
 
-export const Markdown = memo(function Markdown({ text, className }: MarkdownProps) {
+export const Markdown = memo(function Markdown({ text, className, allowRemoteImages }: MarkdownProps) {
   if (!text) {
     return <div className={className} />;
   }
   return (
     <Suspense fallback={<Fallback text={text} className={className} />}>
-      <ReactMarkdown text={text} className={className} />
+      <ReactMarkdown text={text} className={className} allowRemoteImages={allowRemoteImages} />
     </Suspense>
   );
 });

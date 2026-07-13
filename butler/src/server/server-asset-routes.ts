@@ -9,6 +9,8 @@ import { type FileReferenceStore } from "./file-store.js";
 import { type ImageReferenceStore } from "./image-store.js";
 import { deleteReference, listReferenceLibrary, ReferenceHasChildrenError } from "./reference-library.js";
 import type { ReferenceMutationQueue } from "./reference-mutation-queue.js";
+import { resolveReferencePreviewKind } from "../shared/references.js";
+import { InvalidTextPreviewError, readTextPreview } from "./text-preview.js";
 import {
   decodeArtifactRelativePath,
   pruneEmptyArtifactParents,
@@ -54,6 +56,10 @@ function readUploadSizeBytes(request: http.IncomingMessage): number | undefined 
   }
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function readUploadSourceReferenceId(request: http.IncomingMessage): string {
+  return readHeaderValue(request.headers["x-manor-source-reference-id"]).trim();
 }
 
 function readUploadBuffer(request: Request): Buffer | null {
@@ -187,6 +193,7 @@ export function registerServerAssetRoutes(options: {
     const mimeType = uploadBuffer ? readUploadMimeType(request) : typeof request.body?.mimeType === "string" ? request.body.mimeType : "";
     const data = uploadBuffer ? "" : typeof request.body?.data === "string" ? request.body.data : "";
     const sizeBytes = uploadBuffer ? readUploadSizeBytes(request) : typeof request.body?.sizeBytes === "number" ? request.body.sizeBytes : undefined;
+    const sourceReferenceId = uploadBuffer ? readUploadSourceReferenceId(request) : "";
 
     if (!name || (!uploadBuffer && !data)) {
       response.status(400).json({ error: "name and data are required" });
@@ -194,8 +201,15 @@ export function registerServerAssetRoutes(options: {
     }
 
     try {
+      const source = sourceReferenceId ? fileStore.get(sourceReferenceId) : null;
+      if (sourceReferenceId && (resolveReferencePreviewKind(name, mimeType) !== "pdf" || !source || resolveReferencePreviewKind(source.name, source.mimeType) !== "pdf")) {
+        response.status(400).json({ error: "Annotated PDF versions require a PDF source and PDF output" });
+        return;
+      }
       const file = uploadBuffer
-        ? await fileStore.createFromBuffer({ name, mimeType, buffer: uploadBuffer, sizeBytes })
+        ? sourceReferenceId
+          ? await fileStore.createVersionFromBuffer({ name, mimeType, buffer: uploadBuffer, sizeBytes, sourceReferenceId })
+          : await fileStore.createFromBuffer({ name, mimeType, buffer: uploadBuffer, sizeBytes })
         : await fileStore.create({ name, mimeType, data, sizeBytes });
       response.status(201).json({ ok: true, file });
     } catch (error) {
@@ -215,7 +229,7 @@ export function registerServerAssetRoutes(options: {
     response.json({ files: fileStore.list(limit) });
   });
 
-  app.get("/api/files/:fileId", (request, response) => {
+  app.get("/api/files/:fileId", async (request, response) => {
     const fileId = typeof request.params.fileId === "string" ? request.params.fileId : "";
     const filePath = fileStore.getFilePath(fileId);
     const file = fileStore.get(fileId);
@@ -227,6 +241,37 @@ export function registerServerAssetRoutes(options: {
 
     response.setHeader("Cache-Control", "private, max-age=31536000, immutable");
     response.setHeader("X-Content-Type-Options", "nosniff");
+    const previewRequested = Array.isArray(request.query.preview)
+      ? request.query.preview[0] === "1"
+      : request.query.preview === "1";
+    if (previewRequested) {
+      const previewKind = resolveReferencePreviewKind(file.name, file.mimeType);
+      if (!previewKind) {
+        response.status(415).json({ error: "This file type cannot be previewed" });
+        return;
+      }
+      if (previewKind === "pdf") {
+        response.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
+        response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+        response.setHeader("Content-Disposition", "inline");
+        response.type("application/pdf");
+        response.sendFile(filePath);
+        return;
+      }
+      response.setHeader("Content-Security-Policy", "default-src 'none'");
+      response.type("application/json");
+      try {
+        response.json(await readTextPreview(filePath));
+      } catch (error) {
+        if (error instanceof InvalidTextPreviewError) {
+          response.status(415).json({ error: error.message });
+          return;
+        }
+        console.error("Failed to read stored text preview", error);
+        response.status(500).json({ error: "The file preview could not be read" });
+      }
+      return;
+    }
     response.download(filePath, file.name);
   });
 

@@ -4,9 +4,11 @@ import {
   deleteStoredReference,
   listStoredReferences,
   uploadAttachment,
+  type FileReference,
   type StoredReference
 } from "./api";
 import { AttachmentIcon, DownloadIcon, ImageIcon, SearchIcon, TrashIcon, WarningIcon } from "./icons";
+import { FilePreviewModal } from "./FilePreviewModal";
 import { ImagePreviewModal, type PreviewMedia } from "./ImagePreviewModal";
 
 export type ReferenceFilter = "all" | "image" | "file";
@@ -89,7 +91,11 @@ function referenceTypeLabel(item: StoredReference): string {
   return extension && extension !== item.name ? extension.toUpperCase() : "File";
 }
 
-export function FileExplorer({ active }: { active: boolean }) {
+export function FileExplorer({ active, attachTargetLabel, onAttached }: {
+  active: boolean;
+  attachTargetLabel: string | null;
+  onAttached: (payload: { attachment: FileReference; text: string }) => Promise<void> | void;
+}) {
   const [items, setItems] = useState<StoredReference[]>([]);
   const [filter, setFilter] = useState<ReferenceFilter>("all");
   const [search, setSearch] = useState("");
@@ -99,6 +105,8 @@ export function FileExplorer({ active }: { active: boolean }) {
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
+  const [previewReference, setPreviewReference] = useState<StoredReference | null>(null);
+  const previewOpenerRef = useRef<HTMLButtonElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
   const [dragActive, setDragActive] = useState(false);
@@ -198,6 +206,18 @@ export function FileExplorer({ active }: { active: boolean }) {
     if (transition.filesToUpload.length > 0) void uploadFiles(transition.filesToUpload);
   }
 
+  function openFilePreview(item: StoredReference, opener: HTMLButtonElement): void {
+    previewOpenerRef.current = opener;
+    setPreviewReference(item);
+  }
+
+  function closeFilePreview(): void {
+    setPreviewReference(null);
+    const opener = previewOpenerRef.current;
+    previewOpenerRef.current = null;
+    requestAnimationFrame(() => opener?.focus());
+  }
+
   return (
     <section
       className={`file-explorer${dragActive ? " is-dragging" : ""}`}
@@ -273,7 +293,8 @@ export function FileExplorer({ active }: { active: boolean }) {
             <ul className="file-explorer-list">
               {visibleItems.map((item) => {
                 const isImage = displayKind(item) === "image";
-                const canPreview = canPreviewStoredImage(item);
+                const canPreviewImage = canPreviewStoredImage(item);
+                const canPreviewText = Boolean(item.previewKind && item.previewUrl);
                 const parent = item.sourceReferenceId ? itemsById.get(item.sourceReferenceId) : undefined;
                 const children = childrenByParentId.get(item.id) ?? [];
                 const lineageLabel = parent
@@ -287,7 +308,7 @@ export function FileExplorer({ active }: { active: boolean }) {
                 return (
                 <li key={item.id} className="file-explorer-row">
                   <div className="file-explorer-name-cell">
-                    {canPreview ? (
+                    {canPreviewImage ? (
                       <button
                         className="file-explorer-thumb is-image"
                         type="button"
@@ -298,10 +319,16 @@ export function FileExplorer({ active }: { active: boolean }) {
                           ? <img src={item.url} alt="" loading="lazy" decoding="async" fetchPriority="low" />
                           : <ImageIcon />}
                       </button>
+                    ) : canPreviewText ? (
+                      <button className="file-explorer-thumb is-file" type="button" onClick={(event) => openFilePreview(item, event.currentTarget)} aria-label={`Preview ${item.name}`}>
+                        {referenceTypeLabel(item).slice(0, 4)}
+                      </button>
                     ) : <span className={`file-explorer-thumb ${isImage ? "is-file-image" : "is-file"}`}>{isImage ? <ImageIcon /> : referenceTypeLabel(item).slice(0, 4)}</span>}
                     <div>
-                      {canPreview ? (
+                      {canPreviewImage ? (
                         <button className="file-explorer-name" type="button" onClick={() => setPreviewMedia({ name: item.name, url: item.url, kind: "image", downloadUrl: item.downloadUrl })}>{item.name}</button>
+                      ) : canPreviewText ? (
+                        <button className="file-explorer-name" type="button" onClick={(event) => openFilePreview(item, event.currentTarget)}>{item.name}</button>
                       ) : <a className="file-explorer-name" href={item.downloadUrl}>{item.name}</a>}
                       <span className="file-explorer-mime">{item.mimeType}</span>
                       {lineageLabel ? <span className="file-explorer-lineage" title={lineageLabel}>{lineageLabel}</span> : null}
@@ -337,6 +364,25 @@ export function FileExplorer({ active }: { active: boolean }) {
           attachTargetLabel={null}
           onAttached={() => undefined}
           onClose={() => setPreviewMedia(null)}
+          showErrorToast={(err) => setMutationError(err instanceof Error ? err.message : String(err))}
+        />
+      ) : null}
+      {previewReference?.previewKind && previewReference.previewUrl ? (
+        <FilePreviewModal
+          media={{
+            id: previewReference.id,
+            name: previewReference.name,
+            mimeType: previewReference.mimeType,
+            previewKind: previewReference.previewKind,
+            previewUrl: previewReference.previewUrl,
+            downloadUrl: previewReference.downloadUrl
+          }}
+          attachTargetLabel={attachTargetLabel}
+          onAttached={async (payload) => {
+            await onAttached(payload);
+            await load();
+          }}
+          onClose={closeFilePreview}
           showErrorToast={(err) => setMutationError(err instanceof Error ? err.message : String(err))}
         />
       ) : null}

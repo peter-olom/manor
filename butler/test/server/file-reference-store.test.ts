@@ -71,3 +71,24 @@ test("concurrent file uploads persist every reference", async (t) => {
   await reloaded.load();
   assert.equal(reloaded.list(20).length, 12);
 });
+
+test("derived file versions are immutable and allocate monotonic lineage versions", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "manor-file-versions-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const store = new FileReferenceStore(root);
+  await store.load();
+  const source = await store.createFromBuffer({ name: "source.pdf", mimeType: "application/pdf", buffer: Buffer.from("source") });
+  const [second, third] = await Promise.all([
+    store.createVersionFromBuffer({ name: "second.pdf", mimeType: "application/pdf", buffer: Buffer.from("second"), sourceReferenceId: source.id }),
+    store.createVersionFromBuffer({ name: "third.pdf", mimeType: "application/pdf", buffer: Buffer.from("third"), sourceReferenceId: source.id })
+  ]);
+  assert.deepEqual(new Set([second.version, third.version]), new Set([2, 3]));
+  assert.equal(second.sourceReferenceId, source.id);
+  assert.equal(third.sourceReferenceId, source.id);
+  assert.equal(await fs.readFile(store.getFilePath(source.id)!, "utf8"), "source");
+  await assert.rejects(fs.access(store.getFilePath(second.id)!, fsConstants.W_OK));
+  const latest = second.version === 3 ? second : third;
+  await store.delete(latest.id);
+  const fourth = await store.createVersionFromBuffer({ name: "fourth.pdf", mimeType: "application/pdf", buffer: Buffer.from("fourth"), sourceReferenceId: source.id });
+  assert.equal(fourth.version, 4);
+});

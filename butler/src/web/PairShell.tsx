@@ -1121,7 +1121,12 @@ export function PairShell() {
     setComposerAttachments((current) =>
       current.some((entry) => entry.id === payload.attachment.id) ? current : [...current, payload.attachment]
     );
-    if (viewMode === "worker") setViewMode("split");
+    if (manorSurface !== "sessions") {
+      setViewMode("butler");
+      setLastWorkstreamMode("butler");
+    } else if (viewMode === "worker") {
+      setViewMode("split");
+    }
   }
 
   const onButlerPatchRef = useCallback((handler: ((patch: ProviderRuntimeLivePatch) => void) | null) => {
@@ -1439,7 +1444,7 @@ export function PairShell() {
               />
             </div>
             <div className={`workspace-view is-files ${viewMode === "files" ? "is-active" : ""}`}>
-              <FileExplorer active={viewMode === "files"} />
+              <FileExplorer active={viewMode === "files"} attachTargetLabel={activePair ? "Butler composer" : null} onAttached={attachAnnotatedProof} />
             </div>
             <div className={`workspace-view is-improve ${viewMode === "improve" ? "is-active" : ""}`}>
               <SelfImprovementQueue

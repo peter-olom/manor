@@ -1,7 +1,7 @@
 import type { FileReferenceStore } from "./file-store.js";
 import type { ImageReferenceStore } from "./image-store.js";
 import type { ReferenceMutationQueue } from "./reference-mutation-queue.js";
-import type { ReferenceLibraryItem, ReferenceLibraryResponse } from "../shared/references.js";
+import { resolveReferencePreviewKind, type ReferenceLibraryItem, type ReferenceLibraryResponse } from "../shared/references.js";
 
 export class ReferenceHasChildrenError extends Error {}
 
@@ -16,13 +16,17 @@ export function listReferenceLibrary(
     version: image.version ?? 1,
     hasChildren: false
   }));
-  const files: ReferenceLibraryItem[] = fileStore.list(Number.MAX_SAFE_INTEGER).map((file) => ({
-    ...file,
-    kind: "file",
-    downloadUrl: file.url,
-    version: file.version ?? 1,
-    hasChildren: false
-  }));
+  const files: ReferenceLibraryItem[] = fileStore.list(Number.MAX_SAFE_INTEGER).map((file) => {
+    const previewKind = resolveReferencePreviewKind(file.name, file.mimeType);
+    return {
+      ...file,
+      kind: "file",
+      downloadUrl: file.url,
+      ...(previewKind ? { previewKind, previewUrl: `${file.url}?preview=1` } : {}),
+      version: file.version ?? 1,
+      hasChildren: false
+    };
+  });
   const items = [...images, ...files];
   const parentIds = new Set(items.flatMap((item) => item.sourceReferenceId ? [item.sourceReferenceId] : []));
   return {
