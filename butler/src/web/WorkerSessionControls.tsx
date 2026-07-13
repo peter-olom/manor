@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { getJson, postJson } from "./api";
+import { SessionControlsIcon } from "./icons";
 import type { WorkerSessionControlAction, WorkerSessionControls } from "../shared/worker-session-controls";
 
 function formatNumber(value: number): string {
@@ -22,14 +23,13 @@ export function SessionControlsButton({ pairId, lane, disabled }: SessionControl
   const [controls, setControls] = useState<WorkerSessionControls | null>(null);
   const [pending, setPending] = useState<WorkerSessionControlAction | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [name, setName] = useState("");
   const [instructions, setInstructions] = useState("");
   const [entryId, setEntryId] = useState("");
+  const triggerLabel = `${lane === "butler" ? "Butler" : "Worker"} session controls`;
 
   async function load() {
     const payload = await getJson<{ controls: WorkerSessionControls }>(`/api/pairs/${encodeURIComponent(pairId)}/${lane}/controls`);
     setControls(payload.controls);
-    setName(payload.controls.sessionName ?? "");
     setEntryId((current) => payload.controls.forkPoints.some((point) => point.entryId === current) ? current : payload.controls.forkPoints.at(-1)?.entryId ?? "");
   }
 
@@ -65,15 +65,12 @@ export function SessionControlsButton({ pairId, lane, disabled }: SessionControl
 
   return (
     <>
-      <button className="button" type="button" disabled={disabled} onClick={() => setOpen(true)}>Session controls</button>
+      <button className="icon-button" type="button" disabled={disabled} aria-label={triggerLabel} aria-haspopup="dialog" aria-expanded={open} title={triggerLabel} onClick={() => setOpen(true)}><SessionControlsIcon /></button>
       {open ? (
         <div className="worker-session-backdrop" role="presentation">
-          <section className="worker-session-dialog" role="dialog" aria-modal="true" aria-labelledby="worker-session-title">
+          <section className="worker-session-dialog" role="dialog" aria-modal="true" aria-label={`${lane === "butler" ? "Butler" : "Worker"} session controls`}>
             <header className="worker-session-head">
-              <div>
-                <span className="eyebrow">Pi {lane}</span>
-                <h2 id="worker-session-title">Session controls</h2>
-              </div>
+              <h2 id="worker-session-title">Session controls</h2>
               <button className="button" type="button" disabled={Boolean(pending)} onClick={() => setOpen(false)}>Close</button>
             </header>
             {!controls && !error ? <p className="muted">Loading session details…</p> : null}
@@ -89,13 +86,6 @@ export function SessionControlsButton({ pairId, lane, disabled }: SessionControl
             ) : null}
             {controls ? (
               <div className="worker-session-sections">
-                <section>
-                  <h3>Name</h3>
-                  <div className="worker-session-row">
-                    <input className="input" value={name} maxLength={120} onChange={(event) => setName(event.target.value)} aria-label={`Pi ${lane} session name`} />
-                    <button className="button" type="button" disabled={!name.trim() || Boolean(pending)} onClick={() => void run("rename", { name })}>Save</button>
-                  </div>
-                </section>
                 <section>
                   <h3>Context</h3>
                   <textarea className="input worker-session-instructions" value={instructions} placeholder="Optional compaction instructions" onChange={(event) => setInstructions(event.target.value)} />
@@ -113,7 +103,9 @@ export function SessionControlsButton({ pairId, lane, disabled }: SessionControl
                     </select>
                     <button className="button" type="button" disabled={!entryId || controls.busy || controls.compacting || Boolean(pending)} onClick={() => void run("fork", { entryId })}>Fork here</button>
                   </div>
-                  <button className="button" type="button" disabled={!controls.leafId || controls.busy || controls.compacting || Boolean(pending)} onClick={() => void run("clone")}>Clone active branch</button>
+                  <div className="worker-session-clone-action">
+                    <button className="button" type="button" disabled={!controls.leafId || controls.busy || controls.compacting || Boolean(pending)} onClick={() => void run("clone")}>Clone active branch</button>
+                  </div>
                 </section>
               </div>
             ) : null}

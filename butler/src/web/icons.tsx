@@ -355,6 +355,17 @@ export function ToolIcon() {
   );
 }
 
+export function SessionControlsIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M2.5 4h3M8.5 4h5M2.5 8h6M11.5 8h2M2.5 12h1.5M7 12h6.5" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <circle cx="7" cy="4" r="1.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
+      <circle cx="10" cy="8" r="1.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
+      <circle cx="5.5" cy="12" r="1.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
 export function DotIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">

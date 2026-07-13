@@ -7068,7 +7068,8 @@ a.file-explorer-name:hover {
   place-items: center;
   padding: 20px;
   background: rgb(9 12 18 / 52%);
-  backdrop-filter: blur(3px);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 .worker-session-dialog {
@@ -7089,7 +7090,7 @@ a.file-explorer-name:hover {
   gap: 16px;
 }
 
-.worker-session-head h2 { margin: 4px 0 0; font-size: 20px; }
+.worker-session-head h2 { margin: 0; font-size: 20px; }
 .worker-session-stats {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -7109,6 +7110,7 @@ a.file-explorer-name:hover {
 .worker-session-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 .worker-session-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .worker-session-instructions { min-height: 76px; resize: vertical; }
+.worker-session-clone-action { margin-top: 2px; padding-top: 12px; border-top: 1px solid var(--border-strong); }
 
 @media (max-width: 620px) {
   .worker-session-backdrop { align-items: end; padding: 0; }

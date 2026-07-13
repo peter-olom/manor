@@ -12,6 +12,9 @@ test("Butler sessions expose an explicitly labelled session controls entry point
     lane: "butler",
     disabled: false
   }));
-  assert.match(markup, />Session controls</);
+  assert.match(markup, /class="icon-button"/);
+  assert.match(markup, /aria-label="Butler session controls"/);
+  assert.match(markup, /title="Butler session controls"/);
+  assert.doesNotMatch(markup, />Session controls</);
   assert.doesNotMatch(markup, /disabled/);
 });
