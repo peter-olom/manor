@@ -21,35 +21,72 @@ export function createBrokerStorage(context, deps = {}) {
     toManagedVolumeName
   } = deps;
 
+async function prepareWorkspaceOutputSubpath(outputSubpath) {
+  const workspaceContainer = docker.getContainer(workspaceContainerName);
+  const outputExec = await workspaceContainer.exec({
+    AttachStdout: true,
+    AttachStderr: true,
+    Cmd: ["sh", "-c", `mkdir -p /outputs/${outputSubpath} && chmod 0777 /outputs/${outputSubpath}`],
+    User: "0",
+    Tty: false
+  });
+  const outputResult = await collectExecOutput(workspaceContainer, outputExec);
+  if (outputResult.exitCode !== 0) {
+    throw new Error(outputResult.stderr.trim() || `Could not prepare /outputs/${outputSubpath}`);
+  }
+}
+
 async function resolveWorkspaceMounts(options = {}) {
   const readOnly = options.readOnly === true;
+  const outputSubpath = typeof options.outputSubpath === "string" ? options.outputSubpath.trim() : "";
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(outputSubpath)) {
+    throw new Error("A safe outputSubpath is required for preview isolation");
+  }
   const workspaceContainer = docker.getContainer(workspaceContainerName);
+  await (deps.prepareWorkspaceOutputSubpath ?? prepareWorkspaceOutputSubpath)(outputSubpath);
   const inspection = await workspaceContainer.inspect();
   const mounts = Array.isArray(inspection.Mounts) ? inspection.Mounts : [];
   const workspaceMounts = mounts
-    .filter((mount) => mount?.Destination === "/repos")
+    .filter((mount) => mount?.Destination === "/repos" || mount?.Destination === "/inputs" || mount?.Destination === "/outputs")
     .map((mount) => {
       if (mount.Type === "volume" && mount.Name) {
+        if (mount.Destination === "/outputs") {
+          return {
+            Type: "volume",
+            Source: mount.Name,
+            Target: `/outputs/${outputSubpath}`,
+            ReadOnly: false,
+            VolumeOptions: { Subpath: outputSubpath }
+          };
+        }
         return {
           Type: "volume",
           Source: mount.Name,
           Target: mount.Destination,
-          ReadOnly: readOnly || mount.RW === false
+          ReadOnly: mount.Destination === "/inputs" ? true : mount.Destination === "/outputs" ? false : readOnly || mount.RW === false
         };
       }
       if (mount.Source) {
+        if (mount.Destination === "/outputs") {
+          return {
+            Type: mount.Type || "bind",
+            Source: path.join(mount.Source, outputSubpath),
+            Target: `/outputs/${outputSubpath}`,
+            ReadOnly: false
+          };
+        }
         return {
           Type: mount.Type || "bind",
           Source: mount.Source,
           Target: mount.Destination,
-          ReadOnly: readOnly || mount.RW === false
+          ReadOnly: mount.Destination === "/inputs" ? true : mount.Destination === "/outputs" ? false : readOnly || mount.RW === false
         };
       }
       return null;
     })
     .filter(Boolean);
 
-  if (workspaceMounts.length === 0) {
+  if (!workspaceMounts.some((mount) => mount.Target === "/repos")) {
     throw new Error(`Could not resolve /repos mount from ${workspaceContainerName}`);
   }
 

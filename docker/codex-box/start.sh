@@ -86,7 +86,7 @@ ensure_capability_token_file() {
 
   mkdir -p "$(dirname "${token_file}")"
   if [[ ! -s "${token_file}" ]]; then
-    node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64") + "\n")' >"${token_file}"
+    /usr/local/bin/node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64") + "\n")' >"${token_file}"
   fi
   chmod 600 "${token_file}" 2>/dev/null || true
 }
@@ -97,7 +97,7 @@ append_toml_string_config() {
   local encoded=""
 
   encoded="$(
-    python3 - "$value" <<'PY'
+    /usr/bin/python3 - "$value" <<'PY'
 import json
 import sys
 
@@ -143,7 +143,7 @@ write_codex_service_tier_config() {
   local config_file="${CODEX_HOME:-$HOME/.codex}/config.toml"
 
   mkdir -p "$(dirname "${config_file}")"
-  python3 - "${config_file}" "${tier}" <<'PY'
+  /usr/bin/python3 - "${config_file}" "${tier}" <<'PY'
 from pathlib import Path
 import re
 import sys
@@ -223,13 +223,13 @@ ttyd \
   bash -lc 'exec zsh -li' &
 ttyd_pid=$!
 
-node /opt/manor/codex-box/worker-pi-rpc-bridge.mjs &
+/usr/local/bin/node /opt/manor/codex-box/worker-pi-rpc-bridge.mjs &
 worker_pi_bridge_pid=$!
 
 /usr/local/bin/codex-auth bootstrap
 ensure_capability_token_file
 
-codex "${args[@]}" &
+/usr/local/bin/node /opt/manor/npm-global/lib/node_modules/@openai/codex/bin/codex.js "${args[@]}" &
 codex_pid=$!
 
 wait -n "${ttyd_pid}" "${codex_pid}" "${worker_pi_bridge_pid}"

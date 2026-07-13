@@ -5,6 +5,7 @@ import { Type } from "@sinclair/typebox";
 import { decoratePreviewVerification } from "./preview-verification.js";
 import { buildWorkerInputWithReferences } from "./reference-inputs.js";
 import { formatPreviewRuntimeDiagnostics } from "./runtime-broker-client.js";
+import { formatPreviewBootstrapHistory } from "./codex-harness-preview-lifecycle.js";
 import { observeStartedPreview } from "./butler-preview-bootstrap-observer.js";
 import { buildButlerStackTools } from "./butler-agent-stack-tools.js";
 import { normalizeBrowserSessionCookies } from "./butler-browser-tool-input.js";
@@ -159,7 +160,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
             content: [
               {
                 type: "text",
-                text: `Preview ${lease.title} is still starting at ${lease.operatorUrl}. Bootstrap=${lease.bootstrap.phase}.${heartbeat} Use inspect_preview with lease id ${lease.id} for the terminal result.`
+                text: `Preview ${lease.title} is still starting at ${lease.operatorUrl}. Bootstrap=${lease.bootstrap.phase}.${heartbeat} Use inspect_preview with lease id ${lease.id} for the terminal result.\n${formatPreviewBootstrapHistory(lease)}`
               }
             ],
             details: { lease, runtime: observation.runtime, pending: true, workspaceBootstrap, previewDefaults }
@@ -262,7 +263,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           content: [
             {
               type: "text",
-              text: `${lease.title} is ${lease.status}. ${runtimeSummary}. Bootstrap=${lease.bootstrap.phase}. Workspace=${lease.workspaceMode}. ${formatLeaseLifecycle(lease)}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}. Domains=${domains}.`
+              text: `${lease.title} is ${lease.status}. ${runtimeSummary}. Bootstrap=${lease.bootstrap.phase}. Workspace=${lease.workspaceMode}. ${formatLeaseLifecycle(lease)}. Route=${lease.operatorUrl}. Egress=${lease.egressProfile}. Domains=${domains}.\n${formatPreviewBootstrapHistory(lease)}`
             }
           ],
           details: { lease, runtime: inspected.runtime }
@@ -1241,8 +1242,8 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         const delegatedTask = typedParams.task;
         const delegatedGoal = typedParams.goal;
         const activeReferences = access.getActiveOperatorReferences();
-        const imageReferenceIds = typedParams.imageReferenceIds ?? activeReferences?.imageReferenceIds ?? [];
-        const fileReferenceIds = typedParams.fileReferenceIds ?? activeReferences?.fileReferenceIds ?? [];
+        const imageReferenceIds = [...new Set([...(activeReferences?.imageReferenceIds ?? []), ...(typedParams.imageReferenceIds ?? [])])];
+        const fileReferenceIds = [...new Set([...(activeReferences?.fileReferenceIds ?? []), ...(typedParams.fileReferenceIds ?? [])])];
         const workspace = await access.prepareDelegationWorkspace(typedParams.task, typedParams.cwd);
         const orchestration = buildDelegationRoutingDecision({ task: delegatedTask, goal: delegatedGoal });
         const repoBootstrapTask = isSharedShellRepoBootstrapTask(delegatedTask);

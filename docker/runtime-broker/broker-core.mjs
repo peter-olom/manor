@@ -13,6 +13,30 @@ export function createBrokerCore(context, deps = {}) {
     serializeLiveLeaseFromSummary
   } = deps;
 
+const previewLifecycleStatePath = context.previewLifecycleStatePath;
+
+function loadPreviewLifecycleRegistry() {
+  if (!previewLifecycleStatePath || !leaseBootstrapStates) return;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(previewLifecycleStatePath, "utf8"));
+    for (const [leaseId, state] of Object.entries(parsed?.leases ?? {})) {
+      if (leaseId && state && typeof state === "object") leaseBootstrapStates.set(leaseId, state);
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") console.warn("Could not load preview lifecycle state:", error);
+  }
+}
+
+function savePreviewLifecycleRegistry() {
+  if (!previewLifecycleStatePath || !leaseBootstrapStates) return;
+  fs.mkdirSync(path.dirname(previewLifecycleStatePath), { recursive: true });
+  const temporaryPath = `${previewLifecycleStatePath}.${process.pid}.tmp`;
+  fs.writeFileSync(temporaryPath, `${JSON.stringify({ version: 1, leases: Object.fromEntries(leaseBootstrapStates) }, null, 2)}\n`, "utf8");
+  fs.renameSync(temporaryPath, previewLifecycleStatePath);
+}
+
+loadPreviewLifecycleRegistry();
+
 function loadStackBindingRegistry() {
   try {
     const raw = fs.readFileSync(stackBindingRegistryPath, "utf8");
@@ -830,17 +854,31 @@ function buildBootstrapConfig(payload, targetPort) {
       ? "/"
       : null;
 
+  const startedAt = Date.now();
+  const waitSeconds = normalizePositiveInteger(payload.bootstrapWaitSeconds, 120);
   return {
-    waitSeconds: normalizePositiveInteger(payload.bootstrapWaitSeconds, 120),
+    waitSeconds,
     hint: normalizeBootstrapTarget(payload.bootstrapHint),
     heartbeatKind: defaultKind,
     heartbeatTarget: normalizeBootstrapTarget(payload.heartbeatTarget) ?? defaultTarget,
     heartbeatIntervalSeconds: normalizePositiveInteger(payload.heartbeatIntervalSeconds, 5),
     phase: "pulling_image",
-    startedAt: Date.now(),
+    startedAt,
     readyAt: null,
     lastHeartbeatAt: null,
     lastHeartbeatError: null,
+    deadlineAt: startedAt + waitSeconds * 1000,
+    sequence: 1,
+    heartbeatAttempt: 0,
+    events: [{
+      sequence: 1,
+      phase: "pulling_image",
+      at: startedAt,
+      elapsedMs: 0,
+      message: "Preparing the preview image.",
+      heartbeatAttempt: 0,
+      heartbeatError: null
+    }],
     targetPort
   };
 }
@@ -872,13 +910,26 @@ function buildBootstrapFallback(labels, targetPort, status, containerRunning) {
     phase = config.heartbeatKind === "none" ? "ready" : "waiting_for_heartbeat";
   }
 
+  const at = Date.now();
   return {
     ...config,
     phase,
     startedAt: null,
     readyAt: phase === "ready" ? Date.now() : null,
     lastHeartbeatAt: null,
-    lastHeartbeatError: null
+    lastHeartbeatError: null,
+    deadlineAt: null,
+    sequence: 1,
+    heartbeatAttempt: 0,
+    events: [{
+      sequence: 1,
+      phase,
+      at,
+      elapsedMs: 0,
+      message: phase === "ready" ? "Preview is ready." : phase === "failed" ? "Preview failed." : "Preview container is starting.",
+      heartbeatAttempt: 0,
+      heartbeatError: null
+    }]
   };
 }
 
@@ -897,12 +948,17 @@ function serializeBootstrapState(bootstrap) {
     startedAt: bootstrap.startedAt,
     readyAt: bootstrap.readyAt,
     lastHeartbeatAt: bootstrap.lastHeartbeatAt,
-    lastHeartbeatError: bootstrap.lastHeartbeatError
+    lastHeartbeatError: bootstrap.lastHeartbeatError,
+    deadlineAt: bootstrap.deadlineAt ?? null,
+    sequence: bootstrap.sequence ?? 0,
+    heartbeatAttempt: bootstrap.heartbeatAttempt ?? 0,
+    events: Array.isArray(bootstrap.events) ? bootstrap.events : []
   };
 }
 
 function setLeaseBootstrapState(leaseId, state) {
   leaseBootstrapStates.set(leaseId, state);
+  savePreviewLifecycleRegistry();
   return state;
 }
 
@@ -912,16 +968,52 @@ function mergeLeaseBootstrapState(leaseId, patch) {
     return null;
   }
 
+  const at = Date.now();
+  const nextAttempt = patch.lastHeartbeatAt && patch.phase !== "ready"
+    ? (current.heartbeatAttempt ?? 0) + 1
+    : (current.heartbeatAttempt ?? 0);
+  const shouldAppendEvent =
+    typeof patch.phase === "string" && patch.phase !== current.phase ||
+    patch.lastHeartbeatError !== undefined && patch.lastHeartbeatError !== current.lastHeartbeatError ||
+    patch.readyAt !== undefined;
+  const nextSequence = (current.sequence ?? 0) + (shouldAppendEvent ? 1 : 0);
+  const message = patch.phase === "ready"
+    ? "Preview is ready."
+    : patch.phase === "failed"
+      ? `Preview failed${patch.lastHeartbeatError ? `: ${patch.lastHeartbeatError}` : "."}`
+      : patch.phase === "starting_container"
+        ? "Starting the preview container and command."
+        : patch.phase === "bootstrapping"
+          ? current.hint || "Preview command is bootstrapping."
+          : patch.phase === "waiting_for_heartbeat"
+            ? patch.lastHeartbeatError
+              ? `Waiting for readiness: ${patch.lastHeartbeatError}`
+              : "Waiting for the readiness check."
+            : patch.lastHeartbeatError || `Preview bootstrap is ${patch.phase ?? current.phase}.`;
+  const event = shouldAppendEvent ? {
+    sequence: nextSequence,
+    phase: patch.phase ?? current.phase,
+    at,
+    elapsedMs: current.startedAt ? Math.max(0, at - current.startedAt) : 0,
+    message,
+    heartbeatAttempt: nextAttempt,
+    heartbeatError: patch.lastHeartbeatError ?? null
+  } : null;
   const next = {
     ...current,
-    ...patch
+    ...patch,
+    sequence: nextSequence,
+    heartbeatAttempt: nextAttempt,
+    events: event ? [...(current.events ?? []), event].slice(-40) : (current.events ?? [])
   };
   leaseBootstrapStates.set(leaseId, next);
+  savePreviewLifecycleRegistry();
   return next;
 }
 
 function clearLeaseBootstrapState(leaseId) {
   leaseBootstrapStates.delete(leaseId);
+  savePreviewLifecycleRegistry();
 }
 
 function parseContainerTimestamp(value) {

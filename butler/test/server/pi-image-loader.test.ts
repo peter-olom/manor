@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, truncate } from "node:fs/promises";
+import { chmod, mkdtemp, rm, truncate } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -65,6 +65,7 @@ test("Butler rejects one oversized Pi image before reading it", async () => {
       mimeType: "image/png",
       buffer: Buffer.from([1])
     });
+    await chmod(store.getFilePath(reference.id)!, 0o644);
     await truncate(store.getFilePath(reference.id)!, 3 * 1024 * 1024 + 1);
 
     await assert.rejects(
@@ -88,6 +89,7 @@ test("Butler rejects aggregate Pi image payloads before reading them", async () 
         mimeType: "image/png",
         buffer: Buffer.from([1])
       });
+      await chmod(store.getFilePath(reference.id)!, 0o644);
       await truncate(store.getFilePath(reference.id)!, 3 * 1024 * 1024);
       ids.push(reference.id);
     }

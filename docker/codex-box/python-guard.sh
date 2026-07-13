@@ -35,28 +35,19 @@ run_real() {
 
 block() {
   cat >&2 <<EOF
-${name} is blocked from package installation in the shared Worker execution host.
-Do repo and git work here.
-Use a Manor preview for package installs, app startup, builds, and project execution.
+RUN_IN_PREVIEW
+${name} is blocked in the shared Worker execution host.
+The Worker shell is only for source files, repository inspection, editing, and Git.
+Run package installs, builds, tests, scripts, servers, conversions, and project code in a Manor preview.
 EOF
   exit 126
 }
 
-if [[ "${1:-}" == "-m" ]]; then
-  module="${2:-}"
-  subcommand="${3:-}"
-  case "${module}" in
-    pip|pip3|ensurepip|uv|piptools|pipx|poetry)
-      block
-      ;;
-    playwright)
-      case "${subcommand}" in
-        install|install-deps|uninstall)
-          block
-          ;;
-      esac
-      ;;
-  esac
-fi
-
-run_real "$@"
+case "${1:-}" in
+  ""|-V|--version|-h|--help)
+    run_real "$@"
+    ;;
+  *)
+    block
+    ;;
+esac

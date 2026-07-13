@@ -46,6 +46,18 @@ type LeasePayload = {
     readyAt: number | null;
     lastHeartbeatAt: number | null;
     lastHeartbeatError: string | null;
+    deadlineAt?: number | null;
+    sequence?: number;
+    heartbeatAttempt?: number;
+    events?: Array<{
+      sequence: number;
+      phase: LeasePayload["bootstrap"]["phase"];
+      at: number;
+      elapsedMs: number;
+      message: string;
+      heartbeatAttempt: number;
+      heartbeatError: string | null;
+    }>;
   };
 };
 

@@ -143,6 +143,22 @@ test("manor-harness proof subcommand help is available without a job binding", a
   assert.match(result.stdout, /Markdown is the default format/);
 });
 
+test("manor-harness publishes a derived output as a new input version", async () => {
+  const request = await captureHarnessAction([
+    "input", "publish", "/outputs/thread-1/revised.pdf",
+    "--from", "file-source",
+    "--name", "revised-cv.pdf",
+    "--content-type", "application/pdf"
+  ]);
+  assert.equal(request.action, "input.publish_version");
+  assert.deepEqual(request.params, {
+    filePath: "/outputs/thread-1/revised.pdf",
+    sourceReferenceId: "file-source",
+    name: "revised-cv.pdf",
+    contentType: "application/pdf"
+  });
+});
+
 test("manor-harness resolves lifecycle cwd flags before forwarding broker requests", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "manor-harness-cwd-test-"));
   const workspace = path.join(root, "workspace");
@@ -200,6 +216,16 @@ test("manor-harness preserves preview exec cwd as an in-container path", async (
   ]);
   assert.equal(previewAbsoluteExec.action, "preview.exec");
   assert.equal(previewAbsoluteExec.params?.cwd, "/tmp/manor-preview-workspaces/preview-1/app");
+});
+
+test("manor-harness forwards bounded preview lifecycle waits", async () => {
+  const previewWait = await captureHarnessAction([
+    "preview", "wait", "preview-1",
+    "--timeout-seconds", "20"
+  ]);
+  assert.equal(previewWait.action, "preview.wait");
+  assert.equal(previewWait.params?.leaseId, "preview-1");
+  assert.equal(previewWait.params?.timeoutSeconds, 20);
 });
 
 test("manor-harness preserves service exec cwd as an in-container path", async () => {

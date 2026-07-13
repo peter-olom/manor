@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+codex_cli=(/usr/local/bin/node /opt/manor/npm-global/lib/node_modules/@openai/codex/bin/codex.js)
+
 usage() {
   cat >&2 <<'EOF'
 Usage:
@@ -32,7 +34,7 @@ read_api_key() {
 }
 
 login_status() {
-  codex login status 2>&1 || true
+  "${codex_cli[@]}" login status 2>&1 || true
 }
 
 bootstrap_api_key() {
@@ -50,7 +52,7 @@ bootstrap_api_key() {
 
   local api_key
   api_key="$(read_api_key)"
-  printf '%s' "${api_key}" | codex login --with-api-key
+  printf '%s' "${api_key}" | "${codex_cli[@]}" login --with-api-key
 }
 
 command_name="${1:-}"
@@ -74,14 +76,14 @@ case "${command_name}" in
     esac
     ;;
   status)
-    exec codex login status
+    exec "${codex_cli[@]}" login status
     ;;
   api-key)
     api_key="$(read_api_key)"
-    printf '%s' "${api_key}" | codex login --with-api-key
+    printf '%s' "${api_key}" | "${codex_cli[@]}" login --with-api-key
     ;;
   device)
-    exec codex login --device-auth
+    exec "${codex_cli[@]}" login --device-auth
     ;;
   *)
     usage

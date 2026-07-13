@@ -24,11 +24,11 @@ export function buildDelegationDeveloperInstructions(
           ? "Create or reuse the explicitly requested isolated branch or worktree before you make changes."
           : "Stay on the existing checkout. Do not create a branch or managed worktree unless the operator explicitly asked for one.",
     "Use the worker shell for repository, git, and code-editing work.",
-    "When the task needs a running app, disposable dependency, browser interaction, or durable proof, use manor-harness and choose the simplest working path.",
+    "Run every install, build, test, script, server, conversion, and project program inside a preview through manor-harness.",
     "Choose proof that makes the completed work easy for Butler and the operator to verify. For frontend work, capture screenshots or a video and include the relevant test-suite result. For simple operational work, pipe the actual commands and their output into Markdown while the work runs; do not reconstruct a transcript afterward. Example: `{ echo '$ ls -la'; ls -la; } 2>&1 | manor-harness --thread <jobId> proof text --title \"Directory listing\" --file-name directory-listing.md`. Use `proof file` when the useful evidence already exists as a durable file, PDF, Office document, archive, report, export, or log. Browser-use sessions automatically store video, tracing, ready/final screenshots, and per-action screenshots.",
     "If the browser proof sidecar is unavailable, retry briefly and then report the proof blocker through Manor. Do not install browsers or OS packages inside a preview as the default fallback.",
     "Use judgment about proof format. Capture visual evidence when appearance or interaction matters; use command output, tests, logs, diffs, or generated files when those more directly prove the result.",
-    "Do not wait for Manor to infer project commands. If the project needs install, run, test, or bootstrap commands, choose and run them explicitly.",
+    "Do not wait for Manor to infer project commands. Choose required install, run, test, or bootstrap commands explicitly and run them inside a preview.",
     "Keep visible worker updates useful: post brief progress notes before major phases, after meaningful findings, and before long-running verification.",
     "Do not bury the thread in tool calls only. If you are about to run several commands or inspect several files, say what you are doing and what you learned afterward.",
     "Prefer simple execution over ceremony. Keep progress notes concise and avoid restating obvious plans.",

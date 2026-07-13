@@ -22,15 +22,16 @@ is_help_or_version() {
 
 block() {
   cat >&2 <<EOF
+RUN_IN_PREVIEW
 ${name} is blocked in the shared Worker execution host.
-Do repo and git work here.
-Use a Manor preview for package installs, app startup, builds, and project execution.
+The Worker shell is only for source files, repository inspection, editing, and Git.
+Run package installs, builds, tests, scripts, servers, conversions, and project code in a Manor preview.
 EOF
   exit 126
 }
 
 case "${name}" in
-  npm|npx|pnpm|pnpx|yarn|yarnpkg|bun|bunx|pip|pip3|pipx|uv|uvx|poetry|bundle|composer|corepack)
+  npm|npx|pnpm|pnpx|yarn|yarnpkg|bun|bunx|pip|pip3|pipx|uv|uvx|poetry|bundle|composer|corepack|make|cmake|ctest|meson|ninja|gradle|mvn|ant|pytest|rspec|tsx|ts-node|jest|vitest)
     if is_help_or_version "${1:-}"; then
       run_real "$@"
     fi
@@ -41,24 +42,18 @@ case "${name}" in
       ""|-v|--version|version|help|--help|env|list|which)
         run_real "$@"
         ;;
-      install|update|uninstall|pristine|cleanup|setup|sources)
-        block
-        ;;
       *)
-        run_real "$@"
+        block
         ;;
     esac
     ;;
   cargo)
     case "${1:-}" in
-      ""|-V|--version|version|help|--help|fmt|clippy|metadata|locate-project|tree|pkgid|read-manifest)
+      ""|-V|--version|version|help|--help|metadata|locate-project|tree|pkgid|read-manifest)
         run_real "$@"
-        ;;
-      install|add|remove|update|fetch|vendor)
-        block
         ;;
       *)
-        run_real "$@"
+        block
         ;;
     esac
     ;;
@@ -67,11 +62,8 @@ case "${name}" in
       ""|version|env|help|fmt|vet|list)
         run_real "$@"
         ;;
-      get|install)
-        block
-        ;;
       *)
-        run_real "$@"
+        block
         ;;
     esac
     ;;
@@ -80,11 +72,11 @@ case "${name}" in
       ""|-v|--version|help)
         run_real "$@"
         ;;
-      install|remove|purge|upgrade|dist-upgrade|full-upgrade|autoremove|build-dep|source|download)
-        block
+      list|show|search|policy)
+        run_real "$@"
         ;;
       *)
-        run_real "$@"
+        block
         ;;
     esac
     ;;
@@ -97,7 +89,7 @@ case "${name}" in
         block
         ;;
       *)
-        run_real "$@"
+        block
         ;;
     esac
     ;;
@@ -110,7 +102,7 @@ case "${name}" in
         block
         ;;
       *)
-        run_real "$@"
+        block
         ;;
     esac
     ;;
@@ -123,7 +115,7 @@ case "${name}" in
         block
         ;;
       *)
-        run_real "$@"
+        block
         ;;
     esac
     ;;
@@ -136,7 +128,17 @@ case "${name}" in
         block
         ;;
       *)
+        block
+        ;;
+    esac
+    ;;
+  mise)
+    case "${1:-}" in
+      ""|-V|--version|version|help|--help|current|doctor|env|info|ls|list|where|which)
         run_real "$@"
+        ;;
+      *)
+        block
         ;;
     esac
     ;;

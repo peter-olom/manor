@@ -553,6 +553,7 @@ export interface PreviewLeaseView extends LeaseLifecycleView {
     readyAt: number | null;
     lastHeartbeatAt: number | null;
     lastHeartbeatError: string | null;
+    events?: Array<{ sequence: number; phase: PreviewBootstrapPhase; at: number; elapsedMs: number; message: string; heartbeatAttempt: number; heartbeatError: string | null }>;
   };
 }
 

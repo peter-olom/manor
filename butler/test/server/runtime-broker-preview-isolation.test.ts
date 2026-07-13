@@ -116,6 +116,63 @@ test("runtime broker creates snapshot preview leases by contract", (t) => {
   assert.equal(lease.operatorUrl, "/preview/lease-preview-isolation/");
 });
 
+test("runtime broker exposes ordered preview bootstrap lifecycle events", (t) => {
+  const egressConfigPath = path.join(os.tmpdir(), `manor-egress-${process.pid}-${Date.now()}.json`);
+  const lifecycleStatePath = path.join(os.tmpdir(), `manor-preview-lifecycle-${process.pid}-${Date.now()}.json`);
+  fs.writeFileSync(egressConfigPath, '{"profiles":[]}\n', "utf8");
+  t.after(() => {
+    fs.rmSync(egressConfigPath, { force: true });
+    fs.rmSync(lifecycleStatePath, { force: true });
+  });
+  const leaseBootstrapStates = new Map();
+  const broker = createBrokerCore({
+    previewImage: "node:22",
+    previewEgressConfigPath: egressConfigPath,
+    routeBase: "/preview",
+    previewLifecycleStatePath: lifecycleStatePath,
+    leaseBootstrapStates,
+    retainedPreviewLeases: new Map(),
+    leaseTransitions: new Map()
+  });
+
+  const initial = broker.buildBootstrapConfig({ bootstrapWaitSeconds: 30 }, 3000);
+  broker.setLeaseBootstrapState("preview-events", initial);
+  broker.mergeLeaseBootstrapState("preview-events", { phase: "starting_container" });
+  broker.mergeLeaseBootstrapState("preview-events", {
+    phase: "waiting_for_heartbeat",
+    lastHeartbeatAt: Date.now(),
+    lastHeartbeatError: "connect ECONNREFUSED"
+  });
+  broker.mergeLeaseBootstrapState("preview-events", {
+    phase: "ready",
+    readyAt: Date.now(),
+    lastHeartbeatAt: Date.now(),
+    lastHeartbeatError: null
+  });
+
+  const lifecycle = broker.serializeBootstrapState(broker.getLeaseBootstrapState("preview-events", {}, 3000, "running", true));
+  assert.equal(lifecycle.phase, "ready");
+  assert.equal(lifecycle.heartbeatAttempt, 1);
+  assert.equal(lifecycle.events.length, 4);
+  assert.deepEqual(lifecycle.events.map((event) => event.sequence), [1, 2, 3, 4]);
+  assert.match(lifecycle.events[2].message, /ECONNREFUSED/);
+  assert.equal(lifecycle.events[3].message, "Preview is ready.");
+  assert.ok(lifecycle.deadlineAt > lifecycle.events[0].at);
+
+  const reloaded = createBrokerCore({
+    previewImage: "node:22",
+    previewEgressConfigPath: egressConfigPath,
+    routeBase: "/preview",
+    previewLifecycleStatePath: lifecycleStatePath,
+    leaseBootstrapStates: new Map(),
+    retainedPreviewLeases: new Map(),
+    leaseTransitions: new Map()
+  });
+  const durable = reloaded.getLeaseBootstrapState("preview-events", {}, 3000, "running", true);
+  assert.equal(durable.phase, "ready");
+  assert.equal(durable.events.length, 4);
+});
+
 test("runtime broker rejects cross-project stack storage keys before resource creation", (t) => {
   const egressConfigPath = path.join(os.tmpdir(), `manor-egress-${process.pid}-${Date.now()}.json`);
   fs.writeFileSync(egressConfigPath, '{"profiles":[]}\n', "utf8");
@@ -561,6 +618,18 @@ test("runtime broker can resolve source workspace mounts as read-only", async ()
                 Source: "/tmp/ignored",
                 Destination: "/tmp/ignored",
                 RW: true
+              },
+              {
+                Type: "volume",
+                Name: "manor_inputs",
+                Destination: "/inputs",
+                RW: false
+              },
+              {
+                Type: "volume",
+                Name: "manor_outputs",
+                Destination: "/outputs",
+                RW: true
               }
             ]
           };
@@ -568,27 +637,55 @@ test("runtime broker can resolve source workspace mounts as read-only", async ()
       };
     }
   };
-  const storage = createBrokerStorage({
-    workspaceContainerName: "worker-host",
-    docker
+  const prepared: string[] = [];
+  const storage = createBrokerStorage({ workspaceContainerName: "worker-host", docker }, {
+    prepareWorkspaceOutputSubpath: async (outputSubpath: string) => prepared.push(outputSubpath)
   });
 
-  assert.deepEqual(await storage.resolveWorkspaceMounts(), [
+  await assert.rejects(storage.resolveWorkspaceMounts(), /safe outputSubpath/);
+  assert.deepEqual(await storage.resolveWorkspaceMounts({ outputSubpath: "thread-1" }), [
     {
       Type: "volume",
       Source: "manor_repos",
       Target: "/repos",
       ReadOnly: false
+    },
+    {
+      Type: "volume",
+      Source: "manor_inputs",
+      Target: "/inputs",
+      ReadOnly: true
+    },
+    {
+      Type: "volume",
+      Source: "manor_outputs",
+      Target: "/outputs/thread-1",
+      ReadOnly: false,
+      VolumeOptions: { Subpath: "thread-1" }
     }
   ]);
-  assert.deepEqual(await storage.resolveWorkspaceMounts({ readOnly: true }), [
+  assert.deepEqual(await storage.resolveWorkspaceMounts({ readOnly: true, outputSubpath: "thread-2" }), [
     {
       Type: "volume",
       Source: "manor_repos",
       Target: "/repos",
       ReadOnly: true
+    },
+    {
+      Type: "volume",
+      Source: "manor_inputs",
+      Target: "/inputs",
+      ReadOnly: true
+    },
+    {
+      Type: "volume",
+      Source: "manor_outputs",
+      Target: "/outputs/thread-2",
+      ReadOnly: false,
+      VolumeOptions: { Subpath: "thread-2" }
     }
   ]);
+  assert.deepEqual(prepared, ["thread-1", "thread-2"]);
 });
 
 test("runtime broker accepts neutral harness tokens and legacy Codex token headers", (t) => {

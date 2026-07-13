@@ -37,6 +37,8 @@ type PersistedImageReference = {
   sha256: string;
   createdAt: number;
   filePath: string;
+  sourceReferenceId?: string;
+  version?: number;
 };
 
 export type ImageReferenceView = {
@@ -46,6 +48,8 @@ export type ImageReferenceView = {
   sizeBytes: number;
   createdAt: number;
   url: string;
+  sourceReferenceId?: string;
+  version?: number;
 };
 
 export const MAX_IMAGE_BYTES = 512 * 1024 * 1024;
@@ -146,7 +150,16 @@ export class ImageReferenceStore {
         continue;
       }
 
-      this.records.set(record.id, record as PersistedImageReference);
+      const filePath = path.join(this.filesDir, path.basename(record.filePath));
+      try {
+        await fs.chmod(filePath, 0o444);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          continue;
+        }
+        throw error;
+      }
+      this.records.set(record.id, { ...(record as PersistedImageReference), filePath });
     }
   }
 
@@ -176,17 +189,19 @@ export class ImageReferenceStore {
     return null;
   }
 
-  async create(input: { name: string; mimeType: string; data: string; sizeBytes?: number }): Promise<ImageReferenceView> {
+  async create(input: { name: string; mimeType: string; data: string; sizeBytes?: number; sourceReferenceId?: string; version?: number }): Promise<ImageReferenceView> {
     const normalizedBase64 = normalizeBase64(input.data);
     return this.createFromBuffer({
       name: input.name,
       mimeType: input.mimeType,
       buffer: Buffer.from(normalizedBase64, "base64"),
-      sizeBytes: input.sizeBytes
+      sizeBytes: input.sizeBytes,
+      sourceReferenceId: input.sourceReferenceId,
+      version: input.version
     });
   }
 
-  async createFromBuffer(input: { name: string; mimeType: string; buffer: Buffer; sizeBytes?: number }): Promise<ImageReferenceView> {
+  async createFromBuffer(input: { name: string; mimeType: string; buffer: Buffer; sizeBytes?: number; sourceReferenceId?: string; version?: number }): Promise<ImageReferenceView> {
     const mimeType = ensureImageMimeType(input.mimeType);
     const buffer = input.buffer;
 
@@ -214,10 +229,12 @@ export class ImageReferenceStore {
       sizeBytes: buffer.byteLength,
       sha256,
       createdAt,
-      filePath
+      filePath,
+      ...(input.sourceReferenceId ? { sourceReferenceId: input.sourceReferenceId, version: input.version ?? 2 } : {})
     };
 
-    await fs.writeFile(filePath, buffer);
+    await fs.writeFile(filePath, buffer, { mode: 0o444 });
+    await fs.chmod(filePath, 0o444);
     this.records.set(id, record);
     await this.save();
     return this.toView(record);
@@ -305,7 +322,8 @@ export class ImageReferenceStore {
       mimeType: record.mimeType,
       sizeBytes: record.sizeBytes,
       createdAt: record.createdAt,
-      url: `${this.publicBasePath}/${record.id}`
+      url: `${this.publicBasePath}/${record.id}`,
+      ...(record.sourceReferenceId ? { sourceReferenceId: record.sourceReferenceId, version: record.version ?? 2 } : {})
     };
   }
 

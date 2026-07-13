@@ -25,6 +25,7 @@ const brokerToken = process.env.RUNTIME_BROKER_TOKEN ?? null;
 const legacyHarnessAccessRegistryPath = process.env.RUNTIME_CODEX_ACCESS_FILE ?? "/state/codex-broker-access.json";
 const harnessAccessRegistryPath = process.env.RUNTIME_HARNESS_ACCESS_FILE ?? process.env.RUNTIME_CODEX_ACCESS_FILE ?? "/state/harness-broker-access.json";
 const stackBindingRegistryPath = process.env.RUNTIME_STACK_BINDINGS_FILE ?? "/opt/manor/runtime-broker/state/stack-thread-bindings.json";
+const previewLifecycleStatePath = process.env.RUNTIME_PREVIEW_LIFECYCLE_FILE ?? "/runtime-state/preview-lifecycle.json";
 const internalOperatorBaseUrl = process.env.RUNTIME_OPERATOR_BASE_URL_INTERNAL ?? "http://butler:8080";
 const workspaceContainerName = process.env.RUNTIME_WORKSPACE_CONTAINER ?? process.env.RUNTIME_CODEX_WORKSPACE_CONTAINER ?? "manor-codex-box";
 const butlerContainerName = process.env.RUNTIME_BUTLER_CONTAINER ?? "manor-butler";
@@ -73,6 +74,7 @@ const brokerContext = {
   harnessAccessRegistryPath,
   legacyHarnessAccessRegistryPath,
   stackBindingRegistryPath,
+  previewLifecycleStatePath,
   internalOperatorBaseUrl,
   workspaceContainerName,
   butlerContainerName,
@@ -916,7 +918,10 @@ app.post("/leases", async (request, response) => {
     }
 
     const networkName = stack?.Name || previewNetwork;
-    const workspaceMounts = await resolveWorkspaceMounts({ readOnly: true });
+    const workspaceMounts = await resolveWorkspaceMounts({
+      readOnly: true,
+      outputSubpath: lease.threadId || lease.id
+    });
     const sourceWorktreePath = lease.worktreePath;
     const runtimeWorktreePath = `/tmp/manor-preview-workspaces/${lease.id}`;
     const runtimeCommand = buildSnapshotWorkspaceCommand(sourceWorktreePath, runtimeWorktreePath, lease.command);

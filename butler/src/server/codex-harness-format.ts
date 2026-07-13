@@ -29,7 +29,8 @@ export function formatHarnessExecutionContract(thread: CodexThreadRecord): strin
 
 export function formatHarnessRuntimeModel(): string[] {
   return [
-    "Runtime model: use the Worker shell for repository and code work; use manor-harness only when the task needs a running app, disposable dependency, browser interaction, or durable proof.",
+    "Runtime rule: the Worker shell is only for source files, repository inspection, editing, and Git. Run all installs, builds, tests, scripts, servers, conversions, and project code in a preview through manor-harness.",
+    "Uploaded inputs are mounted read-only at /inputs in both Worker and previews. Write derived files under /outputs/<jobId>, then publish them with manor-harness input publish <path> --from <referenceId> so Manor creates a linked immutable version.",
     "Previews run app code. Services provide supporting infrastructure such as databases, queues, object storage, or mail capture.",
     "Browser-use sessions already capture tracing, video, a ready screenshot, a final screenshot, and per-action screenshots unless you disable auto-capture.",
     "Choose proof that directly demonstrates the result. Frontend work usually benefits from screenshots or video plus test output; operational work is often best shown with a Markdown command transcript.",
@@ -38,6 +39,7 @@ export function formatHarnessRuntimeModel(): string[] {
     "If the browser proof sidecar is unavailable, retry briefly and then report the proof blocker through Manor. Do not install browsers or OS packages inside a preview as the default fallback.",
     "If the desktop proof sidecar is unavailable, check desktop status and report that the desktop profile must be started before native headed proof can proceed.",
     "Keep startup explicit. If the project needs install or run commands, choose and run them directly instead of waiting for Manor to infer them.",
+    "After starting a preview, use preview wait for its ready or failed result. Startup logs, processes, and diagnostic exec remain available while it boots; inspect them before creating another preview.",
     "If the repo has its own AGENTS guidance for install or runtime shape, follow that guidance over these generic defaults."
   ];
 }

@@ -10,6 +10,8 @@ type PersistedFileReference = {
   sha256: string;
   createdAt: number;
   filePath: string;
+  sourceReferenceId?: string;
+  version?: number;
 };
 
 export type FileReferenceView = {
@@ -19,9 +21,26 @@ export type FileReferenceView = {
   sizeBytes: number;
   createdAt: number;
   url: string;
+  sourceReferenceId?: string;
+  version?: number;
 };
 
 export const MAX_FILE_BYTES = 40 * 1024 * 1024;
+
+export async function migrateLegacyReferenceStore(legacyDir: string, targetDir: string): Promise<void> {
+  if (path.resolve(legacyDir) === path.resolve(targetDir)) return;
+  try {
+    await fs.access(path.join(targetDir, "index.json"));
+    return;
+  } catch {}
+  try {
+    await fs.access(path.join(legacyDir, "index.json"));
+  } catch {
+    return;
+  }
+  await fs.mkdir(path.dirname(targetDir), { recursive: true });
+  await fs.cp(legacyDir, targetDir, { recursive: true, errorOnExist: false, force: false });
+}
 
 function normalizeMimeType(mimeType: string): string {
   const normalized = mimeType.trim().toLowerCase();
@@ -96,7 +115,16 @@ export class FileReferenceStore {
         continue;
       }
 
-      this.records.set(record.id, record as PersistedFileReference);
+      const filePath = path.join(this.filesDir, path.basename(record.filePath));
+      try {
+        await fs.chmod(filePath, 0o444);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          continue;
+        }
+        throw error;
+      }
+      this.records.set(record.id, { ...(record as PersistedFileReference), filePath });
     }
   }
 
@@ -116,17 +144,19 @@ export class FileReferenceStore {
     return this.records.get(id)?.filePath ?? null;
   }
 
-  async create(input: { name: string; mimeType: string; data: string; sizeBytes?: number }): Promise<FileReferenceView> {
+  async create(input: { name: string; mimeType: string; data: string; sizeBytes?: number; sourceReferenceId?: string; version?: number }): Promise<FileReferenceView> {
     const normalizedBase64 = normalizeBase64(input.data);
     return this.createFromBuffer({
       name: input.name,
       mimeType: input.mimeType,
       buffer: Buffer.from(normalizedBase64, "base64"),
-      sizeBytes: input.sizeBytes
+      sizeBytes: input.sizeBytes,
+      sourceReferenceId: input.sourceReferenceId,
+      version: input.version
     });
   }
 
-  async createFromBuffer(input: { name: string; mimeType: string; buffer: Buffer; sizeBytes?: number }): Promise<FileReferenceView> {
+  async createFromBuffer(input: { name: string; mimeType: string; buffer: Buffer; sizeBytes?: number; sourceReferenceId?: string; version?: number }): Promise<FileReferenceView> {
     const mimeType = normalizeMimeType(input.mimeType);
     const buffer = input.buffer;
     if (buffer.byteLength === 0) {
@@ -152,10 +182,12 @@ export class FileReferenceStore {
       sizeBytes: buffer.byteLength,
       sha256: crypto.createHash("sha256").update(buffer).digest("hex"),
       createdAt,
-      filePath
+      filePath,
+      ...(input.sourceReferenceId ? { sourceReferenceId: input.sourceReferenceId, version: input.version ?? 2 } : {})
     };
 
-    await fs.writeFile(filePath, buffer);
+    await fs.writeFile(filePath, buffer, { mode: 0o444 });
+    await fs.chmod(filePath, 0o444);
     this.records.set(id, record);
     await this.save();
     return this.toView(record);
@@ -191,7 +223,8 @@ export class FileReferenceStore {
       mimeType: record.mimeType,
       sizeBytes: record.sizeBytes,
       createdAt: record.createdAt,
-      url: `${this.publicBasePath}/${record.id}`
+      url: `${this.publicBasePath}/${record.id}`,
+      ...(record.sourceReferenceId ? { sourceReferenceId: record.sourceReferenceId, version: record.version ?? 2 } : {})
     };
   }
 

@@ -21,6 +21,8 @@ import { normalizeReportEvidence, normalizeWorkerClaimsReport, validateCompleted
 import { handleHarnessDesktopAction } from "./codex-harness-desktop.js";
 import { formatHarnessJobMemory, formatHarnessProjectMemory, handleHarnessMemoryAction } from "./codex-harness-memory.js";
 import { handleHarnessPayloadAction } from "./codex-harness-instructions.js";
+import { handleHarnessPreviewWait } from "./codex-harness-preview-lifecycle.js";
+import { handleHarnessInputAction, type HarnessInputActionAccess } from "./codex-harness-inputs.js";
 import { handleHarnessProofAction } from "./codex-harness-proof.js";
 import { updatePayloadFromAssist, updatePayloadFromWorkerReport } from "./codex-harness-payload.js";
 import { CodexExecMemoryReviewService } from "./memory-review.js";
@@ -73,8 +75,9 @@ export class HarnessService {
   private readonly memoryReview: CodexExecMemoryReviewService | null;
   private readonly memoryScheduler: MemoryUpdateScheduler | null;
   private readonly visionInspection: VisionInspectionService;
+  private readonly inputActionAccess: HarnessInputActionAccess | null;
   private readonly capabilities = new Map<string, HarnessCapability>();
-  constructor(options: { codexHomeDir?: string; harnessRegistryPath?: string | null; harnessAccessPath?: string | null; stateDir: string; artifactsDir: string; store: ButlerStateStore; runtimeBroker: RuntimeBrokerClient; serviceTemplateRegistry: ServiceTemplateRegistry; memoryReview?: CodexExecMemoryReviewService | null; memoryScheduler?: MemoryUpdateScheduler | null; visionInspection: VisionInspectionService }) {
+  constructor(options: { codexHomeDir?: string; harnessRegistryPath?: string | null; harnessAccessPath?: string | null; stateDir: string; artifactsDir: string; store: ButlerStateStore; runtimeBroker: RuntimeBrokerClient; serviceTemplateRegistry: ServiceTemplateRegistry; memoryReview?: CodexExecMemoryReviewService | null; memoryScheduler?: MemoryUpdateScheduler | null; visionInspection: VisionInspectionService; inputActionAccess?: HarnessInputActionAccess }) {
     const storagePaths = resolveHarnessStoragePaths(options);
     this.registryPath = storagePaths.registryPath;
     this.legacyRegistryPath = storagePaths.legacyRegistryPath;
@@ -87,6 +90,7 @@ export class HarnessService {
     this.memoryReview = options.memoryReview ?? null;
     this.memoryScheduler = options.memoryScheduler ?? null;
     this.visionInspection = options.visionInspection;
+    this.inputActionAccess = options.inputActionAccess ?? null;
   }
   private getRuntimeAccess() {
     return {
@@ -289,16 +293,6 @@ export class HarnessService {
     const lease = this.store.getPreviewLease(leaseId);
     if (!lease || lease.threadId !== capability.threadId) {
       throw new Error(`Preview ${leaseId} is not attached to this job`);
-    }
-    return lease;
-  }
-  private requireThreadPreviewReady(capability: HarnessCapability, leaseId: string) {
-    const lease = this.requireThreadPreview(capability, leaseId);
-    if (lease.status === "stopping") {
-      throw new Error(`Preview ${leaseId} is stopping. Retry in a moment.`);
-    }
-    if (lease.status === "starting") {
-      throw new Error(`Preview ${leaseId} is still starting. Retry in a moment.`);
     }
     return lease;
   }
@@ -509,6 +503,7 @@ export class HarnessService {
       store: this.store
     });
     if (payloadResult) return payloadResult;
+    const inputResult = this.inputActionAccess ? await handleHarnessInputAction({ action, params, threadId: capability.threadId, store: this.store, ...this.inputActionAccess }) : null; if (inputResult) return inputResult;
     if (action === "report") {
       const status = normalizeString(params.status);
       const summary = normalizeString(params.summary);
@@ -588,7 +583,7 @@ export class HarnessService {
         responseLines.push(`Use the existing stack ${activeStack.id} for the preview unless you have a reason to split the runtime.`);
       }
       responseLines.push("Previews now default to normal outbound internet access. Use an explicit egress mode only when you need to block or restrict outbound traffic.");
-      responseLines.push("Use the worker shell for repo work. Move into Manor runtime only when you actually need it.");
+      responseLines.push("Use the Worker shell only for source files, repository inspection, editing, and Git. Run all project commands inside a preview.");
       if (previewDefaults.bootstrapHint) {
         responseLines.push(`Preview bootstrap hint: ${previewDefaults.bootstrapHint}.`);
       }
@@ -816,9 +811,20 @@ export class HarnessService {
       this.store.upsertPreviewLease(retainedLease);
       this.store.addEvent(capability.threadId, "harness/preview/start", `Started preview ${retainedLease.id}`);
       return {
-        text: `Started preview ${retainedLease.title} at ${retainedLease.operatorUrl}. Workspace=${retainedLease.workspaceMode}. ${this.formatLeaseLifecycle(retainedLease)}.${previewDefaults.autofilled.length > 0 ? ` Auto-filled ${previewDefaults.autofilled.join(", ")} from workspace bootstrap.` : ""}`,
+        text: `Preview ${retainedLease.title} was created and startup is in progress at ${retainedLease.operatorUrl}. Bootstrap=${retainedLease.bootstrap.phase}. Run manor-harness preview wait ${retainedLease.id} for readiness and the complete lifecycle. Workspace=${retainedLease.workspaceMode}. ${this.formatLeaseLifecycle(retainedLease)}.${previewDefaults.autofilled.length > 0 ? ` Auto-filled ${previewDefaults.autofilled.join(", ")} from workspace bootstrap.` : ""}`,
         data: { lease: retainedLease, workspaceBootstrap, previewDefaults }
       };
+    }
+    if (action === "preview.wait") {
+      const preview = await this.resolveThreadPreview(capability, normalizeString(params.leaseId));
+      const timeoutSeconds = Math.min(normalizePositiveInteger(params.timeoutSeconds) ?? 15, 60);
+      return handleHarnessPreviewWait({
+        capability,
+        leaseId: preview.id,
+        timeoutSeconds,
+        runtimeBroker: this.runtimeBroker,
+        store: this.store
+      });
     }
     if (action === "preview.inspect") {
       const preview = await this.resolveThreadPreview(capability, normalizeString(params.leaseId));
@@ -866,7 +872,6 @@ export class HarnessService {
     }
     if (action === "preview.processes") {
       const preview = await this.resolveThreadPreview(capability, normalizeString(params.leaseId));
-      this.requireThreadPreviewReady(capability, preview.id);
       const result = await this.runtimeBroker.listProcesses(preview.id);
       this.store.notePreviewLeaseActivity(preview.id);
       const rows =
@@ -881,7 +886,6 @@ export class HarnessService {
     if (action === "preview.logs") {
       const preview = await this.resolveThreadPreview(capability, normalizeString(params.leaseId));
       const tail = typeof params.tail === "number" ? params.tail : Number(params.tail ?? 200);
-      this.requireThreadPreviewReady(capability, preview.id);
       const result = await this.runtimeBroker.readLogs(preview.id, Number.isFinite(tail) ? tail : 200);
       this.store.notePreviewLeaseActivity(preview.id);
       return {
@@ -896,7 +900,6 @@ export class HarnessService {
       const cwd = normalizeString(params.cwd) || undefined;
       const stdin = typeof params.stdin === "string" ? params.stdin : undefined;
       const stdinProvided = params.stdinProvided === true;
-      this.requireThreadPreviewReady(capability, preview.id);
       if (!command && commandArgs.length === 0) {
         throw new Error("preview.exec requires command");
       }
@@ -1287,7 +1290,6 @@ export class HarnessService {
       }
 
       const effectiveTitle = title || `${template.label} ${crypto.randomUUID().slice(0, 8)}`;
-
       if (template.runtimeKind === "embedded") {
         const filePath = `${cwd}/${template.fileName ?? ".manor/sqlite/app.db"}`.replace(/\/+/g, "/");
         await fs.mkdir(path.dirname(filePath), { recursive: true });

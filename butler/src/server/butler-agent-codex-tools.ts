@@ -660,8 +660,8 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
         }
         await loadWorkerThread(access, typedParams.threadId);
         const activeReferences = access.getActiveOperatorReferences();
-        const imageReferenceIds = typedParams.imageReferenceIds ?? activeReferences?.imageReferenceIds ?? [];
-        const fileReferenceIds = typedParams.fileReferenceIds ?? activeReferences?.fileReferenceIds ?? [];
+        const imageReferenceIds = [...new Set([...(activeReferences?.imageReferenceIds ?? []), ...(typedParams.imageReferenceIds ?? [])])];
+        const fileReferenceIds = [...new Set([...(activeReferences?.fileReferenceIds ?? []), ...(typedParams.fileReferenceIds ?? [])])];
         const refreshedChecklist = typedParams.refreshChecklist
           ? access.store.refreshCompletedSupervisionChecklistForFollowup(typedParams.threadId, typedParams.text)
           : null;

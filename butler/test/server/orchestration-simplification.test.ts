@@ -116,6 +116,7 @@ test("delegation starts worker directly with deterministic routing metadata", as
   let acknowledgement = "";
   let postedQuestions = 0;
   let delegatedImageReferenceIds: string[] = [];
+  let delegatedFileReferenceIds: string[] = [];
   const tool = buildButlerDelegationTools({
     defineButlerTool: (definition) => definition,
     getToolUiEffects: () => [],
@@ -144,9 +145,10 @@ test("delegation starts worker directly with deterministic routing metadata", as
     },
     imageStore: { resolveViews: () => [], getFilePath: () => null },
     fileStore: { resolveViews: () => [], getFilePath: () => null },
-    getActiveOperatorReferences: () => ({ imageReferenceIds: ["image-current-turn"], fileReferenceIds: [] }),
-    createOrUpdateJobPayload: async (input: { imageReferenceIds?: string[] }) => {
+    getActiveOperatorReferences: () => ({ imageReferenceIds: ["image-current-turn"], fileReferenceIds: ["file-current-turn"] }),
+    createOrUpdateJobPayload: async (input: { imageReferenceIds?: string[]; fileReferenceIds?: string[] }) => {
       delegatedImageReferenceIds = input.imageReferenceIds ?? [];
+      delegatedFileReferenceIds = input.fileReferenceIds ?? [];
       return {} as never;
     },
     store,
@@ -158,13 +160,18 @@ test("delegation starts worker directly with deterministic routing metadata", as
     execute: (toolCallId: string, params: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>;
   };
 
-  const result = await tool.execute("call-1", { task: "Implement the API change" });
+  const result = await tool.execute("call-1", {
+    task: "Implement the API change",
+    imageReferenceIds: [],
+    fileReferenceIds: ["file-explicit"]
+  });
   assert.match(result.content[0]!.text, /Delegated/);
   assert.equal(capturedOrchestration?.taskClass, "api");
   assert.equal(capturedOrchestration?.reviewRecommendation.required, true);
   assert.equal(capturedOrchestration?.fallbackReason, null);
   assert.equal(postedQuestions, 0);
   assert.deepEqual(delegatedImageReferenceIds, ["image-current-turn"]);
+  assert.deepEqual(delegatedFileReferenceIds, ["file-current-turn", "file-explicit"]);
   assert.match(acknowledgement, /delegated this to a Worker/);
   assert.match(acknowledgement, /Codex harness/);
   assert.doesNotMatch(acknowledgement, /Codex worker/i);

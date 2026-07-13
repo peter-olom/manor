@@ -12,9 +12,8 @@ import { runSerializedJobMutation, runSerializedJobMutations } from "./butler-jo
 import { createBackgroundModelServices } from "./background-model-services.js";
 import { CodexAppServerClient } from "./codex-client.js";
 import { HarnessService } from "./codex-harness.js";
-import { FileReferenceStore, MAX_FILE_BYTES } from "./file-store.js";
+import { loadReferenceStores, MAX_FILE_BYTES, MAX_IMAGE_BYTES } from "./reference-stores.js";
 import { HostControllerClient } from "./host-controller-client.js";
-import { ImageReferenceStore, MAX_IMAGE_BYTES } from "./image-store.js";
 import { createManorSettingsApplyHandler } from "./manor-settings-apply.js";
 import { defaultManorSettingsPath, ManorSettingsService } from "./manor-settings-service.js";
 import { setActiveManorSettingsService, getActiveManorSettings } from "./manor-settings-runtime.js";
@@ -115,10 +114,7 @@ const scratchPadStore = new ScratchPadStore(scratchPadStatePath);
 await scratchPadStore.load();
 const serviceTemplateRegistry = new ServiceTemplateRegistry(path.join(stateDir, "service-templates.json"));
 await serviceTemplateRegistry.load();
-const imageStore = new ImageReferenceStore(imageReferenceDir);
-await imageStore.load();
-const fileStore = new FileReferenceStore(fileReferenceDir);
-await fileStore.load();
+const { imageStore, fileStore } = await loadReferenceStores({ artifactsDir, imageReferenceDir, fileReferenceDir });
 const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerToken);
 const hostController = new HostControllerClient(hostControllerUrl, hostControllerToken);
 let runtimeAccess!: RuntimeServerAccess;
@@ -149,7 +145,7 @@ store.setMemoryUpdateObserver(memoryScheduler); const harnessService = new Harne
   serviceTemplateRegistry,
   memoryReview,
   memoryScheduler,
-  visionInspection
+  visionInspection, inputActionAccess: { fileStore, imageStore, outputsDir: process.env.MANOR_OUTPUTS_DIR ?? "/outputs" }
 });
 memoryReview.reviewPendingReportsAsync();
 memoryScheduler.start();

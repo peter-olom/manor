@@ -92,6 +92,7 @@ COPY docker/codex-box/bootstrap-tools.sh /usr/local/bin/codex-bootstrap-tools
 COPY docker/codex-box/manor-harness.mjs /usr/local/bin/manor-harness
 COPY docker/codex-box/install-guard.sh /opt/manor/codex-box/install-guard.sh
 COPY docker/codex-box/python-guard.sh /opt/manor/codex-box/python-guard.sh
+COPY docker/codex-box/runtime-guard.sh /opt/manor/codex-box/runtime-guard.sh
 COPY docker/codex-box/manor-shell-env.sh /etc/profile.d/manor-shell-env.sh
 COPY docker/codex-box/healthcheck.mjs /opt/manor/codex-box/healthcheck.mjs
 COPY docker/codex-box/worker-pi-rpc-bridge.mjs /opt/manor/codex-box/worker-pi-rpc-bridge.mjs
@@ -131,10 +132,13 @@ RUN mkdir -p /opt/manor/codex-box/install-guard-bin \
     && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/dnf \
     && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/yum \
     && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/brew \
+    && ln -sf /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/install-guard-bin/mise \
+    && for command in make cmake ctest meson ninja gradle mvn ant pytest rspec tsx ts-node jest vitest; do ln -sf /opt/manor/codex-box/install-guard.sh "/opt/manor/codex-box/install-guard-bin/${command}"; done \
     && ln -sf /opt/manor/codex-box/python-guard.sh /opt/manor/codex-box/install-guard-bin/python \
     && ln -sf /opt/manor/codex-box/python-guard.sh /opt/manor/codex-box/install-guard-bin/python3 \
-    && sed -i 's/\r$//' /usr/local/bin/start-codex-app-server /usr/local/bin/codex-auth /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/codex-bootstrap-tools /usr/local/bin/manor-harness /opt/manor/codex-box/worker-pi-rpc-bridge.mjs /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/python-guard.sh /etc/profile.d/manor-shell-env.sh /home/worker/.zshrc /home/worker/.zprofile \
-    && chmod 755 /usr/local/bin/start-codex-app-server /usr/local/bin/codex-auth /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/codex-bootstrap-tools /usr/local/bin/manor-harness /opt/manor/codex-box/worker-pi-rpc-bridge.mjs /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/python-guard.sh /etc/profile.d/manor-shell-env.sh \
+    && for command in node deno ruby php java javac dotnet swift kotlin kotlinc lua perl R Rscript gcc g++ clang clang++; do ln -sf /opt/manor/codex-box/runtime-guard.sh "/opt/manor/codex-box/install-guard-bin/${command}"; done \
+    && sed -i 's/\r$//' /usr/local/bin/start-codex-app-server /usr/local/bin/codex-auth /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/codex-bootstrap-tools /usr/local/bin/manor-harness /opt/manor/codex-box/worker-pi-rpc-bridge.mjs /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/python-guard.sh /opt/manor/codex-box/runtime-guard.sh /etc/profile.d/manor-shell-env.sh /home/worker/.zshrc /home/worker/.zprofile \
+    && chmod 755 /usr/local/bin/start-codex-app-server /usr/local/bin/codex-auth /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/codex-bootstrap-tools /usr/local/bin/manor-harness /opt/manor/codex-box/worker-pi-rpc-bridge.mjs /opt/manor/codex-box/install-guard.sh /opt/manor/codex-box/python-guard.sh /opt/manor/codex-box/runtime-guard.sh /etc/profile.d/manor-shell-env.sh \
     && chown -R worker:worker /home/worker/.oh-my-zsh /home/worker/.zshrc /home/worker/.zprofile \
     && rm -rf /tmp/* /var/tmp/*
 

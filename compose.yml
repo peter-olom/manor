@@ -22,7 +22,8 @@ services:
       WORKER_PI_RPC_SOCKET: /worker-runtime/pi-rpc.sock
       WORKER_PI_EXTENSION_DIR: /opt/manor/worker/dist/server
       WORKER_BUTLER_BASE_URL: http://butler:8080
-      MANOR_IMAGE_REFERENCE_DIR: /artifacts/manor-images
+      MANOR_IMAGE_REFERENCE_DIR: /inputs/manor-images
+      MANOR_FILE_REFERENCE_DIR: /inputs/manor-files
       BUTLER_PORT: 8080
       BUTLER_PUBLIC_PORT: ${BUTLER_HOST_PORT:-8180}
       BUTLER_HOT_RELOAD: 0
@@ -127,6 +128,8 @@ services:
       - harness-state:/harness-state
       - repos:/repos
       - artifacts:/artifacts
+      - inputs:/inputs
+      - outputs:/outputs:ro
     depends_on:
       codex-box:
         condition: service_healthy
@@ -274,9 +277,11 @@ services:
       - ./config/codex-model-instructions.md:/opt/manor/config/codex-model-instructions.md:ro
       - repos:/repos
       - artifacts:/artifacts
+      - inputs:/inputs:ro
+      - outputs:/outputs
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "node", "/opt/manor/codex-box/healthcheck.mjs"]
+      test: ["CMD", "/usr/local/bin/node", "/opt/manor/codex-box/healthcheck.mjs"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -334,6 +339,7 @@ services:
       RUNTIME_HARNESS_ACCESS_FILE: /state/harness-broker-access.json
       RUNTIME_WORKSPACE_CONTAINER: manor-codex-box
       RUNTIME_STACK_BINDINGS_FILE: /runtime-state/stack-thread-bindings.json
+      RUNTIME_PREVIEW_LIFECYCLE_FILE: /runtime-state/preview-lifecycle.json
       RUNTIME_PREVIEW_NETWORK: manor_preview
       RUNTIME_PREVIEW_EGRESS_CONFIG: /opt/manor/config/preview-egress-profiles.json
       RUNTIME_PREVIEW_EGRESS_ADMIN_URL: http://preview-egress:8091
@@ -564,6 +570,8 @@ networks:
 
 volumes:
   artifacts:
+  inputs:
+  outputs:
   butler-home:
   butler-pi:
   worker-pi:

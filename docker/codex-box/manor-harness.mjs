@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/local/bin/node
 
 import os from "node:os";
 import path from "node:path";
@@ -32,6 +32,7 @@ function printHelp() {
   manor-harness [--thread <jobId>] artifact read <artifactId>
   manor-harness [--thread <jobId>] artifact save-text --title "<text>" [--kind seed|reference|download|research|report|other] [--description "<text>"] [--file-name <name>] [--content-type <mime>] [--tag <text> ...] [--metadata KEY=VALUE ...] [--body "<text>"]
   manor-harness [--thread <jobId>] artifact download --title "<text>" --url <url> [--kind seed|reference|download|research|report|other] [--description "<text>"] [--file-name <name>] [--content-type <mime>] [--tag <text> ...] [--metadata KEY=VALUE ...]
+  manor-harness [--thread <jobId>] input publish <outputPath> --from <referenceId> [--name <fileName>] [--content-type <mime>]
   manor-harness [--thread <jobId>] proof file <filePath> [--title <text>] [--label <text>] [--content-type <mime>]
   manor-harness [--thread <jobId>] proof text --title <text> [--label <text>] [--file-name <name>] [--content-type <mime>] [--body <text>]
   manor-harness [--thread <jobId>] policy list
@@ -45,16 +46,20 @@ function printHelp() {
   manor-harness [--thread <jobId>] stack stop <stackSelector> [--drop-volumes]
   manor-harness [--thread <jobId>] preview list
   manor-harness [--thread <jobId>] preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--stack <stackSelector>] [--alias <name> ...] [--env KEY=VALUE ...] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>] [--sticky] [--lease-ttl-minutes <n>]
+  manor-harness preview wait <previewSelector> [--timeout-seconds <n>]
 
 Preview defaults:
   egress-profile=internet
   heartbeat-kind=http
   heartbeat-target=/
   workspace-mode=snapshot
-  runtime rule: do repo and git work in the worker shell; do installs, app startup, builds, and browser checks in previews
+  runtime rule: use the Worker shell only for source, repository inspection, editing, and Git; run installs, builds, tests, scripts, servers, conversions, and project code in previews
+  uploaded inputs: read-only under /inputs in Worker and previews
+  derived outputs: write under /outputs/<jobId>, then run manor-harness input publish <path> --from <referenceId>
   preview commands start in the job worktree; prefer relative paths there or the contract cwd under /repos
   preview lifecycle is broker-managed; install, start, and debug the app explicitly with preview exec/logs/processes
   manor-harness preview inspect <previewSelector>
+  manor-harness preview wait <previewSelector> [--timeout-seconds <n>]
   manor-harness preview proof <previewSelector> [--run-id <id>]
   manor-harness preview processes <previewSelector>
   manor-harness preview logs <previewSelector> [--tail <n>]
@@ -641,6 +646,16 @@ async function main() {
         metadata: Object.fromEntries(parseRepeatedKeyValueFlags(args, "--metadata"))
       };
     }
+  } else if (args[0] === "input") {
+    if (args[1] === "publish" && args[2]) {
+      action = "input.publish_version";
+      params = {
+        filePath: args[2],
+        sourceReferenceId: readFlag(args, "--from"),
+        name: readFlag(args, "--name"),
+        contentType: readFlag(args, "--content-type")
+      };
+    }
   } else if (args[0] === "policy") {
     const subcommand = args[1];
     if (subcommand === "list") {
@@ -697,6 +712,12 @@ async function main() {
     } else if (subcommand === "inspect" && args[2]) {
       action = "preview.inspect";
       params = { leaseId: args[2] };
+    } else if (subcommand === "wait" && args[2]) {
+      action = "preview.wait";
+      params = {
+        leaseId: args[2],
+        timeoutSeconds: Number(readFlag(args, "--timeout-seconds", "15"))
+      };
     } else if (subcommand === "proof" && args[2]) {
       action = "preview.proof";
       params = {
