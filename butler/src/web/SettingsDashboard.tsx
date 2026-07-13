@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { getJson, patchJson, postJson } from "./api";
 import { ModelPicker, modelOptionValue, type ModelPickerGroup, type ModelPickerOption } from "./ModelPicker";
 import { WarningIcon } from "./icons";
+import { SkillsDashboard } from "./SkillsDashboard";
 import {
   workerHarnessLabel,
   workerModelForRoute,
@@ -92,16 +93,18 @@ const VALIDATION_LABELS: Record<SettingsValidationKey, string> = {
   memoryEmbeddings: "Embeddings"
 };
 
-export type SettingsSectionId = "runtime" | "providers" | "memory" | "diagnostics";
+export type SettingsSectionId = "runtime" | "providers" | "skills" | "memory" | "diagnostics";
 export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; description: string }[] = [
   { id: "runtime", label: "Runtime", description: "Operator, Worker, vision, and titles" },
   { id: "providers", label: "Providers", description: "Model and tool access" },
+  { id: "skills", label: "Skills", description: "Browse, install, and edit agent skills" },
   { id: "memory", label: "Memory", description: "Models, synthesis, and embeddings" },
   { id: "diagnostics", label: "Diagnostics", description: "Connection tests" }
 ];
 
 const SECTION_HELP: Record<SettingsSectionId, string> = {
   providers: "Configure the model providers (OpenAI/Codex, Ollama Local, Ollama Cloud, OpenCode Go) and web tools Butler can use.",
+  skills: "Browse and manage the skills available to Butler Pi, Worker Pi, and Worker Codex.",
   runtime: "Set operator and Worker defaults, choose the shared vision companion, and configure session titles.",
   memory: "Choose the models and behavior used to synthesize, promote, and connect memory.",
   diagnostics: "Run connection checks for the services Butler depends on."
@@ -807,6 +810,8 @@ export function SettingsDashboard({ active, activeSection }: { active: boolean; 
   const failingCount = validationEntries.filter((entry) => entry.result?.status === "failed").length;
   const okCount = validationEntries.filter((entry) => entry.result?.status === "ok").length;
   const unconfiguredCount = validationEntries.filter((entry) => entry.result?.status === "not_configured").length;
+
+  if (activeSection === "skills") return <SkillsDashboard active={active} />;
 
   if (!draft || !payload) {
     return (

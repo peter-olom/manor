@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -42,7 +42,7 @@ function createButlerAgent(store: ButlerStateStore, sessionDir: string, codexCli
   });
 }
 
-test("operator message reload preserves clean text and attachment metadata", async () => {
+test("operator message persistence preserves presentation metadata", async () => {
   const store = await createStore();
   const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-operator-message-reload-"));
   await writeFile(path.join(sessionDir, "operator-messages.json"), JSON.stringify([{
@@ -50,6 +50,7 @@ test("operator message reload preserves clean text and attachment metadata", asy
     role: "user",
     text: "internal reference context",
     displayText: "Review these",
+    hiddenFromTranscript: true,
     at: 100,
     taskDurationMs: null,
     kind: "message",
@@ -59,12 +60,20 @@ test("operator message reload preserves clean text and attachment metadata", asy
     ]
   }]), "utf8");
   const agent = createButlerAgent(store, sessionDir);
-  const internals = agent as unknown as { loadOperatorMessageState(): Promise<void>; operatorMessages: Array<{ displayText?: string; attachments?: Array<{ id: string }> }> };
+  const internals = agent as unknown as {
+    loadOperatorMessageState(): Promise<void>;
+    saveOperatorMessageState(): Promise<void>;
+    operatorMessages: Array<{ displayText?: string; hiddenFromTranscript?: boolean; attachments?: Array<{ id: string }> }>;
+  };
 
   await internals.loadOperatorMessageState();
 
   assert.equal(internals.operatorMessages[0]?.displayText, "Review these");
+  assert.equal(internals.operatorMessages[0]?.hiddenFromTranscript, true);
   assert.deepEqual(internals.operatorMessages[0]?.attachments?.map((attachment) => attachment.id), ["image-1", "file-1"]);
+  await internals.saveOperatorMessageState();
+  const persisted = JSON.parse(await readFile(path.join(sessionDir, "operator-messages.json"), "utf8"));
+  assert.equal(persisted[0]?.hiddenFromTranscript, true);
 });
 
 test("direct Codex ping summary includes message and selected context", () => {

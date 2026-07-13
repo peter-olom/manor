@@ -4,7 +4,7 @@ import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { ActivityOnlyBubble, Bubble, durableActivitySupersedesLive, LiveBubble, pendingActivityOwner, persistedButlerMessageCoversLive, ReviewActivityBubble, WorkerWaitIndicator, WorkLoaderBubble } from "../../src/web/ButlerPane.js";
+import { ActivityOnlyBubble, Bubble, ButlerPane, durableActivitySupersedesLive, findActiveOperatorQuestionMessage, LiveBubble, pendingActivityOwner, persistedButlerMessageCoversLive, ReviewActivityBubble, WorkerWaitIndicator, WorkLoaderBubble } from "../../src/web/ButlerPane.js";
 import { ThinkingTrace } from "../../src/web/ThinkingTrace.js";
 import { applyPatchToState, type LiveTurnState } from "../../src/web/useLiveButlerTurn.js";
 
@@ -259,6 +259,81 @@ test("active Butler activity is flat instead of a message bubble", () => {
   assert.match(markup, /class="butler-activity-indicator"/);
   assert.match(markup, /aria-label="Butler is working"/);
   assert.doesNotMatch(markup, /class="bubble(?:\s|")/);
+  assert.ok(markup.indexOf("bubble-disclosure") < markup.indexOf("working-indicator"));
+});
+
+test("an active operator decision stays after later Butler narration until delivery completes", () => {
+  const questionMessage = {
+    id: "question-message",
+    role: "butler",
+    lane: "butler",
+    text: "Approve this change?",
+    at: 2,
+    sourceThreadId: null,
+    memoryObservationId: null,
+    metadata: {},
+    question: {
+      id: "question-1",
+      prompt: "Approve this change?",
+      context: null,
+      options: [{ id: "approve", label: "Approve", description: null }],
+      allowFreeform: false,
+      createdAt: 2,
+      selectedOptionId: null,
+      freeformAnswer: null,
+      answeredAt: null,
+      deliveryState: "idle" as const
+    }
+  } as const;
+  const messages = [
+    { ...questionMessage, id: "request", role: "user" as const, text: "Install it", at: 1, question: undefined },
+    questionMessage,
+    { ...questionMessage, id: "narration", text: "I am waiting for your approval.", at: 3, question: undefined }
+  ];
+
+  assert.equal(findActiveOperatorQuestionMessage(messages)?.id, "question-message");
+  assert.equal(findActiveOperatorQuestionMessage([
+    ...messages,
+    { ...questionMessage, id: "queued-user", role: "user", text: "A queued follow-up", at: 4, question: undefined }
+  ])?.id, "question-message");
+  assert.equal(findActiveOperatorQuestionMessage(messages.map((message) => message.id === "question-message"
+    ? { ...message, question: { ...questionMessage.question, selectedOptionId: "approve", answeredAt: 4, deliveryState: "pending" as const } }
+    : message))?.id, "question-message");
+  assert.equal(findActiveOperatorQuestionMessage(messages.map((message) => message.id === "question-message"
+    ? { ...message, question: { ...questionMessage.question, selectedOptionId: "approve", answeredAt: 4, deliveryState: "delivered" as const } }
+    : message)), null);
+});
+
+test("live activity stays above the decision input and suppresses the composer", () => {
+  const decision = {
+    id: "decision-message", role: "butler", lane: "butler", text: "Approve this change?", at: 2,
+    sourceThreadId: null, memoryObservationId: null, metadata: {},
+    question: {
+      id: "decision", prompt: "Approve this change?", context: null,
+      options: [{ id: "approve", label: "Approve", description: null }], allowFreeform: false,
+      createdAt: 2, selectedOptionId: null, freeformAnswer: null, answeredAt: null, deliveryState: "idle" as const
+    }
+  };
+  const pair = {
+    id: "pair-1", messages: [decision], lastMessage: decision, updatedAt: 3, hasMore: false,
+    status: "butler_running", butlerPending: true, butlerPendingReason: null, butlerReady: true,
+    review: null, worker: null,
+    butlerActivity: [{ id: "thinking", type: "reasoning", status: "in_progress", title: "Thinking", text: "Checking.", at: 3 }],
+    butlerActivityOutcome: { status: "active", startedAt: 3, completedAt: null, detail: null }
+  } as unknown as React.ComponentProps<typeof ButlerPane>["pair"];
+  const markup = renderToStaticMarkup(React.createElement(ButlerPane, {
+    pair, draft: "authored text", busy: false, composerBusy: false, sendDisabled: false,
+    onDraft: () => undefined, onSend: () => undefined, onLoadOlder: () => undefined, onButlerPatch: null,
+    onThinkingLevelChange: () => undefined, onButlerModelChange: () => undefined, onRetryReview: () => undefined,
+    onStopReview: () => undefined, onStopButler: () => undefined, stoppingButler: false,
+    liveConnected: true, liveHasConnected: true, onOpenProviderSettings: () => undefined,
+    attachments: [], onUploadFiles: () => undefined, uploadingFiles: false, uploadError: null,
+    onRemoveAttachment: () => undefined, onPreviewImage: () => undefined, onPairUpdate: () => undefined,
+    contextItems: [], onContextItemsChange: () => undefined
+  }));
+
+  assert.ok(markup.indexOf("working-indicator") < markup.indexOf("operator-question-input"));
+  assert.doesNotMatch(markup, /composer-form/);
 });
 
 test("worker-running state uses a dedicated Worker indicator", () => {

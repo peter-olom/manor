@@ -1206,6 +1206,7 @@ export interface ButlerMessageView {
   role: string;
   text: string;
   displayText?: string;
+  hiddenFromTranscript?: boolean;
   at: number | null;
   taskDurationMs: number | null;
   kind: "message";

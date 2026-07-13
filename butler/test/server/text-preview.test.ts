@@ -35,6 +35,9 @@ test("text previews are bounded and reject binary or invalid UTF-8 content", asy
   const large = await readTextPreview(largePath);
   assert.equal(large.text.length, MAX_TEXT_PREVIEW_BYTES);
   assert.equal(large.truncated, true);
+  const small = await readTextPreview(largePath, { maxBytes: 32 });
+  assert.equal(small.text.length, 32);
+  assert.equal(small.truncated, true);
   await assert.rejects(readTextPreview(binaryPath), InvalidTextPreviewError);
   await assert.rejects(readTextPreview(invalidPath), InvalidTextPreviewError);
 });

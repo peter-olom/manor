@@ -52,6 +52,30 @@ export function registerPairRoutes(access: PairRouteAccess): void {
     }
   });
 
+  app.get("/api/pairs/:pairId/composer-suggestions", async (request, response) => {
+    const trigger = request.query.trigger === "@" || request.query.trigger === "$" || request.query.trigger === "/"
+      ? request.query.trigger
+      : null;
+    if (!trigger) {
+      response.status(400).json({ error: "trigger is required" });
+      return;
+    }
+    try {
+      const suggestions = await pairSessions.listComposerSuggestions(
+        request.params.pairId,
+        trigger,
+        typeof request.query.q === "string" ? request.query.q : ""
+      );
+      if (!suggestions) {
+        response.status(404).json({ error: "Butler session not found" });
+        return;
+      }
+      response.json({ suggestions });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.delete("/api/pairs/:pairId", async (request, response) => {
     response.json({ ok: await pairSessions.deletePair(request.params.pairId) });
   });
@@ -146,12 +170,13 @@ export function registerPairRoutes(access: PairRouteAccess): void {
     const target = request.body?.target === "worker" ? "worker" : "butler";
     const imageReferenceIds = readImageReferenceIds(request.body);
     const fileReferenceIds = readFileReferenceIds(request.body);
+    const inputItems = Array.isArray(request.body?.inputItems) ? request.body.inputItems : [];
     if (target === "worker") {
       response.status(409).json({ error: "Message Butler. Butler controls the worker for this session." });
       return;
     }
-    if (!text && imageReferenceIds.length === 0 && fileReferenceIds.length === 0) {
-      response.status(400).json({ error: "text or attachments are required" });
+    if (!text && imageReferenceIds.length === 0 && fileReferenceIds.length === 0 && inputItems.length === 0) {
+      response.status(400).json({ error: "text, attachments, or context are required" });
       return;
     }
 
@@ -160,7 +185,8 @@ export function registerPairRoutes(access: PairRouteAccess): void {
         pairId: request.params.pairId,
         text,
         imageReferenceIds,
-        fileReferenceIds
+        fileReferenceIds,
+        inputItems
       });
       if (!pair) {
         response.status(404).json({ error: "Butler session not found" });

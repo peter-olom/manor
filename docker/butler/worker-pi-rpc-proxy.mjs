@@ -138,7 +138,7 @@ socket.on("connect", () => {
 process.stdin.on("data", (chunk) => {
   const state = { value: stdinBuffer };
   trackJsonLines(chunk, state, (value) => {
-    if (typeof value?.id === "string") pendingRequestIds.add(value.id);
+    if (typeof value?.id === "string" && value.type !== "extension_ui_response") pendingRequestIds.add(value.id);
   });
   stdinBuffer = state.value;
   sendFrame({ type: "stdin", data: Buffer.from(chunk).toString("base64") });

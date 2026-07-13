@@ -9,6 +9,7 @@ import { PiRpcWorkerClient } from "../../src/server/pi-rpc-worker-client.js";
 import { buildJobDetail } from "../../src/server/butler-job-detail.js";
 import { StaleWorkerOperationError } from "../../src/server/stale-worker-operation-error.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
+import { ExtensionUiBroker } from "../../src/server/extension-ui-broker.js";
 import type { ProviderRuntimeLivePatch } from "../../src/shared/provider-runtime.js";
 
 type FakeSession = {
@@ -20,6 +21,7 @@ type FakeSession = {
     abort: () => Promise<void>;
     stop: () => Promise<void>;
     setThinkingLevel?: (level: string) => Promise<void>;
+    process?: { stdin: { destroyed: boolean; writable: boolean; write: (value: string) => boolean } };
   };
   mapper: PiProviderRuntimeMapper;
   unsubscribe: (() => void) | null;
@@ -45,11 +47,40 @@ type TestClient = {
   stopThread: (threadId: string) => Promise<boolean>;
   deleteThread: (threadId: string) => Promise<boolean>;
   loadThread: (threadId: string) => Promise<void>;
+  forkThread: (threadId: string, entryId: string) => Promise<{ cancelled: boolean }>;
   webToolsExtensionArgs: (provider?: string | null) => Promise<string[]>;
   handleSessionEvent: (session: FakeSession, event: Record<string, unknown>) => void;
   applyPatch: (session: FakeSession, generation: number | null, patch: ProviderRuntimeLivePatch) => void;
   on: (event: "threadPatch", listener: (patch: ProviderRuntimeLivePatch) => void) => void;
 };
+
+test("forking replaces Manor's stored transcript with Pi's active branch", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-fork-sync-"));
+  try {
+    const threadId = "pi-fork-sync";
+    const store = await createStore(dir);
+    store.upsertThreadSummary({ id: threadId, source: "pi-rpc", turns: [{ id: "old-turn", status: "completed", items: [{ id: "old-message", type: "agentMessage", status: "completed", text: "Abandoned branch" }] }] });
+    const client = new PiRpcWorkerClient({ store, piAuthPath: path.join(dir, "auth.json"), sessionRootDir: path.join(dir, "sessions") }) as unknown as TestClient;
+    client.sessions.set(threadId, {
+      threadId,
+      client: {
+        getState: async () => ({ isStreaming: false, isCompacting: false }),
+        getMessages: async () => [{ role: "user", content: "Start" }, { role: "assistant", content: [{ type: "text", text: "Active branch" }], stopReason: "stop", timestamp: 100 }],
+        fork: async () => ({ text: "Start", cancelled: false })
+      },
+      mapper: new PiProviderRuntimeMapper(threadId), unsubscribe: null, cwd: "/repos", provider: "ollama-cloud", model: "glm-5.2",
+      activityVersion: 0, acceptedEventVersion: null, eventStreamVersion: null, pendingPromptGenerations: []
+    } as never);
+
+    assert.deepEqual(await client.forkThread(threadId, "entry-1"), { cancelled: false });
+    const turns = store.getThread(threadId)?.turns ?? [];
+    assert.equal(turns.length, 1);
+    assert.equal(turns[0]?.items[0]?.text, "Active branch");
+    assert.equal(turns.some((turn) => turn.items.some((item) => item.text === "Abandoned branch")), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("Worker Pi extensions use compiled runtime paths across the environment bridge", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-worker-extension-"));
@@ -491,6 +522,131 @@ test("Pi persists failed items and redacted runtime errors across reload", async
     assert.match(detail, /dynamic_tool_call \(failed\) Tool execution failed/);
     assert.match(detail, /runtime_error@.*Bearer \[REDACTED\]/);
     assert.doesNotMatch(detail, /pi-secret-token/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Pi stays active through retry, compaction, and queued continuation until agent_settled", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-settled-lifecycle-"));
+  try {
+    const threadId = "pi-settled-lifecycle";
+    const store = await createStore(dir);
+    store.upsertThreadSummary({ id: threadId, cwd: dir, source: "pi-rpc", status: { type: "idle" }, turns: [] });
+    const session: FakeSession = {
+      threadId,
+      client: {
+        getState: async () => ({ isStreaming: false }),
+        prompt: async () => undefined,
+        steer: async () => undefined,
+        abort: async () => undefined,
+        stop: async () => undefined
+      },
+      mapper: new PiProviderRuntimeMapper(threadId),
+      unsubscribe: null,
+      cwd: dir,
+      activityVersion: 1,
+      acceptedEventVersion: 1,
+      eventStreamVersion: null,
+      pendingPromptGenerations: [1]
+    };
+    const client = new PiRpcWorkerClient({
+      store,
+      piAuthPath: path.join(dir, "auth.json"),
+      sessionRootDir: path.join(dir, "sessions")
+    }) as unknown as TestClient;
+    client.sessions.set(threadId, session);
+    const patches: ProviderRuntimeLivePatch[] = [];
+    client.on("threadPatch", (patch) => patches.push(patch));
+
+    client.handleSessionEvent(session, { type: "agent_start" });
+    client.handleSessionEvent(session, { type: "turn_start" });
+    client.handleSessionEvent(session, { type: "agent_end", messages: [], willRetry: true });
+
+    assert.equal(store.getThread(threadId)?.status, "active");
+    assert.equal(session.eventStreamVersion, 1);
+    assert.equal(session.acceptedEventVersion, 1);
+
+    client.handleSessionEvent(session, {
+      type: "auto_retry_start",
+      attempt: 1,
+      maxAttempts: 3,
+      delayMs: 10,
+      errorMessage: "Temporary provider failure"
+    });
+    client.handleSessionEvent(session, { type: "compaction_start", reason: "overflow" });
+    client.handleSessionEvent(session, {
+      type: "compaction_end",
+      reason: "overflow",
+      result: undefined,
+      aborted: false,
+      willRetry: true
+    });
+    client.handleSessionEvent(session, { type: "queue_update", steering: [], followUp: ["Continue"] });
+    client.handleSessionEvent(session, { type: "agent_start" });
+    client.handleSessionEvent(session, { type: "turn_start" });
+    client.handleSessionEvent(session, { type: "agent_end", messages: [], willRetry: false });
+
+    assert.equal(store.getThread(threadId)?.status, "active");
+    assert.equal(store.getThread(threadId)?.turns.length, 3);
+    assert.equal(store.getThread(threadId)?.turns[1]?.items[0]?.type, "context_compaction");
+    assert.equal(store.getThread(threadId)?.turns[1]?.items[0]?.status, "completed");
+    assert.equal(patches.some((patch) => patch.kind === "runtime-message" && patch.message === "Temporary provider failure"), true);
+
+    client.handleSessionEvent(session, { type: "agent_settled" });
+
+    assert.equal(store.getThread(threadId)?.status, "idle");
+    assert.equal(session.eventStreamVersion, null);
+    assert.equal(session.acceptedEventVersion, null);
+    assert.equal(patches.at(-1)?.kind, "thread-state");
+    assert.equal(patches.at(-1)?.kind === "thread-state" ? patches.at(-1)?.state : null, "idle");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Pi extension UI requests round-trip through Manor without becoming RPC commands", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-extension-ui-"));
+  try {
+    const broker = new ExtensionUiBroker();
+    const writes: string[] = [];
+    const threadId = "pi-extension-ui";
+    const session: FakeSession = {
+      threadId,
+      client: {
+        getState: async () => ({ isStreaming: false }),
+        prompt: async () => undefined,
+        steer: async () => undefined,
+        abort: async () => undefined,
+        stop: async () => undefined,
+        process: { stdin: { destroyed: false, writable: true, write: (value) => { writes.push(value); return true; } } }
+      },
+      mapper: new PiProviderRuntimeMapper(threadId),
+      unsubscribe: null,
+      cwd: dir,
+      activityVersion: 1,
+      acceptedEventVersion: 1,
+      eventStreamVersion: 1,
+      pendingPromptGenerations: []
+    };
+    const client = new PiRpcWorkerClient({
+      store: await createStore(dir),
+      piAuthPath: path.join(dir, "auth.json"),
+      sessionRootDir: path.join(dir, "sessions"),
+      extensionUiBroker: broker
+    }) as unknown as TestClient;
+    client.sessions.set(threadId, session);
+    client.handleSessionEvent(session, {
+      type: "extension_ui_request",
+      id: "select-1",
+      method: "select",
+      title: "Choose",
+      options: ["A", "B"]
+    });
+    assert.equal(broker.view([{ scope: threadId, lane: "worker" }]).dialog?.id, "select-1");
+    broker.respond(threadId, "select-1", { value: "B" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(JSON.parse(writes[0]!), { type: "extension_ui_response", id: "select-1", value: "B" });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

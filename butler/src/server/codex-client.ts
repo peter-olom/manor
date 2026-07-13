@@ -542,6 +542,13 @@ export class CodexAppServerClient extends EventEmitter {
       });
   }
 
+  async listSkills(cwd: string): Promise<Record<string, unknown>[]> {
+    return this.codexProviderAdapter.listSkills({
+      cwds: [cwd],
+      forceReload: true
+    });
+  }
+
   private async listComposerApps(query: string, threadId?: string | null): Promise<ComposerSuggestion[]> {
     const apps = await this.codexProviderAdapter.listApps({
       limit: 100,

@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { ButlerAgentService } from "./butler-agent.js";
-import { buildReferencePromptText } from "./reference-inputs.js";
+import { buildComposerInputItemsPrompt, buildReferencePromptText, normalizeComposerInputItems } from "./reference-inputs.js";
 import type { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { FileReferenceStore } from "./file-store.js";
@@ -13,10 +13,13 @@ import type { PairStore } from "./pair-store.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-templates.js";
 import type { SessionTitleGenerator } from "./session-title-generator.js";
+import type { SkillsService } from "./skills-service.js";
+import type { ExtensionUiBroker } from "./extension-ui-broker.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { ButlerMessageView, ButlerLivePatchView, ModelOption } from "./types.js";
 import type { VisionInspectionService } from "./vision-inspection.js";
-import type { PairButlerActivityOutcome, PairChat, PairModelOption, PairDetail, PairMessage, PairComposeSettings, PairReviewActivity, PairSummary, PairTraceItem, PairWorker } from "../shared/pairing.js";
+import type { PairButlerActivityOutcome, PairChat, PairComposerInputItem, PairComposerSuggestion, PairModelOption, PairDetail, PairMessage, PairComposeSettings, PairReviewActivity, PairSummary, PairTraceItem, PairWorker } from "../shared/pairing.js";
+import type { WorkerSessionControlAction, WorkerSessionControls } from "../shared/worker-session-controls.js";
 import { DEFAULT_THINKING_LEVELS } from "../shared/pairing.js";
 import { pairTitleIsDefault } from "./pair-store.js";
 import { getUnifiedWorkerCompose, loadWorkerThread, updateUnifiedWorkerCompose, updateWorkerThreadEffort, type WorkerClientAccess } from "./worker-client-router.js";
@@ -27,7 +30,7 @@ import { workerThreadIsRunning } from "./worker-thread-status.js";
 
 type PairButlerService = Pick<
   ButlerAgentService,
-  "answerOperatorQuestion" | "cancelCallbackReview" | "dispose" | "ensureExternalWorkerDelegation" | "getLiveSnapshot" | "getMessagePage" | "getShellSnapshot" | "handoffWorker" | "on" | "prompt" | "quiesceCallbackReviews" | "refreshModelSettings" | "retryBlockedCallbackReviews" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings"
+  "answerOperatorQuestion" | "cancelCallbackReview" | "dispose" | "ensureExternalWorkerDelegation" | "exportSession" | "getLiveSnapshot" | "getMessagePage" | "getSessionControls" | "getShellSnapshot" | "handoffWorker" | "listComposerCommands" | "on" | "prompt" | "quiesceCallbackReviews" | "refreshModelSettings" | "reloadResources" | "retryBlockedCallbackReviews" | "runSessionControl" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings"
 >;
 
 type PairSessionManagerOptions = {
@@ -50,6 +53,8 @@ type PairSessionManagerOptions = {
   memoryScheduler?: MemoryUpdateScheduler | null;
   onButlerPatch?: (payload: ButlerLivePatchView) => void;
   sessionTitleGenerator?: SessionTitleGenerator | null;
+  skillsService: SkillsService;
+  extensionUiBroker: ExtensionUiBroker;
   getCodexAuthStatus?: () => { loggedIn: boolean };
   createButlerService?: (options: ConstructorParameters<typeof ButlerAgentService>[0]) => PairButlerService;
 };
@@ -598,18 +603,100 @@ export class PairSessionManager {
     }));
   }
 
+  scheduleButlerSkillsReload(): void {
+    for (const [pairId, loaded] of this.services) {
+      void loaded.started.then(() => loaded.service.reloadResources()).then(() => this.syncPairSnapshot(pairId)).catch((error) => {
+        console.error(`Butler skill reload failed for pair ${pairId}: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
+  }
+
+  async listComposerSuggestions(pairId: string, trigger: "@" | "$" | "/", query: string): Promise<PairComposerSuggestion[] | null> {
+    const pair = this.options.pairStore.getPair(pairId);
+    if (!pair) return null;
+    const displayQuery = query.trim().slice(0, 200);
+    const normalizedQuery = displayQuery.toLowerCase();
+    const matches = (...values: Array<string | null | undefined>) => !normalizedQuery || values.some((value) => value?.toLowerCase().includes(normalizedQuery));
+    const service = trigger === "/" ? await this.ensureService(pairId) : null;
+    const commands = service?.listComposerCommands() ?? [];
+    const cwd = pair.worker?.cwd ?? pair.defaultCwd;
+    const skills = trigger === "@" ? [] : await this.options.skillsService.list("butler-pi", cwd).catch(() => []);
+
+    if (trigger === "/") {
+      const commandSuggestions: PairComposerSuggestion[] = commands.filter((command) => matches(command.name, command.description)).map((command) => ({
+        id: `command:${command.name}`,
+        kind: "command",
+        label: `/${command.name}`,
+        detail: command.description,
+        insertText: `/${command.name}`
+      }));
+      const skillCommands: PairComposerSuggestion[] = skills.filter((skill) => matches(skill.name, skill.description)).map((skill) => ({
+        id: `command:${skill.invocation}`,
+        kind: "command",
+        label: skill.invocation,
+        detail: skill.description,
+        insertText: skill.invocation
+      }));
+      return [...commandSuggestions, ...skillCommands].slice(0, 32);
+    }
+
+    const skillSuggestions: PairComposerSuggestion[] = skills.filter((skill) => matches(skill.name, skill.description)).map((skill) => ({
+      id: skill.id,
+      kind: "skill",
+      label: skill.name,
+      detail: skill.description,
+      insertText: `$${skill.name}`,
+      inputItem: { type: "skill", name: skill.name, id: skill.id, environment: "butler-pi" }
+    }));
+    if (trigger === "$") {
+      if (skillSuggestions.length > 0 || !displayQuery) return skillSuggestions.slice(0, 32);
+      const request = `Find or create a skill for ${displayQuery}.`;
+      return [{
+        id: `action:find-or-create-skill:${normalizedQuery}`,
+        kind: "action",
+        label: `Find or create a skill for ${displayQuery}`,
+        detail: "Ask Butler to find an existing skill or create one with you.",
+        insertText: request
+      }];
+    }
+
+    const codexSuggestions = await this.options.codexClient.listComposerSuggestions({
+      trigger,
+      query: normalizedQuery,
+      cwd,
+      threadId: pair.worker?.runtime === "openai" ? pair.worker.threadId : null
+    }).catch(() => []);
+
+    if (trigger === "@") {
+      return codexSuggestions.filter((suggestion) => suggestion.kind === "file" || suggestion.kind === "directory").map((suggestion) => {
+        const itemPath = suggestion.id.startsWith("file:") ? suggestion.id.slice(5) : suggestion.detail ?? suggestion.label;
+        return {
+          id: suggestion.id,
+          kind: suggestion.kind === "directory" ? "directory" as const : "file" as const,
+          label: suggestion.label,
+          detail: suggestion.detail,
+          insertText: suggestion.insertText,
+          inputItem: { type: "file", name: suggestion.detail ?? suggestion.label, path: itemPath } satisfies PairComposerInputItem
+        };
+      });
+    }
+
+    return [];
+  }
+
   async sendOperatorMessage(input: {
     pairId: string;
     text: string;
     imageReferenceIds: string[];
     fileReferenceIds: string[];
+    inputItems?: unknown[];
   }): Promise<PairDetail | null> {
     const pair = this.options.pairStore.getPair(input.pairId);
     if (!pair) return null;
     const service = await this.ensureService(input.pairId);
     const selectionError = butlerModelAvailabilityError(pair, service.getShellSnapshot());
     if (selectionError) throw new Error(selectionError);
-    const promptText = buildReferencePromptText({
+    const referencePromptText = buildReferencePromptText({
       text: input.text,
       imageStore: this.options.imageStore,
       imageReferenceIds: input.imageReferenceIds,
@@ -618,8 +705,31 @@ export class PairSessionManager {
       includeIds: true,
       includeFilePaths: true
     });
+    const normalizedInputItems = normalizeComposerInputItems(input.inputItems);
+    const selectedSkillInput = normalizedInputItems.find((item) => item.type === "skill") ?? null;
+    const inputItems = [
+      ...normalizedInputItems.filter((item) => item.type === "file"),
+      ...(selectedSkillInput ? [selectedSkillInput] : [])
+    ];
+    const composerRoot = path.resolve(pair.worker?.cwd ?? pair.defaultCwd ?? "/repos");
+    const resolvedInputItems = await Promise.all(inputItems.map(async (item): Promise<PairComposerInputItem> => {
+      if (item.type === "file") {
+        const filePath = path.resolve(item.path);
+        const relative = path.relative(composerRoot, filePath);
+        if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Selected file is outside this session workspace.");
+        return { ...item, path: filePath };
+      }
+      if (item.type !== "skill" || item.path || !item.id) return item;
+      return this.options.skillsService.resolveInputItem("butler-pi", item.id, pair.worker?.cwd ?? pair.defaultCwd);
+    }));
+    const contextPromptText = buildComposerInputItemsPrompt(resolvedInputItems.filter((item) => item.type === "file"));
+    const promptBody = [referencePromptText, contextPromptText].filter(Boolean).join("\n\n");
+    const selectedSkill = resolvedInputItems.find((item) => item.type === "skill");
+    const promptText = selectedSkill ? `/skill:${selectedSkill.name} ${promptBody}`.trim() : promptBody;
     const referenceCount = input.imageReferenceIds.length + input.fileReferenceIds.length;
-    const displayText = input.text.trim() || (referenceCount === 1 ? "Attached 1 reference file." : `Attached ${referenceCount} reference files.`);
+    const displayText = input.text.trim() || (referenceCount > 0
+      ? referenceCount === 1 ? "Attached 1 reference file." : `Attached ${referenceCount} reference files.`
+      : resolvedInputItems.length === 1 ? "Added 1 context item." : `Added ${resolvedInputItems.length} context items.`);
     const shouldGenerateTitle = this.shouldGenerateTitle(pair, input.text, service);
     service.prompt(promptText, input.imageReferenceIds, { mode: "queue", displayText, fileReferenceIds: input.fileReferenceIds });
     if (shouldGenerateTitle) {
@@ -675,6 +785,27 @@ export class PairSessionManager {
     return this.getPairDetail(pairId, null, 120);
   }
 
+  async getButlerSessionControls(pairId: string): Promise<WorkerSessionControls | null> {
+    if (!this.options.pairStore.getPair(pairId)) return null;
+    return (await this.ensureService(pairId)).getSessionControls();
+  }
+
+  async runButlerSessionControl(
+    pairId: string,
+    action: WorkerSessionControlAction,
+    input: { instructions?: string; entryId?: string; name?: string }
+  ): Promise<boolean> {
+    if (!this.options.pairStore.getPair(pairId)) return false;
+    await (await this.ensureService(pairId)).runSessionControl(action, input);
+    this.syncPairSnapshot(pairId);
+    return true;
+  }
+
+  async exportButlerSession(pairId: string): Promise<string | null> {
+    if (!this.options.pairStore.getPair(pairId)) return null;
+    return (await this.ensureService(pairId)).exportSession();
+  }
+
   private async ensureService(pairId: string): Promise<PairButlerService> {
     if (this.quiescedPairs.has(pairId)) throw new Error("Butler session is closing.");
     const existing = this.services.get(pairId);
@@ -706,6 +837,8 @@ export class PairSessionManager {
       sessionDir,
       artifactsDir: this.options.artifactsDir,
       runtimeThreadId: `butler:${pair.id}`,
+      extensionUiBroker: this.options.extensionUiBroker,
+      skillsService: this.options.skillsService,
       refreshRuntimeInventory: this.options.refreshRuntimeInventory,
       memoryScheduler: this.options.memoryScheduler,
       systemPromptSuffix: pairSystemPrompt(pair.id),

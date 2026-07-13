@@ -5,6 +5,20 @@ export type PairViewMode = "butler" | "worker" | "split" | "files" | "memory" | 
 export type PairWorkerRuntime = "openai" | "pi-rpc";
 export type PairWorkerHarness = "codex" | "pi" | (string & {});
 
+export type PairComposerInputItem =
+  | { type: "file"; name: string; path: string }
+  | { type: "skill"; name: string; path?: string; id?: string; environment?: "butler-pi" | "worker-pi" | "worker-codex" }
+  | { type: "mention"; name?: string; path: string };
+
+export type PairComposerSuggestion = {
+  id: string;
+  kind: "file" | "directory" | "skill" | "app" | "command" | "action";
+  label: string;
+  detail: string | null;
+  insertText: string;
+  inputItem?: PairComposerInputItem;
+};
+
 export const DEFAULT_THINKING_LEVELS: readonly string[] = ["low", "medium", "high", "xhigh"];
 export const BUTLER_THINKING_LEVELS: readonly string[] = ["off", "default", "none", "minimal", ...DEFAULT_THINKING_LEVELS, "max", "thinking"];
 export const REASONING_EFFORTS: readonly string[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];

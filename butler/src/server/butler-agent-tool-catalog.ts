@@ -212,6 +212,24 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while waiting for an operator decision." }]
   },
   {
+    name: "inspect_skills",
+    label: "Inspect skills",
+    description: "List, search, or read installed skills in butler-pi, worker-pi, or worker-codex without changing them.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while reviewing installed skills." }]
+  },
+  {
+    name: "propose_skill_change",
+    label: "Propose skill change",
+    description: "Validate a skill create, install, update, or undo in butler-pi, worker-pi, or worker-codex and request explicit operator approval.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while waiting for skill-change approval." }]
+  },
+  {
+    name: "apply_skill_change",
+    label: "Apply skill change",
+    description: "Apply an approved skill change in butler-pi, worker-pi, or worker-codex, verify it, schedule the applicable resource reload, and return undo details.",
+    uiEffects: [{ kind: "refreshThreads", description: "Makes approved skill changes available to Butler." }]
+  },
+  {
     name: "list_project_artifacts",
     label: "List project artifacts",
     description: "List or search durable project artifacts such as saved seeds, downloads, and reusable analysis files.",
@@ -304,7 +322,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "inspect_filesystem",
     label: "Inspect filesystem",
-    description: "Read-only list, stat, or bounded find under approved local roots such as /repos.",
+    description: "Read UTF-8 text, list, stat, or perform a bounded find under approved local roots such as /repos.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while answering safe local filesystem questions." }]
   },
   {

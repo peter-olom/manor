@@ -16,6 +16,7 @@ type ButlerMessageAttachmentView = NonNullable<ButlerMessageView["attachments"]>
 type OperatorMessageOptions = {
   role?: string;
   displayText?: string | null;
+  hiddenFromTranscript?: boolean;
   question?: ButlerOperatorQuestionView | null;
   trace?: ButlerTraceItemView[] | null;
   traceMeta?: ButlerTraceMetaView | null;
@@ -385,6 +386,7 @@ export function upsertOperatorMessage(messages: ButlerMessageView[], id: string,
   const updatesTrace = Object.prototype.hasOwnProperty.call(options, "trace");
   const updatesTraceMeta = Object.prototype.hasOwnProperty.call(options, "traceMeta");
   const updatesAttachments = Object.prototype.hasOwnProperty.call(options, "attachments");
+  const updatesTranscriptVisibility = Object.prototype.hasOwnProperty.call(options, "hiddenFromTranscript");
   const trace = updatesTrace ? options.trace ?? null : existingMessage?.trace ?? null;
   const traceMeta = updatesTraceMeta ? options.traceMeta ?? null : existingMessage?.traceMeta ?? null;
   const attachments = updatesAttachments ? options.attachments ?? null : existingMessage?.attachments ?? null;
@@ -396,6 +398,7 @@ export function upsertOperatorMessage(messages: ButlerMessageView[], id: string,
       existingMessage.taskDurationMs !== taskDurationMs ||
       existingMessage.role !== role ||
       existingMessage.displayText !== (displayText ?? undefined) ||
+      (updatesTranscriptVisibility && existingMessage.hiddenFromTranscript !== options.hiddenFromTranscript) ||
       JSON.stringify(existingMessage.question ?? null) !== JSON.stringify(question) ||
       JSON.stringify(existingMessage.trace ?? null) !== JSON.stringify(trace) ||
       JSON.stringify(existingMessage.traceMeta ?? null) !== JSON.stringify(traceMeta);
@@ -406,6 +409,10 @@ export function upsertOperatorMessage(messages: ButlerMessageView[], id: string,
     existingMessage.role = role;
     if (displayText) existingMessage.displayText = displayText;
     else delete existingMessage.displayText;
+    if (updatesTranscriptVisibility) {
+      if (options.hiddenFromTranscript) existingMessage.hiddenFromTranscript = true;
+      else delete existingMessage.hiddenFromTranscript;
+    }
     if (question) existingMessage.question = question;
     else delete existingMessage.question;
     if (updatesTrace) {
@@ -431,6 +438,7 @@ export function upsertOperatorMessage(messages: ButlerMessageView[], id: string,
       kind: "message"
     };
     if (displayText) next.displayText = displayText;
+    if (options.hiddenFromTranscript) next.hiddenFromTranscript = true;
     if (question) next.question = question;
     if (trace && trace.length > 0) next.trace = trace;
     if (traceMeta) next.traceMeta = traceMeta;

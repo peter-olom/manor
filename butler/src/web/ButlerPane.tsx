@@ -5,22 +5,26 @@ import { AttachmentIcon, CloseIcon } from "./icons";
 import { JumpToLatest } from "./JumpToLatest";
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
+import { SessionControlsButton } from "./WorkerSessionControls";
 import { operatorQuestionNeedsAction, OperatorQuestionCard } from "./OperatorQuestionCard";
 import { SandSpinner } from "./SandSpinner";
 import { ThinkingTrace, traceDisclosureLabel } from "./ThinkingTrace";
 import { useAnchoredScroll } from "./useAnchoredScroll";
 import { useLiveButlerTurn, type CompletedTrace } from "./useLiveButlerTurn";
 import { providerModelRef } from "./worker-route";
+import { addComposerContextItem, applyComposerSuggestion, composerItemKey, composerItemLabel, findComposerTrigger, type ComposerTriggerMatch } from "./composer-suggestions";
 
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
-import type { PairButlerActivityOutcome, PairDetail, PairMessage, PairModelOption, PairReviewActivity, PairTraceItem } from "../shared/pairing";
-import { isVisionImageFile, type FileReference } from "./api";
+import type { PairButlerActivityOutcome, PairComposerInputItem, PairComposerSuggestion, PairDetail, PairMessage, PairModelOption, PairReviewActivity, PairTraceItem } from "../shared/pairing";
+import { getJson, isVisionImageFile, type FileReference } from "./api";
 import type { PreviewMedia } from "./ImagePreviewModal";
 
 type ButlerPaneProps = {
   pair: PairDetail;
   draft: string;
+  composerPlaceholder?: string;
   busy: boolean;
+  composerBusy: boolean;
   sendDisabled: boolean;
   onDraft: (value: string) => void;
   onSend: () => void;
@@ -42,6 +46,8 @@ type ButlerPaneProps = {
   onRemoveAttachment: (attachmentId: string) => void;
   onPreviewImage: (media: PreviewMedia) => void;
   onPairUpdate: (pair: PairDetail) => void;
+  contextItems: PairComposerInputItem[];
+  onContextItemsChange: (items: PairComposerInputItem[]) => void;
 };
 
 function formatTime(value: number | null | undefined): string {
@@ -99,6 +105,8 @@ type ComposerProps = {
   onChange: (value: string) => void;
   onSubmit: () => void;
   busy: boolean;
+  settingsDisabled: boolean;
+  queueMode: boolean;
   sendDisabled: boolean;
   model: string | null;
   availableModels: PairModelOption[];
@@ -113,6 +121,10 @@ type ComposerProps = {
   onRemoveAttachment: (attachmentId: string) => void;
   onPreviewImage: (media: PreviewMedia) => void;
   blockedReason: string | null;
+  placeholder?: string;
+  pairId: string;
+  contextItems: PairComposerInputItem[];
+  onContextItemsChange: (items: PairComposerInputItem[]) => void;
 };
 
 type ComposerFileDragPhase = "enter" | "over" | "leave" | "drop" | "end";
@@ -162,6 +174,8 @@ export const Composer = memo(function Composer({
   onChange,
   onSubmit,
   busy,
+  settingsDisabled,
+  queueMode,
   sendDisabled,
   model,
   availableModels,
@@ -175,15 +189,64 @@ export const Composer = memo(function Composer({
   uploadError,
   onRemoveAttachment,
   onPreviewImage,
-  blockedReason
+  blockedReason,
+  placeholder = "Message Butler…",
+  pairId,
+  contextItems = [],
+  onContextItemsChange = () => undefined
 }: ComposerProps) {
   const ref = useAutoGrow(value);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
   const [dragActive, setDragActive] = useState(false);
-  const canSubmit = Boolean(value.trim() || attachments.length > 0);
+  const [triggerMatch, setTriggerMatch] = useState<ComposerTriggerMatch | null>(null);
+  const [suggestions, setSuggestions] = useState<PairComposerSuggestion[]>([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [activeSuggestion, setActiveSuggestion] = useState(0);
+  const suggestionRequestRef = useRef(0);
+  const canSubmit = Boolean(value.trim() || attachments.length > 0 || contextItems.length > 0);
   const isMultilineDraft = value.includes("\n");
   const canAttach = !busy && !uploadingFiles;
+  useEffect(() => {
+    if (!triggerMatch) {
+      setSuggestions([]);
+      setSuggestionsLoading(false);
+      return;
+    }
+    const requestId = suggestionRequestRef.current + 1;
+    suggestionRequestRef.current = requestId;
+    setSuggestionsLoading(true);
+    const timer = window.setTimeout(() => {
+      const query = new URLSearchParams({ trigger: triggerMatch.trigger, q: triggerMatch.query });
+      void getJson<{ suggestions: PairComposerSuggestion[] }>(`/api/pairs/${encodeURIComponent(pairId)}/composer-suggestions?${query}`).then((payload) => {
+        if (suggestionRequestRef.current !== requestId) return;
+        setSuggestions(payload.suggestions);
+        setActiveSuggestion(0);
+        setSuggestionsLoading(false);
+      }).catch(() => {
+        if (suggestionRequestRef.current === requestId) {
+          setSuggestions([]);
+          setSuggestionsLoading(false);
+        }
+      });
+    }, 100);
+    return () => window.clearTimeout(timer);
+  }, [pairId, triggerMatch]);
+  const chooseSuggestion = (suggestion: PairComposerSuggestion) => {
+    if (!triggerMatch) return;
+    const applied = applyComposerSuggestion(value, triggerMatch, suggestion);
+    onChange(applied.value);
+    if (applied.inputItem) {
+      onContextItemsChange(addComposerContextItem(contextItems, applied.inputItem));
+    }
+    setTriggerMatch(null);
+    setSuggestions([]);
+    setSuggestionsLoading(false);
+    window.requestAnimationFrame(() => {
+      ref.current?.focus();
+      ref.current?.setSelectionRange(applied.caret, applied.caret);
+    });
+  };
   const applyFileDrag = (phase: ComposerFileDragPhase, event: DragEvent<HTMLFormElement>) => {
     const transition = reduceComposerFileDrag({
       phase,
@@ -207,6 +270,18 @@ export const Composer = memo(function Composer({
   }
   return (
     <div className="composer">
+      {contextItems.length > 0 ? (
+        <div className="composer-context-items" aria-label="Selected context">
+          {contextItems.map((item) => (
+            <span className={`composer-context-chip is-${item.type}`} key={composerItemKey(item)}>
+              <span>{composerItemLabel(item)}</span>
+              <button type="button" onClick={() => onContextItemsChange(contextItems.filter((candidate) => composerItemKey(candidate) !== composerItemKey(item)))} aria-label={`Remove ${composerItemLabel(item)}`}>
+                <CloseIcon />
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : null}
       {attachments.length > 0 ? (
         <div className="composer-attachments" aria-label="Composer attachments">
           {attachments.map((attachment) => {
@@ -248,11 +323,57 @@ export const Composer = memo(function Composer({
         }}
       >
         {dragActive ? <div className="composer-drop-target" aria-live="polite">Drop files to attach</div> : null}
+        {triggerMatch ? (
+          <div className="composer-suggestions" role="listbox" aria-label={`${triggerMatch.trigger} suggestions`}>
+            {suggestions.map((suggestion, index) => (
+              <button
+                key={suggestion.id}
+                type="button"
+                role="option"
+                aria-selected={index === activeSuggestion}
+                className={index === activeSuggestion ? "is-active" : ""}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setActiveSuggestion(index)}
+                onClick={() => chooseSuggestion(suggestion)}
+              >
+                <span className="composer-suggestion-kind">{suggestion.kind}</span>
+                <strong>{suggestion.label}</strong>
+                {suggestion.detail ? <small>{suggestion.detail}</small> : null}
+              </button>
+            ))}
+            {suggestions.length === 0 ? (
+              <div className="composer-suggestions-empty" role="status">
+                {suggestionsLoading ? "Finding matches…" : triggerMatch.trigger === "@" ? "No matching files." : triggerMatch.trigger === "$" ? "No matching skills." : "No matching commands."}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <textarea
           ref={ref}
           value={value}
-          onChange={(event) => onChange(event.target.value)}
+          onChange={(event) => {
+            onChange(event.target.value);
+            setTriggerMatch(findComposerTrigger(event.target.value, event.target.selectionStart));
+          }}
           onKeyDown={(event) => {
+            if (suggestions.length > 0 && triggerMatch) {
+              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                event.preventDefault();
+                setActiveSuggestion((current) => (current + (event.key === "ArrowDown" ? 1 : -1) + suggestions.length) % suggestions.length);
+                return;
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setTriggerMatch(null);
+                setSuggestions([]);
+                return;
+              }
+              if (event.key === "Enter" || event.key === "Tab") {
+                event.preventDefault();
+                chooseSuggestion(suggestions[activeSuggestion]!);
+                return;
+              }
+            }
             if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
             if (event.metaKey || event.ctrlKey) {
               event.preventDefault();
@@ -265,7 +386,7 @@ export const Composer = memo(function Composer({
             event.preventDefault();
             if (canSubmit && !busy && !sendDisabled) onSubmit();
           }}
-          placeholder="Message Butler…"
+          placeholder={placeholder}
           rows={2}
         />
         <div className="composer-actions">
@@ -296,7 +417,7 @@ export const Composer = memo(function Composer({
               label="Butler model"
               value={model}
               options={availableModels}
-              disabled={busy}
+              disabled={settingsDisabled}
               compact
               className="composer-model"
               onChange={onModelChange}
@@ -306,7 +427,7 @@ export const Composer = memo(function Composer({
                 label="Butler thinking"
                 value={thinkingLevel}
                 options={availableThinkingLevels}
-                disabled={busy}
+                disabled={settingsDisabled}
                 onChange={onThinkingLevelChange}
                 className="composer-budget"
               />
@@ -314,7 +435,7 @@ export const Composer = memo(function Composer({
             {isMultilineDraft ? <span className="composer-hint">Ctrl/Cmd + Enter</span> : null}
           </div>
           <button className="composer-send" type="submit" disabled={busy || sendDisabled || !canSubmit}>
-            {busy ? <span className="spinner" /> : <span>Send</span>}
+            {busy ? <span className="spinner" /> : <span>{queueMode ? "Queue" : "Send"}</span>}
           </button>
         </div>
         {uploadError ? <div className="composer-upload-error" role="alert">{uploadError}</div> : null}
@@ -466,15 +587,8 @@ export const WorkLoaderBubble = memo(function WorkLoaderBubble({ items, failed =
   const staleFor = lastUpdateAt ? Math.max(0, now - lastUpdateAt) : 0;
   return (
     <div className={`butler-activity-indicator${failed ? " is-failed" : ""}`} aria-label={failed ? "Butler stopped with an error" : "Butler is working"}>
-      <span className="working-indicator" aria-live="polite">
-        <span className="working-indicator-label">{failed ? "Butler stopped with an error" : "Butler"}</span>
-        {failed ? null : <SandSpinner />}
-      </span>
-      {startedAt ? (
-        <span className={`working-timing${staleFor >= 30_000 ? " is-stale" : ""}`}>
-          {failed ? `Stopped after ${shortDuration((lastUpdateAt ?? now) - startedAt)}` : `Working for ${shortDuration(now - startedAt)}`}
-          {!failed && lastUpdateAt ? ` · last update ${shortDuration(staleFor)} ago` : ""}
-        </span>
+      {items.length > 0 ? (
+        <TraceDisclosure items={items} defaultOpen label={failed ? "Activity and tool details" : liveActivityLabel(items)} />
       ) : null}
       {failed && detail ? (
         <details className="review-diagnostics" open>
@@ -482,9 +596,18 @@ export const WorkLoaderBubble = memo(function WorkLoaderBubble({ items, failed =
           <Markdown className="trace-body" text={detail} />
         </details>
       ) : null}
-      {items.length > 0 ? (
-        <TraceDisclosure items={items} defaultOpen label={failed ? "Activity and tool details" : liveActivityLabel(items)} />
-      ) : null}
+      <div className="butler-activity-current">
+        <span className="working-indicator" aria-live="polite">
+          <span className="working-indicator-label">{failed ? "Butler stopped with an error" : "Butler"}</span>
+          {failed ? null : <SandSpinner />}
+        </span>
+        {startedAt ? (
+          <span className={`working-timing${staleFor >= 30_000 ? " is-stale" : ""}`}>
+            {failed ? `Stopped after ${shortDuration((lastUpdateAt ?? now) - startedAt)}` : `Working for ${shortDuration(now - startedAt)}`}
+            {!failed && lastUpdateAt ? ` · last update ${shortDuration(staleFor)} ago` : ""}
+          </span>
+        ) : null}
+      </div>
     </div>
   );
 });
@@ -649,10 +772,22 @@ export const Bubble = memo(function Bubble({ message, liveTrace, pairId, onPairU
   );
 });
 
+export function findActiveOperatorQuestionMessage(messages: PairMessage[]): PairMessage | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.question && (operatorQuestionNeedsAction(message.question) || message.question.deliveryState === "pending")) {
+      return message;
+    }
+  }
+  return null;
+}
+
 export function ButlerPane({
   pair,
   draft,
+  composerPlaceholder,
   busy,
+  composerBusy,
   sendDisabled,
   onDraft,
   onSend,
@@ -673,7 +808,9 @@ export function ButlerPane({
   uploadError,
   onRemoveAttachment,
   onPreviewImage,
-  onPairUpdate
+  onPairUpdate,
+  contextItems,
+  onContextItemsChange
 }: ButlerPaneProps) {
   const live = useLiveButlerTurn(`butler:${pair.id}`);
   const [completedTraces, setCompletedTraces] = useState<Map<string, CompletedTrace>>(new Map());
@@ -785,15 +922,9 @@ export function ButlerPane({
       break;
     }
   }
-  let activeQuestionMessageId: string | null = null;
-  for (let index = pair.messages.length - 1; index > lastUserMessageIndex; index -= 1) {
-    const message = pair.messages[index];
-    if (message?.question && operatorQuestionNeedsAction(message.question)) {
-      activeQuestionMessageId = message.id;
-      break;
-    }
-  }
-  const hasOpenQuestion = Boolean(activeQuestionMessageId);
+  const activeQuestionMessage = findActiveOperatorQuestionMessage(pair.messages);
+  const activeQuestionMessageId = activeQuestionMessage?.id ?? null;
+  const historicalMessages = activeQuestionMessage ? pair.messages.filter((message) => message.id !== activeQuestionMessage.id) : pair.messages;
   const hasButlerReplyAfterLastUser = pair.messages.slice(lastUserMessageIndex + 1).some((message) => message.role === "butler");
   const orphanActivityTrace = !hasButlerReplyAfterLastUser && !liveStreaming && !activityFailed
     ? live.completedTraces.at(-1) ?? completedTraceFromItems(`activity-${pair.id}`, pair.butlerActivity)
@@ -802,7 +933,7 @@ export function ButlerPane({
     ? activityOutcome
     : null;
   const totalCount = pair.messages.length + (showWorkBubble ? 1 : 0) + (showWorkerWait ? 1 : 0) + (showBlockedCloseout ? 1 : 0) + (showLiveBubble ? 1 : 0) + (pair.review ? 1 : 0) + (orphanActivityOutcome ? 1 : 0);
-  const bottomKey = `${lastMessageId}:${totalCount}:${live.state.assistantText.length}:${live.state.items.size}:${lastMessageAt}`;
+  const bottomKey = `${lastMessageId}:${totalCount}:${live.state.assistantText.length}:${live.state.items.size}:${lastMessageAt}:${activeQuestionMessageId ?? ""}:${activeQuestionMessage?.question?.deliveryState ?? ""}`;
 
   const { ref, onScroll, isPinned, unreadCount, scrollToBottom } = useAnchoredScroll<HTMLDivElement>({ bottomKey, resetKey: pair.id });
 
@@ -813,6 +944,7 @@ export function ButlerPane({
           <h2>Butler</h2>
           <span className="pane-sub">{pair.messages.length} messages · {shortId(pair.id)}</span>
         </div>
+        {!pair.butlerPending ? <SessionControlsButton pairId={pair.id} lane="butler" disabled={!pair.butlerReady} /> : null}
         {pair.butlerPending && !pair.review ? (
           <button className="button is-ghost" type="button" disabled={stoppingButler} onClick={onStopButler}>
             {stoppingButler ? "Stopping…" : "Stop Butler"}
@@ -826,7 +958,7 @@ export function ButlerPane({
             Load older
           </button>
         ) : null}
-        {pair.messages.map((message) => (
+        {historicalMessages.map((message) => (
           <Bubble key={message.id} message={message} liveTrace={liveTraceByMessageId.get(message.id)} pairId={pair.id} onPairUpdate={onPairUpdate} activeQuestionMessageId={activeQuestionMessageId} onPreviewImage={onPreviewImage} />
         ))}
         {showLiveBubble ? (
@@ -850,6 +982,12 @@ export function ButlerPane({
         {showWorkBubble ? <WorkLoaderBubble items={showLiveBubble ? [] : visibleActivityItems} failed={activityFailed} detail={activityOutcome?.detail} startedAt={activityStartedAt} lastUpdateAt={activityLastUpdateAt} /> : null}
         {showWorkerWait ? <WorkerWaitIndicator worker={pair.worker} startedAt={pair.worker?.startedAt ?? pair.updatedAt} /> : null}
         {orphanActivityOutcome ? <ActivityOnlyBubble trace={orphanActivityTrace} outcome={orphanActivityOutcome} /> : null}
+        {activeQuestionMessage?.question ? (
+          <div className="operator-question-input" aria-label="Butler needs your decision">
+            <div className="operator-question-input-label">Decision required</div>
+            <OperatorQuestionCard pairId={pair.id} messageId={activeQuestionMessage.id} question={activeQuestionMessage.question} onPairUpdate={onPairUpdate} />
+          </div>
+        ) : null}
         <JumpToLatest
           count={unreadCount}
           onClick={() => {
@@ -857,7 +995,7 @@ export function ButlerPane({
           }}
         />
       </div>
-      {(pair.compose?.butler?.availableModels.length ?? 0) === 0 ? (
+      {activeQuestionMessage ? null : (pair.compose?.butler?.availableModels.length ?? 0) === 0 ? (
         <div className="empty-state">
           <p>Connect a provider before messaging Butler.</p>
           <button className="button is-primary" type="button" onClick={onOpenProviderSettings}>Open provider settings</button>
@@ -866,7 +1004,9 @@ export function ButlerPane({
         value={draft}
         onChange={onDraft}
         onSubmit={onSend}
-        busy={busy}
+        busy={composerBusy}
+        settingsDisabled={busy}
+        queueMode={pair.butlerPending}
         sendDisabled={sendDisabled}
         model={pair.compose?.butler?.model ?? null}
         availableModels={pair.compose?.butler?.availableModels ?? []}
@@ -880,7 +1020,11 @@ export function ButlerPane({
         uploadError={uploadError}
         onRemoveAttachment={onRemoveAttachment}
         onPreviewImage={onPreviewImage}
-        blockedReason={hasOpenQuestion ? "Answer Butler’s open question above to continue." : null}
+        blockedReason={null}
+        placeholder={composerPlaceholder}
+        pairId={pair.id}
+        contextItems={contextItems}
+        onContextItemsChange={onContextItemsChange}
       />}
     </section>
   );

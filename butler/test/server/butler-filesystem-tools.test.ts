@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rename, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -50,6 +50,51 @@ test("inspectReadOnlyFilesystem supports stat, list, and bounded find", async ()
   assert.match(deep.text, /keep\.txt/);
 });
 
+test("inspectReadOnlyFilesystem reads bounded AGENTS.md text and rejects binary content", async () => {
+  const root = await fixture();
+  const agentsPath = path.join(root, "repo", "AGENTS.md");
+  const binaryPath = path.join(root, "repo", "binary.txt");
+  await writeFile(agentsPath, "# AGENTS.md\n\nUse Docker for local development.\n");
+  await writeFile(binaryPath, Buffer.from([65, 0, 66]));
+
+  const full = await inspectReadOnlyFilesystem({ operation: "read", path: agentsPath }, { approvedRoots: [root] });
+  assert.equal(full.text, "# AGENTS.md\n\nUse Docker for local development.\n");
+  assert.equal(full.details.truncated, false);
+
+  const bounded = await inspectReadOnlyFilesystem({ operation: "read", path: agentsPath, maxBytes: 12 }, { approvedRoots: [root] });
+  assert.match(bounded.text, /^# AGENTS\.md\n/);
+  assert.match(bounded.text, /truncated at 12 bytes/);
+  assert.equal(bounded.details.truncated, true);
+  await assert.rejects(
+    inspectReadOnlyFilesystem({ operation: "read", path: binaryPath }, { approvedRoots: [root] }),
+    /binary data/
+  );
+});
+
+test("inspectReadOnlyFilesystem reads the verified descriptor when the selected path is swapped", async () => {
+  const root = await fixture();
+  const outside = await mkdtemp(path.join(tmpdir(), "manor-fs-swap-outside-"));
+  const agentsPath = path.join(root, "repo", "AGENTS.md");
+  const openedPath = path.join(root, "repo", "opened-AGENTS.md");
+  const outsidePath = path.join(outside, "AGENTS.md");
+  await writeFile(agentsPath, "# Trusted AGENTS.md\n");
+  await writeFile(outsidePath, "# Outside content\n");
+
+  const result = await inspectReadOnlyFilesystem(
+    { operation: "read", path: agentsPath },
+    {
+      approvedRoots: [root],
+      beforeRead: async () => {
+        await rename(agentsPath, openedPath);
+        await symlink(outsidePath, agentsPath);
+      }
+    }
+  );
+
+  assert.equal(result.text, "# Trusted AGENTS.md\n");
+  assert.doesNotMatch(result.text, /Outside content/);
+});
+
 test("Butler registers the read-only filesystem tool", async () => {
   const definitions: Array<{
     name: string;
@@ -82,7 +127,7 @@ test("Butler prompt and catalog guide safe fs inspection and same-context follow
   const store = new ButlerStateStore(path.join(dir, "state.json"));
   const prompt = buildSystemPrompt(store, "No callbacks.");
 
-  assert.match(prompt, /Use inspect_filesystem for simple read-only local filesystem questions/);
+  assert.match(prompt, /Use inspect_filesystem to read selected UTF-8 text files/);
   assert.match(prompt, /default to message_job when it is the same workspace and task context/);
   assert.match(prompt, /surface and record that reason when you delegate anew/);
   assert.ok(BUTLER_TOOL_CATALOG.some((tool) => tool.name === "inspect_filesystem"));

@@ -1,11 +1,13 @@
-import { promises as fs } from "node:fs";
+import { constants, promises as fs } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 
 import { Type } from "@sinclair/typebox";
 
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import { MAX_TEXT_PREVIEW_BYTES, readTextPreviewHandle } from "./text-preview.js";
 
-type FilesystemInspectionOperation = "list" | "stat" | "find";
+type FilesystemInspectionOperation = "list" | "stat" | "find" | "read";
 type FilesystemInspectionEntryType = "any" | "file" | "directory" | "symlink";
 
 type FilesystemInspectionParams = {
@@ -15,6 +17,7 @@ type FilesystemInspectionParams = {
   nameContains?: string;
   type?: FilesystemInspectionEntryType;
   limit?: number;
+  maxBytes?: number;
 };
 
 type FilesystemInspectionEntry = {
@@ -29,6 +32,7 @@ const DEFAULT_APPROVED_ROOTS = ["/repos"];
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 200;
 const MAX_DEPTH = 5;
+const DEFAULT_READ_BYTES = 64 * 1024;
 
 function parseApprovedRoots(raw = process.env.MANOR_BUTLER_FS_INSPECTION_ROOTS): string[] {
   const roots = (raw ?? "")
@@ -47,7 +51,7 @@ function isInsideRoot(candidate: string, root: string): boolean {
   return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-async function resolveApprovedPath(requestedPath: string, approvedRoots: string[]): Promise<{ requested: string; root: string }> {
+async function resolveApprovedPath(requestedPath: string, approvedRoots: string[]): Promise<{ requested: string; root: string; realRoot: string }> {
   const requested = path.resolve(requestedPath);
   const roots = await Promise.all(
     approvedRoots.map(async (rawRoot) => {
@@ -66,7 +70,42 @@ async function resolveApprovedPath(requestedPath: string, approvedRoots: string[
     throw new Error(`Path ${requested} resolves outside approved read-only root ${approved.root}`);
   }
 
-  return { requested, root: approved.root };
+  return { requested, root: approved.root, realRoot: approved.realRoot };
+}
+
+function sameFile(left: Awaited<ReturnType<FileHandle["stat"]>>, right: Awaited<ReturnType<typeof fs.lstat>>): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+async function verifyOpenedFilePath(handle: FileHandle, requested: string, realRoot: string): Promise<void> {
+  const openedStats = await handle.stat();
+  if (!openedStats.isFile()) throw new Error(`${requested} is not a regular file`);
+
+  const procTarget = await fs.readlink(`/proc/self/fd/${handle.fd}`).catch(() => null);
+  if (procTarget) {
+    if (procTarget.endsWith(" (deleted)") || !isInsideRoot(path.resolve(procTarget), realRoot)) {
+      throw new Error(`Path ${requested} resolves outside approved read-only root ${realRoot}`);
+    }
+    return;
+  }
+
+  const before = await fs.lstat(requested);
+  if (!before.isFile() || !sameFile(openedStats, before)) throw new Error(`Path ${requested} changed while it was being opened`);
+  const currentRealPath = await fs.realpath(requested);
+  if (!isInsideRoot(currentRealPath, realRoot)) throw new Error(`Path ${requested} resolves outside approved read-only root ${realRoot}`);
+  const after = await fs.lstat(requested);
+  if (!after.isFile() || !sameFile(openedStats, after)) throw new Error(`Path ${requested} changed while it was being opened`);
+}
+
+async function openApprovedRegularFile(requested: string, realRoot: string): Promise<FileHandle> {
+  const handle = await fs.open(requested, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    await verifyOpenedFilePath(handle, requested, realRoot);
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
 }
 
 function entryType(stats: Awaited<ReturnType<typeof fs.lstat>>): FilesystemInspectionEntry["type"] {
@@ -136,10 +175,34 @@ function formatEntry(entry: FilesystemInspectionEntry): string {
 
 export async function inspectReadOnlyFilesystem(
   params: FilesystemInspectionParams,
-  options?: { approvedRoots?: string[] }
+  options?: { approvedRoots?: string[]; beforeRead?: () => void | Promise<void> }
 ): Promise<{ text: string; details: Record<string, unknown> }> {
   const approvedRoots = options?.approvedRoots ?? parseApprovedRoots();
-  const { requested } = await resolveApprovedPath(params.path, approvedRoots);
+  const { requested, realRoot } = await resolveApprovedPath(params.path, approvedRoots);
+
+  if (params.operation === "read") {
+    const maxBytes = clampInteger(params.maxBytes, DEFAULT_READ_BYTES, 1, MAX_TEXT_PREVIEW_BYTES);
+    const handle = await openApprovedRegularFile(requested, realRoot);
+    try {
+      const stats = await handle.stat();
+      const target = toEntry(requested, stats);
+      await options?.beforeRead?.();
+      const preview = await readTextPreviewHandle(handle, { maxBytes });
+      return {
+        text: preview.truncated ? `${preview.text}\n\n[File content truncated at ${maxBytes} bytes.]` : preview.text,
+        details: {
+          operation: params.operation,
+          approvedRoots: approvedRoots.map(normalizeRoot),
+          target,
+          maxBytes,
+          truncated: preview.truncated
+        }
+      };
+    } finally {
+      await handle.close();
+    }
+  }
+
   const stats = await fs.lstat(requested);
   const target = toEntry(requested, stats);
 
@@ -175,16 +238,17 @@ export function buildButlerFilesystemTools(access: ButlerAgentToolAccess): Butle
     access.defineButlerTool({
       name: "inspect_filesystem",
       label: "Inspect filesystem",
-      description: "Read-only list, stat, or bounded find under approved local roots such as /repos.",
+      description: "Read UTF-8 text, list, stat, or perform a bounded find under approved local roots such as /repos.",
       promptSnippet:
-        "inspect_filesystem: answer simple local filesystem inventory questions directly with read-only list/stat/find under approved roots like /repos; never use it for writes, deletes, shell execution, or unrestricted traversal.",
+        "inspect_filesystem: read selected text files and answer local filesystem questions directly with read-only read/list/stat/find under approved roots like /repos; reads reject binary data and are size-bounded; never use it for writes, deletes, shell execution, or unrestricted traversal.",
       parameters: Type.Object({
-        operation: Type.Union([Type.Literal("list"), Type.Literal("stat"), Type.Literal("find")]),
+        operation: Type.Union([Type.Literal("list"), Type.Literal("stat"), Type.Literal("find"), Type.Literal("read")]),
         path: Type.String({ minLength: 1 }),
         maxDepth: Type.Optional(Type.Number({ minimum: 0, maximum: MAX_DEPTH })),
         nameContains: Type.Optional(Type.String()),
         type: Type.Optional(Type.Union([Type.Literal("any"), Type.Literal("file"), Type.Literal("directory"), Type.Literal("symlink")])),
-        limit: Type.Optional(Type.Number({ minimum: 1, maximum: MAX_LIMIT }))
+        limit: Type.Optional(Type.Number({ minimum: 1, maximum: MAX_LIMIT })),
+        maxBytes: Type.Optional(Type.Number({ minimum: 1, maximum: MAX_TEXT_PREVIEW_BYTES }))
       }),
       uiEffects: access.getToolUiEffects("inspect_filesystem"),
       execute: async (_toolCallId, params) => {

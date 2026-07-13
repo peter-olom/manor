@@ -5,6 +5,7 @@ import manorLogoLight from "./assets/manor-logo.svg";
 import manorLogoDark from "./assets/manor-logo-dark.svg";
 import { ButlerPane } from "./ButlerPane";
 import { FileExplorer } from "./FileExplorer";
+import { ExtensionUiBridge } from "./ExtensionUiBridge";
 import {
   ChevronLeftIcon,
   FilesIcon,
@@ -27,11 +28,8 @@ import {
   shouldReportPairDetailError
 } from "./pair-selection";
 import { SandSpinner } from "./SandSpinner";
-import {
-  SelfImprovementQueue,
-  formatSelfImprovementTime,
-  selfImprovementStatusLabel
-} from "./SelfImprovementQueue";
+import { listenForSkillInstallHandoff, readSkillInstallHandoff, removeSkillInstallHandoff, shouldCreateSkillInstallSession, SKILL_INSTALL_HANDOFF_PLACEHOLDER } from "./skill-install-handoff";
+import { SelfImprovementQueue, formatSelfImprovementTime, selfImprovementStatusLabel } from "./SelfImprovementQueue";
 import { SettingsDashboard, SETTINGS_SECTIONS, type SettingsSectionId } from "./SettingsDashboard";
 import { TerminalPane } from "./TerminalPane";
 import { useEventStream } from "./useEventStream";
@@ -46,6 +44,7 @@ import type {
   PairDetail,
   PairDetailResponse,
   PairListResponse,
+  PairComposerInputItem,
   PairMessage,
   PairStatus,
   PairSummary,
@@ -53,16 +52,11 @@ import type {
   PairWorkerHarness,
   PairWorkerThreadResponse
 } from "../shared/pairing";
-import {
-  DEFAULT_TERMINAL_TARGET,
-  readInitialTerminalTarget,
-  type TerminalTarget
-} from "../shared/terminal";
+import { DEFAULT_TERMINAL_TARGET, readInitialTerminalTarget, type TerminalTarget } from "../shared/terminal";
 
 type RuntimeProofSnapshot = {
   previewProofsByThreadId?: Record<string, WorkerProofRecord[]>;
 };
-
 type WorkerHandoffUiState = {
   requestId: number;
   pending: boolean;
@@ -639,6 +633,9 @@ export function PairShell() {
   const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>(
     () => readInitialTerminalTarget(new URLSearchParams(window.location.search).get("terminal")) ?? DEFAULT_TERMINAL_TARGET
   );
+  const skillInstallHandoffPending = useRef(readSkillInstallHandoff(window.location.search));
+  const skillInstallSessionCreating = useRef(false); const skillInstallSessionRequest = useRef(0);
+  const [skillInstallIntent, setSkillInstallIntent] = useState(skillInstallHandoffPending.current);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false); const [stoppingButler, setStoppingButler] = useState(false);
   const [butlerComposePending, setButlerComposePending] = useState(0);
@@ -671,10 +668,12 @@ export function PairShell() {
   const [memorySummary, setMemorySummary] = useState<MemoryDashboardSummary | null>(null);
   const [proofsByThreadId, setProofsByThreadId] = useState<Record<string, WorkerProofRecord[]>>({});
   const [composerAttachments, setComposerAttachments] = useState<FileReference[]>([]);
+  const [composerContextItems, setComposerContextItems] = useState<PairComposerInputItem[]>([]);
   const [uploadingFiles, setUploadingFiles] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  useEffect(() => setComposerContextItems([]), [selectedPairId]);
   const manorSurface = manorSurfaceForView(viewMode);
   const activePair = pair?.id === selectedPairId ? pair : null;
   const activeWorkerHandoff = activePair ? workerHandoffByPairId[activePair.id] ?? null : null;
@@ -785,6 +784,7 @@ export function PairShell() {
       setPairs(payload.pairs);
       selectPairId(reconcileSelectedPairId(selectedPairIdRef.current, payload.pairs));
     });
+    return payload;
   }, [selectPairId]);
 
   const loadWorker = useCallback(async (pairId: string): Promise<WorkerThread | null> => {
@@ -795,6 +795,8 @@ export function PairShell() {
   useEffect(() => {
     syncUrlState(viewMode, terminalTarget, settingsSection);
   }, [settingsSection, terminalTarget, viewMode]);
+
+  useEffect(() => { if (readSkillInstallHandoff(window.location.search)) window.history.replaceState(null, "", removeSkillInstallHandoff(window.location.href)); }, []);
 
   useEffect(() => {
     const onPopState = () => {
@@ -809,13 +811,28 @@ export function PairShell() {
   useEffect(() => {
     if (viewMode !== "files" && viewMode !== "memory" && viewMode !== "improve" && viewMode !== "settings") setLastWorkstreamMode(viewMode);
   }, [viewMode]);
+  useEffect(() => { if (manorSurface !== "sessions") { skillInstallHandoffPending.current = false; skillInstallSessionRequest.current += 1; setSkillInstallIntent(false); } }, [manorSurface]);
 
   useEffect(() => {
-    void loadPairs().catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    void loadPairs().then((payload) => {
+      if (skillInstallHandoffPending.current && payload.pairs.length === 0) createSkillInstallSession();
+    }).catch((err) => setError(err instanceof Error ? err.message : String(err)));
     const interval = window.setInterval(() => void loadPairs().catch(() => undefined), 5000);
     return () => window.clearInterval(interval);
   }, [loadPairs]);
 
+  useEffect(() => {
+    if (!activePair || !skillInstallHandoffPending.current) return;
+    skillInstallHandoffPending.current = false;
+    setViewMode("butler");
+    setLastWorkstreamMode("butler");
+    window.requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus());
+  }, [activePair]);
+  useEffect(() => listenForSkillInstallHandoff(() => {
+    setSkillInstallIntent(true); setViewMode("butler"); setLastWorkstreamMode("butler");
+    if (shouldCreateSkillInstallSession(selectedPairIdRef.current, skillInstallSessionCreating.current)) { skillInstallHandoffPending.current = true; createSkillInstallSession(); return; }
+    window.requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus());
+  }), []);
   const loadImproveQueue = useCallback(async () => {
     const payload = await getJson<SelfImprovementQueueResponse>("/api/self-improvement/requests");
     startTransition(() => {
@@ -952,25 +969,27 @@ export function PairShell() {
     [activePair?.worker?.threadId, proofsByThreadId]
   );
 
-  async function createPair() {
+  async function createPair(): Promise<boolean> { return createPairWithActivation(() => true); }
+  async function createPairWithActivation(activate: () => boolean): Promise<boolean> {
     setBusy(true);
     setError(null);
     try {
       const payload = await postJson<PairDetailResponse>("/api/pairs", { title: "New session" });
-      await loadPairs();
+      await loadPairs(); if (!activate()) return true;
       selectPairId(payload.pair.id);
       setPair(payload.pair);
       setViewMode("butler");
       setMobileSidebarOpen(false);
       setEditingTitle(false);
       setTitleDraft("");
-      setTitleError(null);
+      setTitleError(null); return true;
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(err instanceof Error ? err.message : String(err)); return false;
     } finally {
       setBusy(false);
     }
   }
+  function createSkillInstallSession() { if (!skillInstallSessionCreating.current) { const requestId = ++skillInstallSessionRequest.current; skillInstallSessionCreating.current = true; skillInstallHandoffPending.current = false; void createPairWithActivation(() => requestId === skillInstallSessionRequest.current).then((created) => { if (!created && requestId === skillInstallSessionRequest.current) setSkillInstallIntent(false); }).finally(() => { skillInstallSessionCreating.current = false; if (requestId === skillInstallSessionRequest.current) window.requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus()); }); } }
 
   async function deletePair(pairId: string) {
     if (!canBeginPairDeletion(pairId, suppressedPairDetailErrorsRef.current)) return;
@@ -1030,19 +1049,22 @@ export function PairShell() {
   async function sendButler() {
     if (!activePair || butlerComposePending > 0) return;
     const text = draft.trim();
-    if (!text && composerAttachments.length === 0) return;
+    if (!text && composerAttachments.length === 0 && composerContextItems.length === 0) return;
     setBusy(true);
     setError(null);
     try {
       const payload = await postJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(activePair.id)}/messages`, {
         text,
         target: "butler",
+        inputItems: composerContextItems,
         imageReferenceIds: composerAttachments.filter((attachment) => isVisionImageFile(attachment.mimeType, attachment.name)).map((attachment) => attachment.id),
         fileReferenceIds: composerAttachments.filter((attachment) => !isVisionImageFile(attachment.mimeType, attachment.name)).map((attachment) => attachment.id)
       });
       setPair(payload.pair);
       setDraft("");
+      setSkillInstallIntent(false);
       setComposerAttachments([]);
+      setComposerContextItems([]);
       setUploadError(null);
       await loadPairs();
     } catch (err) {
@@ -1260,9 +1282,9 @@ export function PairShell() {
   const selectTerminalTarget = useCallback((target: TerminalTarget) => {
     setTerminalTarget(target);
   }, []);
+  const applyExtensionEditorText = useCallback((text: string) => setDraft(text), []);
   const selectManorSurface = useCallback((surface: ManorSurface) => {
-    cancelEditTitle();
-    setMobileSidebarOpen(false);
+    cancelEditTitle(); setMobileSidebarOpen(false);
     setViewMode(surface === "sessions" ? lastWorkstreamMode : surface);
   }, [cancelEditTitle, lastWorkstreamMode]);
   const selectSettingsSection = useCallback((section: SettingsSectionId) => {
@@ -1285,12 +1307,8 @@ export function PairShell() {
         memorySummary={memorySummary}
         settingsSection={settingsSection}
         onSelect={(id) => {
-          selectPairId(id);
-          setViewMode(lastWorkstreamMode);
-          setMobileSidebarOpen(false);
-          setEditingTitle(false);
-          setTitleDraft("");
-          setTitleError(null);
+          selectPairId(id); setSkillInstallIntent(false); setViewMode(lastWorkstreamMode);
+          setMobileSidebarOpen(false); setEditingTitle(false); setTitleDraft(""); setTitleError(null);
         }}
         onSelectManor={selectManorSurface}
         onSelectImproveRequest={(id) => {
@@ -1302,7 +1320,7 @@ export function PairShell() {
           setMobileSidebarOpen(false);
         }}
         onSelectSettingsSection={selectSettingsSection}
-        onCreate={createPair}
+        onCreate={() => void createPair()}
         onDelete={deletePair}
         search={search}
         onSearch={setSearch}
@@ -1347,7 +1365,7 @@ export function PairShell() {
             </picture>
             <h2>Welcome to Manor</h2>
             <p>Create a new session to start a scoped conversation with one Worker.</p>
-            <button className="button is-primary" type="button" onClick={createPair} disabled={busy}>
+            <button className="button is-primary" type="button" onClick={() => void createPair()} disabled={busy}>
               <PlusIcon />
               <span>New session</span>
             </button>
@@ -1360,8 +1378,10 @@ export function PairShell() {
                   <ButlerPane
                     pair={activePair}
                     draft={draft}
+                    composerPlaceholder={skillInstallIntent ? SKILL_INSTALL_HANDOFF_PLACEHOLDER : undefined}
                     busy={busy || butlerComposePending > 0 || activePair.butlerPending}
-                    sendDisabled={busy || uploadingFiles || butlerComposePending > 0 || activePair.butlerPending || /chosen Butler model|No connected Butler model/i.test(activePair.butlerLastError ?? "")}
+                    composerBusy={busy || butlerComposePending > 0}
+                    sendDisabled={busy || uploadingFiles || butlerComposePending > 0 || /chosen Butler model|No connected Butler model/i.test(activePair.butlerLastError ?? "")}
                     onDraft={setDraft}
                     onSend={() => void sendButler()}
                     onLoadOlder={() => void loadOlder()}
@@ -1383,6 +1403,8 @@ export function PairShell() {
                       setPreviewMedia(media);
                     }}
                     onPairUpdate={(updatedPair) => setPair(updatedPair)}
+                    contextItems={composerContextItems}
+                    onContextItemsChange={setComposerContextItems}
                   />
                 ) : null}
                 {viewMode === "split" ? <div className="divider" /> : null}
@@ -1433,6 +1455,7 @@ export function PairShell() {
                   showErrorToast={(err) => setPreviewError(err instanceof Error ? err.message : String(err))}
                 />
               ) : null}
+              <ExtensionUiBridge pairId={activePair?.id ?? null} onEditorText={applyExtensionEditorText} />
             </div>
             <div className={`workspace-view is-memory ${viewMode === "memory" ? "is-active" : ""}`}>
               <MemoryDashboard

@@ -7,6 +7,7 @@ import { JumpToLatest } from "./JumpToLatest";
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
 import { WorkerSwitchDialog } from "./WorkerSwitchDialog";
+import { WorkerSessionControlsButton } from "./WorkerSessionControls";
 import {
   isSameWorkerRoute,
   workerHarnessLabel,
@@ -774,6 +775,7 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onWo
               Switch worker…
             </button>
           ) : <button className="button" type="button" onClick={onOpenProviderSettings}>Reconnect provider</button>}
+          {pair.worker.runtime === "pi-rpc" ? <WorkerSessionControlsButton pairId={pair.id} disabled={handoffPending} /> : null}
         </div>
       </div>
       <WorkerTimelineView loading={loading} timeline={timeline} proofRecords={proofRecords} onPreviewImage={(media) => {

@@ -14,6 +14,7 @@ import type { SessionTitleGenerator } from "../../src/server/session-title-gener
 class FakeButlerService extends EventEmitter {
   messages: ButlerMessageView[] = [];
   refreshCount = 0;
+  resourceReloadCount = 0;
   startCount = 0;
   pending = false;
   trackedExternalThreads: string[] = [];
@@ -59,6 +60,8 @@ class FakeButlerService extends EventEmitter {
     this.refreshCount += 1;
     this.emit("change");
   }
+
+  async reloadResources(): Promise<void> { this.resourceReloadCount += 1; }
 
   async stopPrompt(): Promise<void> { this.stopCount += 1; this.lifecycleEvents.push("stop-prompt"); }
 
@@ -143,13 +146,14 @@ class FakeButlerService extends EventEmitter {
   }
 }
 
-async function createManager(generator: SessionTitleGenerator | null = null, onCreateService?: (options: unknown) => void, runtime?: { workerModels?: ModelOption[] }): Promise<{
+async function createManager(generator: SessionTitleGenerator | null = null, onCreateService?: (options: unknown) => void, runtime?: { workerModels?: ModelOption[]; butlerSkills?: Array<{ id: string; name: string; description: string; invocation: string }> }): Promise<{
   manager: PairSessionManager;
   pairStore: PairStore;
   service: FakeButlerService;
   store: ButlerStateStore;
   codexUpdates: Array<{ model: string; effort: ReasoningEffort | null }>;
   threadEffortUpdates: Array<{ threadId: string; effort: ReasoningEffort }>;
+  codexComposerCalls: string[];
 }> {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-pair-session-test-"));
   const store = new ButlerStateStore(path.join(dir, "state.json"));
@@ -158,6 +162,7 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
   const service = new FakeButlerService();
   const codexUpdates: Array<{ model: string; effort: ReasoningEffort | null }> = [];
   const threadEffortUpdates: Array<{ threadId: string; effort: ReasoningEffort }> = [];
+  const codexComposerCalls: string[] = [];
   const workerModels = runtime?.workerModels ?? [];
   const manager = new PairSessionManager({
     pairStore,
@@ -169,6 +174,10 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
       },
       updateThreadReasoningEffort: async (threadId: string, effort: ReasoningEffort) => {
         threadEffortUpdates.push({ threadId, effort });
+      },
+      listComposerSuggestions: async () => {
+        codexComposerCalls.push("called");
+        return [{ id: "app:figma", kind: "app", label: "Figma", detail: null, insertText: "$figma", inputItem: { type: "mention", name: "Figma", path: "app://figma" } }];
       }
     },
     hostController: {},
@@ -176,6 +185,11 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
     serviceTemplateRegistry: {},
     imageStore: { resolveViews: () => [] },
     fileStore: { resolveViews: () => [], getFilePath: () => null },
+    skillsService: {
+      list: async () => runtime?.butlerSkills ?? [],
+      resolveInputItem: async (_environment: string, id: string) => ({ type: "skill", name: id === "skill-review" ? "review" : "unknown", path: `/skills/${id}/SKILL.md` })
+    },
+    extensionUiBroker: {},
     piAuthPath: path.join(dir, "pi-auth.json"),
     codexAuthPath: path.join(dir, "codex-auth.json"),
     codexConfigDir: dir,
@@ -188,7 +202,7 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
       return service as never;
     }
   } as never);
-  return { manager, pairStore, service, store, codexUpdates, threadEffortUpdates };
+  return { manager, pairStore, service, store, codexUpdates, threadEffortUpdates, codexComposerCalls };
 }
 
 test("pair Butler services receive a pair-scoped runtime thread id", async () => {
@@ -201,6 +215,16 @@ test("pair Butler services receive a pair-scoped runtime thread id", async () =>
   const second = await manager.createPair();
 
   assert.deepEqual(runtimeThreadIds, [`butler:${first.id}`, `butler:${second.id}`]);
+});
+
+test("skill mutations schedule resource reloads for active pair Butler sessions", async () => {
+  const { manager, service } = await createManager();
+  await manager.createPair();
+
+  manager.scheduleButlerSkillsReload();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(service.resourceReloadCount, 1);
 });
 
 test("pair Butler services expose the complete persisted Worker handoff lineage", async () => {
@@ -323,6 +347,65 @@ test("sendOperatorMessage starts automatic title generation for the first text p
 
   assert.deepEqual(calls, ["Please review checkout retry failures."]);
   assert.equal(pairStore.getPair(pair.id)?.title, "Checkout retry review");
+});
+
+test("selected Butler skills use Pi native skill expansion", async () => {
+  const { manager, service } = await createManager();
+  const pair = await manager.createPair({ defaultCwd: "/repos" });
+  await manager.sendOperatorMessage({
+    pairId: pair.id,
+    text: "Check the release",
+    imageReferenceIds: [],
+    fileReferenceIds: [],
+    inputItems: [{ type: "skill", name: "review", id: "skill-review", environment: "butler-pi" }]
+  });
+  assert.match(service.messages.at(-1)?.text ?? "", /^\/skill:review Check the release/);
+  assert.doesNotMatch(service.messages.at(-1)?.text ?? "", /Selected composer context:[\s\S]*skill:/);
+});
+
+test("Butler accepts one native skill and ignores app mentions", async () => {
+  const { manager, service } = await createManager();
+  const pair = await manager.createPair({ defaultCwd: "/repos" });
+  await manager.sendOperatorMessage({
+    pairId: pair.id,
+    text: "Check the release",
+    imageReferenceIds: [],
+    fileReferenceIds: [],
+    inputItems: [
+      { type: "skill", name: "review", id: "skill-review", environment: "butler-pi" },
+      { type: "skill", name: "other", id: "skill-other", environment: "butler-pi" },
+      { type: "mention", name: "Figma", path: "app://figma" }
+    ]
+  });
+  const prompt = service.messages.at(-1)?.text ?? "";
+  assert.match(prompt, /^\/skill:review Check the release/);
+  assert.doesNotMatch(prompt, /skill:other|Figma|app:\/\//);
+});
+
+test("Butler dollar suggestions list skills without querying transport apps", async () => {
+  const { manager, codexComposerCalls } = await createManager(null, undefined, {
+    butlerSkills: [{ id: "skill-review", name: "review", description: "Review changes", invocation: "/skill:review" }]
+  });
+  const pair = await manager.createPair({ defaultCwd: "/repos" });
+  const suggestions = await manager.listComposerSuggestions(pair.id, "$", "rev");
+  assert.deepEqual(suggestions?.map((suggestion) => ({ kind: suggestion.kind, label: suggestion.label })), [{ kind: "skill", label: "review" }]);
+  assert.deepEqual(codexComposerCalls, []);
+});
+
+test("unmatched Butler skill searches offer an agent handoff", async () => {
+  const { manager, codexComposerCalls } = await createManager(null, undefined, {
+    butlerSkills: [{ id: "skill-review", name: "review", description: "Review changes", invocation: "/skill:review" }]
+  });
+  const pair = await manager.createPair({ defaultCwd: "/repos" });
+  const suggestions = await manager.listComposerSuggestions(pair.id, "$", "release-notes");
+  assert.deepEqual(suggestions, [{
+    id: "action:find-or-create-skill:release-notes",
+    kind: "action",
+    label: "Find or create a skill for release-notes",
+    detail: "Ask Butler to find an existing skill or create one with you.",
+    insertText: "Find or create a skill for release-notes."
+  }]);
+  assert.deepEqual(codexComposerCalls, []);
 });
 
 test("sendOperatorMessage uses fallback title when generator cannot use a model", async () => {

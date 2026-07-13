@@ -9,11 +9,12 @@ import { buildButlerProjectTools } from "../../src/server/butler-agent-project-t
 import { buildButlerServiceTools } from "../../src/server/butler-agent-service-tools.js";
 import { buildButlerDelegationTools, buildButlerStackPreviewTools, workerProviderModelRoute } from "../../src/server/butler-agent-stack-preview-tools.js";
 import { buildButlerFilesystemTools } from "../../src/server/butler-agent-filesystem-tools.js";
+import { buildButlerSkillTools } from "../../src/server/butler-agent-skill-tools.js";
 import { BUTLER_TOOL_CATALOG } from "../../src/server/butler-agent-tool-catalog.js";
 import { OLLAMA_WEB_FETCH_TOOL, OLLAMA_WEB_SEARCH_TOOL } from "../../src/server/ollama-web-tools.js";
 import { OPENCODE_WEB_FETCH_TOOL, OPENCODE_WEB_SEARCH_TOOL } from "../../src/server/opencode-web-tools.js";
 import { buildButlerProviderWebTools } from "../../src/server/provider-web-tools.js";
-import { buildComposerInputItemsPrompt, buildReferencePromptText } from "../../src/server/reference-inputs.js";
+import { buildComposerInputItemsPrompt, buildReferencePromptText, normalizeComposerInputItems } from "../../src/server/reference-inputs.js";
 import type { ButlerAgentToolAccess } from "../../src/server/butler-agent-tool-access.js";
 
 function schemaContainsLiteral(schema: unknown, literal: string): boolean {
@@ -93,6 +94,7 @@ test("Butler custom tool registration has unique tool names and provider-portabl
   buildButlerServiceTools(access);
   buildButlerManorTools(access);
   buildButlerOperatorTools(access);
+  buildButlerSkillTools(access);
   buildButlerProjectTools(access, "/artifacts");
   buildButlerWorkerTools(access);
   buildButlerDelegationTools(access);
@@ -135,6 +137,7 @@ test("Butler tool catalog matches registered base tools", () => {
   buildButlerServiceTools(access);
   buildButlerManorTools(access);
   buildButlerOperatorTools(access);
+  buildButlerSkillTools(access);
   buildButlerProjectTools(access, "/artifacts");
   buildButlerWorkerTools(access);
   buildButlerDelegationTools(access);
@@ -327,4 +330,16 @@ test("delegation reference guidance is provider-neutral", () => {
   assert.match(referencePrompt, /delegating to a Worker/);
   assert.match(composerPrompt, /selected Worker context items/);
   assert.doesNotMatch(`${referencePrompt}\n${composerPrompt}`, /Codex/);
+});
+
+test("Pair composer context normalizes opaque skills and explicit workspace files", () => {
+  assert.deepEqual(normalizeComposerInputItems([
+    { type: "skill", name: "review", id: "skill_123", environment: "butler-pi" },
+    { type: "file", name: "src/app.ts", path: "/repos/src/app.ts" },
+    { type: "file", name: "missing path" },
+    { type: "skill", name: "review", id: "skill_123", environment: "butler-pi" }
+  ]), [
+    { type: "skill", name: "review", id: "skill_123", environment: "butler-pi" },
+    { type: "file", name: "src/app.ts", path: "/repos/src/app.ts" }
+  ]);
 });

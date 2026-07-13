@@ -122,6 +122,23 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
     })
   ).session;
 
+  if (access.extensionUiBroker) {
+    const session = access.session;
+    const unsupportedSessionChange = async () => { throw new Error("This session change is unavailable in Manor's Butler lane."); };
+    await access.session.bindExtensions({
+      uiContext: access.extensionUiBroker.createContext(access.runtimeThreadId, "butler"),
+      mode: "rpc",
+      commandContextActions: {
+        waitForIdle: () => session.waitForIdle(),
+        newSession: unsupportedSessionChange,
+        fork: unsupportedSessionChange,
+        navigateTree: async (targetId, options) => session.navigateTree(targetId, options),
+        switchSession: unsupportedSessionChange,
+        reload: () => session.reload()
+      }
+    });
+  }
+
   sanitizeButlerSessionMessages(access);
   dropTrailingFailedButlerTurns(access);
   await applyManagedButlerDefaults(access);
@@ -242,6 +259,19 @@ export async function createOrRefreshButlerSession(access: ButlerAgentSessionAcc
     access.ready = true;
     access.emit("change");
   });
+}
+
+export function reloadButlerResources(access: Pick<ButlerAgentSessionAccess, "promptQueue" | "session">): Promise<void> {
+  const reload = async () => {
+    const session = access.session;
+    if (!session) return;
+    await session.waitForIdle();
+    if (access.session !== session) return;
+    await session.reload();
+  };
+  const queued = access.promptQueue.then(reload, reload);
+  access.promptQueue = queued.catch(() => undefined);
+  return queued;
 }
 
 function liveChatGptModelIds(access: ButlerAgentSessionAccess): Set<string> | null {
@@ -582,6 +612,7 @@ function preserveDurableAssistantTrace(providerMessage: ButlerMessageView, durab
 function preserveDurableUserPresentation(providerMessage: ButlerMessageView, durableMessage: ButlerMessageView): void {
   if (!isUserMessage(providerMessage) || !isUserMessage(durableMessage)) return;
   if (durableMessage.displayText?.trim()) providerMessage.displayText = durableMessage.displayText;
+  if (durableMessage.hiddenFromTranscript === true) providerMessage.hiddenFromTranscript = true;
   if (durableMessage.attachments?.length) providerMessage.attachments = durableMessage.attachments.map((attachment) => ({ ...attachment }));
 }
 
@@ -695,7 +726,13 @@ export function commitPendingOperatorPrompt(access: ButlerAgentSessionAccess, id
   access.emit("change");
 }
 
-export function registerPendingOperatorPrompt(access: ButlerAgentSessionAccess, text: string, displayText = text, attachments: ButlerMessageView["attachments"] = []): string {
+export function registerPendingOperatorPrompt(
+  access: ButlerAgentSessionAccess,
+  text: string,
+  displayText = text,
+  attachments: ButlerMessageView["attachments"] = [],
+  options: { hiddenFromTranscript?: boolean } = {}
+): string {
   const at = Date.now();
   const id = `pending-operator-${at}-${access.pendingOperatorMessageSequence++}`;
   access.pendingOperatorMessages.push({
@@ -706,6 +743,7 @@ export function registerPendingOperatorPrompt(access: ButlerAgentSessionAccess, 
     at,
     taskDurationMs: null,
     kind: "message",
+    ...(options.hiddenFromTranscript ? { hiddenFromTranscript: true } : {}),
     ...(attachments.length > 0 ? { attachments: attachments.map((attachment) => ({ ...attachment })) } : {}),
     pending: true
   });
@@ -769,7 +807,7 @@ export function getVisibleButlerMessages(access: ButlerAgentSessionAccess) {
     collapseCallbackDuplicateMessages(mergeVisibleMessages(sessionMessages, serverOperatorMessages as never[]))
   );
   removeTrivialOperatorQuestionConfirmations(visibleMessages, { providerBackedOnly: false });
-  return visibleMessages;
+  return visibleMessages.filter((message) => message.hiddenFromTranscript !== true);
 }
 
 export function getButlerMessagePage(

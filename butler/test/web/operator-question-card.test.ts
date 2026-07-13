@@ -9,6 +9,8 @@ import {
   OperatorQuestionCard,
   operatorQuestionNeedsAction,
   operatorQuestionItemIsAnswered,
+  SKILL_PROPOSAL_CONTENT_MARKER,
+  splitSkillProposalContent,
   submitOperatorQuestionDrafts
 } from "../../src/web/OperatorQuestionCard.js";
 import { Composer, reduceComposerFileDrag } from "../../src/web/ButlerPane.js";
@@ -50,6 +52,38 @@ test("operator question card renders an accessible recommended-first form", () =
   assert.match(markup, /Write my own answer/);
   assert.equal((markup.match(/>Submit answer</g) ?? []).length, 1);
   assert.doesNotMatch(markup, /<textarea/);
+  assert.doesNotMatch(markup, /Review approved content/);
+});
+
+test("skill proposals keep the decision summary visible and full content collapsed", () => {
+  const proposal = {
+    ...question,
+    context: `Purpose: Review pull requests\nTarget: Butler Pi\n${SKILL_PROPOSAL_CONTENT_MARKER}\n---\nname: review-pr\n---\n\nCheck the full diff. <safe>`
+  };
+  const markup = render(proposal);
+
+  assert.match(markup, /Purpose: Review pull requests/);
+  assert.match(markup, /Target: Butler Pi/);
+  assert.match(markup, /<details class="operator-question-approved-content">/);
+  assert.match(markup, /<summary>Review approved content<\/summary>/);
+  assert.match(markup, /<pre aria-label="Full approved skill content" tabindex="0">/);
+  assert.match(markup, /name: review-pr/);
+  assert.match(markup, /&lt;safe&gt;/);
+  assert.doesNotMatch(markup, /<details[^>]*open/);
+  assert.equal((markup.match(/Approved content evidence:/g) ?? []).length, 0);
+});
+
+test("skill proposal content marker supports inline and following-line payloads", () => {
+  assert.deepEqual(splitSkillProposalContent(`Summary\n${SKILL_PROPOSAL_CONTENT_MARKER} inline`), { summary: "Summary", payload: "inline" });
+  assert.deepEqual(splitSkillProposalContent(`Summary\n${SKILL_PROPOSAL_CONTENT_MARKER}\nnext line`), { summary: "Summary", payload: "next line" });
+  assert.equal(splitSkillProposalContent("Generic operator context"), null);
+});
+
+test("skill proposal content marker decodes the exact approved SKILL.md", () => {
+  assert.deepEqual(
+    splitSkillProposalContent(`Summary\n${SKILL_PROPOSAL_CONTENT_MARKER} Complete content\nMANOR_FULL_SKILL_CONTENT_V1_JSON\n"---\\nname: smoke\\n---\\n"`),
+    { summary: "Summary", payload: "---\nname: smoke\n---\n" }
+  );
 });
 
 test("operator question card preserves an answered freeform response", () => {

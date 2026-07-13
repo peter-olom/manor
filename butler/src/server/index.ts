@@ -29,7 +29,7 @@ import { registerPreviewAnnotationRoutes } from "./preview-annotation-routes.js"
 import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-routes.js";
 import { buildComposerInputItemsPrompt, buildReferencePromptText, buildWorkerInputWithReferences } from "./reference-inputs.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
-import { registerScratchPadRoutes } from "./scratch-pad-routes.js";
+import { registerScratchPadRoutes } from "./scratch-pad-routes.js"; import { registerSkillsRoutes } from "./skills-routes.js"; import { SkillsService } from "./skills-service.js"; import { ExtensionUiBroker } from "./extension-ui-broker.js"; import { registerExtensionUiRoutes } from "./extension-ui-routes.js"; import { registerWorkerSessionControlRoutes } from "./worker-session-control-routes.js"; import { registerButlerSessionControlRoutes } from "./butler-session-control-routes.js";
 import { registerRuntimeResourceRoutes } from "./runtime-resource-routes.js";
 import { ScratchPadStore } from "./scratch-pad-store.js";
 import { registerServerAssetRoutes } from "./server-asset-routes.js";
@@ -154,7 +154,7 @@ memoryPromotion.start();
 memoryEmbeddings.start();
 memorySemanticEdges.start();
 await harnessService.load();
-await harnessService.reconcileThreadCapabilities();
+await harnessService.reconcileThreadCapabilities(); const extensionUiBroker = new ExtensionUiBroker();
 const piRpcWorkerClient = new PiRpcWorkerClient({
   store,
   piAuthPath: workerPiAuthPath,
@@ -172,7 +172,7 @@ const piRpcWorkerClient = new PiRpcWorkerClient({
   },
   onThreadDeleting: async (context) => {
     await cleanupThreadRuntimeResources(runtimeAccess, context);
-  }
+  }, extensionUiBroker
 });
 const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, {
   onThreadCapabilityReady: async (threadId, cwd) => {
@@ -191,7 +191,7 @@ const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, 
   artifactsDir,
   authTokenFile: codexAppServerAuthTokenFile
 });
-function buildOperatorPromptSuffix(): string | null {
+const skillsService = new SkillsService({ butlerPiAgentDir: piAgentDir, workerPiAgentDir, workerCodexHomeDir: codexHomeDir, workspaceRoot: process.env.WORKER_REPOS_ROOT ?? "/repos", listCodexSkills: (cwd) => codexClient.listSkills(cwd) }); function buildOperatorPromptSuffix(): string | null {
   const name = getActiveManorSettings().overview.operatorName.trim();
   return name ? `Refer to the operator as ${name}.` : null;
 }
@@ -211,7 +211,7 @@ const butlerAgent = new ButlerAgentService({
   imageStore,
   fileStore,
   visionInspection,
-  artifactsDir,
+  artifactsDir, extensionUiBroker, skillsService,
   refreshRuntimeInventory: syncRuntimeInventory,
   systemPromptSuffix: buildOperatorPromptSuffix(),
   getButlerDefaults: () => {
@@ -230,6 +230,7 @@ const pairSessions = new PairSessionManager({
   store,
   codexClient,
   piRpcWorkerClient,
+  skillsService, extensionUiBroker,
   hostController,
   runtimeBroker,
   serviceTemplateRegistry,
@@ -411,7 +412,7 @@ app.get("/api/shell", (_request, response) => {
   }));
 });
 
-registerDeviceAuthRoutes(app, { piAgentDir, codexHomeDir });
+registerDeviceAuthRoutes(app, { piAgentDir, codexHomeDir }); registerSkillsRoutes(app, skillsService, { onMutation: (environment) => { if (environment !== "butler-pi") return; void butlerAgent.reloadResources().catch((error) => console.error("Butler skill reload failed", error)); pairSessions.scheduleButlerSkillsReload(); } });
 
 app.get("/api/runtime", async (_request, response) => {
   try {
@@ -465,10 +466,8 @@ registerPreviewAnnotationRoutes({
   sseHub,
   store
 });
-registerPairRoutes({
-  app,
-  pairSessions
-});
+registerPairRoutes({ app, pairSessions });
+registerExtensionUiRoutes({ app, pairStore, broker: extensionUiBroker }); registerWorkerSessionControlRoutes({ app, pairStore, piRpcWorkerClient }); registerButlerSessionControlRoutes({ app, pairSessions });
 registerManorSettingsRoutes({ app, settingsService, store, codexClient, piRpcWorkerClient, butlerAgent, onSettingsChanged: applyManagedSettingsChange });
 registerSelfImprovementRoutes({
   app,

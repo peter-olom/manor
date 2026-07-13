@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { RpcClient, type RpcEventListener } from "@earendil-works/pi-coding-agent";
 import type { ImageContent } from "@earendil-works/pi-ai";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 import { createManorModelRegistry, modelToModelOption, shouldExposeManorModel, syncManorPiModelsJson } from "./model-provider-config.js";
 import { readButlerAuthStatus } from "./auth-status.js";
@@ -21,6 +22,9 @@ import type { ButlerStateStore } from "./state-store.js";
 import type { CodexInputItem } from "./image-store.js";
 import type { CodexThreadPatchView, ModelOption, ReasoningEffort } from "./types.js";
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime.js";
+import type { WorkerSessionControls } from "../shared/worker-session-controls.js";
+import type { ExtensionUiBroker } from "./extension-ui-broker.js";
+import { contentToText, extractMessageTimestamp } from "./butler-agent-helpers.js";
 
 type PiRpcWorkerClientEvents = {
   change: [];
@@ -137,6 +141,7 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
       previews: Array<{ id: string; stackId: string | null; status: string }>;
       services: Array<{ id: string; stackId: string | null; runtimeKind: string; status: string }>;
     }) => Promise<unknown>;
+    extensionUiBroker?: ExtensionUiBroker | null;
   }) {
     super();
   }
@@ -261,6 +266,123 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     if (!session) throw new Error("Pi RPC worker thread is not loaded");
     await session.client.setThinkingLevel(piThinkingLevelForEffort(effort) as never);
     this.options.store.setThreadRequestedReasoningEffort(threadId, effort);
+  }
+
+  private async requireSession(threadId: string): Promise<PiWorkerSession> {
+    if (!this.sessions.has(threadId)) await this.loadThread(threadId);
+    const session = this.sessions.get(threadId);
+    if (!session) throw new Error("Pi RPC worker thread is not loaded");
+    return session;
+  }
+
+  private async replaceStoredTranscriptFromPi(session: PiWorkerSession): Promise<void> {
+    const messages = await session.client.getMessages();
+    const turns = messages.flatMap((message: AgentMessage, index) => {
+      const record = message as unknown as Record<string, unknown>;
+      if (record.role !== "assistant") return [];
+      const text = contentToText(record.content).trim();
+      if (!text) return [];
+      const at = extractMessageTimestamp(record) ?? Date.now() + index;
+      const failed = record.stopReason === "error";
+      const interrupted = record.stopReason === "aborted";
+      return [{
+        id: `pi-history-${index}-${at}`,
+        status: failed ? "failed" : interrupted ? "interrupted" : "completed",
+        error: failed && typeof record.errorMessage === "string" ? redactSensitiveText(record.errorMessage) : null,
+        startedAt: at,
+        completedAt: at,
+        items: [{ id: `pi-history-message-${index}-${at}`, type: "agentMessage", status: failed ? "failed" : "completed", text, at, raw: {} }]
+      }];
+    });
+    this.options.store.replaceThreadTurns(session.threadId, turns);
+    session.mapper = new PiProviderRuntimeMapper(session.threadId);
+    await this.options.store.flushSave();
+  }
+
+  async getSessionControls(threadId: string): Promise<WorkerSessionControls> {
+    const session = await this.requireSession(threadId);
+    const [state, stats, forkPoints, tree] = await Promise.all([
+      session.client.getState(),
+      session.client.getSessionStats(),
+      session.client.getForkMessages(),
+      session.client.getTree()
+    ]);
+    const contextUsage = stats.contextUsage;
+    return {
+      supported: true,
+      runtime: "pi",
+      busy: state.isStreaming,
+      compacting: state.isCompacting,
+      autoCompactionEnabled: state.autoCompactionEnabled,
+      pendingMessageCount: state.pendingMessageCount,
+      sessionName: state.sessionName?.trim() || null,
+      stats: {
+        userMessages: stats.userMessages,
+        assistantMessages: stats.assistantMessages,
+        toolCalls: stats.toolCalls,
+        totalMessages: stats.totalMessages,
+        tokens: { ...stats.tokens },
+        cost: stats.cost,
+        contextUsage: contextUsage ? { ...contextUsage } : null
+      },
+      forkPoints: forkPoints.map((point) => ({ entryId: point.entryId, text: point.text })),
+      leafId: tree.leafId
+    };
+  }
+
+  async compactThread(threadId: string, customInstructions?: string): Promise<void> {
+    const session = await this.requireSession(threadId);
+    const state = await session.client.getState();
+    if (state.isStreaming || state.isCompacting) throw new Error("Wait for the current Worker operation to finish before compacting.");
+    await session.client.compact(customInstructions?.trim() || undefined);
+  }
+
+  async abortThreadRetry(threadId: string): Promise<void> {
+    const session = await this.requireSession(threadId);
+    await session.client.abortRetry();
+  }
+
+  async exportThreadHtml(threadId: string): Promise<string> {
+    const session = await this.requireSession(threadId);
+    const exportPath = path.join(this.options.sessionRootDir, threadId, `export-${Date.now()}-${crypto.randomUUID()}.html`);
+    const result = await session.client.exportHtml(exportPath);
+    const resolved = path.resolve(result.path);
+    const allowedRoot = path.resolve(this.options.sessionRootDir, threadId);
+    if (resolved !== allowedRoot && !resolved.startsWith(`${allowedRoot}${path.sep}`)) {
+      throw new Error("Pi returned an export outside the Worker session directory.");
+    }
+    return resolved;
+  }
+
+  async forkThread(threadId: string, entryId: string): Promise<{ cancelled: boolean }> {
+    const session = await this.requireSession(threadId);
+    const state = await session.client.getState();
+    if (state.isStreaming || state.isCompacting) throw new Error("Wait for the current Worker operation to finish before branching.");
+    const result = await session.client.fork(entryId);
+    if (!result.cancelled) {
+      await this.replaceStoredTranscriptFromPi(session);
+      this.options.store.addEvent(threadId, "runtime.session_forked", `Forked the Pi session from ${entryId}.`);
+    }
+    return { cancelled: result.cancelled };
+  }
+
+  async cloneThread(threadId: string): Promise<{ cancelled: boolean }> {
+    const session = await this.requireSession(threadId);
+    const state = await session.client.getState();
+    if (state.isStreaming || state.isCompacting) throw new Error("Wait for the current Worker operation to finish before cloning.");
+    const result = await session.client.clone();
+    if (!result.cancelled) {
+      await this.replaceStoredTranscriptFromPi(session);
+      this.options.store.addEvent(threadId, "runtime.session_cloned", "Cloned the active Pi session branch.");
+    }
+    return result;
+  }
+
+  async renameThreadSession(threadId: string, name: string): Promise<void> {
+    const session = await this.requireSession(threadId);
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error("Session name is required.");
+    await session.client.setSessionName(trimmed.slice(0, 120));
   }
 
   async startThread(options: {
@@ -655,6 +777,16 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
   }
 
   private handleSessionEvent(session: PiWorkerSession, event: Parameters<RpcEventListener>[0]): void {
+    const rpcEvent = event as unknown as Record<string, unknown>;
+    if (rpcEvent.type === "extension_ui_request" && typeof rpcEvent.id === "string" && typeof rpcEvent.method === "string") {
+      this.options.extensionUiBroker?.acceptRpcRequest(
+        session.threadId,
+        "worker",
+        rpcEvent as never,
+        (response) => this.writeExtensionUiResponse(session, response)
+      );
+      return;
+    }
     if ((event as { type?: string }).type === PI_TRANSPORT_CLOSED_EVENT) {
       const reason = (event as unknown as { reason?: unknown }).reason;
       this.handleSessionTransportClosed(session, typeof reason === "string" ? reason : "Worker Pi transport closed.");
@@ -670,11 +802,34 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
       event as never,
       { messages: [], getSessionStats: () => ({ contextUsage: null }) } as never
     );
-    for (const patch of patches) this.applyPatch(session, eventGeneration, patch);
+    for (const patch of patches) {
+      if (event.type === "agent_end" && patch.kind === "thread-state" && patch.state === "idle") continue;
+      this.applyPatch(session, eventGeneration, patch);
+    }
 
-    if (event.type === "agent_end") {
+    if (event.type === "agent_settled") {
+      this.applyPatch(session, eventGeneration, {
+        kind: "thread-state",
+        threadId: session.threadId,
+        state: "idle",
+        at: Date.now()
+      });
       if (session.eventStreamVersion === eventGeneration) session.eventStreamVersion = null;
       if (session.acceptedEventVersion === eventGeneration) session.acceptedEventVersion = null;
+    }
+  }
+
+  private writeExtensionUiResponse(session: PiWorkerSession, response: Record<string, unknown>): void {
+    const processHandle = (session.client as unknown as { process?: { stdin?: { destroyed?: boolean; writable?: boolean; write(value: string): boolean } } }).process;
+    const stdin = processHandle?.stdin;
+    if (!stdin || stdin.destroyed || stdin.writable === false) {
+      this.handleSessionTransportClosed(session, "Worker Pi extension response transport is unavailable.");
+      return;
+    }
+    try {
+      stdin.write(`${JSON.stringify(response)}\n`);
+    } catch (error) {
+      this.handleSessionTransportClosed(session, error instanceof Error ? error.message : String(error));
     }
   }
 

@@ -105,6 +105,23 @@ export async function patchJson<T = void>(url: string, body: unknown): Promise<T
   return (await response.json().catch(() => undefined)) as T;
 }
 
+export async function putJson<T = void>(url: string, body: unknown): Promise<T> {
+  const response = await fetch(url, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) throw new Error(await readErrorMessage(response));
+  return (await response.json().catch(() => undefined)) as T;
+}
+
+export async function deleteJson<T = void>(url: string): Promise<T> {
+  const response = await fetch(url, { method: "DELETE" });
+  if (!response.ok) throw new Error(await readErrorMessage(response));
+  if (response.status === 204) return undefined as T;
+  return (await response.json().catch(() => undefined)) as T;
+}
+
 function uploadContextHeaders(context?: ReferenceUploadContext): Record<string, string> {
   if (!context) return {};
   return {

@@ -9,6 +9,8 @@ import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { ServiceTemplateRegistry } from "./service-templates.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { VisionInspectionService } from "./vision-inspection.js";
+import type { ExtensionUiBroker } from "./extension-ui-broker.js";
+import type { SkillsService } from "./skills-service.js";
 
 export type ButlerDelegationAttachmentAcknowledgement = {
   attached: boolean;
@@ -69,4 +71,6 @@ export type ButlerAgentServiceOptions = {
   getWorkerDefaults?: () => ButlerWorkerDefaults | null;
   getWorkerAffinity?: () => WorkerProviderAffinity | null;
   recordSuccessfulWorkerSelection?: (input: { harness: string; provider: string; model: string; effort?: string | null }) => unknown;
+  extensionUiBroker?: ExtensionUiBroker | null;
+  skillsService?: SkillsService | null;
 };

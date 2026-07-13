@@ -536,7 +536,7 @@ export class ButlerStateStore extends EventEmitter {
     }
     this.emitChange();
   }
-
+  replaceThreadTurns(threadId: string, turns: Record<string, unknown>[]): void { const record = this.getOrCreateThread(threadId); record.turns = turns.map((turn) => normalizeTurn(turn)); record.turnCount = record.turns.length; record.updatedAt = Date.now(); this.refreshDerivedThreadState(record); this.queueSave(); this.emitChange(); }
   updateItem(threadId: string, turnId: string, item: Record<string, unknown>, status: "started" | "completed" | "failed" | "declined"): void {
     const turn = this.getOrCreateTurn(threadId, turnId);
     const normalized = normalizeItem(item, status);

@@ -57,7 +57,7 @@ function makePair(overrides: Partial<PairDetail> = {}): PairDetail {
 
 function createFakePairSessions(initialPair: PairDetail = makePair()) {
   const pairs = new Map<string, PairDetail>([[initialPair.id, initialPair]]);
-  const sentMessages: Array<{ pairId: string; text: string; imageReferenceIds: string[]; fileReferenceIds: string[] }> = [];
+  const sentMessages: Array<{ pairId: string; text: string; imageReferenceIds: string[]; fileReferenceIds: string[]; inputItems?: unknown[] }> = [];
   const handoffs: Array<{ pairId: string; harness: string | null; model: string; effort: string | null }> = [];
   const questionAnswers: Array<{ pairId: string; messageId: string; questionId: string; optionId?: string; freeformText?: string }> = [];
   return {
@@ -79,6 +79,10 @@ function createFakePairSessions(initialPair: PairDetail = makePair()) {
       },
       async getPairDetail(pairId: string): Promise<PairDetail | null> {
         return pairs.get(pairId) ?? null;
+      },
+      async listComposerSuggestions(pairId: string, trigger: "@" | "$" | "/") {
+        if (!pairs.has(pairId)) return null;
+        return [{ id: `${trigger}:one`, kind: trigger === "/" ? "command" : trigger === "$" ? "skill" : "file", label: "One", detail: null, insertText: `${trigger}one` }];
       },
       updatePairTitle(pairId: string, title: string): PairDetail | null {
         const pair = pairs.get(pairId);
@@ -153,7 +157,7 @@ function createFakePairSessions(initialPair: PairDetail = makePair()) {
         pairs.set(pairId, updated);
         return updated;
       },
-      async sendOperatorMessage(input: { pairId: string; text: string; imageReferenceIds: string[]; fileReferenceIds: string[] }): Promise<PairDetail | null> {
+      async sendOperatorMessage(input: { pairId: string; text: string; imageReferenceIds: string[]; fileReferenceIds: string[]; inputItems?: unknown[] }): Promise<PairDetail | null> {
         const pair = pairs.get(input.pairId);
         if (!pair) return null;
         sentMessages.push(input);
@@ -297,6 +301,36 @@ test("POST /api/pairs/:pairId/messages sends operator text to Butler", async () 
     const body = (await res.json()) as { pair: { messageCount: number; messages: Array<{ role: string; text: string }> } };
     assert.equal(body.pair.messageCount, 1);
     assert.deepEqual(body.pair.messages.map((message) => [message.role, message.text]), [["user", "Hi"]]);
+  } finally {
+    await close();
+  }
+});
+
+test("GET /api/pairs/:pairId/composer-suggestions scopes suggestions to the active pair", async () => {
+  const fake = createFakePairSessions();
+  const { url, close } = await listen(mountRoutes(fake.manager));
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/composer-suggestions?trigger=%40&q=pair`);
+    assert.equal(res.status, 200);
+    const body = await res.json() as { suggestions: Array<{ kind: string }> };
+    assert.deepEqual(body.suggestions.map((suggestion) => suggestion.kind), ["file"]);
+  } finally {
+    await close();
+  }
+});
+
+test("POST /api/pairs/:pairId/messages forwards structured composer context", async () => {
+  const fake = createFakePairSessions();
+  const { url, close } = await listen(mountRoutes(fake.manager));
+  try {
+    const inputItems = [{ type: "skill", name: "review", id: "skill_123", environment: "butler-pi" }];
+    const res = await fetch(`${url}/api/pairs/pair-1/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "", target: "butler", inputItems })
+    });
+    assert.equal(res.status, 202);
+    assert.deepEqual(fake.sentMessages[0]?.inputItems, inputItems);
   } finally {
     await close();
   }

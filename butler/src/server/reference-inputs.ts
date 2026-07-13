@@ -1,5 +1,6 @@
 import type { FileReferenceStore } from "./file-store.js";
 import type { ImageReferenceStore, WorkerInputItem } from "./image-store.js";
+import type { PairComposerInputItem } from "../shared/pairing.js";
 
 const DEFAULT_IMAGE_PROMPT = "Use the attached reference image for this request.";
 const DEFAULT_IMAGES_PROMPT = "Use the attached reference images for this request.";
@@ -83,17 +84,10 @@ export function buildReferencePromptText(input: {
 export function buildComposerInputItemsPrompt(inputItems: unknown[]): string {
   const lines: string[] = [];
 
-  for (const item of inputItems) {
-    if (!item || typeof item !== "object") {
-      continue;
-    }
-
-    const record = item as Record<string, unknown>;
-    if (record.type === "skill" && typeof record.name === "string" && typeof record.path === "string") {
-      lines.push(`- skill: ${record.name} (${record.path})`);
-    } else if (record.type === "mention" && typeof record.path === "string") {
-      lines.push(`- app: ${typeof record.name === "string" ? record.name : record.path} (${record.path})`);
-    }
+  for (const item of normalizeComposerInputItems(inputItems)) {
+    if (item.type === "skill") lines.push(`- skill: ${item.name} (${item.path ?? item.id ?? item.name})`);
+    if (item.type === "file") lines.push(`- file: ${item.name} (${item.path})`);
+    if (item.type === "mention") lines.push(`- app: ${item.name ?? item.path} (${item.path})`);
   }
 
   if (lines.length === 0) {
@@ -101,6 +95,34 @@ export function buildComposerInputItemsPrompt(inputItems: unknown[]): string {
   }
 
   return ["Selected composer context:", "Use these selected Worker context items when delegating or reasoning about the operator request.", ...lines].join("\n");
+}
+
+export function normalizeComposerInputItems(inputItems: unknown): PairComposerInputItem[] {
+  if (!Array.isArray(inputItems)) return [];
+  const normalized: PairComposerInputItem[] = [];
+  const seen = new Set<string>();
+  for (const item of inputItems.slice(0, 24)) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const itemPath = typeof record.path === "string" ? record.path.trim().slice(0, 2_000) : "";
+    const name = typeof record.name === "string" ? record.name.trim().slice(0, 200) : "";
+    let normalizedItem: PairComposerInputItem | null = null;
+    if (record.type === "file" && name && itemPath) normalizedItem = { type: "file", name, path: itemPath };
+    if (record.type === "skill" && name) {
+      const id = typeof record.id === "string" ? record.id.trim().slice(0, 200) : "";
+      const environment = record.environment === "butler-pi" || record.environment === "worker-pi" || record.environment === "worker-codex"
+        ? record.environment
+        : undefined;
+      if (itemPath || id) normalizedItem = { type: "skill", name, ...(itemPath ? { path: itemPath } : {}), ...(id ? { id } : {}), ...(environment ? { environment } : {}) };
+    }
+    if (record.type === "mention" && itemPath) normalizedItem = { type: "mention", ...(name ? { name } : {}), path: itemPath };
+    if (!normalizedItem) continue;
+    const key = `${normalizedItem.type}:${"path" in normalizedItem ? normalizedItem.path : "id" in normalizedItem ? normalizedItem.id : ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(normalizedItem);
+  }
+  return normalized;
 }
 
 export function buildWorkerInputWithReferences(input: {

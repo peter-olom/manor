@@ -11,6 +11,29 @@ type DraftAnswer =
 type SubmitDraftsResult =
   | { failedQuestionId: null; error: null }
   | { failedQuestionId: string; error: string };
+type SkillProposalContent = { summary: string; payload: string };
+
+export const SKILL_PROPOSAL_CONTENT_MARKER = "Approved content evidence:";
+const FULL_SKILL_CONTENT_MARKER = "MANOR_FULL_SKILL_CONTENT_V1_JSON";
+
+export function splitSkillProposalContent(context: string | null | undefined): SkillProposalContent | null {
+  if (!context) return null;
+  const markerIndex = context.indexOf(SKILL_PROPOSAL_CONTENT_MARKER);
+  if (markerIndex < 0) return null;
+  const evidence = context.slice(markerIndex + SKILL_PROPOSAL_CONTENT_MARKER.length).trim();
+  if (!evidence) return null;
+  const fullContentIndex = evidence.indexOf(FULL_SKILL_CONTENT_MARKER);
+  if (fullContentIndex >= 0) {
+    const encoded = evidence.slice(fullContentIndex + FULL_SKILL_CONTENT_MARKER.length).trim();
+    try {
+      const payload = JSON.parse(encoded) as unknown;
+      if (typeof payload === "string") return { summary: context.slice(0, markerIndex).trimEnd(), payload };
+    } catch {
+      // Fall through to the complete raw evidence for forward compatibility.
+    }
+  }
+  return { summary: context.slice(0, markerIndex).trimEnd(), payload: evidence };
+}
 
 function draftAnswerIsReady(draft: DraftAnswer | undefined): boolean {
   return Boolean(draft && (draft.kind === "option" || draft.text.trim()));
@@ -170,7 +193,9 @@ export function OperatorQuestionCard({
       {items.map((item, itemIndex) => {
         const answered = operatorQuestionItemIsAnswered(item);
         const draft = drafts[item.id];
-        const contextId = item.context ? `${item.id}-context` : undefined;
+        const skillProposalContent = splitSkillProposalContent(item.context);
+        const contextSummary = skillProposalContent?.summary ?? item.context;
+        const contextId = contextSummary ? `${item.id}-context` : undefined;
         const error = errors[item.id];
         return (
           <fieldset
@@ -180,7 +205,13 @@ export function OperatorQuestionCard({
             aria-describedby={contextId}
           >
             <legend>{items.length > 1 ? `${itemIndex + 1}. ${item.prompt}` : item.prompt}</legend>
-            {item.context ? <p className="operator-question-context" id={contextId}>{item.context}</p> : null}
+            {contextSummary ? <p className="operator-question-context" id={contextId}>{contextSummary}</p> : null}
+            {skillProposalContent ? (
+              <details className="operator-question-approved-content">
+                <summary>Review approved content</summary>
+                <pre aria-label="Full approved skill content" tabIndex={0}>{skillProposalContent.payload}</pre>
+              </details>
+            ) : null}
             <div className="operator-question-options">
               {item.options.map((option, optionIndex) => {
                 const selected = item.selectedOptionId === option.id || (draft?.kind === "option" && draft.optionId === option.id);

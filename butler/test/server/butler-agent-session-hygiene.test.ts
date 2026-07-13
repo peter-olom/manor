@@ -652,6 +652,44 @@ test("server-owned pending operator prompts are visible before Pi commits them",
   assert.equal(access.pendingOperatorMessageRevision, 2);
 });
 
+test("transcript-hidden operator continuations stay available internally without rendering", () => {
+  const access = pendingAccess();
+  registerPendingOperatorPrompt(
+    access as never,
+    'For "Install this skill?", I choose: Install.',
+    'For "Install this skill?", I choose: Install.',
+    [],
+    { hiddenFromTranscript: true }
+  );
+
+  const messages = getVisibleButlerMessages(access as never);
+
+  assert.equal(messages.length, 0);
+  assert.equal(access.pendingOperatorMessages.length, 1);
+  assert.equal(access.pendingOperatorMessages[0]?.hiddenFromTranscript, true);
+  assert.equal(access.pendingOperatorMessages[0]?.pending, true);
+});
+
+test("transcript-hidden presentation survives replacement by Pi provider history", () => {
+  const access = pendingAccess();
+  const text = 'For "Install this skill?", I choose: Install.';
+  const id = registerPendingOperatorPrompt(access as never, text, text, [], { hiddenFromTranscript: true });
+  access.pendingOperatorMessages[0].at = 100;
+  commitPendingOperatorPrompt(access as never, id);
+  access.session = {
+    sessionId: "session-1",
+    messages: [
+      { role: "user", content: [{ type: "text", text }], timestamp: 110 },
+      { role: "assistant", content: [{ type: "text", text: "Skill installed." }], timestamp: 120 }
+    ]
+  };
+
+  const messages = getVisibleButlerMessages(access as never);
+
+  assert.deepEqual(messages.map((message) => message.text), ["Skill installed."]);
+  assert.equal(access.pendingOperatorMessages[0]?.hiddenFromTranscript, true);
+});
+
 test("provider user echoes do not duplicate visible pending operator prompts", () => {
   const access = pendingAccess();
   const id = registerPendingOperatorPrompt(access as never, "Make it store todos locally");

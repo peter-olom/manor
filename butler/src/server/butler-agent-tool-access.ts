@@ -34,6 +34,8 @@ import type {
 import type { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { ButlerOperatorThreadGuard, ProofScreenshotReview, ResolvedPreviewProof, SupervisionSmokePlan } from "./butler-agent-helpers.js";
+import type { ExtensionUiBroker } from "./extension-ui-broker.js";
+import type { SkillsService } from "./skills-service.js";
 
 export type ButlerCustomTool = ReturnType<typeof defineTool>;
 
@@ -53,6 +55,8 @@ export type ButlerToolDefiner = <TParams extends Record<string, unknown>>(defini
 
 export type ButlerAgentToolAccess = {
   runtimeThreadId: string;
+  extensionUiBroker: ExtensionUiBroker | null;
+  skillsService: SkillsService;
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;
   piRpcWorkerClient: PiRpcWorkerClient | null;
@@ -65,6 +69,7 @@ export type ButlerAgentToolAccess = {
   defineButlerTool: ButlerToolDefiner;
   getToolUiEffects(name: string): ButlerToolUiEffect[];
   refreshRuntimeInventoryIfAvailable(): Promise<string | null>;
+  scheduleButlerSkillReload(): void;
   prepareDelegationWorkspace(task: string, cwd?: string): Promise<{ cwd: string; branchName: string | null }>;
   describeStackStorage(stack: {
     storageMode: "ephemeral" | "job" | "base" | "custom";
@@ -247,6 +252,7 @@ export type ButlerAgentSessionAccess = {
   codexConfigDir: string;
   sessionDir: string;
   runtimeThreadId: string;
+  extensionUiBroker: ExtensionUiBroker | null;
   operatorMessages: ButlerMessageView[];
   pendingOperatorMessages: ButlerMessageView[];
   pendingOperatorMessageSequence: number;
@@ -265,6 +271,7 @@ export type ButlerAgentSessionAccess = {
   buildCustomTools(): ButlerCustomTool[];
   listServiceTemplates(): LoadedServiceTemplate[];
   saveOperatorMessageState(): Promise<void>;
+  saveActivitySummaryState(): Promise<void>;
   getButlerDefaults?: () => { model: string | null; thinkingLevel: string | null } | null;
   emit(event: "change"): boolean;
   emit(event: "butlerPatch", payload: import("./types.js").ButlerLivePatchView): boolean;
