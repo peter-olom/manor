@@ -27,6 +27,7 @@ import { parseProviderModelRef } from "./model-provider-config.js";
 import { isCallbackReviewRetryablePause } from "./butler-callback-review-runner.js";
 import { redactSensitiveText } from "./redact-sensitive-text.js";
 import { workerThreadIsRunning } from "./worker-thread-status.js";
+import { buildManorSkillRoutingContext, listManorSkillCapabilities, normalizeManorSkillName, parseManorSkillInvocation, skillAvailabilityDetail } from "./manor-skill-routing.js";
 
 type PairButlerService = Pick<
   ButlerAgentService,
@@ -617,10 +618,12 @@ export class PairSessionManager {
     const displayQuery = query.trim().slice(0, 200);
     const normalizedQuery = displayQuery.toLowerCase();
     const matches = (...values: Array<string | null | undefined>) => !normalizedQuery || values.some((value) => value?.toLowerCase().includes(normalizedQuery));
+    const skillQuery = trigger === "/" && normalizedQuery.startsWith("skill:") ? normalizedQuery.slice("skill:".length) : normalizedQuery;
+    const matchesSkill = (...values: Array<string | null | undefined>) => !skillQuery || values.some((value) => value?.toLowerCase().includes(skillQuery));
     const service = trigger === "/" ? await this.ensureService(pairId) : null;
     const commands = service?.listComposerCommands() ?? [];
     const cwd = pair.worker?.cwd ?? pair.defaultCwd;
-    const skills = trigger === "@" ? [] : await this.options.skillsService.list("butler-pi", cwd).catch(() => []);
+    const skills = trigger === "@" ? [] : await listManorSkillCapabilities(this.options.skillsService, cwd);
 
     if (trigger === "/") {
       const commandSuggestions: PairComposerSuggestion[] = commands.filter((command) => matches(command.name, command.description)).map((command) => ({
@@ -630,23 +633,23 @@ export class PairSessionManager {
         detail: command.description,
         insertText: `/${command.name}`
       }));
-      const skillCommands: PairComposerSuggestion[] = skills.filter((skill) => matches(skill.name, skill.description)).map((skill) => ({
-        id: `command:${skill.invocation}`,
+      const skillCommands: PairComposerSuggestion[] = skills.filter((skill) => matchesSkill(skill.name, skill.description)).map((skill) => ({
+        id: `command:/skill:${skill.name}`,
         kind: "command",
-        label: skill.invocation,
-        detail: skill.description,
-        insertText: skill.invocation
+        label: `/skill:${skill.name}`,
+        detail: skillAvailabilityDetail(skill),
+        insertText: `/skill:${skill.name}`
       }));
       return [...commandSuggestions, ...skillCommands].slice(0, 32);
     }
 
-    const skillSuggestions: PairComposerSuggestion[] = skills.filter((skill) => matches(skill.name, skill.description)).map((skill) => ({
-      id: skill.id,
+    const skillSuggestions: PairComposerSuggestion[] = skills.filter((skill) => matchesSkill(skill.name, skill.description)).map((skill) => ({
+      id: `manor-skill:${skill.name.toLowerCase()}`,
       kind: "skill",
       label: skill.name,
-      detail: skill.description,
+      detail: skillAvailabilityDetail(skill),
       insertText: `$${skill.name}`,
-      inputItem: { type: "skill", name: skill.name, id: skill.id, environment: "butler-pi" }
+      inputItem: { type: "skill", name: skill.name }
     }));
     if (trigger === "$") {
       if (skillSuggestions.length > 0 || !displayQuery) return skillSuggestions.slice(0, 32);
@@ -696,8 +699,9 @@ export class PairSessionManager {
     const service = await this.ensureService(input.pairId);
     const selectionError = butlerModelAvailabilityError(pair, service.getShellSnapshot());
     if (selectionError) throw new Error(selectionError);
+    const invokedSkill = parseManorSkillInvocation(input.text);
     const referencePromptText = buildReferencePromptText({
-      text: input.text,
+      text: invokedSkill?.task ?? input.text,
       imageStore: this.options.imageStore,
       imageReferenceIds: input.imageReferenceIds,
       fileStore: this.options.fileStore,
@@ -719,13 +723,20 @@ export class PairSessionManager {
         if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Selected file is outside this session workspace.");
         return { ...item, path: filePath };
       }
-      if (item.type !== "skill" || item.path || !item.id) return item;
-      return this.options.skillsService.resolveInputItem("butler-pi", item.id, pair.worker?.cwd ?? pair.defaultCwd);
+      return item;
     }));
     const contextPromptText = buildComposerInputItemsPrompt(resolvedInputItems.filter((item) => item.type === "file"));
     const promptBody = [referencePromptText, contextPromptText].filter(Boolean).join("\n\n");
-    const selectedSkill = resolvedInputItems.find((item) => item.type === "skill");
-    const promptText = selectedSkill ? `/skill:${selectedSkill.name} ${promptBody}`.trim() : promptBody;
+    const selectedInputSkillName = resolvedInputItems.find((item) => item.type === "skill")?.name ?? null;
+    const selectedSkillName = invokedSkill?.name ?? (selectedInputSkillName ? normalizeManorSkillName(selectedInputSkillName) : null);
+    if (selectedInputSkillName && !selectedSkillName) throw new Error("Selected skill has an invalid name.");
+    const skillCatalog = selectedSkillName ? await listManorSkillCapabilities(this.options.skillsService, pair.worker?.cwd ?? pair.defaultCwd) : [];
+    const selectedSkill = selectedSkillName ? skillCatalog.find((skill) => skill.name.toLowerCase() === selectedSkillName.toLowerCase()) : null;
+    const workerHarness = this.resolveCompose(pair, service).worker.harness;
+    const targetWorkerEnvironment = workerHarness === "pi" ? "worker-pi" : "worker-codex";
+    const skillRoutingContext = selectedSkillName ? buildManorSkillRoutingContext(selectedSkillName, selectedSkill?.environments ?? [], targetWorkerEnvironment) : "";
+    const nativeButlerInvocation = selectedSkill?.environments.includes("butler-pi") ? `/skill:${selectedSkill.name}` : "";
+    const promptText = [nativeButlerInvocation, skillRoutingContext, promptBody].filter(Boolean).join("\n\n");
     const referenceCount = input.imageReferenceIds.length + input.fileReferenceIds.length;
     const displayText = input.text.trim() || (referenceCount > 0
       ? referenceCount === 1 ? "Attached 1 reference file." : `Attached ${referenceCount} reference files.`

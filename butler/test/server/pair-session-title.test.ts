@@ -63,6 +63,8 @@ class FakeButlerService extends EventEmitter {
 
   async reloadResources(): Promise<void> { this.resourceReloadCount += 1; }
 
+  listComposerCommands(): [] { return []; }
+
   async stopPrompt(): Promise<void> { this.stopCount += 1; this.lifecycleEvents.push("stop-prompt"); }
 
   ensureExternalWorkerDelegation(threadId: string): void {
@@ -146,7 +148,7 @@ class FakeButlerService extends EventEmitter {
   }
 }
 
-async function createManager(generator: SessionTitleGenerator | null = null, onCreateService?: (options: unknown) => void, runtime?: { workerModels?: ModelOption[]; butlerSkills?: Array<{ id: string; name: string; description: string; invocation: string }> }): Promise<{
+async function createManager(generator: SessionTitleGenerator | null = null, onCreateService?: (options: unknown) => void, runtime?: { workerModels?: ModelOption[]; butlerSkills?: Array<{ id: string; name: string; description: string; invocation: string }>; skillsByEnvironment?: Partial<Record<"butler-pi" | "worker-pi" | "worker-codex", Array<{ id: string; name: string; description: string; invocation: string }>>> }): Promise<{
   manager: PairSessionManager;
   pairStore: PairStore;
   service: FakeButlerService;
@@ -186,7 +188,7 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
     imageStore: { resolveViews: () => [] },
     fileStore: { resolveViews: () => [], getFilePath: () => null },
     skillsService: {
-      list: async () => runtime?.butlerSkills ?? [],
+      list: async (environment: "butler-pi" | "worker-pi" | "worker-codex") => runtime?.skillsByEnvironment?.[environment] ?? (environment === "butler-pi" ? runtime?.butlerSkills ?? [] : []),
       resolveInputItem: async (_environment: string, id: string) => ({ type: "skill", name: id === "skill-review" ? "review" : "unknown", path: `/skills/${id}/SKILL.md` })
     },
     extensionUiBroker: {},
@@ -350,7 +352,7 @@ test("sendOperatorMessage starts automatic title generation for the first text p
 });
 
 test("selected Butler skills use Pi native skill expansion", async () => {
-  const { manager, service } = await createManager();
+  const { manager, service } = await createManager(null, undefined, { butlerSkills: [{ id: "skill-review", name: "review", description: "Review changes", invocation: "/skill:review" }] });
   const pair = await manager.createPair({ defaultCwd: "/repos" });
   await manager.sendOperatorMessage({
     pairId: pair.id,
@@ -359,12 +361,13 @@ test("selected Butler skills use Pi native skill expansion", async () => {
     fileReferenceIds: [],
     inputItems: [{ type: "skill", name: "review", id: "skill-review", environment: "butler-pi" }]
   });
-  assert.match(service.messages.at(-1)?.text ?? "", /^\/skill:review Check the release/);
+  assert.match(service.messages.at(-1)?.text ?? "", /^\/skill:review\n\nMANOR-WIDE SKILL ROUTING/);
+  assert.match(service.messages.at(-1)?.text ?? "", /Check the release$/);
   assert.doesNotMatch(service.messages.at(-1)?.text ?? "", /Selected composer context:[\s\S]*skill:/);
 });
 
 test("Butler accepts one native skill and ignores app mentions", async () => {
-  const { manager, service } = await createManager();
+  const { manager, service } = await createManager(null, undefined, { butlerSkills: [{ id: "skill-review", name: "review", description: "Review changes", invocation: "/skill:review" }] });
   const pair = await manager.createPair({ defaultCwd: "/repos" });
   await manager.sendOperatorMessage({
     pairId: pair.id,
@@ -378,7 +381,8 @@ test("Butler accepts one native skill and ignores app mentions", async () => {
     ]
   });
   const prompt = service.messages.at(-1)?.text ?? "";
-  assert.match(prompt, /^\/skill:review Check the release/);
+  assert.match(prompt, /^\/skill:review\n\nMANOR-WIDE SKILL ROUTING/);
+  assert.match(prompt, /Check the release$/);
   assert.doesNotMatch(prompt, /skill:other|Figma|app:\/\//);
 });
 
@@ -390,6 +394,78 @@ test("Butler dollar suggestions list skills without querying transport apps", as
   const suggestions = await manager.listComposerSuggestions(pair.id, "$", "rev");
   assert.deepEqual(suggestions?.map((suggestion) => ({ kind: suggestion.kind, label: suggestion.label })), [{ kind: "skill", label: "review" }]);
   assert.deepEqual(codexComposerCalls, []);
+});
+
+test("Butler slash suggestions include worker-only skills with environment availability", async () => {
+  const { manager } = await createManager(null, undefined, {
+    skillsByEnvironment: {
+      "worker-pi": [{ id: "pi-asiri", name: "asiri", description: "Operate secrets safely", invocation: "/skill:asiri" }],
+      "worker-codex": [{ id: "codex-asiri", name: "asiri", description: "Operate secrets safely", invocation: "$asiri" }]
+    }
+  });
+  const pair = await manager.createPair({ defaultCwd: "/repos" });
+  const suggestions = await manager.listComposerSuggestions(pair.id, "/", "skill:asi");
+  const skillSuggestion = suggestions?.find((suggestion) => suggestion.label === "/skill:asiri");
+
+  assert.equal(skillSuggestion?.kind, "command");
+  assert.match(skillSuggestion?.detail ?? "", /Worker Pi, Worker Codex/);
+});
+
+test("worker-only skill invocation routes through Butler without native Butler expansion", async () => {
+  const { manager, service } = await createManager(null, undefined, {
+    skillsByEnvironment: {
+      "worker-codex": [{ id: "codex-asiri", name: "asiri", description: "Operate secrets safely", invocation: "$asiri" }]
+    }
+  });
+  const pair = await manager.createPair({ defaultCwd: "/repos" });
+  await manager.sendOperatorMessage({ pairId: pair.id, text: "/skill:asiri rotate the staging token", imageReferenceIds: [], fileReferenceIds: [] });
+  const prompt = service.messages.at(-1)?.text ?? "";
+
+  assert.doesNotMatch(prompt, /^\/skill:asiri/);
+  assert.match(prompt, /^MANOR-WIDE SKILL ROUTING/);
+  assert.match(prompt, /Selected Worker availability: installed/);
+  assert.match(prompt, /rotate the staging token$/);
+});
+
+test("Butler-only skill invocation requires provisioning before Worker delegation", async () => {
+  const { manager, service } = await createManager(null, undefined, {
+    butlerSkills: [{ id: "butler-asiri", name: "asiri", description: "Operate secrets safely", invocation: "/skill:asiri" }]
+  });
+  const pair = await manager.createPair({ defaultCwd: "/repos" });
+  await manager.sendOperatorMessage({ pairId: pair.id, text: "/skill:asiri rotate the staging token", imageReferenceIds: [], fileReferenceIds: [] });
+  const prompt = service.messages.at(-1)?.text ?? "";
+
+  assert.match(prompt, /^\/skill:asiri\n\nMANOR-WIDE SKILL ROUTING/);
+  assert.match(prompt, /Selected Worker availability: not installed/);
+  assert.match(prompt, /propose installing the exact skill in worker-codex/);
+});
+
+test("shared Butler and Worker skills expand natively and delegate without provisioning", async () => {
+  const shared = { name: "asiri", description: "Operate secrets safely" };
+  const { manager, service } = await createManager(null, undefined, {
+    skillsByEnvironment: {
+      "butler-pi": [{ ...shared, id: "butler-asiri", invocation: "/skill:asiri" }],
+      "worker-codex": [{ ...shared, id: "codex-asiri", invocation: "$asiri" }]
+    }
+  });
+  const pair = await manager.createPair({ defaultCwd: "/repos" });
+  await manager.sendOperatorMessage({ pairId: pair.id, text: "/skill:asiri rotate the staging token", imageReferenceIds: [], fileReferenceIds: [] });
+  const prompt = service.messages.at(-1)?.text ?? "";
+
+  assert.match(prompt, /^\/skill:asiri\n\nMANOR-WIDE SKILL ROUTING/);
+  assert.match(prompt, /Selected Worker availability: installed/);
+  assert.doesNotMatch(prompt, /propose installing the exact skill/);
+});
+
+test("unknown skill invocation asks Butler to acquire it before delegation", async () => {
+  const { manager, service } = await createManager();
+  const pair = await manager.createPair({ defaultCwd: "/repos" });
+  await manager.sendOperatorMessage({ pairId: pair.id, text: "/skill:unknown do the work", imageReferenceIds: [], fileReferenceIds: [] });
+  const prompt = service.messages.at(-1)?.text ?? "";
+
+  assert.doesNotMatch(prompt, /^\/skill:unknown/);
+  assert.match(prompt, /No Manor environment currently has this skill/);
+  assert.match(prompt, /do the work$/);
 });
 
 test("unmatched Butler skill searches offer an agent handoff", async () => {
