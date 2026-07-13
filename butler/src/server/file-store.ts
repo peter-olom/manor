@@ -2,7 +2,9 @@ import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import type { ReferenceMetadata } from "../shared/references.js";
 import { writeJsonStateFileAtomic } from "./json-state-file.js";
+import { deriveReferenceMetadata, normalizeReferenceMetadata } from "./reference-metadata.js";
 import { ReferenceMutationQueue } from "./reference-mutation-queue.js";
 
 type PersistedFileReference = {
@@ -16,6 +18,7 @@ type PersistedFileReference = {
   sourceReferenceId?: string;
   version?: number;
   lineageVersionHighWater?: number;
+  metadata?: ReferenceMetadata;
 };
 
 export type FileReferenceView = {
@@ -27,6 +30,7 @@ export type FileReferenceView = {
   url: string;
   sourceReferenceId?: string;
   version?: number;
+  metadata?: ReferenceMetadata;
 };
 
 export const MAX_FILE_BYTES = 40 * 1024 * 1024;
@@ -152,7 +156,7 @@ export class FileReferenceStore {
     return this.records.get(id)?.filePath ?? null;
   }
 
-  async create(input: { name: string; mimeType: string; data: string; sizeBytes?: number; sourceReferenceId?: string; version?: number }): Promise<FileReferenceView> {
+  async create(input: { name: string; mimeType: string; data: string; sizeBytes?: number; sourceReferenceId?: string; version?: number; metadata?: ReferenceMetadata }): Promise<FileReferenceView> {
     const normalizedBase64 = normalizeBase64(input.data);
     return this.createFromBuffer({
       name: input.name,
@@ -160,15 +164,16 @@ export class FileReferenceStore {
       buffer: Buffer.from(normalizedBase64, "base64"),
       sizeBytes: input.sizeBytes,
       sourceReferenceId: input.sourceReferenceId,
-      version: input.version
+      version: input.version,
+      metadata: input.metadata
     });
   }
 
-  async createFromBuffer(input: { name: string; mimeType: string; buffer: Buffer; sizeBytes?: number; sourceReferenceId?: string; version?: number }): Promise<FileReferenceView> {
+  async createFromBuffer(input: { name: string; mimeType: string; buffer: Buffer; sizeBytes?: number; sourceReferenceId?: string; version?: number; metadata?: ReferenceMetadata }): Promise<FileReferenceView> {
     return this.mutations.run(() => this.createFromBufferNow(input));
   }
 
-  async createVersionFromBuffer(input: { name: string; mimeType: string; buffer: Buffer; sizeBytes?: number; sourceReferenceId: string }): Promise<FileReferenceView> {
+  async createVersionFromBuffer(input: { name: string; mimeType: string; buffer: Buffer; sizeBytes?: number; sourceReferenceId: string; metadata?: ReferenceMetadata }): Promise<FileReferenceView> {
     return this.mutations.run(() => {
       const source = this.records.get(input.sourceReferenceId);
       if (!source) throw new Error("Source file reference was not found");
@@ -213,7 +218,7 @@ export class FileReferenceStore {
     });
   }
 
-  private async createFromBufferNow(input: { name: string; mimeType: string; buffer: Buffer; sizeBytes?: number; sourceReferenceId?: string; version?: number }): Promise<FileReferenceView> {
+  private async createFromBufferNow(input: { name: string; mimeType: string; buffer: Buffer; sizeBytes?: number; sourceReferenceId?: string; version?: number; metadata?: ReferenceMetadata }): Promise<FileReferenceView> {
     const mimeType = normalizeMimeType(input.mimeType);
     const buffer = input.buffer;
     if (buffer.byteLength === 0) {
@@ -232,6 +237,10 @@ export class FileReferenceStore {
     const name = normalizeName(input.name);
     const filePath = path.join(this.filesDir, `${id}${extensionFromName(name)}`);
     const createdAt = Date.now();
+    const sourceMetadata = input.sourceReferenceId ? this.records.get(input.sourceReferenceId)?.metadata : undefined;
+    const metadata = input.sourceReferenceId
+      ? deriveReferenceMetadata(sourceMetadata, input.metadata)
+      : normalizeReferenceMetadata(input.metadata);
     const record: PersistedFileReference = {
       id,
       name,
@@ -240,7 +249,8 @@ export class FileReferenceStore {
       sha256: crypto.createHash("sha256").update(buffer).digest("hex"),
       createdAt,
       filePath,
-      ...(input.sourceReferenceId ? { sourceReferenceId: input.sourceReferenceId, version: input.version ?? 2 } : {})
+      ...(input.sourceReferenceId ? { sourceReferenceId: input.sourceReferenceId, version: input.version ?? 2 } : {}),
+      ...(metadata ? { metadata } : {})
     };
 
     await fs.writeFile(filePath, buffer, { mode: 0o444 });
@@ -299,6 +309,7 @@ export class FileReferenceStore {
       sizeBytes: record.sizeBytes,
       createdAt: record.createdAt,
       url: `${this.publicBasePath}/${record.id}`,
+      ...(record.metadata ? { metadata: normalizeReferenceMetadata(record.metadata) } : {}),
       ...(record.sourceReferenceId ? { sourceReferenceId: record.sourceReferenceId, version: record.version ?? 2 } : {})
     };
   }

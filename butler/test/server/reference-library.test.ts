@@ -57,3 +57,22 @@ test("reference library merges stores, preserves lineage, and safely deletes lea
   await Promise.all([reloadedFiles.load(), reloadedImages.load()]);
   assert.equal(listReferenceLibrary(reloadedImages, reloadedFiles).items.length, 0);
 });
+
+test("image metadata persists and remains visible in the reference library", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "manor-image-metadata-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const imageStore = new ImageReferenceStore(path.join(root, "images"));
+  const fileStore = new FileReferenceStore(path.join(root, "files"));
+  await Promise.all([imageStore.load(), fileStore.load()]);
+  const image = await imageStore.createFromBuffer({
+    name: "proof.png",
+    mimeType: "image/png",
+    buffer: Buffer.from("image"),
+    metadata: { projectId: "project-1", projectLabel: "Manor", sessionId: "session-1", sessionTitle: "Visual review", origin: "image-annotation" }
+  });
+
+  const reloadedImages = new ImageReferenceStore(path.join(root, "images"));
+  await reloadedImages.load();
+  assert.deepEqual(reloadedImages.get(image.id)?.metadata, image.metadata);
+  assert.deepEqual(listReferenceLibrary(reloadedImages, fileStore).items[0]?.metadata, image.metadata);
+});

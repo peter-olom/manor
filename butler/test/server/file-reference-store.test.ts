@@ -14,7 +14,14 @@ test("uploaded reference files are durable and immutable", async (t) => {
   const created = await store.createFromBuffer({
     name: "report.pdf",
     mimeType: "application/pdf",
-    buffer: Buffer.from("durable input")
+    buffer: Buffer.from("durable input"),
+    metadata: {
+      projectId: "project-1",
+      projectLabel: "Manor",
+      sessionId: "session-1",
+      sessionTitle: "File metadata",
+      origin: "butler-upload"
+    }
   });
   const filePath = store.getFilePath(created.id);
   assert.ok(filePath);
@@ -77,14 +84,26 @@ test("derived file versions are immutable and allocate monotonic lineage version
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const store = new FileReferenceStore(root);
   await store.load();
-  const source = await store.createFromBuffer({ name: "source.pdf", mimeType: "application/pdf", buffer: Buffer.from("source") });
+  const source = await store.createFromBuffer({
+    name: "source.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from("source"),
+    metadata: { projectId: "project-1", projectLabel: "Manor", sessionId: "session-1", sessionTitle: "PDF work", origin: "butler-upload" }
+  });
   const [second, third] = await Promise.all([
-    store.createVersionFromBuffer({ name: "second.pdf", mimeType: "application/pdf", buffer: Buffer.from("second"), sourceReferenceId: source.id }),
+    store.createVersionFromBuffer({ name: "second.pdf", mimeType: "application/pdf", buffer: Buffer.from("second"), sourceReferenceId: source.id, metadata: { sessionId: "other-session", origin: "pdf-annotation" } }),
     store.createVersionFromBuffer({ name: "third.pdf", mimeType: "application/pdf", buffer: Buffer.from("third"), sourceReferenceId: source.id })
   ]);
   assert.deepEqual(new Set([second.version, third.version]), new Set([2, 3]));
   assert.equal(second.sourceReferenceId, source.id);
   assert.equal(third.sourceReferenceId, source.id);
+  assert.deepEqual(second.metadata, {
+    projectId: "project-1",
+    projectLabel: "Manor",
+    sessionId: "session-1",
+    sessionTitle: "PDF work",
+    origin: "pdf-annotation"
+  });
   assert.equal(await fs.readFile(store.getFilePath(source.id)!, "utf8"), "source");
   await assert.rejects(fs.access(store.getFilePath(second.id)!, fsConstants.W_OK));
   const latest = second.version === 3 ? second : third;

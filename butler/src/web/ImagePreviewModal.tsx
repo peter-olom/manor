@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
-import { uploadAttachment, type FileReference } from "./api";
+import { uploadAttachment, type FileReference, type ReferenceUploadContext } from "./api";
 import { CloseIcon, DownloadIcon, ImageIcon, PencilIcon, TrashIcon, ZoomInIcon, ZoomOutIcon } from "./icons";
 
 export type PreviewMedia = {
@@ -142,12 +142,14 @@ async function renderAnnotatedImage(image: HTMLImageElement, annotations: ProofA
 export function ImagePreviewModal({
   media,
   attachTargetLabel,
+  uploadContext,
   onAttached,
   onClose,
   showErrorToast
 }: {
   media: PreviewMedia;
   attachTargetLabel: string | null;
+  uploadContext?: ReferenceUploadContext;
   onAttached: (payload: { attachment: FileReference; text: string }) => Promise<void> | void;
   onClose: () => void;
   showErrorToast: (error: unknown) => void;
@@ -267,7 +269,7 @@ export function ImagePreviewModal({
     try {
       const blob = await renderAnnotatedImage(imageRef.current, annotations);
       const file = new File([blob], buildAnnotatedFileName(media.name), { type: "image/png" });
-      const attachment = await uploadAttachment(file);
+      const attachment = await uploadAttachment(file, uploadContext);
       await onAttached({ attachment, text: buildAnnotationPrompt(annotations) });
       onClose();
     } catch (error) {

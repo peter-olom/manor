@@ -3,6 +3,7 @@ import path from "node:path";
 import { MAX_FILE_BYTES, type FileReferenceStore, type FileReferenceView } from "./file-store.js";
 import { MAX_IMAGE_BYTES, type ImageReferenceStore, type ImageReferenceView } from "./image-store.js";
 import type { ReferenceMutationQueue } from "./reference-mutation-queue.js";
+import { deriveReferenceMetadata } from "./reference-metadata.js";
 import type { ButlerStateStore } from "./state-store.js";
 import { normalizeString } from "./codex-harness-helpers.js";
 
@@ -122,9 +123,14 @@ export async function handleHarnessInputAction(input: {
     const rootId = lineageRoot(currentSource, input);
     return withLineageLock(rootId, async () => {
       const version = nextLineageVersion(rootId, input);
+      const metadata = deriveReferenceMetadata(source.metadata, {
+        projectId: payload?.project?.id,
+        projectLabel: payload?.project?.label,
+        origin: "worker-output"
+      });
       const reference = mimeType.startsWith("image/")
-        ? await input.imageStore.createFromBuffer({ name, mimeType, buffer, sourceReferenceId, version })
-        : await input.fileStore.createFromBuffer({ name, mimeType, buffer, sourceReferenceId, version });
+        ? await input.imageStore.createFromBuffer({ name, mimeType, buffer, sourceReferenceId, version, metadata })
+        : await input.fileStore.createFromBuffer({ name, mimeType, buffer, sourceReferenceId, version, metadata });
       const immutablePath = mimeType.startsWith("image/")
         ? input.imageStore.getFilePath(reference.id)
         : input.fileStore.getFilePath(reference.id);

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import { GlobalWorkerOptions, getDocument, type PDFDocumentProxy, type RenderTask } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
-import { uploadFileVersion, type FileReference } from "./api";
+import { uploadFileVersion, type FileReference, type ReferenceUploadContext } from "./api";
 import { ChevronLeftIcon, ChevronRightIcon, TrashIcon, WarningIcon } from "./icons";
 import { buildAnnotatedPdfName, buildPdfAnnotationPrompt, pdfLabelOrigin, pdfRectFromViewport, type AnnotationRect, type PdfAnnotation } from "./pdf-annotations";
 import { calculatePdfCanvasLayout } from "./pdf-preview-layout";
@@ -80,6 +80,7 @@ export function PdfPreview({
   sourceReferenceId,
   annotationMode,
   attachTargetLabel,
+  uploadContext,
   onAttached,
   onBusyChange,
   onError
@@ -89,6 +90,7 @@ export function PdfPreview({
   sourceReferenceId: string;
   annotationMode: boolean;
   attachTargetLabel: string | null;
+  uploadContext?: ReferenceUploadContext;
   onAttached: (payload: { attachment: FileReference; text: string }) => Promise<void> | void;
   onBusyChange: (busy: boolean) => void;
   onError: (error: unknown) => void;
@@ -242,7 +244,7 @@ export function PdfPreview({
     try {
       const blob = await createAnnotatedPdf(url, pdfDocument, submittedAnnotations);
       const file = new File([blob], buildAnnotatedPdfName(name), { type: "application/pdf" });
-      const attachment = await uploadFileVersion(file, sourceReferenceId);
+      const attachment = await uploadFileVersion(file, sourceReferenceId, uploadContext);
       await onAttached({ attachment, text: buildPdfAnnotationPrompt(submittedAnnotations) });
     } catch (reason) {
       onError(reason);

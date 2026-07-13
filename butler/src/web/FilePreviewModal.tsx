@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 import type { ReferencePreviewKind } from "../shared/references";
-import { getStoredTextPreview, type FileReference } from "./api";
+import { getStoredTextPreview, type FileReference, type ReferenceUploadContext } from "./api";
 import { CloseIcon, DownloadIcon, ImageIcon, PencilIcon, WarningIcon } from "./icons";
 import { Markdown } from "./Markdown";
 
@@ -71,9 +71,10 @@ function previewLabel(kind: ReferencePreviewKind): string {
   return "Text";
 }
 
-export function FilePreviewModal({ media, attachTargetLabel, onAttached, onClose, showErrorToast }: {
+export function FilePreviewModal({ media, attachTargetLabel, uploadContext, onAttached, onClose, showErrorToast }: {
   media: FilePreviewMedia;
   attachTargetLabel: string | null;
+  uploadContext?: ReferenceUploadContext;
   onAttached: (payload: { attachment: FileReference; text: string }) => Promise<void> | void;
   onClose: () => void;
   showErrorToast: (error: unknown) => void;
@@ -182,6 +183,7 @@ export function FilePreviewModal({ media, attachTargetLabel, onAttached, onClose
                 sourceReferenceId={media.id}
                 annotationMode={annotationMode}
                 attachTargetLabel={attachTargetLabel}
+                uploadContext={uploadContext}
                 onAttached={async (payload) => {
                   await onAttached(payload);
                   onClose();

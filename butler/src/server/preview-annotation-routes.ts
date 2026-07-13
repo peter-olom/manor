@@ -250,10 +250,16 @@ export function registerPreviewAnnotationRoutes(access: PreviewAnnotationRoutesA
       throw new Error("Preview annotation is not ready.");
     }
     const insertBatch = { ...batch, intent: "insert" as const, targetId: targetIdForPrefill(target) };
+    const lease = access.store.getPreviewLease(batch.leaseId);
     const attachment = await captureAnnotatedPreviewScreenshot({
       batch: insertBatch,
       runtimeBroker: access.runtimeBroker,
-      imageStore: access.imageStore
+      imageStore: access.imageStore,
+      metadata: {
+        projectId: lease?.projectId ?? undefined,
+        projectLabel: lease?.projectLabel ?? undefined,
+        origin: "preview-annotation"
+      }
     });
     access.sseHub.broadcastComposerPrefill({
       id: crypto.randomUUID(),

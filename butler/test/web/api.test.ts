@@ -33,7 +33,7 @@ test("uploadAttachment routes general files and inferred images correctly", asyn
   };
 
   try {
-    await uploadAttachment(new File(["pdf"], "report.pdf", { type: "application/pdf" }));
+    await uploadAttachment(new File(["pdf"], "report.pdf", { type: "application/pdf" }), { sessionId: "session 1", origin: "file-explorer" });
     await uploadAttachment(new File(["png"], "diagram.png"));
   } finally {
     globalThis.fetch = originalFetch;
@@ -41,6 +41,8 @@ test("uploadAttachment routes general files and inferred images correctly", asyn
 
   assert.equal(requests[0]?.url, "/api/files/upload");
   assert.equal(requests[0]?.headers.get("content-type"), "application/pdf");
+  assert.equal(requests[0]?.headers.get("x-manor-session-id"), "session%201");
+  assert.equal(requests[0]?.headers.get("x-manor-reference-origin"), "file-explorer");
   assert.equal(requests[1]?.url, "/api/images/upload");
   assert.equal(requests[1]?.headers.get("content-type"), "image/png");
 });
@@ -53,13 +55,14 @@ test("uploadFileVersion links an immutable derived file to its source", async ()
     return Response.json({ ok: true, file: uploaded }, { status: 201 });
   };
   try {
-    assert.deepEqual(await uploadFileVersion(new File(["pdf"], "report-annotated.pdf", { type: "application/pdf" }), "source-1"), uploaded);
+    assert.deepEqual(await uploadFileVersion(new File(["pdf"], "report-annotated.pdf", { type: "application/pdf" }), "source-1", { sessionId: "session-1", origin: "pdf-annotation" }), uploaded);
   } finally {
     globalThis.fetch = originalFetch;
   }
   assert.equal(request?.url, "/api/files/upload");
   assert.equal(request?.headers.get("x-manor-source-reference-id"), "source-1");
   assert.equal(request?.headers.get("content-type"), "application/pdf");
+  assert.equal(request?.headers.get("x-manor-reference-origin"), "pdf-annotation");
 });
 
 test("stored reference API lists and deletes durable files", async () => {

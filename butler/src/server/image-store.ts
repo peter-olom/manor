@@ -3,9 +3,11 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import type { ImageContent } from "@earendil-works/pi-ai";
+import type { ReferenceMetadata } from "../shared/references.js";
 import { writeJsonStateFileAtomic } from "./json-state-file.js";
 import { loadPiImageFiles } from "./pi-image-loader.js";
 import { ReferenceMutationQueue } from "./reference-mutation-queue.js";
+import { deriveReferenceMetadata, normalizeReferenceMetadata } from "./reference-metadata.js";
 
 export type WorkerInputItem =
   | {
@@ -41,6 +43,7 @@ type PersistedImageReference = {
   filePath: string;
   sourceReferenceId?: string;
   version?: number;
+  metadata?: ReferenceMetadata;
 };
 
 export type ImageReferenceView = {
@@ -52,6 +55,7 @@ export type ImageReferenceView = {
   url: string;
   sourceReferenceId?: string;
   version?: number;
+  metadata?: ReferenceMetadata;
 };
 
 export const MAX_IMAGE_BYTES = 512 * 1024 * 1024;
@@ -195,7 +199,7 @@ export class ImageReferenceStore {
     return null;
   }
 
-  async create(input: { name: string; mimeType: string; data: string; sizeBytes?: number; sourceReferenceId?: string; version?: number }): Promise<ImageReferenceView> {
+  async create(input: { name: string; mimeType: string; data: string; sizeBytes?: number; sourceReferenceId?: string; version?: number; metadata?: ReferenceMetadata }): Promise<ImageReferenceView> {
     const normalizedBase64 = normalizeBase64(input.data);
     return this.createFromBuffer({
       name: input.name,
@@ -203,11 +207,12 @@ export class ImageReferenceStore {
       buffer: Buffer.from(normalizedBase64, "base64"),
       sizeBytes: input.sizeBytes,
       sourceReferenceId: input.sourceReferenceId,
-      version: input.version
+      version: input.version,
+      metadata: input.metadata
     });
   }
 
-  async createFromBuffer(input: { name: string; mimeType: string; buffer: Buffer; sizeBytes?: number; sourceReferenceId?: string; version?: number }): Promise<ImageReferenceView> {
+  async createFromBuffer(input: { name: string; mimeType: string; buffer: Buffer; sizeBytes?: number; sourceReferenceId?: string; version?: number; metadata?: ReferenceMetadata }): Promise<ImageReferenceView> {
     return this.mutations.run(() => this.createFromBufferNow(input));
   }
 
@@ -235,7 +240,7 @@ export class ImageReferenceStore {
     });
   }
 
-  private async createFromBufferNow(input: { name: string; mimeType: string; buffer: Buffer; sizeBytes?: number; sourceReferenceId?: string; version?: number }): Promise<ImageReferenceView> {
+  private async createFromBufferNow(input: { name: string; mimeType: string; buffer: Buffer; sizeBytes?: number; sourceReferenceId?: string; version?: number; metadata?: ReferenceMetadata }): Promise<ImageReferenceView> {
     const mimeType = ensureImageMimeType(input.mimeType);
     const buffer = input.buffer;
 
@@ -256,6 +261,10 @@ export class ImageReferenceStore {
     const name = normalizeImageName(input.name, mimeType);
     const filePath = path.join(this.filesDir, `${id}${extensionFromMimeType(mimeType)}`);
     const createdAt = Date.now();
+    const sourceMetadata = input.sourceReferenceId ? this.records.get(input.sourceReferenceId)?.metadata : undefined;
+    const metadata = input.sourceReferenceId
+      ? deriveReferenceMetadata(sourceMetadata, input.metadata)
+      : normalizeReferenceMetadata(input.metadata);
     const record: PersistedImageReference = {
       id,
       name,
@@ -264,7 +273,8 @@ export class ImageReferenceStore {
       sha256,
       createdAt,
       filePath,
-      ...(input.sourceReferenceId ? { sourceReferenceId: input.sourceReferenceId, version: input.version ?? 2 } : {})
+      ...(input.sourceReferenceId ? { sourceReferenceId: input.sourceReferenceId, version: input.version ?? 2 } : {}),
+      ...(metadata ? { metadata } : {})
     };
 
     await fs.writeFile(filePath, buffer, { mode: 0o444 });
@@ -363,6 +373,7 @@ export class ImageReferenceStore {
       sizeBytes: record.sizeBytes,
       createdAt: record.createdAt,
       url: `${this.publicBasePath}/${record.id}`,
+      ...(record.metadata ? { metadata: normalizeReferenceMetadata(record.metadata) } : {}),
       ...(record.sourceReferenceId ? { sourceReferenceId: record.sourceReferenceId, version: record.version ?? 2 } : {})
     };
   }

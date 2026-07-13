@@ -5,6 +5,7 @@ import {
   listStoredReferences,
   uploadAttachment,
   type FileReference,
+  type ReferenceUploadContext,
   type StoredReference
 } from "./api";
 import { AttachmentIcon, DownloadIcon, ImageIcon, SearchIcon, TrashIcon, WarningIcon } from "./icons";
@@ -12,6 +13,7 @@ import { FilePreviewModal } from "./FilePreviewModal";
 import { ImagePreviewModal, type PreviewMedia } from "./ImagePreviewModal";
 
 export type ReferenceFilter = "all" | "image" | "file";
+export const UNASSIGNED_PROJECT_FILTER = "__unassigned__";
 type FileDragPhase = "enter" | "over" | "leave" | "drop" | "end";
 const MAX_AUTOMATIC_THUMBNAIL_BYTES = 3 * 1024 * 1024;
 const INLINE_PREVIEW_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"]);
@@ -31,13 +33,34 @@ export function canPreviewStoredImage(item: StoredReference): boolean {
 export function filterStoredReferences(
   items: StoredReference[],
   filter: ReferenceFilter,
-  search: string
+  search: string,
+  projectFilter = "all"
 ): StoredReference[] {
   const query = search.trim().toLowerCase();
   return items.filter((item) => {
     if (filter !== "all" && displayKind(item) !== filter) return false;
-    return !query || item.name.toLowerCase().includes(query) || item.mimeType.toLowerCase().includes(query);
+    const projectKey = referenceProjectKey(item);
+    if (projectFilter !== "all" && projectKey !== projectFilter) return false;
+    return !query || [item.name, item.mimeType, item.metadata?.projectLabel, item.metadata?.sessionTitle]
+      .some((value) => value?.toLowerCase().includes(query));
   });
+}
+
+export function referenceProjectKey(item: StoredReference): string {
+  if (item.metadata?.projectId) return `id:${item.metadata.projectId}`;
+  if (item.metadata?.projectLabel) return `label:${item.metadata.projectLabel}`;
+  return UNASSIGNED_PROJECT_FILTER;
+}
+
+export function referenceContextLabel(item: StoredReference): string {
+  const project = item.metadata?.projectLabel ?? "Unassigned project";
+  return item.metadata?.sessionTitle ? `${project} · ${item.metadata.sessionTitle}` : project;
+}
+
+export function shouldResetProjectFilter(projectFilter: string, projectOptions: Array<[string, string]>): boolean {
+  return projectFilter !== "all"
+    && projectFilter !== UNASSIGNED_PROJECT_FILTER
+    && !projectOptions.some(([value]) => value === projectFilter);
 }
 
 export function formatReferenceSize(sizeBytes: number): string {
@@ -91,14 +114,16 @@ function referenceTypeLabel(item: StoredReference): string {
   return extension && extension !== item.name ? extension.toUpperCase() : "File";
 }
 
-export function FileExplorer({ active, attachTargetLabel, onAttached }: {
+export function FileExplorer({ active, attachTargetLabel, uploadContext, onAttached }: {
   active: boolean;
   attachTargetLabel: string | null;
+  uploadContext: ReferenceUploadContext;
   onAttached: (payload: { attachment: FileReference; text: string }) => Promise<void> | void;
 }) {
   const [items, setItems] = useState<StoredReference[]>([]);
   const [filter, setFilter] = useState<ReferenceFilter>("all");
   const [search, setSearch] = useState("");
+  const [projectFilter, setProjectFilter] = useState("all");
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -135,7 +160,21 @@ export function FileExplorer({ active, attachTargetLabel, onAttached }: {
     image: items.filter((item) => displayKind(item) === "image").length,
     file: items.filter((item) => displayKind(item) === "file").length
   }), [items]);
-  const visibleItems = useMemo(() => filterStoredReferences(items, filter, search), [filter, items, search]);
+  const projectOptions = useMemo(() => {
+    const options = new Map<string, string>();
+    for (const item of items) {
+      const key = referenceProjectKey(item);
+      if (key !== UNASSIGNED_PROJECT_FILTER) options.set(key, item.metadata?.projectLabel ?? "Unknown project");
+    }
+    return [...options].sort((left, right) => left[1].localeCompare(right[1]));
+  }, [items]);
+  useEffect(() => {
+    if (shouldResetProjectFilter(projectFilter, projectOptions)) setProjectFilter("all");
+  }, [projectFilter, projectOptions]);
+  const visibleItems = useMemo(
+    () => filterStoredReferences(items, filter, search, projectFilter),
+    [filter, items, projectFilter, search]
+  );
   const error = mutationError ?? refreshError;
   const itemsById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
   const childrenByParentId = useMemo(() => {
@@ -157,7 +196,7 @@ export function FileExplorer({ active, attachTargetLabel, onAttached }: {
       const failures: unknown[] = [];
       for (const file of files) {
         try {
-          await uploadAttachment(file);
+          await uploadAttachment(file, uploadContext);
         } catch (err) {
           failures.push(err);
         }
@@ -245,6 +284,14 @@ export function FileExplorer({ active, attachTargetLabel, onAttached }: {
           ))}
         </div>
         <div className="file-explorer-actions">
+          <label className="file-explorer-project-filter">
+            <span className="sr-only">Filter by project</span>
+            <select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} aria-label="Filter files by project">
+              <option value="all">All projects</option>
+              {projectOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              <option value={UNASSIGNED_PROJECT_FILTER}>Unassigned</option>
+            </select>
+          </label>
           <label className="search file-explorer-search">
             <span className="search-icon"><SearchIcon /></span>
             <input
@@ -331,6 +378,7 @@ export function FileExplorer({ active, attachTargetLabel, onAttached }: {
                         <button className="file-explorer-name" type="button" onClick={(event) => openFilePreview(item, event.currentTarget)}>{item.name}</button>
                       ) : <a className="file-explorer-name" href={item.downloadUrl}>{item.name}</a>}
                       <span className="file-explorer-mime">{item.mimeType}</span>
+                      <span className="file-explorer-context" title={referenceContextLabel(item)}>{referenceContextLabel(item)}</span>
                       {lineageLabel ? <span className="file-explorer-lineage" title={lineageLabel}>{lineageLabel}</span> : null}
                     </div>
                   </div>
@@ -362,6 +410,7 @@ export function FileExplorer({ active, attachTargetLabel, onAttached }: {
         <ImagePreviewModal
           media={previewMedia}
           attachTargetLabel={null}
+          uploadContext={{ ...uploadContext, origin: "image-annotation" }}
           onAttached={() => undefined}
           onClose={() => setPreviewMedia(null)}
           showErrorToast={(err) => setMutationError(err instanceof Error ? err.message : String(err))}
@@ -378,6 +427,7 @@ export function FileExplorer({ active, attachTargetLabel, onAttached }: {
             downloadUrl: previewReference.downloadUrl
           }}
           attachTargetLabel={attachTargetLabel}
+          uploadContext={{ ...uploadContext, origin: "pdf-annotation" }}
           onAttached={async (payload) => {
             await onAttached(payload);
             await load();

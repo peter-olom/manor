@@ -785,6 +785,7 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onWo
         <ImagePreviewModal
           media={previewMedia}
           attachTargetLabel="Butler composer"
+          uploadContext={{ sessionId: pair.id, origin: "image-annotation" }}
           onAttached={onAttachAnnotatedProof}
           onClose={() => setPreviewMedia(null)}
           showErrorToast={(error) => setPreviewError(error instanceof Error ? error.message : String(error))}

@@ -6395,6 +6395,17 @@ a:hover {
   margin: 0;
 }
 
+.file-explorer-project-filter select {
+  min-width: 150px;
+  height: 34px;
+  padding: 0 28px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 .file-explorer-error {
   margin: 12px 20px 0;
 }
@@ -6519,6 +6530,14 @@ a.file-explorer-name:hover {
   white-space: nowrap;
 }
 
+.file-explorer-context {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .file-explorer-lineage {
   overflow: hidden;
   color: var(--accent-ink);
@@ -6627,6 +6646,10 @@ a.file-explorer-name:hover {
     flex: 1;
   }
 
+  .file-explorer-project-filter select {
+    min-width: 138px;
+  }
+
   .file-explorer-list-shell {
     padding: 0 12px 20px;
   }
@@ -6654,6 +6677,11 @@ a.file-explorer-name:hover {
 @media (max-width: 520px) {
   .file-explorer-actions {
     flex-wrap: wrap;
+  }
+
+  .file-explorer-project-filter,
+  .file-explorer-project-filter select {
+    width: 100%;
   }
 
   .file-explorer-actions .button {

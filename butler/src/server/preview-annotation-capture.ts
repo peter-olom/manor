@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 
 import type { ImageReferenceStore, ImageReferenceView } from "./image-store.js";
+import type { ReferenceMetadata } from "../shared/references.js";
 import type { OperatorPreviewAnnotation, OperatorPreviewAnnotationBatch, OperatorPreviewAnnotationViewport } from "./preview-annotation-types.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { PreviewVerificationArtifactView } from "./types.js";
@@ -189,6 +190,7 @@ export async function captureAnnotatedPreviewScreenshot(input: {
   batch: OperatorPreviewAnnotationBatch;
   runtimeBroker: RuntimeBrokerClient;
   imageStore: ImageReferenceStore;
+  metadata?: ReferenceMetadata;
 }): Promise<ImageReferenceView> {
   const viewport = primaryViewport(input.batch);
   const fileName = buildAnnotatedPreviewFileName(input.batch);
@@ -227,7 +229,8 @@ export async function captureAnnotatedPreviewScreenshot(input: {
       name: fileName,
       mimeType: "image/png",
       buffer,
-      sizeBytes: artifact.sizeBytes ?? undefined
+      sizeBytes: artifact.sizeBytes ?? undefined,
+      metadata: input.metadata
     });
   } finally {
     if (sessionId) {

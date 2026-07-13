@@ -7,9 +7,12 @@ import type { Express, Request, RequestHandler } from "express";
 import { resolveProofBundleKey } from "./butler-agent-helpers.js";
 import { type FileReferenceStore } from "./file-store.js";
 import { type ImageReferenceStore } from "./image-store.js";
+import { type PairStore } from "./pair-store.js";
 import { deleteReference, listReferenceLibrary, ReferenceHasChildrenError } from "./reference-library.js";
+import { normalizeReferenceMetadata } from "./reference-metadata.js";
+import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 import type { ReferenceMutationQueue } from "./reference-mutation-queue.js";
-import { resolveReferencePreviewKind } from "../shared/references.js";
+import { resolveReferencePreviewKind, type ReferenceMetadata } from "../shared/references.js";
 import { InvalidTextPreviewError, readTextPreview } from "./text-preview.js";
 import {
   decodeArtifactRelativePath,
@@ -62,6 +65,36 @@ function readUploadSourceReferenceId(request: http.IncomingMessage): string {
   return readHeaderValue(request.headers["x-manor-source-reference-id"]).trim();
 }
 
+function readDecodedHeader(request: http.IncomingMessage, name: string): string {
+  const encoded = readHeaderValue(request.headers[name]).trim();
+  if (!encoded) return "";
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return encoded;
+  }
+}
+
+function currentReferenceMetadata(metadata: ReferenceMetadata | undefined, pairStore: PairStore, store: ButlerStateStore) {
+  const pair = metadata?.sessionId ? pairStore.getPair(metadata.sessionId) : null;
+  const workerPayload = pair?.worker?.threadId ? store.getThreadJobPayload(pair.worker.threadId) : null;
+  const workspaceProject = resolveWorkspaceProjectInfo(pair?.defaultCwd);
+  return normalizeReferenceMetadata({
+    ...metadata,
+    sessionId: pair?.id ?? metadata?.sessionId,
+    sessionTitle: pair?.title ?? metadata?.sessionTitle,
+    projectId: pair?.projectId ?? metadata?.projectId ?? workerPayload?.project.id ?? (workspaceProject.kind === "project" ? workspaceProject.id : undefined),
+    projectLabel: pair?.projectLabel ?? metadata?.projectLabel ?? workerPayload?.project.label ?? (workspaceProject.kind === "project" ? workspaceProject.label : undefined)
+  });
+}
+
+function readUploadMetadata(request: http.IncomingMessage, pairStore: PairStore, store: ButlerStateStore) {
+  return currentReferenceMetadata(normalizeReferenceMetadata({
+    sessionId: readDecodedHeader(request, "x-manor-session-id"),
+    origin: readDecodedHeader(request, "x-manor-reference-origin")
+  }), pairStore, store);
+}
+
 function readUploadBuffer(request: Request): Buffer | null {
   return Buffer.isBuffer(request.body) ? request.body : null;
 }
@@ -112,6 +145,7 @@ export function registerServerAssetRoutes(options: {
   app: Express;
   artifactsDir: string;
   store: ButlerStateStore;
+  pairStore: PairStore;
   imageStore: ImageReferenceStore;
   fileStore: FileReferenceStore;
   referenceMutations: ReferenceMutationQueue;
@@ -122,6 +156,7 @@ export function registerServerAssetRoutes(options: {
     app,
     artifactsDir,
     store,
+    pairStore,
     imageStore,
     fileStore,
     referenceMutations,
@@ -135,6 +170,7 @@ export function registerServerAssetRoutes(options: {
     const mimeType = uploadBuffer ? readUploadMimeType(request) : typeof request.body?.mimeType === "string" ? request.body.mimeType : "";
     const data = uploadBuffer ? "" : typeof request.body?.data === "string" ? request.body.data : "";
     const sizeBytes = uploadBuffer ? readUploadSizeBytes(request) : typeof request.body?.sizeBytes === "number" ? request.body.sizeBytes : undefined;
+    const metadata = uploadBuffer ? readUploadMetadata(request, pairStore, store) : undefined;
 
     if (!name || !mimeType || (!uploadBuffer && !data)) {
       response.status(400).json({ error: "name, mimeType, and data are required" });
@@ -143,8 +179,8 @@ export function registerServerAssetRoutes(options: {
 
     try {
       const image = uploadBuffer
-        ? await imageStore.createFromBuffer({ name, mimeType, buffer: uploadBuffer, sizeBytes })
-        : await imageStore.create({ name, mimeType, data, sizeBytes });
+        ? await imageStore.createFromBuffer({ name, mimeType, buffer: uploadBuffer, sizeBytes, metadata })
+        : await imageStore.create({ name, mimeType, data, sizeBytes, metadata });
       response.status(201).json({ ok: true, image });
     } catch (error) {
       response.status(400).json({ error: error instanceof Error ? error.message : String(error) });
@@ -160,7 +196,10 @@ export function registerServerAssetRoutes(options: {
       return;
     }
 
-    response.json({ images: imageStore.list(limit) });
+    response.json({ images: imageStore.list(limit).map((image) => ({
+      ...image,
+      ...(image.metadata ? { metadata: currentReferenceMetadata(image.metadata, pairStore, store) } : {})
+    })) });
   });
 
   app.get("/api/images/:imageId", (request, response) => {
@@ -194,6 +233,7 @@ export function registerServerAssetRoutes(options: {
     const data = uploadBuffer ? "" : typeof request.body?.data === "string" ? request.body.data : "";
     const sizeBytes = uploadBuffer ? readUploadSizeBytes(request) : typeof request.body?.sizeBytes === "number" ? request.body.sizeBytes : undefined;
     const sourceReferenceId = uploadBuffer ? readUploadSourceReferenceId(request) : "";
+    const metadata = uploadBuffer ? readUploadMetadata(request, pairStore, store) : undefined;
 
     if (!name || (!uploadBuffer && !data)) {
       response.status(400).json({ error: "name and data are required" });
@@ -208,9 +248,9 @@ export function registerServerAssetRoutes(options: {
       }
       const file = uploadBuffer
         ? sourceReferenceId
-          ? await fileStore.createVersionFromBuffer({ name, mimeType, buffer: uploadBuffer, sizeBytes, sourceReferenceId })
-          : await fileStore.createFromBuffer({ name, mimeType, buffer: uploadBuffer, sizeBytes })
-        : await fileStore.create({ name, mimeType, data, sizeBytes });
+          ? await fileStore.createVersionFromBuffer({ name, mimeType, buffer: uploadBuffer, sizeBytes, sourceReferenceId, metadata })
+          : await fileStore.createFromBuffer({ name, mimeType, buffer: uploadBuffer, sizeBytes, metadata })
+        : await fileStore.create({ name, mimeType, data, sizeBytes, metadata });
       response.status(201).json({ ok: true, file });
     } catch (error) {
       response.status(400).json({ error: error instanceof Error ? error.message : String(error) });
@@ -226,7 +266,10 @@ export function registerServerAssetRoutes(options: {
       return;
     }
 
-    response.json({ files: fileStore.list(limit) });
+    response.json({ files: fileStore.list(limit).map((file) => ({
+      ...file,
+      ...(file.metadata ? { metadata: currentReferenceMetadata(file.metadata, pairStore, store) } : {})
+    })) });
   });
 
   app.get("/api/files/:fileId", async (request, response) => {
@@ -276,7 +319,13 @@ export function registerServerAssetRoutes(options: {
   });
 
   app.get("/api/references", (_request, response) => {
-    response.json(listReferenceLibrary(imageStore, fileStore));
+    const library = listReferenceLibrary(imageStore, fileStore);
+    response.json({
+      items: library.items.map((item) => ({
+        ...item,
+        ...(item.metadata ? { metadata: currentReferenceMetadata(item.metadata, pairStore, store) } : {})
+      }))
+    });
   });
 
   app.delete("/api/references/:referenceId", async (request, response) => {

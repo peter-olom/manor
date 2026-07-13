@@ -338,6 +338,7 @@ registerServerAssetRoutes({
   app,
   artifactsDir,
   store,
+  pairStore,
   imageStore,
   fileStore,
   referenceMutations,

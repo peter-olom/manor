@@ -1073,7 +1073,10 @@ export function PairShell() {
     setUploadingFiles(true);
     setUploadError(null);
     try {
-      const results = await Promise.allSettled(files.map((file) => uploadAttachment(file)));
+      const results = await Promise.allSettled(files.map((file) => uploadAttachment(file, {
+        sessionId: activePair.id,
+        origin: "butler-upload"
+      })));
       const uploaded = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
       if (uploaded.length > 0) {
         setComposerAttachments((current) => {
@@ -1424,6 +1427,7 @@ export function PairShell() {
                 <ImagePreviewModal
                   media={previewMedia}
                   attachTargetLabel="Butler composer"
+                  uploadContext={{ sessionId: activePair?.id, origin: "image-annotation" }}
                   onAttached={attachAnnotatedProof}
                   onClose={() => setPreviewMedia(null)}
                   showErrorToast={(err) => setPreviewError(err instanceof Error ? err.message : String(err))}
@@ -1444,7 +1448,12 @@ export function PairShell() {
               />
             </div>
             <div className={`workspace-view is-files ${viewMode === "files" ? "is-active" : ""}`}>
-              <FileExplorer active={viewMode === "files"} attachTargetLabel={activePair ? "Butler composer" : null} onAttached={attachAnnotatedProof} />
+              <FileExplorer
+                active={viewMode === "files"}
+                attachTargetLabel={activePair ? "Butler composer" : null}
+                uploadContext={{ sessionId: activePair?.id, origin: "file-explorer" }}
+                onAttached={attachAnnotatedProof}
+              />
             </div>
             <div className={`workspace-view is-improve ${viewMode === "improve" ? "is-active" : ""}`}>
               <SelfImprovementQueue

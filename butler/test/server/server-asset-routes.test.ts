@@ -43,11 +43,34 @@ test("asset library lists references, downloads unsafe images, and deletes leave
   });
 
   const app = express();
+  let sessionTitle = "File metadata";
   app.use(express.json({ type: shouldParseJsonRequest }));
   registerServerAssetRoutes({
     app,
     artifactsDir: root,
-    store: {} as never,
+    store: {
+      getThreadJobPayload: (threadId: string) => threadId === "worker-1" ? { project: { id: "project-1", label: "Manor" } } : null
+    } as never,
+    pairStore: {
+      getPair: (id: string) => {
+        if (id === "session-1") return {
+          id,
+          title: sessionTitle,
+          projectId: null,
+          projectLabel: null,
+          worker: { threadId: "worker-1" }
+        };
+        if (id === "session-2") return {
+          id,
+          title: "Workspace upload",
+          projectId: null,
+          projectLabel: null,
+          defaultCwd: "/repos/xpd",
+          worker: null
+        };
+        return null;
+      }
+    } as never,
     imageStore,
     fileStore,
     referenceMutations,
@@ -101,14 +124,47 @@ test("asset library lists references, downloads unsafe images, and deletes leave
       "content-type": "application/json",
       "x-manor-upload-name": "settings.json",
       "x-manor-upload-size": "13",
-      "x-manor-upload-mime-type": "application/json"
+      "x-manor-upload-mime-type": "application/json",
+      "x-manor-session-id": "session-1",
+      "x-manor-reference-origin": "file-explorer"
     },
     body: '{"live":true}'
   });
-  const jsonUpload = await jsonUploadResponse.json() as { file?: { name?: string; mimeType?: string } };
+  const jsonUpload = await jsonUploadResponse.json() as { file?: { id?: string; name?: string; mimeType?: string; metadata?: unknown } };
   assert.equal(jsonUploadResponse.status, 201);
   assert.equal(jsonUpload.file?.name, "settings.json");
   assert.equal(jsonUpload.file?.mimeType, "application/json");
+  assert.deepEqual(jsonUpload.file?.metadata, {
+    projectId: "project-1",
+    projectLabel: "Manor",
+    sessionId: "session-1",
+    sessionTitle: "File metadata",
+    origin: "file-explorer"
+  });
+  sessionTitle = "Renamed metadata session";
+  const renamedLibrary = await fetch(`${origin}/api/references`).then((response) => response.json()) as {
+    items: Array<{ id: string; metadata?: { sessionTitle?: string } }>;
+  };
+  assert.equal(renamedLibrary.items.find((item) => item.id === jsonUpload.file?.id)?.metadata?.sessionTitle, sessionTitle);
+
+  const workspaceUploadResponse = await fetch(`${origin}/api/files/upload`, {
+    method: "POST",
+    headers: {
+      "content-type": "text/plain",
+      "x-manor-upload-name": "workspace.txt",
+      "x-manor-session-id": "session-2",
+      "x-manor-reference-origin": "file-explorer"
+    },
+    body: "workspace"
+  });
+  const workspaceUpload = await workspaceUploadResponse.json() as { file?: { metadata?: unknown } };
+  assert.deepEqual(workspaceUpload.file?.metadata, {
+    projectId: "xpd",
+    projectLabel: "xpd",
+    sessionId: "session-2",
+    sessionTitle: "Workspace upload",
+    origin: "file-explorer"
+  });
 
   const annotatedUploadResponse = await fetch(`${origin}/api/files/upload`, {
     method: "POST",

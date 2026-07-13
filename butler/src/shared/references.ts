@@ -1,5 +1,20 @@
 export type ReferenceLibraryKind = "image" | "file";
 export type ReferencePreviewKind = "text" | "markdown" | "html" | "pdf";
+export type ReferenceOrigin =
+  | "butler-upload"
+  | "file-explorer"
+  | "image-annotation"
+  | "pdf-annotation"
+  | "worker-output"
+  | "preview-annotation";
+
+export type ReferenceMetadata = {
+  projectId?: string;
+  projectLabel?: string;
+  sessionId?: string;
+  sessionTitle?: string;
+  origin?: ReferenceOrigin;
+};
 
 const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdown", "mkdn"]);
 const HTML_EXTENSIONS = new Set(["html", "htm"]);
@@ -41,6 +56,7 @@ export type ReferenceLibraryItem = {
   previewUrl?: string;
   previewKind?: ReferencePreviewKind;
   sourceReferenceId?: string;
+  metadata?: ReferenceMetadata;
   version: number;
   hasChildren: boolean;
 };

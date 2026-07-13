@@ -1,4 +1,4 @@
-import type { ReferenceLibraryItem, ReferenceLibraryResponse } from "../shared/references";
+import type { ReferenceLibraryItem, ReferenceLibraryResponse, ReferenceMetadata, ReferenceOrigin } from "../shared/references";
 
 export type FileReference = {
   id: string;
@@ -7,6 +7,12 @@ export type FileReference = {
   sizeBytes: number;
   createdAt: number;
   url: string;
+  metadata?: ReferenceMetadata;
+};
+
+export type ReferenceUploadContext = {
+  sessionId?: string;
+  origin: ReferenceOrigin;
 };
 
 export type StoredReference = ReferenceLibraryItem;
@@ -99,7 +105,15 @@ export async function patchJson<T = void>(url: string, body: unknown): Promise<T
   return (await response.json().catch(() => undefined)) as T;
 }
 
-export async function uploadAttachment(file: File): Promise<FileReference> {
+function uploadContextHeaders(context?: ReferenceUploadContext): Record<string, string> {
+  if (!context) return {};
+  return {
+    "X-Manor-Reference-Origin": context.origin,
+    ...(context.sessionId ? { "X-Manor-Session-Id": encodeURIComponent(context.sessionId) } : {})
+  };
+}
+
+export async function uploadAttachment(file: File, context?: ReferenceUploadContext): Promise<FileReference> {
   const imageMimeType = resolveVisionImageMimeType(file.type, file.name);
   const uploadMimeType = (imageMimeType ?? file.type) || "application/octet-stream";
   const response = await fetch(imageMimeType ? "/api/images/upload" : "/api/files/upload", {
@@ -108,7 +122,8 @@ export async function uploadAttachment(file: File): Promise<FileReference> {
       "Content-Type": uploadMimeType,
       "X-Manor-Upload-Name": encodeURIComponent(file.name),
       "X-Manor-Upload-Size": String(file.size),
-      "X-Manor-Upload-Mime-Type": uploadMimeType
+      "X-Manor-Upload-Mime-Type": uploadMimeType,
+      ...uploadContextHeaders(context)
     },
     body: file
   });
@@ -127,7 +142,7 @@ export async function uploadAttachment(file: File): Promise<FileReference> {
   return uploaded;
 }
 
-export async function uploadFileVersion(file: File, sourceReferenceId: string): Promise<FileReference> {
+export async function uploadFileVersion(file: File, sourceReferenceId: string, context?: ReferenceUploadContext): Promise<FileReference> {
   const response = await fetch("/api/files/upload", {
     method: "POST",
     headers: {
@@ -135,7 +150,8 @@ export async function uploadFileVersion(file: File, sourceReferenceId: string): 
       "X-Manor-Upload-Name": encodeURIComponent(file.name),
       "X-Manor-Upload-Size": String(file.size),
       "X-Manor-Upload-Mime-Type": file.type || "application/octet-stream",
-      "X-Manor-Source-Reference-Id": sourceReferenceId
+      "X-Manor-Source-Reference-Id": sourceReferenceId,
+      ...uploadContextHeaders(context)
     },
     body: file
   });

@@ -6,6 +6,7 @@ import {
   filterStoredReferences,
   formatReferenceSize,
   reduceStoredFileDrag,
+  shouldResetProjectFilter,
   shouldLoadImageThumbnail
 } from "../../src/web/FileExplorer.js";
 import type { StoredReference } from "../../src/web/api.js";
@@ -33,7 +34,8 @@ const items: StoredReference[] = [
     url: "/api/files/file-1",
     downloadUrl: "/api/files/file-1",
     version: 1,
-    hasChildren: true
+    hasChildren: true,
+    metadata: { projectId: "project-1", projectLabel: "Manor", sessionId: "session-1", sessionTitle: "Quarterly planning", origin: "butler-upload" }
   },
   {
     id: "file-image-1",
@@ -54,6 +56,10 @@ test("file explorer filters by kind, name, and MIME type", () => {
   assert.deepEqual(filterStoredReferences(items, "file", "PDF"), [items[1]]);
   assert.deepEqual(filterStoredReferences(items, "all", "dashboard"), [items[0]]);
   assert.deepEqual(filterStoredReferences(items, "all", "missing"), []);
+  assert.deepEqual(filterStoredReferences(items, "all", "quarterly planning"), [items[1]]);
+  assert.deepEqual(filterStoredReferences(items, "all", "manor"), [items[1]]);
+  assert.deepEqual(filterStoredReferences(items, "all", "", "id:project-1"), [items[1]]);
+  assert.deepEqual(filterStoredReferences(items, "all", "", "__unassigned__"), [items[0], items[2]]);
 });
 
 test("file explorer formats compact byte sizes", () => {
@@ -83,4 +89,11 @@ test("file explorer refuses drops while an upload is active", () => {
   const file = new File(["data"], "report.pdf", { type: "application/pdf" });
   const dropped = reduceStoredFileDrag({ phase: "drop", depth: 1, hasFileType: true, files: [file], canUpload: false });
   assert.deepEqual(dropped, { depth: 0, active: false, preventDefault: true, filesToUpload: [] });
+});
+
+test("file explorer resets a project filter after its last file disappears", () => {
+  assert.equal(shouldResetProjectFilter("id:project-1", [["id:project-1", "Manor"]]), false);
+  assert.equal(shouldResetProjectFilter("id:project-1", []), true);
+  assert.equal(shouldResetProjectFilter("all", []), false);
+  assert.equal(shouldResetProjectFilter("__unassigned__", []), false);
 });
