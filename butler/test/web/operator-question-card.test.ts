@@ -11,7 +11,8 @@ import {
   operatorQuestionItemIsAnswered,
   submitOperatorQuestionDrafts
 } from "../../src/web/OperatorQuestionCard.js";
-import { Composer } from "../../src/web/ButlerPane.js";
+import { Composer, reduceComposerFileDrag } from "../../src/web/ButlerPane.js";
+import { isVisionImageFile } from "../../src/web/api.js";
 import type { PairDetail, PairOperatorQuestion } from "../../src/shared/pairing.js";
 
 const question: PairOperatorQuestion = {
@@ -173,6 +174,9 @@ test("blocked Butler composer shows one instruction and no bypass controls", () 
     onModelChange: () => undefined,
     onThinkingLevelChange: () => undefined,
     attachments: [],
+    onUploadFiles: () => undefined,
+    uploadingFiles: false,
+    uploadError: null,
     onRemoveAttachment: () => undefined,
     onPreviewImage: () => undefined,
     blockedReason
@@ -182,4 +186,55 @@ test("blocked Butler composer shows one instruction and no bypass controls", () 
   assert.match(markup, /role="status"/);
   assert.doesNotMatch(markup, /<textarea/);
   assert.doesNotMatch(markup, /<button/);
+});
+
+test("Butler composer offers a general multiple-file picker", () => {
+  const markup = renderToStaticMarkup(React.createElement(Composer, {
+    value: "",
+    onChange: () => undefined,
+    onSubmit: () => undefined,
+    busy: false,
+    sendDisabled: false,
+    model: null,
+    availableModels: [],
+    thinkingLevel: "medium",
+    availableThinkingLevels: [],
+    onModelChange: () => undefined,
+    onThinkingLevelChange: () => undefined,
+    attachments: [],
+    onUploadFiles: () => undefined,
+    uploadingFiles: false,
+    uploadError: null,
+    onRemoveAttachment: () => undefined,
+    onPreviewImage: () => undefined,
+    blockedReason: null
+  }));
+
+  assert.match(markup, /aria-label="Attach files"/);
+  assert.match(markup, /type="file"/);
+  assert.doesNotMatch(markup, /accept=/);
+  assert.match(markup, /multiple=""/);
+});
+
+test("attachment classification keeps supported images first class", () => {
+  assert.equal(isVisionImageFile("image/png", "reference.png"), true);
+  assert.equal(isVisionImageFile("", "reference.jpeg"), true);
+  assert.equal(isVisionImageFile("application/pdf", "reference.pdf"), false);
+  assert.equal(isVisionImageFile("image/svg+xml", "reference.svg"), false);
+});
+
+test("composer file drag state handles nesting, disabled drops, and forwarding", () => {
+  const file = new File(["report"], "report.pdf", { type: "application/pdf" });
+  const entered = reduceComposerFileDrag({ phase: "enter", depth: 0, hasFileType: true, files: [], canAttach: true });
+  const nested = reduceComposerFileDrag({ phase: "enter", depth: entered.depth, hasFileType: true, files: [], canAttach: true });
+  const leftChild = reduceComposerFileDrag({ phase: "leave", depth: nested.depth, hasFileType: false, files: [], canAttach: true });
+  const dropped = reduceComposerFileDrag({ phase: "drop", depth: leftChild.depth, hasFileType: true, files: [file], canAttach: true });
+  const disabled = reduceComposerFileDrag({ phase: "drop", depth: 1, hasFileType: true, files: [file], canAttach: false });
+
+  assert.deepEqual([entered.depth, nested.depth, leftChild.depth], [1, 2, 1]);
+  assert.equal(leftChild.active, true);
+  assert.deepEqual(dropped.filesToUpload, [file]);
+  assert.equal(dropped.depth, 0);
+  assert.deepEqual(disabled.filesToUpload, []);
+  assert.equal(disabled.preventDefault, true);
 });

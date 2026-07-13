@@ -115,6 +115,7 @@ test("delegation starts worker directly with deterministic routing metadata", as
   let capturedOrchestration: ButlerRoutingDecisionView | null = null;
   let acknowledgement = "";
   let postedQuestions = 0;
+  let delegatedImageReferenceIds: string[] = [];
   const tool = buildButlerDelegationTools({
     defineButlerTool: (definition) => definition,
     getToolUiEffects: () => [],
@@ -143,6 +144,11 @@ test("delegation starts worker directly with deterministic routing metadata", as
     },
     imageStore: { resolveViews: () => [], getFilePath: () => null },
     fileStore: { resolveViews: () => [], getFilePath: () => null },
+    getActiveOperatorReferences: () => ({ imageReferenceIds: ["image-current-turn"], fileReferenceIds: [] }),
+    createOrUpdateJobPayload: async (input: { imageReferenceIds?: string[] }) => {
+      delegatedImageReferenceIds = input.imageReferenceIds ?? [];
+      return {} as never;
+    },
     store,
     getCodexAuthStatus: () => ({ loggedIn: true }),
     noteThreadFocus: () => undefined,
@@ -158,6 +164,7 @@ test("delegation starts worker directly with deterministic routing metadata", as
   assert.equal(capturedOrchestration?.reviewRecommendation.required, true);
   assert.equal(capturedOrchestration?.fallbackReason, null);
   assert.equal(postedQuestions, 0);
+  assert.deepEqual(delegatedImageReferenceIds, ["image-current-turn"]);
   assert.match(acknowledgement, /delegated this to a Worker/);
   assert.match(acknowledgement, /Codex harness/);
   assert.doesNotMatch(acknowledgement, /Codex worker/i);
@@ -190,6 +197,7 @@ test("delegation cleans up a Worker when the occupied pair rejects attachment", 
     store,
     getCodexAuthStatus: () => ({ loggedIn: true }),
     noteThreadFocus: () => undefined,
+    getActiveOperatorReferences: () => null,
     queueDelegationAcknowledgement: () => ({ attached: false }),
     registerPendingChatCallback: () => { callbackRegistrations += 1; }
   } as never).find((entry) => entry.name === "delegate_to_worker") as {
@@ -232,6 +240,7 @@ test("supervision smoke test stops and deletes a Worker when pair attachment is 
     store,
     getCodexAuthStatus: () => ({ loggedIn: true }),
     noteThreadFocus: () => undefined,
+    getActiveOperatorReferences: () => null,
     queueDelegationAcknowledgement: () => ({ attached: false }),
     registerPendingChatCallback: () => { callbackRegistrations += 1; },
     supervisionSmokePlans: smokePlans
@@ -279,6 +288,7 @@ test("delegation contract receives the resolved workspace cwd", async () => {
     store,
     getCodexAuthStatus: () => ({ loggedIn: true }),
     noteThreadFocus: () => undefined,
+    getActiveOperatorReferences: () => null,
     queueDelegationAcknowledgement: () => undefined,
     registerPendingChatCallback: () => undefined
   } as never).find((entry) => entry.name === "delegate_to_worker") as {
@@ -316,6 +326,7 @@ test("shared repository bootstrap delegation keeps the bootstrap note", async ()
     store,
     getCodexAuthStatus: () => ({ loggedIn: true }),
     noteThreadFocus: () => undefined,
+    getActiveOperatorReferences: () => null,
     queueDelegationAcknowledgement: () => undefined,
     registerPendingChatCallback: () => undefined
   } as never).find((entry) => entry.name === "delegate_to_worker") as {

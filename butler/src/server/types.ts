@@ -1214,6 +1214,7 @@ export interface ButlerMessageView {
   question?: ButlerOperatorQuestionView;
   trace?: ButlerTraceItemView[];
   traceMeta?: ButlerTraceMetaView;
+  attachments?: Array<{ id: string; kind: "image" | "file"; name: string; mimeType: string; sizeBytes: number; url: string }>;
 }
 
 export interface ButlerOperatorQuestionOptionView {

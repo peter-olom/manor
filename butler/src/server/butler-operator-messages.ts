@@ -11,12 +11,15 @@ import {
 } from "./butler-agent-helpers.js";
 import type { ButlerMessageView, ButlerOperatorQuestionItemView, ButlerOperatorQuestionView, ButlerTraceItemView, ButlerTraceMetaView } from "./types.js";
 
+type ButlerMessageAttachmentView = NonNullable<ButlerMessageView["attachments"]>[number];
+
 type OperatorMessageOptions = {
   role?: string;
   displayText?: string | null;
   question?: ButlerOperatorQuestionView | null;
   trace?: ButlerTraceItemView[] | null;
   traceMeta?: ButlerTraceMetaView | null;
+  attachments?: ButlerMessageAttachmentView[] | null;
   normalize?: boolean;
 };
 
@@ -35,6 +38,18 @@ const CALLBACK_THREAD_PATTERN = /^callback(?:-fallback)?-([0-9a-f]{8}-[0-9a-f]{4
 const DIRECT_OPERATOR_THREAD_PATTERN = /^operator-direct-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-/i;
 const ATTACHMENT_SUMMARY_PATTERN =
   /^Attached \d+ (?:image|images|file|files|attachment|attachments)(?:, \d+ (?:image|images|file|files|attachment|attachments))*$/;
+
+export function readPersistedMessageAttachments(value: unknown): ButlerMessageAttachmentView[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const attachment = entry as Partial<ButlerMessageAttachmentView>;
+    const kind = attachment.kind === "image" || attachment.kind === "file" ? attachment.kind : null;
+    const validUrl = kind === "image" ? attachment.url?.startsWith("/api/images/") : attachment.url?.startsWith("/api/files/");
+    if (!kind || !validUrl || typeof attachment.id !== "string" || typeof attachment.name !== "string" || typeof attachment.mimeType !== "string" || typeof attachment.sizeBytes !== "number") return [];
+    return [{ id: attachment.id, kind, name: attachment.name, mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, url: attachment.url! }];
+  });
+}
 
 function isOperatorUserRole(role: string | null | undefined): boolean {
   return role === "user" || role === "user-with-attachments";
@@ -303,7 +318,13 @@ function alignCallbacksToDirectOperatorMessages(messages: ButlerMessageView[]): 
 }
 
 export function normalizeOperatorMessages(messages: ButlerMessageView[]): boolean {
-  const beforeSignature = JSON.stringify(messages.map((message) => [message.id, message.at ?? null, message.question ?? null]));
+  const beforeSignature = JSON.stringify(messages.map((message) => [message.id, message.at ?? null, message.displayText ?? null, message.question ?? null, message.attachments?.map((attachment) => attachment.id) ?? null]));
+  for (const message of messages) {
+    if (isOperatorUserMessage(message) && !message.displayText) {
+      const displayText = displayTextForPersistedUserText(message.text);
+      if (displayText) message.displayText = displayText;
+    }
+  }
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (isLeakedProviderAttachmentSummary(messages[index]!)) {
       messages.splice(index, 1);
@@ -352,7 +373,7 @@ export function normalizeOperatorMessages(messages: ButlerMessageView[]): boolea
   messages.splice(0, messages.length, ...nextMessages);
   const removedTrivialConfirmations = removeTrivialOperatorQuestionConfirmations(messages, { providerBackedOnly: true });
 
-  const afterSignature = JSON.stringify(messages.map((message) => [message.id, message.at ?? null, message.question ?? null]));
+  const afterSignature = JSON.stringify(messages.map((message) => [message.id, message.at ?? null, message.displayText ?? null, message.question ?? null, message.attachments?.map((attachment) => attachment.id) ?? null]));
   return removedTrivialConfirmations || beforeSignature !== afterSignature;
 }
 
@@ -363,8 +384,10 @@ export function upsertOperatorMessage(messages: ButlerMessageView[], id: string,
   const question = options.question ? normalizeOperatorQuestion(options.question) : null;
   const updatesTrace = Object.prototype.hasOwnProperty.call(options, "trace");
   const updatesTraceMeta = Object.prototype.hasOwnProperty.call(options, "traceMeta");
+  const updatesAttachments = Object.prototype.hasOwnProperty.call(options, "attachments");
   const trace = updatesTrace ? options.trace ?? null : existingMessage?.trace ?? null;
   const traceMeta = updatesTraceMeta ? options.traceMeta ?? null : existingMessage?.traceMeta ?? null;
+  const attachments = updatesAttachments ? options.attachments ?? null : existingMessage?.attachments ?? null;
   let changed = false;
   if (existingMessage) {
     changed =
@@ -376,6 +399,7 @@ export function upsertOperatorMessage(messages: ButlerMessageView[], id: string,
       JSON.stringify(existingMessage.question ?? null) !== JSON.stringify(question) ||
       JSON.stringify(existingMessage.trace ?? null) !== JSON.stringify(trace) ||
       JSON.stringify(existingMessage.traceMeta ?? null) !== JSON.stringify(traceMeta);
+    changed = changed || JSON.stringify(existingMessage.attachments ?? null) !== JSON.stringify(attachments);
     existingMessage.text = text;
     existingMessage.at = at;
     existingMessage.taskDurationMs = taskDurationMs;
@@ -392,6 +416,10 @@ export function upsertOperatorMessage(messages: ButlerMessageView[], id: string,
       if (traceMeta) existingMessage.traceMeta = traceMeta;
       else delete existingMessage.traceMeta;
     }
+    if (updatesAttachments) {
+      if (attachments && attachments.length > 0) existingMessage.attachments = attachments.map((attachment) => ({ ...attachment }));
+      else delete existingMessage.attachments;
+    }
   } else {
     changed = true;
     const next: ButlerMessageView = {
@@ -406,6 +434,7 @@ export function upsertOperatorMessage(messages: ButlerMessageView[], id: string,
     if (question) next.question = question;
     if (trace && trace.length > 0) next.trace = trace;
     if (traceMeta) next.traceMeta = traceMeta;
+    if (attachments && attachments.length > 0) next.attachments = attachments.map((attachment) => ({ ...attachment }));
     messages.push(next);
   }
   if (options.normalize !== false) changed = normalizeOperatorMessages(messages) || changed;

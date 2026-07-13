@@ -124,13 +124,44 @@ test("completed trace renders above and outside the final Butler message", () =>
     },
     pairId: "pair-1",
     onPairUpdate: () => undefined,
-    activeQuestionMessageId: null
+    activeQuestionMessageId: null,
+    onPreviewImage: () => undefined
   }));
 
   assert.match(markup, /^<div class="butler-turn"><details class="bubble-disclosure"/);
   assert.ok(markup.indexOf("bubble-disclosure") < markup.indexOf("bubble is-butler"));
   assert.doesNotMatch(markup, /<article class="bubble is-butler"[^>]*>[\s\S]*bubble-disclosure/);
   assert.doesNotMatch(markup, /bubble-disclosure-icon/);
+});
+
+test("user bubble renders tiny attachments without internal reference text", () => {
+  const markup = renderToStaticMarkup(React.createElement(Bubble, {
+    message: {
+      id: "message-user-1",
+      role: "user",
+      lane: "butler",
+      text: "What do you see?",
+      at: 200,
+      sourceThreadId: null,
+      memoryObservationId: null,
+      metadata: {},
+      attachments: [
+        { id: "image-1", kind: "image", name: "screen.png", mimeType: "image/png", sizeBytes: 20, url: "/api/images/image-1" },
+        { id: "file-1", kind: "file", name: "report.pdf", mimeType: "application/pdf", sizeBytes: 30, url: "/api/files/file-1" }
+      ]
+    },
+    pairId: "pair-1",
+    onPairUpdate: () => undefined,
+    activeQuestionMessageId: null,
+    onPreviewImage: () => undefined
+  }));
+
+  assert.match(markup, /class="bubble-attachment is-image"/);
+  assert.match(markup, /src="\/api\/images\/image-1"/);
+  assert.match(markup, /class="bubble-attachment is-file"/);
+  assert.match(markup, />pdf<\/a>/i);
+  assert.doesNotMatch(markup, /Stored reference/);
+  assert.ok(markup.indexOf("What do you see?") < markup.indexOf("bubble-attachments"));
 });
 
 test("live trace stays expanded above the streaming Butler message", () => {

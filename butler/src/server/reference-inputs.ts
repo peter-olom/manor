@@ -64,11 +64,11 @@ export function buildReferencePromptText(input: {
       if (input.includeFilePaths) {
         sections.push(
           input.includeIds
-            ? `- ${file.id} | ${file.name} | path: ${filePath} | preview: [open](${file.url}) | fetch: ${sharedUrl}`
+            ? `- ${file.id} | ${file.name} | path: ${filePath} | download: [file](${file.url}) | fetch: ${sharedUrl}`
             : `- ${file.name} | ${filePath} | ${sharedUrl}`
         );
       } else {
-        sections.push(input.includeIds ? `- ${file.id} | ${file.name} | preview: [open](${file.url})` : `- ${file.name}`);
+        sections.push(input.includeIds ? `- ${file.id} | ${file.name} | download: [file](${file.url})` : `- ${file.name}`);
       }
     }
   }

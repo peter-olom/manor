@@ -18,6 +18,7 @@ import {
 } from "../../src/server/butler-agent-helpers.js";
 import { ButlerAgentService } from "../../src/server/butler-agent.js";
 import {
+  activateOperatorReferences,
   clearPendingOperatorPrompts,
   commitPendingOperatorPrompt,
   dropTrailingFailedButlerTurns,
@@ -43,6 +44,40 @@ import {
   upsertOperatorMessage,
   upsertProviderBackedOperatorMessage
 } from "../../src/server/butler-operator-messages.js";
+
+test("queued operator turns expose only their own attachment references", async () => {
+  const scope: { activeOperatorReferences: { imageReferenceIds: string[]; fileReferenceIds: string[] } | null } = { activeOperatorReferences: null };
+  let releaseFirst: (() => void) | null = null;
+  let markFirstStarted: (() => void) | null = null;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+  const seen: string[][] = [];
+  let queue: Promise<void> = Promise.resolve();
+  const schedule = (imageReferenceId: string) => {
+    const references = { imageReferenceIds: [imageReferenceId], fileReferenceIds: [] };
+    const execute = async () => {
+      const clear = activateOperatorReferences(scope, references);
+      seen.push(scope.activeOperatorReferences?.imageReferenceIds ?? []);
+      if (imageReferenceId === "image-first") {
+        markFirstStarted?.();
+        await firstGate;
+      }
+      clear();
+    };
+    const scheduled = queue.then(execute, execute);
+    queue = scheduled.then(() => undefined);
+    return scheduled;
+  };
+
+  const first = schedule("image-first");
+  const second = schedule("image-second");
+  await firstStarted;
+  assert.deepEqual(scope.activeOperatorReferences?.imageReferenceIds, ["image-first"]);
+  releaseFirst?.();
+  await Promise.all([first, second]);
+  assert.deepEqual(seen, [["image-first"], ["image-second"]]);
+  assert.equal(scope.activeOperatorReferences, null);
+});
 
 function pendingAccess() {
   return {
@@ -881,6 +916,8 @@ test("provider user history suppresses duplicate durable operator prompts", () =
     id: "operator-user-1",
     role: "user",
     text: "Original prompt",
+    displayText: "What do you see?",
+    attachments: [{ id: "image-1", kind: "image", name: "screen.png", mimeType: "image/png", sizeBytes: 20, url: "/api/images/image-1" }],
     at: 100,
     taskDurationMs: null,
     kind: "message"
@@ -897,6 +934,22 @@ test("provider user history suppresses duplicate durable operator prompts", () =
 
   assert.deepEqual(messages.map((message) => message.id), ["message-0", "message-1"]);
   assert.deepEqual(messages.map((message) => message.text), ["Normalized prompt", "Done."]);
+  assert.equal(messages[0]?.displayText, "What do you see?");
+  assert.deepEqual(messages[0]?.attachments, access.operatorMessages[0]?.attachments);
+});
+
+test("provider compaction does not move earlier attachments onto a retained later prompt", () => {
+  const access = pendingAccess();
+  access.operatorMessages.push(
+    { id: "operator-a", role: "user", text: "internal A", displayText: "Prompt A", attachments: [{ id: "image-a", kind: "image", name: "a.png", mimeType: "image/png", sizeBytes: 10, url: "/api/images/image-a" }], at: 100, taskDurationMs: null, kind: "message" },
+    { id: "operator-b", role: "user", text: "internal B", displayText: "Prompt B", attachments: [{ id: "image-b", kind: "image", name: "b.png", mimeType: "image/png", sizeBytes: 10, url: "/api/images/image-b" }], at: 110, taskDurationMs: null, kind: "message" }
+  );
+  access.session = { sessionId: "session-1", messages: [{ role: "user", content: [{ type: "text", text: "internal B\n\nThe current model cannot receive image bytes." }], timestamp: 115 }] };
+
+  const messages = getVisibleButlerMessages(access as never);
+
+  assert.deepEqual(messages.map((message) => message.displayText), ["Prompt A", "Prompt B"]);
+  assert.deepEqual(messages.map((message) => message.attachments?.[0]?.id), ["image-a", "image-b"]);
 });
 
 test("provider user history suppresses duplicate session-backed user prompts", () => {

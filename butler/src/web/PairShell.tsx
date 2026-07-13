@@ -1,6 +1,6 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { getJson, patchJson, postJson, type FileReference } from "./api";
+import { getJson, isVisionImageFile, patchJson, postJson, uploadAttachment, type FileReference } from "./api";
 import manorLogoLight from "./assets/manor-logo.svg";
 import manorLogoDark from "./assets/manor-logo-dark.svg";
 import { ButlerPane } from "./ButlerPane";
@@ -699,6 +699,8 @@ export function PairShell() {
   const [memorySummary, setMemorySummary] = useState<MemoryDashboardSummary | null>(null);
   const [proofsByThreadId, setProofsByThreadId] = useState<Record<string, WorkerProofRecord[]>>({});
   const [composerAttachments, setComposerAttachments] = useState<FileReference[]>([]);
+  const [uploadingFiles, setUploadingFiles] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const manorSurface = manorSurfaceForView(viewMode);
@@ -1063,17 +1065,59 @@ export function PairShell() {
       const payload = await postJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(activePair.id)}/messages`, {
         text,
         target: "butler",
-        imageReferenceIds: composerAttachments.filter((attachment) => attachment.mimeType.startsWith("image/")).map((attachment) => attachment.id),
-        fileReferenceIds: composerAttachments.filter((attachment) => !attachment.mimeType.startsWith("image/")).map((attachment) => attachment.id)
+        imageReferenceIds: composerAttachments.filter((attachment) => isVisionImageFile(attachment.mimeType, attachment.name)).map((attachment) => attachment.id),
+        fileReferenceIds: composerAttachments.filter((attachment) => !isVisionImageFile(attachment.mimeType, attachment.name)).map((attachment) => attachment.id)
       });
       setPair(payload.pair);
       setDraft("");
       setComposerAttachments([]);
+      setUploadError(null);
       await loadPairs();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function uploadComposerFiles(files: File[]) {
+    const images = files.filter((file) => isVisionImageFile(file.type, file.name));
+    const otherFiles = files.filter((file) => !isVisionImageFile(file.type, file.name));
+    if (images.some((file) => file.size > 3 * 1024 * 1024)) {
+      setUploadError("Each image must be 3 MB or smaller.");
+      return;
+    }
+    const currentImageBytes = composerAttachments
+      .filter((attachment) => isVisionImageFile(attachment.mimeType, attachment.name))
+      .reduce((total, attachment) => total + attachment.sizeBytes, 0);
+    if (currentImageBytes + images.reduce((total, file) => total + file.size, 0) > 12 * 1024 * 1024) {
+      setUploadError("Attached images must total 12 MB or less.");
+      return;
+    }
+    if (otherFiles.some((file) => file.size > 40 * 1024 * 1024)) {
+      setUploadError("Each non-image file must be 40 MB or smaller.");
+      return;
+    }
+    setUploadingFiles(true);
+    setUploadError(null);
+    try {
+      const results = await Promise.allSettled(files.map((file) => uploadAttachment(file)));
+      const uploaded = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+      if (uploaded.length > 0) {
+        setComposerAttachments((current) => {
+          const knownIds = new Set(current.map((attachment) => attachment.id));
+          return [...current, ...uploaded.filter((attachment) => !knownIds.has(attachment.id))];
+        });
+      }
+      const failures = results.filter((result) => result.status === "rejected");
+      if (failures.length > 0) {
+        const firstFailure = failures[0];
+        setUploadError(firstFailure?.status === "rejected" && firstFailure.reason instanceof Error
+          ? firstFailure.reason.message
+          : `${failures.length} ${failures.length === 1 ? "file" : "files"} could not be uploaded.`);
+      }
+    } finally {
+      setUploadingFiles(false);
     }
   }
 
@@ -1337,7 +1381,7 @@ export function PairShell() {
                     pair={activePair}
                     draft={draft}
                     busy={busy || butlerComposePending > 0 || activePair.butlerPending}
-                    sendDisabled={busy || butlerComposePending > 0 || activePair.butlerPending || /chosen Butler model|No connected Butler model/i.test(activePair.butlerLastError ?? "")}
+                    sendDisabled={busy || uploadingFiles || butlerComposePending > 0 || activePair.butlerPending || /chosen Butler model|No connected Butler model/i.test(activePair.butlerLastError ?? "")}
                     onDraft={setDraft}
                     onSend={() => void sendButler()}
                     onLoadOlder={() => void loadOlder()}
@@ -1350,6 +1394,9 @@ export function PairShell() {
                     stoppingButler={stoppingButler} liveConnected={eventStream.connected} liveHasConnected={eventStream.hasConnected}
                     onOpenProviderSettings={() => selectSettingsSection("providers")}
                     attachments={composerAttachments}
+                    onUploadFiles={(files) => void uploadComposerFiles(files)}
+                    uploadingFiles={uploadingFiles}
+                    uploadError={uploadError}
                     onRemoveAttachment={(attachmentId) => setComposerAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId))}
                     onPreviewImage={(media) => {
                       setPreviewError(null);

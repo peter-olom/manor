@@ -812,7 +812,7 @@ app.post("/api/chat/messages", async (request, response) => {
     const displayText = text.trim() || (referenceCount > 0
       ? referenceCount === 1 ? "Attached 1 reference file." : `Attached ${referenceCount} reference files.`
       : inputItemsPromptText.trim() || promptText);
-    butlerAgent.prompt(promptText, imageReferenceIds, { mode, displayText });
+    butlerAgent.prompt(promptText, imageReferenceIds, { mode, displayText, fileReferenceIds });
     response.status(202).json({ ok: true });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });

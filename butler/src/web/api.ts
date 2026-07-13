@@ -7,6 +7,27 @@ export type FileReference = {
   url: string;
 };
 
+const VISION_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+const VISION_IMAGE_EXTENSION_MIME_TYPES = new Map([
+  ["jpg", "image/jpeg"],
+  ["jpeg", "image/jpeg"],
+  ["png", "image/png"],
+  ["gif", "image/gif"],
+  ["webp", "image/webp"]
+]);
+
+export function resolveVisionImageMimeType(mimeType: string, name = ""): string | null {
+  const normalizedMimeType = mimeType.trim().toLowerCase();
+  if (VISION_IMAGE_MIME_TYPES.has(normalizedMimeType)) return normalizedMimeType;
+  if (normalizedMimeType && normalizedMimeType !== "application/octet-stream") return null;
+  const extension = name.split(".").pop()?.toLowerCase() ?? "";
+  return VISION_IMAGE_EXTENSION_MIME_TYPES.get(extension) ?? null;
+}
+
+export function isVisionImageFile(mimeType: string, name = ""): boolean {
+  return resolveVisionImageMimeType(mimeType, name) !== null;
+}
+
 async function readErrorMessage(response: Response): Promise<string> {
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
@@ -74,13 +95,15 @@ export async function patchJson<T = void>(url: string, body: unknown): Promise<T
 }
 
 export async function uploadAttachment(file: File): Promise<FileReference> {
-  const response = await fetch(file.type.startsWith("image/") ? "/api/images/upload" : "/api/files/upload", {
+  const imageMimeType = resolveVisionImageMimeType(file.type, file.name);
+  const uploadMimeType = (imageMimeType ?? file.type) || "application/octet-stream";
+  const response = await fetch(imageMimeType ? "/api/images/upload" : "/api/files/upload", {
     method: "POST",
     headers: {
-      "Content-Type": file.type || "application/octet-stream",
+      "Content-Type": uploadMimeType,
       "X-Manor-Upload-Name": encodeURIComponent(file.name),
       "X-Manor-Upload-Size": String(file.size),
-      "X-Manor-Upload-Mime-Type": file.type || "application/octet-stream"
+      "X-Manor-Upload-Mime-Type": uploadMimeType
     },
     body: file
   });

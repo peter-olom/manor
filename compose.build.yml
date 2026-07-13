@@ -4,8 +4,8 @@ services:
       context: .
       dockerfile: docker/butler/Dockerfile
       args:
-        CODEX_VERSION: ${CODEX_VERSION:-0.124.0}
-        PI_VERSION: ${PI_VERSION:-0.73.0}
+        CODEX_VERSION: ${CODEX_VERSION:-0.144.1}
+        PI_VERSION: ${PI_VERSION:-0.73.1}
     image: manor-butler:local
     volumes:
       - ${MANOR_HOST_PROJECT_SOURCE_DIR:-${PWD:-.}}:/repos/manor
@@ -16,7 +16,7 @@ services:
       context: .
       dockerfile: docker/codex-box/Dockerfile
       args:
-        CODEX_VERSION: ${CODEX_VERSION:-0.124.0}
+        CODEX_VERSION: ${CODEX_VERSION:-0.144.1}
     image: manor-codex-box:local
     volumes:
       - ${MANOR_HOST_PROJECT_SOURCE_DIR:-${PWD:-.}}:/repos/manor

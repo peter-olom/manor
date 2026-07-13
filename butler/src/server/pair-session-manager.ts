@@ -123,6 +123,7 @@ export function mapButlerMessage(message: ButlerMessageView): PairMessage {
     metadata: { sourceRole: message.role },
     pending: message.pending,
     ...(message.question ? { question: message.question } : {}),
+    ...(message.attachments?.length ? { attachments: message.attachments.map((attachment) => ({ ...attachment })) } : {}),
     ...(message.trace && message.trace.length > 0 ? { trace: message.trace } : {})
   };
 }
@@ -620,7 +621,7 @@ export class PairSessionManager {
     const referenceCount = input.imageReferenceIds.length + input.fileReferenceIds.length;
     const displayText = input.text.trim() || (referenceCount === 1 ? "Attached 1 reference file." : `Attached ${referenceCount} reference files.`);
     const shouldGenerateTitle = this.shouldGenerateTitle(pair, input.text, service);
-    service.prompt(promptText, input.imageReferenceIds, { mode: "queue", displayText });
+    service.prompt(promptText, input.imageReferenceIds, { mode: "queue", displayText, fileReferenceIds: input.fileReferenceIds });
     if (shouldGenerateTitle) {
       this.generateTitleAsync(input.pairId, input.text, pair.defaultCwd);
     }

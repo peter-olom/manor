@@ -29,7 +29,7 @@ RUN --mount=type=cache,target=/root/.npm \
 
 FROM ${NODE_RUNTIME_IMAGE}
 
-ARG CODEX_VERSION=0.124.0
+ARG CODEX_VERSION=0.144.1
 ARG TTYD_VERSION=1.7.7
 
 ENV NODE_ENV=production

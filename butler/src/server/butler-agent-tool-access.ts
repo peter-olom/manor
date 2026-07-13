@@ -164,6 +164,7 @@ export type ButlerAgentToolAccess = {
   buildSupervisionSmokeTask(totalFollowUps: number): string;
   buildDelegationDeveloperInstructions(workspace: { cwd: string; branchName: string | null }, task: string): Promise<string>;
   getActiveOperatorThreadGuard(): ButlerOperatorThreadGuard | null;
+  getActiveOperatorReferences(): { imageReferenceIds: string[]; fileReferenceIds: string[] } | null;
   noteThreadFocus(threadId: string, reason?: string): void;
   buildDelegationContract(options: {
     threadId: string;
@@ -235,6 +236,7 @@ export type ButlerAgentSessionAccess = {
   activitySequence: number;
   lastError: string | null;
   promptQueue: Promise<void>;
+  activeOperatorReferences: { imageReferenceIds: string[]; fileReferenceIds: string[] } | null;
   stopRequestSequence: number;
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;

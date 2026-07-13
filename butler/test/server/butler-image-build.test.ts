@@ -15,8 +15,8 @@ test('Butler image contains locked development dependencies and never installs t
   ]);
   const manifest = JSON.parse(packageJson) as { dependencies?: Record<string, string> };
 
-  assert.equal(manifest.dependencies?.['@mariozechner/pi-ai'], '0.73.0');
-  assert.equal(manifest.dependencies?.['@mariozechner/pi-coding-agent'], '0.73.0');
+  assert.equal(manifest.dependencies?.['@mariozechner/pi-ai'], '0.73.1');
+  assert.equal(manifest.dependencies?.['@mariozechner/pi-coding-agent'], '0.73.1');
   assert.match(dockerfile, /FROM --platform=\$BUILDPLATFORM \$\{NODE_BUILD_IMAGE\} AS build/);
   assert.match(dockerfile, /FROM \$\{NODE_BUILD_IMAGE\} AS runtime-deps/);
   assert.match(dockerfile, /RUN --mount=type=cache,target=\/root\/\.npm \\\n\s+npm ci/);

@@ -475,6 +475,14 @@ test("paired Butler messages preserve structured question state", async () => {
   assert.deepEqual(paired.question?.options.map((option) => option.id), ["simple", "complete"]);
 });
 
+test("paired user messages preserve attachment presentation", () => {
+  const attachment = { id: "file-1", kind: "file" as const, name: "report.pdf", mimeType: "application/pdf", sizeBytes: 30, url: "/api/files/file-1" };
+  const paired = mapButlerMessage({ id: "user-1", role: "user", text: "internal", displayText: "Review this", at: 100, taskDurationMs: null, kind: "message", attachments: [attachment] });
+
+  assert.equal(paired.text, "Review this");
+  assert.deepEqual(paired.attachments, [attachment]);
+});
+
 test("operator question answers produce durable taste memory candidates", async () => {
   const messages: ButlerMessageView[] = [];
   const state = access(messages);

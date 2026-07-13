@@ -1240,6 +1240,9 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         };
         const delegatedTask = typedParams.task;
         const delegatedGoal = typedParams.goal;
+        const activeReferences = access.getActiveOperatorReferences();
+        const imageReferenceIds = typedParams.imageReferenceIds ?? activeReferences?.imageReferenceIds ?? [];
+        const fileReferenceIds = typedParams.fileReferenceIds ?? activeReferences?.fileReferenceIds ?? [];
         const workspace = await access.prepareDelegationWorkspace(typedParams.task, typedParams.cwd);
         const orchestration = buildDelegationRoutingDecision({ task: delegatedTask, goal: delegatedGoal });
         const repoBootstrapTask = isSharedShellRepoBootstrapTask(delegatedTask);
@@ -1267,16 +1270,16 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
                 threadId,
                 kind: "delegation",
                 instruction: preparedContract.text,
-                imageReferenceIds: typedParams.imageReferenceIds ?? [],
-                fileReferenceIds: typedParams.fileReferenceIds ?? []
+                imageReferenceIds,
+                fileReferenceIds
               });
             }
             return buildWorkerInputWithReferences({
               text: preparedContract.text,
               imageStore: access.imageStore,
-              imageReferenceIds: typedParams.imageReferenceIds ?? [],
+              imageReferenceIds,
               fileStore: access.fileStore,
-              fileReferenceIds: typedParams.fileReferenceIds ?? []
+              fileReferenceIds
             });
           },
           cwd: workspace.cwd,

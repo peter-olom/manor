@@ -42,6 +42,31 @@ function createButlerAgent(store: ButlerStateStore, sessionDir: string, codexCli
   });
 }
 
+test("operator message reload preserves clean text and attachment metadata", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-operator-message-reload-"));
+  await writeFile(path.join(sessionDir, "operator-messages.json"), JSON.stringify([{
+    id: "operator-1",
+    role: "user",
+    text: "internal reference context",
+    displayText: "Review these",
+    at: 100,
+    taskDurationMs: null,
+    kind: "message",
+    attachments: [
+      { id: "image-1", kind: "image", name: "screen.png", mimeType: "image/png", sizeBytes: 10, url: "/api/images/image-1" },
+      { id: "file-1", kind: "file", name: "report.pdf", mimeType: "application/pdf", sizeBytes: 20, url: "/api/files/file-1" }
+    ]
+  }]), "utf8");
+  const agent = createButlerAgent(store, sessionDir);
+  const internals = agent as unknown as { loadOperatorMessageState(): Promise<void>; operatorMessages: Array<{ displayText?: string; attachments?: Array<{ id: string }> }> };
+
+  await internals.loadOperatorMessageState();
+
+  assert.equal(internals.operatorMessages[0]?.displayText, "Review these");
+  assert.deepEqual(internals.operatorMessages[0]?.attachments?.map((attachment) => attachment.id), ["image-1", "file-1"]);
+});
+
 test("direct Codex ping summary includes message and selected context", () => {
   const summary = buildDirectCodexMessagePingSummary({
     text: "Please retry the smoke proof.",

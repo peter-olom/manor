@@ -109,6 +109,16 @@ export type PairMessage = {
   pending?: boolean;
   trace?: PairTraceItem[];
   question?: PairOperatorQuestion;
+  attachments?: PairMessageAttachment[];
+};
+
+export type PairMessageAttachment = {
+  id: string;
+  kind: "image" | "file";
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  url: string;
 };
 
 export type PairWorkerHandoff = {

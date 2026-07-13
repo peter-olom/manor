@@ -11,7 +11,7 @@ import { buildThreadExecutionContract } from "../../src/server/thread-contract.j
 import type { ButlerAgentToolAccess } from "../../src/server/butler-agent-tool-access.js";
 import type { JobPayloadView } from "../../src/server/job-payload-types.js";
 
-async function createHarness(options: { attachedWorkerThreadId?: string | null } = {}) {
+async function createHarness(options: { attachedWorkerThreadId?: string | null; activeImageReferenceIds?: string[] } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-codex-instruction-tools-"));
   const store = new ButlerStateStore(path.join(dir, "state.json"));
   await store.load();
@@ -74,6 +74,10 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null }
       return payload;
     },
     getActiveOperatorThreadGuard: () => null,
+    getActiveOperatorReferences: () => ({
+      imageReferenceIds: options.activeImageReferenceIds ?? [],
+      fileReferenceIds: []
+    }),
     getWorkerDefaults: () => ({
       runtime: "auto",
       threadId: options.attachedWorkerThreadId === undefined ? threadId : options.attachedWorkerThreadId
@@ -109,7 +113,7 @@ function tool(tools: unknown[], name: string) {
 }
 
 test("message_job updates the job payload and sends readable chat", async () => {
-  const { threadId, sent, payloads, tools } = await createHarness();
+  const { threadId, sent, payloads, tools } = await createHarness({ activeImageReferenceIds: ["image-current-turn"] });
 
   await tool(tools, "message_job").execute("call-1", {
     threadId,
@@ -118,6 +122,7 @@ test("message_job updates the job payload and sends readable chat", async () => 
   });
 
   assert.equal(payloads[0]?.kind, "steering");
+  assert.deepEqual(payloads[0]?.attachments.images, ["image-current-turn"]);
   assert.match(JSON.stringify(sent[0]), /Please retry the browser proof/);
   assert.match(JSON.stringify(sent[0]), /I updated the job payload/);
   assert.doesNotMatch(JSON.stringify(sent[0]), /MANOR INSTRUCTION/);

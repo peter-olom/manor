@@ -1,7 +1,7 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from "react";
 
 import { BudgetSegmented } from "./BudgetSegmented";
-import { CloseIcon } from "./icons";
+import { AttachmentIcon, CloseIcon } from "./icons";
 import { JumpToLatest } from "./JumpToLatest";
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
@@ -14,7 +14,7 @@ import { providerModelRef } from "./worker-route";
 
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
 import type { PairButlerActivityOutcome, PairDetail, PairMessage, PairModelOption, PairReviewActivity, PairTraceItem } from "../shared/pairing";
-import type { FileReference } from "./api";
+import { isVisionImageFile, type FileReference } from "./api";
 import type { PreviewMedia } from "./ImagePreviewModal";
 
 type ButlerPaneProps = {
@@ -36,6 +36,9 @@ type ButlerPaneProps = {
   liveHasConnected: boolean;
   onOpenProviderSettings: () => void;
   attachments: FileReference[];
+  onUploadFiles: (files: File[]) => void;
+  uploadingFiles: boolean;
+  uploadError: string | null;
   onRemoveAttachment: (attachmentId: string) => void;
   onPreviewImage: (media: PreviewMedia) => void;
   onPairUpdate: (pair: PairDetail) => void;
@@ -104,10 +107,55 @@ type ComposerProps = {
   onModelChange: (model: string) => void;
   onThinkingLevelChange: (level: string) => void;
   attachments: FileReference[];
+  onUploadFiles: (files: File[]) => void;
+  uploadingFiles: boolean;
+  uploadError: string | null;
   onRemoveAttachment: (attachmentId: string) => void;
   onPreviewImage: (media: PreviewMedia) => void;
   blockedReason: string | null;
 };
+
+type ComposerFileDragPhase = "enter" | "over" | "leave" | "drop" | "end";
+
+export function reduceComposerFileDrag(input: {
+  phase: ComposerFileDragPhase;
+  depth: number;
+  hasFileType: boolean;
+  files: File[];
+  canAttach: boolean;
+}): { depth: number; active: boolean; preventDefault: boolean; dropEffect: "copy" | "none" | null; filesToUpload: File[] } {
+  const accepted = input.hasFileType || (input.phase === "drop" && input.files.length > 0);
+  if (input.phase === "end") {
+    return { depth: 0, active: false, preventDefault: false, dropEffect: null, filesToUpload: [] };
+  }
+  if (input.phase === "enter" && !accepted) {
+    return { depth: input.depth, active: false, preventDefault: false, dropEffect: null, filesToUpload: [] };
+  }
+  if (input.phase === "over") {
+    return {
+      depth: input.depth,
+      active: input.depth > 0 && input.canAttach,
+      preventDefault: accepted,
+      dropEffect: accepted ? input.canAttach ? "copy" : "none" : null,
+      filesToUpload: []
+    };
+  }
+  if (input.phase === "leave") {
+    const depth = Math.max(0, input.depth - 1);
+    return { depth, active: depth > 0 && input.canAttach, preventDefault: input.depth > 0, dropEffect: null, filesToUpload: [] };
+  }
+  if (input.phase === "drop") {
+    return {
+      depth: 0,
+      active: false,
+      preventDefault: accepted,
+      dropEffect: null,
+      filesToUpload: accepted && input.canAttach ? input.files : []
+    };
+  }
+  const depth = input.depth + 1;
+  return { depth, active: input.canAttach, preventDefault: true, dropEffect: null, filesToUpload: [] };
+}
 
 export const Composer = memo(function Composer({
   value,
@@ -122,13 +170,34 @@ export const Composer = memo(function Composer({
   onModelChange,
   onThinkingLevelChange,
   attachments,
+  onUploadFiles,
+  uploadingFiles,
+  uploadError,
   onRemoveAttachment,
   onPreviewImage,
   blockedReason
 }: ComposerProps) {
   const ref = useAutoGrow(value);
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const dragDepthRef = useRef(0);
+  const [dragActive, setDragActive] = useState(false);
   const canSubmit = Boolean(value.trim() || attachments.length > 0);
   const isMultilineDraft = value.includes("\n");
+  const canAttach = !busy && !uploadingFiles;
+  const applyFileDrag = (phase: ComposerFileDragPhase, event: DragEvent<HTMLFormElement>) => {
+    const transition = reduceComposerFileDrag({
+      phase,
+      depth: dragDepthRef.current,
+      hasFileType: Array.from(event.dataTransfer.types).includes("Files"),
+      files: Array.from(event.dataTransfer.files),
+      canAttach
+    });
+    if (transition.preventDefault) event.preventDefault();
+    if (transition.dropEffect) event.dataTransfer.dropEffect = transition.dropEffect;
+    dragDepthRef.current = transition.depth;
+    setDragActive(transition.active);
+    if (transition.filesToUpload.length > 0) onUploadFiles(transition.filesToUpload);
+  };
   if (blockedReason) {
     return (
       <div className="composer">
@@ -141,7 +210,7 @@ export const Composer = memo(function Composer({
       {attachments.length > 0 ? (
         <div className="composer-attachments" aria-label="Composer attachments">
           {attachments.map((attachment) => {
-            const isImage = attachment.mimeType.startsWith("image/");
+            const isImage = isVisionImageFile(attachment.mimeType, attachment.name);
             return (
               <div key={attachment.id} className="composer-attachment">
                 {isImage ? (
@@ -166,13 +235,19 @@ export const Composer = memo(function Composer({
         </div>
       ) : null}
       <form
-        className="composer-form"
+        className={`composer-form${dragActive ? " is-dragging" : ""}`}
+        onDragEnter={(event) => applyFileDrag("enter", event)}
+        onDragOver={(event) => applyFileDrag("over", event)}
+        onDragLeave={(event) => applyFileDrag("leave", event)}
+        onDrop={(event) => applyFileDrag("drop", event)}
+        onDragEnd={(event) => applyFileDrag("end", event)}
         onSubmit={(event) => {
           event.preventDefault();
           if (!canSubmit || busy || sendDisabled) return;
           onSubmit();
         }}
       >
+        {dragActive ? <div className="composer-drop-target" aria-live="polite">Drop files to attach</div> : null}
         <textarea
           ref={ref}
           value={value}
@@ -195,6 +270,28 @@ export const Composer = memo(function Composer({
         />
         <div className="composer-actions">
           <div className="composer-settings" aria-label="Butler settings">
+            <input
+              ref={uploadInputRef}
+              className="composer-upload-input"
+              type="file"
+              multiple
+              tabIndex={-1}
+              onChange={(event) => {
+                const files = Array.from(event.target.files ?? []);
+                event.target.value = "";
+                if (files.length > 0) onUploadFiles(files);
+              }}
+            />
+            <button
+              className="composer-attach"
+              type="button"
+              disabled={!canAttach}
+              onClick={() => uploadInputRef.current?.click()}
+              aria-label="Attach files"
+            >
+              {uploadingFiles ? <span className="spinner" /> : <AttachmentIcon />}
+              <span>{uploadingFiles ? "Uploading" : "Attach"}</span>
+            </button>
             <ModelPicker
               label="Butler model"
               value={model}
@@ -220,6 +317,7 @@ export const Composer = memo(function Composer({
             {busy ? <span className="spinner" /> : <span>Send</span>}
           </button>
         </div>
+        {uploadError ? <div className="composer-upload-error" role="alert">{uploadError}</div> : null}
       </form>
     </div>
   );
@@ -488,9 +586,10 @@ type BubbleProps = {
   pairId: string;
   onPairUpdate: (pair: PairDetail) => void;
   activeQuestionMessageId: string | null;
+  onPreviewImage: (media: PreviewMedia) => void;
 };
 
-export const Bubble = memo(function Bubble({ message, liveTrace, pairId, onPairUpdate, activeQuestionMessageId }: BubbleProps) {
+export const Bubble = memo(function Bubble({ message, liveTrace, pairId, onPairUpdate, activeQuestionMessageId, onPreviewImage }: BubbleProps) {
   const role = message.role === "user" ? "user" : message.role === "worker" ? "worker" : message.role === "butler" ? "butler" : "system";
   if (message.metadata.kind === "work-loader") {
     return <WorkLoaderBubble items={[]} />;
@@ -508,7 +607,35 @@ export const Bubble = memo(function Bubble({ message, liveTrace, pairId, onPairU
       {message.question ? (
         <OperatorQuestionCard pairId={pairId} messageId={message.id} question={message.question} onPairUpdate={onPairUpdate} active={message.id === activeQuestionMessageId} />
       ) : (
-        <Markdown className="bubble-body" text={message.text} />
+        <>
+          {message.text.trim() ? <Markdown className="bubble-body" text={message.text} /> : null}
+          {message.attachments?.length ? (
+            <div className="bubble-attachments" aria-label="Message attachments">
+              {message.attachments.map((attachment) => attachment.kind === "image" ? (
+                <button
+                  key={attachment.id}
+                  className="bubble-attachment is-image"
+                  type="button"
+                  title={attachment.name}
+                  aria-label={`Preview ${attachment.name}`}
+                  onClick={() => onPreviewImage({ name: attachment.name, url: attachment.url, kind: "image", downloadUrl: attachment.url })}
+                >
+                  <img src={attachment.url} alt="" />
+                </button>
+              ) : (
+                <a
+                  key={attachment.id}
+                  className="bubble-attachment is-file"
+                  href={attachment.url}
+                  title={attachment.name}
+                  aria-label={`Download ${attachment.name}`}
+                >
+                  {attachment.name.split(".").pop()?.slice(0, 4) || "file"}
+                </a>
+              ))}
+            </div>
+          ) : null}
+        </>
       )}
       {message.sourceThreadId ? <footer className="bubble-foot">thread {shortId(message.sourceThreadId)}</footer> : null}
     </article>
@@ -541,6 +668,9 @@ export function ButlerPane({
   liveHasConnected,
   onOpenProviderSettings,
   attachments,
+  onUploadFiles,
+  uploadingFiles,
+  uploadError,
   onRemoveAttachment,
   onPreviewImage,
   onPairUpdate
@@ -697,7 +827,7 @@ export function ButlerPane({
           </button>
         ) : null}
         {pair.messages.map((message) => (
-          <Bubble key={message.id} message={message} liveTrace={liveTraceByMessageId.get(message.id)} pairId={pair.id} onPairUpdate={onPairUpdate} activeQuestionMessageId={activeQuestionMessageId} />
+          <Bubble key={message.id} message={message} liveTrace={liveTraceByMessageId.get(message.id)} pairId={pair.id} onPairUpdate={onPairUpdate} activeQuestionMessageId={activeQuestionMessageId} onPreviewImage={onPreviewImage} />
         ))}
         {showLiveBubble ? (
           <LiveBubble
@@ -745,6 +875,9 @@ export function ButlerPane({
         onModelChange={onButlerModelChange}
         onThinkingLevelChange={onThinkingLevelChange}
         attachments={attachments}
+        onUploadFiles={onUploadFiles}
+        uploadingFiles={uploadingFiles}
+        uploadError={uploadError}
         onRemoveAttachment={onRemoveAttachment}
         onPreviewImage={onPreviewImage}
         blockedReason={hasOpenQuestion ? "Answer Butler’s open question above to continue." : null}

@@ -659,6 +659,9 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
           };
         }
         await loadWorkerThread(access, typedParams.threadId);
+        const activeReferences = access.getActiveOperatorReferences();
+        const imageReferenceIds = typedParams.imageReferenceIds ?? activeReferences?.imageReferenceIds ?? [];
+        const fileReferenceIds = typedParams.fileReferenceIds ?? activeReferences?.fileReferenceIds ?? [];
         const refreshedChecklist = typedParams.refreshChecklist
           ? access.store.refreshCompletedSupervisionChecklistForFollowup(typedParams.threadId, typedParams.text)
           : null;
@@ -666,8 +669,8 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
           threadId: typedParams.threadId,
           kind: "steering",
           instruction: typedParams.text,
-          imageReferenceIds: typedParams.imageReferenceIds ?? [],
-          fileReferenceIds: typedParams.fileReferenceIds ?? []
+          imageReferenceIds,
+          fileReferenceIds
         });
         assertCallbackReviewCurrent(typedParams.threadId);
         const sent = await sendWorkerMessage(
@@ -676,9 +679,9 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
           buildWorkerInputWithReferences({
             text: formatJobPayloadMessage("steering", payload.threadId, payload.workerDirective, payload.display.summary),
             imageStore: access.imageStore,
-            imageReferenceIds: typedParams.imageReferenceIds ?? [],
+            imageReferenceIds,
             fileStore: access.fileStore,
-            fileReferenceIds: typedParams.fileReferenceIds ?? []
+            fileReferenceIds
           })
         );
         await access.bindJobPayloadDelivery(typedParams.threadId, { turnId: sent.turnId });

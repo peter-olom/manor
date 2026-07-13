@@ -433,7 +433,7 @@ export async function runButlerPrompt(
     }
     const promptText = needsVisionTool
       ? [
-          access.imageStore.buildPromptText(text, imageReferenceIds, { includeIds: true }),
+          text,
           visionSettings.enabled
             ? "The current model cannot receive image bytes. Use inspect_images with the reference ids above before making image-dependent claims."
             : "The current model cannot receive image bytes and Vision assistance is disabled. Do not claim to have inspected these images."
@@ -579,8 +579,25 @@ function preserveDurableAssistantTrace(providerMessage: ButlerMessageView, durab
   }
 }
 
+function preserveDurableUserPresentation(providerMessage: ButlerMessageView, durableMessage: ButlerMessageView): void {
+  if (!isUserMessage(providerMessage) || !isUserMessage(durableMessage)) return;
+  if (durableMessage.displayText?.trim()) providerMessage.displayText = durableMessage.displayText;
+  if (durableMessage.attachments?.length) providerMessage.attachments = durableMessage.attachments.map((attachment) => ({ ...attachment }));
+}
+
 function filterProviderBackedServerOperatorMessages(sessionMessages: ButlerMessageView[], messages: ButlerMessageView[]): ButlerMessageView[] {
   const consumedSessionMessageIds = new Set<string>();
+  const exactMatchSessionMessageIds = new Set(sessionMessages.filter((sessionMessage) =>
+    messages.some((message) => sessionMessage.text === message.text && matchesProviderBackedMessage(sessionMessage, message))
+  ).map((message) => message.id));
+  const fallbackOwnerBySessionMessageId = new Map<string, string>();
+  for (const sessionMessage of sessionMessages) {
+    if (exactMatchSessionMessageIds.has(sessionMessage.id)) continue;
+    const owner = messages
+      .filter((message) => message.pending !== true && matchesProviderBackedMessage(sessionMessage, message))
+      .sort((left, right) => Math.abs((sessionMessage.at ?? 0) - (left.at ?? 0)) - Math.abs((sessionMessage.at ?? 0) - (right.at ?? 0)))[0];
+    if (owner) fallbackOwnerBySessionMessageId.set(sessionMessage.id, owner.id);
+  }
   return messages.filter((message) => {
     if (message.pending === true) {
       return true;
@@ -588,13 +605,21 @@ function filterProviderBackedServerOperatorMessages(sessionMessages: ButlerMessa
     if (!isUserMessage(message) && !(message.role === "assistant" && message.id.startsWith("operator-session-"))) {
       return true;
     }
-    const providerMessage = sessionMessages.find((sessionMessage) =>
+    const exactProviderMessage = sessionMessages.find((sessionMessage) =>
       !consumedSessionMessageIds.has(sessionMessage.id) &&
+      sessionMessage.text === message.text &&
+      matchesProviderBackedMessage(sessionMessage, message)
+    );
+    const providerMessage = exactProviderMessage ?? sessionMessages.find((sessionMessage) =>
+      !consumedSessionMessageIds.has(sessionMessage.id) &&
+      !exactMatchSessionMessageIds.has(sessionMessage.id) &&
+      fallbackOwnerBySessionMessageId.get(sessionMessage.id) === message.id &&
       matchesProviderBackedMessage(sessionMessage, message)
     );
     if (!providerMessage) {
       return true;
     }
+    preserveDurableUserPresentation(providerMessage, message);
     preserveDurableAssistantTrace(providerMessage, message);
     consumedSessionMessageIds.add(providerMessage.id);
     return false;
@@ -629,7 +654,7 @@ function collapseDuplicateVisibleUserMessages(messages: ButlerMessageView[]): Bu
       previous &&
       isUserMessage(previous) &&
       isUserMessage(message) &&
-      previous.text.trim() === message.text.trim() &&
+      (previous.displayText?.trim() || previous.text.trim()) === (message.displayText?.trim() || message.text.trim()) &&
       Math.abs((previous.at ?? 0) - (message.at ?? 0)) <= 30_000;
     if (duplicateUserMessage) {
       continue;
@@ -670,7 +695,7 @@ export function commitPendingOperatorPrompt(access: ButlerAgentSessionAccess, id
   access.emit("change");
 }
 
-export function registerPendingOperatorPrompt(access: ButlerAgentSessionAccess, text: string, displayText = text): string {
+export function registerPendingOperatorPrompt(access: ButlerAgentSessionAccess, text: string, displayText = text, attachments: ButlerMessageView["attachments"] = []): string {
   const at = Date.now();
   const id = `pending-operator-${at}-${access.pendingOperatorMessageSequence++}`;
   access.pendingOperatorMessages.push({
@@ -681,6 +706,7 @@ export function registerPendingOperatorPrompt(access: ButlerAgentSessionAccess, 
     at,
     taskDurationMs: null,
     kind: "message",
+    ...(attachments.length > 0 ? { attachments: attachments.map((attachment) => ({ ...attachment })) } : {}),
     pending: true
   });
   if (access.pendingOperatorMessages.length > MAX_PENDING_OPERATOR_MESSAGES) {
@@ -852,7 +878,7 @@ export async function promptButler(
   access: ButlerAgentSessionAccess,
   text: string,
   imageReferenceIds: string[] = [],
-  options: { mode?: "queue" | "steer"; pendingOperatorMessageId?: string | null; displayText?: string | null; ignoreStopRequestSequence?: number | null } = {}
+  options: { mode?: "queue" | "steer"; pendingOperatorMessageId?: string | null; displayText?: string | null; ignoreStopRequestSequence?: number | null; fileReferenceIds?: string[] } = {}
 ): Promise<boolean> {
   if (options.mode === "steer" && !options.pendingOperatorMessageId) {
     clearPendingOperatorPrompts(access);
@@ -864,7 +890,7 @@ export async function promptButler(
     ignoreStopRequestSequence = access.stopRequestSequence;
   }
 
-  return queueButlerPrompt(access, text, imageReferenceIds, { background: false, pendingOperatorMessageId, ignoreStopRequestSequence });
+  return queueButlerPrompt(access, text, imageReferenceIds, { background: false, pendingOperatorMessageId, ignoreStopRequestSequence, fileReferenceIds: options.fileReferenceIds });
 }
 
 export async function stopButlerPrompt(access: ButlerAgentSessionAccess, options: { clearPendingOperatorMessages?: boolean } = {}): Promise<boolean> {
@@ -903,6 +929,16 @@ export async function promptButlerInternal(
   }
 }
 
+export function activateOperatorReferences(
+  access: Pick<ButlerAgentSessionAccess, "activeOperatorReferences">,
+  references: ButlerAgentSessionAccess["activeOperatorReferences"]
+): () => void {
+  access.activeOperatorReferences = references;
+  return () => {
+    if (access.activeOperatorReferences === references) access.activeOperatorReferences = null;
+  };
+}
+
 export async function syncOperatorMessagesFromSessionFiles(
   access: Pick<ButlerAgentSessionAccess, "operatorMessages" | "sessionDir" | "saveOperatorMessageState">
 ): Promise<boolean> {
@@ -917,7 +953,7 @@ async function queueButlerPrompt(
   access: ButlerAgentSessionAccess,
   text: string,
   imageReferenceIds: string[],
-  options: { background: boolean; pendingOperatorMessageId?: string | null; ignoreStopRequestSequence?: number | null }
+  options: { background: boolean; pendingOperatorMessageId?: string | null; ignoreStopRequestSequence?: number | null; fileReferenceIds?: string[] }
 ): Promise<boolean> {
   if (!access.session) {
     if (!options.background) {
@@ -927,6 +963,10 @@ async function queueButlerPrompt(
   }
 
   const acceptedStopRequestSequence = options.ignoreStopRequestSequence ?? access.stopRequestSequence;
+  const operatorReferences = options.background ? null : {
+    imageReferenceIds: [...new Set(imageReferenceIds)],
+    fileReferenceIds: [...new Set(options.fileReferenceIds ?? [])]
+  };
 
   if (!options.background) {
     access.pending = true;
@@ -935,6 +975,7 @@ async function queueButlerPrompt(
   }
 
   const execute = async () => {
+    const clearOperatorReferences = activateOperatorReferences(access, operatorReferences);
     const promptStartedAt = Date.now();
     let ok = true;
     try {
@@ -976,6 +1017,7 @@ async function queueButlerPrompt(
       }
       ok = false;
     } finally {
+      clearOperatorReferences();
       await access.refreshExternalStatus();
       if (!options.background) {
         access.pending = false;

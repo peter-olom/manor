@@ -210,17 +210,9 @@ export function registerServerAssetRoutes(options: {
       return;
     }
 
-    const downloadRequested = Array.isArray(request.query.download)
-      ? request.query.download[0] === "1"
-      : request.query.download === "1";
-
     response.setHeader("Cache-Control", "private, max-age=31536000, immutable");
-    if (downloadRequested) {
-      response.download(filePath, file.name);
-      return;
-    }
-    response.type(file.mimeType);
-    response.sendFile(filePath);
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    response.download(filePath, file.name);
   });
 
   app.get(/^\/api\/artifacts\/(.+)$/, (request, response) => {

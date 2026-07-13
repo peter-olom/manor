@@ -176,6 +176,14 @@ export function ImageIcon() {
   );
 }
 
+export function AttachmentIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M5.3 8.8 9.8 4.3a2.1 2.1 0 0 1 3 3l-5.4 5.4a3.3 3.3 0 0 1-4.7-4.7l5.1-5.1" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export function ZoomInIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
