@@ -244,7 +244,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "share_project_file",
     label: "Share project file",
-    description: "Persist an existing local file as a durable project artifact and return a download link.",
+    description: "Present an existing local file with an inline preview when supported and clickable open and download links.",
     uiEffects: [{ kind: "refreshThreads", description: "Makes newly shared project files available immediately." }]
   },
   {

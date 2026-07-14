@@ -92,10 +92,14 @@ export function registerProjectArtifactPolicyRoutes(input: {
 
     const downloadRequested = response.req.query.download === "1";
     response.setHeader("Cache-Control", "private, max-age=3600");
+    response.setHeader("X-Content-Type-Options", "nosniff");
     if (downloadRequested) {
       response.download(filePath, artifact.fileName);
       return;
     }
+    response.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
+    response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+    response.setHeader("Content-Disposition", "inline");
     response.type(artifact.contentType);
     response.sendFile(filePath);
   }

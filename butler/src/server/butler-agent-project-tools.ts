@@ -1,11 +1,13 @@
 import path from "node:path";
+import { promises as fs } from "node:fs";
 
 import { Type } from "@sinclair/typebox";
 
 import {
   decorateProjectArtifactWithAccess,
   formatProjectArtifactAccessLine,
-  getProjectArtifactUserDownloadUrl
+  getProjectArtifactUserDownloadUrl,
+  getProjectArtifactUserUrl
 } from "./project-artifact-access.js";
 import {
   buildProjectPolicy,
@@ -34,6 +36,30 @@ function approvedProjectFileRoots(artifactsDir: string): string[] {
     .map((entry) => entry.trim())
     .filter(Boolean);
   return [...new Set(["/repos", artifactsDir, ...configured])];
+}
+
+const GENERIC_SHARED_FILE_STEM = /^(?:artifact|capture|download|file|final|image|img|output|photo|picture|proof|ready|result|screen[-_ ]?shot|untitled)(?:[-_ ]?(?:copy|\d+|[0-9a-f]{8,}))?$/i;
+const MAX_INLINE_SHARED_IMAGE_BYTES = 20 * 1024 * 1024;
+
+function descriptiveSharedFileName(sourceFilePath: string, explicitFileName: string | null, title: string | null): string | null {
+  if (explicitFileName) return explicitFileName;
+  const sourceName = path.basename(sourceFilePath);
+  const extension = path.extname(sourceName).toLowerCase();
+  const stem = path.basename(sourceName, path.extname(sourceName));
+  const genericStem = GENERIC_SHARED_FILE_STEM.test(stem) ||
+    /^(?:capture|image|img|screen[-_ ]?shot)[-_ ]?\d[\d._ -]*$/i.test(stem) ||
+    /^[0-9a-f]{8}-[0-9a-f-]{18,}$/i.test(stem);
+  if (!genericStem || !title) return null;
+  const titleStem = title
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .toLowerCase()
+    .replace(/\.[a-z0-9]{1,8}$/i, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80)
+    .replace(/-+$/g, "");
+  return titleStem && !GENERIC_SHARED_FILE_STEM.test(titleStem) ? `${titleStem}${extension}` : null;
 }
 
 function assertMatchingMemoryScopes(access: ButlerAgentToolAccess, projectId: string | null, threadId: string | null): void {
@@ -352,11 +378,11 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
     access.defineButlerTool({
       name: "share_project_file",
       label: "Share project file",
-      description: "Store an existing local file as a durable project artifact and return a host-clickable download link.",
-      promptSnippet: "share_project_file: use this when the operator asks for a download link to an existing local file.",
+      description: "Present an existing local file to the operator as a durable artifact with an inline preview when supported plus clickable open and download links.",
+      promptSnippet: "share_project_file: use this to present an existing local file. Always provide a concise descriptive title. Generic source names are renamed from that model-written title; explicit and useful filenames are preserved. The tool creates the operator-visible attachment and links automatically, so do not retype raw paths or URLs.",
       parameters: Type.Object({
         sourceFilePath: Type.String({ minLength: 1 }),
-        title: Type.Optional(Type.String()),
+        title: Type.String({ minLength: 1, description: "Concise descriptive title used for display and intelligent naming of generic files." }),
         kind: Type.Optional(
           Type.Union([
             Type.Literal("seed"),
@@ -364,6 +390,8 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
             Type.Literal("download"),
             Type.Literal("research"),
             Type.Literal("report"),
+            Type.Literal("proof"),
+            Type.Literal("screenshot"),
             Type.Literal("other")
           ])
         ),
@@ -379,10 +407,12 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
       }),
       uiEffects: access.getToolUiEffects("share_project_file"),
       execute: async (_toolCallId, params) => {
-        const threadId = typeof params.threadId === "string" ? params.threadId.trim() : "";
+        const requestedThreadId = typeof params.threadId === "string" ? params.threadId.trim() : "";
+        const guardedThreadId = access.getActiveOperatorThreadGuard()?.lockedThreadId ?? "";
+        const threadId = requestedThreadId || guardedThreadId;
         const thread = threadId ? access.store.getThread(threadId) ?? null : null;
         const sourceFilePath = (params.sourceFilePath as string).trim();
-        const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : thread?.cwd ?? sourceFilePath;
+        const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : thread?.cwd ?? "/repos";
         const project = resolveRequestedProject(access, {
           cwd,
           projectId: params.projectId,
@@ -390,44 +420,103 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
           fallbackId: thread?.supervisor.projectId || "project",
           fallbackLabel: thread?.supervisor.projectLabel || "project"
         });
-        const fileName = typeof params.fileName === "string" && params.fileName.trim() ? params.fileName.trim() : null;
+        assertMatchingMemoryScopes(access, project.id, threadId || null);
+        const explicitFileName = typeof params.fileName === "string" && params.fileName.trim() ? params.fileName.trim() : null;
+        const requestedTitle = typeof params.title === "string" && params.title.trim() ? params.title.trim() : null;
+        const fileName = descriptiveSharedFileName(sourceFilePath, explicitFileName, requestedTitle);
+        const originalFileName = path.basename(sourceFilePath);
+        const metadata = normalizeArtifactMetadata(params.metadata);
+        if (fileName && fileName !== originalFileName && !explicitFileName) {
+          metadata.originalFileName = originalFileName;
+          metadata.namingSource = "model-title";
+        }
         const artifact = await createProjectArtifactFromFile({
           artifactsDir,
           projectId: project.id,
           projectLabel: project.label,
           threadId: threadId || null,
           kind:
-            params.kind === "seed" ||
-            params.kind === "reference" ||
-            params.kind === "download" ||
-            params.kind === "research" ||
-            params.kind === "report"
-              ? params.kind
-              : "download",
-          title:
-            typeof params.title === "string" && params.title.trim()
-              ? params.title.trim()
-              : fileName || sourceFilePath.split("/").filter(Boolean).at(-1) || "File download",
+            params.kind === "proof" || params.kind === "report"
+              ? "report"
+              : params.kind === "screenshot" || params.kind === "reference"
+                ? "reference"
+                : params.kind === "seed" || params.kind === "download" || params.kind === "research"
+                  ? params.kind
+                  : "download",
+          title: requestedTitle || fileName || originalFileName || "File download",
           description: typeof params.description === "string" ? params.description : null,
           sourceFilePath,
           approvedRoots: approvedProjectFileRoots(artifactsDir),
           fileName,
           contentType: typeof params.contentType === "string" ? params.contentType : null,
           tags: Array.isArray(params.tags) ? params.tags : [],
-          metadata: normalizeArtifactMetadata(params.metadata)
+          metadata
         });
+        const openUrl = getProjectArtifactUserUrl(artifact);
+        const downloadUrl = getProjectArtifactUserDownloadUrl(artifact);
+        const imageReference = artifact.contentType.startsWith("image/") && artifact.sizeBytes <= MAX_INLINE_SHARED_IMAGE_BYTES
+          ? await access.imageStore.createFromBuffer({
+              name: artifact.fileName,
+              mimeType: artifact.contentType,
+              buffer: await fs.readFile(artifact.filePath),
+              metadata: {
+                origin: "worker-output",
+                projectId: artifact.projectId,
+                projectLabel: artifact.projectLabel
+              }
+            })
+          : null;
+        if (imageReference) {
+          artifact.metadata = { ...artifact.metadata, imageReferenceId: imageReference.id };
+        }
         access.store.upsertProjectArtifact(artifact);
+        const presentationText = [
+          `**${artifact.title}**`,
+          `[Open ${artifact.fileName}](${openUrl}) · [Download](${downloadUrl})`
+        ].join("\n\n");
+        await access.presentOperatorAttachment({
+          messageId: `shared-project-file-${_toolCallId}`,
+          text: presentationText,
+          attachment: imageReference
+            ? {
+                id: imageReference.id,
+                kind: "image",
+                name: imageReference.name,
+                mimeType: imageReference.mimeType,
+                sizeBytes: imageReference.sizeBytes,
+                url: imageReference.url,
+                downloadUrl
+              }
+            : {
+                id: artifact.id,
+                kind: "file",
+                name: artifact.fileName,
+                mimeType: artifact.contentType,
+                sizeBytes: artifact.sizeBytes,
+                url: openUrl,
+                downloadUrl
+              }
+        });
         return {
           content: [
             {
               type: "text",
               text: [
-                `Download: ${getProjectArtifactUserDownloadUrl(artifact)}`,
-                `File name: ${artifact.fileName}`
+                `Presented ${artifact.fileName} to the operator.`,
+                `[Open file](${openUrl})`,
+                `[Download file](${downloadUrl})`,
+                ...(imageReference ? [`Image reference ID: ${imageReference.id}`] : [])
               ].join("\n")
             }
           ],
-          details: { artifact: decorateProjectArtifactWithAccess(artifact) }
+          details: {
+            artifact: decorateProjectArtifactWithAccess(artifact),
+            presentation: {
+              openUrl,
+              downloadUrl,
+              imageReferenceId: imageReference?.id ?? null
+            }
+          }
         };
       }
     }),

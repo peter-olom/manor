@@ -44,6 +44,25 @@ test("project artifacts can be created from local HTML files", async () => {
   }
 });
 
+test("project artifacts infer video content types from file names", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "manor-project-video-"));
+  try {
+    const sourcePath = path.join(tempDir, "interaction.webm");
+    await writeFile(sourcePath, Buffer.from("video"));
+    const artifact = await createProjectArtifactFromFile({
+      artifactsDir: path.join(tempDir, "artifacts"),
+      projectId: "alpha",
+      projectLabel: "Alpha",
+      kind: "download",
+      title: "Interaction recording",
+      sourceFilePath: sourcePath
+    });
+    assert.equal(artifact.contentType, "video/webm");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("shared project files stay within approved real roots", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "manor-project-artifact-root-"));
   try {

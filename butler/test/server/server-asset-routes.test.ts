@@ -14,6 +14,57 @@ import { registerServerAssetRoutes } from "../../src/server/server-asset-routes.
 import { shouldParseJsonRequest } from "../../src/server/upload-request.js";
 import { ReferenceMutationQueue } from "../../src/server/reference-mutation-queue.js";
 
+test("proof artifact videos support inline byte-range playback", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "manor-video-asset-route-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const videoPath = path.join(root, "previews", "run-1", "video.webm");
+  await fs.mkdir(path.dirname(videoPath), { recursive: true });
+  await fs.writeFile(videoPath, Buffer.from("0123456789"));
+
+  const referenceMutations = new ReferenceMutationQueue();
+  const fileStore = new FileReferenceStore(path.join(root, "files"), "/api/files", referenceMutations);
+  const imageStore = new ImageReferenceStore(path.join(root, "images"), "/api/images", referenceMutations);
+  await Promise.all([fileStore.load(), imageStore.load()]);
+  const artifact = {
+    kind: "video",
+    label: "Interaction video",
+    fileName: "video.webm",
+    filePath: videoPath,
+    contentType: "video/webm",
+    availability: "available",
+    retainedUntilAt: Date.now() + 60_000,
+    expiredAt: null
+  };
+
+  const app = express();
+  registerServerAssetRoutes({
+    app,
+    artifactsDir: root,
+    store: {
+      findPreviewProofArtifactByFilePath: (candidate: string) => candidate === videoPath ? { artifact } : null
+    } as never,
+    pairStore: {} as never,
+    imageStore,
+    fileStore,
+    referenceMutations,
+    imageUploadBinaryParser: express.raw({ type: () => true, limit: "1mb" }),
+    fileUploadBinaryParser: express.raw({ type: () => true, limit: "1mb" })
+  });
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const port = (server.address() as AddressInfo).port;
+
+  const response = await fetch(`http://127.0.0.1:${port}/api/artifacts/previews/run-1/video.webm`, {
+    headers: { Range: "bytes=0-3" }
+  });
+  assert.equal(response.status, 206);
+  assert.equal(response.headers.get("content-type"), "video/webm");
+  assert.equal(response.headers.get("x-artifact-availability"), "available");
+  assert.equal(response.headers.get("content-range"), "bytes 0-3/10");
+  assert.equal(await response.text(), "0123");
+});
+
 test("asset library lists references, downloads unsafe images, and deletes leaves", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "manor-asset-routes-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

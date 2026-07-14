@@ -316,6 +316,22 @@ test("project policy catalog describes its context-only behavior", () => {
   assert.doesNotMatch(registeredListTool.description, /apply|execute/i);
 });
 
+test("share project file accepts natural proof and screenshot categories", () => {
+  const definitions: Array<{ name: string; parameters: object }> = [];
+  const access = {
+    defineButlerTool: (definition: { name: string; parameters: object }) => {
+      definitions.push(definition);
+      return definition;
+    },
+    getToolUiEffects: () => []
+  } as unknown as ButlerAgentToolAccess;
+  buildButlerProjectTools(access, "/artifacts");
+  const schema = definitions.find((definition) => definition.name === "share_project_file")?.parameters as never;
+
+  assert.equal(Value.Check(schema, { sourceFilePath: "/artifacts/proof.png", title: "Proof screenshot", kind: "proof" }), true);
+  assert.equal(Value.Check(schema, { sourceFilePath: "/artifacts/proof.png", title: "Proof screenshot", kind: "screenshot" }), true);
+});
+
 test("delegation reference guidance is provider-neutral", () => {
   const referencePrompt = buildReferencePromptText({
     text: "",

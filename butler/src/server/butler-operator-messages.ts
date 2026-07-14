@@ -10,6 +10,7 @@ import {
   isTrivialOperatorQuestionConfirmation
 } from "./butler-agent-helpers.js";
 import type { ButlerMessageView, ButlerOperatorQuestionItemView, ButlerOperatorQuestionView, ButlerTraceItemView, ButlerTraceMetaView } from "./types.js";
+import { isTrustedProjectArtifactUserUrl } from "./project-artifact-access.js";
 
 type ButlerMessageAttachmentView = NonNullable<ButlerMessageView["attachments"]>[number];
 
@@ -46,9 +47,15 @@ export function readPersistedMessageAttachments(value: unknown): ButlerMessageAt
     if (!entry || typeof entry !== "object") return [];
     const attachment = entry as Partial<ButlerMessageAttachmentView>;
     const kind = attachment.kind === "image" || attachment.kind === "file" ? attachment.kind : null;
-    const validUrl = kind === "image" ? attachment.url?.startsWith("/api/images/") : attachment.url?.startsWith("/api/files/");
+    const validUrl = kind === "image"
+      ? attachment.url?.startsWith("/api/images/")
+      : attachment.url?.startsWith("/api/files/") || isTrustedProjectArtifactUserUrl(attachment.url);
     if (!kind || !validUrl || typeof attachment.id !== "string" || typeof attachment.name !== "string" || typeof attachment.mimeType !== "string" || typeof attachment.sizeBytes !== "number") return [];
-    return [{ id: attachment.id, kind, name: attachment.name, mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, url: attachment.url! }];
+    const downloadUrl = typeof attachment.downloadUrl === "string" &&
+      (attachment.downloadUrl.startsWith("/api/images/") || attachment.downloadUrl.startsWith("/api/files/") || isTrustedProjectArtifactUserUrl(attachment.downloadUrl))
+      ? attachment.downloadUrl
+      : undefined;
+    return [{ id: attachment.id, kind, name: attachment.name, mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, url: attachment.url!, ...(downloadUrl ? { downloadUrl } : {}) }];
   });
 }
 

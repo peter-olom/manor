@@ -62,6 +62,7 @@ export type WorkerProofArtifact = {
   fileName: string;
   contentType: string;
   sizeBytes: number | null;
+  checksumSha256?: string | null;
   url: string | null;
   downloadUrl: string | null;
   availability: string;
@@ -430,66 +431,254 @@ function proofArtifactLabel(artifact: WorkerProofArtifact): string {
   return artifact.label || artifact.fileName || artifact.kind;
 }
 
+export function isPreviewableProofImage(artifact: WorkerProofArtifact): boolean {
+  return artifact.availability === "available"
+    && Boolean(artifact.url)
+    && (artifact.kind === "screenshot" || artifact.contentType.toLowerCase().startsWith("image/"));
+}
+
+export function isPreviewableProofVideo(artifact: WorkerProofArtifact): boolean {
+  return artifact.availability === "available"
+    && Boolean(artifact.url)
+    && (artifact.kind === "video" || artifact.contentType.toLowerCase().startsWith("video/"));
+}
+
+function isPreviewableProofMedia(artifact: WorkerProofArtifact): boolean {
+  return isPreviewableProofImage(artifact) || isPreviewableProofVideo(artifact);
+}
+
+function proofPreviewMedia(artifact: WorkerProofArtifact, name?: string): PreviewMedia {
+  return {
+    name: name || artifact.fileName || artifact.label || (isPreviewableProofVideo(artifact) ? "Proof video" : "Proof screenshot"),
+    url: artifact.url ?? "",
+    kind: isPreviewableProofVideo(artifact) ? "video" : "image",
+    downloadUrl: artifact.downloadUrl ?? artifact.url
+  };
+}
+
+type OpenProofPreview = (media: PreviewMedia, gallery?: PreviewMedia[]) => void;
+
+type WorkerProofArtifactEntry = {
+  proof: WorkerProofRecord;
+  artifact: WorkerProofArtifact;
+  index: number;
+  aliases: string[];
+};
+
+const BROWSER_PROOF_KINDS = new Set(["manifest", "screenshot", "video", "trace", "html"]);
+
+function isBrowserProof(proof: WorkerProofRecord): boolean {
+  return proof.verification.artifacts.some((artifact) => BROWSER_PROOF_KINDS.has(artifact.kind));
+}
+
+function proofEntryKey(entry: WorkerProofArtifactEntry): string {
+  return proofArtifactKey(entry.proof.id, entry.artifact, entry.index);
+}
+
+function proofEntryLabel(entry: WorkerProofArtifactEntry): string {
+  const label = proofArtifactLabel(entry.artifact);
+  return entry.aliases.length > 0 ? `${label} · ${entry.aliases.join(" · ")}` : label;
+}
+
+function proofEntryIdentity(entry: WorkerProofArtifactEntry): string | null {
+  const checksum = entry.artifact.checksumSha256?.trim().toLowerCase();
+  if (checksum) return `sha256:${checksum}`;
+  const url = entry.artifact.url?.split("?", 1)[0]?.trim();
+  return url ? `url:${url}` : null;
+}
+
+function compareProofEntries(left: WorkerProofArtifactEntry, right: WorkerProofArtifactEntry): number {
+  return proofTimestamp(left.proof) - proofTimestamp(right.proof)
+    || left.index - right.index
+    || proofEntryKey(left).localeCompare(proofEntryKey(right));
+}
+
+function proofGroupStatus(proofs: WorkerProofRecord[]): string {
+  const reviews = proofs.map((proof) => proof.proofReviews?.at(-1)).filter(Boolean);
+  if (reviews.some((review) => review?.verdict === "failed")) return "failed";
+  if (reviews.some((review) => review?.verdict === "unclear")) return "unclear";
+  if (reviews.length > 0 && reviews.every((review) => review?.verdict === "credible")) return "credible";
+  const failedProof = proofs.find((proof) => !proof.verification.ok);
+  return failedProof?.verification.failureKind || "recorded";
+}
+
+function proofGroupTitle(proofs: WorkerProofRecord[]): string {
+  const browserProof = [...proofs]
+    .filter(isBrowserProof)
+    .sort((left, right) => proofTimestamp(right) - proofTimestamp(left))[0];
+  return browserProof?.previewTitle || proofs[0]?.previewTitle || "Worker evidence";
+}
+
+function proofArtifactKey(proofId: string, artifact: WorkerProofArtifact, index: number): string {
+  const identity = artifact.url || artifact.downloadUrl || `${artifact.kind}:${artifact.fileName}:${artifact.label}`;
+  return `${proofId}:${identity}:${index}`;
+}
+
+const WorkerProofMediaSection = memo(function WorkerProofMediaSection({
+  label,
+  runId,
+  entries,
+  gallery,
+  onPreviewImage
+}: {
+  label: string | null;
+  runId: string | null;
+  entries: WorkerProofArtifactEntry[];
+  gallery: PreviewMedia[];
+  onPreviewImage: OpenProofPreview;
+}) {
+  const screenshots = entries.filter(({ artifact }) => isPreviewableProofImage(artifact));
+  const videos = entries.filter(({ artifact }) => isPreviewableProofVideo(artifact));
+  return (
+    <section className="worker-proof-run">
+      {label ? (
+        <header className="worker-proof-run-head">
+          <span>{label}</span>
+          {runId ? <code>{runId}</code> : null}
+        </header>
+      ) : null}
+      {screenshots.length > 0 ? (
+        <div className="worker-proof-shots">
+          {screenshots.map((entry) => {
+            const media = proofPreviewMedia(entry.artifact, proofEntryLabel(entry));
+            return (
+              <button
+                key={proofEntryKey(entry)}
+                type="button"
+                title={proofEntryLabel(entry)}
+                onClick={() => onPreviewImage(media, gallery)}
+              >
+                <img src={entry.artifact.url ?? undefined} alt={proofEntryLabel(entry)} />
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      {videos.length > 0 ? (
+        <div className="worker-proof-videos">
+          {videos.map((entry) => {
+            const media = proofPreviewMedia(entry.artifact, proofEntryLabel(entry));
+            return (
+              <figure key={proofEntryKey(entry)}>
+                <video src={media.url} controls playsInline preload="metadata" aria-label={proofEntryLabel(entry)} />
+                <figcaption>
+                  <span>{proofEntryLabel(entry)}</span>
+                  <span className="worker-proof-video-actions">
+                    <button type="button" onClick={() => onPreviewImage(media, gallery)}>Expand</button>
+                    <a href={media.url} target="_blank" rel="noreferrer">Open</a>
+                    <a href={media.downloadUrl ?? media.url} download>Download</a>
+                  </span>
+                </figcaption>
+              </figure>
+            );
+          })}
+        </div>
+      ) : null}
+      <div className="worker-proof-artifacts">
+        {entries.map((entry) => (
+          <span key={`${proofEntryKey(entry)}:chip`} title={`${entry.proof.previewTitle || "Proof"} · ${entry.proof.verification.runId}`}>
+            {proofEntryLabel(entry)}{entry.artifact.availability === "available" ? "" : ` · ${entry.artifact.availability}`}
+          </span>
+        ))}
+      </div>
+    </section>
+  );
+});
+
 const WorkerProofBundleList = memo(function WorkerProofBundleList({
   proofs,
   onPreviewImage
 }: {
   proofs: WorkerProofRecord[];
-  onPreviewImage: (media: PreviewMedia) => void;
+  onPreviewImage: OpenProofPreview;
 }) {
   if (proofs.length === 0) return null;
-  const visibleProofs = proofs.slice(0, 4);
+  const entries: WorkerProofArtifactEntry[] = proofs.flatMap((proof) =>
+    proof.verification.artifacts.map((artifact, index) => ({ proof, artifact, index, aliases: [] }))
+  );
+  const browserProofs = [...proofs].filter(isBrowserProof).sort((left, right) => proofTimestamp(left) - proofTimestamp(right));
+  const browserProofIds = new Set(browserProofs.map((proof) => proof.id));
+  const browserEntries = browserProofs.flatMap((proof) => entries.filter((entry) => entry.proof.id === proof.id));
+  const additionalEntries = entries.filter((entry) => !browserProofIds.has(entry.proof.id)).sort(compareProofEntries);
+  const linkedCopyKeys = new Set<string>();
+  for (const entry of additionalEntries.filter(({ artifact }) => isPreviewableProofImage(artifact))) {
+    const identity = proofEntryIdentity(entry);
+    if (!identity) continue;
+    const matches = browserEntries.filter((candidate) =>
+      isPreviewableProofImage(candidate.artifact) && proofEntryIdentity(candidate) === identity
+    );
+    if (matches.length !== 1) continue;
+    linkedCopyKeys.add(proofEntryKey(entry));
+    const alias = entry.proof.previewTitle || proofArtifactLabel(entry.artifact);
+    if (!matches[0]!.aliases.includes(alias)) matches[0]!.aliases.push(alias);
+  }
+  const visibleAdditionalEntries = additionalEntries.filter((entry) => !linkedCopyKeys.has(proofEntryKey(entry)));
+  const mediaEntries = [...browserEntries, ...visibleAdditionalEntries]
+    .filter(({ artifact }) => isPreviewableProofMedia(artifact))
+    .sort(compareProofEntries);
+  const gallery = mediaEntries.map((entry) => proofPreviewMedia(entry.artifact, proofEntryLabel(entry)));
+  const screenshots = mediaEntries.filter(({ artifact }) => isPreviewableProofImage(artifact));
+  const videos = mediaEntries.filter(({ artifact }) => isPreviewableProofVideo(artifact));
+  const status = proofGroupStatus(proofs);
+  const failed = status === "failed" || proofs.some((proof) => !proof.verification.ok);
+  const unclear = status === "unclear";
+  const reviewStates = [...new Set(proofs.map((proof) => proof.proofReviews?.at(-1)?.visibleState?.trim()).filter((value): value is string => Boolean(value)))];
+  const runCount = browserProofs.length;
+  const summaryParts = [
+    `${entries.length} artifact${entries.length === 1 ? "" : "s"}`,
+    screenshots.length > 0 ? `${screenshots.length} screenshot${screenshots.length === 1 ? "" : "s"}` : "",
+    videos.length > 0 ? `${videos.length} video${videos.length === 1 ? "" : "s"}` : "",
+    linkedCopyKeys.size > 0 ? `${linkedCopyKeys.size} linked cop${linkedCopyKeys.size === 1 ? "y" : "ies"}` : ""
+  ].filter(Boolean);
   return (
     <section className="worker-proof-bundles" aria-label="Proof attached to conversation">
       <header className="worker-proof-head">
-        <span>Proof attached</span>
-        <span>{proofs.length} bundle{proofs.length === 1 ? "" : "s"}</span>
+        <span>Evidence attached</span>
+        <span>{runCount > 0 ? `${runCount} browser run${runCount === 1 ? "" : "s"}` : `${proofs.length} source${proofs.length === 1 ? "" : "s"}`}</span>
       </header>
-      <div className="worker-proof-list">
-        {visibleProofs.map((proof) => {
-          const screenshots = proof.verification.artifacts.filter((artifact) => artifact.kind === "screenshot" && artifact.url && artifact.availability === "available").slice(0, 3);
-          const artifacts = proof.verification.artifacts.filter((artifact) => artifact.availability === "available").slice(0, 5);
-          const review = proof.proofReviews?.at(-1);
-          return (
-            <article key={proof.id} className={`worker-proof-card ${proof.verification.ok ? "is-ok" : "is-failed"}`}>
-              <div className="worker-proof-card-head">
-                <div>
-                  <h3>{proof.previewTitle || "Proof bundle"}</h3>
-                  <p>{proof.verification.runId}</p>
-                </div>
-                <span>{proofStatusLabel(proof)}</span>
-              </div>
-              {screenshots.length > 0 ? (
-                <div className="worker-proof-shots">
-                  {screenshots.map((artifact) => (
-                    <button
-                      key={`${proof.id}:${artifact.fileName}`}
-                      type="button"
-                      title={proofArtifactLabel(artifact)}
-                      onClick={() =>
-                        onPreviewImage({
-                          name: artifact.fileName || artifact.label || "Proof screenshot",
-                          url: artifact.url ?? "",
-                          kind: "image",
-                          downloadUrl: artifact.downloadUrl ?? artifact.url
-                        })
-                      }
-                    >
-                      <img src={artifact.url ?? undefined} alt={proofArtifactLabel(artifact)} />
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-              <div className="worker-proof-artifacts">
-                {artifacts.map((artifact) => (
-                  <span key={`${proof.id}:artifact:${artifact.fileName}`}>{proofArtifactLabel(artifact)}</span>
-                ))}
-              </div>
-              {review?.visibleState ? <p className="worker-proof-review">{review.visibleState}</p> : null}
-            </article>
-          );
-        })}
-      </div>
+      <article className={`worker-proof-card ${failed ? "is-failed" : unclear ? "is-unclear" : "is-ok"}`}>
+        <div className="worker-proof-card-head">
+          <div>
+            <h3>{proofGroupTitle(proofs)}</h3>
+            <p>{summaryParts.join(" · ")}</p>
+          </div>
+          <span>{status}</span>
+        </div>
+        {browserProofs.map((proof, index) => (
+          <WorkerProofMediaSection
+            key={proof.id}
+            label={browserProofs.length > 1 ? `Browser run ${index + 1}` : null}
+            runId={browserProofs.length > 1 ? proof.verification.runId : null}
+            entries={browserEntries.filter((entry) => entry.proof.id === proof.id)}
+            gallery={gallery}
+            onPreviewImage={onPreviewImage}
+          />
+        ))}
+        {visibleAdditionalEntries.length > 0 ? (
+          <WorkerProofMediaSection
+            label={browserProofs.length > 0 ? "Additional evidence" : null}
+            runId={null}
+            entries={visibleAdditionalEntries}
+            gallery={gallery}
+            onPreviewImage={onPreviewImage}
+          />
+        ) : null}
+        {proofs.length > 1 ? (
+          <details className="worker-proof-sources">
+            <summary>{proofs.length} source records</summary>
+            <div>
+              {proofs.map((proof) => (
+                <p key={proof.id}>
+                  <span>{proof.previewTitle || "Proof bundle"}</span>
+                  <code>{proof.verification.runId}</code>
+                  <em>{proofStatusLabel(proof)}</em>
+                </p>
+              ))}
+            </div>
+          </details>
+        ) : null}
+        {reviewStates.map((reviewState) => <p key={reviewState} className="worker-proof-review">{reviewState}</p>)}
+      </article>
     </section>
   );
 });
@@ -565,9 +754,11 @@ type WorkerActiveTurnProps = {
   index: number;
   payload: WorkerJobPayload | null;
   checklist: WorkerChecklistItem[] | null;
+  proofs: WorkerProofRecord[];
+  onPreviewImage: OpenProofPreview;
 };
 
-const WorkerActiveTurn = memo(function WorkerActiveTurn({ turn, index, payload, checklist }: WorkerActiveTurnProps) {
+const WorkerActiveTurn = memo(function WorkerActiveTurn({ turn, index, payload, checklist, proofs, onPreviewImage }: WorkerActiveTurnProps) {
   const sorted = useMemo(() => [...turn.items].sort((a, b) => a.at - b.at), [turn.items]);
   return (
     <section className="worker-turn is-active" aria-label={`Worker turn ${index + 1} in progress`}>
@@ -586,6 +777,7 @@ const WorkerActiveTurn = memo(function WorkerActiveTurn({ turn, index, payload, 
           )
         )}
       </div>
+      <WorkerProofBundleList proofs={proofs} onPreviewImage={onPreviewImage} />
     </section>
   );
 });
@@ -596,7 +788,7 @@ type WorkerCompletedTurnProps = {
   payload: WorkerJobPayload | null;
   checklist: WorkerChecklistItem[] | null;
   proofs: WorkerProofRecord[];
-  onPreviewImage: (media: PreviewMedia) => void;
+  onPreviewImage: OpenProofPreview;
 };
 
 const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, payload, checklist, proofs, onPreviewImage }: WorkerCompletedTurnProps) {
@@ -636,7 +828,7 @@ const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, pay
         </details>
       ) : null}
       {finalItem ? <WorkerMessageRow key={finalItem.id} item={finalItem} payload={payloadForMessage(payload, finalItem, turn.id)} checklist={checklist} /> : null}
-      {finalItem ? <WorkerProofBundleList proofs={proofs} onPreviewImage={onPreviewImage} /> : null}
+      <WorkerProofBundleList proofs={proofs} onPreviewImage={onPreviewImage} />
     </section>
   );
 });
@@ -654,9 +846,11 @@ export const WorkerTurnView = memo(function WorkerTurnView({
   payload: WorkerJobPayload | null;
   checklist: WorkerChecklistItem[] | null;
   proofs: WorkerProofRecord[];
-  onPreviewImage: (media: PreviewMedia) => void;
+  onPreviewImage: OpenProofPreview;
 }) {
-  if (turn.completedAt === null) return <WorkerActiveTurn turn={turn} index={index} payload={payload} checklist={checklist} />;
+  if (turn.completedAt === null) {
+    return <WorkerActiveTurn turn={turn} index={index} payload={payload} checklist={checklist} proofs={proofs} onPreviewImage={onPreviewImage} />;
+  }
   return <WorkerCompletedTurn turn={turn} index={index} payload={payload} checklist={checklist} proofs={proofs} onPreviewImage={onPreviewImage} />;
 });
 
@@ -678,6 +872,7 @@ const FallbackRow = memo(function FallbackRow({ row }: { row: WorkerItem }) {
 
 export function WorkerPane({ pair, timeline, loading = false, proofRecords, onWorkerModelChange, onWorkerEffortChange, handoffPending = false, handoffError = null, onHandoff, onOpenProviderSettings, onAttachAnnotatedProof }: WorkerPaneProps) {
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
+  const [previewGallery, setPreviewGallery] = useState<PreviewMedia[]>([]);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [switchOpen, setSwitchOpen] = useState(false);
 
@@ -751,6 +946,16 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onWo
       : !hasAlternativeModel
         ? "No other Worker route is available."
         : "Start a new worker with a handoff.";
+  const previewIndex = previewMedia
+    ? previewGallery.findIndex((entry) => entry.url === previewMedia.url && entry.kind === previewMedia.kind)
+    : -1;
+  const canCyclePreview = previewGallery.length > 1 && previewIndex >= 0;
+
+  function cyclePreview(offset: number): void {
+    if (!canCyclePreview) return;
+    const nextIndex = (previewIndex + offset + previewGallery.length) % previewGallery.length;
+    setPreviewMedia(previewGallery[nextIndex] ?? null);
+  }
 
   return (
     <section className="pane" aria-label="Worker lane">
@@ -778,8 +983,9 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onWo
           {pair.worker.runtime === "pi-rpc" ? <WorkerSessionControlsButton pairId={pair.id} disabled={handoffPending} /> : null}
         </div>
       </div>
-      <WorkerTimelineView loading={loading} timeline={timeline} proofRecords={proofRecords} onPreviewImage={(media) => {
+      <WorkerTimelineView loading={loading} timeline={timeline} proofRecords={proofRecords} onPreviewImage={(media, gallery = [media]) => {
         setPreviewError(null);
+        setPreviewGallery(gallery.length > 0 ? gallery : [media]);
         setPreviewMedia(media);
       }} />
       {previewError ? <div className="error worker-proof-preview-error" role="alert">{previewError}</div> : null}
@@ -789,7 +995,13 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onWo
           attachTargetLabel="Butler composer"
           uploadContext={{ sessionId: pair.id, origin: "image-annotation" }}
           onAttached={onAttachAnnotatedProof}
-          onClose={() => setPreviewMedia(null)}
+          onPrevious={canCyclePreview ? () => cyclePreview(-1) : null}
+          onNext={canCyclePreview ? () => cyclePreview(1) : null}
+          positionLabel={canCyclePreview ? `${previewIndex + 1} of ${previewGallery.length}` : null}
+          onClose={() => {
+            setPreviewMedia(null);
+            setPreviewGallery([]);
+          }}
           showErrorToast={(error) => setPreviewError(error instanceof Error ? error.message : String(error))}
         />
       ) : null}
@@ -822,10 +1034,12 @@ function WorkerTimelineView({
   loading: boolean;
   timeline: WorkerTimeline;
   proofRecords: WorkerProofRecord[];
-  onPreviewImage: (media: PreviewMedia) => void;
+  onPreviewImage: OpenProofPreview;
 }) {
   const { turns, report, reports, payload, checklist, fallback } = timeline;
   const proofsByTurnId = useMemo(() => groupProofsByTurn(turns, proofRecords, reports), [proofRecords, reports, turns]);
+  const reportProofs = useMemo(() => proofsForFinalReport(report, proofRecords, reports, turns), [proofRecords, report, reports, turns]);
+  const reportProofIds = useMemo(() => new Set(reportProofs.map((proof) => proof.id)), [reportProofs]);
   const anchoredProofIds = useMemo(() => new Set([...proofsByTurnId.values()].flat().map((proof) => proof.id)), [proofsByTurnId]);
   const unanchoredProofs = useMemo(() => proofRecords.filter((proof) => !anchoredProofIds.has(proof.id)), [anchoredProofIds, proofRecords]);
   const lastTurn = turns.at(-1);
@@ -869,12 +1083,17 @@ function WorkerTimelineView({
             index={index}
             payload={payload}
             checklist={checklist}
-            proofs={proofsByTurnId.get(turn.id) ?? []}
+            proofs={(proofsByTurnId.get(turn.id) ?? []).filter((proof) => !reportProofIds.has(proof.id))}
             onPreviewImage={onPreviewImage}
           />
         ))}
-        {report ? <WorkerMessageRow item={reportToWorkerItem(report)} /> : null}
-        {turns.length === 0 ? <WorkerProofBundleList proofs={unanchoredProofs} onPreviewImage={onPreviewImage} /> : null}
+        {report ? (
+          <section className="worker-report" aria-label="Latest worker report">
+            <WorkerMessageRow item={reportToWorkerItem(report)} />
+            <WorkerProofBundleList proofs={reportProofs} onPreviewImage={onPreviewImage} />
+          </section>
+        ) : null}
+        {turns.length === 0 && !report ? <WorkerProofBundleList proofs={unanchoredProofs} onPreviewImage={onPreviewImage} /> : null}
         {turns.length === 0 && !report
           ? fallback.map((row) => <FallbackRow key={row.id} row={row} />)
           : null}
@@ -904,18 +1123,53 @@ function proofMatchesReference(proof: WorkerProofRecord, referenceIds: Set<strin
   return referenceIds.has(proof.id) || referenceIds.has(proof.verification.runId);
 }
 
+export function proofsForFinalReport(
+  report: WorkerReport | null,
+  proofs: WorkerProofRecord[],
+  reports: WorkerReport[] = [],
+  turns: WorkerTurnGroup[] = []
+): WorkerProofRecord[] {
+  if (!report || proofs.length === 0) return [];
+  const referenceIds = proofReferenceIds(report);
+  const exact = proofs
+    .filter((proof) => proofMatchesReference(proof, referenceIds))
+    .sort((left, right) => proofTimestamp(right) - proofTimestamp(left));
+
+  const previousReportAt = reports
+    .filter((entry) => entry !== report && entry.updatedAt < report.updatedAt)
+    .reduce((latest, entry) => Math.max(latest, entry.updatedAt), Number.NEGATIVE_INFINITY);
+  const orderedTurns = [...turns].sort((left, right) => left.startedAt - right.startedAt);
+  const reportTurnIndex = orderedTurns.findIndex((turn) => turn.id === report.turnId);
+  const nextTurnAt = reportTurnIndex >= 0 ? orderedTurns[reportTurnIndex + 1]?.startedAt ?? null : null;
+  const upperBound = nextTurnAt === null ? report.updatedAt + 10_000 : Math.min(report.updatedAt + 10_000, nextTurnAt);
+  const newestFirst = proofs
+    .filter((proof) => {
+      const at = proofTimestamp(proof);
+      return at > previousReportAt && at < upperBound;
+    })
+    .sort((left, right) => proofTimestamp(right) - proofTimestamp(left));
+  if (exact.length > 0) {
+    const grouped = new Map<string, WorkerProofRecord>();
+    for (const proof of [...exact, ...newestFirst]) grouped.set(proof.id, proof);
+    return [...grouped.values()].sort((left, right) => proofTimestamp(right) - proofTimestamp(left));
+  }
+  if (newestFirst.length === 0) return [];
+  const visualProofs = newestFirst
+    .filter((proof) => proof.verification.artifacts.some(isPreviewableProofMedia));
+  return visualProofs.length > 0 ? visualProofs : [newestFirst[0]!];
+}
+
 export function groupProofsByTurn(
   turns: WorkerTurnGroup[],
   proofs: WorkerProofRecord[],
   reports: WorkerReport[] = []
 ): Map<string, WorkerProofRecord[]> {
-  const completedTurns = turns
-    .filter((turn) => turn.completedAt !== null)
-    .sort((left, right) => left.startedAt - right.startedAt);
+  const orderedTurns = [...turns].sort((left, right) => left.startedAt - right.startedAt);
   const grouped = new Map<string, WorkerProofRecord[]>();
-  if (completedTurns.length === 0) return grouped;
+  if (orderedTurns.length === 0) return grouped;
 
   const proofIdsAssignedByReport = new Set<string>();
+  const completedTurns = orderedTurns.filter((turn) => turn.completedAt !== null);
   const completedTurnIds = new Set(completedTurns.map((turn) => turn.id));
   for (const report of reports) {
     if (!report.turnId || !completedTurnIds.has(report.turnId)) continue;
@@ -935,12 +1189,35 @@ export function groupProofsByTurn(
     grouped.set(report.turnId, entries);
   }
 
+  const orderedReports = reports
+    .filter((report): report is WorkerReport & { turnId: string } => Boolean(report.turnId && completedTurnIds.has(report.turnId)))
+    .sort((left, right) => left.updatedAt - right.updatedAt);
+  for (const [index, report] of orderedReports.entries()) {
+    if (grouped.has(report.turnId)) continue;
+    const previousReportAt = orderedReports[index - 1]?.updatedAt ?? Number.NEGATIVE_INFINITY;
+    const reportTurnIndex = orderedTurns.findIndex((turn) => turn.id === report.turnId);
+    const nextTurnAt = reportTurnIndex >= 0 ? orderedTurns[reportTurnIndex + 1]?.startedAt ?? null : null;
+    const upperBound = nextTurnAt === null ? report.updatedAt + 10_000 : Math.min(report.updatedAt + 10_000, nextTurnAt);
+    const visualCandidates = proofs
+      .filter((proof) => {
+        const at = proofTimestamp(proof);
+        return !proofIdsAssignedByReport.has(proof.id)
+          && at > previousReportAt
+          && at < upperBound
+          && proof.verification.artifacts.some(isPreviewableProofMedia);
+      })
+      .sort((left, right) => proofTimestamp(right) - proofTimestamp(left));
+    if (visualCandidates.length === 0) continue;
+    grouped.set(report.turnId, visualCandidates);
+    for (const proof of visualCandidates) proofIdsAssignedByReport.add(proof.id);
+  }
+
   for (const proof of proofs) {
     if (proofIdsAssignedByReport.has(proof.id)) continue;
     const proofAt = proofTimestamp(proof);
     const target =
-      [...completedTurns].reverse().find((turn) => proofAt >= turn.startedAt) ??
-      completedTurns[0];
+      [...orderedTurns].reverse().find((turn) => proofAt >= turn.startedAt) ??
+      orderedTurns[0];
     const entries = grouped.get(target.id) ?? [];
     entries.push(proof);
     entries.sort((left, right) => proofTimestamp(right) - proofTimestamp(left));

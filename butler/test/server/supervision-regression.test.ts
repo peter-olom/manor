@@ -200,7 +200,7 @@ test("thread proof maps keep concise reviewable evidence in useful order", () =>
 
   const mapped = buildProofsByThreadMap([oldPdf, newPdf, markdown, visual]);
 
-  assert.deepEqual(mapped["thread-1"]?.map((proof) => proof.id), ["visual", "new-pdf", "markdown"]);
+  assert.deepEqual(mapped["thread-1"]?.map((proof) => proof.id), ["visual", "new-pdf", "old-pdf", "markdown"]);
   assert.deepEqual(selectReviewableProofArtifacts(visual.verification).map((artifact) => artifact.label), [
     "updated first page",
     "Open video",
@@ -215,11 +215,23 @@ test("thread proof maps keep concise reviewable evidence in useful order", () =>
     "updated.png",
     "video.webm",
     "brief.pdf",
+    "brief.pdf",
     "brief.md",
     "trace.zip",
     "page.html",
     "manifest.json"
   ]);
+});
+
+test("thread proof maps retain distinct file artifacts that share a basename", () => {
+  const firstArtifact = proofArtifact("file", "first final", "final.png");
+  firstArtifact.filePath = "/artifacts/previews/run-1/final.png";
+  const secondArtifact = proofArtifact("file", "second final", "final.png");
+  secondArtifact.filePath = "/artifacts/previews/run-2/final.png";
+  const first = makeProof("first-final", 1000, [firstArtifact], { previewTitle: "First final" });
+  const second = makeProof("second-final", 2000, [secondArtifact], { previewTitle: "Second final" });
+
+  assert.deepEqual(buildProofsByThreadMap([first, second])["thread-1"]?.map((proof) => proof.id), ["second-final", "first-final"]);
 });
 
 test("file proof artifacts expose download links when listed", async () => {

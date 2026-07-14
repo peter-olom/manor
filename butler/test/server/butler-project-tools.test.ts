@@ -128,6 +128,8 @@ test("share project file accepts files already in Manor artifact storage", async
         return definition;
       },
       getToolUiEffects: () => [],
+      getActiveOperatorThreadGuard: () => null,
+      presentOperatorAttachment: async () => undefined,
       store: {
         getThread: () => null,
         upsertProjectArtifact: (artifact: ProjectArtifactView) => { stored = artifact; }
@@ -142,8 +144,158 @@ test("share project file accepts files already in Manor artifact storage", async
       projectId: "alpha",
       title: "Existing artifact"
     });
-    assert.match(result.content[0]?.text ?? "", /Download:/);
+    assert.match(result.content[0]?.text ?? "", /\[Open file\]\([^)]*\/file\)/);
+    assert.match(result.content[0]?.text ?? "", /\[Download file\]\([^)]*\/file\?download=1\)/);
     assert.equal(stored?.projectId, "alpha");
+  } finally {
+    await rm(artifactsDir, { recursive: true, force: true });
+  }
+});
+
+test("share project file presents inferred PNGs with a vision reference in the active job scope", async () => {
+  const artifactsDir = await mkdtemp(path.join(os.tmpdir(), "manor-share-project-image-"));
+  try {
+    const sourceFilePath = path.join(artifactsDir, "proof.png");
+    await writeFile(sourceFilePath, Buffer.from("89504e470d0a1a0a", "hex"));
+    const definitions: CapturedTool[] = [];
+    let stored: ProjectArtifactView | null = null;
+    let inferredCwd: string | null = null;
+    let createdImage: Record<string, unknown> | null = null;
+    let presentation: Record<string, unknown> | null = null;
+    const access = {
+      defineButlerTool: (definition: CapturedTool) => {
+        definitions.push(definition);
+        return definition;
+      },
+      getToolUiEffects: () => [],
+      getActiveOperatorThreadGuard: () => ({ lockedThreadId: "thread-boardwalk" }),
+      resolveWorkspaceProject: (cwd: string) => {
+        inferredCwd = cwd;
+        return { id: "boardwalk", label: "Boardwalk" };
+      },
+      imageStore: {
+        createFromBuffer: async (input: Record<string, unknown>) => {
+          createdImage = input;
+          return {
+            id: "image-proof",
+            name: "proof.png",
+            mimeType: "image/png",
+            sizeBytes: 8,
+            createdAt: 1,
+            url: "/api/images/image-proof"
+          };
+        }
+      },
+      presentOperatorAttachment: async (input: Record<string, unknown>) => { presentation = input; },
+      store: {
+        getThread: (threadId: string) => threadId === "thread-boardwalk"
+          ? { cwd: "/repos/boardwalk", supervisor: { projectId: "boardwalk", projectLabel: "Boardwalk" } }
+          : null,
+        getJobMemory: () => null,
+        upsertProjectArtifact: (artifact: ProjectArtifactView) => { stored = artifact; }
+      }
+    } as unknown as ButlerAgentToolAccess;
+
+    buildButlerProjectTools(access, artifactsDir);
+    const shareFile = definitions.find((definition) => definition.name === "share_project_file");
+    assert.ok(shareFile);
+    const result = await shareFile.execute("tool-call-image", {
+      sourceFilePath,
+      title: "Board proof",
+      kind: "screenshot"
+    });
+
+    assert.equal(inferredCwd, "/repos/boardwalk");
+    assert.equal(stored?.projectId, "boardwalk");
+    assert.equal(stored?.kind, "reference");
+    assert.equal(stored?.contentType, "image/png");
+    assert.equal(stored?.fileName, "board-proof.png");
+    assert.equal(stored?.metadata.originalFileName, "proof.png");
+    assert.equal(stored?.metadata.namingSource, "model-title");
+    assert.equal(stored?.metadata.imageReferenceId, "image-proof");
+    assert.equal(createdImage?.mimeType, "image/png");
+    assert.equal(createdImage?.name, "board-proof.png");
+    assert.equal((createdImage?.metadata as { sessionId?: string })?.sessionId, undefined);
+    assert.equal((presentation?.attachment as { kind?: string })?.kind, "image");
+    assert.equal((presentation?.attachment as { id?: string })?.id, "image-proof");
+    assert.match(String(presentation?.text), /\[Open board-proof\.png\]\([^)]*\/file\)/);
+    assert.match(String(presentation?.text), /\[Download\]\([^)]*\?download=1\)/);
+    assert.equal((result.details?.presentation as { imageReferenceId?: string }).imageReferenceId, "image-proof");
+  } finally {
+    await rm(artifactsDir, { recursive: true, force: true });
+  }
+});
+
+test("share project file preserves explicit names instead of applying model-assisted naming", async () => {
+  const artifactsDir = await mkdtemp(path.join(os.tmpdir(), "manor-share-project-name-"));
+  try {
+    const sourceFilePath = path.join(artifactsDir, "final.png");
+    await writeFile(sourceFilePath, Buffer.from("89504e470d0a1a0a", "hex"));
+    const definitions: CapturedTool[] = [];
+    let stored: ProjectArtifactView | null = null;
+    const access = {
+      defineButlerTool: (definition: CapturedTool) => { definitions.push(definition); return definition; },
+      getToolUiEffects: () => [],
+      getActiveOperatorThreadGuard: () => null,
+      imageStore: {
+        createFromBuffer: async (input: Record<string, unknown>) => ({
+          id: "image-explicit",
+          name: input.name,
+          mimeType: input.mimeType,
+          sizeBytes: 8,
+          createdAt: 1,
+          url: "/api/images/image-explicit"
+        })
+      },
+      presentOperatorAttachment: async () => undefined,
+      store: {
+        getThread: () => null,
+        upsertProjectArtifact: (artifact: ProjectArtifactView) => { stored = artifact; }
+      }
+    } as unknown as ButlerAgentToolAccess;
+
+    buildButlerProjectTools(access, artifactsDir);
+    const shareFile = definitions.find((definition) => definition.name === "share_project_file");
+    assert.ok(shareFile);
+    await shareFile.execute("tool-call-explicit", {
+      sourceFilePath,
+      projectId: "alpha",
+      title: "Boardwalk custom columns",
+      fileName: "operator-selected.png"
+    });
+
+    assert.equal(stored?.fileName, "operator-selected.png");
+    assert.equal(stored?.metadata.namingSource, undefined);
+    assert.equal(stored?.metadata.originalFileName, undefined);
+  } finally {
+    await rm(artifactsDir, { recursive: true, force: true });
+  }
+});
+
+test("share project file rejects a project that conflicts with the active job", async () => {
+  const artifactsDir = await mkdtemp(path.join(os.tmpdir(), "manor-share-project-scope-"));
+  try {
+    const sourceFilePath = path.join(artifactsDir, "proof.txt");
+    await writeFile(sourceFilePath, "proof", "utf8");
+    const definitions: CapturedTool[] = [];
+    const access = {
+      defineButlerTool: (definition: CapturedTool) => { definitions.push(definition); return definition; },
+      getToolUiEffects: () => [],
+      getActiveOperatorThreadGuard: () => ({ lockedThreadId: "thread-boardwalk" }),
+      store: {
+        getThread: () => ({ supervisor: { projectId: "boardwalk", projectLabel: "Boardwalk" } }),
+        getJobMemory: () => ({ projectId: "boardwalk" })
+      }
+    } as unknown as ButlerAgentToolAccess;
+
+    buildButlerProjectTools(access, artifactsDir);
+    const shareFile = definitions.find((definition) => definition.name === "share_project_file");
+    assert.ok(shareFile);
+    await assert.rejects(shareFile.execute("tool-call-scope", {
+      sourceFilePath,
+      projectId: "another-project",
+      title: "Proof"
+    }), /does not match job thread-boardwalk/);
   } finally {
     await rm(artifactsDir, { recursive: true, force: true });
   }

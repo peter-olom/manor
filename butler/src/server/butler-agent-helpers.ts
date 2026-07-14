@@ -1222,7 +1222,9 @@ export function buildLatestProofMap(proofs: PreviewProofRecordView[]): Record<st
 
 export function buildProofsByThreadMap(proofs: PreviewProofRecordView[]): Record<string, PreviewProofRecordView[]> {
   return Object.fromEntries(
-    getVisibleThreadProofs(proofs)
+    proofs
+      .filter((proof) => Boolean(proof.threadId) && hasReviewableProofEvidence(proof))
+      .sort(compareProofDisplayOrder)
       .reduce((accumulator, proof) => {
         if (!proof.threadId) {
           return accumulator;
@@ -1381,7 +1383,7 @@ function proofEvidenceSubtypeRank(proof: PreviewProofRecordView): number {
 
 function getReviewableArtifactKey(artifacts: PreviewVerificationArtifactView[]): string {
   return artifacts
-    .map((artifact) => `${artifact.kind}:${artifact.fileName.toLowerCase()}`)
+    .map((artifact) => `${artifact.kind}:${(artifact.filePath || artifact.fileName).toLowerCase()}`)
     .sort()
     .join("|");
 }

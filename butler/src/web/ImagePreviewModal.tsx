@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
 import { uploadAttachment, type FileReference, type ReferenceUploadContext } from "./api";
-import { CloseIcon, DownloadIcon, ImageIcon, PencilIcon, TrashIcon, ZoomInIcon, ZoomOutIcon } from "./icons";
+import { ChevronLeftIcon, ChevronRightIcon, CloseIcon, DownloadIcon, ImageIcon, PencilIcon, TrashIcon, ZoomInIcon, ZoomOutIcon } from "./icons";
 
 export type PreviewMedia = {
   name: string;
   url: string;
-  kind: "image";
+  kind: "image" | "video";
   downloadUrl?: string | null;
 };
 
@@ -145,6 +145,9 @@ export function ImagePreviewModal({
   uploadContext,
   onAttached,
   onClose,
+  onPrevious,
+  onNext,
+  positionLabel,
   showErrorToast
 }: {
   media: PreviewMedia;
@@ -152,6 +155,9 @@ export function ImagePreviewModal({
   uploadContext?: ReferenceUploadContext;
   onAttached: (payload: { attachment: FileReference; text: string }) => Promise<void> | void;
   onClose: () => void;
+  onPrevious?: (() => void) | null;
+  onNext?: (() => void) | null;
+  positionLabel?: string | null;
   showErrorToast: (error: unknown) => void;
 }) {
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -167,6 +173,7 @@ export function ImagePreviewModal({
   const [draftAnnotation, setDraftAnnotation] = useState<DraftAnnotation | null>(null);
   const [busy, setBusy] = useState(false);
   const [imageZoomIndex, setImageZoomIndex] = useState(0);
+  const isVideo = media.kind === "video";
 
   useEffect(() => {
     setAnnotationMode(false);
@@ -180,6 +187,24 @@ export function ImagePreviewModal({
     pendingNewAnnotationIdRef.current = null;
     annotationItemRefs.current.clear();
   }, [media.name, media.url]);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent): void {
+      if (annotationMode || event.defaultPrevented) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, video")) return;
+      if (event.key === "ArrowLeft" && onPrevious) {
+        event.preventDefault();
+        onPrevious();
+      }
+      if (event.key === "ArrowRight" && onNext) {
+        event.preventDefault();
+        onNext();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [annotationMode, onNext, onPrevious]);
 
   useEffect(() => {
     const previousCount = previousAnnotationCountRef.current;
@@ -289,8 +314,21 @@ export function ImagePreviewModal({
         onClick={(event) => event.stopPropagation()}
       >
         <div className="modal-head image-preview-head">
-          <h2 id="image-preview-title">{media.name}</h2>
+          <div className="image-preview-title" aria-live="polite" aria-atomic="true">
+            <h2 id="image-preview-title">{media.name}</h2>
+            {positionLabel ? <span>{positionLabel}</span> : null}
+          </div>
           <div className="modal-head-actions">
+            {onPrevious ? (
+              <button className="modal-icon-action" type="button" onClick={onPrevious} aria-label="Previous proof" title="Previous proof">
+                <ChevronLeftIcon />
+              </button>
+            ) : null}
+            {onNext ? (
+              <button className="modal-icon-action" type="button" onClick={onNext} aria-label="Next proof" title="Next proof">
+                <ChevronRightIcon />
+              </button>
+            ) : null}
             {!annotationMode && media.downloadUrl ? (
               <a className="modal-icon-action" href={media.downloadUrl} download aria-label="Download proof" title="Download proof">
                 <DownloadIcon />
@@ -300,12 +338,12 @@ export function ImagePreviewModal({
               <button className="modal-icon-action" type="button" onClick={() => setAnnotationMode(false)} disabled={busy} aria-label="Preview image" title="Preview image">
                 <ImageIcon />
               </button>
-            ) : attachTargetLabel ? (
+            ) : !isVideo && attachTargetLabel ? (
               <button className="modal-icon-action" type="button" onClick={() => setAnnotationMode(true)} disabled={busy} aria-label="Annotate image" title="Annotate image">
                 <PencilIcon />
               </button>
             ) : null}
-            {!annotationMode ? (
+            {!annotationMode && !isVideo ? (
               <div className="modal-zoom-controls" aria-label="Image zoom">
                 <button className="modal-icon-action" type="button" onClick={() => setImageZoomIndex((current) => Math.max(0, current - 1))} disabled={busy || imageZoomIndex === 0} aria-label="Zoom out" title="Zoom out">
                   <ZoomOutIcon />
@@ -316,13 +354,17 @@ export function ImagePreviewModal({
                 </button>
               </div>
             ) : null}
-            <button className="modal-close modal-icon-action" onClick={onClose} aria-label="Close image preview" disabled={busy}>
+            <button className="modal-close modal-icon-action" onClick={onClose} aria-label="Close proof preview" disabled={busy}>
               <CloseIcon />
             </button>
           </div>
         </div>
 
-        {annotationMode ? (
+        {isVideo ? (
+          <div className="modal-video-shell">
+            <video key={media.url} src={media.url} controls playsInline preload="metadata" aria-label={media.name} />
+          </div>
+        ) : annotationMode ? (
           <div className="proof-annotation-layout">
             <div className="proof-annotation-stage-panel">
               <div className="proof-annotation-hint">

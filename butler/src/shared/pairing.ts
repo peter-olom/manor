@@ -133,6 +133,7 @@ export type PairMessageAttachment = {
   mimeType: string;
   sizeBytes: number;
   url: string;
+  downloadUrl?: string;
 };
 
 export type PairWorkerHandoff = {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { upsertProviderBackedOperatorMessage } from "../../src/server/butler-operator-messages.js";
+import { readPersistedMessageAttachments, upsertProviderBackedOperatorMessage } from "../../src/server/butler-operator-messages.js";
 import type { ButlerMessageView } from "../../src/server/types.js";
 
 test("upsertProviderBackedOperatorMessage persists and clears the trace", () => {
@@ -76,4 +76,32 @@ test("upsertProviderBackedOperatorMessage updates the trace in place", () => {
   assert.equal(messages[0]?.text, "v2");
   assert.equal(messages[0]?.trace?.[0]?.status, "completed");
   assert.equal(messages[0]?.trace?.[0]?.completedAt, 1100);
+});
+
+test("shared project artifact attachments survive persistence with their download URL", () => {
+  assert.deepEqual(readPersistedMessageAttachments([{
+    id: "artifact-1",
+    kind: "file",
+    name: "proof.pdf",
+    mimeType: "application/pdf",
+    sizeBytes: 42,
+    url: "/api/project-artifacts/boardwalk/artifact-1/file",
+    downloadUrl: "/api/project-artifacts/boardwalk/artifact-1/file?download=1"
+  }]), [{
+    id: "artifact-1",
+    kind: "file",
+    name: "proof.pdf",
+    mimeType: "application/pdf",
+    sizeBytes: 42,
+    url: "/api/project-artifacts/boardwalk/artifact-1/file",
+    downloadUrl: "/api/project-artifacts/boardwalk/artifact-1/file?download=1"
+  }]);
+  assert.deepEqual(readPersistedMessageAttachments([{
+    id: "tracking-image",
+    kind: "image",
+    name: "tracking.png",
+    mimeType: "image/png",
+    sizeBytes: 42,
+    url: "https://tracker.example/pixel.png"
+  }]), []);
 });

@@ -61,6 +61,27 @@ test("harness file proof records a durable file artifact", async () => {
   await stat(proof.verification.artifacts[0]!.filePath);
 });
 
+test("harness file proof preserves a browser recording as video", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-video-proof-"));
+  const sourcePath = path.join(dir, "interaction.webm");
+  const artifactsDir = path.join(dir, "artifacts");
+  await writeFile(sourcePath, Buffer.from("video"));
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+
+  await handleHarnessProofAction({
+    action: "proof.file",
+    params: { filePath: sourcePath, label: "Interaction recording" },
+    capability: { threadId: "thread-1", cwd: dir } as never,
+    thread: { id: "thread-1" } as never,
+    store,
+    artifactsDir,
+    resolveWorkspaceProject: () => ({ id: "project-1", label: "Project One" })
+  });
+
+  const artifact = store.getLatestPreviewProofForThread("thread-1")?.verification.artifacts[0];
+  assert.equal(artifact?.contentType, "video/webm");
+});
+
 test("harness text proof stores simple notes without writing side files into /repos workspaces", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-text-proof-"));
   const reposDir = path.join(dir, "repos");

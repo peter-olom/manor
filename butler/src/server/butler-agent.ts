@@ -431,6 +431,7 @@ export class ButlerAgentService extends EventEmitter {
     return { complete: answer.complete, queued: answer.queued, message: answer.message };
   }
   private async postOperatorJobReply(threadId: string, text: string): Promise<void> { await deliverOperatorJobReply(this as unknown as OperatorJobReplyAccess, threadId, text); }
+  private async presentOperatorAttachment(input: { messageId: string; text: string; attachment: NonNullable<ButlerMessageView["attachments"]>[number] }): Promise<void> { upsertOperatorMessage(this.operatorMessages, input.messageId, input.text, Date.now(), null, { attachments: [{ ...input.attachment }] }); await this.saveOperatorMessageState(); this.emit("change"); }
   private describePendingCallbacks(): string {
     return describePendingCallbacks(this.store, [...this.pendingChatCallbacks.values()]);
   }

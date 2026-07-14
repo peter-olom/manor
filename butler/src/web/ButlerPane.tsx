@@ -733,7 +733,7 @@ export const Bubble = memo(function Bubble({ message, liveTrace, pairId, onPairU
         <>
           {message.text.trim() ? <Markdown className="bubble-body" text={message.text} /> : null}
           {message.attachments?.length ? (
-            <div className="bubble-attachments" aria-label="Message attachments">
+            <div className={`bubble-attachments${role === "butler" ? " is-presented" : ""}`} aria-label="Message attachments">
               {message.attachments.map((attachment) => attachment.kind === "image" ? (
                 <button
                   key={attachment.id}
@@ -741,7 +741,7 @@ export const Bubble = memo(function Bubble({ message, liveTrace, pairId, onPairU
                   type="button"
                   title={attachment.name}
                   aria-label={`Preview ${attachment.name}`}
-                  onClick={() => onPreviewImage({ name: attachment.name, url: attachment.url, kind: "image", downloadUrl: attachment.url })}
+                  onClick={() => onPreviewImage({ name: attachment.name, url: attachment.url, kind: "image", downloadUrl: attachment.downloadUrl ?? attachment.url })}
                 >
                   <img src={attachment.url} alt="" />
                 </button>
@@ -749,7 +749,7 @@ export const Bubble = memo(function Bubble({ message, liveTrace, pairId, onPairU
                 <a
                   key={attachment.id}
                   className="bubble-attachment is-file"
-                  href={attachment.url}
+                  href={attachment.downloadUrl ?? attachment.url}
                   title={attachment.name}
                   aria-label={`Download ${attachment.name}`}
                 >

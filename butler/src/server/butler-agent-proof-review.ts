@@ -4,11 +4,12 @@ import { complete, type Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSession, ModelRegistry } from "@earendil-works/pi-coding-agent";
 
 import { contentToText, parseProofScreenshotReview, type ProofScreenshotReview, type ResolvedPreviewProof } from "./butler-agent-helpers.js";
-import { modelToModelOption } from "./model-provider-config.js";
+import { modelToModelOption, parseProviderModelRef } from "./model-provider-config.js";
 import { applyOpencodeGoNativeThinkingPayload } from "./pi-opencode-web-tools-extension.js";
 import { piThinkingLevelForModelOption } from "./pi-thinking-levels.js";
 import { inspectProofArtifacts } from "./proof-artifact-inspector.js";
 import type { ButlerThinkingLevel } from "./types.js";
+import { getActiveManorSettings } from "./manor-settings-runtime.js";
 
 type ButlerProofReviewAccess = {
   modelRegistry: ModelRegistry | null;
@@ -23,6 +24,13 @@ type ButlerProofReviewOptions = {
   modelId?: string;
   reasoningLevel?: ButlerThinkingLevel;
 };
+
+function matchesConfiguredModel(model: Model<any>, configured: string | null): boolean {
+  const ref = parseProviderModelRef(configured);
+  if (!ref.model || (ref.provider && ref.provider !== model.provider)) return false;
+  const qualified = model.id.startsWith(`${model.provider}/`) ? model.id : `${model.provider}/${model.id}`;
+  return ref.model === model.id || configured === qualified;
+}
 
 export function buildButlerProofReviewCompletionOptions(
   model: Model<any>,
@@ -51,17 +59,19 @@ async function resolveButlerProofReviewModel(access: ButlerProofReviewAccess, ne
   if (pinned?.id) {
     const pinnedModel = availableModels.find((model) => model.id === pinned.id && (!pinned.provider || model.provider === pinned.provider));
     if (!pinnedModel) throw new Error("The Butler model pinned for proof review is no longer available. Reconnect it in Settings → Providers, then retry.");
-    if (!needsVision || pinnedModel.input.includes("image")) return pinnedModel;
+    if (!needsVision || modelToModelOption(pinnedModel).inputCapabilities.image === "supported") return pinnedModel;
   }
 
   const currentModel = access.session?.model;
-  if (currentModel && (!needsVision || currentModel.input.includes("image"))) {
+  if (currentModel && (!needsVision || modelToModelOption(currentModel).inputCapabilities.image === "supported")) {
     return currentModel;
   }
 
-  const compatibleModels = availableModels.filter((model) => !needsVision || model.input.includes("image"));
+  const compatibleModels = availableModels.filter((model) => !needsVision || modelToModelOption(model).inputCapabilities.image === "supported");
   const currentProvider = currentModel?.provider ?? null;
+  const companionModel = getActiveManorSettings().vision.companionModel;
   const preferredModel =
+    (companionModel ? compatibleModels.find((model) => matchesConfiguredModel(model, companionModel)) : null) ??
     (currentProvider ? compatibleModels.find((model) => model.provider === currentProvider) : null) ??
     compatibleModels.find((model) => model.provider === "openai-codex" || model.provider === "openai") ??
     compatibleModels[0];

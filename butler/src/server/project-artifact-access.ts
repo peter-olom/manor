@@ -50,6 +50,26 @@ export function getProjectArtifactUserDownloadUrl(artifact: Pick<ProjectArtifact
   return access.publicDownloadUrl ?? access.downloadPath;
 }
 
+export function getProjectArtifactUserUrl(artifact: Pick<ProjectArtifactView, "projectId" | "id">): string {
+  const access = buildProjectArtifactAccess(artifact);
+  return access.publicUrl ?? access.path;
+}
+
+export function isTrustedProjectArtifactUserUrl(value: string | undefined): boolean {
+  if (!value) return false;
+  if (value.startsWith("/api/project-artifacts/")) return true;
+  if (!publicBaseUrl) return false;
+  try {
+    const configured = new URL(publicBaseUrl);
+    const candidate = new URL(value);
+    const basePath = configured.pathname.replace(/\/+$/g, "");
+    return candidate.origin === configured.origin &&
+      candidate.pathname.startsWith(`${basePath}/api/project-artifacts/`);
+  } catch {
+    return false;
+  }
+}
+
 export function formatProjectArtifactAccessLine(artifact: ProjectArtifactView): string {
   const parts = [
     artifact.title,

@@ -39,6 +39,10 @@ function inferredMimeType(fileName: string): string | null {
     case ".webp": return "image/webp";
     case ".svg": return "image/svg+xml";
     case ".avif": return "image/avif";
+    case ".webm": return "video/webm";
+    case ".mp4": case ".m4v": return "video/mp4";
+    case ".mov": return "video/quicktime";
+    case ".ogv": return "video/ogg";
     case ".pdf": return "application/pdf";
     case ".csv": return "text/csv";
     case ".txt": return "text/plain";

@@ -201,6 +201,11 @@ export type ButlerAgentToolAccess = {
   ): Promise<void>;
   removeExternalWorkerDelegation?(threadId: string): Promise<void>;
   postOperatorJobReply(threadId: string, text: string): Promise<void>;
+  presentOperatorAttachment(input: {
+    messageId: string;
+    text: string;
+    attachment: NonNullable<ButlerMessageView["attachments"]>[number];
+  }): Promise<void>;
   postOperatorQuestion(input: {
     prompt?: string;
     context?: string | null;

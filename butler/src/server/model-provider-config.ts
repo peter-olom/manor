@@ -298,7 +298,7 @@ type ResolvedProviderConfig = ReturnType<typeof buildProviderConfig>;
 async function modelsJsonApiKey(provider: CloudLikeProvider, env: NodeJS.ProcessEnv, actualApiKey: string): Promise<string> {
   const source = provider.apiKeySource;
   if (!source) return actualApiKey;
-  if (source.type === "env") return source.name;
+  if (source.type === "env") return `$${source.name}`;
   if (source.type === "file" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(source.pathEnv)) {
     return `!sh -c 'cat "$${source.pathEnv}"'`;
   }

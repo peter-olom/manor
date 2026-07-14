@@ -164,6 +164,38 @@ test("user bubble renders tiny attachments without internal reference text", () 
   assert.ok(markup.indexOf("What do you see?") < markup.indexOf("bubble-attachments"));
 });
 
+test("Butler shared images render as a first-class preview attachment", () => {
+  const markup = renderToStaticMarkup(React.createElement(Bubble, {
+    message: {
+      id: "message-butler-image",
+      role: "butler",
+      lane: "butler",
+      text: "**Board proof**\n\n[Open proof.png](/api/project-artifacts/boardwalk/artifact-1/file) · [Download](/api/project-artifacts/boardwalk/artifact-1/file?download=1)",
+      at: 200,
+      sourceThreadId: null,
+      memoryObservationId: null,
+      metadata: {},
+      attachments: [{
+        id: "image-proof",
+        kind: "image",
+        name: "proof.png",
+        mimeType: "image/png",
+        sizeBytes: 20,
+        url: "/api/images/image-proof",
+        downloadUrl: "/api/project-artifacts/boardwalk/artifact-1/file?download=1"
+      }]
+    },
+    pairId: "pair-1",
+    onPairUpdate: () => undefined,
+    activeQuestionMessageId: null,
+    onPreviewImage: () => undefined
+  }));
+
+  assert.match(markup, /class="bubble-attachments is-presented"/);
+  assert.match(markup, /aria-label="Preview proof\.png"/);
+  assert.match(markup, /src="\/api\/images\/image-proof"/);
+});
+
 test("live trace stays expanded above the streaming Butler message", () => {
   const markup = renderToStaticMarkup(React.createElement(LiveBubble, {
     text: "There are 9 floating files.",

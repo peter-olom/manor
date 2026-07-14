@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { buildButlerProofReviewCompletionOptions, reviewButlerProofScreenshot } from "../../src/server/butler-agent-proof-review.js";
+import { getActiveManorSettings, setActiveManorSettings } from "../../src/server/manor-settings-runtime.js";
 
 test("proof review sends an explicit off reasoning level", () => {
   const options = buildButlerProofReviewCompletionOptions(
@@ -31,23 +32,39 @@ test("proof review never substitutes a different model for a pinned review", asy
   ), /pinned.*no longer available/i);
 });
 
-test("proof review falls back to a vision model when the callback model is text-only", async () => {
+test("proof review sends images to the configured companion instead of a manifest text-only callback model", async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-proof-review-"));
   const imagePath = path.join(dir, "final.png");
   await writeFile(imagePath, Buffer.from("image"));
-  const pinned = { id: "glm-5.2", name: "GLM", provider: "ollama-cloud", reasoning: true, input: ["text"] };
-  const vision = { id: "gpt-5.5", name: "GPT", provider: "openai-codex", reasoning: true, input: ["text", "image"] };
+  const settings = getActiveManorSettings({} as NodeJS.ProcessEnv);
+  settings.vision.companionModel = "ollama-cloud/gemma4:31b";
+  setActiveManorSettings(settings);
+  t.after(() => setActiveManorSettings(null));
+  // Provider metadata can overstate image support. Manor's capability manifest
+  // is the transport contract and declares GLM 5.2 text-only.
+  const pinned = {
+    id: "glm-5.2",
+    name: "GLM",
+    provider: "ollama-cloud",
+    reasoning: true,
+    input: ["text", "image"],
+    compat: { manorInputCapabilities: { image: "unsupported", source: "manifest" } }
+  };
+  const otherVision = { id: "devstral-small-2:24b", name: "Devstral", provider: "ollama-cloud", reasoning: true, input: ["text", "image"] };
+  const vision = { id: "gemma4:31b", name: "Gemma", provider: "ollama-cloud", reasoning: true, input: ["text", "image"] };
   let selectedModel = "";
+  let selectedContent: Array<{ type: string }> = [];
 
   const review = await reviewButlerProofScreenshot(
     {
       modelRegistry: {
-        getAvailable: () => [pinned, vision],
+        getAvailable: () => [pinned, otherVision, vision],
         getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test", headers: {} })
       } as never,
       session: null,
-      completeModel: (async (model: { id: string }) => {
+      completeModel: (async (model: { id: string }, context: { messages: Array<{ content: Array<{ type: string }> }> }) => {
         selectedModel = model.id;
+        selectedContent = context.messages[0]?.content ?? [];
         return {
           stopReason: "stop",
           content: [{ type: "text", text: JSON.stringify({ verdict: "credible", visibleState: "Final state", evidence: "Visible", concern: "" }) }]
@@ -65,6 +82,7 @@ test("proof review falls back to a vision model when the callback model is text-
   );
 
   assert.equal(selectedModel, vision.id);
+  assert.equal(selectedContent.some((item) => item.type === "image"), true);
   assert.equal(review.modelId, vision.id);
 });
 

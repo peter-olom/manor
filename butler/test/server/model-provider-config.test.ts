@@ -632,6 +632,52 @@ test("syncManorPiModelsJson writes Ollama Local provider config for spawned Pi w
   assert.equal(provider.models[0].compat.maxTokensField, "max_tokens");
 });
 
+test("syncManorPiModelsJson writes resolvable environment key references for spawned Pi workers", async (t) => {
+  clearOllamaCloudModelsCache();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("no live discovery in this test");
+  }) as typeof fetch;
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "manor-pi-env-key-"));
+  t.after(async () => {
+    globalThis.fetch = originalFetch;
+    clearOllamaCloudModelsCache();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  const authPath = path.join(dir, "auth.json");
+  const modelsPath = path.join(dir, "models.json");
+
+  const changed = await syncManorPiModelsJson(authPath, {
+    MANOR_OLLAMA_LOCAL_ENABLED: "0",
+    MANOR_OLLAMA_CLOUD_ENABLED: "1",
+    MANOR_OLLAMA_CLOUD_PROVIDER_ID: "ollama-cloud",
+    MANOR_OLLAMA_CLOUD_BASE_URL: "https://ollama.example/v1",
+    MANOR_OLLAMA_CLOUD_MODELS: "glm-5.2",
+    OLLAMA_API_KEY: "resolved-worker-key"
+  } as NodeJS.ProcessEnv);
+
+  assert.equal(changed, true);
+  const payload = JSON.parse(await fs.readFile(modelsPath, "utf8"));
+  assert.equal(payload.providers["ollama-cloud"].apiKey, "$OLLAMA_API_KEY");
+
+  const previousApiKey = process.env.OLLAMA_API_KEY;
+  process.env.OLLAMA_API_KEY = "resolved-worker-key";
+  try {
+    const registry = ModelRegistry.create(AuthStorage.create(authPath), modelsPath);
+    const model = registry.find("ollama-cloud", "glm-5.2");
+    assert.ok(model);
+    const auth = await registry.getApiKeyAndHeaders(model);
+    assert.equal(auth.ok, true);
+    if (auth.ok) {
+      assert.equal(auth.apiKey, "resolved-worker-key");
+      assert.equal(auth.headers?.Authorization, "Bearer resolved-worker-key");
+    }
+  } finally {
+    if (previousApiKey === undefined) delete process.env.OLLAMA_API_KEY;
+    else process.env.OLLAMA_API_KEY = previousApiKey;
+  }
+});
+
 test("syncManorPiModelsJson backs up invalid existing Pi models config before writing", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "manor-pi-models-invalid-"));
   t.after(async () => {
@@ -722,6 +768,7 @@ test("syncManorPiModelsJson writes live OpenCode Go models with OpenCode transfo
   const payload = JSON.parse(await fs.readFile(modelsPath, "utf8"));
   const provider = payload.providers["opencode-go"];
   assert.equal(provider.baseUrl, "https://opencode.example/zen/go/v1");
+  assert.equal(provider.apiKey, "$OPENCODE_API_KEY");
   assert.deepEqual(provider.models.map((model: { id: string }) => model.id), ["general-reasoning-model", "glm-5.2", "qwen3.7-plus", "qwen3.7-max"]);
   const glmModel = provider.models.find((model: { id: string }) => model.id === "glm-5.2");
   assert.equal(glmModel.reasoning, true);
