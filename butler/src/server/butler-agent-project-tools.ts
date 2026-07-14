@@ -379,7 +379,7 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
       name: "share_project_file",
       label: "Share project file",
       description: "Present an existing local file to the operator as a durable artifact with an inline preview when supported plus clickable open and download links.",
-      promptSnippet: "share_project_file: use this to present an existing local file. Always provide a concise descriptive title. Generic source names are renamed from that model-written title; explicit and useful filenames are preserved. The tool creates the operator-visible attachment and links automatically, so do not retype raw paths or URLs.",
+      promptSnippet: "share_project_file: use this to present an existing local file. Always provide a concise descriptive title. Generic source names are renamed from that model-written title; explicit and useful filenames are preserved. The tool creates the operator-visible attachment and controls automatically. Do not restate the file URLs or add manual links after using it.",
       parameters: Type.Object({
         sourceFilePath: Type.String({ minLength: 1 }),
         title: Type.String({ minLength: 1, description: "Concise descriptive title used for display and intelligent naming of generic files." }),
@@ -501,12 +501,7 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
           content: [
             {
               type: "text",
-              text: [
-                `Presented ${artifact.fileName} to the operator.`,
-                `[Open file](${openUrl})`,
-                `[Download file](${downloadUrl})`,
-                ...(imageReference ? [`Image reference ID: ${imageReference.id}`] : [])
-              ].join("\n")
+              text: `Presented ${artifact.fileName} to the operator as an attachment. Do not repeat its links or URLs.${imageReference ? ` Image reference ID: ${imageReference.id}` : ""}`
             }
           ],
           details: {

@@ -144,8 +144,8 @@ test("share project file accepts files already in Manor artifact storage", async
       projectId: "alpha",
       title: "Existing artifact"
     });
-    assert.match(result.content[0]?.text ?? "", /\[Open file\]\([^)]*\/file\)/);
-    assert.match(result.content[0]?.text ?? "", /\[Download file\]\([^)]*\/file\?download=1\)/);
+    assert.match(result.content[0]?.text ?? "", /Presented existing\.txt to the operator as an attachment/);
+    assert.doesNotMatch(result.content[0]?.text ?? "", /\/api\/project-artifacts\//);
     assert.equal(stored?.projectId, "alpha");
   } finally {
     await rm(artifactsDir, { recursive: true, force: true });

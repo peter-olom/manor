@@ -13,6 +13,7 @@ import { useAnchoredScroll } from "./useAnchoredScroll";
 import { useLiveButlerTurn, type CompletedTrace } from "./useLiveButlerTurn";
 import { providerModelRef } from "./worker-route";
 import { addComposerContextItem, applyComposerSuggestion, composerItemKey, composerItemLabel, findComposerTrigger, type ComposerTriggerMatch } from "./composer-suggestions";
+import { buildProjectArtifactPreview, type ProjectArtifactPreview, type ProjectArtifactPreviewTarget } from "./project-artifact-preview";
 
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
 import type { PairButlerActivityOutcome, PairComposerInputItem, PairComposerSuggestion, PairDetail, PairMessage, PairModelOption, PairReviewActivity, PairTraceItem } from "../shared/pairing";
@@ -45,6 +46,8 @@ type ButlerPaneProps = {
   uploadError: string | null;
   onRemoveAttachment: (attachmentId: string) => void;
   onPreviewImage: (media: PreviewMedia) => void;
+  onPreviewProjectArtifact: (target: ProjectArtifactPreviewTarget) => void;
+  onPreviewProjectFile: (preview: ProjectArtifactPreview) => void;
   onPairUpdate: (pair: PairDetail) => void;
   contextItems: PairComposerInputItem[];
   onContextItemsChange: (items: PairComposerInputItem[]) => void;
@@ -710,9 +713,11 @@ type BubbleProps = {
   onPairUpdate: (pair: PairDetail) => void;
   activeQuestionMessageId: string | null;
   onPreviewImage: (media: PreviewMedia) => void;
+  onPreviewProjectArtifact?: (target: ProjectArtifactPreviewTarget) => void;
+  onPreviewProjectFile?: (preview: ProjectArtifactPreview) => void;
 };
 
-export const Bubble = memo(function Bubble({ message, liveTrace, pairId, onPairUpdate, activeQuestionMessageId, onPreviewImage }: BubbleProps) {
+export const Bubble = memo(function Bubble({ message, liveTrace, pairId, onPairUpdate, activeQuestionMessageId, onPreviewImage, onPreviewProjectArtifact, onPreviewProjectFile }: BubbleProps) {
   const role = message.role === "user" ? "user" : message.role === "worker" ? "worker" : message.role === "butler" ? "butler" : "system";
   if (message.metadata.kind === "work-loader") {
     return <WorkLoaderBubble items={[]} />;
@@ -731,31 +736,51 @@ export const Bubble = memo(function Bubble({ message, liveTrace, pairId, onPairU
         <OperatorQuestionCard pairId={pairId} messageId={message.id} question={message.question} onPairUpdate={onPairUpdate} active={message.id === activeQuestionMessageId} />
       ) : (
         <>
-          {message.text.trim() ? <Markdown className="bubble-body" text={message.text} /> : null}
+          {message.text.trim() ? <Markdown className="bubble-body" text={message.text} onProjectArtifactOpen={onPreviewProjectArtifact} /> : null}
           {message.attachments?.length ? (
             <div className={`bubble-attachments${role === "butler" ? " is-presented" : ""}`} aria-label="Message attachments">
-              {message.attachments.map((attachment) => attachment.kind === "image" ? (
-                <button
-                  key={attachment.id}
-                  className="bubble-attachment is-image"
-                  type="button"
-                  title={attachment.name}
-                  aria-label={`Preview ${attachment.name}`}
-                  onClick={() => onPreviewImage({ name: attachment.name, url: attachment.url, kind: "image", downloadUrl: attachment.downloadUrl ?? attachment.url })}
-                >
-                  <img src={attachment.url} alt="" />
-                </button>
-              ) : (
-                <a
-                  key={attachment.id}
-                  className="bubble-attachment is-file"
-                  href={attachment.downloadUrl ?? attachment.url}
-                  title={attachment.name}
-                  aria-label={`Download ${attachment.name}`}
-                >
-                  {attachment.name.split(".").pop()?.slice(0, 4) || "file"}
-                </a>
-              ))}
+              {message.attachments.map((attachment) => {
+                if (attachment.kind === "image") {
+                  return (
+                    <button
+                      key={attachment.id}
+                      className="bubble-attachment is-image"
+                      type="button"
+                      title={attachment.name}
+                      aria-label={`Preview ${attachment.name}`}
+                      onClick={() => onPreviewImage({ name: attachment.name, url: attachment.url, kind: "image", downloadUrl: attachment.downloadUrl ?? attachment.url })}
+                    >
+                      <img src={attachment.url} alt="" />
+                    </button>
+                  );
+                }
+                const preview = buildProjectArtifactPreview(attachment);
+                if (preview && onPreviewProjectFile) {
+                  return (
+                    <button
+                      key={attachment.id}
+                      className="bubble-attachment is-file"
+                      type="button"
+                      title={attachment.name}
+                      aria-label={`Preview ${attachment.name}`}
+                      onClick={() => onPreviewProjectFile(preview)}
+                    >
+                      {attachment.name.split(".").pop()?.slice(0, 4) || "file"}
+                    </button>
+                  );
+                }
+                return (
+                  <a
+                    key={attachment.id}
+                    className="bubble-attachment is-file"
+                    href={attachment.downloadUrl ?? attachment.url}
+                    title={attachment.name}
+                    aria-label={`Download ${attachment.name}`}
+                  >
+                    {attachment.name.split(".").pop()?.slice(0, 4) || "file"}
+                  </a>
+                );
+              })}
             </div>
           ) : null}
         </>
@@ -808,6 +833,8 @@ export function ButlerPane({
   uploadError,
   onRemoveAttachment,
   onPreviewImage,
+  onPreviewProjectArtifact,
+  onPreviewProjectFile,
   onPairUpdate,
   contextItems,
   onContextItemsChange
@@ -959,7 +986,7 @@ export function ButlerPane({
           </button>
         ) : null}
         {historicalMessages.map((message) => (
-          <Bubble key={message.id} message={message} liveTrace={liveTraceByMessageId.get(message.id)} pairId={pair.id} onPairUpdate={onPairUpdate} activeQuestionMessageId={activeQuestionMessageId} onPreviewImage={onPreviewImage} />
+          <Bubble key={message.id} message={message} liveTrace={liveTraceByMessageId.get(message.id)} pairId={pair.id} onPairUpdate={onPairUpdate} activeQuestionMessageId={activeQuestionMessageId} onPreviewImage={onPreviewImage} onPreviewProjectArtifact={onPreviewProjectArtifact} onPreviewProjectFile={onPreviewProjectFile} />
         ))}
         {showLiveBubble ? (
           <LiveBubble

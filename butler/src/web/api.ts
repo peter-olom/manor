@@ -17,6 +17,11 @@ export type ReferenceUploadContext = {
 
 export type StoredReference = ReferenceLibraryItem;
 export type TextPreviewResponse = { text: string; truncated: boolean };
+export type ProjectArtifactPreviewMetadata = {
+  id: string;
+  fileName: string;
+  contentType: string;
+};
 
 const VISION_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 const VISION_IMAGE_EXTENSION_MIME_TYPES = new Map([
@@ -185,6 +190,12 @@ export async function listStoredReferences(): Promise<StoredReference[]> {
 
 export async function getStoredTextPreview(previewUrl: string, signal?: AbortSignal): Promise<TextPreviewResponse> {
   return getJson<TextPreviewResponse>(previewUrl, { signal });
+}
+
+export async function getProjectArtifactPreviewMetadata(url: string): Promise<ProjectArtifactPreviewMetadata> {
+  const payload = await getJson<{ artifact?: ProjectArtifactPreviewMetadata }>(url);
+  if (!payload.artifact) throw new Error("Project artifact metadata is unavailable");
+  return payload.artifact;
 }
 
 export async function deleteStoredReference(id: string): Promise<void> {

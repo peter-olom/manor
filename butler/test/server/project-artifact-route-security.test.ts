@@ -52,4 +52,13 @@ test("project artifact open responses sandbox active content", async (t) => {
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
   assert.equal(response.headers.get("cross-origin-resource-policy"), "same-origin");
   assert.match(response.headers.get("content-disposition") ?? "", /^inline/);
+
+  const preview = await fetch(`http://127.0.0.1:${port}/api/project-artifacts/boardwalk/artifact-1/file?preview=1`);
+  assert.equal(preview.status, 200);
+  assert.equal(preview.headers.get("content-type"), "application/json; charset=utf-8");
+  assert.equal(preview.headers.get("content-security-policy"), "default-src 'none'");
+  assert.deepEqual(await preview.json(), {
+    text: "<script>globalThis.compromised = true</script>",
+    truncated: false
+  });
 });

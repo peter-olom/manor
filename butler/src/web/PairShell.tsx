@@ -35,6 +35,7 @@ import { SettingsDashboard, SETTINGS_SECTIONS, type SettingsSectionId } from "./
 import { SessionWorkspaceControl } from "./SessionWorkspaceControl";
 import { TerminalPane } from "./TerminalPane";
 import { useEventStream } from "./useEventStream";
+import { useProjectArtifactPreview } from "./useProjectArtifactPreview";
 import { WorkerPane } from "./WorkerPane";
 import type { WorkerProofRecord, WorkerTimeline } from "./WorkerPane";
 import { shapeWorkerTimeline, type WorkerThread } from "./worker-timeline";
@@ -631,6 +632,7 @@ export function PairShell() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const { openProjectArtifact, openProjectArtifactFile, dialog: projectArtifactPreview } = useProjectArtifactPreview((message) => setPreviewError(message || null));
   useEffect(() => setComposerContextItems([]), [selectedPairId]);
   const manorSurface = manorSurfaceForView(viewMode);
   const activePair = pair?.id === selectedPairId ? pair : null;
@@ -1383,6 +1385,8 @@ export function PairShell() {
                       setPreviewError(null);
                       setPreviewMedia(media);
                     }}
+                    onPreviewProjectArtifact={openProjectArtifact}
+                    onPreviewProjectFile={openProjectArtifactFile}
                     onPairUpdate={(updatedPair) => setPair(updatedPair)}
                     contextItems={composerContextItems}
                     onContextItemsChange={setComposerContextItems}
@@ -1436,6 +1440,7 @@ export function PairShell() {
                   showErrorToast={(err) => setPreviewError(err instanceof Error ? err.message : String(err))}
                 />
               ) : null}
+              {projectArtifactPreview}
               <ExtensionUiBridge pairId={activePair?.id ?? null} onEditorText={applyExtensionEditorText} />
             </div>
             <div className={`workspace-view is-memory ${viewMode === "memory" ? "is-active" : ""}`}>

@@ -18,6 +18,7 @@ import { decorateProjectArtifactWithAccess } from "./project-artifact-access.js"
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { ButlerStateStore } from "./state-store.js";
 import { pruneEmptyArtifactParents, resolveProjectMetadata } from "./server-runtime-helpers.js";
+import { resolveReferencePreviewKind } from "../shared/references.js";
 
 function hasOwnBodyField(value: unknown, key: string): boolean {
   return Boolean(value) && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key);
@@ -91,10 +92,31 @@ export function registerProjectArtifactPolicyRoutes(input: {
     }
 
     const downloadRequested = response.req.query.download === "1";
+    const previewRequested = response.req.query.preview === "1";
     response.setHeader("Cache-Control", "private, max-age=3600");
     response.setHeader("X-Content-Type-Options", "nosniff");
     if (downloadRequested) {
       response.download(filePath, artifact.fileName);
+      return;
+    }
+    if (previewRequested) {
+      const previewKind = resolveReferencePreviewKind(artifact.fileName, artifact.contentType);
+      if (!previewKind) {
+        response.status(415).json({ error: "This file type cannot be previewed" });
+        return;
+      }
+      if (previewKind === "pdf") {
+        response.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
+        response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+        response.setHeader("Content-Disposition", "inline");
+        response.type("application/pdf");
+        response.sendFile(filePath);
+        return;
+      }
+      response.setHeader("Content-Security-Policy", "default-src 'none'");
+      response.type("application/json");
+      const content = await readProjectArtifactContent(artifact);
+      response.json({ text: content.content ?? "", truncated: content.truncated });
       return;
     }
     response.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");

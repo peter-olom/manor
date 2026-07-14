@@ -164,6 +164,39 @@ test("user bubble renders tiny attachments without internal reference text", () 
   assert.ok(markup.indexOf("What do you see?") < markup.indexOf("bubble-attachments"));
 });
 
+test("Butler shared markdown files open in the in-app previewer", () => {
+  const markup = renderToStaticMarkup(React.createElement(Bubble, {
+    message: {
+      id: "message-butler-file",
+      role: "butler",
+      lane: "butler",
+      text: "[Open specification](/api/project-artifacts/boardwalk/artifact-1/file)",
+      at: 200,
+      sourceThreadId: null,
+      memoryObservationId: null,
+      metadata: {},
+      attachments: [{
+        id: "artifact-1",
+        kind: "file",
+        name: "SPEC.md",
+        mimeType: "text/markdown",
+        sizeBytes: 30,
+        url: "/api/project-artifacts/boardwalk/artifact-1/file",
+        downloadUrl: "/api/project-artifacts/boardwalk/artifact-1/file?download=1"
+      }]
+    },
+    pairId: "pair-1",
+    onPairUpdate: () => undefined,
+    activeQuestionMessageId: null,
+    onPreviewImage: () => undefined,
+    onPreviewProjectArtifact: () => undefined,
+    onPreviewProjectFile: () => undefined
+  }));
+
+  assert.match(markup, /aria-label="Preview SPEC\.md"/);
+  assert.doesNotMatch(markup, /aria-label="Download SPEC\.md"/);
+});
+
 test("Butler shared images render as a first-class preview attachment", () => {
   const markup = renderToStaticMarkup(React.createElement(Bubble, {
     message: {

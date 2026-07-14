@@ -1,4 +1,6 @@
-import { lazy, memo, Suspense, type ComponentProps } from "react";
+import { lazy, memo, Suspense, type ComponentProps, type MouseEvent } from "react";
+
+import { isProjectArtifactDownloadUrl, parseProjectArtifactPreviewTarget, type ProjectArtifactPreviewTarget } from "./project-artifact-preview";
 
 export function MarkdownImage({ allowRemoteImages, alt, ...rest }: ComponentProps<"img"> & { allowRemoteImages: boolean }) {
   return allowRemoteImages
@@ -13,17 +15,38 @@ const ReactMarkdown = lazy(async () => {
     import("rehype-highlight")
   ]);
   return {
-    default: ({ text, className, allowRemoteImages = true }: { text: string; className?: string; allowRemoteImages?: boolean }) => (
+    default: ({ text, className, allowRemoteImages = true, onProjectArtifactOpen }: {
+      text: string;
+      className?: string;
+      allowRemoteImages?: boolean;
+      onProjectArtifactOpen?: (target: ProjectArtifactPreviewTarget) => void;
+    }) => (
       <Markdown
         className={className}
         remarkPlugins={[remarkGfmModule.default]}
         rehypePlugins={[[rehypeHighlightModule.default, { detect: true, ignoreMissing: true }]]}
         components={{
-          a: ({ children, ...rest }) => (
-            <a {...rest} target="_blank" rel="noopener noreferrer">
-              {children}
-            </a>
-          ),
+          a: ({ children, href, ...rest }) => {
+            const target = href ? parseProjectArtifactPreviewTarget(href) : null;
+            const isDownload = href ? isProjectArtifactDownloadUrl(href) : false;
+            if (target && onProjectArtifactOpen) {
+              return (
+                <a
+                  {...rest}
+                  href={href}
+                  onClick={(event: MouseEvent<HTMLAnchorElement>) => {
+                    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                    event.preventDefault();
+                    onProjectArtifactOpen(target);
+                  }}
+                >
+                  {children}
+                </a>
+              );
+            }
+            if (isDownload) return <a {...rest} href={href} download>{children}</a>;
+            return <a {...rest} href={href} target="_blank" rel="noopener noreferrer">{children}</a>;
+          },
           table: ({ children }) => (
             <div className="md-table-wrap">
               <table>{children}</table>
@@ -50,15 +73,16 @@ type MarkdownProps = {
   text: string;
   className?: string;
   allowRemoteImages?: boolean;
+  onProjectArtifactOpen?: (target: ProjectArtifactPreviewTarget) => void;
 };
 
-export const Markdown = memo(function Markdown({ text, className, allowRemoteImages }: MarkdownProps) {
+export const Markdown = memo(function Markdown({ text, className, allowRemoteImages, onProjectArtifactOpen }: MarkdownProps) {
   if (!text) {
     return <div className={className} />;
   }
   return (
     <Suspense fallback={<Fallback text={text} className={className} />}>
-      <ReactMarkdown text={text} className={className} allowRemoteImages={allowRemoteImages} />
+      <ReactMarkdown text={text} className={className} allowRemoteImages={allowRemoteImages} onProjectArtifactOpen={onProjectArtifactOpen} />
     </Suspense>
   );
 });
