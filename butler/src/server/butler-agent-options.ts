@@ -11,6 +11,7 @@ import type { ButlerStateStore } from "./state-store.js";
 import type { VisionInspectionService } from "./vision-inspection.js";
 import type { ExtensionUiBroker } from "./extension-ui-broker.js";
 import type { SkillsService } from "./skills-service.js";
+import type { PairAutomation } from "../shared/pairing.js";
 
 export type ButlerDelegationAttachmentAcknowledgement = {
   attached: boolean;
@@ -48,6 +49,14 @@ export type ButlerWorkerDefaults = {
   effort?: string | null;
 };
 
+export type ButlerAutomationAccess = {
+  get: () => PairAutomation | null;
+  configure: (input: { instruction: string; dailyTimes: string[] }) => Promise<PairAutomation>;
+  configureInterval: (input: { instruction: string; everyMinutes: number; durationMinutes: number }) => Promise<PairAutomation>;
+  setEnabled: (enabled: boolean) => Promise<PairAutomation>;
+  delete: () => Promise<boolean>;
+};
+
 export type ButlerAgentServiceOptions = {
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;
@@ -68,6 +77,7 @@ export type ButlerAgentServiceOptions = {
   memoryScheduler?: MemoryUpdateScheduler | null;
   systemPromptSuffix?: string | null;
   operatorSink?: ButlerOperatorSink | null;
+  automationAccess?: ButlerAutomationAccess | null;
   getButlerDefaults?: () => ButlerAgentDefaults | null;
   getWorkerDefaults?: () => ButlerWorkerDefaults | null;
   getWorkerAffinity?: () => WorkerProviderAffinity | null;

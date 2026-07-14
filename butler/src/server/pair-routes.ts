@@ -184,6 +184,58 @@ export function registerPairRoutes(access: PairRouteAccess): void {
     }
   });
 
+  app.put("/api/pairs/:pairId/automation", async (request, response) => {
+    const instruction = readString(request.body?.instruction);
+    if (!instruction) {
+      response.status(400).json({ error: "instruction is required" });
+      return;
+    }
+    try {
+      const interval = Number.isInteger(request.body?.everyMinutes) && Number.isInteger(request.body?.durationMinutes);
+      const dailyTimes = Array.isArray(request.body?.dailyTimes) ? request.body.dailyTimes : [];
+      if (!interval && dailyTimes.length === 0) throw new Error("Provide dailyTimes or everyMinutes with durationMinutes");
+      const automation = interval
+        ? await pairSessions.configureIntervalAutomation(request.params.pairId, { instruction, everyMinutes: request.body.everyMinutes, durationMinutes: request.body.durationMinutes })
+        : await pairSessions.configureAutomation(request.params.pairId, { instruction, dailyTimes });
+      if (!automation) {
+        response.status(404).json({ error: "Butler session not found" });
+        return;
+      }
+      response.json({ automation });
+    } catch (error) {
+      response.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.patch("/api/pairs/:pairId/automation", async (request, response) => {
+    if (typeof request.body?.enabled !== "boolean") {
+      response.status(400).json({ error: "enabled must be a boolean" });
+      return;
+    }
+    try {
+      const automation = await pairSessions.setAutomationEnabled(request.params.pairId, request.body.enabled);
+      if (!automation) {
+        response.status(404).json({ error: "Session automation not found" });
+        return;
+      }
+      response.json({ automation });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete("/api/pairs/:pairId/automation", async (request, response) => {
+    try {
+      if (!await pairSessions.deleteAutomation(request.params.pairId)) {
+        response.status(404).json({ error: "Session automation not found" });
+        return;
+      }
+      response.json({ ok: true });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.get("/api/pairs/:pairId/worker-thread", async (request, response) => {
     try {
       response.json({ thread: await pairSessions.getWorkerThread(request.params.pairId) });

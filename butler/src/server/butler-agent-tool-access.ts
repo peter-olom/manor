@@ -10,7 +10,7 @@ import type { LoadedServiceTemplate, ServiceTemplateRegistry } from "./service-t
 import type { ButlerStateStore } from "./state-store.js";
 import type { JobPayloadView } from "./job-payload-types.js";
 import type { JobPayloadKind } from "./job-instruction-artifacts.js";
-import type { ButlerDelegationAttachmentAcknowledgement } from "./butler-agent-options.js";
+import type { ButlerAutomationAccess, ButlerDelegationAttachmentAcknowledgement } from "./butler-agent-options.js";
 import type {
   AppSnapshot,
   ButlerActivityTurnView,
@@ -228,6 +228,7 @@ export type ButlerAgentToolAccess = {
     model?: string | null;
     effort?: string | null;
   } | null;
+  getAutomationAccess(): ButlerAutomationAccess | null;
   getSnapshot(): AppSnapshot["butler"];
 };
 
@@ -240,6 +241,7 @@ export type ButlerAgentSessionAccess = {
   compaction: Omit<ButlerCompactionView, "autoEnabled" | "active" | "count">;
   ready: boolean;
   pending: boolean;
+  modelRefreshPromise: Promise<boolean> | null;
   stopRequestedAt: number | null;
   activityTurns: ButlerActivityTurnView[];
   activitySummaryTurns: ButlerActivityTurnView[];

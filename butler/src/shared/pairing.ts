@@ -177,6 +177,44 @@ export type PairWorkspaceListResponse = {
   workspaces: PairWorkspaceOption[];
 };
 
+export type PairAutomationOutcome = "succeeded" | "failed" | "skipped" | "needs_input";
+
+export type PairAutomationRun = {
+  id: string;
+  scheduledFor: number;
+  startedAt: number;
+};
+
+export type PairAutomationLastRun = PairAutomationRun & {
+  finishedAt: number;
+  outcome: PairAutomationOutcome;
+  summary: string;
+  resultPath: string | null;
+};
+
+export type PairAutomationSchedule =
+  | { kind: "daily"; times: string[] }
+  | { kind: "interval"; everyMinutes: number; startsAt: number; endsAt: number };
+
+export type PairAutomationState = "active" | "running" | "paused" | "completed";
+
+export type PairAutomation = {
+  id: string;
+  instruction: string;
+  schedule: PairAutomationSchedule;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+  nextRunAt: number | null;
+  running: PairAutomationRun | null;
+  lastRun: PairAutomationLastRun | null;
+  state: PairAutomationState;
+  scheduleLabel: string;
+  endsAtLabel: string | null;
+  nextRunLabel: string | null;
+  lastRunLabel: string | null;
+};
+
 export type PairModelOption = {
   id: string;
   label: string;
@@ -201,6 +239,7 @@ export type PairChat = {
   createdAt: number;
   updatedAt: number;
   defaultCwd: string | null;
+  automation: PairAutomation | null;
   butlerSessionId: string | null;
   butlerReady: boolean;
   butlerPending: boolean;

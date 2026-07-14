@@ -646,10 +646,16 @@ a:hover {
   font-size: 13px;
   font-weight: 500;
   letter-spacing: -0.005em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 5px;
 }
+
+.pair-title > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pair-automation-icon { display: inline-flex; flex: 0 0 auto; color: var(--accent); }
+.pair-automation-icon.is-paused { color: var(--text-subtle); }
+.pair-automation-icon.is-failed { color: var(--warning); }
+.pair-automation-icon svg { width: 12px; height: 12px; }
 
 .pair-preview {
   grid-area: preview;
@@ -896,6 +902,48 @@ a:hover {
   line-height: 1.25;
   text-align: left;
 }
+
+.session-meta-controls { display: flex; align-items: center; gap: 6px; min-width: 0; }
+
+.session-automation-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 24px;
+  max-width: min(300px, 32vw);
+  padding: 1px 5px;
+  border-radius: 5px;
+  color: var(--accent);
+  font-size: 10.5px;
+  line-height: 1.25;
+}
+.session-automation-trigger:hover, .session-automation-trigger:focus-visible { background: var(--surface); }
+.session-automation-trigger.is-paused { color: var(--text-subtle); }
+.session-automation-trigger.is-completed { color: var(--text-muted); }
+.session-automation-trigger svg { width: 11px; height: 11px; flex: 0 0 auto; }
+.session-automation-trigger span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.session-automation-dialog { display: grid; width: min(540px, 100%); gap: 16px; max-height: min(720px, calc(100vh - 40px)); overflow: auto; }
+.session-automation-dialog > header, .session-automation-dialog > footer { display: flex; align-items: center; gap: 10px; }
+.session-automation-dialog > header { justify-content: space-between; }
+.session-automation-dialog h2, .session-automation-dialog p { margin: 0; }
+.session-automation-dialog h2 { font-size: 18px; }
+.session-automation-dialog header p { margin-top: 4px; color: var(--text-muted); font-size: 12px; }
+.automation-status-row { display: flex; align-items: center; gap: 10px; color: var(--text); font-size: 13px; }
+.automation-state { padding: 3px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 10.5px; font-weight: 700; text-transform: uppercase; }
+.automation-state.is-paused { background: var(--surface); color: var(--text-muted); }
+.automation-state.is-running { color: var(--accent); animation: pulse 1.6s var(--ease) infinite; }
+.automation-instruction { display: grid; gap: 6px; }
+.automation-instruction > span { color: var(--text-muted); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+.automation-instruction p { padding: 11px 12px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; }
+.automation-details { display: grid; margin: 0; border: 1px solid var(--border); border-radius: var(--radius); }
+.automation-details div { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.automation-details div:last-child { border-bottom: 0; }
+.automation-details dt { color: var(--text-subtle); }
+.automation-details dd { margin: 0; color: var(--text); }
+.automation-delete-confirm { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--danger-soft); border-radius: var(--radius); color: var(--danger); font-size: 12px; }
+.automation-footer-spacer { flex: 1; }
 
 .session-workspace-trigger:hover:not(:disabled),
 .session-workspace-trigger:focus-visible {
@@ -4650,8 +4698,17 @@ a:hover {
   }
   .session-workspace-path { display: none; }
   .session-workspace-trigger { max-width: 58vw; }
-  .session-workspace-backdrop { align-items: end; padding: 0; }
+  .session-meta-controls { flex-wrap: wrap; }
+  .session-automation-trigger { min-height: 44px; max-width: 58vw; }
+  .modal-backdrop.session-workspace-backdrop { place-items: end center; padding: 0; }
   .session-workspace-dialog { width: 100%; max-height: 90vh; border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
+  .modal-backdrop.session-automation-backdrop { place-items: end center; padding: 0; }
+  .session-automation-dialog { width: 100%; max-height: 90vh; border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
+  .session-automation-dialog > header .icon-button { width: 44px; height: 44px; }
+  .session-automation-dialog > footer { display: grid; grid-template-columns: 1fr; }
+  .session-automation-dialog > footer .button { width: 100%; min-height: 44px; }
+  .automation-footer-spacer { display: none; }
+  .automation-delete-confirm { align-items: stretch; flex-direction: column; }
   .segmented {
     max-width: 100%;
     overflow-x: auto;

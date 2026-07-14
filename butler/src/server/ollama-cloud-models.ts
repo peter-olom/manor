@@ -97,6 +97,25 @@ type CacheEntry = {
 const CACHE_TTL_MS = 10 * 60 * 1000;
 let cache: CacheEntry | null = null;
 let cacheGeneration = 0;
+const discoveryListeners = new Set<(models: OllamaCloudModelInfo[]) => void>();
+
+export function onOllamaCloudModelsDiscovered(listener: (models: OllamaCloudModelInfo[]) => void): () => void {
+  discoveryListeners.add(listener);
+  return () => discoveryListeners.delete(listener);
+}
+
+function notifyDiscoveryListeners(models: OllamaCloudModelInfo[]): void {
+  const snapshot = models.map((model) => ({ ...model, capabilities: model.capabilities ? [...model.capabilities] : null }));
+  queueMicrotask(() => {
+    for (const listener of discoveryListeners) {
+      try {
+        listener(snapshot);
+      } catch {
+        // A runtime refresh listener must not turn successful discovery into a provider failure.
+      }
+    }
+  });
+}
 
 export function getCachedOllamaCloudModels(): OllamaCloudModelInfo[] {
   return cache?.models ?? [];
@@ -121,6 +140,7 @@ export async function fetchOllamaCloudModelsCached(settings: ManorSettings, opti
     .then((models) => {
       if (generation === cacheGeneration) {
         cache = { models, fetchedAt: Date.now(), inFlight: null };
+        notifyDiscoveryListeners(models);
       }
       return models;
     })

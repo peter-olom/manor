@@ -369,15 +369,18 @@ function withOllamaCloudOpenCodeMetadata(entry: ProviderModelInput): ProviderMod
   };
 }
 
-async function buildOllamaCloudProviderConfig(provider: CloudLikeProvider, env: NodeJS.ProcessEnv, options: { forModelsJson?: boolean } = {}): Promise<ResolvedProviderConfig | null> {
+type ProviderConfigBuildOptions = { forModelsJson?: boolean; discovery?: { succeeded: boolean } };
+
+async function buildOllamaCloudProviderConfig(provider: CloudLikeProvider, env: NodeJS.ProcessEnv, options: ProviderConfigBuildOptions = {}): Promise<ResolvedProviderConfig | null> {
   if (!provider.enabled) return null;
   const apiKey = provider.apiKeySource ? await readSecretSourceValue(provider.apiKeySource, env) : null;
   if (!apiKey) return null;
   const settings = getActiveManorSettings(env);
-  const discovered = await fetchOllamaCloudModelsCached(settings, {
-    env,
-    timeoutMs: CONFIGURED_PROVIDER_DISCOVERY_TIMEOUT_MS
-  }).catch(() => []);
+  let discoverySucceeded = false;
+  const discovered = await fetchOllamaCloudModelsCached(settings, { env, timeoutMs: CONFIGURED_PROVIDER_DISCOVERY_TIMEOUT_MS })
+    .then((models) => { discoverySucceeded = true; return models; })
+    .catch(() => []);
+  if (options.discovery) options.discovery.succeeded = discoverySucceeded;
   let models = provider.models;
   models = mergeDiscoveredModels(models, discovered.map((model) => {
     const metadata = model.capabilities?.some((entry) => entry.trim().toLowerCase() === "thinking")
@@ -414,15 +417,16 @@ async function registerOllamaCloudProvider(registry: ModelRegistry, provider: Cl
   return true;
 }
 
-async function buildOpencodeGoProviderConfig(provider: CloudLikeProvider, env: NodeJS.ProcessEnv, options: { forModelsJson?: boolean } = {}): Promise<ResolvedProviderConfig | null> {
+async function buildOpencodeGoProviderConfig(provider: CloudLikeProvider, env: NodeJS.ProcessEnv, options: ProviderConfigBuildOptions = {}): Promise<ResolvedProviderConfig | null> {
   if (!provider.enabled) return null;
   const apiKey = provider.apiKeySource ? await readSecretSourceValue(provider.apiKeySource, env) : null;
   if (!apiKey) return null;
   const settings = getActiveManorSettings(env);
-  const discovered = await fetchOpencodeGoModelsCached(settings, {
-    env,
-    timeoutMs: CONFIGURED_PROVIDER_DISCOVERY_TIMEOUT_MS
-  }).catch(() => []);
+  let discoverySucceeded = false;
+  const discovered = await fetchOpencodeGoModelsCached(settings, { env, timeoutMs: CONFIGURED_PROVIDER_DISCOVERY_TIMEOUT_MS })
+    .then((models) => { discoverySucceeded = true; return models; })
+    .catch(() => []);
+  if (options.discovery) options.discovery.succeeded = discoverySucceeded;
   const discoveredModels = discovered.map(opencodeGoModelToProviderInput);
   if (discoveredModels.length === 0) return null;
   const models = mergeDiscoveredModels(provider.models, discoveredModels);
@@ -480,6 +484,7 @@ export async function createManorModelRegistry(
 ): Promise<ModelRegistry> {
   const buildRegistry = async () => {
     const registry = ModelRegistry.inMemory(AuthStorage.create(piAuthPath));
+    await registerDurableManagedProviders(registry, piAuthPath, env);
     await registerManorProviders(registry, env);
     return registry;
   };
@@ -494,6 +499,36 @@ export async function createManorModelRegistry(
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function durableModelInputs(value: unknown): ProviderModelInput[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry): ProviderModelInput[] => {
+    if (!isJsonObject(entry) || typeof entry.id !== "string" || !entry.id.trim()) return [];
+    const input = Array.isArray(entry.input) && entry.input.every((item) => item === "text" || item === "image")
+      ? entry.input as ("text" | "image")[]
+      : null;
+    const thinkingLevelMap = isJsonObject(entry.thinkingLevelMap)
+      ? Object.fromEntries(Object.entries(entry.thinkingLevelMap).filter(([, mapped]) => mapped === null || typeof mapped === "string")) as Partial<Record<ButlerThinkingLevel, string | null>>
+      : undefined;
+    return [{
+      id: entry.id.trim(),
+      input,
+      reasoning: typeof entry.reasoning === "boolean" ? entry.reasoning : null,
+      contextWindow: typeof entry.contextWindow === "number" && Number.isFinite(entry.contextWindow) ? entry.contextWindow : null,
+      thinkingLevelMap
+    }];
+  });
+}
+
+async function rebuildDurableProviderConfig(provider: CloudLikeProvider, value: unknown, env: NodeJS.ProcessEnv, apiKey: string, forModelsJson = false): Promise<ResolvedProviderConfig | null> {
+  let models = durableModelInputs(isJsonObject(value) ? value.models : null);
+  if (models.length === 0) return null;
+  if (provider.providerId === getActiveManorSettings(env).providers.ollamaCloud.providerId) {
+    models = models.map(withOllamaCloudOpenCodeMetadata);
+  }
+  const configApiKey = forModelsJson ? await modelsJsonApiKey(provider, env, apiKey) : apiKey;
+  return buildProviderConfig({ ...provider, models }, configApiKey, { useBuiltInModels: false });
 }
 
 async function readModelsJsonObject(filePath: string): Promise<{ current: Record<string, unknown>; currentText: string | null }> {
@@ -521,18 +556,55 @@ function readManagedProviderIds(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
 }
 
+async function registerDurableManagedProviders(registry: ModelRegistry, piAuthPath: string, env: NodeJS.ProcessEnv): Promise<void> {
+  const settings = getActiveManorSettings(env);
+  const { current } = await readModelsJsonObject(path.join(path.dirname(piAuthPath), "models.json"));
+  const providers = isJsonObject(current.providers) ? current.providers : {};
+  const managedProviders = [
+    settings.providers.ollamaLocal,
+    settings.providers.ollamaCloud,
+    settings.providers.opencodeGo
+  ] as const;
+  for (const provider of managedProviders) {
+    if (!provider.enabled) continue;
+    const apiKey = provider.apiKeySource ? await readSecretSourceValue(provider.apiKeySource, env) : null;
+    if (provider.apiKeySource && !apiKey) continue;
+    const durable = await rebuildDurableProviderConfig(provider, providers[provider.providerId], env, apiKey || "ollama");
+    if (!durable) continue;
+    try {
+      registry.registerProvider(provider.providerId, durable as never);
+    } catch {
+      // Ignore an invalid last-known-good entry; live registration can still recover it.
+    }
+  }
+}
+
 export async function syncManorPiModelsJson(piAuthPath: string, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
   const settings = getActiveManorSettings(env);
   const localProvider = settings.providers.ollamaLocal as OllamaLocalProvider;
   const cloudProvider = settings.providers.ollamaCloud as CloudLikeProvider;
   const opencodeProvider = settings.providers.opencodeGo as CloudLikeProvider;
+  const agentDir = path.dirname(piAuthPath);
+  const modelsPath = path.join(agentDir, "models.json");
+  const { current, currentText } = await readModelsJsonObject(modelsPath);
+  const providers = isJsonObject(current.providers) ? { ...current.providers } : {};
   const localConfig = await buildOllamaLocalProviderConfig(localProvider, env);
-  const cloudConfig = await buildOllamaCloudProviderConfig(cloudProvider, env, { forModelsJson: true });
-  const opencodeConfig = await buildOpencodeGoProviderConfig(opencodeProvider, env, { forModelsJson: true });
+  const cloudDiscovery = { succeeded: false }; const opencodeDiscovery = { succeeded: false };
+  const cloudConfig = await buildOllamaCloudProviderConfig(cloudProvider, env, { forModelsJson: true, discovery: cloudDiscovery });
+  const opencodeConfig = await buildOpencodeGoProviderConfig(opencodeProvider, env, { forModelsJson: true, discovery: opencodeDiscovery });
+  const retainedProviderConfig = async (provider: CloudLikeProvider, fresh: ResolvedProviderConfig | null, discoverySucceeded: boolean): Promise<ResolvedProviderConfig | null> => {
+    if (fresh || !provider.enabled || discoverySucceeded) return fresh;
+    const apiKey = provider.apiKeySource ? await readSecretSourceValue(provider.apiKeySource, env) : null;
+    const previous = providers[provider.providerId];
+    if (!apiKey) return null;
+    return rebuildDurableProviderConfig(provider, previous, env, apiKey, true);
+  };
+  const durableCloudConfig = await retainedProviderConfig(cloudProvider, cloudConfig, cloudDiscovery.succeeded);
+  const durableOpencodeConfig = await retainedProviderConfig(opencodeProvider, opencodeConfig, opencodeDiscovery.succeeded);
   const managedProviders = [
     [localProvider.providerId, localConfig],
-    [cloudProvider.providerId, cloudConfig],
-    [opencodeProvider.providerId, opencodeConfig]
+    [cloudProvider.providerId, durableCloudConfig],
+    [opencodeProvider.providerId, durableOpencodeConfig]
   ] as const;
   const managedProviderIds = new Set([
     "ollama-local",
@@ -544,11 +616,7 @@ export async function syncManorPiModelsJson(piAuthPath: string, env: NodeJS.Proc
   ]);
   const enabledProviders = managedProviders.filter((entry): entry is readonly [string, ResolvedProviderConfig] => Boolean(entry[1]));
 
-  const agentDir = path.dirname(piAuthPath);
-  const modelsPath = path.join(agentDir, "models.json");
-  const { current, currentText } = await readModelsJsonObject(modelsPath);
   if (enabledProviders.length === 0 && currentText === null) return false;
-  const providers = isJsonObject(current.providers) ? { ...current.providers } : {};
   for (const providerId of readManagedProviderIds(current[MANOR_MANAGED_PROVIDER_IDS_KEY])) {
     managedProviderIds.add(providerId);
   }

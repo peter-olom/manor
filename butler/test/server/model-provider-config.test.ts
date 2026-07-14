@@ -19,7 +19,8 @@ import {
 import {
   clearOllamaCloudModelsCache,
   fetchOllamaCloudModelsCached,
-  getCachedOllamaCloudModels
+  getCachedOllamaCloudModels,
+  onOllamaCloudModelsDiscovered
 } from "../../src/server/ollama-cloud-models.js";
 import { clearOpencodeGoModelsCache, fetchOpencodeGoModelsCached, opencodeGoModelMetadata } from "../../src/server/opencode-go-models.js";
 import { clearOpenRouterModelCapabilitiesCache } from "../../src/server/openrouter-model-capabilities.js";
@@ -281,6 +282,73 @@ test("preferred Ollama Cloud model waits for slow shared discovery before sessio
   assert.ok(registry.getAvailable().some((model) => model.provider === "ollama-cloud" && model.id === "glm-5.2"));
 });
 
+test("saved Ollama Cloud inventory keeps the preferred model available during discovery failure", async (t) => {
+  clearOllamaCloudModelsCache();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("temporary discovery failure");
+  }) as typeof fetch;
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "manor-durable-cloud-models-"));
+  const authPath = path.join(dir, "auth.json");
+  t.after(async () => {
+    globalThis.fetch = originalFetch;
+    clearOllamaCloudModelsCache();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  const baseEnv = {
+    MANOR_OLLAMA_LOCAL_ENABLED: "0",
+    MANOR_OLLAMA_CLOUD_ENABLED: "1",
+    MANOR_OLLAMA_CLOUD_PROVIDER_ID: "ollama-cloud",
+    MANOR_OLLAMA_CLOUD_BASE_URL: "https://ollama.example/v1",
+    MANOR_OLLAMA_WEB_TOOLS_BASE_URL: "https://ollama.example/api",
+    OLLAMA_API_KEY: "test-key"
+  } as NodeJS.ProcessEnv;
+  await syncManorPiModelsJson(authPath, { ...baseEnv, MANOR_OLLAMA_CLOUD_MODELS: "glm-5.2" });
+  const recoveryEnv = { ...baseEnv, MANOR_OLLAMA_CLOUD_BASE_URL: "https://current-ollama.example/v1", MANOR_OLLAMA_CLOUD_MODELS: "" };
+  const changed = await syncManorPiModelsJson(authPath, recoveryEnv);
+  const registry = await createManorModelRegistry(authPath, recoveryEnv, {
+    preferredModelRef: "ollama-cloud/glm-5.2",
+    recoveryTimeoutMs: 10
+  });
+
+  assert.equal(changed, true);
+  const durable = JSON.parse(await fs.readFile(path.join(dir, "models.json"), "utf8"));
+  assert.equal(durable.providers["ollama-cloud"].baseUrl, "https://current-ollama.example/v1");
+  assert.equal(durable.providers["ollama-cloud"].apiKey, "$OLLAMA_API_KEY");
+  assert.ok(registry.getAvailable().some((model) => model.provider === "ollama-cloud" && model.id === "glm-5.2"));
+});
+
+test("confirmed empty Ollama Cloud discovery removes a stale durable catalog", async (t) => {
+  clearOllamaCloudModelsCache();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL) => {
+    if (String(input).endsWith("/api/tags")) return Response.json({ models: [] });
+    throw new Error(`unexpected fetch: ${String(input)}`);
+  }) as typeof fetch;
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "manor-empty-cloud-models-"));
+  const authPath = path.join(dir, "auth.json");
+  t.after(async () => {
+    globalThis.fetch = originalFetch;
+    clearOllamaCloudModelsCache();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  const env = {
+    MANOR_OLLAMA_LOCAL_ENABLED: "0",
+    MANOR_OLLAMA_CLOUD_ENABLED: "1",
+    MANOR_OLLAMA_CLOUD_PROVIDER_ID: "ollama-cloud",
+    MANOR_OLLAMA_CLOUD_MODELS: "glm-5.2",
+    MANOR_OLLAMA_WEB_TOOLS_BASE_URL: "https://ollama.example/api",
+    OLLAMA_API_KEY: "test-key"
+  } as NodeJS.ProcessEnv;
+  await syncManorPiModelsJson(authPath, env);
+  const changed = await syncManorPiModelsJson(authPath, { ...env, MANOR_OLLAMA_CLOUD_MODELS: "" });
+  const durable = JSON.parse(await fs.readFile(path.join(dir, "models.json"), "utf8"));
+
+  assert.equal(changed, true);
+  assert.equal("ollama-cloud" in durable.providers, false);
+});
+
 test("preferred model recovery does not synthesize a removed model", async (t) => {
   clearOllamaCloudModelsCache();
   const originalFetch = globalThis.fetch;
@@ -356,6 +424,39 @@ test("Ollama Cloud caller timeout retains stale models while refresh continues",
 
   const models = await fetchOllamaCloudModelsCached(settings, { env, force: true, timeoutMs: 5 });
   assert.deepEqual(models.map((model) => model.id), ["glm-5.2"]);
+});
+
+test("late Ollama Cloud discovery notifies runtime refresh listeners", async (t) => {
+  clearOllamaCloudModelsCache();
+  const originalFetch = globalThis.fetch;
+  let releaseTags!: () => void;
+  const tagsReady = new Promise<void>((resolve) => { releaseTags = resolve; });
+  globalThis.fetch = (async (input: string | URL) => {
+    if (String(input).endsWith("/api/tags")) {
+      await tagsReady;
+      return Response.json({ models: [{ name: "glm-5.2" }] });
+    }
+    return Response.json({ capabilities: ["completion", "thinking"], model_info: {} });
+  }) as typeof fetch;
+  const discovered: string[][] = [];
+  const unsubscribe = onOllamaCloudModelsDiscovered((models) => discovered.push(models.map((model) => model.id)));
+  t.after(() => {
+    unsubscribe();
+    globalThis.fetch = originalFetch;
+    clearOllamaCloudModelsCache();
+  });
+  const env = {
+    MANOR_OLLAMA_CLOUD_ENABLED: "1",
+    MANOR_OLLAMA_WEB_TOOLS_BASE_URL: "https://ollama.example/api",
+    OLLAMA_API_KEY: "test-key"
+  } as NodeJS.ProcessEnv;
+  const settings = buildManorSettingsFromEnv(env).settings;
+
+  await assert.rejects(fetchOllamaCloudModelsCached(settings, { env, timeoutMs: 5 }), /Timed out/);
+  releaseTags();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.deepEqual(discovered, [["glm-5.2"]]);
 });
 
 test("OpenCode Go caller timeout retains stale models while refresh continues", async (t) => {

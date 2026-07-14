@@ -993,6 +993,7 @@ async function queueButlerPrompt(
   imageReferenceIds: string[],
   options: { background: boolean; pendingOperatorMessageId?: string | null; ignoreStopRequestSequence?: number | null; fileReferenceIds?: string[] }
 ): Promise<boolean> {
+  if (access.modelRefreshPromise) await access.modelRefreshPromise;
   if (!access.session) {
     if (!options.background) {
       removePendingOperatorPrompt(access, options.pendingOperatorMessageId);

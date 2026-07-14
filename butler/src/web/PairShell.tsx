@@ -32,10 +32,9 @@ import { SandSpinner } from "./SandSpinner";
 import { listenForSkillInstallHandoff, readSkillInstallHandoff, removeSkillInstallHandoff, shouldCreateSkillInstallSession, SKILL_INSTALL_HANDOFF_PLACEHOLDER } from "./skill-install-handoff";
 import { SelfImprovementQueue, formatSelfImprovementTime, selfImprovementStatusLabel } from "./SelfImprovementQueue";
 import { SettingsDashboard, SETTINGS_SECTIONS, type SettingsSectionId } from "./SettingsDashboard";
-import { SessionWorkspaceControl } from "./SessionWorkspaceControl";
+import { SessionWorkspaceControl } from "./SessionWorkspaceControl"; import { SessionAutomationControl } from "./SessionAutomationControl";
 import { TerminalPane } from "./TerminalPane";
-import { useEventStream } from "./useEventStream";
-import { useProjectArtifactPreview } from "./useProjectArtifactPreview";
+import { useEventStream } from "./useEventStream"; import { useProjectArtifactPreview } from "./useProjectArtifactPreview"; import { useSessionAutomation } from "./useSessionAutomation";
 import { WorkerPane } from "./WorkerPane";
 import type { WorkerProofRecord, WorkerTimeline } from "./WorkerPane";
 import { shapeWorkerTimeline, type WorkerThread } from "./worker-timeline";
@@ -45,6 +44,7 @@ import type { MemorySection } from "../shared/memory";
 import type { SelfImprovementQueueResponse, SelfImprovementRequestView } from "../shared/self-improvement";
 import type {
   PairDetail,
+  PairAutomation,
   PairDetailResponse,
   PairListResponse,
   PairComposerInputItem,
@@ -404,8 +404,8 @@ function Topbar({
   settingsSection,
   onMemorySearch,
   onMemoryProjectFilter,
-  workspacePending,
-  onWorkspaceChange
+  workspacePending, onWorkspaceChange,
+  automationPending, onAutomationEnabledChange, onAutomationDelete, onAutomationEdit
 }: {
   pair: PairDetail | null;
   viewMode: PairViewMode;
@@ -433,8 +433,9 @@ function Topbar({
   settingsSection: SettingsSectionId;
   onMemorySearch: (value: string) => void;
   onMemoryProjectFilter: (value: string) => void;
-  workspacePending: boolean;
-  onWorkspaceChange: (cwd: string) => Promise<void>;
+  workspacePending: boolean; onWorkspaceChange: (cwd: string) => Promise<void>;
+  automationPending: boolean; onAutomationEnabledChange: (enabled: boolean) => Promise<void>;
+  onAutomationDelete: () => Promise<void>; onAutomationEdit: () => void;
 }) {
   const isGlobalSurface = viewMode === "files" || viewMode === "memory" || viewMode === "improve" || viewMode === "settings";
   const surfaceTitle = viewMode === "files" ? "Files" : viewMode === "memory" ? "Memory" : viewMode === "improve" ? "Self-improvement" : viewMode === "settings" ? "Settings" : null;
@@ -506,7 +507,7 @@ function Topbar({
             ) : null}
             {pair && !isGlobalSurface && editingTitle && titleError ? <span className="title-error" role="alert">{titleError}</span> : null}
           </div>
-          {pair && !isGlobalSurface ? <SessionWorkspaceControl pair={pair} pending={workspacePending} onChange={onWorkspaceChange} /> : null}
+          {pair && !isGlobalSurface ? <div className="session-meta-controls"><SessionWorkspaceControl pair={pair} pending={workspacePending} onChange={onWorkspaceChange} /><SessionAutomationControl pair={pair} pending={automationPending} onEnabledChange={onAutomationEnabledChange} onDelete={onAutomationDelete} onEdit={onAutomationEdit} /></div> : null}
         </div>
       </div>
       <div className="topbar-right">
@@ -1275,6 +1276,17 @@ export function PairShell() {
     }
   }, [activePair, workspacePending]);
 
+  const applyAutomation = useCallback((automation: PairAutomation | null) => {
+    if (!activePair) return;
+    setPair((current) => current?.id === activePair.id ? { ...current, automation } : current);
+    setPairs((current) => current.map((entry) => entry.id === activePair.id ? { ...entry, automation } : entry));
+  }, [activePair]);
+  const editAutomationWithButler = useCallback((automation: PairAutomation) => {
+    setDraft(`Update this session automation.\n\nCurrent task: ${automation.instruction}\nCurrent schedule: ${automation.scheduleLabel}${automation.endsAtLabel ? `\nRuns through: ${automation.endsAtLabel}` : ""}`);
+    setViewMode("butler"); setLastWorkstreamMode("butler");
+    window.requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus());
+  }, []); const automationActions = useSessionAutomation(activePair, applyAutomation, editAutomationWithButler);
+
   return (
     <main className={`app ${mobileSidebarOpen ? "is-mobile-sidebar-open" : ""} ${activePair ? "" : "is-empty"}`}>
       <Sidebar
@@ -1339,6 +1351,8 @@ export function PairShell() {
           onMemoryProjectFilter={setMemoryProjectFilter}
           workspacePending={workspacePending}
           onWorkspaceChange={changeWorkspace}
+          automationPending={automationActions.pending} onAutomationEnabledChange={automationActions.setEnabled}
+          onAutomationDelete={automationActions.remove} onAutomationEdit={automationActions.edit}
         />
         {!activePair && viewMode !== "files" && viewMode !== "memory" && viewMode !== "improve" && viewMode !== "settings" && viewMode !== "cli" ? (
           <div className="empty-state">

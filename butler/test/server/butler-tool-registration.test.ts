@@ -5,6 +5,7 @@ import { Value } from "@sinclair/typebox/value";
 import { buildButlerWorkerTools } from "../../src/server/butler-agent-codex-tools.js";
 import { buildButlerManorTools } from "../../src/server/butler-agent-manor-tools.js";
 import { buildButlerOperatorTools } from "../../src/server/butler-agent-operator-tools.js";
+import { buildButlerAutomationTools } from "../../src/server/butler-agent-automation-tools.js";
 import { buildButlerProjectTools } from "../../src/server/butler-agent-project-tools.js";
 import { buildButlerServiceTools } from "../../src/server/butler-agent-service-tools.js";
 import { buildButlerDelegationTools, buildButlerStackPreviewTools, workerProviderModelRoute } from "../../src/server/butler-agent-stack-preview-tools.js";
@@ -86,7 +87,8 @@ test("Butler custom tool registration has unique tool names and provider-portabl
       definitions.push(definition);
       return definition;
     },
-    getToolUiEffects: () => []
+    getToolUiEffects: () => [],
+    getAutomationAccess: () => ({ get: () => null, configure: async () => { throw new Error("unused"); }, configureInterval: async () => { throw new Error("unused"); }, setEnabled: async () => { throw new Error("unused"); }, delete: async () => true })
   } as unknown as ButlerAgentToolAccess;
 
   buildButlerStackPreviewTools(access);
@@ -94,6 +96,7 @@ test("Butler custom tool registration has unique tool names and provider-portabl
   buildButlerServiceTools(access);
   buildButlerManorTools(access);
   buildButlerOperatorTools(access);
+  buildButlerAutomationTools(access);
   buildButlerSkillTools(access);
   buildButlerProjectTools(access, "/artifacts");
   buildButlerWorkerTools(access);
@@ -129,7 +132,8 @@ test("Butler tool catalog matches registered base tools", () => {
       definitions.push(definition);
       return definition;
     },
-    getToolUiEffects: () => []
+    getToolUiEffects: () => [],
+    getAutomationAccess: () => ({ get: () => null, configure: async () => { throw new Error("unused"); }, configureInterval: async () => { throw new Error("unused"); }, setEnabled: async () => { throw new Error("unused"); }, delete: async () => true })
   } as unknown as ButlerAgentToolAccess;
 
   buildButlerStackPreviewTools(access);
@@ -137,6 +141,7 @@ test("Butler tool catalog matches registered base tools", () => {
   buildButlerServiceTools(access);
   buildButlerManorTools(access);
   buildButlerOperatorTools(access);
+  buildButlerAutomationTools(access);
   buildButlerSkillTools(access);
   buildButlerProjectTools(access, "/artifacts");
   buildButlerWorkerTools(access);

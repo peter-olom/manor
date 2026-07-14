@@ -4,7 +4,8 @@ import { EventEmitter } from "node:events";
 import { readJsonStateFile, writeJsonStateFileAtomic } from "./json-state-file.js";
 import type { ButlerStateStore } from "./state-store.js";
 import { workerThreadIsRunning } from "./worker-thread-status.js";
-import type { PairChat, PairMessage, PairStatus, PairSummary, PairWorker, PairWorkerHandoff } from "../shared/pairing.js";
+import type { PairAutomation, PairAutomationOutcome, PairChat, PairMessage, PairStatus, PairSummary, PairWorker, PairWorkerHandoff } from "../shared/pairing.js";
+import { createIntervalSchedule, nextAutomationRunAt, normalizeDailyTimes, normalizeStoredAutomation, withAutomationLabels } from "./session-automation.js";
 
 type LegacyPairFields = { codexModel?: string | null; codexEffort?: string | null };
 type PersistedPairState = {
@@ -185,6 +186,15 @@ function clonePairWorker(worker: PairWorker | null): PairWorker | null {
   } : null;
 }
 
+function cloneAutomation(automation: PairAutomation | null): PairAutomation | null {
+  return automation ? withAutomationLabels({
+    ...automation,
+    schedule: automation.schedule.kind === "daily" ? { kind: "daily", times: [...automation.schedule.times] } : { ...automation.schedule },
+    running: automation.running ? { ...automation.running } : null,
+    lastRun: automation.lastRun ? { ...automation.lastRun } : null
+  }) : null;
+}
+
 function titleFromText(text: string): string {
   const normalized = normalizeText(text);
   if (!normalized) {
@@ -222,6 +232,7 @@ function emptyPair(input: { id: string; title?: string | null; defaultCwd?: stri
     createdAt: input.now,
     updatedAt: input.now,
     defaultCwd: normalizeText(input.defaultCwd) || null,
+    automation: null,
     butlerSessionId: input.id,
     butlerReady: false,
     butlerPending: false,
@@ -255,6 +266,7 @@ function normalizePair(raw: Partial<PairChat> & LegacyPairFields & { id?: string
   pair.projectId = typeof raw.projectId === "string" ? raw.projectId : null;
   pair.projectLabel = typeof raw.projectLabel === "string" ? raw.projectLabel : null;
   pair.updatedAt = typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : pair.createdAt;
+  pair.automation = normalizeStoredAutomation(raw.automation, now);
   pair.butlerSessionId = typeof raw.butlerSessionId === "string" && raw.butlerSessionId.trim() ? raw.butlerSessionId : pair.id;
   pair.butlerReady = raw.butlerReady === true;
   pair.butlerPending = raw.butlerPending === true;
@@ -391,13 +403,176 @@ export class PairStore extends EventEmitter {
 
   listSummaries(): PairSummary[] {
     return [...this.pairs.values()]
-      .map((pair) => ({ ...pair, status: deriveStatus(pair, this.store) }))
+      .map((pair) => ({ ...pair, automation: cloneAutomation(pair.automation), status: deriveStatus(pair, this.store) }))
       .sort((left, right) => right.updatedAt - left.updatedAt);
   }
 
   getPair(pairId: string): PairChat | null {
     const pair = this.pairs.get(pairId);
-    return pair ? { ...pair, status: deriveStatus(pair, this.store) } : null;
+    return pair ? { ...pair, automation: cloneAutomation(pair.automation), status: deriveStatus(pair, this.store) } : null;
+  }
+
+  configureAutomation(pairId: string, input: { instruction: string; dailyTimes: unknown }, now = Date.now()): PairChat | null {
+    const dailyTimes = normalizeDailyTimes(input.dailyTimes);
+    return this.configureAutomationSchedule(pairId, input.instruction, { kind: "daily", times: dailyTimes }, now);
+  }
+
+  configureIntervalAutomation(pairId: string, input: { instruction: string; everyMinutes: unknown; durationMinutes: unknown }, now = Date.now()): PairChat | null {
+    return this.configureAutomationSchedule(pairId, input.instruction, createIntervalSchedule(input.everyMinutes, input.durationMinutes, now), now);
+  }
+
+  private configureAutomationSchedule(pairId: string, rawInstruction: string, schedule: PairAutomation["schedule"], now: number): PairChat | null {
+    const pair = this.pairs.get(pairId);
+    if (!pair) return null;
+    const instruction = rawInstruction.trim();
+    if (!instruction) throw new Error("Automation instructions are required");
+    if (instruction.length > 20_000) throw new Error("Automation instructions must be 20,000 characters or fewer");
+    const existing = pair.automation;
+    if (existing?.running) throw new Error("Wait for the current automation run to finish before changing its schedule");
+    pair.automation = withAutomationLabels({
+      id: existing?.id ?? crypto.randomUUID(),
+      instruction,
+      schedule,
+      enabled: true,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      nextRunAt: nextAutomationRunAt(schedule, now),
+      running: null,
+      lastRun: existing?.lastRun ? { ...existing.lastRun } : null
+    });
+    pair.updatedAt = now;
+    this.queueSave();
+    this.emit("change");
+    return this.getPair(pairId);
+  }
+
+  setAutomationEnabled(pairId: string, enabled: boolean, now = Date.now()): PairChat | null {
+    const pair = this.pairs.get(pairId);
+    if (!pair?.automation) return null;
+    if (pair.automation.enabled === enabled) return this.getPair(pairId);
+    if (enabled && pair.automation.schedule.kind === "interval" && pair.automation.schedule.endsAt <= now) {
+      throw new Error("This interval automation has completed. Edit it with Butler to schedule another run window");
+    }
+    pair.automation.enabled = enabled;
+    pair.automation.updatedAt = now;
+    pair.automation.nextRunAt = enabled ? nextAutomationRunAt(pair.automation.schedule, now) : null;
+    pair.updatedAt = now;
+    this.queueSave();
+    this.emit("change");
+    return this.getPair(pairId);
+  }
+
+  deleteAutomation(pairId: string, now = Date.now()): PairChat | null {
+    const pair = this.pairs.get(pairId);
+    if (!pair) return null;
+    if (pair.automation) {
+      pair.automation = null;
+      pair.updatedAt = now;
+      this.queueSave();
+      this.emit("change");
+    }
+    return this.getPair(pairId);
+  }
+
+  restoreAutomation(pairId: string, automation: PairAutomation | null, updatedAt: number): boolean {
+    const pair = this.pairs.get(pairId);
+    if (!pair) return false;
+    pair.automation = cloneAutomation(automation);
+    pair.updatedAt = updatedAt;
+    this.queueSave();
+    this.emit("change");
+    return true;
+  }
+
+  claimAutomationRun(pairId: string, automationId: string, now = Date.now()): PairAutomation["running"] | null {
+    const pair = this.pairs.get(pairId);
+    const automation = pair?.automation;
+    if (!pair || !automation || automation.id !== automationId || !automation.enabled || automation.running || !automation.nextRunAt || automation.nextRunAt > now) return null;
+    let scheduledFor = automation.nextRunAt;
+    if (automation.schedule.kind === "interval" && scheduledFor < now) {
+      const intervalMs = automation.schedule.everyMinutes * 60_000;
+      const latestSlot = automation.schedule.startsAt + Math.floor((Math.min(now, automation.schedule.endsAt) - automation.schedule.startsAt) / intervalMs) * intervalMs;
+      scheduledFor = Math.max(scheduledFor, latestSlot);
+    }
+    const running = { id: crypto.randomUUID(), scheduledFor, startedAt: now };
+    automation.running = running;
+    automation.nextRunAt = nextAutomationRunAt(automation.schedule, now);
+    automation.updatedAt = now;
+    pair.updatedAt = now;
+    this.queueSave();
+    this.emit("change");
+    return { ...running };
+  }
+
+  finishAutomationRun(pairId: string, automationId: string, runId: string, input: {
+    outcome: PairAutomationOutcome;
+    summary: string;
+    resultPath?: string | null;
+  }, now = Date.now()): PairChat | null {
+    const pair = this.pairs.get(pairId);
+    const automation = pair?.automation;
+    if (!pair || !automation || automation.id !== automationId || automation.running?.id !== runId) return pair ? this.getPair(pairId) : null;
+    automation.lastRun = {
+      ...automation.running,
+      finishedAt: now,
+      outcome: input.outcome,
+      summary: normalizeText(input.summary) || input.outcome,
+      resultPath: normalizeText(input.resultPath) || null
+    };
+    automation.running = null;
+    automation.updatedAt = now;
+    if (automation.enabled && (!automation.nextRunAt || automation.nextRunAt <= now)) automation.nextRunAt = nextAutomationRunAt(automation.schedule, now);
+    pair.updatedAt = now;
+    this.queueSave();
+    this.emit("change");
+    return this.getPair(pairId);
+  }
+
+  reconcileAutomationsAfterRestart(now = Date.now()): number {
+    let changed = 0;
+    for (const pair of this.pairs.values()) {
+      const automation = pair.automation;
+      if (!automation) continue;
+      let pairChanged = false;
+      const interrupted = Boolean(automation.running);
+      if (automation.running) {
+        automation.lastRun = {
+          ...automation.running,
+          finishedAt: now,
+          outcome: "skipped",
+          summary: "Run was interrupted when Butler restarted.",
+          resultPath: null
+        };
+        automation.running = null;
+        changed += 1;
+        pairChanged = true;
+      }
+      const intervalExpired = automation.schedule.kind === "interval" && automation.schedule.endsAt <= now;
+      if (automation.enabled && (intervalExpired || automation.nextRunAt === null || automation.nextRunAt <= now)) {
+        if (automation.nextRunAt && !interrupted) {
+          automation.lastRun = {
+            id: crypto.randomUUID(), scheduledFor: automation.nextRunAt, startedAt: now, finishedAt: now,
+            outcome: "skipped", summary: "Missed while Butler was offline.", resultPath: null
+          };
+        }
+        automation.nextRunAt = intervalExpired ? null : nextAutomationRunAt(automation.schedule, now);
+        changed += 1;
+        pairChanged = true;
+      } else if (!automation.enabled && automation.nextRunAt !== null) {
+        automation.nextRunAt = null;
+        changed += 1;
+        pairChanged = true;
+      }
+      if (pairChanged) {
+        automation.updatedAt = now;
+        pair.updatedAt = now;
+      }
+    }
+    if (changed > 0) {
+      this.queueSave();
+      this.emit("change");
+    }
+    return changed;
   }
 
   findPairByWorkerThread(threadId: string): PairChat | null {

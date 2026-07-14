@@ -30,6 +30,7 @@ type SettingsRouteAccess = {
   piRpcWorkerClient: PiRpcWorkerClient;
   butlerAgent: ButlerAgentService;
   onSettingsChanged: () => Promise<void>;
+  refreshModelInventories?: () => void;
 };
 
 const VALIDATION_KEYS: SettingsValidationKey[] = [
@@ -446,9 +447,15 @@ export function registerManorSettingsRoutes(access: SettingsRouteAccess): void {
 
   access.app.post("/api/settings/validate", async (request, response) => {
     const targets = safeTargets(request.body?.target ?? request.body?.targets);
+    let shouldRefreshModels = false;
     for (const target of targets) {
-      await access.settingsService.setValidation(target, await runValidation(access, target));
+      const validation = await runValidation(access, target);
+      await access.settingsService.setValidation(target, validation);
+      if (validation.status === "ok" && (target === "ollamaCloud" || target === "ollamaLocal" || target === "opencodeGo")) {
+        shouldRefreshModels = true;
+      }
     }
+    if (shouldRefreshModels) access.refreshModelInventories?.();
     response.json(settingsPayload(access));
   });
 

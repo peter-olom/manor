@@ -339,7 +339,7 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
       execute: async (_toolCallId, params) => {
         const threadId = typeof params.threadId === "string" ? params.threadId.trim() : "";
         const thread = threadId ? access.store.getThread(threadId) ?? null : null;
-        const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : thread?.cwd ?? "/repos";
+        const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : thread?.cwd ?? access.getWorkerDefaults?.()?.cwd ?? "/repos";
         const project = resolveRequestedProject(access, {
           cwd,
           projectId: params.projectId,

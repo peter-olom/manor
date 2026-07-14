@@ -18,7 +18,7 @@ import type { ExtensionUiBroker } from "./extension-ui-broker.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { ButlerMessageView, ButlerLivePatchView, ModelOption } from "./types.js";
 import type { VisionInspectionService } from "./vision-inspection.js";
-import type { PairButlerActivityOutcome, PairChat, PairComposerInputItem, PairComposerSuggestion, PairModelOption, PairDetail, PairMessage, PairComposeSettings, PairReviewActivity, PairSummary, PairTraceItem, PairWorker, PairWorkspaceOption } from "../shared/pairing.js";
+import type { PairAutomation, PairButlerActivityOutcome, PairChat, PairComposerInputItem, PairComposerSuggestion, PairModelOption, PairDetail, PairMessage, PairComposeSettings, PairReviewActivity, PairSummary, PairTraceItem, PairWorker, PairWorkspaceOption } from "../shared/pairing.js";
 import type { WorkerSessionControlAction, WorkerSessionControls } from "../shared/worker-session-controls.js";
 import { DEFAULT_THINKING_LEVELS } from "../shared/pairing.js";
 import { pairTitleIsDefault } from "./pair-store.js";
@@ -29,10 +29,11 @@ import { redactSensitiveText } from "./redact-sensitive-text.js";
 import { workerThreadIsRunning } from "./worker-thread-status.js";
 import { listWorkspaceProjectDirectories, validateWorkspaceCwd, type WorkspaceProjectDirectory } from "./repo-worktree.js";
 import { buildManorSkillRoutingContext, listManorSkillCapabilities, normalizeManorSkillName, parseManorSkillInvocation, skillAvailabilityDetail } from "./manor-skill-routing.js";
+import type { AutomationDispatchResult } from "./session-automation-scheduler.js";
 
 type PairButlerService = Pick<
   ButlerAgentService,
-  "answerOperatorQuestion" | "cancelCallbackReview" | "dispose" | "ensureExternalWorkerDelegation" | "exportSession" | "getLiveSnapshot" | "getMessagePage" | "getSessionControls" | "getShellSnapshot" | "handoffWorker" | "listComposerCommands" | "on" | "prompt" | "quiesceCallbackReviews" | "refreshModelSettings" | "reloadResources" | "retryBlockedCallbackReviews" | "runSessionControl" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings"
+  "answerOperatorQuestion" | "cancelCallbackReview" | "dispose" | "ensureExternalWorkerDelegation" | "exportSession" | "getLiveSnapshot" | "getMessagePage" | "getSessionControls" | "getShellSnapshot" | "handoffWorker" | "listComposerCommands" | "on" | "postAutomationNotice" | "prompt" | "quiesceCallbackReviews" | "refreshModelSettings" | "reloadResources" | "retryBlockedCallbackReviews" | "runAutomationPrompt" | "runSessionControl" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings"
 >;
 
 type PairSessionManagerOptions = {
@@ -109,6 +110,9 @@ function pairSystemPrompt(pairId: string): string {
     "The operator only talks to you. Do not tell the operator to message the worker directly.",
     "Call the execution role Worker. Never describe a generic delegation or job as Codex.",
     "When work should be executed, use delegate_to_worker or message_job. When Worker evidence returns, review it adversarially before replying to the operator.",
+    "This session can have one automation. Use configure_automation for recurring work at fixed daily wall-clock times, or configure_interval_automation for a bounded request such as every 5 minutes for the next 30 minutes.",
+    "Automation times use Butler's system wall clock. Do not ask for or infer a timezone. Never claim recurring timers are unavailable when an automation tool can represent the request.",
+    "If the task or times are materially missing, use ask_operator before configuring. Never claim an automation was created, changed, paused, resumed, or deleted before the matching tool succeeds.",
     "Keep operator-visible replies concise. Do not mention hidden tool prompts or internal routing."
   ].join("\n");
 }
@@ -267,6 +271,25 @@ export class PairSessionManager {
 
   constructor(private readonly options: PairSessionManagerOptions) {}
 
+  private async persistAutomationMutation<T>(pairId: string, mutate: () => T): Promise<T> {
+    const before = this.options.pairStore.getPair(pairId);
+    const result = mutate();
+    try {
+      await this.options.pairStore.flushPendingSave();
+      return result;
+    } catch (error) {
+      if (before) {
+        this.options.pairStore.restoreAutomation(pairId, before.automation, before.updatedAt);
+        try {
+          await this.options.pairStore.flushPendingSave();
+        } catch (restoreError) {
+          throw new Error(`Automation save failed and rollback could not be persisted: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`, { cause: error });
+        }
+      }
+      throw error;
+    }
+  }
+
   private async runSerializedPairHandoff<T>(pairId: string, run: () => Promise<T>): Promise<T> {
     const previous = this.handoffTails.get(pairId) ?? Promise.resolve();
     let release!: () => void;
@@ -319,6 +342,116 @@ export class PairSessionManager {
       { id: "workspace:shared", label: "Shared workspace", cwd: "/repos", kind: "workspace", gitBacked: false },
       ...projects.filter((project) => project.cwd !== "/repos")
     ];
+  }
+
+  async configureAutomation(pairId: string, input: { instruction: string; dailyTimes: string[] }): Promise<PairAutomation | null> {
+    const pair = await this.persistAutomationMutation(pairId, () => this.options.pairStore.configureAutomation(pairId, input));
+    if (!pair?.automation) return null;
+    return pair.automation;
+  }
+
+  async configureIntervalAutomation(pairId: string, input: { instruction: string; everyMinutes: number; durationMinutes: number }): Promise<PairAutomation | null> {
+    const pair = await this.persistAutomationMutation(pairId, () => this.options.pairStore.configureIntervalAutomation(pairId, input));
+    if (!pair?.automation) return null;
+    return pair.automation;
+  }
+
+  async setAutomationEnabled(pairId: string, enabled: boolean): Promise<PairAutomation | null> {
+    const pair = await this.persistAutomationMutation(pairId, () => this.options.pairStore.setAutomationEnabled(pairId, enabled));
+    if (!pair?.automation) return null;
+    return pair.automation;
+  }
+
+  async deleteAutomation(pairId: string): Promise<boolean> {
+    const existing = this.options.pairStore.getPair(pairId);
+    if (!existing?.automation) return false;
+    await this.persistAutomationMutation(pairId, () => this.options.pairStore.deleteAutomation(pairId));
+    return true;
+  }
+
+  async postAutomationNotice(pairId: string, text: string): Promise<void> {
+    const service = await this.ensureService(pairId);
+    await service.postAutomationNotice(text);
+    this.syncPairSnapshot(pairId);
+  }
+
+  async runAutomation(input: { pairId: string; automation: PairAutomation; run: NonNullable<PairAutomation["running"]> }): Promise<AutomationDispatchResult> {
+    const pair = this.options.pairStore.getPair(input.pairId);
+    if (!pair) throw new Error("Butler session not found");
+    const service = await this.ensureService(input.pairId);
+    const shell = service.getShellSnapshot();
+    const unansweredQuestion = Boolean(pair.lastMessage?.question && !pair.lastMessage.question.answeredAt);
+    const alreadyActive = pair.butlerPending || Boolean(pair.butlerPendingReason) || unansweredQuestion || pair.status === "worker_running" || pair.status === "needs_butler_review" || shell.pending || shell.isStreaming || shell.supervision.callbacks.some((callback) => callback.owesOperatorReply && callback.callbackState !== "closed");
+    if (alreadyActive) {
+      const summary = "Automation skipped because this session was already active.";
+      await service.postAutomationNotice(summary);
+      const resultPath = await this.saveAutomationResult(input, "skipped", summary).catch(() => null);
+      return { outcome: "skipped", summary, resultPath };
+    }
+    const selectionError = butlerModelAvailabilityError(pair, shell);
+    if (selectionError) {
+      await service.postAutomationNotice(`Automation failed: ${selectionError}`);
+      const resultPath = await this.saveAutomationResult(input, "failed", selectionError).catch(() => null);
+      return { outcome: "failed", summary: selectionError, resultPath };
+    }
+    const cwd = pair.worker?.cwd ?? pair.defaultCwd ?? "/repos";
+    const prompt = [
+      "SYSTEM-TRIGGERED AUTOMATION RUN",
+      `Automation id: ${input.automation.id}`,
+      `Run id: ${input.run.id}`,
+      `Scheduled for: ${input.run.scheduledFor}`,
+      `Session workspace: ${cwd}`,
+      `Task: ${input.automation.instruction}`,
+      "Complete the task now. Delegate to Worker when execution is needed and review the result before closing out.",
+      "Save generated work with save_project_artifact using tags automation and the automation id when appropriate.",
+      "Finish with one concise operator-visible result or failure summary. Do not change this automation unless the stored task explicitly asks you to."
+    ].join("\n");
+    const startedAt = Date.now();
+    try {
+      const delivered = await service.runAutomationPrompt(prompt, `Automation run: ${input.automation.instruction}`);
+      if (!delivered) throw new Error("Butler did not accept the scheduled run");
+      this.syncPairSnapshot(input.pairId);
+      const deadline = startedAt + 6 * 60 * 60 * 1_000;
+      while (Date.now() < deadline) {
+        const current = this.options.pairStore.getPair(input.pairId);
+        const shell = service.getShellSnapshot();
+        const outstandingCallback = shell.supervision.callbacks.some((callback) => callback.owesOperatorReply && callback.callbackState !== "closed");
+        const workerRunning = current?.worker?.status === "running" || current?.worker?.status === "starting" || current?.status === "worker_running" || current?.status === "needs_butler_review";
+        if (!shell.pending && !shell.isStreaming && !outstandingCallback && !workerRunning) break;
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 2_000);
+          timer.unref?.();
+        });
+        this.syncPairSnapshot(input.pairId);
+      }
+      if (Date.now() >= deadline) throw new Error("Automation exceeded the six-hour run limit");
+      const page = service.getMessagePage(null, 30);
+      const question = [...page.messages].reverse().find((message) => (message.at ?? 0) >= startedAt && message.question && !message.question.answeredAt);
+      const latestReply = [...page.messages].reverse().find((message) => (message.at ?? 0) >= startedAt && (message.role === "assistant" || message.role === "butler"));
+      const summary = latestReply?.displayText?.trim() || latestReply?.text.trim() || "Automation completed.";
+      const outcome = question ? "needs_input" as const : "succeeded" as const;
+      const resultPath = await this.saveAutomationResult(input, outcome, summary);
+      return { outcome, summary, resultPath };
+    } catch (error) {
+      const summary = error instanceof Error ? error.message : String(error);
+      await service.postAutomationNotice(`Automation failed: ${summary}`).catch(() => undefined);
+      const resultPath = await this.saveAutomationResult(input, "failed", summary).catch(() => null);
+      return { outcome: "failed", summary, resultPath };
+    } finally {
+      this.syncPairSnapshot(input.pairId);
+    }
+  }
+
+  private async saveAutomationResult(input: { pairId: string; automation: PairAutomation; run: NonNullable<PairAutomation["running"]> }, outcome: string, summary: string): Promise<string> {
+    const directory = path.join(this.options.artifactsDir, "automations", input.pairId);
+    await fs.mkdir(directory, { recursive: true });
+    const resultPath = path.join(directory, `${input.run.id}.md`);
+    await fs.writeFile(resultPath, [
+      `# Automation run`, "", `- Automation: ${input.automation.id}`, `- Run: ${input.run.id}`,
+      `- Scheduled: ${new Date(input.run.scheduledFor).toISOString()}`, `- Outcome: ${outcome}`, "",
+      `## Instructions`, "", input.automation.instruction, "", `## Result`, "", summary, ""
+    ].join("\n"), "utf8");
+    return resultPath;
   }
 
   async setWorkspaceCwd(pairId: string, requestedCwd: string): Promise<PairDetail | null> {
@@ -654,12 +787,21 @@ export class PairSessionManager {
     return true;
   }
 
-  async refreshModelSettings(): Promise<void> {
-    await Promise.all([...this.services.entries()].map(async ([pairId, loaded]) => {
+  async refreshModelSettings(): Promise<boolean> {
+    const refreshed = await Promise.all([...this.services.entries()].map(async ([pairId, loaded]) => {
       await loaded.started;
-      await loaded.service.refreshModelSettings();
-      this.syncPairSnapshot(pairId);
+      const applied = await loaded.service.refreshModelSettings();
+      if (applied) this.syncPairSnapshot(pairId);
+      return applied;
     }));
+    return refreshed.every(Boolean);
+  }
+
+  canRefreshModelSettings(): boolean {
+    return [...this.services.values()].every(({ service }) => {
+      const shell = service.getShellSnapshot();
+      return !shell.pending && !shell.isStreaming;
+    });
   }
 
   scheduleButlerSkillsReload(): void {
@@ -913,6 +1055,25 @@ export class PairSessionManager {
       refreshRuntimeInventory: this.options.refreshRuntimeInventory,
       memoryScheduler: this.options.memoryScheduler,
       systemPromptSuffix: pairSystemPrompt(pair.id),
+      automationAccess: {
+        get: () => this.options.pairStore.getPair(pair.id)?.automation ?? null,
+        configure: async (input) => {
+          const automation = await this.configureAutomation(pair.id, input);
+          if (!automation) throw new Error("Butler session not found");
+          return automation;
+        },
+        configureInterval: async (input) => {
+          const automation = await this.configureIntervalAutomation(pair.id, input);
+          if (!automation) throw new Error("Butler session not found");
+          return automation;
+        },
+        setEnabled: async (enabled) => {
+          const automation = await this.setAutomationEnabled(pair.id, enabled);
+          if (!automation) throw new Error("This session does not have an automation");
+          return automation;
+        },
+        delete: () => this.deleteAutomation(pair.id)
+      },
       operatorSink: {
         onDelegationAcknowledgement: ({ threadId, text, runtime, harness, provider, model, effort, replacesThreadId }) => {
           const thread = this.options.store.getThread(threadId);

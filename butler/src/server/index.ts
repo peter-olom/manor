@@ -19,11 +19,11 @@ import { defaultManorSettingsPath, ManorSettingsService } from "./manor-settings
 import { setActiveManorSettingsService, getActiveManorSettings } from "./manor-settings-runtime.js";
 import { registerManorSettingsRoutes } from "./manor-settings-routes.js";
 import { createModelUsageStore } from "./create-model-usage-store.js"; import { registerModelUsageRoutes } from "./model-usage-routes.js";
-import { normalizeMemoryCodexModelEnv } from "./memory-codex-model.js";
+import { createProviderModelRefreshCoordinator, startOllamaCloudModelRecovery } from "./provider-model-refresh.js"; import { normalizeMemoryCodexModelEnv } from "./memory-codex-model.js";
 import { getMemoryDebugTrace, listMemoryDebugTraces } from "./memory-debug-traces.js";
 import { buildMemoryDiagnostics } from "./memory-diagnostics.js";
 import { PairSessionManager } from "./pair-session-manager.js";
-import { PairStore } from "./pair-store.js";
+import { PairStore } from "./pair-store.js"; import { SessionAutomationScheduler } from "./session-automation-scheduler.js";
 import { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import { registerPairRoutes } from "./pair-routes.js";
 import { registerPreviewAnnotationRoutes } from "./preview-annotation-routes.js";
@@ -87,8 +87,7 @@ const imageUploadBinaryLimit = process.env.MANOR_IMAGE_UPLOAD_BINARY_LIMIT ?? `$
 const fileUploadBinaryLimit = process.env.MANOR_FILE_UPLOAD_BINARY_LIMIT ?? `${Math.ceil(MAX_FILE_BYTES / (1024 * 1024))}mb`;
 const previewAnnotationSecret = crypto.randomBytes(32).toString("hex");
 
-const uiStatePath = path.join(stateDir, "butler-ui.json");
-const scratchPadStatePath = path.join(stateDir, "scratch-pad.json");
+const uiStatePath = path.join(stateDir, "butler-ui.json"); const scratchPadStatePath = path.join(stateDir, "scratch-pad.json");
 const pairStatePath = path.join(stateDir, "butler-pairs-v2.json");
 const sessionDir = path.join(stateDir, "pi-sessions");
 const pairSessionDir = path.join(stateDir, "pi-pair-sessions");
@@ -249,6 +248,7 @@ const pairSessions = new PairSessionManager({
   getCodexAuthStatus: () => butlerAgent.getCodexAuthStatus(),
   onButlerPatch: (payload) => sseHub?.broadcastButlerPatch(payload)
 });
+const automationScheduler = new SessionAutomationScheduler({ pairStore, dispatch: (input) => pairSessions.runAutomation(input), onSkipped: (pairId, message) => pairSessions.postAutomationNotice(pairId, message) }); const modelInventoryRefresh = createProviderModelRefreshCoordinator({ pairSessions, piRpcWorkerClient, butlerAgent, scheduleSse: () => sseHub?.schedule() });
 configureSelfImprovementPairCleanup(pairSessions);
 let selfImprovementReconciliation = Promise.resolve();
 const reconcileSelfImprovementAfterRestart = (canConcludeThreadMissing: (threadId: string) => boolean) => {
@@ -284,7 +284,7 @@ await butlerAgent.start();
 codexClient.start();
 await piRpcWorkerClient.start();
 await reconcileSelfImprovementAfterRestart((threadId) => threadId.startsWith("pi-"));
-await pairSessions.startSupervisedSessions();
+await pairSessions.startSupervisedSessions(); automationScheduler.start(); const stopOllamaCloudModelRecovery = startOllamaCloudModelRecovery(modelInventoryRefresh);
 
 const app = express();
 const server = http.createServer(app);
@@ -469,7 +469,7 @@ registerPreviewAnnotationRoutes({
 });
 registerPairRoutes({ app, pairSessions });
 registerExtensionUiRoutes({ app, pairStore, broker: extensionUiBroker }); registerWorkerSessionControlRoutes({ app, pairStore, piRpcWorkerClient }); registerButlerSessionControlRoutes({ app, pairSessions });
-registerManorSettingsRoutes({ app, settingsService, store, codexClient, piRpcWorkerClient, butlerAgent, onSettingsChanged: applyManagedSettingsChange });
+registerManorSettingsRoutes({ app, settingsService, store, codexClient, piRpcWorkerClient, butlerAgent, onSettingsChanged: applyManagedSettingsChange, refreshModelInventories: () => modelInventoryRefresh.request() });
 registerModelUsageRoutes(app, modelUsageStore);
 registerSelfImprovementRoutes({
   app,
@@ -1490,7 +1490,7 @@ server.on("upgrade", (request, socket, head) => {
   });
 });
 
-server.on("close", () => {
+server.on("close", () => { automationScheduler.stop(); stopOllamaCloudModelRecovery(); modelInventoryRefresh.dispose();
   clearInterval(leaseReaper);
   clearInterval(runtimeCleanupWorker);
   clearInterval(artifactReaper);

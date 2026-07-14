@@ -1,4 +1,4 @@
-import { TrashIcon } from "./icons";
+import { AutomationIcon, TrashIcon } from "./icons";
 
 import type { PairSummary } from "../shared/pairing";
 
@@ -40,7 +40,16 @@ export function PairRow({
       }}
     >
       <span className={`pair-dot is-${pair.status}`} aria-hidden="true" />
-      <div className="pair-title">{pair.title}</div>
+      <div className="pair-title">
+        <span>{pair.title}</span>
+        {pair.automation ? (
+          <span
+            className={`pair-automation-icon ${pair.automation.enabled ? "" : "is-paused"} ${pair.automation.lastRun?.outcome === "failed" ? "is-failed" : ""}`}
+            role="img"
+            aria-label={`Automation ${pair.automation.state}: ${pair.automation.scheduleLabel}`}
+          ><AutomationIcon /></span>
+        ) : null}
+      </div>
       <div className="pair-preview">{pair.lastMessage?.text ?? "No messages yet"}</div>
       <div className="pair-meta">
         <span className="pair-meta-time">{formatDay(pair.updatedAt)}</span>

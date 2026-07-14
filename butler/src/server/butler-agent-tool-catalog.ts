@@ -212,6 +212,30 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while waiting for an operator decision." }]
   },
   {
+    name: "configure_automation",
+    label: "Configure automation",
+    description: "Create or replace the daily automation attached to this Butler session.",
+    uiEffects: [{ kind: "refreshThreads", description: "Shows the new session automation immediately." }]
+  },
+  {
+    name: "configure_interval_automation",
+    label: "Configure interval automation",
+    description: "Create or replace a bounded repeating automation attached to this Butler session.",
+    uiEffects: [{ kind: "refreshThreads", description: "Shows the new session automation immediately." }]
+  },
+  {
+    name: "set_automation_enabled",
+    label: "Pause or resume automation",
+    description: "Pause or resume the automation attached to this Butler session.",
+    uiEffects: [{ kind: "refreshThreads", description: "Refreshes the session automation state." }]
+  },
+  {
+    name: "delete_automation",
+    label: "Delete automation",
+    description: "Delete the automation attached to this Butler session.",
+    uiEffects: [{ kind: "refreshThreads", description: "Removes the session automation indicator." }]
+  },
+  {
     name: "inspect_skills",
     label: "Inspect skills",
     description: "List, search, or read installed skills in butler-pi, worker-pi, or worker-codex without changing them.",

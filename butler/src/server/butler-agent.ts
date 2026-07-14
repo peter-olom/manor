@@ -53,6 +53,7 @@ import { buildButlerFilesystemTools } from "./butler-agent-filesystem-tools.js";
 import { buildButlerServiceTools } from "./butler-agent-service-tools.js";
 import { buildButlerManorTools } from "./butler-agent-manor-tools.js";
 import { buildButlerOperatorTools } from "./butler-agent-operator-tools.js"; import { buildButlerSkillTools } from "./butler-agent-skill-tools.js"; import type { SkillsService } from "./skills-service.js";
+import { buildButlerAutomationTools } from "./butler-agent-automation-tools.js";
 import { answerOperatorQuestionMessage, postOperatorQuestionMessage, recordOperatorQuestionTasteMemory, recoverInterruptedOperatorQuestionDeliveries, settleOperatorQuestionDelivery } from "./butler-agent-operator-question.js";
 import { buildButlerProjectTools } from "./butler-agent-project-tools.js";
 import { buildButlerDelegationTools, buildButlerStackPreviewTools } from "./butler-agent-stack-preview-tools.js";
@@ -167,7 +168,7 @@ export class ButlerAgentService extends EventEmitter {
     steps: []
   };
   private ready = false;
-  private pending = false;
+  private pending = false; private modelRefreshPromise: Promise<boolean> | null = null;
   private stopRequestedAt: number | null = null;
   private readonly activityTurns: ButlerActivityTurnView[] = [];
   private readonly activitySummaryTurns: ButlerActivityTurnView[] = [];
@@ -641,11 +642,17 @@ export class ButlerAgentService extends EventEmitter {
     this.unsubscribeSession = null;
   }
 
-  async refreshModelSettings(): Promise<void> { if (this.quiescing) return;
-    this.modelRegistry = await createManorModelRegistry(this.piAuthPath, process.env, { preferredModelRef: this.getButlerDefaults()?.model }); if (this.quiescing) return;
-    this.toolCatalog = this.buildToolCatalog();
-    await this.createOrRefreshSession(); if (this.quiescing) return;
-    this.emit("change");
+  async refreshModelSettings(): Promise<boolean> { if (this.quiescing) return false;
+    if (this.modelRefreshPromise) return this.modelRefreshPromise;
+    if (this.pending || this.session?.isStreaming || this.session?.isCompacting) return false;
+    const refresh = (async () => {
+      const registry = await createManorModelRegistry(this.piAuthPath, process.env, { preferredModelRef: this.getButlerDefaults()?.model }); if (this.quiescing) return false;
+      this.modelRegistry = registry; this.toolCatalog = this.buildToolCatalog();
+      await this.createOrRefreshSession(); if (this.quiescing) return false;
+      this.emit("change"); return true;
+    })();
+    this.modelRefreshPromise = refresh;
+    try { return await refresh; } finally { if (this.modelRefreshPromise === refresh) this.modelRefreshPromise = null; }
   }
   reloadResources(): Promise<void> { return reloadButlerResources(this.getSessionAccess()); }
   private async refreshExternalStatus(): Promise<void> { if (this.quiescing) return;
@@ -695,7 +702,7 @@ export class ButlerAgentService extends EventEmitter {
   // side effects. Keep agent tool definitions aligned with this catalog.
   private buildToolCatalog(): ButlerToolView[] {
     const activeTools = new Set(this.session?.getActiveToolNames() ?? []);
-    const base = BUTLER_TOOL_CATALOG.filter((tool) => (tool.name !== "inspect_images" || activeTools.has(tool.name)) && (this.skillsService || !["inspect_skills", "propose_skill_change", "apply_skill_change"].includes(tool.name)));
+    const base = BUTLER_TOOL_CATALOG.filter((tool) => (tool.name !== "inspect_images" || activeTools.has(tool.name)) && (this.skillsService || !["inspect_skills", "propose_skill_change", "apply_skill_change"].includes(tool.name)) && (this.getAutomationAccess() || !["configure_automation", "set_automation_enabled", "delete_automation"].includes(tool.name)));
     if (activeTools.has("inspect_images")) base.push({ name: "inspect_images", label: "Inspect images", description: "Inspect attached images through the configured vision companion.", uiEffects: [] });
     if (activeTools.has(PROVIDER_WEB_SEARCH_TOOL_NAME) && activeTools.has(PROVIDER_WEB_FETCH_TOOL_NAME)) {
       base.push(
@@ -738,6 +745,7 @@ export class ButlerAgentService extends EventEmitter {
 
   getButlerDefaults(): ButlerAgentDefaults | null { return this.options?.getButlerDefaults?.() ?? null; }
   getWorkerDefaults(): ButlerWorkerDefaults | null { return this.options.getWorkerDefaults?.() ?? null; }
+  getAutomationAccess() { return this.options.automationAccess ?? null; }
   getWorkerAffinity() { return this.options.getWorkerAffinity?.() ?? null; }
   recordSuccessfulWorkerSelection(input: { harness: string; provider: string; model: string; effort?: string | null }) { return this.options.recordSuccessfulWorkerSelection?.(input); }
 
@@ -1398,7 +1406,7 @@ export class ButlerAgentService extends EventEmitter {
   private async reviewProofScreenshot(proof: ResolvedPreviewProof, options?: { expectedOutcome?: string; signal?: AbortSignal }): Promise<ProofScreenshotReview> { return reviewButlerProofScreenshot(this.getSessionAccess(), proof, { ...options, ...getCallbackReviewExecution() }); }
   private buildCustomTools() {
     const toolAccess = this.getToolAccess();
-    const tools = [...buildButlerStackPreviewTools(toolAccess), ...buildButlerFilesystemTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerManorTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerOperatorTools(toolAccess), ...(this.skillsService ? buildButlerSkillTools(toolAccess) : []), ...buildButlerWorkerTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
+    const tools = [...buildButlerStackPreviewTools(toolAccess), ...buildButlerFilesystemTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerManorTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerOperatorTools(toolAccess), ...buildButlerAutomationTools(toolAccess), ...(this.skillsService ? buildButlerSkillTools(toolAccess) : []), ...buildButlerWorkerTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
     tools.push(...buildButlerVisionTools(toolAccess, this.options.visionInspection));
     tools.push(...buildButlerProviderWebTools(() => this.session?.model?.provider));
     return tools;
@@ -1485,6 +1493,8 @@ export class ButlerAgentService extends EventEmitter {
   }
   private async promptOperatorTurn(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer"; displayText?: string | null; fileReferenceIds?: string[] } = {}): Promise<boolean> { return (await this.prepareOperatorTurn(text, imageReferenceIds, options)).completion; }
   prompt(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer"; displayText?: string | null; fileReferenceIds?: string[] } = {}): void { void this.promptOperatorTurn(text, imageReferenceIds, options); }
+  async runAutomationPrompt(text: string, displayText: string): Promise<boolean> { return (await this.prepareOperatorTurn(text, [], { mode: "queue", displayText, removeOnFailure: true })).completion; }
+  async postAutomationNotice(text: string): Promise<void> { const at = Date.now(); upsertOperatorMessage(this.operatorMessages, `automation-notice-${at}-${this.operatorMessages.length}`, text, at); await this.saveOperatorMessageState(); this.emit("change"); }
   async stopPrompt(): Promise<boolean> { return stopButlerPrompt(this.getSessionAccess()); }
   async updateComposeSettings(provider: string, modelId: string, thinkingLevel: ButlerThinkingLevel): Promise<void> { await updateButlerComposeSettings(this.getSessionAccess(), provider, modelId, thinkingLevel); this.toolCatalog = this.buildToolCatalog(); this.emit("change"); }
 }

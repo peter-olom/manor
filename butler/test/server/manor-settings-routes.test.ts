@@ -138,6 +138,7 @@ test("settings diagnostics validates Ollama Cloud using discovered models", asyn
   });
 
   const validation = new Map<SettingsValidationKey, SettingsValidationResult>();
+  let refreshRequests = 0;
   const app = express();
   app.use(express.json());
   registerManorSettingsRoutes({
@@ -158,7 +159,8 @@ test("settings diagnostics validates Ollama Cloud using discovered models", asyn
       getButlerAuthStatus: () => ({ loggedIn: false }),
       getCodexAuthStatus: () => ({ loggedIn: false })
     },
-    onSettingsChanged: async () => undefined
+    onSettingsChanged: async () => undefined,
+    refreshModelInventories: () => { refreshRequests += 1; }
   } as never);
 
   const server = await listen(app);
@@ -175,6 +177,7 @@ test("settings diagnostics validates Ollama Cloud using discovered models", asyn
     assert.equal(response.status, 200);
     assert.equal(payload.validation.ollamaCloud?.status, "ok");
     assert.match(payload.validation.ollamaCloud?.message ?? "", /glm-5\.2/);
+    assert.equal(refreshRequests, 1);
   } finally {
     await server.close();
   }
