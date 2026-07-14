@@ -117,10 +117,15 @@ test("delegation starts worker directly with deterministic routing metadata", as
   let postedQuestions = 0;
   let delegatedImageReferenceIds: string[] = [];
   let delegatedFileReferenceIds: string[] = [];
+  let requestedCwd: string | undefined;
   const tool = buildButlerDelegationTools({
     defineButlerTool: (definition) => definition,
     getToolUiEffects: () => [],
-    prepareDelegationWorkspace: async () => ({ cwd: "/workspace", branchName: null }),
+    getWorkerDefaults: () => ({ runtime: "auto", threadId: null, cwd: "/workspace" }),
+    prepareDelegationWorkspace: async (_task: string, cwd?: string) => {
+      requestedCwd = cwd;
+      return { cwd: "/workspace", branchName: null };
+    },
     buildDelegationDeveloperInstructions: async () => "",
     buildDelegationContract: async (input: { threadId: string; orchestration?: ButlerRoutingDecisionView | null }) => {
       capturedOrchestration = input.orchestration ?? null;
@@ -172,6 +177,7 @@ test("delegation starts worker directly with deterministic routing metadata", as
   assert.equal(postedQuestions, 0);
   assert.deepEqual(delegatedImageReferenceIds, ["image-current-turn"]);
   assert.deepEqual(delegatedFileReferenceIds, ["file-current-turn", "file-explicit"]);
+  assert.equal(requestedCwd, "/workspace");
   assert.match(acknowledgement, /delegated this to a Worker/);
   assert.match(acknowledgement, /Codex harness/);
   assert.doesNotMatch(acknowledgement, /Codex worker/i);

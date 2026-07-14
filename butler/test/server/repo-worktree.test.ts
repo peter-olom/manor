@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { ensureManagedWorktreeWritableForWorker, resolveCodexWorkerOwnership, taskRequiresManagedWorktree } from "../../src/server/repo-worktree.js";
+import { ensureManagedWorktreeWritableForWorker, resolveCodexWorkerOwnership, taskRequiresManagedWorktree, validateWorkspaceCwd, WorkspaceCwdError } from "../../src/server/repo-worktree.js";
 
 test("resolveCodexWorkerOwnership defaults to the codex container uid and gid", () => {
   assert.deepEqual(resolveCodexWorkerOwnership({}), {
@@ -46,4 +46,28 @@ test("ensureManagedWorktreeWritableForWorker recursively prepares writable workt
   assert.equal(nested.gid, ownership.gid);
   assert.equal(file.uid, ownership.uid);
   assert.equal(file.gid, ownership.gid);
+});
+
+test("validateWorkspaceCwd accepts and canonicalizes directories inside the shared root", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-workspace-root-"));
+  const project = path.join(root, "project");
+  const alias = path.join(root, "project-alias");
+  await mkdir(project);
+  await symlink(project, alias);
+
+  assert.equal(await validateWorkspaceCwd(alias, root), await realpath(project));
+  assert.equal(await validateWorkspaceCwd(root, root), await realpath(root));
+});
+
+test("validateWorkspaceCwd rejects invalid paths and symlink escapes", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-workspace-root-"));
+  const outside = await mkdtemp(path.join(tmpdir(), "manor-workspace-outside-"));
+  const file = path.join(root, "file.txt");
+  const escape = path.join(root, "escape");
+  await writeFile(file, "content");
+  await symlink(outside, escape);
+
+  for (const candidate of ["relative/path", path.join(root, "missing"), file, outside, escape]) {
+    await assert.rejects(() => validateWorkspaceCwd(candidate, root), WorkspaceCwdError);
+  }
 });

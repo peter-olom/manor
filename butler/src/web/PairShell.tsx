@@ -21,6 +21,7 @@ import {
 import { MemoryDashboard, type MemoryDashboardSummary, type MemoryProjectOption } from "./MemoryDashboard";
 import { PairRow } from "./PairRow";
 import { ImagePreviewModal, type PreviewMedia } from "./ImagePreviewModal";
+import { readPairUrlState, writePairUrl, type PairUrlHistoryMode } from "./pair-url-state";
 import {
   canBeginPairDeletion,
   reconcileSelectedPairId,
@@ -31,6 +32,7 @@ import { SandSpinner } from "./SandSpinner";
 import { listenForSkillInstallHandoff, readSkillInstallHandoff, removeSkillInstallHandoff, shouldCreateSkillInstallSession, SKILL_INSTALL_HANDOFF_PLACEHOLDER } from "./skill-install-handoff";
 import { SelfImprovementQueue, formatSelfImprovementTime, selfImprovementStatusLabel } from "./SelfImprovementQueue";
 import { SettingsDashboard, SETTINGS_SECTIONS, type SettingsSectionId } from "./SettingsDashboard";
+import { SessionWorkspaceControl } from "./SessionWorkspaceControl";
 import { TerminalPane } from "./TerminalPane";
 import { useEventStream } from "./useEventStream";
 import { WorkerPane } from "./WorkerPane";
@@ -52,7 +54,7 @@ import type {
   PairWorkerHarness,
   PairWorkerThreadResponse
 } from "../shared/pairing";
-import { DEFAULT_TERMINAL_TARGET, readInitialTerminalTarget, type TerminalTarget } from "../shared/terminal";
+import type { TerminalTarget } from "../shared/terminal";
 
 type RuntimeProofSnapshot = {
   previewProofsByThreadId?: Record<string, WorkerProofRecord[]>;
@@ -74,67 +76,18 @@ const VIEW_LABELS: Record<PairViewMode, string> = {
   settings: "Settings",
   cli: "CLI"
 };
-const VIEW_MODES = new Set<PairViewMode>(["butler", "worker", "split", "files", "memory", "improve", "settings", "cli"]);
 type WorkstreamViewMode = Exclude<PairViewMode, "files" | "memory" | "improve" | "settings">;
 type ManorSurface = "sessions" | "files" | "memory" | "improve" | "settings";
 const WORKSTREAM_MODES: WorkstreamViewMode[] = ["butler", "worker", "split", "cli"];
-const SETTINGS_SECTION_IDS = new Set<SettingsSectionId>(SETTINGS_SECTIONS.map((section) => section.id));
 
 function manorSurfaceForView(viewMode: PairViewMode): ManorSurface {
   if (viewMode === "files" || viewMode === "memory" || viewMode === "improve" || viewMode === "settings") return viewMode;
   return "sessions";
 }
 
-function readInitialViewMode(): PairViewMode {
-  if (typeof window === "undefined") return "butler";
-  if (window.location.pathname === "/settings" || window.location.pathname.startsWith("/settings/")) return "settings";
-  const value = new URLSearchParams(window.location.search).get("view");
-  return value && VIEW_MODES.has(value as PairViewMode) ? (value as PairViewMode) : "butler";
-}
-
-function readInitialSettingsSection(): SettingsSectionId {
-  if (typeof window === "undefined") return "runtime";
-  const [, prefix, section] = window.location.pathname.split("/");
-  if (prefix !== "settings") return "runtime";
-  return SETTINGS_SECTION_IDS.has(section as SettingsSectionId) ? (section as SettingsSectionId) : "runtime";
-}
-
-function syncUrlState(viewMode: PairViewMode, terminalTarget: TerminalTarget, settingsSection: SettingsSectionId): void {
-  if (typeof window === "undefined") return;
-  const url = new URL(window.location.href);
-  if (viewMode === "settings") {
-    url.pathname = `/settings/${settingsSection}`;
-    url.searchParams.delete("view");
-    url.searchParams.delete("terminal");
-    if (settingsSection !== "providers") url.searchParams.delete("provider");
-    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
-    return;
-  }
-  if (url.pathname === "/settings" || url.pathname.startsWith("/settings/")) {
-    url.pathname = "/";
-  }
-  url.searchParams.delete("provider");
-  if (viewMode === "butler") {
-    url.searchParams.delete("view");
-  } else {
-    url.searchParams.set("view", viewMode);
-  }
-  if (viewMode === "cli" && terminalTarget !== DEFAULT_TERMINAL_TARGET) {
-    url.searchParams.set("terminal", terminalTarget);
-  } else {
-    url.searchParams.delete("terminal");
-  }
-  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
-}
-
 function formatTime(value: number | null | undefined): string {
   if (!value) return "—";
   return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function shortId(value: string | null | undefined): string {
-  if (!value) return "—";
-  return value.split("-").at(-1) ?? value.slice(0, 8);
 }
 
 function statusLabel(status: PairStatus | null | undefined): string {
@@ -449,7 +402,9 @@ function Topbar({
   memoryTotalCount,
   settingsSection,
   onMemorySearch,
-  onMemoryProjectFilter
+  onMemoryProjectFilter,
+  workspacePending,
+  onWorkspaceChange
 }: {
   pair: PairDetail | null;
   viewMode: PairViewMode;
@@ -477,6 +432,8 @@ function Topbar({
   settingsSection: SettingsSectionId;
   onMemorySearch: (value: string) => void;
   onMemoryProjectFilter: (value: string) => void;
+  workspacePending: boolean;
+  onWorkspaceChange: (cwd: string) => Promise<void>;
 }) {
   const isGlobalSurface = viewMode === "files" || viewMode === "memory" || viewMode === "improve" || viewMode === "settings";
   const surfaceTitle = viewMode === "files" ? "Files" : viewMode === "memory" ? "Memory" : viewMode === "improve" ? "Self-improvement" : viewMode === "settings" ? "Settings" : null;
@@ -503,54 +460,52 @@ function Topbar({
         >
           {isMobileSidebarOpen ? <ChevronLeftIcon /> : <MenuIcon />}
         </button>
-        <div className="topbar-title">
-          {isGlobalSurface ? (
-            <div className="surface-topbar-title">
-              <h1 className="title-label">{surfaceTitle}</h1>
-              {surfaceMeta ? <span className="surface-topbar-meta">{surfaceMeta}</span> : null}
-            </div>
-          ) : pair && editingTitle ? (
-            <input
-              className="title-input"
-              type="text"
-              value={titleDraft}
-              onChange={(event) => onTitleDraftChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  onCommitTitle();
-                } else if (event.key === "Escape") {
-                  event.preventDefault();
-                  onCancelEditTitle();
-                }
-              }}
-              onBlur={() => onCommitTitle()}
-              disabled={savingTitle}
-              autoFocus
-              aria-label="Session title"
-              maxLength={72}
-            />
-          ) : (
-            <button
-              type="button"
-              className="title-button"
-              onClick={pair ? onStartEditTitle : undefined}
-              disabled={!pair || busy}
-              aria-label={pair ? `Rename session: ${pair.title}` : "No session selected"}
-            >
-              <h1 className="title-label">{pair?.title ?? "No session selected"}</h1>
-              {pair ? <PencilIcon /> : null}
-            </button>
-          )}
-          {pair?.status === "worker_running" && !isGlobalSurface ? (
-            <span className="topbar-worker-loader" aria-label="Worker is working">
-              <SandSpinner />
-            </span>
-          ) : null}
-          {pair && !isGlobalSurface ? <span className="pair-id">{shortId(pair.id)}</span> : null}
-          {pair && !isGlobalSurface && editingTitle && titleError ? (
-            <span className="title-error" role="alert">{titleError}</span>
-          ) : null}
+        <div className={`topbar-heading ${pair && !isGlobalSurface ? "has-workspace" : ""}`}>
+          <div className="topbar-title">
+            {isGlobalSurface ? (
+              <div className="surface-topbar-title">
+                <h1 className="title-label">{surfaceTitle}</h1>
+                {surfaceMeta ? <span className="surface-topbar-meta">{surfaceMeta}</span> : null}
+              </div>
+            ) : pair && editingTitle ? (
+              <input
+                className="title-input"
+                type="text"
+                value={titleDraft}
+                onChange={(event) => onTitleDraftChange(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    onCommitTitle();
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    onCancelEditTitle();
+                  }
+                }}
+                onBlur={() => onCommitTitle()}
+                disabled={savingTitle}
+                autoFocus
+                aria-label="Session title"
+                maxLength={72}
+              />
+            ) : (
+              <button
+                type="button"
+                className="title-button"
+                onClick={pair ? onStartEditTitle : undefined}
+                disabled={!pair || busy}
+                aria-label={pair ? `Rename session: ${pair.title}` : "No session selected"}
+              >
+                <h1 className="title-label">{pair?.title ?? "No session selected"}</h1>
+                {pair ? <PencilIcon /> : null}
+              </button>
+            )}
+            {pair?.status === "worker_running" && !isGlobalSurface ? (
+              <span className="topbar-worker-loader" aria-label="Worker is working"><SandSpinner /></span>
+            ) : null}
+            {pair && !isGlobalSurface && editingTitle && titleError ? <span className="title-error" role="alert">{titleError}</span> : null}
+          </div>
+          {pair && !isGlobalSurface ? <SessionWorkspaceControl pair={pair} pending={workspacePending} onChange={onWorkspaceChange} /> : null}
         </div>
       </div>
       <div className="topbar-right">
@@ -618,21 +573,21 @@ function Topbar({
 }
 
 export function PairShell() {
+  const [initialUrlState] = useState(readPairUrlState);
   const [pairs, setPairs] = useState<PairSummary[]>([]);
-  const [selectedPairId, setSelectedPairId] = useState<string | null>(null);
+  const [pairsLoaded, setPairsLoaded] = useState(false);
+  const [selectedPairId, setSelectedPairId] = useState<string | null>(initialUrlState.sessionId);
   const [pair, setPair] = useState<PairDetail | null>(null);
   const [workerThread, setWorkerThread] = useState<WorkerThread | null>(null);
   const [workerThreadPairId, setWorkerThreadPairId] = useState<string | null>(null);
   const [workerThreadLoading, setWorkerThreadLoading] = useState(false);
-  const [viewMode, setViewMode] = useState<PairViewMode>(() => readInitialViewMode());
+  const [viewMode, setViewMode] = useState<PairViewMode>(initialUrlState.viewMode);
   const [lastWorkstreamMode, setLastWorkstreamMode] = useState<WorkstreamViewMode>(() => {
-    const initial = readInitialViewMode();
+    const initial = initialUrlState.viewMode;
     return initial === "files" || initial === "memory" || initial === "improve" || initial === "settings" ? "butler" : initial;
   });
-  const [settingsSection, setSettingsSection] = useState<SettingsSectionId>(() => readInitialSettingsSection());
-  const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>(
-    () => readInitialTerminalTarget(new URLSearchParams(window.location.search).get("terminal")) ?? DEFAULT_TERMINAL_TARGET
-  );
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionId>(initialUrlState.settingsSection);
+  const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>(initialUrlState.terminalTarget);
   const skillInstallHandoffPending = useRef(readSkillInstallHandoff(window.location.search));
   const skillInstallSessionCreating = useRef(false); const skillInstallSessionRequest = useRef(0);
   const [skillInstallIntent, setSkillInstallIntent] = useState(skillInstallHandoffPending.current);
@@ -643,10 +598,13 @@ export function PairShell() {
   const workerHandoffRequestCounter = useRef(0);
   const latestWorkerHandoffRequestByPairId = useRef(new Map<string, number>());
   const [error, setError] = useState<string | null>(null);
-  const selectedPairIdRef = useRef<string | null>(null);
+  const [workspacePending, setWorkspacePending] = useState(false);
+  const selectedPairIdRef = useRef<string | null>(initialUrlState.sessionId);
+  const pairUrlHistoryModeRef = useRef<PairUrlHistoryMode>("replace");
   const suppressedPairDetailErrorsRef = useRef(new Set<string>());
   const pairListRequestRef = useRef(0);
-  const selectPairId = useCallback((pairId: string | null) => {
+  const selectPairId = useCallback((pairId: string | null, pushHistory = false) => {
+    if (pushHistory && pairId !== selectedPairIdRef.current) pairUrlHistoryModeRef.current = "push";
     selectedPairIdRef.current = pairId;
     setSelectedPairId(pairId);
   }, []);
@@ -783,6 +741,7 @@ export function PairShell() {
     startTransition(() => {
       setPairs(payload.pairs);
       selectPairId(reconcileSelectedPairId(selectedPairIdRef.current, payload.pairs));
+      setPairsLoaded(true);
     });
     return payload;
   }, [selectPairId]);
@@ -793,20 +752,26 @@ export function PairShell() {
   }, []);
 
   useEffect(() => {
-    syncUrlState(viewMode, terminalTarget, settingsSection);
-  }, [settingsSection, terminalTarget, viewMode]);
+    const historyMode = pairUrlHistoryModeRef.current;
+    pairUrlHistoryModeRef.current = "replace";
+    writePairUrl(window.history, window.location.href, {
+      sessionId: selectedPairId, viewMode, terminalTarget, settingsSection
+    }, historyMode);
+  }, [selectedPairId, settingsSection, terminalTarget, viewMode]);
 
   useEffect(() => { if (readSkillInstallHandoff(window.location.search)) window.history.replaceState(null, "", removeSkillInstallHandoff(window.location.href)); }, []);
 
   useEffect(() => {
     const onPopState = () => {
-      setViewMode(readInitialViewMode());
-      setSettingsSection(readInitialSettingsSection());
-      setTerminalTarget(readInitialTerminalTarget(new URLSearchParams(window.location.search).get("terminal")) ?? DEFAULT_TERMINAL_TARGET);
+      const urlState = readPairUrlState();
+      selectPairId(pairsLoaded ? reconcileSelectedPairId(urlState.sessionId, pairs) : urlState.sessionId);
+      setViewMode(urlState.viewMode);
+      setSettingsSection(urlState.settingsSection);
+      setTerminalTarget(urlState.terminalTarget);
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+  }, [pairs, pairsLoaded, selectPairId]);
 
   useEffect(() => {
     if (viewMode !== "files" && viewMode !== "memory" && viewMode !== "improve" && viewMode !== "settings") setLastWorkstreamMode(viewMode);
@@ -862,6 +827,7 @@ export function PairShell() {
   }, [loadRuntime]);
 
   useEffect(() => {
+    if (!pairsLoaded) return;
     if (!selectedPairId) {
       setPair(null);
       return;
@@ -890,7 +856,7 @@ export function PairShell() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [selectedPairId]);
+  }, [pairsLoaded, selectedPairId]);
 
   useEffect(() => {
     if (!activeWorkerPairId) {
@@ -976,7 +942,7 @@ export function PairShell() {
     try {
       const payload = await postJson<PairDetailResponse>("/api/pairs", { title: "New session" });
       await loadPairs(); if (!activate()) return true;
-      selectPairId(payload.pair.id);
+      selectPairId(payload.pair.id, true);
       setPair(payload.pair);
       setViewMode("butler");
       setMobileSidebarOpen(false);
@@ -1031,7 +997,7 @@ export function PairShell() {
     if (request.pairId) {
       await loadPairs();
       const payload = await getJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(request.pairId)}?limit=${PAGE_SIZE}`);
-      selectPairId(payload.pair.id);
+      selectPairId(payload.pair.id, true);
       setPair(payload.pair);
       setViewMode("worker");
       setLastWorkstreamMode("worker");
@@ -1293,6 +1259,19 @@ export function PairShell() {
     setViewMode("settings");
     setMobileSidebarOpen(false);
   }, [cancelEditTitle]);
+  const changeWorkspace = useCallback(async (cwd: string) => {
+    if (!activePair || workspacePending) return;
+    const pairId = activePair.id;
+    setWorkspacePending(true);
+    try {
+      const payload = await patchJson<{ pair: PairDetail }>(`/api/pairs/${encodeURIComponent(pairId)}/workspace`, { cwd });
+      setPair((current) => current?.id === pairId ? payload.pair : current);
+      setPairs((current) => current.map((entry) => entry.id === payload.pair.id ? { ...entry, defaultCwd: payload.pair.defaultCwd, worker: payload.pair.worker, updatedAt: payload.pair.updatedAt } : entry));
+      if (selectedPairIdRef.current === pairId) setComposerContextItems([]);
+    } finally {
+      setWorkspacePending(false);
+    }
+  }, [activePair, workspacePending]);
 
   return (
     <main className={`app ${mobileSidebarOpen ? "is-mobile-sidebar-open" : ""} ${activePair ? "" : "is-empty"}`}>
@@ -1307,7 +1286,7 @@ export function PairShell() {
         memorySummary={memorySummary}
         settingsSection={settingsSection}
         onSelect={(id) => {
-          selectPairId(id); setSkillInstallIntent(false); setViewMode(lastWorkstreamMode);
+          selectPairId(id, true); setSkillInstallIntent(false); setViewMode(lastWorkstreamMode);
           setMobileSidebarOpen(false); setEditingTitle(false); setTitleDraft(""); setTitleError(null);
         }}
         onSelectManor={selectManorSurface}
@@ -1356,6 +1335,8 @@ export function PairShell() {
           settingsSection={settingsSection}
           onMemorySearch={setMemorySearch}
           onMemoryProjectFilter={setMemoryProjectFilter}
+          workspacePending={workspacePending}
+          onWorkspaceChange={changeWorkspace}
         />
         {!activePair && viewMode !== "files" && viewMode !== "memory" && viewMode !== "improve" && viewMode !== "settings" && viewMode !== "cli" ? (
           <div className="empty-state">

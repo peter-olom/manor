@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -152,6 +152,58 @@ test("a worker handoff remaps the complete live payload without flattening its r
   assert.deepEqual(remapped.delivery, { threadId: "replacement-worker", turnId: null, messageId: null });
 });
 
+test("a cross-workspace handoff starts with fresh workspace-scoped state", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-worker-cross-workspace-"));
+  const sourceCwd = path.join(dir, "source");
+  const targetCwd = path.join(dir, "target");
+  await Promise.all([mkdir(sourceCwd), mkdir(targetCwd)]);
+  try {
+    const store = new ButlerStateStore(path.join(dir, "state.json"));
+    const sourceContract = buildThreadExecutionContract({
+      threadId: "source-worker",
+      workspaceCwd: sourceCwd,
+      projectId: "source",
+      projectLabel: "Source",
+      branch: null,
+      taskText: "Continue the implementation",
+      notes: []
+    });
+    store.upsertThreadSummary({ id: "source-worker", source: "appServer", status: "idle", cwd: sourceCwd, turns: [] });
+    store.setThreadExecutionContract("source-worker", sourceContract);
+    store.setThreadJobPayload(buildJobPayload({
+      threadId: "source-worker",
+      kind: "delegation",
+      instruction: sourceContract.requestedTask,
+      contract: sourceContract,
+      imageReferenceIds: ["old-image"],
+      fileReferenceIds: ["old-file"]
+    }));
+
+    await startWorkerHandoff({
+      access: { store } as never,
+      sourceThreadId: "source-worker",
+      targetHarness: "codex",
+      targetModel: "gpt-5.4",
+      targetEffort: "high",
+      targetCwd,
+      artifactsDir: dir,
+      startWorker: async (_access, options) => {
+        store.upsertThreadSummary({ id: "replacement-worker", source: "appServer", status: "idle", cwd: targetCwd, turns: [] });
+        if (typeof options.input === "function") await options.input("replacement-worker");
+        return { threadId: "replacement-worker", turnId: "replacement-turn", runtime: "openai", harness: "codex", provider: "openai-codex", model: "gpt-5.4", effort: "high" };
+      }
+    });
+
+    const replacementPayload = store.getThreadJobPayload("replacement-worker");
+    assert.equal(store.getThread("replacement-worker")?.executionContract?.workspaceCwd, targetCwd);
+    assert.deepEqual(replacementPayload?.attachments.images, ["old-image"]);
+    assert.deepEqual(replacementPayload?.attachments.files, []);
+    assert.equal(replacementPayload?.protocol.parentThreadId, "source-worker");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("handoff notes include a worker reply that is newer than the last report", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "manor-worker-handoff-notes-"));
   try {
@@ -174,6 +226,21 @@ test("handoff notes include a worker reply that is newer than the last report", 
     const notes = buildWorkerHandoffNotes(store, "source-worker");
     assert.ok(notes.some((note) => note.includes("Older completed report.")));
     assert.ok(notes.some((note) => note.includes("Newer worker progress after the report.")));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("handoff notes make cross-workspace boundaries explicit", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-worker-handoff-workspace-notes-"));
+  try {
+    const store = new ButlerStateStore(path.join(dir, "state.json"));
+    store.upsertThreadSummary({ id: "source-worker", status: "idle", cwd: "/repos/old", turns: [] });
+
+    const notes = buildWorkerHandoffNotes(store, "source-worker", "/repos/new");
+
+    assert.ok(notes.some((note) => note.includes("new workspace at /repos/new")));
+    assert.ok(notes.some((note) => note.includes("do not modify the previous workspace")));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -247,6 +314,21 @@ test("a self-improvement handoff transfers the source reservation to the replace
     await requestState.flush();
     let replacementWasAuthorized = false;
     let pairAttachmentFlushed = false;
+
+    await assert.rejects(() => handoffWorkerAtomically({
+      access: { store } as never,
+      sourceThreadId: "source-worker",
+      targetHarness: "pi",
+      targetModel: "ollama-cloud/glm-5.2",
+      targetEffort: "high",
+      targetCwd: path.join(dir, "other"),
+      artifactsDir: dir,
+      startHandoff: async () => { throw new Error("must not start"); },
+      trackCallback: async () => undefined,
+      removeCallback: async () => undefined,
+      attach: () => ({ attached: true }),
+      post: () => undefined
+    }), /workspace cannot be changed.*self-improvement checkout/i);
 
     const result = await handoffWorkerAtomically({
       access: { store } as never,

@@ -201,6 +201,7 @@ test("attachWorker records one Butler-managed worker", async () => {
   assert.equal(updated.worker?.threadId, "thread-1");
   assert.equal(updated.worker?.task, "Fix the checkout retry bug");
   assert.equal(updated.worker?.handoffPrompt, "Run the checks and report evidence.");
+  assert.equal(updated.defaultCwd, null);
   assert.equal(updated.worker?.runtime, null);
   assert.equal(updated.status, "worker_running");
 });
@@ -236,9 +237,10 @@ test("replacement attachment requires the expected worker and can restore it exa
   pairStore.attachWorker(empty.id, { threadId: "unexpected", replacesThreadId: "missing" });
   assert.equal(pairStore.getPair(empty.id)?.worker, null);
 
-  const created = pairStore.createPair();
+  const created = pairStore.createPair({ defaultCwd: "/repos/old" });
   pairStore.attachWorker(created.id, {
     threadId: "thread-old",
+    cwd: "/repos/old",
     runtime: "openai",
     provider: "openai-codex",
     model: "gpt-5.4",
@@ -248,14 +250,16 @@ test("replacement attachment requires the expected worker and can restore it exa
   const original = structuredClone(pairStore.getPair(created.id)?.worker ?? null);
   pairStore.attachWorker(created.id, {
     threadId: "thread-new",
+    cwd: "/repos/new",
     runtime: "pi-rpc",
     provider: "opencode-go",
     model: "opencode-go/minimax-m3",
     replacesThreadId: "thread-old"
   });
 
-  assert.equal(pairStore.restoreWorkerIfCurrent(created.id, "thread-new", original), true);
+  assert.equal(pairStore.restoreWorkerIfCurrent(created.id, "thread-new", original, "/repos/old"), true);
   assert.deepEqual(pairStore.getPair(created.id)?.worker, original);
+  assert.equal(pairStore.getPair(created.id)?.defaultCwd, "/repos/old");
   assert.equal(pairStore.restoreWorkerIfCurrent(created.id, "thread-new", original), false);
 });
 

@@ -1,6 +1,7 @@
 import type express from "express";
 
 import { readFileReferenceIds, readImageReferenceIds } from "./server-runtime-helpers.js";
+import { WorkspaceCwdError } from "./repo-worktree.js";
 import type { PairSessionManager } from "./pair-session-manager.js";
 import { isKnownReasoningEffort, isKnownThinkingLevel, type PairDetail } from "../shared/pairing.js";
 
@@ -25,6 +26,14 @@ export function registerPairRoutes(access: PairRouteAccess): void {
     response.json({ pairs: await pairSessions.listSummaries() });
   });
 
+  app.get("/api/workspaces", async (_request, response) => {
+    try {
+      response.json({ workspaces: await pairSessions.listWorkspaces() });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.post("/api/pairs", async (request, response) => {
     try {
       const pair = await pairSessions.createPair({
@@ -33,7 +42,7 @@ export function registerPairRoutes(access: PairRouteAccess): void {
       });
       response.status(201).json({ pair });
     } catch (error) {
-      response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+      response.status(error instanceof WorkspaceCwdError ? 400 : 500).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
 
@@ -155,6 +164,24 @@ export function registerPairRoutes(access: PairRouteAccess): void {
       return;
     }
     response.json({ pair });
+  });
+
+  app.patch("/api/pairs/:pairId/workspace", async (request, response) => {
+    const cwd = readString(request.body?.cwd);
+    if (!cwd) {
+      response.status(400).json({ error: "cwd is required" });
+      return;
+    }
+    try {
+      const pair = await pairSessions.setWorkspaceCwd(request.params.pairId, cwd);
+      if (!pair) {
+        response.status(404).json({ error: "Butler session not found" });
+        return;
+      }
+      response.json({ pair });
+    } catch (error) {
+      response.status(error instanceof WorkspaceCwdError ? 400 : 409).json({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   app.get("/api/pairs/:pairId/worker-thread", async (request, response) => {

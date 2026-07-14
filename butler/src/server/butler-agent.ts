@@ -92,7 +92,7 @@ import { createManorModelRegistry, modelToModelOption } from "./model-provider-c
 import { loadWorkerThread, sendWorkerMessage, type WorkerClientAccess } from "./worker-client-router.js";
 import { handoffWorkerAtomically } from "./worker-handoff.js";
 import { decoratePreviewVerification } from "./preview-verification.js";
-import { ensureTaskWorktree, resolveExistingWorkspaceCwd, resolveWorkspaceBranchName, resolveWorkspaceProjectInfo, taskRequiresManagedWorktree } from "./repo-worktree.js";
+import { ensureTaskWorktree, resolveExistingWorkspaceCwd, resolveWorkspaceBranchName, resolveWorkspaceProjectInfo, taskRequiresManagedWorktree, validateWorkspaceCwd } from "./repo-worktree.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { type LoadedServiceTemplate, ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { formatStackStorageSummary, normalizeStackStorageMode } from "./stack-storage.js";
@@ -1037,18 +1037,8 @@ export class ButlerAgentService extends EventEmitter {
   }
 
   private async prepareDelegationWorkspace(task: string, cwd?: string): Promise<{ cwd: string; branchName: string | null }> {
-    const requestedCwd = cwd ?? "/repos";
-    if (cwd) {
-      const resolvedCwd = await resolveExistingWorkspaceCwd(cwd);
-      if (resolvedCwd && resolvedCwd !== cwd) {
-        return {
-          cwd: resolvedCwd,
-          branchName: await resolveWorkspaceBranchName(resolvedCwd)
-        };
-      }
-    }
-
-    const resolvedCwd = await resolveExistingWorkspaceCwd(requestedCwd);
+    const requestedCwd = await resolveExistingWorkspaceCwd(cwd ?? "/repos");
+    const resolvedCwd = await validateWorkspaceCwd(requestedCwd);
     if (!taskRequiresManagedWorktree(task)) {
       return {
         cwd: resolvedCwd,
@@ -1450,13 +1440,13 @@ export class ButlerAgentService extends EventEmitter {
     if (this.quiescing) throw new Error("Butler session is closing."); await this.registerPendingChatCallback(threadId, { requestedAt: this.store.getThread(threadId)?.createdAt ?? Date.now() }); this.store.noteButlerSteer(threadId);
   }); }
   async ensureExternalWorkerDelegation(threadId: string): Promise<void> { const callback = this.pendingChatCallbacks.get(threadId); if (callback && isCallbackOutstanding(callback)) return; const thread = this.store.getThread(threadId); const latestTurnId = getFallbackTurnId(thread); if (latestTurnId) { const closeoutId = buildCloseoutId(threadId, latestTurnId); if (this.deliveredCloseoutIds.has(closeoutId) || this.operatorMessages.some((message) => message.id === `callback-${closeoutId}` || message.id === `callback-fallback-${closeoutId}`)) return; } const latestWorkAt = Math.max(this.store.getWorkerReport(threadId)?.updatedAt ?? 0, thread?.turns.at(-1)?.startedAt ?? 0); if (callback && latestWorkAt <= (callback.closedAt ?? callback.updatedAt)) return; await this.trackExternalWorkerDelegation(threadId); }
-  async handoffWorker(input: { sourceThreadId: string; harness: string; model: string; effort: ReasoningEffort | null; butlerThreadId?: string | null }) {
+  async handoffWorker(input: { sourceThreadId: string; harness: string; model: string; effort: ReasoningEffort | null; butlerThreadId?: string | null; cwd?: string | null }) {
     return handoffWorkerAtomically({
       access: this.getWorkerClientAccess(),
       sourceThreadId: input.sourceThreadId, targetHarness: input.harness,
       targetModel: input.model,
       targetEffort: input.effort,
-      artifactsDir: this.artifactsDir,
+      artifactsDir: this.artifactsDir, targetCwd: input.cwd ?? null,
       butlerThreadId: input.butlerThreadId ?? this.session?.sessionId ?? null,
       trackCallback: (threadId) => this.trackExternalWorkerDelegation(threadId),
       removeCallback: (threadId) => this.removeExternalWorkerDelegation(threadId),

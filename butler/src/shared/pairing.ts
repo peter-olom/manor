@@ -165,6 +165,18 @@ export type PairWorker = {
   handedOffFrom?: PairWorkerHandoff | null;
 };
 
+export type PairWorkspaceOption = {
+  id: string;
+  label: string;
+  cwd: string;
+  kind: "project" | "workspace";
+  gitBacked: boolean;
+};
+
+export type PairWorkspaceListResponse = {
+  workspaces: PairWorkspaceOption[];
+};
+
 export type PairModelOption = {
   id: string;
   label: string;

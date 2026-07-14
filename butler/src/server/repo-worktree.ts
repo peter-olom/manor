@@ -26,6 +26,13 @@ export interface WorkspaceProjectDirectory {
   gitBacked: boolean;
 }
 
+export class WorkspaceCwdError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkspaceCwdError";
+  }
+}
+
 export function resolveWorkspaceProjectInfo(cwd: string | null | undefined): { id: string; label: string; kind: WorkstreamGroupKind } {
   const normalized = typeof cwd === "string" ? cwd.replace(/\\/g, "/").replace(/\/+$/, "") : "";
   if (!normalized) {
@@ -181,6 +188,26 @@ export async function resolveExistingWorkspaceCwd(cwd: string): Promise<string> 
   }
 
   return normalized;
+}
+
+export async function validateWorkspaceCwd(cwd: string, root: string = SHARED_WORKSPACE_ROOT): Promise<string> {
+  const requested = cwd.trim();
+  if (!requested) throw new WorkspaceCwdError("Workspace directory is required.");
+  if (!path.isAbsolute(requested)) throw new WorkspaceCwdError("Workspace directory must be an absolute path.");
+
+  const realRoot = await fs.realpath(path.resolve(root)).catch(() => {
+    throw new WorkspaceCwdError("The shared workspace is unavailable.");
+  });
+  const realCwd = await fs.realpath(path.resolve(requested)).catch(() => {
+    throw new WorkspaceCwdError("That workspace directory does not exist.");
+  });
+  const relative = path.relative(realRoot, realCwd);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new WorkspaceCwdError("Workspace directory must be inside the shared workspace.");
+  }
+  const info = await fs.stat(realCwd).catch(() => null);
+  if (!info?.isDirectory()) throw new WorkspaceCwdError("Workspace must point to a directory.");
+  return realCwd;
 }
 
 export async function listWorkspaceProjectDirectories(root: string = SHARED_WORKSPACE_ROOT): Promise<WorkspaceProjectDirectory[]> {

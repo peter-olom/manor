@@ -435,6 +435,19 @@ export class PairStore extends EventEmitter {
     return this.getPair(pair.id);
   }
 
+  updatePairDefaultCwd(pairId: string, rawCwd: string | null): PairChat | null {
+    const pair = this.pairs.get(pairId);
+    if (!pair) return null;
+    const next = normalizeText(rawCwd) || null;
+    if (pair.defaultCwd !== next) {
+      pair.defaultCwd = next;
+      pair.updatedAt = Date.now();
+      this.queueSave();
+      this.emit("change");
+    }
+    return this.getPair(pair.id);
+  }
+
   updateDefaultPairTitle(pairId: string, rawTitle: string): PairChat | null {
     const pair = this.pairs.get(pairId);
     if (!pair || !pairTitleIsDefault(pair.title) || !normalizeText(rawTitle)) {
@@ -580,10 +593,11 @@ export class PairStore extends EventEmitter {
     return this.getPair(pair.id);
   }
 
-  restoreWorkerIfCurrent(pairId: string, expectedThreadId: string, worker: PairWorker | null): boolean {
+  restoreWorkerIfCurrent(pairId: string, expectedThreadId: string, worker: PairWorker | null, defaultCwd?: string | null): boolean {
     const pair = this.pairs.get(pairId);
     if (!pair || pair.worker?.threadId !== expectedThreadId) return false;
     pair.worker = clonePairWorker(worker);
+    if (defaultCwd !== undefined) pair.defaultCwd = normalizeText(defaultCwd) || null;
     pair.lastHandoffPrompt = pair.worker?.handoffPrompt || null;
     pair.updatedAt = Date.now();
     pair.status = deriveStatus(pair, this.store);

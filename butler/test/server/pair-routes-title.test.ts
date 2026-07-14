@@ -4,7 +4,8 @@ import test from "node:test";
 import express from "express";
 
 import { registerPairRoutes } from "../../src/server/pair-routes.js";
-import type { PairDetail, PairSummary } from "../../src/shared/pairing.js";
+import { WorkspaceCwdError } from "../../src/server/repo-worktree.js";
+import type { PairDetail, PairSummary, PairWorkspaceOption } from "../../src/shared/pairing.js";
 
 function makePair(overrides: Partial<PairDetail> = {}): PairDetail {
   const now = Date.now();
@@ -59,10 +60,14 @@ function createFakePairSessions(initialPair: PairDetail = makePair()) {
   const pairs = new Map<string, PairDetail>([[initialPair.id, initialPair]]);
   const sentMessages: Array<{ pairId: string; text: string; imageReferenceIds: string[]; fileReferenceIds: string[]; inputItems?: unknown[] }> = [];
   const handoffs: Array<{ pairId: string; harness: string | null; model: string; effort: string | null }> = [];
+  const workspaceChanges: Array<{ pairId: string; cwd: string }> = [];
+  const workspaces: PairWorkspaceOption[] = [{ id: "workspace:shared", cwd: "/repos", label: "Shared workspace", kind: "workspace", gitBacked: false }];
   const questionAnswers: Array<{ pairId: string; messageId: string; questionId: string; optionId?: string; freeformText?: string }> = [];
   return {
     sentMessages,
     handoffs,
+    workspaceChanges,
+    workspaces,
     questionAnswers,
     manager: {
       async listSummaries(): Promise<PairSummary[]> {
@@ -79,6 +84,17 @@ function createFakePairSessions(initialPair: PairDetail = makePair()) {
       },
       async getPairDetail(pairId: string): Promise<PairDetail | null> {
         return pairs.get(pairId) ?? null;
+      },
+      async listWorkspaces(): Promise<PairWorkspaceOption[]> {
+        return workspaces;
+      },
+      async setWorkspaceCwd(pairId: string, cwd: string): Promise<PairDetail | null> {
+        const pair = pairs.get(pairId);
+        if (!pair) return null;
+        workspaceChanges.push({ pairId, cwd });
+        const updated = { ...pair, defaultCwd: cwd, updatedAt: Date.now() };
+        pairs.set(pairId, updated);
+        return updated;
       },
       async listComposerSuggestions(pairId: string, trigger: "@" | "$" | "/") {
         if (!pairs.has(pairId)) return null;
@@ -279,6 +295,27 @@ test("POST /api/pairs creates an empty Butler-backed pair", async () => {
     assert.equal(body.pair.title, "Fresh session");
     assert.equal(body.pair.butlerSessionId, "pair-created");
     assert.equal(body.pair.messages.length, 0);
+  } finally {
+    await close();
+  }
+});
+
+test("POST /api/pairs rejects an invalid initial workspace", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes({
+    ...fake.manager,
+    async createPair(): Promise<PairDetail> {
+      throw new WorkspaceCwdError("Workspace directory must be inside the shared workspace.");
+    }
+  });
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ defaultCwd: "/tmp" })
+    });
+    assert.equal(res.status, 400);
   } finally {
     await close();
   }
@@ -629,6 +666,61 @@ test("POST /api/pairs/:pairId/worker/handoff starts an explicit model handoff", 
     });
     assert.equal(res.status, 201);
     assert.deepEqual(fake.handoffs, [{ pairId: "pair-1", harness: "pi", model: "opencode-go/minimax-m3", effort: "high" }]);
+  } finally {
+    await close();
+  }
+});
+
+test("GET /api/workspaces lists valid workspace choices", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/workspaces`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { workspaces: fake.workspaces });
+  } finally {
+    await close();
+  }
+});
+
+test("PATCH /api/pairs/:pairId/workspace changes the session workspace", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/workspace`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cwd: "/repos/manor" })
+    });
+    assert.equal(res.status, 200);
+    assert.equal(((await res.json()) as { pair: PairDetail }).pair.defaultCwd, "/repos/manor");
+    assert.deepEqual(fake.workspaceChanges, [{ pairId: "pair-1", cwd: "/repos/manor" }]);
+  } finally {
+    await close();
+  }
+});
+
+test("PATCH /api/pairs/:pairId/workspace maps invalid paths and conflicts", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes({
+    ...fake.manager,
+    async setWorkspaceCwd(_pairId: string, cwd: string): Promise<PairDetail | null> {
+      if (cwd === "/invalid") throw new WorkspaceCwdError("Workspace must be inside the shared workspace");
+      throw new Error("Wait for the current Worker turn to finish");
+    }
+  });
+  const { url, close } = await listen(app);
+  try {
+    for (const [cwd, status] of [["/invalid", 400], ["/repos/busy", 409]] as const) {
+      const res = await fetch(`${url}/api/pairs/pair-1/workspace`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd })
+      });
+      assert.equal(res.status, status);
+    }
   } finally {
     await close();
   }

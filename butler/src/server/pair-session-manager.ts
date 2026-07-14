@@ -18,7 +18,7 @@ import type { ExtensionUiBroker } from "./extension-ui-broker.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { ButlerMessageView, ButlerLivePatchView, ModelOption } from "./types.js";
 import type { VisionInspectionService } from "./vision-inspection.js";
-import type { PairButlerActivityOutcome, PairChat, PairComposerInputItem, PairComposerSuggestion, PairModelOption, PairDetail, PairMessage, PairComposeSettings, PairReviewActivity, PairSummary, PairTraceItem, PairWorker } from "../shared/pairing.js";
+import type { PairButlerActivityOutcome, PairChat, PairComposerInputItem, PairComposerSuggestion, PairModelOption, PairDetail, PairMessage, PairComposeSettings, PairReviewActivity, PairSummary, PairTraceItem, PairWorker, PairWorkspaceOption } from "../shared/pairing.js";
 import type { WorkerSessionControlAction, WorkerSessionControls } from "../shared/worker-session-controls.js";
 import { DEFAULT_THINKING_LEVELS } from "../shared/pairing.js";
 import { pairTitleIsDefault } from "./pair-store.js";
@@ -27,6 +27,7 @@ import { parseProviderModelRef } from "./model-provider-config.js";
 import { isCallbackReviewRetryablePause } from "./butler-callback-review-runner.js";
 import { redactSensitiveText } from "./redact-sensitive-text.js";
 import { workerThreadIsRunning } from "./worker-thread-status.js";
+import { listWorkspaceProjectDirectories, validateWorkspaceCwd, type WorkspaceProjectDirectory } from "./repo-worktree.js";
 import { buildManorSkillRoutingContext, listManorSkillCapabilities, normalizeManorSkillName, parseManorSkillInvocation, skillAvailabilityDetail } from "./manor-skill-routing.js";
 
 type PairButlerService = Pick<
@@ -58,6 +59,8 @@ type PairSessionManagerOptions = {
   extensionUiBroker: ExtensionUiBroker;
   getCodexAuthStatus?: () => { loggedIn: boolean };
   createButlerService?: (options: ConstructorParameters<typeof ButlerAgentService>[0]) => PairButlerService;
+  listWorkspaceProjects?: () => Promise<WorkspaceProjectDirectory[]>;
+  validateWorkspace?: (cwd: string) => Promise<string>;
 };
 
 function toPairModelOptions(models: ReturnType<CodexAppServerClient["getConnectionState"]>["compose"]["availableModels"]): PairModelOption[] {
@@ -301,10 +304,65 @@ export class PairSessionManager {
   }
 
   async createPair(input: { title?: string | null; defaultCwd?: string | null } = {}): Promise<PairDetail> {
-    const pair = this.options.pairStore.createPair(input);
+    const defaultCwd = input.defaultCwd
+      ? await (this.options.validateWorkspace ?? validateWorkspaceCwd)(input.defaultCwd)
+      : null;
+    const pair = this.options.pairStore.createPair({ ...input, defaultCwd });
     await this.options.pairStore.flushPendingSave();
     await this.ensureService(pair.id);
     return this.getPairDetail(pair.id, null, 120) as Promise<PairDetail>;
+  }
+
+  async listWorkspaces(): Promise<PairWorkspaceOption[]> {
+    const projects = await (this.options.listWorkspaceProjects ?? (() => listWorkspaceProjectDirectories()))();
+    return [
+      { id: "workspace:shared", label: "Shared workspace", cwd: "/repos", kind: "workspace", gitBacked: false },
+      ...projects.filter((project) => project.cwd !== "/repos")
+    ];
+  }
+
+  async setWorkspaceCwd(pairId: string, requestedCwd: string): Promise<PairDetail | null> {
+    return this.runSerializedPairHandoff(pairId, async () => {
+      const pair = this.options.pairStore.getPair(pairId);
+      if (!pair) return null;
+      const cwd = await (this.options.validateWorkspace ?? validateWorkspaceCwd)(requestedCwd);
+      const effectiveCwd = pair.worker?.cwd ?? pair.defaultCwd ?? "/repos";
+      if (cwd === effectiveCwd) return this.getPairDetail(pairId, null, 120);
+      if (pair.butlerPending) throw new Error("Wait for Butler to finish before changing workspace.");
+      if (pair.worker && workerThreadIsRunning(this.options.store.getThread(pair.worker.threadId))) {
+        throw new Error("Wait for the current Worker turn to finish before changing workspace.");
+      }
+
+      const previousDefaultCwd = pair.defaultCwd;
+      this.options.pairStore.updatePairDefaultCwd(pairId, cwd);
+      try {
+        await this.options.pairStore.flushPendingSave();
+      } catch (error) {
+        this.options.pairStore.updatePairDefaultCwd(pairId, previousDefaultCwd);
+        throw error;
+      }
+      if (!pair.worker) return this.getPairDetail(pairId, null, 120);
+
+      try {
+        const service = await this.ensureService(pairId);
+        const model = pair.worker.model ?? pair.workerModel;
+        const harness = pair.worker.harness ?? pair.workerHarness;
+        if (!model || !harness) throw new Error("The active Worker route is unavailable. Switch Worker before changing workspace.");
+        await service.handoffWorker({
+          sourceThreadId: pair.worker.threadId,
+          harness,
+          model,
+          effort: (pair.worker.requestedReasoningEffort ?? pair.workerEffort ?? null) as never,
+          butlerThreadId: pair.butlerSessionId,
+          cwd
+        });
+      } catch (error) {
+        this.options.pairStore.updatePairDefaultCwd(pairId, previousDefaultCwd);
+        await this.options.pairStore.flushPendingSave();
+        throw error;
+      }
+      return this.getPairDetail(pairId, null, 120);
+    });
   }
 
   async createWorkerPair(input: {
@@ -622,7 +680,7 @@ export class PairSessionManager {
     const matchesSkill = (...values: Array<string | null | undefined>) => !skillQuery || values.some((value) => value?.toLowerCase().includes(skillQuery));
     const service = trigger === "/" ? await this.ensureService(pairId) : null;
     const commands = service?.listComposerCommands() ?? [];
-    const cwd = pair.worker?.cwd ?? pair.defaultCwd;
+    const cwd = await (this.options.validateWorkspace ?? validateWorkspaceCwd)(pair.worker?.cwd ?? pair.defaultCwd ?? "/repos");
     const skills = trigger === "@" ? [] : await listManorSkillCapabilities(this.options.skillsService, cwd);
 
     if (trigger === "/") {
@@ -715,10 +773,12 @@ export class PairSessionManager {
       ...normalizedInputItems.filter((item) => item.type === "file"),
       ...(selectedSkillInput ? [selectedSkillInput] : [])
     ];
-    const composerRoot = path.resolve(pair.worker?.cwd ?? pair.defaultCwd ?? "/repos");
+    const composerRoot = await (this.options.validateWorkspace ?? validateWorkspaceCwd)(pair.worker?.cwd ?? pair.defaultCwd ?? "/repos");
     const resolvedInputItems = await Promise.all(inputItems.map(async (item): Promise<PairComposerInputItem> => {
       if (item.type === "file") {
-        const filePath = path.resolve(item.path);
+        const filePath = await fs.realpath(path.resolve(item.path)).catch(() => {
+          throw new Error("Selected file is no longer available.");
+        });
         const relative = path.relative(composerRoot, filePath);
         if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Selected file is outside this session workspace.");
         return { ...item, path: filePath };
@@ -857,6 +917,7 @@ export class PairSessionManager {
         onDelegationAcknowledgement: ({ threadId, text, runtime, harness, provider, model, effort, replacesThreadId }) => {
           const thread = this.options.store.getThread(threadId);
           const before = this.options.pairStore.getPair(pair.id);
+          const previousDefaultCwd = before?.defaultCwd ?? null;
           const previousWorker: PairWorker | null = before?.worker ? {
             ...before.worker,
             handedOffFrom: before.worker.handedOffFrom ? { ...before.worker.handedOffFrom } : null
@@ -879,7 +940,7 @@ export class PairSessionManager {
             attached: true,
             flush: () => this.options.pairStore.flushPendingSave(),
             rollback: () => {
-              if (!this.options.pairStore.restoreWorkerIfCurrent(pair.id, threadId, previousWorker)) return false;
+              if (!this.options.pairStore.restoreWorkerIfCurrent(pair.id, threadId, previousWorker, previousDefaultCwd)) return false;
               this.syncPairSnapshot(pair.id);
               return true;
             }
@@ -898,6 +959,7 @@ export class PairSessionManager {
         }
         return {
           runtime: "auto",
+          cwd: current?.worker?.cwd ?? current?.defaultCwd ?? "/repos",
           threadId: current?.worker?.threadId ?? null,
           ...(runtimeOwnerThreadIds.length > 0 ? { runtimeOwnerThreadIds } : {}),
           harness: current?.workerHarness ?? current?.worker?.harness ?? null,

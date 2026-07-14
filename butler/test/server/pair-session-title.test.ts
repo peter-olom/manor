@@ -18,7 +18,7 @@ class FakeButlerService extends EventEmitter {
   startCount = 0;
   pending = false;
   trackedExternalThreads: string[] = [];
-  handoffs: Array<{ sourceThreadId: string; harness: string; model: string; effort: string | null; butlerThreadId?: string | null }> = [];
+  handoffs: Array<{ sourceThreadId: string; harness: string; model: string; effort: string | null; butlerThreadId?: string | null; cwd?: string | null }> = [];
   handoffDelayMs = 0;
   concurrentHandoffs = 0;
   maxConcurrentHandoffs = 0;
@@ -86,7 +86,7 @@ class FakeButlerService extends EventEmitter {
     await this.cancelCallbackReview();
   }
 
-  async handoffWorker(input: { sourceThreadId: string; harness: string; model: string; effort: string | null; butlerThreadId?: string | null }): Promise<void> {
+  async handoffWorker(input: { sourceThreadId: string; harness: string; model: string; effort: string | null; butlerThreadId?: string | null; cwd?: string | null }): Promise<void> {
     this.concurrentHandoffs += 1;
     this.maxConcurrentHandoffs = Math.max(this.maxConcurrentHandoffs, this.concurrentHandoffs);
     try {
@@ -148,7 +148,7 @@ class FakeButlerService extends EventEmitter {
   }
 }
 
-async function createManager(generator: SessionTitleGenerator | null = null, onCreateService?: (options: unknown) => void, runtime?: { workerModels?: ModelOption[]; butlerSkills?: Array<{ id: string; name: string; description: string; invocation: string }>; skillsByEnvironment?: Partial<Record<"butler-pi" | "worker-pi" | "worker-codex", Array<{ id: string; name: string; description: string; invocation: string }>>> }): Promise<{
+async function createManager(generator: SessionTitleGenerator | null = null, onCreateService?: (options: unknown) => void, runtime?: { workerModels?: ModelOption[]; butlerSkills?: Array<{ id: string; name: string; description: string; invocation: string }>; skillsByEnvironment?: Partial<Record<"butler-pi" | "worker-pi" | "worker-codex", Array<{ id: string; name: string; description: string; invocation: string }>>>; validateWorkspace?: (cwd: string) => Promise<string> }): Promise<{
   manager: PairSessionManager;
   pairStore: PairStore;
   service: FakeButlerService;
@@ -199,6 +199,8 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
     sessionRootDir: path.join(dir, "sessions"),
     artifactsDir: path.join(dir, "artifacts"),
     sessionTitleGenerator: generator,
+    validateWorkspace: runtime?.validateWorkspace ?? (async (cwd: string) => cwd),
+    listWorkspaceProjects: async () => [],
     createButlerService: (serviceOptions: unknown) => {
       onCreateService?.(serviceOptions);
       return service as never;
@@ -752,7 +754,7 @@ test("stopReview cancels the isolated review through the pair Butler", async () 
 });
 
 test("loaded pair services read current worker compose defaults", async () => {
-  let serviceOptions: { getWorkerDefaults?: () => { runtime: string | null; harness?: string | null; model?: string | null; effort?: string | null } | null } | null = null;
+  let serviceOptions: { getWorkerDefaults?: () => { runtime: string | null; harness?: string | null; model?: string | null; effort?: string | null; cwd?: string | null } | null } | null = null;
   const model: ModelOption = {
     id: "gpt-5-codex",
     label: "GPT-5 Codex",
@@ -775,7 +777,8 @@ test("loaded pair services read current worker compose defaults", async () => {
     harness: "codex",
     model: "gpt-5-codex",
     effort: "xhigh",
-    threadId: null
+    threadId: null,
+    cwd: "/repos"
   });
 });
 
@@ -936,6 +939,99 @@ test("handoffWorker serializes competing replacements for one pair", async () =>
 
   assert.equal(service.maxConcurrentHandoffs, 1);
   assert.deepEqual(service.handoffs.map((handoff) => handoff.model), [firstTarget.id, secondTarget.id]);
+});
+
+test("setWorkspaceCwd updates an unattached session after validation", async () => {
+  const validated: string[] = [];
+  const { manager, pairStore } = await createManager(null, undefined, {
+    validateWorkspace: async (cwd) => {
+      validated.push(cwd);
+      return cwd === "/repos" ? cwd : "/repos/canonical-project";
+    }
+  });
+  const pair = await manager.createPair({ defaultCwd: "/repos" });
+
+  const updated = await manager.setWorkspaceCwd(pair.id, "/repos/project-link");
+
+  assert.deepEqual(validated, ["/repos", "/repos/project-link"]);
+  assert.equal(updated?.defaultCwd, "/repos/canonical-project");
+  assert.equal(pairStore.getPair(pair.id)?.defaultCwd, "/repos/canonical-project");
+});
+
+test("createPair validates and canonicalizes an initial workspace", async () => {
+  const requested: string[] = [];
+  const { manager } = await createManager(null, undefined, {
+    validateWorkspace: async (cwd) => {
+      requested.push(cwd);
+      return "/repos/canonical-project";
+    }
+  });
+
+  const pair = await manager.createPair({ defaultCwd: "/repos/project-link" });
+
+  assert.deepEqual(requested, ["/repos/project-link"]);
+  assert.equal(pair.defaultCwd, "/repos/canonical-project");
+});
+
+test("setWorkspaceCwd replaces an idle attached Worker in the new workspace", async () => {
+  const { manager, pairStore, service, store } = await createManager();
+  const pair = await manager.createPair({ defaultCwd: "/repos/old" });
+  store.upsertThreadSummary({ id: "worker-current", source: "appServer", status: "idle", turns: [] });
+  pairStore.attachWorker(pair.id, {
+    threadId: "worker-current",
+    cwd: "/repos/old",
+    runtime: "openai",
+    harness: "codex",
+    provider: "openai-codex",
+    model: "gpt-5-codex",
+    effort: "high"
+  });
+
+  await manager.setWorkspaceCwd(pair.id, "/repos/new");
+
+  assert.deepEqual(service.handoffs, [{
+    sourceThreadId: "worker-current",
+    harness: "codex",
+    model: "gpt-5-codex",
+    effort: "high",
+    butlerThreadId: "fake-session",
+    cwd: "/repos/new"
+  }]);
+  assert.equal(pairStore.getPair(pair.id)?.defaultCwd, "/repos/new");
+});
+
+test("setWorkspaceCwd rejects running Workers and rolls back failed replacements", async () => {
+  const { manager, pairStore, service, store } = await createManager();
+  const pair = await manager.createPair({ defaultCwd: "/repos/old" });
+  store.upsertThreadSummary({ id: "worker-current", source: "appServer", status: "active", turns: [{ id: "turn-active", status: "inProgress", items: [] }] });
+  pairStore.attachWorker(pair.id, {
+    threadId: "worker-current",
+    cwd: "/repos/old",
+    runtime: "openai",
+    harness: "codex",
+    model: "gpt-5-codex"
+  });
+
+  await assert.rejects(() => manager.setWorkspaceCwd(pair.id, "/repos/new"), /current Worker turn/);
+  assert.equal(pairStore.getPair(pair.id)?.defaultCwd, "/repos/old");
+
+  store.upsertThreadSummary({ id: "worker-current", source: "appServer", status: "idle", turns: [] });
+  service.handoffWorker = async () => { throw new Error("replacement failed"); };
+  await assert.rejects(() => manager.setWorkspaceCwd(pair.id, "/repos/new"), /replacement failed/);
+  assert.equal(pairStore.getPair(pair.id)?.defaultCwd, "/repos/old");
+
+  const unloadedPair = pairStore.createPair({ defaultCwd: "/repos/old" });
+  store.upsertThreadSummary({ id: "worker-unloaded", source: "appServer", status: "idle", turns: [] });
+  pairStore.attachWorker(unloadedPair.id, {
+    threadId: "worker-unloaded",
+    cwd: "/repos/old",
+    runtime: "openai",
+    harness: "codex",
+    model: "gpt-5-codex"
+  });
+  service.start = async () => { throw new Error("Butler startup failed"); };
+  await assert.rejects(() => manager.setWorkspaceCwd(unloadedPair.id, "/repos/new"), /Butler startup failed/);
+  assert.equal(pairStore.getPair(unloadedPair.id)?.defaultCwd, "/repos/old");
 });
 
 test("pair attachment acknowledgement uses compare-and-swap and exposes an exact rollback", async () => {

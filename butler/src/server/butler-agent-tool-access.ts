@@ -221,6 +221,7 @@ export type ButlerAgentToolAccess = {
   getCodexAuthStatus(): ButlerAuthStatus;
   getWorkerDefaults?: () => {
     runtime: "auto" | "openai" | "pi-rpc" | null;
+    cwd?: string | null;
     threadId?: string | null;
     runtimeOwnerThreadIds?: string[];
     harness?: string | null;

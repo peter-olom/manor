@@ -61,7 +61,7 @@ async function prepareWorkerHandoffWorkspace(input: {
   await (input.repairOwnership ?? ensureManagedWorktreeWritableForWorker)(input.cwd);
 }
 
-export function buildWorkerHandoffNotes(store: ButlerStateStore, sourceThreadId: string): string[] {
+export function buildWorkerHandoffNotes(store: ButlerStateStore, sourceThreadId: string, targetCwd?: string | null): string[] {
   const source = store.getThread(sourceThreadId);
   if (!source) throw new Error("The active worker job no longer exists");
   const report = store.getWorkerReport(sourceThreadId);
@@ -70,7 +70,9 @@ export function buildWorkerHandoffNotes(store: ButlerStateStore, sourceThreadId:
   const latestReply = source.supervisor.latestAgentReply?.trim() || null;
   const notes = [
     `This is an explicit cold handoff from worker job ${sourceThreadId}. Provider cache and hidden reasoning state do not transfer.`,
-    "Continue in the same workspace. Inspect and preserve existing changes before editing, then finish the remaining acceptance points.",
+    targetCwd && targetCwd !== source.cwd
+      ? `Continue the task in the new workspace at ${targetCwd}. Inspect it before editing and do not modify the previous workspace.`
+      : "Continue in the same workspace. Inspect and preserve existing changes before editing, then finish the remaining acceptance points.",
     report ? `Previous worker report (${report.status}): ${bounded(report.summary, 800)}${report.details ? ` — ${bounded(report.details)}` : ""}` : null,
     source.jobMemory ? `Previous worker checkpoint and memory: ${bounded(source.jobMemory)}` : null,
     source.supervisionChecklist ? `Previous supervision checklist: ${bounded(source.supervisionChecklist)}` : null,
@@ -121,6 +123,7 @@ export async function startWorkerHandoff(input: {
   targetEffort: ReasoningEffort | null;
   artifactsDir: string;
   butlerThreadId?: string | null;
+  targetCwd?: string | null;
   repairWorkspaceOwnership?: WorkspaceOwnershipRepair;
   startWorker?: typeof startWorkerThread;
 }): Promise<WorkerThreadStartResult> {
@@ -129,10 +132,12 @@ export async function startWorkerHandoff(input: {
   const sourceContract = source.executionContract;
   const task = sourceContract?.requestedTask?.trim() || source.supervisor.latestUserPrompt?.trim() || source.name?.trim();
   if (!task) throw new Error("The active worker does not have a task to hand off");
-  const cwd = sourceContract?.workspaceCwd || source.cwd;
-  if (!cwd) throw new Error("The active worker does not have a workspace to hand off");
-  const workspace = { cwd, branchName: sourceContract?.branch ?? await resolveWorkspaceBranchName(cwd) };
-  const notes = buildWorkerHandoffNotes(input.access.store, input.sourceThreadId);
+  const sourceCwd = sourceContract?.workspaceCwd || source.cwd;
+  if (!sourceCwd) throw new Error("The active worker does not have a workspace to hand off");
+  const cwd = input.targetCwd?.trim() || sourceCwd;
+  const workspaceChanged = cwd !== sourceCwd;
+  const workspace = { cwd, branchName: workspaceChanged ? await resolveWorkspaceBranchName(cwd) : sourceContract?.branch ?? await resolveWorkspaceBranchName(cwd) };
+  const notes = buildWorkerHandoffNotes(input.access.store, input.sourceThreadId, cwd);
   const developerInstructions = buildDelegationDeveloperInstructions(workspace, task);
   const sourcePayload = input.access.store.getThreadJobPayload(input.sourceThreadId);
   let candidateThreadId: string | null = null;
@@ -159,10 +164,10 @@ export async function startWorkerHandoff(input: {
           butlerThreadId: input.butlerThreadId ?? null,
           parentThreadId: input.sourceThreadId,
           reviewBaselineRoot: path.join(input.artifactsDir, "review-baselines"),
-          reviewBaselineSource: sourceContract
+          reviewBaselineSource: workspaceChanged ? null : sourceContract
         });
-        const contract = inheritHandoffContract({ source: sourceContract, built: built.contract, threadId });
-        const payload = sourcePayload
+        const contract = workspaceChanged ? built.contract : inheritHandoffContract({ source: sourceContract, built: built.contract, threadId });
+        const payload = sourcePayload && !workspaceChanged
           ? remapJobPayloadForWorkerHandoff(sourcePayload, {
               threadId,
               butlerThreadId: input.butlerThreadId ?? null,
@@ -175,7 +180,8 @@ export async function startWorkerHandoff(input: {
               instruction: task,
               butlerThreadId: input.butlerThreadId ?? null,
               parentThreadId: input.sourceThreadId,
-              contract
+              contract,
+              imageReferenceIds: workspaceChanged ? sourcePayload?.attachments.images ?? [] : []
             });
         const text = buildWorkerHandoffPrompt({
           threadId,
@@ -227,6 +233,7 @@ export async function handoffWorkerAtomically(input: {
   targetEffort: ReasoningEffort | null;
   artifactsDir: string;
   butlerThreadId?: string | null;
+  targetCwd?: string | null;
   trackCallback: (threadId: string) => Promise<void>;
   removeCallback: (threadId: string) => Promise<void>;
   attach: (result: WorkerThreadStartResult, text: string, at: number) => ButlerDelegationAttachmentAcknowledgement | void;
@@ -241,6 +248,12 @@ export async function handoffWorkerAtomically(input: {
       throw new Error("The self-improvement request is no longer active for this Worker.");
     }
     const selfImprovementRequestId = observedSelfImprovementRequestId ?? currentSelfImprovementRequestId;
+    const sourceWorkspace = input.access.store.getThread(input.sourceThreadId)?.executionContract?.workspaceCwd
+      ?? input.access.store.getThread(input.sourceThreadId)?.cwd
+      ?? null;
+    if (selfImprovementRequestId && input.targetCwd && input.targetCwd !== sourceWorkspace) {
+      throw new Error("The workspace cannot be changed while this Worker owns a self-improvement checkout.");
+    }
     const execute = async (): Promise<WorkerThreadStartResult> => {
       if (selfImprovementRequestId && getSelfImprovementSourceCheckoutRequestId(input.sourceThreadId) !== selfImprovementRequestId) {
         throw new Error("The self-improvement request is no longer active for this Worker.");
@@ -267,11 +280,18 @@ export async function handoffWorkerAtomically(input: {
           targetHarness: input.targetHarness,
           targetEffort: input.targetEffort,
           artifactsDir: input.artifactsDir,
-          butlerThreadId: input.butlerThreadId ?? null
+          butlerThreadId: input.butlerThreadId ?? null,
+          targetCwd: input.targetCwd ?? null
         });
         await input.trackCallback(result.threadId);
         const route = result.model?.startsWith(`${result.provider}/`) ? result.model : `${result.provider ?? "the selected provider"}/${result.model ?? "default"}`;
-        const text = `Switched Worker ${input.sourceThreadId} to ${route} using the ${workerHarnessDisplayName(result.harness)} harness in job ${result.threadId}. The previous work and review baseline were handed over.`;
+        const sourceCwd = source.executionContract?.workspaceCwd ?? source.cwd;
+        const workspaceChanged = Boolean(input.targetCwd && input.targetCwd !== sourceCwd);
+        const workspaceChange = workspaceChanged ? ` The job moved to ${input.targetCwd}.` : "";
+        const continuity = workspaceChanged
+          ? "The previous work context was handed over with a fresh review baseline for the new workspace."
+          : "The previous work and review baseline were handed over.";
+        const text = `Switched Worker ${input.sourceThreadId} to ${route} using the ${workerHarnessDisplayName(result.harness)} harness in job ${result.threadId}.${workspaceChange} ${continuity}`;
         const at = Date.now();
         attachment = input.attach(result, text, at);
         if (attachment?.attached !== true) {

@@ -1244,11 +1244,11 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         const activeReferences = access.getActiveOperatorReferences();
         const imageReferenceIds = [...new Set([...(activeReferences?.imageReferenceIds ?? []), ...(typedParams.imageReferenceIds ?? [])])];
         const fileReferenceIds = [...new Set([...(activeReferences?.fileReferenceIds ?? []), ...(typedParams.fileReferenceIds ?? [])])];
-        const workspace = await access.prepareDelegationWorkspace(typedParams.task, typedParams.cwd);
+        const workerDefaults = typeof access.getWorkerDefaults === "function" ? access.getWorkerDefaults() : null;
+        const workspace = await access.prepareDelegationWorkspace(typedParams.task, typedParams.cwd ?? workerDefaults?.cwd ?? undefined);
         const orchestration = buildDelegationRoutingDecision({ task: delegatedTask, goal: delegatedGoal });
         const repoBootstrapTask = isSharedShellRepoBootstrapTask(delegatedTask);
         const developerInstructions = await access.buildDelegationDeveloperInstructions(workspace, delegatedTask);
-        const workerDefaults = typeof access.getWorkerDefaults === "function" ? access.getWorkerDefaults() : null;
         const workerEffort = (workerDefaults?.effort ?? null) as ReasoningEffort | null;
         const extraNotes = repoBootstrapTask
           ? ["This job starts in the shared /repos workspace. Create or clone the repo first, then continue inside that repo."]
