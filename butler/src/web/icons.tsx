@@ -382,3 +382,12 @@ export function AutomationIcon() {
     </svg>
   );
 }
+
+export function CompletedAutomationIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <circle cx="8" cy="8" r="5.25" fill="none" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M8 4.8V8l2.3 1.5M5.1 2.9 3.7 4.3M10.9 2.9l1.4 1.4M3 3l10 10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}

@@ -654,6 +654,7 @@ a:hover {
 .pair-title > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pair-automation-icon { display: inline-flex; flex: 0 0 auto; color: var(--accent); }
 .pair-automation-icon.is-paused { color: var(--text-subtle); }
+.pair-automation-icon.is-completed { color: var(--text-muted); }
 .pair-automation-icon.is-failed { color: var(--warning); }
 .pair-automation-icon svg { width: 12px; height: 12px; }
 

@@ -1,4 +1,4 @@
-import { AutomationIcon, TrashIcon } from "./icons";
+import { AutomationIcon, CompletedAutomationIcon, TrashIcon } from "./icons";
 
 import type { PairSummary } from "../shared/pairing";
 
@@ -26,6 +26,17 @@ export function PairRow({
   onSelect: () => void;
   onDelete: () => void;
 }) {
+  const automation = pair.automation;
+  const automationCompleted = automation?.state === "completed";
+  const automationFailed = !automationCompleted && automation?.lastRun?.outcome === "failed";
+  const automationPaused = automation?.state === "paused" || automation?.enabled === false;
+  const automationClassName = [
+    "pair-automation-icon",
+    automationPaused ? "is-paused" : null,
+    automationCompleted ? "is-completed" : null,
+    automationFailed ? "is-failed" : null
+  ].filter(Boolean).join(" ");
+
   return (
     <div
       className={`pair-item ${isActive ? "is-active" : ""}`}
@@ -42,12 +53,12 @@ export function PairRow({
       <span className={`pair-dot is-${pair.status}`} aria-hidden="true" />
       <div className="pair-title">
         <span>{pair.title}</span>
-        {pair.automation ? (
+        {automation ? (
           <span
-            className={`pair-automation-icon ${pair.automation.enabled ? "" : "is-paused"} ${pair.automation.lastRun?.outcome === "failed" ? "is-failed" : ""}`}
+            className={automationClassName}
             role="img"
-            aria-label={`Automation ${pair.automation.state}: ${pair.automation.scheduleLabel}`}
-          ><AutomationIcon /></span>
+            aria-label={`Automation ${automation.state}: ${automation.scheduleLabel}`}
+          >{automationCompleted ? <CompletedAutomationIcon /> : <AutomationIcon />}</span>
         ) : null}
       </div>
       <div className="pair-preview">{pair.lastMessage?.text ?? "No messages yet"}</div>

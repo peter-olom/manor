@@ -16,12 +16,17 @@ function automation(overrides: Partial<PairAutomation> = {}): PairAutomation {
   };
 }
 
-test("session row decorates active, paused, and failed automations", () => {
+test("session row decorates active, paused, completed, and failed automations", () => {
   const base = { id: "pair-1", title: "Reports", status: "idle", updatedAt: 1, messageCount: 0, lastMessage: null } as PairSummary;
   const active = renderToStaticMarkup(React.createElement(PairRow, { pair: { ...base, automation: automation() }, isActive: false, onSelect() {}, onDelete() {} }));
   assert.match(active, /Automation active: Daily at 12:00 PM, 6:00 PM/);
   const paused = renderToStaticMarkup(React.createElement(PairRow, { pair: { ...base, automation: automation({ enabled: false, state: "paused" }) }, isActive: false, onSelect() {}, onDelete() {} }));
   assert.match(paused, /pair-automation-icon is-paused/);
+  const completed = renderToStaticMarkup(React.createElement(PairRow, { pair: { ...base, automation: automation({ state: "completed", nextRunAt: null, nextRunLabel: null }) }, isActive: false, onSelect() {}, onDelete() {} }));
+  assert.match(completed, /pair-automation-icon is-completed/);
+  assert.doesNotMatch(completed, /is-paused|is-failed/);
+  assert.match(completed, /Automation completed: Daily at 12:00 PM, 6:00 PM/);
+  assert.match(completed, /M3 3l10 10/);
   const failed = renderToStaticMarkup(React.createElement(PairRow, { pair: { ...base, automation: automation({ lastRun: { id: "run", scheduledFor: 1, startedAt: 1, finishedAt: 2, outcome: "failed", summary: "Failed", resultPath: null } }) }, isActive: false, onSelect() {}, onDelete() {} }));
   assert.match(failed, /pair-automation-icon[^\"]*is-failed/);
 });
