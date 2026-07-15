@@ -34,6 +34,7 @@ import { listenForSkillInstallHandoff, readSkillInstallHandoff, removeSkillInsta
 import { SelfImprovementQueue, formatSelfImprovementTime, selfImprovementStatusLabel } from "./SelfImprovementQueue";
 import { SettingsDashboard, SETTINGS_SECTIONS, type SettingsSectionId } from "./SettingsDashboard";
 import { SessionWorkspaceControl } from "./SessionWorkspaceControl"; import { SessionAutomationControl } from "./SessionAutomationControl";
+import { readSidebarCollapsed, writeSidebarCollapsed } from "./sidebar-preference";
 import { TerminalPane } from "./TerminalPane";
 import { useEventStream } from "./useEventStream"; import { useProjectArtifactPreview } from "./useProjectArtifactPreview"; import { useSessionAutomation } from "./useSessionAutomation";
 import { useWorkerThreadHistory } from "./useWorkerThreadHistory";
@@ -122,6 +123,9 @@ function Sidebar({
   onSelectSettingsSection,
   onCreate,
   onDelete,
+  collapsed,
+  onToggleCollapsed,
+  onCloseMobile,
   search,
   onSearch
 }: {
@@ -141,6 +145,9 @@ function Sidebar({
   onSelectSettingsSection: (section: SettingsSectionId) => void;
   onCreate: () => void;
   onDelete: (id: string) => void;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  onCloseMobile: () => void;
   search: string;
   onSearch: (value: string) => void;
 }) {
@@ -154,7 +161,7 @@ function Sidebar({
     improveRequests.find((request) => request.id === selectedImproveRequestId) ?? improveRequests[0] ?? null;
 
   return (
-    <aside className={`sidebar ${manorSurface === "sessions" ? "" : "is-surface-only"}`}>
+    <aside className={`sidebar ${collapsed ? "is-collapsed" : ""} ${manorSurface === "sessions" ? "" : "is-surface-only"}`}>
       <div className="sidebar-head">
         <div className="brand">
           <picture className="brand-logo">
@@ -162,6 +169,19 @@ function Sidebar({
             <img src={manorLogoDark} alt="Manor" />
           </picture>
         </div>
+        <button
+          className="sidebar-collapse-toggle"
+          type="button"
+          onClick={onToggleCollapsed}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded={!collapsed}
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          <ChevronLeftIcon />
+        </button>
+        <button className="sidebar-mobile-close" type="button" onClick={onCloseMobile} aria-label="Close navigation" title="Close navigation">
+          <ChevronLeftIcon />
+        </button>
       </div>
 
       <div className="sidebar-switcher">
@@ -608,6 +628,7 @@ export function PairShell() {
   }, []);
   const [search, setSearch] = useState("");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [desktopSidebarCollapsed, setDesktopSidebarCollapsed] = useState(readSidebarCollapsed);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [savingTitle, setSavingTitle] = useState(false);
@@ -628,6 +649,7 @@ export function PairShell() {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const { openProjectArtifact, openProjectArtifactFile, dialog: projectArtifactPreview } = useProjectArtifactPreview((message) => setPreviewError(message || null));
   useEffect(() => setComposerContextItems([]), [selectedPairId]);
+  useEffect(() => writeSidebarCollapsed(desktopSidebarCollapsed), [desktopSidebarCollapsed]);
   const manorSurface = manorSurfaceForView(viewMode);
   const activePair = pair?.id === selectedPairId ? pair : null;
   const activeWorkerHandoff = activePair ? workerHandoffByPairId[activePair.id] ?? null : null;
@@ -1201,7 +1223,7 @@ export function PairShell() {
   }, []); const automationActions = useSessionAutomation(activePair, applyAutomation, editAutomationWithButler);
 
   return (
-    <main className={`app ${mobileSidebarOpen ? "is-mobile-sidebar-open" : ""} ${activePair ? "" : "is-empty"}`}>
+    <main className={`app ${desktopSidebarCollapsed ? "is-sidebar-collapsed" : ""} ${mobileSidebarOpen ? "is-mobile-sidebar-open" : ""} ${activePair ? "" : "is-empty"}`}>
       <Sidebar
         pairs={pairs}
         selectedPairId={selectedPairId}
@@ -1228,6 +1250,9 @@ export function PairShell() {
         onSelectSettingsSection={selectSettingsSection}
         onCreate={() => void createPair()}
         onDelete={deletePair}
+        collapsed={desktopSidebarCollapsed}
+        onToggleCollapsed={() => setDesktopSidebarCollapsed((collapsed) => !collapsed)}
+        onCloseMobile={() => setMobileSidebarOpen(false)}
         search={search}
         onSearch={setSearch}
       />
