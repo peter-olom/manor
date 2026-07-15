@@ -844,12 +844,52 @@ test("incomplete checklists do not refresh for follow-up work", async () => {
   assert.deepEqual(store.getSupervisionChecklist(contract.threadId)?.items.map((item) => item.text), contract.acceptancePoints);
 });
 
+test("explicit checklist refresh replaces incomplete prior scope", async () => {
+  const store = await createStore();
+  const contract = makeContract({ requestedTask: "Bootstrap the project." });
+  store.setThreadExecutionContract(contract.threadId, contract);
+  const priorPoint = store.getSupervisionChecklist(contract.threadId)?.items[0];
+  assert.ok(priorPoint);
+  store.reviewAcceptancePoint({ threadId: contract.threadId, pointId: priorPoint.id, status: "rejected", note: "Old scope failed.", nextInstruction: "Retry the old scope." });
+
+  const refreshed = store.refreshCompletedSupervisionChecklistForFollowup(
+    contract.threadId,
+    "- Implement passwordless authentication\n- Add capability overrides",
+    { force: true }
+  );
+
+  assert.ok(refreshed);
+  assert.deepEqual(refreshed.items.map((item) => item.text), ["Implement passwordless authentication", "Add capability overrides"]);
+  assert.deepEqual(refreshed.items.map((item) => item.status), ["pending", "pending"]);
+  assert.match(store.getThread(contract.threadId)?.executionContract?.requestedTask ?? "", /passwordless authentication/);
+  assert.match(store.getThread(contract.threadId)?.executionContract?.mission.intent ?? "", /passwordless authentication/);
+});
+
+test("explicit checklist refresh creates missing review scope", async () => {
+  const store = await createStore();
+  const threadId = "thread-missing-review-scope";
+  store.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [] });
+
+  const refreshed = store.refreshCompletedSupervisionChecklistForFollowup(
+    threadId,
+    "- Implement Microsoft OAuth\n- Implement magic links",
+    { force: true }
+  );
+
+  assert.ok(refreshed);
+  assert.deepEqual(refreshed.items.map((item) => item.text), ["Implement Microsoft OAuth", "Implement magic links"]);
+  assert.match(store.getThread(threadId)?.executionContract?.requestedTask ?? "", /Microsoft OAuth/);
+});
+
 test("system prompt advises focused checklist refresh for new work", async () => {
   const store = await createStore();
   const prompt = buildSystemPrompt(store, "No callbacks.");
 
-  assert.match(prompt, /use message_job with refreshChecklist/);
+  assert.match(prompt, /Use message_job with refreshChecklist/);
   assert.match(prompt, /genuine new slice of work/);
+  assert.match(prompt, /pending or rejected items/);
+  assert.match(prompt, /complete resulting scope/);
+  assert.match(prompt, /every criterion that should remain/);
   assert.match(prompt, /hold_job_context/);
   assert.match(prompt, /newer context for an active job/);
   assert.match(prompt, /Do not answer project inventory questions from supervisor state alone/);

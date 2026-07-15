@@ -50,7 +50,6 @@ function normalizeCallbackEntry(entry: PendingChatCallback): PendingChatCallback
         ? "thread_recovery"
         : null;
   const interruptedAutomationReview = entry.reviewState === "running" ||
-    (entry.reviewState === "queued" && entry.reviewStage === "retry_wait") ||
     (entry.reviewState === "blocked" && entry.blockedCloseoutReason?.startsWith("Adversarial review paused") === true);
   const reviewState =
     interruptedAutomationReview
@@ -183,7 +182,11 @@ export async function loadButlerCallbackState(input: {
   callbackStatePath: string;
   pendingChatCallbacks: Map<string, PendingChatCallback>;
   deliveredCloseoutIds: Set<string>;
+  callbackReviewFailureCount: Map<string, number>;
+  callbackReviewNotBefore: Map<string, number>;
 }): Promise<void> {
+  input.callbackReviewFailureCount.clear();
+  input.callbackReviewNotBefore.clear();
   try {
     const raw = await fs.readFile(input.callbackStatePath, "utf8");
     if (!raw.trim()) return;
@@ -192,7 +195,12 @@ export async function loadButlerCallbackState(input: {
     input.pendingChatCallbacks.clear();
     for (const entry of parsed.callbackRecords ?? parsed.pendingCallbacks ?? []) {
       const normalized = normalizeCallbackEntry(entry);
-      if (normalized) input.pendingChatCallbacks.set(normalized.threadId, normalized);
+      if (!normalized) continue;
+      input.pendingChatCallbacks.set(normalized.threadId, normalized);
+      if (normalized.reviewState === "queued" && normalized.reviewStage === "retry_wait") {
+        input.callbackReviewFailureCount.set(normalized.threadId, Math.max(1, normalized.reviewAttempt ?? 0));
+        if (typeof normalized.reviewNextAttemptAt === "number") input.callbackReviewNotBefore.set(normalized.threadId, normalized.reviewNextAttemptAt);
+      }
     }
 
     input.deliveredCloseoutIds.clear();
@@ -215,15 +223,45 @@ export async function saveButlerCallbackState(input: {
   });
 }
 
-export function reconcileReservedCallbackDispatch(callback: PendingChatCallback, thread: CodexThreadRecord | undefined): "ready" | "drop" | null {
+export function replaceCallbackPreservingRunningReview(
+  existing: PendingChatCallback | undefined,
+  next: PendingChatCallback,
+  preserveRunningReview: boolean
+): PendingChatCallback {
+  if (!preserveRunningReview || existing?.reviewState !== "running") return next;
+  const runningReview = {
+    reviewState: existing.reviewState,
+    reviewReason: existing.reviewReason,
+    reviewModelProvider: existing.reviewModelProvider,
+    reviewModelId: existing.reviewModelId,
+    reviewReasoningLevel: existing.reviewReasoningLevel,
+    reviewStage: existing.reviewStage,
+    reviewAttempt: existing.reviewAttempt,
+    reviewStartedAt: existing.reviewStartedAt,
+    reviewDeadlineAt: existing.reviewDeadlineAt,
+    reviewNextAttemptAt: existing.reviewNextAttemptAt,
+    reviewLastActivityAt: existing.reviewLastActivityAt,
+    reviewLastActivity: existing.reviewLastActivity,
+    reviewLastTool: existing.reviewLastTool,
+    reviewLastError: existing.reviewLastError,
+    reviewErrors: existing.reviewErrors
+  } satisfies Partial<PendingChatCallback>;
+  return Object.assign(existing, next, runningReview);
+}
+
+export function reconcileReservedCallbackDispatch(callback: PendingChatCallback, thread: CodexThreadRecord | undefined): "ready" | null {
   if (callback.dispatchState !== "reserving") return null;
-  if (!thread) return "drop";
+  if (!thread) return Date.now() - callback.requestedAt >= RESERVED_CALLBACK_RECOVERY_GRACE_MS ? "ready" : null;
   const acceptedTurnId = acceptedDirectWorkerDispatchTurnId(callback, thread);
   if (acceptedTurnId) {
     callback.acceptedWorkerTurnId = acceptedTurnId;
     return "ready";
   }
-  return Date.now() - callback.requestedAt >= RESERVED_CALLBACK_RECOVERY_GRACE_MS ? "drop" : null;
+  // A missing marker cannot prove that the Worker rejected the dispatch. The
+  // transport may have accepted it before disconnecting or may omit the marker
+  // while steering an active turn. Keep the operator closeout obligation and
+  // let report/thread recovery settle it instead of deleting it permanently.
+  return Date.now() - callback.requestedAt >= RESERVED_CALLBACK_RECOVERY_GRACE_MS ? "ready" : null;
 }
 
 export function acceptedDirectWorkerDispatchTurnId(callback: PendingChatCallback, thread: CodexThreadRecord | undefined): string | null {

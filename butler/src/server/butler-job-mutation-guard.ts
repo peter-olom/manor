@@ -56,6 +56,11 @@ export function assertCallbackReviewCurrent(threadId: string): void {
   }
 }
 
+export function hasCurrentCallbackReviewGuard(threadId: string): boolean {
+  const guard = callbackReviewGuard.getStore();
+  return Boolean(guard && guard.threadId === threadId && guard.isCurrent());
+}
+
 export function monitorCallbackReviewCurrent(threadId: string): { promise: Promise<never>; dispose: () => void } | null {
   const guard = callbackReviewGuard.getStore();
   if (!guard) return null;

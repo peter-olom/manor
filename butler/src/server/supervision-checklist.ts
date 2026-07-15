@@ -249,15 +249,18 @@ export function updateChecklistHeartbeat(
 
 export function refreshCompletedChecklistForFollowup(
   thread: CodexThreadRecord,
-  taskText: string
+  taskText: string,
+  options: { force?: boolean } = {}
 ): { contract: CodexThreadExecutionContractView; checklist: SupervisionChecklistView } | null {
   const existingChecklist = thread.supervisionChecklist;
   const trimmedTask = taskText.trim();
   if (
     !trimmedTask ||
-    !existingChecklist ||
-    existingChecklist.items.length === 0 ||
-    !existingChecklist.items.every((item) => item.status === "accepted" || item.status === "waived")
+    (!options.force && (
+      !existingChecklist ||
+      existingChecklist.items.length === 0 ||
+      !existingChecklist.items.every((item) => item.status === "accepted" || item.status === "waived")
+    ))
   ) {
     return null;
   }
@@ -270,11 +273,12 @@ export function refreshCompletedChecklistForFollowup(
     projectLabel: existingContract?.projectLabel ?? thread.supervisor.projectLabel ?? "Unknown",
     branch: existingContract?.branch ?? null,
     taskText: trimmedTask,
-    requestedTask: "Follow-up work",
+    requestedTask: trimmedTask,
     operatorGoal: null,
-    notes: ["Refreshed after new follow-up work arrived with the previous checklist already complete."]
+    notes: [options.force
+      ? "Explicitly refreshed for a new follow-up task so earlier review state cannot leak into the new scope."
+      : "Refreshed after new follow-up work arrived with the previous checklist already complete."]
   });
-  contract.requestedTask = trimmedTask;
   const checklist = buildSupervisionChecklist({ ...thread, supervisionChecklist: null }, contract);
   checklist.reviewState = "needs_review";
   return { contract, checklist };

@@ -172,15 +172,12 @@ export class ButlerStateStore extends EventEmitter {
   private normalizeStackLease(lease: StackLeaseView, now = Date.now()): StackLeaseView {
     return normalizeStateStoreStackLease(this.getInternalAccess(), lease, now);
   }
-
   private normalizeServiceLease(lease: ServiceLeaseView, now = Date.now()): ServiceLeaseView {
     return normalizeStateStoreServiceLease(this.getInternalAccess(), lease, now);
   }
-
   private normalizePreviewProofRecord(record: PreviewProofRecordView): PreviewProofRecordView {
     return normalizeStateStorePreviewProofRecord(this.getInternalAccess(), record);
   }
-
   private upsertPreviewProofRecord(record: PreviewProofRecordView, options?: { emitChange?: boolean }): PreviewProofRecordView { return upsertStateStorePreviewProofRecord(this.getInternalAccess(), record, options); }
 
   private recordPreviewProofFromLease(lease: Pick<PreviewLeaseView, "id" | "threadId" | "projectId" | "projectLabel" | "title" | "stackId" | "lastVerification">, options?: { emitChange?: boolean }): PreviewProofRecordView | null { return recordStateStorePreviewProofFromLease(this.getInternalAccess(), lease, options); }
@@ -406,11 +403,14 @@ export class ButlerStateStore extends EventEmitter {
 
   setThreadJobPayload(payload: import("./job-payload-types.js").JobPayloadView): void { const record = this.getOrCreateThread(payload.threadId); record.jobPayload = { ...payload, nodes: [...payload.nodes], snapshots: [...payload.snapshots], checklist: [...payload.checklist], proof: [...payload.proof], constraints: [...payload.constraints], notes: [...payload.notes] }; record.updatedAt = Math.max(record.updatedAt, payload.updatedAt); this.refreshDerivedThreadState(record); this.queueSave(); this.emitChange(); }
 
+  clearThreadJobPayload(threadId: string): void { const record = this.getOrCreateThread(threadId); record.jobPayload = null; record.updatedAt = Date.now(); this.refreshDerivedThreadState(record); this.queueSave(); this.emitChange(); }
+  restoreThreadReviewScope(threadId: string, executionContract: CodexThreadExecutionContractView | null, supervisionChecklist: SupervisionChecklistView | null): void { const record = this.getOrCreateThread(threadId); record.executionContract = executionContract ? structuredClone(executionContract) : null; record.supervisionChecklist = supervisionChecklist ? structuredClone(supervisionChecklist) : null; if (record.executionContract) this.persistedExecutionContractsByThreadId.set(threadId, structuredClone(record.executionContract)); else this.persistedExecutionContractsByThreadId.delete(threadId); if (record.supervisionChecklist) this.persistedSupervisionChecklistsByThreadId.set(threadId, structuredClone(record.supervisionChecklist)); else this.persistedSupervisionChecklistsByThreadId.delete(threadId); record.updatedAt = Date.now(); this.refreshDerivedThreadState(record); this.queueSave(); this.emitChange(); }
+
   getThreadJobPayload(threadId: string): import("./job-payload-types.js").JobPayloadView | null { return this.getOrCreateThread(threadId).jobPayload ?? null; }
 
   getSupervisionChecklist(threadId: string): SupervisionChecklistView | null { return this.getOrCreateThread(threadId).supervisionChecklist; }
 
-  refreshCompletedSupervisionChecklistForFollowup(threadId: string, taskText: string): SupervisionChecklistView | null { const record = this.getOrCreateThread(threadId); const refreshed = refreshCompletedChecklistForFollowup(record, taskText); if (!refreshed) return null; record.executionContract = { ...refreshed.contract }; record.supervisionChecklist = refreshed.checklist; record.updatedAt = Date.now(); this.persistedExecutionContractsByThreadId.set(threadId, { ...record.executionContract }); this.persistedSupervisionChecklistsByThreadId.set(threadId, { ...record.supervisionChecklist }); this.refreshDerivedThreadState(record); this.queueSave(); this.emitChange(); return record.supervisionChecklist; }
+  refreshCompletedSupervisionChecklistForFollowup(threadId: string, taskText: string, options: { force?: boolean } = {}): SupervisionChecklistView | null { const record = this.getOrCreateThread(threadId); const refreshed = refreshCompletedChecklistForFollowup(record, taskText, options); if (!refreshed) return null; record.executionContract = { ...refreshed.contract }; record.supervisionChecklist = refreshed.checklist; record.updatedAt = Date.now(); this.persistedExecutionContractsByThreadId.set(threadId, { ...record.executionContract }); this.persistedSupervisionChecklistsByThreadId.set(threadId, { ...record.supervisionChecklist }); this.refreshDerivedThreadState(record); this.queueSave(); this.emitChange(); return record.supervisionChecklist; }
 
   reviewAcceptancePoint(input: { threadId: string; pointId: string; status: SupervisionChecklistItemStatus; note?: string | null; nextInstruction?: string | null }): SupervisionChecklistView { const thread = this.getOrCreateThread(input.threadId); const checklist = thread.supervisionChecklist; if (!checklist) throw new Error(`No supervision checklist exists for job ${input.threadId}.`); reviewChecklistAcceptancePoint(checklist, input); if (thread.executionContract) { const reviewedItem = checklist.items.find((item) => item.id === input.pointId); thread.executionContract.verificationMatrix = thread.executionContract.verificationMatrix.map((row) => row.acceptancePointId === input.pointId ? { ...row, status: input.status === "pending" ? "pending" : input.status, reviewerNote: input.note?.trim() || reviewedItem?.butlerNote || row.reviewerNote, evidenceIds: [...new Set([...row.evidenceIds, ...(reviewedItem?.evidence.map((entry) => entry.id) ?? [])])], updatedAt: Date.now() } : row); this.persistedExecutionContractsByThreadId.set(input.threadId, { ...thread.executionContract }); } thread.updatedAt = checklist.updatedAt; this.persistedSupervisionChecklistsByThreadId.set(input.threadId, { ...checklist }); this.queueSave(); this.emitChange(); return checklist; }
 

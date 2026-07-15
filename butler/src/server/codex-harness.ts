@@ -21,6 +21,7 @@ import { normalizeReportEvidence, normalizeWorkerClaimsReport, validateCompleted
 import { handleHarnessDesktopAction } from "./codex-harness-desktop.js";
 import { formatHarnessJobMemory, formatHarnessProjectMemory, handleHarnessMemoryAction } from "./codex-harness-memory.js";
 import { handleHarnessPayloadAction } from "./codex-harness-instructions.js";
+import { runSerializedJobMutation } from "./butler-job-mutation-guard.js";
 import { handleHarnessPreviewWait } from "./codex-harness-preview-lifecycle.js";
 import { handleHarnessInputAction, type HarnessInputActionAccess } from "./codex-harness-inputs.js";
 import { handleHarnessProofAction } from "./codex-harness-proof.js";
@@ -508,18 +509,15 @@ export class HarnessService {
       const status = normalizeString(params.status);
       const summary = normalizeString(params.summary);
       const details = normalizeString(params.details) || null;
-      const turnId = normalizeString(params.turnId) || null;
+      const requestedTurnId = normalizeString(params.turnId) || null;
       const evidence = normalizeReportEvidence(params.evidence);
       const claims = normalizeWorkerClaimsReport(params.claims);
+      const reportThread = this.getThreadContext(capability), reportScope = { executionContract: reportThread.executionContract, supervisionChecklist: reportThread.supervisionChecklist }, reportLatestTurnId = reportThread.turns.at(-1)?.id ?? null, reportTurnId = requestedTurnId ?? reportLatestTurnId;
       if (status !== "completed" && status !== "blocked") throw new Error("report requires --status completed or --status blocked.");
       if (!summary) throw new Error("report requires --summary \"<concise outcome>\".");
-      if (params.claims !== null && params.claims !== undefined && !claims) {
-        throw new Error("Optional claims must be a JSON object with changed_work_summary and a non-empty claims array. Each claim requires status, summary, and evidence_pointer.");
-      }
+      if (params.claims !== null && params.claims !== undefined && !claims) throw new Error("Optional claims must be a JSON object with changed_work_summary and a non-empty claims array. Each claim requires status, summary, and evidence_pointer.");
       await this.validateWorkerReport(capability, { status, summary, details, evidence, claims });
-      const report = this.store.recordWorkerReport(capability.threadId, { status, summary, details, turnId, evidence, claims });
-      await updatePayloadFromWorkerReport({ artifactsDir: this.artifactsDir, store: this.store, report });
-      this.store.addEvent(capability.threadId, `harness/report/${status}`, summary);
+      const report = await runSerializedJobMutation(capability.threadId, async () => { const currentThread = this.store.getThread(capability.threadId); if (!currentThread || currentThread.executionContract !== reportScope.executionContract || currentThread.supervisionChecklist !== reportScope.supervisionChecklist) throw new Error("Job scope changed while this report was waiting. Read the current payload before continuing; this report was not applied to the newer task."); if ((currentThread.turns.at(-1)?.id ?? null) !== reportLatestTurnId) throw new Error("Worker turn changed while this report was waiting. Read the current payload before continuing; this report was not applied to the newer turn."); if (reportTurnId !== reportLatestTurnId) throw new Error("The requested Worker turn is no longer current. Read the current payload before continuing; this report was not applied to the newer turn."); const report = this.store.recordWorkerReport(capability.threadId, { status, summary, details, turnId: reportTurnId, evidence, claims }); await updatePayloadFromWorkerReport({ artifactsDir: this.artifactsDir, store: this.store, report }); this.store.addEvent(capability.threadId, `harness/report/${status}`, summary); return report; });
       this.memoryScheduler?.observeWorkerReport(report);
       this.memoryReview?.reviewWorkerReportAsync(report);
       return {

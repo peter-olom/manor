@@ -529,14 +529,14 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
           const payload = await access.createOrUpdateJobPayload({
             threadId: typedParams.threadId,
             kind: "rejection_followup",
-            instruction: text
+            instruction: text,
+            onPrepared: (prepared) => { reservation.jobPayloadReplacement = structuredClone(prepared); }
           });
           assertCallbackReviewCurrent(typedParams.threadId);
           const dispatch = await sendWorkerMessage(access, typedParams.threadId, `${formatJobPayloadMessage("rejection_followup", typedParams.threadId, payload.workerDirective, payload.display.summary)}\n\n${directWorkerDispatchMarker(typedParams.threadId, requestedAt)}`);
           sent = true;
           await access.bindJobPayloadDelivery(typedParams.threadId, { turnId: dispatch.turnId });
           await access.markPendingChatCallbackDispatched(typedParams.threadId, requestedAt, dispatch.turnId);
-          assertCallbackReviewCurrent(typedParams.threadId);
           access.store.clearQueuedRejectionInstructions(typedParams.threadId);
           const supervision = access.store.noteButlerSteer(typedParams.threadId);
           access.store.addEvent(typedParams.threadId, "butler.supervision.rejection_followup", "Butler sent queued rejected checklist items to the worker.");
@@ -604,7 +604,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
         text: Type.String({ minLength: 1 }),
         imageReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
         fileReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-        refreshChecklist: Type.Optional(Type.Boolean()),
+        refreshChecklist: Type.Optional(Type.Boolean({ description: "Replace the current review contract for a genuine new work slice or material scope/acceptance change, including when existing points are pending or rejected. When true, text must state the complete resulting scope, including every criterion that should remain." })),
         nextWorkerReportAction: Type.Optional(Type.Union([Type.Literal("review"), Type.Literal("reply_to_operator")]))
       }),
       uiEffects: access.getToolUiEffects("message_job"),
@@ -663,20 +663,25 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
         const activeReferences = access.getActiveOperatorReferences();
         const imageReferenceIds = [...new Set([...(activeReferences?.imageReferenceIds ?? []), ...(typedParams.imageReferenceIds ?? [])])];
         const fileReferenceIds = [...new Set([...(activeReferences?.fileReferenceIds ?? []), ...(typedParams.fileReferenceIds ?? [])])];
-        const refreshedChecklist = typedParams.refreshChecklist
-          ? access.store.refreshCompletedSupervisionChecklistForFollowup(typedParams.threadId, typedParams.text)
-          : null;
         const requestedAt = Date.now();
         const nextWorkerReportAction = typedParams.nextWorkerReportAction ?? "review";
         const reservation = await access.reserveDirectCodexMessage({ threadId: typedParams.threadId, text: typedParams.text, requestedAt, nextWorkerReportAction });
         let sent = false;
         try {
+          const refreshedChecklist = typedParams.refreshChecklist
+            ? access.store.refreshCompletedSupervisionChecklistForFollowup(typedParams.threadId, typedParams.text, { force: true })
+            : null;
+          if (refreshedChecklist) {
+            const refreshedThread = access.store.getThread(typedParams.threadId);
+            reservation.reviewScopeReplacement = { executionContract: refreshedThread?.executionContract ? structuredClone(refreshedThread.executionContract) : null, supervisionChecklist: refreshedThread?.supervisionChecklist ? structuredClone(refreshedThread.supervisionChecklist) : null };
+          }
           const payload = await access.createOrUpdateJobPayload({
             threadId: typedParams.threadId,
             kind: "steering",
             instruction: typedParams.text,
             imageReferenceIds,
-            fileReferenceIds
+            fileReferenceIds,
+            onPrepared: (prepared) => { reservation.jobPayloadReplacement = structuredClone(prepared); }
           });
           assertCallbackReviewCurrent(typedParams.threadId);
           const workerInput = buildWorkerInputWithReferences({
@@ -691,7 +696,6 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
           sent = true;
           await access.bindJobPayloadDelivery(typedParams.threadId, { turnId: dispatch.turnId });
           await access.markPendingChatCallbackDispatched(typedParams.threadId, requestedAt, dispatch.turnId);
-          assertCallbackReviewCurrent(typedParams.threadId);
           const supervision = access.store.noteButlerSteer(typedParams.threadId);
           access.store.addEvent(typedParams.threadId, "butler.supervision.turn_spent", "Butler spent a private supervision turn on this job.");
           access.noteThreadFocus(typedParams.threadId, "message_job");

@@ -8,8 +8,17 @@ import {
   updateJobPayload
 } from "./job-instruction-artifacts.js";
 import { normalizeString } from "./codex-harness-helpers.js";
+import { runSerializedJobMutation } from "./butler-job-mutation-guard.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { JobPayloadView } from "./job-payload-types.js";
+
+type HarnessPayloadActionInput = {
+  action: string;
+  params: Record<string, unknown>;
+  threadId: string;
+  artifactsDir: string;
+  store: ButlerStateStore;
+};
 
 async function loadCurrentPayload(input: {
   rootDir: string;
@@ -47,17 +56,14 @@ async function loadCurrentPayload(input: {
   return payload;
 }
 
-export async function handleHarnessPayloadAction(input: {
-  action: string;
-  params: Record<string, unknown>;
-  threadId: string;
-  artifactsDir: string;
-  store: ButlerStateStore;
-}): Promise<{ text: string; data?: Record<string, unknown> } | null> {
+export async function handleHarnessPayloadAction(input: HarnessPayloadActionInput): Promise<{ text: string; data?: Record<string, unknown> } | null> {
   if (input.action !== "payload.current" && input.action !== "payload.update") {
     return null;
   }
+  return runSerializedJobMutation(input.threadId, () => handleHarnessPayloadActionLocked(input));
+}
 
+async function handleHarnessPayloadActionLocked(input: HarnessPayloadActionInput): Promise<{ text: string; data?: Record<string, unknown> }> {
   const rootDir = jobPayloadsRoot(input.artifactsDir);
   const current = await loadCurrentPayload({ rootDir, threadId: input.threadId, store: input.store });
 

@@ -240,7 +240,7 @@ test("callback review interrupted by restart pauses for explicit retry", async (
   await writeFile(callbackStatePath, JSON.stringify({ callbackRecords: [persisted] }), "utf8");
   const callbacks = new Map<string, PendingChatCallback>();
 
-  await loadButlerCallbackState({ callbackStatePath, pendingChatCallbacks: callbacks, deliveredCloseoutIds: new Set() });
+  await loadButlerCallbackState({ callbackStatePath, pendingChatCallbacks: callbacks, deliveredCloseoutIds: new Set(), callbackReviewFailureCount: new Map(), callbackReviewNotBefore: new Map() });
 
   assert.equal(callbacks.get("worker")?.reviewState, "blocked");
   assert.equal(callbacks.get("worker")?.reviewStage, "blocked");
@@ -258,7 +258,7 @@ test("callback review interrupted by restart pauses for explicit retry", async (
   persisted.blockedCloseoutReason = "Adversarial review paused after 3 failed attempts: expired token";
   persisted.blockedCloseoutReportAt = persisted.updatedAt;
   await writeFile(callbackStatePath, JSON.stringify({ callbackRecords: [persisted] }), "utf8");
-  await loadButlerCallbackState({ callbackStatePath, pendingChatCallbacks: callbacks, deliveredCloseoutIds: new Set() });
+  await loadButlerCallbackState({ callbackStatePath, pendingChatCallbacks: callbacks, deliveredCloseoutIds: new Set(), callbackReviewFailureCount: new Map(), callbackReviewNotBefore: new Map() });
   assert.equal(callbacks.get("worker")?.reviewState, "blocked");
   assert.match(callbacks.get("worker")?.blockedCloseoutReason ?? "", /expired token/);
 
@@ -267,9 +267,16 @@ test("callback review interrupted by restart pauses for explicit retry", async (
   persisted.blockedCloseoutReason = null;
   persisted.reviewNextAttemptAt = Date.now() + 30_000;
   await writeFile(callbackStatePath, JSON.stringify({ callbackRecords: [persisted] }), "utf8");
-  await loadButlerCallbackState({ callbackStatePath, pendingChatCallbacks: callbacks, deliveredCloseoutIds: new Set() });
+  const failureCount = new Map<string, number>();
+  const notBefore = new Map<string, number>();
+  await loadButlerCallbackState({ callbackStatePath, pendingChatCallbacks: callbacks, deliveredCloseoutIds: new Set(), callbackReviewFailureCount: failureCount, callbackReviewNotBefore: notBefore });
+  assert.equal(callbacks.get("worker")?.reviewState, "queued");
+  assert.equal(callbacks.get("worker")?.reviewStage, "retry_wait");
+  assert.equal(failureCount.get("worker"), 2);
+  assert.equal(notBefore.get("worker"), persisted.reviewNextAttemptAt);
+  applyCallbackReviewFailure({ callback: callbacks.get("worker")!, error: new Error("third failure"), store: { getWorkerReport: () => null } as ButlerStateStore, failureCount, notBefore });
+  assert.equal(failureCount.get("worker"), 3);
   assert.equal(callbacks.get("worker")?.reviewState, "blocked");
-  assert.match(callbacks.get("worker")?.blockedCloseoutReason ?? "", /paused after restart/);
 });
 
 test("older callback state gains safe Worker watchdog defaults", async () => {
@@ -279,7 +286,7 @@ test("older callback state gains safe Worker watchdog defaults", async () => {
   await writeFile(callbackStatePath, JSON.stringify({ callbackRecords: [persisted] }), "utf8");
   const callbacks = new Map<string, PendingChatCallback>();
 
-  await loadButlerCallbackState({ callbackStatePath, pendingChatCallbacks: callbacks, deliveredCloseoutIds: new Set() });
+  await loadButlerCallbackState({ callbackStatePath, pendingChatCallbacks: callbacks, deliveredCloseoutIds: new Set(), callbackReviewFailureCount: new Map(), callbackReviewNotBefore: new Map() });
 
   const restored = callbacks.get("worker");
   assert.equal(restored?.watchdogLastProbeAt, null);

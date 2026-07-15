@@ -926,7 +926,7 @@ app.post("/api/threads/messages", async (request, response) => {
       const reservation = await butlerAgent.reserveDirectCodexMessage(directInput);
       let sent = false;
       try {
-        await butlerAgent.notifyDirectCodexMessage({ ...directInput, callbackAlreadyRegistered: true });
+        await butlerAgent.notifyDirectCodexMessage({ ...directInput, callbackAlreadyRegistered: true }, reservation);
         const workerInput = buildWorkerInputWithReferences({ text, imageStore, imageReferenceIds, fileStore, fileReferenceIds, extraInputItems: inputItems });
         workerInput.push({ type: "text", text: directWorkerDispatchMarker(threadId, requestedAt) });
         const dispatch = await sendWorkerMessage(

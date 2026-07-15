@@ -77,6 +77,24 @@ export async function postWorkerWatchdogAttentionNotice(input: {
   input.emit();
 }
 
+export async function postWorkerHydrationAttentionNotice(input: {
+  callback: PendingChatCallback;
+  messages: ButlerMessageView[];
+  save: () => Promise<void>;
+  emit: () => void;
+}): Promise<void> {
+  const { callback } = input;
+  if (!callback.watchdogAttentionAt) return;
+  upsertOperatorMessage(
+    input.messages,
+    `worker-hydration-attention-${callback.threadId}-${callback.watchdogAttentionAt}`,
+    "Worker recovery needs attention. Manor could not reload this Worker session after restart. I kept the operator closeout pending and will continue retrying instead of dropping it.",
+    callback.watchdogAttentionAt
+  );
+  await input.save();
+  input.emit();
+}
+
 export function shouldHydratePendingWorkerCallback(callback: PendingChatCallback, thread: CodexThreadRecord | null | undefined): boolean {
   if (!thread || callback.dispatchState === "reserving") return true;
   return thread.status !== "active" && callback.lastWorkerStatusSeen !== thread.status;

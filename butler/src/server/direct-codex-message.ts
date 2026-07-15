@@ -6,7 +6,7 @@ import { runSerializedCallbackReplacement } from "./butler-job-mutation-guard.js
 import type { JobPayloadKind } from "./job-instruction-artifacts.js";
 import type { JobPayloadView } from "./job-payload-types.js";
 import type { ButlerStateStore } from "./state-store.js";
-import type { ButlerMessageView, ButlerNextWorkerReportAction } from "./types.js";
+import type { ButlerMessageView, ButlerNextWorkerReportAction, CodexThreadExecutionContractView, SupervisionChecklistView } from "./types.js";
 import { workerMessageDispatchMayHaveBeenAccepted } from "./worker-client-router.js";
 
 export type DirectCodexMessagePingInput = {
@@ -19,12 +19,56 @@ export type DirectCodexMessagePingInput = {
   nextWorkerReportAction?: ButlerNextWorkerReportAction;
 };
 
+type DirectMessageReviewScope = {
+  executionContract: CodexThreadExecutionContractView | null;
+  supervisionChecklist: SupervisionChecklistView | null;
+};
+
+function sameValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function comparableChecklist(checklist: SupervisionChecklistView | null | undefined): unknown {
+  return checklist
+    ? { ...checklist, updatedAt: 0, heartbeat: { ...checklist.heartbeat, lastThreadEventAt: null } }
+    : null;
+}
+
+export function planDirectMessageRollback(input: {
+  currentPayload: JobPayloadView | null;
+  originalPayload: JobPayloadView | null;
+  payloadReplacement: JobPayloadView | null;
+  currentScope: DirectMessageReviewScope;
+  scopeReplacement: DirectMessageReviewScope | null;
+}): { payload: boolean; scope: boolean } {
+  const hasPayloadReplacement = input.payloadReplacement !== null;
+  const hasScopeReplacement = input.scopeReplacement !== null;
+  const ownsPayload = !hasPayloadReplacement || sameValue(input.currentPayload, input.payloadReplacement) || sameValue(input.currentPayload, input.originalPayload);
+  const ownsScope = !hasScopeReplacement || (
+    sameValue(input.currentScope.executionContract, input.scopeReplacement?.executionContract ?? null) &&
+    sameValue(comparableChecklist(input.currentScope.supervisionChecklist), comparableChecklist(input.scopeReplacement?.supervisionChecklist))
+  );
+  const ownsReplacementGeneration = ownsPayload && ownsScope;
+  return {
+    payload: hasPayloadReplacement && ownsReplacementGeneration,
+    scope: hasScopeReplacement && ownsReplacementGeneration
+  };
+}
+
 export async function settleFailedDirectWorkerDispatch(
   error: unknown,
   preserve: () => Promise<void>,
   rollback: () => Promise<void>
 ): Promise<void> {
-  await (workerMessageDispatchMayHaveBeenAccepted(error) ? preserve() : rollback());
+  try {
+    await (workerMessageDispatchMayHaveBeenAccepted(error) ? preserve() : rollback());
+  } catch (settlementError) {
+    if (error instanceof Error) {
+      if (error.cause === undefined) error.cause = settlementError;
+      throw error;
+    }
+    throw new Error(String(error), { cause: settlementError });
+  }
 }
 
 export type DirectCodexMessageAccess = {
@@ -39,6 +83,7 @@ export type DirectCodexMessageAccess = {
     instruction: string;
     imageReferenceIds?: string[];
     fileReferenceIds?: string[];
+    onPrepared?: (payload: JobPayloadView) => void;
   }): Promise<JobPayloadView>;
   noteThreadFocus(threadId: string, reason?: string): void;
   saveCallbackState(): Promise<void>;
@@ -281,23 +326,28 @@ export function buildDirectCodexMessagePingSummary(input: DirectCodexMessagePing
 
 export async function notifyDirectCodexMessage(
   access: DirectCodexMessageAccess,
-  input: DirectCodexMessagePingInput & { threadId: string }
-): Promise<void> {
+  input: DirectCodexMessagePingInput & { threadId: string },
+  observer?: { onReviewScopeReplacement?: (replacement: { executionContract: CodexThreadExecutionContractView | null; supervisionChecklist: SupervisionChecklistView | null }) => void; onJobPayloadReplacement?: (payload: JobPayloadView) => void }
+): Promise<{ executionContract: CodexThreadExecutionContractView | null; supervisionChecklist: SupervisionChecklistView | null } | null> {
   if (!access.store.getThread(input.threadId)) {
     throw new Error(`Job ${input.threadId} is not available for Butler notification.`);
   }
 
-  await runSerializedCallbackReplacement(input.threadId, async () => {
+  return runSerializedCallbackReplacement(input.threadId, async () => {
     const privateSteerText = buildDirectCodexMessagePingSummary(input);
     const requestedAt = typeof input.requestedAt === "number" && Number.isFinite(input.requestedAt) ? input.requestedAt : Date.now();
+    const refreshed = access.store.refreshCompletedSupervisionChecklistForFollowup(input.threadId, privateSteerText);
+    const refreshedThread = refreshed ? access.store.getThread(input.threadId) : null;
+    const reviewScopeReplacement = refreshed ? { executionContract: refreshedThread?.executionContract ? structuredClone(refreshedThread.executionContract) : null, supervisionChecklist: refreshedThread?.supervisionChecklist ? structuredClone(refreshedThread.supervisionChecklist) : null } : null;
+    if (reviewScopeReplacement) observer?.onReviewScopeReplacement?.(reviewScopeReplacement);
     await access.createOrUpdateJobPayload?.({
       threadId: input.threadId,
       kind: "direct_message",
       instruction: privateSteerText,
       imageReferenceIds: input.imageReferenceIds,
-      fileReferenceIds: input.fileReferenceIds
+      fileReferenceIds: input.fileReferenceIds,
+      onPrepared: observer?.onJobPayloadReplacement
     });
-    access.store.refreshCompletedSupervisionChecklistForFollowup(input.threadId, privateSteerText);
     if (!input.callbackAlreadyRegistered) {
       await access.registerPendingChatCallback(input.threadId, {
         privateSteerText,
@@ -309,5 +359,6 @@ export async function notifyDirectCodexMessage(
     access.store.addEvent(input.threadId, "butler.direct_message.pinged", "Butler was pinged for an operator direct message to a Worker.");
     await access.saveCallbackState();
     access.emit("change");
+    return reviewScopeReplacement;
   });
 }

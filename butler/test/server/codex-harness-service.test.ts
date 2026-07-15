@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { CodexHarnessService, HarnessService } from "../../src/server/codex-harness.js";
+import { runSerializedJobMutation } from "../../src/server/butler-job-mutation-guard.js";
 import {
   buildJobPayload,
   jobPayloadsRoot,
@@ -115,6 +116,91 @@ test("harness reads and updates the current payload for the bound thread", async
   assert.match(read.text, /"schemaVersion": "manor.job_payload.v1"/);
   assert.equal((read.data?.payload as { threadId?: string } | undefined)?.threadId, contract.threadId);
   assert.equal((updated.data?.payload as { report?: { summary?: string } } | undefined)?.report?.summary, "Worker updated payload");
+});
+
+test("a queued Worker report does not cross into a refreshed job scope", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-harness-report-lock-"));
+  const stateDir = path.join(root, "state");
+  const codexHomeDir = path.join(root, "codex-home");
+  const artifactsDir = path.join(root, "artifacts");
+  const threadId = "thread-report-lock";
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "butler-ui.json"), JSON.stringify({ windows: [], focusedWindowId: null }, null, 2), "utf8");
+  const store = new ButlerStateStore(path.join(stateDir, "butler-ui.json"));
+  await store.load();
+  store.upsertThreadSummary({ id: threadId, cwd: "/workspace", status: "active", source: "codex", turns: [{ id: "turn-1", status: "completed", items: [] }] });
+  const contract = buildThreadExecutionContract({ threadId, workspaceCwd: "/workspace", projectId: "project", projectLabel: "Project", branch: null, taskText: "Wait for the mutation lock.", notes: [] });
+  store.setThreadExecutionContract(threadId, contract);
+  const payload = buildJobPayload({ threadId, kind: "delegation", instruction: contract.requestedTask, contract });
+  await persistJobPayload(jobPayloadsRoot(artifactsDir), payload);
+  store.setThreadJobPayload(payload);
+  const harness = new CodexHarnessService({ codexHomeDir, stateDir, artifactsDir, store, runtimeBroker: { listStacks: async () => [] } as unknown as RuntimeBrokerClient, serviceTemplateRegistry: { list: () => [], get: () => undefined } as unknown as ServiceTemplateRegistry });
+  await harness.load();
+  const capability = await harness.ensureThreadCapability(threadId, "/workspace");
+  assert.ok(capability);
+  let release!: () => void;
+  let lockReady!: () => void;
+  const ready = new Promise<void>((resolve) => { lockReady = resolve; });
+  const held = runSerializedJobMutation(threadId, async () => { lockReady(); await new Promise<void>((resolve) => { release = resolve; }); });
+  await ready;
+  let settled = false;
+  const report = harness.handleAction({ token: capability.token, action: "report", params: { status: "blocked", summary: "Waiting", details: "The shared lock is held; retry after it releases." } }).finally(() => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 25));
+
+  assert.equal(settled, false);
+  assert.equal(store.getWorkerReport(threadId), null);
+  store.refreshCompletedSupervisionChecklistForFollowup(threadId, "New task", { force: true });
+  release();
+  await held;
+  await assert.rejects(report, /Job scope changed while this report was waiting/);
+  assert.equal(store.getWorkerReport(threadId), null);
+  assert.equal(store.getThreadJobPayload(threadId)?.report, null);
+  assert.equal(store.getThread(threadId)?.executionContract?.requestedTask, "New task");
+});
+
+test("a queued Worker report does not cross into a newer Worker turn", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-harness-report-turn-"));
+  const stateDir = path.join(root, "state");
+  const codexHomeDir = path.join(root, "codex-home");
+  const artifactsDir = path.join(root, "artifacts");
+  const threadId = "thread-report-turn";
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "butler-ui.json"), JSON.stringify({ windows: [], focusedWindowId: null }, null, 2), "utf8");
+  const store = new ButlerStateStore(path.join(stateDir, "butler-ui.json"));
+  await store.load();
+  store.upsertThreadSummary({ id: threadId, cwd: "/workspace", status: "active", source: "codex", turns: [{ id: "turn-1", status: "completed", items: [] }] });
+  const contract = buildThreadExecutionContract({ threadId, workspaceCwd: "/workspace", projectId: "project", projectLabel: "Project", branch: null, taskText: "Keep reports on their Worker turn.", notes: [] });
+  store.setThreadExecutionContract(threadId, contract);
+  const payload = buildJobPayload({ threadId, kind: "delegation", instruction: contract.requestedTask, contract });
+  await persistJobPayload(jobPayloadsRoot(artifactsDir), payload);
+  store.setThreadJobPayload(payload);
+  const harness = new CodexHarnessService({ codexHomeDir, stateDir, artifactsDir, store, runtimeBroker: { listStacks: async () => [] } as unknown as RuntimeBrokerClient, serviceTemplateRegistry: { list: () => [], get: () => undefined } as unknown as ServiceTemplateRegistry });
+  await harness.load();
+  const capability = await harness.ensureThreadCapability(threadId, "/workspace");
+  assert.ok(capability);
+  const originalScope = store.getThread(threadId)?.supervisionChecklist;
+  let release!: () => void;
+  let lockReady!: () => void;
+  const ready = new Promise<void>((resolve) => { lockReady = resolve; });
+  const held = runSerializedJobMutation(threadId, async () => { lockReady(); await new Promise<void>((resolve) => { release = resolve; }); });
+  await ready;
+  let settled = false;
+  const report = harness.handleAction({ token: capability.token, action: "report", params: { status: "blocked", summary: "Old turn report", details: "The earlier Worker turn completed before this newer turn started." } }).finally(() => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(settled, false);
+  store.upsertThreadSummary({ id: threadId, cwd: "/workspace", status: "active", source: "codex", turns: [{ id: "turn-1", status: "completed", items: [] }, { id: "turn-2", status: "active", items: [] }] });
+  assert.equal(store.getThread(threadId)?.supervisionChecklist, originalScope);
+  release();
+  await held;
+
+  await assert.rejects(report, /Worker turn changed while this report was waiting/);
+  assert.equal(store.getWorkerReport(threadId), null);
+  assert.equal(store.getThreadJobPayload(threadId)?.report, null);
+  await assert.rejects(
+    harness.handleAction({ token: capability.token, action: "report", params: { status: "blocked", summary: "Stale explicit report", details: "This report belongs to the earlier Worker turn.", turnId: "turn-1" } }),
+    /requested Worker turn is no longer current/
+  );
+  assert.equal(store.getWorkerReport(threadId), null);
 });
 
 test("harness rejects payload writes when the stored protocol targets another worker", async () => {

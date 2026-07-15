@@ -575,6 +575,10 @@ export async function persistJobPayload(rootDir: string, payload: JobPayloadView
   return parsed;
 }
 
+export async function removeCurrentJobPayload(rootDir: string, threadId: string): Promise<void> {
+  await fs.rm(payloadFilePath(rootDir, threadId), { force: true });
+}
+
 export async function readCurrentJobPayload(rootDir: string, threadId: string): Promise<JobPayloadView | null> {
   const payload = await fs
     .readFile(payloadFilePath(rootDir, threadId), "utf8")

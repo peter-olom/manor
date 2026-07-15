@@ -75,6 +75,7 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
             contract: thread?.executionContract ?? null,
             checklist: thread?.supervisionChecklist ?? null
           });
+      input.onPrepared?.(structuredClone(payload));
       store.setThreadJobPayload(payload);
       payloads.push(payload);
       return payload;
@@ -90,9 +91,34 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
     }),
     getThreadBudgetLimitMessage: () => null,
     bindJobPayloadDelivery: async (threadId: string) => store.getThreadJobPayload(threadId),
-    reserveDirectCodexMessage: async () => { dispatchOrder.push("reserve"); return { callback: null, failureCount: null, notBefore: null, jobPayload: null }; },
+    reserveDirectCodexMessage: async () => {
+      dispatchOrder.push("reserve");
+      const thread = store.getThread(threadId);
+      return {
+        callback: null,
+        failureCount: null,
+        notBefore: null,
+        jobPayload: thread?.jobPayload ?? null,
+        jobPayloadReplacement: null,
+        executionContract: thread?.executionContract ? structuredClone(thread.executionContract) : null,
+        supervisionChecklist: thread?.supervisionChecklist ? structuredClone(thread.supervisionChecklist) : null,
+        reviewScopeReplacement: null
+      };
+    },
     markPendingChatCallbackDispatched: async (_threadId: string, requestedAt: number, turnId: string | null) => { dispatchOrder.push("mark"); callbackDispatches.push({ requestedAt, turnId }); },
-    rollbackDirectCodexMessage: async () => { dispatchOrder.push("rollback"); },
+    rollbackDirectCodexMessage: async (_threadId: string, _requestedAt: number, reservation: Awaited<ReturnType<ButlerAgentToolAccess["reserveDirectCodexMessage"]>>) => {
+      dispatchOrder.push("rollback");
+      const currentPayload = store.getThreadJobPayload(_threadId);
+      const current = store.getThread(_threadId);
+      const comparableChecklist = (checklist: typeof current.supervisionChecklist) => checklist ? { ...checklist, updatedAt: 0, heartbeat: { ...checklist.heartbeat, lastThreadEventAt: null } } : null;
+      const ownsPayload = !reservation.jobPayloadReplacement || [reservation.jobPayloadReplacement, reservation.jobPayload].some((candidate) => JSON.stringify(currentPayload) === JSON.stringify(candidate));
+      const ownsScope = !reservation.reviewScopeReplacement || JSON.stringify(current?.executionContract ?? null) === JSON.stringify(reservation.reviewScopeReplacement.executionContract) && JSON.stringify(comparableChecklist(current?.supervisionChecklist)) === JSON.stringify(comparableChecklist(reservation.reviewScopeReplacement.supervisionChecklist));
+      if (reservation.jobPayloadReplacement && ownsPayload && ownsScope) {
+        if (reservation.jobPayload) store.setThreadJobPayload(reservation.jobPayload);
+        else store.clearThreadJobPayload(_threadId);
+      }
+      if (reservation.reviewScopeReplacement && ownsPayload && ownsScope) store.restoreThreadReviewScope(_threadId, reservation.executionContract, reservation.supervisionChecklist);
+    },
     registerPendingChatCallback: () => undefined,
     removeExternalWorkerDelegation: async (workerThreadId: string) => { removedCallbacks.push(workerThreadId); },
     noteThreadFocus: () => undefined
@@ -143,6 +169,55 @@ test("message_job updates the job payload and sends readable chat", async () => 
   assert.doesNotMatch(JSON.stringify(sent[0]), /MANOR INSTRUCTION/);
 });
 
+test("message_job forced refresh replaces stale rejected scope before building its payload", async () => {
+  const { store, threadId, payloads, tools } = await createHarness();
+  store.reviewAcceptancePoint({
+    threadId,
+    pointId: "point-1",
+    status: "rejected",
+    nextInstruction: "Retry the old bootstrap point."
+  });
+
+  await tool(tools, "message_job").execute("call-refresh", {
+    threadId,
+    text: "- Second point\n- Implement passwordless authentication\n- Add capability overrides",
+    refreshChecklist: true
+  });
+
+  assert.deepEqual(
+    store.getSupervisionChecklist(threadId)?.items.map((item) => item.text),
+    ["Second point", "Implement passwordless authentication", "Add capability overrides"]
+  );
+  const payload = payloads[0];
+  assert.equal(payload?.requestedTask, "- Second point - Implement passwordless authentication - Add capability overrides");
+  assert.deepEqual(payload?.checklist.map((item) => item.text), ["Second point", "Implement passwordless authentication", "Add capability overrides"]);
+  const executionContract = payload?.executionContract as {
+    requestedTask?: string;
+    acceptancePoints?: string[];
+    verificationMatrix?: Array<{ acceptancePointId: string }>;
+    mission?: { intent?: string };
+  };
+  assert.equal(executionContract.requestedTask, payload?.requestedTask);
+  assert.deepEqual(executionContract.acceptancePoints, payload?.checklist.map((item) => item.text));
+  assert.deepEqual(executionContract.verificationMatrix?.map((row) => row.acceptancePointId), ["point-1", "point-2", "point-3"]);
+  assert.match(executionContract.mission?.intent ?? "", /passwordless authentication/);
+  assert.doesNotMatch(JSON.stringify(executionContract), /First point/);
+});
+
+test("message_job without refresh keeps the existing review contract", async () => {
+  const { store, threadId, payloads, tools } = await createHarness();
+  const before = store.getThread(threadId)?.executionContract;
+
+  await tool(tools, "message_job").execute("call-no-refresh", {
+    threadId,
+    text: "Clarify how to verify the first point."
+  });
+
+  assert.deepEqual(store.getThread(threadId)?.executionContract, before);
+  assert.equal((payloads[0]?.executionContract as { requestedTask?: string })?.requestedTask, before?.requestedTask);
+  assert.deepEqual(payloads[0]?.checklist.map((item) => item.text), before?.acceptancePoints);
+});
+
 test("message_job reserves its callback before a steered turn can settle", async () => {
   const { callbackDispatches, dispatchOrder, store, threadId, tools } = await createHarness({ settleDuringSend: true });
 
@@ -165,6 +240,25 @@ test("message_job preserves supervision when a timed-out dispatch may have been 
 
   assert.deepEqual(dispatchOrder, ["reserve", "send", "mark"]);
   assert.equal(callbackDispatches[0]?.turnId, null);
+});
+
+test("failed refreshed follow-up restores the prior review scope and payload", async () => {
+  const { store, threadId, dispatchOrder, tools } = await createHarness({ dispatchError: new Error("send failed") });
+  const priorContract = structuredClone(store.getThread(threadId)?.executionContract ?? null);
+  const priorChecklist = structuredClone(store.getSupervisionChecklist(threadId));
+
+  await assert.rejects(() => tool(tools, "message_job").execute("call-refresh-failure", {
+    threadId,
+    text: "- Replace the old scope\n- Verify the replacement",
+    refreshChecklist: true
+  }), /send failed/);
+
+  assert.deepEqual(store.getThread(threadId)?.executionContract, priorContract);
+  assert.equal(store.getSupervisionChecklist(threadId)?.requestedTask, priorChecklist?.requestedTask);
+  assert.deepEqual(store.getSupervisionChecklist(threadId)?.items, priorChecklist?.items);
+  assert.equal(store.getSupervisionChecklist(threadId)?.reviewState, priorChecklist?.reviewState);
+  assert.equal(store.getThreadJobPayload(threadId), null);
+  assert.deepEqual(dispatchOrder, ["reserve", "send", "rollback"]);
 });
 
 test("rejected checklist flush updates payload and clears the queue", async () => {

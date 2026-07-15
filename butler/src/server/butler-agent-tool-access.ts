@@ -29,7 +29,8 @@ import type {
   JobMemoryPromotionCandidateView,
   ManorRestartRequestView,
   PreviewVerificationView,
-  ProjectMemoryView
+  ProjectMemoryView,
+  SupervisionChecklistView
 } from "./types.js";
 import type { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
@@ -38,7 +39,16 @@ import type { ExtensionUiBroker } from "./extension-ui-broker.js";
 import type { SkillsService } from "./skills-service.js";
 
 export type ButlerCustomTool = ReturnType<typeof defineTool>;
-export type ButlerCallbackReservation = { callback: ButlerThreadCallbackView | null; failureCount: number | null; notBefore: number | null; jobPayload: JobPayloadView | null };
+export type ButlerCallbackReservation = {
+  callback: ButlerThreadCallbackView | null;
+  failureCount: number | null;
+  notBefore: number | null;
+  jobPayload: JobPayloadView | null;
+  jobPayloadReplacement: JobPayloadView | null;
+  executionContract: CodexThreadExecutionContractView | null;
+  supervisionChecklist: SupervisionChecklistView | null;
+  reviewScopeReplacement: { executionContract: CodexThreadExecutionContractView | null; supervisionChecklist: SupervisionChecklistView | null } | null;
+};
 
 export type ButlerToolDefiner = <TParams extends Record<string, unknown>>(definition: {
   name: string;
@@ -186,6 +196,7 @@ export type ButlerAgentToolAccess = {
     instruction: string;
     imageReferenceIds?: string[];
     fileReferenceIds?: string[];
+    onPrepared?: (payload: JobPayloadView) => void;
   }): Promise<JobPayloadView>;
   bindJobPayloadDelivery(threadId: string, delivery: { turnId?: string | null; messageId?: string | null }): Promise<JobPayloadView | null>;
   queueDelegationAcknowledgement(threadId: string, text: string, selection?: {

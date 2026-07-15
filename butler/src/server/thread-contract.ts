@@ -180,7 +180,8 @@ function deriveColonListPrefix(beforeColon: string): string | null {
 }
 
 export function deriveAcceptancePoints(taskText: string, requestedTask?: string | null): string[] {
-  const source = [requestedTask ?? "", taskText].filter(Boolean).join("\n");
+  const requestedSource = normalizeContractText(requestedTask) === normalizeContractText(taskText) ? "" : requestedTask ?? "";
+  const source = [requestedSource, taskText].filter(Boolean).join("\n");
   const points: string[] = [];
   const seen = new Set<string>();
   const addPoint = (value: string): void => {
