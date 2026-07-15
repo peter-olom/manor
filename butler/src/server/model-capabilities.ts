@@ -14,7 +14,6 @@ const BUILTIN_FALLBACK_CAPABILITIES: Array<ModelCapabilityMetadata & { ids: stri
   {
     ids: ["glm-5.2", "glm-5.2-20260616", "z-ai/glm-5.2", "z-ai/glm-5.2-20260616"],
     reasoning: true,
-    contextWindow: 1_000_000,
     thinkingLevelMap: { off: null, none: null, minimal: null, low: null, medium: null, high: "high", xhigh: "max" },
     compat: { supportsReasoningEffort: true },
     __source: "builtin-fallback"

@@ -62,6 +62,23 @@ test("Codex provider adapter delegates JSON-RPC calls to transport", async () =>
   });
 });
 
+test("Codex provider adapter reads probe state without loading turns", async () => {
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const adapter = createAdapter(async (method, params) => {
+    calls.push({ method, params });
+    return { thread: { id: "thread-probe", status: { type: "active" } } };
+  });
+
+  assert.deepEqual(await adapter.readThreadState("thread-probe"), {
+    id: "thread-probe",
+    status: { type: "active" }
+  });
+  assert.deepEqual(calls, [{
+    method: "thread/read",
+    params: { threadId: "thread-probe", includeTurns: false }
+  }]);
+});
+
 test("Codex provider adapter owns thread and turn operations", async () => {
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
   const adapter = createAdapter(async (method, params) => {

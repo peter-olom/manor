@@ -8,12 +8,17 @@ import {
   getUnifiedWorkerCompose,
   deleteAllWorkerThreads,
   deleteWorkerThread,
+  getWorkerThreadRuntimeActivityAt,
   loadWorkerThread,
+  loadWorkerThreadWithin,
+  probeWorkerThreadWithin,
   sendWorkerMessage,
   startWorkerThread,
   stopWorkerThread,
+  stopWorkerThreadWithin,
   updateUnifiedWorkerCompose
 } from "../../src/server/worker-client-router.js";
+import { WorkerTransportDeadError } from "../../src/server/worker-thread-runtime-probe.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { StaleWorkerOperationError } from "../../src/server/stale-worker-operation-error.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
@@ -719,6 +724,143 @@ test("startWorkerThread resolves stale configured model against forced runtime b
 test("Pi RPC thread load fails clearly when Pi runtime is unavailable", async () => {
   const ctx = access({ piRpcWorkerClient: null });
   await assert.rejects(() => loadWorkerThread(ctx.access, "pi-thread"), /Pi RPC worker runtime is not available/);
+});
+
+test("bounded Worker thread loads reuse the in-flight load after a timeout", async () => {
+  let loadCalls = 0;
+  let releaseLoad!: () => void;
+  const loadCanFinish = new Promise<void>((resolve) => { releaseLoad = resolve; });
+  const workerAccess = {
+    store: { getThread: () => ({ id: "slow-load", source: "appServer" }) },
+    codexClient: {
+      loadThread: async () => {
+        loadCalls += 1;
+        if (loadCalls === 1) await loadCanFinish;
+      },
+      invalidateThreadOperations: () => undefined
+    }
+  } as never;
+
+  assert.equal(await loadWorkerThreadWithin(workerAccess, "slow-load", 5), "timeout");
+  assert.equal(await loadWorkerThreadWithin(workerAccess, "slow-load", 5), "timeout");
+  assert.equal(loadCalls, 1);
+
+  releaseLoad();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(await loadWorkerThreadWithin(workerAccess, "slow-load", 50), "loaded");
+  assert.equal(loadCalls, 2);
+});
+
+test("Worker probes route to the runtime and expose only real runtime activity", async () => {
+  let probeCalls = 0;
+  const workerAccess = {
+    store: { getThread: () => ({ id: "pi-probe", source: "pi-rpc" }) },
+    codexClient: {},
+    piRpcWorkerClient: {
+      getLastRuntimeActivityAt: () => 1234,
+      probeThread: async () => {
+        probeCalls += 1;
+        return {
+          state: "busy", busy: true, compacting: true, pendingMessageCount: 2,
+          activityAt: 1234, acknowledgedWait: "Worker is compacting context.", confirmedDead: false
+        };
+      }
+    }
+  } as never;
+
+  assert.equal(getWorkerThreadRuntimeActivityAt(workerAccess, "pi-probe"), 1234);
+  const result = await probeWorkerThreadWithin(workerAccess, "pi-probe", 50);
+  const { attemptId, ...probe } = result;
+  assert.equal(attemptId.length > 0, true);
+  assert.deepEqual(probe, {
+    state: "busy", busy: true, compacting: true, pendingMessageCount: 2,
+    activityAt: 1234, acknowledgedWait: "Worker is compacting context.", confirmedDead: false
+  });
+  assert.equal(probeCalls, 1);
+});
+
+test("bounded Worker probes deduplicate a hung runtime call and distinguish confirmed transport death", async () => {
+  let probeCalls = 0;
+  let releaseProbe!: () => void;
+  const probeCanFinish = new Promise<void>((resolve) => { releaseProbe = resolve; });
+  const store = { getThread: () => ({ id: "codex-probe", source: "appServer" }) };
+  const codexClient = {
+    getLastRuntimeActivityAt: () => 5678,
+    probeThread: async () => {
+      probeCalls += 1;
+      await probeCanFinish;
+      return {
+        state: "idle", busy: false, compacting: false, pendingMessageCount: 0,
+        activityAt: 5678, acknowledgedWait: null, confirmedDead: false
+      } as const;
+    }
+  };
+  const workerAccess = { store, codexClient } as never;
+
+  const [first, second] = await Promise.all([
+    probeWorkerThreadWithin(workerAccess, "codex-probe", 5),
+    probeWorkerThreadWithin(workerAccess, "codex-probe", 5)
+  ]);
+  assert.equal(first.state, "unreachable");
+  assert.equal(first.confirmedDead, false);
+  assert.equal(second.state, "unreachable");
+  assert.equal(first.attemptId, second.attemptId);
+  assert.equal(probeCalls, 1);
+
+  const third = await probeWorkerThreadWithin(workerAccess, "codex-probe", 5);
+  assert.equal(third.state, "unreachable");
+  assert.notEqual(third.attemptId, first.attemptId);
+  assert.equal(probeCalls, 2);
+
+  releaseProbe();
+  await new Promise((resolve) => setImmediate(resolve));
+  codexClient.probeThread = async () => {
+    throw new WorkerTransportDeadError("transport closed");
+  };
+  const dead = await probeWorkerThreadWithin(workerAccess, "codex-probe", 50);
+  const { attemptId, ...deadResult } = dead;
+  assert.equal(attemptId === first.attemptId, false);
+  assert.deepEqual(deadResult, {
+    state: "unreachable", busy: false, compacting: false, pendingMessageCount: 0,
+    activityAt: 5678, detail: "transport closed", acknowledgedWait: null, confirmedDead: true
+  });
+});
+
+test("bounded Worker stops deduplicate a hung stop and do not mark idle after failure", async () => {
+  let stopCalls = 0;
+  let releaseStop!: () => void;
+  const stopCanFinish = new Promise<void>((resolve) => { releaseStop = resolve; });
+  const thread = { id: "bounded-stop", source: "appServer", status: "active", turns: [{ id: "turn", status: "in_progress", items: [] }] };
+  const workerAccess = {
+    store: { getThread: () => thread, flushSave: async () => undefined },
+    codexClient: {
+      stopThread: async () => {
+        stopCalls += 1;
+        await stopCanFinish;
+        throw new Error("interrupt failed");
+      }
+    }
+  } as never;
+
+  const [first, second] = await Promise.all([
+    stopWorkerThreadWithin(workerAccess, thread.id, 5),
+    stopWorkerThreadWithin(workerAccess, thread.id, 5)
+  ]);
+  assert.deepEqual([first, second], [
+    { state: "timeout", detail: "Worker stop timed out." },
+    { state: "timeout", detail: "Worker stop timed out." }
+  ]);
+  assert.equal(stopCalls, 1);
+  assert.equal(thread.status, "active");
+
+  assert.deepEqual(await stopWorkerThreadWithin(workerAccess, thread.id, 5), { state: "timeout", detail: "Worker stop timed out." });
+  assert.equal(stopCalls, 1);
+
+  releaseStop();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(await stopWorkerThreadWithin(workerAccess, thread.id, 50), { state: "failed", detail: "interrupt failed" });
+  assert.equal(stopCalls, 2);
+  assert.equal(thread.status, "active");
 });
 
 test("stopWorkerThread rehydrates an active Pi Worker before retrying stop", async () => {

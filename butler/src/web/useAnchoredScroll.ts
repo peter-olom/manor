@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const PIN_THRESHOLD_PX = 64;
 
 type AnchoredScrollOptions = {
   bottomKey: unknown;
+  prependKey?: unknown;
   resetKey?: unknown;
 };
 
-export function useAnchoredScroll<T extends HTMLElement>({ bottomKey, resetKey }: AnchoredScrollOptions) {
+export function useAnchoredScroll<T extends HTMLElement>({ bottomKey, prependKey, resetKey }: AnchoredScrollOptions) {
   const ref = useRef<T | null>(null);
   const [isPinned, setIsPinned] = useState(true);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -15,6 +16,7 @@ export function useAnchoredScroll<T extends HTMLElement>({ bottomKey, resetKey }
   const rafHandle = useRef<number | null>(null);
   const lastBottomKey = useRef<unknown>(bottomKey);
   const pinnedRef = useRef(true);
+  const prependAnchor = useRef<{ key: unknown; scrollHeight: number } | null>(null);
 
   useEffect(() => {
     pinnedRef.current = isPinned;
@@ -40,6 +42,16 @@ export function useAnchoredScroll<T extends HTMLElement>({ bottomKey, resetKey }
       setUnreadCount(0);
     }
   }, []);
+
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const previous = prependAnchor.current;
+    if (previous && previous.key !== prependKey) {
+      element.scrollTop += element.scrollHeight - previous.scrollHeight;
+    }
+    prependAnchor.current = { key: prependKey, scrollHeight: element.scrollHeight };
+  });
 
   useEffect(() => {
     const element = ref.current;

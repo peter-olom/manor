@@ -37,7 +37,48 @@ export type WorkerThread = {
   supervisionChecklist?: {
     items?: Array<{ id: string; text: string; status: string; butlerNote?: string | null; queuedInstruction?: string | null }>;
   } | null;
+  loadedStart?: number;
+  hasMore?: boolean;
+  turnCount?: number;
 };
+
+export function mergeWorkerThreadPages(current: WorkerThread | null, incoming: WorkerThread | null): WorkerThread | null {
+  if (!incoming) return current;
+  if (!current || current.id !== incoming.id) return incoming;
+  const currentStart = current.loadedStart ?? 0;
+  const incomingStart = incoming.loadedStart ?? 0;
+  const incomingIsOlderPage = incomingStart < currentStart;
+  const currentEnd = currentStart + (current.turns?.length ?? 0);
+  const currentTurnIds = new Set((current.turns ?? []).map((turn) => turn.id));
+  const overlapsCurrent = (incoming.turns ?? []).some((turn) => currentTurnIds.has(turn.id));
+  if (!incomingIsOlderPage && incomingStart > currentEnd && !overlapsCurrent) return incoming;
+  const older = incomingIsOlderPage ? incoming : current;
+  const newer = incomingIsOlderPage ? current : incoming;
+  const turns = new Map((older.turns ?? []).map((turn) => [turn.id, turn]));
+  for (const turn of newer.turns ?? []) turns.set(turn.id, turn);
+  const snapshots = new Map((older.jobPayload?.snapshots ?? []).map((snapshot) => [`${snapshot.nodeId}:${snapshot.revision}`, snapshot]));
+  for (const snapshot of newer.jobPayload?.snapshots ?? []) snapshots.set(`${snapshot.nodeId}:${snapshot.revision}`, snapshot);
+  const reports = new Map((older.workerReports ?? []).map((report) => [`${report.turnId}:${report.updatedAt}`, report]));
+  for (const report of newer.workerReports ?? []) reports.set(`${report.turnId}:${report.updatedAt}`, report);
+  const events = new Map((older.eventLog ?? []).map((entry) => [`${entry.at}:${entry.method}:${entry.summary}`, entry]));
+  for (const entry of newer.eventLog ?? []) events.set(`${entry.at}:${entry.method}:${entry.summary}`, entry);
+  const loadedStart = Math.min(current.loadedStart ?? Number.POSITIVE_INFINITY, incoming.loadedStart ?? Number.POSITIVE_INFINITY);
+  const newestPayload = newer.jobPayload ?? older.jobPayload;
+  return {
+    ...older,
+    ...newer,
+    turns: [...turns.values()].sort((left, right) => (left.startedAt ?? 0) - (right.startedAt ?? 0)),
+    eventLog: [...events.values()].sort((left, right) => left.at - right.at),
+    workerReport: newer.workerReport ?? older.workerReport,
+    workerReports: [...reports.values()].sort((left, right) => left.updatedAt - right.updatedAt),
+    jobPayload: newestPayload
+      ? { ...newestPayload, snapshots: [...snapshots.values()].sort((left, right) => left.updatedAt - right.updatedAt) }
+      : null,
+    loadedStart: Number.isFinite(loadedStart) ? loadedStart : 0,
+    hasMore: Number.isFinite(loadedStart) ? loadedStart > 0 : Boolean(incoming.hasMore ?? current.hasMore),
+    turnCount: Math.max(current.turnCount ?? 0, incoming.turnCount ?? 0)
+  };
+}
 
 function workerReportFromWire(report: WorkerThreadReport): WorkerTimeline["reports"][number] {
   return {
@@ -120,7 +161,15 @@ export function shapeWorkerTimeline(thread: WorkerThread | null): WorkerTimeline
           }
         }
       }
-      return { id: turn.id, status: turn.status, startedAt: turn.startedAt ?? items[0]?.at ?? 0, completedAt, items, finalIndex };
+      return {
+        id: turn.id,
+        ordinal: Math.max(0, thread.loadedStart ?? 0) + turnIndex + 1,
+        status: turn.status,
+        startedAt: turn.startedAt ?? items[0]?.at ?? 0,
+        completedAt,
+        items,
+        finalIndex
+      };
     })
     .filter((turn) => turn.items.length > 0 || turn.completedAt === null || isFailedWorkerTurn(turn.status));
   return {

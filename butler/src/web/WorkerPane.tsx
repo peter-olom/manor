@@ -37,6 +37,7 @@ export type WorkerItem = {
 
 export type WorkerTurnGroup = {
   id: string;
+  ordinal?: number;
   status: string;
   startedAt: number;
   completedAt: number | null;
@@ -145,6 +146,9 @@ type WorkerPaneProps = {
   pair: PairDetail;
   timeline: WorkerTimeline;
   loading?: boolean;
+  hasMore?: boolean;
+  loadingOlder?: boolean;
+  onLoadOlder?: () => void;
   proofRecords: WorkerProofRecord[];
   onWorkerModelChange: (model: string, harness: PairWorkerHarness | null) => void;
   onWorkerEffortChange: (effort: string) => void;
@@ -548,7 +552,7 @@ const WorkerProofMediaSection = memo(function WorkerProofMediaSection({
                 title={proofEntryLabel(entry)}
                 onClick={() => onPreviewImage(media, gallery)}
               >
-                <img src={entry.artifact.url ?? undefined} alt={proofEntryLabel(entry)} />
+                <img src={entry.artifact.url ?? undefined} alt={proofEntryLabel(entry)} loading="lazy" decoding="async" />
               </button>
             );
           })}
@@ -560,7 +564,7 @@ const WorkerProofMediaSection = memo(function WorkerProofMediaSection({
             const media = proofPreviewMedia(entry.artifact, proofEntryLabel(entry));
             return (
               <figure key={proofEntryKey(entry)}>
-                <video src={media.url} controls playsInline preload="metadata" aria-label={proofEntryLabel(entry)} />
+                <video src={media.url} controls playsInline preload="none" aria-label={proofEntryLabel(entry)} />
                 <figcaption>
                   <span>{proofEntryLabel(entry)}</span>
                   <span className="worker-proof-video-actions">
@@ -760,11 +764,12 @@ type WorkerActiveTurnProps = {
 
 const WorkerActiveTurn = memo(function WorkerActiveTurn({ turn, index, payload, checklist, proofs, onPreviewImage }: WorkerActiveTurnProps) {
   const sorted = useMemo(() => [...turn.items].sort((a, b) => a.at - b.at), [turn.items]);
+  const ordinal = turn.ordinal ?? index + 1;
   return (
-    <section className="worker-turn is-active" aria-label={`Worker turn ${index + 1} in progress`}>
+    <section className="worker-turn is-active" aria-label={`Worker turn ${ordinal} in progress`}>
       <header className="worker-turn-head">
         <span className="worker-turn-dot" aria-hidden="true" />
-        <span className="worker-turn-title">Worker turn {index + 1}</span>
+        <span className="worker-turn-title">Worker turn {ordinal}</span>
         <span className="worker-turn-status">in progress</span>
         <time className="worker-turn-time">{formatTime(turn.startedAt)}</time>
       </header>
@@ -809,11 +814,12 @@ const WorkerCompletedTurn = memo(function WorkerCompletedTurn({ turn, index, pay
   const stopped = turn.status === "interrupted" || turn.status === "cancelled";
   const terminalLabel = failed ? "failed" : stopped ? "stopped" : "complete";
   const defaultOpen = failed || stopped || !finalItem;
+  const ordinal = turn.ordinal ?? index + 1;
 
   return (
-    <section className={`worker-turn is-complete${failed || stopped ? " is-failed" : ""}`} aria-label={`Worker turn ${index + 1} ${terminalLabel}`}>
+    <section className={`worker-turn is-complete${failed || stopped ? " is-failed" : ""}`} aria-label={`Worker turn ${ordinal} ${terminalLabel}`}>
       <header className="worker-turn-head">
-        <span className="worker-turn-title">Worker turn {index + 1}</span>
+        <span className="worker-turn-title">Worker turn {ordinal}</span>
         <span className={`worker-turn-status ${failed || stopped ? "is-failed" : "is-done"}`}>{terminalLabel}</span>
         <time className="worker-turn-time">{formatTime(turn.startedAt)}</time>
         {durationMs > 0 ? <span className="worker-turn-duration">{formatDuration(durationMs)}</span> : null}
@@ -870,7 +876,7 @@ const FallbackRow = memo(function FallbackRow({ row }: { row: WorkerItem }) {
   );
 });
 
-export function WorkerPane({ pair, timeline, loading = false, proofRecords, onWorkerModelChange, onWorkerEffortChange, handoffPending = false, handoffError = null, onHandoff, onOpenProviderSettings, onAttachAnnotatedProof }: WorkerPaneProps) {
+export function WorkerPane({ pair, timeline, loading = false, hasMore = false, loadingOlder = false, onLoadOlder, proofRecords, onWorkerModelChange, onWorkerEffortChange, handoffPending = false, handoffError = null, onHandoff, onOpenProviderSettings, onAttachAnnotatedProof }: WorkerPaneProps) {
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
   const [previewGallery, setPreviewGallery] = useState<PreviewMedia[]>([]);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -983,7 +989,7 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onWo
           {pair.worker.runtime === "pi-rpc" ? <WorkerSessionControlsButton pairId={pair.id} disabled={handoffPending} /> : null}
         </div>
       </div>
-      <WorkerTimelineView loading={loading} timeline={timeline} proofRecords={proofRecords} onPreviewImage={(media, gallery = [media]) => {
+      <WorkerTimelineView loading={loading} hasMore={hasMore} loadingOlder={loadingOlder} onLoadOlder={onLoadOlder} timeline={timeline} proofRecords={proofRecords} resetKey={pair.worker?.threadId ?? pair.id} onPreviewImage={(media, gallery = [media]) => {
         setPreviewError(null);
         setPreviewGallery(gallery.length > 0 ? gallery : [media]);
         setPreviewMedia(media);
@@ -1027,27 +1033,40 @@ export function WorkerPane({ pair, timeline, loading = false, proofRecords, onWo
 
 function WorkerTimelineView({
   loading,
+  hasMore,
+  loadingOlder,
+  onLoadOlder,
   timeline,
   proofRecords,
+  resetKey,
   onPreviewImage
 }: {
   loading: boolean;
+  hasMore: boolean;
+  loadingOlder: boolean;
+  onLoadOlder?: () => void;
   timeline: WorkerTimeline;
   proofRecords: WorkerProofRecord[];
+  resetKey: string;
   onPreviewImage: OpenProofPreview;
 }) {
   const { turns, report, reports, payload, checklist, fallback } = timeline;
-  const proofsByTurnId = useMemo(() => groupProofsByTurn(turns, proofRecords, reports), [proofRecords, reports, turns]);
-  const reportProofs = useMemo(() => proofsForFinalReport(report, proofRecords, reports, turns), [proofRecords, report, reports, turns]);
+  const visibleProofRecords = useMemo(
+    () => proofsForLoadedWorkerWindow(turns, proofRecords, hasMore, reports),
+    [hasMore, proofRecords, reports, turns]
+  );
+  const proofsByTurnId = useMemo(() => groupProofsByTurn(turns, visibleProofRecords, reports), [reports, turns, visibleProofRecords]);
+  const reportProofs = useMemo(() => proofsForFinalReport(report, visibleProofRecords, reports, turns), [report, reports, turns, visibleProofRecords]);
   const reportProofIds = useMemo(() => new Set(reportProofs.map((proof) => proof.id)), [reportProofs]);
   const anchoredProofIds = useMemo(() => new Set([...proofsByTurnId.values()].flat().map((proof) => proof.id)), [proofsByTurnId]);
-  const unanchoredProofs = useMemo(() => proofRecords.filter((proof) => !anchoredProofIds.has(proof.id)), [anchoredProofIds, proofRecords]);
+  const unanchoredProofs = useMemo(() => visibleProofRecords.filter((proof) => !anchoredProofIds.has(proof.id)), [anchoredProofIds, visibleProofRecords]);
   const lastTurn = turns.at(-1);
   const lastItem = lastTurn?.items.at(-1);
-  const bottomKey = `${turns.length}:${lastItem?.id ?? ""}:${lastItem?.at ?? 0}:${report?.updatedAt ?? 0}:${fallback.length}`;
-  const resetKey = turns.length === 0 && !report ? (fallback.at(-1)?.id ?? "") : undefined;
+  const bottomKey = `${lastTurn?.id ?? ""}:${lastItem?.id ?? ""}:${lastItem?.at ?? 0}:${report?.updatedAt ?? 0}:${fallback.at(-1)?.id ?? ""}`;
+  const prependKey = turns[0]?.id ?? null;
   const { ref, onScroll, unreadCount, scrollToBottom } = useAnchoredScroll<HTMLDivElement>({
     bottomKey,
+    prependKey,
     resetKey
   });
 
@@ -1076,6 +1095,13 @@ function WorkerTimelineView({
   return (
     <div className="transcript" ref={ref} onScroll={onScroll}>
       <div className="worker-timeline">
+        {hasMore && onLoadOlder ? (
+          <div className="worker-history-more">
+            <button className="button is-ghost" type="button" disabled={loadingOlder} onClick={onLoadOlder}>
+              {loadingOlder ? "Loading earlier activity…" : "Load earlier activity"}
+            </button>
+          </div>
+        ) : null}
         {turns.map((turn, index) => (
           <WorkerTurnView
             key={turn.id}
@@ -1105,6 +1131,25 @@ function WorkerTimelineView({
 
 function proofTimestamp(proof: WorkerProofRecord): number {
   return proof.verification.checkedAt || proof.updatedAt || proof.createdAt || 0;
+}
+
+export function proofsForLoadedWorkerWindow(
+  turns: WorkerTurnGroup[],
+  proofs: WorkerProofRecord[],
+  hasMore: boolean,
+  reports: WorkerReport[] = []
+): WorkerProofRecord[] {
+  if (!hasMore || turns.length === 0) return proofs;
+  const firstLoadedTurnAt = turns.reduce((earliest, turn) => Math.min(earliest, turn.startedAt), Number.POSITIVE_INFINITY);
+  const loadedTurnIds = new Set(turns.map((turn) => turn.id));
+  const references = new Set<string>();
+  for (const report of reports) {
+    if (!report.turnId || !loadedTurnIds.has(report.turnId)) continue;
+    for (const reference of proofReferenceIds(report)) references.add(reference);
+  }
+  return proofs.filter((proof) =>
+    proofTimestamp(proof) >= firstLoadedTurnAt || proofMatchesReference(proof, references)
+  );
 }
 
 function proofReferenceIds(report: WorkerReport): Set<string> {

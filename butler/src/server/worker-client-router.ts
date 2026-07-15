@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import path from "node:path";
 
 import type { CodexInputItem } from "./image-store.js";
@@ -9,12 +10,14 @@ import type { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import { workerAffinityRouteKey, type WorkerProviderAffinity } from "./pair-store.js";
 import type { ButlerStateStore } from "./state-store.js";
+import { StaleWorkerOperationError } from "./stale-worker-operation-error.js";
 import { assertCallbackReviewCurrent, monitorCallbackReviewCurrent, runSerializedJobMutation } from "./butler-job-mutation-guard.js";
 import type { ModelOption, ReasoningEffort } from "./types.js";
 import { workerExecutionEndAt } from "./worker-execution-window.js";
 import { workerFileChangeAttribution } from "./worker-review-attribution.js";
 import { isWorkerReviewBaselineReferenced } from "./worker-review-baseline.js";
 import { workerThreadIsRunning } from "./worker-thread-status.js";
+import { WorkerTransportDeadError, type WorkerThreadInterventionResult, type WorkerThreadProbeResult, type WorkerThreadRuntimeProbe } from "./worker-thread-runtime-probe.js";
 import {
   isClosedSelfImprovementWorkerThread,
   isSelfImprovementSourceCheckoutReserved,
@@ -68,6 +71,8 @@ export type WorkerThreadStartResult = {
   model: string | null;
   effort: ReasoningEffort | null;
 };
+
+export type { WorkerThreadInterventionResult, WorkerThreadProbeResult, WorkerThreadRuntimeProbe } from "./worker-thread-runtime-probe.js";
 
 export function prepareWorkerInputForModel(input: string, model: ModelOption | null): string;
 export function prepareWorkerInputForModel(input: CodexInputItem[], model: ModelOption | null): CodexInputItem[];
@@ -553,12 +558,118 @@ export async function loadWorkerThread(access: WorkerClientAccess, threadId: str
   assertCallbackReviewCurrent(threadId);
 }
 
+const boundedWorkerThreadLoads = new WeakMap<ButlerStateStore, Map<string, Promise<void>>>();
+type BoundedWorkerThreadProbe = { attemptId: string; promise: Promise<WorkerThreadRuntimeProbe> };
+const boundedWorkerThreadProbes = new WeakMap<ButlerStateStore, Map<string, BoundedWorkerThreadProbe>>();
+const boundedWorkerThreadStops = new WeakMap<ButlerStateStore, Map<string, Promise<"stopped" | "idle">>>();
+
+function abandonBoundedWorkerThreadProbe(store: ButlerStateStore, threadId: string, probe: BoundedWorkerThreadProbe): void {
+  const probes = boundedWorkerThreadProbes.get(store);
+  if (probes?.get(threadId) === probe) probes.delete(threadId);
+}
+
+export function getWorkerThreadRuntimeActivityAt(access: WorkerClientAccess, threadId: string): number | null {
+  const runtime = resolveThreadWorkerRuntime(access, threadId);
+  const client = runtime === "pi-rpc" ? access.piRpcWorkerClient : access.codexClient;
+  return client?.getLastRuntimeActivityAt?.(threadId) ?? null;
+}
+
+function getBoundedWorkerThreadProbe(access: WorkerClientAccess, threadId: string): BoundedWorkerThreadProbe {
+  let probes = boundedWorkerThreadProbes.get(access.store);
+  if (!probes) {
+    probes = new Map<string, BoundedWorkerThreadProbe>();
+    boundedWorkerThreadProbes.set(access.store, probes);
+  }
+  const existing = probes.get(threadId);
+  if (existing) return existing;
+  const runtime = resolveThreadWorkerRuntime(access, threadId);
+  const client = runtime === "pi-rpc" ? access.piRpcWorkerClient : access.codexClient;
+  const promise = client && typeof client.probeThread === "function"
+    ? client.probeThread(threadId)
+    : Promise.reject(new Error(client ? "Worker runtime probing is not available" : "Pi RPC worker runtime is not available"));
+  const probe = { attemptId: crypto.randomUUID(), promise };
+  probes.set(threadId, probe);
+  const clear = () => {
+    if (probes?.get(threadId) === probe) probes.delete(threadId);
+  };
+  void promise.then(clear, clear);
+  return probe;
+}
+
+export async function probeWorkerThreadWithin(access: WorkerClientAccess, threadId: string, timeoutMs = 2_000): Promise<WorkerThreadProbeResult> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const activityAt = () => getWorkerThreadRuntimeActivityAt(access, threadId);
+  const probe = getBoundedWorkerThreadProbe(access, threadId);
+  try {
+    return await Promise.race([
+      probe.promise.then((result): WorkerThreadProbeResult => ({ ...result, attemptId: probe.attemptId }), (error): WorkerThreadProbeResult => ({
+        attemptId: probe.attemptId,
+        state: "unreachable",
+        busy: false,
+        compacting: false,
+        pendingMessageCount: 0,
+        activityAt: activityAt(),
+        detail: error instanceof Error ? error.message : String(error),
+        acknowledgedWait: null,
+        confirmedDead: error instanceof WorkerTransportDeadError
+      })),
+      new Promise<WorkerThreadProbeResult>((resolve) => {
+        timeout = setTimeout(() => {
+          abandonBoundedWorkerThreadProbe(access.store, threadId, probe);
+          resolve({
+            attemptId: probe.attemptId,
+            state: "unreachable",
+            busy: false,
+            compacting: false,
+            pendingMessageCount: 0,
+            activityAt: activityAt(),
+            detail: "Worker runtime probe timed out.",
+            acknowledgedWait: null,
+            confirmedDead: false
+          });
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+function getBoundedWorkerThreadLoad(access: WorkerClientAccess, threadId: string): Promise<void> {
+  let loads = boundedWorkerThreadLoads.get(access.store);
+  if (!loads) {
+    loads = new Map<string, Promise<void>>();
+    boundedWorkerThreadLoads.set(access.store, loads);
+  }
+  const existing = loads.get(threadId);
+  if (existing) return existing;
+  const load = loadWorkerThread(access, threadId);
+  loads.set(threadId, load);
+  const clear = () => {
+    if (loads?.get(threadId) === load) loads.delete(threadId);
+  };
+  void load.then(clear, clear);
+  return load;
+}
+
 async function stopWorkerMessageBounded(client: { stopThread(threadId: string): Promise<boolean> }, threadId: string): Promise<void> {
   let timeout: ReturnType<typeof setTimeout> | null = null;
   try {
     await Promise.race([
       client.stopThread(threadId).catch(() => false),
       new Promise<void>((resolve) => { timeout = setTimeout(resolve, 2_000); })
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+export async function loadWorkerThreadWithin(access: WorkerClientAccess, threadId: string, timeoutMs = 2_000): Promise<"loaded" | "failed" | "timeout"> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      getBoundedWorkerThreadLoad(access, threadId).then(() => "loaded" as const, () => "failed" as const),
+      new Promise<"timeout">((resolve) => { timeout = setTimeout(() => resolve("timeout"), timeoutMs); })
     ]);
   } finally {
     if (timeout) clearTimeout(timeout);
@@ -628,6 +739,13 @@ export async function sendWorkerMessage(access: WorkerClientAccess, threadId: st
   });
 }
 
+export function workerMessageDispatchMayHaveBeenAccepted(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error instanceof StaleWorkerOperationError && error.dispatchMayHaveBeenAccepted) return true;
+  if (error.name === "WorkerSendTimeoutError" || error instanceof WorkerTransportDeadError) return true;
+  return /(?:transport|socket|connection|websocket).*(?:closed|disconnect|timed?\s*out|lost|reset)|(?:closed|disconnect|timed?\s*out|lost|reset).*(?:transport|socket|connection|websocket)/i.test(error.message);
+}
+
 export async function updateWorkerThreadEffort(access: WorkerClientAccess, threadId: string, effort: ReasoningEffort): Promise<void> {
   const runtime = resolveThreadWorkerRuntime(access, threadId);
   if (runtime === "pi-rpc") {
@@ -665,6 +783,78 @@ async function stopWorkerThreadUnlocked(access: WorkerClientAccess, threadId: st
 
 export async function stopWorkerThread(access: WorkerClientAccess, threadId: string): Promise<boolean> {
   return runSerializedJobMutation(threadId, () => stopWorkerThreadUnlocked(access, threadId));
+}
+
+function getBoundedWorkerThreadStop(access: WorkerClientAccess, threadId: string): Promise<"stopped" | "idle"> {
+  if (!workerThreadIsRunning(access.store.getThread(threadId))) return Promise.resolve("idle");
+  let stops = boundedWorkerThreadStops.get(access.store);
+  if (!stops) {
+    stops = new Map<string, Promise<"stopped" | "idle">>();
+    boundedWorkerThreadStops.set(access.store, stops);
+  }
+  const existing = stops.get(threadId);
+  if (existing) return existing;
+  const stop = stopWorkerThread(access, threadId).then((stopped) => stopped ? "stopped" as const : "idle" as const);
+  stops.set(threadId, stop);
+  const clear = () => {
+    if (stops?.get(threadId) === stop) stops.delete(threadId);
+  };
+  void stop.then(clear, clear);
+  return stop;
+}
+
+export async function stopWorkerThreadWithin(access: WorkerClientAccess, threadId: string, timeoutMs = 5_000): Promise<WorkerThreadInterventionResult> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const stop = getBoundedWorkerThreadStop(access, threadId);
+  try {
+    return await Promise.race([
+      stop.then((state) => ({ state, detail: null }), (error) => ({ state: "failed" as const, detail: error instanceof Error ? error.message : String(error) })),
+      new Promise<WorkerThreadInterventionResult>((resolve) => { timeout = setTimeout(() => resolve({ state: "timeout", detail: "Worker stop timed out." }), timeoutMs); })
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+export async function reconcileConfirmedDeadWorkerThread(access: WorkerClientAccess, threadId: string): Promise<WorkerThreadInterventionResult> {
+  return runSerializedJobMutation(threadId, async () => {
+    const runtime = resolveThreadWorkerRuntime(access, threadId);
+    const client = runtime === "pi-rpc" ? access.piRpcWorkerClient : access.codexClient;
+    if (!client) return { state: "failed", detail: "Worker runtime is not available." };
+    if ("isThreadTransportDead" in client && typeof client.isThreadTransportDead === "function" && !client.isThreadTransportDead(threadId)) {
+      return workerThreadIsRunning(access.store.getThread(threadId))
+        ? { state: "failed", detail: "Worker transport recovered before dead-turn reconciliation." }
+        : { state: "idle", detail: null };
+    }
+
+    client.invalidateThreadOperations?.(threadId);
+    const thread = access.store.getThread(threadId);
+    for (const turn of thread?.turns ?? []) {
+      if (["started", "inProgress", "in_progress"].includes(turn.status)) {
+        access.store.updateTurn(threadId, { id: turn.id, status: "interrupted", error: "Worker transport stopped before this turn completed." });
+      }
+    }
+    if (thread?.status !== "idle") access.store.setThreadStatus(threadId, { type: "idle" });
+    await access.store.flushSave();
+    return { state: "stopped", detail: null };
+  });
+}
+
+export async function reconcileAuthoritativeIdleWorkerThread(access: WorkerClientAccess, threadId: string): Promise<WorkerThreadInterventionResult> {
+  return runSerializedJobMutation(threadId, async () => {
+    const runtime = resolveThreadWorkerRuntime(access, threadId);
+    const client = runtime === "pi-rpc" ? access.piRpcWorkerClient : access.codexClient;
+    client?.invalidateThreadOperations?.(threadId);
+    const thread = access.store.getThread(threadId);
+    for (const turn of thread?.turns ?? []) {
+      if (["started", "inProgress", "in_progress"].includes(turn.status)) {
+        access.store.updateTurn(threadId, { id: turn.id, status: "interrupted", error: "Worker runtime became idle before this turn reported completion." });
+      }
+    }
+    if (thread?.status !== "idle") access.store.setThreadStatus(threadId, { type: "idle" });
+    await access.store.flushSave();
+    return { state: "idle", detail: null };
+  });
 }
 
 export async function deleteWorkerThread(access: WorkerClientAccess, threadId: string, options?: { waitForCleanup?: boolean }): Promise<unknown> {

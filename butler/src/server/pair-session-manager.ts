@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { ButlerAgentService } from "./butler-agent.js";
+import { buildProofsByThreadMap } from "./butler-agent-helpers.js";
 import { buildComposerInputItemsPrompt, buildReferencePromptText, normalizeComposerInputItems } from "./reference-inputs.js";
 import type { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
@@ -27,6 +28,7 @@ import { parseProviderModelRef } from "./model-provider-config.js";
 import { isCallbackReviewRetryablePause } from "./butler-callback-review-runner.js";
 import { redactSensitiveText } from "./redact-sensitive-text.js";
 import { workerThreadIsRunning } from "./worker-thread-status.js";
+import { pageWorkerProofRecords, pageWorkerThread } from "./worker-thread-page.js";
 import { listWorkspaceProjectDirectories, validateWorkspaceCwd, type WorkspaceProjectDirectory } from "./repo-worktree.js";
 import { buildManorSkillRoutingContext, listManorSkillCapabilities, normalizeManorSkillName, parseManorSkillInvocation, skillAvailabilityDetail } from "./manor-skill-routing.js";
 import type { AutomationDispatchResult } from "./session-automation-scheduler.js";
@@ -55,6 +57,7 @@ type PairSessionManagerOptions = {
   refreshRuntimeInventory?: () => Promise<void>;
   memoryScheduler?: MemoryUpdateScheduler | null;
   onButlerPatch?: (payload: ButlerLivePatchView) => void;
+  onWorkerThreadRefreshed?: (threadId: string) => void;
   sessionTitleGenerator?: SessionTitleGenerator | null;
   skillsService: SkillsService;
   extensionUiBroker: ExtensionUiBroker;
@@ -251,6 +254,23 @@ function pairNeedsSupervision(pair: PairChat, store: ButlerStateStore): boolean 
   return !pair.worker.lastReviewedReportAt || report.updatedAt > pair.worker.lastReviewedReportAt;
 }
 
+async function pairHasPersistedCallbackObligation(pair: PairChat, sessionRootDir: string): Promise<boolean> {
+  if (!pair.worker) return false;
+  try {
+    const raw = await fs.readFile(path.join(sessionRootDir, pair.id, "chat-callbacks.json"), "utf8");
+    const parsed = JSON.parse(raw) as { callbackRecords?: Array<Record<string, unknown>>; pendingCallbacks?: Array<Record<string, unknown>> };
+    return (parsed.callbackRecords ?? parsed.pendingCallbacks ?? []).some((callback) =>
+      callback.threadId === pair.worker?.threadId &&
+      callback.callbackState !== "closed" &&
+      callback.operatorCloseoutStatus !== "posted" &&
+      callback.owesOperatorReply !== false
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) return false;
+    throw error;
+  }
+}
+
 async function awaitPairShutdown<T>(operation: Promise<T>, label: string, timeoutMs = 10_000): Promise<T> {
   return await new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${label} timed out.`)), timeoutMs);
@@ -268,6 +288,8 @@ export class PairSessionManager {
   private readonly titleAttempted = new Set<string>();
   private readonly handoffTails = new Map<string, Promise<void>>();
   private readonly quiescedPairs = new Set<string>();
+  private readonly workerThreadRefreshes = new Map<string, Promise<void>>();
+  private readonly workerThreadRefreshedAt = new Map<string, number>();
 
   constructor(private readonly options: PairSessionManagerOptions) {}
 
@@ -322,7 +344,11 @@ export class PairSessionManager {
   }
 
   async startSupervisedSessions(): Promise<void> {
-    const supervised = this.options.pairStore.listSummaries().filter((pair) => pairNeedsSupervision(pair, this.options.store));
+    const candidates = this.options.pairStore.listSummaries();
+    const supervisionFlags = await Promise.all(candidates.map(async (pair) =>
+      pairNeedsSupervision(pair, this.options.store) || pairHasPersistedCallbackObligation(pair, this.options.sessionRootDir)
+    ));
+    const supervised = candidates.filter((_pair, index) => supervisionFlags[index]);
     await Promise.allSettled(supervised.map((pair) => this.ensureService(pair.id)));
   }
 
@@ -971,15 +997,29 @@ export class PairSessionManager {
     return this.getPairDetail(input.pairId, null, 120);
   }
 
-  async getWorkerThread(pairId: string): Promise<unknown | null> {
+  async getWorkerThreadPage(pairId: string, before: number | null = null, limit = 10): Promise<{ thread: unknown | null; proofRecords: unknown[] }> {
     const pair = this.options.pairStore.getPair(pairId);
-    if (!pair?.worker) return null;
-    try {
-      await loadWorkerThread(this.getWorkerClientAccess(), pair.worker.threadId);
-    } catch {
-      // Saved local state is enough for the read-only worker pane.
-    }
-    return this.options.store.getThreadDetail(pair.worker.threadId) ?? null;
+    if (!pair?.worker) return { thread: null, proofRecords: [] };
+    this.refreshWorkerThreadInBackground(pair.worker.threadId);
+    const thread = this.options.store.getThreadDetail(pair.worker.threadId);
+    if (!thread) return { thread: null, proofRecords: [] };
+    const page = pageWorkerThread(thread, before, limit);
+    const proofs = buildProofsByThreadMap(this.options.store.listPreviewProofs())[pair.worker.threadId] ?? [];
+    return { thread: page, proofRecords: pageWorkerProofRecords(proofs, page) };
+  }
+
+  private refreshWorkerThreadInBackground(threadId: string): void {
+    if (this.workerThreadRefreshes.has(threadId)) return;
+    const now = Date.now();
+    if (now - (this.workerThreadRefreshedAt.get(threadId) ?? 0) < 15_000) return;
+    this.workerThreadRefreshedAt.set(threadId, now);
+    const refresh = loadWorkerThread(this.getWorkerClientAccess(), threadId)
+      .then(() => { this.options.onWorkerThreadRefreshed?.(threadId); })
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.workerThreadRefreshes.get(threadId) === refresh) this.workerThreadRefreshes.delete(threadId);
+      });
+    this.workerThreadRefreshes.set(threadId, refresh);
   }
 
   async retryBlockedReview(pairId: string): Promise<PairDetail | null> {

@@ -7,6 +7,7 @@ import type { JobPayloadKind } from "./job-instruction-artifacts.js";
 import type { JobPayloadView } from "./job-payload-types.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { ButlerMessageView, ButlerNextWorkerReportAction } from "./types.js";
+import { workerMessageDispatchMayHaveBeenAccepted } from "./worker-client-router.js";
 
 export type DirectCodexMessagePingInput = {
   text: string;
@@ -15,7 +16,16 @@ export type DirectCodexMessagePingInput = {
   inputItems?: unknown[];
   requestedAt?: number;
   callbackAlreadyRegistered?: boolean;
+  nextWorkerReportAction?: ButlerNextWorkerReportAction;
 };
+
+export async function settleFailedDirectWorkerDispatch(
+  error: unknown,
+  preserve: () => Promise<void>,
+  rollback: () => Promise<void>
+): Promise<void> {
+  await (workerMessageDispatchMayHaveBeenAccepted(error) ? preserve() : rollback());
+}
 
 export type DirectCodexMessageAccess = {
   store: ButlerStateStore;
@@ -23,7 +33,6 @@ export type DirectCodexMessageAccess = {
     threadId: string,
     options?: { privateSteerText?: string | null; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null; dispatchState?: "ready" | "reserving" }
   ): Promise<void>;
-  markPendingChatCallbackDispatched(threadId: string, requestedAt: number): Promise<void>;
   createOrUpdateJobPayload?(input: {
     threadId: string;
     kind: JobPayloadKind;
@@ -295,8 +304,6 @@ export async function notifyDirectCodexMessage(
         nextWorkerReportAction: "review",
         requestedAt
       });
-    } else {
-      await access.markPendingChatCallbackDispatched(input.threadId, requestedAt);
     }
     access.noteThreadFocus(input.threadId, "direct_worker_message");
     access.store.addEvent(input.threadId, "butler.direct_message.pinged", "Butler was pinged for an operator direct message to a Worker.");

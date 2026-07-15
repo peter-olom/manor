@@ -109,7 +109,7 @@ test("thinkingLevelMapFromSupportedEfforts returns undefined for empty or null e
 test("getModelCapabilityMetadata returns GLM-5.2 fallback with high and max transport mapping", () => {
   const metadata = getModelCapabilityMetadata("glm-5.2");
   assert.equal(metadata?.reasoning, true);
-  assert.equal(metadata?.contextWindow, 1_000_000);
+  assert.equal(metadata?.contextWindow, undefined);
   assert.equal(metadata?.__source, "builtin-fallback");
   assert.deepEqual(
     metadata?.thinkingLevelMap,
@@ -624,7 +624,9 @@ test("registerManorProviders applies OpenCode-style Ollama Cloud metadata to con
 
   const models = registry.getAvailable().filter((model) => model.provider === "ollama-cloud");
   assert.deepEqual(models.map((model) => model.id), ["deepseek-v4-flash", "glm-5.2", "north-mini-code", "qwen3.5"]);
-  const glmOption = modelToModelOption(models.find((model) => model.id === "glm-5.2")!);
+  const glmModel = models.find((model) => model.id === "glm-5.2")!;
+  const glmOption = modelToModelOption(glmModel);
+  assert.equal(glmModel.contextWindow, 131_072);
   assert.deepEqual(glmOption.supportedThinkingLevels, ["high", "max"]);
 
   const deepseekOption = modelToModelOption(models.find((model) => model.id === "deepseek-v4-flash")!);

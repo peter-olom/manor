@@ -238,7 +238,13 @@ export function registerPairRoutes(access: PairRouteAccess): void {
 
   app.get("/api/pairs/:pairId/worker-thread", async (request, response) => {
     try {
-      response.json({ thread: await pairSessions.getWorkerThread(request.params.pairId) });
+      const before = readLimit(request.query.before, NaN);
+      const limit = readLimit(request.query.limit, 10);
+      response.json(await pairSessions.getWorkerThreadPage(
+        request.params.pairId,
+        Number.isFinite(before) ? before : null,
+        limit
+      ));
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }

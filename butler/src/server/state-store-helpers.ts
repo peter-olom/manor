@@ -430,6 +430,9 @@ export function inferPersistedThreadExecutionContract(thread: CodexThreadRecord)
 }
 
 export function normalizeStatus(status: unknown): CodexThreadStatus {
+  if (status === "active" || status === "idle") {
+    return status;
+  }
   if (status && typeof status === "object" && "type" in status && typeof status.type === "string") {
     if (status.type === "active" || status.type === "idle") {
       return status.type;

@@ -7,12 +7,14 @@ import assert from "node:assert/strict";
 import { ButlerAgentService } from "../../src/server/butler-agent.js";
 import { directWorkerDispatchMarker } from "../../src/server/butler-callback-state.js";
 import { normalizeOperatorMessages } from "../../src/server/butler-operator-messages.js";
-import { backfillDirectCodexMessagesFromSessionFiles, buildDirectCodexMessagePingSummary } from "../../src/server/direct-codex-message.js";
+import { CodexAppServerClient } from "../../src/server/codex-client.js";
+import { backfillDirectCodexMessagesFromSessionFiles, buildDirectCodexMessagePingSummary, settleFailedDirectWorkerDispatch } from "../../src/server/direct-codex-message.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { StaleWorkerOperationError } from "../../src/server/stale-worker-operation-error.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
 import { runSerializedJobMutation } from "../../src/server/butler-job-mutation-guard.js";
 import { sendWorkerMessage } from "../../src/server/worker-client-router.js";
+import { WorkerTransportDeadError } from "../../src/server/worker-thread-runtime-probe.js";
 import type { ButlerThreadCallbackView } from "../../src/server/types.js";
 
 async function createStore(): Promise<ButlerStateStore> {
@@ -149,7 +151,10 @@ test("direct Worker callback is persisted before send and rolled back on failure
   assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.lastPrivateSteerText, "Run the follow-up.");
   assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.dispatchState, "reserving");
   await agent.notifyDirectCodexMessage({ threadId, text: "Run the follow-up.", requestedAt, callbackAlreadyRegistered: true });
+  assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.dispatchState, "reserving");
+  await agent.markPendingChatCallbackDispatched(threadId, requestedAt, "turn-1");
   assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.dispatchState, "ready");
+  assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.acceptedWorkerTurnId, "turn-1");
 
   await agent.rollbackDirectCodexMessage(threadId, requestedAt, reservation);
   assert.equal(agent.getShellSnapshot().supervision.callbacks.length, 0);
@@ -189,6 +194,25 @@ test("a stale direct Worker dispatch rolls back its reserved callback", async ()
 
   assert.ok(caught instanceof StaleWorkerOperationError);
   assert.equal(agent.getShellSnapshot().supervision.callbacks.length, 0);
+  agent.dispose();
+});
+
+test("a post-dispatch stale Worker operation preserves its supervision callback", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-ambiguous-stale-dispatch-"));
+  const threadId = "thread-ambiguous-stale-direct-dispatch";
+  store.upsertThreadSummary({ id: threadId, source: "appServer", status: { type: "idle" }, cwd: "/workspace", turns: [] });
+  const agent = createButlerAgent(store, sessionDir);
+  const requestedAt = Date.now();
+  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Possibly accepted.", requestedAt });
+
+  await settleFailedDirectWorkerDispatch(
+    new StaleWorkerOperationError(threadId, { dispatchMayHaveBeenAccepted: true }),
+    () => agent.markPendingChatCallbackDispatched(threadId, requestedAt, null),
+    () => agent.rollbackDirectCodexMessage(threadId, requestedAt, reservation)
+  );
+
+  assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.dispatchState, "ready");
   agent.dispose();
 });
 
@@ -237,6 +261,7 @@ test("startup promotes only the exact accepted direct-message dispatch", async (
   await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
 
   assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.dispatchState, "ready");
+  assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.acceptedWorkerTurnId, "turn-direct");
   agent.dispose();
 });
 
@@ -559,6 +584,429 @@ test("direct Codex callback recovery uses worker reply item time instead of refr
 
     assert.equal(liveCallback.reviewState, "running");
     assert.equal(liveCallback.reviewReason, "thread_recovery");
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("silent completed Worker activity wakes Butler recovery when no report or reply arrives", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-silent-worker-recovery-"));
+  const threadId = "thread-silent-worker";
+  const requestedAt = Date.parse("2026-07-14T20:40:00.000Z");
+  const terminalAt = requestedAt + 5_000;
+  const recoveryAt = terminalAt + 31_000;
+  const originalNow = Date.now;
+  Date.now = () => requestedAt;
+
+  try {
+    store.upsertThreadSummary({
+      id: threadId,
+      status: { type: "active" },
+      cwd: "/workspace",
+      turns: [{ id: "turn-0", status: "completed", items: [] }]
+    });
+    const refreshedThread = () => ({
+      id: threadId,
+      status: { type: "idle" },
+      cwd: "/workspace",
+      turns: [
+        {
+          id: "turn-0",
+          status: "completed",
+          startedAt: requestedAt - 20_000,
+          completedAt: requestedAt - 10_000,
+          items: [{ id: "stale-reply", type: "agentMessage", status: "completed", text: "Earlier work finished.", at: requestedAt - 10_000 }]
+        },
+        {
+          id: "turn-1",
+          status: "completed",
+          startedAt: requestedAt,
+          completedAt: terminalAt,
+          items: [{ id: "thinking-only", type: "reasoning", status: "completed", text: "Planning the document.", at: terminalAt }]
+        }
+      ]
+    });
+    const agent = createButlerAgent(store, sessionDir, {
+      getConnectionState: () => ({ compose: { availableModels: [] } }),
+      loadThread: async () => { store.upsertThreadSummary(refreshedThread()); }
+    });
+
+    await agent.notifyDirectCodexMessage({
+      threadId,
+      text: "Create the requested document.",
+      imageReferenceIds: [],
+      fileReferenceIds: [],
+      inputItems: []
+    });
+    store.upsertThreadSummary(refreshedThread());
+
+    Date.now = () => recoveryAt;
+    await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
+
+    const callback = agent.getShellSnapshot().supervision.callbacks.find((entry) => entry.threadId === threadId);
+    assert.equal(callback?.callbackState, "missing_worker_callback");
+    assert.equal(callback?.reviewState, "queued");
+    assert.equal(callback?.reviewReason, "thread_recovery");
+    agent.dispose();
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("a steered active turn wakes Butler when that exact turn later stops silently", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-steered-worker-recovery-"));
+  const threadId = "thread-steered-worker";
+  const requestedAt = 1_000;
+  const terminalAt = 1_100;
+  const originalNow = Date.now;
+  Date.now = () => requestedAt;
+
+  try {
+    store.upsertThreadSummary({
+      id: threadId,
+      status: { type: "active" },
+      cwd: "/workspace",
+      turns: [{
+        id: "turn-active-before-steer",
+        status: "in_progress",
+        startedAt: 500,
+        items: [{ id: "old-reasoning", type: "reasoning", status: "completed", text: "Earlier work.", at: 600 }]
+      }]
+    });
+    const agent = createButlerAgent(store, sessionDir, {
+      getConnectionState: () => ({ compose: { availableModels: [] } }),
+      loadThread: async () => undefined
+    });
+    await agent.reserveDirectCodexMessage({ threadId, text: "Continue this active turn.", requestedAt });
+    await agent.notifyDirectCodexMessage({ threadId, text: "Continue this active turn.", requestedAt, callbackAlreadyRegistered: true });
+    await agent.markPendingChatCallbackDispatched(threadId, requestedAt, "turn-active-before-steer");
+
+    store.upsertThreadSummary({
+      id: threadId,
+      status: { type: "idle" },
+      cwd: "/workspace",
+      turns: [{
+        id: "turn-active-before-steer",
+        status: "interrupted",
+        startedAt: 500,
+        completedAt: terminalAt,
+        items: [{ id: "old-reasoning", type: "reasoning", status: "completed", text: "Earlier work.", at: 600 }]
+      }]
+    });
+
+    Date.now = () => terminalAt + 31_000;
+    await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
+
+    const callback = agent.getShellSnapshot().supervision.callbacks.find((entry) => entry.threadId === threadId);
+    assert.equal(callback?.acceptedWorkerTurnId, "turn-active-before-steer");
+    assert.equal(callback?.callbackState, "missing_worker_callback");
+    assert.equal(callback?.reviewState, "queued");
+    assert.equal(callback?.reviewReason, "thread_recovery");
+    agent.dispose();
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("an accepted unbound dispatch probes an idle runtime instead of waiting forever", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-unbound-idle-recovery-"));
+  const threadId = "thread-unbound-idle";
+  const requestedAt = 1_000;
+  const originalNow = Date.now;
+  let probes = 0;
+  let stops = 0;
+  Date.now = () => requestedAt;
+  try {
+    store.upsertThreadSummary({ id: threadId, source: "appServer", status: "idle", cwd: "/workspace", turns: [] });
+    const agent = createButlerAgent(store, sessionDir, {
+      getConnectionState: () => ({ compose: { availableModels: [] } }),
+      getLastRuntimeActivityAt: () => null,
+      loadThread: async () => undefined,
+      probeThread: async () => { probes += 1; return { attemptId: "probe-unbound-idle", state: "idle", busy: false, compacting: false, pendingMessageCount: 0, activityAt: null, acknowledgedWait: null, confirmedDead: false }; },
+      stopThread: async () => { stops += 1; return true; }
+    });
+    await agent.reserveDirectCodexMessage({ threadId, text: "Accepted but not yet bound.", requestedAt });
+    await agent.markPendingChatCallbackDispatched(threadId, requestedAt, null);
+
+    Date.now = () => requestedAt + 5 * 60_000;
+    await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
+
+    const callback = agent.getShellSnapshot().supervision.callbacks.find((entry) => entry.threadId === threadId);
+    assert.equal(probes, 1);
+    assert.equal(stops, 0);
+    assert.equal(callback?.callbackState, "missing_worker_callback");
+    assert.equal(callback?.reviewReason, "thread_recovery");
+    agent.dispose();
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("an idle thread with a nonterminal accepted turn is still watchdog-probed and recovered", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-accepted-idle-recovery-"));
+  const threadId = "thread-accepted-idle";
+  const requestedAt = 1_000;
+  const originalNow = Date.now;
+  let probes = 0;
+  let stops = 0;
+  Date.now = () => requestedAt;
+  try {
+    store.upsertThreadSummary({
+      id: threadId,
+      source: "appServer",
+      status: "idle",
+      cwd: "/workspace",
+      turns: [{ id: "accepted-turn", status: "in_progress", startedAt: requestedAt, items: [] }]
+    });
+    const agent = createButlerAgent(store, sessionDir, {
+      getConnectionState: () => ({ compose: { availableModels: [] } }),
+      getLastRuntimeActivityAt: () => null,
+      invalidateThreadOperations: () => undefined,
+      loadThread: async () => undefined,
+      probeThread: async () => { probes += 1; return { state: "idle", busy: false, compacting: false, pendingMessageCount: 0, activityAt: null, acknowledgedWait: null, confirmedDead: false }; },
+      stopThread: async () => { stops += 1; return true; }
+    });
+    await agent.reserveDirectCodexMessage({ threadId, text: "Accepted but stale.", requestedAt });
+    await agent.markPendingChatCallbackDispatched(threadId, requestedAt, "accepted-turn");
+
+    Date.now = () => requestedAt + 5 * 60_000;
+    await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
+
+    const callback = agent.getShellSnapshot().supervision.callbacks.find((entry) => entry.threadId === threadId);
+    assert.equal(probes, 1);
+    assert.equal(stops, 0);
+    assert.equal(store.getThread(threadId)?.turns.at(-1)?.status, "interrupted");
+    assert.equal(callback?.callbackState, "missing_worker_callback");
+    agent.dispose();
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("watchdog confirms an abandoned active turn and wakes Butler immediately", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-worker-watchdog-idle-"));
+  const threadId = "thread-watchdog-idle";
+  const requestedAt = 1_000;
+  const originalNow = Date.now;
+  let stops = 0;
+  Date.now = () => requestedAt;
+  try {
+    store.upsertThreadSummary({
+      id: threadId,
+      source: "appServer",
+      status: "active",
+      cwd: "/workspace",
+      turns: [{ id: "turn-1", status: "in_progress", startedAt: requestedAt, items: [{ id: "reasoning", type: "reasoning", status: "started", text: "", at: requestedAt }] }]
+    });
+    const agent = createButlerAgent(store, sessionDir, {
+      getConnectionState: () => ({ compose: { availableModels: [] } }),
+      getLastRuntimeActivityAt: () => null,
+      loadThread: async () => undefined,
+      probeThread: async () => ({ attemptId: "probe-idle", state: "idle", busy: false, compacting: false, pendingMessageCount: 0, activityAt: null, acknowledgedWait: null, confirmedDead: false }),
+      stopThread: async () => {
+        stops += 1;
+        store.updateTurn(threadId, { id: "turn-1", status: "interrupted", error: "Worker runtime stopped." });
+        store.setThreadStatus(threadId, { type: "idle" });
+        return true;
+      }
+    });
+    await agent.notifyDirectCodexMessage({ threadId, text: "Create the document.", requestedAt });
+
+    Date.now = () => requestedAt + 5 * 60_000;
+    await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
+
+    const callback = agent.getShellSnapshot().supervision.callbacks.find((entry) => entry.threadId === threadId);
+    assert.equal(stops, 0);
+    assert.equal(store.getThread(threadId)?.turns.at(-1)?.status, "interrupted");
+    assert.equal(callback?.callbackState, "missing_worker_callback");
+    assert.equal(callback?.reviewState, "queued");
+    assert.equal(callback?.reviewReason, "thread_recovery");
+    assert.equal(store.getThread(threadId)?.eventLog.some((entry) => entry.method === "butler.watchdog.recovered"), true);
+    agent.dispose();
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("watchdog recovers a confirmed dead transport without attempting an impossible interrupt", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-worker-watchdog-dead-"));
+  const threadId = "thread-watchdog-dead";
+  const requestedAt = 1_000;
+  const originalNow = Date.now;
+  let invalidations = 0;
+  let stops = 0;
+  Date.now = () => requestedAt;
+  try {
+    store.upsertThreadSummary({
+      id: threadId,
+      source: "appServer",
+      status: "active",
+      cwd: "/workspace",
+      turns: [{ id: "turn-dead", status: "in_progress", startedAt: requestedAt, items: [] }]
+    });
+    const agent = createButlerAgent(store, sessionDir, {
+      getConnectionState: () => ({ compose: { availableModels: [] } }),
+      getLastRuntimeActivityAt: () => null,
+      isThreadTransportDead: () => true,
+      invalidateThreadOperations: () => { invalidations += 1; },
+      loadThread: async () => undefined,
+      probeThread: async () => { throw new WorkerTransportDeadError("Worker process exited"); },
+      stopThread: async () => { stops += 1; throw new Error("interrupt transport is closed"); }
+    });
+    await agent.notifyDirectCodexMessage({ threadId, text: "Create the document.", requestedAt });
+
+    Date.now = () => requestedAt + 5 * 60_000;
+    await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
+
+    const callback = agent.getShellSnapshot().supervision.callbacks.find((entry) => entry.threadId === threadId);
+    const recoveredThread = store.getThread(threadId);
+    assert.equal(stops, 0);
+    assert.equal(invalidations, 1);
+    assert.equal(recoveredThread?.status, "idle");
+    assert.equal(recoveredThread?.turns.at(-1)?.status, "interrupted");
+    assert.equal(callback?.callbackState, "missing_worker_callback");
+    assert.equal(callback?.reviewReason, "thread_recovery");
+    assert.equal(recoveredThread?.eventLog.some((entry) => entry.method === "butler.watchdog.recovered"), true);
+    agent.dispose();
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("watchdog keeps supervision waiting when a reconnected Codex status is unknown", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-worker-watchdog-unknown-codex-status-"));
+  const threadId = "thread-watchdog-unknown-codex-status";
+  const requestedAt = 1_000;
+  const originalNow = Date.now;
+  Date.now = () => requestedAt;
+  try {
+    store.upsertThreadSummary({
+      id: threadId,
+      source: "appServer",
+      status: "active",
+      cwd: sessionDir,
+      turns: [{ id: "turn-unknown-status", status: "in_progress", startedAt: requestedAt, items: [] }]
+    });
+    let remoteThread: Record<string, unknown> = { id: threadId, status: { type: "futureStatus" } };
+    const codexClient = new CodexAppServerClient("ws://127.0.0.1:1", store, sessionDir) as unknown as {
+      activeTurnIds: Map<string, string>;
+      transport: { options: { onClosed?: (reason: string) => void }; getState: () => { connected: boolean; lastError: string | null } };
+      codexProviderAdapter: { readThreadState: () => Promise<Record<string, unknown>> };
+    };
+    codexClient.activeTurnIds.set(threadId, "turn-unknown-status");
+    codexClient.transport.options.onClosed?.("temporary disconnect");
+    codexClient.transport.getState = () => ({ connected: true, lastError: null });
+    codexClient.codexProviderAdapter = { readThreadState: async () => remoteThread };
+    const agent = createButlerAgent(store, sessionDir, codexClient);
+    await agent.reserveDirectCodexMessage({ threadId, text: "Keep supervising this work.", requestedAt });
+    await agent.markPendingChatCallbackDispatched(threadId, requestedAt, "turn-unknown-status");
+
+    Date.now = () => requestedAt + 5 * 60_000;
+    await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
+    remoteThread = { id: threadId };
+    Date.now = () => requestedAt + 10 * 60_000;
+    await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
+
+    const callback = agent.getShellSnapshot().supervision.callbacks.find((entry) => entry.threadId === threadId);
+    assert.equal(codexClient.activeTurnIds.has(threadId), false);
+    assert.equal(store.getThread(threadId)?.turns.at(-1)?.status, "in_progress");
+    assert.equal(callback?.callbackState, "waiting");
+    assert.equal(callback?.reviewState, "idle");
+    await store.flushSave();
+    agent.dispose();
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("watchdog never interrupts a responsive silent long-running command", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-worker-watchdog-command-"));
+  const threadId = "thread-watchdog-command";
+  const requestedAt = 1_000;
+  const originalNow = Date.now;
+  let probes = 0;
+  let stops = 0;
+  let loads = 0;
+  Date.now = () => requestedAt;
+  try {
+    store.upsertThreadSummary({
+      id: threadId,
+      source: "appServer",
+      status: "active",
+      cwd: "/workspace",
+      turns: [{ id: "turn-1", status: "in_progress", startedAt: requestedAt, items: [{ id: "command", type: "commandExecution", status: "started", text: "", at: requestedAt }] }]
+    });
+    const agent = createButlerAgent(store, sessionDir, {
+      getConnectionState: () => ({ compose: { availableModels: [] } }),
+      getLastRuntimeActivityAt: () => null,
+      loadThread: async () => { loads += 1; },
+      probeThread: async () => ({ attemptId: `probe-${++probes}`, state: "busy", busy: true, compacting: false, pendingMessageCount: 0, activityAt: null, acknowledgedWait: null, confirmedDead: false }),
+      stopThread: async () => { stops += 1; return true; }
+    });
+    await agent.notifyDirectCodexMessage({ threadId, text: "Run the long poll.", requestedAt });
+
+    for (const now of [requestedAt + 5 * 60_000, requestedAt + 10 * 60_000]) {
+      Date.now = () => now;
+      await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
+    }
+
+    const callback = agent.getShellSnapshot().supervision.callbacks.find((entry) => entry.threadId === threadId);
+    assert.equal(probes, 2);
+    assert.equal(stops, 0);
+    assert.equal(loads, 0);
+    assert.equal(callback?.callbackState, "waiting");
+    assert.equal(callback?.watchdogProtectedOperation, "commandExecution");
+    agent.dispose();
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("watchdog emits one Butler notice when repeated probes cannot safely stop the Worker", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-worker-watchdog-attention-"));
+  const threadId = "thread-watchdog-attention";
+  const requestedAt = 1_000;
+  const originalNow = Date.now;
+  let probes = 0;
+  Date.now = () => requestedAt;
+  try {
+    store.upsertThreadSummary({
+      id: threadId,
+      source: "appServer",
+      status: "active",
+      cwd: "/workspace",
+      turns: [{ id: "turn-attention", status: "in_progress", startedAt: requestedAt, items: [] }]
+    });
+    const agent = createButlerAgent(store, sessionDir, {
+      getConnectionState: () => ({ compose: { availableModels: [] } }),
+      getLastRuntimeActivityAt: () => null,
+      loadThread: async () => undefined,
+      probeThread: async () => { probes += 1; throw new Error(`probe unavailable ${probes}`); },
+      stopThread: async () => { throw new Error("interrupt failed"); }
+    });
+    await agent.notifyDirectCodexMessage({ threadId, text: "Run supervised work.", requestedAt });
+
+    for (const now of [requestedAt + 5 * 60_000, requestedAt + 5 * 60_000 + 30_000, requestedAt + 5 * 60_000 + 60_000]) {
+      Date.now = () => now;
+      await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
+    }
+
+    const callback = agent.getShellSnapshot().supervision.callbacks.find((entry) => entry.threadId === threadId);
+    const notices = agent.getLiveSnapshot().messages.filter((message) => message.id.startsWith(`worker-watchdog-attention-${threadId}-`));
+    assert.equal(callback?.callbackState, "waiting");
+    assert.equal(callback?.watchdogAttentionReason, "interrupt failed");
+    assert.equal(notices.length, 1);
+    assert.match(notices[0]?.text ?? "", /keeping the job supervised/);
+    agent.dispose();
   } finally {
     Date.now = originalNow;
   }

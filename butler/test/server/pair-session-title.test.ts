@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -156,6 +156,7 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
   codexUpdates: Array<{ model: string; effort: ReasoningEffort | null }>;
   threadEffortUpdates: Array<{ threadId: string; effort: ReasoningEffort }>;
   codexComposerCalls: string[];
+  sessionRootDir: string;
 }> {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-pair-session-test-"));
   const store = new ButlerStateStore(path.join(dir, "state.json"));
@@ -166,6 +167,7 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
   const threadEffortUpdates: Array<{ threadId: string; effort: ReasoningEffort }> = [];
   const codexComposerCalls: string[] = [];
   const workerModels = runtime?.workerModels ?? [];
+  const sessionRootDir = path.join(dir, "sessions");
   const manager = new PairSessionManager({
     pairStore,
     store,
@@ -196,7 +198,7 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
     codexAuthPath: path.join(dir, "codex-auth.json"),
     codexConfigDir: dir,
     getCodexAuthStatus: () => ({ loggedIn: true }),
-    sessionRootDir: path.join(dir, "sessions"),
+    sessionRootDir,
     artifactsDir: path.join(dir, "artifacts"),
     sessionTitleGenerator: generator,
     validateWorkspace: runtime?.validateWorkspace ?? (async (cwd: string) => cwd),
@@ -206,7 +208,7 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
       return service as never;
     }
   } as never);
-  return { manager, pairStore, service, store, codexUpdates, threadEffortUpdates, codexComposerCalls };
+  return { manager, pairStore, service, store, codexUpdates, threadEffortUpdates, codexComposerCalls, sessionRootDir };
 }
 
 test("pair Butler services receive a pair-scoped runtime thread id", async () => {
@@ -730,6 +732,26 @@ test("startup does not rearm an already reviewed historical Worker", async () =>
 
   assert.equal(service.startCount, 0);
   assert.deepEqual(service.trackedExternalThreads, []);
+});
+
+test("startup resumes a reviewed idle Worker when persisted callback closeout is still owed", async () => {
+  const { manager, pairStore, service, store, sessionRootDir } = await createManager();
+  store.upsertThreadSummary({ id: "callback-worker", source: "appServer", status: "idle", turns: [{ id: "turn-1", status: "completed", items: [] }] });
+  const report = store.recordWorkerReport("callback-worker", { turnId: "turn-1", status: "completed", summary: "Old report", details: null });
+  const pair = pairStore.createPair({ title: "Persisted closeout" });
+  pairStore.attachWorker(pair.id, { threadId: "callback-worker", task: "Recover closeout" });
+  pairStore.updatePairSnapshot(pair.id, {
+    lastMessage: { id: "callback-callback-worker:turn-1", role: "butler", lane: "butler", text: "Reviewed", at: report.updatedAt, sourceThreadId: "callback-worker", memoryObservationId: null, metadata: {} }
+  });
+  await mkdir(path.join(sessionRootDir, pair.id), { recursive: true });
+  await writeFile(path.join(sessionRootDir, pair.id, "chat-callbacks.json"), JSON.stringify({ callbackRecords: [{
+    threadId: "callback-worker", callbackState: "waiting", dispatchState: "ready", requestedAt: report.updatedAt + 1,
+    operatorCloseoutStatus: "owed", owesOperatorReply: true, updatedAt: report.updatedAt + 1
+  }] }));
+
+  await manager.startSupervisedSessions();
+
+  assert.equal(service.startCount, 1);
 });
 
 test("retryBlockedReview delegates recovery to the pair Butler", async () => {

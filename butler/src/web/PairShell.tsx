@@ -35,9 +35,10 @@ import { SettingsDashboard, SETTINGS_SECTIONS, type SettingsSectionId } from "./
 import { SessionWorkspaceControl } from "./SessionWorkspaceControl"; import { SessionAutomationControl } from "./SessionAutomationControl";
 import { TerminalPane } from "./TerminalPane";
 import { useEventStream } from "./useEventStream"; import { useProjectArtifactPreview } from "./useProjectArtifactPreview"; import { useSessionAutomation } from "./useSessionAutomation";
+import { useWorkerThreadHistory } from "./useWorkerThreadHistory";
 import { WorkerPane } from "./WorkerPane";
-import type { WorkerProofRecord, WorkerTimeline } from "./WorkerPane";
-import { shapeWorkerTimeline, type WorkerThread } from "./worker-timeline";
+import type { WorkerTimeline } from "./WorkerPane";
+import { shapeWorkerTimeline } from "./worker-timeline";
 
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
 import type { MemorySection } from "../shared/memory";
@@ -52,14 +53,10 @@ import type {
   PairStatus,
   PairSummary,
   PairViewMode,
-  PairWorkerHarness,
-  PairWorkerThreadResponse
+  PairWorkerHarness
 } from "../shared/pairing";
 import type { TerminalTarget } from "../shared/terminal";
 
-type RuntimeProofSnapshot = {
-  previewProofsByThreadId?: Record<string, WorkerProofRecord[]>;
-};
 type WorkerHandoffUiState = {
   requestId: number;
   pending: boolean;
@@ -580,9 +577,6 @@ export function PairShell() {
   const [pairsLoaded, setPairsLoaded] = useState(false);
   const [selectedPairId, setSelectedPairId] = useState<string | null>(initialUrlState.sessionId);
   const [pair, setPair] = useState<PairDetail | null>(null);
-  const [workerThread, setWorkerThread] = useState<WorkerThread | null>(null);
-  const [workerThreadPairId, setWorkerThreadPairId] = useState<string | null>(null);
-  const [workerThreadLoading, setWorkerThreadLoading] = useState(false);
   const [viewMode, setViewMode] = useState<PairViewMode>(initialUrlState.viewMode);
   const [lastWorkstreamMode, setLastWorkstreamMode] = useState<WorkstreamViewMode>(() => {
     const initial = initialUrlState.viewMode;
@@ -617,8 +611,6 @@ export function PairShell() {
   const [savingTitle, setSavingTitle] = useState(false);
   const [titleError, setTitleError] = useState<string | null>(null);
   const [butlerPatchHandler, setButlerPatchHandler] = useState<((patch: ProviderRuntimeLivePatch) => void) | null>(null);
-  const workerRefreshRef = useRef<(() => void) | null>(null);
-  const workerRefreshTimerRef = useRef<number | null>(null);
   const [improvePendingCount, setImprovePendingCount] = useState(0);
   const [improveQueue, setImproveQueue] = useState<SelfImprovementQueueResponse | null>(null);
   const [selectedImproveRequestId, setSelectedImproveRequestId] = useState<string | null>(null);
@@ -626,7 +618,6 @@ export function PairShell() {
   const [memorySearch, setMemorySearch] = useState("");
   const [memoryProjectFilter, setMemoryProjectFilter] = useState("");
   const [memorySummary, setMemorySummary] = useState<MemoryDashboardSummary | null>(null);
-  const [proofsByThreadId, setProofsByThreadId] = useState<Record<string, WorkerProofRecord[]>>({});
   const [composerAttachments, setComposerAttachments] = useState<FileReference[]>([]);
   const [composerContextItems, setComposerContextItems] = useState<PairComposerInputItem[]>([]);
   const [uploadingFiles, setUploadingFiles] = useState(false);
@@ -641,14 +632,9 @@ export function PairShell() {
   const shouldLoadWorkerThread = manorSurface === "sessions" && viewMode !== "butler" && Boolean(activePair?.worker);
   const activeWorkerPairId = shouldLoadWorkerThread ? activePair?.id ?? null : null;
   const activeWorkerThreadId = shouldLoadWorkerThread ? activePair?.worker?.threadId ?? null : null;
-  const activeWorkerThread = workerThreadPairId === activeWorkerPairId ? workerThread : null;
-  const activeWorkerThreadLoading = Boolean(activeWorkerPairId && (workerThreadPairId !== activeWorkerPairId || workerThreadLoading));
-  const applyRuntimeSnapshot = useCallback((runtime: unknown) => {
-    const typed = runtime as RuntimeProofSnapshot | null;
-    if (!typed || typeof typed !== "object" || !typed.previewProofsByThreadId) return;
-    setProofsByThreadId(typed.previewProofsByThreadId);
-  }, []);
-
+  const workerHistory = useWorkerThreadHistory(activeWorkerPairId, activeWorkerThreadId, setError);
+  const activeWorkerThread = workerHistory.thread;
+  const activeWorkerThreadLoading = workerHistory.loading;
   const eventStream = useEventStream({
     onButlerPatch: (patch) => {
       if (!activePair || patch.threadId !== `butler:${activePair.id}`) return;
@@ -658,18 +644,10 @@ export function PairShell() {
       if (!activeWorkerThreadId || patch.threadId !== activeWorkerThreadId) return;
       const urgent = (patch.kind === "turn-lifecycle" && patch.status !== "started") ||
         (patch.kind === "runtime-message" && patch.tone === "error");
-      if (workerRefreshTimerRef.current !== null) {
-        window.clearTimeout(workerRefreshTimerRef.current);
-        workerRefreshTimerRef.current = null;
-      }
-      if (urgent) {
-        workerRefreshRef.current?.();
-        return;
-      }
-      workerRefreshTimerRef.current = window.setTimeout(() => {
-        workerRefreshTimerRef.current = null;
-        workerRefreshRef.current?.();
-      }, 50);
+      workerHistory.requestRefresh(urgent);
+    },
+    onWorkerThreadRefreshed: ({ threadId }) => {
+      if (threadId === activeWorkerThreadId) workerHistory.requestRefresh(true);
     },
     onComposerPrefill: (payload) => {
       if (!activePair) return;
@@ -689,9 +667,6 @@ export function PairShell() {
       } else if (manorSurface !== "sessions") {
         setViewMode("butler");
       }
-    },
-    onInitial: (payload) => {
-      if (payload.runtime) applyRuntimeSnapshot(payload.runtime);
     }
   });
 
@@ -748,11 +723,6 @@ export function PairShell() {
     });
     return payload;
   }, [selectPairId]);
-
-  const loadWorker = useCallback(async (pairId: string): Promise<WorkerThread | null> => {
-    const payload = await getJson<PairWorkerThreadResponse>(`/api/pairs/${encodeURIComponent(pairId)}/worker-thread`);
-    return (payload.thread as WorkerThread | null) ?? null;
-  }, []);
 
   useEffect(() => {
     const historyMode = pairUrlHistoryModeRef.current;
@@ -818,17 +788,6 @@ export function PairShell() {
     return () => window.clearInterval(interval);
   }, [loadImproveQueue]);
 
-  const loadRuntime = useCallback(async () => {
-    const payload = await getJson<RuntimeProofSnapshot>("/api/runtime");
-    startTransition(() => applyRuntimeSnapshot(payload));
-  }, [applyRuntimeSnapshot]);
-
-  useEffect(() => {
-    void loadRuntime().catch(() => undefined);
-    const interval = window.setInterval(() => void loadRuntime().catch(() => undefined), 5000);
-    return () => window.clearInterval(interval);
-  }, [loadRuntime]);
-
   useEffect(() => {
     if (!pairsLoaded) return;
     if (!selectedPairId) {
@@ -861,49 +820,6 @@ export function PairShell() {
     };
   }, [pairsLoaded, selectedPairId]);
 
-  useEffect(() => {
-    if (!activeWorkerPairId) {
-      setWorkerThread(null);
-      setWorkerThreadPairId(null);
-      setWorkerThreadLoading(false);
-      return;
-    }
-    let cancelled = false;
-    const pairId = activeWorkerPairId;
-    setWorkerThread(null);
-    setWorkerThreadPairId(pairId);
-    setWorkerThreadLoading(true);
-    const refresh = async () => {
-      try {
-        const thread = await loadWorker(pairId);
-        if (!cancelled) {
-          startTransition(() => {
-            setWorkerThread(thread);
-            setWorkerThreadPairId(pairId);
-            setWorkerThreadLoading(false);
-          });
-        }
-      } catch {
-        if (!cancelled) {
-          setWorkerThreadLoading(false);
-        }
-      }
-    };
-    const requestRefresh = () => { void refresh(); };
-    workerRefreshRef.current = requestRefresh;
-    void refresh();
-    const interval = window.setInterval(() => void refresh(), 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-      if (workerRefreshRef.current === requestRefresh) workerRefreshRef.current = null;
-    };
-  }, [activeWorkerPairId, activeWorkerThreadId, loadWorker]);
-
-  useEffect(() => () => {
-    if (workerRefreshTimerRef.current !== null) window.clearTimeout(workerRefreshTimerRef.current);
-  }, []);
-
   const workerTimeline = useMemo<WorkerTimeline>(() => {
     if (!activePair?.worker) return { turns: [], report: null, reports: [], payload: null, checklist: null, fallback: [] };
     const timeline = shapeWorkerTimeline(activeWorkerThread);
@@ -932,11 +848,6 @@ export function PairShell() {
       ]
     };
   }, [activePair?.worker, activeWorkerThread, activeWorkerThreadLoading]);
-
-  const workerProofRecords = useMemo(
-    () => (activePair?.worker?.threadId ? proofsByThreadId[activePair.worker.threadId] ?? [] : []),
-    [activePair?.worker?.threadId, proofsByThreadId]
-  );
 
   async function createPair(): Promise<boolean> { return createPairWithActivation(() => true); }
   async function createPairWithActivation(activate: () => boolean): Promise<boolean> {
@@ -1412,7 +1323,10 @@ export function PairShell() {
                     pair={activePair}
                     timeline={workerTimeline}
                     loading={activeWorkerThreadLoading}
-                    proofRecords={workerProofRecords}
+                    hasMore={Boolean(activeWorkerThread?.hasMore)}
+                    loadingOlder={workerHistory.loadingOlder}
+                    onLoadOlder={() => void workerHistory.loadOlder()}
+                    proofRecords={workerHistory.proofRecords}
                     onWorkerModelChange={(model, harness) => void onWorkerModelChange(model, harness)}
                     onWorkerEffortChange={(effort) => void onWorkerEffortChange(effort)}
                     handoffPending={activeWorkerHandoff?.pending ?? false}

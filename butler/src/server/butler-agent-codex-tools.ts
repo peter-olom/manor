@@ -9,6 +9,8 @@ import {
   shouldAllowLocalThreadFallback
 } from "./butler-agent-helpers.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import { directWorkerDispatchMarker } from "./butler-callback-state.js";
+import { settleFailedDirectWorkerDispatch } from "./direct-codex-message.js";
 import { formatJobPayloadMessage } from "./job-instruction-artifacts.js";
 import { assertCallbackReviewCurrent, runSerializedJobMutations } from "./butler-job-mutation-guard.js";
 import { classifyManorBlocker } from "./butler-self-improvement.js";
@@ -520,30 +522,29 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
           };
         }
         await loadWorkerThread(access, typedParams.threadId);
-        const payload = await access.createOrUpdateJobPayload({
-          threadId: typedParams.threadId,
-          kind: "rejection_followup",
-          instruction: text
-        });
-        assertCallbackReviewCurrent(typedParams.threadId);
-        const sent = await sendWorkerMessage(access, typedParams.threadId, formatJobPayloadMessage("rejection_followup", typedParams.threadId, payload.workerDirective, payload.display.summary));
-        await access.bindJobPayloadDelivery(typedParams.threadId, { turnId: sent.turnId });
-        assertCallbackReviewCurrent(typedParams.threadId);
-        access.store.clearQueuedRejectionInstructions(typedParams.threadId);
-        await access.registerPendingChatCallback(typedParams.threadId, {
-          privateSteerText: text,
-          nextWorkerReportAction: "review"
-        });
-        const supervision = access.store.noteButlerSteer(typedParams.threadId);
-        access.store.addEvent(typedParams.threadId, "butler.supervision.rejection_followup", "Butler sent queued rejected checklist items to the worker.");
-        return {
-          content: [{ type: "text", text: `Sent queued rejected acceptance points to job ${typedParams.threadId}.` }],
-          details: {
-            payload,
-            supervision,
-            checklist: access.store.getSupervisionChecklist(typedParams.threadId)
-          }
-        };
+        const requestedAt = Date.now();
+        const reservation = await access.reserveDirectCodexMessage({ threadId: typedParams.threadId, text, requestedAt });
+        let sent = false;
+        try {
+          const payload = await access.createOrUpdateJobPayload({
+            threadId: typedParams.threadId,
+            kind: "rejection_followup",
+            instruction: text
+          });
+          assertCallbackReviewCurrent(typedParams.threadId);
+          const dispatch = await sendWorkerMessage(access, typedParams.threadId, `${formatJobPayloadMessage("rejection_followup", typedParams.threadId, payload.workerDirective, payload.display.summary)}\n\n${directWorkerDispatchMarker(typedParams.threadId, requestedAt)}`);
+          sent = true;
+          await access.bindJobPayloadDelivery(typedParams.threadId, { turnId: dispatch.turnId });
+          await access.markPendingChatCallbackDispatched(typedParams.threadId, requestedAt, dispatch.turnId);
+          assertCallbackReviewCurrent(typedParams.threadId);
+          access.store.clearQueuedRejectionInstructions(typedParams.threadId);
+          const supervision = access.store.noteButlerSteer(typedParams.threadId);
+          access.store.addEvent(typedParams.threadId, "butler.supervision.rejection_followup", "Butler sent queued rejected checklist items to the worker.");
+          return { content: [{ type: "text", text: `Sent queued rejected acceptance points to job ${typedParams.threadId}.` }], details: { payload, supervision, checklist: access.store.getSupervisionChecklist(typedParams.threadId) } };
+        } catch (error) {
+          if (!sent) await settleFailedDirectWorkerDispatch(error, () => access.markPendingChatCallbackDispatched(typedParams.threadId, requestedAt, null), () => access.rollbackDirectCodexMessage(typedParams.threadId, requestedAt, reservation));
+          throw error;
+        }
       }
     }),
     access.defineButlerTool({
@@ -665,48 +666,43 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
         const refreshedChecklist = typedParams.refreshChecklist
           ? access.store.refreshCompletedSupervisionChecklistForFollowup(typedParams.threadId, typedParams.text)
           : null;
-        const payload = await access.createOrUpdateJobPayload({
-          threadId: typedParams.threadId,
-          kind: "steering",
-          instruction: typedParams.text,
-          imageReferenceIds,
-          fileReferenceIds
-        });
-        assertCallbackReviewCurrent(typedParams.threadId);
-        const sent = await sendWorkerMessage(
-          access,
-          typedParams.threadId,
-          buildWorkerInputWithReferences({
+        const requestedAt = Date.now();
+        const nextWorkerReportAction = typedParams.nextWorkerReportAction ?? "review";
+        const reservation = await access.reserveDirectCodexMessage({ threadId: typedParams.threadId, text: typedParams.text, requestedAt, nextWorkerReportAction });
+        let sent = false;
+        try {
+          const payload = await access.createOrUpdateJobPayload({
+            threadId: typedParams.threadId,
+            kind: "steering",
+            instruction: typedParams.text,
+            imageReferenceIds,
+            fileReferenceIds
+          });
+          assertCallbackReviewCurrent(typedParams.threadId);
+          const workerInput = buildWorkerInputWithReferences({
             text: formatJobPayloadMessage("steering", payload.threadId, payload.workerDirective, payload.display.summary),
             imageStore: access.imageStore,
             imageReferenceIds,
             fileStore: access.fileStore,
             fileReferenceIds
-          })
-        );
-        await access.bindJobPayloadDelivery(typedParams.threadId, { turnId: sent.turnId });
-        assertCallbackReviewCurrent(typedParams.threadId);
-        await access.registerPendingChatCallback(typedParams.threadId, {
-          privateSteerText: typedParams.text,
-          nextWorkerReportAction: typedParams.nextWorkerReportAction ?? "review"
-        });
-        const supervision = access.store.noteButlerSteer(typedParams.threadId);
-        access.store.addEvent(typedParams.threadId, "butler.supervision.turn_spent", "Butler spent a private supervision turn on this job.");
-        access.noteThreadFocus(typedParams.threadId, "message_job");
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Sent a private follow-up to job ${typedParams.threadId}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}. Next worker report action: ${typedParams.nextWorkerReportAction ?? "review"}.`
-            }
-          ],
-          details: {
-            checklist: refreshedChecklist,
-              payload,
-            supervision,
-            thread: access.store.getThread(typedParams.threadId) ?? null
-          }
-        };
+          });
+          workerInput.push({ type: "text", text: directWorkerDispatchMarker(typedParams.threadId, requestedAt) });
+          const dispatch = await sendWorkerMessage(access, typedParams.threadId, workerInput);
+          sent = true;
+          await access.bindJobPayloadDelivery(typedParams.threadId, { turnId: dispatch.turnId });
+          await access.markPendingChatCallbackDispatched(typedParams.threadId, requestedAt, dispatch.turnId);
+          assertCallbackReviewCurrent(typedParams.threadId);
+          const supervision = access.store.noteButlerSteer(typedParams.threadId);
+          access.store.addEvent(typedParams.threadId, "butler.supervision.turn_spent", "Butler spent a private supervision turn on this job.");
+          access.noteThreadFocus(typedParams.threadId, "message_job");
+          return {
+            content: [{ type: "text", text: `Sent a private follow-up to job ${typedParams.threadId}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}. Next worker report action: ${nextWorkerReportAction}.` }],
+            details: { checklist: refreshedChecklist, payload, supervision, thread: access.store.getThread(typedParams.threadId) ?? null }
+          };
+        } catch (error) {
+          if (!sent) await settleFailedDirectWorkerDispatch(error, () => access.markPendingChatCallbackDispatched(typedParams.threadId, requestedAt, null), () => access.rollbackDirectCodexMessage(typedParams.threadId, requestedAt, reservation));
+          throw error;
+        }
       }
     }),
     access.defineButlerTool({

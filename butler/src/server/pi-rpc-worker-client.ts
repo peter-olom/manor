@@ -26,6 +26,7 @@ import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime.js";
 import type { WorkerSessionControls } from "../shared/worker-session-controls.js";
 import type { ExtensionUiBroker } from "./extension-ui-broker.js";
 import { contentToText, extractMessageTimestamp } from "./butler-agent-helpers.js";
+import { WorkerTransportDeadError, type WorkerThreadRuntimeProbe } from "./worker-thread-runtime-probe.js";
 
 type PiRpcWorkerClientEvents = {
   change: [];
@@ -40,10 +41,12 @@ type PiWorkerSession = {
   cwd: string;
   provider: string;
   model: string;
+  modelContextWindow: number | null;
   activityVersion: number;
   acceptedEventVersion: number | null;
   eventStreamVersion: number | null;
   pendingPromptGenerations: number[];
+  operationTurnIds?: string[];
   transportClosed: boolean;
 };
 
@@ -118,6 +121,9 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
   private readonly loadingSessions = new Map<string, Promise<void>>();
   private readonly deletingSessions = new Set<string>();
   private readonly startingSessions = new Set<string>();
+  private readonly lastRuntimeActivityAt = new Map<string, number>();
+  private readonly transportDeadThreadIds = new Set<string>();
+  private readonly retryWaits = new Map<string, string>();
   private pendingTransportStateSave: Promise<void> = Promise.resolve();
   private availableModels: ModelOption[] = [];
   private pricingModels: ReturnType<ModelRegistry["getAvailable"]> = [];
@@ -177,8 +183,8 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     if (this.isSessionGenerationCurrent(session, generation)) this.invalidateSessionOperations(session);
   }
 
-  private staleOperation(threadId: string): StaleWorkerOperationError {
-    return new StaleWorkerOperationError(threadId);
+  private staleOperation(threadId: string, dispatchMayHaveBeenAccepted = false, cause?: unknown): StaleWorkerOperationError {
+    return new StaleWorkerOperationError(threadId, { cause, dispatchMayHaveBeenAccepted });
   }
 
   private async rejectStaleStartedSession(session: PiWorkerSession): Promise<never> {
@@ -191,7 +197,7 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
         cleanupError = error;
       }
     }
-    throw new StaleWorkerOperationError(session.threadId, cleanupError);
+    throw new StaleWorkerOperationError(session.threadId, { cause: cleanupError });
   }
 
   private async cleanupStartedSession(session: PiWorkerSession): Promise<void> {
@@ -223,10 +229,18 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     throw startError;
   }
 
-  private async promptSession(session: PiWorkerSession, generation: number, text: string, images: ImageContent[] = []): Promise<void> {
+  private async promptSession(session: PiWorkerSession, generation: number, text: string, images: ImageContent[] = [], streamingBehavior?: "steer"): Promise<void> {
     session.pendingPromptGenerations.push(generation);
     try {
-      await session.client.prompt(text, images.length > 0 ? images : undefined);
+      const rpcImages = images.length > 0 ? images : undefined;
+      const atomicSend = (session.client as unknown as { send?: (command: Record<string, unknown>) => Promise<unknown> }).send;
+      if (streamingBehavior && typeof atomicSend === "function") {
+        await atomicSend.call(session.client, { type: "prompt", message: text, images: rpcImages, streamingBehavior });
+      } else if (streamingBehavior && session.client instanceof RpcClient) {
+        throw new Error("Installed Pi RPC client does not support atomic prompt dispatch.");
+      } else {
+        await session.client.prompt(text, rpcImages);
+      }
     } finally {
       const pendingIndex = session.pendingPromptGenerations.indexOf(generation);
       if (pendingIndex >= 0) session.pendingPromptGenerations.splice(pendingIndex, 1);
@@ -251,6 +265,81 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
         effort: this.selectedEffort,
         availableModels: this.availableModels
       }
+    };
+  }
+
+  getLastRuntimeActivityAt(threadId: string): number | null {
+    return this.lastRuntimeActivityAt.get(threadId) ?? null;
+  }
+
+  isThreadTransportDead(threadId: string): boolean {
+    const session = this.sessions.get(threadId);
+    return session ? this.sessionTransportIsDead(session) : this.transportDeadThreadIds.has(threadId);
+  }
+
+  invalidateThreadOperations(threadId: string): void {
+    const session = this.sessions.get(threadId);
+    if (session) this.invalidateSessionOperations(session);
+  }
+
+  private sessionTransportIsDead(session: PiWorkerSession): boolean {
+    if (session.transportClosed) return true;
+    const processHandle = (session.client as unknown as {
+      process?: { exitCode?: number | null; signalCode?: string | null; stdin?: { destroyed?: boolean; writable?: boolean } };
+    }).process;
+    return Boolean(processHandle && (
+      processHandle.exitCode !== null && processHandle.exitCode !== undefined
+      || processHandle.signalCode !== null && processHandle.signalCode !== undefined
+      || processHandle.stdin?.destroyed === true
+      || processHandle.stdin?.writable === false
+    ));
+  }
+
+  async probeThread(threadId: string): Promise<WorkerThreadRuntimeProbe> {
+    let session: PiWorkerSession;
+    try {
+      session = await this.requireSession(threadId);
+    } catch (error) {
+      if (this.transportDeadThreadIds.has(threadId)) {
+        throw new WorkerTransportDeadError(error instanceof Error ? error.message : "Worker Pi transport is closed");
+      }
+      throw error;
+    }
+    if (session.transportClosed) throw new WorkerTransportDeadError("Worker Pi transport is closed");
+    let state: Awaited<ReturnType<RpcClient["getState"]>>;
+    try {
+      state = await session.client.getState();
+    } catch (error) {
+      if (this.sessionTransportIsDead(session)) {
+        this.transportDeadThreadIds.add(threadId);
+        this.handleSessionTransportClosed(session, error instanceof Error ? error.message : "Worker Pi process exited");
+        throw new WorkerTransportDeadError(error instanceof Error ? error.message : "Worker Pi process exited");
+      }
+      throw error;
+    }
+    const pendingMessageCount = Number.isFinite(state.pendingMessageCount)
+      ? Math.max(0, Math.trunc(state.pendingMessageCount))
+      : 0;
+    const compacting = state.isCompacting === true;
+    const pendingDialog = this.options.extensionUiBroker?.view([{ scope: threadId, lane: "worker" }]).dialog;
+    const retryWait = this.retryWaits.get(threadId) ?? null;
+    const busy = state.isStreaming === true || compacting || pendingMessageCount > 0 || Boolean(pendingDialog) || Boolean(retryWait);
+    const acknowledgedWait = pendingDialog
+      ? "Worker is waiting for extension UI input."
+      : retryWait
+        ?? (compacting
+          ? "Worker is compacting context."
+          : pendingMessageCount > 0
+            ? `Worker has ${pendingMessageCount} queued message${pendingMessageCount === 1 ? "" : "s"}.`
+            : null);
+    return {
+      state: busy ? "busy" : "idle",
+      busy,
+      compacting,
+      pendingMessageCount,
+      activityAt: this.getLastRuntimeActivityAt(threadId),
+      acknowledgedWait,
+      confirmedDead: false
     };
   }
 
@@ -478,27 +567,30 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
 
   async sendMessage(threadId: string, input: string | CodexInputItem[]): Promise<{ threadId: string; turnId: string | null }> {
     if (!this.sessions.has(threadId)) await this.loadThread(threadId);
-    const session = this.sessions.get(threadId);
+    let session = this.sessions.get(threadId);
     if (!session) throw new Error("Pi RPC worker thread is not loaded");
-    const preflightGeneration = session.activityVersion;
+    let preflightGeneration = session.activityVersion;
     const resolvedInput = await resolvePiWorkerInput(input);
     if (!this.isSessionGenerationCurrent(session, preflightGeneration)) throw this.staleOperation(threadId);
-    const state = await session.client.getState().catch(() => null);
-    if (!this.isSessionGenerationCurrent(session, preflightGeneration)) throw this.staleOperation(threadId);
+    if (this.sessionModelContextChanged(session)) {
+      const state = await session.client.getState().catch(() => null);
+      if (!this.isSessionGenerationCurrent(session, preflightGeneration)) throw this.staleOperation(threadId);
+      if (state && !state.isStreaming && !state.isCompacting) {
+        session = await this.restartSessionForModelContext(session);
+        preflightGeneration = session.activityVersion;
+      }
+    }
     const operationGeneration = this.beginSessionOperation(session);
     try {
-      if (state?.isStreaming) {
-        session.eventStreamVersion = operationGeneration;
-        await session.client.steer(resolvedInput.text, resolvedInput.images.length > 0 ? resolvedInput.images : undefined);
-      } else {
-        await this.promptSession(session, operationGeneration, resolvedInput.text, resolvedInput.images);
-      }
+      await this.promptSession(session, operationGeneration, resolvedInput.text, resolvedInput.images, "steer");
     } catch (error) {
-      if (!this.isSessionGenerationCurrent(session, operationGeneration)) throw this.staleOperation(threadId);
+      if (!this.isSessionGenerationCurrent(session, operationGeneration)) throw this.staleOperation(threadId, true, error);
       this.invalidateSessionGenerationIfCurrent(session, operationGeneration);
       throw error;
     }
-    if (!this.isSessionGenerationCurrent(session, operationGeneration)) throw this.staleOperation(threadId);
+    if (!this.isSessionGenerationCurrent(session, operationGeneration)) throw this.staleOperation(threadId, true);
+    session.acceptedEventVersion = operationGeneration;
+    session.eventStreamVersion = operationGeneration;
     return { threadId, turnId: null };
   }
 
@@ -526,6 +618,7 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
       }
       throw error;
     }
+    this.retryWaits.delete(threadId);
     session.pendingPromptGenerations = session.pendingPromptGenerations.filter((generation) => generation > activityVersion);
     if (!this.isSessionGenerationCurrent(session, activityVersion)) return true;
     session.eventStreamVersion = null;
@@ -567,14 +660,25 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     }
     const state = await session.client.getState().catch(() => null);
     const lastTurn = thread.turns.at(-1);
+    let changed = false;
     if (lastTurn?.status === "in_progress") {
       this.options.store.updateTurn(threadId, {
         id: lastTurn.id,
         status: "interrupted",
         error: "Worker process restarted before this turn completed."
       });
+      changed = true;
     }
-    this.options.store.setThreadStatus(threadId, { type: state?.isStreaming ? "active" : "idle" });
+    const nextStatus = state?.isStreaming ? "active" : "idle";
+    if (thread.status !== nextStatus) {
+      this.options.store.setThreadStatus(threadId, { type: nextStatus });
+      changed = true;
+    }
+    if (changed) {
+      this.pendingTransportStateSave = this.pendingTransportStateSave
+        .then(() => this.options.store.flushSave())
+        .catch((error) => console.error("Pi Worker resumed state save failed", error));
+    }
     this.emit("change");
   }
 
@@ -683,6 +787,9 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
 
     try {
       await this.options.store.removeThreadDurably(threadId);
+      this.lastRuntimeActivityAt.delete(threadId);
+      this.transportDeadThreadIds.delete(threadId);
+      this.retryWaits.delete(threadId);
     } catch (error) {
       const restoreError = capabilityRevoked ? await this.restoreThreadCapability(threadId, cwd) : null;
       const message = error instanceof Error ? error.message : String(error);
@@ -717,6 +824,28 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     this.selectedProvider = selected?.provider ?? null;
     this.selectedModel = selected?.id ?? null;
     this.emit("change");
+  }
+
+  private modelContextWindow(provider: string, modelId: string): number | null {
+    const model = this.pricingModels.find((entry) => entry.provider === provider && entry.id === modelId);
+    return typeof model?.contextWindow === "number" && Number.isFinite(model.contextWindow) ? model.contextWindow : null;
+  }
+
+  private sessionModelContextChanged(session: PiWorkerSession): boolean {
+    const current = this.modelContextWindow(session.provider, session.model);
+    return current !== null && session.modelContextWindow !== current;
+  }
+
+  private async restartSessionForModelContext(session: PiWorkerSession): Promise<PiWorkerSession> {
+    const threadId = session.threadId;
+    this.invalidateSessionOperations(session);
+    session.unsubscribe?.();
+    this.sessions.delete(threadId);
+    await session.client.stop();
+    await this.resumeThread(threadId);
+    const resumed = this.sessions.get(threadId);
+    if (!resumed) throw new Error("Pi RPC worker thread could not be refreshed after its model context changed");
+    return resumed;
   }
 
   private async createSession(threadId: string, cwd: string, provider: string, model: string, sessionPath?: string): Promise<PiWorkerSession> {
@@ -769,10 +898,12 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
       cwd,
       provider,
       model,
+      modelContextWindow: this.modelContextWindow(provider, model),
       activityVersion: 0,
       acceptedEventVersion: null,
       eventStreamVersion: null,
       pendingPromptGenerations: [],
+      operationTurnIds: [],
       transportClosed: false
     };
     const listener: RpcEventListener = (event) => {
@@ -780,6 +911,8 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     };
     session.unsubscribe = client.onEvent(listener);
     this.sessions.set(threadId, session);
+    this.transportDeadThreadIds.delete(threadId);
+    this.retryWaits.delete(threadId);
     return session;
   }
 
@@ -792,8 +925,10 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
   }
 
   private handleSessionEvent(session: PiWorkerSession, event: Parameters<RpcEventListener>[0]): void {
+    const sessionIsCurrent = this.sessions.get(session.threadId) === session;
     const rpcEvent = event as unknown as Record<string, unknown>;
     if (rpcEvent.type === "extension_ui_request" && typeof rpcEvent.id === "string" && typeof rpcEvent.method === "string") {
+      if (sessionIsCurrent && !session.transportClosed) this.lastRuntimeActivityAt.set(session.threadId, Date.now());
       this.options.extensionUiBroker?.acceptRpcRequest(
         session.threadId,
         "worker",
@@ -807,10 +942,20 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
       this.handleSessionTransportClosed(session, typeof reason === "string" ? reason : "Worker Pi transport closed.");
       return;
     }
-    let eventGeneration = session.eventStreamVersion ?? session.acceptedEventVersion;
+    const previousEventGeneration = session.eventStreamVersion;
+    let eventGeneration = previousEventGeneration ?? session.acceptedEventVersion;
     if (event.type === "agent_start") {
       eventGeneration = session.pendingPromptGenerations.shift() ?? session.acceptedEventVersion;
       session.eventStreamVersion = eventGeneration;
+      if (eventGeneration !== previousEventGeneration) session.operationTurnIds = [];
+    }
+    const currentEvent = this.isSessionEventGenerationCurrent(session, eventGeneration);
+    if (currentEvent) this.lastRuntimeActivityAt.set(session.threadId, Date.now());
+    if (currentEvent && rpcEvent.type === "auto_retry_start") {
+      const attempt = typeof rpcEvent.attempt === "number" ? rpcEvent.attempt : null;
+      this.retryWaits.set(session.threadId, attempt ? `Worker is waiting for retry attempt ${attempt}.` : "Worker is waiting to retry.");
+    } else if (currentEvent && ["auto_retry_end", "agent_start", "agent_settled"].includes(String(rpcEvent.type))) {
+      this.retryWaits.delete(session.threadId);
     }
 
     const patches = session.mapper.map(
@@ -819,18 +964,56 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     );
     for (const patch of patches) {
       if (event.type === "agent_end" && patch.kind === "thread-state" && patch.state === "idle") continue;
+      if (patch.kind === "turn-lifecycle" && this.isSessionEventGenerationCurrent(session, eventGeneration)) {
+        session.operationTurnIds ??= [];
+        if (!session.operationTurnIds.includes(patch.turnId)) session.operationTurnIds.push(patch.turnId);
+      }
       this.applyPatch(session, eventGeneration, patch);
     }
 
     if (event.type === "agent_settled") {
+      if (!this.isSessionEventGenerationCurrent(session, eventGeneration)) return;
+      const settledAt = Date.now();
+      const thread = this.options.store.getThread(session.threadId);
+      const operationTurns = new Set(session.operationTurnIds ?? []);
+      const activeTurns = thread?.turns.filter((turn) => ["started", "inProgress", "in_progress"].includes(turn.status)) ?? [];
+      const lastOperationTurn = [...(thread?.turns ?? [])].reverse().find((turn) => operationTurns.has(turn.id));
+      const turnsToSettle = new Map(activeTurns.map((turn) => [turn.id, turn]));
+      if (lastOperationTurn?.status === "completed") turnsToSettle.set(lastOperationTurn.id, lastOperationTurn);
+      for (const turn of turnsToSettle.values()) {
+        const completedReply = turn.items.some((item) =>
+          item.type === "agentMessage" && item.status === "completed" && item.text.trim()
+        );
+        const status = completedReply ? "completed" : "interrupted";
+        this.applyPatch(session, eventGeneration, {
+          kind: "turn-lifecycle", threadId: session.threadId, turnId: turn.id, status, at: settledAt
+        });
+        if (!completedReply) {
+          const message = "Worker stopped without a completed assistant response.";
+          this.options.store.updateTurn(session.threadId, { id: turn.id, status, error: message });
+          this.options.store.addEvent(session.threadId, "runtime.error", message);
+          this.emit("threadPatch", {
+            kind: "runtime-message",
+            threadId: session.threadId,
+            turnId: turn.id,
+            tone: "error",
+            message,
+            at: settledAt
+          } satisfies CodexThreadPatchView);
+        }
+      }
       this.applyPatch(session, eventGeneration, {
         kind: "thread-state",
         threadId: session.threadId,
         state: "idle",
-        at: Date.now()
+        at: settledAt
       });
       if (session.eventStreamVersion === eventGeneration) session.eventStreamVersion = null;
       if (session.acceptedEventVersion === eventGeneration) session.acceptedEventVersion = null;
+      session.operationTurnIds = [];
+      this.pendingTransportStateSave = this.pendingTransportStateSave
+        .then(() => this.options.store.flushSave())
+        .catch((error) => console.error("Pi Worker settled state save failed", error));
     }
   }
 
@@ -852,6 +1035,8 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     if (this.sessions.get(session.threadId) !== session) return;
     const isStarting = this.startingSessions.has(session.threadId);
     session.transportClosed = true;
+    this.transportDeadThreadIds.add(session.threadId);
+    this.retryWaits.delete(session.threadId);
     this.invalidateSessionOperations(session);
     session.pendingPromptGenerations = [];
     session.eventStreamVersion = null;

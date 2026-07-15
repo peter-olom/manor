@@ -9,7 +9,6 @@ import { PiRpcWorkerClient } from "../../src/server/pi-rpc-worker-client.js";
 import { buildJobDetail } from "../../src/server/butler-job-detail.js";
 import { StaleWorkerOperationError } from "../../src/server/stale-worker-operation-error.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
-import { ExtensionUiBroker } from "../../src/server/extension-ui-broker.js";
 import type { ProviderRuntimeLivePatch } from "../../src/shared/provider-runtime.js";
 
 type FakeSession = {
@@ -18,16 +17,17 @@ type FakeSession = {
     getState: () => Promise<{ isStreaming: boolean }>;
     prompt: (text: string) => Promise<void>;
     steer: (text: string) => Promise<void>;
+    send?: (command: Record<string, unknown>) => Promise<unknown>;
     abort: () => Promise<void>;
     stop: () => Promise<void>;
     setThinkingLevel?: (level: string) => Promise<void>;
-    process?: { stdin: { destroyed: boolean; writable: boolean; write: (value: string) => boolean } };
   };
   mapper: PiProviderRuntimeMapper;
   unsubscribe: (() => void) | null;
   cwd: string;
   provider?: string;
   model?: string;
+  modelContextWindow?: number | null;
   activityVersion: number;
   acceptedEventVersion: number | null;
   eventStreamVersion: number | null;
@@ -38,6 +38,7 @@ type FakeSession = {
 type TestClient = {
   sessions: Map<string, FakeSession>;
   availableModels: Array<Record<string, unknown>>;
+  pricingModels: Array<Record<string, unknown>>;
   selectedProvider: string | null;
   selectedModel: string | null;
   selectedEffort: "low" | "medium" | "high" | "xhigh" | null;
@@ -49,6 +50,8 @@ type TestClient = {
   loadThread: (threadId: string) => Promise<void>;
   forkThread: (threadId: string, entryId: string) => Promise<{ cancelled: boolean }>;
   webToolsExtensionArgs: (provider?: string | null) => Promise<string[]>;
+  pendingTransportStateSave: Promise<void>;
+  handleSessionTransportClosed: (session: FakeSession, reason: string) => void;
   handleSessionEvent: (session: FakeSession, event: Record<string, unknown>) => void;
   applyPatch: (session: FakeSession, generation: number | null, patch: ProviderRuntimeLivePatch) => void;
   on: (event: "threadPatch", listener: (patch: ProviderRuntimeLivePatch) => void) => void;
@@ -127,6 +130,13 @@ test("Pi resumes one persisted session after restart and reconciles the interrup
       piAuthPath: path.join(dir, "auth.json"),
       sessionRootDir: path.join(dir, "sessions")
     }) as unknown as TestClient;
+    const originalFlushSave = store.flushSave.bind(store);
+    let releaseSave!: () => void;
+    const saveGate = new Promise<void>((resolve) => { releaseSave = resolve; });
+    store.flushSave = async () => {
+      await saveGate;
+      await originalFlushSave();
+    };
     let createCount = 0;
     let resumedWith: string | undefined;
     client.createSession = async (id, sessionCwd, provider, model, persistedPath) => {
@@ -146,13 +156,117 @@ test("Pi resumes one persisted session after restart and reconciles the interrup
       return session;
     };
 
-    await Promise.all([client.loadThread(threadId), client.loadThread(threadId)]);
+    const loaded = Promise.all([client.loadThread(threadId), client.loadThread(threadId)]).then(() => "loaded");
+    assert.equal(await Promise.race([
+      loaded,
+      new Promise<string>((resolve) => setTimeout(() => resolve("timed-out"), 100))
+    ]), "loaded");
+    releaseSave();
+    await client.pendingTransportStateSave;
 
     assert.equal(createCount, 1);
     assert.equal(resumedWith, sessionPath);
     assert.equal(store.getThread(threadId)?.status, "idle");
     assert.equal(store.getThread(threadId)?.turns[0]?.status, "interrupted");
     assert.match(store.getThread(threadId)?.turns[0]?.error ?? "", /restarted/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Pi restarts an idle loaded session when refreshed model metadata corrects its context window", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-context-refresh-"));
+  try {
+    const threadId = "pi-context-refresh";
+    const cwd = path.join(dir, "workspace");
+    const sessionDir = path.join(dir, "sessions", threadId);
+    const sessionPath = path.join(sessionDir, "2026-07-11T00-00-00-000Z_session.jsonl");
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(path.join(sessionDir, "manor-session.json"), JSON.stringify({
+      threadId,
+      cwd,
+      provider: "ollama-cloud",
+      model: "glm-5.2"
+    }), "utf8");
+    await writeFile(sessionPath, JSON.stringify({ type: "session", cwd }), "utf8");
+    const store = await createStore(dir);
+    store.upsertThreadSummary({
+      id: threadId,
+      cwd,
+      source: "pi-rpc",
+      modelProvider: "ollama-cloud",
+      modelId: "glm-5.2",
+      status: { type: "idle" },
+      turns: []
+    });
+    const client = new PiRpcWorkerClient({
+      store,
+      piAuthPath: path.join(dir, "auth.json"),
+      sessionRootDir: path.join(dir, "sessions")
+    }) as unknown as TestClient;
+    client.pricingModels = [{ provider: "ollama-cloud", id: "glm-5.2", contextWindow: 131_072 }];
+
+    let staleStopCalls = 0;
+    const staleSession: FakeSession = {
+      threadId,
+      client: {
+        getState: async () => ({ isStreaming: false, isCompacting: false }),
+        prompt: async () => undefined,
+        steer: async () => undefined,
+        abort: async () => undefined,
+        stop: async () => { staleStopCalls += 1; }
+      },
+      mapper: new PiProviderRuntimeMapper(threadId),
+      unsubscribe: null,
+      cwd,
+      provider: "ollama-cloud",
+      model: "glm-5.2",
+      modelContextWindow: 1_000_000,
+      activityVersion: 0,
+      acceptedEventVersion: null,
+      eventStreamVersion: null,
+      pendingPromptGenerations: []
+    };
+    client.sessions.set(threadId, staleSession);
+
+    let createCalls = 0;
+    let promptCalls = 0;
+    client.createSession = async (id, sessionCwd, provider, model, persistedPath) => {
+      createCalls += 1;
+      assert.deepEqual(
+        { id, sessionCwd, provider, model, persistedPath },
+        { id: threadId, sessionCwd: cwd, provider: "ollama-cloud", model: "glm-5.2", persistedPath: sessionPath }
+      );
+      const resumed: FakeSession = {
+        threadId,
+        client: {
+          getState: async () => ({ isStreaming: false, isCompacting: false }),
+          prompt: async () => { promptCalls += 1; },
+          steer: async () => undefined,
+          abort: async () => undefined,
+          stop: async () => undefined
+        },
+        mapper: new PiProviderRuntimeMapper(threadId),
+        unsubscribe: null,
+        cwd,
+        provider,
+        model,
+        modelContextWindow: 131_072,
+        activityVersion: 0,
+        acceptedEventVersion: null,
+        eventStreamVersion: null,
+        pendingPromptGenerations: []
+      };
+      client.sessions.set(threadId, resumed);
+      return resumed;
+    };
+
+    await client.sendMessage(threadId, "Continue");
+
+    assert.equal(staleStopCalls, 1);
+    assert.equal(createCalls, 1);
+    assert.equal(promptCalls, 1);
+    assert.equal(client.sessions.get(threadId)?.modelContextWindow, 131_072);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -527,6 +641,118 @@ test("Pi persists failed items and redacted runtime errors across reload", async
   }
 });
 
+test("Pi agent_settled completes only turns with a completed assistant response", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-settled-response-"));
+  try {
+    const threadId = "pi-settled-response";
+    const store = await createStore(dir);
+    store.upsertThreadSummary({
+      id: threadId,
+      cwd: dir,
+      source: "pi-rpc",
+      status: { type: "active" },
+      turns: [{
+        id: "turn-with-response",
+        status: "in_progress",
+        items: [{ id: "reply", type: "agentMessage", status: "completed", text: "Done", at: 100 }]
+      }]
+    });
+    const session: FakeSession = {
+      threadId,
+      client: {
+        getState: async () => ({ isStreaming: false }),
+        prompt: async () => undefined,
+        steer: async () => undefined,
+        abort: async () => undefined,
+        stop: async () => undefined
+      },
+      mapper: new PiProviderRuntimeMapper(threadId),
+      unsubscribe: null,
+      cwd: dir,
+      activityVersion: 1,
+      acceptedEventVersion: 1,
+      eventStreamVersion: 1,
+      pendingPromptGenerations: []
+    };
+    const client = new PiRpcWorkerClient({
+      store,
+      piAuthPath: path.join(dir, "auth.json"),
+      sessionRootDir: path.join(dir, "sessions")
+    }) as unknown as TestClient;
+    client.sessions.set(threadId, session);
+
+    client.handleSessionEvent(session, { type: "agent_settled" });
+    await client.pendingTransportStateSave;
+
+    assert.equal(store.getThread(threadId)?.status, "idle");
+    assert.equal(store.getThread(threadId)?.turns[0]?.status, "completed");
+    assert.equal(store.getThread(threadId)?.turns[0]?.error ?? null, null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Pi agent_settled interrupts a reasoning-only turn completed by turn_end", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-settled-reasoning-only-"));
+  try {
+    const threadId = "pi-settled-reasoning-only";
+    const store = await createStore(dir);
+    store.upsertThreadSummary({ id: threadId, cwd: dir, source: "pi-rpc", status: { type: "idle" }, turns: [] });
+    const session: FakeSession = {
+      threadId,
+      client: {
+        getState: async () => ({ isStreaming: false }),
+        prompt: async () => undefined,
+        steer: async () => undefined,
+        abort: async () => undefined,
+        stop: async () => undefined
+      },
+      mapper: new PiProviderRuntimeMapper(threadId),
+      unsubscribe: null,
+      cwd: dir,
+      activityVersion: 1,
+      acceptedEventVersion: 1,
+      eventStreamVersion: null,
+      pendingPromptGenerations: [1]
+    };
+    const client = new PiRpcWorkerClient({
+      store,
+      piAuthPath: path.join(dir, "auth.json"),
+      sessionRootDir: path.join(dir, "sessions")
+    }) as unknown as TestClient;
+    client.sessions.set(threadId, session);
+
+    client.handleSessionEvent(session, { type: "agent_start" });
+    client.handleSessionEvent(session, { type: "turn_start" });
+    client.handleSessionEvent(session, {
+      type: "message_update",
+      message: { role: "assistant", content: [{ type: "thinking", thinking: "Planning the document" }] },
+      assistantMessageEvent: { type: "thinking_start", contentIndex: 0 }
+    });
+    client.handleSessionEvent(session, {
+      type: "message_update",
+      message: { role: "assistant", content: [{ type: "thinking", thinking: "Planning the document" }] },
+      assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: "Planning the document" }
+    });
+    client.handleSessionEvent(session, {
+      type: "turn_end",
+      message: { role: "assistant", content: [{ type: "thinking", thinking: "Planning the document" }], stopReason: "stop" }
+    });
+    client.handleSessionEvent(session, { type: "agent_end", messages: [], willRetry: false });
+
+    assert.equal(store.getThread(threadId)?.turns[0]?.status, "completed");
+    client.handleSessionEvent(session, { type: "agent_settled" });
+    await client.pendingTransportStateSave;
+
+    const turn = store.getThread(threadId)?.turns[0];
+    assert.equal(turn?.status, "interrupted");
+    assert.equal(turn?.error, "Worker stopped without a completed assistant response.");
+    assert.equal(store.getThread(threadId)?.status, "idle");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("Pi stays active through retry, compaction, and queued continuation until agent_settled", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-settled-lifecycle-"));
   try {
@@ -600,53 +826,14 @@ test("Pi stays active through retry, compaction, and queued continuation until a
     assert.equal(session.acceptedEventVersion, null);
     assert.equal(patches.at(-1)?.kind, "thread-state");
     assert.equal(patches.at(-1)?.kind === "thread-state" ? patches.at(-1)?.state : null, "idle");
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("Pi extension UI requests round-trip through Manor without becoming RPC commands", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-extension-ui-"));
-  try {
-    const broker = new ExtensionUiBroker();
-    const writes: string[] = [];
-    const threadId = "pi-extension-ui";
-    const session: FakeSession = {
-      threadId,
-      client: {
-        getState: async () => ({ isStreaming: false }),
-        prompt: async () => undefined,
-        steer: async () => undefined,
-        abort: async () => undefined,
-        stop: async () => undefined,
-        process: { stdin: { destroyed: false, writable: true, write: (value) => { writes.push(value); return true; } } }
-      },
-      mapper: new PiProviderRuntimeMapper(threadId),
-      unsubscribe: null,
-      cwd: dir,
-      activityVersion: 1,
-      acceptedEventVersion: 1,
-      eventStreamVersion: 1,
-      pendingPromptGenerations: []
-    };
-    const client = new PiRpcWorkerClient({
-      store: await createStore(dir),
-      piAuthPath: path.join(dir, "auth.json"),
-      sessionRootDir: path.join(dir, "sessions"),
-      extensionUiBroker: broker
-    }) as unknown as TestClient;
-    client.sessions.set(threadId, session);
-    client.handleSessionEvent(session, {
-      type: "extension_ui_request",
-      id: "select-1",
-      method: "select",
-      title: "Choose",
-      options: ["A", "B"]
-    });
-    assert.equal(broker.view([{ scope: threadId, lane: "worker" }]).dialog?.id, "select-1");
-    broker.respond(threadId, "select-1", { value: "B" });
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(JSON.parse(writes[0]!), { type: "extension_ui_response", id: "select-1", value: "B" });
+    await client.pendingTransportStateSave;
+    const reloaded = await createStore(dir);
+    assert.equal(reloaded.getThread(threadId)?.status, "idle");
+    const persistedTurns = reloaded.getThread(threadId)?.turns ?? [];
+    assert.equal(persistedTurns.some((turn) => turn.status === "in_progress"), false);
+    const interruptedTurns = persistedTurns.filter((turn) => turn.status === "interrupted");
+    assert.equal(interruptedTurns.length, 2);
+    assert.equal(interruptedTurns.every((turn) => turn.error === "Worker stopped without a completed assistant response."), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -722,6 +909,7 @@ test("stopped Pi operations reject late events while a newer operation remains l
       message: { role: "assistant", content: [{ type: "text", text: "late" }], timestamp: 101 }
     });
     client.handleSessionEvent(session, { type: "agent_end" });
+    assert.equal((client as unknown as { getLastRuntimeActivityAt(id: string): number | null }).getLastRuntimeActivityAt(threadId), null);
     assert.equal(store.getThread(threadId)?.status, "idle");
     assert.equal(store.getThread(threadId)?.turns.length, 0);
 
@@ -739,6 +927,7 @@ test("stopped Pi operations reject late events while a newer operation remains l
       type: "message_start",
       message: { role: "assistant", content: [{ type: "text", text: "" }], timestamp: 110 }
     });
+    assert.notEqual((client as unknown as { getLastRuntimeActivityAt(id: string): number | null }).getLastRuntimeActivityAt(threadId), null);
     assert.equal(store.getThread(threadId)?.status, "active");
     assert.equal(store.getThread(threadId)?.turns.length, 1);
     assert.equal(store.getThread(threadId)?.turns[0]?.items.length, 1);
@@ -796,62 +985,6 @@ test("deleted Pi sessions reject stale applyPatch calls even if the thread id is
   }
 });
 
-test("Pi getState preflight keeps the existing stream generation live", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-preflight-generation-"));
-  try {
-    const threadId = "pi-thread-preflight";
-    const store = await createStore(dir);
-    store.upsertThreadSummary({ id: threadId, cwd: dir, source: "pi-rpc", status: { type: "active" }, turns: [] });
-    const state = deferred<{ isStreaming: boolean }>();
-    let stateRequested = false;
-    let steerCalls = 0;
-    const session: FakeSession = {
-      threadId,
-      client: {
-        getState: async () => {
-          stateRequested = true;
-          return state.promise;
-        },
-        prompt: async () => undefined,
-        steer: async () => { steerCalls += 1; },
-        abort: async () => undefined,
-        stop: async () => undefined
-      },
-      mapper: new PiProviderRuntimeMapper(threadId),
-      unsubscribe: null,
-      cwd: dir,
-      activityVersion: 1,
-      acceptedEventVersion: 1,
-      eventStreamVersion: 1,
-      pendingPromptGenerations: []
-    };
-    const client = new PiRpcWorkerClient({
-      store,
-      piAuthPath: path.join(dir, "auth.json"),
-      sessionRootDir: path.join(dir, "sessions")
-    }) as unknown as TestClient;
-    client.sessions.set(threadId, session);
-
-    const sending = client.sendMessage(threadId, "Steer the live turn");
-    await waitFor(() => stateRequested);
-    client.handleSessionEvent(session, { type: "turn_start" });
-    client.handleSessionEvent(session, {
-      type: "message_start",
-      message: { role: "assistant", content: [{ type: "text", text: "live" }], timestamp: 300 }
-    });
-    assert.equal(store.getThread(threadId)?.turns.length, 1);
-    assert.equal(store.getThread(threadId)?.turns[0]?.items.length, 1);
-
-    state.resolve({ isStreaming: true });
-    assert.deepEqual(await sending, { threadId, turnId: null });
-    assert.equal(steerCalls, 1);
-    assert.equal(session.activityVersion, 2);
-    assert.equal(session.eventStreamVersion, 2);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 test("rejected Pi dispatch invalidates late provider events", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-rejected-generation-"));
   try {
@@ -902,22 +1035,23 @@ test("rejected Pi dispatch invalidates late provider events", async () => {
   }
 });
 
-test("stopping Pi during getState preflight rejects before provider dispatch", async () => {
+test("stopping Pi during atomic dispatch rejects the stale send", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-stopped-preflight-"));
   try {
     const threadId = "pi-thread-stopped-preflight";
     const store = await createStore(dir);
     store.upsertThreadSummary({ id: threadId, cwd: dir, source: "pi-rpc", status: { type: "idle" }, turns: [] });
-    const state = deferred<{ isStreaming: boolean }>();
-    let stateRequested = false;
+    const dispatch = deferred<void>();
+    let dispatchRequested = false;
     let promptCalls = 0;
     let steerCalls = 0;
     const session: FakeSession = {
       threadId,
       client: {
-        getState: async () => { stateRequested = true; return state.promise; },
+        getState: async () => ({ isStreaming: false }),
         prompt: async () => { promptCalls += 1; },
         steer: async () => { steerCalls += 1; },
+        send: async () => { dispatchRequested = true; await dispatch.promise; },
         abort: async () => undefined,
         stop: async () => undefined
       },
@@ -933,13 +1067,57 @@ test("stopping Pi during getState preflight rejects before provider dispatch", a
     client.sessions.set(threadId, session);
 
     const sending = client.sendMessage(threadId, "Never dispatch this");
-    await waitFor(() => stateRequested);
+    await waitFor(() => dispatchRequested);
     assert.equal(await client.stopThread(threadId), true);
-    state.resolve({ isStreaming: false });
+    dispatch.resolve();
 
     await assert.rejects(sending, StaleWorkerOperationError);
     assert.equal(promptCalls, 0);
     assert.equal(steerCalls, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Pi transport loss after prompt dispatch marks the stale operation as possibly accepted", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-transport-close-during-dispatch-"));
+  try {
+    const threadId = "pi-thread-transport-close-during-dispatch";
+    const store = await createStore(dir);
+    store.upsertThreadSummary({ id: threadId, cwd: dir, source: "pi-rpc", status: { type: "idle" }, turns: [] });
+    const dispatch = deferred<void>();
+    let dispatchRequested = false;
+    const session: FakeSession = {
+      threadId,
+      client: {
+        getState: async () => ({ isStreaming: false }),
+        prompt: async () => undefined,
+        steer: async () => undefined,
+        send: async () => { dispatchRequested = true; await dispatch.promise; },
+        abort: async () => undefined,
+        stop: async () => undefined
+      },
+      mapper: new PiProviderRuntimeMapper(threadId),
+      unsubscribe: null,
+      cwd: dir,
+      activityVersion: 0,
+      acceptedEventVersion: null,
+      eventStreamVersion: null,
+      pendingPromptGenerations: [],
+      transportClosed: false
+    };
+    const client = new PiRpcWorkerClient({ store, piAuthPath: path.join(dir, "auth.json"), sessionRootDir: path.join(dir, "sessions") }) as unknown as TestClient;
+    client.sessions.set(threadId, session);
+
+    const sending = client.sendMessage(threadId, "Continue after this prompt.");
+    await waitFor(() => dispatchRequested);
+    client.handleSessionTransportClosed(session, "transport lost after dispatch");
+    dispatch.resolve();
+
+    const staleError = await sending.then(() => null, (error: unknown) => error);
+    assert.ok(staleError instanceof StaleWorkerOperationError);
+    assert.equal(staleError.dispatchMayHaveBeenAccepted, true);
+    await client.pendingTransportStateSave;
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

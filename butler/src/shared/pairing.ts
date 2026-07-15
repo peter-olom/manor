@@ -314,4 +314,5 @@ export type PairMemoryResponse = {
 
 export type PairWorkerThreadResponse = {
   thread: unknown | null;
+  proofRecords: unknown[];
 };

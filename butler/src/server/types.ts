@@ -1,5 +1,5 @@
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime.js";
-import type { ButlerRoutingDecisionView, WorkerClaimsReportView, WorkerReviewResultRecordView } from "./orchestration-types.js";
+import type { ButlerRoutingDecisionView, ReviewPanelRunView, ReviewPanelSummaryView, WorkerClaimsReportView, WorkerReviewResultRecordView } from "./orchestration-types.js";
 import type { ButlerMemoryEntryView, MemoryEmbeddingView, MemoryRetrievalCandidateView } from "./memory-types.js";
 export type { ButlerMemoryEntryView, ButlerMemoryReviewState, ButlerMemoryScopeKind, ButlerMemoryType, MemoryEmbeddingView, MemoryRetrievalCandidateView } from "./memory-types.js";
 export type {
@@ -9,6 +9,11 @@ export type {
   ButlerRoutingQuestionView,
   ButlerRoutingRiskLevel,
   ButlerRoutingTaskClass,
+  ReviewPanelRole,
+  ReviewPanelRunView,
+  ReviewPanelSummaryStatus,
+  ReviewPanelSummaryView,
+  ReviewPanelVerdict,
   WorkerClaimStatus,
   WorkerClaimsReportView,
   WorkerClaimView,
@@ -73,37 +78,6 @@ export type ButlerCloseoutChannel = "none" | "main_chat";
 export type ButlerNextWorkerReportAction = "review" | "reply_to_operator";
 export type ButlerCallbackReviewState = "idle" | "queued" | "running" | "blocked";
 export type ButlerCallbackReviewReason = "worker_callback" | "thread_recovery" | null; export type ButlerCallbackReviewStage = "queued" | "preparing" | "reviewing_changes" | "supervising_closeout" | "retry_wait" | "blocked";
-export type ReviewPanelRole = "intent" | "qa" | "ui_taste" | "api" | "ops" | "product"; export type ReviewPanelVerdict = "pending" | "passed" | "concern" | "failed" | "blocked";
-export type ReviewPanelSummaryStatus = "pending" | "passed" | "concerns" | "blocked";
-export interface ReviewPanelRunView {
-  id: string;
-  role: ReviewPanelRole;
-  label: string;
-  scope: string;
-  trigger: string;
-  prompt: string;
-  verdict: ReviewPanelVerdict;
-  concerns: string[];
-  evidenceRefs: string[];
-  requiredFollowUp: string | null;
-  reviewerNote: string | null;
-  modelProvider: string | null;
-  modelId: string | null;
-  createdAt: number;
-  reviewedAt: number | null;
-  updatedAt: number;
-}
-
-export interface ReviewPanelSummaryView {
-  status: ReviewPanelSummaryStatus;
-  reviewers: number;
-  passed: number;
-  concerns: number;
-  blocking: number;
-  summary: string | null;
-  updatedAt: number | null;
-}
-
 export interface MissionContractView {
   intent: string;
   tasteNotes: string[];
@@ -162,6 +136,16 @@ export interface ButlerThreadCallbackView {
   lastEventAt: number | null;
   lastWorkerStatusSeen: CodexThreadStatus | null;
   lastTerminalReportAt: number | null;
+  watchdogLastProbeAt?: number | null;
+  watchdogLastProbeId?: string | null;
+  watchdogProbeFailures?: number;
+  watchdogProbeState?: "busy" | "idle" | "unreachable" | null;
+  watchdogProtectedOperation?: string | null;
+  watchdogIntervenedAt?: number | null;
+  watchdogAttentionAt?: number | null;
+  watchdogAttentionReason?: string | null;
+  watchdogInterventionFailures?: number;
+  acceptedWorkerTurnId?: string | null;
   lastPrivateSteerText: string | null;
   lastPrivateSteerAt: number | null;
   nextWorkerReportAction: ButlerNextWorkerReportAction;

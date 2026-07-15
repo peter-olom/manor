@@ -267,6 +267,55 @@ test("a newer send supersedes an older pending send", async () => {
   }
 });
 
+test("a reconnect never reuses an operation generation from before transport close", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-codex-reconnect-generation-"));
+  try {
+    const threadId = "thread-reconnect-generation";
+    const store = await createStore(dir);
+    store.upsertThreadSummary({ id: threadId, cwd: dir, status: "active", turns: [] });
+    const sends = [
+      deferred<{ threadId: string; turnId: string; turn: Record<string, unknown> }>(),
+      deferred<{ threadId: string; turnId: string; turn: Record<string, unknown> }>()
+    ];
+    const interrupted: string[] = [];
+    let sendIndex = 0;
+    const client = new CodexAppServerClient("ws://127.0.0.1:1", store, dir) as unknown as {
+      transport: { options: { onClosed?: (reason: string) => void } };
+      codexProviderAdapter: {
+        sendTurn: () => Promise<unknown>;
+        interruptTurn: (_threadId: string, turnId?: string) => Promise<void>;
+      };
+      directControlThreadIds: Set<string>;
+      sendMessage: (threadId: string, input: string) => Promise<{ threadId: string; turnId: string | null }>;
+    };
+    client.directControlThreadIds.add(threadId);
+    client.codexProviderAdapter = {
+      sendTurn: async () => sends[sendIndex++]!.promise,
+      interruptTurn: async (_id, turnId) => { if (turnId) interrupted.push(turnId); }
+    };
+
+    const beforeClose = client.sendMessage(threadId, "Before disconnect");
+    await waitFor(() => sendIndex === 1);
+    client.transport.options.onClosed?.("temporary disconnect");
+    client.directControlThreadIds.add(threadId);
+    const afterReconnect = client.sendMessage(threadId, "After reconnect");
+    await waitFor(() => sendIndex === 2);
+
+    sends[0]!.resolve({ threadId, turnId: "stale-turn", turn: { id: "stale-turn", status: "inProgress", items: [] } });
+    const staleError = await beforeClose.then(() => null, (error: unknown) => error);
+    assert.ok(staleError instanceof StaleWorkerOperationError);
+    assert.equal(staleError.dispatchMayHaveBeenAccepted, true);
+    assert.deepEqual(interrupted, ["stale-turn"]);
+    sends[1]!.resolve({ threadId, turnId: "current-turn", turn: { id: "current-turn", status: "inProgress", items: [] } });
+    assert.deepEqual(await afterReconnect, { threadId, turnId: "current-turn" });
+    assert.equal(store.getThread(threadId)?.turns.some((turn) => turn.id === "stale-turn"), false);
+    assert.equal(store.getThread(threadId)?.turns.some((turn) => turn.id === "current-turn"), true);
+    await store.flushSave();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("late Codex events from an unresolved send cannot pollute a newer operation", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "manor-codex-event-generation-"));
   try {

@@ -1,9 +1,11 @@
 export class StaleWorkerOperationError extends Error {
   readonly code = "WORKER_OPERATION_STALE";
+  readonly dispatchMayHaveBeenAccepted: boolean;
 
-  constructor(threadId: string, cause?: unknown) {
+  constructor(threadId: string, options: { cause?: unknown; dispatchMayHaveBeenAccepted?: boolean } = {}) {
     super(`Worker operation for ${threadId} was superseded before dispatch completed.`);
     this.name = "StaleWorkerOperationError";
-    if (cause !== undefined) this.cause = cause;
+    this.dispatchMayHaveBeenAccepted = options.dispatchMayHaveBeenAccepted === true;
+    if (options.cause !== undefined) this.cause = options.cause;
   }
 }

@@ -3813,6 +3813,16 @@ a:hover {
   min-width: 0;
 }
 
+.worker-history-more {
+  display: flex;
+  justify-content: center;
+  min-height: 44px;
+}
+
+.worker-history-more .button {
+  min-height: 44px;
+}
+
 .worker-report {
   display: flex;
   flex-direction: column;

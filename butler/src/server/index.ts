@@ -6,8 +6,8 @@ import path from "node:path";
 import express from "express";
 import httpProxy from "http-proxy";
 
-import { ButlerAgentService } from "./butler-agent.js";
-import { directWorkerDispatchMarker } from "./butler-callback-state.js";
+import { ButlerAgentService } from "./butler-agent.js"; import { directWorkerDispatchMarker } from "./butler-callback-state.js";
+import { settleFailedDirectWorkerDispatch } from "./direct-codex-message.js";
 import { runSerializedJobMutation, runSerializedJobMutations } from "./butler-job-mutation-guard.js";
 import { createBackgroundModelServices } from "./background-model-services.js";
 import { CodexAppServerClient } from "./codex-client.js";
@@ -47,7 +47,7 @@ import { registerManorRestartRoutes } from "./manor-restart-routes.js";
 import { proxyPreviewRoute, registerPreviewProxyResponseRewriter, resolvePreviewRefererRouteUrl, resolvePreviewRouteUrl } from "./preview-gateway.js";
 import { preserveMissingPreviewLeaseTombstones } from "./preview-lease-reconciliation.js";
 import { reconcileDesktopSessions, registerDesktopSessionRoutes } from "./server-desktop-routes.js";
-import { ButlerSseHub, cleanupThreadRuntimeResources, currentBootstrapSnapshot, pruneEmptyArtifactParents, readImageReferenceIds, readFileReferenceIds, removeStackArtifactsFromStore, resolvePreviewProxyTarget, shouldAllowLocalThreadWindow, type RuntimeServerAccess } from "./server-runtime-helpers.js";
+import { ButlerSseHub, cleanupThreadRuntimeResources, currentBootstrapSnapshot, pruneEmptyArtifactParents, readImageReferenceIds, readFileReferenceIds, removeStackArtifactsFromStore, resolvePreviewProxyTarget, resolveSseStateChannels, shouldAllowLocalThreadWindow, type RuntimeServerAccess } from "./server-runtime-helpers.js";
 import { ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates.js";
 import { ButlerStateStore } from "./state-store.js";
 import { registerThreadArtifactRoutes } from "./thread-artifact-routes.js";
@@ -246,7 +246,7 @@ const pairSessions = new PairSessionManager({
   memoryScheduler,
   sessionTitleGenerator,
   getCodexAuthStatus: () => butlerAgent.getCodexAuthStatus(),
-  onButlerPatch: (payload) => sseHub?.broadcastButlerPatch(payload)
+  onButlerPatch: (payload) => sseHub?.broadcastButlerPatch(payload), onWorkerThreadRefreshed: (threadId) => sseHub?.broadcastWorkerThreadRefreshed(threadId)
 });
 const automationScheduler = new SessionAutomationScheduler({ pairStore, dispatch: (input) => pairSessions.runAutomation(input), onSkipped: (pairId, message) => pairSessions.postAutomationNotice(pairId, message) }); const modelInventoryRefresh = createProviderModelRefreshCoordinator({ pairSessions, piRpcWorkerClient, butlerAgent, scheduleSse: () => sseHub?.schedule() });
 configureSelfImprovementPairCleanup(pairSessions);
@@ -766,7 +766,7 @@ app.get("/api/events", (request, response) => {
   response.setHeader("X-Accel-Buffering", "no");
   response.flushHeaders();
   response.write("retry: 1000\n\n");
-  sseHub.addClient(response);
+  sseHub.addClient(response, resolveSseStateChannels(request.query.state));
   sseHub.sendInitialEvents(response);
   const heartbeat = setInterval(() => {
     sseHub.writeHeartbeat(response);
@@ -929,14 +929,14 @@ app.post("/api/threads/messages", async (request, response) => {
         await butlerAgent.notifyDirectCodexMessage({ ...directInput, callbackAlreadyRegistered: true });
         const workerInput = buildWorkerInputWithReferences({ text, imageStore, imageReferenceIds, fileStore, fileReferenceIds, extraInputItems: inputItems });
         workerInput.push({ type: "text", text: directWorkerDispatchMarker(threadId, requestedAt) });
-        await sendWorkerMessage(
+        const dispatch = await sendWorkerMessage(
           { store, codexClient, piRpcWorkerClient },
           threadId,
           workerInput
         );
-        sent = true;
+        sent = true; await butlerAgent.markPendingChatCallbackDispatched(threadId, requestedAt, dispatch.turnId);
       } catch (error) {
-        if (!sent) await butlerAgent.rollbackDirectCodexMessage(threadId, requestedAt, reservation);
+        if (!sent) await settleFailedDirectWorkerDispatch(error, () => butlerAgent.markPendingChatCallbackDispatched(threadId, requestedAt, null), () => butlerAgent.rollbackDirectCodexMessage(threadId, requestedAt, reservation));
         throw error;
       }
     });

@@ -12,6 +12,7 @@ import {
   groupProofsByTurn,
   isPreviewableProofImage,
   isPreviewableProofVideo,
+  proofsForLoadedWorkerWindow,
   proofsForFinalReport,
   WorkerTurnView,
   type WorkerProofArtifact,
@@ -87,6 +88,35 @@ function turn(id: string): WorkerTurnGroup {
     ]
   };
 }
+
+test("partial Worker history excludes proofs from before the loaded turn window", () => {
+  const turns = [turn("turn-current")];
+  const oldProof = proof("proof-old", "run-old", 4_999);
+  const currentProof = proof("proof-current", "run-current", 5_000);
+  const laterProof = proof("proof-later", "run-later", 5_500);
+
+  assert.deepEqual(
+    proofsForLoadedWorkerWindow(turns, [oldProof, currentProof, laterProof], true).map((entry) => entry.id),
+    ["proof-current", "proof-later"]
+  );
+  assert.deepEqual(
+    proofsForLoadedWorkerWindow(turns, [oldProof, currentProof, laterProof], false).map((entry) => entry.id),
+    ["proof-old", "proof-current", "proof-later"]
+  );
+
+  const report: WorkerReport = {
+    turnId: "turn-current",
+    status: "completed",
+    summary: "Done",
+    details: null,
+    evidence: [{ proofRunId: "run-old" }],
+    updatedAt: 6_000
+  };
+  assert.deepEqual(
+    proofsForLoadedWorkerWindow(turns, [oldProof, currentProof], true, [report]).map((entry) => entry.id),
+    ["proof-old", "proof-current"]
+  );
+});
 
 test("worker proof grouping uses report proof references before timestamp fallback", () => {
   const turns = [turn("turn-1"), turn("turn-2")];
@@ -198,7 +228,7 @@ test("worker proof video renders inline with direct actions", () => {
   assert.match(markup, /<video[^>]*src="\/api\/proofs\/video\.webm"/);
   assert.match(markup, /controls=""/);
   assert.match(markup, /playsInline=""/);
-  assert.match(markup, /preload="metadata"/);
+  assert.match(markup, /preload="none"/);
   assert.match(markup, />Expand<\/button>/);
   assert.match(markup, />Open<\/a>/);
   assert.match(markup, />Download<\/a>/);

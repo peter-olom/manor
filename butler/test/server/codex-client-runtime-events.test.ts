@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { CodexAppServerClient } from "../../src/server/codex-client.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
+import { stopWorkerThreadWithin } from "../../src/server/worker-client-router.js";
 import type { CodexThreadPatchView } from "../../src/server/types.js";
 
 async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
@@ -62,9 +63,87 @@ test("thread/settings/updated notification refreshes the per-thread effort", asy
 
   await waitFor(() => store.getThread("thread-9")?.requestedReasoningEffort === "xhigh");
   assert.equal(store.getThread("thread-9")?.requestedReasoningEffort, "xhigh");
+  assert.equal((client as unknown as { getLastRuntimeActivityAt: (threadId: string) => number | null }).getLastRuntimeActivityAt("thread-9") !== null, true);
 });
 
-test("transport close durably interrupts every active Codex turn with its exact redacted reason", async () => {
+test("Codex Worker probe uses a lightweight thread read and preserves real activity time", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-codex-probe-"));
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  await store.load();
+  const client = new CodexAppServerClient("ws://127.0.0.1:1", store, dir) as unknown as {
+    transport: { getState: () => { connected: boolean; lastError: string | null } };
+    codexProviderAdapter: { readThreadState: (threadId: string) => Promise<Record<string, unknown> | null> };
+    activeTurnIds: Map<string, string>;
+    lastRuntimeActivityAt: Map<string, number>;
+    probeThread: (threadId: string) => Promise<Record<string, unknown>>;
+  };
+  const reads: string[] = [];
+  client.transport.getState = () => ({ connected: true, lastError: null });
+  client.codexProviderAdapter = {
+    readThreadState: async (threadId) => {
+      reads.push(threadId);
+      return { id: threadId, status: { type: "active" } };
+    }
+  };
+  client.lastRuntimeActivityAt.set("codex-live-probe", 4321);
+
+  assert.deepEqual(await client.probeThread("codex-live-probe"), {
+    state: "busy", busy: true, compacting: false, pendingMessageCount: 0,
+    activityAt: 4321, acknowledgedWait: null, confirmedDead: false
+  });
+  assert.deepEqual(reads, ["codex-live-probe"]);
+  assert.equal(client.lastRuntimeActivityAt.get("codex-live-probe"), 4321);
+});
+
+test("authoritative remote idle overrides stale Codex activity and makes intervention a no-op", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-codex-idle-probe-"));
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  await store.load();
+  const threadId = "codex-remotely-idle";
+  store.upsertThreadSummary({
+    id: threadId,
+    source: "appServer",
+    status: "active",
+    cwd: dir,
+    turns: [{ id: "stale-turn", status: "in_progress", items: [] }]
+  });
+  let interruptCalls = 0;
+  let remoteStatus = "futureStatus";
+  const client = new CodexAppServerClient("ws://127.0.0.1:1", store, dir) as unknown as {
+    transport: { getState: () => { connected: boolean; lastError: string | null } };
+    codexProviderAdapter: {
+      readThreadState: () => Promise<Record<string, unknown>>;
+      interruptTurn: () => Promise<void>;
+    };
+    activeTurnIds: Map<string, string>;
+    probeThread: (threadId: string) => Promise<Record<string, unknown>>;
+    stopThread: (threadId: string) => Promise<boolean>;
+  };
+  client.transport.getState = () => ({ connected: true, lastError: null });
+  client.codexProviderAdapter = {
+    readThreadState: async () => ({ id: threadId, status: { type: remoteStatus } }),
+    interruptTurn: async () => {
+      interruptCalls += 1;
+      throw new Error("completed remote turns cannot be interrupted");
+    }
+  };
+  client.activeTurnIds.set(threadId, "stale-turn");
+
+  assert.equal((await client.probeThread(threadId)).state, "busy");
+  assert.equal(client.activeTurnIds.has(threadId), true);
+  remoteStatus = "idle";
+  assert.equal((await client.probeThread(threadId)).state, "idle");
+  assert.equal(client.activeTurnIds.has(threadId), false);
+  assert.equal(store.getThread(threadId)?.status, "idle");
+  assert.equal(store.getThread(threadId)?.turns.at(-1)?.status, "completed");
+  assert.deepEqual(
+    await stopWorkerThreadWithin({ store, codexClient: client } as never, threadId, 50),
+    { state: "idle", detail: null }
+  );
+  assert.equal(interruptCalls, 0);
+});
+
+test("transport close preserves active Codex turns until reconnect reports authoritative state", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-codex-close-events-"));
   const store = new ButlerStateStore(path.join(dir, "state.json"));
   await store.load();
@@ -76,8 +155,9 @@ test("transport close durably interrupts every active Codex turn with its exact 
   });
   const client = new CodexAppServerClient("ws://127.0.0.1:1", store, dir) as unknown as {
     activeTurnIds: Map<string, string>;
-    transport: { options: { onClosed?: (reason: string) => void } };
-    providerRuntimeIngestion: { drain: () => Promise<void> };
+    transport: { options: { onClosed?: (reason: string) => void }; getState: () => { connected: boolean; lastError: string | null } };
+    codexProviderAdapter: { readThreadState: () => Promise<Record<string, unknown>> };
+    probeThread: (threadId: string) => Promise<{ state: string }>;
     on: (event: "threadPatch", listener: (patch: CodexThreadPatchView) => void) => void;
   };
   client.activeTurnIds.set("thread-close", "turn-close");
@@ -85,22 +165,29 @@ test("transport close durably interrupts every active Codex turn with its exact 
   client.on("threadPatch", (patch) => patches.push(patch));
 
   client.transport.options.onClosed?.("Socket closed Authorization: Bearer codex-close-secret-123456");
-  await waitFor(() => store.getThread("thread-close")?.turns[0]?.status === "interrupted");
-  await client.providerRuntimeIngestion.drain();
+  await waitFor(() => store.getThread("thread-close")?.eventLog.some((entry) => entry.method === "runtime.transport.disconnected") === true);
+  client.transport.getState = () => ({ connected: true, lastError: null });
+  client.codexProviderAdapter = { readThreadState: async () => ({ id: "thread-close", status: { type: "futureStatus" } }) };
+  assert.equal((await client.probeThread("thread-close")).state, "busy");
+  client.codexProviderAdapter = { readThreadState: async () => ({ id: "thread-close" }) };
+  assert.equal((await client.probeThread("thread-close")).state, "busy");
+  client.codexProviderAdapter = { readThreadState: async () => ({ id: "thread-close", status: { type: "active" } }) };
+  assert.equal((await client.probeThread("thread-close")).state, "busy");
+  await store.flushSave();
 
   const turn = store.getThread("thread-close")?.turns[0];
-  assert.equal(store.getThread("thread-close")?.status, "idle");
-  assert.equal(turn?.error, "Socket closed Authorization: Bearer [REDACTED]");
-  assert.equal(turn?.completedAt === null, false);
+  assert.equal(store.getThread("thread-close")?.status, "active");
+  assert.equal(turn?.status, "in_progress");
+  assert.equal(turn?.error, null);
+  assert.equal(turn?.completedAt, null);
   assert.equal(store.getThread("thread-close")?.eventLog[0]?.summary, "Socket closed Authorization: Bearer [REDACTED]");
-  assert.equal(patches.some((patch) => patch.kind === "runtime-message" && patch.message.includes("[REDACTED]")), true);
-  assert.equal(patches.some((patch) => patch.kind === "turn-lifecycle" && patch.status === "interrupted"), true);
+  assert.equal(patches.length, 0);
   assert.doesNotMatch(JSON.stringify(patches), /codex-close-secret/);
 
   const reloaded = new ButlerStateStore(path.join(dir, "state.json"));
   await reloaded.load();
-  assert.equal(reloaded.getThread("thread-close")?.turns[0]?.status, "interrupted");
-  assert.equal(reloaded.getThread("thread-close")?.turns[0]?.error, "Socket closed Authorization: Bearer [REDACTED]");
+  assert.equal(reloaded.getThread("thread-close")?.turns[0]?.status, "in_progress");
+  assert.equal(reloaded.getThread("thread-close")?.status, "active");
 });
 
 test("thread read snapshots redact provider errors and item text before reload", async () => {

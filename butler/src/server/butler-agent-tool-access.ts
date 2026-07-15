@@ -38,6 +38,7 @@ import type { ExtensionUiBroker } from "./extension-ui-broker.js";
 import type { SkillsService } from "./skills-service.js";
 
 export type ButlerCustomTool = ReturnType<typeof defineTool>;
+export type ButlerCallbackReservation = { callback: ButlerThreadCallbackView | null; failureCount: number | null; notBefore: number | null; jobPayload: JobPayloadView | null };
 
 export type ButlerToolDefiner = <TParams extends Record<string, unknown>>(definition: {
   name: string;
@@ -199,6 +200,9 @@ export type ButlerAgentToolAccess = {
     threadId: string,
     options?: { privateSteerText?: string | null; preservePrivateSteer?: boolean; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null }
   ): Promise<void>;
+  reserveDirectCodexMessage(input: { threadId: string; text: string; requestedAt: number; nextWorkerReportAction?: ButlerNextWorkerReportAction }): Promise<ButlerCallbackReservation>;
+  markPendingChatCallbackDispatched(threadId: string, requestedAt: number, acceptedWorkerTurnId: string | null): Promise<void>;
+  rollbackDirectCodexMessage(threadId: string, requestedAt: number, reservation: ButlerCallbackReservation): Promise<void>;
   removeExternalWorkerDelegation?(threadId: string): Promise<void>;
   postOperatorJobReply(threadId: string, text: string): Promise<void>;
   presentOperatorAttachment(input: {

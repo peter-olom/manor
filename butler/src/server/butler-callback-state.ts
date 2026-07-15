@@ -87,6 +87,46 @@ function normalizeCallbackEntry(entry: PendingChatCallback): PendingChatCallback
       typeof entry.lastTerminalReportAt === "number" && Number.isFinite(entry.lastTerminalReportAt)
         ? entry.lastTerminalReportAt
         : null,
+    watchdogLastProbeAt:
+      typeof entry.watchdogLastProbeAt === "number" && Number.isFinite(entry.watchdogLastProbeAt)
+        ? entry.watchdogLastProbeAt
+        : null,
+    watchdogLastProbeId:
+      typeof entry.watchdogLastProbeId === "string" && entry.watchdogLastProbeId.trim()
+        ? entry.watchdogLastProbeId.trim().slice(0, 200)
+        : null,
+    watchdogProbeFailures:
+      typeof entry.watchdogProbeFailures === "number" && Number.isFinite(entry.watchdogProbeFailures)
+        ? Math.max(0, Math.floor(entry.watchdogProbeFailures))
+        : 0,
+    watchdogProbeState:
+      entry.watchdogProbeState === "busy" || entry.watchdogProbeState === "idle" || entry.watchdogProbeState === "unreachable"
+        ? entry.watchdogProbeState
+        : null,
+    watchdogProtectedOperation:
+      typeof entry.watchdogProtectedOperation === "string" && entry.watchdogProtectedOperation.trim()
+        ? entry.watchdogProtectedOperation.trim().slice(0, 200)
+        : null,
+    watchdogIntervenedAt:
+      typeof entry.watchdogIntervenedAt === "number" && Number.isFinite(entry.watchdogIntervenedAt)
+        ? entry.watchdogIntervenedAt
+        : null,
+    watchdogAttentionAt:
+      typeof entry.watchdogAttentionAt === "number" && Number.isFinite(entry.watchdogAttentionAt)
+        ? entry.watchdogAttentionAt
+        : null,
+    watchdogAttentionReason:
+      typeof entry.watchdogAttentionReason === "string" && entry.watchdogAttentionReason.trim()
+        ? entry.watchdogAttentionReason.trim().slice(0, 500)
+        : null,
+    watchdogInterventionFailures:
+      typeof entry.watchdogInterventionFailures === "number" && Number.isFinite(entry.watchdogInterventionFailures)
+        ? Math.max(0, Math.floor(entry.watchdogInterventionFailures))
+        : 0,
+    acceptedWorkerTurnId:
+      typeof entry.acceptedWorkerTurnId === "string" && entry.acceptedWorkerTurnId.trim()
+        ? entry.acceptedWorkerTurnId.trim().slice(0, 300)
+        : null,
     lastPrivateSteerText: typeof entry.lastPrivateSteerText === "string" && entry.lastPrivateSteerText.trim() ? entry.lastPrivateSteerText : null,
     lastPrivateSteerAt:
       typeof entry.lastPrivateSteerAt === "number" && Number.isFinite(entry.lastPrivateSteerAt) ? entry.lastPrivateSteerAt : null,
@@ -178,8 +218,18 @@ export async function saveButlerCallbackState(input: {
 export function reconcileReservedCallbackDispatch(callback: PendingChatCallback, thread: CodexThreadRecord | undefined): "ready" | "drop" | null {
   if (callback.dispatchState !== "reserving") return null;
   if (!thread) return "drop";
+  const acceptedTurnId = acceptedDirectWorkerDispatchTurnId(callback, thread);
+  if (acceptedTurnId) {
+    callback.acceptedWorkerTurnId = acceptedTurnId;
+    return "ready";
+  }
+  return Date.now() - callback.requestedAt >= RESERVED_CALLBACK_RECOVERY_GRACE_MS ? "drop" : null;
+}
+
+export function acceptedDirectWorkerDispatchTurnId(callback: PendingChatCallback, thread: CodexThreadRecord | undefined): string | null {
+  if (!thread) return null;
   const marker = directWorkerDispatchMarker(callback.threadId, callback.requestedAt);
-  const markerWasAccepted = thread.turns.some((turn) => turn.items.some((item) => {
+  const acceptedTurn = thread.turns.find((turn) => turn.items.some((item) => {
     if (item.type !== "userMessage") return false;
     let rawText = "";
     try {
@@ -190,6 +240,21 @@ export function reconcileReservedCallbackDispatch(callback: PendingChatCallback,
     }
     return item.text.includes(marker) || rawText.includes(marker);
   }));
-  if (markerWasAccepted) return "ready";
-  return Date.now() - callback.requestedAt >= RESERVED_CALLBACK_RECOVERY_GRACE_MS ? "drop" : null;
+  return acceptedTurn?.id?.trim() || null;
+}
+
+export function reconcileAcceptedWorkerTurn(callback: PendingChatCallback, thread: CodexThreadRecord | undefined): boolean {
+  if (callback.acceptedWorkerTurnId) return false;
+  const acceptedWorkerTurnId = acceptedDirectWorkerDispatchTurnId(callback, thread);
+  if (!acceptedWorkerTurnId) return false;
+  callback.acceptedWorkerTurnId = acceptedWorkerTurnId;
+  return true;
+}
+
+export function acceptedWorkerTurnCompletionAt(thread: CodexThreadRecord | undefined, turnId: string | null | undefined, after = 0): number | null {
+  if (!turnId) return null;
+  const turn = thread?.turns.find((entry) => entry.id === turnId);
+  if (!turn || !["completed", "failed", "interrupted", "cancelled"].includes(turn.status)) return null;
+  const completedAt = typeof turn.completedAt === "number" && Number.isFinite(turn.completedAt) ? turn.completedAt : null;
+  return completedAt !== null && completedAt >= after ? completedAt : null;
 }

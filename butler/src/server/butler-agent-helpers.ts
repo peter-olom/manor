@@ -733,12 +733,33 @@ export function extractLatestNoticeTexts(thread: ReturnType<ButlerStateStore["ge
   return { latestUserPrompt, latestAgentReply };
 }
 
-export function latestCompletedAgentMessageAt(thread: ReturnType<ButlerStateStore["getThread"]>): number | null {
+function latestCompletedAgentMessage(thread: ReturnType<ButlerStateStore["getThread"]>, after = 0): { at: number; text: string } | null {
+  let latest: { at: number; text: string } | null = null;
+  for (const turn of thread?.turns ?? []) {
+    if (turn.status !== "completed") continue;
+    for (const item of turn.items) {
+      if (item.type === "agentMessage" && item.status === "completed" && item.text.trim() && Number.isFinite(item.at) && item.at >= after && (!latest || item.at >= latest.at)) {
+        latest = { at: item.at, text: item.text.trim() };
+      }
+    }
+  }
+  return latest;
+}
+
+export function latestCompletedAgentMessageAt(thread: ReturnType<ButlerStateStore["getThread"]>, after = 0): number | null {
+  return latestCompletedAgentMessage(thread, after)?.at ?? null;
+}
+
+export function latestTerminalWorkerActivityAt(thread: ReturnType<ButlerStateStore["getThread"]>, after = 0): number | null {
   let latest: number | null = null;
   for (const turn of thread?.turns ?? []) {
-    for (const item of turn.items) {
-      if (item.type === "agentMessage" && item.text.trim() && Number.isFinite(item.at)) latest = Math.max(latest ?? 0, item.at);
-    }
+    if (!["completed", "failed", "interrupted", "cancelled"].includes(turn.status)) continue;
+    const itemAt = turn.items.reduce((value, item) => Number.isFinite(item.at) && item.at >= after ? Math.max(value, item.at) : value, 0);
+    const startedAfter = Number.isFinite(turn.startedAt) && turn.startedAt >= after;
+    if (!startedAfter && itemAt === 0) continue;
+    const completedAt = typeof turn.completedAt === "number" && Number.isFinite(turn.completedAt) ? turn.completedAt : 0;
+    const activityAt = startedAfter ? Math.max(itemAt, completedAt) : itemAt;
+    if (activityAt > 0) latest = Math.max(latest ?? 0, activityAt);
   }
   return latest;
 }
@@ -775,12 +796,12 @@ export function buildChatCallbackText(
   return [lead, workerReport.summary, workerReport.details].filter(Boolean).join("\n\n");
 }
 
-export function buildFallbackChatCallbackText(thread: ReturnType<ButlerStateStore["getThread"]>): string | null {
+export function buildFallbackChatCallbackText(thread: ReturnType<ButlerStateStore["getThread"]>, requestedAt = 0): string | null {
   if (!thread || thread.status !== "idle") {
     return null;
   }
 
-  const latestReply = thread.supervisor.latestAgentReply?.trim();
+  const latestReply = latestCompletedAgentMessage(thread, requestedAt)?.text;
   if (!latestReply) {
     return null;
   }
@@ -811,6 +832,17 @@ export function describePendingCallbacks(store: ButlerStateStore, callbacks: Pen
         const details = [workerReport.summary, workerReport.details].filter(Boolean).join(" | ");
         return `- job ${callback.threadId} on ${projectLabel}: worker callback received (${workerReport.status}). Butler still owes one operator reply. Latest report: ${details}`;
       }
+      if (callback.watchdogProbeState === "busy") {
+        const wait = callback.watchdogProtectedOperation ? ` Protected wait: ${callback.watchdogProtectedOperation}.` : "";
+        return `- job ${callback.threadId} on ${projectLabel}: waiting on worker callback; a runtime health probe confirms the Worker is still busy.${wait}`;
+      }
+      if (callback.watchdogAttentionAt) {
+        const reason = callback.watchdogAttentionReason ? ` Last stop attempt: ${callback.watchdogAttentionReason}` : "";
+        return `- job ${callback.threadId} on ${projectLabel}: Worker runtime is unresponsive and could not be safely stopped; Manor is still monitoring it.${reason}`;
+      }
+      if (callback.watchdogProbeState === "unreachable" && (callback.watchdogProbeFailures ?? 0) > 0) {
+        return `- job ${callback.threadId} on ${projectLabel}: waiting on worker callback; runtime health probe failures: ${callback.watchdogProbeFailures}. Manor is retrying before any intervention.`;
+      }
       return `- job ${callback.threadId} on ${projectLabel}: waiting on worker callback; latest known thread status is ${status}.`;
     })
     .join("\n");
@@ -833,7 +865,7 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
           alreadyQueued: alreadyQueuedSelfImprovement
         })
       : "Manor blocker classifier: no blocked worker report to classify.";
-  const latestReply = thread?.supervisor.latestAgentReply?.trim() ?? "";
+  const latestReply = latestCompletedAgentMessage(thread, callback.requestedAt)?.text ?? "";
   const contract = thread?.executionContract ?? null;
   const visualProofRequired = contractRequiresVisualProof(contract);
   const acceptancePoints = Array.isArray(contract?.acceptancePoints) ? contract.acceptancePoints : [];

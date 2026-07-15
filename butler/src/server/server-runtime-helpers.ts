@@ -14,7 +14,14 @@ import type { ButlerLivePatchView, CodexThreadPatchView, StackStorageMode } from
 import { LiveStreamTelemetryStore } from "./live-stream-telemetry.js";
 import { resolveWorkspaceProjectInfo } from "./repo-worktree.js";
 
-type SseStateChannel = "shell" | "butlerLive" | "runtime" | "threads";
+export type SseStateChannel = "shell" | "butlerLive" | "runtime" | "threads";
+const SSE_STATE_CHANNELS: readonly SseStateChannel[] = ["shell", "butlerLive", "runtime", "threads"];
+
+export function resolveSseStateChannels(value: unknown): SseStateChannel[] {
+  if (typeof value !== "string") return [...SSE_STATE_CHANNELS];
+  const requested = new Set(value.split(",").map((entry) => entry.trim()).filter(Boolean));
+  return SSE_STATE_CHANNELS.filter((channel) => requested.has(channel));
+}
 
 export type RuntimeServerAccess = {
   artifactsDir: string;
@@ -63,6 +70,15 @@ function currentOpenThreadsSnapshot(access: RuntimeServerAccess) {
   return access.store.listOpenThreadDetails();
 }
 
+function currentSseStateSnapshot(access: RuntimeServerAccess, channel: SseStateChannel): unknown {
+  switch (channel) {
+    case "shell": return currentShellSnapshot(access);
+    case "butlerLive": return currentButlerLiveSnapshot(access);
+    case "runtime": return currentRuntimeSnapshot(access);
+    case "threads": return currentOpenThreadsSnapshot(access);
+  }
+}
+
 export function currentBootstrapSnapshot(access: RuntimeServerAccess) {
   return {
     shell: currentShellSnapshot(access),
@@ -80,7 +96,7 @@ export function shouldAllowLocalThreadWindow(access: RuntimeServerAccess, thread
 
 export class ButlerSseHub {
   readonly heartbeatMs: number;
-  private readonly clients = new Set<Response>();
+  private readonly clients = new Map<Response, Set<SseStateChannel>>();
   private readonly broadcastCache = {
     shell: "",
     butlerLive: "",
@@ -111,8 +127,8 @@ export class ButlerSseHub {
 
   private readonly broadcastDebounceMs: number;
 
-  addClient(response: Response): void {
-    this.clients.add(response);
+  addClient(response: Response, stateChannels: readonly SseStateChannel[] = SSE_STATE_CHANNELS): void {
+    this.clients.set(response, new Set(stateChannels));
   }
 
   removeClient(response: Response): void {
@@ -120,7 +136,11 @@ export class ButlerSseHub {
   }
 
   writeEvent(response: Response, eventName: string, payload: unknown, eventId?: string): void {
-    response.write(`${eventId ? `id: ${eventId}\n` : ""}event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`);
+    this.writeSerializedEvent(response, eventName, JSON.stringify(payload), eventId);
+  }
+
+  private writeSerializedEvent(response: Response, eventName: string, payload: string, eventId?: string): void {
+    response.write(`${eventId ? `id: ${eventId}\n` : ""}event: ${eventName}\ndata: ${payload}\n\n`);
   }
 
   writeHeartbeat(response: Response): void {
@@ -144,7 +164,7 @@ export class ButlerSseHub {
 
   broadcastThreadPatch(payload: CodexThreadPatchView): void {
     this.deferSnapshots();
-    for (const client of this.clients) {
+    for (const client of this.clients.keys()) {
       this.writeEvent(client, "threadPatch", payload);
     }
   }
@@ -152,8 +172,14 @@ export class ButlerSseHub {
   broadcastButlerPatch(payload: ButlerLivePatchView): void {
     this.deferSnapshots();
     const timedPayload = this.liveStreamTelemetry.attachServerTiming("butlerPatch", payload);
-    for (const client of this.clients) {
+    for (const client of this.clients.keys()) {
       this.writeEvent(client, "butlerPatch", timedPayload);
+    }
+  }
+
+  broadcastWorkerThreadRefreshed(threadId: string): void {
+    for (const client of this.clients.keys()) {
+      this.writeEvent(client, "workerThreadRefreshed", { threadId });
     }
   }
 
@@ -171,7 +197,7 @@ export class ButlerSseHub {
     text: string;
     attachment?: { id: string; name: string; mimeType: string; sizeBytes: number; createdAt: number; url: string };
   }): void {
-    for (const client of this.clients) {
+    for (const client of this.clients.keys()) {
       this.writeEvent(client, "composerPrefill", payload);
     }
   }
@@ -184,16 +210,17 @@ export class ButlerSseHub {
       duration
     };
 
-    for (const client of this.clients) {
+    for (const client of this.clients.keys()) {
       this.writeEvent(client, "toast", payload);
     }
   }
 
   sendInitialEvents(response: Response): void {
-    this.writeEvent(response, "shell", currentShellSnapshot(this.access), `shell:${this.channelVersions.shell}`);
-    this.writeEvent(response, "butlerLive", currentButlerLiveSnapshot(this.access), `butlerLive:${this.channelVersions.butlerLive}`);
-    this.writeEvent(response, "runtime", currentRuntimeSnapshot(this.access), `runtime:${this.channelVersions.runtime}`);
-    this.writeEvent(response, "threads", currentOpenThreadsSnapshot(this.access), `threads:${this.channelVersions.threads}`);
+    const channels = this.clients.get(response) ?? new Set(SSE_STATE_CHANNELS);
+    if (channels.has("shell")) this.writeEvent(response, "shell", currentShellSnapshot(this.access), `shell:${this.channelVersions.shell}`);
+    if (channels.has("butlerLive")) this.writeEvent(response, "butlerLive", currentButlerLiveSnapshot(this.access), `butlerLive:${this.channelVersions.butlerLive}`);
+    if (channels.has("runtime")) this.writeEvent(response, "runtime", currentRuntimeSnapshot(this.access), `runtime:${this.channelVersions.runtime}`);
+    if (channels.has("threads")) this.writeEvent(response, "threads", currentOpenThreadsSnapshot(this.access), `threads:${this.channelVersions.threads}`);
   }
 
   flush(force = false): void {
@@ -205,50 +232,32 @@ export class ButlerSseHub {
       return;
     }
 
-    const shell = currentShellSnapshot(this.access);
-    const butlerLive = currentButlerLiveSnapshot(this.access);
-    const runtime = currentRuntimeSnapshot(this.access);
-    const threads = currentOpenThreadsSnapshot(this.access);
+    const subscribedChannels = new Set<SseStateChannel>();
+    for (const channels of this.clients.values()) {
+      for (const channel of channels) subscribedChannels.add(channel);
+    }
+    if (subscribedChannels.size === 0) return;
 
-    const nextPayloads = {
-      shell: JSON.stringify(shell),
-      butlerLive: JSON.stringify(butlerLive),
-      runtime: JSON.stringify(runtime),
-      threads: JSON.stringify(threads)
-    };
-
-    const changed: Record<SseStateChannel, boolean> = {
-      shell: nextPayloads.shell !== this.broadcastCache.shell,
-      butlerLive: nextPayloads.butlerLive !== this.broadcastCache.butlerLive,
-      runtime: nextPayloads.runtime !== this.broadcastCache.runtime,
-      threads: nextPayloads.threads !== this.broadcastCache.threads
-    };
-
-    for (const channel of Object.keys(changed) as SseStateChannel[]) {
-      if (changed[channel]) {
+    const serializedSnapshots: Partial<Record<SseStateChannel, string>> = {};
+    const changed = new Set<SseStateChannel>();
+    for (const channel of subscribedChannels) {
+      const snapshot = currentSseStateSnapshot(this.access, channel);
+      const nextPayload = JSON.stringify(snapshot);
+      serializedSnapshots[channel] = nextPayload;
+      if (nextPayload !== this.broadcastCache[channel]) {
+        changed.add(channel);
         this.channelVersions[channel] += 1;
       }
+      this.broadcastCache[channel] = nextPayload;
     }
 
-    for (const client of this.clients) {
-      if (force || changed.shell) {
-        this.writeEvent(client, "shell", shell, `shell:${this.channelVersions.shell}`);
-      }
-      if (force || changed.butlerLive) {
-        this.writeEvent(client, "butlerLive", butlerLive, `butlerLive:${this.channelVersions.butlerLive}`);
-      }
-      if (force || changed.runtime) {
-        this.writeEvent(client, "runtime", runtime, `runtime:${this.channelVersions.runtime}`);
-      }
-      if (force || changed.threads) {
-        this.writeEvent(client, "threads", threads, `threads:${this.channelVersions.threads}`);
+    for (const [client, channels] of this.clients) {
+      for (const channel of channels) {
+        if (force || changed.has(channel)) {
+          this.writeSerializedEvent(client, channel, serializedSnapshots[channel] ?? "null", `${channel}:${this.channelVersions[channel]}`);
+        }
       }
     }
-
-    this.broadcastCache.shell = nextPayloads.shell;
-    this.broadcastCache.butlerLive = nextPayloads.butlerLive;
-    this.broadcastCache.runtime = nextPayloads.runtime;
-    this.broadcastCache.threads = nextPayloads.threads;
   }
 
   schedule(): void {

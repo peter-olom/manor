@@ -13,11 +13,12 @@ import { CodexAppServerTransport, type JsonRpcMessage } from "./codex-app-server
 import { cleanupFailedCodexStart, rejectFailedCodexStart } from "./codex-failed-start-cleanup.js";
 import { CodexProviderAdapter } from "./codex-provider-adapter.js";
 import { ProviderRuntimeIngestion } from "./provider-runtime-ingestion.js";
-import { persistCodexTransportCloseFailures } from "./codex-transport-close.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
+import { redactSensitiveText } from "./redact-sensitive-text.js";
 import type { CodexThreadPatchView, ModelOption, ReasoningEffort, RuntimeCleanupTaskView } from "./types.js";
 import { codexModelEntryId, hasMissingChatGptOnlyCacheModel, modelOptionFromCodexEntry } from "./codex-model-options.js";
 import type { ProviderRuntimeEvent, ProviderRuntimeLivePatch } from "../shared/provider-runtime.js";
+import type { WorkerThreadRuntimeProbe } from "./worker-thread-runtime-probe.js";
 
 type ThreadDeleteContext = {
   threadId: string;
@@ -120,6 +121,7 @@ export class CodexAppServerClient extends EventEmitter {
   private readonly resumedThreadIds = new Set<string>();
   private readonly directControlThreadIds = new Set<string>();
   private readonly activeTurnIds = new Map<string, string>();
+  private readonly lastRuntimeActivityAt = new Map<string, number>();
   private readonly threadModelIds = new Map<string, string>();
   private readonly deletedThreadIds = new Set<string>();
   private readonly operationGuard = new CodexOperationGuard((threadId) => this.deletedThreadIds.has(threadId));
@@ -176,10 +178,16 @@ export class CodexAppServerClient extends EventEmitter {
         this.store.enableMilestones();
       },
       onClosed: (reason) => {
-        persistCodexTransportCloseFailures({ reason, activeTurns: [...this.activeTurnIds], ingestion: this.providerRuntimeIngestion,
-          onError: (message) => { this.lastError = message; this.emit("change"); }
+        const detail = redactSensitiveText(reason || "Codex app-server connection closed").slice(0, 3000);
+        this.lastError = detail;
+        for (const threadId of this.activeTurnIds.keys()) {
+          this.store.addEvent(threadId, "runtime.transport.disconnected", detail);
+        }
+        void this.store.flushSave().catch((error) => {
+          this.lastError = redactSensitiveText(error instanceof Error ? error.message : String(error));
+          this.emit("change");
         });
-        this.resumedThreadIds.clear(); this.directControlThreadIds.clear(); this.activeTurnIds.clear(); this.operationGuard.clear();
+        this.resumedThreadIds.clear(); this.directControlThreadIds.clear(); this.activeTurnIds.clear(); this.operationGuard.invalidateAll();
       }
     });
     this.codexProviderAdapter = new CodexProviderAdapter(this.transport);
@@ -211,8 +219,8 @@ export class CodexAppServerClient extends EventEmitter {
     return this.operationGuard.begin(threadId);
   }
 
-  private staleOperation(threadId: string): StaleWorkerOperationError {
-    return new StaleWorkerOperationError(threadId);
+  private staleOperation(threadId: string, dispatchMayHaveBeenAccepted = false, cause?: unknown): StaleWorkerOperationError {
+    return new StaleWorkerOperationError(threadId, { cause, dispatchMayHaveBeenAccepted });
   }
 
   private async rejectStaleStartedThread(threadId: string): Promise<never> {
@@ -224,7 +232,7 @@ export class CodexAppServerClient extends EventEmitter {
         cleanupError = error;
       }
     }
-    throw new StaleWorkerOperationError(threadId, cleanupError);
+    throw new StaleWorkerOperationError(threadId, { cause: cleanupError });
   }
   private cleanupStartedThread(threadId: string): Promise<void> {
     const cwd = this.store.getThread(threadId)?.cwd ?? null;
@@ -254,6 +262,7 @@ export class CodexAppServerClient extends EventEmitter {
 
   private markThreadDeleted(threadId: string): void {
     this.deletedThreadIds.add(threadId);
+    this.lastRuntimeActivityAt.delete(threadId);
     this.store.markCodexThreadDeleted(threadId);
   }
 
@@ -316,6 +325,9 @@ export class CodexAppServerClient extends EventEmitter {
       return;
     }
 
+    const activityAt = Number.isFinite(event.at) && event.at > 0 ? event.at : Date.now();
+    this.lastRuntimeActivityAt.set(event.threadId, Math.max(this.lastRuntimeActivityAt.get(event.threadId) ?? 0, activityAt));
+
     this.noteRuntimeEvent(event);
     void this.providerRuntimeIngestion.ingest(
       event,
@@ -338,6 +350,63 @@ export class CodexAppServerClient extends EventEmitter {
         effort: this.selectedEffort,
         availableModels: this.availableModels
       }
+    };
+  }
+
+  getLastRuntimeActivityAt(threadId: string): number | null {
+    return this.lastRuntimeActivityAt.get(threadId) ?? null;
+  }
+
+  async probeThread(threadId: string): Promise<WorkerThreadRuntimeProbe> {
+    const transportState = this.transport.getState();
+    if (!transportState.connected) {
+      throw new Error(transportState.lastError || "Codex app-server is not connected");
+    }
+    let thread: Record<string, unknown> | null;
+    try {
+      thread = await this.codexProviderAdapter.readThreadState(threadId);
+    } catch (error) {
+      const currentTransportState = this.transport.getState();
+      if (!currentTransportState.connected) {
+        throw new Error(currentTransportState.lastError || "Codex app-server disconnected during the Worker probe");
+      }
+      throw error;
+    }
+    if (!thread) throw new Error(`Codex Worker thread ${threadId} was not found`);
+    const status = thread.status;
+    const statusType = typeof status === "string"
+      ? status
+      : status && typeof status === "object" && typeof (status as Record<string, unknown>).type === "string"
+        ? (status as Record<string, unknown>).type as string
+        : null;
+    const normalizedStatus = statusType?.replace(/[-_\s]/g, "").toLowerCase() ?? null;
+    const compacting = normalizedStatus === "compacting";
+    const remoteBusy = compacting || ["active", "running", "inprogress", "started"].includes(normalizedStatus ?? "");
+    const remoteIdle = ["idle", "completed", "failed", "interrupted", "cancelled", "canceled", "stopped", "systemerror", "notloaded"].includes(normalizedStatus ?? "");
+    const busy = remoteBusy || !remoteIdle;
+    if (remoteIdle) {
+      const storedThread = this.store.getThread(threadId);
+      const storedTurn = storedThread?.turns.at(-1);
+      const staleTurnId = this.activeTurnIds.get(threadId)
+        ?? (["inProgress", "in_progress", "started"].includes(storedTurn?.status ?? "") ? storedTurn?.id : null);
+      this.activeTurnIds.delete(threadId);
+      if (staleTurnId) {
+        const terminalStatus = normalizedStatus === "failed" || normalizedStatus === "systemerror"
+          ? "failed"
+          : normalizedStatus === "interrupted" ? "interrupted"
+            : normalizedStatus === "cancelled" || normalizedStatus === "canceled" ? "cancelled" : "completed";
+        this.store.updateTurn(threadId, { id: staleTurnId, status: terminalStatus });
+      }
+      if (storedThread?.status !== "idle") this.store.setThreadStatus(threadId, { type: "idle" });
+    }
+    return {
+      state: busy ? "busy" : "idle",
+      busy,
+      compacting,
+      pendingMessageCount: 0,
+      activityAt: this.getLastRuntimeActivityAt(threadId),
+      acknowledgedWait: compacting ? "Worker is compacting context." : null,
+      confirmedDead: false
     };
   }
 
@@ -1010,12 +1079,12 @@ export class CodexAppServerClient extends EventEmitter {
         await this.codexProviderAdapter.steerTurn(targetThreadId, activeTurnId, inputItems);
       } catch (error) {
         if (!this.isThreadOperationCurrent(targetThreadId, operationGeneration)) {
-          throw this.staleOperation(targetThreadId);
+          throw this.staleOperation(targetThreadId, true, error);
         }
         throw error;
       }
       if (!this.isThreadOperationCurrent(targetThreadId, operationGeneration)) {
-        throw this.staleOperation(targetThreadId);
+        throw this.staleOperation(targetThreadId, true);
       }
       return { threadId: targetThreadId, turnId: activeTurnId };
     }
@@ -1040,7 +1109,7 @@ export class CodexAppServerClient extends EventEmitter {
       result = await this.codexProviderAdapter.sendTurn(targetThreadId, params);
     } catch (error) {
       if (!this.isThreadOperationCurrent(targetThreadId, operationGeneration)) {
-        throw this.staleOperation(targetThreadId);
+        throw this.staleOperation(targetThreadId, true, error);
       }
       throw error;
     }
@@ -1053,7 +1122,7 @@ export class CodexAppServerClient extends EventEmitter {
       if (resultTurnId) {
         await this.codexProviderAdapter.interruptTurn(targetThreadId, resultTurnId).catch(() => undefined);
       }
-      throw this.staleOperation(targetThreadId);
+      throw this.staleOperation(targetThreadId, true);
     }
     if (threadWorkspace) {
       this.store.upsertThreadSummary({ id: targetThreadId, cwd: threadWorkspace });

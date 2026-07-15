@@ -15,6 +15,7 @@ import {
   buildProjectInventorySummary,
   buildSystemPrompt,
   isCallbackOutstanding,
+  latestTerminalWorkerActivityAt,
   mergeThreadProofBundles,
   selectReviewableProofArtifacts
 } from "../../src/server/butler-agent-helpers.js";
@@ -968,6 +969,7 @@ test("callback closeout text distinguishes complete, blocked, and recovered jobs
   assert.match(
     buildFallbackChatCallbackText({
       status: "idle",
+      turns: [{ id: "turn-1", status: "completed", startedAt: 1, completedAt: 2, items: [{ id: "reply", type: "agentMessage", status: "completed", text: "The worker final answer.", at: 2 }] }],
       supervisor: {
         projectLabel: "Project One",
         latestAgentReply: "The worker final answer."
@@ -975,6 +977,46 @@ test("callback closeout text distinguishes complete, blocked, and recovered jobs
     } as ReturnType<ButlerStateStore["getThread"]>) ?? "",
     /I never got feedback from the worker/
   );
+});
+
+test("terminal Worker recovery ignores pre-request turns with refreshed completion times", () => {
+  const requestedAt = 1_000;
+  const thread = {
+    turns: [
+      { id: "old", status: "completed", startedAt: 100, completedAt: 2_000, items: [{ id: "old-item", type: "reasoning", status: "completed", text: "Old", at: 200 }] },
+      { id: "active", status: "in_progress", startedAt: 1_100, completedAt: 1_200, items: [{ id: "active-item", type: "reasoning", status: "completed", text: "Still running", at: 1_200 }] }
+    ]
+  } as ReturnType<ButlerStateStore["getThread"]>;
+  assert.equal(latestTerminalWorkerActivityAt(thread, requestedAt), null);
+
+  const failedThread = { ...thread!, turns: [...thread!.turns, { id: "failed", status: "failed", startedAt: 1_300, completedAt: 1_400, items: [] }] } as ReturnType<ButlerStateStore["getThread"]>;
+  assert.equal(latestTerminalWorkerActivityAt(failedThread, requestedAt), 1_400);
+});
+
+test("fallback callback text never surfaces a stale pre-request Worker reply", () => {
+  const thread = {
+    status: "idle",
+    supervisor: { projectLabel: "Project One", latestAgentReply: "Stale reply" },
+    turns: [{ id: "old", status: "completed", startedAt: 100, completedAt: 200, items: [{ id: "old-reply", type: "agentMessage", status: "completed", text: "Stale reply", at: 200 }] }]
+  } as ReturnType<ButlerStateStore["getThread"]>;
+  assert.equal(buildFallbackChatCallbackText(thread, 1_000), null);
+});
+
+test("fallback callback text never surfaces failed or partial Worker replies", () => {
+  for (const [turnStatus, itemStatus] of [["failed", "completed"], ["failed", "failed"], ["interrupted", "in_progress"]] as const) {
+    const thread = {
+      status: "idle",
+      supervisor: { projectLabel: "Project One", latestAgentReply: "Unsafe partial reply" },
+      turns: [{
+        id: `turn-${turnStatus}-${itemStatus}`,
+        status: turnStatus,
+        startedAt: 1_100,
+        completedAt: 1_200,
+        items: [{ id: `reply-${itemStatus}`, type: "agentMessage", status: itemStatus, text: "Unsafe partial reply", at: 1_200 }]
+      }]
+    } as ReturnType<ButlerStateStore["getThread"]>;
+    assert.equal(buildFallbackChatCallbackText(thread, 1_000), null);
+  }
 });
 
 test("contract derivation preserves many explicit acceptance points for checklist review", () => {

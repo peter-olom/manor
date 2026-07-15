@@ -142,6 +142,11 @@ export class CodexProviderAdapter extends EventEmitter<CodexProviderAdapterEvent
     };
   }
 
+  async readThreadState(threadId: string): Promise<Record<string, unknown> | null> {
+    const result = await this.call("thread/read", { threadId, includeTurns: false });
+    return recordOrNull(result.thread);
+  }
+
   async resumeThread(threadId: string, input: Record<string, unknown> = {}): Promise<ProviderRuntimeThreadResult> {
     const result = await this.call("thread/resume", { threadId, ...input });
     const thread = recordOrNull(result.thread);

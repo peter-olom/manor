@@ -2,13 +2,6 @@ import { useEffect, useRef, useState } from "react";
 
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
 
-export type EventStreamInitialPayload = {
-  shell?: unknown;
-  butlerLive?: unknown;
-  runtime?: unknown;
-  threads?: unknown;
-};
-
 export type ComposerPrefillPayload = {
   id: string;
   target: { kind: "butler" } | { kind: "thread"; threadId: string };
@@ -30,12 +23,16 @@ export type ToastPayload = {
   duration: number;
 };
 
+export type WorkerThreadRefreshedPayload = {
+  threadId: string;
+};
+
 export type EventStreamHandlers = {
   onButlerPatch?: (patch: ProviderRuntimeLivePatch) => void;
   onThreadPatch?: (patch: ProviderRuntimeLivePatch) => void;
   onComposerPrefill?: (payload: ComposerPrefillPayload) => void;
   onToast?: (payload: ToastPayload) => void;
-  onInitial?: (payload: EventStreamInitialPayload) => void;
+  onWorkerThreadRefreshed?: (payload: WorkerThreadRefreshedPayload) => void;
   onError?: (error: Event) => void;
 };
 
@@ -66,7 +63,7 @@ export function useEventStream(handlers: EventStreamHandlers): UseEventStreamRes
 
     const open = () => {
       if (cancelled) return;
-      source = new EventSource("/api/events");
+      source = new EventSource("/api/events?state=");
 
       source.addEventListener("open", () => {
         attempt = 0;
@@ -106,20 +103,7 @@ export function useEventStream(handlers: EventStreamHandlers): UseEventStreamRes
 
       source.addEventListener("composerPrefill", (event) => handleJsonEvent(event as MessageEvent, handlersRef.current.onComposerPrefill));
       source.addEventListener("toast", (event) => handleJsonEvent(event as MessageEvent, handlersRef.current.onToast));
-
-      const handleInitial = (event: MessageEvent) => {
-        try {
-          const payload = JSON.parse(event.data) as EventStreamInitialPayload;
-          handlersRef.current.onInitial?.(payload);
-        } catch {
-          // ignore malformed payload
-        }
-      };
-
-      source.addEventListener("shell", handleInitial);
-      source.addEventListener("butlerLive", handleInitial);
-      source.addEventListener("runtime", handleInitial);
-      source.addEventListener("threads", handleInitial);
+      source.addEventListener("workerThreadRefreshed", (event) => handleJsonEvent(event as MessageEvent, handlersRef.current.onWorkerThreadRefreshed));
 
       source.addEventListener("error", (event) => {
         setConnected(false);

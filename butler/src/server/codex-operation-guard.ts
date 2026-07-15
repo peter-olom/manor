@@ -109,6 +109,19 @@ export class CodexOperationGuard {
     this.bufferedEvents.delete(threadId);
   }
 
+  invalidateAll(): void {
+    const threadIds = new Set([
+      ...this.generations.keys(),
+      ...this.acceptedEventGenerations.keys(),
+      ...this.turnGenerations.keys(),
+      ...this.bufferedEvents.keys()
+    ]);
+    for (const threadId of threadIds) {
+      this.invalidate(threadId);
+      this.turnGenerations.delete(threadId);
+    }
+  }
+
   clear(): void {
     this.generations.clear();
     this.acceptedEventGenerations.clear();

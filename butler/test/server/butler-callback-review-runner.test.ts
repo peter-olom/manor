@@ -272,6 +272,27 @@ test("callback review interrupted by restart pauses for explicit retry", async (
   assert.match(callbacks.get("worker")?.blockedCloseoutReason ?? "", /paused after restart/);
 });
 
+test("older callback state gains safe Worker watchdog defaults", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-watchdog-state-"));
+  const callbackStatePath = path.join(dir, "callbacks.json");
+  const persisted = callback("worker", 2_000);
+  await writeFile(callbackStatePath, JSON.stringify({ callbackRecords: [persisted] }), "utf8");
+  const callbacks = new Map<string, PendingChatCallback>();
+
+  await loadButlerCallbackState({ callbackStatePath, pendingChatCallbacks: callbacks, deliveredCloseoutIds: new Set() });
+
+  const restored = callbacks.get("worker");
+  assert.equal(restored?.watchdogLastProbeAt, null);
+  assert.equal(restored?.watchdogLastProbeId, null);
+  assert.equal(restored?.watchdogProbeFailures, 0);
+  assert.equal(restored?.watchdogProbeState, null);
+  assert.equal(restored?.watchdogProtectedOperation, null);
+  assert.equal(restored?.watchdogIntervenedAt, null);
+  assert.equal(restored?.watchdogAttentionAt, null);
+  assert.equal(restored?.watchdogAttentionReason, null);
+  assert.equal(restored?.watchdogInterventionFailures, 0);
+});
+
 test("adversarial review brief carries Butler's latest steering and unresolved decisions", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-review-brief-"));
   const store = new ButlerStateStore(path.join(dir, "state.json"));

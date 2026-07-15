@@ -11,7 +11,7 @@ import { buildThreadExecutionContract } from "../../src/server/thread-contract.j
 import type { ButlerAgentToolAccess } from "../../src/server/butler-agent-tool-access.js";
 import type { JobPayloadView } from "../../src/server/job-payload-types.js";
 
-async function createHarness(options: { attachedWorkerThreadId?: string | null; activeImageReferenceIds?: string[]; activeFileReferenceIds?: string[] } = {}) {
+async function createHarness(options: { attachedWorkerThreadId?: string | null; activeImageReferenceIds?: string[]; activeFileReferenceIds?: string[]; settleDuringSend?: boolean; dispatchError?: Error; stopError?: Error } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-codex-instruction-tools-"));
   const store = new ButlerStateStore(path.join(dir, "state.json"));
   await store.load();
@@ -37,6 +37,8 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
   const stopped: string[] = [];
   const removedCallbacks: string[] = [];
   const payloads: JobPayloadView[] = [];
+  const callbackDispatches: Array<{ requestedAt: number; turnId: string | null }> = [];
+  const dispatchOrder: string[] = [];
   const access = {
     defineButlerTool: (definition: unknown) => definition,
     getToolUiEffects: () => [],
@@ -45,11 +47,15 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
       loadThread: async () => undefined,
       stopThread: async (_threadId: string) => {
         stopped.push(_threadId);
+        if (options.stopError) throw options.stopError;
         store.upsertThreadSummary({ id: _threadId, status: "idle" });
         return true;
       },
       sendMessage: async (_threadId: string, input: unknown) => {
+        dispatchOrder.push("send");
         sent.push(input);
+        if (options.settleDuringSend) store.upsertThreadSummary({ id: _threadId, status: "idle", turns: [{ id: "turn-sent", status: "interrupted", startedAt: 500, completedAt: Date.now(), items: [] }] });
+        if (options.dispatchError) throw options.dispatchError;
         return { threadId: _threadId, turnId: "turn-sent" };
       }
     },
@@ -84,12 +90,15 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
     }),
     getThreadBudgetLimitMessage: () => null,
     bindJobPayloadDelivery: async (threadId: string) => store.getThreadJobPayload(threadId),
+    reserveDirectCodexMessage: async () => { dispatchOrder.push("reserve"); return { callback: null, failureCount: null, notBefore: null, jobPayload: null }; },
+    markPendingChatCallbackDispatched: async (_threadId: string, requestedAt: number, turnId: string | null) => { dispatchOrder.push("mark"); callbackDispatches.push({ requestedAt, turnId }); },
+    rollbackDirectCodexMessage: async () => { dispatchOrder.push("rollback"); },
     registerPendingChatCallback: () => undefined,
     removeExternalWorkerDelegation: async (workerThreadId: string) => { removedCallbacks.push(workerThreadId); },
     noteThreadFocus: () => undefined
   } as unknown as ButlerAgentToolAccess;
   const tools = buildButlerCodexTools(access);
-  return { store, threadId, sent, stopped, removedCallbacks, payloads, tools };
+  return { store, threadId, sent, stopped, removedCallbacks, payloads, callbackDispatches, dispatchOrder, tools };
 }
 
 test("message_job cannot steer a Worker attached to another Butler session", async () => {
@@ -132,6 +141,30 @@ test("message_job updates the job payload and sends readable chat", async () => 
   assert.match(JSON.stringify(sent[0]), /Please retry the browser proof/);
   assert.match(JSON.stringify(sent[0]), /I updated the job payload/);
   assert.doesNotMatch(JSON.stringify(sent[0]), /MANOR INSTRUCTION/);
+});
+
+test("message_job reserves its callback before a steered turn can settle", async () => {
+  const { callbackDispatches, dispatchOrder, store, threadId, tools } = await createHarness({ settleDuringSend: true });
+
+  await tool(tools, "message_job").execute("call-race", { threadId, text: "Finish the document." });
+
+  assert.deepEqual(dispatchOrder, ["reserve", "send", "mark"]);
+  assert.equal(callbackDispatches[0]?.turnId, "turn-sent");
+  assert.equal(store.getThread(threadId)?.status, "idle");
+});
+
+test("message_job preserves supervision when a timed-out dispatch may have been accepted", async () => {
+  const dispatchError = new Error("Worker message send timed out; stopping the uncertain turn.");
+  dispatchError.name = "WorkerSendTimeoutError";
+  const { callbackDispatches, dispatchOrder, threadId, tools } = await createHarness({
+    dispatchError,
+    stopError: new Error("interrupt transport unavailable")
+  });
+
+  await assert.rejects(() => tool(tools, "message_job").execute("call-ambiguous", { threadId, text: "Finish the document." }), /timed out/);
+
+  assert.deepEqual(dispatchOrder, ["reserve", "send", "mark"]);
+  assert.equal(callbackDispatches[0]?.turnId, null);
 });
 
 test("rejected checklist flush updates payload and clears the queue", async () => {
