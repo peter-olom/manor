@@ -15,7 +15,7 @@ import { HarnessService } from "./codex-harness.js";
 import { loadReferenceStores, MAX_FILE_BYTES, MAX_IMAGE_BYTES } from "./reference-stores.js";
 import { HostControllerClient } from "./host-controller-client.js";
 import { createManorSettingsApplyHandler } from "./manor-settings-apply.js";
-import { defaultManorSettingsPath, ManorSettingsService } from "./manor-settings-service.js";
+import { defaultManorSettingsPath, ManorSettingsService } from "./manor-settings-service.js"; import { MANOR_VERSION } from "./manor-version.js";
 import { setActiveManorSettingsService, getActiveManorSettings } from "./manor-settings-runtime.js";
 import { registerManorSettingsRoutes } from "./manor-settings-routes.js";
 import { createModelUsageStore } from "./create-model-usage-store.js"; import { registerModelUsageRoutes } from "./model-usage-routes.js";
@@ -390,7 +390,7 @@ app.get("/api/health", (_request, response) => {
 });
 
 app.get("/livez", (_request, response) => {
-  response.json({ ok: true });
+  response.json({ ok: true, version: MANOR_VERSION });
 });
 
 app.get("/api/bootstrap", (_request, response) => {

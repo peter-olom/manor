@@ -229,6 +229,14 @@ a:hover {
   width: auto;
 }
 
+.brand-version {
+  color: var(--text-subtle);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+
 .brand-sub {
   font-size: 11px;
   color: var(--text-subtle);
@@ -328,9 +336,17 @@ a:hover {
 }
 
 .sidebar-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   flex: 0 0 auto;
   padding: 8px 12px 12px;
   border-top: 1px solid var(--border);
+}
+
+.sidebar-footer .brand-version {
+  flex: 0 0 auto;
+  padding-right: 10px;
 }
 
 .sidebar-settings-button {

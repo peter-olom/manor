@@ -19,6 +19,7 @@ import {
   WarningIcon
 } from "./icons";
 import { MemoryDashboard, type MemoryDashboardSummary, type MemoryProjectOption } from "./MemoryDashboard";
+import { ManorVersion } from "./ManorVersion";
 import { PairRow } from "./PairRow";
 import { ImagePreviewModal, type PreviewMedia } from "./ImagePreviewModal";
 import { readPairUrlState, writePairUrl, type PairUrlHistoryMode } from "./pair-url-state";
@@ -369,6 +370,7 @@ function Sidebar({
           <SetupTabIcon />
           <span>Settings</span>
         </button>
+        <ManorVersion version={__MANOR_VERSION__} />
       </div>
     </aside>
   );

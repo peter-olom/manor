@@ -1,6 +1,6 @@
 {
   "name": "manor-butler",
-  "version": "0.1.0",
+  "version": "1.27.0",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -10,6 +10,7 @@
     "build:web": "vite build",
     "check:max-loc": "node ./scripts/check-max-loc.mjs",
     "dev:start": "tsx watch src/server/index.ts",
+    "release:check": "node ./scripts/check-release-version.mjs",
     "smoke:memory-hybrid": "tsx scripts/memory-hybrid-graph-prod-smoke.ts",
     "smoke:memory-embeddings": "tsx scripts/memory-embedding-prod-smoke.ts",
     "start": "node dist/server/index.js",

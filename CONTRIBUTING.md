@@ -46,6 +46,24 @@ If your change touches runtime behavior, also verify the Docker stack, relevant 
 
 If your change touches shared Worker behavior, validate every affected harness. Validate the Codex app-server and Pi RPC paths separately when the change affects both.
 
+## Releases
+
+Manor uses the version in `butler/package.json` as its canonical release version. Keep `butler/package-lock.json` in sync when changing it.
+
+For a normal release, open the **Release** action in GitHub, choose **Run workflow**, and select a `patch`, `minor`, or `major` increment. The action updates both package files, validates the release, runs the test and build gates, commits the version, creates and pushes the matching tag, and publishes the GitHub release with generated notes.
+
+To prepare a version manually:
+
+```bash
+cd butler
+npm version --no-git-tag-version patch
+npm run release:check
+npm test
+npm run build
+```
+
+Commit the version change, create the matching `vX.Y.Z` tag, and push the commit and tag. External matching tag pushes use the same validation, test, build, and publishing gates.
+
 ## Pull Requests
 
 A good pull request includes:

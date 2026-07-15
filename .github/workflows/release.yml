@@ -1,0 +1,138 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Semantic version increment
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.event_name == 'workflow_dispatch' && 'manor-release-bump' || format('manor-release-{0}', github.ref_name) }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      release_tag: ${{ steps.release-tag.outputs.tag }}
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.ref }}
+      - name: Verify release source
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          if [ "$DISPATCH_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "Releases must be started from the default branch." >&2
+            exit 1
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: butler/package-lock.json
+      - name: Install dependencies
+        working-directory: butler
+        run: npm ci
+      - name: Prepare release version
+        if: github.event_name == 'workflow_dispatch'
+        id: prepare
+        working-directory: butler
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          npm version --no-git-tag-version "$BUMP"
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Resolve release tag
+        id: release-tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_VERSION: ${{ steps.prepare.outputs.version }}
+          PUSH_TAG: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "tag=v$MANUAL_VERSION" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$PUSH_TAG" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Verify release version
+        working-directory: butler
+        env:
+          RELEASE_TAG: ${{ steps.release-tag.outputs.tag }}
+        run: npm run release:check -- "$RELEASE_TAG"
+      - name: Test
+        working-directory: butler
+        run: npm test
+      - name: Build
+        working-directory: butler
+        run: npm run build
+      - name: Commit and tag release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          VERSION: ${{ steps.prepare.outputs.version }}
+        run: |
+          base_sha=$(git rev-parse HEAD)
+          tag="v$VERSION"
+          git fetch origin "$DEFAULT_BRANCH" --tags
+
+          if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
+            tag_commit=$(git rev-list -n 1 "$tag")
+            if [ "$(git rev-parse "$tag_commit^")" != "$base_sha" ]; then
+              echo "Existing tag $tag was not created from this release's source commit." >&2
+              exit 1
+            fi
+            if ! git diff --quiet "$tag_commit" -- butler/package.json butler/package-lock.json; then
+              echo "Existing tag $tag does not contain this release's version metadata." >&2
+              exit 1
+            fi
+            echo "Tag $tag already exists from a previous attempt; continuing to publication."
+            exit 0
+          fi
+
+          if [ "$(git rev-parse "origin/$DEFAULT_BRANCH")" != "$base_sha" ]; then
+            echo "The default branch changed while this release was running. Start the release again." >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add butler/package.json butler/package-lock.json
+          git commit -m "chore(release): v$VERSION"
+          git tag -a "$tag" -m "Manor $tag"
+          git push --atomic origin "HEAD:refs/heads/$DEFAULT_BRANCH" "refs/tags/$tag"
+
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.release.outputs.release_tag }}
+    steps:
+      - name: Publish GitHub release
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub release $RELEASE_TAG already exists."
+            exit 0
+          fi
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "$RELEASE_TAG"
