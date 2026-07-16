@@ -5,7 +5,8 @@ import { readJsonStateFile, writeJsonStateFileAtomic } from "./json-state-file.j
 import type { ButlerStateStore } from "./state-store.js";
 import { workerThreadIsRunning } from "./worker-thread-status.js";
 import type { PairAutomation, PairAutomationOutcome, PairChat, PairMessage, PairStatus, PairSummary, PairWorker, PairWorkerHandoff } from "../shared/pairing.js";
-import { createIntervalSchedule, nextAutomationRunAt, normalizeDailyTimes, normalizeStoredAutomation, withAutomationLabels } from "./session-automation.js";
+import { createIntervalSchedule, nextAutomationRunAt, nextDailyRunAfterLastRun, normalizeDailyTimes, normalizeStoredAutomation, withAutomationLabels } from "./session-automation.js";
+import { resolveOperatorTimezone, zonedHourMinute } from "./operator-timezone.js";
 
 type LegacyPairFields = { codexModel?: string | null; codexEffort?: string | null };
 type PersistedPairState = {
@@ -186,13 +187,13 @@ function clonePairWorker(worker: PairWorker | null): PairWorker | null {
   } : null;
 }
 
-function cloneAutomation(automation: PairAutomation | null): PairAutomation | null {
+function cloneAutomation(automation: PairAutomation | null, timezone: string): PairAutomation | null {
   return automation ? withAutomationLabels({
     ...automation,
     schedule: automation.schedule.kind === "daily" ? { kind: "daily", times: [...automation.schedule.times] } : { ...automation.schedule },
     running: automation.running ? { ...automation.running } : null,
     lastRun: automation.lastRun ? { ...automation.lastRun } : null
-  }) : null;
+  }, Date.now(), timezone) : null;
 }
 
 function titleFromText(text: string): string {
@@ -266,7 +267,7 @@ function normalizePair(raw: Partial<PairChat> & LegacyPairFields & { id?: string
   pair.projectId = typeof raw.projectId === "string" ? raw.projectId : null;
   pair.projectLabel = typeof raw.projectLabel === "string" ? raw.projectLabel : null;
   pair.updatedAt = typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : pair.createdAt;
-  pair.automation = normalizeStoredAutomation(raw.automation, now);
+  pair.automation = normalizeStoredAutomation(raw.automation, now, resolveOperatorTimezone());
   pair.butlerSessionId = typeof raw.butlerSessionId === "string" && raw.butlerSessionId.trim() ? raw.butlerSessionId : pair.id;
   pair.butlerReady = raw.butlerReady === true;
   pair.butlerPending = raw.butlerPending === true;
@@ -402,14 +403,15 @@ export class PairStore extends EventEmitter {
   }
 
   listSummaries(): PairSummary[] {
+    const timezone = resolveOperatorTimezone();
     return [...this.pairs.values()]
-      .map((pair) => ({ ...pair, automation: cloneAutomation(pair.automation), status: deriveStatus(pair, this.store) }))
+      .map((pair) => ({ ...pair, automation: cloneAutomation(pair.automation, timezone), status: deriveStatus(pair, this.store) }))
       .sort((left, right) => right.updatedAt - left.updatedAt);
   }
 
   getPair(pairId: string): PairChat | null {
     const pair = this.pairs.get(pairId);
-    return pair ? { ...pair, automation: cloneAutomation(pair.automation), status: deriveStatus(pair, this.store) } : null;
+    return pair ? { ...pair, automation: cloneAutomation(pair.automation, resolveOperatorTimezone()), status: deriveStatus(pair, this.store) } : null;
   }
 
   configureAutomation(pairId: string, input: { instruction: string; dailyTimes: unknown }, now = Date.now()): PairChat | null {
@@ -429,6 +431,7 @@ export class PairStore extends EventEmitter {
     if (instruction.length > 20_000) throw new Error("Automation instructions must be 20,000 characters or fewer");
     const existing = pair.automation;
     if (existing?.running) throw new Error("Wait for the current automation run to finish before changing its schedule");
+    const timezone = resolveOperatorTimezone();
     pair.automation = withAutomationLabels({
       id: existing?.id ?? crypto.randomUUID(),
       instruction,
@@ -436,10 +439,10 @@ export class PairStore extends EventEmitter {
       enabled: true,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
-      nextRunAt: nextAutomationRunAt(schedule, now),
+      nextRunAt: nextAutomationRunAt(schedule, now, timezone),
       running: null,
       lastRun: existing?.lastRun ? { ...existing.lastRun } : null
-    });
+    }, now, timezone);
     pair.updatedAt = now;
     this.queueSave();
     this.emit("change");
@@ -455,7 +458,7 @@ export class PairStore extends EventEmitter {
     }
     pair.automation.enabled = enabled;
     pair.automation.updatedAt = now;
-    pair.automation.nextRunAt = enabled ? nextAutomationRunAt(pair.automation.schedule, now) : null;
+    pair.automation.nextRunAt = enabled ? nextAutomationRunAt(pair.automation.schedule, now, resolveOperatorTimezone()) : null;
     pair.updatedAt = now;
     this.queueSave();
     this.emit("change");
@@ -477,7 +480,7 @@ export class PairStore extends EventEmitter {
   restoreAutomation(pairId: string, automation: PairAutomation | null, updatedAt: number): boolean {
     const pair = this.pairs.get(pairId);
     if (!pair) return false;
-    pair.automation = cloneAutomation(automation);
+    pair.automation = cloneAutomation(automation, resolveOperatorTimezone());
     pair.updatedAt = updatedAt;
     this.queueSave();
     this.emit("change");
@@ -494,9 +497,9 @@ export class PairStore extends EventEmitter {
       const latestSlot = automation.schedule.startsAt + Math.floor((Math.min(now, automation.schedule.endsAt) - automation.schedule.startsAt) / intervalMs) * intervalMs;
       scheduledFor = Math.max(scheduledFor, latestSlot);
     }
-    const running = { id: crypto.randomUUID(), scheduledFor, startedAt: now };
+    const running = { id: crypto.randomUUID(), scheduledFor, startedAt: now, scheduledSlot: automation.schedule.kind === "daily" ? zonedHourMinute(scheduledFor, resolveOperatorTimezone()) : null };
     automation.running = running;
-    automation.nextRunAt = nextAutomationRunAt(automation.schedule, now);
+    automation.nextRunAt = nextAutomationRunAt(automation.schedule, now, resolveOperatorTimezone());
     automation.updatedAt = now;
     pair.updatedAt = now;
     this.queueSave();
@@ -521,7 +524,7 @@ export class PairStore extends EventEmitter {
     };
     automation.running = null;
     automation.updatedAt = now;
-    if (automation.enabled && (!automation.nextRunAt || automation.nextRunAt <= now)) automation.nextRunAt = nextAutomationRunAt(automation.schedule, now);
+    if (automation.enabled && (!automation.nextRunAt || automation.nextRunAt <= now)) automation.nextRunAt = nextAutomationRunAt(automation.schedule, now, resolveOperatorTimezone());
     pair.updatedAt = now;
     this.queueSave();
     this.emit("change");
@@ -529,6 +532,7 @@ export class PairStore extends EventEmitter {
   }
 
   reconcileAutomationsAfterRestart(now = Date.now()): number {
+    const timezone = resolveOperatorTimezone();
     let changed = 0;
     for (const pair of this.pairs.values()) {
       const automation = pair.automation;
@@ -555,7 +559,7 @@ export class PairStore extends EventEmitter {
             outcome: "skipped", summary: "Missed while Butler was offline.", resultPath: null
           };
         }
-        automation.nextRunAt = intervalExpired ? null : nextAutomationRunAt(automation.schedule, now);
+        automation.nextRunAt = intervalExpired ? null : nextAutomationRunAt(automation.schedule, now, timezone);
         changed += 1;
         pairChanged = true;
       } else if (!automation.enabled && automation.nextRunAt !== null) {
@@ -566,6 +570,49 @@ export class PairStore extends EventEmitter {
       if (pairChanged) {
         automation.updatedAt = now;
         pair.updatedAt = now;
+      }
+    }
+    if (changed > 0) {
+      this.queueSave();
+      this.emit("change");
+    }
+    return changed;
+  }
+
+  /**
+   * Recomputes the stored `nextRunAt` for enabled, idle daily automations using
+   * the current operator timezone. Called when the operator changes their
+   * timezone in Settings so already-scheduled daily runs move to the new zone
+   * without a restart (labels already update live via `resolveOperatorTimezone`).
+   *
+   * Interval automations are timezone-independent for scheduling and running
+   * automations are left untouched so an in-flight dispatch is not disturbed.
+   *
+   * Edge cases:
+   * - Duplicate same-day slot: dedup is per-slot, not per-day (see
+   *   `nextDailyRunAfterLastRun`). Only the specific slot that already fired (by its
+   *   HH:mm in the new zone, matched against the last run's `scheduledSlot` on the
+   *   last run's new-zone calendar day) is skipped — remaining same-day slots still
+   *   fire (e.g. ['09:00','17:00']: after 09:00 fires, 17:00 still runs today).
+   * - Due-but-unfired run: an automation that is already overdue (`nextRunAt` <=
+   *   now) is left untouched so the scheduler fires it now (catch-up); the next
+   *   cycle then advances into the new zone, so the run is never silently dropped.
+   */
+  recomputeAutomationSchedules(now = Date.now()): number {
+    const timezone = resolveOperatorTimezone();
+    let changed = 0;
+    for (const pair of this.pairs.values()) {
+      const automation = pair.automation;
+      if (!automation || !automation.enabled || automation.running || automation.schedule.kind !== "daily") continue;
+      // Don't displace an already-overdue run: leave it so the scheduler fires it
+      // now (catch-up); the next cycle advances into the new zone.
+      if (automation.nextRunAt !== null && automation.nextRunAt <= now) continue;
+      const recomputed = nextDailyRunAfterLastRun(automation.schedule.times, now, timezone, automation.lastRun ? { scheduledFor: automation.lastRun.scheduledFor, scheduledSlot: automation.lastRun.scheduledSlot ?? null } : null);
+      if (recomputed !== automation.nextRunAt) {
+        automation.nextRunAt = recomputed;
+        automation.updatedAt = now;
+        pair.updatedAt = now;
+        changed += 1;
       }
     }
     if (changed > 0) {

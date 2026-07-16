@@ -16,6 +16,24 @@ import type {
 
 const DEFAULT_OLLAMA_CLOUD_MODELS: SettingsProviderModel[] = [];
 
+export const DEFAULT_OPERATOR_TIMEZONE = "UTC";
+
+function isValidTimezone(value: string): boolean {
+  if (!value) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function operatorTimezone(value: unknown): string {
+  if (typeof value !== "string") return DEFAULT_OPERATOR_TIMEZONE;
+  const trimmed = value.trim();
+  return trimmed && isValidTimezone(trimmed) ? trimmed : DEFAULT_OPERATOR_TIMEZONE;
+}
+
 const DEFAULT_OLLAMA_LOCAL_MODELS: SettingsProviderModel[] = [];
 
 const DEFAULT_OPENCODE_GO_MODELS: SettingsProviderModel[] = [];
@@ -49,6 +67,7 @@ export const SETTINGS_VALIDATION_KEYS: SettingsValidationKey[] = [
 export const DEFAULT_MANOR_SETTINGS: ManorSettings = {
   overview: {
     operatorName: "",
+    operatorTimezone: DEFAULT_OPERATOR_TIMEZONE,
     butlerProvider: "openai-codex",
     workerProvider: "openai-codex"
   },
@@ -344,6 +363,7 @@ export function normalizeManorSettings(value: unknown): ManorSettings {
   return {
     overview: {
       operatorName: typeof overview.operatorName === "string" ? overview.operatorName.trim() : "",
+      operatorTimezone: operatorTimezone(overview.operatorTimezone),
       butlerProvider: providerKey(overview.butlerProvider, DEFAULT_MANOR_SETTINGS.overview.butlerProvider),
       workerProvider: providerKey(overview.workerProvider ?? overview.codexProvider, DEFAULT_MANOR_SETTINGS.overview.workerProvider)
     },
@@ -478,6 +498,10 @@ export function buildManorSettingsFromEnv(env: NodeJS.ProcessEnv = process.env):
   };
 
   apply("overview", "MANOR_OPERATOR_NAME", (value) => { settings.overview.operatorName = value.trim(); });
+  if (hasEnv(env, "MANOR_OPERATOR_TIMEZONE")) {
+    markEnvGroup(envGroups, "overview");
+    settings.overview.operatorTimezone = operatorTimezone(env.MANOR_OPERATOR_TIMEZONE);
+  }
   if (hasEnv(env, "MANOR_BUTLER_PROVIDER")) {
     markEnvGroup(envGroups, "overview");
     settings.overview.butlerProvider = providerKey(env.MANOR_BUTLER_PROVIDER, settings.overview.butlerProvider);

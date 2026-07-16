@@ -15,7 +15,7 @@ import { HarnessService } from "./codex-harness.js";
 import { loadReferenceStores, MAX_FILE_BYTES, MAX_IMAGE_BYTES } from "./reference-stores.js";
 import { HostControllerClient } from "./host-controller-client.js";
 import { createManorSettingsApplyHandler } from "./manor-settings-apply.js";
-import { defaultManorSettingsPath, ManorSettingsService } from "./manor-settings-service.js"; import { MANOR_VERSION } from "./manor-version.js";
+import { defaultManorSettingsPath, ManorSettingsService } from "./manor-settings-service.js";
 import { setActiveManorSettingsService, getActiveManorSettings } from "./manor-settings-runtime.js";
 import { registerManorSettingsRoutes } from "./manor-settings-routes.js";
 import { createModelUsageStore } from "./create-model-usage-store.js"; import { registerModelUsageRoutes } from "./model-usage-routes.js";
@@ -42,7 +42,7 @@ import { VisionInspectionService } from "./vision-inspection.js";
 import { configureSelfImprovementRequestState, SelfImprovementRequestState } from "./self-improvement-request-state.js";
 import { configureSelfImprovementPairCleanup, reconcileInterruptedSelfImprovementRequests } from "./self-improvement-actions.js";
 import { registerSelfImprovementRoutes } from "./self-improvement-routes.js";
-import { formatButlerMemoryRetrieval, retrieveButlerMemory, retrieveButlerMemoryWithEmbeddings } from "./memory-retrieval.js";
+import { retrieveButlerMemoryWithEmbeddings } from "./memory-retrieval.js";
 import { registerManorRestartRoutes } from "./manor-restart-routes.js";
 import { proxyPreviewRoute, registerPreviewProxyResponseRewriter, resolvePreviewRefererRouteUrl, resolvePreviewRouteUrl } from "./preview-gateway.js";
 import { preserveMissingPreviewLeaseTombstones } from "./preview-lease-reconciliation.js";
@@ -262,7 +262,7 @@ const reconcileSelfImprovementAfterRestart = (canConcludeThreadMissing: (threadI
 };
 codexClient.on("threadsSeeded", () => { void reconcileSelfImprovementAfterRestart(() => true); });
 
-const applyManagedSettingsChange = createManorSettingsApplyHandler({ settingsService, applyBackgroundSettings, sessionTitleGenerator, piRpcWorkerClient, butlerAgent, pairSessions, store, codexClient, getSseHub: () => sseHub });
+const applyManagedSettingsChange = createManorSettingsApplyHandler({ settingsService, applyBackgroundSettings, sessionTitleGenerator, piRpcWorkerClient, butlerAgent, pairSessions, pairStore, store, codexClient, getSseHub: () => sseHub });
 runtimeAccess = {
   artifactsDir,
   butlerAgent,
@@ -390,7 +390,7 @@ app.get("/api/health", (_request, response) => {
 });
 
 app.get("/livez", (_request, response) => {
-  response.json({ ok: true, version: MANOR_VERSION });
+  response.json({ ok: true });
 });
 
 app.get("/api/bootstrap", (_request, response) => {
@@ -523,17 +523,19 @@ app.get("/api/memory/retrieve", async (request, response) => {
   const limitRaw = typeof request.query.limit === "string" ? Number(request.query.limit) : null;
   const includeGlobal = request.query.includeGlobal === "1" || request.query.includeGlobal === "true";
   const includeProvenance = request.query.includeProvenance === "1" || request.query.includeProvenance === "true";
-  const retrieve = request.query.preview === "1" ? retrieveButlerMemory : retrieveButlerMemoryWithEmbeddings;
-  const retrieval = await retrieve(store, {
-    projectId,
-    threadId,
-    query,
-    limit: Number.isFinite(limitRaw) ? limitRaw : null,
-    includeGlobal,
-    includeProvenance
+
+  response.json({
+    retrieval: await retrieveButlerMemoryWithEmbeddings(store, {
+      projectId,
+      threadId,
+      query,
+      limit: Number.isFinite(limitRaw) ? limitRaw : null,
+      includeGlobal,
+      includeProvenance
+    })
   });
-  response.json({ retrieval, formatted: formatButlerMemoryRetrieval(retrieval) });
 });
+
 app.get("/api/memory/diagnostics", (request, response) => {
   const projectId = typeof request.query.projectId === "string" ? request.query.projectId : null;
   const threadId = typeof request.query.threadId === "string" ? request.query.threadId : null;
@@ -747,6 +749,7 @@ for (const route of ["/api/harness/action", "/api/codex-harness/action"]) {
       response.status(400).json({ error: "token and action are required" });
       return;
     }
+
     try {
       const result = await harnessService.handleAction({ token, action, params });
       response.json({ ok: true, ...result });

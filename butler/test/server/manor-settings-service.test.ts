@@ -187,3 +187,40 @@ test("ManorSettingsService records validation status", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("operator timezone defaults to UTC and validates IANA names", () => {
+  assert.equal(normalizeManorSettings({}).overview.operatorTimezone, "UTC");
+  assert.equal(normalizeManorSettings({ overview: { operatorTimezone: "Europe/Berlin" } }).overview.operatorTimezone, "Europe/Berlin");
+  assert.equal(normalizeManorSettings({ overview: { operatorTimezone: "  America/New_York  " } }).overview.operatorTimezone, "America/New_York");
+  assert.equal(normalizeManorSettings({ overview: { operatorTimezone: "Mars/Olympus" } }).overview.operatorTimezone, "UTC");
+  assert.equal(normalizeManorSettings({ overview: { operatorTimezone: "" } }).overview.operatorTimezone, "UTC");
+});
+
+test("MANOR_OPERATOR_TIMEZONE seeds the overview group when set", () => {
+  const seeded = buildManorSettingsFromEnv({ MANOR_OPERATOR_TIMEZONE: "Europe/Berlin" } as NodeJS.ProcessEnv);
+  assert.equal(seeded.settings.overview.operatorTimezone, "Europe/Berlin");
+  assert.equal(seeded.provenance.overview, "env_seed");
+  const blank = buildManorSettingsFromEnv({ MANOR_OPERATOR_TIMEZONE: "" } as NodeJS.ProcessEnv);
+  assert.equal(blank.settings.overview.operatorTimezone, "UTC");
+  assert.equal(blank.provenance.overview, "default");
+  const invalid = buildManorSettingsFromEnv({ MANOR_OPERATOR_TIMEZONE: "Not/A_Zone" } as NodeJS.ProcessEnv);
+  assert.equal(invalid.settings.overview.operatorTimezone, "UTC");
+  assert.equal(invalid.provenance.overview, "env_seed");
+});
+
+test("operator timezone persists and round-trips through the settings service", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-settings-tz-"));
+  const dbPath = path.join(dir, "settings.sqlite");
+  try {
+    const service = new ManorSettingsService(dbPath, {} as NodeJS.ProcessEnv);
+    await service.load();
+    await service.patch({ overview: { operatorTimezone: "Europe/Berlin" } } as never);
+    assert.equal(service.getSettings().overview.operatorTimezone, "Europe/Berlin");
+    assert.equal(service.getProvenance().overview, "ui");
+    const reloaded = new ManorSettingsService(dbPath, {} as NodeJS.ProcessEnv);
+    await reloaded.load();
+    assert.equal(reloaded.getSettings().overview.operatorTimezone, "Europe/Berlin");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -23,7 +23,6 @@ import type {
   SettingsValidationMap,
   SettingsWorkerHarness
 } from "../shared/settings";
-import type { ActivityWatchdogDiagnostics, ActivityWatchdogSnapshot } from "../shared/activity-watchdog";
 
 type ModelOption = {
   id: string;
@@ -213,6 +212,54 @@ const PROVIDER_LABELS: Record<string, string> = {
   "ollama-cloud": "Ollama Cloud",
   "opencode-go": "OpenCode Go"
 };
+
+const OPERATOR_TIMEZONE_SUGGESTIONS: readonly string[] = [
+  "UTC",
+  "Europe/London",
+  "Europe/Berlin",
+  "Europe/Paris",
+  "Europe/Madrid",
+  "Europe/Amsterdam",
+  "Europe/Moscow",
+  "Africa/Casablanca",
+  "Africa/Johannesburg",
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Los_Angeles",
+  "America/Sao_Paulo",
+  "Asia/Dubai",
+  "Asia/Kolkata",
+  "Asia/Shanghai",
+  "Asia/Tokyo",
+  "Australia/Sydney",
+  "Pacific/Auckland"
+];
+
+function timezoneShortOffset(zone: string): string | null {
+  try {
+    const part = new Intl.DateTimeFormat("en-US", { timeZone: zone, timeZoneName: "shortOffset" })
+      .formatToParts(new Date())
+      .find((p) => p.type === "timeZoneName");
+    const value = part?.value ?? "";
+    if (!value) return null;
+    return value === "GMT" || value === "GMT+0" || value === "GMT-0" ? "UTC" : value.replace(/^GMT/, "UTC");
+  } catch {
+    return null;
+  }
+}
+
+const OPERATOR_TIMEZONE_OPTIONS: { zone: string; label: string }[] = OPERATOR_TIMEZONE_SUGGESTIONS.map((zone) => {
+  const offset = timezoneShortOffset(zone);
+  return { zone, label: offset ? `${zone} (${offset})` : zone };
+});
+
+function timezonePreview(zone: string): string {
+  const trimmed = (zone ?? "").trim();
+  if (!trimmed) return "Defaults to UTC when blank.";
+  const offset = timezoneShortOffset(trimmed);
+  return offset ? `Currently ${offset} (${trimmed}).` : "Unknown timezone — defaults to UTC.";
+}
 
 function providerLabel(provider: string): string {
   return PROVIDER_LABELS[provider] ?? provider;
@@ -497,24 +544,13 @@ function settingsEqual(a: ManorSettings, b: ManorSettings): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function watchdogCadence(intervalMs: number): string {
-  return intervalMs >= 1_000 ? `${intervalMs / 1_000}s` : `${intervalMs}ms`;
-}
-
-function watchdogTarget(watchdog: ActivityWatchdogSnapshot): string {
-  const target = watchdog.target ?? watchdog.id;
-  return target.length > 22 ? `${target.slice(0, 18)}…` : target;
-}
-
-export function SettingsDashboard({ active, activeSection, pairId }: { active: boolean; activeSection: SettingsSectionId; pairId: string | null }) {
+export function SettingsDashboard({ active, activeSection }: { active: boolean; activeSection: SettingsSectionId }) {
   const [payload, setPayload] = useState<SettingsResponse | null>(null);
   const [draft, setDraft] = useState<ManorSettings | null>(null);
   const [saving, setSaving] = useState(false);
   const [validating, setValidating] = useState<SettingsValidationKey | null>(null);
   const [validatingAll, setValidatingAll] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [watchdogDiagnostics, setWatchdogDiagnostics] = useState<ActivityWatchdogDiagnostics | null>(null);
-  const [watchdogError, setWatchdogError] = useState<string | null>(null);
   const [providerTab, setProviderTab] = useState<"openai" | "ollamaLocal" | "ollama" | "opencode">(() => {
     if (typeof window === "undefined") return "openai";
     const param = new URLSearchParams(window.location.search).get("provider");
@@ -557,42 +593,6 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
   useEffect(() => {
     void load().catch((error) => setMessage(error instanceof Error ? error.message : String(error)));
   }, [load]);
-
-  useEffect(() => {
-    if (!active || activeSection !== "diagnostics" || !pairId) {
-      setWatchdogDiagnostics(null);
-      setWatchdogError(null);
-      return;
-    }
-    setWatchdogDiagnostics(null);
-    setWatchdogError(null);
-    let disposed = false;
-    let loading = false;
-    const refresh = async () => {
-      if (loading) return;
-      loading = true;
-      try {
-        const next = await getJson<ActivityWatchdogDiagnostics>(`/api/pairs/${encodeURIComponent(pairId)}/activity-watchdogs`);
-        if (!disposed) {
-          setWatchdogDiagnostics(next);
-          setWatchdogError(null);
-        }
-      } catch (error) {
-        if (!disposed) {
-          setWatchdogDiagnostics(null);
-          setWatchdogError(error instanceof Error ? error.message : String(error));
-        }
-      } finally {
-        loading = false;
-      }
-    };
-    void refresh();
-    const interval = window.setInterval(() => { void refresh(); }, 2_000);
-    return () => {
-      disposed = true;
-      window.clearInterval(interval);
-    };
-  }, [active, activeSection, pairId]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !active || activeSection !== "providers") return;
@@ -1126,6 +1126,19 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
               <Field label="Operator name" hint="How Butler should refer to you in chat. Leave blank for no name.">
                 <input value={draft.overview.operatorName} placeholder="(none)" onChange={(event) => update((s) => { s.overview.operatorName = event.target.value; })} />
               </Field>
+              <Field label="Operator timezone" hint={`IANA timezone used for automation scheduling and time displays. ${timezonePreview(draft.overview.operatorTimezone)}`}>
+                <input
+                  value={draft.overview.operatorTimezone}
+                  list="operator-timezone-options"
+                  placeholder="UTC"
+                  spellCheck={false}
+                  autoComplete="off"
+                  onChange={(event) => update((s) => { s.overview.operatorTimezone = event.target.value; })}
+                />
+                <datalist id="operator-timezone-options">
+                  {OPERATOR_TIMEZONE_OPTIONS.map((option) => <option key={option.zone} value={option.zone}>{option.label}</option>)}
+                </datalist>
+              </Field>
             </FieldGrid>
           </SubGroup>
           <SubGroup title="Worker defaults">
@@ -1302,34 +1315,6 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
             </button>
           )}
         >
-          <SubGroup title="Activity watchdogs">
-            <p className="settings-subgroup-copy">Live supervision for the selected session's Worker handoffs and review activity.</p>
-            {watchdogError ? <div className="settings-watchdog-error" role="alert">{watchdogError}</div> : null}
-            {!pairId ? (
-              <div className="settings-watchdog-empty">Select a session to inspect its activity watchdogs.</div>
-            ) : watchdogDiagnostics?.watchdogs.length ? (
-              <div className="settings-watchdog-table" role="table" aria-label="Active activity watchdogs">
-                <div className="settings-watchdog-row is-head" role="row">
-                  <span role="columnheader">Supervision</span>
-                  <span role="columnheader">Target</span>
-                  <span role="columnheader">Cadence</span>
-                  <span role="columnheader">Checks</span>
-                </div>
-                {watchdogDiagnostics.watchdogs.map((watchdog) => (
-                  <div className="settings-watchdog-row" role="row" key={watchdog.id}>
-                    <strong role="cell">{watchdog.label}</strong>
-                    <span className="is-target" role="cell" title={watchdog.target ?? watchdog.id}>{watchdogTarget(watchdog)}</span>
-                    <span className="is-cadence" role="cell">Every {watchdogCadence(watchdog.intervalMs)}</span>
-                    <span className={`is-checks ${watchdog.checkCount > 0 ? "" : "is-waiting"}`} role="cell">{watchdog.checkCount > 0 ? watchdog.checkCount.toLocaleString() : "Waiting"}</span>
-                  </div>
-                ))}
-              </div>
-            ) : watchdogDiagnostics ? (
-              <div className="settings-watchdog-empty">No handoffs or reviews need supervision right now.</div>
-            ) : (
-              <div className="settings-watchdog-empty">Loading activity watchdogs…</div>
-            )}
-          </SubGroup>
           <SubGroup title="Connection tests">
             <div className="settings-diag-summary">
               <span className="settings-diag-count is-ok">{okCount} healthy</span>

@@ -8,6 +8,8 @@ import { PairStore } from "../../src/server/pair-store.js";
 import { SessionAutomationScheduler } from "../../src/server/session-automation-scheduler.js";
 import { nextDailyRunAt, normalizeDailyTimes, withAutomationLabels } from "../../src/server/session-automation.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
+import { setActiveManorSettings } from "../../src/server/manor-settings-runtime.js";
+import { normalizeManorSettings } from "../../src/server/manor-settings-schema.js";
 
 async function createStore() {
   const directory = await mkdtemp(path.join(tmpdir(), "manor-automation-test-"));
@@ -18,26 +20,206 @@ async function createStore() {
   return { pairs, pairPath, state };
 }
 
-test("daily automation times are validated, deduplicated, and use local wall clock", () => {
+test("daily automation times are validated, deduplicated, and use the operator wall clock (UTC by default)", () => {
   assert.deepEqual(normalizeDailyTimes(["18:00", "12:00", "18:00"]), ["12:00", "18:00"]);
   assert.throws(() => normalizeDailyTimes(["24:00"]), /HH:mm/);
-  const morning = new Date(2026, 6, 14, 11, 30).getTime();
-  assert.equal(nextDailyRunAt(["12:00", "18:00"], morning), new Date(2026, 6, 14, 12, 0).getTime());
-  assert.equal(nextDailyRunAt(["12:00", "18:00"], new Date(2026, 6, 14, 18, 0).getTime()), new Date(2026, 6, 15, 12, 0).getTime());
+  const morning = Date.UTC(2026, 6, 14, 11, 30);
+  assert.equal(nextDailyRunAt(["12:00", "18:00"], morning), Date.UTC(2026, 6, 14, 12, 0));
+  assert.equal(nextDailyRunAt(["12:00", "18:00"], Date.UTC(2026, 6, 14, 18, 0)), Date.UTC(2026, 6, 15, 12, 0));
+});
+
+test("daily automation times interpret in the operator timezone with DST awareness", () => {
+  // Europe/Berlin is UTC+1 (CET) in winter and UTC+2 (CEST) in summer.
+  const winterAfter = Date.UTC(2026, 0, 15, 7, 30); // 08:30 Berlin
+  assert.equal(nextDailyRunAt(["09:00"], winterAfter, "Europe/Berlin"), Date.UTC(2026, 0, 15, 8, 0));
+  const summerAfter = Date.UTC(2026, 6, 15, 6, 30); // 08:30 Berlin (CEST)
+  assert.equal(nextDailyRunAt(["09:00"], summerAfter, "Europe/Berlin"), Date.UTC(2026, 6, 15, 7, 0));
+  // A daily time inside the spring-forward gap (02:30 Berlin on 2026-03-29 does
+  // not exist) still resolves to a valid later instant without throwing.
+  const gapAfter = Date.UTC(2026, 2, 29, 0, 0);
+  const gapRun = nextDailyRunAt(["02:30"], gapAfter, "Europe/Berlin");
+  assert.ok(gapRun > gapAfter);
+});
+
+test("nextDailyRunAt keeps the later fold occurrence when the earlier one has already passed", () => {
+  // Europe/Berlin falls back on 2026-10-25 03:00->02:00 CEST->CET, so 02:30
+  // occurs twice: 00:30 UTC (CEST) and 01:30 UTC (CET). After 01:00 UTC the
+  // earlier occurrence has passed, so the next 02:30 is the 01:30 UTC (02:30 CET)
+  // occurrence — not skipped to the next day.
+  assert.equal(nextDailyRunAt(["02:30"], Date.UTC(2026, 9, 25, 1, 0), "Europe/Berlin"), Date.UTC(2026, 9, 25, 1, 30));
+  // Before the fold, the earlier occurrence is returned.
+  assert.equal(nextDailyRunAt(["02:30"], Date.UTC(2026, 9, 25, 0, 0), "Europe/Berlin"), Date.UTC(2026, 9, 25, 0, 30));
+});
+
+test("changing the operator timezone recomputes already-scheduled daily runs in real time", async (t) => {
+  // The Settings UI persists overview.operatorTimezone; the settings-apply hook
+  // calls PairStore.recomputeAutomationSchedules so enabled daily automations move
+  // to the new zone without a restart. Labels update live even before that.
+  setActiveManorSettings(normalizeManorSettings({ overview: { operatorTimezone: "Europe/Berlin" } }));
+  t.after(() => setActiveManorSettings(null));
+  const { pairs } = await createStore();
+  const pair = pairs.createPair();
+  const after = Date.UTC(2026, 0, 15, 7, 30); // 08:30 Berlin
+  const configured = pairs.configureAutomation(pair.id, { instruction: "Report", dailyTimes: ["09:00"] }, after)!;
+  assert.equal(configured.automation!.nextRunAt, Date.UTC(2026, 0, 15, 8, 0)); // 09:00 Berlin = 08:00 UTC
+
+  // Operator switches timezone to America/New_York (UTC-5 in winter).
+  setActiveManorSettings(normalizeManorSettings({ overview: { operatorTimezone: "America/New_York" } }));
+
+  // Labels already render in the new timezone immediately (live re-read)...
+  assert.match(pairs.getPair(pair.id)?.automation?.nextRunLabel ?? "", /Jan 15, 3:00 AM UTC-5$/);
+  // ...and the settings-change hook recomputes the stored nextRunAt into the new zone.
+  const changed = pairs.recomputeAutomationSchedules(after);
+  assert.equal(changed, 1);
+  assert.equal(pairs.getPair(pair.id)?.automation?.nextRunAt, Date.UTC(2026, 0, 15, 14, 0)); // 09:00 New York = 14:00 UTC
+});
+
+test("recomputeAutomationSchedules skips running automations and interval schedules", async (t) => {
+  setActiveManorSettings(normalizeManorSettings({ overview: { operatorTimezone: "Europe/Berlin" } }));
+  t.after(() => setActiveManorSettings(null));
+  const { pairs } = await createStore();
+  const daily = pairs.createPair({ title: "Daily" });
+  const interval = pairs.createPair({ title: "Interval" });
+  const base = Date.UTC(2026, 0, 15, 7, 0); // 08:00 Berlin
+  const configuredDaily = pairs.configureAutomation(daily.id, { instruction: "Daily", dailyTimes: ["09:00"] }, base)!;
+  pairs.configureIntervalAutomation(interval.id, { instruction: "Interval", everyMinutes: 5, durationMinutes: 30 }, base);
+  // Claim the daily run (due at 08:00 UTC) so it is running and its nextRunAt advances.
+  pairs.claimAutomationRun(daily.id, configuredDaily.automation!.id, Date.UTC(2026, 0, 15, 8, 1));
+  const dailyNextRun = pairs.getPair(daily.id)?.automation?.nextRunAt;
+  const intervalNextRun = pairs.getPair(interval.id)?.automation?.nextRunAt;
+
+  setActiveManorSettings(normalizeManorSettings({ overview: { operatorTimezone: "America/New_York" } }));
+  const changed = pairs.recomputeAutomationSchedules(Date.UTC(2026, 0, 15, 8, 10));
+  // The running daily automation and the (non-daily) interval are both skipped.
+  assert.equal(changed, 0);
+  assert.equal(pairs.getPair(daily.id)?.automation?.nextRunAt, dailyNextRun);
+  assert.equal(pairs.getPair(interval.id)?.automation?.nextRunAt, intervalNextRun);
+});
+
+test("recomputeAutomationSchedules does not schedule a duplicate same-day run after today's run fired", async (t) => {
+  setActiveManorSettings(normalizeManorSettings({ overview: { operatorTimezone: "Europe/Berlin" } }));
+  t.after(() => setActiveManorSettings(null));
+  const { pairs } = await createStore();
+  const pair = pairs.createPair();
+  // Berlin summer (CEST, UTC+2): daily 09:00 = 07:00 UTC.
+  const configured = pairs.configureAutomation(pair.id, { instruction: "Report", dailyTimes: ["09:00"] }, Date.UTC(2026, 6, 15, 6, 0))!;
+  assert.equal(configured.automation!.nextRunAt, Date.UTC(2026, 6, 15, 7, 0));
+  // Today's run fires at 07:05 UTC (09:05 Berlin) and finishes.
+  const run = pairs.claimAutomationRun(pair.id, configured.automation!.id, Date.UTC(2026, 6, 15, 7, 5))!;
+  pairs.finishAutomationRun(pair.id, configured.automation!.id, run.id, { outcome: "succeeded", summary: "done" }, Date.UTC(2026, 6, 15, 7, 6));
+  assert.equal(pairs.getPair(pair.id)?.automation?.nextRunAt, Date.UTC(2026, 6, 16, 7, 0)); // tomorrow 09:00 Berlin
+
+  // Operator switches to America/New_York (EDT, UTC-4) at 08:00 UTC. 09:00 NY
+  // today is 13:00 UTC, still ahead of now. Without the guard this would fire
+  // AGAIN today; the dedup schedules tomorrow instead (same NY calendar day as
+  // the finished run).
+  setActiveManorSettings(normalizeManorSettings({ overview: { operatorTimezone: "America/New_York" } }));
+  const changed = pairs.recomputeAutomationSchedules(Date.UTC(2026, 6, 15, 8, 0));
+  assert.equal(changed, 1);
+  assert.equal(pairs.getPair(pair.id)?.automation?.nextRunAt, Date.UTC(2026, 6, 16, 13, 0)); // 09:00 NY tomorrow, not today 13:00
+});
+
+test("recomputeAutomationSchedules leaves an overdue due-but-unfired run so the scheduler fires it", async (t) => {
+  setActiveManorSettings(normalizeManorSettings({ overview: { operatorTimezone: "Europe/Berlin" } }));
+  t.after(() => setActiveManorSettings(null));
+  const { pairs } = await createStore();
+  const pair = pairs.createPair();
+  // Berlin winter (CET, UTC+1): daily 09:00 = 08:00 UTC.
+  const configured = pairs.configureAutomation(pair.id, { instruction: "Report", dailyTimes: ["09:00"] }, Date.UTC(2026, 0, 15, 7, 0))!;
+  const dueAt = Date.UTC(2026, 0, 15, 8, 0);
+  assert.equal(configured.automation!.nextRunAt, dueAt);
+  // "now" is after the scheduled time but the run never fired (overdue).
+  const now = Date.UTC(2026, 0, 15, 10, 0); // 11:00 Berlin; run is 2h overdue
+  assert.ok(dueAt <= now);
+
+  // Operator switches to America/New_York. Without the guard the recompute would
+  // move nextRunAt to tomorrow, silently dropping the overdue run. Instead it is
+  // left due so the scheduler fires it now (catch-up), and the next cycle advances
+  // into the new zone.
+  setActiveManorSettings(normalizeManorSettings({ overview: { operatorTimezone: "America/New_York" } }));
+  const changed = pairs.recomputeAutomationSchedules(now);
+  assert.equal(changed, 0);
+  assert.equal(pairs.getPair(pair.id)?.automation?.nextRunAt, dueAt);
+});
+
+test("recomputeAutomationSchedules keeps remaining same-day slots after one slot fires (multi-time schedule)", async (t) => {
+  setActiveManorSettings(normalizeManorSettings({ overview: { operatorTimezone: "Europe/Berlin" } }));
+  t.after(() => setActiveManorSettings(null));
+  const { pairs } = await createStore();
+  const pair = pairs.createPair();
+  // Berlin summer (CEST, UTC+2): 09:00=07:00 UTC, 17:00=15:00 UTC.
+  const configured = pairs.configureAutomation(pair.id, { instruction: "Report", dailyTimes: ["09:00", "17:00"] }, Date.UTC(2026, 6, 15, 6, 0))!;
+  assert.equal(configured.automation!.nextRunAt, Date.UTC(2026, 6, 15, 7, 0)); // 09:00 Berlin today
+  // 09:00 fires and finishes; nextRunAt advances to 17:00 Berlin today (15:00 UTC).
+  const run = pairs.claimAutomationRun(pair.id, configured.automation!.id, Date.UTC(2026, 6, 15, 7, 5))!;
+  assert.equal(run!.scheduledSlot, "09:00");
+  pairs.finishAutomationRun(pair.id, configured.automation!.id, run.id, { outcome: "succeeded", summary: "done" }, Date.UTC(2026, 6, 15, 7, 6));
+  assert.equal(pairs.getPair(pair.id)?.automation?.lastRun?.scheduledSlot, "09:00");
+  assert.equal(pairs.getPair(pair.id)?.automation?.nextRunAt, Date.UTC(2026, 6, 15, 15, 0)); // 17:00 Berlin today
+
+  // Operator switches to America/New_York (EDT, UTC-4) at 08:00 UTC. 09:00 NY today
+  // is 13:00 UTC (still ahead). The per-slot dedup skips only the fired 09:00 slot
+  // and keeps 17:00 NY today (21:00 UTC) — it must NOT drop to tomorrow.
+  setActiveManorSettings(normalizeManorSettings({ overview: { operatorTimezone: "America/New_York" } }));
+  const changed = pairs.recomputeAutomationSchedules(Date.UTC(2026, 6, 15, 8, 0));
+  assert.equal(changed, 1);
+  assert.equal(pairs.getPair(pair.id)?.automation?.nextRunAt, Date.UTC(2026, 6, 15, 21, 0)); // 17:00 NY today, not tomorrow
+});
+
+test("recomputeAutomationSchedules per-slot dedup handles schedules with 5+ daily times", async (t) => {
+  setActiveManorSettings(normalizeManorSettings({ overview: { operatorTimezone: "Europe/Berlin" } }));
+  t.after(() => setActiveManorSettings(null));
+  const { pairs } = await createStore();
+  const pair = pairs.createPair();
+  const times = ["06:00", "09:00", "12:00", "15:00", "18:00"];
+  // Berlin summer (UTC+2): 06:00=04:00 UTC.
+  const configured = pairs.configureAutomation(pair.id, { instruction: "Report", dailyTimes: times }, Date.UTC(2026, 6, 15, 3, 0))!;
+  assert.equal(configured.automation!.nextRunAt, Date.UTC(2026, 6, 15, 4, 0)); // 06:00 Berlin today
+  // 06:00 fires; nextRunAt advances to 09:00 Berlin today (07:00 UTC).
+  const run = pairs.claimAutomationRun(pair.id, configured.automation!.id, Date.UTC(2026, 6, 15, 4, 5))!;
+  assert.equal(run!.scheduledSlot, "06:00");
+  pairs.finishAutomationRun(pair.id, configured.automation!.id, run.id, { outcome: "succeeded", summary: "done" }, Date.UTC(2026, 6, 15, 4, 6));
+  assert.equal(pairs.getPair(pair.id)?.automation?.nextRunAt, Date.UTC(2026, 6, 15, 7, 0)); // 09:00 Berlin today
+
+  // Switch to America/New_York (EDT, UTC-4) at 05:00 UTC. The per-slot dedup skips
+  // only the fired 06:00 slot and keeps the next same-day slot 09:00 NY (13:00 UTC).
+  setActiveManorSettings(normalizeManorSettings({ overview: { operatorTimezone: "America/New_York" } }));
+  const changed = pairs.recomputeAutomationSchedules(Date.UTC(2026, 6, 15, 5, 0));
+  assert.equal(changed, 1);
+  assert.equal(pairs.getPair(pair.id)?.automation?.nextRunAt, Date.UTC(2026, 6, 15, 13, 0)); // 09:00 NY today, not dropped
+});
+
+test("automation labels render in the operator timezone with an offset suffix", () => {
+  const winter = withAutomationLabels({
+    id: "a", instruction: "Report", schedule: { kind: "daily", times: ["09:00"] },
+    enabled: true, createdAt: 1, updatedAt: 1, nextRunAt: Date.UTC(2026, 0, 15, 8, 0), running: null, lastRun: null
+  }, Date.UTC(2026, 0, 15, 7, 30), "Europe/Berlin");
+  assert.equal(winter.scheduleLabel, "Daily at 9:00 AM");
+  assert.match(winter.nextRunLabel ?? "", /Jan 15, 9:00 AM UTC\+1$/);
+  const summer = withAutomationLabels({
+    id: "a", instruction: "Report", schedule: { kind: "daily", times: ["09:00"] },
+    enabled: true, createdAt: 1, updatedAt: 1, nextRunAt: Date.UTC(2026, 6, 15, 7, 0), running: null, lastRun: null
+  }, Date.UTC(2026, 6, 15, 6, 30), "Europe/Berlin");
+  assert.match(summer.nextRunLabel ?? "", /Jul 15, 9:00 AM UTC\+2$/);
+  const utc = withAutomationLabels({
+    id: "a", instruction: "Report", schedule: { kind: "daily", times: ["12:00"] },
+    enabled: true, createdAt: 1, updatedAt: 1, nextRunAt: Date.UTC(2026, 6, 14, 12, 0), running: null, lastRun: null
+  }, Date.UTC(2026, 6, 14, 11, 0));
+  assert.match(utc.nextRunLabel ?? "", /Jul 14, 12:00 PM UTC$/);
 });
 
 test("pair automations persist and support pause, resume, and guarded run completion", async () => {
   const { pairs, pairPath, state } = await createStore();
   const pair = pairs.createPair({ title: "Daily report" });
-  const configured = pairs.configureAutomation(pair.id, { instruction: "Prepare the report", dailyTimes: ["12:00", "18:00"] }, new Date(2026, 6, 14, 10).getTime());
+  const configured = pairs.configureAutomation(pair.id, { instruction: "Prepare the report", dailyTimes: ["12:00", "18:00"] }, Date.UTC(2026, 6, 14, 10));
   assert.equal(configured?.automation?.scheduleLabel, "Daily at 12:00 PM, 6:00 PM");
-  assert.ok(configured?.automation?.nextRunLabel?.endsWith("Butler clock"));
+  assert.ok(configured?.automation?.nextRunLabel?.endsWith("UTC"));
   assert.equal(pairs.setAutomationEnabled(pair.id, false)?.automation?.nextRunAt, null);
-  const resumed = pairs.setAutomationEnabled(pair.id, true, new Date(2026, 6, 14, 11).getTime())!;
-  const run = pairs.claimAutomationRun(pair.id, resumed.automation!.id, new Date(2026, 6, 14, 12, 1).getTime());
+  const resumed = pairs.setAutomationEnabled(pair.id, true, Date.UTC(2026, 6, 14, 11))!;
+  const run = pairs.claimAutomationRun(pair.id, resumed.automation!.id, Date.UTC(2026, 6, 14, 12, 1));
   assert.ok(run);
-  assert.equal(pairs.claimAutomationRun(pair.id, resumed.automation!.id, new Date(2026, 6, 14, 12, 2).getTime()), null);
-  pairs.finishAutomationRun(pair.id, resumed.automation!.id, run!.id, { outcome: "succeeded", summary: "Saved." }, new Date(2026, 6, 14, 12, 5).getTime());
+  assert.equal(pairs.claimAutomationRun(pair.id, resumed.automation!.id, Date.UTC(2026, 6, 14, 12, 2)), null);
+  pairs.finishAutomationRun(pair.id, resumed.automation!.id, run!.id, { outcome: "succeeded", summary: "Saved." }, Date.UTC(2026, 6, 14, 12, 5));
   assert.equal(pairs.getPair(pair.id)?.automation?.lastRun?.outcome, "succeeded");
   await pairs.flushPendingSave();
   const reloaded = new PairStore(pairPath, state); await reloaded.load();
@@ -46,8 +228,8 @@ test("pair automations persist and support pause, resume, and guarded run comple
 
 test("scheduler runs due work once and skips an active session", async () => {
   const { pairs } = await createStore();
-  const base = new Date(2026, 6, 14, 7).getTime();
-  const dueAt = new Date(2026, 6, 14, 8, 1).getTime();
+  const base = Date.UTC(2026, 6, 14, 7);
+  const dueAt = Date.UTC(2026, 6, 14, 8, 1);
   const idle = pairs.createPair({ title: "Idle" });
   const busy = pairs.createPair({ title: "Busy" });
   pairs.configureAutomation(idle.id, { instruction: "Run idle task", dailyTimes: ["08:00"] }, base);
@@ -70,8 +252,8 @@ test("scheduler runs due work once and skips an active session", async () => {
 test("scheduler persists its run claim before dispatch", async () => {
   const { pairs } = await createStore();
   const pair = pairs.createPair();
-  const base = new Date(2026, 6, 14, 7).getTime();
-  const dueAt = new Date(2026, 6, 14, 8, 1).getTime();
+  const base = Date.UTC(2026, 6, 14, 7);
+  const dueAt = Date.UTC(2026, 6, 14, 8, 1);
   pairs.configureAutomation(pair.id, { instruction: "Persist first", dailyTimes: ["08:00"] }, base);
   await pairs.flushPendingSave();
   let release!: () => void;
@@ -94,10 +276,10 @@ test("scheduler persists its run claim before dispatch", async () => {
 test("restart recovery skips missed and interrupted runs without catch-up", async () => {
   const { pairs } = await createStore();
   const pair = pairs.createPair();
-  const base = new Date(2026, 6, 14, 7).getTime();
+  const base = Date.UTC(2026, 6, 14, 7);
   const configured = pairs.configureAutomation(pair.id, { instruction: "Run once daily", dailyTimes: ["08:00"] }, base)!;
-  pairs.claimAutomationRun(pair.id, configured.automation!.id, new Date(2026, 6, 14, 8, 1).getTime());
-  const restart = new Date(2026, 6, 15, 9).getTime();
+  pairs.claimAutomationRun(pair.id, configured.automation!.id, Date.UTC(2026, 6, 14, 8, 1));
+  const restart = Date.UTC(2026, 6, 15, 9);
   pairs.reconcileAutomationsAfterRestart(restart);
   const recovered = pairs.getPair(pair.id)!.automation!;
   assert.equal(recovered.running, null);
@@ -108,7 +290,7 @@ test("restart recovery skips missed and interrupted runs without catch-up", asyn
 
 test("bounded interval automation runs on anchored slots and completes at its deadline", async () => {
   const { pairs } = await createStore();
-  const start = new Date(2026, 6, 14, 20, 0).getTime();
+  const start = Date.UTC(2026, 6, 14, 20, 0);
   const pair = pairs.createPair();
   const configured = pairs.configureIntervalAutomation(pair.id, { instruction: "Check the score", everyMinutes: 5, durationMinutes: 30 }, start)!;
   assert.equal(configured.automation?.scheduleLabel, "Every 5 min for 30 min");

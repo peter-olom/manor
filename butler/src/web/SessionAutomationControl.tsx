@@ -73,7 +73,7 @@ export function SessionAutomationControl({
         <div className="modal-backdrop session-automation-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !pending) setOpen(false); }}>
           <section ref={dialogRef} className="modal session-automation-dialog" role="dialog" aria-modal="true" aria-labelledby="automation-title" aria-describedby="automation-description">
             <header>
-              <div><h2 id="automation-title">Session automation</h2><p id="automation-description">Runs on Butler’s system wall clock.</p></div>
+              <div><h2 id="automation-title">Session automation</h2><p id="automation-description">Times follow the operator timezone set in Settings; next-run labels show that zone's offset.</p></div>
               <button className="icon-button" type="button" disabled={pending} aria-label="Close automation dialog" onClick={() => setOpen(false)}>×</button>
             </header>
             <div className="automation-status-row" aria-live="polite">

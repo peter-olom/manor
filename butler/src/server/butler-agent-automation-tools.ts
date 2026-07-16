@@ -1,6 +1,7 @@
 import { Type } from "@sinclair/typebox";
 
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import { formatTimezoneLabel, resolveOperatorTimezone } from "./operator-timezone.js";
 
 export function buildButlerAutomationTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
   const automation = access.getAutomationAccess();
@@ -9,8 +10,8 @@ export function buildButlerAutomationTools(access: ButlerAgentToolAccess): Butle
     access.defineButlerTool({
       name: "configure_automation",
       label: "Configure automation",
-      description: "Create or replace a daily wall-clock automation attached to this Butler session.",
-      promptSnippet: "configure_automation: Configure this session's one daily automation only after the task and Butler wall-clock times are clear. Times must be 24-hour HH:mm. This replaces the previous schedule and enables it.",
+      description: "Create or replace a daily wall-clock automation attached to this Butler session. Times are interpreted in the operator's configured timezone.",
+      promptSnippet: "configure_automation: Configure this session's one daily automation only after the task and the operator's local wall-clock times are clear. Times are 24-hour HH:mm in the operator's configured timezone (do not convert to UTC yourself). This replaces the previous schedule and enables it.",
       parameters: Type.Object({
         instruction: Type.String({ minLength: 1, maxLength: 20_000 }),
         dailyTimes: Type.Array(Type.String({ pattern: "^(?:[01]\\d|2[0-3]):[0-5]\\d$" }), { minItems: 1, uniqueItems: true })
@@ -18,7 +19,8 @@ export function buildButlerAutomationTools(access: ButlerAgentToolAccess): Butle
       uiEffects: access.getToolUiEffects("configure_automation"),
       execute: async (_toolCallId, params) => {
         const configured = await automation.configure(params as { instruction: string; dailyTimes: string[] });
-        return { content: [{ type: "text", text: `Automation configured. ${configured.scheduleLabel}. Next run: ${configured.nextRunLabel}.` }], details: { automation: configured } };
+        const tzLabel = formatTimezoneLabel(resolveOperatorTimezone());
+        return { content: [{ type: "text", text: `Automation configured. ${configured.scheduleLabel}. Next run: ${configured.nextRunLabel}. Times run in the operator timezone (${tzLabel}).` }], details: { automation: configured } };
       }
     }),
     access.defineButlerTool({
@@ -34,7 +36,8 @@ export function buildButlerAutomationTools(access: ButlerAgentToolAccess): Butle
       uiEffects: access.getToolUiEffects("configure_interval_automation"),
       execute: async (_toolCallId, params) => {
         const configured = await automation.configureInterval(params as { instruction: string; everyMinutes: number; durationMinutes: number });
-        return { content: [{ type: "text", text: `Automation configured. ${configured.scheduleLabel}. Runs through: ${configured.endsAtLabel}. Next run: ${configured.nextRunLabel}.` }], details: { automation: configured } };
+        const tzLabel = formatTimezoneLabel(resolveOperatorTimezone());
+        return { content: [{ type: "text", text: `Automation configured. ${configured.scheduleLabel}. Runs through: ${configured.endsAtLabel}. Next run: ${configured.nextRunLabel}. Times display in the operator timezone (${tzLabel}).` }], details: { automation: configured } };
       }
     }),
     access.defineButlerTool({

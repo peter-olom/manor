@@ -29,14 +29,14 @@ import { isCallbackReviewRetryablePause } from "./butler-callback-review-runner.
 import { redactSensitiveText } from "./redact-sensitive-text.js";
 import { workerThreadIsRunning } from "./worker-thread-status.js";
 import { pageWorkerProofRecords, pageWorkerThread } from "./worker-thread-page.js";
+import { formatTimezoneLabel, resolveOperatorTimezone } from "./operator-timezone.js";
 import { listWorkspaceProjectDirectories, validateWorkspaceCwd, type WorkspaceProjectDirectory } from "./repo-worktree.js";
 import { buildManorSkillRoutingContext, listManorSkillCapabilities, normalizeManorSkillName, parseManorSkillInvocation, skillAvailabilityDetail } from "./manor-skill-routing.js";
 import type { AutomationDispatchResult } from "./session-automation-scheduler.js";
-import type { ActivityWatchdogDiagnostics } from "../shared/activity-watchdog.js";
 
 type PairButlerService = Pick<
   ButlerAgentService,
-  "answerOperatorQuestion" | "cancelCallbackReview" | "dispose" | "ensureExternalWorkerDelegation" | "exportSession" | "getLiveSnapshot" | "getMessagePage" | "getSessionControls" | "getShellSnapshot" | "handoffWorker" | "listComposerCommands" | "on" | "postAutomationNotice" | "prompt" | "quiesceCallbackReviews" | "refreshModelSettings" | "reloadResources" | "retryBlockedCallbackReviews" | "runAutomationPrompt" | "runSessionControl" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings" | "watchdogs"
+  "answerOperatorQuestion" | "cancelCallbackReview" | "dispose" | "ensureExternalWorkerDelegation" | "exportSession" | "getLiveSnapshot" | "getMessagePage" | "getSessionControls" | "getShellSnapshot" | "handoffWorker" | "listComposerCommands" | "on" | "postAutomationNotice" | "prompt" | "quiesceCallbackReviews" | "refreshModelSettings" | "reloadResources" | "retryBlockedCallbackReviews" | "runAutomationPrompt" | "runSessionControl" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings"
 >;
 
 type PairSessionManagerOptions = {
@@ -115,7 +115,7 @@ function pairSystemPrompt(pairId: string): string {
     "Call the execution role Worker. Never describe a generic delegation or job as Codex.",
     "When work should be executed, use delegate_to_worker or message_job. When Worker evidence returns, review it adversarially before replying to the operator.",
     "This session can have one automation. Use configure_automation for recurring work at fixed daily wall-clock times, or configure_interval_automation for a bounded request such as every 5 minutes for the next 30 minutes.",
-    "Automation times use Butler's system wall clock. Do not ask for or infer a timezone. Never claim recurring timers are unavailable when an automation tool can represent the request.",
+    `Automation times run in the operator's configured timezone (currently ${formatTimezoneLabel(resolveOperatorTimezone())}). configure_automation dailyTimes are 24-hour HH:mm in that timezone; use the operator's local times directly without converting to UTC. If the operator has not set a timezone it defaults to UTC. Never claim recurring timers are unavailable when an automation tool can represent the request.`,
     "If the task or times are materially missing, use ask_operator before configuring. Never claim an automation was created, changed, paused, resumed, or deleted before the matching tool succeeds.",
     "Keep operator-visible replies concise. Do not mention hidden tool prompts or internal routing."
   ].join("\n");
@@ -593,12 +593,6 @@ export class PairSessionManager {
       hasMore: page.hasMore,
       compose: this.resolveCompose(refreshed, service)
     };
-  }
-
-  async getActivityWatchdogs(pairId: string): Promise<ActivityWatchdogDiagnostics | null> {
-    if (!this.options.pairStore.getPair(pairId)) return null;
-    const watchdogs = (await this.ensureService(pairId)).watchdogs.snapshot();
-    return { activeCount: watchdogs.length, watchdogs };
   }
 
   updatePairTitle(pairId: string, title: string): PairDetail | null {
