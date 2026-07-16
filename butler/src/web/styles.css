@@ -6766,6 +6766,65 @@ a:hover {
   font-size: 11px;
 }
 
+.settings-watchdog-table {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.settings-watchdog-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.2fr) minmax(130px, 1fr) 100px 80px;
+  gap: 16px;
+  align-items: center;
+  min-height: 42px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.settings-watchdog-row:first-child {
+  border-top: 0;
+}
+
+.settings-watchdog-row.is-head {
+  min-height: 34px;
+  color: var(--text-subtle);
+  background: var(--surface-raised);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.settings-watchdog-row strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.settings-watchdog-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.settings-watchdog-empty,
+.settings-watchdog-error {
+  padding: 14px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  background: var(--surface);
+  font-size: 12px;
+}
+
+.settings-watchdog-error {
+  margin-bottom: 10px;
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  color: var(--danger);
+}
+
 .settings-subgroup h3 {
   margin: 0;
   font-size: 14.5px;
@@ -7455,6 +7514,41 @@ a:hover {
 @media (max-width: 720px) {
   .settings-content {
     padding: 22px 16px 40px;
+  }
+
+  .settings-watchdog-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 14px;
+    padding: 10px 12px;
+  }
+
+  .settings-watchdog-row.is-head {
+    display: none;
+  }
+
+  .settings-watchdog-row strong {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .settings-watchdog-row .is-target {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .settings-watchdog-row .is-cadence {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .settings-watchdog-row .is-checks {
+    grid-column: 2;
+    grid-row: 2;
+    text-align: right;
+  }
+
+  .settings-watchdog-row .is-checks:not(.is-waiting)::after {
+    content: " checks";
   }
 
   .settings-section-head {

@@ -23,6 +23,7 @@ import type {
   SettingsValidationMap,
   SettingsWorkerHarness
 } from "../shared/settings";
+import type { ActivityWatchdogDiagnostics, ActivityWatchdogSnapshot } from "../shared/activity-watchdog";
 
 type ModelOption = {
   id: string;
@@ -496,13 +497,24 @@ function settingsEqual(a: ManorSettings, b: ManorSettings): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-export function SettingsDashboard({ active, activeSection }: { active: boolean; activeSection: SettingsSectionId }) {
+function watchdogCadence(intervalMs: number): string {
+  return intervalMs >= 1_000 ? `${intervalMs / 1_000}s` : `${intervalMs}ms`;
+}
+
+function watchdogTarget(watchdog: ActivityWatchdogSnapshot): string {
+  const target = watchdog.target ?? watchdog.id;
+  return target.length > 22 ? `${target.slice(0, 18)}…` : target;
+}
+
+export function SettingsDashboard({ active, activeSection, pairId }: { active: boolean; activeSection: SettingsSectionId; pairId: string | null }) {
   const [payload, setPayload] = useState<SettingsResponse | null>(null);
   const [draft, setDraft] = useState<ManorSettings | null>(null);
   const [saving, setSaving] = useState(false);
   const [validating, setValidating] = useState<SettingsValidationKey | null>(null);
   const [validatingAll, setValidatingAll] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [watchdogDiagnostics, setWatchdogDiagnostics] = useState<ActivityWatchdogDiagnostics | null>(null);
+  const [watchdogError, setWatchdogError] = useState<string | null>(null);
   const [providerTab, setProviderTab] = useState<"openai" | "ollamaLocal" | "ollama" | "opencode">(() => {
     if (typeof window === "undefined") return "openai";
     const param = new URLSearchParams(window.location.search).get("provider");
@@ -545,6 +557,42 @@ export function SettingsDashboard({ active, activeSection }: { active: boolean; 
   useEffect(() => {
     void load().catch((error) => setMessage(error instanceof Error ? error.message : String(error)));
   }, [load]);
+
+  useEffect(() => {
+    if (!active || activeSection !== "diagnostics" || !pairId) {
+      setWatchdogDiagnostics(null);
+      setWatchdogError(null);
+      return;
+    }
+    setWatchdogDiagnostics(null);
+    setWatchdogError(null);
+    let disposed = false;
+    let loading = false;
+    const refresh = async () => {
+      if (loading) return;
+      loading = true;
+      try {
+        const next = await getJson<ActivityWatchdogDiagnostics>(`/api/pairs/${encodeURIComponent(pairId)}/activity-watchdogs`);
+        if (!disposed) {
+          setWatchdogDiagnostics(next);
+          setWatchdogError(null);
+        }
+      } catch (error) {
+        if (!disposed) {
+          setWatchdogDiagnostics(null);
+          setWatchdogError(error instanceof Error ? error.message : String(error));
+        }
+      } finally {
+        loading = false;
+      }
+    };
+    void refresh();
+    const interval = window.setInterval(() => { void refresh(); }, 2_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, [active, activeSection, pairId]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !active || activeSection !== "providers") return;
@@ -1254,6 +1302,34 @@ export function SettingsDashboard({ active, activeSection }: { active: boolean; 
             </button>
           )}
         >
+          <SubGroup title="Activity watchdogs">
+            <p className="settings-subgroup-copy">Live supervision for the selected session's Worker handoffs and review activity.</p>
+            {watchdogError ? <div className="settings-watchdog-error" role="alert">{watchdogError}</div> : null}
+            {!pairId ? (
+              <div className="settings-watchdog-empty">Select a session to inspect its activity watchdogs.</div>
+            ) : watchdogDiagnostics?.watchdogs.length ? (
+              <div className="settings-watchdog-table" role="table" aria-label="Active activity watchdogs">
+                <div className="settings-watchdog-row is-head" role="row">
+                  <span role="columnheader">Supervision</span>
+                  <span role="columnheader">Target</span>
+                  <span role="columnheader">Cadence</span>
+                  <span role="columnheader">Checks</span>
+                </div>
+                {watchdogDiagnostics.watchdogs.map((watchdog) => (
+                  <div className="settings-watchdog-row" role="row" key={watchdog.id}>
+                    <strong role="cell">{watchdog.label}</strong>
+                    <span className="is-target" role="cell" title={watchdog.target ?? watchdog.id}>{watchdogTarget(watchdog)}</span>
+                    <span className="is-cadence" role="cell">Every {watchdogCadence(watchdog.intervalMs)}</span>
+                    <span className={`is-checks ${watchdog.checkCount > 0 ? "" : "is-waiting"}`} role="cell">{watchdog.checkCount > 0 ? watchdog.checkCount.toLocaleString() : "Waiting"}</span>
+                  </div>
+                ))}
+              </div>
+            ) : watchdogDiagnostics ? (
+              <div className="settings-watchdog-empty">No handoffs or reviews need supervision right now.</div>
+            ) : (
+              <div className="settings-watchdog-empty">Loading activity watchdogs…</div>
+            )}
+          </SubGroup>
           <SubGroup title="Connection tests">
             <div className="settings-diag-summary">
               <span className="settings-diag-count is-ok">{okCount} healthy</span>

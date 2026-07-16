@@ -1,7 +1,5 @@
 import { ActivityWatchdogService } from "./activity-watchdog.js";
 
-const DELEGATION_WATCHDOG_INTERVAL_MS = 10_000;
-
 export class ButlerDelegationWatchdogs {
   private readonly checksInFlight = new Set<string>();
 
@@ -17,7 +15,8 @@ export class ButlerDelegationWatchdogs {
     this.unregister(threadId);
     this.options.watchdogs.register({
       id,
-      intervalMs: DELEGATION_WATCHDOG_INTERVAL_MS,
+      policy: "delegation-reconciliation",
+      target: threadId,
       callback: () => { void this.runCheck(threadId); }
     });
   }

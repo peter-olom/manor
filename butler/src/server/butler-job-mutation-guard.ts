@@ -80,7 +80,8 @@ export function monitorCallbackReviewCurrent(threadId: string, watchdogs?: Activ
     };
     registration = watchdogs.register({
       id: `review-current:${threadId}:${crypto.randomUUID()}`,
-      intervalMs: 50,
+      policy: "callback-review-currency",
+      target: threadId,
       callback: check
     });
     check();

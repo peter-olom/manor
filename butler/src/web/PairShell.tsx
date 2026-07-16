@@ -1443,7 +1443,7 @@ export function PairShell() {
               />
             </div>
             <div className={`workspace-view is-settings ${viewMode === "settings" ? "is-active" : ""}`}>
-              <SettingsDashboard active={viewMode === "settings"} activeSection={settingsSection} />
+              <SettingsDashboard active={viewMode === "settings"} activeSection={settingsSection} pairId={activePair?.id ?? null} />
             </div>
             <TerminalPane active={cliVisible} target={terminalTarget} onTarget={selectTerminalTarget} />
           </div>

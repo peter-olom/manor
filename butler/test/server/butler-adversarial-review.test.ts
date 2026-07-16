@@ -267,7 +267,7 @@ test("Pi adversarial review stops promptly when the callback is cancelled", asyn
   assert.ok(Date.now() - startedAt < 300);
 });
 
-test("native Codex review can outlive the former hard maximum while output continues", async () => {
+test("native Codex review tolerates startup delay and outlives the former hard maximum while output continues", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-review-active-child-"));
   const binDir = path.join(dir, "bin");
   const scratchDir = path.join(dir, "scratch");
@@ -277,10 +277,13 @@ test("native Codex review can outlive the former hard maximum while output conti
     "#!/usr/bin/env node",
     "const fs = require('node:fs');",
     "const outputIndex = process.argv.indexOf('--output-last-message') + 1;",
-    "process.stderr.write('.');",
-    "const heartbeat = setInterval(() => process.stderr.write('.'), 100);",
+    "let heartbeat = null;",
     "setTimeout(() => {",
-    "  clearInterval(heartbeat);",
+    "  process.stderr.write('.');",
+    "  heartbeat = setInterval(() => process.stderr.write('.'), 100);",
+    "}, 1800);",
+    "setTimeout(() => {",
+    "  if (heartbeat) clearInterval(heartbeat);",
     "  fs.writeFileSync(process.argv[outputIndex], JSON.stringify({ findings: [] }));",
     "  process.exit(0);",
     "}, 3200);"

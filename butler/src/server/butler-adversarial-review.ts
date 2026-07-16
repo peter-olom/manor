@@ -55,6 +55,7 @@ export const ADVERSARIAL_REVIEW_OUTPUT_SCHEMA = {
 
 const REVIEW_SEVERITIES = new Set(["info", "low", "medium", "high", "critical"]);
 const CODEX_REVIEW_TERMINATION_GRACE_MS = 250;
+const CODEX_REVIEW_STARTUP_GRACE_MS = 3_000;
 const PI_REVIEW_SUBMISSION_SCHEMA = Type.Object({
   findings: Type.Array(Type.Object({
     severity: Type.Union([Type.Literal("info"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("critical")]),
@@ -113,7 +114,9 @@ export async function waitForPiReviewSubmission(input: {
       watchdogId = input.watchdogId ?? `review-pi:${crypto.randomUUID()}`;
       input.watchdogs.register({
         id: watchdogId,
-        intervalMs: Math.min(100, input.timeoutMs),
+        policy: "review-activity",
+        target: "Pi reviewer",
+        maxIntervalMs: input.timeoutMs,
         callback: check
       });
     });
@@ -286,6 +289,7 @@ async function runCodexReview(input: ProviderAdversarialReviewInput): Promise<un
       let watchdogRegistration: ReturnType<ActivityWatchdogService["register"]> | null = null;
       let shutdownError: Error | null = null;
       let settled = false;
+      let hasProducedOutput = false;
       const clearWatchers = () => {
         watchdogRegistration?.unregister();
         watchdogRegistration = null;
@@ -311,19 +315,25 @@ async function runCodexReview(input: ProviderAdversarialReviewInput): Promise<un
         }
         const now = Date.now();
         const inactiveFor = now - lastActivityAt;
-        if (inactiveFor >= input.timeoutMs) {
+        const inactivityLimitMs = hasProducedOutput
+          ? input.timeoutMs
+          : Math.max(input.timeoutMs, CODEX_REVIEW_STARTUP_GRACE_MS);
+        if (inactiveFor >= inactivityLimitMs) {
           shutdown(reviewTimeoutError(input, lastProgress));
           return;
         }
       };
       watchdogRegistration = input.watchdogs.register({
         id: `review-codex:${runId}`,
-        intervalMs: Math.min(100, input.timeoutMs),
+        policy: "review-activity",
+        target: "Codex reviewer",
+        maxIntervalMs: input.timeoutMs,
         callback: checkTimeout
       });
       let lastOutputReportAt = 0;
       const noteOutput = (stream: "stdout" | "stderr", chunk: Buffer) => {
         const now = Date.now();
+        hasProducedOutput = true;
         lastActivityAt = now;
         if (now - lastOutputReportAt < 1000) return;
         lastOutputReportAt = now;

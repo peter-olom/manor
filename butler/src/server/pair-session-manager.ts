@@ -32,10 +32,11 @@ import { pageWorkerProofRecords, pageWorkerThread } from "./worker-thread-page.j
 import { listWorkspaceProjectDirectories, validateWorkspaceCwd, type WorkspaceProjectDirectory } from "./repo-worktree.js";
 import { buildManorSkillRoutingContext, listManorSkillCapabilities, normalizeManorSkillName, parseManorSkillInvocation, skillAvailabilityDetail } from "./manor-skill-routing.js";
 import type { AutomationDispatchResult } from "./session-automation-scheduler.js";
+import type { ActivityWatchdogDiagnostics } from "../shared/activity-watchdog.js";
 
 type PairButlerService = Pick<
   ButlerAgentService,
-  "answerOperatorQuestion" | "cancelCallbackReview" | "dispose" | "ensureExternalWorkerDelegation" | "exportSession" | "getLiveSnapshot" | "getMessagePage" | "getSessionControls" | "getShellSnapshot" | "handoffWorker" | "listComposerCommands" | "on" | "postAutomationNotice" | "prompt" | "quiesceCallbackReviews" | "refreshModelSettings" | "reloadResources" | "retryBlockedCallbackReviews" | "runAutomationPrompt" | "runSessionControl" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings"
+  "answerOperatorQuestion" | "cancelCallbackReview" | "dispose" | "ensureExternalWorkerDelegation" | "exportSession" | "getLiveSnapshot" | "getMessagePage" | "getSessionControls" | "getShellSnapshot" | "handoffWorker" | "listComposerCommands" | "on" | "postAutomationNotice" | "prompt" | "quiesceCallbackReviews" | "refreshModelSettings" | "reloadResources" | "retryBlockedCallbackReviews" | "runAutomationPrompt" | "runSessionControl" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings" | "watchdogs"
 >;
 
 type PairSessionManagerOptions = {
@@ -592,6 +593,12 @@ export class PairSessionManager {
       hasMore: page.hasMore,
       compose: this.resolveCompose(refreshed, service)
     };
+  }
+
+  async getActivityWatchdogs(pairId: string): Promise<ActivityWatchdogDiagnostics | null> {
+    if (!this.options.pairStore.getPair(pairId)) return null;
+    const watchdogs = (await this.ensureService(pairId)).watchdogs.snapshot();
+    return { activeCount: watchdogs.length, watchdogs };
   }
 
   updatePairTitle(pairId: string, title: string): PairDetail | null {

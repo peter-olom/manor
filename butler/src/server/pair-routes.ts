@@ -61,6 +61,19 @@ export function registerPairRoutes(access: PairRouteAccess): void {
     }
   });
 
+  app.get("/api/pairs/:pairId/activity-watchdogs", async (request, response) => {
+    try {
+      const diagnostics = await pairSessions.getActivityWatchdogs(request.params.pairId);
+      if (!diagnostics) {
+        response.status(404).json({ error: "Butler session not found" });
+        return;
+      }
+      response.json(diagnostics);
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.get("/api/pairs/:pairId/composer-suggestions", async (request, response) => {
     const trigger = request.query.trigger === "@" || request.query.trigger === "$" || request.query.trigger === "/"
       ? request.query.trigger

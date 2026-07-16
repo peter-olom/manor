@@ -399,7 +399,9 @@ export async function runCallbackAdversarialReview(input: {
       watchdogId = `review-supervisor:${callback.threadId}:${callback.reviewAttempt ?? 0}:${crypto.randomUUID()}`;
       input.watchdogs.register({
         id: watchdogId,
-        intervalMs: Math.min(100, supervisorTimeoutMs),
+        policy: "review-activity",
+        target: callback.threadId,
+        maxIntervalMs: supervisorTimeoutMs,
         callback: check
       });
     });

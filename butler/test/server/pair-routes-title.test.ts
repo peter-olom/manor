@@ -85,6 +85,22 @@ function createFakePairSessions(initialPair: PairDetail = makePair()) {
       async getPairDetail(pairId: string): Promise<PairDetail | null> {
         return pairs.get(pairId) ?? null;
       },
+      async getActivityWatchdogs(pairId: string) {
+        if (!pairs.has(pairId)) return null;
+        return {
+          activeCount: 1,
+          watchdogs: [{
+            id: "delegation:worker-one",
+            policy: "delegation-reconciliation" as const,
+            label: "Worker handoff",
+            target: "worker-one",
+            intervalMs: 10_000,
+            registeredAt: 1,
+            lastCheckedAt: 2,
+            checkCount: 3
+          }]
+        };
+      },
       async listWorkspaces(): Promise<PairWorkspaceOption[]> {
         return workspaces;
       },
@@ -351,6 +367,25 @@ test("GET /api/pairs/:pairId/composer-suggestions scopes suggestions to the acti
     assert.equal(res.status, 200);
     const body = await res.json() as { suggestions: Array<{ kind: string }> };
     assert.deepEqual(body.suggestions.map((suggestion) => suggestion.kind), ["file"]);
+  } finally {
+    await close();
+  }
+});
+
+test("GET /api/pairs/:pairId/activity-watchdogs returns selected-session supervision", async () => {
+  const fake = createFakePairSessions();
+  const { url, close } = await listen(mountRoutes(fake.manager));
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/activity-watchdogs`);
+    assert.equal(res.status, 200);
+    const body = await res.json() as { activeCount: number; watchdogs: Array<{ policy: string; target: string; checkCount: number }> };
+    assert.equal(body.activeCount, 1);
+    assert.deepEqual(body.watchdogs.map(({ policy, target, checkCount }) => ({ policy, target, checkCount })), [
+      { policy: "delegation-reconciliation", target: "worker-one", checkCount: 3 }
+    ]);
+
+    const missing = await fetch(`${url}/api/pairs/missing/activity-watchdogs`);
+    assert.equal(missing.status, 404);
   } finally {
     await close();
   }
