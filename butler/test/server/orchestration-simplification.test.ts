@@ -119,6 +119,7 @@ test("delegation starts worker directly with deterministic routing metadata", as
   let delegatedFileReferenceIds: string[] = [];
   let requestedCwd: string | undefined;
   const tool = buildButlerDelegationTools({
+    prepareWorkerWorkspace: async () => undefined,
     defineButlerTool: (definition) => definition,
     getToolUiEffects: () => [],
     getWorkerDefaults: () => ({ runtime: "auto", threadId: null, cwd: "/workspace" }),
@@ -188,6 +189,7 @@ test("delegation cleans up a Worker when the occupied pair rejects attachment", 
   let deletedThreadId: string | null = null;
   let callbackRegistrations = 0;
   const tool = buildButlerDelegationTools({
+    prepareWorkerWorkspace: async () => undefined,
     defineButlerTool: (definition) => definition,
     getToolUiEffects: () => [],
     prepareDelegationWorkspace: async () => ({ cwd: "/workspace", branchName: null }),
@@ -229,6 +231,7 @@ test("supervision smoke test stops and deletes a Worker when pair attachment is 
   let callbackRegistrations = 0;
   const smokePlans = new Map();
   const tool = buildButlerDelegationTools({
+    prepareWorkerWorkspace: async () => undefined,
     runtimeThreadId: "butler:pair-1",
     defineButlerTool: (definition) => definition,
     getToolUiEffects: () => [],
@@ -272,6 +275,7 @@ test("delegation contract receives the resolved workspace cwd", async () => {
   const store = await createStore();
   let capturedWorkspace: { cwd: string; branchName: string | null } | null = null;
   const tool = buildButlerDelegationTools({
+    prepareWorkerWorkspace: async () => undefined,
     defineButlerTool: (definition) => definition,
     getToolUiEffects: () => [],
     prepareDelegationWorkspace: async () => ({ cwd: "/repos/project", branchName: "main" }),
@@ -317,6 +321,7 @@ test("shared repository bootstrap delegation keeps the bootstrap note", async ()
   let capturedNotes: string[] | undefined;
   const store = await createStore();
   const tool = buildButlerDelegationTools({
+    prepareWorkerWorkspace: async () => undefined,
     defineButlerTool: (definition) => definition,
     getToolUiEffects: () => [],
     prepareDelegationWorkspace: async () => ({ cwd: "/repos", branchName: null }),

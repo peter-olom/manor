@@ -127,6 +127,7 @@ function access(overrides: Record<string, unknown> = {}) {
         async loadThread() {}
       },
       getCodexAuthStatus: () => ({ loggedIn: true }),
+      prepareWorkerWorkspace: async () => undefined,
       recordSuccessfulWorkerSelection(selection: { harness: string; provider: string; model: string; effort?: string | null }) {
         affinityRecords.push(selection);
       },
@@ -1196,6 +1197,7 @@ test("direct Manor Worker starts are serialized on the active source checkout", 
   const startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
   const started = new Promise<void>((resolve) => { noteStart = resolve; });
   let startCount = 0;
+  const prepared: string[] = [];
   const ctx = access({
     store: {
       listThreads: () => active ? [{ id: "manor-worker-1", cwd: sourceCwd }] : [],
@@ -1224,7 +1226,8 @@ test("direct Manor Worker starts are serialized on the active source checkout", 
         active = true;
         return { threadId: "manor-worker-1", turnId: "turn-1" };
       }
-    }
+    },
+    prepareWorkerWorkspace: async (cwd: string) => { prepared.push(cwd); }
   });
 
   await withEnvAsync({ MANOR_SELF_IMPROVEMENT_SOURCE_CWD: sourceCwd }, async () => {
@@ -1238,6 +1241,7 @@ test("direct Manor Worker starts are serialized on the active source checkout", 
     await secondRejected;
     await startWorkerThread(ctx.access, { task: "Unrelated sibling change", cwd: `${sourceCwd}-sibling` });
     assert.equal(startCount, 2);
+    assert.deepEqual(prepared, [sourceCwd, `${sourceCwd}-sibling`]);
   });
 });
 

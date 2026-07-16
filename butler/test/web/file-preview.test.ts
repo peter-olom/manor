@@ -11,7 +11,7 @@ import {
   buildSandboxedHtmlPreview,
   isSafeHtmlReference
 } from "../../src/web/FilePreviewModal.js";
-import { MarkdownImage } from "../../src/web/Markdown.js";
+import { MarkdownImage, MarkdownPre } from "../../src/web/Markdown.js";
 
 test("HTML preview policy blocks active content and remote resources", () => {
   assert.match(BLOCKED_HTML_SELECTORS, /script/);
@@ -67,4 +67,9 @@ test("uploaded Markdown image syntax produces no network-capable image element",
   assert.doesNotMatch(omitted, /<img/i);
   assert.doesNotMatch(omitted, /tracker\.example/);
   assert.match(omitted, /Image omitted: tracking pixel/);
+});
+
+test("Markdown code blocks are keyboard-scrollable", () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownPre, null, "long command"));
+  assert.match(markup, /tabindex="0"/);
 });

@@ -8,6 +8,10 @@ export function MarkdownImage({ allowRemoteImages, alt, ...rest }: ComponentProp
     : <span className="md-image-omitted">{alt ? `Image omitted: ${alt}` : "Remote image omitted"}</span>;
 }
 
+export function MarkdownPre({ node: _node, ...props }: ComponentProps<"pre"> & { node?: unknown }) {
+  return <pre {...props} tabIndex={0} />;
+}
+
 const ReactMarkdown = lazy(async () => {
   const [{ default: Markdown }, remarkGfmModule, rehypeHighlightModule] = await Promise.all([
     import("react-markdown"),
@@ -21,11 +25,11 @@ const ReactMarkdown = lazy(async () => {
       allowRemoteImages?: boolean;
       onProjectArtifactOpen?: (target: ProjectArtifactPreviewTarget) => void;
     }) => (
-      <Markdown
-        className={className}
-        remarkPlugins={[remarkGfmModule.default]}
-        rehypePlugins={[[rehypeHighlightModule.default, { detect: true, ignoreMissing: true }]]}
-        components={{
+      <div className={className}>
+        <Markdown
+          remarkPlugins={[remarkGfmModule.default]}
+          rehypePlugins={[[rehypeHighlightModule.default, { detect: true, ignoreMissing: true }]]}
+          components={{
           a: ({ children, href, ...rest }) => {
             const target = href ? parseProjectArtifactPreviewTarget(href) : null;
             const isDownload = href ? isProjectArtifactDownloadUrl(href) : false;
@@ -52,11 +56,13 @@ const ReactMarkdown = lazy(async () => {
               <table>{children}</table>
             </div>
           ),
+          pre: MarkdownPre,
           img: ({ alt, ...rest }) => <MarkdownImage allowRemoteImages={allowRemoteImages} alt={alt ?? ""} {...rest} />
-        }}
-      >
-        {text}
-      </Markdown>
+          }}
+        >
+          {text}
+        </Markdown>
+      </div>
     )
   };
 });

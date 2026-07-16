@@ -1,16 +1,13 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
 import type { SelfImprovementRequestState } from "./self-improvement-request-state.js";
 import type { PairStore } from "./pair-store.js";
 import type { PairSessionManager } from "./pair-session-manager.js";
 import type { ButlerStateStore } from "./state-store.js";
 import { buildSelfImprovementTask } from "./butler-self-improvement.js";
 import { runSerializedJobMutation } from "./butler-job-mutation-guard.js";
+import { execFileAsWorker } from "./repo-worktree.js";
 import { stopWorkerThread, type WorkerClientAccess } from "./worker-client-router.js";
 import type { SelfImprovementRequestView } from "../shared/self-improvement.js";
 
-const execFileAsync = promisify(execFile);
 type SelfImprovementPairLifecycle = Pick<PairSessionManager, "quiescePair" | "resumePair" | "deletePair">;
 let selfImprovementPairLifecycle: SelfImprovementPairLifecycle | null = null;
 const selfImprovementActionTails = new Map<string, Promise<void>>();
@@ -156,8 +153,38 @@ export async function reconcileInterruptedSelfImprovementRequests(
 }
 
 async function git(args: string[], cwd: string): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["-c", "safe.directory=*", ...args], { cwd });
+  const env = workerPublishingEnv();
+  const { stdout } = await execFileAsWorker(
+    "git",
+    [
+      "-c", "safe.directory=*",
+      "-c", "core.hooksPath=/dev/null",
+      "-c", "core.fsmonitor=false",
+      "-c", "credential.helper=",
+      "-c", "credential.helper=!gh auth git-credential",
+      "-c", `user.name=${env.GIT_AUTHOR_NAME}`,
+      "-c", `user.email=${env.GIT_AUTHOR_EMAIL}`,
+      ...args
+    ],
+    cwd,
+    undefined,
+    env
+  );
   return String(stdout).trim();
+}
+
+function workerPublishingEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    GH_CONFIG_DIR: process.env.MANOR_WORKER_GH_CONFIG_DIR ?? "/codex-config/gh",
+    GIT_AUTHOR_NAME: process.env.MANOR_GIT_AUTHOR_NAME ?? "Manor Worker",
+    GIT_AUTHOR_EMAIL: process.env.MANOR_GIT_AUTHOR_EMAIL ?? "worker@manor.local",
+    GIT_COMMITTER_NAME: process.env.MANOR_GIT_AUTHOR_NAME ?? "Manor Worker",
+    GIT_COMMITTER_EMAIL: process.env.MANOR_GIT_AUTHOR_EMAIL ?? "worker@manor.local"
+  };
+  for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"]) {
+    if (process.env[name]) env[name] = process.env[name];
+  }
+  return env;
 }
 
 function readWorkspaceRequest(requests: SelfImprovementRequestState, requestId: string): SelfImprovementRequestView & { workspaceCwd: string } {
@@ -257,7 +284,8 @@ export async function openSelfImprovementPullRequest(
     }
     if (!existingCommit) await git(["branch", branchName, current.commitSha], current.workspaceCwd);
     await git(["push", "--set-upstream", "origin", branchName], current.workspaceCwd);
-    const { stdout } = await execFileAsync("gh", ["pr", "create", "--draft", "--head", branchName, "--base", baseBranch, "--title", prTitle, "--body", prBody], { cwd: current.workspaceCwd });
+    const env = workerPublishingEnv();
+    const { stdout } = await execFileAsWorker("gh", ["pr", "create", "--draft", "--head", branchName, "--base", baseBranch, "--title", prTitle, "--body", prBody], current.workspaceCwd, undefined, env);
     const output = String(stdout).trim();
     const pullRequestUrl = output.split(/\s+/).find((part) => part.startsWith("http")) ?? output;
     const updated = requests.update(current.id, { status: "pr_opened", branchName, pullRequestUrl });

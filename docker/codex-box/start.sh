@@ -40,6 +40,9 @@ if gh auth status --hostname "${github_host}" >/dev/null 2>&1; then
   gh auth setup-git --hostname "${github_host}" >/dev/null 2>&1 || true
 fi
 
+git config --global --get user.name >/dev/null 2>&1 || git config --global user.name "${MANOR_GIT_AUTHOR_NAME:-Manor Worker}"
+git config --global --get user.email >/dev/null 2>&1 || git config --global user.email "${MANOR_GIT_AUTHOR_EMAIL:-worker@manor.local}"
+
 # Keep the interactive browser terminal on zsh, but force the Codex app-server
 # process onto a plain shell so command execution does not try to launch zsh.
 export SHELL=/usr/bin/bash

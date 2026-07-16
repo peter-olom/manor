@@ -46,7 +46,9 @@ RUN apt-get update \
     curl \
     fd-find \
     git \
+    gh \
     ripgrep \
+    util-linux \
     zsh \
     zsh-autosuggestions \
     zsh-syntax-highlighting \

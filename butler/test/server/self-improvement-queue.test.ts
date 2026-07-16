@@ -492,6 +492,7 @@ test("approval creates a visible session and preserves immediate Worker completi
     app,
     requests: state,
     hostController: { getStatus: async () => ({ ok: true, active: null, latestRun: null }) } as never,
+    prepareWorkerWorkspace: async () => undefined,
     store,
     codexClient: {
       getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "high", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["high"], supportedReasoningEfforts: ["high"], defaultReasoningEffort: "high" }] } }),
@@ -590,6 +591,7 @@ test("approval is serialized while another self-improvement worker owns the chec
     app,
     requests: state,
     hostController: { getStatus: async () => ({ ok: true, active: null, latestRun: null }) } as never,
+    prepareWorkerWorkspace: async () => undefined,
     store: {} as never,
     codexClient: { startThread: async () => { started = true; throw new Error("should not start"); } } as never,
     imageStore: { resolveViews: () => [] } as never,
@@ -645,6 +647,7 @@ test("approval deletes the Worker and pair when post-pair setup fails", async ()
     app,
     requests: state,
     hostController: { getStatus: async () => ({ ok: true, active: null, latestRun: null }) } as never,
+    prepareWorkerWorkspace: async () => undefined,
     store: routeStore,
     codexClient: {
       getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "high", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["high"], supportedReasoningEfforts: ["high"], defaultReasoningEffort: "high" }] } }),
@@ -730,14 +733,19 @@ test("source-first eligibility requires controller status and a writable Git che
     await execFileAsync("git", ["init"], { cwd: dir });
     const enabled = await resolveSelfImprovementEligibility({
       getStatus: async () => ({ ok: true, active: null, latestRun: null })
-    } as never);
+    } as never, async () => undefined);
     const disabled = await resolveSelfImprovementEligibility({
       getStatus: async () => { throw new Error("offline"); }
-    } as never);
+    } as never, async () => undefined);
+    const workerBlocked = await resolveSelfImprovementEligibility({
+      getStatus: async () => ({ ok: true, active: null, latestRun: null })
+    } as never, async () => { throw new Error("worker uid cannot write"); });
 
     assert.equal(enabled.enabled, true);
     assert.equal(disabled.enabled, false);
     assert.match(disabled.reasons.join(" "), /status is unavailable/);
+    assert.equal(workerBlocked.enabled, false);
+    assert.match(workerBlocked.reasons.join(" "), /worker uid cannot write/);
   } finally {
     if (previous === undefined) {
       delete process.env.MANOR_SELF_IMPROVEMENT_SOURCE_CWD;

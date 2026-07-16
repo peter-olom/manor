@@ -98,6 +98,7 @@ async function createServer(
       getFilePath: (id: string) => (options.fileReferences ?? []).find((entry) => entry.id === id)?.filePath ?? null
     } as never,
     prepareScratchWorkspace: options.prepareScratchWorkspace as never,
+    prepareWorkerWorkspace: async () => undefined,
     cleanupScratchWorkspace: options.cleanupScratchWorkspace
   });
 

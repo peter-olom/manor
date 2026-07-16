@@ -1,10 +1,30 @@
-import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import {
+  ensureWorkerOwnedDirectory,
+  execFileAsWorker,
+  resolveCodexWorkerOwnership,
+  type WorkerOwnership
+} from "./repo-worktree.js";
+
 type GitOutputResult = { output: string; ok: boolean; truncated: boolean };
+
+function reviewWorkerOwnership(): WorkerOwnership {
+  const configured = resolveCodexWorkerOwnership();
+  const uid = process.getuid?.();
+  const gid = process.getgid?.();
+  if (uid === undefined || gid === undefined || (process.platform === "linux" && (uid === 0 || uid === configured.uid))) {
+    return configured;
+  }
+  return { uid, gid, label: `current process (${uid}:${gid})` };
+}
+
+function safeGitArgs(args: string[]): string[] {
+  return ["-c", "safe.directory=*", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args];
+}
 
 async function gitOutputResult(
   cwd: string,
@@ -12,30 +32,24 @@ async function gitOutputResult(
   maxLength = 160_000,
   env?: NodeJS.ProcessEnv
 ): Promise<GitOutputResult> {
-  return await new Promise<GitOutputResult>((resolve) => {
-    const child = spawn("git", args, {
+  try {
+    const { stdout } = await execFileAsWorker(
+      "git",
+      safeGitArgs(args),
       cwd,
-      env: env ? { ...process.env, ...env } : process.env,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    let stdout = "";
-    let truncated = false;
-    let timedOut = false;
-    let settled = false;
-    const finish = (result: GitOutputResult) => {
-      if (settled) return;
-      settled = true;
-      resolve(result);
-    };
-    const timeout = setTimeout(() => { timedOut = true; child.kill("SIGTERM"); }, 10_000);
-    child.stdout.on("data", (chunk: Buffer) => {
-      const next = `${stdout}${chunk.toString("utf8")}`;
-      if (next.length > maxLength) truncated = true;
-      stdout = next.slice(0, maxLength);
-    });
-    child.on("error", () => { clearTimeout(timeout); finish({ output: "", ok: false, truncated }); });
-    child.on("close", (code) => { clearTimeout(timeout); finish({ output: stdout.trim(), ok: code === 0 && !timedOut, truncated }); });
-  });
+      reviewWorkerOwnership(),
+      env ?? {},
+      { maxBuffer: maxLength + 1, timeout: 10_000 }
+    );
+    const output = stdout.toString();
+    return { output: output.slice(0, maxLength).trim(), ok: output.length <= maxLength, truncated: output.length > maxLength };
+  } catch (error) {
+    const output = typeof (error as { stdout?: unknown }).stdout === "string"
+      ? (error as { stdout: string }).stdout
+      : "";
+    const truncated = output.length > maxLength || (error as { code?: unknown }).code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+    return { output: output.slice(0, maxLength).trim(), ok: false, truncated };
+  }
 }
 
 async function gitOutput(cwd: string, args: string[], maxLength = 160_000, env?: NodeJS.ProcessEnv): Promise<string> {
@@ -44,12 +58,7 @@ async function gitOutput(cwd: string, args: string[], maxLength = 160_000, env?:
 }
 
 async function gitSucceeds(cwd: string, args: string[], env: NodeJS.ProcessEnv): Promise<boolean> {
-  return await new Promise<boolean>((resolve) => {
-    const child = spawn("git", args, { cwd, env: { ...process.env, ...env }, stdio: "ignore" });
-    const timeout = setTimeout(() => child.kill("SIGTERM"), 10_000);
-    child.on("error", () => { clearTimeout(timeout); resolve(false); });
-    child.on("close", (code) => { clearTimeout(timeout); resolve(code === 0); });
-  });
+  return (await gitOutputResult(cwd, args, 8_000, env)).ok;
 }
 
 export async function resolveGitRoot(cwd: string): Promise<string | null> {
@@ -71,7 +80,10 @@ function snapshotObjectEnv(objectDir: string, repositoryObjectDir: string): Node
 
 async function captureWorktreeTree(cwd: string, objectDir: string, repositoryObjectDir: string): Promise<string | null> {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "manor-review-index-"));
-  await fs.mkdir(objectDir, { recursive: true });
+  const ownership = reviewWorkerOwnership();
+  await ensureWorkerOwnedDirectory(tempDir, ownership);
+  await ensureWorkerOwnedDirectory(path.dirname(objectDir), ownership);
+  await ensureWorkerOwnedDirectory(objectDir, ownership);
   const env = { ...snapshotObjectEnv(objectDir, repositoryObjectDir), GIT_INDEX_FILE: path.join(tempDir, "index") };
   try {
     if (!await gitSucceeds(cwd, ["add", "-A", "--", "."], env)) return null;
@@ -164,6 +176,7 @@ export async function createScopedReviewWorkspace(input: {
   );
   const reviewDir = await fs.mkdtemp(path.join(os.tmpdir(), "manor-scoped-review-"));
   try {
+    await ensureWorkerOwnedDirectory(reviewDir, reviewWorkerOwnership());
     if (!await gitSucceeds(reviewDir, ["init", "--quiet"], {})) throw new Error("git init failed");
     const alternatesPath = path.join(reviewDir, ".git", "objects", "info", "alternates");
     await fs.mkdir(path.dirname(alternatesPath), { recursive: true });

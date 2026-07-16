@@ -12,6 +12,7 @@ import { runSerializedJobMutation } from "./butler-job-mutation-guard.js";
 import { buildWorkerInputWithReferences } from "./reference-inputs.js";
 import {
   cleanupManagedWorktree,
+  ensureWorkspaceWritableForWorker,
   ensureTaskWorktree,
   isManagedWorktree,
   resolveExistingWorkspaceCwd,
@@ -43,6 +44,7 @@ type ScratchPadRoutesAccess = {
   fileStore: FileReferenceStore;
   prepareScratchWorkspace?: (item: ScratchPadItemView, task: string, baseCwd: string) => Promise<ScratchWorkspace>;
   cleanupScratchWorkspace?: (cwd: string) => Promise<number>;
+  prepareWorkerWorkspace?: typeof ensureWorkspaceWritableForWorker;
 };
 
 function buildScratchTask(item: ScratchPadItemView): string {

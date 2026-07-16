@@ -17,6 +17,7 @@ import type { ModelOption, ReasoningEffort } from "./types.js";
 import { workerExecutionEndAt } from "./worker-execution-window.js";
 import { workerFileChangeAttribution } from "./worker-review-attribution.js";
 import { isWorkerReviewBaselineReferenced } from "./worker-review-baseline.js";
+import { ensureWorkspaceWritableForWorker } from "./repo-worktree.js";
 import { workerThreadIsRunning } from "./worker-thread-status.js";
 import { WorkerTransportDeadError, type WorkerThreadInterventionResult, type WorkerThreadProbeResult, type WorkerThreadRuntimeProbe } from "./worker-thread-runtime-probe.js";
 import {
@@ -38,6 +39,7 @@ export type WorkerClientAccess = {
   getWorkerAffinity?: () => WorkerProviderAffinity | null;
   recordSuccessfulWorkerSelection?: (input: { harness: string; provider: string; model: string; effort?: string | null }) => unknown;
   cleanupReviewBaseline?: typeof cleanupGitReviewBaseline;
+  prepareWorkerWorkspace?: typeof ensureWorkspaceWritableForWorker;
 };
 
 type WorkerStartOptions = {
@@ -521,6 +523,7 @@ async function withManorSourceStartLock<T>(operation: () => Promise<T>): Promise
 
 export async function startWorkerThread(access: WorkerClientAccess, options: WorkerStartOptions): Promise<WorkerThreadStartResult> {
   if (!isManorSourceCheckout(options.cwd)) {
+    if (options.cwd) await (access.prepareWorkerWorkspace ?? ensureWorkspaceWritableForWorker)(options.cwd);
     return startWorkerThreadUnlocked(access, options);
   }
   return withManorSourceStartLock(async () => {
@@ -531,6 +534,7 @@ export async function startWorkerThread(access: WorkerClientAccess, options: Wor
     if (!options.ownsManorSourceCheckoutReservation && isSelfImprovementSourceCheckoutReserved()) {
       throw new Error("The active Manor source checkout is reserved by an open self-improvement request. Close that request before delegating another Manor Worker.");
     }
+    await (access.prepareWorkerWorkspace ?? ensureWorkspaceWritableForWorker)(options.cwd!);
     return startWorkerThreadUnlocked(access, options);
   });
 }

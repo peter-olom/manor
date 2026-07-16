@@ -1978,6 +1978,7 @@ a:hover {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
   width: fit-content;
   max-width: min(680px, calc(100% - 56px));
   padding: 9px 12px;
@@ -2066,6 +2067,8 @@ a:hover {
   font-size: 13px;
   line-height: 1.55;
   color: var(--text);
+  min-width: 0;
+  max-width: 100%;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -2552,12 +2555,14 @@ a:hover {
 }
 
 .bubble-body pre {
+  max-width: 100%;
   margin: 8px 0;
   padding: 10px 12px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.55;
@@ -4128,6 +4133,8 @@ a:hover {
   font-size: 13px;
   line-height: 1.55;
   color: var(--text);
+  min-width: 0;
+  max-width: 100%;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -4138,6 +4145,12 @@ a:hover {
 
 .worker-message-body > :last-child {
   margin-bottom: 0;
+}
+
+.worker-message-body pre {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
 }
 
 .worker-payload {

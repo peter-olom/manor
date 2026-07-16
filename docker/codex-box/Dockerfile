@@ -81,7 +81,7 @@ RUN apt-get update \
 
 COPY --from=tools /usr/local/bin/ttyd /usr/local/bin/ttyd
 COPY --from=tools /opt/manor/npm-global /opt/manor/npm-global
-COPY --from=tools /opt/manor/ohmyzsh /home/worker/.oh-my-zsh
+COPY --chown=worker:worker --from=tools /opt/manor/ohmyzsh /home/worker/.oh-my-zsh
 COPY --from=worker-runtime-deps /opt/manor/worker/node_modules /opt/manor/worker/node_modules
 COPY --from=worker-build /opt/manor/worker/dist/server /opt/manor/worker/dist/server
 COPY docker/codex-box/start.sh /usr/local/bin/start-codex-app-server
@@ -96,8 +96,8 @@ COPY docker/codex-box/runtime-guard.sh /opt/manor/codex-box/runtime-guard.sh
 COPY docker/codex-box/manor-shell-env.sh /etc/profile.d/manor-shell-env.sh
 COPY docker/codex-box/healthcheck.mjs /opt/manor/codex-box/healthcheck.mjs
 COPY docker/codex-box/worker-pi-rpc-bridge.mjs /opt/manor/codex-box/worker-pi-rpc-bridge.mjs
-COPY docker/codex-box/zshrc /home/worker/.zshrc
-COPY docker/codex-box/zprofile /home/worker/.zprofile
+COPY --chown=worker:worker docker/codex-box/zshrc /home/worker/.zshrc
+COPY --chown=worker:worker docker/codex-box/zprofile /home/worker/.zprofile
 
 ENV MANOR_REAL_PATH="/home/worker/.local/bin:/home/worker/.local/share/mise/shims:/home/worker/.local/share/mise/bin:/opt/manor/npm-global/bin:${PATH}"
 ENV PATH="/opt/manor/codex-box/install-guard-bin:${MANOR_REAL_PATH}"

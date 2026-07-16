@@ -12,6 +12,7 @@ import type { ImageReferenceStore } from "./image-store.js";
 import { bindJobPayloadDelivery, jobPayloadsRoot, persistJobPayload } from "./job-instruction-artifacts.js";
 import type { PairSessionManager } from "./pair-session-manager.js";
 import { buildWorkerInputWithReferences } from "./reference-inputs.js";
+import { ensureWorkspaceWritableForWorker } from "./repo-worktree.js";
 import { commitSelfImprovementRequest, discardSelfImprovementRequest, openSelfImprovementPullRequest, runSerializedSelfImprovementAction } from "./self-improvement-actions.js";
 import { resolveSelfImprovementEligibility } from "./self-improvement-eligibility.js";
 import type { SelfImprovementRequestState } from "./self-improvement-request-state.js";
@@ -32,6 +33,7 @@ type RouteAccess = {
   getCodexAuthStatus?: () => { loggedIn: boolean };
   getWorkerAffinity?: WorkerClientAccess["getWorkerAffinity"];
   recordSuccessfulWorkerSelection?: WorkerClientAccess["recordSuccessfulWorkerSelection"];
+  prepareWorkerWorkspace?: WorkerClientAccess["prepareWorkerWorkspace"];
 };
 
 function readText(value: unknown): string {
@@ -66,7 +68,8 @@ export function registerSelfImprovementRoutes(access: RouteAccess): void {
     try {
       const current = requests.get(request.params.requestId);
       if (!current || current.status !== "pending") throw new Error("Only pending self-improvement requests can be approved.");
-      const eligibility = await resolveSelfImprovementEligibility(hostController);
+      const prepareWorkerWorkspace = access.prepareWorkerWorkspace ?? ensureWorkspaceWritableForWorker;
+      const eligibility = await resolveSelfImprovementEligibility(hostController, prepareWorkerWorkspace);
       if (!eligibility.enabled) throw new Error(`Self-improvement is disabled: ${eligibility.reasons.join(" ")}`);
       if (requests.hasSourceCheckoutOwner(current.id)) throw new Error("Another self-improvement worker is already using the active Manor source checkout.");
       const approved = requests.update(current.id, { status: "approved", approvedAt: Date.now() });
@@ -79,7 +82,7 @@ export function registerSelfImprovementRoutes(access: RouteAccess): void {
       };
       const developerInstructions = buildDelegationDeveloperInstructions(workspace, task);
       let delegation: Awaited<ReturnType<typeof buildButlerDelegationContract>> | null = null;
-      const result = await startWorkerThread(access, {
+      const result = await startWorkerThread({ ...access, prepareWorkerWorkspace: async () => undefined }, {
         task,
         input: async (threadId) => {
           startedThreadId = threadId;

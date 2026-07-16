@@ -11,18 +11,10 @@ function sourceCwd(): string {
   return path.resolve(process.env.MANOR_SELF_IMPROVEMENT_SOURCE_CWD ?? DEFAULT_SOURCE_CWD);
 }
 
-async function pathWritable(directory: string): Promise<boolean> {
-  const probe = path.join(directory, `.manor-self-improvement-probe-${process.pid}-${Date.now()}`);
-  try {
-    await fs.writeFile(probe, "ok", "utf8");
-    await fs.rm(probe, { force: true });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export async function resolveSelfImprovementEligibility(hostController: HostControllerClient): Promise<SelfImprovementEligibilityView> {
+export async function resolveSelfImprovementEligibility(
+  hostController: HostControllerClient,
+  checkWorkerWorkspace: (cwd: string) => Promise<void> = async () => undefined
+): Promise<SelfImprovementEligibilityView> {
   const source = sourceCwd();
   const reasons: string[] = [];
 
@@ -37,8 +29,15 @@ export async function resolveSelfImprovementEligibility(hostController: HostCont
   } catch {
     reasons.push(`Mounted source was not found at ${source}.`);
   }
-  if (!await pathWritable(source)) reasons.push(`Mounted source is not writable at ${source}.`);
-  if (!await resolveGitRoot(source)) reasons.push("Mounted source is not a Git checkout.");
+  if (!await resolveGitRoot(source)) {
+    reasons.push("Mounted source is not a Git checkout.");
+  } else {
+    try {
+      await checkWorkerWorkspace(source);
+    } catch (error) {
+      reasons.push(`Mounted source is not ready for Worker edits and Git operations: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 
   return { enabled: reasons.length === 0, sourceCwd: source, reasons };
 }
