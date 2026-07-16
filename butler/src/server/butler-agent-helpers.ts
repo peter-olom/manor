@@ -1,6 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-
 import {
   buildSelfImprovementReviewInstruction,
   classifyManorBlocker
@@ -10,6 +9,7 @@ import { contractRequiresVisualProof } from "./proof-policy.js";
 import { isAcceptedOperatorPreferenceMemory } from "./memory-metadata.js";
 import { ButlerStateStore } from "./state-store.js";
 import { elapsedTaskDurationMs } from "./task-timing.js";
+import { buildCurrentReportProofCoverageLines } from "./preview-proof-resolution.js";
 import { BUTLER_BACKGROUND_PROMPT_PREFIX, isButlerBackgroundPromptText, stripEphemeralButlerTurns } from "./butler-background-context.js";
 export { BUTLER_BACKGROUND_PROMPT_PREFIX, BUTLER_EPHEMERAL_BACKGROUND_PROMPT_PREFIX, isButlerBackgroundPromptText } from "./butler-background-context.js";
 export { buildJobDetail } from "./butler-job-detail.js";
@@ -25,7 +25,6 @@ import type {
   PreviewVerificationArtifactView,
   PreviewVerificationView
 } from "./types.js";
-
 export type ProofScreenshotReview = {
   verdict: string;
   visibleState: string;
@@ -36,7 +35,6 @@ export type ProofScreenshotReview = {
   modelId: string;
   modelProvider: string;
 };
-
 export type ResolvedPreviewProof = {
   proofRecordId: string | null;
   preview: Pick<PreviewLeaseView, "id" | "threadId" | "projectId" | "projectLabel" | "title" | "stackId">;
@@ -49,20 +47,17 @@ export type ResolvedPreviewProof = {
   manifest: PreviewVerificationArtifactView | null;
   trace: PreviewVerificationArtifactView | null;
 };
-
 export type SupervisionSmokePlan = {
   threadId: string;
   totalFollowUps: number;
   followUpsSent: number;
 };
-
 export type PendingChatCallback = ButlerThreadCallbackView;
 export type ButlerOperatorThreadGuard = {
   explicitThreadIds: string[];
   lockedThreadId: string | null;
   contextPrompt: string | null;
 };
-
 export const SNAPSHOT_MESSAGE_TAIL_LIMIT = 80;
 export const MAX_HISTORY_PAGE_SIZE = 1000;
 const MAX_BACKGROUND_HISTORY_TEXT_CHARS = 20_000;
@@ -142,7 +137,6 @@ export function summarizeToolResultDetails(details: Record<string, unknown> | nu
   if (keys.length === 0) {
     return uiEffects ? { uiEffects } : undefined;
   }
-
   return {
     ...(uiEffects ? { uiEffects } : {}),
     omittedDetails: {
@@ -893,12 +887,13 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     ? (contract?.reviewResults ?? []).filter((entry) => entry.turnId === relevantWorkerReport.turnId && entry.reportUpdatedAt === relevantWorkerReport.updatedAt && entry.automationFailure !== true)
         .map((entry) => `${entry.id} | ${entry.severity}${entry.waived ? " disproved" : entry.blocking ? " blocking" : ""}: ${entry.findingSummary}${entry.waiverReason ? ` | resolution: ${entry.waiverReason}` : ""}${entry.linkedClaimIds.length > 0 ? ` | claims: ${entry.linkedClaimIds.join(", ")}` : ""}`)
     : [];
+  const proofCoverageLines = buildCurrentReportProofCoverageLines(relevantWorkerReport, store.listPreviewProofs(), callback.threadId);
 
   return [
     BUTLER_BACKGROUND_PROMPT_PREFIX,
     "This is an internal delegated-job supervision event, not an operator turn.",
     "Do not write a normal Butler chat reply.",
-    "If checklist points are rejected, use review_acceptance_point with nextInstruction, then flush_rejected_acceptance_points once after all rejected points are marked.",
+    "Use review_acceptance_points to batch two or more checklist decisions in one atomic call. Use review_acceptance_point only for a single targeted decision. Every rejected decision requires nextInstruction; flush_rejected_acceptance_points once after all rejected points are marked.",
     "Use message_job only for private follow-ups that are not rejected-checklist steering.",
     "If the job is done, blocked, or needs operator input now, use reply_to_operator exactly once.",
     "You may use read_job first if you need transcript context.",
@@ -922,6 +917,9 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     adversarialReviewLines.length > 0
       ? `Isolated adversarial review findings:\n${adversarialReviewLines.join("\n")}\nTreat these compact findings as reviewer input. Butler owns the final acceptance decision and worker steering.`
       : "Isolated adversarial review findings: none available.",
+    proofCoverageLines.length > 0
+      ? `Current report proof runs and review coverage:\n${proofCoverageLines.join("\n")}`
+      : "Current report proof runs and review coverage: none referenced.",
     contract ? `Proof expectation: ${contract.proofExpectationLabel}` : "Proof expectation: unknown",
     contract ? `Internal task category: ${contract.taskCategory}. Internal depth: ${contract.inferredWorkDepth}. Do not expose depth to the operator; use it only to decide how hard to verify.` : "",
     visualProofRequired
@@ -940,7 +938,7 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     "Use nextWorkerReportAction=review when Butler should inspect the next worker report before deciding what to surface.",
     "Use nextWorkerReportAction=reply_to_operator only for no-checklist jobs, blocked reports, or operator-input reports. Completed checklist work must still go through Butler review.",
     "Decide from the job context and thread state, not from worker phrasing heuristics.",
-    "Review the worker report, submitted artifacts, code diff, and relevant runtime state independently against every acceptance point.",
+    "Review the worker report, submitted artifacts, code diff, and relevant runtime state independently against every still-open acceptance point. Preserve already accepted or waived points unless newer evidence materially reopens them.",
     "Use the isolated adversarial review findings without exposing the reviewer transcript or internal review machinery to the operator.",
     "A blocking reviewer finding must become a rejected checklist point and one batched worker follow-up unless Butler can disprove it from stronger evidence.",
     "Review the mission intent and taste notes before accepting. A technically complete worker report can still fail if it misses the desired outcome or quality bar.",
@@ -950,10 +948,10 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     "If the next move depends on a missing operator product, taste, permission, or priority choice, use reply_to_operator to ask for that input instead of pretending the job is complete.",
     "Use the verification matrix as review context, not as a required Worker submission schema. Judge whether the available evidence is convincing for the actual task.",
     "Ask whether the worker preserved the operator's real intent, investigated enough, chose a practical maintainable route, and produced a tasteful result.",
-    "Use review_acceptance_point to record accepted, rejected, or waived decisions in the structured checklist. Workers only submit evidence; Butler owns acceptance.",
+    "Use review_acceptance_points for two or more accepted, rejected, or waived decisions, and review_acceptance_point for one. Workers only submit evidence; Butler owns acceptance.",
     "Worker reports are evidence, not acceptance. Do not post a completed closeout until Butler has accepted or waived every checklist point.",
     "For each rejected point, include nextInstruction. If multiple points are rejected, mark them all first, then use flush_rejected_acceptance_points once to send one batched worker follow-up.",
-    "Use review_preview_proof whenever the Worker recorded screenshots, video, browser proof, desktop proof, or a proof file. Read text evidence, inspect visual artifacts, and compare them with the code diff or runtime checks before accepting the claim.",
+    "Use review_preview_proof once for each unreviewed or unclear proof run referenced by the current report. Pass this job id as threadId with the exact runId shown above, never the word latest, and reuse one proof verdict across every checklist point it supports. Skip a run whose latest review is already credible unless newer evidence conflicts with it.",
     "Recorded proof artifacts live in Manor storage and may not exist under /repos. Never infer that proof is missing from a workspace search; use review_preview_proof to inspect the stored bundles. The optional structured evidence array may be empty even when durable proof exists.",
     "Proof format is chosen by the Worker. Reject completion only when the submitted evidence and Butler's independent checks do not convincingly demonstrate the requested outcome.",
     "Reject weak intent fit, shallow investigation, weak route choice, missing negative checks, missing logs, or weak taste with a concrete nextInstruction.",
@@ -989,6 +987,8 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Memory provenance matters: distinguish tracked work from operator-authored work. Do not say the operator did or touched something unless the evidence proves an operator-originated request; source labels like vscode, appServer, or cli identify the surface, not the human.",
     "You have real callable tools. A tool is used only when you emit a structured tool call to the harness; writing a tool name, JSON, or function-call-looking text in chat is not tool use.",
     "Use your judgment to decide whether to answer directly, inspect Butler state with tools, message an existing worker job, or delegate a new worker workstream.",
+    "An explicit operator instruction to delegate, hand off, or use Worker is binding. Call delegate_to_worker before any Butler execution, preview, browser, stack, service, filesystem-mutation, or worktree tool. Butler may do only the minimum safe read needed to identify the workspace first. Do not substitute Butler-native tools for the requested Worker delegation.",
+    "When writing a Worker task, describe the operator's desired outcome, constraints, acceptance criteria, and useful evidence. Do not prescribe tool names, arguments, optional values, time budgets, retry windows, or execution choreography unless the operator explicitly required that exact method. Let the Worker use its live tool schemas and judgment.",
     "ask_operator: Butler-only tool. Use when a product, taste, priority, permission, or irreversible execution choice would materially change the outcome. Ask 1-3 concise structured questions with 2-6 options each and put each recommended option first. Call it with one top-level questions array.",
     "Do not use ask_operator for work-depth selection, status updates, or questions Butler can answer through safe inspection, memory retrieval, or local state.",
     "Default to agency: when the operator asks for current state, verification, cleanup, continuation, or execution, use the available tools to answer or act instead of waiting for perfectly worded instructions.",
@@ -1006,7 +1006,7 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Tool selection guide: use list_projects for project inventory questions; use list_jobs for broad worker job/thread checks, counts, status summaries, or project filtering; use read_job only when inspecting one specific job by id.",
     "Project count means known project directories. Active project work means currently tracked worker workstream groups or active worker jobs. If the operator asks how many projects we have, answer the known project count first; if they ask what we are actively working on, answer tracked active work separately.",
     "Do not answer project inventory questions from supervisor state alone. Supervisor state only covers tracked workstream groups; call list_projects first for project counts or project lists unless the operator explicitly asks only about active, idle, blocked, or tracked work.",
-    "Use read_supervision_checklist to inspect a delegated job's acceptance points, evidence, and heartbeat; use review_acceptance_point when you have reviewed evidence and are accepting, rejecting, or waiving one point; use disprove_review_finding only when stronger evidence proves a blocking adversarial finding is false; use flush_rejected_acceptance_points after marking all rejected points.",
+    "Use read_supervision_checklist to inspect a delegated job's acceptance points, evidence, and heartbeat; batch two or more decisions with review_acceptance_points and use review_acceptance_point for one targeted decision; use disprove_review_finding only when stronger evidence proves a blocking adversarial finding is false; use flush_rejected_acceptance_points after marking all rejected points.",
     "After delegate_to_worker returns, use its real result to acknowledge the real job id. Never invent or predict a job id.",
     "For operator follow-up on an existing valid worker job, default to message_job when it is the same workspace and task context and the job needs new instructions outside checklist rejection review; answer directly when the request can be handled from existing state.",
     "Start a new worker job for a same-workspace follow-up only when isolation is clearly warranted, such as conflicting branch/worktree requirements, a stale or invalid thread, parallel-risk, or a materially different task; surface and record that reason when you delegate anew.",
@@ -1017,7 +1017,7 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "Never say you delegated, started, asked, messaged, or handed off work unless the corresponding tool call has completed successfully.",
     "Do not expose private Butler-to-worker steering verbatim in the Butler chat.",
     "Worker callbacks and thread recovery are background supervision signals, not operator-visible chat by themselves.",
-    "If the operator asks for real execution, project setup, repository cloning, coding work, or shell work, consider whether delegate_to_worker is the right tool instead of giving manual shell instructions.",
+    "If the operator asks for real execution, project setup, repository cloning, coding work, or shell work, consider whether delegate_to_worker is the right tool instead of giving manual shell instructions. If the operator explicitly asks for delegation or Worker, delegate_to_worker is required rather than optional.",
     "When the operator explicitly asks to restart, update, or self-restart Manor, use request_manor_restart to request operator authorization. If they ask to restart from a local source commit, pass the exact commit SHA or local branch as gitRef. The browser approval dialog starts the authorized restart through the host controller; use read_manor_restart_status after Manor comes back.",
     "For direct operator requests to improve Manor, Butler, worker behavior, preview, runtime broker, supervision, restart-controller, or dogfooding, start normal work with delegate_to_worker in /repos/manor. Keep that work in the existing checkout and leave changes uncommitted unless the operator explicitly asks otherwise. The self-improvement queue is only for blocked worker reports that look like Manor platform blockers. When a blocked worker report looks like a Manor platform blocker, use request_self_improvement once for that source job before posting the blocked closeout. Do not use it for direct operator requests, missing credentials, operator approval, external outages, or app-specific bugs outside Manor. Use discard_self_improvement, commit_self_improvement, or open_self_improvement_pr only after the operator explicitly asks for that follow-up action.",
     "When worker work changes state, summarize the outcome rather than replaying the full back-and-forth.",
@@ -1292,11 +1292,17 @@ export function mergeThreadProofBundles(proofs: PreviewProofRecordView[]): Previ
   if (proofs.length === 0) return null;
   if (proofs.length === 1) return proofs[0]!;
   const base = proofs[0]!;
+  const failed = proofs.find((proof) => !proof.verification.ok || proof.verification.failureKind !== "none");
   return {
     ...base,
     previewTitle: "Worker proof bundle",
     verification: {
       ...base.verification,
+      ok: proofs.every((proof) => proof.verification.ok),
+      error: failed?.verification.error ?? base.verification.error,
+      failureKind: failed ? (failed.verification.failureKind === "none" ? "unknown" : failed.verification.failureKind) : base.verification.failureKind,
+      phases: proofs.flatMap((proof) => proof.verification.phases),
+      actions: proofs.flatMap((proof) => proof.verification.actions ?? []),
       artifacts: proofs.flatMap((proof) => proof.verification.artifacts)
     }
   };

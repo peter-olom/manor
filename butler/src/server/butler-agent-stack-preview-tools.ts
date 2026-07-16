@@ -69,7 +69,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       name: "start_preview",
       label: "Start preview",
       description: "Start a disposable preview runtime on the internal Manor network and expose it through a stable route.",
-      promptSnippet: "start_preview: use this when a job needs a live reviewable app preview instead of a raw host port.",
+      promptSnippet: "start_preview: use this only for work Butler is handling directly when a live reviewable app is needed. If the operator explicitly asked for delegation or Worker, call delegate_to_worker instead.",
       parameters: startPreviewSchema(),
       uiEffects: access.getToolUiEffects("start_preview"),
       execute: async (_toolCallId, params, signal) => {
@@ -275,7 +275,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       label: "Start preview browser session",
       description: "Attach a browser sidecar to one preview and begin a live recorded session.",
       promptSnippet:
-        "start_preview_browser_session: open a live browser session for a preview. The timer and recording begin immediately; stop the session later to persist proof.",
+        "start_preview_browser_session: open a live browser session only for preview work Butler is handling directly. If the operator explicitly asked for delegation or Worker, call delegate_to_worker instead. The timer and recording begin immediately; stop the session later to persist proof.",
       parameters: Type.Object({
         leaseId: Type.String({ minLength: 1 }),
         mode: Type.Optional(Type.Union([Type.Literal("headless"), Type.Literal("headful")])),
@@ -340,7 +340,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       label: "Start browser session",
       description: "Start a live recorded browser session for a direct URL.",
       promptSnippet:
-        "start_browser_session: open a live browser session for a direct URL. Proof is persisted only after stop_browser_session.",
+        "start_browser_session: open a live browser session only for work Butler is handling directly. If the operator explicitly asked for delegation or Worker, call delegate_to_worker instead. Proof is persisted only after stop_browser_session.",
       parameters: Type.Object({
         threadId: Type.Optional(Type.String()),
         targetUrl: Type.String({ minLength: 1 }),
@@ -433,7 +433,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
     access.defineButlerTool({
       name: "browser_session_action",
       label: "Browser session action",
-      description: "Run one explicit action in an active browser session, including manual screenshots.",
+      description: "Run one explicit action in an active browser session, including manual screenshots. Evaluate runs an async Node body with Playwright page/context/browser/chromium and read-only session; read DOM through page.evaluate.",
       promptSnippet:
         "browser_session_action: use this for stepwise browser control. Always provide a specific evidence label and .png fileName; set autoCapture=false only when no screenshot should be stored.",
       parameters: Type.Object({
@@ -460,7 +460,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         key: Type.Optional(Type.String()),
         url: Type.Optional(Type.String()),
         urlIncludes: Type.Optional(Type.String()),
-        script: Type.Optional(Type.String()),
+        script: Type.Optional(Type.String({ description: "Async Node body for evaluate. Use Playwright page methods and read DOM through page.evaluate." })),
         ms: Type.Optional(Type.Number({ minimum: 0 })),
         x: Type.Optional(Type.Number()),
         y: Type.Optional(Type.Number()),
@@ -1008,9 +1008,9 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
     access.defineButlerTool({
       name: "review_preview_proof",
       label: "Review proof",
-      description: "Inspect the latest proof bundle for one preview or job and decide whether the recorded artifacts are convincing.",
+      description: "Inspect one exact proof run and decide whether its recorded artifacts are convincing. A thread with several runs returns coverage first so Butler can choose an exact run without repeating vision review.",
       promptSnippet:
-        "review_preview_proof: use this when proof is demanded. It can review browser, desktop, and file proof bundles. For UI-impacting work, screenshot or video proof must show the relevant state.",
+        "review_preview_proof: review each unreviewed exact run once, then reuse that verdict across related checklist points. Never pass runId=latest. For UI-impacting work, screenshot or video proof must show the relevant state.",
       parameters: reviewPreviewProofSchema(),
       uiEffects: access.getToolUiEffects("review_preview_proof"),
       execute: async (_toolCallId, params, signal?: AbortSignal) => {
@@ -1020,6 +1020,13 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           runId?: string;
           expectedOutcome?: string;
         };
+
+        if (!typedParams.leaseId?.trim() && !typedParams.threadId?.trim() && !typedParams.runId?.trim()) {
+          throw new Error("review_preview_proof requires a leaseId or threadId selector.");
+        }
+        if (typedParams.runId?.trim() && !typedParams.leaseId?.trim() && !typedParams.threadId?.trim()) {
+          throw new Error("An exact runId must be scoped by leaseId or threadId.");
+        }
 
         if (typedParams.leaseId) {
           const preview = access.requireValidatedPreview(typedParams.leaseId.trim(), null);
@@ -1031,25 +1038,49 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
             throw new Error(`Proof for job ${threadId} belongs to another Butler session.`);
           }
         }
+        if (typedParams.runId?.trim().toLowerCase() === "latest") {
+          throw new Error("review_preview_proof requires an exact runId. Use threadId without runId to list available proof coverage.");
+        }
+        if (typedParams.threadId && !typedParams.runId && !typedParams.leaseId) {
+          const threadProofs = access.store.listPreviewProofs()
+            .filter((entry) => entry.threadId === typedParams.threadId!.trim())
+            .sort((left, right) => right.updatedAt - left.updatedAt);
+          if (threadProofs.length > 1) {
+            const coverage = threadProofs.map((entry) => {
+              const latestReview = entry.proofReviews.at(-1);
+              return `${entry.verification.runId}: verification=${entry.verification.ok && entry.verification.failureKind === "none" ? "passed" : `failed:${entry.verification.failureKind}`} | review=${latestReview?.verdict ?? "unreviewed"} | title=${entry.previewTitle}`;
+            });
+            return {
+              content: [{ type: "text", text: `Multiple proof runs exist for this job. Reuse credible verdicts and call review_preview_proof only for an exact unreviewed or unclear runId.\n${coverage.join("\n")}` }],
+              details: { proofCoverage: threadProofs, requiresExactRunId: true }
+            };
+          }
+        }
 
         const proof = access.resolvePreviewProof({
           leaseId: typedParams.leaseId?.trim(),
           threadId: typedParams.threadId?.trim(),
           runId: typedParams.runId?.trim()
         });
+        assertRuntimeResourceOwned(access, proof.preview, `Proof run ${proof.verification.runId}`);
         const review = await access.reviewProofScreenshot(proof, {
           expectedOutcome: typedParams.expectedOutcome,
           signal
         });
+        const deterministicFailure = !proof.verification.ok || proof.verification.failureKind !== "none";
+        const reviewVerdict = deterministicFailure ? "failed" as const : review.verdict;
+        const reviewConcern = deterministicFailure
+          ? proof.verification.error ?? `Recorded proof failed with signal ${proof.verification.failureKind}.`
+          : review.concern;
         if (typedParams.threadId) assertCallbackReviewCurrent(typedParams.threadId);
         let persistedProofReview: PreviewProofReviewView | null = null;
         if (proof.proofRecordId) {
           const reviewRecord: PreviewProofReviewView = {
             id: crypto.randomUUID(),
-            verdict: review.verdict === "credible" || review.verdict === "failed" ? review.verdict : "unclear",
+            verdict: reviewVerdict === "credible" || reviewVerdict === "failed" ? reviewVerdict : "unclear",
             visibleState: review.visibleState,
             evidence: review.evidence,
-            concern: review.concern,
+            concern: reviewConcern,
             expectedOutcome:
               typeof typedParams.expectedOutcome === "string" && typedParams.expectedOutcome.trim()
                 ? typedParams.expectedOutcome.trim()
@@ -1062,7 +1093,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         }
 
         const availableArtifactCount = proof.artifacts.length;
-        const proofVerdict = availableArtifactCount > 0 ? review.verdict : "incomplete";
+        const proofVerdict = availableArtifactCount > 0 ? reviewVerdict : "incomplete";
         const artifactSummary =
           availableArtifactCount > 0
             ? `${availableArtifactCount} available (${proof.artifacts
@@ -1075,7 +1106,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           `FailureKind=${proof.verification.failureKind}`,
           `Visible=${review.visibleState}`,
           `Evidence=${review.evidence}`,
-          `Concern=${availableArtifactCount > 0 ? review.concern : "Recorded proof artifacts are missing."}`,
+          `Concern=${availableArtifactCount > 0 ? reviewConcern : "Recorded proof artifacts are missing."}`,
           `RecordedVideo=${proof.video ? "yes" : "no"}`,
           `Artifacts=${artifactSummary}`
         ].join("\n");

@@ -1490,7 +1490,6 @@ export function persistStateStoreThreadSupervision(access: StateStoreInternalAcc
     maxButlerTurns: thread.supervision.maxButlerTurns
   });
 }
-
 export function removeStateStorePreviewProofsForThread(access: StateStoreInternalAccess, threadId: string): void {
   for (const [proofId, proof] of access.previewProofs.entries()) {
     if (proof.threadId === threadId) {

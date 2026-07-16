@@ -109,6 +109,23 @@ export function reviewChecklistAcceptancePoint(
   return checklist;
 }
 
+export function reviewChecklistAcceptancePoints(
+  checklist: SupervisionChecklistView,
+  decisions: Array<{
+    pointId: string;
+    status: SupervisionChecklistItemStatus;
+    note?: string | null;
+    nextInstruction?: string | null;
+  }>
+): SupervisionChecklistView {
+  if (decisions.length === 0) throw new Error("Batch review requires at least one acceptance-point decision.");
+  const pointIds = decisions.map((decision) => decision.pointId);
+  if (new Set(pointIds).size !== pointIds.length) throw new Error("Batch review cannot decide the same acceptance point twice.");
+  const next = structuredClone(checklist);
+  for (const decision of decisions) reviewChecklistAcceptancePoint(next, decision);
+  return next;
+}
+
 export function buildQueuedRejectionInstruction(checklist: SupervisionChecklistView): string | null {
   const rejected = checklist.items.filter((item) => item.status === "rejected" && item.queuedInstruction);
   if (rejected.length === 0) {

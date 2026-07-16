@@ -18,7 +18,7 @@ import {
   ThreadsIcon,
   WarningIcon
 } from "./icons";
-import { MemoryDashboard, type MemoryDashboardSummary, type MemoryProjectOption } from "./MemoryDashboard";
+import { MemoryDashboard, type MemoryDashboardSummary, type MemoryProjectOption, type MemorySearchMode } from "./MemoryDashboard";
 import { ManorVersion } from "./ManorVersion";
 import { PairRow } from "./PairRow";
 import { ImagePreviewModal, type PreviewMedia } from "./ImagePreviewModal";
@@ -301,7 +301,7 @@ function Sidebar({
             <div className="sidebar-surface-list" aria-label="Memory sections">
               {(["projects", "jobs", "butler"] as MemorySection[]).map((sectionOption) => {
                 const count = memorySummary?.counts[sectionOption]?.total ?? 0;
-                const label = sectionOption === "projects" ? "Projects" : sectionOption === "jobs" ? "Jobs" : "Butler";
+                const label = sectionOption === "projects" ? "Projects" : sectionOption === "jobs" ? "Jobs" : "Global";
                 const description =
                   sectionOption === "projects"
                     ? "Project memory"
@@ -416,12 +416,14 @@ function Topbar({
   improveEligibilityBlocked,
   memorySection,
   memorySearch,
+  memorySearchMode,
   memoryProjectFilter,
   memoryProjectOptions,
   memoryActiveCount,
   memoryTotalCount,
   settingsSection,
   onMemorySearch,
+  onMemorySearchMode,
   onMemoryProjectFilter,
   workspacePending, onWorkspaceChange,
   automationPending, onAutomationEnabledChange, onAutomationDelete, onAutomationEdit
@@ -445,12 +447,14 @@ function Topbar({
   improveEligibilityBlocked: boolean;
   memorySection: MemorySection;
   memorySearch: string;
+  memorySearchMode: MemorySearchMode;
   memoryProjectFilter: string;
   memoryProjectOptions: MemoryProjectOption[];
   memoryActiveCount: number;
   memoryTotalCount: number;
   settingsSection: SettingsSectionId;
   onMemorySearch: (value: string) => void;
+  onMemorySearchMode: (mode: MemorySearchMode) => void;
   onMemoryProjectFilter: (value: string) => void;
   workspacePending: boolean; onWorkspaceChange: (cwd: string) => Promise<void>;
   automationPending: boolean; onAutomationEnabledChange: (enabled: boolean) => Promise<void>;
@@ -463,7 +467,9 @@ function Topbar({
     viewMode === "files"
       ? "Durable storage"
       : viewMode === "memory"
-      ? `${memoryActiveCount} of ${memoryTotalCount} ${memorySection}`
+      ? memorySearchMode === "agent"
+        ? "Butler retrieval preview"
+        : `${memoryActiveCount} of ${memoryTotalCount} ${memorySection === "butler" ? "global" : memorySection}`
       : viewMode === "improve"
         ? `${improveRequestCount} requests`
         : viewMode === "settings"
@@ -532,16 +538,20 @@ function Topbar({
       <div className="topbar-right">
         {viewMode === "memory" ? (
           <div className="topbar-memory-controls">
+            <div className="memory-search-mode" role="group" aria-label="Memory search mode">
+              <button type="button" className={memorySearchMode === "browse" ? "is-active" : ""} onClick={() => onMemorySearchMode("browse")}>Browse</button>
+              <button type="button" className={memorySearchMode === "agent" ? "is-active" : ""} onClick={() => onMemorySearchMode("agent")}>Agent preview</button>
+            </div>
             <div className="search dashboard-search">
               <span className="search-icon">
                 <SearchIcon />
               </span>
               <input
                 type="search"
-                placeholder={`Search ${memorySection}…`}
+                placeholder={memorySearchMode === "agent" ? "Search memory as Butler…" : `Filter ${memorySection === "butler" ? "global" : memorySection}…`}
                 value={memorySearch}
                 onChange={(event) => onMemorySearch(event.target.value)}
-                aria-label={`Search ${memorySection}`}
+                aria-label={`Search ${memorySection === "butler" ? "global" : memorySection}`}
               />
             </div>
             <select
@@ -549,9 +559,9 @@ function Topbar({
               value={memoryProjectFilter}
               onChange={(event) => onMemoryProjectFilter(event.target.value)}
               aria-label="Filter by project"
-              disabled={memorySection === "butler"}
+              disabled={memorySearchMode === "browse" && memorySection === "butler"}
             >
-              <option value="">{memorySection === "butler" ? "Global" : "All projects"}</option>
+              <option value="">{memorySearchMode === "agent" ? "All projects" : memorySection === "butler" ? "Global" : "All projects"}</option>
               {memoryProjectOptions.map((option) => (
                 <option key={option.id} value={option.id}>
                   {option.label}
@@ -639,6 +649,7 @@ export function PairShell() {
   const [selectedImproveRequestId, setSelectedImproveRequestId] = useState<string | null>(null);
   const [memorySection, setMemorySection] = useState<MemorySection>("projects");
   const [memorySearch, setMemorySearch] = useState("");
+  const [memorySearchMode, setMemorySearchMode] = useState<MemorySearchMode>("browse");
   const [memoryProjectFilter, setMemoryProjectFilter] = useState("");
   const [memorySummary, setMemorySummary] = useState<MemoryDashboardSummary | null>(null);
   const [composerAttachments, setComposerAttachments] = useState<FileReference[]>([]);
@@ -1280,12 +1291,14 @@ export function PairShell() {
           improveEligibilityBlocked={Boolean(improveQueue?.eligibility && !improveQueue.eligibility.enabled)}
           memorySection={memorySection}
           memorySearch={memorySearch}
+          memorySearchMode={memorySearchMode}
           memoryProjectFilter={memoryProjectFilter}
           memoryProjectOptions={memorySummary?.projectOptions ?? []}
           memoryActiveCount={memorySummary?.activeCount ?? 0}
           memoryTotalCount={memorySummary?.totalCount ?? 0}
           settingsSection={settingsSection}
           onMemorySearch={setMemorySearch}
+          onMemorySearchMode={setMemorySearchMode}
           onMemoryProjectFilter={setMemoryProjectFilter}
           workspacePending={workspacePending}
           onWorkspaceChange={changeWorkspace}
@@ -1406,6 +1419,8 @@ export function PairShell() {
                 onSectionChange={setMemorySection}
                 search={memorySearch}
                 onSearchChange={setMemorySearch}
+                searchMode={memorySearchMode}
+                onSearchModeChange={setMemorySearchMode}
                 projectFilter={memoryProjectFilter}
                 onProjectFilterChange={setMemoryProjectFilter}
                 onSummaryChange={setMemorySummary}

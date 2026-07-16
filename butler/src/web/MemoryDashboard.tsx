@@ -1,21 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getJson } from "./api";
-import { SearchIcon, TrashIcon, WarningIcon } from "./icons";
+import { ChevronRightIcon, SearchIcon, TrashIcon, WarningIcon } from "./icons";
 import type {
   ButlerMemoryEntry,
-  ButlerMemoryResponse,
   JobMemory,
-  JobsResponse,
+  MemoryRetrievalResponse,
   MemorySection,
   ProjectMemory,
-  ProjectsResponse
 } from "../shared/memory";
 
 const POLL_INTERVAL_MS = 5_000;
-const PROJECT_ROW = 88;
-const JOB_ROW = 92;
-const BUTLER_ROW = 80;
+const SEARCH_DEBOUNCE_MS = 300;
+
+export type MemorySearchMode = "browse" | "agent";
 
 export type MemoryProjectOption = { id: string; label: string };
 
@@ -30,6 +28,29 @@ export type MemoryDashboardSummary = {
 function formatTime(value: number | null | undefined): string {
   if (!value) return "—";
   return new Date(value).toLocaleString();
+}
+
+function formatRelativeTime(value: number | null | undefined): string {
+  if (!value) return "Unknown";
+  const elapsed = Date.now() - value;
+  if (elapsed < 60_000) return "Just now";
+  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m ago`;
+  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h ago`;
+  if (elapsed < 7 * 86_400_000) return `${Math.floor(elapsed / 86_400_000)}d ago`;
+  return new Date(value).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+}
+
+function readableMemoryType(value: string | null | undefined): string {
+  if (!value || value === "legacy_global") return "Global";
+  return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function sourceLabel(value: ButlerMemoryEntry["source"]): string {
+  return value === "butler_tool" ? "Butler" : "Saved from chat";
+}
+
+function sectionLabel(section: MemorySection): string {
+  return section === "butler" ? "global" : section;
 }
 
 function kindLabel(kind: string): string {
@@ -103,6 +124,65 @@ function useMemoryList<T>(
   return { items, loading, error, reload };
 }
 
+function useAgentMemoryPreview(
+  enabled: boolean,
+  query: string,
+  projectId: string
+): {
+  payload: MemoryRetrievalResponse | null;
+  loading: boolean;
+  error: string | null;
+  reload: () => void;
+} {
+  const [payload, setPayload] = useState<MemoryRetrievalResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+  const reload = useCallback(() => setNonce((value) => value + 1), []);
+
+  useEffect(() => {
+    const trimmedQuery = query.trim();
+    if (!enabled || !trimmedQuery) {
+      setPayload(null);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => {
+      setLoading(true);
+      const params = new URLSearchParams({
+        query: trimmedQuery,
+        limit: "6",
+        preview: "1",
+        includeGlobal: "1",
+        includeProvenance: "1"
+      });
+      if (projectId) params.set("projectId", projectId);
+      getJson<MemoryRetrievalResponse>(`/api/memory/retrieve?${params.toString()}`, { signal: controller.signal })
+        .then((nextPayload) => {
+          setPayload(nextPayload);
+          setError(null);
+        })
+        .catch((err: unknown) => {
+          if (controller.signal.aborted) return;
+          setError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setLoading(false);
+        });
+    }, SEARCH_DEBOUNCE_MS);
+
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [enabled, nonce, projectId, query]);
+
+  return { payload, loading, error, reload };
+}
+
 function ConfirmDialog({
   open,
   title,
@@ -174,30 +254,35 @@ function ProjectCard({
   onDelete: (entryId: string, summary: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const visible = expanded ? project.entries : project.entries.slice(0, 3);
-  const hiddenCount = project.entries.length - visible.length;
 
   return (
-    <article className="memory-card-row">
-      <header className="memory-card-head" onClick={() => setExpanded((value) => !value)}>
-        <div className="memory-card-main">
-          <div className="memory-card-title">{project.projectLabel}</div>
-          <div className="memory-card-sub">
-            {project.entries.length} entries · updated {formatTime(project.updatedAt)}
-          </div>
-        </div>
-        <div className="memory-card-meta">
-          {project.summary ? <span className="memory-summary">{project.summary}</span> : null}
-          <span className="memory-card-toggle">{expanded ? "−" : "+"}</span>
-        </div>
-      </header>
+    <article className={`memory-record ${expanded ? "is-expanded" : ""}`}>
+      <button
+        className="memory-record-trigger"
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <span className="memory-record-chevron"><ChevronRightIcon /></span>
+        <span className="memory-record-identity">
+          <span className="memory-record-title">{project.projectLabel}</span>
+          <span className="memory-record-kicker">Project memory</span>
+        </span>
+        <span className="memory-record-preview">
+          {project.summary ?? project.entries.at(-1)?.summary ?? "No project summary yet."}
+        </span>
+        <span className="memory-record-stats">
+          <span>{project.entries.length} {project.entries.length === 1 ? "memory" : "memories"}</span>
+          <time dateTime={new Date(project.updatedAt).toISOString()}>{formatRelativeTime(project.updatedAt)}</time>
+        </span>
+      </button>
       {expanded ? (
-        <div className="memory-card-body">
+        <div className="memory-record-body">
           {project.entries.length === 0 ? (
             <div className="memory-empty">No entries.</div>
           ) : (
             <ul className="memory-entries">
-              {visible.map((entry) => (
+              {project.entries.map((entry) => (
                 <li key={entry.id} className={`memory-entry ${entryKindClass(entry.kind)}`}>
                   <div className="memory-entry-main">
                     <span className="memory-entry-kind">{kindLabel(entry.kind)}</span>
@@ -219,9 +304,6 @@ function ProjectCard({
                   </button>
                 </li>
               ))}
-              {hiddenCount > 0 ? (
-                <li className="memory-entry-more">+{hiddenCount} more</li>
-              ) : null}
             </ul>
           )}
         </div>
@@ -243,25 +325,33 @@ function JobCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const pendingCandidates = job.promotionCandidates.filter((candidate) => candidate.status === "pending");
+  const title = job.requestedTask ?? job.operatorGoal ?? job.latestCheckpoint ?? `${job.projectLabel} job`;
+  const preview = job.latestCheckpoint ?? job.nextAction ?? job.operatorGoal ?? "No durable activity recorded yet.";
 
   return (
-    <article className="memory-card-row">
-      <header className="memory-card-head" onClick={() => setExpanded((value) => !value)}>
-        <div className="memory-card-main">
-          <div className="memory-card-title">
-            {job.projectLabel} <span className="memory-card-id">· {job.threadId.slice(0, 8)}</span>
-          </div>
-          <div className="memory-card-sub">
-            {job.entries.length} entries · {pendingCandidates.length} pending · updated {formatTime(job.updatedAt)}
-          </div>
-        </div>
-        <div className="memory-card-meta">
-          {job.latestCheckpoint ? <span className="memory-summary">{job.latestCheckpoint}</span> : null}
-          <span className="memory-card-toggle">{expanded ? "−" : "+"}</span>
-        </div>
-      </header>
+    <article className={`memory-record ${expanded ? "is-expanded" : ""}`}>
+      <button
+        className="memory-record-trigger"
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <span className="memory-record-chevron"><ChevronRightIcon /></span>
+        <span className="memory-record-identity">
+          <span className="memory-record-title">{title}</span>
+          <span className="memory-record-kicker">
+            {job.projectLabel} · <span className="memory-card-id">{job.threadId.slice(0, 8)}</span>
+          </span>
+        </span>
+        <span className="memory-record-preview">{preview}</span>
+        <span className="memory-record-stats">
+          <span>{job.entries.length} {job.entries.length === 1 ? "memory" : "memories"}</span>
+          {pendingCandidates.length > 0 ? <strong>{pendingCandidates.length} pending</strong> : null}
+          <time dateTime={new Date(job.updatedAt).toISOString()}>{formatRelativeTime(job.updatedAt)}</time>
+        </span>
+      </button>
       {expanded ? (
-        <div className="memory-card-body">
+        <div className="memory-record-body">
           {job.operatorGoal ? (
             <div className="memory-section">
               <div className="memory-section-label">Goal</div>
@@ -351,28 +441,32 @@ function ButlerCard({
   onDelete: (id: string, summary: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const showDetails = expanded || !entry.details;
+  const visibleTags = entry.tags.slice(0, 2);
   return (
-    <article className="memory-card-row">
-      <header className="memory-card-head" onClick={() => setExpanded((value) => !value)}>
-        <div className="memory-card-main">
-          <div className="memory-card-title">{entry.summary}</div>
-          <div className="memory-card-sub">
-            {entry.source.replace("_", " ")} · {formatTime(entry.createdAt)}
-            {entry.tags.length > 0 ? ` · ${entry.tags.length} tag${entry.tags.length === 1 ? "" : "s"}` : ""}
-          </div>
-        </div>
-        <div className="memory-card-meta">
-          {entry.tags.length > 0 ? <span className="memory-tag-row">{entry.tags.join(" · ")}</span> : null}
-          <span className="memory-card-toggle">{expanded ? "−" : "+"}</span>
-        </div>
-      </header>
-      {showDetails && entry.details ? (
-        <div className="memory-card-body">
-          <p className="memory-card-text">{entry.details}</p>
-        </div>
-      ) : null}
-      <footer className="memory-card-foot">
+    <article className={`memory-record ${expanded ? "is-expanded" : ""}`}>
+      <div className="memory-record-head is-with-action">
+        <button
+          className="memory-record-trigger"
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <span className="memory-record-chevron"><ChevronRightIcon /></span>
+          <span className="memory-record-identity">
+            <span className="memory-record-title">{entry.summary}</span>
+            <span className="memory-record-kicker">
+              {sourceLabel(entry.source)} · {formatRelativeTime(entry.createdAt)}
+            </span>
+          </span>
+          <span className="memory-record-preview">
+            {entry.details ?? "No additional details."}
+          </span>
+          <span className="memory-record-tags">
+            <span className="memory-type-badge">{readableMemoryType(entry.memoryType)}</span>
+            {visibleTags.map((tag) => <span key={tag} className="memory-tag">{tag}</span>)}
+            {entry.tags.length > visibleTags.length ? <span className="memory-tag-more">+{entry.tags.length - visibleTags.length}</span> : null}
+          </span>
+        </button>
         <button
           className="icon-button is-danger"
           type="button"
@@ -381,8 +475,197 @@ function ButlerCard({
         >
           <TrashIcon />
         </button>
-      </footer>
+      </div>
+      {expanded ? (
+        <div className="memory-record-body">
+          {entry.details ? <p className="memory-card-text">{entry.details}</p> : null}
+          <div className="memory-entry-meta">
+            Created {formatTime(entry.createdAt)} · {sourceLabel(entry.source)}
+            {entry.tags.length > 0 ? ` · ${entry.tags.join(", ")}` : ""}
+          </div>
+        </div>
+      ) : null}
     </article>
+  );
+}
+
+function AgentRetrievalPreview({
+  query,
+  projectId,
+  payload,
+  loading,
+  error,
+  onRetry
+}: {
+  query: string;
+  projectId: string;
+  payload: MemoryRetrievalResponse | null;
+  loading: boolean;
+  error: string | null;
+  onRetry: () => void;
+}) {
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const retrieval = payload?.retrieval ?? null;
+  const resultCount = retrieval
+    ? retrieval.projectRollups.length + retrieval.jobMemories.length + retrieval.butlerMemories.length + retrieval.pendingPromotionCandidates.length
+    : 0;
+
+  function copyBrief() {
+    if (!payload?.formatted) return;
+    const textarea = document.createElement("textarea");
+    textarea.value = payload.formatted;
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.append(textarea);
+    textarea.select();
+    const copied = typeof document.execCommand === "function" && document.execCommand("copy");
+    textarea.remove();
+    setCopyStatus(copied ? "copied" : "failed");
+    window.setTimeout(() => setCopyStatus("idle"), 1_500);
+  }
+
+  if (!query.trim()) {
+    return (
+      <div className="memory-preview-empty">
+        <span className="memory-preview-empty-icon"><SearchIcon /></span>
+        <h2>Search memory as Butler</h2>
+        <p>Enter a question above to preview the scoped brief Butler receives from the retrieval tool.</p>
+      </div>
+    );
+  }
+
+  if (loading && !retrieval) {
+    return (
+      <div className="memory-preview-loading" aria-label="Searching memory">
+        <span /> <span /> <span />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="memory-preview-error" role="alert">
+        <WarningIcon />
+        <div><strong>Memory search failed</strong><span>{error}</span></div>
+        <button className="button" type="button" onClick={onRetry}>Retry</button>
+      </div>
+    );
+  }
+
+  if (!retrieval || !payload) return null;
+
+  return (
+    <div className="memory-preview">
+      <header className="memory-preview-head">
+        <div>
+          <span className="memory-preview-eyebrow">Butler retrieval preview</span>
+          <h2>{resultCount === 0 ? "No brief entries matched" : `${resultCount} brief ${resultCount === 1 ? "entry" : "entries"}`}</h2>
+          <p>
+            Query “{retrieval.query}” · {projectId ? "Scoped to one project" : "Across all projects"} · retrieved {formatRelativeTime(retrieval.retrievedAt)}
+          </p>
+        </div>
+        <button className="button is-small" type="button" onClick={copyBrief}>
+          {copyStatus === "copied" ? "Copied" : copyStatus === "failed" ? "Copy unavailable" : "Copy agent brief"}
+        </button>
+      </header>
+
+      {retrieval.warnings.length > 0 ? (
+        <div className="memory-preview-warnings">
+          {retrieval.warnings.map((warning) => <span key={warning}><WarningIcon />{warning}</span>)}
+        </div>
+      ) : null}
+
+      {resultCount === 0 ? (
+        <div className="memory-preview-no-results">
+          Try a broader phrase or search across all projects.
+        </div>
+      ) : (
+        <div className="memory-preview-groups">
+          {retrieval.projectRollups.length > 0 ? (
+            <section className="memory-preview-group">
+              <header><h3>Project rollups</h3><span>{retrieval.projectRollups.length}</span></header>
+              <ol>
+                {retrieval.projectRollups.map((memory) => (
+                  <li key={memory.projectId} className="memory-preview-result">
+                    <span className="memory-preview-rank" />
+                    <div>
+                      <strong>{memory.projectLabel}</strong>
+                      <p>{memory.summary ?? "No summary"}</p>
+                      {memory.entries.length > 0 ? <span>Recent: {memory.entries.slice(-3).map((entry) => entry.summary).join(" · ")}</span> : null}
+                    </div>
+                    <span className="memory-result-badge">Project</span>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          ) : null}
+
+          {retrieval.jobMemories.length > 0 ? (
+            <section className="memory-preview-group">
+              <header><h3>Job memories</h3><span>{retrieval.jobMemories.length}</span></header>
+              <ol>
+                {retrieval.jobMemories.map((memory) => (
+                  <li key={memory.threadId} className="memory-preview-result">
+                    <span className="memory-preview-rank" />
+                    <div>
+                      <strong>{memory.projectLabel}</strong>
+                      <p>{memory.latestCheckpoint ?? memory.requestedTask ?? memory.operatorGoal ?? "No checkpoint"}</p>
+                      <span>
+                        Job {memory.threadId.slice(0, 8)} · Next: {memory.nextAction ?? "none"} · Blockers: {memory.blockers.join(" · ") || "none"}
+                      </span>
+                    </div>
+                    <span className="memory-result-badge">Job</span>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          ) : null}
+
+          {retrieval.butlerMemories.length > 0 ? (
+            <section className="memory-preview-group">
+              <header><h3>Global memory</h3><span>{retrieval.butlerMemories.length}</span></header>
+              <ol>
+                {retrieval.butlerMemories.map((memory) => (
+                  <li key={memory.id} className="memory-preview-result">
+                    <span className="memory-preview-rank" />
+                    <div>
+                      <strong>{memory.summary}</strong>
+                      {memory.details ? <p>{memory.details}</p> : null}
+                      <span>{sourceLabel(memory.source)} · {formatRelativeTime(memory.createdAt)}</span>
+                    </div>
+                    <span className="memory-result-badge">Global</span>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          ) : null}
+
+          {retrieval.pendingPromotionCandidates.length > 0 ? (
+            <section className="memory-preview-group is-pending">
+              <header><h3>Pending memory outcomes</h3><span>{retrieval.pendingPromotionCandidates.length}</span></header>
+              <ol>
+                {retrieval.pendingPromotionCandidates.map((candidate) => (
+                  <li key={candidate.id} className="memory-preview-result">
+                    <span className="memory-preview-rank" />
+                    <div>
+                      <strong>{candidate.summary}</strong>
+                      {candidate.details ? <p>{candidate.details}</p> : null}
+                      <span>{candidate.projectLabel} · {kindLabel(candidate.kind)}</span>
+                    </div>
+                    <span className="memory-result-badge is-pending">Pending</span>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          ) : null}
+        </div>
+      )}
+
+      <details className="memory-raw-brief">
+        <summary>View exact agent brief</summary>
+        <pre>{payload.formatted}</pre>
+      </details>
+    </div>
   );
 }
 
@@ -394,6 +677,8 @@ export function MemoryDashboard({
   onSectionChange,
   search: controlledSearch,
   onSearchChange,
+  searchMode: controlledSearchMode,
+  onSearchModeChange,
   projectFilter: controlledProjectFilter,
   onProjectFilterChange,
   onSummaryChange
@@ -405,25 +690,32 @@ export function MemoryDashboard({
   onSectionChange?: (section: MemorySection) => void;
   search?: string;
   onSearchChange?: (search: string) => void;
+  searchMode?: MemorySearchMode;
+  onSearchModeChange?: (mode: MemorySearchMode) => void;
   projectFilter?: string;
   onProjectFilterChange?: (projectId: string) => void;
   onSummaryChange?: (summary: MemoryDashboardSummary) => void;
 }) {
   const [internalSection, setInternalSection] = useState<MemorySection>("projects");
   const [internalSearch, setInternalSearch] = useState("");
+  const [internalSearchMode, setInternalSearchMode] = useState<MemorySearchMode>("browse");
   const [internalProjectFilter, setInternalProjectFilter] = useState<string>("");
+  const [jobView, setJobView] = useState<"with-memory" | "pending" | "all">("with-memory");
   const [confirmDelete, setConfirmDelete] = useState<{ kind: "butler" | "project" | "job"; id: string; parentId: string | null; summary: string } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const section = controlledSection ?? internalSection;
   const search = controlledSearch ?? internalSearch;
+  const searchMode = controlledSearchMode ?? internalSearchMode;
   const projectFilter = controlledProjectFilter ?? internalProjectFilter;
   const setSection = onSectionChange ?? setInternalSection;
   const setSearch = onSearchChange ?? setInternalSearch;
+  const setSearchMode = onSearchModeChange ?? setInternalSearchMode;
   const setProjectFilter = onProjectFilterChange ?? setInternalProjectFilter;
 
   const projectsQuery = useMemoryList<ProjectMemory>("/api/memory/projects", { projectId: projectFilter || null });
   const jobsQuery = useMemoryList<JobMemory>("/api/memory/jobs", { projectId: projectFilter || null });
   const butlerQuery = useMemoryList<ButlerMemoryEntry>("/api/memory/butler", { projectId: projectFilter || null });
+  const previewQuery = useAgentMemoryPreview(searchMode === "agent", search, projectFilter);
 
   const projects: ProjectMemory[] = projectsQuery.items;
   const jobs: JobMemory[] = jobsQuery.items;
@@ -435,38 +727,48 @@ export function MemoryDashboard({
     ).sort((a, b) => a.label.localeCompare(b.label));
   }, [projects]);
 
+  const browseSearch = searchMode === "browse" ? search : "";
+
   const filteredProjects = useMemo(() => {
     return projects.filter((project) => {
-      if (search && !filterText(project.projectLabel, search) && !filterText(project.summary, search)) {
-        if (!project.entries.some((entry) => filterText(entry.summary, search) || filterText(entry.details, search))) {
+      if (browseSearch && !filterText(project.projectLabel, browseSearch) && !filterText(project.summary, browseSearch)) {
+        if (!project.entries.some((entry) => filterText(entry.summary, browseSearch) || filterText(entry.details, browseSearch))) {
           return false;
         }
       }
       return true;
     });
-  }, [projects, search]);
+  }, [browseSearch, projects]);
 
   const filteredJobs = useMemo(() => {
     return jobs.filter((job) => {
-      if (!search) return true;
-      if (filterText(job.latestCheckpoint, search)) return true;
-      if (filterText(job.nextAction, search)) return true;
-      if (filterText(job.operatorGoal, search)) return true;
-      if (filterText(job.requestedTask, search)) return true;
-      if (job.entries.some((entry) => filterText(entry.summary, search))) return true;
+      if (!browseSearch) return true;
+      if (filterText(job.latestCheckpoint, browseSearch)) return true;
+      if (filterText(job.nextAction, browseSearch)) return true;
+      if (filterText(job.operatorGoal, browseSearch)) return true;
+      if (filterText(job.requestedTask, browseSearch)) return true;
+      if (job.entries.some((entry) => filterText(entry.summary, browseSearch))) return true;
       return false;
     });
-  }, [jobs, search]);
+  }, [browseSearch, jobs]);
+
+  const visibleJobs = useMemo(() => {
+    if (jobView === "all") return filteredJobs;
+    if (jobView === "pending") {
+      return filteredJobs.filter((job) => job.promotionCandidates.some((candidate) => candidate.status === "pending"));
+    }
+    return filteredJobs.filter((job) => job.entries.length > 0 || job.decisions.length > 0 || Boolean(job.latestCheckpoint));
+  }, [filteredJobs, jobView]);
 
   const filteredButler = useMemo(() => {
     return butler.filter((entry) => {
-      if (!search) return true;
-      if (filterText(entry.summary, search)) return true;
-      if (filterText(entry.details, search)) return true;
-      if (entry.tags.some((tag) => filterText(tag, search))) return true;
+      if (!browseSearch) return true;
+      if (filterText(entry.summary, browseSearch)) return true;
+      if (filterText(entry.details, browseSearch)) return true;
+      if (entry.tags.some((tag) => filterText(tag, browseSearch))) return true;
       return false;
     });
-  }, [butler, search]);
+  }, [browseSearch, butler]);
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -528,15 +830,15 @@ export function MemoryDashboard({
   const sectionLoading =
     section === "projects" ? projectsQuery.loading : section === "jobs" ? jobsQuery.loading : butlerQuery.loading;
   const activeCount =
-    section === "projects" ? filteredProjects.length : section === "jobs" ? filteredJobs.length : filteredButler.length;
+    section === "projects" ? filteredProjects.length : section === "jobs" ? visibleJobs.length : filteredButler.length;
   const totalCount = section === "projects" ? projects.length : section === "jobs" ? jobs.length : butler.length;
   const counts = useMemo<Record<MemorySection, { active: number; total: number }>>(
     () => ({
       projects: { active: filteredProjects.length, total: projects.length },
-      jobs: { active: filteredJobs.length, total: jobs.length },
+      jobs: { active: visibleJobs.length, total: jobs.length },
       butler: { active: filteredButler.length, total: butler.length }
     }),
-    [butler.length, filteredButler.length, filteredJobs.length, filteredProjects.length, jobs.length, projects.length]
+    [butler.length, filteredButler.length, filteredProjects.length, jobs.length, projects.length, visibleJobs.length]
   );
 
   useEffect(() => {
@@ -551,25 +853,29 @@ export function MemoryDashboard({
           <div className="dashboard-title">
             <h1>Memory</h1>
             <span className="dashboard-sub">
-              {activeCount} of {totalCount} {section}
+              {activeCount} of {totalCount} {sectionLabel(section)}
             </span>
           </div>
         ) : (
           <span className="dashboard-sub">
-            {activeCount} of {totalCount} {section}
+            {activeCount} of {totalCount} {sectionLabel(section)}
           </span>
         )}
         <div className="dashboard-controls">
+          <div className="memory-search-mode" role="group" aria-label="Memory search mode">
+            <button type="button" className={searchMode === "browse" ? "is-active" : ""} onClick={() => setSearchMode("browse")}>Browse</button>
+            <button type="button" className={searchMode === "agent" ? "is-active" : ""} onClick={() => setSearchMode("agent")}>Agent preview</button>
+          </div>
           <div className="search dashboard-search">
             <span className="search-icon">
               <SearchIcon />
             </span>
             <input
               type="search"
-              placeholder={`Search ${section}…`}
+              placeholder={searchMode === "agent" ? "Search memory as Butler…" : `Filter ${sectionLabel(section)}…`}
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              aria-label={`Search ${section}`}
+              aria-label={`Search ${sectionLabel(section)}`}
             />
           </div>
           <select
@@ -577,9 +883,9 @@ export function MemoryDashboard({
             value={projectFilter}
             onChange={(event) => setProjectFilter(event.target.value)}
             aria-label="Filter by project"
-            disabled={section === "butler"}
+            disabled={searchMode === "browse" && section === "butler"}
           >
-            <option value="">{section === "butler" ? "Global" : "All projects"}</option>
+            <option value="">{searchMode === "agent" ? "All projects" : section === "butler" ? "Global" : "All projects"}</option>
             {projectOptions.map((option) => (
               <option key={option.id} value={option.id}>
                 {option.label}
@@ -588,6 +894,23 @@ export function MemoryDashboard({
           </select>
         </div>
       </div>
+      ) : null}
+
+      {!showSections ? (
+        <div className="memory-mobile-sections" role="tablist" aria-label="Memory section">
+          {(["projects", "jobs", "butler"] as MemorySection[]).map((option) => (
+            <button
+              key={option}
+              type="button"
+              role="tab"
+              aria-selected={section === option}
+              className={section === option ? "is-selected" : ""}
+              onClick={() => setSection(option)}
+            >
+              {option === "projects" ? "Projects" : option === "jobs" ? "Jobs" : "Global"}
+            </button>
+          ))}
+        </div>
       ) : null}
 
       {showSections ? (
@@ -615,14 +938,23 @@ export function MemoryDashboard({
       ) : null}
 
       <div className="dashboard-body">
-        {sectionLoading && activeCount === 0 ? (
+        {searchMode === "agent" ? (
+          <AgentRetrievalPreview
+            query={search}
+            projectId={projectFilter}
+            payload={previewQuery.payload}
+            loading={previewQuery.loading}
+            error={previewQuery.error}
+            onRetry={previewQuery.reload}
+          />
+        ) : sectionLoading && totalCount === 0 ? (
           <div className="dashboard-loading">Loading…</div>
         ) : sectionError ? (
           <div className="error" role="alert">
             <WarningIcon />
             <span>{sectionError}</span>
           </div>
-        ) : activeCount === 0 ? (
+        ) : (section === "jobs" ? filteredJobs.length === 0 : activeCount === 0) ? (
           <div className="dashboard-empty">
             {search
               ? `No ${section} match "${search}".`
@@ -647,22 +979,36 @@ export function MemoryDashboard({
             ))}
           </ul>
         ) : section === "jobs" ? (
-          <ul className="memory-list">
-            {filteredJobs.map((job) => (
-              <li key={job.threadId}>
-                <JobCard
-                  job={job}
-                  query={search}
-                  onDeleteEntry={(entryId, summary) =>
-                    setConfirmDelete({ kind: "job", id: entryId, parentId: job.threadId, summary })
-                  }
-                  onResolveCandidate={(candidateId, accepted) => {
-                    void resolveCandidate(candidateId, accepted);
-                  }}
-                />
-              </li>
-            ))}
-          </ul>
+          <>
+            <div className="memory-list-toolbar">
+              <span>Job records</span>
+              <div className="memory-list-filter" role="group" aria-label="Filter job memory">
+                <button type="button" className={jobView === "with-memory" ? "is-active" : ""} onClick={() => setJobView("with-memory")}>With memory</button>
+                <button type="button" className={jobView === "pending" ? "is-active" : ""} onClick={() => setJobView("pending")}>Pending</button>
+                <button type="button" className={jobView === "all" ? "is-active" : ""} onClick={() => setJobView("all")}>All {filteredJobs.length}</button>
+              </div>
+            </div>
+            {visibleJobs.length === 0 ? (
+              <div className="dashboard-empty is-filtered">No jobs in this view. <button type="button" onClick={() => setJobView("all")}>Show all jobs</button></div>
+            ) : (
+              <ul className="memory-list">
+                {visibleJobs.map((job) => (
+                  <li key={job.threadId}>
+                    <JobCard
+                      job={job}
+                      query={search}
+                      onDeleteEntry={(entryId, summary) =>
+                        setConfirmDelete({ kind: "job", id: entryId, parentId: job.threadId, summary })
+                      }
+                      onResolveCandidate={(candidateId, accepted) => {
+                        void resolveCandidate(candidateId, accepted);
+                      }}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
         ) : (
           <ul className="memory-list">
             {filteredButler.map((entry) => (

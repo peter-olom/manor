@@ -50,6 +50,7 @@ const OPERATOR_PREFERENCE_EVIDENCE_PATTERN =
 const SKIP_OPERATOR_QUESTION_MEMORY_PATTERN =
   /\b(smoke test|test only|verification only|temporary test|do not remember|don't remember)\b/i;
 const MAX_FREEFORM_ANSWER_CHARS = 2_000;
+const MAX_DURABLE_TASTE_NOTE_CHARS = 1_600;
 const operatorQuestionMutationTails = new WeakMap<ButlerMessageView[], Promise<void>>();
 
 async function runOperatorQuestionMutation<T>(messages: ButlerMessageView[], mutation: () => Promise<T>): Promise<T> {
@@ -81,7 +82,7 @@ function isOperatorUserRole(role: string): boolean {
 }
 
 function truncateMemoryText(value: string, maxLength: number): string {
-  return value.length > maxLength ? `${value.slice(0, maxLength - 1).trim()}...` : value;
+  return value.length > maxLength ? `${value.slice(0, maxLength - 3).trimEnd()}...` : value;
 }
 
 function tagsForOperatorTasteQuestion(text: string): string[] {
@@ -103,7 +104,7 @@ export function findDurableOperatorTasteNotes(memoryEntries: ButlerMemoryEntryVi
     .filter((entry) => isAcceptedOperatorPreferenceMemory(entry))
     .filter((entry) => OPERATOR_PREFERENCE_EVIDENCE_PATTERN.test(`${entry.summary} ${entry.details ?? ""} ${(entry.tags ?? []).join(" ")}`))
     .slice(-6)
-    .map(formatOperatorPreferenceMemory);
+    .map((entry) => truncateMemoryText(formatOperatorPreferenceMemory(entry), MAX_DURABLE_TASTE_NOTE_CHARS));
 }
 
 function buildQuestionOptions(input: { options?: Array<{ id?: string | null; label: string; description?: string | null }> }): ButlerOperatorQuestionItemView["options"] {

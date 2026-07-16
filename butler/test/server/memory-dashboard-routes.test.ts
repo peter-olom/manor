@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import express from "express";
 
+import { formatButlerMemoryRetrieval, retrieveButlerMemory } from "../../src/server/memory-retrieval.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import type { CodexThreadExecutionContractView } from "../../src/server/types.js";
 
@@ -57,6 +58,15 @@ function mountRoutes(store: ButlerStateStore): express.Express {
   app.get("/api/memory/jobs", (req, res) => {
     const projectId = typeof req.query.projectId === "string" && req.query.projectId ? req.query.projectId : null;
     res.json({ jobs: store.listJobMemories(projectId) });
+  });
+
+  app.get("/api/memory/retrieve", (req, res) => {
+    const projectId = typeof req.query.projectId === "string" ? req.query.projectId : null;
+    const query = typeof req.query.query === "string" ? req.query.query : null;
+    const includeGlobal = req.query.includeGlobal === "1";
+    const includeProvenance = req.query.includeProvenance === "1";
+    const retrieval = retrieveButlerMemory(store, { projectId, query, includeGlobal, includeProvenance });
+    res.json({ retrieval, formatted: formatButlerMemoryRetrieval(retrieval) });
   });
 
   app.delete("/api/memory/butler/:id", (req, res) => {
@@ -117,6 +127,24 @@ test("GET /api/memory/butler returns all entries and supports query", async () =
     const filtered = await fetch(`${url}/api/memory/butler?query=dark`).then((r) => r.json() as Promise<{ entries: Array<{ summary: string }> }>);
     assert.equal(filtered.entries.length, 1);
     assert.equal(filtered.entries[0].summary, "Prefer dark themes by default");
+  } finally {
+    await close();
+  }
+});
+
+test("GET /api/memory/retrieve returns the exact formatted Butler brief", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-mem-route-"));
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  store.recordButlerMemory({ summary: "Use compact memory rows", details: "Keep provenance visible.", tags: ["memory"] });
+  const app = mountRoutes(store);
+  const { url, close } = await listen(app);
+  try {
+    const payload = await fetch(`${url}/api/memory/retrieve?query=memory&includeGlobal=1&includeProvenance=1`)
+      .then((response) => response.json() as Promise<{ retrieval: { butlerMemories: Array<{ summary: string }> }; formatted: string }>);
+    assert.equal(payload.retrieval.butlerMemories[0]?.summary, "Use compact memory rows");
+    assert.match(payload.formatted, /Global Butler memories:/);
+    assert.match(payload.formatted, /Use compact memory rows/);
+    assert.match(payload.formatted, /source=butler_tool/);
   } finally {
     await close();
   }

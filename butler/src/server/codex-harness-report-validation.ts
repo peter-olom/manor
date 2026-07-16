@@ -1,10 +1,12 @@
 import crypto from "node:crypto";
 
 import { normalizeWorkerClaimsReport } from "./butler-orchestration.js";
+import { proofHasVisualArtifact, threadRequiresVisualProof } from "./proof-policy.js";
 import type { CodexThreadRecord, CodexWorkerEvidenceView, PreviewProofRecordView, WorkerClaimsReportView, WorkerEvidenceKind } from "./types.js";
 
 function normalizeWorkerEvidenceKind(value: unknown): WorkerEvidenceKind {
-  return typeof value === "string" &&
+  const normalizedValue = value === "browser" ? "browser_flow" : value;
+  return typeof normalizedValue === "string" &&
     [
       "unit_test",
       "integration_test",
@@ -29,8 +31,8 @@ function normalizeWorkerEvidenceKind(value: unknown): WorkerEvidenceKind {
       "command",
       "file",
       "manual"
-    ].includes(value)
-    ? (value as WorkerEvidenceKind)
+    ].includes(normalizedValue)
+    ? (normalizedValue as WorkerEvidenceKind)
     : "manual";
 }
 
@@ -64,11 +66,135 @@ export function normalizeReportEvidence(raw: unknown): CodexWorkerEvidenceView[]
 
 export { normalizeWorkerClaimsReport };
 
+const VISUAL_EVIDENCE_KINDS = new Set<WorkerEvidenceKind>([
+  "browser_flow",
+  "visual_review",
+  "responsive_review",
+  "screenshot",
+  "video",
+  "proof",
+  "taste_review"
+]);
+const PROOF_BOUND_EVIDENCE_KINDS = new Set<WorkerEvidenceKind>([
+  "browser_flow",
+  "visual_review",
+  "screenshot",
+  "video",
+  "proof"
+]);
+
+function normalizedRoutePath(raw: string): string | null {
+  try {
+    const pathname = new URL(raw, "http://manor.invalid").pathname.replace(/^\/preview\/[^/]+/, "");
+    return pathname.replace(/\/$/, "") || "/";
+  } catch {
+    return null;
+  }
+}
+
+function proofFailure(proof: PreviewProofRecordView): string | null {
+  const verification = proof.verification;
+  if (!verification.ok || verification.failureKind !== "none") {
+    return verification.error ?? `proof run failed with signal ${verification.failureKind}`;
+  }
+  if (!verification.readiness.routeOk) {
+    return "the captured route did not pass readiness checks";
+  }
+  if (verification.phases.some((phase) => phase.status === "failed")) {
+    return "the proof contains a failed phase";
+  }
+  if (verification.actions?.some((action) => action.status === "failed")) {
+    return "the proof contains a failed browser action";
+  }
+  if (!proofHasVisualArtifact(proof)) {
+    return "the proof has no available screenshot or video";
+  }
+  return null;
+}
+
+function routeMatchesProof(route: string, proof: PreviewProofRecordView): boolean {
+  const expectedPath = normalizedRoutePath(route);
+  if (!expectedPath) return false;
+  const candidates = [
+    proof.verification.readiness.finalUrl,
+    proof.verification.url,
+    ...proof.verification.artifacts
+      .filter((artifact) => artifact.kind === "screenshot")
+      .map((artifact) => artifact.captureUrl)
+      .filter((value): value is string => Boolean(value))
+  ];
+  return candidates.some((candidate) => {
+    const actualPath = normalizedRoutePath(candidate);
+    if (!actualPath) return false;
+    return actualPath === expectedPath || (expectedPath !== "/" && actualPath.endsWith(expectedPath));
+  });
+}
+
+function rejectDuplicateNamedCaptures(proofs: PreviewProofRecordView[]): void {
+  const byChecksum = new Map<string, Array<{ label: string; route: string | null }>>();
+  for (const proof of proofs) {
+    for (const artifact of proof.verification.artifacts) {
+      if (artifact.kind !== "screenshot" || !artifact.checksumSha256 || /\b(ready|final)\b/i.test(artifact.label)) continue;
+      const entries = byChecksum.get(artifact.checksumSha256) ?? [];
+      entries.push({ label: artifact.label, route: artifact.captureUrl ? normalizedRoutePath(artifact.captureUrl) : null });
+      byChecksum.set(artifact.checksumSha256, entries);
+    }
+  }
+  for (const entries of byChecksum.values()) {
+    const claims = new Set(entries.map((entry) => `${entry.label}\u0000${entry.route ?? ""}`));
+    if (claims.size > 1) {
+      throw new Error("Completed report references differently named or routed screenshots with identical image content. Recapture each claimed UI state.");
+    }
+  }
+}
+
 export function validateCompletedWorkerEvidence(input: {
   thread: CodexThreadRecord;
   evidence: CodexWorkerEvidenceView[];
   threadProofs: PreviewProofRecordView[];
   claims?: WorkerClaimsReportView | null;
 }): void {
-  void input;
+  const contract = input.thread.executionContract;
+  const pointIds = new Set(contract?.verificationMatrix.map((row) => row.acceptancePointId).filter((id): id is string => Boolean(id)) ?? []);
+  const matrixRowIds = new Set(contract?.verificationMatrix.map((row) => row.id) ?? []);
+  for (const entry of input.evidence) {
+    if (entry.pointId && !pointIds.has(entry.pointId)) {
+      throw new Error(`Completed report evidence references unknown acceptance point ${entry.pointId}.`);
+    }
+    if (entry.matrixRowId && !matrixRowIds.has(entry.matrixRowId)) {
+      throw new Error(`Completed report evidence references unknown verification row ${entry.matrixRowId}.`);
+    }
+  }
+
+  const proofByRunId = new Map(input.threadProofs.map((proof) => [proof.verification.runId, proof]));
+  const referencedEvidence = input.evidence.filter((entry) => entry.proofRunId);
+
+  for (const entry of referencedEvidence) {
+    const proof = proofByRunId.get(entry.proofRunId!);
+    if (!proof) {
+      throw new Error(`Completed report references missing proof run ${entry.proofRunId}. Capture the proof again and report its returned run ID.`);
+    }
+    const failure = proofFailure(proof);
+    if (failure) {
+      throw new Error(`Completed report references unusable proof run ${entry.proofRunId}: ${failure}.`);
+    }
+    if (entry.route && !routeMatchesProof(entry.route, proof)) {
+      throw new Error(`Completed report claims route ${entry.route}, but proof run ${entry.proofRunId} did not capture that route.`);
+    }
+  }
+  rejectDuplicateNamedCaptures([...new Set(referencedEvidence.map((entry) => proofByRunId.get(entry.proofRunId!)).filter((proof): proof is PreviewProofRecordView => Boolean(proof)))]);
+
+  if (!threadRequiresVisualProof(input.thread)) return;
+
+  const visualEvidence = input.evidence.filter((entry) => VISUAL_EVIDENCE_KINDS.has(entry.kind));
+  if (visualEvidence.length === 0) {
+    throw new Error("UI work cannot be reported completed without structured visual evidence.");
+  }
+  const proofBoundEvidence = visualEvidence.filter((entry) => PROOF_BOUND_EVIDENCE_KINDS.has(entry.kind));
+  if (proofBoundEvidence.length === 0) {
+    throw new Error("UI work cannot be reported completed without browser or screenshot evidence tied to a proof run.");
+  }
+  if (proofBoundEvidence.some((entry) => !entry.proofRunId)) {
+    throw new Error("Browser and screenshot evidence for completed UI work must reference the proof run that produced it.");
+  }
 }

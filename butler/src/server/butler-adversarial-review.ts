@@ -28,6 +28,7 @@ import { workerExecutionEndAt } from "./worker-execution-window.js";
 import { workerFileChangeAttribution, workerFileChangePaths } from "./worker-review-attribution.js";
 import { redactSensitiveText } from "./redact-sensitive-text.js";
 import { assertIsolatedPromptSucceeded } from "./isolated-prompt-outcome.js";
+import type { ActivityWatchdogService } from "./activity-watchdog.js";
 
 export const ADVERSARIAL_REVIEW_OUTPUT_SCHEMA = {
   type: "object",
@@ -90,8 +91,10 @@ export async function waitForPiReviewSubmission(input: {
   timeoutMs: number;
   lastActivityAt?: () => number;
   isCurrent?: () => boolean;
+  watchdogs: ActivityWatchdogService;
+  watchdogId?: string;
 }): Promise<ReturnType<typeof validateAdversarialReviewOutput> | null> {
-  let timeout: ReturnType<typeof setTimeout> | null = null;
+  let watchdogId: string | null = null;
   try {
     const startedAt = Date.now();
     const timeoutOutcome = new Promise<never>((_resolve, reject) => {
@@ -106,10 +109,13 @@ export async function waitForPiReviewSubmission(input: {
           reject(new Error("adversarial review timed out"));
           return;
         }
-        const untilInactive = Math.max(1, input.timeoutMs - inactiveFor);
-        timeout = setTimeout(check, Math.min(untilInactive, input.isCurrent ? 100 : Number.POSITIVE_INFINITY));
       };
-      timeout = setTimeout(check, Math.min(input.timeoutMs, input.isCurrent ? 100 : Number.POSITIVE_INFINITY));
+      watchdogId = input.watchdogId ?? `review-pi:${crypto.randomUUID()}`;
+      input.watchdogs.register({
+        id: watchdogId,
+        intervalMs: Math.min(100, input.timeoutMs),
+        callback: check
+      });
     });
     const outcome = await Promise.race([
       input.prompt.then(() => ({ kind: "prompt" as const })),
@@ -120,7 +126,7 @@ export async function waitForPiReviewSubmission(input: {
     await input.abort().catch(() => undefined);
     return outcome.review;
   } finally {
-    if (timeout) clearTimeout(timeout);
+    if (watchdogId) input.watchdogs.unregister(watchdogId);
   }
 }
 
@@ -162,6 +168,7 @@ export type ProviderAdversarialReviewInput = {
   codexExecutable?: string;
   onProgress?: (progress: AdversarialReviewProgress) => void;
   isCurrent?: () => boolean;
+  watchdogs: ActivityWatchdogService;
 };
 
 export type AdversarialReviewProgress = {
@@ -275,16 +282,13 @@ async function runCodexReview(input: ProviderAdversarialReviewInput): Promise<un
       });
       let stderr = "";
       let stdout = "";
-      let timeout: ReturnType<typeof setTimeout> | null = null;
       let forceKill: ReturnType<typeof setTimeout> | null = null;
-      let superseded: ReturnType<typeof setInterval> | null = null;
+      let watchdogRegistration: ReturnType<ActivityWatchdogService["register"]> | null = null;
       let shutdownError: Error | null = null;
       let settled = false;
       const clearWatchers = () => {
-        if (timeout) clearTimeout(timeout);
-        if (superseded) clearInterval(superseded);
-        timeout = null;
-        superseded = null;
+        watchdogRegistration?.unregister();
+        watchdogRegistration = null;
       };
       const finish = (error?: Error) => {
         if (settled) return;
@@ -301,19 +305,22 @@ async function runCodexReview(input: ProviderAdversarialReviewInput): Promise<un
         forceKill = setTimeout(() => child.kill("SIGKILL"), CODEX_REVIEW_TERMINATION_GRACE_MS);
       };
       const checkTimeout = () => {
+        if (input.isCurrent?.() === false) {
+          shutdown(new Error("adversarial review was superseded"));
+          return;
+        }
         const now = Date.now();
         const inactiveFor = now - lastActivityAt;
         if (inactiveFor >= input.timeoutMs) {
           shutdown(reviewTimeoutError(input, lastProgress));
           return;
         }
-        timeout = setTimeout(checkTimeout, Math.max(1, Math.min(input.timeoutMs - inactiveFor, 1_000)));
       };
-      timeout = setTimeout(checkTimeout, Math.min(input.timeoutMs, 1_000));
-      superseded = input.isCurrent ? setInterval(() => {
-        if (input.isCurrent?.() !== false) return;
-        shutdown(new Error("adversarial review was superseded"));
-      }, 100) : null;
+      watchdogRegistration = input.watchdogs.register({
+        id: `review-codex:${runId}`,
+        intervalMs: Math.min(100, input.timeoutMs),
+        callback: checkTimeout
+      });
       let lastOutputReportAt = 0;
       const noteOutput = (stream: "stdout" | "stderr", chunk: Buffer) => {
         const now = Date.now();
@@ -423,7 +430,9 @@ async function runPiReview(input: ProviderAdversarialReviewInput): Promise<unkno
       abort: () => session.abort(),
       timeoutMs: input.timeoutMs,
       lastActivityAt: () => lastProgress.at,
-      isCurrent: input.isCurrent
+      isCurrent: input.isCurrent,
+      watchdogs: input.watchdogs,
+      watchdogId: `review-pi:${crypto.randomUUID()}`
     });
     if (earlySubmission) return earlySubmission;
     assertPiReviewerPromptSucceeded(session.messages);
@@ -529,6 +538,7 @@ export async function ensureButlerAdversarialReview(input: {
   reviewBrief?: string | null;
   codexAuthenticated?: boolean;
   timeoutMs?: number;
+  watchdogs: ActivityWatchdogService;
   runReview?: typeof runProviderAdversarialReview;
   buildWorkspaceSnapshot?: (cwd: string, baselineSha?: string | null, baselineTreeSha?: string | null, baselineObjectDir?: string | null) => Promise<string>;
   createScopedWorkspace?: typeof createScopedReviewWorkspace;
@@ -641,6 +651,7 @@ export async function ensureButlerAdversarialReview(input: {
       codexNativeAvailable: input.codexAuthenticated !== false,
       prompt,
       timeoutMs: input.timeoutMs ?? 120_000,
+      watchdogs: input.watchdogs,
       onProgress: input.onProgress,
       isCurrent: input.isCurrent
     }));

@@ -105,15 +105,21 @@ export function defaultOpencodeWebToolsExtensionPath(): string {
   return path.join(path.dirname(currentPath), `pi-opencode-web-tools-extension${path.extname(currentPath)}`);
 }
 
+export function defaultManorToolsExtensionPath(): string {
+  const currentPath = fileURLToPath(import.meta.url);
+  return path.join(path.dirname(currentPath), `pi-manor-tools-extension${path.extname(currentPath)}`);
+}
+
 export async function webToolsExtensionArgsForProvider(provider: string | null | undefined, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
+  const manorTools = ["--extension", defaultManorToolsExtensionPath()];
   const settings = getActiveManorSettings(env);
   if (provider === settings.providers.opencodeGo.providerId || provider === "opencode-go") {
-    return ["--extension", defaultOpencodeWebToolsExtensionPath()];
+    return [...manorTools, "--extension", defaultOpencodeWebToolsExtensionPath()];
   }
   const source = await selectProviderWebToolSource(provider, env);
-  if (source === "opencode") return ["--extension", defaultOpencodeWebToolsExtensionPath()];
-  if (source === "ollama") return ["--extension", defaultOllamaWebToolsExtensionPath()];
-  return [];
+  if (source === "opencode") return [...manorTools, "--extension", defaultOpencodeWebToolsExtensionPath()];
+  if (source === "ollama") return [...manorTools, "--extension", defaultOllamaWebToolsExtensionPath()];
+  return manorTools;
 }
 
 export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
@@ -185,6 +191,10 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
 
   private staleOperation(threadId: string, dispatchMayHaveBeenAccepted = false, cause?: unknown): StaleWorkerOperationError {
     return new StaleWorkerOperationError(threadId, { cause, dispatchMayHaveBeenAccepted });
+  }
+
+  private assertSendNotAborted(threadId: string, signal: AbortSignal | undefined, dispatchMayHaveBeenAccepted = false): void {
+    if (signal?.aborted) throw this.staleOperation(threadId, dispatchMayHaveBeenAccepted, signal.reason);
   }
 
   private async rejectStaleStartedSession(session: PiWorkerSession): Promise<never> {
@@ -565,28 +575,42 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     return { threadId, turnId: null };
   }
 
-  async sendMessage(threadId: string, input: string | CodexInputItem[]): Promise<{ threadId: string; turnId: string | null }> {
+  async sendMessage(threadId: string, input: string | CodexInputItem[], options: { signal?: AbortSignal } = {}): Promise<{ threadId: string; turnId: string | null }> {
+    this.assertSendNotAborted(threadId, options.signal);
     if (!this.sessions.has(threadId)) await this.loadThread(threadId);
+    this.assertSendNotAborted(threadId, options.signal);
     let session = this.sessions.get(threadId);
     if (!session) throw new Error("Pi RPC worker thread is not loaded");
     let preflightGeneration = session.activityVersion;
     const resolvedInput = await resolvePiWorkerInput(input);
+    this.assertSendNotAborted(threadId, options.signal);
     if (!this.isSessionGenerationCurrent(session, preflightGeneration)) throw this.staleOperation(threadId);
     if (this.sessionModelContextChanged(session)) {
       const state = await session.client.getState().catch(() => null);
+      this.assertSendNotAborted(threadId, options.signal);
       if (!this.isSessionGenerationCurrent(session, preflightGeneration)) throw this.staleOperation(threadId);
       if (state && !state.isStreaming && !state.isCompacting) {
         session = await this.restartSessionForModelContext(session);
+        this.assertSendNotAborted(threadId, options.signal);
         preflightGeneration = session.activityVersion;
       }
     }
+    this.assertSendNotAborted(threadId, options.signal);
     const operationGeneration = this.beginSessionOperation(session);
     try {
       await this.promptSession(session, operationGeneration, resolvedInput.text, resolvedInput.images, "steer");
     } catch (error) {
       if (!this.isSessionGenerationCurrent(session, operationGeneration)) throw this.staleOperation(threadId, true, error);
+      if (options.signal?.aborted) {
+        this.invalidateSessionGenerationIfCurrent(session, operationGeneration);
+        throw this.staleOperation(threadId, true, options.signal.reason ?? error);
+      }
       this.invalidateSessionGenerationIfCurrent(session, operationGeneration);
       throw error;
+    }
+    if (options.signal?.aborted) {
+      this.invalidateSessionGenerationIfCurrent(session, operationGeneration);
+      throw this.staleOperation(threadId, true, options.signal.reason);
     }
     if (!this.isSessionGenerationCurrent(session, operationGeneration)) throw this.staleOperation(threadId, true);
     session.acceptedEventVersion = operationGeneration;

@@ -835,3 +835,97 @@ test("stop_browser_session validates the supplied preview association before sto
   );
   assert.equal(stopped, false);
 });
+
+test("proof review lists exact coverage instead of reviewing an ambiguous multi-run bundle", async () => {
+  const definitions: Array<{
+    name: string;
+    execute: (toolCallId: string, params: Record<string, unknown>) => Promise<{
+      content: Array<{ text: string }>;
+      details?: Record<string, unknown>;
+    }>;
+  }> = [];
+  let visionReviews = 0;
+  const access = {
+    runtimeThreadId: "butler:pair-1",
+    getWorkerDefaults: () => ({ runtime: "auto", threadId: "thread-proof" }),
+    defineButlerTool: (definition: (typeof definitions)[number]) => {
+      definitions.push(definition);
+      return definition;
+    },
+    getToolUiEffects: () => [],
+    store: {
+      listPreviewProofs: () => [
+        {
+          id: "proof-reviewed",
+          threadId: "thread-proof",
+          previewTitle: "Reviewed page",
+          updatedAt: 100,
+          verification: { runId: "run-reviewed", ok: true, failureKind: "none" },
+          proofReviews: [{ verdict: "credible" }]
+        },
+        {
+          id: "proof-pending",
+          threadId: "thread-proof",
+          previewTitle: "Pending page",
+          updatedAt: 200,
+          verification: { runId: "run-pending", ok: true, failureKind: "none" },
+          proofReviews: []
+        }
+      ]
+    },
+    reviewProofScreenshot: async () => {
+      visionReviews += 1;
+      throw new Error("vision review should not run for an ambiguous selector");
+    }
+  } as unknown as ButlerAgentToolAccess;
+
+  buildButlerStackPreviewTools(access);
+  const reviewProof = definitions.find((definition) => definition.name === "review_preview_proof");
+  assert.ok(reviewProof);
+
+  const result = await reviewProof.execute("review-multiple", { threadId: "thread-proof" });
+
+  assert.equal(visionReviews, 0);
+  assert.match(result.content[0]?.text ?? "", /run-reviewed: verification=passed \| review=credible/);
+  assert.match(result.content[0]?.text ?? "", /run-pending: verification=passed \| review=unreviewed/);
+  assert.equal(result.details?.requiresExactRunId, true);
+});
+
+test("exact proof review requires an owned thread or lease scope", async () => {
+  const definitions: Array<{
+    name: string;
+    execute: (toolCallId: string, params: Record<string, unknown>) => Promise<unknown>;
+  }> = [];
+  let visionReviews = 0;
+  const access = {
+    runtimeThreadId: "butler:pair-1",
+    getWorkerDefaults: () => ({ runtime: "auto", threadId: "thread-owned" }),
+    defineButlerTool: (definition: (typeof definitions)[number]) => {
+      definitions.push(definition);
+      return definition;
+    },
+    getToolUiEffects: () => [],
+    resolvePreviewProof: () => ({
+      preview: { id: "preview-foreign", threadId: "thread-foreign" },
+      verification: { runId: "run-foreign" }
+    }),
+    reviewProofScreenshot: async () => {
+      visionReviews += 1;
+      throw new Error("foreign proof must not reach vision review");
+    }
+  } as unknown as ButlerAgentToolAccess;
+
+  buildButlerStackPreviewTools(access);
+  const reviewProof = definitions.find((definition) => definition.name === "review_preview_proof");
+  assert.ok(reviewProof);
+
+  await assert.rejects(
+    () => reviewProof.execute("review-unscoped", { runId: "run-foreign" }),
+    /must be scoped by leaseId or threadId/
+  );
+  await assert.rejects(
+    () => reviewProof.execute("review-foreign", { threadId: "thread-owned", runId: "run-foreign" }),
+    /Proof run run-foreign belongs to another Butler session/
+  );
+  assert.equal(visionReviews, 0);
+});

@@ -140,6 +140,16 @@ Text proof accepts either piped stdin or --body. Markdown is the default format.
   manor-harness [--thread <jobId>] proof file <filePath> [--title <text>] [--label <text>] [--content-type <mime>]`);
 }
 
+function printReportHelp() {
+  console.log(`Usage:
+  manor-harness [--thread <jobId>] report --status completed|blocked --summary "<concise outcome>" [--details "<evidence and remaining risk>"] [--evidence "<pointId>|<kind>|<summary>" ...] [--evidence-json '<json>' ...]
+
+Browser proof example:
+  manor-harness --thread <jobId> report --status completed --summary "UI verified" --evidence-json '{"kind":"browser_flow","summary":"Recorded UI flow","proofRunId":"<exact-run-id>"}'
+
+Use one report after work and verification finish. Blocked reports require details. Browser proof evidence should include the exact proofRunId returned when the browser session stopped.`);
+}
+
 async function loadCapabilities() {
   const raw = await fs.readFile(registryPath, "utf8").catch(() => "");
   if (!raw) {
@@ -477,6 +487,11 @@ async function main() {
 
   if (args[0] === "proof" && (args.includes("--help") || args.includes("-h") || args[1] === "help")) {
     printProofHelp(args[1] === "help" ? "" : args[1]);
+    return;
+  }
+
+  if (args[0] === "report" && (args[1] === "help" || args.includes("--help") || args.includes("-h"))) {
+    printReportHelp();
     return;
   }
 

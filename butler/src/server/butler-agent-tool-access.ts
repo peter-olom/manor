@@ -2,6 +2,7 @@ import type { AgentSession, ModelRegistry } from "@earendil-works/pi-coding-agen
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "@sinclair/typebox";
 
+import type { ActivityWatchdogService } from "./activity-watchdog.js";
 import type { FileReferenceStore } from "./file-store.js";
 import type { HostControllerClient } from "./host-controller-client.js";
 import type { ImageReferenceStore } from "./image-store.js";
@@ -70,6 +71,7 @@ export type ButlerAgentToolAccess = {
   skillsService: SkillsService;
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;
+  watchdogs: ActivityWatchdogService;
   piRpcWorkerClient: PiRpcWorkerClient | null;
   hostController: HostControllerClient;
   runtimeBroker: RuntimeBrokerClient;

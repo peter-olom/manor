@@ -11,6 +11,7 @@ Manor runtime rule:
 - do repository, git, and edit work in the current Worker session
 - do package installs, app startup, builds, and browser checks in previews
 - previews run from isolated snapshots for app startup, builds, and smoke runs
+- when native Manor preview and browser tools are available, prefer them over shelling out to `manor-harness`; they preserve arguments and propagate failures directly
 - use sticky stack or preview leases only when the operator wants a warm reusable runtime across jobs
 - use `manor-harness stack lease <stack> --sticky` or `manor-harness preview lease <preview> --sticky` to keep a runtime reusable, and `--unsticky` to return it to normal cleanup
 - do not ask to install packages in the shared execution host unless the operator explicitly wants an exception

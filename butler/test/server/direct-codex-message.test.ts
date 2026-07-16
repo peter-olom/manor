@@ -120,9 +120,14 @@ test("direct Codex messages register Butler supervision callback", async () => {
   assert.equal(callbacks[0]?.operatorCloseoutStatus, "owed");
   assert.equal(callbacks[0]?.nextWorkerReportAction, "review");
   assert.equal(store.getThread(threadId)?.eventLog[0]?.method, "butler.direct_message.pinged");
+  const internals = agent as unknown as { watchdogs: { size: number } };
+  assert.equal(internals.watchdogs.size, 1);
 
   const messages = agent.getLiveSnapshot().messages;
   assert.equal(messages.length, 0);
+  await agent.removeExternalWorkerDelegation(threadId);
+  assert.equal(internals.watchdogs.size, 0);
+  agent.dispose();
 });
 
 test("direct Worker new work refreshes the review scope before persisting its payload", async () => {
@@ -1433,8 +1438,13 @@ test("delegated worker instructions define provider-neutral memory and shell bou
   assert.match(instructions, /Write memory only when it will help a future worker/);
   assert.match(instructions, /Do not write routine progress/);
   assert.match(instructions, /worker shell/);
-  assert.match(instructions, /pipe the actual commands and their output into Markdown while the work runs/);
-  assert.match(instructions, /do not reconstruct a transcript afterward/);
+  assert.match(instructions, /callable native tool schema is authoritative for tool names and parameters/);
+  assert.match(instructions, /Native preview command results and stopped browser sessions are already durable evidence/);
+  assert.match(instructions, /Use `proof file` only when the useful evidence is a separate durable deliverable/);
+  assert.match(instructions, /successful manor_browser_stop already records the durable screenshots, video, trace, manifest, and proof run/);
+  assert.match(instructions, /cite that run id and do not attach or reconstruct the same evidence again/);
+  assert.match(instructions, /record exactly one supervisor report before your final reply/);
+  assert.match(instructions, /Prefer the native manor_report tool/);
   assert.doesNotMatch(instructions, /strict JSON claims/);
   assert.doesNotMatch(instructions, /Codex worker|Codex-shell/);
 });

@@ -81,8 +81,8 @@ test("Ollama web tools attach only to the Ollama Cloud provider by default", asy
 
   assert.equal(shouldAttachOllamaWebTools("ollama-cloud", env), true);
   assert.equal(shouldAttachOllamaWebTools("openai", env), false);
-  assert.deepEqual(await webToolsExtensionArgsForProvider("openai", env), []);
-  assert.match((await webToolsExtensionArgsForProvider("ollama-cloud", env))[1] ?? "", /pi-ollama-web-tools-extension\.(ts|js)$/);
+  assert.match((await webToolsExtensionArgsForProvider("openai", env))[1] ?? "", /pi-manor-tools-extension\.(ts|js)$/);
+  assert.match((await webToolsExtensionArgsForProvider("ollama-cloud", env))[3] ?? "", /pi-ollama-web-tools-extension\.(ts|js)$/);
 });
 
 test("Ollama web tools can be attached to all Pi models by opt-in", () => {
@@ -103,8 +103,9 @@ test("OpenCode web tools take priority over Ollama all-model tools for OpenCode 
 
   assert.equal(await selectProviderWebToolSource("opencode-go", env), "opencode");
   const args = await webToolsExtensionArgsForProvider("opencode-go", env);
-  assert.equal(args.length, 2);
-  assert.match(args[1] ?? "", /pi-opencode-web-tools-extension\.(ts|js)$/);
+  assert.equal(args.length, 4);
+  assert.match(args[1] ?? "", /pi-manor-tools-extension\.(ts|js)$/);
+  assert.match(args[3] ?? "", /pi-opencode-web-tools-extension\.(ts|js)$/);
   assert.doesNotMatch(args.join(" "), /pi-ollama-web-tools-extension/);
 });
 
@@ -116,8 +117,9 @@ test("OpenCode provider extension loads for native request transforms even when 
 
   assert.equal(await selectProviderWebToolSource("opencode-go", env), null);
   const args = await webToolsExtensionArgsForProvider("opencode-go", env);
-  assert.equal(args.length, 2);
-  assert.match(args[1] ?? "", /pi-opencode-web-tools-extension\.(ts|js)$/);
+  assert.equal(args.length, 4);
+  assert.match(args[1] ?? "", /pi-manor-tools-extension\.(ts|js)$/);
+  assert.match(args[3] ?? "", /pi-opencode-web-tools-extension\.(ts|js)$/);
 });
 
 test("OpenCode provider extension patches MiniMax M3 native thinking variants", () => {
@@ -174,7 +176,7 @@ test("Butler and workers both skip Ollama all-model web tools when the Ollama ke
   };
 
   assert.equal(await selectProviderWebToolSource("openai", env), null);
-  assert.deepEqual(await webToolsExtensionArgsForProvider("openai", env), []);
+  assert.match((await webToolsExtensionArgsForProvider("openai", env))[1] ?? "", /pi-manor-tools-extension\.(ts|js)$/);
   await syncProviderWebToolsForSession(session, env);
   assert.deepEqual(session.activeTools, ["prepare_worktree"]);
 });

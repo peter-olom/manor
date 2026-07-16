@@ -458,6 +458,34 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       }
     }),
     access.defineButlerTool({
+      name: "review_acceptance_points",
+      label: "Review points",
+      description: "Atomically record Butler's explicit decisions for several acceptance points after one evidence review.",
+      promptSnippet: "review_acceptance_points: batch two or more accepted, rejected, or waived checklist decisions in one call; every rejected point still requires nextInstruction.",
+      parameters: Type.Object({
+        threadId: Type.String({ minLength: 1 }),
+        decisions: Type.Array(Type.Object({
+          pointId: Type.String({ minLength: 1 }),
+          status: Type.Union([Type.Literal("accepted"), Type.Literal("rejected"), Type.Literal("waived")]),
+          note: Type.Optional(Type.String()),
+          nextInstruction: Type.Optional(Type.String())
+        }), { minItems: 2, maxItems: 100 })
+      }),
+      uiEffects: access.getToolUiEffects("review_acceptance_points"),
+      execute: async (_toolCallId, params) => {
+        const typedParams = params as {
+          threadId: string;
+          decisions: Array<{ pointId: string; status: "accepted" | "rejected" | "waived"; note?: string; nextInstruction?: string }>;
+        };
+        assertCallbackReviewCurrent(typedParams.threadId);
+        const checklist = access.store.reviewAcceptancePoints({ threadId: typedParams.threadId, decisions: typedParams.decisions });
+        return {
+          content: [{ type: "text", text: `Recorded ${typedParams.decisions.length} acceptance-point decisions. Checklist is ${checklist.reviewState}.` }],
+          details: { checklist }
+        };
+      }
+    }),
+    access.defineButlerTool({
       name: "disprove_review_finding",
       label: "Disprove review finding",
       description: "Resolve one isolated blocking review finding only when stronger concrete evidence proves it is a false positive.",

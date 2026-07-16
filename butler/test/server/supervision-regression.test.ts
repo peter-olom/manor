@@ -586,13 +586,14 @@ test("completed UI reports accept proof for Butler to review independently", asy
   const thread = store.getThread(contract.threadId);
   assert.ok(thread);
   const evidence = contract.verificationMatrix.flatMap((row, index) => [
-    workerEvidence(index === 0 ? "responsive_review" : "screenshot", {
+    workerEvidence("screenshot", {
       id: `evidence-${index}-primary`,
       pointId: row.acceptancePointId,
       matrixRowId: row.id
     }),
     ...(index === 0
       ? [
+          workerEvidence("responsive_review", { id: "evidence-responsive", pointId: row.acceptancePointId, matrixRowId: row.id }),
           workerEvidence("accessibility_review", { id: "evidence-accessibility", pointId: row.acceptancePointId, matrixRowId: row.id }),
           workerEvidence("taste_review", { id: "evidence-taste", pointId: row.acceptancePointId, matrixRowId: row.id })
         ]
@@ -605,8 +606,8 @@ test("completed UI reports accept proof for Butler to review independently", asy
     threadId: contract.threadId
   });
 
-  assert.doesNotThrow(() => validateCompletedWorkerEvidence({ thread, evidence, threadProofs: [] }));
-  assert.doesNotThrow(() => validateCompletedWorkerEvidence({ thread, evidence, threadProofs: [textProof] }));
+  assert.throws(() => validateCompletedWorkerEvidence({ thread, evidence, threadProofs: [] }), /missing proof run proof-1/);
+  assert.throws(() => validateCompletedWorkerEvidence({ thread, evidence, threadProofs: [textProof] }), /missing proof run proof-1/);
   assert.doesNotThrow(() => validateCompletedWorkerEvidence({ thread, evidence, threadProofs: [proof] }));
 });
 
@@ -899,6 +900,17 @@ test("system prompt advises focused checklist refresh for new work", async () =>
   assert.match(prompt, /explicit authorization for stop_job/);
   assert.match(prompt, /Call stop_job immediately/);
   assert.match(prompt, /do not message that Worker or start a replacement/);
+});
+
+test("system prompt keeps delegated tasks outcome-focused", async () => {
+  const store = await createStore();
+  const prompt = buildSystemPrompt(store, "No callbacks.");
+
+  assert.match(prompt, /desired outcome, constraints, acceptance criteria, and useful evidence/);
+  assert.match(prompt, /Do not prescribe tool names, arguments, optional values, time budgets, retry windows, or execution choreography/);
+  assert.match(prompt, /Let the Worker use its live tool schemas and judgment/);
+  assert.doesNotMatch(prompt, /Worker-native lifecycle tools are/);
+  assert.doesNotMatch(prompt, /For manor_browser_start/);
 });
 
 test("Butler callback state startup tolerates empty persisted files", () => {

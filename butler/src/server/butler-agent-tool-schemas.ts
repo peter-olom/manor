@@ -25,7 +25,7 @@ export function startPreviewSchema() {
     }))),
     bootstrapWaitSeconds: Type.Optional(Type.Number({
       minimum: 1,
-      description: "How long the preview may spend bootstrapping before the heartbeat is treated as failed."
+      description: "Maximum time to wait for preview bootstrap before returning its current state."
     })),
     bootstrapHint: Type.Optional(Type.String({
       minLength: 1,
@@ -55,9 +55,9 @@ export function startPreviewSchema() {
 
 export function reviewPreviewProofSchema() {
   return Type.Object({
-    leaseId: Type.Optional(Type.String({ minLength: 1 })),
-    threadId: Type.Optional(Type.String({ minLength: 1 })),
-    runId: Type.Optional(Type.String({ minLength: 1 })),
-    expectedOutcome: Type.Optional(Type.String())
+    leaseId: Type.Optional(Type.String({ minLength: 1, description: "Active preview lease selector. Prefer an exact runId after the browser session has stopped." })),
+    threadId: Type.Optional(Type.String({ minLength: 1, description: "Job selector. With several proof runs and no runId, this lists exact run coverage without invoking vision." })),
+    runId: Type.Optional(Type.String({ minLength: 1, description: "Exact proof run ID returned by the stopped browser session. Scope it with threadId or leaseId; do not pass 'latest'." })),
+    expectedOutcome: Type.Optional(Type.String({ description: "Concise overall visible outcome for this proof run, not one checklist point at a time." }))
   });
 }

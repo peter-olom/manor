@@ -44,7 +44,7 @@ type TestClient = {
   selectedEffort: "low" | "medium" | "high" | "xhigh" | null;
   createSession: (threadId: string, cwd: string, provider: string, model: string, sessionPath?: string) => Promise<FakeSession>;
   startThread: (options: { task: string; cwd?: string; provider?: string; model?: string; effort?: "low" | "medium" | "high" | "xhigh" | null; input?: (threadId: string) => Promise<string> }) => Promise<{ threadId: string; turnId: string | null }>;
-  sendMessage: (threadId: string, input: string) => Promise<{ threadId: string; turnId: string | null }>;
+  sendMessage: (threadId: string, input: string, options?: { signal?: AbortSignal }) => Promise<{ threadId: string; turnId: string | null }>;
   stopThread: (threadId: string) => Promise<boolean>;
   deleteThread: (threadId: string) => Promise<boolean>;
   loadThread: (threadId: string) => Promise<void>;
@@ -96,6 +96,8 @@ test("Worker Pi extensions use compiled runtime paths across the environment bri
     }) as unknown as TestClient;
 
     assert.deepEqual(await client.webToolsExtensionArgs("opencode-go"), [
+      "--extension",
+      "/opt/manor/worker/dist/server/pi-manor-tools-extension.js",
       "--extension",
       "/opt/manor/worker/dist/server/pi-opencode-web-tools-extension.js"
     ]);
@@ -1074,6 +1076,52 @@ test("stopping Pi during atomic dispatch rejects the stale send", async () => {
     await assert.rejects(sending, StaleWorkerOperationError);
     assert.equal(promptCalls, 0);
     assert.equal(steerCalls, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("aborting a Pi follow-up during session load prevents late prompt dispatch", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-aborted-load-send-"));
+  try {
+    const threadId = "pi-thread-aborted-load-send";
+    const store = await createStore(dir);
+    store.upsertThreadSummary({ id: threadId, cwd: dir, source: "pi-rpc", status: { type: "idle" }, turns: [] });
+    const load = deferred<void>();
+    let dispatchCalls = 0;
+    const session: FakeSession = {
+      threadId,
+      client: {
+        getState: async () => ({ isStreaming: false }),
+        prompt: async () => { dispatchCalls += 1; },
+        steer: async () => { dispatchCalls += 1; },
+        send: async () => { dispatchCalls += 1; },
+        abort: async () => undefined,
+        stop: async () => undefined
+      },
+      mapper: new PiProviderRuntimeMapper(threadId),
+      unsubscribe: null,
+      cwd: dir,
+      activityVersion: 0,
+      acceptedEventVersion: null,
+      eventStreamVersion: null,
+      pendingPromptGenerations: []
+    };
+    const client = new PiRpcWorkerClient({ store, piAuthPath: path.join(dir, "auth.json"), sessionRootDir: path.join(dir, "sessions") }) as unknown as TestClient;
+    client.loadThread = async () => {
+      await load.promise;
+      client.sessions.set(threadId, session);
+    };
+    const controller = new AbortController();
+
+    const sending = client.sendMessage(threadId, "Never dispatch this follow-up", { signal: controller.signal });
+    controller.abort(new Error("follow-up superseded"));
+    load.resolve(undefined);
+
+    const error = await sending.then(() => null, (caught: unknown) => caught);
+    assert.ok(error instanceof StaleWorkerOperationError);
+    assert.equal(error.dispatchMayHaveBeenAccepted, false);
+    assert.equal(dispatchCalls, 0);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

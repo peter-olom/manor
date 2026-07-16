@@ -1,5 +1,6 @@
 import type { ButlerStateStore } from "./state-store.js";
 import { getOrchestrationCloseoutBlocker } from "./butler-orchestration.js";
+import { contractRequiresVisualProof } from "./proof-policy.js";
 import { evaluateOperatorCloseoutGate } from "./supervision-checklist.js";
 import type { ButlerCallbackResolutionState, ButlerThreadCallbackView, CodexThreadRecord, CodexWorkerReportView } from "./types.js";
 import { workerThreadIsRunning } from "./worker-thread-status.js";
@@ -28,6 +29,19 @@ export function getOperatorCloseoutBlocker(
   const orchestrationBlocker = getOrchestrationCloseoutBlocker({ thread, workerReport });
   if (orchestrationBlocker) {
     return orchestrationBlocker;
+  }
+  if (workerReport?.status === "completed" && contractRequiresVisualProof(thread?.executionContract)) {
+    const referencedRunIds = [...new Set(workerReport.evidence.map((entry) => entry.proofRunId).filter((id): id is string => Boolean(id)))];
+    if (referencedRunIds.length === 0) return "Completed UI closeout requires referenced visual proof.";
+    const proofs = store.listPreviewProofs().filter((proof) => proof.threadId === threadId && referencedRunIds.includes(proof.verification.runId));
+    for (const runId of referencedRunIds) {
+      const proof = proofs.find((entry) => entry.verification.runId === runId);
+      const latestReview = proof?.proofReviews.slice().sort((left, right) => right.reviewedAt - left.reviewedAt)[0];
+      if (!latestReview) return `Visual proof ${runId} must be reviewed by Butler before completed closeout.`;
+      if (latestReview.verdict !== "credible") {
+        return `Visual proof ${runId} cannot support completed closeout because Butler's latest review is ${latestReview.verdict}.`;
+      }
+    }
   }
   return null;
 }

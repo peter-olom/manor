@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { ActivityWatchdogService } from "../../src/server/activity-watchdog.js";
 import { buildButlerCodexTools } from "../../src/server/butler-agent-codex-tools.js";
+import { runWithCallbackReviewGuard } from "../../src/server/butler-job-mutation-guard.js";
 import { buildJobPayload, updateJobPayload } from "../../src/server/job-instruction-artifacts.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
@@ -39,10 +41,12 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
   const payloads: JobPayloadView[] = [];
   const callbackDispatches: Array<{ requestedAt: number; turnId: string | null }> = [];
   const dispatchOrder: string[] = [];
+  const watchdogs = new ActivityWatchdogService();
   const access = {
     defineButlerTool: (definition: unknown) => definition,
     getToolUiEffects: () => [],
     store,
+    watchdogs,
     codexClient: {
       loadThread: async () => undefined,
       stopThread: async (_threadId: string) => {
@@ -124,7 +128,7 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
     noteThreadFocus: () => undefined
   } as unknown as ButlerAgentToolAccess;
   const tools = buildButlerCodexTools(access);
-  return { store, threadId, sent, stopped, removedCallbacks, payloads, callbackDispatches, dispatchOrder, tools };
+  return { store, threadId, sent, stopped, removedCallbacks, payloads, callbackDispatches, dispatchOrder, tools, watchdogs };
 }
 
 test("message_job cannot steer a Worker attached to another Butler session", async () => {
@@ -146,6 +150,85 @@ function tool(tools: unknown[], name: string) {
     execute: (id: string, params: Record<string, unknown>) => Promise<unknown>;
   };
 }
+
+test("batch acceptance review records several explicit decisions atomically", async () => {
+  const { store, threadId, tools } = await createHarness();
+
+  const result = await tool(tools, "review_acceptance_points").execute("call-batch", {
+    threadId,
+    decisions: [
+      { pointId: "point-1", status: "accepted", note: "Build evidence is convincing." },
+      { pointId: "point-2", status: "waived", note: "The operator explicitly waived this point." }
+    ]
+  }) as { content: Array<{ text: string }> };
+
+  const checklist = store.getSupervisionChecklist(threadId);
+  assert.equal(result.content[0]?.text, "Recorded 2 acceptance-point decisions. Checklist is reviewed.");
+  assert.deepEqual(checklist?.items.map((item) => item.status), ["accepted", "waived"]);
+  assert.deepEqual(checklist?.items.map((item) => item.butlerNote), [
+    "Build evidence is convincing.",
+    "The operator explicitly waived this point."
+  ]);
+  assert.ok(checklist?.items.every((item) => item.evidence.at(-1)?.source === "butler_review"));
+  assert.deepEqual(
+    store.getThread(threadId)?.executionContract?.verificationMatrix.map((row) => row.status),
+    ["accepted", "waived"]
+  );
+});
+
+test("batch acceptance review leaves every point unchanged when one decision is invalid", async () => {
+  const { store, threadId, tools } = await createHarness();
+  const before = structuredClone(store.getSupervisionChecklist(threadId));
+
+  await assert.rejects(
+    () => tool(tools, "review_acceptance_points").execute("call-invalid-batch", {
+      threadId,
+      decisions: [
+        { pointId: "point-1", status: "accepted", note: "Would otherwise pass." },
+        { pointId: "point-missing", status: "accepted", note: "Unknown point." }
+      ]
+    }),
+    /Unknown acceptance point point-missing/
+  );
+
+  assert.deepEqual(store.getSupervisionChecklist(threadId), before);
+});
+
+test("batch acceptance review rejects duplicate point decisions without mutation", async () => {
+  const { store, threadId, tools } = await createHarness();
+  const before = structuredClone(store.getSupervisionChecklist(threadId));
+
+  await assert.rejects(
+    () => tool(tools, "review_acceptance_points").execute("call-duplicate-batch", {
+      threadId,
+      decisions: [
+        { pointId: "point-1", status: "accepted" },
+        { pointId: "point-1", status: "waived" }
+      ]
+    }),
+    /cannot decide the same acceptance point twice/
+  );
+
+  assert.deepEqual(store.getSupervisionChecklist(threadId), before);
+});
+
+test("batch acceptance review requires rejection steering before mutating any point", async () => {
+  const { store, threadId, tools } = await createHarness();
+  const before = structuredClone(store.getSupervisionChecklist(threadId));
+
+  await assert.rejects(
+    () => tool(tools, "review_acceptance_points").execute("call-rejected-batch", {
+      threadId,
+      decisions: [
+        { pointId: "point-1", status: "accepted" },
+        { pointId: "point-2", status: "rejected", note: "Proof is incomplete." }
+      ]
+    }),
+    /Rejected acceptance points require nextInstruction/
+  );
+
+  assert.deepEqual(store.getSupervisionChecklist(threadId), before);
+});
 
 test("message_job updates the job payload and sends readable chat", async () => {
   const { threadId, sent, payloads, tools } = await createHarness({
@@ -262,7 +345,7 @@ test("failed refreshed follow-up restores the prior review scope and payload", a
 });
 
 test("rejected checklist flush updates payload and clears the queue", async () => {
-  const { store, threadId, sent, payloads, tools } = await createHarness();
+  const { store, threadId, sent, payloads, tools, watchdogs } = await createHarness();
   store.reviewAcceptancePoint({
     threadId,
     pointId: "point-1",
@@ -270,11 +353,15 @@ test("rejected checklist flush updates payload and clears the queue", async () =
     nextInstruction: "Fix the first point with evidence."
   });
 
-  await tool(tools, "flush_rejected_acceptance_points").execute("call-1", { threadId });
+  await runWithCallbackReviewGuard(
+    { threadId, isCurrent: () => true },
+    () => tool(tools, "flush_rejected_acceptance_points").execute("call-1", { threadId })
+  );
 
   assert.equal(payloads[0]?.kind, "rejection_followup");
   assert.match(String(sent[0]), /checklist items/);
   assert.equal(store.buildQueuedRejectionInstruction(threadId), null);
+  assert.equal(watchdogs.size, 0);
 });
 
 test("hold_job_context persists held context in the payload without sending a turn", async () => {

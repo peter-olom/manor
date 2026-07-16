@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { ActivityWatchdogService } from "../../src/server/activity-watchdog.js";
 import { ButlerAgentService } from "../../src/server/butler-agent.js";
 import { applyCallbackReviewFailure } from "../../src/server/butler-callback-review-runner.js";
 import { assertCallbackReviewCurrent, monitorCallbackReviewCurrent, runWithCallbackReviewGuard } from "../../src/server/butler-job-mutation-guard.js";
@@ -50,14 +51,17 @@ test("a dispatched review follow-up stays current until the review tool finishes
     threadId,
     isCurrent: () => internals.pendingChatCallbacks.get(threadId) === attempted && attempted.reviewState === "running"
   }, async () => {
+    const watchdogs = new ActivityWatchdogService();
     await agent.reserveDirectCodexMessage({ threadId, text: "Fix the rejected point.", requestedAt });
-    const monitor = monitorCallbackReviewCurrent(threadId);
+    const monitor = monitorCallbackReviewCurrent(threadId, watchdogs);
     assert.ok(monitor);
+    assert.equal(watchdogs.size, 1);
     let superseded = false;
     void monitor.promise.catch(() => { superseded = true; });
     await agent.markPendingChatCallbackDispatched(threadId, requestedAt, "turn-followup");
     await new Promise((resolve) => setTimeout(resolve, 75));
     monitor.dispose();
+    assert.equal(watchdogs.size, 0);
     assert.equal(superseded, false);
     assert.doesNotThrow(() => assertCallbackReviewCurrent(threadId));
     assert.equal(attempted.reviewState, "running");

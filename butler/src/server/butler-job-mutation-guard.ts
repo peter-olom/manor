@@ -1,4 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import crypto from "node:crypto";
+import type { ActivityWatchdogService } from "./activity-watchdog.js";
 import type { ButlerThinkingLevel } from "./types.js";
 
 type CallbackReviewGuard = {
@@ -16,6 +18,7 @@ const mutationLockContext = new AsyncLocalStorage<MutationOwner>();
 const mutationTails = new Map<string, Promise<void>>();
 const MUTATING_JOB_TOOLS = new Set([
   "review_acceptance_point",
+  "review_acceptance_points",
   "disprove_review_finding",
   "flush_rejected_acceptance_points",
   "review_preview_proof",
@@ -61,22 +64,34 @@ export function hasCurrentCallbackReviewGuard(threadId: string): boolean {
   return Boolean(guard && guard.threadId === threadId && guard.isCurrent());
 }
 
-export function monitorCallbackReviewCurrent(threadId: string): { promise: Promise<never>; dispose: () => void } | null {
+export function monitorCallbackReviewCurrent(threadId: string, watchdogs?: ActivityWatchdogService): { promise: Promise<never>; dispose: () => void } | null {
   const guard = callbackReviewGuard.getStore();
   if (!guard) return null;
-  let timer: ReturnType<typeof setInterval> | null = null;
+  if (!watchdogs) throw new Error("Activity watchdogs are required while monitoring callback review currency.");
+  let registration: ReturnType<ActivityWatchdogService["register"]> | null = null;
   const promise = new Promise<never>((_resolve, reject) => {
     const check = () => {
       if (guard.threadId === threadId && guard.isCurrent()) return;
-      if (timer) clearInterval(timer);
+      registration?.unregister();
+      registration = null;
       const error = new Error("This callback review was superseded by newer Butler context.");
       error.name = "CallbackReviewSupersededError";
       reject(error);
     };
-    timer = setInterval(check, 50);
+    registration = watchdogs.register({
+      id: `review-current:${threadId}:${crypto.randomUUID()}`,
+      intervalMs: 50,
+      callback: check
+    });
     check();
   });
-  return { promise, dispose: () => { if (timer) clearInterval(timer); timer = null; } };
+  return {
+    promise,
+    dispose: () => {
+      registration?.unregister();
+      registration = null;
+    }
+  };
 }
 
 async function withMutationLock<T>(threadId: string, run: () => Promise<T>): Promise<T> {

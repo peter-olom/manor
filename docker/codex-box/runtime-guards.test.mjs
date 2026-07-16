@@ -42,3 +42,16 @@ test("guard scripts have valid Bash syntax", () => {
     execFileSync("bash", ["-n", path.join(here, script)]);
   }
 });
+
+test("report help is concise and includes exact browser proof syntax", () => {
+  for (const args of [["report", "--help"], ["report", "help"]]) {
+    const result = spawnSync(process.execPath, [path.join(here, "manor-harness.mjs"), ...args], {
+      encoding: "utf8",
+      env: { ...process.env, MANOR_HARNESS_REGISTRY_PATH: path.join(tmpdir(), "missing-manor-capabilities.json") }
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /proofRunId/);
+    assert.match(result.stdout, /--evidence-json/);
+    assert.doesNotMatch(result.stdout, /memory diagnostics/);
+  }
+});

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import path from "node:path";
 import { AuthStorage, createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -13,6 +14,7 @@ import { piThinkingLevelForModelOption } from "./pi-thinking-levels.js";
 import type { ButlerStateStore } from "./state-store.js";
 import { redactSensitiveText } from "./redact-sensitive-text.js";
 import { assertIsolatedPromptSucceeded } from "./isolated-prompt-outcome.js";
+import type { ActivityWatchdogService } from "./activity-watchdog.js";
 
 const CALLBACK_REVIEW_RETRY_MS = 30_000;
 const CALLBACK_REVIEW_MAX_ATTEMPTS = 3;
@@ -262,6 +264,7 @@ export async function runCallbackAdversarialReview(input: {
   piAuthPath: string;
   scratchDir: string;
   codexAuthenticated: boolean;
+  watchdogs: ActivityWatchdogService;
   isCurrent?: () => boolean;
   supervisorTimeoutMs?: number;
   onProgress?: (progress: AdversarialReviewProgress) => void;
@@ -291,6 +294,7 @@ export async function runCallbackAdversarialReview(input: {
     minimumReportUpdatedAt: callback.requestedAt,
     reviewBrief: buildCallbackAdversarialReviewBrief(input.store, callback),
     codexAuthenticated: input.codexAuthenticated,
+    watchdogs: input.watchdogs,
     isCurrent,
     onProgress: input.onProgress
   });
@@ -376,39 +380,37 @@ export async function runCallbackAdversarialReview(input: {
       input.onProgress?.(lastProgress);
     }
   });
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-  let superseded: ReturnType<typeof setInterval> | null = null;
+  let watchdogId: string | null = null;
   try {
-    await Promise.race([
-      session.prompt(buildCallbackReviewPrompt(input.store, callback)),
-      new Promise<never>((_resolve, reject) => {
-        const check = () => {
-          const now = Date.now();
-          const inactiveFor = now - lastProgress.at;
-          if (inactiveFor >= supervisorTimeoutMs) {
-            attemptActive = false;
-            void session.abort();
-            const modelLabel = formatProviderModelRef({ provider: model.provider, model: model.id }) ?? model.id;
-            reject(new Error(`Isolated Butler supervision was inactive for ${Math.round(supervisorTimeoutMs / 1000)}s using ${modelLabel}. Last activity ${Math.max(0, Math.round(inactiveFor / 1000))}s ago: ${lastProgress.message}`));
-            return;
-          }
-          timeout = setTimeout(check, Math.max(1, Math.min(supervisorTimeoutMs - inactiveFor, 1_000)));
-        };
-        timeout = setTimeout(check, Math.min(supervisorTimeoutMs, 1_000));
-      }),
-      new Promise<never>((_resolve, reject) => {
-        superseded = setInterval(() => {
-          if (isCurrent()) return;
+    const reviewHealth = new Promise<never>((_resolve, reject) => {
+      const check = () => {
+        if (!isCurrent()) {
           void session.abort();
           reject(new Error("This callback review was superseded by newer Butler context."));
-        }, 50);
-      })
+          return;
+        }
+        const inactiveFor = Date.now() - lastProgress.at;
+        if (inactiveFor < supervisorTimeoutMs) return;
+        attemptActive = false;
+        void session.abort();
+        const modelLabel = formatProviderModelRef({ provider: model.provider, model: model.id }) ?? model.id;
+        reject(new Error(`Isolated Butler supervision was inactive for ${Math.round(supervisorTimeoutMs / 1000)}s using ${modelLabel}. Last activity ${Math.max(0, Math.round(inactiveFor / 1000))}s ago: ${lastProgress.message}`));
+      };
+      watchdogId = `review-supervisor:${callback.threadId}:${callback.reviewAttempt ?? 0}:${crypto.randomUUID()}`;
+      input.watchdogs.register({
+        id: watchdogId,
+        intervalMs: Math.min(100, supervisorTimeoutMs),
+        callback: check
+      });
+    });
+    await Promise.race([
+      session.prompt(buildCallbackReviewPrompt(input.store, callback)),
+      reviewHealth
     ]);
     assertCallbackSupervisorPromptSucceeded(session.messages, completedSupervisorAction, formatProviderModelRef({ provider: model.provider, model: model.id }) ?? model.id);
   } finally {
     attemptActive = false;
-    if (timeout) clearTimeout(timeout);
-    if (superseded) clearInterval(superseded);
+    if (watchdogId) input.watchdogs.unregister(watchdogId);
     unsubscribe();
     session.dispose();
   }

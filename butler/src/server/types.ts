@@ -330,6 +330,21 @@ export interface PreviewVerificationArtifactView {
   availability: PreviewVerificationArtifactAvailability;
   retainedUntilAt: number | null;
   expiredAt: number | null;
+  checksumSha256?: string | null; captureUrl?: string | null;
+  actionType?: string | null; actionIndex?: number | null;
+  capturedAt?: number | null;
+}
+
+export interface PreviewVerificationActionView {
+  type: string;
+  label: string | null;
+  fileName: string | null;
+  startUrl: string;
+  endUrl: string;
+  at: number;
+  durationMs: number;
+  status: "completed" | "failed";
+  error?: string | null;
 }
 
 export interface PreviewVerificationConsoleMessageView {
@@ -455,6 +470,7 @@ export interface PreviewVerificationView {
   };
   auth: PreviewVerificationAuthView;
   diagnostics?: PreviewVerificationDiagnosticsView;
+  actions?: PreviewVerificationActionView[];
   artifacts: PreviewVerificationArtifactView[];
   consoleMessages: PreviewVerificationConsoleMessageView[];
   pageErrors: string[];

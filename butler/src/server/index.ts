@@ -42,7 +42,7 @@ import { VisionInspectionService } from "./vision-inspection.js";
 import { configureSelfImprovementRequestState, SelfImprovementRequestState } from "./self-improvement-request-state.js";
 import { configureSelfImprovementPairCleanup, reconcileInterruptedSelfImprovementRequests } from "./self-improvement-actions.js";
 import { registerSelfImprovementRoutes } from "./self-improvement-routes.js";
-import { retrieveButlerMemoryWithEmbeddings } from "./memory-retrieval.js";
+import { formatButlerMemoryRetrieval, retrieveButlerMemory, retrieveButlerMemoryWithEmbeddings } from "./memory-retrieval.js";
 import { registerManorRestartRoutes } from "./manor-restart-routes.js";
 import { proxyPreviewRoute, registerPreviewProxyResponseRewriter, resolvePreviewRefererRouteUrl, resolvePreviewRouteUrl } from "./preview-gateway.js";
 import { preserveMissingPreviewLeaseTombstones } from "./preview-lease-reconciliation.js";
@@ -523,19 +523,17 @@ app.get("/api/memory/retrieve", async (request, response) => {
   const limitRaw = typeof request.query.limit === "string" ? Number(request.query.limit) : null;
   const includeGlobal = request.query.includeGlobal === "1" || request.query.includeGlobal === "true";
   const includeProvenance = request.query.includeProvenance === "1" || request.query.includeProvenance === "true";
-
-  response.json({
-    retrieval: await retrieveButlerMemoryWithEmbeddings(store, {
-      projectId,
-      threadId,
-      query,
-      limit: Number.isFinite(limitRaw) ? limitRaw : null,
-      includeGlobal,
-      includeProvenance
-    })
+  const retrieve = request.query.preview === "1" ? retrieveButlerMemory : retrieveButlerMemoryWithEmbeddings;
+  const retrieval = await retrieve(store, {
+    projectId,
+    threadId,
+    query,
+    limit: Number.isFinite(limitRaw) ? limitRaw : null,
+    includeGlobal,
+    includeProvenance
   });
+  response.json({ retrieval, formatted: formatButlerMemoryRetrieval(retrieval) });
 });
-
 app.get("/api/memory/diagnostics", (request, response) => {
   const projectId = typeof request.query.projectId === "string" ? request.query.projectId : null;
   const threadId = typeof request.query.threadId === "string" ? request.query.threadId : null;
@@ -749,7 +747,6 @@ for (const route of ["/api/harness/action", "/api/codex-harness/action"]) {
       response.status(400).json({ error: "token and action are required" });
       return;
     }
-
     try {
       const result = await harnessService.handleAction({ token, action, params });
       response.json({ ok: true, ...result });

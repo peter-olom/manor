@@ -99,3 +99,21 @@ export type MemorySection = "projects" | "jobs" | "butler";
 export type ProjectsResponse = { projects: ProjectMemory[] };
 export type JobsResponse = { jobs: JobMemory[] };
 export type ButlerMemoryResponse = { entries: ButlerMemoryEntry[] };
+
+export type MemoryRetrieval = {
+  query: string | null;
+  projectId: string | null;
+  threadId: string | null;
+  includeProvenance: boolean;
+  projectRollups: ProjectMemory[];
+  jobMemories: JobMemory[];
+  butlerMemories: ButlerMemoryEntry[];
+  pendingPromotionCandidates: JobMemoryPromotionCandidate[];
+  warnings: string[];
+  retrievedAt: number;
+};
+
+export type MemoryRetrievalResponse = {
+  retrieval: MemoryRetrieval;
+  formatted: string;
+};

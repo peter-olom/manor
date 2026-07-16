@@ -5,22 +5,14 @@ import { getModel } from "@earendil-works/pi-ai/compat";
 import { defineTool, type AgentSession, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "@sinclair/typebox";
 import {
-  buildChatCallbackText,
-  buildCloseoutId,
-  buildOperatorThreadGuard,
-  buildFallbackChatCallbackText,
-  buildLatestProofMap,
-  buildMessagePage,
-  buildSystemPrompt,
-  collapseCallbackDuplicateMessages,
-  contentToText,
-  describePendingCallbacks,
-  extractLatestNoticeTexts,
-  findVerificationArtifact,
-  getFallbackTurnId,
-  getVisibleThreadProofs,
-  isAssistantFailureMessage,
-  isCallbackOutstanding,
+  buildChatCallbackText, buildCloseoutId,
+  buildOperatorThreadGuard, buildFallbackChatCallbackText,
+  buildLatestProofMap, buildMessagePage,
+  buildSystemPrompt, collapseCallbackDuplicateMessages,
+  contentToText, describePendingCallbacks,
+  extractLatestNoticeTexts, findVerificationArtifact,
+  getFallbackTurnId, getVisibleThreadProofs,
+  isAssistantFailureMessage, isCallbackOutstanding,
   latestCompletedAgentMessageAt, latestTerminalWorkerActivityAt,
   MAX_HISTORY_PAGE_SIZE,
   mergeThreadProofBundles,
@@ -40,6 +32,7 @@ import {
   type ResolvedPreviewProof,
   type SupervisionSmokePlan
 } from "./butler-agent-helpers.js";
+import { previewProofSubject, requireExactPreviewProof } from "./preview-proof-resolution.js";
 import { buildButlerWorkerTools } from "./butler-agent-codex-tools.js";
 import { buildButlerVisionTools } from "./butler-agent-vision-tools.js";
 import type { ButlerAgentDefaults, ButlerAgentServiceOptions, ButlerDelegationAttachmentAcknowledgement, ButlerOperatorSink, ButlerWorkerDefaults } from "./butler-agent-options.js";
@@ -130,6 +123,7 @@ function isButlerAuthRecoveryError(message: string | null): boolean {
   return typeof message === "string" && /\b(auth|authentication|token|signing in)\b/i.test(message);
 }
 import { ButlerTraceBuffer } from "./butler-trace-buffer.js";
+import { ActivityWatchdogService } from "./activity-watchdog.js"; import { ButlerDelegationWatchdogs } from "./butler-delegation-watchdog.js";
 import { getActiveManorSettings } from "./manor-settings-runtime.js";
 import { buildButlerProviderWebTools, PROVIDER_WEB_FETCH_TOOL_NAME, PROVIDER_WEB_SEARCH_TOOL_NAME } from "./provider-web-tools.js";
 import { piThinkingLevelForModelOption } from "./pi-thinking-levels.js";
@@ -182,6 +176,7 @@ export class ButlerAgentService extends EventEmitter {
   private readonly pendingOperatorMessages: ButlerMessageView[] = []; private pendingOperatorMessageSequence = 0; private pendingOperatorMessageRevision = 0;
   private readonly traceBuffer: ButlerTraceBuffer = new ButlerTraceBuffer();
   private readonly pendingChatCallbacks = new Map<string, PendingChatCallback>();
+  readonly watchdogs = new ActivityWatchdogService(); private readonly delegationWatchdogs: ButlerDelegationWatchdogs;
   private readonly deliveredCloseoutIds = new Set<string>();
   private readonly supervisionSmokePlans = new Map<string, SupervisionSmokePlan>();
   private readonly delegationInstructionCache = new Map<string, { signature: string; text: string; contract: CodexThreadExecutionContractView }>();
@@ -235,6 +230,7 @@ export class ButlerAgentService extends EventEmitter {
       () => this.processCallbackReviews(),
       (error) => { console.warn("Background callback review failed", error instanceof Error ? error.message : String(error)); }
     );
+    this.delegationWatchdogs = new ButlerDelegationWatchdogs({ watchdogs: this.watchdogs, isOutstanding: (threadId) => { const callback = this.pendingChatCallbacks.get(threadId); return !this.quiescing && Boolean(callback && isCallbackOutstanding(callback)); }, check: (threadId) => this.reconcilePendingChatCallbacks(threadId), onError: (error) => { this.lastError = `Delegation watchdog check failed: ${redactSensitiveText(error instanceof Error ? error.message : String(error))}`; this.emit("change"); } });
     this.manorRestartRequests = new ManorRestartRequestState(path.join(this.sessionDir, "manor-restart-requests.json"), this.hostController, (error) => {
       this.lastError = error instanceof Error ? error.message : String(error);
       this.emit("change");
@@ -288,10 +284,7 @@ export class ButlerAgentService extends EventEmitter {
       }
     }
   }
-
-  private async loadCallbackState(): Promise<void> {
-    await loadButlerCallbackState({ callbackStatePath: this.callbackStatePath, pendingChatCallbacks: this.pendingChatCallbacks, deliveredCloseoutIds: this.deliveredCloseoutIds, callbackReviewFailureCount: this.callbackReviewFailureCount, callbackReviewNotBefore: this.callbackReviewNotBefore });
-  }
+  private async loadCallbackState(): Promise<void> { await loadButlerCallbackState({ callbackStatePath: this.callbackStatePath, pendingChatCallbacks: this.pendingChatCallbacks, deliveredCloseoutIds: this.deliveredCloseoutIds, callbackReviewFailureCount: this.callbackReviewFailureCount, callbackReviewNotBefore: this.callbackReviewNotBefore }); for (const callback of this.pendingChatCallbacks.values()) if (isCallbackOutstanding(callback)) this.delegationWatchdogs.register(callback.threadId); }
   async saveOperatorMessageState(): Promise<void> { normalizeOperatorMessages(this.operatorMessages); await writeJsonStateFileAtomic(this.operatorMessageStatePath, this.operatorMessages); }
   private loadActivitySummaryState(): Promise<void> { return this.activitySummaryState.load(); }
   private saveActivitySummaryState(): Promise<void> { return this.activitySummaryState.save(); }
@@ -352,6 +345,7 @@ export class ButlerAgentService extends EventEmitter {
       updatedAt: now
     };
     this.pendingChatCallbacks.set(threadId, replaceCallbackPreservingRunningReview(existing, nextCallback, options?.preserveRunningReview === true));
+    this.delegationWatchdogs.register(threadId);
     this.store.addEvent(threadId, existing ? "butler.callback.rearmed" : "butler.callback.registered", existing
       ? "Butler renewed the operator closeout obligation after a private steer."
       : "Butler registered an operator closeout obligation.");
@@ -425,13 +419,13 @@ export class ButlerAgentService extends EventEmitter {
     }
     return { complete: answer.complete, queued: answer.queued, message: answer.message };
   }
-  private async postOperatorJobReply(threadId: string, text: string): Promise<void> { await deliverOperatorJobReply(this as unknown as OperatorJobReplyAccess, threadId, text); }
+  private async postOperatorJobReply(threadId: string, text: string): Promise<void> { await deliverOperatorJobReply(this as unknown as OperatorJobReplyAccess, threadId, text); const callback = this.pendingChatCallbacks.get(threadId); if (!callback || !isCallbackOutstanding(callback)) this.delegationWatchdogs.unregister(threadId); }
   private async presentOperatorAttachment(input: { messageId: string; text: string; attachment: NonNullable<ButlerMessageView["attachments"]>[number] }): Promise<void> { upsertOperatorMessage(this.operatorMessages, input.messageId, input.text, Date.now(), null, { attachments: [{ ...input.attachment }] }); await this.saveOperatorMessageState(); this.emit("change"); }
   private describePendingCallbacks(): string {
     return describePendingCallbacks(this.store, [...this.pendingChatCallbacks.values()]);
   }
-  private async reconcilePendingChatCallbacks(): Promise<void> { if (this.quiescing) return;
-    const outstandingCallbacks = [...this.pendingChatCallbacks.values()].filter(isCallbackOutstanding);
+  private async reconcilePendingChatCallbacks(threadId?: string): Promise<void> { if (this.quiescing) return;
+    const outstandingCallbacks = [...this.pendingChatCallbacks.values()].filter((callback) => isCallbackOutstanding(callback) && (!threadId || callback.threadId === threadId));
     if (outstandingCallbacks.length === 0) {
       return;
     }
@@ -499,11 +493,10 @@ export class ButlerAgentService extends EventEmitter {
     if (changed) {
       await this.saveCallbackState();
     }
-    await this.processPendingChatCallbacks();
+    await this.processPendingChatCallbacks(threadId);
   }
-
-  private async processPendingChatCallbacks(): Promise<boolean> { if (this.quiescing) return false; return runSerializedJobMutations([...this.pendingChatCallbacks.values()].filter((callback) => isCallbackOutstanding(callback) && callback.dispatchState !== "reserving").map((callback) => callback.threadId), async () => { if (this.quiescing) return false;
-    const outstandingCallbacks = [...this.pendingChatCallbacks.values()].filter((callback) => isCallbackOutstanding(callback) && callback.dispatchState !== "reserving");
+  private async processPendingChatCallbacks(threadId?: string): Promise<boolean> { if (this.quiescing) return false; return runSerializedJobMutations([...this.pendingChatCallbacks.values()].filter((callback) => isCallbackOutstanding(callback) && callback.dispatchState !== "reserving" && (!threadId || callback.threadId === threadId)).map((callback) => callback.threadId), async () => { if (this.quiescing) return false;
+    const outstandingCallbacks = [...this.pendingChatCallbacks.values()].filter((callback) => isCallbackOutstanding(callback) && callback.dispatchState !== "reserving" && (!threadId || callback.threadId === threadId));
     if (outstandingCallbacks.length === 0) {
       return false;
     }
@@ -628,6 +621,7 @@ export class ButlerAgentService extends EventEmitter {
   dispose(): void {
     this.quiescing = true;
     if (this.statusRefreshTimer) clearInterval(this.statusRefreshTimer);
+    this.watchdogs.clear();
     this.callbackReviewScheduler.dispose();
     this.statusRefreshTimer = null;
     this.store.off("change", this.storeChangeHandler);
@@ -688,8 +682,6 @@ export class ButlerAgentService extends EventEmitter {
       this.emit("change");
     }
 
-    await this.reconcilePendingChatCallbacks(); if (this.quiescing) return;
-    this.callbackReviewScheduler.schedule();
   }
   // This is the single discoverable registry for Butler actions and their UI
   // side effects. Keep agent tool definitions aligned with this catalog.
@@ -726,7 +718,7 @@ export class ButlerAgentService extends EventEmitter {
   private getWorkerClientAccess(): WorkerClientAccess {
     return {
       store: this.store,
-      codexClient: this.codexClient,
+      codexClient: this.codexClient, watchdogs: this.watchdogs,
       piRpcWorkerClient: this.piRpcWorkerClient,
       getCodexAuthStatus: () => this.codexAuth,
       getWorkerAffinity: this.options.getWorkerAffinity,
@@ -926,6 +918,7 @@ export class ButlerAgentService extends EventEmitter {
           piAuthPath: this.piAuthPath,
           scratchDir: path.join(this.sessionDir, "adversarial-review"),
           codexAuthenticated: this.codexAuth.loggedIn || Boolean(process.env.OPENAI_API_KEY?.trim()),
+          watchdogs: this.watchdogs,
           isCurrent: () => !this.quiescing && this.pendingChatCallbacks.get(liveCallback.threadId) === liveCallback && liveCallback.reviewState === "running" && isCallbackOutstanding(liveCallback),
           onProgress: (progress) => { void persistCallbackReviewProgress({ attempted: liveCallback, progress, getCurrent: () => this.pendingChatCallbacks.get(liveCallback.threadId), save: () => this.saveCallbackState(), emit: () => this.emit("change") }).catch((error) => { this.lastError = `Adversarial review progress could not be saved: ${redactSensitiveText(error instanceof Error ? error.message : String(error))}`; this.emit("change"); }); }
         });
@@ -1303,6 +1296,15 @@ export class ButlerAgentService extends EventEmitter {
 
   private resolvePreviewProof(params: { threadId?: string; leaseId?: string; runId?: string }): ResolvedPreviewProof {
     const preview = params.leaseId ? this.requireValidatedPreview(params.leaseId, params.threadId?.trim() || null) : null;
+    const requestedRunId = params.runId?.trim();
+
+    if (requestedRunId) {
+      const exactProof = requireExactPreviewProof(this.store.listPreviewProofs(), requestedRunId, {
+        threadId: params.threadId?.trim(),
+        previewId: preview?.id
+      });
+      return this.toResolvedProof(previewProofSubject(exactProof), exactProof.verification, requestedRunId, exactProof.id);
+    }
 
     if (preview?.lastVerification) {
       const latestProof = this.store.getLatestPreviewProofForPreview(preview.id);
@@ -1463,7 +1465,7 @@ export class ButlerAgentService extends EventEmitter {
       post: (threadId, text, at) => this.postDelegationAcknowledgement(threadId, text, at)
     });
   }
-  async removeExternalWorkerDelegation(threadId: string): Promise<void> { await runSerializedCallbackReplacement(threadId, async () => { const callback = this.pendingChatCallbacks.get(threadId); if (!callback) return; const failureCount = this.callbackReviewFailureCount.get(threadId); const notBefore = this.callbackReviewNotBefore.get(threadId); const smokePlan = this.supervisionSmokePlans.get(threadId); this.pendingChatCallbacks.delete(threadId); this.callbackReviewFailureCount.delete(threadId); this.callbackReviewNotBefore.delete(threadId); this.supervisionSmokePlans.delete(threadId); try { await this.saveCallbackState(); } catch (error) { this.pendingChatCallbacks.set(threadId, callback); if (failureCount !== undefined) this.callbackReviewFailureCount.set(threadId, failureCount); if (notBefore !== undefined) this.callbackReviewNotBefore.set(threadId, notBefore); if (smokePlan) this.supervisionSmokePlans.set(threadId, smokePlan); throw error; } this.emit("change"); }); }
+  async removeExternalWorkerDelegation(threadId: string): Promise<void> { await runSerializedCallbackReplacement(threadId, async () => { const callback = this.pendingChatCallbacks.get(threadId); if (!callback) return; const failureCount = this.callbackReviewFailureCount.get(threadId); const notBefore = this.callbackReviewNotBefore.get(threadId); const smokePlan = this.supervisionSmokePlans.get(threadId); this.pendingChatCallbacks.delete(threadId); this.callbackReviewFailureCount.delete(threadId); this.callbackReviewNotBefore.delete(threadId); this.supervisionSmokePlans.delete(threadId); try { await this.saveCallbackState(); } catch (error) { this.pendingChatCallbacks.set(threadId, callback); if (failureCount !== undefined) this.callbackReviewFailureCount.set(threadId, failureCount); if (notBefore !== undefined) this.callbackReviewNotBefore.set(threadId, notBefore); if (smokePlan) this.supervisionSmokePlans.set(threadId, smokePlan); throw error; } this.delegationWatchdogs.unregister(threadId); this.emit("change"); }); }
   private async prepareOperatorTurn(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer"; displayText?: string | null; removeOnFailure?: boolean; fileReferenceIds?: string[]; hiddenFromTranscript?: boolean } = {}): Promise<{ completion: Promise<boolean> }> {
     const guard = buildOperatorThreadGuard(this.store, text, this.getRecentFocusedThreadId());
     const attachments = [...this.imageStore.resolveViews(imageReferenceIds).map(({ id, name, mimeType, sizeBytes, url }) => ({ id, kind: "image" as const, name, mimeType, sizeBytes, url })), ...this.fileStore.resolveViews(options.fileReferenceIds ?? []).map(({ id, name, mimeType, sizeBytes, url }) => ({ id, kind: "file" as const, name, mimeType, sizeBytes, url }))];

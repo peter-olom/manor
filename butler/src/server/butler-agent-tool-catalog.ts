@@ -10,7 +10,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "start_stack",
     label: "Start stack",
-    description: "Create one isolated stack lease and network for a multi-container job.",
+    description: "Create one isolated stack lease and network for work Butler is handling directly. Never use this instead of Worker when the operator explicitly asked for delegation.",
     uiEffects: [{ kind: "refreshThreads", description: "Keeps stack-backed job state current." }]
   },
   {
@@ -46,7 +46,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "start_preview",
     label: "Start preview",
-    description: "Start a disposable preview runtime for one worktree and expose it through a stable Manor route.",
+    description: "Start a disposable preview runtime for work Butler is handling directly. Never use this instead of Worker when the operator explicitly asked for delegation.",
     uiEffects: [{ kind: "refreshThreads", description: "Keeps preview-backed job state current." }]
   },
   {
@@ -76,13 +76,13 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "start_preview_browser_session",
     label: "Start preview browser session",
-    description: "Attach a browser sidecar to one preview and begin a live recorded session.",
+    description: "Attach a browser sidecar to a preview Butler is handling directly. Never use this instead of Worker when the operator explicitly asked for delegation.",
     uiEffects: [{ kind: "refreshThreads", description: "Refreshes preview state when a browser session begins." }]
   },
   {
     name: "start_browser_session",
     label: "Start browser session",
-    description: "Start a live recorded browser session for a direct URL.",
+    description: "Start a live recorded browser session for direct Butler work. Never use this instead of Worker when the operator explicitly asked for delegation.",
     uiEffects: [{ kind: "refreshThreads", description: "Refreshes thread state when a browser session begins." }]
   },
   {
@@ -148,7 +148,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "review_preview_proof",
     label: "Review proof",
-    description: "Inspect the latest browser, desktop, or file proof for one preview or job. UI-impacting work needs screenshot or video proof.",
+    description: "Inspect one exact browser, desktop, or file proof run. Multi-run jobs return coverage first; reuse credible verdicts instead of repeating vision review.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while reviewing proof artifacts." }]
   },
   {
@@ -394,7 +394,7 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "delegate_to_worker",
     label: "Delegate to worker",
-    description: "Start a worker workstream using the operator's authenticated-provider model selection and defaults.",
+    description: "Start a worker workstream using the operator's authenticated-provider model selection and defaults. This is mandatory when the operator explicitly asks Butler to delegate, hand off, or use Worker.",
     uiEffects: [
       { kind: "openWindow", description: "Opens the delegated worker workstream as a tab." },
       { kind: "focusWindow", description: "Moves focus into the new worker workstream." }
@@ -471,6 +471,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     label: "Review point",
     description: "Record Butler's accept, reject, or waive decision for one acceptance point.",
     uiEffects: [{ kind: "refreshThread", description: "Refreshes the target run after Butler updates checklist state." }]
+  },
+  {
+    name: "review_acceptance_points",
+    label: "Review points",
+    description: "Atomically record Butler's explicit decisions for several acceptance points in one call.",
+    uiEffects: [{ kind: "refreshThread", description: "Refreshes the target run once after Butler batches checklist decisions." }]
   },
   {
     name: "disprove_review_finding",

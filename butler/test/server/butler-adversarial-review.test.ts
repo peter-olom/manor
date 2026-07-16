@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { assertPiReviewerPromptSucceeded, createPiReviewSubmissionTool, ensureButlerAdversarialReview, runProviderAdversarialReview, validateAdversarialReviewOutput, waitForPiReviewSubmission } from "../../src/server/butler-adversarial-review.js";
+import { ActivityWatchdogService } from "../../src/server/activity-watchdog.js";
 import { getOrchestrationCloseoutBlocker } from "../../src/server/butler-orchestration.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
@@ -43,6 +44,7 @@ test("isolated adversarial review stores only compact findings and reuses the ex
   let reviewerPrompt = "";
   const progress: string[] = [];
   const review = () => ensureButlerAdversarialReview({
+    watchdogs: new ActivityWatchdogService(),
     store,
     threadId,
     model,
@@ -93,6 +95,7 @@ test("isolated adversarial review stores only compact findings and reuses the ex
   }]);
 
   const stale = await ensureButlerAdversarialReview({
+    watchdogs: new ActivityWatchdogService(),
     store,
     threadId,
     model,
@@ -132,6 +135,7 @@ test("OpenAI review falls back to the isolated same-provider harness when native
 
   let nativeAvailable: boolean | null = null;
   const results = await ensureButlerAdversarialReview({
+    watchdogs: new ActivityWatchdogService(),
     store,
     threadId,
     model: { provider: "openai-codex", id: "gpt-5.5" } as never,
@@ -193,6 +197,7 @@ test("Pi adversarial review stops as soon as a valid submission arrives", async 
   let abortCalls = 0;
   const review = { findings: [{ severity: "low", findingSummary: "Minor issue", blocking: false, linkedClaimIds: [] }] };
   const result = await waitForPiReviewSubmission({
+    watchdogs: new ActivityWatchdogService(),
     prompt: new Promise<void>(() => undefined),
     submission: Promise.resolve(review),
     abort: async () => { abortCalls += 1; },
@@ -208,6 +213,7 @@ test("Pi adversarial review can outlive the former hard maximum while activity c
   const activity = setInterval(() => { lastActivityAt = Date.now(); }, 10);
   try {
     const result = await waitForPiReviewSubmission({
+    watchdogs: new ActivityWatchdogService(),
       prompt: new Promise<void>(() => undefined),
       submission: new Promise<typeof review>((resolve) => setTimeout(() => resolve(review), 130)),
       abort: async () => undefined,
@@ -222,6 +228,7 @@ test("Pi adversarial review can outlive the former hard maximum while activity c
 
 test("Pi adversarial review still stops after sustained inactivity", async () => {
   await assert.rejects(() => waitForPiReviewSubmission({
+    watchdogs: new ActivityWatchdogService(),
     prompt: new Promise<void>(() => undefined),
     submission: new Promise<{ findings: [] }>(() => undefined),
     abort: async () => undefined,
@@ -230,12 +237,27 @@ test("Pi adversarial review still stops after sustained inactivity", async () =>
   }), /timed out/);
 });
 
+test("Pi adversarial review uses and releases a registered activity watchdog", async () => {
+  const watchdogs = new ActivityWatchdogService();
+  await assert.rejects(() => waitForPiReviewSubmission({
+    prompt: new Promise<void>(() => undefined),
+    submission: new Promise<{ findings: [] }>(() => undefined),
+    abort: async () => undefined,
+    timeoutMs: 10,
+    lastActivityAt: () => Date.now() - 10,
+    watchdogs,
+    watchdogId: "review:test"
+  }), /timed out/);
+  assert.equal(watchdogs.size, 0);
+});
+
 test("Pi adversarial review stops promptly when the callback is cancelled", async () => {
   let current = true;
   setTimeout(() => { current = false; }, 10);
   const startedAt = Date.now();
 
   await assert.rejects(() => waitForPiReviewSubmission({
+    watchdogs: new ActivityWatchdogService(),
     prompt: new Promise<void>(() => undefined),
     submission: new Promise(() => undefined),
     abort: async () => undefined,
@@ -265,6 +287,7 @@ test("native Codex review can outlive the former hard maximum while output conti
   ].join("\n"), "utf8");
   await chmod(executable, 0o755);
   const result = await runProviderAdversarialReview({
+    watchdogs: new ActivityWatchdogService(),
     cwd: dir,
     codexHomeDir: dir,
     piAuthPath: path.join(dir, "pi-auth.json"),
@@ -288,6 +311,7 @@ test("native Codex review force-kills a child that ignores SIGTERM before cleanu
   const pidFile = path.join(dir, "reviewer.pid");
   await mkdir(binDir, { recursive: true });
   const executable = path.join(binDir, "codex");
+  const watchdogs = new ActivityWatchdogService();
   await writeFile(executable, [
     "#!/usr/bin/env node",
     "const fs = require('node:fs');",
@@ -306,12 +330,14 @@ test("native Codex review force-kills a child that ignores SIGTERM before cleanu
     codexNativeAvailable: true,
     codexExecutable: executable,
     prompt: "Review the change.",
-    timeoutMs: 1_000
+    timeoutMs: 3_000,
+    watchdogs
   }), /Adversarial review/);
 
   const pid = Number(await readFile(pidFile, "utf8"));
   assert.throws(() => process.kill(pid, 0), (error: unknown) => (error as NodeJS.ErrnoException).code === "ESRCH");
   assert.deepEqual(await readdir(scratchDir), []);
+  assert.equal(watchdogs.size, 0);
 });
 
 test("overlapping Workers stay isolated after the other baseline has been cleaned", async () => {
@@ -367,6 +393,7 @@ test("overlapping Workers stay isolated after the other baseline has been cleane
 
   let scopedInput: { workerContextText: string; otherWorkerContextTexts?: string[] } | null = null;
   await ensureButlerAdversarialReview({
+    watchdogs: new ActivityWatchdogService(),
     store,
     threadId: "worker-a",
     model: { provider: "openai-codex", id: "gpt-5.5" } as never,
@@ -414,6 +441,7 @@ test("Butler bookkeeping after Worker completion does not create false review ov
   let otherWorkerContexts: string[] | undefined;
   let attributeAllChangedPaths = false;
   await ensureButlerAdversarialReview({
+    watchdogs: new ActivityWatchdogService(),
     store,
     threadId: "later-b",
     model: { provider: "openai-codex", id: "gpt-5.5" } as never,
@@ -452,6 +480,7 @@ test("deleted Worker attribution survives event-log pruning", async () => {
 
   let otherWorkerContexts: string[] | undefined;
   await ensureButlerAdversarialReview({
+    watchdogs: new ActivityWatchdogService(),
     store,
     threadId,
     model: { provider: "openai-codex", id: "gpt-5.5" } as never,
@@ -486,6 +515,7 @@ test("ambiguous shared-checkout ownership becomes a blocking review finding", as
   store.recordWorkerReport(threadId, { turnId: "turn-1", status: "completed", summary: "Changed shared.ts.", details: null });
 
   const results = await ensureButlerAdversarialReview({
+    watchdogs: new ActivityWatchdogService(),
     store,
     threadId,
     model: { provider: "openai-codex", id: "gpt-5.5" } as never,
@@ -518,6 +548,7 @@ test("a failed concurrent isolation never reviews the shared checkout", async ()
   store.recordWorkerReport("worker-a", { turnId: "turn-0", status: "completed", summary: "Done.", details: null });
   let reviewerRan = false;
   await assert.rejects(() => ensureButlerAdversarialReview({
+    watchdogs: new ActivityWatchdogService(),
     store,
     threadId: "worker-a",
     model: { provider: "openai-codex", id: "gpt-5.5" } as never,
@@ -544,6 +575,7 @@ test("a failed delegation baseline capture blocks review instead of using the li
   store.recordWorkerReport(threadId, { turnId: "turn-1", status: "completed", summary: "Done.", details: null });
 
   await assert.rejects(() => ensureButlerAdversarialReview({
+    watchdogs: new ActivityWatchdogService(),
     store,
     threadId,
     model: { provider: "openai-codex", id: "gpt-5.5" } as never,
@@ -569,6 +601,7 @@ test("a superseded reviewer persists neither findings nor failure events", async
   const blocked = new Promise<void>((resolve) => { release = resolve; });
   const started = new Promise<void>((resolve) => { entered = resolve; });
   const review = ensureButlerAdversarialReview({
+    watchdogs: new ActivityWatchdogService(),
     store,
     threadId,
     model: { provider: "openai-codex", id: "gpt-5.5" } as never,

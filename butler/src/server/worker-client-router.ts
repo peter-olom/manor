@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import path from "node:path";
 
+import type { ActivityWatchdogService } from "./activity-watchdog.js";
 import type { CodexInputItem } from "./image-store.js";
 import { isOpenAiRuntimeProvider } from "./chatgpt-entitlement.js";
 import { shouldExposeManorModel } from "./model-provider-config.js";
@@ -31,6 +32,7 @@ export type WorkerHarness = "codex" | "pi" | (string & {});
 export type WorkerClientAccess = {
   store: ButlerStateStore;
   codexClient: CodexAppServerClient;
+  watchdogs?: ActivityWatchdogService;
   piRpcWorkerClient?: PiRpcWorkerClient | null;
   getCodexAuthStatus?: () => { loggedIn: boolean };
   getWorkerAffinity?: () => WorkerProviderAffinity | null;
@@ -538,7 +540,7 @@ export async function loadWorkerThread(access: WorkerClientAccess, threadId: str
   const runtime = resolveThreadWorkerRuntime(access, threadId);
   const client = runtime === "pi-rpc" ? access.piRpcWorkerClient : access.codexClient;
   if (!client) throw new Error("Pi RPC worker runtime is not available");
-  const callbackMonitor = monitorCallbackReviewCurrent(threadId);
+  const callbackMonitor = monitorCallbackReviewCurrent(threadId, access.watchdogs);
   let timeout: ReturnType<typeof setTimeout> | null = null;
   try {
     await Promise.race([
@@ -683,7 +685,7 @@ async function sendWorkerMessageUnlocked(access: WorkerClientAccess, threadId: s
   if (!client) throw new Error("Pi RPC worker runtime is not available");
   const model = typeof client.getThreadModelOption === "function" ? client.getThreadModelOption(threadId) : null;
   const send = client.sendMessage(threadId, prepareWorkerInputForModel(input, model));
-  const callbackMonitor = monitorCallbackReviewCurrent(threadId);
+  const callbackMonitor = monitorCallbackReviewCurrent(threadId, access.watchdogs);
   let timeout: ReturnType<typeof setTimeout> | null = null;
   const timeoutFailure = new Promise<never>((_resolve, reject) => {
     timeout = setTimeout(() => {

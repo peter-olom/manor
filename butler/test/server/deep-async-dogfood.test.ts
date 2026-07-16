@@ -235,8 +235,14 @@ test("UI dogfood rejects weak proof, steers rework privately, then closes with p
     evidence("accessibility_review", row),
     evidence("taste_review", row)
   ]);
-  assert.doesNotThrow(() => validateCompletedWorkerEvidence({ thread, evidence: uiEvidence, threadProofs: [] }));
-  assert.doesNotThrow(() => validateCompletedWorkerEvidence({ thread, evidence: uiEvidence, threadProofs: [textProof(contract.threadId)] }));
+  assert.throws(
+    () => validateCompletedWorkerEvidence({ thread, evidence: uiEvidence, threadProofs: [] }),
+    /missing proof run proof-ui/
+  );
+  assert.throws(
+    () => validateCompletedWorkerEvidence({ thread, evidence: uiEvidence, threadProofs: [textProof(contract.threadId)] }),
+    /missing proof run proof-ui/
+  );
 
   const proof = store.recordBrowserVerification({
     threadId: contract.threadId,

@@ -578,6 +578,29 @@ test("durable taste retrieval ignores legacy task facts and artifact notes", () 
   assert.deepEqual(notes, ["Operator preference: Ask fewer better questions - Infer from memory and inspect state first."]);
 });
 
+test("durable taste retrieval bounds oversized preference context", () => {
+  const notes = findDurableOperatorTasteNotes([{
+    id: "oversized-preference",
+    summary: "Operator preference: Keep worker context focused",
+    details: `Selected option context: ${"x".repeat(20_000)}`,
+    source: "butler_tool",
+    sourceMessageId: "operator-question-oversized",
+    tags: ["operator-taste", "operator-question"],
+    createdAt: 1,
+    memoryType: "operator_preference",
+    scopeKind: "global",
+    reviewState: "accepted",
+    confidence: 1,
+    expiresAt: null,
+    supersedesId: null,
+    contentVersion: 1
+  }]);
+
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0]?.length, 1_600);
+  assert.match(notes[0] ?? "", /\.\.\.$/);
+});
+
 test("operator question taste memory skips explicit smoke tests", async () => {
   const messages: ButlerMessageView[] = [];
   const state = access(messages);

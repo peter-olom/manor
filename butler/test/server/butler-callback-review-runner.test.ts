@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { ActivityWatchdogService } from "../../src/server/activity-watchdog.js";
 import { applyCallbackReviewFailure, applyCallbackReviewProgress, assertCallbackSupervisorPromptSucceeded, buildCallbackAdversarialReviewBrief, buildGuardedCallbackReviewTools, CallbackReviewScheduler, isCallbackReviewAutomationPause, isCallbackReviewOperatorPause, isCallbackReviewRetryablePause, isCurrentCallbackReview, pauseCallbackReview, prepareCallbackReviewRetry, selectRunnableCallbackReviews, shouldIgnoreCallbackReviewFailure } from "../../src/server/butler-callback-review-runner.js";
 import { blockCloseoutReview } from "../../src/server/butler-closeout-gate.js";
 import type { PendingChatCallback } from "../../src/server/butler-agent-helpers.js";
@@ -501,6 +502,7 @@ test("a timed-out callback send is stopped before stale completion can escape", 
   const stopped: string[] = [];
   const access = {
     store: { getThread: () => ({ source: "codex" }) },
+    watchdogs: new ActivityWatchdogService(),
     codexClient: {
       async sendMessage() { sendEntered(); await blocked; return { threadId: "worker", turnId: "turn-1" }; },
       async stopThread(threadId: string) { stopped.push(threadId); return true; }
@@ -524,6 +526,7 @@ test("a superseded callback releases its lock even when send never resolves", as
   const stopped: string[] = [];
   const access = {
     store: { getThread: () => ({ source: "codex" }) },
+    watchdogs: new ActivityWatchdogService(),
     codexClient: {
       async sendMessage() { sendEntered(); return new Promise<never>(() => undefined); },
       async stopThread(threadId: string) { stopped.push(threadId); return true; }

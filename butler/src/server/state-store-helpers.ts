@@ -483,7 +483,19 @@ export function normalizePreviewVerificationArtifact(
     downloadUrl: typeof artifact.downloadUrl === "string" && artifact.downloadUrl.trim() ? artifact.downloadUrl : null,
     availability,
     retainedUntilAt,
-    expiredAt
+    expiredAt,
+    checksumSha256:
+      typeof artifact.checksumSha256 === "string" && /^[a-f0-9]{64}$/i.test(artifact.checksumSha256)
+        ? artifact.checksumSha256.toLowerCase()
+        : null,
+    captureUrl: typeof artifact.captureUrl === "string" && artifact.captureUrl.trim() ? artifact.captureUrl.trim() : null,
+    actionType: typeof artifact.actionType === "string" && artifact.actionType.trim() ? artifact.actionType.trim() : null,
+    actionIndex:
+      typeof artifact.actionIndex === "number" && Number.isFinite(artifact.actionIndex)
+        ? Math.max(0, Math.trunc(artifact.actionIndex))
+        : null,
+    capturedAt:
+      typeof artifact.capturedAt === "number" && Number.isFinite(artifact.capturedAt) ? artifact.capturedAt : null
   };
 }
 
@@ -760,6 +772,24 @@ export function normalizePreviewVerification(
       usedSessionCookie: verification.auth?.usedSessionCookie === true
     },
     diagnostics: normalizedDiagnostics,
+    actions: Array.isArray(verification.actions)
+      ? verification.actions
+          .filter((action) => action && typeof action === "object")
+          .map((action) => ({
+            type: typeof action.type === "string" && action.type.trim() ? action.type.trim() : "unknown",
+            label: typeof action.label === "string" && action.label.trim() ? action.label.trim() : null,
+            fileName: typeof action.fileName === "string" && action.fileName.trim() ? action.fileName.trim() : null,
+            startUrl: typeof action.startUrl === "string" ? action.startUrl : "",
+            endUrl: typeof action.endUrl === "string" ? action.endUrl : "",
+            at: typeof action.at === "number" && Number.isFinite(action.at) ? action.at : checkedAt,
+            durationMs:
+              typeof action.durationMs === "number" && Number.isFinite(action.durationMs)
+                ? Math.max(0, action.durationMs)
+                : 0,
+            status: action.status === "failed" ? "failed" as const : "completed" as const,
+            ...(typeof action.error === "string" && action.error.trim() ? { error: action.error.trim() } : {})
+          }))
+      : [],
     artifacts: Array.isArray(verification.artifacts)
       ? verification.artifacts
           .filter((artifact): artifact is PreviewVerificationArtifactView => Boolean(artifact && typeof artifact === "object"))

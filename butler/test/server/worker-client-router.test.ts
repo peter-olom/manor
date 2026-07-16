@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { ActivityWatchdogService } from "../../src/server/activity-watchdog.js";
 import {
   getUnifiedWorkerCompose,
   deleteAllWorkerThreads,
@@ -950,6 +951,7 @@ test("a superseded Codex load invalidates the late concrete operation", async ()
   let invalidations = 0;
   const loading = runWithCallbackReviewGuard({ threadId: "codex-load", isCurrent: () => current }, () => loadWorkerThread({
     store: { getThread: () => ({ id: "codex-load", source: "appServer" }) },
+    watchdogs: new ActivityWatchdogService(),
     codexClient: {
       loadThread: async () => new Promise<void>(() => undefined),
       invalidateThreadOperations: () => { invalidations += 1; }
