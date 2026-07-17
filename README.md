@@ -7,7 +7,7 @@ It puts Butler in charge of supervision, routes work to provider-backed Workers,
 ## Contents
 
 - [Public Preview](#public-preview)
-- [Screenshots](#screenshots)
+- [Screenshot](#screenshot)
 - [Opinionated by Design](#opinionated-by-design)
 - [Quick Start](#quick-start)
 - [Source Distribution](#source-distribution)
@@ -27,20 +27,11 @@ Manor is usable, but early. Expect rough edges around setup, upgrades, and advan
 
 The current goal is a dependable single-operator appliance: clear Docker setup, honest trust boundaries, durable worker state, and practical runtime isolation for agent-led development work.
 
-## Screenshots
+## Screenshot
 
-The example project Butler was given to build in the screenshots below is [peter-olom/vaultfolio-drive](https://github.com/peter-olom/vaultfolio-drive).
+Butler supervises the task on the left while the active Worker and its verification evidence remain visible on the right.
 
-<p align="center">
-  <a href="docs/assets/readme/manor-butler-summary.jpg"><img src="docs/assets/readme/manor-butler-summary.jpg" alt="Manor Butler completion summary" width="840"></a>
-</p>
-
-<p align="center">
-  <a href="docs/assets/readme/manor-delegation-contract.jpg"><img src="docs/assets/readme/manor-delegation-contract.jpg" alt="Manor job contract view" width="205"></a>
-  <a href="docs/assets/readme/manor-checklist-timeline.jpg"><img src="docs/assets/readme/manor-checklist-timeline.jpg" alt="Manor checklist and timeline panels" width="205"></a>
-  <a href="docs/assets/readme/manor-codex-workstream.jpg"><img src="docs/assets/readme/manor-codex-workstream.jpg" alt="Manor Worker workstream with generated design artifact" width="205"></a>
-  <a href="docs/assets/readme/manor-proof-review.jpg"><img src="docs/assets/readme/manor-proof-review.jpg" alt="Manor proof review list" width="205"></a>
-</p>
+[![Manor Butler and Worker workspace](docs/assets/readme/manor-workspace.png)](docs/assets/readme/manor-workspace.png)
 
 ## Opinionated by Design
 

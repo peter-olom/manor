@@ -20,6 +20,7 @@
     "@earendil-works/pi-agent-core": "0.80.6",
     "@earendil-works/pi-ai": "0.80.6",
     "@earendil-works/pi-coding-agent": "0.80.6",
+    "@fontsource-variable/geist": "^5.2.9",
     "@sinclair/typebox": "^0.34.41",
     "express": "^5.1.0",
     "highlight.js": "^11.11.1",
