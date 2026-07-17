@@ -214,6 +214,73 @@ const PROVIDER_LABELS: Record<string, string> = {
   "opencode-go": "OpenCode Go"
 };
 
+const FALLBACK_OPERATOR_TIMEZONES: readonly string[] = [
+  "UTC",
+  "Europe/London",
+  "Europe/Berlin",
+  "Europe/Paris",
+  "Europe/Madrid",
+  "Europe/Amsterdam",
+  "Europe/Moscow",
+  "Africa/Casablanca",
+  "Africa/Lagos",
+  "Africa/Johannesburg",
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Los_Angeles",
+  "America/Sao_Paulo",
+  "Asia/Dubai",
+  "Asia/Kolkata",
+  "Asia/Shanghai",
+  "Asia/Tokyo",
+  "Australia/Sydney",
+  "Pacific/Auckland"
+];
+
+const OPERATOR_TIMEZONE_SUGGESTIONS: readonly string[] = (() => {
+  try {
+    const supportedValuesOf = (Intl as typeof Intl & { supportedValuesOf?: (key: "timeZone") => string[] }).supportedValuesOf;
+    const zones = supportedValuesOf?.("timeZone") ?? [];
+    if (zones.length > 0) return ["UTC", ...zones.filter((zone) => zone !== "UTC")];
+  } catch {
+    // Older browsers use the concise fallback list below.
+  }
+  return [...FALLBACK_OPERATOR_TIMEZONES];
+})();
+
+function timezoneShortOffset(zone: string): string | null {
+  try {
+    const part = new Intl.DateTimeFormat("en-US", { timeZone: zone, timeZoneName: "shortOffset" })
+      .formatToParts(new Date())
+      .find((p) => p.type === "timeZoneName");
+    const value = part?.value ?? "";
+    if (!value) return null;
+    return value === "GMT" || value === "GMT+0" || value === "GMT-0" ? "UTC" : value.replace(/^GMT/, "UTC");
+  } catch {
+    return null;
+  }
+}
+
+const OPERATOR_TIMEZONE_OPTIONS: { zone: string; label: string }[] = OPERATOR_TIMEZONE_SUGGESTIONS.map((zone) => {
+  const offset = timezoneShortOffset(zone);
+  return { zone, label: offset ? `${zone} (${offset})` : zone };
+});
+
+function timezonePreview(zone: string | null | undefined): string {
+  const trimmed = (zone ?? "").trim();
+  if (!trimmed) return "Uses UTC when blank. Changing it updates existing daily schedules.";
+  const offset = timezoneShortOffset(trimmed);
+  return offset
+    ? `Used for schedules, reminders, and displayed times. Current offset: ${offset}. Changing it updates existing daily schedules.`
+    : "Choose a valid timezone, for example Africa/Lagos.";
+}
+
+export function timezoneInputIsValid(zone: string | null | undefined): boolean {
+  const trimmed = (zone ?? "").trim();
+  return !trimmed || timezoneShortOffset(trimmed) !== null;
+}
+
 function providerLabel(provider: string): string {
   return PROVIDER_LABELS[provider] ?? provider;
 }
@@ -631,6 +698,10 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
 
   async function save() {
     if (!draft) return;
+    if (!timezoneInputIsValid(draft.overview.operatorTimezone)) {
+      setMessage("Choose a valid operator timezone before saving.");
+      return;
+    }
     setSaving(true);
     setMessage(null);
     try {
@@ -884,13 +955,14 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
   const testing = validatingAll || Boolean(validating);
   const pullPercent = ollamaPullProgress ? Math.max(0, Math.min(100, (ollamaPullProgress.completed / ollamaPullProgress.total) * 100)) : null;
   const ollamaLocalPullEnabled = payload.settings.providers.ollamaLocal.enabled;
+  const operatorTimezoneInvalid = !timezoneInputIsValid(draft.overview.operatorTimezone);
   const settingsActions = (extra?: ReactNode) => (
     <>
       {extra}
       <span className="settings-save-status" aria-live="polite">
         {dirty ? "Unsaved changes" : savedMessage ?? "All changes saved"}
       </span>
-      <button className="button is-primary" type="button" onClick={save} disabled={saving || testing || !dirty}>
+      <button className="button is-primary" type="button" onClick={save} disabled={saving || testing || !dirty || operatorTimezoneInvalid}>
         {saving ? "Saving..." : "Save changes"}
       </button>
     </>
@@ -1125,6 +1197,21 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
             <FieldGrid>
               <Field label="Operator name" hint="How Butler should refer to you in chat. Leave blank for no name.">
                 <input value={draft.overview.operatorName} placeholder="(none)" onChange={(event) => update((s) => { s.overview.operatorName = event.target.value; })} />
+              </Field>
+              <Field label="Operator timezone" hint={operatorTimezoneInvalid ? undefined : timezonePreview(draft.overview.operatorTimezone)}>
+                <input
+                  value={draft.overview.operatorTimezone ?? ""}
+                  list="operator-timezone-options"
+                  placeholder="UTC"
+                  spellCheck={false}
+                  autoComplete="off"
+                  aria-invalid={operatorTimezoneInvalid || undefined}
+                  onChange={(event) => update((s) => { s.overview.operatorTimezone = event.target.value; })}
+                />
+                <datalist id="operator-timezone-options">
+                  {OPERATOR_TIMEZONE_OPTIONS.map((option) => <option key={option.zone} value={option.zone}>{option.label}</option>)}
+                </datalist>
+                {operatorTimezoneInvalid ? <span className="settings-field-warning" role="alert">Choose a valid timezone, for example Africa/Lagos.</span> : null}
               </Field>
             </FieldGrid>
           </SubGroup>

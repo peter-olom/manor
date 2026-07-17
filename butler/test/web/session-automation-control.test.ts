@@ -11,7 +11,7 @@ function automation(overrides: Partial<PairAutomation> = {}): PairAutomation {
   return {
     id: "automation-1", instruction: "Prepare a daily report", schedule: { kind: "daily", times: ["12:00", "18:00"] }, enabled: true,
     createdAt: 1, updatedAt: 1, nextRunAt: 2, running: null, lastRun: null,
-    state: "active", scheduleLabel: "Daily at 12:00 PM, 6:00 PM", endsAtLabel: null, nextRunLabel: "Jul 15, 12:00 PM Butler clock", lastRunLabel: null,
+    state: "active", scheduleLabel: "Daily at 12:00 PM, 6:00 PM", endsAtLabel: null, nextRunLabel: "Jul 15, 12:00 PM UTC", lastRunLabel: null,
     ...overrides
   };
 }
@@ -35,16 +35,16 @@ test("bounded interval automation shows its deadline and completed state", () =>
   const interval = automation({
     schedule: { kind: "interval", everyMinutes: 5, startsAt: 1, endsAt: 1_800_001 },
     state: "completed", nextRunAt: null, nextRunLabel: null,
-    scheduleLabel: "Every 5 min for 30 min", endsAtLabel: "Jul 14, 6:30 PM Butler clock"
+    scheduleLabel: "Every 5 min for 30 min", endsAtLabel: "Jul 14, 6:30 PM UTC"
   });
   const pair = { id: "pair-1", automation: interval } as PairDetail;
   const markup = renderToStaticMarkup(React.createElement(SessionAutomationControl, {
     pair, pending: false, onEnabledChange: async () => {}, onDelete: async () => {}, onEdit: () => {}
   }));
-  assert.match(markup, /Completed · Every 5 min · until Jul 14, 6:30 PM Butler clock/);
+  assert.match(markup, /Completed · Every 5 min · until Jul 14, 6:30 PM UTC/);
 });
 
-test("automation trigger renders the server-provided Butler clock labels", () => {
+test("automation trigger renders the server-provided operator timezone labels", () => {
   const pair = { id: "pair-1", automation: automation() } as PairDetail;
   const markup = renderToStaticMarkup(React.createElement(SessionAutomationControl, {
     pair, pending: false, onEnabledChange: async () => {}, onDelete: async () => {}, onEdit: () => {}

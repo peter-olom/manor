@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ModelOption } from "../../src/server/types.js";
-import { resolveProviderSettingsParam, resolveSettingsModelValue, resolveWorkerSettingsSelection } from "../../src/web/SettingsDashboard.js";
+import { resolveProviderSettingsParam, resolveSettingsModelValue, resolveWorkerSettingsSelection, timezoneInputIsValid } from "../../src/web/SettingsDashboard.js";
 import { workerModelPickerOption } from "../../src/web/worker-route.js";
 
 function model(id: string, provider: string, harness: "codex" | "pi" | null = null): ModelOption {
@@ -45,6 +45,13 @@ test("settings preserves an exact provider-qualified model", () => {
 test("settings maps custom provider ids to their provider remediation tab", () => {
   assert.equal(resolveProviderSettingsParam("custom-go", { "custom-go": "opencode" }), "opencode");
   assert.equal(resolveProviderSettingsParam("unknown", {}), null);
+});
+
+test("settings accepts supported operator timezones and rejects typos", () => {
+  assert.equal(timezoneInputIsValid("Africa/Lagos"), true);
+  assert.equal(timezoneInputIsValid(""), true);
+  assert.equal(timezoneInputIsValid(undefined), true);
+  assert.equal(timezoneInputIsValid("Africa/Lago"), false);
 });
 
 test("Worker defaults preserve the harness when provider and model are duplicated", () => {

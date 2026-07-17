@@ -262,7 +262,7 @@ const reconcileSelfImprovementAfterRestart = (canConcludeThreadMissing: (threadI
 };
 codexClient.on("threadsSeeded", () => { void reconcileSelfImprovementAfterRestart(() => true); });
 
-const applyManagedSettingsChange = createManorSettingsApplyHandler({ settingsService, applyBackgroundSettings, sessionTitleGenerator, piRpcWorkerClient, butlerAgent, pairSessions, store, codexClient, getSseHub: () => sseHub });
+const applyManagedSettingsChange = createManorSettingsApplyHandler({ settingsService, applyBackgroundSettings, sessionTitleGenerator, piRpcWorkerClient, butlerAgent, pairSessions, pairStore, store, codexClient, getSseHub: () => sseHub });
 runtimeAccess = {
   artifactsDir,
   butlerAgent,

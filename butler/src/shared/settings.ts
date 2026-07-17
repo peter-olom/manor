@@ -53,6 +53,7 @@ export type SettingsOpencodeWebTools = {
 export type ManorSettings = {
   overview: {
     operatorName: string;
+    operatorTimezone: string;
     butlerProvider: SettingsProviderKey;
     workerProvider: SettingsProviderKey;
   };

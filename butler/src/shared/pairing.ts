@@ -183,6 +183,13 @@ export type PairAutomationRun = {
   id: string;
   scheduledFor: number;
   startedAt: number;
+  /**
+   * The HH:mm wall-clock slot this run was scheduled for, captured at claim time in
+   * the then-active operator timezone. Used to dedup per-slot (not per-day) when the
+   * operator changes timezone after a run fired, so only the already-fired slot is
+   * skipped and remaining same-day slots still fire.
+   */
+  scheduledSlot?: string | null;
 };
 
 export type PairAutomationLastRun = PairAutomationRun & {
@@ -206,6 +213,8 @@ export type PairAutomation = {
   createdAt: number;
   updatedAt: number;
   nextRunAt: number | null;
+  /** Configured HH:mm slot associated with nextRunAt for daily schedules. */
+  nextRunSlot?: string | null;
   running: PairAutomationRun | null;
   lastRun: PairAutomationLastRun | null;
   state: PairAutomationState;

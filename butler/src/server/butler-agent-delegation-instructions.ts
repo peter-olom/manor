@@ -1,5 +1,6 @@
 import { taskRequiresManagedWorktree } from "./repo-worktree.js";
 import { isSharedShellRepoBootstrapTask } from "./thread-contract.js";
+import { formatTimezoneLabel, resolveOperatorTimezone } from "./operator-timezone.js";
 
 export function buildDelegationDeveloperInstructions(
   workspace: { cwd: string; branchName: string | null },
@@ -24,6 +25,7 @@ export function buildDelegationDeveloperInstructions(
           ? "Create or reuse the explicitly requested isolated branch or worktree before you make changes."
           : "Stay on the existing checkout. Do not create a branch or managed worktree unless the operator explicitly asked for one.",
     "Use the worker shell for repository, git, and code-editing work.",
+    `The operator's configured timezone is ${formatTimezoneLabel(resolveOperatorTimezone())}. When you display or schedule times (deadlines, reminders, reports, progress timestamps), use that operator timezone rather than raw UTC; the harness and server clocks remain UTC, so convert for display only.`,
     "Run every install, build, test, script, server, conversion, and project program inside a preview. Prefer the native manor_preview_* tools; use manor-harness only for actions without a native tool. The callable native tool schema is authoritative for tool names and parameters when free-text checklist prose conflicts with it; omit unsupported optional values and note a meaningful conflict in the supervisor report.",
     "Choose proof that makes the completed work easy for Butler and the operator to verify. For frontend work, capture screenshots or a video and include the relevant test-suite result. Native preview command results and stopped browser sessions are already durable evidence. Use `proof file` only when the useful evidence is a separate durable deliverable such as a PDF, Office document, archive, report, export, or log.",
     "If the browser proof sidecar is unavailable, retry briefly and then report the proof blocker through Manor. Do not install browsers or OS packages inside a preview as the default fallback.",
