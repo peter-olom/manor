@@ -64,6 +64,7 @@ cd /opt/manor/butler
 ttyd \
   --port "${ttyd_port}" \
   --base-path "${ttyd_base_path}" \
+  --client-option fontSize=14 \
   --writable \
   --cwd /opt/manor/butler \
   /usr/local/bin/start-butler-shell &

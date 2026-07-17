@@ -205,7 +205,7 @@ export const ModelPicker = memo(function ModelPicker({
         event.preventDefault();
         event.stopImmediatePropagation();
         close();
-        triggerRef.current?.focus();
+        triggerRef.current?.focus({ preventScroll: true });
       }
     };
     document.addEventListener("mousedown", onPointer);
@@ -219,7 +219,7 @@ export const ModelPicker = memo(function ModelPicker({
   useEffect(() => {
     if (!open) return;
     const input = searchRef.current;
-    if (input) input.focus();
+    if (input) input.focus({ preventScroll: true });
   }, [open]);
 
   useEffect(() => {
@@ -247,7 +247,7 @@ export const ModelPicker = memo(function ModelPicker({
   const choose = useCallback((next: string | null) => {
     onChange(next);
     close();
-    triggerRef.current?.focus();
+    triggerRef.current?.focus({ preventScroll: true });
   }, [onChange, close]);
 
   const onTriggerKeyDown = useCallback((event: ReactKeyboardEvent<HTMLButtonElement>) => {
@@ -357,7 +357,7 @@ export const ModelPicker = memo(function ModelPicker({
                 aria-label="Clear search"
                 onClick={() => {
                   setQuery("");
-                  searchRef.current?.focus();
+                  searchRef.current?.focus({ preventScroll: true });
                 }}
               >
                 <CloseIcon />

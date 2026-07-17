@@ -221,6 +221,7 @@ fi
 ttyd \
   --port "${ttyd_port}" \
   --base-path "${ttyd_base_path}" \
+  --client-option fontSize=14 \
   --writable \
   --cwd /repos \
   bash -lc 'exec zsh -li' &

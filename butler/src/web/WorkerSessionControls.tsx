@@ -75,10 +75,10 @@ function UsageByModel({ models }: { models: ModelUsageRow[] }) {
           {models.map((row) => (
             <tr key={`${row.provider}/${row.model}`}>
               <th scope="row"><strong>{row.model}</strong><span>{providerLabel(row.provider)} · {basisLabel(row.cost.basis)}</span></th>
-              <td>{costCell(row.tokens.input, row.cost.input, row.cost.basis)}</td>
-              <td>{costCell(row.tokens.cacheRead + row.tokens.cacheWrite, row.cost.cacheRead + row.cost.cacheWrite, row.cost.basis)}</td>
-              <td>{costCell(row.tokens.output, row.cost.output, row.cost.basis)}</td>
-              <td>{costCell(row.tokens.total, row.cost.total, row.cost.basis)}</td>
+              <td data-label="Input">{costCell(row.tokens.input, row.cost.input, row.cost.basis)}</td>
+              <td data-label="Cache">{costCell(row.tokens.cacheRead + row.tokens.cacheWrite, row.cost.cacheRead + row.cost.cacheWrite, row.cost.basis)}</td>
+              <td data-label="Output">{costCell(row.tokens.output, row.cost.output, row.cost.basis)}</td>
+              <td data-label="Total">{costCell(row.tokens.total, row.cost.total, row.cost.basis)}</td>
             </tr>
           ))}
         </tbody>

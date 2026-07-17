@@ -864,7 +864,7 @@ export function MemoryDashboard({
         <div className="dashboard-controls">
           <div className="memory-search-mode" role="group" aria-label="Memory search mode">
             <button type="button" className={searchMode === "browse" ? "is-active" : ""} onClick={() => setSearchMode("browse")}>Browse</button>
-            <button type="button" className={searchMode === "agent" ? "is-active" : ""} onClick={() => setSearchMode("agent")}>Agent preview</button>
+            <button type="button" className={searchMode === "agent" ? "is-active" : ""} onClick={() => setSearchMode("agent")}>Agent<span className="memory-preview-word"> preview</span></button>
           </div>
           <div className="search dashboard-search">
             <span className="search-icon">

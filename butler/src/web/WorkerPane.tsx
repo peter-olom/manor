@@ -20,7 +20,8 @@ import {
 } from "./worker-route";
 import {
   ChevronDownIcon,
-  ChevronRightIcon
+  ChevronRightIcon,
+  StatusIcon
 } from "./icons";
 
 import type { PairDetail, PairWorkerHarness } from "../shared/pairing";
@@ -967,10 +968,11 @@ export function WorkerPane({ pair, timeline, loading = false, hasMore = false, l
     <section className="pane" aria-label="Worker lane">
       <div className="pane-head worker-pane-head">
         <div className="pane-head-info">
-          <h2>Worker · {shortId(pair.worker.threadId)}</h2>
+          <h2>Worker <span className="worker-id-label">· {shortId(pair.worker.threadId)}</span></h2>
           <span className="pane-sub worker-summary" title={workerSummary}>{workerSummary}</span>
         </div>
         <div className="worker-controls" aria-label="Worker settings">
+          <span className="worker-route-compact" title={route}>{workerModelLabel(worker.availableModels, pair.worker.model, pair.worker.harness)}</span>
           {options.length > 0 ? (
             <BudgetSegmented
               label="Thinking"
@@ -982,8 +984,9 @@ export function WorkerPane({ pair, timeline, loading = false, hasMore = false, l
             />
           ) : null}
           {worker.availableModels.length > 0 ? (
-            <button className="button worker-switch-button" type="button" disabled={switchDisabled} title={switchTitle} onClick={() => setSwitchOpen(true)}>
-              Switch worker…
+            <button className="button worker-switch-button" type="button" disabled={switchDisabled} title={switchTitle} aria-label="Switch worker" onClick={() => setSwitchOpen(true)}>
+              <StatusIcon kind="model" />
+              <span className="worker-switch-label">Switch worker…</span>
             </button>
           ) : <button className="button" type="button" onClick={onOpenProviderSettings}>Reconnect provider</button>}
           {pair.worker.runtime === "pi-rpc" ? <WorkerSessionControlsButton pairId={pair.id} disabled={handoffPending} /> : null}

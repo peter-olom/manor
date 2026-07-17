@@ -166,10 +166,10 @@ export function UsageDashboard({ active }: { active: boolean }) {
                       <tbody>{(breakdown === "models" ? summary.models : summary.providers).map((row) => (
                         <tr key={"model" in row ? `${row.provider}/${row.model}` : row.provider}>
                           <th scope="row"><strong>{"model" in row ? row.model : providerLabel(row.provider)}</strong><span>{"model" in row ? providerLabel(row.provider) : modelLabel(row.modelCount)} · {basisLabel(row.cost.basis)} · {requestLabel(row.requests)}</span></th>
-                          <td>{cell(row.tokens.input, row.cost.input, row.cost.basis)}</td>
-                          <td>{cell(row.tokens.cacheRead + row.tokens.cacheWrite, row.cost.cacheRead + row.cost.cacheWrite, row.cost.basis)}</td>
-                          <td>{cell(row.tokens.output, row.cost.output, row.cost.basis)}</td>
-                          <td>{cell(row.tokens.total, row.cost.total, row.cost.basis)}</td>
+                          <td data-label="Input">{cell(row.tokens.input, row.cost.input, row.cost.basis)}</td>
+                          <td data-label="Cache">{cell(row.tokens.cacheRead + row.tokens.cacheWrite, row.cost.cacheRead + row.cost.cacheWrite, row.cost.basis)}</td>
+                          <td data-label="Output">{cell(row.tokens.output, row.cost.output, row.cost.basis)}</td>
+                          <td data-label="Total">{cell(row.tokens.total, row.cost.total, row.cost.basis)}</td>
                         </tr>
                       ))}</tbody>
                     </table>

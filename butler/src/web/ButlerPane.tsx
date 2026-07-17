@@ -1,7 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from "react";
 
 import { BudgetSegmented } from "./BudgetSegmented";
-import { AttachmentIcon, CloseIcon } from "./icons";
+import { AttachmentIcon, CloseIcon, SendIcon } from "./icons";
 import { JumpToLatest } from "./JumpToLatest";
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
@@ -414,7 +414,7 @@ export const Composer = memo(function Composer({
               aria-label="Attach files"
             >
               {uploadingFiles ? <span className="spinner" /> : <AttachmentIcon />}
-              <span>{uploadingFiles ? "Uploading" : "Attach"}</span>
+              <span className="composer-action-label">{uploadingFiles ? "Uploading" : "Attach"}</span>
             </button>
             <ModelPicker
               label="Butler model"
@@ -437,8 +437,8 @@ export const Composer = memo(function Composer({
             ) : null}
             {isMultilineDraft ? <span className="composer-hint">Ctrl/Cmd + Enter</span> : null}
           </div>
-          <button className="composer-send" type="submit" disabled={busy || sendDisabled || !canSubmit}>
-            {busy ? <span className="spinner" /> : <span>{queueMode ? "Queue" : "Send"}</span>}
+          <button className="composer-send" type="submit" disabled={busy || sendDisabled || !canSubmit} aria-label={queueMode ? "Queue message" : "Send message"}>
+            {busy ? <span className="spinner" /> : <><SendIcon /><span className="composer-action-label">{queueMode ? "Queue" : "Send"}</span></>}
           </button>
         </div>
         {uploadError ? <div className="composer-upload-error" role="alert">{uploadError}</div> : null}

@@ -186,7 +186,7 @@ export function SkillsDashboard({ active }: { active: boolean }) {
             <span className="skills-inventory-main"><strong>{skill.name}</strong><small>{skill.description || "No description"}</small></span>
             <code>{skill.invocation}</code>
             <span className="skills-inventory-meta">{skill.scope}<small>{skill.origin}{skill.mutable ? "" : " · read-only"}</small></span>
-            <button className="button" type="button" onClick={() => { setCreating(false); setSelectedId(skill.id); }}>View details</button>
+            <button className="button" type="button" onClick={() => { setCreating(false); setSelectedId(skill.id); }}><span className="skills-view-details">View details</span><span className="skills-view-short">View</span></button>
           </div>
         ))}
         {visible.length === 0 ? <div className="skills-empty"><strong>No installed skills found.</strong><span>Ask Butler to find one for the work you need to do.</span><a className="button is-primary" href="/?ask=add-skill" onClick={askButler}>Ask Butler</a></div> : null}

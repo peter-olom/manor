@@ -314,7 +314,7 @@ export function FileExplorer({ active, attachTargetLabel, uploadContext, onAttac
               void uploadFiles(files);
             }}
           />
-          <button className="button is-primary" type="button" disabled={uploading} onClick={() => inputRef.current?.click()}>
+          <button className="button is-primary" type="button" disabled={uploading} aria-label={uploading ? "Uploading files" : "Upload files"} onClick={() => inputRef.current?.click()}>
             {uploading ? <span className="spinner" /> : <AttachmentIcon />}
             <span>{uploading ? "Uploading…" : "Upload files"}</span>
           </button>

@@ -198,6 +198,14 @@ export function AttachmentIcon() {
   );
 }
 
+export function SendIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M3 3.5 13 8 3 12.5l1.1-4.1L9.2 8 4.1 7.6z" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export function ZoomInIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">

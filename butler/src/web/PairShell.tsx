@@ -477,7 +477,7 @@ function Topbar({
           : null;
   const modes: WorkstreamViewMode[] = pair ? WORKSTREAM_MODES : ["cli"];
   return (
-    <header className={`topbar ${isGlobalSurface ? "is-global-surface" : ""}`}>
+    <header className={`topbar ${isGlobalSurface ? "is-global-surface" : ""} is-${viewMode}`}>
       <div className="topbar-left">
         <button
           className="mobile-toggle"
@@ -493,6 +493,7 @@ function Topbar({
               <div className="surface-topbar-title">
                 <h1 className="title-label">{surfaceTitle}</h1>
                 {surfaceMeta ? <span className="surface-topbar-meta">{surfaceMeta}</span> : null}
+                {viewMode === "improve" && improveEligibilityBlocked ? <span className="improve-gate improve-gate-mobile"><WarningIcon />Disabled</span> : null}
               </div>
             ) : pair && editingTitle ? (
               <input
@@ -540,7 +541,7 @@ function Topbar({
           <div className="topbar-memory-controls">
             <div className="memory-search-mode" role="group" aria-label="Memory search mode">
               <button type="button" className={memorySearchMode === "browse" ? "is-active" : ""} onClick={() => onMemorySearchMode("browse")}>Browse</button>
-              <button type="button" className={memorySearchMode === "agent" ? "is-active" : ""} onClick={() => onMemorySearchMode("agent")}>Agent preview</button>
+              <button type="button" className={memorySearchMode === "agent" ? "is-active" : ""} onClick={() => onMemorySearchMode("agent")}>Agent<span className="memory-preview-word"> preview</span></button>
             </div>
             <div className="search dashboard-search">
               <span className="search-icon">
@@ -584,7 +585,7 @@ function Topbar({
                 type="button"
                 role="tab"
                 aria-selected={workstreamMode === mode}
-                className={workstreamMode === mode ? "is-selected" : ""}
+                className={`view-mode-tab is-${mode}${workstreamMode === mode ? " is-selected" : ""}`}
                 onClick={() => onViewMode(mode)}
               >
                 {VIEW_LABELS[mode]}
@@ -595,7 +596,7 @@ function Topbar({
         {pair?.status && !isGlobalSurface ? (
           <span className={`status is-${pair.status}`}>
             <span className="status-dot" />
-            {statusLabel(pair.status)}
+            <span className="status-label">{statusLabel(pair.status)}</span>
           </span>
         ) : null}
       </div>
@@ -784,6 +785,21 @@ export function PairShell() {
   useEffect(() => {
     if (viewMode !== "files" && viewMode !== "memory" && viewMode !== "improve" && viewMode !== "settings") setLastWorkstreamMode(viewMode);
   }, [viewMode]);
+  useEffect(() => {
+    if (viewMode !== "split" || !window.matchMedia("(max-width: 860px)").matches) return;
+    setViewMode("butler");
+    setLastWorkstreamMode("butler");
+  }, [viewMode]);
+  useEffect(() => {
+    const mobileViewport = window.matchMedia("(max-width: 860px)");
+    const leaveSplitOnMobile = () => {
+      if (!mobileViewport.matches) return;
+      setViewMode((current) => (current === "split" ? "butler" : current));
+      setLastWorkstreamMode((current) => (current === "split" ? "butler" : current));
+    };
+    mobileViewport.addEventListener("change", leaveSplitOnMobile);
+    return () => mobileViewport.removeEventListener("change", leaveSplitOnMobile);
+  }, []);
   useEffect(() => { if (manorSurface !== "sessions") { skillInstallHandoffPending.current = false; skillInstallSessionRequest.current += 1; setSkillInstallIntent(false); } }, [manorSurface]);
 
   useEffect(() => {
