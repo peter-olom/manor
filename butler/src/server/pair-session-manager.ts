@@ -38,7 +38,7 @@ import { listComposerFileSuggestions } from "./composer-file-suggestions.js";
 
 type PairButlerService = Pick<
   ButlerAgentService,
-  "answerOperatorQuestion" | "cancelCallbackReview" | "dispose" | "ensureExternalWorkerDelegation" | "exportSession" | "getLiveSnapshot" | "getMessagePage" | "getSessionControls" | "getShellSnapshot" | "handoffWorker" | "listComposerCommands" | "on" | "postAutomationNotice" | "prompt" | "quiesceCallbackReviews" | "refreshModelSettings" | "reloadResources" | "retryBlockedCallbackReviews" | "runAutomationPrompt" | "runSessionControl" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings" | "watchdogs"
+  "answerOperatorQuestion" | "cancelCallbackReview" | "dispose" | "ensureExternalWorkerDelegation" | "exportSession" | "getLiveSnapshot" | "getMessagePage" | "getSessionControls" | "getShellSnapshot" | "handoffWorker" | "listComposerCommands" | "on" | "postAutomationNotice" | "prompt" | "quiesceCallbackReviews" | "refreshModelSettings" | "reloadResources" | "removeExternalWorkerDelegation" | "retryBlockedCallbackReviews" | "runAutomationPrompt" | "runSessionControl" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings" | "watchdogs"
 >;
 
 type PairSessionManagerOptions = {
@@ -810,8 +810,16 @@ export class PairSessionManager {
     return true;
   }
 
+  getPairWorkerThreadId(pairId: string): string | null {
+    return this.options.pairStore.getPair(pairId)?.worker?.threadId ?? null;
+  }
+
   async deletePair(pairId: string): Promise<boolean> {
     const existing = this.options.pairStore.getPair(pairId);
+    if (existing?.worker) {
+      const service = await this.ensureService(pairId);
+      await service.removeExternalWorkerDelegation(existing.worker.threadId);
+    }
     await this.quiescePair(pairId);
     const deleted = this.options.pairStore.deletePair(pairId);
     try {

@@ -10,7 +10,7 @@ import express from "express";
 
 import { buildButlerCodexTools } from "../../src/server/butler-agent-codex-tools.js";
 import type { ButlerAgentToolAccess } from "../../src/server/butler-agent-tool-access.js";
-import { commitSelfImprovementRequest, configureSelfImprovementPairCleanup, discardSelfImprovementRequest, openSelfImprovementPullRequest, reconcileInterruptedSelfImprovementRequests, runSerializedSelfImprovementAction } from "../../src/server/self-improvement-actions.js";
+import { commitSelfImprovementRequest, configureSelfImprovementPairCleanup, deleteSelfImprovementRequest, discardSelfImprovementRequest, openSelfImprovementPullRequest, reconcileInterruptedSelfImprovementRequests, runSerializedSelfImprovementAction } from "../../src/server/self-improvement-actions.js";
 import { resolveSelfImprovementEligibility } from "../../src/server/self-improvement-eligibility.js";
 import { configureSelfImprovementRequestState, SelfImprovementRequestState } from "../../src/server/self-improvement-request-state.js";
 import { registerSelfImprovementRoutes } from "../../src/server/self-improvement-routes.js";
@@ -86,6 +86,35 @@ test("self-improvement request state persists required evidence and dismissal re
     assert.equal(dismissed.status, "dismissed");
     assert.equal(dismissed.dismissedReason, "Already covered by another fix.");
     assert.equal(reloaded.get(created.id)?.proposedChange, "Add retry handling around broker cleanup.");
+  } finally {
+    await removeTempDir(dir);
+  }
+});
+
+test("self-improvement request removal persists", async () => {
+  const { dir, state } = await createRequestState();
+  try {
+    const created = state.create(requestInput());
+    await state.remove(created.id);
+    const reloaded = new SelfImprovementRequestState(path.join(dir, "requests.json"), () => undefined, () => undefined);
+    await reloaded.load();
+
+    assert.equal(state.get(created.id), null);
+    assert.equal(reloaded.get(created.id), null);
+  } finally {
+    await removeTempDir(dir);
+  }
+});
+
+test("failed self-improvement request removal restores the in-memory guard", async () => {
+  const { dir, state } = await createRequestState();
+  try {
+    const created = state.create(requestInput());
+    await state.flush();
+    (state as unknown as { statePath: string }).statePath = "/dev/null/requests.json";
+
+    await assert.rejects(() => state.remove(created.id), /deletion failed|ENOTDIR|EEXIST/);
+    assert.equal(state.get(created.id)?.id, created.id);
   } finally {
     await removeTempDir(dir);
   }
@@ -865,6 +894,23 @@ test("dismiss endpoint rejects an active self-improvement request", async () => 
   }
 });
 
+test("delete endpoint permanently removes a pending self-improvement request", async () => {
+  const { dir, state } = await createRequestState();
+  const app = express();
+  app.use(express.json());
+  const created = state.create(requestInput());
+  registerSelfImprovementRoutes({ app, requests: state } as never);
+  const server = await listen(app);
+  try {
+    const response = await fetch(`${server.origin}/api/self-improvement/requests/${created.id}/delete`, { method: "POST" });
+    assert.equal(response.status, 200);
+    assert.equal(state.get(created.id), null);
+  } finally {
+    await server.close();
+    await removeTempDir(dir);
+  }
+});
+
 test("closing waits for an in-flight Worker follow-up and then stops that turn", async () => {
   const { dir: requestDir, state } = await createRequestState();
   const { dir: storeDir, store } = await createStore();
@@ -988,6 +1034,150 @@ test("closing a self-improvement request leaves active source changes untouched"
     configureSelfImprovementPairCleanup(null);
     await removeTempDir(sourceDir);
     await removeTempDir(dir);
+  }
+});
+
+test("deleting an active self-improvement request closes its pair first", async () => {
+  const { dir, state } = await createRequestState();
+  const deletedPairs: string[] = [];
+  try {
+    const created = state.create(requestInput());
+    state.update(created.id, { status: "changes_ready", pairId: "pair-to-delete" });
+    configureSelfImprovementPairCleanup({
+      quiescePair: async () => true,
+      resumePair: async () => true,
+      deletePair: async (pairId) => {
+        deletedPairs.push(pairId);
+        return true;
+      }
+    });
+
+    const deleted = await deleteSelfImprovementRequest(state, {} as never, created.id);
+
+    assert.equal(deleted.id, created.id);
+    assert.equal(state.get(created.id), null);
+    assert.deepEqual(deletedPairs, ["pair-to-delete"]);
+  } finally {
+    configureSelfImprovementPairCleanup(null);
+    await removeTempDir(dir);
+  }
+});
+
+test("deleting a handed-off PR request captures and removes the pair's current Worker", async () => {
+  const { dir: requestDir, state } = await createRequestState();
+  const { dir: storeDir, store } = await createStore();
+  const lifecycle: string[] = [];
+  try {
+    const created = state.create(requestInput());
+    state.update(created.id, { status: "pr_opened", threadId: "old-worker", workerThreadIds: ["old-worker"], pairId: "pr-pair" });
+    store.upsertThreadSummary({ id: "old-worker", source: "pi-rpc", status: "idle", turns: [] });
+    store.upsertThreadSummary({ id: "replacement-worker", source: "pi-rpc", status: "idle", turns: [] });
+    configureSelfImprovementPairCleanup({
+      quiescePair: async () => { lifecycle.push("quiesce"); return true; },
+      resumePair: async () => true,
+      deletePair: async () => { lifecycle.push("delete-pair"); return true; }
+    });
+    const access = {
+      store,
+      piRpcWorkerClient: {
+        stopThread: async (threadId: string) => { lifecycle.push(`stop:${threadId}`); return true; },
+        deleteThread: async (threadId: string) => {
+          lifecycle.push(`delete-worker:${threadId}`);
+          store.removeThread(threadId);
+          return true;
+        }
+      }
+    } as never;
+
+    await deleteSelfImprovementRequest(state, access, created.id, {
+      resolvePairWorkerThreadId: () => "replacement-worker"
+    });
+
+    assert.equal(state.get(created.id), null);
+    assert.deepEqual(lifecycle, ["quiesce", "stop:old-worker", "delete-pair", "delete-worker:old-worker", "delete-worker:replacement-worker"]);
+  } finally {
+    configureSelfImprovementPairCleanup(null);
+    await state.flush();
+    await store.flushSave();
+    await removeTempDir(requestDir);
+    await removeTempDir(storeDir);
+  }
+});
+
+test("deleting a closed self-improvement request durably removes every linked Worker", async () => {
+  const { dir: requestDir, state } = await createRequestState();
+  const { dir: storeDir, store } = await createStore();
+  const deletedThreads: string[] = [];
+  const removedDelegations: string[] = [];
+  try {
+    const created = state.create(requestInput());
+    state.update(created.id, { status: "discarded", threadId: "worker-to-delete", workerThreadIds: ["older-worker", "worker-to-delete"] });
+    store.upsertThreadSummary({ id: "older-worker", source: "pi-rpc", status: "idle", turns: [] });
+    store.upsertThreadSummary({ id: "worker-to-delete", source: "pi-rpc", status: "idle", turns: [] });
+    const access = {
+      store,
+      piRpcWorkerClient: {
+        deleteThread: async (threadId: string) => {
+          deletedThreads.push(threadId);
+          store.removeThread(threadId);
+          return true;
+        }
+      }
+    } as never;
+
+    await deleteSelfImprovementRequest(state, access, created.id, {
+      removeExternalWorkerDelegation: async (threadId) => {
+        removedDelegations.push(threadId);
+      }
+    });
+
+    assert.equal(state.get(created.id), null);
+    assert.equal(store.getThread("older-worker"), undefined);
+    assert.equal(store.getThread("worker-to-delete"), undefined);
+    assert.deepEqual(deletedThreads, ["older-worker", "worker-to-delete"]);
+    assert.deepEqual(removedDelegations, ["older-worker", "worker-to-delete"]);
+  } finally {
+    await state.flush();
+    await store.flushSave();
+    await removeTempDir(requestDir);
+    await removeTempDir(storeDir);
+  }
+});
+
+test("Worker cleanup failure keeps self-improvement deletion retryable", async () => {
+  const { dir: requestDir, state } = await createRequestState();
+  const { dir: storeDir, store } = await createStore();
+  let failSecondDelete = true;
+  try {
+    const created = state.create(requestInput());
+    state.update(created.id, { status: "discarded", threadId: "second-worker", workerThreadIds: ["first-worker", "second-worker"] });
+    store.upsertThreadSummary({ id: "first-worker", source: "pi-rpc", status: "idle", turns: [] });
+    store.upsertThreadSummary({ id: "second-worker", source: "pi-rpc", status: "idle", turns: [] });
+    const access = {
+      store,
+      piRpcWorkerClient: {
+        deleteThread: async (threadId: string) => {
+          if (threadId === "second-worker" && failSecondDelete) throw new Error("Worker cleanup failed");
+          store.removeThread(threadId);
+          return true;
+        }
+      }
+    } as never;
+
+    await assert.rejects(() => deleteSelfImprovementRequest(state, access, created.id), /Worker cleanup failed/);
+    assert.equal(state.get(created.id)?.status, "discarded");
+    assert.equal(store.getThread("first-worker"), undefined);
+    assert.ok(store.getThread("second-worker"));
+
+    failSecondDelete = false;
+    await deleteSelfImprovementRequest(state, access, created.id);
+    assert.equal(state.get(created.id), null);
+    assert.equal(store.getThread("second-worker"), undefined);
+  } finally {
+    await state.flush();
+    await store.flushSave();
+    await removeTempDir(requestDir);
+    await removeTempDir(storeDir);
   }
 });
 

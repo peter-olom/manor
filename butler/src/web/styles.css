@@ -3645,6 +3645,10 @@ a:hover {
   color: var(--text-subtle);
 }
 
+.model-picker-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
 .model-picker-search-clear {
   display: inline-flex;
   align-items: center;

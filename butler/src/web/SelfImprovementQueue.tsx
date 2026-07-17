@@ -82,6 +82,16 @@ export function SelfImprovementQueue({
     }
   }
 
+  async function deleteRequest() {
+    if (!selected) return;
+    const hasActiveSession = ["approved", "running", "changes_ready", "committed", "pr_opened"].includes(selected.status);
+    const warning = hasActiveSession
+      ? `Delete this self-improvement request and its linked Worker history permanently? Its active session will be closed first. Source changes and commits will remain. This cannot be undone.`
+      : `Delete this self-improvement request and its linked Worker history permanently? Source changes and commits will remain. This cannot be undone.`;
+    if (!window.confirm(warning)) return;
+    await runAction("delete");
+  }
+
   const requests = data?.requests ?? [];
   const eligibility = data?.eligibility;
   const actionInProgress = busyAction !== null;
@@ -103,7 +113,8 @@ export function SelfImprovementQueue({
                 <div className="improve-actions">
                   {selected.threadId || selected.pairId ? <button className="button" type="button" disabled={actionInProgress} onClick={() => void openSession(selected)}>Open session</button> : null}
                   {selected.status === "pending" ? <button className="button is-primary" type="button" disabled={!eligibility?.enabled || actionInProgress} onClick={() => void runAction("approve")}>Approve</button> : null}
-                  {selected.status === "approved" || selected.status === "running" || selected.status === "changes_ready" || selected.status === "committed" ? <button className="button" type="button" disabled={actionInProgress} onClick={() => void runAction("discard")}>Close request</button> : null}
+                  {selected.status === "approved" || selected.status === "running" || selected.status === "changes_ready" || selected.status === "committed" || selected.status === "pr_opened" ? <button className="button" type="button" disabled={actionInProgress} onClick={() => void runAction("discard")}>Close request</button> : null}
+                  <button className="button is-danger" type="button" disabled={actionInProgress} onClick={() => void deleteRequest()}>{busyAction === "delete" ? "Deleting…" : "Delete"}</button>
                 </div>
               </div>
 

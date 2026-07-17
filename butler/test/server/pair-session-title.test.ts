@@ -18,6 +18,7 @@ class FakeButlerService extends EventEmitter {
   startCount = 0;
   pending = false;
   trackedExternalThreads: string[] = [];
+  removedExternalThreads: string[] = [];
   handoffs: Array<{ sourceThreadId: string; harness: string; model: string; effort: string | null; butlerThreadId?: string | null; cwd?: string | null }> = [];
   handoffDelayMs = 0;
   concurrentHandoffs = 0;
@@ -69,6 +70,11 @@ class FakeButlerService extends EventEmitter {
 
   ensureExternalWorkerDelegation(threadId: string): void {
     if (!this.trackedExternalThreads.includes(threadId)) this.trackedExternalThreads.push(threadId);
+  }
+
+  async removeExternalWorkerDelegation(threadId: string): Promise<void> {
+    this.removedExternalThreads.push(threadId);
+    this.lifecycleEvents.push(`remove-delegation:${threadId}`);
   }
 
   async retryBlockedCallbackReviews(): Promise<boolean> {
@@ -629,6 +635,15 @@ test("deletePair stops active Butler work before removing supervision", async ()
   assert.equal(service.stopCount, 1);
   assert.equal(service.disposeCount, 1);
   assert.deepEqual(service.lifecycleEvents, ["stop-prompt", "cancel-review", "dispose"]);
+});
+
+test("deletePair removes the current Worker callback before disposing Butler", async () => {
+  const { manager, service } = await createManager();
+  const pair = await manager.createWorkerPair({ threadId: "worker-to-delete", task: "Delete safely" });
+
+  assert.equal(await manager.deletePair(pair.id), true);
+  assert.deepEqual(service.removedExternalThreads, ["worker-to-delete"]);
+  assert.deepEqual(service.lifecycleEvents, ["remove-delegation:worker-to-delete", "stop-prompt", "cancel-review", "dispose"]);
 });
 
 test("quiesced pairs cannot restart supervision until explicitly resumed", async () => {

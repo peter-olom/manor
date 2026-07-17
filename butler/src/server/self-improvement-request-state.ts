@@ -178,6 +178,29 @@ export class SelfImprovementRequestState {
     return this.update(id, { status: "dismissed", dismissedAt: now, dismissedReason: reason });
   }
 
+  async remove(id: string): Promise<SelfImprovementRequestView> {
+    const current = this.requests.get(id);
+    if (!current) throw new Error("Self-improvement request was not found.");
+    this.requests.delete(id);
+    this.persist();
+    try {
+      await this.flush();
+      return current;
+    } catch (error) {
+      this.requests.set(id, current);
+      this.persist();
+      try {
+        await this.flush();
+      } catch (rollbackError) {
+        throw new Error(
+          `Self-improvement request deletion failed and could not be restored: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+          { cause: error }
+        );
+      }
+      throw error;
+    }
+  }
+
   async flush(): Promise<void> {
     await this.saveQueue;
   }

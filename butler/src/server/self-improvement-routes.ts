@@ -12,7 +12,7 @@ import { bindJobPayloadDelivery, jobPayloadsRoot, persistJobPayload } from "./jo
 import type { PairSessionManager } from "./pair-session-manager.js";
 import { buildWorkerInputWithReferences } from "./reference-inputs.js";
 import { ensureWorkspaceWritableForWorker } from "./repo-worktree.js";
-import { commitSelfImprovementRequest, discardSelfImprovementRequest, openSelfImprovementPullRequest, runSerializedSelfImprovementAction } from "./self-improvement-actions.js";
+import { commitSelfImprovementRequest, deleteSelfImprovementRequest, discardSelfImprovementRequest, openSelfImprovementPullRequest, runSerializedSelfImprovementAction } from "./self-improvement-actions.js";
 import { resolveSelfImprovementEligibility } from "./self-improvement-eligibility.js";
 import type { SelfImprovementRequestState } from "./self-improvement-request-state.js";
 import type { ButlerStateStore } from "./state-store.js";
@@ -24,13 +24,14 @@ type RouteAccess = {
   hostController: HostControllerClient;
   store: ButlerStateStore;
   piRpcWorkerClient?: PiRpcWorkerClient | null;
-  pairSessions?: Pick<PairSessionManager, "createWorkerPair" | "deletePair">;
+  pairSessions?: Pick<PairSessionManager, "createWorkerPair" | "deletePair" | "getPairWorkerThreadId">;
   imageStore: ImageReferenceStore;
   fileStore: FileReferenceStore;
   artifactsDir: string;
   getWorkerAffinity?: WorkerClientAccess["getWorkerAffinity"];
   recordSuccessfulWorkerSelection?: WorkerClientAccess["recordSuccessfulWorkerSelection"];
   prepareWorkerWorkspace?: WorkerClientAccess["prepareWorkerWorkspace"];
+  removeExternalWorkerDelegation?: (threadId: string) => Promise<void>;
 };
 
 function readText(value: unknown): string {
@@ -205,6 +206,20 @@ export function registerSelfImprovementRoutes(access: RouteAccess): void {
   app.post("/api/self-improvement/requests/:requestId/discard", async (request, response) => {
     try {
       response.json({ ok: true, request: await discardSelfImprovementRequest(requests, access, request.params.requestId) });
+    } catch (error) {
+      response.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post("/api/self-improvement/requests/:requestId/delete", async (request, response) => {
+    try {
+      response.json({
+        ok: true,
+        request: await deleteSelfImprovementRequest(requests, access, request.params.requestId, {
+          removeExternalWorkerDelegation: access.removeExternalWorkerDelegation,
+          resolvePairWorkerThreadId: (pairId) => pairSessions?.getPairWorkerThreadId(pairId) ?? null
+        })
+      });
     } catch (error) {
       response.status(409).json({ error: error instanceof Error ? error.message : String(error) });
     }

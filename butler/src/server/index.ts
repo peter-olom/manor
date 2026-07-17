@@ -464,6 +464,7 @@ registerSelfImprovementRoutes({
   piRpcWorkerClient,
   getWorkerAffinity: () => butlerAgent.getWorkerAffinity(),
   recordSuccessfulWorkerSelection: (selection) => butlerAgent.recordSuccessfulWorkerSelection(selection),
+  removeExternalWorkerDelegation: (threadId) => butlerAgent.removeExternalWorkerDelegation(threadId),
   pairSessions,
   imageStore,
   fileStore,

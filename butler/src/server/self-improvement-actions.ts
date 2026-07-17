@@ -5,7 +5,7 @@ import type { ButlerStateStore } from "./state-store.js";
 import { buildSelfImprovementTask } from "./butler-self-improvement.js";
 import { runSerializedJobMutation } from "./butler-job-mutation-guard.js";
 import { execFileAsWorker } from "./repo-worktree.js";
-import { stopWorkerThread, type WorkerClientAccess } from "./worker-client-router.js";
+import { deleteWorkerThread, stopWorkerThread, type WorkerClientAccess } from "./worker-client-router.js";
 import type { SelfImprovementRequestView } from "../shared/self-improvement.js";
 
 type SelfImprovementPairLifecycle = Pick<PairSessionManager, "quiescePair" | "resumePair" | "deletePair">;
@@ -203,7 +203,7 @@ export async function discardSelfImprovementRequest(
       const current = requests.get(requestId);
       if (!current) throw new Error("Self-improvement request was not found.");
       if (current.threadId !== expectedThreadId) return { retry: true, request: null };
-      if (!["approved", "running", "changes_ready", "committed"].includes(current.status)) {
+      if (!["approved", "running", "changes_ready", "committed", "pr_opened"].includes(current.status)) {
         throw new Error("Only approved or active self-improvement requests can be closed.");
       }
       if (current.pairId) {
@@ -238,6 +238,47 @@ export async function discardSelfImprovementRequest(
       ? await runSerializedJobMutation(expectedThreadId, () => discardCurrent(expectedThreadId))
       : await discardCurrent(null);
     if (!result.retry && result.request) return result.request;
+  }
+}
+
+export async function deleteSelfImprovementRequest(
+  requests: SelfImprovementRequestState,
+  workerClient: WorkerClientAccess,
+  requestId: string,
+  options: {
+    removeExternalWorkerDelegation?: (threadId: string) => Promise<void>;
+    resolvePairWorkerThreadId?: (pairId: string) => string | null;
+  } = {}
+): Promise<SelfImprovementRequestView> {
+  for (;;) {
+    const removed = await runSerializedSelfImprovementAction(requestId, async () => {
+      let current = requests.get(requestId);
+      if (!current) throw new Error("Self-improvement request was not found.");
+      if (["approved", "running", "changes_ready", "committed", "pr_opened"].includes(current.status)) {
+        const pairWorkerThreadId = current.pairId ? options.resolvePairWorkerThreadId?.(current.pairId) ?? null : null;
+        if (pairWorkerThreadId && !current.workerThreadIds.includes(pairWorkerThreadId)) {
+          current = requests.update(current.id, { workerThreadIds: [...current.workerThreadIds, pairWorkerThreadId] });
+          await requests.flush();
+        }
+        return null;
+      }
+      for (const threadId of new Set(current.workerThreadIds)) {
+        try {
+          await deleteWorkerThread(workerClient, threadId, { waitForCleanup: true });
+        } finally {
+          if (!workerClient.store.getThread(threadId)) await options.removeExternalWorkerDelegation?.(threadId);
+        }
+      }
+      return await requests.remove(requestId);
+    });
+    if (removed) return removed;
+    try {
+      await discardSelfImprovementRequest(requests, workerClient, requestId);
+    } catch (error) {
+      const current = requests.get(requestId);
+      if (current && !["approved", "running", "changes_ready", "committed", "pr_opened"].includes(current.status)) continue;
+      throw error;
+    }
   }
 }
 
