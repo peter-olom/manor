@@ -27,8 +27,10 @@ import {
   canBeginPairDeletion,
   reconcileSelectedPairId,
   shouldClearDeletedPairSelection,
+  shouldReconcilePairDetail,
   shouldReportPairDetailError
 } from "./pair-selection";
+import { createRefreshScheduler } from "./refresh-scheduler";
 import { SandSpinner } from "./SandSpinner";
 import { listenForSkillInstallHandoff, readSkillInstallHandoff, removeSkillInstallHandoff, shouldCreateSkillInstallSession, SKILL_INSTALL_HANDOFF_PLACEHOLDER } from "./skill-install-handoff";
 import { SelfImprovementQueue, formatSelfImprovementTime, selfImprovementStatusLabel } from "./SelfImprovementQueue";
@@ -627,6 +629,7 @@ export function PairShell() {
   const workerHandoffRequestCounter = useRef(0);
   const latestWorkerHandoffRequestByPairId = useRef(new Map<string, number>());
   const [error, setError] = useState<string | null>(null);
+  const [pairRefreshError, setPairRefreshError] = useState<string | null>(null);
   const [workspacePending, setWorkspacePending] = useState(false);
   const selectedPairIdRef = useRef<string | null>(initialUrlState.sessionId);
   const pairUrlHistoryModeRef = useRef<PairUrlHistoryMode>("replace");
@@ -664,6 +667,7 @@ export function PairShell() {
   useEffect(() => writeSidebarCollapsed(desktopSidebarCollapsed), [desktopSidebarCollapsed]);
   const manorSurface = manorSurfaceForView(viewMode);
   const activePair = pair?.id === selectedPairId ? pair : null;
+  const displayedError = error ?? pairRefreshError;
   const activeWorkerHandoff = activePair ? workerHandoffByPairId[activePair.id] ?? null : null;
   const shouldLoadWorkerThread = manorSurface === "sessions" && viewMode !== "butler" && Boolean(activePair?.worker);
   const activeWorkerPairId = shouldLoadWorkerThread ? activePair?.id ?? null : null;
@@ -843,31 +847,46 @@ export function PairShell() {
     if (!pairsLoaded) return;
     if (!selectedPairId) {
       setPair(null);
+      setPairRefreshError(null);
       return;
     }
     let cancelled = false;
     const pairId = selectedPairId;
-    const refresh = async () => {
+    setPairRefreshError(null);
+    const refresh = async (signal: AbortSignal) => {
       try {
-        const payload = await getJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(pairId)}?limit=${PAGE_SIZE}`);
+        const payload = await getJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(pairId)}?limit=${PAGE_SIZE}`, { signal });
         if (!cancelled) {
-          startTransition(() => setPair(payload.pair));
+          startTransition(() => {
+            setPair(payload.pair);
+            setPairRefreshError(null);
+          });
         }
       } catch (err) {
+        if (signal.aborted) return;
         if (!cancelled && shouldReportPairDetailError(
           pairId,
           selectedPairIdRef.current,
           suppressedPairDetailErrorsRef.current
         )) {
-          setError(err instanceof Error ? err.message : String(err));
+          setPairRefreshError(err instanceof Error ? err.message : String(err));
         }
       }
     };
-    void refresh();
-    const interval = window.setInterval(() => void refresh(), 5000);
+    const refreshScheduler = createRefreshScheduler(refresh);
+    const reconcileWhenVisible = () => {
+      if (shouldReconcilePairDetail(document.visibilityState)) refreshScheduler.request(true);
+    };
+    refreshScheduler.request();
+    const interval = window.setInterval(() => refreshScheduler.request(), 5000);
+    window.addEventListener("focus", reconcileWhenVisible);
+    document.addEventListener("visibilitychange", reconcileWhenVisible);
     return () => {
       cancelled = true;
+      refreshScheduler.dispose();
       window.clearInterval(interval);
+      window.removeEventListener("focus", reconcileWhenVisible);
+      document.removeEventListener("visibilitychange", reconcileWhenVisible);
     };
   }, [pairsLoaded, selectedPairId]);
 
@@ -1393,10 +1412,10 @@ export function PairShell() {
                   />
                 ) : null}
               </div>
-              {error ? (
+              {displayedError ? (
                 <div className="error" role="alert">
                   <WarningIcon />
-                  <span>{error}</span>
+                  <span>{displayedError}</span>
                 </div>
               ) : null}
               {activePair?.butlerLastError ? (

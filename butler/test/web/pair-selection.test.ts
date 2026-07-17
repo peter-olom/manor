@@ -5,6 +5,7 @@ import {
   canBeginPairDeletion,
   reconcileSelectedPairId,
   shouldClearDeletedPairSelection,
+  shouldReconcilePairDetail,
   shouldReportPairDetailError
 } from "../../src/web/pair-selection.js";
 
@@ -24,6 +25,11 @@ test("detail errors from a deleting or stale session stay hidden", () => {
   assert.equal(shouldReportPairDetailError("pair-a", "pair-a", new Set(["pair-a"])), false);
   assert.equal(shouldReportPairDetailError("pair-a", "pair-b", new Set()), false);
   assert.equal(shouldReportPairDetailError("pair-b", "pair-b", new Set()), true);
+});
+
+test("session detail reconciles when the UI becomes visible", () => {
+  assert.equal(shouldReconcilePairDetail("visible"), true);
+  assert.equal(shouldReconcilePairDetail("hidden"), false);
 });
 
 test("a slow delete stays suppressed across switch-away and switch-back races", () => {

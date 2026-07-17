@@ -20,6 +20,10 @@ export function shouldReportPairDetailError(
   return requestedPairId === selectedPairId && !suppressedPairIds.has(requestedPairId);
 }
 
+export function shouldReconcilePairDetail(visibilityState: DocumentVisibilityState): boolean {
+  return visibilityState === "visible";
+}
+
 export function shouldClearDeletedPairSelection(
   deletedPairId: string,
   selectedPairId: string | null
