@@ -168,7 +168,7 @@ test("a cross-workspace handoff starts with fresh workspace-scoped state", async
       taskText: "Continue the implementation",
       notes: []
     });
-    store.upsertThreadSummary({ id: "source-worker", source: "appServer", status: "idle", cwd: sourceCwd, turns: [] });
+    store.upsertThreadSummary({ id: "source-worker", source: "pi-rpc", status: "idle", cwd: sourceCwd, turns: [] });
     store.setThreadExecutionContract("source-worker", sourceContract);
     store.setThreadJobPayload(buildJobPayload({
       threadId: "source-worker",
@@ -182,15 +182,15 @@ test("a cross-workspace handoff starts with fresh workspace-scoped state", async
     await startWorkerHandoff({
       access: { store } as never,
       sourceThreadId: "source-worker",
-      targetHarness: "codex",
+      targetHarness: "pi",
       targetModel: "gpt-5.4",
       targetEffort: "high",
       targetCwd,
       artifactsDir: dir,
       startWorker: async (_access, options) => {
-        store.upsertThreadSummary({ id: "replacement-worker", source: "appServer", status: "idle", cwd: targetCwd, turns: [] });
+        store.upsertThreadSummary({ id: "replacement-worker", source: "pi-rpc", status: "idle", cwd: targetCwd, turns: [] });
         if (typeof options.input === "function") await options.input("replacement-worker");
-        return { threadId: "replacement-worker", turnId: "replacement-turn", runtime: "openai", harness: "codex", provider: "openai-codex", model: "gpt-5.4", effort: "high" };
+        return { threadId: "replacement-worker", turnId: "replacement-turn", runtime: "pi-rpc", harness: "pi", provider: "openai-codex", model: "gpt-5.4", effort: "high" };
       }
     });
 
@@ -241,42 +241,6 @@ test("handoff notes make cross-workspace boundaries explicit", async () => {
 
     assert.ok(notes.some((note) => note.includes("new workspace at /repos/new")));
     assert.ok(notes.some((note) => note.includes("do not modify the previous workspace")));
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("a Pi to Codex handoff repairs workspace ownership before replacement", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-worker-handoff-ownership-"));
-  try {
-    const store = new ButlerStateStore(path.join(dir, "state.json"));
-    store.upsertThreadSummary({ id: "pi-source", source: "pi-rpc", status: "idle", cwd: dir, turns: [] });
-    store.setThreadExecutionContract("pi-source", buildThreadExecutionContract({
-      threadId: "pi-source",
-      workspaceCwd: dir,
-      projectId: "project",
-      projectLabel: "Project",
-      branch: null,
-      taskText: "Continue the implementation",
-      notes: []
-    }));
-    const repaired: string[] = [];
-
-    await assert.rejects(() => startWorkerHandoff({
-      access: { store } as never,
-      sourceThreadId: "pi-source",
-      targetHarness: "codex",
-      targetModel: "gpt-5.4",
-      targetEffort: "high",
-      artifactsDir: dir,
-      repairWorkspaceOwnership: async (cwd) => {
-        repaired.push(cwd);
-        throw new Error("ownership repair sentinel");
-      }
-    }), /ownership repair sentinel/);
-
-    assert.deepEqual(repaired, [dir]);
-    await store.flushSave();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

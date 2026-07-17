@@ -181,7 +181,7 @@ const semanticReview = new MemorySemanticEdgeReviewService({
   store,
   config: synthesisConfig,
   stateDir: path.dirname(statePath),
-  codexHomeDir: process.env.CODEX_HOME ?? path.join(process.env.HOME ?? "/tmp", ".codex"),
+  codexHomeDir: process.env.MANOR_STATE_DIR ?? path.join(process.env.HOME ?? "/tmp", ".local", "state", "manor"),
   onError: (error) => semanticErrors.push(error instanceof Error ? error.message : String(error))
 });
 let semanticReviewed = 0;

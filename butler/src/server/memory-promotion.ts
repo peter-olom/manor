@@ -1,9 +1,3 @@
-import { spawn } from "node:child_process";
-import { promises as fs } from "node:fs";
-import path from "node:path";
-import crypto from "node:crypto";
-
-import { isUnsupportedCodexModelError, memoryCodexModelArgs } from "./memory-codex-model.js";
 import { getActiveManorSettings } from "./manor-settings-runtime.js";
 import { resolveMemoryServiceModel } from "./memory-synthesis-config.js";
 import type { MemoryUpdateScheduler } from "./memory-update-scheduler.js";
@@ -71,25 +65,6 @@ function clean(value: string | null | undefined, limit = 2_000): string | null {
   return normalized ? normalized.slice(0, limit) : null;
 }
 
-function normalizeDecision(value: unknown): PromotionDecision | null {
-  if (!value || typeof value !== "object") return null;
-  const candidate = value as Partial<PromotionDecision>;
-  const candidateId = clean(candidate.candidateId, 200);
-  const reason = clean(candidate.reason, 600);
-  if (!candidateId || !reason || typeof candidate.accepted !== "boolean") return null;
-  if (candidate.confidence !== "high" && candidate.confidence !== "medium" && candidate.confidence !== "low") return null;
-  return { candidateId, accepted: candidate.accepted, confidence: candidate.confidence, reason };
-}
-
-function parsePromotionOutput(text: string): PromotionReviewOutput {
-  const parsed = JSON.parse(text) as Partial<PromotionReviewOutput>;
-  return {
-    decisions: (Array.isArray(parsed.decisions) ? parsed.decisions : []).map(normalizeDecision).filter((entry): entry is PromotionDecision => Boolean(entry)),
-    rawOutput: parsed,
-    rawText: text
-  };
-}
-
 function projectMemoryBrief(memory: ProjectMemoryView | null): Record<string, unknown> | null {
   if (!memory) return null;
   return {
@@ -106,8 +81,6 @@ function projectMemoryBrief(memory: ProjectMemoryView | null): Record<string, un
 export class CodexExecMemoryPromotionService {
   private readonly store: ButlerStateStore;
   private readonly memoryScheduler: MemoryUpdateScheduler;
-  private readonly stateDir: string;
-  private readonly codexHomeDir: string;
   private enabled: boolean;
   private timeoutMs: number;
   private maxInputChars: number;
@@ -123,14 +96,11 @@ export class CodexExecMemoryPromotionService {
     store: ButlerStateStore;
     memoryScheduler: MemoryUpdateScheduler;
     stateDir: string;
-    codexHomeDir: string;
     config: MemorySynthesisConfig;
     runner?: PromotionRunner;
   }) {
     this.store = options.store;
     this.memoryScheduler = options.memoryScheduler;
-    this.stateDir = options.stateDir;
-    this.codexHomeDir = options.codexHomeDir;
     this.enabled = options.config.enabled && options.config.promotionAutoResolve;
     this.timeoutMs = options.config.timeoutMs;
     this.maxInputChars = options.config.maxInputChars;
@@ -138,7 +108,9 @@ export class CodexExecMemoryPromotionService {
     this.maxBatchesPerRun = options.config.promotionMaxBatchesPerRun;
     this.intervalMs = options.config.promotionIntervalMs;
     this.model = resolveMemoryServiceModel(getActiveManorSettings().modelTasks.memoryPromotionModel, options.config.model);
-    this.runner = options.runner ?? ((input) => this.runCodexExec(input));
+    this.runner = options.runner ?? (async () => {
+      throw new Error("Memory promotion model runner is unavailable.");
+    });
   }
 
   start(): void {
@@ -249,48 +221,4 @@ export class CodexExecMemoryPromotionService {
     for (const threadId of threadIds) this.store.addEvent(threadId, "memory/promotion/failed", `Memory promotion auto-resolution failed: ${message}`);
   }
 
-  private async runCodexExec(input: { prompt: string; cwd: string; timeoutMs: number }): Promise<PromotionReviewOutput> {
-    const scratchDir = path.join(this.stateDir, "memory-promotion");
-    await fs.mkdir(scratchDir, { recursive: true });
-    const runId = crypto.randomUUID();
-    const schemaPath = path.join(scratchDir, `${runId}.schema.json`);
-    const outputPath = path.join(scratchDir, `${runId}.output.json`);
-    await fs.writeFile(schemaPath, JSON.stringify(MEMORY_PROMOTION_OUTPUT_SCHEMA, null, 2), "utf8");
-    const baseArgs = ["exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--ignore-rules", "--output-schema", schemaPath, "--output-last-message", outputPath, "--cd", input.cwd || "/repos"];
-    const run = async (model: string | null): Promise<void> => {
-      const args = [...baseArgs, ...memoryCodexModelArgs(model), "-"];
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn("codex", args, { env: { ...process.env, CODEX_HOME: this.codexHomeDir, NO_COLOR: "1" }, stdio: ["pipe", "pipe", "pipe"] });
-        let stderr = "";
-        const timeout = setTimeout(() => {
-          child.kill("SIGTERM");
-          reject(new Error("codex exec memory promotion timed out"));
-        }, input.timeoutMs);
-        child.stderr.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk.toString("utf8")}`.slice(-8_000); });
-        child.on("error", (error) => { clearTimeout(timeout); reject(error); });
-        child.on("close", (code) => {
-          clearTimeout(timeout);
-          code === 0 ? resolve() : reject(new Error(`codex exec exited with ${code}: ${stderr}`.trim()));
-        });
-        child.stdin.end(input.prompt);
-      });
-    };
-    try {
-      if (this.model) {
-        try {
-          await run(this.model);
-        } catch (error) {
-          if (!isUnsupportedCodexModelError(error)) throw error;
-          await fs.rm(outputPath, { force: true }).catch(() => {});
-          await run(null);
-        }
-      } else {
-        await run(null);
-      }
-      const text = await fs.readFile(outputPath, "utf8");
-      return parsePromotionOutput(text);
-    } finally {
-      await Promise.all([fs.rm(schemaPath, { force: true }).catch(() => {}), fs.rm(outputPath, { force: true }).catch(() => {})]);
-    }
-  }
 }

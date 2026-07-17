@@ -10,7 +10,6 @@ import { WorkerSwitchDialog } from "./WorkerSwitchDialog";
 import { WorkerSessionControlsButton } from "./WorkerSessionControls";
 import {
   isSameWorkerRoute,
-  workerHarnessLabel,
   workerModelForRoute,
   workerModelForSelection,
   workerModelLabel,
@@ -942,7 +941,7 @@ export function WorkerPane({ pair, timeline, loading = false, hasMore = false, l
   const effort = pair.worker.requestedReasoningEffort ?? worker.effort ?? null;
   const activeModel = workerModelForRoute(worker.availableModels, pair.worker.model, pair.worker.harness);
   const options = activeModel?.supportedReasoningEfforts ?? [];
-  const route = `${workerProviderLabel(pair.worker.provider)} · ${workerModelLabel(worker.availableModels, pair.worker.model, pair.worker.harness)} · ${workerHarnessLabel(pair.worker.harness)}`;
+  const route = `${workerProviderLabel(pair.worker.provider)} · ${workerModelLabel(worker.availableModels, pair.worker.model, pair.worker.harness)}`;
   const workerSummary = `${pair.worker.status} · ${route}`;
   const hasAlternativeModel = worker.availableModels.some((model) => !isSameWorkerRoute(model, pair.worker?.model, pair.worker?.harness));
   const switchDisabled = busy || handoffPending || !hasAlternativeModel;
@@ -951,7 +950,7 @@ export function WorkerPane({ pair, timeline, loading = false, hasMore = false, l
     : handoffPending
       ? "Worker switch in progress."
       : !hasAlternativeModel
-        ? "No other Worker route is available."
+        ? "No other Worker model is available."
         : "Start a new worker with a handoff.";
   const previewIndex = previewMedia
     ? previewGallery.findIndex((entry) => entry.url === previewMedia.url && entry.kind === previewMedia.kind)
@@ -989,7 +988,7 @@ export function WorkerPane({ pair, timeline, loading = false, hasMore = false, l
               <span className="worker-switch-label">Switch worker…</span>
             </button>
           ) : <button className="button" type="button" onClick={onOpenProviderSettings}>Reconnect provider</button>}
-          {pair.worker.runtime === "pi-rpc" ? <WorkerSessionControlsButton pairId={pair.id} disabled={handoffPending} /> : null}
+          <WorkerSessionControlsButton pairId={pair.id} disabled={handoffPending} />
         </div>
       </div>
       <WorkerTimelineView loading={loading} hasMore={hasMore} loadingOlder={loadingOlder} onLoadOlder={onLoadOlder} timeline={timeline} proofRecords={proofRecords} resetKey={pair.worker?.threadId ?? pair.id} onPreviewImage={(media, gallery = [media]) => {

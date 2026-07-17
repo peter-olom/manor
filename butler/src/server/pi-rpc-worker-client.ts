@@ -21,7 +21,7 @@ import { redactSensitiveText } from "./redact-sensitive-text.js";
 import { summarizeUsage, usageSamplesFromPiEntries } from "./model-usage.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { CodexInputItem } from "./image-store.js";
-import type { CodexThreadPatchView, ModelOption, ReasoningEffort } from "./types.js";
+import type { ButlerAuthStatus, CodexThreadPatchView, ModelOption, ReasoningEffort } from "./types.js";
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime.js";
 import type { WorkerSessionControls } from "../shared/worker-session-controls.js";
 import type { ExtensionUiBroker } from "./extension-ui-broker.js";
@@ -146,7 +146,6 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     cliPath?: string | null;
     extensionDir?: string | null;
     manageSessionDirectories?: boolean;
-    codexHomeDir?: string | null;
     butlerBaseUrl?: string | null;
     onThreadCapabilityReady?: (threadId: string, cwd: string) => Promise<unknown>;
     onThreadCapabilityRemoved?: (threadId: string) => Promise<unknown>;
@@ -263,6 +262,10 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
 
   async refreshModels(): Promise<void> {
     await this.loadModels();
+  }
+
+  async getAuthStatus(): Promise<ButlerAuthStatus> {
+    return readButlerAuthStatus(this.options.piAuthPath);
   }
 
   getConnectionState(): { connected: boolean; lastError: string | null; compose: { provider: string | null; model: string | null; effort: ReasoningEffort | null; availableModels: ModelOption[] } } {
@@ -836,6 +839,10 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     await syncManorPiModelsJson(this.options.piAuthPath);
     const registry = await createManorModelRegistry(this.options.piAuthPath);
     const auth = await readButlerAuthStatus(this.options.piAuthPath);
+    // ModelRegistry#getAvailable is the authentication boundary. In
+    // particular, API-key-backed `openai` models and OAuth-backed
+    // `openai-codex` models are exposed only when their own Worker Pi auth
+    // entry exists.
     this.pricingModels = registry.getAvailable();
     this.oauthPricingModels = new Set(this.pricingModels
       .filter((model) => registry.isUsingOAuth(model))
@@ -875,9 +882,7 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
   private async createSession(threadId: string, cwd: string, provider: string, model: string, sessionPath?: string): Promise<PiWorkerSession> {
     await syncManorPiModelsJson(this.options.piAuthPath);
     const extensionArgs = await this.webToolsExtensionArgs(provider);
-    const codexHomeDir = this.options.codexHomeDir ?? process.env.CODEX_HOME ?? null;
-    const harnessRegistryPath = process.env.MANOR_HARNESS_REGISTRY_PATH
-      ?? (codexHomeDir ? path.join(codexHomeDir, "manor", "harness-capabilities.json") : null);
+    const harnessRegistryPath = process.env.MANOR_HARNESS_REGISTRY_PATH ?? null;
     const client = new RpcClient({
       cwd,
       cliPath: this.options.cliPath ?? defaultPiCliPath(),

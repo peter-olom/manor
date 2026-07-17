@@ -8,7 +8,7 @@ function environment(request: Request): SkillEnvironmentId {
     : typeof request.body?.environment === "string"
       ? request.body.environment
       : "";
-  if (value !== "butler-pi" && value !== "worker-pi" && value !== "worker-codex") {
+  if (value !== "butler-pi" && value !== "worker-pi") {
     throw new Error("Unknown skill environment.");
   }
   return value;

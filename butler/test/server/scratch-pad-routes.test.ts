@@ -63,7 +63,7 @@ async function createServer(
       getThreadJobPayload: () => null,
       setThreadJobPayload: (payload: unknown) => options.jobPayloads?.push(payload)
     } as never,
-    codexClient: {
+    piRpcWorkerClient: {
       getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "high", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, inputCapabilities: { image: "supported", source: "provider" }, supportsReasoning: true, supportedThinkingLevels: ["high"], supportedReasoningEfforts: ["high"], defaultReasoningEffort: "high" }] } }),
       updateComposeSettings: async () => undefined,
       startThread: options.startThread ?? (async () => ({ threadId: "thread-started" })),
@@ -72,7 +72,7 @@ async function createServer(
     butlerAgent: {
       trackScratchPadDelegation: () => undefined,
       removeExternalWorkerDelegation: async () => undefined,
-      getCodexAuthStatus: () => ({ loggedIn: true }),
+      getWorkerAuthStatus: () => ({ loggedIn: true }),
       getWorkerAffinity: () => null,
       recordSuccessfulWorkerSelection: () => undefined
     } as never,
@@ -388,10 +388,10 @@ test("scratch pad cleanup deletes linked thread and artifacts before removing th
     const body = (await response.json()) as { deletedArtifacts?: number; threadDeleted?: boolean };
 
     assert.equal(response.status, 200);
-    assert.deepEqual(calls, [{ threadId: "thread-cleanup-1", waitForCleanup: true }]);
+    assert.deepEqual(calls, [{ threadId: "thread-cleanup-1", waitForCleanup: undefined }]);
     assert.deepEqual(cleanupCalls, ["/repos/.manor-worktrees/manor/butler--cleanup"]);
     assert.equal(body.threadDeleted, true);
-    assert.equal(body.deletedArtifacts, 5);
+    assert.equal(body.deletedArtifacts, 2);
     assert.equal(server.scratchPadStore.get(created.id), null);
   } finally {
     await server.cleanup();
@@ -399,7 +399,7 @@ test("scratch pad cleanup deletes linked thread and artifacts before removing th
 });
 
 test("scratch pad cleanup keeps item when linked thread cleanup fails", async () => {
-  const server = await createServer(async () => ({ deletedArtifacts: 0, cleanupFailed: true, cleanupError: "cleanup failed" }));
+  const server = await createServer(async () => { throw new Error("cleanup failed"); });
 
   try {
     const created = server.scratchPadStore.create({ text: "Keep this if cleanup fails." });

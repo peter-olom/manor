@@ -10,7 +10,6 @@ import { ButlerAgentService } from "./butler-agent.js"; import { directWorkerDis
 import { settleFailedDirectWorkerDispatch } from "./direct-codex-message.js";
 import { runSerializedJobMutation, runSerializedJobMutations } from "./butler-job-mutation-guard.js";
 import { createBackgroundModelServices } from "./background-model-services.js";
-import { CodexAppServerClient } from "./codex-client.js";
 import { HarnessService } from "./codex-harness.js";
 import { loadReferenceStores, MAX_FILE_BYTES, MAX_IMAGE_BYTES } from "./reference-stores.js";
 import { HostControllerClient } from "./host-controller-client.js";
@@ -53,20 +52,20 @@ import { ServiceTemplateRegistry, toServiceLeaseView } from "./service-templates
 import { ButlerStateStore } from "./state-store.js";
 import { registerThreadArtifactRoutes } from "./thread-artifact-routes.js";
 import { deleteAllWorkerThreads, deleteWorkerThread, loadWorkerThread, sendWorkerMessage, stopWorkerThread, updateUnifiedWorkerCompose, updateWorkerThreadEffort } from "./worker-client-router.js";
+import { listComposerFileSuggestions } from "./composer-file-suggestions.js";
+import { validateWorkspaceCwd, WorkspaceCwdError } from "./repo-worktree.js";
+import { purgeNonPiWorkerArtifacts } from "./pi-only-cleanup.js";
 
 normalizeMemoryCodexModelEnv(process.env);
 
 const port = Number(process.env.BUTLER_PORT ?? "8080");
-const codexBaseUrl = process.env.CODEX_BASE_URL ?? "ws://codex-box:8080";
-const codexAppServerAuthTokenFile = process.env.CODEX_APP_SERVER_AUTH_TOKEN_FILE ?? null;
 const piAgentDir = process.env.PI_AGENT_DIR ?? "/home/butler/.pi/agent";
 const workerPiAgentDir = process.env.WORKER_PI_AGENT_DIR ?? piAgentDir; const workerPiSessionRoot = process.env.WORKER_PI_SESSION_ROOT ?? path.join(process.env.MANOR_STATE_DIR ?? "/state", "pi-worker-sessions");
 const workerPiRpcCliPath = process.env.WORKER_PI_RPC_CLI_PATH ?? null; const workerPiExtensionDir = process.env.WORKER_PI_EXTENSION_DIR ?? null; const workerButlerBaseUrl = process.env.WORKER_BUTLER_BASE_URL ?? `http://127.0.0.1:${port}`;
 const stateDir = process.env.MANOR_STATE_DIR ?? "/state";
-const codexHomeDir = process.env.CODEX_SHARED_HOME_DIR ?? "/codex-home";
+const workerConfigDir = process.env.WORKER_CONFIG_DIR ?? "/worker-config";
 const harnessRegistryPath = process.env.MANOR_HARNESS_REGISTRY_PATH ?? path.join(stateDir, "harness-capabilities.json");
 const harnessAccessPath = process.env.MANOR_HARNESS_ACCESS_FILE ?? path.join(stateDir, "harness-broker-access.json");
-const codexConfigDir = process.env.CODEX_SHARED_CONFIG_DIR ?? "/codex-config";
 const runtimeBrokerUrl = process.env.RUNTIME_BROKER_URL ?? "http://runtime-broker:8090"; const runtimeEgressAdminUrl = process.env.MANOR_EGRESS_ADMIN_URL ?? "http://egress:8092";
 const runtimeBrokerToken = process.env.RUNTIME_BROKER_TOKEN ?? null;
 const hostControllerUrl = process.env.MANOR_HOST_CONTROLLER_URL ?? null;
@@ -103,6 +102,13 @@ const store = new ButlerStateStore(uiStatePath, {
   artifactRetentionMs
 });
 await store.load();
+const purgedLegacyWorkerIds = store.purgeNonPiWorkerState();
+await Promise.all([
+  fs.rm(path.join(stateDir, "butler-ui.pre-pi-only.json"), { force: true }),
+  fs.rm(path.join(stateDir, "pi-only-worker-migration.json"), { force: true })
+]);
+if (purgedLegacyWorkerIds.length > 0) await store.flushSave();
+await purgeNonPiWorkerArtifacts(artifactsDir, store.listThreads());
 const pairStore = new PairStore(pairStatePath, store);
 await pairStore.load();
 let recoveredRetiredWorkers = false;
@@ -123,9 +129,9 @@ let sseHub!: ButlerSseHub;
 const selfImprovementRequests = new SelfImprovementRequestState(path.join(stateDir, "self-improvement-requests.json"), () => sseHub?.schedule(), (error) => console.error("Self-improvement queue save failed", error));
 await selfImprovementRequests.load();
 configureSelfImprovementRequestState(selfImprovementRequests);
-const piAuthPath = path.join(piAgentDir, "auth.json"); const workerPiAuthPath = path.join(workerPiAgentDir, "auth.json"); const codexAuthPath = path.join(codexHomeDir, "auth.json");
-const modelUsageStore = createModelUsageStore({ stateDir, butlerSessionRoots: [sessionDir, pairSessionDir], workerPiSessionRoot, codexHomeDir, piAuthPath });
-const modelTasks = new ManorModelTaskRunner({ stateDir, codexHomeDir, piAuthPath }); const visionInspection = new VisionInspectionService({ imageStore, piAuthPath });
+const piAuthPath = path.join(piAgentDir, "auth.json"); const workerPiAuthPath = path.join(workerPiAgentDir, "auth.json");
+const modelUsageStore = createModelUsageStore({ stateDir, butlerSessionRoots: [sessionDir, pairSessionDir], workerPiSessionRoot, piAuthPath });
+const modelTasks = new ManorModelTaskRunner({ stateDir, piAuthPath }); const visionInspection = new VisionInspectionService({ imageStore, piAuthPath });
 const sessionTitleGenerator = new ManorSessionTitleGenerator({
   ...readSessionTitleConfig(),
   runner: async (input) => modelTasks.runText({ purpose: "session title", ...input })
@@ -133,11 +139,9 @@ const sessionTitleGenerator = new ManorSessionTitleGenerator({
 const { memoryReview, memoryScheduler, memoryPromotion, memoryEmbeddings, memorySemanticEdges, applySettings: applyBackgroundSettings } = createBackgroundModelServices({
   store,
   stateDir,
-  codexHomeDir,
   modelTasks
 });
 store.setMemoryUpdateObserver(memoryScheduler); const harnessService = new HarnessService({
-  codexHomeDir,
   harnessRegistryPath,
   harnessAccessPath,
   stateDir,
@@ -163,7 +167,6 @@ const piRpcWorkerClient = new PiRpcWorkerClient({
   cliPath: workerPiRpcCliPath,
   extensionDir: workerPiExtensionDir,
   manageSessionDirectories: workerPiRpcCliPath === null,
-  codexHomeDir,
   butlerBaseUrl: workerButlerBaseUrl,
   onThreadCapabilityReady: async (threadId, cwd) => {
     await harnessService.ensureThreadCapability(threadId, cwd);
@@ -175,24 +178,7 @@ const piRpcWorkerClient = new PiRpcWorkerClient({
     await cleanupThreadRuntimeResources(runtimeAccess, context);
   }, extensionUiBroker
 });
-const codexClient = new CodexAppServerClient(codexBaseUrl, store, codexHomeDir, {
-  onThreadCapabilityReady: async (threadId, cwd) => {
-    await harnessService.ensureThreadCapability(threadId, cwd);
-  },
-  onThreadDeleting: async (context) => {
-    await cleanupThreadRuntimeResources(runtimeAccess, context);
-  },
-  onRuntimeCleanupError: (threadId, message) => {
-    sseHub.broadcastToast(`Thread cleanup failed for ${threadId.slice(0, 8)}: ${message}`, "error", 6000);
-  },
-  memoryScheduler,
-  onThreadCapabilityRemoved: async (threadId) => {
-    await harnessService.revokeThreadCapability(threadId);
-  },
-  artifactsDir,
-  authTokenFile: codexAppServerAuthTokenFile
-});
-const skillsService = new SkillsService({ butlerPiAgentDir: piAgentDir, workerPiAgentDir, workerCodexHomeDir: codexHomeDir, workspaceRoot: process.env.WORKER_REPOS_ROOT ?? "/repos", listCodexSkills: (cwd) => codexClient.listSkills(cwd) }); function buildOperatorPromptSuffix(): string | null {
+const skillsService = new SkillsService({ butlerPiAgentDir: piAgentDir, workerPiAgentDir, workspaceRoot: process.env.WORKER_REPOS_ROOT ?? "/repos" }); function buildOperatorPromptSuffix(): string | null {
   const name = getActiveManorSettings().overview.operatorName.trim();
   return name ? `Refer to the operator as ${name}.` : null;
 }
@@ -200,14 +186,13 @@ const skillsService = new SkillsService({ butlerPiAgentDir: piAgentDir, workerPi
 const butlerAgent = new ButlerAgentService({
   store,
   memoryScheduler,
-  codexClient,
   piRpcWorkerClient,
   hostController,
   runtimeBroker,
   serviceTemplateRegistry,
   piAuthPath,
-  codexAuthPath,
-  codexConfigDir,
+  workerAuthPath: workerPiAuthPath,
+  workerConfigDir: workerConfigDir,
   sessionDir,
   imageStore,
   fileStore,
@@ -229,7 +214,6 @@ const butlerAgent = new ButlerAgentService({
 const pairSessions = new PairSessionManager({
   pairStore,
   store,
-  codexClient,
   piRpcWorkerClient,
   skillsService, extensionUiBroker,
   hostController,
@@ -239,14 +223,13 @@ const pairSessions = new PairSessionManager({
   fileStore,
   visionInspection,
   piAuthPath,
-  codexAuthPath,
-  codexConfigDir,
+  workerAuthPath: workerPiAuthPath,
+  workerConfigDir: workerConfigDir,
   sessionRootDir: pairSessionDir,
   artifactsDir,
   refreshRuntimeInventory: syncRuntimeInventory,
   memoryScheduler,
   sessionTitleGenerator,
-  getCodexAuthStatus: () => butlerAgent.getCodexAuthStatus(),
   onButlerPatch: (payload) => sseHub?.broadcastButlerPatch(payload), onWorkerThreadRefreshed: (threadId) => sseHub?.broadcastWorkerThreadRefreshed(threadId)
 });
 const automationScheduler = new SessionAutomationScheduler({ pairStore, dispatch: (input) => pairSessions.runAutomation(input), isBusy: (pair) => pairSessions.isAutomationBusy(pair.id) }); const modelInventoryRefresh = createProviderModelRefreshCoordinator({ pairSessions, piRpcWorkerClient, butlerAgent, scheduleSse: () => sseHub?.schedule() });
@@ -261,13 +244,11 @@ const reconcileSelfImprovementAfterRestart = (canConcludeThreadMissing: (threadI
   });
   return selfImprovementReconciliation;
 };
-codexClient.on("threadsSeeded", () => { void reconcileSelfImprovementAfterRestart(() => true); });
-
-const applyManagedSettingsChange = createManorSettingsApplyHandler({ settingsService, applyBackgroundSettings, sessionTitleGenerator, piRpcWorkerClient, butlerAgent, pairSessions, pairStore, store, codexClient, getSseHub: () => sseHub });
+const applyManagedSettingsChange = createManorSettingsApplyHandler({ settingsService, applyBackgroundSettings, sessionTitleGenerator, piRpcWorkerClient, butlerAgent, pairSessions, pairStore, store, getSseHub: () => sseHub });
 runtimeAccess = {
   artifactsDir,
   butlerAgent,
-  codexClient,
+  piRpcWorkerClient,
   runtimeBroker,
   runtimeBrokerUrl,
   previewAnnotationSecret,
@@ -282,7 +263,6 @@ await fs.mkdir(piAgentDir, { recursive: true }); await fs.mkdir(workerPiAgentDir
 await fs.mkdir(workerPiSessionRoot, { recursive: true });
 
 await butlerAgent.start();
-codexClient.start();
 await piRpcWorkerClient.start();
 await reconcileSelfImprovementAfterRestart((threadId) => threadId.startsWith("pi-"));
 await pairSessions.startSupervisedSessions(); automationScheduler.start(); const stopOllamaCloudModelRecovery = startOllamaCloudModelRecovery(modelInventoryRefresh);
@@ -374,8 +354,6 @@ store.on("change", () => {
 });
 pairStore.on("change", () => sseHub.schedule());
 scratchPadStore.on("change", () => sseHub.schedule());
-codexClient.on("change", () => sseHub.schedule());
-codexClient.on("threadPatch", (payload) => sseHub.broadcastThreadPatch(payload));
 piRpcWorkerClient.on("change", () => sseHub.schedule());
 piRpcWorkerClient.on("threadPatch", (payload) => sseHub.broadcastThreadPatch(payload));
 butlerAgent.on("change", () => sseHub.schedule());
@@ -384,7 +362,7 @@ butlerAgent.on("butlerPatch", (payload) => sseHub.broadcastButlerPatch(payload))
 app.get("/api/health", (_request, response) => {
   response.json({
 	    ok: true,
-	    codex: codexClient.getConnectionState(),
+	    worker: piRpcWorkerClient.getConnectionState(),
 	    piRpcWorker: piRpcWorkerClient.getConnectionState(),
 	    butler: butlerAgent.getSnapshot()
 	  });
@@ -409,12 +387,19 @@ app.post("/api/telemetry/live-stream", (request, response) => {
 
 app.get("/api/shell", (_request, response) => {
   response.json(store.getShellSnapshot(butlerAgent.getShellSnapshot(), {
-    ...codexClient.getConnectionState(),
-    auth: butlerAgent.getCodexAuthStatus()
+    ...piRpcWorkerClient.getConnectionState(),
+    auth: butlerAgent.getWorkerAuthStatus()
   }));
 });
 
-registerDeviceAuthRoutes(app, { piAgentDir, codexHomeDir }); registerSkillsRoutes(app, skillsService, { onMutation: (environment) => { if (environment !== "butler-pi") return; void butlerAgent.reloadResources().catch((error) => console.error("Butler skill reload failed", error)); pairSessions.scheduleButlerSkillsReload(); } });
+registerDeviceAuthRoutes(app, {
+  butlerPiAgentDir: piAgentDir,
+  workerPiAgentDir,
+  onAuthChanged: (target) => {
+    if (target === "worker") void piRpcWorkerClient.refreshModels();
+    else void butlerAgent.refreshModelSettings();
+  }
+}); registerSkillsRoutes(app, skillsService, { onMutation: (environment) => { if (environment !== "butler-pi") return; void butlerAgent.reloadResources().catch((error) => console.error("Butler skill reload failed", error)); pairSessions.scheduleButlerSkillsReload(); } });
 
 app.get("/api/runtime", async (_request, response) => {
   try {
@@ -445,14 +430,12 @@ app.get("/api/threads/:threadId", (request, response) => {
 registerThreadArtifactRoutes({
   app,
   artifactsDir,
-  codexHomeDir,
   store
 });
 registerScratchPadRoutes({
   app,
   scratchPadStore,
   store,
-  codexClient,
   piRpcWorkerClient,
   butlerAgent,
   artifactsDir,
@@ -470,7 +453,7 @@ registerPreviewAnnotationRoutes({
 });
 registerPairRoutes({ app, pairSessions });
 registerExtensionUiRoutes({ app, pairStore, broker: extensionUiBroker }); registerWorkerSessionControlRoutes({ app, pairStore, piRpcWorkerClient }); registerButlerSessionControlRoutes({ app, pairSessions });
-registerManorSettingsRoutes({ app, settingsService, store, codexClient, piRpcWorkerClient, butlerAgent, onSettingsChanged: applyManagedSettingsChange, refreshModelInventories: () => modelInventoryRefresh.request() });
+registerManorSettingsRoutes({ app, settingsService, store, piRpcWorkerClient, butlerAgent, onSettingsChanged: applyManagedSettingsChange, refreshModelInventories: () => modelInventoryRefresh.request() });
 registerRuntimeEgressRoutes({ app, client: runtimeEgress, operatorGatewayHost: process.env.MANOR_OPERATOR_GATEWAY_HOST ?? "butler-gateway" });
 registerModelUsageRoutes(app, modelUsageStore);
 registerSelfImprovementRoutes({
@@ -478,9 +461,7 @@ registerSelfImprovementRoutes({
   requests: selfImprovementRequests,
   hostController,
   store,
-  codexClient,
   piRpcWorkerClient,
-  getCodexAuthStatus: () => butlerAgent.getCodexAuthStatus(),
   getWorkerAffinity: () => butlerAgent.getWorkerAffinity(),
   recordSuccessfulWorkerSelection: (selection) => butlerAgent.recordSuccessfulWorkerSelection(selection),
   pairSessions,
@@ -739,7 +720,7 @@ app.get("/api/chat/history", (request, response) => {
   response.json(butlerAgent.getMessagePage(before, limit));
 });
 
-for (const route of ["/api/harness/action", "/api/codex-harness/action"]) {
+for (const route of ["/api/harness/action"]) {
   app.post(route, async (request, response) => {
     const token = typeof request.body?.token === "string" ? request.body.token : "";
     const action = typeof request.body?.action === "string" ? request.body.action : "";
@@ -900,10 +881,11 @@ app.get("/api/composer/suggestions", async (request, response) => {
   }
 
   try {
-    const suggestions = await codexClient.listComposerSuggestions({ trigger, query, cwd, threadId });
+    const workspace = trigger === "@" && cwd ? await validateWorkspaceCwd(cwd) : null;
+    const suggestions = workspace ? await listComposerFileSuggestions(workspace, query) : [];
     response.json({ suggestions });
   } catch (error) {
-    response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    response.status(error instanceof WorkspaceCwdError ? 400 : 500).json({ error: error instanceof Error ? error.message : String(error) });
   }
 });
 
@@ -929,7 +911,7 @@ app.post("/api/threads/messages", async (request, response) => {
         const workerInput = buildWorkerInputWithReferences({ text, imageStore, imageReferenceIds, fileStore, fileReferenceIds, extraInputItems: inputItems });
         workerInput.push({ type: "text", text: directWorkerDispatchMarker(threadId, requestedAt) });
         const dispatch = await sendWorkerMessage(
-          { store, codexClient, piRpcWorkerClient },
+          { store, piRpcWorkerClient },
           threadId,
           workerInput
         );
@@ -953,7 +935,7 @@ app.post("/api/threads/stop", async (request, response) => {
   }
 
   try {
-    const stopped = await stopWorkerThread({ store, codexClient, piRpcWorkerClient }, threadId);
+    const stopped = await stopWorkerThread({ store, piRpcWorkerClient }, threadId);
     response.json({ ok: true, stopped });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -971,9 +953,7 @@ app.post("/api/threads/settings", async (request, response) => {
   try {
     await updateUnifiedWorkerCompose({
       store,
-      codexClient,
       piRpcWorkerClient,
-      getCodexAuthStatus: () => butlerAgent.getCodexAuthStatus(),
       getWorkerAffinity: () => butlerAgent.getWorkerAffinity()
     }, { model, effort: effort as never });
     response.json({ ok: true });
@@ -991,7 +971,7 @@ app.post("/api/threads/:threadId/settings", async (request, response) => {
   }
 
   try {
-    await updateWorkerThreadEffort({ store, codexClient, piRpcWorkerClient }, threadId, effort as never);
+    await updateWorkerThreadEffort({ store, piRpcWorkerClient }, threadId, effort as never);
     response.json({ ok: true });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -1027,7 +1007,7 @@ app.post("/api/threads/delete", async (request, response) => {
 
   void runSerializedJobMutation(threadId, async () => {
     try {
-      await deleteWorkerThread({ store, codexClient, piRpcWorkerClient }, threadId);
+      await deleteWorkerThread({ store, piRpcWorkerClient }, threadId);
     } finally {
       if (!store.getThread(threadId)) await butlerAgent.removeExternalWorkerDelegation(threadId);
     }
@@ -1043,7 +1023,7 @@ app.post("/api/threads/delete-all", async (_request, response) => {
   const threadIds = store.listThreads().map((thread) => thread.id);
   void runSerializedJobMutations(threadIds, async () => {
     try {
-      await deleteAllWorkerThreads({ store, codexClient, piRpcWorkerClient });
+      await deleteAllWorkerThreads({ store, piRpcWorkerClient });
     } finally {
       await Promise.all(threadIds
         .filter((threadId) => !store.getThread(threadId))
@@ -1065,7 +1045,7 @@ app.post("/api/windows/open", async (request, response) => {
   }
 
   try {
-    await loadWorkerThread({ store, codexClient, piRpcWorkerClient }, threadId);
+    await loadWorkerThread({ store, piRpcWorkerClient }, threadId);
     store.openWindow(threadId);
     response.json({ ok: true });
   } catch (error) {
@@ -1091,15 +1071,15 @@ app.post("/api/windows/focus", async (request, response) => {
   }
 
   try {
-    await loadWorkerThread({ store, codexClient, piRpcWorkerClient }, threadId);
+    await loadWorkerThread({ store, piRpcWorkerClient }, threadId);
     store.focusWindow(threadId);
     response.json({ ok: true });
   } catch (error) {
     if (shouldAllowLocalThreadWindow(runtimeAccess, threadId, error)) {
       store.focusWindow(threadId);
       if (store.getShellSnapshot(butlerAgent.getShellSnapshot(), {
-        ...codexClient.getConnectionState(),
-        auth: butlerAgent.getCodexAuthStatus()
+        ...piRpcWorkerClient.getConnectionState(),
+        auth: butlerAgent.getWorkerAuthStatus()
       }).codex.windows.some((window) => window.threadId === threadId)) {
         response.json({ ok: true, localFallback: true });
         return;
@@ -1218,18 +1198,8 @@ const leaseReaper = setInterval(() => {
   });
 }, leaseSweepIntervalMs);
 
-const runtimeCleanupWorker = setInterval(() => {
-  void codexClient.processPendingCleanupTasks().catch((error) => {
-    console.error("Runtime cleanup worker failed", error);
-  });
-}, leaseSweepIntervalMs);
-
 void sweepExpiredLeases().catch((error) => {
   console.error("Initial lease sweep failed", error);
-});
-
-void codexClient.processPendingCleanupTasks().catch((error) => {
-  console.error("Initial runtime cleanup sweep failed", error);
 });
 
 async function sweepExpiredArtifacts(): Promise<void> {
@@ -1491,7 +1461,6 @@ server.on("upgrade", (request, socket, head) => {
 
 server.on("close", () => { automationScheduler.stop(); stopOllamaCloudModelRecovery(); modelInventoryRefresh.dispose();
   clearInterval(leaseReaper);
-  clearInterval(runtimeCleanupWorker);
   clearInterval(artifactReaper);
   clearInterval(runtimeReconciler);
   memoryEmbeddings.dispose();

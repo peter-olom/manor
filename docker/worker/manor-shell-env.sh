@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-guard_bin="/opt/manor/codex-box/install-guard-bin"
+guard_bin="/opt/manor/worker/install-guard-bin"
 
 if [[ -n "${MANOR_REAL_PATH:-}" ]]; then
   export PATH="${guard_bin}:${MANOR_REAL_PATH}"

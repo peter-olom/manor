@@ -54,6 +54,22 @@ test("successful full source lifecycle reclaims only unused clean HEAD snapshots
   assert.doesNotMatch(desktopBody, /cleanup_recovery_snapshots=1/);
 });
 
+test("startup removes the retired Worker harness and its persistent volumes", async () => {
+  const source = await readFile(lifecyclePath, "utf8");
+  const cleanupBody = source.slice(
+    source.indexOf("cleanup_retired_worker_resources()"),
+    source.indexOf("remove_lifecycle_heartbeats()")
+  );
+  const runUpBody = source.slice(source.indexOf("run_up()"), source.indexOf("run_logs()"));
+  const recoveryBody = source.slice(source.indexOf("recover_from_clean_head()"), source.indexOf("run_up()"));
+
+  assert.match(cleanupBody, /manor-codex-box manor-codex/);
+  assert.match(cleanupBody, /codex-config codex-home codex-state butler-home/);
+  assert.match(runUpBody, /cleanup_retired_worker_resources/);
+  assert.match(runUpBody, /--remove-orphans/);
+  assert.match(recoveryBody, /--remove-orphans/);
+});
+
 test("host lifecycle mutations use the shared Docker lock", async () => {
   const source = await readFile(lifecyclePath, "utf8");
   const lockBody = source.slice(

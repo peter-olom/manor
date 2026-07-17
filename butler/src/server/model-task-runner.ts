@@ -1,13 +1,6 @@
-import { spawn } from "node:child_process";
-import crypto from "node:crypto";
-import { promises as fs } from "node:fs";
-import path from "node:path";
-
 import { complete, type Api, type Message, type Model, type ToolCall } from "@earendil-works/pi-ai/compat";
-import { readCodexAuthStatus } from "./auth-status.js";
 import { contentToText } from "./butler-agent-helpers.js";
-import { memoryCodexModelArgs } from "./memory-codex-model.js";
-import { createManorModelRegistry, isCodexPreferredModelRef, parseProviderModelRef, type ProviderModelRef } from "./model-provider-config.js";
+import { createManorModelRegistry, parseProviderModelRef, type ProviderModelRef } from "./model-provider-config.js";
 import { appendToolMessages } from "./ollama-web-tools.js";
 import { appendProviderWebToolInstruction, executeProviderWebToolCall, providerWebTools, selectProviderWebToolSource, PROVIDER_WEB_FETCH_TOOL_NAME, PROVIDER_WEB_SEARCH_TOOL_NAME } from "./provider-web-tools.js";
 
@@ -31,10 +24,7 @@ type PiModelAuth =
   | { ok: false; error: string };
 type ModelTaskRunnerOptions = {
   stateDir: string;
-  codexHomeDir: string;
   piAuthPath: string;
-  codexAuthenticated?: () => Promise<boolean>;
-  codexExecutor?: (input: ResolvedModelTaskRunnerInput) => Promise<string>;
   piExecutor?: (input: ResolvedModelTaskRunnerInput) => Promise<string>;
 };
 
@@ -49,10 +39,8 @@ function matchesModelRef(entry: Model<Api>, ref: ProviderModelRef): boolean {
   return entry.id === ref.model || entryId === ref.model || entry.id.endsWith(`/${ref.model}`);
 }
 
-export function modelTaskTransport(ref: string | ProviderModelRef | null | undefined, codexAuthenticated: boolean): "codex" | "pi" {
-  const normalized = normalizeRef(ref);
-  if (normalized.provider || normalized.model) return isCodexPreferredModelRef(normalized) ? "codex" : "pi";
-  return codexAuthenticated ? "codex" : "pi";
+export function modelTaskTransport(_ref: string | ProviderModelRef | null | undefined, _openAiAuthenticated?: boolean): "pi" {
+  return "pi";
 }
 
 function providerReconnectError(provider: string, detail?: string): Error {
@@ -66,7 +54,7 @@ export async function selectAuthenticatedPiModel(
 ): Promise<{ model: Model<Api>; auth: Extract<PiModelAuth, { ok: true }> }> {
   const candidates = ref.model
     ? available.filter((entry) => matchesModelRef(entry, ref))
-    : available.filter((entry) => !isCodexPreferredModelRef({ provider: entry.provider, model: entry.id }));
+    : available;
   if (candidates.length === 0) {
     const requested = ref.provider && ref.model ? `${ref.provider}/${ref.model}` : ref.model ?? "automatic selection";
     throw new Error(`The background model ${requested} is unavailable. Open Settings → Providers to reconnect it, or choose another model.`);
@@ -115,19 +103,11 @@ function isAuthenticationFailure(error: unknown): boolean {
 }
 
 export class ManorModelTaskRunner implements ModelTaskRunner {
-  private readonly stateDir: string;
-  private readonly codexHomeDir: string;
   private readonly piAuthPath: string;
-  private readonly authStatus: () => Promise<boolean>;
-  private readonly codexExecutor?: (input: ResolvedModelTaskRunnerInput) => Promise<string>;
   private readonly piExecutor?: (input: ResolvedModelTaskRunnerInput) => Promise<string>;
 
   constructor(options: ModelTaskRunnerOptions) {
-    this.stateDir = options.stateDir;
-    this.codexHomeDir = options.codexHomeDir;
     this.piAuthPath = options.piAuthPath;
-    this.authStatus = options.codexAuthenticated ?? (async () => Boolean(process.env.OPENAI_API_KEY?.trim()) || (await readCodexAuthStatus(path.join(this.codexHomeDir, "auth.json"))).loggedIn);
-    this.codexExecutor = options.codexExecutor;
     this.piExecutor = options.piExecutor;
   }
 
@@ -146,20 +126,15 @@ export class ManorModelTaskRunner implements ModelTaskRunner {
   async runText(input: ModelTaskRunnerInput): Promise<string> {
     const ref = normalizeRef(input.model);
     const deadline = Date.now() + input.timeoutMs;
-    const codexAuthenticated = await withinDeadline(this.authStatus(), deadline, input.purpose);
     const resolvedInput = { ...input, model: ref, deadline };
-    if (modelTaskTransport(ref, codexAuthenticated) === "pi") {
-      return this.piExecutor ? this.piExecutor(resolvedInput) : this.runPiInline(resolvedInput);
-    }
-    if (!codexAuthenticated) throw providerReconnectError("OpenAI / Codex");
     try {
       return await withinDeadline(
-        this.codexExecutor ? this.codexExecutor(resolvedInput) : this.runCodexExec(resolvedInput),
+        this.piExecutor ? this.piExecutor(resolvedInput) : this.runPiInline(resolvedInput),
         deadline,
         input.purpose
       );
     } catch (error) {
-      if (isAuthenticationFailure(error)) throw providerReconnectError("OpenAI / Codex");
+      if (isAuthenticationFailure(error)) throw providerReconnectError(ref.provider ?? "configured");
       throw error;
     }
   }
@@ -219,68 +194,4 @@ export class ManorModelTaskRunner implements ModelTaskRunner {
     return contentToText(response.content).trim();
   }
 
-  private async runCodexExec(input: ResolvedModelTaskRunnerInput): Promise<string> {
-    const scratchDir = path.join(this.stateDir, "model-tasks");
-    await fs.mkdir(scratchDir, { recursive: true });
-    const runId = crypto.randomUUID();
-    const outputPath = path.join(scratchDir, `${runId}.output.txt`);
-    const schemaPath = input.schema ? path.join(scratchDir, `${runId}.schema.json`) : null;
-    if (schemaPath) {
-      await fs.writeFile(schemaPath, JSON.stringify(input.schema, null, 2), "utf8");
-    }
-    const modelArg =
-      input.model.provider && input.model.model && !isCodexPreferredModelRef(input.model)
-        ? `${input.model.provider}/${input.model.model}`
-        : input.model.model;
-    const args = [
-      "exec",
-      "--ephemeral",
-      "--sandbox",
-      "read-only",
-      "--skip-git-repo-check",
-      "--ignore-rules",
-      ...(schemaPath ? ["--output-schema", schemaPath] : []),
-      "--output-last-message",
-      outputPath,
-      "--cd",
-      input.cwd || "/repos",
-      ...memoryCodexModelArgs(modelArg),
-      "-"
-    ];
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn("codex", args, {
-          env: { ...process.env, CODEX_HOME: this.codexHomeDir, NO_COLOR: "1" },
-          stdio: ["pipe", "pipe", "pipe"]
-        });
-        let stderr = "";
-        let stdout = "";
-        const timeout = setTimeout(() => {
-          child.kill("SIGTERM");
-          reject(new Error(`codex exec ${input.purpose} timed out`));
-        }, remainingTimeout(input.deadline, input.purpose));
-        child.stdout.on("data", (chunk: Buffer) => {
-          stdout = `${stdout}${chunk.toString("utf8")}`.slice(-16_000);
-        });
-        child.stderr.on("data", (chunk: Buffer) => {
-          stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16_000);
-        });
-        child.on("error", (error) => {
-          clearTimeout(timeout);
-          reject(error);
-        });
-        child.on("close", (code) => {
-          clearTimeout(timeout);
-          code === 0 ? resolve() : reject(new Error(`codex exec ${input.purpose} exited with ${code}: ${stderr || stdout}`.trim()));
-        });
-        child.stdin.end(input.prompt);
-      });
-      return (await fs.readFile(outputPath, "utf8")).trim();
-    } finally {
-      await Promise.all([
-        fs.rm(outputPath, { force: true }).catch(() => {}),
-        ...(schemaPath ? [fs.rm(schemaPath, { force: true }).catch(() => {})] : [])
-      ]);
-    }
-  }
 }

@@ -43,8 +43,8 @@ function makePair(overrides: Partial<PairDetail> = {}): PairDetail {
         availableThinkingLevels: ["low", "medium", "high", "xhigh"]
       },
       worker: {
-        runtime: "openai",
-        harness: "codex",
+        runtime: "pi-rpc",
+        harness: "pi",
         provider: "openai-codex",
         model: "gpt-5-codex",
         effort: null,
@@ -529,13 +529,13 @@ test("PATCH /api/pairs/:pairId/settings updates the per-pair worker model", asyn
     const res = await fetch(`${url}/api/pairs/pair-1/settings`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target: "worker", harness: "codex", model: "gpt-5-codex-high" })
+      body: JSON.stringify({ target: "worker", harness: "pi", model: "gpt-5-codex-high" })
     });
     assert.equal(res.status, 200);
     const body = (await res.json()) as { pair: { workerHarness: string | null; workerModel: string | null; compose: { worker: { harness: string | null; model: string | null } } } };
-    assert.equal(body.pair.workerHarness, "codex");
+    assert.equal(body.pair.workerHarness, "pi");
     assert.equal(body.pair.workerModel, "gpt-5-codex-high");
-    assert.equal(body.pair.compose.worker.harness, "codex");
+    assert.equal(body.pair.compose.worker.harness, "pi");
     assert.equal(body.pair.compose.worker.model, "gpt-5-codex-high");
   } finally {
     await close();
@@ -550,7 +550,7 @@ test("PATCH /api/pairs/:pairId/settings returns 400 when worker model and effort
     const res = await fetch(`${url}/api/pairs/pair-1/settings`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target: "codex" })
+      body: JSON.stringify({ target: "worker" })
     });
     assert.equal(res.status, 400);
   } finally {
@@ -614,7 +614,7 @@ test("PATCH /api/pairs/:pairId/settings returns 400 when worker effort is missin
     const res = await fetch(`${url}/api/pairs/pair-1/settings`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target: "codex" })
+      body: JSON.stringify({ target: "worker" })
     });
     assert.equal(res.status, 400);
   } finally {
@@ -630,7 +630,7 @@ test("PATCH /api/pairs/:pairId/settings returns 400 for an invalid worker effort
     const res = await fetch(`${url}/api/pairs/pair-1/settings`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target: "codex", effort: "turbo" })
+      body: JSON.stringify({ target: "worker", effort: "turbo" })
     });
     assert.equal(res.status, 400);
   } finally {
@@ -652,7 +652,7 @@ test("PATCH /api/pairs/:pairId/settings returns 502 when worker provider rejects
     const res = await fetch(`${url}/api/pairs/pair-1/settings`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target: "codex", effort: "xhigh" })
+      body: JSON.stringify({ target: "worker", effort: "xhigh" })
     });
     assert.equal(res.status, 502);
     const body = (await res.json()) as { error: string };

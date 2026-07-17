@@ -1,4 +1,4 @@
-export type ProviderRuntimeHarness = "codex" | "pi" | (string & {});
+export type ProviderRuntimeHarness = "pi";
 
 export type ProviderRuntimeContentStreamKind =
   | "assistant_text"

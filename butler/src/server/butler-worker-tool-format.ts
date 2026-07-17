@@ -1,5 +1,4 @@
 export function workerHarnessLabel(harness: string): string {
-  if (harness === "codex") return "Codex";
   if (harness === "pi") return "Pi";
   return harness;
 }

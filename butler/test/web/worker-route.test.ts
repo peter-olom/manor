@@ -6,7 +6,6 @@ import {
   isSameWorkerRoute,
   providerModelRef,
   workerHarnessForModel,
-  workerHarnessLabel,
   workerModelForRoute,
   workerModelForSelection,
   workerModelLabel,
@@ -29,9 +28,8 @@ function model(provider: string | null, harness: PairWorkerHarness | null, label
   };
 }
 
-test("missing persisted worker identity stays visibly unknown", () => {
+test("missing provider identity stays visibly unknown", () => {
   assert.equal(workerProviderLabel(null), "Unknown provider");
-  assert.equal(workerHarnessLabel(null), "Unknown harness");
 });
 
 test("provider-qualified model references never repeat their provider", () => {
@@ -40,23 +38,17 @@ test("provider-qualified model references never repeat their provider", () => {
   assert.equal(providerModelRef(null, "gpt-5.5"), "gpt-5.5");
 });
 
-test("duplicate provider and model ids remain distinct across Worker harnesses", () => {
-  const codex = model("openai-codex", "codex", "Model through Codex");
-  const pi = model("openai-codex", "pi", "Model through Pi");
-  const models = [codex, pi];
-  const codexOption = workerModelPickerOption(codex);
+test("worker model selection is provider-facing and transport-independent", () => {
+  const pi = model("openai-codex", "pi", "Model");
+  const models = [pi];
   const piOption = workerModelPickerOption(pi);
 
-  assert.notEqual(workerModelSelectionId(codex), workerModelSelectionId(pi));
-  assert.notEqual(modelOptionValue(codexOption), modelOptionValue(piOption));
   assert.equal(modelOptionSelectionValue(piOption), piOption.selectionId);
   assert.equal(workerModelForSelection(models, modelOptionValue(piOption)), pi);
-  assert.equal(workerModelForRoute(models, "model", "codex"), codex);
-  assert.equal(workerModelForRoute([pi], "model", "codex"), null);
-  assert.equal(workerModelLabel(models, "model", "pi"), "Model through Pi");
-  assert.equal(isSameWorkerRoute(pi, "model", "codex"), false);
-  assert.equal(codexOption.hint, "Codex harness");
-  assert.equal(piOption.hint, "Pi harness");
+  assert.equal(workerModelForRoute(models, "model", "codex"), pi);
+  assert.equal(workerModelLabel(models, "model", "pi"), "Model");
+  assert.equal(isSameWorkerRoute(pi, "model", "codex"), true);
+  assert.equal(piOption.hint, "OpenAI");
 });
 
 test("picker selection ids do not change legacy option values", () => {
@@ -72,6 +64,4 @@ test("worker harness identity is explicit and independent from provider", () => 
   assert.equal(workerHarnessForModel(model("ollama-cloud", "pi")), "pi");
   assert.equal(workerHarnessForModel(model("custom-provider", "custom-harness")), "custom-harness");
   assert.equal(workerHarnessForModel(model("ollama-cloud", null)), null);
-  assert.equal(workerHarnessLabel("codex"), "Codex");
-  assert.equal(workerHarnessLabel("pi"), "Pi");
 });

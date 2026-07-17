@@ -189,6 +189,30 @@ run_compose() {
   "${command_args[@]}"
 }
 
+cleanup_retired_worker_resources() {
+  local container_name=""
+  for container_name in manor-codex-box manor-codex; do
+    if docker container inspect "${container_name}" >/dev/null 2>&1; then
+      docker rm --force "${container_name}" >/dev/null
+    fi
+  done
+
+  local volume_key=""
+  local volume_id=""
+  for volume_key in codex-config codex-home codex-state butler-home; do
+    while IFS= read -r volume_id; do
+      [[ -z "${volume_id}" ]] && continue
+      docker volume rm "${volume_id}" >/dev/null
+    done < <(docker volume ls --quiet \
+      --filter "label=com.docker.compose.project=${compose_project_name}" \
+      --filter "label=com.docker.compose.volume=${volume_key}")
+    volume_id="${compose_project_name}_${volume_key}"
+    if docker volume inspect "${volume_id}" >/dev/null 2>&1; then
+      docker volume rm "${volume_id}" >/dev/null
+    fi
+  done
+}
+
 remove_lifecycle_heartbeats() {
   local expected_owner="${1:-}"
   local heartbeat details network_id owner
@@ -589,13 +613,12 @@ recover_from_clean_head() {
     clean_compose+=("${profile_args[@]}")
   fi
 
-  local recovery_args=(up -d --build --force-recreate --wait --wait-timeout "${wait_timeout}")
+  local recovery_args=(up -d --build --force-recreate --remove-orphans --wait --wait-timeout "${wait_timeout}")
   if [[ "$#" -gt 0 ]]; then
     recovery_args+=("$@")
   fi
   if ! MANOR_HOST_PROJECT_SOURCE_DIR="${MANOR_HOST_PROJECT_SOURCE_DIR:-${repo_dir}}" \
     BUTLER_HOT_RELOAD=0 \
-    MANOR_CODEX_AUTO_UPDATE=0 \
     MANOR_PI_AUTO_UPDATE=0 \
     "${clean_compose[@]}" "${recovery_args[@]}"; then
     echo "Clean HEAD recovery did not become healthy." >&2
@@ -614,7 +637,9 @@ run_up() {
     return 64
   fi
 
-  local up_args=(up -d --build --wait --wait-timeout "${wait_timeout}")
+  cleanup_retired_worker_resources
+
+  local up_args=(up -d --build --remove-orphans --wait --wait-timeout "${wait_timeout}")
   if [[ "$#" -gt 0 ]]; then
     up_args+=("$@")
   fi

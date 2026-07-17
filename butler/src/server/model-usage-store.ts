@@ -18,7 +18,7 @@ type SqlJsDatabase = {
 
 type SqlJsStatic = { Database: new (data?: Uint8Array) => SqlJsDatabase };
 
-type UsageEvent = UsageSample & { id: string; harness: "pi" | "codex"; lane: "butler" | "worker" };
+type UsageEvent = UsageSample & { id: string; harness: "pi"; lane: "butler" | "worker" };
 
 const require = createRequire(import.meta.url);
 let sqlPromise: Promise<SqlJsStatic> | null = null;
@@ -83,46 +83,6 @@ function parsePiEvents(content: string, filePath: string, lane: "butler" | "work
   });
 }
 
-function parseCodexEvents(content: string, filePath: string, models: PricingModel[]): UsageEvent[] {
-  const pricing = new Map(models.map((model) => [modelKey(model.provider, model.id), model]));
-  let sessionId = path.basename(filePath, ".jsonl");
-  let model = "unknown";
-  const events: UsageEvent[] = [];
-  for (const line of content.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    let entry: Record<string, unknown>;
-    try { entry = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
-    const payload = entry.payload && typeof entry.payload === "object" ? entry.payload as Record<string, unknown> : null;
-    if (entry.type === "session_meta" && typeof payload?.id === "string") sessionId = payload.id;
-    if (entry.type === "turn_context" && typeof payload?.model === "string") model = payload.model;
-    if (entry.type !== "event_msg" || payload?.type !== "token_count") continue;
-    const info = payload.info && typeof payload.info === "object" ? payload.info as Record<string, unknown> : null;
-    const last = info?.last_token_usage && typeof info.last_token_usage === "object" ? info.last_token_usage as Record<string, unknown> : null;
-    const total = info?.total_token_usage && typeof info.total_token_usage === "object" ? info.total_token_usage as Record<string, unknown> : null;
-    if (!last || !total) continue;
-    const input = Math.max(0, number(last.input_tokens) - number(last.cached_input_tokens));
-    const cacheRead = number(last.cached_input_tokens);
-    const output = number(last.output_tokens);
-    const sample = createUsageSample({
-      at: time(entry.timestamp, Date.now()),
-      sessionId,
-      provider: "openai-codex",
-      model,
-      usage: { input, output, cacheRead, cacheWrite: 0 },
-      pricingModel: pricing.get(modelKey("openai-codex", model)) ?? null,
-      oauth: true
-    });
-    if (!sample) continue;
-    events.push({
-      ...sample,
-      id: hash({ source: "codex", sessionId, model, total }),
-      harness: "codex",
-      lane: "worker"
-    });
-  }
-  return events;
-}
-
 function rangeStart(range: ModelUsageRange, now: number): number | null {
   if (range === "all") return null;
   return now - (range === "7d" ? 7 : 30) * 24 * 60 * 60 * 1000;
@@ -138,7 +98,6 @@ export class ModelUsageStore {
     dbPath: string;
     butlerPiRoots: string[];
     workerPiRoots: string[];
-    codexRoots: string[];
     loadPiPricing: () => Promise<{ models: PricingModel[]; oauthKeys: Set<string> }>;
   }) {}
 
@@ -171,6 +130,7 @@ export class ModelUsageStore {
       CREATE TABLE IF NOT EXISTS usage_files (path TEXT PRIMARY KEY, mtime REAL NOT NULL, size INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS usage_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
+    this.db.run("DELETE FROM usage_events WHERE harness <> 'pi'");
     await this.persist();
   }
 
@@ -208,7 +168,7 @@ export class ModelUsageStore {
     ]);
   }
 
-  private async importRoot(root: string, lane: "butler" | "worker", harness: "pi" | "codex", models: PricingModel[], oauthKeys: Set<string>): Promise<void> {
+  private async importRoot(root: string, lane: "butler" | "worker", models: PricingModel[], oauthKeys: Set<string>): Promise<void> {
     for (const filePath of await listJsonlFiles(root)) {
       const stat = await fs.stat(filePath).catch(() => null);
       if (!stat) continue;
@@ -216,9 +176,7 @@ export class ModelUsageStore {
       if (previous?.mtime === stat.mtimeMs && previous.size === stat.size) continue;
       const content = await fs.readFile(filePath, "utf8").catch(() => null);
       if (content === null) continue;
-      const events = harness === "pi"
-        ? parsePiEvents(content, filePath, lane, models, oauthKeys)
-        : parseCodexEvents(content, filePath, models);
+      const events = parsePiEvents(content, filePath, lane, models, oauthKeys);
       for (const event of events) this.insert(event);
       this.db!.run("INSERT OR REPLACE INTO usage_files(path, mtime, size) VALUES (?, ?, ?)", [filePath, stat.mtimeMs, stat.size]);
     }
@@ -240,9 +198,8 @@ export class ModelUsageStore {
         this.db!.run("DELETE FROM usage_files");
         this.db!.run("INSERT OR REPLACE INTO usage_meta(key, value) VALUES ('pricing_fingerprint', ?)", [pricingFingerprint]);
       }
-      for (const root of this.options.butlerPiRoots) await this.importRoot(root, "butler", "pi", models, oauthKeys);
-      for (const root of this.options.workerPiRoots) await this.importRoot(root, "worker", "pi", models, oauthKeys);
-      for (const root of this.options.codexRoots) await this.importRoot(root, "worker", "codex", models, oauthKeys);
+      for (const root of this.options.butlerPiRoots) await this.importRoot(root, "butler", models, oauthKeys);
+      for (const root of this.options.workerPiRoots) await this.importRoot(root, "worker", models, oauthKeys);
       await this.persist();
     })().finally(() => { this.refreshPromise = null; });
     return this.refreshPromise;

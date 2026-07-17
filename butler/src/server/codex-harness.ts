@@ -13,7 +13,6 @@ import {
   normalizeHeartbeatKind,
   normalizePositiveInteger,
   normalizeStringArray,
-  readHarnessRegistryText,
   resolveHarnessStoragePaths
 } from "./codex-harness-helpers.js";
 import { formatHarnessExecutionContract, formatHarnessRuntimeModel } from "./codex-harness-format.js";
@@ -66,9 +65,7 @@ function mentionsNativeDesktopTarget(thread: CodexThreadRecord): boolean {
 }
 export class HarnessService {
   private readonly registryPath: string;
-  private readonly legacyRegistryPath: string | null;
   private readonly brokerAccessPath: string;
-  private readonly legacyBrokerAccessPath: string;
   private readonly artifactsDir: string;
   private readonly store: ButlerStateStore;
   private readonly runtimeBroker: RuntimeBrokerClient;
@@ -78,12 +75,10 @@ export class HarnessService {
   private readonly visionInspection: VisionInspectionService;
   private readonly inputActionAccess: HarnessInputActionAccess | null;
   private readonly capabilities = new Map<string, HarnessCapability>();
-  constructor(options: { codexHomeDir?: string; harnessRegistryPath?: string | null; harnessAccessPath?: string | null; stateDir: string; artifactsDir: string; store: ButlerStateStore; runtimeBroker: RuntimeBrokerClient; serviceTemplateRegistry: ServiceTemplateRegistry; memoryReview?: CodexExecMemoryReviewService | null; memoryScheduler?: MemoryUpdateScheduler | null; visionInspection: VisionInspectionService; inputActionAccess?: HarnessInputActionAccess }) {
+  constructor(options: { harnessRegistryPath?: string | null; harnessAccessPath?: string | null; stateDir: string; artifactsDir: string; store: ButlerStateStore; runtimeBroker: RuntimeBrokerClient; serviceTemplateRegistry: ServiceTemplateRegistry; memoryReview?: CodexExecMemoryReviewService | null; memoryScheduler?: MemoryUpdateScheduler | null; visionInspection: VisionInspectionService; inputActionAccess?: HarnessInputActionAccess }) {
     const storagePaths = resolveHarnessStoragePaths(options);
     this.registryPath = storagePaths.registryPath;
-    this.legacyRegistryPath = storagePaths.legacyRegistryPath;
     this.brokerAccessPath = storagePaths.brokerAccessPath;
-    this.legacyBrokerAccessPath = storagePaths.legacyBrokerAccessPath;
     this.artifactsDir = options.artifactsDir;
     this.store = options.store;
     this.runtimeBroker = options.runtimeBroker;
@@ -103,7 +98,7 @@ export class HarnessService {
   async load(): Promise<void> {
     await fs.mkdir(path.dirname(this.registryPath), { recursive: true });
     await fs.mkdir(path.dirname(this.brokerAccessPath), { recursive: true });
-    const { raw, fromLegacy } = await readHarnessRegistryText(this.registryPath, this.legacyRegistryPath);
+    const raw = await fs.readFile(this.registryPath, "utf8").catch(() => "");
     if (!raw) {
       await this.save();
       return;
@@ -129,16 +124,14 @@ export class HarnessService {
         });
       }
     }
-    if (fromLegacy) await this.save();
+    await this.save();
   }
   private async save(): Promise<void> {
     const payload: HarnessRegistryPayload = { capabilities: [...this.capabilities.values()].sort((left, right) => left.createdAt - right.createdAt) };
     const brokerAccessPayload: BrokerAccessRegistryPayload = { grants: payload.capabilities.map((capability) => ({ token: capability.token, threadId: capability.threadId, createdAt: capability.createdAt, updatedAt: capability.updatedAt })) };
-    const registryPaths = [this.registryPath, this.legacyRegistryPath].filter((entry): entry is string => Boolean(entry));
-    const brokerAccessPaths = [...new Set([this.brokerAccessPath, this.legacyBrokerAccessPath])];
     await Promise.all([
-      ...registryPaths.map((registryPath) => atomicWriteJson(registryPath, payload)),
-      ...brokerAccessPaths.map((brokerAccessPath) => atomicWriteJson(brokerAccessPath, brokerAccessPayload))
+      atomicWriteJson(this.registryPath, payload),
+      atomicWriteJson(this.brokerAccessPath, brokerAccessPayload)
     ]);
   }
   async ensureThreadCapability(threadId: string, cwd: string | null | undefined): Promise<HarnessCapability | null> {

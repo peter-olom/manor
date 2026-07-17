@@ -12,10 +12,9 @@ import type { ButlerStateStore } from "./state-store.js";
 export function createBackgroundModelServices(input: {
   store: ButlerStateStore;
   stateDir: string;
-  codexHomeDir: string;
   modelTasks: ModelTaskRunner;
 }) {
-  const { store, stateDir, codexHomeDir, modelTasks } = input;
+  const { store, stateDir, modelTasks } = input;
   const serviceModels = () => {
     const settings = getActiveManorSettings();
     const config = readMemorySynthesisConfig();
@@ -30,7 +29,6 @@ export function createBackgroundModelServices(input: {
   const memoryReview = new CodexExecMemoryReviewService({
     store,
     stateDir,
-    codexHomeDir,
     enabled: initial.config.enabled,
     model: initial.memoryReviewModel ?? undefined,
     timeoutMs: initial.config.timeoutMs,
@@ -40,7 +38,6 @@ export function createBackgroundModelServices(input: {
     store,
     config: initial.config,
     stateDir,
-    codexHomeDir,
     runner: async (runnerInput) => await modelTasks.runJson({ purpose: "memory synthesis", ...runnerInput, model: serviceModels().config.model, schema: MEMORY_SYNTHESIS_OUTPUT_SCHEMA }) as never
   });
   const memoryPromotion = new CodexExecMemoryPromotionService({
@@ -48,7 +45,6 @@ export function createBackgroundModelServices(input: {
     memoryScheduler,
     config: initial.config,
     stateDir,
-    codexHomeDir,
     runner: async (runnerInput) => await modelTasks.runJson({ purpose: "memory promotion", ...runnerInput, model: serviceModels().memoryPromotionModel, schema: MEMORY_PROMOTION_OUTPUT_SCHEMA }) as never
   });
   const memoryEmbeddings = new MemoryEmbeddingService({
@@ -64,7 +60,6 @@ export function createBackgroundModelServices(input: {
     store,
     config: initial.config,
     stateDir,
-    codexHomeDir,
     runner: async (runnerInput) => await modelTasks.runJson({ purpose: "memory semantic edge review", ...runnerInput, model: serviceModels().config.model, schema: SEMANTIC_EDGE_REVIEW_OUTPUT_SCHEMA }) as never,
     onResult: (result, reason) => {
       if (result.reviewed > 0 || result.relationships > 0) {

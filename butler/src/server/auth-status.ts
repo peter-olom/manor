@@ -98,30 +98,3 @@ export async function readButlerAuthStatus(piAuthPath: string): Promise<ButlerAu
     return buildAuthStatus("none", false);
   }
 }
-
-export async function readCodexAuthStatus(codexAuthPath: string): Promise<ButlerAuthStatus> {
-  try {
-    const raw = await fs.readFile(codexAuthPath, "utf8");
-    const data = JSON.parse(raw) as {
-      auth_mode?: string | null;
-      OPENAI_API_KEY?: string | null;
-      last_refresh?: number | null;
-      tokens?: {
-        access_token?: string;
-        refresh_token?: string;
-      };
-    };
-
-    if (data.auth_mode === "chatgpt") {
-      return validateChatGptAuth(data.tokens?.access_token, data.tokens?.refresh_token);
-    }
-
-    if (data.auth_mode === "api" && data.OPENAI_API_KEY) {
-      return buildAuthStatus("api", true);
-    }
-
-    return buildAuthStatus("none", false);
-  } catch {
-    return buildAuthStatus("none", false);
-  }
-}

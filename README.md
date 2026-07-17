@@ -65,7 +65,7 @@ Prerequisites:
 
 - Docker with Compose support
 - at least one supported Worker provider: OpenAI/Codex, Ollama Local, Ollama Cloud, or OpenCode Go
-- GitHub auth in the Codex app-server host when that Worker needs repo cloning or fresh project setup
+- GitHub auth in the Worker host when that Worker needs repo cloning or fresh project setup
 
 Run the guided installer:
 
@@ -128,7 +128,7 @@ Manor runs as one Docker Compose project with these services:
 
 - `butler`: the always-on supervisor and web app
 - `butler-gateway`: the host-facing reverse proxy for the Butler UI
-- `codex-box`: the compatibility-named service for the Worker host, which runs Codex app-server and Pi RPC Worker sessions
+- `worker`: the Pi RPC Worker host
 - `runtime-broker`: the Docker control plane for previews, stack leases, and disposable services
 - `host-controller`: the narrow restart/update sidecar that survives Manor appliance restarts
 - `egress`: the restricted outbound proxy for Butler and Worker execution
@@ -151,16 +151,11 @@ The working model is:
 - one operator
 - one Butler supervisor
 - one active Worker per Butler pair
-- one selected harness, provider, model, and reasoning option for that Worker
+- one selected provider, model, and reasoning option for that Worker
 - one Docker host
 - many jobs
 
-Worker names the product role across model providers and CLIs. Manor currently runs Workers through two harnesses:
-
-- Codex app server for OpenAI/Codex models
-- Pi RPC for Ollama Local, Ollama Cloud, and OpenCode Go models
-
-The provider supplies models and authentication. The harness owns the session and transport behavior. Butler keeps the supervision, job contract, proof, and runtime policy consistent across both.
+Worker names the product role across model providers and CLIs. Manor runs every Worker through Pi RPC. OpenAI/Codex, Ollama Local, Ollama Cloud, and OpenCode Go supply the models and provider-specific authentication while Pi owns the session and transport behavior.
 
 The default job shape is:
 
@@ -170,7 +165,7 @@ The default job shape is:
 - sticky stack and preview leases can be reused by later jobs when warm runtime state is intentional
 - previews and disposable services attach to that stack when needed
 
-Switching an active Worker to another provider, model, or harness starts a cold handoff. Manor carries forward the task, workspace, acceptance state, proof context, and lineage. Provider caches and hidden reasoning state do not transfer.
+Switching an active Worker to another provider or model starts a cold handoff. Manor carries forward the task, workspace, acceptance state, proof context, and lineage. Provider caches and hidden reasoning state do not transfer.
 
 ## Execution Rule
 
@@ -220,30 +215,28 @@ Today it provides:
 - a web UI on `http://127.0.0.1:8180`
 - a unified Butler chat
 - a jobs sidebar and per-job windows
-- a Worker workstream, with one operational Worker CLI for both harnesses
+- a Worker workstream with one operational Worker CLI
 - runtime visibility for stacks, previews, and services
 - image-reference tracking for visual tasks
 - tool-driven delegation into provider-backed Worker jobs
 
-Butler is built on the Pi agent framework. Its own Pi-backed agent stays in the Butler environment. OpenAI/Codex Workers use the Codex app server, while supported Ollama and OpenCode Go Workers use Pi RPC; both Worker harnesses execute in the separate Worker environment.
+Butler is built on the Pi agent framework. Its supervisor stays in the Butler environment, while every provider-backed Worker session runs through Pi RPC in the separate Worker environment.
 
-### Worker Harnesses
+### Worker Runtime
 
-Workers share one supervision and runtime contract even though their transports differ.
+Workers share one Pi-backed supervision and runtime contract across providers.
 
 The Worker environment provides:
 
-- the official Codex CLI
-- Codex app-server mode
 - the Pi RPC Worker runtime
 - one direct Worker CLI through `ttyd`
 - repo and worktree access through a dedicated Docker volume mounted at `/repos`
 - shared runtime state through dedicated Docker volumes
 - local helper access through `manor-harness`
 
-The Pi RPC harness provides Worker sessions for Manor's supported Ollama Local, Ollama Cloud, and OpenCode Go providers. These sessions execute in the Worker environment and receive the same job payload, workspace access, harness capabilities, reporting contract, and Butler review.
+The Pi RPC harness provides Worker sessions for Manor's supported OpenAI/Codex, Ollama Local, Ollama Cloud, and OpenCode Go providers. These sessions execute in the Worker environment and receive the same job payload, workspace access, harness capabilities, reporting contract, and Butler review.
 
-The `codex-box` service and `manor-codex-box` container keep their existing deployment names for compatibility. The runtime identity is `worker@manor-worker`, and it hosts the complete Worker environment. The UI exposes exactly two agent CLIs: Butler CLI and Worker CLI.
+The `worker` service runs in the `manor-worker` container. Its runtime identity is `worker@manor-worker`, and it hosts the complete Worker environment. The UI exposes exactly two agent CLIs: Butler CLI and Worker CLI.
 
 Workers own repository work. Butler and the broker own runtime lifecycle and policy.
 
@@ -352,7 +345,7 @@ The important constraint is unchanged:
 
 ## Auth
 
-OpenAI/Codex Workers use Codex authentication. Butler and the Codex app-server host support ChatGPT device-code login and OpenAI API-key login.
+OpenAI Workers use Pi's OpenAI provider authentication. Butler supports ChatGPT device-code login and OpenAI API-key login, then makes that credential source available to the Worker runtime.
 
 Ollama Local does not need external provider credentials. Ollama Cloud and OpenCode Go use their provider API keys. Configure and validate every enabled provider in Settings before assigning it Worker jobs.
 
@@ -363,12 +356,8 @@ docker compose exec butler butler-auth status
 docker compose exec butler butler-auth device
 docker compose exec butler butler-auth api-key
 
-docker compose exec codex-box codex-auth status
-docker compose exec codex-box codex-auth device
-docker compose exec codex-box codex-auth api-key
-
-docker compose exec codex-box gh auth status
-docker compose exec -it codex-box gh-auth-headless
+docker compose exec worker gh auth status
+docker compose exec -it worker gh-auth-headless
 ```
 
 ## Trust and Security Model
@@ -379,7 +368,7 @@ Current trust boundaries:
 
 - Butler and the Worker host are separate services
 - Butler contains only its own Pi-backed supervisor agent
-- Codex app-server and Pi RPC Worker sessions both execute in the Worker host
+- Pi RPC Worker sessions execute in the Worker host
 - Worker execution does not get direct internet access
 - external outbound traffic from Butler and Worker execution goes through the restricted `egress` proxy; local Ollama traffic stays inside the appliance
 - operators can add or remove trusted runtime hostnames in Settings → Network; changes apply live to the shared Butler and Worker proxy while built-in domains remain read-only
@@ -398,15 +387,7 @@ For vulnerability reporting and remote-use hardening, see the [security policy](
 
 ## Worker Configuration
 
-Butler builds the shared delegation, runtime, proof, and reporting instructions for every Worker.
-
-The Codex-specific configuration remains separate because it belongs to the Codex app-server transport:
-
-- Codex app-server model instructions are mounted from `config/codex-model-instructions.md`
-- `compose.yml` passes that markdown file into the Codex CLI through `CODEX_MODEL_INSTRUCTIONS_FILE`
-- `CODEX_PERSONALITY` selects Codex's built-in preset personality (`none`, `friendly`, or `pragmatic`)
-
-Provider availability, model discovery, and reasoning options come from the selected provider and harness. OpenAI/Codex models come from the Codex app server. Ollama and OpenCode Go models come through Pi and their provider-specific discovery and transform rules.
+Butler builds the shared delegation, runtime, proof, and reporting instructions for every Worker. Provider availability, model discovery, and reasoning options come through Pi and the selected provider's discovery and transform rules.
 
 ## Development
 
@@ -428,10 +409,10 @@ For contribution workflow and validation expectations, see the [contributing gui
 - `compose.build.yml`: source-build overlay used by the official launcher
 - `compose.dev.yml`: optional local Butler hot-reload overlay
 - `butler/`: Butler backend and web app
-- `config/`: optional preview egress profiles and Codex app-server model instructions
+- `config/`: optional preview egress profiles
 - `docker/butler/`: Butler image and auth helpers
 - `docker/butler-gateway/`: Butler reverse proxy
-- `docker/codex-box/`: compatibility-named Worker image for Codex app-server, Pi RPC, and the Worker CLI
+- `docker/worker/`: image for the Pi RPC Worker and Worker CLI
 - `docker/egress/`: restricted outbound proxy
 - `docker/host-controller/`: restart/update controller with its own scoped token
 - `docker/preview-egress/`: optional restrictive preview egress control plane

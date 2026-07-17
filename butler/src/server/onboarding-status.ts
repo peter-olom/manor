@@ -1,18 +1,15 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { readCodexAuthStatus } from "./auth-status.js";
 import type { ButlerAuthStatus, ButlerOnboardingView, OnboardingCommandSet } from "./types.js";
 
 type WorkerOnboardingRoute = {
-  runtime?: "auto" | "openai" | "pi-rpc" | null;
-  harness?: string | null;
   model?: string | null;
 };
 
 type WorkerOnboardingSettings = {
   overview: { workerProvider: string };
-  worker: { defaultHarness: string | null; defaultModel: string | null };
+  worker: { defaultModel: string | null };
   providers: {
     ollamaLocal: { providerId: string };
     ollamaCloud: { providerId: string };
@@ -20,7 +17,7 @@ type WorkerOnboardingSettings = {
   };
 };
 
-function modelRequiresCodexHarness(model: string | null | undefined, settings: WorkerOnboardingSettings): boolean | null {
+function modelRequiresOpenAiAuth(model: string | null | undefined, settings: WorkerOnboardingSettings): boolean | null {
   const normalized = model?.trim().toLowerCase() ?? "";
   if (!normalized) return null;
   const slash = normalized.indexOf("/");
@@ -35,18 +32,14 @@ function modelRequiresCodexHarness(model: string | null | undefined, settings: W
     settings.providers.opencodeGo.providerId.toLowerCase()
   ]);
   if (piProviders.has(provider)) return false;
-  if (provider === "openai" || provider === "openai-codex" || provider === "codex") return true;
+  if (provider === "openai" || provider === "openai-codex") return true;
   return null;
 }
 
-export function codexHarnessOnboardingRequired(workerDefaults: WorkerOnboardingRoute | null, settings: WorkerOnboardingSettings): boolean {
-  if (workerDefaults?.harness === "codex" || workerDefaults?.runtime === "openai") return true;
-  if (workerDefaults?.harness === "pi" || workerDefaults?.runtime === "pi-rpc") return false;
-  const workerModelRequirement = modelRequiresCodexHarness(workerDefaults?.model, settings);
+export function workerOpenAiOnboardingRequired(workerDefaults: WorkerOnboardingRoute | null, settings: WorkerOnboardingSettings): boolean {
+  const workerModelRequirement = modelRequiresOpenAiAuth(workerDefaults?.model, settings);
   if (workerModelRequirement !== null) return workerModelRequirement;
-  if (settings.worker.defaultHarness === "codex") return true;
-  if (settings.worker.defaultHarness === "pi") return false;
-  const defaultModelRequirement = modelRequiresCodexHarness(settings.worker.defaultModel, settings);
+  const defaultModelRequirement = modelRequiresOpenAiAuth(settings.worker.defaultModel, settings);
   return defaultModelRequirement ?? settings.overview.workerProvider === "openai-codex";
 }
 
@@ -70,9 +63,9 @@ function pendingAuthDetail(auth: ButlerAuthStatus, fallback: string): string {
   return fallback;
 }
 
-async function readGithubAuthStatus(codexConfigDir: string): Promise<boolean> {
+async function readGithubAuthStatus(workerConfigDir: string): Promise<boolean> {
   try {
-    const raw = await fs.readFile(path.join(codexConfigDir, "gh", "hosts.yml"), "utf8");
+    const raw = await fs.readFile(path.join(workerConfigDir, "gh", "hosts.yml"), "utf8");
     return /^\s*oauth_token:\s*.+$/m.test(raw);
   } catch {
     return false;
@@ -81,11 +74,11 @@ async function readGithubAuthStatus(codexConfigDir: string): Promise<boolean> {
 
 export async function buildOnboardingView(options: {
   butlerAuth: ButlerAuthStatus;
-  codexAuth: ButlerAuthStatus;
-  codexConfigDir: string;
-  codexHarnessRequired: boolean;
+  workerAuth: ButlerAuthStatus;
+  workerConfigDir: string;
+  workerOpenAiRequired: boolean;
 }): Promise<ButlerOnboardingView> {
-  const githubLoggedIn = await readGithubAuthStatus(options.codexConfigDir);
+  const githubLoggedIn = await readGithubAuthStatus(options.workerConfigDir);
 
   const steps: ButlerOnboardingView["steps"] = [
     {
@@ -100,7 +93,7 @@ export async function buildOnboardingView(options: {
           target: "localShell",
           detail: options.butlerAuth.loggedIn
             ? "Check Butler auth from your local shell."
-            : "Run this from your local shell. Butler auth does not run inside the Codex terminal.",
+            : "Run this from your local shell. Butler auth is separate from Worker auth.",
           commands: options.butlerAuth.loggedIn
             ? ["docker exec manor-butler butler-auth status"]
             : ["docker exec -it manor-butler butler-auth device", "docker exec manor-butler butler-auth api-key"]
@@ -116,42 +109,42 @@ export async function buildOnboardingView(options: {
     }
   ];
 
-  if (options.codexHarnessRequired) {
+  if (options.workerOpenAiRequired) {
     steps.push({
-      id: "codexAuth",
-      title: "Sign in to Codex",
-      status: options.codexAuth.loggedIn ? "complete" : "pending",
-      detail: options.codexAuth.loggedIn
-        ? `Connected through ${authModeLabel(options.codexAuth)}.`
-        : pendingAuthDetail(options.codexAuth, "Connect the Codex harness before opening Worker jobs through it."),
-      commandSets: buildCodexCommandSets({
-        localShellCommands: options.codexAuth.loggedIn
-          ? ["docker exec manor-codex-box codex-auth status"]
-          : ["docker exec -it manor-codex-box codex-auth device", "docker exec manor-codex-box codex-auth api-key"],
-        terminalTarget: "codexTerminal",
-        terminalCommands: options.codexAuth.loggedIn ? ["codex-auth status"] : ["codex-auth device", "codex-auth api-key"],
-        connectedDetail: options.codexAuth.loggedIn ? "Check Codex auth from the built-in Terminal or your local shell." : undefined,
-        pendingTerminalDetail: "Run this in the built-in Terminal before opening Worker jobs through the Codex harness."
+      id: "workerAuth",
+      title: "Connect OpenAI for Worker",
+      status: options.workerAuth.loggedIn ? "complete" : "pending",
+      detail: options.workerAuth.loggedIn
+        ? `Connected through ${authModeLabel(options.workerAuth)}.`
+        : pendingAuthDetail(options.workerAuth, "Connect OpenAI in the Worker Pi environment before choosing an OpenAI Worker model."),
+      commandSets: buildWorkerCommandSets({
+        localShellCommands: options.workerAuth.loggedIn
+          ? ["docker exec -e PI_AGENT_DIR=/worker-pi/agent manor-butler butler-auth status"]
+          : ["docker exec -it -e PI_AGENT_DIR=/worker-pi/agent manor-butler butler-auth device", "docker exec -e PI_AGENT_DIR=/worker-pi/agent manor-butler butler-auth api-key"],
+        terminalTarget: "butlerTerminal",
+        terminalCommands: options.workerAuth.loggedIn ? ["PI_AGENT_DIR=/worker-pi/agent butler-auth status"] : ["PI_AGENT_DIR=/worker-pi/agent butler-auth device", "PI_AGENT_DIR=/worker-pi/agent butler-auth api-key"],
+        connectedDetail: options.workerAuth.loggedIn ? "Worker OpenAI authentication is active." : undefined,
+        pendingTerminalDetail: "Use Settings → Providers to connect OpenAI for Worker."
       })
     },
     {
       id: "githubAuth",
-      title: "Sign in to GitHub in Codex",
+      title: "Sign in to GitHub for Worker",
       status: githubLoggedIn ? "complete" : "pending",
       detail: githubLoggedIn
-        ? "Connected. Workers using the Codex harness can use GitHub from the container."
-        : "Connect GitHub in the Codex harness before asking a Worker through it to clone or push repositories.",
-      commandSets: buildCodexCommandSets({
+        ? "Connected. Worker can use GitHub from its container."
+        : "Connect GitHub before asking Worker to clone or push repositories.",
+      commandSets: buildWorkerCommandSets({
         localShellCommands: githubLoggedIn
-          ? ["docker exec manor-codex-box gh auth status"]
+          ? ["docker exec manor-worker gh auth status"]
           : [
-              "docker exec -it manor-codex-box gh-auth-headless",
-              "docker exec manor-codex-box gh auth status"
+              "docker exec -it manor-worker gh-auth-headless",
+              "docker exec manor-worker gh auth status"
             ],
-        terminalTarget: "codexTerminal",
+        terminalTarget: "workerTerminal",
         terminalCommands: githubLoggedIn ? ["gh auth status"] : ["gh-auth-headless", "gh auth status"],
         connectedDetail: githubLoggedIn ? "Check GitHub auth from the built-in Terminal or your local shell." : undefined,
-        pendingTerminalDetail: "Run this in the built-in Terminal to start headless GitHub sign-in in Codex."
+        pendingTerminalDetail: "Run this in the Worker terminal to start headless GitHub sign-in."
       })
     });
   }
@@ -162,9 +155,9 @@ export async function buildOnboardingView(options: {
   };
 }
 
-function buildCodexCommandSets(options: {
+function buildWorkerCommandSets(options: {
   localShellCommands: string[];
-  terminalTarget: "butlerTerminal" | "codexTerminal";
+  terminalTarget: "butlerTerminal" | "workerTerminal";
   terminalCommands: string[];
   connectedDetail?: string;
   pendingTerminalDetail: string;

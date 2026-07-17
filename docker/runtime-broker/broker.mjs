@@ -22,12 +22,11 @@ const operatorBaseUrl = process.env.RUNTIME_OPERATOR_BASE_URL ?? "";
 const previewEgressConfigPath = process.env.RUNTIME_PREVIEW_EGRESS_CONFIG ?? "/opt/manor/config/preview-egress-profiles.json";
 const previewEgressAdminUrl = process.env.RUNTIME_PREVIEW_EGRESS_ADMIN_URL ?? "http://preview-egress:8091";
 const brokerToken = process.env.RUNTIME_BROKER_TOKEN ?? null;
-const legacyHarnessAccessRegistryPath = process.env.RUNTIME_CODEX_ACCESS_FILE ?? "/state/codex-broker-access.json";
-const harnessAccessRegistryPath = process.env.RUNTIME_HARNESS_ACCESS_FILE ?? process.env.RUNTIME_CODEX_ACCESS_FILE ?? "/state/harness-broker-access.json";
+const harnessAccessRegistryPath = process.env.RUNTIME_HARNESS_ACCESS_FILE ?? "/state/harness-broker-access.json";
 const stackBindingRegistryPath = process.env.RUNTIME_STACK_BINDINGS_FILE ?? "/opt/manor/runtime-broker/state/stack-thread-bindings.json";
 const previewLifecycleStatePath = process.env.RUNTIME_PREVIEW_LIFECYCLE_FILE ?? "/runtime-state/preview-lifecycle.json";
 const internalOperatorBaseUrl = process.env.RUNTIME_OPERATOR_BASE_URL_INTERNAL ?? "http://butler:8080";
-const workspaceContainerName = process.env.RUNTIME_WORKSPACE_CONTAINER ?? process.env.RUNTIME_CODEX_WORKSPACE_CONTAINER ?? "manor-codex-box";
+const workspaceContainerName = process.env.RUNTIME_WORKSPACE_CONTAINER ?? "manor-worker";
 const butlerContainerName = process.env.RUNTIME_BUTLER_CONTAINER ?? "manor-butler";
 const butlerArtifactsRootDir = path.posix.resolve(process.env.RUNTIME_BUTLER_ARTIFACTS_DIR ?? "/artifacts");
 const playwrightContainerName = process.env.RUNTIME_PLAYWRIGHT_CONTAINER ?? "manor-playwright";
@@ -72,7 +71,6 @@ const brokerContext = {
   previewEgressAdminUrl,
   brokerToken,
   harnessAccessRegistryPath,
-  legacyHarnessAccessRegistryPath,
   stackBindingRegistryPath,
   previewLifecycleStatePath,
   internalOperatorBaseUrl,
@@ -209,7 +207,7 @@ app.use((request, response, next) => {
     next();
     return;
   }
-  if (hasBrokerAccess(request) || request.header("x-manor-harness-token") || request.header("x-manor-codex-token")) {
+  if (hasBrokerAccess(request) || request.header("x-manor-harness-token")) {
     next();
     return;
   }

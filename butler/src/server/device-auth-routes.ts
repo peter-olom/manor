@@ -1,7 +1,10 @@
+import { mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import type express from "express";
+
+import { readButlerAuthStatus } from "./auth-status.js";
 
 type AuthLoginSession = {
   child: ChildProcessWithoutNullStreams;
@@ -10,16 +13,32 @@ type AuthLoginSession = {
   output: string;
 };
 
-const authLoginTimeoutMs = 15_000;
+type AuthTarget = "butler" | "worker";
 
-function extractButlerAuthUrl(output: string): string | null {
+type AuthProcessIdentity = {
+  uid?: number;
+  gid?: number;
+};
+
+const defaultAuthLoginTimeoutMs = 15_000;
+
+class AuthLoginConflictError extends Error {}
+
+function extractPiAuthUrl(output: string): string | null {
   const match = output.match(/https:\/\/auth\.openai\.com\/oauth\/authorize\?\S+/);
   return match ? match[0] : null;
 }
 
-function extractCodexAuthUrl(output: string): string | null {
-  const match = output.match(/https:\/\/auth\.openai\.com\/codex\/device\S*/);
-  return match ? match[0] : null;
+/**
+ * Run the login process as the owner of the target Pi agent directory when the
+ * Butler server is privileged. This keeps the Worker-owned auth file writable
+ * by the Worker after Pi rotates its OAuth refresh token.
+ */
+export async function authProcessIdentityForPiAgentDir(piAgentDir: string): Promise<AuthProcessIdentity> {
+  await mkdir(piAgentDir, { recursive: true, mode: 0o700 });
+  if (typeof process.getuid !== "function" || process.getuid() !== 0) return {};
+  const owner = await stat(piAgentDir);
+  return { uid: owner.uid, gid: owner.gid };
 }
 
 function clearAuthLoginSession(current: AuthLoginSession | null, child: ChildProcessWithoutNullStreams): AuthLoginSession | null {
@@ -29,55 +48,70 @@ function clearAuthLoginSession(current: AuthLoginSession | null, child: ChildPro
 export function registerDeviceAuthRoutes(
   app: express.Express,
   options: {
-    piAgentDir: string;
-    codexHomeDir: string;
+    butlerPiAgentDir: string;
+    workerPiAgentDir: string;
+    authCommand?: string;
+    authCommandArgs?: string[];
+    authLoginTimeoutMs?: number;
+    onAuthChanged?: (target: AuthTarget) => void | Promise<void>;
   }
 ): void {
   let butlerAuthLoginSession: AuthLoginSession | null = null;
-  let codexAuthLoginSession: AuthLoginSession | null = null;
+  let workerAuthLoginSession: AuthLoginSession | null = null;
 
-  function startButlerAuthLogin(): Promise<string> {
-    if (butlerAuthLoginSession?.authUrl) {
-      return Promise.resolve(butlerAuthLoginSession.authUrl);
+  function sessionFor(target: AuthTarget): AuthLoginSession | null {
+    return target === "butler" ? butlerAuthLoginSession : workerAuthLoginSession;
+  }
+
+  function setSession(target: AuthTarget, session: AuthLoginSession | null): void {
+    if (target === "butler") butlerAuthLoginSession = session;
+    else workerAuthLoginSession = session;
+  }
+
+  async function startPiAuthLogin(target: AuthTarget, piAgentDir: string): Promise<string> {
+    const otherTarget: AuthTarget = target === "butler" ? "worker" : "butler";
+    if (sessionFor(otherTarget)) {
+      throw new AuthLoginConflictError(`Finish or cancel the active ${otherTarget === "butler" ? "Butler" : "Worker"} sign-in before starting another sign-in.`);
+    }
+    const existing = sessionFor(target);
+    if (existing?.authUrl) return existing.authUrl;
+    if (existing) {
+      existing.child.kill();
+      setSession(target, null);
     }
 
-    if (butlerAuthLoginSession) {
-      butlerAuthLoginSession.child.kill();
-      butlerAuthLoginSession = null;
-    }
-
-    const child = spawn("butler-auth", ["device"], {
+    const identity = await authProcessIdentityForPiAgentDir(piAgentDir);
+    const child = spawn(options.authCommand ?? "butler-auth", [...(options.authCommandArgs ?? []), "device"], {
+      ...identity,
       env: {
         ...process.env,
-        PI_AGENT_DIR: options.piAgentDir,
-        CODEX_HOME: process.env.CODEX_HOME ?? path.join(path.dirname(options.piAgentDir), ".codex")
+        PI_AGENT_DIR: piAgentDir,
+        PI_CODING_AGENT_DIR: piAgentDir
       }
     });
 
-    butlerAuthLoginSession = {
+    const authSession: AuthLoginSession = {
       child,
       authUrl: null,
       startedAt: Date.now(),
       output: ""
     };
+    setSession(target, authSession);
 
     return new Promise((resolve, reject) => {
+      const label = target === "butler" ? "Butler" : "Worker";
       const timeout = setTimeout(() => {
-        reject(new Error("Timed out waiting for Butler auth URL. Open the Butler terminal and run butler-auth device."));
-      }, authLoginTimeoutMs);
+        child.kill();
+        setSession(target, clearAuthLoginSession(sessionFor(target), child));
+        reject(new Error(`Timed out waiting for ${label} auth URL. Open the ${label} terminal and run butler-auth device.`));
+      }, options.authLoginTimeoutMs ?? defaultAuthLoginTimeoutMs);
 
       const finishWithUrl = (chunk: Buffer) => {
-        const session = butlerAuthLoginSession;
-        if (!session || session.child !== child) {
-          return;
-        }
-
+        const session = sessionFor(target);
+        if (!session || session.child !== child) return;
         session.output += chunk.toString("utf8");
-        const authUrl = extractButlerAuthUrl(session.output);
-        if (!authUrl) {
-          return;
-        }
-
+        const authUrl = extractPiAuthUrl(session.output);
+        if (!authUrl) return;
         session.authUrl = authUrl;
         clearTimeout(timeout);
         resolve(authUrl);
@@ -87,107 +121,43 @@ export function registerDeviceAuthRoutes(
       child.stderr.on("data", finishWithUrl);
       child.on("error", (error) => {
         clearTimeout(timeout);
-        butlerAuthLoginSession = clearAuthLoginSession(butlerAuthLoginSession, child);
+        setSession(target, clearAuthLoginSession(sessionFor(target), child));
         reject(error);
       });
       child.on("exit", (code) => {
         clearTimeout(timeout);
-        butlerAuthLoginSession = clearAuthLoginSession(butlerAuthLoginSession, child);
-        if (code !== 0) {
-          reject(new Error(`Butler auth exited with code ${code ?? "unknown"}. Open the Butler terminal and run butler-auth device.`));
+        setSession(target, clearAuthLoginSession(sessionFor(target), child));
+        if (code === 0) {
+          void Promise.resolve(options.onAuthChanged?.(target)).catch((error) => {
+            console.error(`${label} auth refresh failed`, error);
+          });
+          return;
         }
+        reject(new Error(`${label} auth exited with code ${code ?? "unknown"}. Open the ${label} terminal and run butler-auth device.`));
       });
     });
   }
 
-  function startCodexAuthLogin(): Promise<string> {
-    if (codexAuthLoginSession?.authUrl) {
-      return Promise.resolve(codexAuthLoginSession.authUrl);
-    }
+  function registerTarget(target: AuthTarget, piAgentDir: string): void {
+    app.get(`/api/auth/${target}/status`, async (_request, response) => {
+      response.json(await readButlerAuthStatus(path.join(piAgentDir, "auth.json")));
+    });
 
-    if (codexAuthLoginSession) {
-      codexAuthLoginSession.child.kill();
-      codexAuthLoginSession = null;
-    }
-
-    const child = spawn("codex", ["login", "--device-auth"], {
-      env: {
-        ...process.env,
-        CODEX_HOME: options.codexHomeDir
+    app.post(`/api/auth/${target}/device`, async (_request, response) => {
+      try {
+        const authUrl = await startPiAuthLogin(target, piAgentDir);
+        response.json({
+          authUrl,
+          startedAt: sessionFor(target)?.startedAt ?? Date.now()
+        });
+      } catch (error) {
+        response.status(error instanceof AuthLoginConflictError ? 409 : 500).json({
+          error: error instanceof Error ? error.message : String(error)
+        });
       }
     });
-
-    codexAuthLoginSession = {
-      child,
-      authUrl: null,
-      startedAt: Date.now(),
-      output: ""
-    };
-
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error("Timed out waiting for Codex auth URL. Open the Codex terminal and run codex-auth device."));
-      }, authLoginTimeoutMs);
-
-      const finishWithUrl = (chunk: Buffer) => {
-        const session = codexAuthLoginSession;
-        if (!session || session.child !== child) {
-          return;
-        }
-
-        session.output += chunk.toString("utf8");
-        const authUrl = extractCodexAuthUrl(session.output);
-        if (!authUrl) {
-          return;
-        }
-
-        session.authUrl = authUrl;
-        clearTimeout(timeout);
-        resolve(authUrl);
-      };
-
-      child.stdout.on("data", finishWithUrl);
-      child.stderr.on("data", finishWithUrl);
-      child.on("error", (error) => {
-        clearTimeout(timeout);
-        codexAuthLoginSession = clearAuthLoginSession(codexAuthLoginSession, child);
-        reject(error);
-      });
-      child.on("exit", (code) => {
-        clearTimeout(timeout);
-        codexAuthLoginSession = clearAuthLoginSession(codexAuthLoginSession, child);
-        if (code !== 0) {
-          reject(new Error(`Codex auth exited with code ${code ?? "unknown"}. Open the Codex terminal and run codex-auth device.`));
-        }
-      });
-    });
   }
 
-  app.post("/api/auth/butler/device", async (_request, response) => {
-    try {
-      const authUrl = await startButlerAuthLogin();
-      response.json({
-        authUrl,
-        startedAt: butlerAuthLoginSession?.startedAt ?? Date.now()
-      });
-    } catch (error) {
-      response.status(500).json({
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  });
-
-  app.post("/api/auth/codex/device", async (_request, response) => {
-    try {
-      const authUrl = await startCodexAuthLogin();
-      response.json({
-        authUrl,
-        startedAt: codexAuthLoginSession?.startedAt ?? Date.now()
-      });
-    } catch (error) {
-      response.status(500).json({
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  });
+  registerTarget("butler", options.butlerPiAgentDir);
+  registerTarget("worker", options.workerPiAgentDir);
 }

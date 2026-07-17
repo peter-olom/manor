@@ -6,14 +6,14 @@ import path from "node:path";
 import {
   ensureWorkerOwnedDirectory,
   execFileAsWorker,
-  resolveCodexWorkerOwnership,
+  resolveWorkerOwnership,
   type WorkerOwnership
 } from "./repo-worktree.js";
 
 type GitOutputResult = { output: string; ok: boolean; truncated: boolean };
 
 function reviewWorkerOwnership(): WorkerOwnership {
-  const configured = resolveCodexWorkerOwnership();
+  const configured = resolveWorkerOwnership();
   const uid = process.getuid?.();
   const gid = process.getgid?.();
   if (uid === undefined || gid === undefined || (process.platform === "linux" && (uid === 0 || uid === configured.uid))) {

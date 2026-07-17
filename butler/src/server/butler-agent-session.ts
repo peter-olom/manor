@@ -275,11 +275,7 @@ export function reloadButlerResources(access: Pick<ButlerAgentSessionAccess, "pr
 }
 
 function liveChatGptModelIds(access: ButlerAgentSessionAccess): Set<string> | null {
-  if (access.auth.mode !== "chatgpt") return null;
-  const state = access.codexClient.getConnectionState();
-  const models = state.compose.availableModels;
-  if (!state.connected || models.length === 0) return null;
-  return new Set(models.map((model) => parseProviderModelRef(model.id).model ?? model.id));
+  return null;
 }
 
 function isButlerModelProviderAuthenticated(access: ButlerAgentSessionAccess, provider: string | null | undefined): boolean {

@@ -83,7 +83,7 @@ export function normalizeRoutingDecision(raw: unknown, fallbackTaskClass: CodexT
   if (rawGoalMode !== "none" && rawGoalMode !== "native_goal" && rawGoalMode !== "contract_fallback") return null;
   const reviewRequired = review.required === true;
   const rawReviewTarget = text(review.target, 40);
-  if (rawReviewTarget !== "none" && rawReviewTarget !== "codex_review" && rawReviewTarget !== "adversarial_review") return null;
+  if (rawReviewTarget !== "none" && rawReviewTarget !== "adversarial_review") return null;
 
   return {
     taskClass: rawTaskClass as ButlerRoutingTaskClass,
@@ -95,8 +95,8 @@ export function normalizeRoutingDecision(raw: unknown, fallbackTaskClass: CodexT
       fallbackReason: text(goal.fallbackReason ?? goal.fallback_reason, 500)
     },
     reviewRecommendation: {
-      target: rawReviewTarget === "codex_review" ? "adversarial_review" : rawReviewTarget,
-      required: reviewRequired || rawReviewTarget === "codex_review" || rawReviewTarget === "adversarial_review",
+      target: rawReviewTarget,
+      required: reviewRequired || rawReviewTarget === "adversarial_review",
       reason: text(review.reason, 500)
     },
     subAgentRoles: stringList(rawSubAgentRoles, 8, 80),

@@ -1248,18 +1248,12 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
     imageReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
     fileReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 })))
   });
-  const defineDelegationTool = (name: "delegate_to_worker" | "delegate_to_codex"): ButlerCustomTool =>
+  const defineDelegationTool = (name: "delegate_to_worker"): ButlerCustomTool =>
     access.defineButlerTool({
       name,
-      label: name === "delegate_to_worker" ? "Delegate to worker" : "Delegate to worker (compatibility)",
-      description:
-        name === "delegate_to_worker"
-          ? "Start a new worker workstream using the operator's selected worker model or Manor's authenticated-provider default."
-          : "Compatibility alias for delegate_to_worker. Use delegate_to_worker for new delegation calls.",
-      promptSnippet:
-        name === "delegate_to_worker"
-          ? "delegate_to_worker: start execution, coding, shell work, repo setup, app build, file generation, or other task delivery. Manor chooses the authenticated provider, model, harness, runtime, and thinking from operator preferences and defaults."
-          : "delegate_to_codex: legacy compatibility alias for delegate_to_worker; use delegate_to_worker for new calls.",
+      label: "Delegate to worker",
+      description: "Start a new worker workstream using the operator's selected worker model or Manor's authenticated-provider default.",
+      promptSnippet: "delegate_to_worker: start execution, coding, shell work, repo setup, app build, file generation, or other task delivery. Manor chooses the authenticated provider, model, harness, runtime, and thinking from operator preferences and defaults.",
       parameters: delegationParameters,
       uiEffects: access.getToolUiEffects("delegate_to_worker"),
       execute: async (_toolCallId, params) => {
@@ -1319,7 +1313,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           effort: workerEffort,
           openWindow: true,
           runtime: "auto",
-          harness: workerDefaults?.harness ?? null,
+          harness: workerDefaults?.harness === "pi" ? "pi" : null,
           model: workerDefaults?.model ?? null
         });
         const delegationContract = preparedContract ?? await access.buildDelegationContract({
@@ -1370,7 +1364,6 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
 
   return [
     defineDelegationTool("delegate_to_worker"),
-    defineDelegationTool("delegate_to_codex"),
     access.defineButlerTool({
       name: "run_supervision_smoke_test",
       label: "Run supervision smoke test",

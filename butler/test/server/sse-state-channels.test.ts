@@ -18,13 +18,13 @@ test("SSE flush computes and serializes only subscribed state channels", () => {
   const access = {
     butlerAgent: {
       getShellSnapshot: () => ({}),
-      getCodexAuthStatus: () => ({}),
+      getWorkerAuthStatus: () => ({}),
       getLiveSnapshot: () => {
         calls.butlerLive += 1;
         return {};
       }
     },
-    codexClient: { getConnectionState: () => ({}) },
+    piRpcWorkerClient: { getConnectionState: () => ({}) },
     scratchPadStore: { getSnapshot: () => ({}) },
     serviceTemplateRegistry: { list: () => [] },
     store: {

@@ -90,7 +90,7 @@ test("accepted closeout rotates the review baseline and retires peer attribution
   assert.ok(initial);
   const store = new ButlerStateStore(path.join(dir, "state.json"));
   const threadId = "worker-rotate";
-  store.upsertThreadSummary({ id: threadId, source: "appServer", status: "idle", cwd: repo, turns: [] });
+  store.upsertThreadSummary({ id: threadId, source: "pi-rpc", status: "idle", cwd: repo, turns: [] });
   store.setThreadExecutionContract(threadId, {
     ...buildThreadExecutionContract({ threadId, workspaceCwd: repo, projectId: "project", projectLabel: "Project", branch: null, taskText: "Change feature.txt.", taskCategory: "generic_code", inferredWorkDepth: "standard", notes: [] }),
     reviewBaselineCwd: initial.cwd,
@@ -120,7 +120,7 @@ test("rotating a handed-off worker keeps a review baseline still referenced by i
   assert.ok(initial);
   const store = new ButlerStateStore(path.join(dir, "state.json"));
   for (const threadId of ["source-worker", "replacement-worker"]) {
-    store.upsertThreadSummary({ id: threadId, source: "appServer", status: "idle", cwd: repo, turns: [] });
+    store.upsertThreadSummary({ id: threadId, source: "pi-rpc", status: "idle", cwd: repo, turns: [] });
     store.setThreadExecutionContract(threadId, {
       ...buildThreadExecutionContract({ threadId, workspaceCwd: repo, projectId: "project", projectLabel: "Project", branch: null, taskText: "Change feature.txt.", notes: [] }),
       reviewBaselineCwd: initial.cwd,
@@ -148,7 +148,7 @@ test("failed baseline persistence restores the prior baseline and peer attributi
   const store = new ButlerStateStore(path.join(dir, "state.json"));
   const threadId = "worker-rotate-rollback";
   const peerContexts = [{ sourceThreadId: "peer", baselineTreeSha: initial.treeSha, paths: ["peer.ts"], recordedAt: 1 }];
-  store.upsertThreadSummary({ id: threadId, source: "appServer", status: "idle", cwd: repo, turns: [] });
+  store.upsertThreadSummary({ id: threadId, source: "pi-rpc", status: "idle", cwd: repo, turns: [] });
   store.setThreadExecutionContract(threadId, {
     ...buildThreadExecutionContract({ threadId, workspaceCwd: repo, projectId: "project", projectLabel: "Project", branch: null, taskText: "Change feature.txt.", taskCategory: "generic_code", inferredWorkDepth: "standard", notes: [] }),
     reviewBaselineCwd: initial.cwd,

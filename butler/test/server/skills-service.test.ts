@@ -16,60 +16,37 @@ async function writeSkill(root: string, name: string, description = `${name} des
   return filePath;
 }
 
-async function fixture(t: test.TestContext, listCodexSkills?: (cwd: string) => Promise<Record<string, unknown>[]>) {
+async function fixture(t: test.TestContext) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "manor-skills-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const workspace = path.join(root, "repos");
   const cwd = path.join(workspace, "project");
   const butlerPi = path.join(root, "butler-pi", "agent");
   const workerPi = path.join(root, "worker-pi", "agent");
-  const workerCodex = path.join(root, "codex-home");
   await fs.mkdir(cwd, { recursive: true });
   const service = new SkillsService({
     butlerPiAgentDir: butlerPi,
     workerPiAgentDir: workerPi,
-    workerCodexHomeDir: workerCodex,
-    workerCodexRuntimeHomeDir: "/runtime/codex",
-    workspaceRoot: workspace,
-    listCodexSkills
+    workspaceRoot: workspace
   });
-  return { root, workspace, cwd, butlerPi, workerPi, workerCodex, service };
+  return { root, workspace, cwd, butlerPi, workerPi, service };
 }
 
-test("normalizes Butler Pi, Worker Pi, and Worker Codex skill catalogs", async (t) => {
-  let codexLocalPath = "";
-  const setup = await fixture(t, async () => [{
-    cwd: "/repos/project",
-    skills: [
-      { name: "codex-local", description: "from app server", path: "/runtime/codex/skills/codex-local/SKILL.md" }
-    ]
-  }]);
+test("normalizes Butler and Worker Pi skill catalogs", async (t) => {
+  const setup = await fixture(t);
   await writeSkill(path.join(setup.butlerPi, "skills"), "butler-local");
   await writeSkill(path.join(setup.cwd, ".pi", "skills"), "worker-project");
   await writeSkill(path.join(setup.workspace, ".agents", "skills"), "shared-project");
-  codexLocalPath = await writeSkill(path.join(setup.workerCodex, "skills"), "codex-local", "from disk");
-  await writeSkill(path.join(setup.workerCodex, "skills", ".system"), "codex-system");
-  await writeSkill(path.join(setup.workerCodex, "plugins", "cache", "vendor", "plugin", "skills"), "codex-package");
+  await writeSkill(path.join(setup.workerPi, "npm", "node_modules", "vendor", "skills"), "worker-package");
 
   const butler = await setup.service.list("butler-pi", setup.cwd);
   const workerPi = await setup.service.list("worker-pi", setup.cwd);
-  const codex = await setup.service.list("worker-codex", setup.cwd);
 
   assert.deepEqual(butler.map((skill) => skill.name), ["butler-local", "shared-project", "worker-project"]);
   assert.equal(butler[0]?.invocation, "/skill:butler-local");
-  assert.deepEqual(workerPi.map((skill) => skill.name), ["shared-project", "worker-project"]);
-  assert.ok(workerPi.every((skill) => skill.scope === "project"));
-  assert.deepEqual(codex.map((skill) => [skill.name, skill.origin, skill.mutable]), [
-    ["codex-local", "local", true],
-    ["codex-package", "package", false],
-    ["codex-system", "system", false],
-    ["shared-project", "local", true]
-  ]);
-  assert.equal(codex.find((skill) => skill.name === "codex-local")?.description, "from disk");
-  assert.ok(!JSON.stringify(codex).includes(codexLocalPath));
-  assert.match(codex[0]?.id ?? "", /^skill_[A-Za-z0-9_-]{24}$/);
-  const codexInput = await setup.service.resolveInputItem("worker-codex", codex.find((skill) => skill.name === "codex-local")!.id, setup.cwd);
-  assert.equal(codexInput.path, "/runtime/codex/skills/codex-local/SKILL.md");
+  assert.deepEqual(workerPi.map((skill) => skill.name), ["shared-project", "worker-package", "worker-project"]);
+  assert.equal(workerPi.find((skill) => skill.name === "worker-package")?.mutable, false);
+  assert.match(workerPi[0]?.id ?? "", /^skill_[A-Za-z0-9_-]{24}$/);
 });
 
 test("creates, reads, edits, resolves, and deletes a local skill by server id", async (t) => {
@@ -104,24 +81,16 @@ test("creates, reads, edits, resolves, and deletes a local skill by server id", 
   await assert.rejects(() => setup.service.read("worker-pi", created.id, setup.cwd), /not found/i);
 });
 
-test("keeps package and system skills read-only", async (t) => {
+test("keeps package skills read-only", async (t) => {
   const setup = await fixture(t);
   await writeSkill(path.join(setup.workerPi, "npm", "node_modules", "example", "skills"), "package-skill");
-  await writeSkill(path.join(setup.workerCodex, "skills", ".system"), "system-skill");
-
-  for (const environment of ["worker-pi", "worker-codex"] as SkillEnvironmentId[]) {
-    const skill = (await setup.service.list(environment, setup.cwd))[0]!;
-    assert.equal(skill.mutable, false);
-    assert.equal(skill.capabilities.edit, false);
-    assert.match((await setup.service.read(environment, skill.id, setup.cwd)).content, /Use/);
-    await assert.rejects(() => setup.service.edit({
-      environment,
-      id: skill.id,
-      cwd: setup.cwd,
-      content: "---\nname: changed\ndescription: changed\n---\n"
-    }), /read-only/i);
-    await assert.rejects(() => setup.service.delete(environment, skill.id, setup.cwd), /read-only/i);
-  }
+  const environment: SkillEnvironmentId = "worker-pi";
+  const skill = (await setup.service.list(environment, setup.cwd))[0]!;
+  assert.equal(skill.mutable, false);
+  assert.equal(skill.capabilities.edit, false);
+  assert.match((await setup.service.read(environment, skill.id, setup.cwd)).content, /Use/);
+  await assert.rejects(() => setup.service.edit({ environment, id: skill.id, cwd: setup.cwd, content: "---\nname: changed\ndescription: changed\n---\n" }), /read-only/i);
+  await assert.rejects(() => setup.service.delete(environment, skill.id, setup.cwd), /read-only/i);
 });
 
 test("imports only staged skill files without executing package content", async (t) => {
@@ -152,12 +121,12 @@ test("rejects archive traversal and rolls back the staging directory", async (t)
   const archiveBase64 = (await zip.generateAsync({ type: "nodebuffer" })).toString("base64");
 
   await assert.rejects(() => setup.service.importArchive({
-    environment: "worker-codex",
+    environment: "worker-pi",
     archiveBase64,
     cwd: setup.cwd
   }), /unsafe path/i);
-  await assert.rejects(() => fs.access(path.join(setup.workerCodex, "skills", "escaped")));
-  const entries = await fs.readdir(path.join(setup.workerCodex, "skills"));
+  await assert.rejects(() => fs.access(path.join(setup.workerPi, "skills", "escaped")));
+  const entries = await fs.readdir(path.join(setup.workerPi, "skills"));
   assert.deepEqual(entries, []);
 });
 

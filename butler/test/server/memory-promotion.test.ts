@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -120,66 +120,4 @@ test("accepted duplicate candidates do not append duplicate project memory entri
 
   assert.equal(store.getProjectMemory("project-1")?.entries.length, 1);
   assert.equal(store.getProjectMemory("project-1")?.summary, "PR #17 merged: memory synthesis JSON schema fix is now on main.");
-});
-
-test("memory promotion model env overrides the global synthesis model", async () => {
-  const { store, stateDir } = await createStore();
-  const scheduler = new MemoryUpdateScheduler({ store, stateDir, codexHomeDir: stateDir, config: testConfig({ model: "gpt-5.4-mini" }) });
-  store.upsertThreadSummary({ id: "thread-1", cwd: "/workspace", createdAt: 1, status: "running" });
-  store.setThreadExecutionContract("thread-1", contract());
-  const candidate = store.submitJobMemoryPromotionCandidate("thread-1", {
-    kind: "decision",
-    summary: "Promotion-specific model should win.",
-    sourceEntryId: "worker-report:turn-1:candidate:model",
-    context: { projectId: "project-1", projectLabel: "Project One" }
-  });
-  const binDir = await mkdtemp(path.join(tmpdir(), "manor-memory-promotion-model-bin-"));
-  const fakeCodexPath = path.join(binDir, "codex");
-  const invocationsPath = path.join(binDir, "invocations.jsonl");
-  await writeFile(
-    fakeCodexPath,
-    [
-      "#!/usr/bin/env node",
-      'const fs = require("node:fs");',
-      "const args = process.argv.slice(2);",
-      `fs.appendFileSync(${JSON.stringify(invocationsPath)}, JSON.stringify(args) + "\\n");`,
-      'const outputIndex = args.indexOf("--output-last-message");',
-      "if (outputIndex === -1 || !args[outputIndex + 1]) process.exit(2);",
-      "fs.writeFileSync(",
-      "  args[outputIndex + 1],",
-      `  JSON.stringify({ decisions: [{ candidateId: ${JSON.stringify(candidate.id)}, accepted: false, confidence: "high", reason: "Regression test." }] })`,
-      ");"
-    ].join("\n"),
-    "utf8"
-  );
-  await chmod(fakeCodexPath, 0o755);
-  const originalPath = process.env.PATH;
-  const originalModel = process.env.MANOR_MEMORY_PROMOTION_MODEL;
-  process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
-  process.env.MANOR_MEMORY_PROMOTION_MODEL = "gpt-5.5";
-  try {
-    const resolver = new CodexExecMemoryPromotionService({
-      store,
-      memoryScheduler: scheduler,
-      stateDir,
-      codexHomeDir: stateDir,
-      config: testConfig({ model: "gpt-5.4-mini", timeoutMs: 5_000 })
-    });
-
-    await resolver.drainPendingCandidates();
-    const invocations = (await readFile(invocationsPath, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as string[]);
-    const modelIndex = invocations[0]?.indexOf("--model") ?? -1;
-
-    assert.deepEqual(invocations[0]?.slice(modelIndex, modelIndex + 2), ["--model", "gpt-5.5"]);
-  } finally {
-    process.env.PATH = originalPath;
-    if (originalModel === undefined) {
-      delete process.env.MANOR_MEMORY_PROMOTION_MODEL;
-    } else {
-      process.env.MANOR_MEMORY_PROMOTION_MODEL = originalModel;
-    }
-  }
 });

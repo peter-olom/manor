@@ -66,16 +66,13 @@ test("settings exposes only authenticated provider models for background tasks, 
       getValidation: () => ({})
     },
     store: { getThread: () => null, listThreads: () => [] },
-    codexClient: {
-      getConnectionState: () => ({ connected: true, lastError: null, compose: { model: null, effort: null, availableModels: [codexModel] } })
-    },
     piRpcWorkerClient: {
       getConnectionState: () => ({ lastError: null, compose: { provider: "custom-go", model: null, effort: null, availableModels: [openCodeModel] } })
     },
     butlerAgent: {
       getShellSnapshot: () => ({ compose: { availableModels: [codexModel, openCodeModel] } }),
       getButlerAuthStatus: () => ({ loggedIn: true }),
-      getCodexAuthStatus: () => ({ loggedIn: false })
+      getWorkerAuthStatus: () => ({ loggedIn: false })
     },
     onSettingsChanged: async () => undefined
   } as never);
@@ -89,9 +86,9 @@ test("settings exposes only authenticated provider models for background tasks, 
       modelTaskProviderAvailability: Record<string, { secretAvailable: boolean }>;
     };
     assert.equal(response.status, 200);
-    assert.deepEqual(payload.availableModels.modelTasks.map((entry) => entry.id), ["custom-go/glm-5.2"]);
+    assert.deepEqual(payload.availableModels.modelTasks.map((entry) => entry.id), ["openai-codex/gpt-5.4", "custom-go/glm-5.2"]);
     assert.equal(payload.providerAvailability["openai-codex"]?.secretAvailable, true);
-    assert.equal(payload.modelTaskProviderAvailability["openai-codex"]?.secretAvailable, false);
+    assert.equal(payload.modelTaskProviderAvailability["openai-codex"]?.secretAvailable, true);
   } finally {
     await server.close();
   }
@@ -152,12 +149,11 @@ test("settings diagnostics validates Ollama Cloud using discovered models", asyn
       }
     },
     store: {},
-    codexClient: { getConnectionState: () => ({ connected: false, lastError: null, compose: { availableModels: [] } }) },
     piRpcWorkerClient: { getConnectionState: () => ({ lastError: null, compose: { availableModels: [] } }) },
     butlerAgent: {
       getShellSnapshot: () => ({ compose: { availableModels: [] } }),
       getButlerAuthStatus: () => ({ loggedIn: false }),
-      getCodexAuthStatus: () => ({ loggedIn: false })
+      getWorkerAuthStatus: () => ({ loggedIn: false })
     },
     onSettingsChanged: async () => undefined,
     refreshModelInventories: () => { refreshRequests += 1; }
@@ -232,7 +228,6 @@ test("settings exposes OpenCode Go models from the live OpenCode Go endpoint", a
       }
     },
     store: { getThread: () => null, listThreads: () => [] },
-    codexClient: { getConnectionState: () => ({ connected: true, lastError: null, compose: { model: null, effort: null, availableModels: [] } }) },
     piRpcWorkerClient: {
       getConnectionState: () => ({
         lastError: null,
@@ -247,7 +242,7 @@ test("settings exposes OpenCode Go models from the live OpenCode Go endpoint", a
     butlerAgent: {
       getShellSnapshot: () => ({ compose: { availableModels: [] } }),
       getButlerAuthStatus: () => ({ loggedIn: false }),
-      getCodexAuthStatus: () => ({ loggedIn: false })
+      getWorkerAuthStatus: () => ({ loggedIn: false })
     },
     onSettingsChanged: async () => undefined
   } as never);

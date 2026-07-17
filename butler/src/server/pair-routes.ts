@@ -331,7 +331,12 @@ export function registerPairRoutes(access: PairRouteAccess): void {
   });
 
   app.patch("/api/pairs/:pairId/settings", async (request, response) => {
-    const target = request.body?.target === "codex" || request.body?.target === "worker" ? "worker" : "butler";
+    const rawTarget = request.body?.target;
+    const target = rawTarget === "worker" ? "worker" : rawTarget === "butler" || rawTarget == null ? "butler" : null;
+    if (!target) {
+      response.status(400).json({ error: "target must be butler or worker" });
+      return;
+    }
     try {
       if (target === "butler") {
         const model = readString(request.body?.model);

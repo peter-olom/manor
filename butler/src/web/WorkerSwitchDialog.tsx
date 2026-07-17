@@ -5,8 +5,6 @@ import { BudgetSegmented } from "./BudgetSegmented";
 import { ModelPicker } from "./ModelPicker";
 import {
   isSameWorkerRoute,
-  workerHarnessForModel,
-  workerHarnessLabel,
   workerModelForRoute,
   workerModelForSelection,
   workerModelLabel,
@@ -131,7 +129,6 @@ export function WorkerSwitchDialog({
   }, [open]);
 
   if (!open) return null;
-  const nextHarness = selected ? workerHarnessForModel(selected) : null;
   const sameModel = selected ? isSameWorkerRoute(selected, activeWorker.model, activeWorker.harness) : false;
   const hasAlternativeModel = models.some((model) => !isSameWorkerRoute(model, activeWorker.model, activeWorker.harness));
 
@@ -147,9 +144,9 @@ export function WorkerSwitchDialog({
           </div>
           <button ref={closeRef} className="icon-button" type="button" aria-label="Close worker switch" disabled={pending} onClick={onClose}>×</button>
         </header>
-        <div className="worker-switch-route" aria-label="Worker route change">
-          <div><span>Active</span><strong>{workerProviderLabel(activeWorker.provider)} · {workerModelLabel(models, activeWorker.model, activeWorker.harness)} · {workerHarnessLabel(activeWorker.harness)}</strong></div>
-          <div><span>Next</span><strong>{selected ? `${workerProviderForModelLabel(selected)} · ${selected.label} · ${workerHarnessLabel(nextHarness)}` : "No worker available"}</strong></div>
+        <div className="worker-switch-route" aria-label="Worker model change">
+          <div><span>Active</span><strong>{workerProviderLabel(activeWorker.provider)} · {workerModelLabel(models, activeWorker.model, activeWorker.harness)}</strong></div>
+          <div><span>Next</span><strong>{selected ? `${workerProviderForModelLabel(selected)} · ${selected.label}` : "No worker available"}</strong></div>
         </div>
         <div className="worker-switch-fields">
           <ModelPicker
@@ -170,7 +167,7 @@ export function WorkerSwitchDialog({
           ) : <div className="worker-switch-na"><span>Thinking</span><strong>N/A</strong></div>}
         </div>
         <p id="worker-switch-cache-note" className="worker-switch-note">The new Worker session starts cold. Provider cache and hidden reasoning do not transfer. The previous Worker remains in history.</p>
-        {!hasAlternativeModel ? <p className="worker-switch-warning">No other Worker route is available.</p> : sameModel ? <p className="worker-switch-warning">Choose a different Worker route. Thinking can be changed on the active worker.</p> : null}
+        {!hasAlternativeModel ? <p className="worker-switch-warning">No other Worker model is available.</p> : sameModel ? <p className="worker-switch-warning">Choose a different Worker model. Thinking can be changed on the active worker.</p> : null}
         {error ? <div className="error worker-switch-error" role="alert">{error}</div> : null}
         <footer>
           <button className="button" type="button" disabled={pending} onClick={onClose}>Cancel</button>

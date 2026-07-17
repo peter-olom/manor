@@ -4,7 +4,7 @@ import type { SelfImprovementRequestView } from "../shared/self-improvement.js";
 const MANOR_PLATFORM_TERMS = [
   "manor",
   "butler",
-  "codex-box",
+  "worker",
   "codex box",
   "shared codex",
   "manor-harness",
@@ -54,7 +54,7 @@ const STRONG_PLATFORM_TERMS = [
   "install guard",
   "install-guard",
   "shared codex",
-  "codex-box",
+  "worker",
   "butler",
   "supervision",
   "worker callback",

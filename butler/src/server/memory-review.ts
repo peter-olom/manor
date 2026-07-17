@@ -1,9 +1,6 @@
-import { spawn } from "node:child_process";
 import crypto from "node:crypto";
-import { promises as fs } from "node:fs";
-import path from "node:path";
 
-import { isUnsupportedCodexModelError, memoryCodexModelArgs, normalizeMemoryCodexModel } from "./memory-codex-model.js";
+import { normalizeMemoryCodexModel } from "./memory-codex-model.js";
 import { resolveMemorySynthesisModel } from "./memory-synthesis-config.js";
 import { recordMemoryDebugTrace, type MemoryDebugTraceDecision } from "./memory-debug-traces.js";
 import type { ButlerStateStore } from "./state-store.js";
@@ -138,25 +135,8 @@ function shouldSubmitCandidate(candidate: MemoryReviewCandidate): boolean {
   return candidate.confidence === "high" || candidate.confidence === "medium";
 }
 
-function parseReviewOutput(text: string): MemoryReviewOutput {
-  const parsed = JSON.parse(text) as Partial<MemoryReviewOutput>;
-  const decisions: MemoryDebugTraceDecision[] = [];
-  const candidates: MemoryReviewCandidate[] = [];
-  for (const [index, candidate] of (Array.isArray(parsed.candidates) ? parsed.candidates : []).entries()) {
-    const normalized = normalizeCandidate(candidate as MemoryReviewCandidate);
-    if (!normalized) {
-      decisions.push({ stage: "parse", outcome: "dropped", summary: "Dropped invalid review candidate.", reason: "schema_or_normalization_failed", inputIndex: index });
-      continue;
-    }
-    candidates.push(normalized);
-  }
-  return { candidates, rawOutput: parsed, rawText: text, parseDecisions: decisions };
-}
-
 export class CodexExecMemoryReviewService {
   private readonly store: ButlerStateStore;
-  private readonly stateDir: string;
-  private readonly codexHomeDir: string;
   private enabled: boolean;
   private timeoutMs: number;
   private model: string | null;
@@ -167,19 +147,18 @@ export class CodexExecMemoryReviewService {
   constructor(options: {
     store: ButlerStateStore;
     stateDir: string;
-    codexHomeDir: string;
     enabled?: boolean;
     timeoutMs?: number;
     model?: string;
     runner?: MemoryReviewRunner;
   }) {
     this.store = options.store;
-    this.stateDir = options.stateDir;
-    this.codexHomeDir = options.codexHomeDir;
     this.enabled = options.enabled ?? true;
     this.timeoutMs = options.timeoutMs ?? 90_000;
     this.model = normalizeMemoryCodexModel(options.model) ?? resolveMemorySynthesisModel();
-    this.runner = options.runner ?? ((input) => this.runCodexExec(input));
+    this.runner = options.runner ?? (async () => {
+      throw new Error("Memory review model runner is unavailable.");
+    });
   }
 
   applyConfig(options: { enabled?: boolean; timeoutMs?: number; model?: string | null }): void {
@@ -277,7 +256,7 @@ export class CodexExecMemoryReviewService {
 
     const prompt = this.buildPrompt(context);
     this.markReviewPending(context);
-    this.store.addEvent(report.threadId, "memory/review/started", "Started Codex CLI memory review for Worker report.");
+    this.store.addEvent(report.threadId, "memory/review/started", "Started model memory review for Worker report.");
     let output: MemoryReviewOutput | null = null;
     const decisions: MemoryDebugTraceDecision[] = [];
     const persisted = { observationIds: [] as string[], candidateIds: [] as string[], entityIds: [] as string[], relationshipIds: [] as string[], jobEntryIds: [reviewPendingSourceId(report)] };
@@ -285,7 +264,7 @@ export class CodexExecMemoryReviewService {
       output = await this.runner({ cwd: context.cwd, prompt, timeoutMs: this.timeoutMs });
       decisions.push(...(output.parseDecisions ?? []));
       if (this.isStaleReview(report)) {
-        this.store.addEvent(report.threadId, "memory/review/stale", "Skipped stale Codex CLI memory review for Worker report.");
+        this.store.addEvent(report.threadId, "memory/review/stale", "Skipped stale model memory review for Worker report.");
         const completedAt = Date.now();
         recordMemoryDebugTrace(this.store, {
           kind: "review",
@@ -495,89 +474,4 @@ export class CodexExecMemoryReviewService {
     return `${DURABLE_REVIEW_PROMPT}\n\nJob outcome payload:\n${JSON.stringify(payload, null, 2)}`;
   }
 
-  private async runCodexExec(input: { cwd: string; prompt: string; timeoutMs: number }): Promise<MemoryReviewOutput> {
-    const scratchDir = path.join(this.stateDir, "memory-review");
-    await fs.mkdir(scratchDir, { recursive: true });
-    const runId = crypto.randomUUID();
-    const schemaPath = path.join(scratchDir, `${runId}.schema.json`);
-    const outputPath = path.join(scratchDir, `${runId}.output.json`);
-    await fs.writeFile(schemaPath, JSON.stringify(MEMORY_REVIEW_OUTPUT_SCHEMA, null, 2), "utf8");
-
-    const baseArgs = [
-      "exec",
-      "--ephemeral",
-      "--sandbox",
-      "read-only",
-      "--skip-git-repo-check",
-      "--ignore-rules",
-      "--output-schema",
-      schemaPath,
-      "--output-last-message",
-      outputPath,
-      "--cd",
-      input.cwd
-    ];
-
-    try {
-      const run = async (model: string | null): Promise<void> => {
-        const args = [...baseArgs, ...memoryCodexModelArgs(model), "-"];
-        await new Promise<void>((resolve, reject) => {
-          const child = spawn("codex", args, {
-            env: {
-              ...process.env,
-              CODEX_HOME: this.codexHomeDir,
-              NO_COLOR: "1"
-            },
-            stdio: ["pipe", "pipe", "pipe"]
-          });
-          let stderr = "";
-          let stdout = "";
-          const timeout = setTimeout(() => {
-            child.kill("SIGTERM");
-            reject(new Error("codex exec memory review timed out"));
-          }, input.timeoutMs);
-
-          child.stdout.on("data", (chunk: Buffer) => {
-            stdout = `${stdout}${chunk.toString("utf8")}`.slice(-16_000);
-          });
-          child.stderr.on("data", (chunk: Buffer) => {
-            stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16_000);
-          });
-          child.on("error", (error) => {
-            clearTimeout(timeout);
-            reject(error);
-          });
-          child.on("close", (code) => {
-            clearTimeout(timeout);
-            if (code === 0) {
-              resolve();
-              return;
-            }
-            reject(new Error(`codex exec exited with ${code}: ${stderr || stdout}`.trim()));
-          });
-
-          child.stdin.end(input.prompt);
-        });
-      };
-
-      if (this.model) {
-        try {
-          await run(this.model);
-        } catch (error) {
-          if (!isUnsupportedCodexModelError(error)) {
-            throw error;
-          }
-          await fs.rm(outputPath, { force: true }).catch(() => {});
-          await run(null);
-        }
-      } else {
-        await run(null);
-      }
-
-      const output = await fs.readFile(outputPath, "utf8");
-      return parseReviewOutput(output);
-    } finally {
-      await Promise.all([schemaPath, outputPath].map((filePath) => fs.rm(filePath, { force: true }).catch(() => {})));
-    }
-  }
 }

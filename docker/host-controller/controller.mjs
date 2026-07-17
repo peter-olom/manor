@@ -31,7 +31,7 @@ const hostGid = Number(process.env.MANOR_HOST_GID);
 const applianceServices = [
   "egress",
   "preview-egress",
-  "codex-box",
+  "worker",
   "runtime-broker",
   "playwright",
   "butler",
@@ -144,7 +144,6 @@ function commandEnv(run) {
   return {
     ...process.env,
     COMPOSE_PROJECT_NAME: composeProjectName,
-    MANOR_CODEX_AUTO_UPDATE: "0",
     MANOR_PI_AUTO_UPDATE: "0"
   };
 }

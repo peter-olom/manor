@@ -1,6 +1,6 @@
 import type { SkillCatalogItem, SkillEnvironmentId } from "./skills-service.js";
 
-export const SKILL_ENVIRONMENTS: readonly SkillEnvironmentId[] = ["butler-pi", "worker-pi", "worker-codex"];
+export const SKILL_ENVIRONMENTS: readonly SkillEnvironmentId[] = ["butler-pi", "worker-pi"];
 
 export type ManorSkillCapability = {
   name: string;
@@ -35,8 +35,7 @@ export async function listManorSkillCapabilities(reader: SkillCatalogReader, cwd
 
 export function skillEnvironmentLabel(environment: SkillEnvironmentId): string {
   if (environment === "butler-pi") return "Butler";
-  if (environment === "worker-pi") return "Worker Pi";
-  return "Worker Codex";
+  return "Worker";
 }
 
 export function skillAvailabilityDetail(skill: ManorSkillCapability): string {
@@ -65,7 +64,7 @@ export function buildManorSkillRoutingContext(
   const available = environments.length > 0 ? environments.map(skillEnvironmentLabel).join(", ") : "none";
   const targetHasSkill = environments.includes(targetWorkerEnvironment);
   const butlerHasSkill = environments.includes("butler-pi");
-  const workerInvocation = targetWorkerEnvironment === "worker-pi" ? `/skill:${name}` : `$${name}`;
+  const workerInvocation = `/skill:${name}`;
   return [
     "MANOR-WIDE SKILL ROUTING",
     `Selected capability: ${name}`,

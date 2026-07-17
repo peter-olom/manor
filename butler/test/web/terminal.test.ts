@@ -19,11 +19,11 @@ test("CLI targets represent the two agent environments", () => {
   });
 });
 
-test("legacy Codex terminal links normalize to the active Worker shell", () => {
+test("retired terminal links are rejected", () => {
   assert.equal(DEFAULT_TERMINAL_TARGET, "worker");
   assert.equal(readInitialTerminalTarget("worker"), "worker");
-  assert.equal(readInitialTerminalTarget("codex"), "worker");
-  assert.equal(readInitialTerminalTarget("pi"), "worker");
+  assert.equal(readInitialTerminalTarget("codex"), null);
+  assert.equal(readInitialTerminalTarget("pi"), null);
   assert.equal(readInitialTerminalTarget("butler"), "butler");
   assert.equal(readInitialTerminalTarget("unknown"), null);
 });

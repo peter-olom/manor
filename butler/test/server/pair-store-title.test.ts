@@ -38,6 +38,24 @@ test("createPair defaults the title to 'New session'", async () => {
   assert.equal(pair.messageCount, 0);
 });
 
+test("load permanently discards pairs backed by a retired Worker harness", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-retired-worker-pair-"));
+  const pairPath = path.join(dir, "pairs.json");
+  await writeFile(pairPath, JSON.stringify({
+    pairs: [{ id: "old-pair", worker: { threadId: "019f-old-worker", runtime: "app-server", harness: "codex" } }],
+    lastUsedCompose: { workerHarness: "codex", workerModel: "openai-codex/gpt-5.4" },
+    workerAffinity: { hasSuccessfulDelegation: true, lastHarness: "codex", lastProvider: "openai-codex", modelByProvider: { "openai-codex": "openai-codex/gpt-5.4" } }
+  }));
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  const pairStore = new PairStore(pairPath, store);
+
+  await pairStore.load();
+
+  assert.deepEqual(pairStore.listSummaries(), []);
+  assert.equal(pairStore.getLastUsedCompose(), null);
+  assert.equal(pairStore.getWorkerAffinity(), null);
+});
+
 test("worker affinity records successful selections without treating picker changes as use", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-worker-affinity-test-"));
   const statePath = path.join(dir, "state.json");
@@ -241,7 +259,7 @@ test("replacement attachment requires the expected worker and can restore it exa
   pairStore.attachWorker(created.id, {
     threadId: "thread-old",
     cwd: "/repos/old",
-    runtime: "openai",
+    runtime: "pi-rpc",
     provider: "openai-codex",
     model: "gpt-5.4",
     effort: "high",
@@ -289,7 +307,7 @@ test("attachWorker replaces only the named worker and preserves handoff identity
   const created = pairStore.createPair();
   pairStore.attachWorker(created.id, {
     threadId: "thread-codex",
-    runtime: "openai",
+    runtime: "pi-rpc",
     provider: "openai-codex",
     model: "gpt-5.4",
     effort: "high"
@@ -321,8 +339,8 @@ test("attachWorker replaces only the named worker and preserves handoff identity
     effort: "medium",
     handedOffFrom: {
       threadId: "thread-codex",
-      runtime: "openai",
-      harness: "codex",
+      runtime: "pi-rpc",
+      harness: "pi",
       provider: "openai-codex",
       model: "gpt-5.4"
     }
@@ -334,12 +352,12 @@ test("attachWorker preserves the full Worker lineage across repeated handoffs", 
   const pairPath = path.join(dir, "pairs.json");
   const store = new ButlerStateStore(path.join(dir, "state.json"));
   for (const id of ["thread-first", "thread-second", "thread-third"]) {
-    store.upsertThreadSummary({ id, source: "appServer", status: "idle", turns: [] });
+    store.upsertThreadSummary({ id, source: "pi-rpc", status: "idle", turns: [] });
   }
   const pairStore = new PairStore(pairPath, store);
   await pairStore.load();
   const created = pairStore.createPair();
-  pairStore.attachWorker(created.id, { threadId: "thread-first", runtime: "openai" });
+  pairStore.attachWorker(created.id, { threadId: "thread-first", runtime: "pi-rpc" });
   pairStore.attachWorker(created.id, {
     threadId: "thread-second",
     runtime: "pi-rpc",
@@ -348,7 +366,7 @@ test("attachWorker preserves the full Worker lineage across repeated handoffs", 
 
   const updated = pairStore.attachWorker(created.id, {
     threadId: "thread-third",
-    runtime: "openai",
+    runtime: "pi-rpc",
     replacesThreadId: "thread-second"
   });
 
@@ -429,9 +447,9 @@ test("loading persisted state drops an attachment whose worker no longer exists"
   const pairStore = new PairStore(pairPath, store);
   await pairStore.load();
   const created = pairStore.createPair();
-  store.upsertThreadSummary({ id: "thread-missing-after-reload", status: "active", turns: [] });
+  store.upsertThreadSummary({ id: "pi-thread-missing-after-reload", source: "pi-rpc", status: "active", turns: [] });
   pairStore.attachWorker(created.id, {
-    threadId: "thread-missing-after-reload",
+    threadId: "pi-thread-missing-after-reload",
     model: "ollama-cloud/devstral-small-2:24b",
     task: "Build the requested app",
     handoffPrompt: "Primary job"
@@ -441,7 +459,7 @@ test("loading persisted state drops an attachment whose worker no longer exists"
     workerEffort: "high"
   });
   await pairStore.flushPendingSave();
-  store.removeThread("thread-missing-after-reload");
+  store.removeThread("pi-thread-missing-after-reload");
 
   const reloaded = new PairStore(pairPath, store);
   await reloaded.load();
@@ -454,7 +472,7 @@ test("loading persisted state drops an attachment whose worker no longer exists"
   assert.equal(repaired?.workerEffort, null);
 });
 
-test("loading persisted state migrates legacy Codex compose fields to Worker fields", async () => {
+test("loading persisted state ignores retired Worker compose fields", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-worker-field-migration-test-"));
   const statePath = path.join(dir, "state.json");
   const pairPath = path.join(dir, "pairs.json");
@@ -474,9 +492,9 @@ test("loading persisted state migrates legacy Codex compose fields to Worker fie
   await pairStore.load();
 
   const migrated = pairStore.getPair("legacy-pair");
-  assert.equal(migrated?.workerModel, "ollama-cloud/glm-5.2");
-  assert.equal(migrated?.workerHarness, "pi");
-  assert.equal(migrated?.workerEffort, "high");
+  assert.equal(migrated?.workerModel, null);
+  assert.equal(migrated?.workerHarness, null);
+  assert.equal(migrated?.workerEffort, null);
   assert.equal(migrated?.worker?.harness, "pi");
   assert.equal("codexModel" in (migrated ?? {}), false);
   assert.equal("codexEffort" in (migrated ?? {}), false);

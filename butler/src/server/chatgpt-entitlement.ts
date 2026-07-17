@@ -11,7 +11,7 @@ function providerFromModelRef(id: string): string | null {
 }
 
 function isOpenAiRuntimeProvider(provider: string | null | undefined): boolean {
-  return provider === "openai" || provider === "openai-codex" || provider === "codex";
+  return provider === "openai" || provider === "openai-codex";
 }
 
 function isCodexManagedRegularGptModel(id: string, provider: string | null | undefined): boolean {

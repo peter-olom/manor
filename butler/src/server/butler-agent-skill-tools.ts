@@ -5,12 +5,11 @@ import type { AgentSkillChangeInput, SkillEnvironmentId, SkillScope } from "./sk
 
 const environmentSchema = Type.Union([
   Type.Literal("butler-pi"),
-  Type.Literal("worker-pi"),
-  Type.Literal("worker-codex")
+  Type.Literal("worker-pi")
 ]);
 
 function environment(value: unknown): SkillEnvironmentId {
-  if (value === "butler-pi" || value === "worker-pi" || value === "worker-codex") return value;
+  if (value === "butler-pi" || value === "worker-pi") return value;
   throw new Error("Unknown skill environment.");
 }
 
@@ -66,8 +65,8 @@ export function buildButlerSkillTools(access: ButlerAgentToolAccess): ButlerCust
     access.defineButlerTool({
       name: "inspect_skills",
       label: "Inspect skills",
-      description: "List, search, or read installed skills in butler-pi, worker-pi, or worker-codex without changing them.",
-      promptSnippet: "inspect_skills: use this before proposing a skill install, creation, or update. Set environment to exactly butler-pi, worker-pi, or worker-codex; never guess another id. Search installed skills first and read a matching skill before changing it.",
+      description: "List, search, or read installed skills for Butler or Worker without changing them.",
+      promptSnippet: "inspect_skills: use this before proposing a skill install, creation, or update. Set environment to exactly butler-pi or worker-pi; never guess another id. Search installed skills first and read a matching skill before changing it.",
       parameters: Type.Object({
         environment: environmentSchema,
         cwd: Type.Optional(Type.String()),
@@ -96,8 +95,8 @@ export function buildButlerSkillTools(access: ButlerAgentToolAccess): ButlerCust
     access.defineButlerTool({
       name: "propose_skill_change",
       label: "Propose skill change",
-      description: "Prepare a validated skill create, install, update, or undo in butler-pi, worker-pi, or worker-codex and ask the operator to approve it. This never mutates skills.",
-      promptSnippet: "propose_skill_change: after inspecting existing skills, use this to present one explicit approval card. Set environment to exactly butler-pi, worker-pi, or worker-codex. Agent create, install, and update accept one complete SKILL.md only, up to 32 KiB, with no companion-file references. The conservative guard may reject ambiguous file-like instructions; use explicit https:// URLs and clearly qualify runtime-generated paths. Direct genuine multi-file skills to Settings → Skills → Advanced archive install. Install source is agent-reported; Manor does not fetch or attest it. Never call apply_skill_change until the operator approves the card.",
+      description: "Prepare a validated skill create, install, update, or undo for Butler or Worker and ask the operator to approve it. This never mutates skills.",
+      promptSnippet: "propose_skill_change: after inspecting existing skills, use this to present one explicit approval card. Set environment to exactly butler-pi or worker-pi. Agent create, install, and update accept one complete SKILL.md only, up to 32 KiB, with no companion-file references. The conservative guard may reject ambiguous file-like instructions; use explicit https:// URLs and clearly qualify runtime-generated paths. Direct genuine multi-file skills to Settings → Skills → Advanced archive install. Install source is agent-reported; Manor does not fetch or attest it. Never call apply_skill_change until the operator approves the card.",
       parameters: Type.Object({
         operation: Type.Union([Type.Literal("create"), Type.Literal("install"), Type.Literal("update"), Type.Literal("undo")]),
         environment: Type.Optional(environmentSchema),
@@ -148,8 +147,8 @@ export function buildButlerSkillTools(access: ButlerAgentToolAccess): ButlerCust
     access.defineButlerTool({
       name: "apply_skill_change",
       label: "Apply skill change",
-      description: "Apply one server-approved skill proposal for butler-pi, worker-pi, or worker-codex, verify it, schedule the applicable resource reload, and return undo details.",
-      promptSnippet: "apply_skill_change: call this only after the operator approved the matching proposal card for butler-pi, worker-pi, or worker-codex. The server rejects unapproved, rejected, expired, cross-session, or stale proposals.",
+      description: "Apply one server-approved skill proposal for Butler or Worker, verify it, schedule the applicable resource reload, and return undo details.",
+      promptSnippet: "apply_skill_change: call this only after the operator approved the matching proposal card for butler-pi or worker-pi. The server rejects unapproved, rejected, expired, cross-session, or stale proposals.",
       parameters: Type.Object({ proposalId: Type.String({ minLength: 1 }) }),
       uiEffects: access.getToolUiEffects("apply_skill_change"),
       execute: async (_toolCallId, params) => {

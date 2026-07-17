@@ -5,7 +5,7 @@ import path from "node:path";
 import type { Response } from "express";
 
 import type { ButlerAgentService } from "./butler-agent.js";
-import type { CodexAppServerClient } from "./codex-client.js";
+import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { ScratchPadStore } from "./scratch-pad-store.js";
 import type { ServiceTemplateRegistry } from "./service-templates.js";
@@ -26,7 +26,7 @@ export function resolveSseStateChannels(value: unknown): SseStateChannel[] {
 export type RuntimeServerAccess = {
   artifactsDir: string;
   butlerAgent: ButlerAgentService;
-  codexClient: CodexAppServerClient;
+  piRpcWorkerClient: PiRpcWorkerClient;
   runtimeBroker: RuntimeBrokerClient;
   runtimeBrokerUrl: string;
   previewAnnotationSecret: string;
@@ -46,8 +46,8 @@ export function resolvePreviewProxyTarget(access: RuntimeServerAccess, leaseId: 
 
 function currentShellSnapshot(access: RuntimeServerAccess) {
   const shell = access.store.getShellSnapshot(access.butlerAgent.getShellSnapshot(), {
-    ...access.codexClient.getConnectionState(),
-    auth: access.butlerAgent.getCodexAuthStatus()
+    ...access.piRpcWorkerClient.getConnectionState(),
+    auth: access.butlerAgent.getWorkerAuthStatus()
   });
   return {
     ...shell,

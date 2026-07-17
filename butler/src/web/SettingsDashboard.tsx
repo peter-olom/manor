@@ -8,7 +8,6 @@ import { SkillsDashboard } from "./SkillsDashboard";
 import { RuntimeEgressDashboard } from "./RuntimeEgressDashboard";
 import { UsageDashboard } from "./UsageDashboard";
 import {
-  workerHarnessLabel,
   workerModelForRoute,
   workerModelForSelection,
   workerModelPickerOption,
@@ -21,8 +20,7 @@ import type {
   SettingsProviderAvailabilityMap,
   SettingsSecretSource,
   SettingsValidationKey,
-  SettingsValidationMap,
-  SettingsWorkerHarness
+  SettingsValidationMap
 } from "../shared/settings";
 import type { ActivityWatchdogDiagnostics, ActivityWatchdogSnapshot } from "../shared/activity-watchdog";
 
@@ -30,7 +28,7 @@ type ModelOption = {
   id: string;
   label: string;
   provider: string | null;
-  harness?: SettingsWorkerHarness | null;
+  harness?: "pi" | null;
   inputCapabilities?: {
     image: "supported" | "unsupported" | "unknown";
     source: "override" | "provider" | "manifest" | "unknown";
@@ -43,17 +41,16 @@ type SettingsResponse = {
   provenance: ManorSettingsProvenance;
   availableModels: {
     butler: ModelOption[];
-    codex: ModelOption[];
     piRpc: ModelOption[];
     ollamaLocal: ModelOption[];
     opencodeGo: ModelOption[];
     modelTasks: ModelOption[];
     vision: ModelOption[];
-    worker: { harness: SettingsWorkerHarness | null; model: string | null; availableModels: ModelOption[] };
+    worker: { harness: "pi" | null; model: string | null; availableModels: ModelOption[] };
   };
   providerAvailability: SettingsProviderAvailabilityMap;
   modelTaskProviderAvailability: SettingsProviderAvailabilityMap;
-  openaiCodexAuth?: { butler: AuthStatusView; codex: AuthStatusView };
+  openaiAuth: { butler: AuthStatusView; worker: AuthStatusView };
   validation: SettingsValidationMap;
 };
 
@@ -71,7 +68,6 @@ const GROUP_LABELS: Record<SettingsGroupKey, string> = {
 };
 
 const VALIDATION_TARGETS: SettingsValidationKey[] = [
-  "codex",
   "piRpc",
   "ollamaLocal",
   "ollamaCloud",
@@ -84,8 +80,7 @@ const VALIDATION_TARGETS: SettingsValidationKey[] = [
 ];
 
 const VALIDATION_LABELS: Record<SettingsValidationKey, string> = {
-  codex: "Codex app-server harness",
-  piRpc: "Pi RPC",
+  piRpc: "Worker service",
   ollamaLocal: "Ollama Local",
   ollamaCloud: "Ollama Cloud",
   opencodeGo: "OpenCode Go",
@@ -109,9 +104,9 @@ export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; descript
 
 const SECTION_HELP: Record<SettingsSectionId, string> = {
   network: "Allow or remove trusted internet hosts for the shared Butler and Worker runtime.",
-  providers: "Configure the model providers (OpenAI/Codex, Ollama Local, Ollama Cloud, OpenCode Go) and web tools Butler can use.",
+  providers: "Configure the model providers (OpenAI, Ollama Local, Ollama Cloud, OpenCode Go) and web tools Butler can use.",
   usage: "Review recorded model tokens, known costs, and subscription usage across Butler and Workers.",
-  skills: "Browse and manage the skills available to Butler Pi, Worker Pi, and Worker Codex.",
+  skills: "Browse and manage the skills available to Butler and Worker.",
   runtime: "Set operator and Worker defaults, choose the shared vision companion, and configure session titles.",
   memory: "Choose the models and behavior used to synthesize, promote, and connect memory.",
   diagnostics: "Run connection checks for the services Butler depends on."
@@ -210,7 +205,7 @@ function ToggleGrid({ children }: { children: ReactNode }) {
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
-  "openai-codex": "OpenAI / Codex",
+  "openai-codex": "OpenAI",
   "openai": "OpenAI",
   "ollama-local": "Ollama Local",
   "ollama-cloud": "Ollama Cloud",
@@ -413,25 +408,23 @@ function ModelSelectField({
   );
 }
 
-export function resolveWorkerSettingsSelection(selectionId: string | null, models: ModelOption[]): { defaultModel: string | null; defaultHarness: SettingsWorkerHarness | null } | null {
-  if (!selectionId) return { defaultModel: null, defaultHarness: null };
+export function resolveWorkerSettingsSelection(selectionId: string | null, models: ModelOption[]): { defaultModel: string | null } | null {
+  if (!selectionId) return { defaultModel: null };
   const selected = workerModelForSelection(models, selectionId);
-  return selected ? { defaultModel: selected.id, defaultHarness: selected.harness ?? null } : null;
+  return selected ? { defaultModel: selected.id } : null;
 }
 
 function WorkerModelSelectField({
   value,
-  harness,
   models,
   onChange
 }: {
   value: string | null;
-  harness: SettingsWorkerHarness | null;
   models: ModelOption[];
-  onChange: (model: string | null, harness: SettingsWorkerHarness | null) => void;
+  onChange: (model: string | null) => void;
 }) {
-  const selected = workerModelForRoute(models, value, harness);
-  const unavailableSelectionId = value ? `unavailable|${encodeURIComponent(harness ?? "")}|${encodeURIComponent(value)}` : null;
+  const selected = workerModelForRoute(models, value, "pi");
+  const unavailableSelectionId = value ? `unavailable|pi|${encodeURIComponent(value)}` : null;
   const pickerOptions = useMemo<ModelPickerOption[]>(() => {
     const available = models.map(workerModelPickerOption);
     if (!value || selected) return available;
@@ -440,11 +433,11 @@ function WorkerModelSelectField({
       selectionId: unavailableSelectionId ?? value,
       label: `Unavailable · ${value}`,
       provider: value.includes("/") ? value.slice(0, value.indexOf("/")) : null,
-      hint: `${workerHarnessLabel(harness)} harness`,
+      hint: "Saved provider or model is no longer available",
       disabled: true,
-      disabledReason: "Reconnect its provider or choose another Worker route."
+      disabledReason: "Reconnect its provider or choose another Worker model."
     }, ...available];
-  }, [harness, models, selected, unavailableSelectionId, value]);
+  }, [models, selected, unavailableSelectionId, value]);
   const groups = useMemo<ModelPickerGroup[]>(
     () => groupModelsByProvider(pickerOptions).map((group) => ({
       provider: group.provider,
@@ -456,7 +449,7 @@ function WorkerModelSelectField({
   const selectedValue = selected ? workerModelSelectionId(selected) : unavailableSelectionId;
 
   return (
-    <Field label="Default worker model" hint="Used for the first delegation when more than one Worker route is available. The selection includes harness, provider, and model.">
+    <Field label="Default worker model" hint="Used for the first delegation when more than one Worker model is available.">
       <ModelPicker
         label="Default worker model"
         value={selectedValue}
@@ -469,12 +462,12 @@ function WorkerModelSelectField({
         clearLabel="Use automatic selection"
         onChange={(selectionId) => {
           const next = resolveWorkerSettingsSelection(selectionId, models);
-          if (next) onChange(next.defaultModel, next.defaultHarness);
+          if (next) onChange(next.defaultModel);
         }}
       />
       {value && !selected ? (
         <span className="settings-field-warning" role="status">
-          This saved Worker route is unavailable. Reconnect its provider or choose another route. <a href="/settings/providers">Open provider settings</a>
+          This saved Worker model is unavailable. Reconnect its provider or choose another model. <a href="/settings/providers">Open provider settings</a>
         </span>
       ) : null}
     </Field>
@@ -591,8 +584,9 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
     if (param === "ollama-local") return "ollamaLocal";
     return param === "ollama" || param === "opencode" ? param : "openai";
   });
-  const [authPending, setAuthPending] = useState<"butler" | "codex" | null>(null);
-  const [authUrl, setAuthUrl] = useState<{ side: "butler" | "codex"; url: string } | null>(null);
+  const [authPending, setAuthPending] = useState(false);
+  const [authUrl, setAuthUrl] = useState<string | null>(null);
+  const [authTarget, setAuthTarget] = useState<"butler" | "worker" | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [ollamaLocalModels, setOllamaLocalModels] = useState<{ id: string; contextWindow: number | null; capabilities?: string[] }[] | null>(null);
   const [ollamaLocalModelsLoading, setOllamaLocalModelsLoading] = useState(false);
@@ -735,18 +729,19 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
     }
   }
 
-  async function startAuth(side: "butler" | "codex") {
-    setAuthPending(side);
+  async function startAuth(target: "butler" | "worker") {
+    setAuthPending(true);
+    setAuthTarget(target);
     setAuthError(null);
     setAuthUrl(null);
     try {
-      const result = await postJson<{ authUrl: string; startedAt: number }>(`/api/auth/${side}/device`, {});
-      setAuthUrl({ side, url: result.authUrl });
+      const result = await postJson<{ authUrl: string; startedAt: number }>(`/api/auth/${target}/device`, {});
+      setAuthUrl(result.authUrl);
       window.open(result.authUrl, "_blank", "noopener");
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : String(error));
     } finally {
-      setAuthPending(null);
+      setAuthPending(false);
     }
   }
 
@@ -757,6 +752,7 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
       setPayload(next);
       setDraft(cloneSettings(next.settings));
       setAuthUrl(null);
+      setAuthTarget(null);
       setAuthError(null);
       setMessage("Auth status refreshed.");
     } catch (error) {
@@ -978,39 +974,39 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
         {errorMessage ? <div className="settings-error settings-feedback"><WarningIcon />{errorMessage}</div> : null}
         {activeSection === "providers" ? <Section id="providers" title="Providers" actions={settingsActions()}>
           <div className="settings-provider-tabs">
-            <button className={`settings-provider-tab ${providerTab === "openai" ? "is-active" : ""}`} type="button" onClick={() => setProviderTab("openai")}>OpenAI / Codex</button>
+            <button className={`settings-provider-tab ${providerTab === "openai" ? "is-active" : ""}`} type="button" onClick={() => setProviderTab("openai")}>OpenAI</button>
             <button className={`settings-provider-tab ${providerTab === "ollamaLocal" ? "is-active" : ""}`} type="button" onClick={() => setProviderTab("ollamaLocal")}>Ollama Local</button>
             <button className={`settings-provider-tab ${providerTab === "ollama" ? "is-active" : ""}`} type="button" onClick={() => setProviderTab("ollama")}>Ollama Cloud</button>
             <button className={`settings-provider-tab ${providerTab === "opencode" ? "is-active" : ""}`} type="button" onClick={() => setProviderTab("opencode")}>OpenCode Go</button>
           </div>
 
           {providerTab === "openai" ? (
-            <SubGroup title="OpenAI / Codex">
+            <SubGroup title="OpenAI">
               {authError ? <div className="settings-auth-error">{authError}</div> : null}
               {authUrl ? (
                 <div className="settings-auth-pending">
-                  <span>Waiting for {authUrl.side === "butler" ? "Butler" : "Codex"} sign-in to complete…</span>
-                  <a href={authUrl.url} target="_blank" rel="noopener noreferrer">Open auth page again</a>
+                  <span>Waiting for {authTarget === "worker" ? "Worker" : "Butler"} ChatGPT sign-in to complete…</span>
+                  <a href={authUrl} target="_blank" rel="noopener noreferrer">Open auth page again</a>
                   <button className="button" type="button" onClick={() => void refreshAuth()}>I've signed in — refresh</button>
                 </div>
               ) : null}
-              <Field label="Butler auth" hint="Butler's OpenAI/Codex connection status.">
-                <input readOnly value={formatAuthSummary(payload.openaiCodexAuth?.butler)} />
+              <Field label="Butler" hint="OpenAI authentication used by Butler chat.">
+                <input readOnly value={formatAuthSummary(payload.openaiAuth.butler)} />
               </Field>
-              {!payload.openaiCodexAuth?.butler.loggedIn ? (
+              {!payload.openaiAuth.butler.loggedIn ? (
                 <div className="settings-auth-actions">
-                  <button className="button is-primary" type="button" onClick={() => void startAuth("butler")} disabled={authPending !== null}>
-                    {authPending === "butler" ? "Starting…" : "Sign in Butler with ChatGPT"}
+                  <button className="button is-primary" type="button" onClick={() => void startAuth("butler")} disabled={authPending}>
+                    {authPending && authTarget === "butler" ? "Starting…" : "Connect Butler"}
                   </button>
                 </div>
               ) : null}
-              <Field label="Codex harness auth" hint="Connection status for the Codex app-server harness.">
-                <input readOnly value={formatAuthSummary(payload.openaiCodexAuth?.codex)} />
+              <Field label="Worker" hint="OpenAI authentication used by Pi Worker sessions.">
+                <input readOnly value={formatAuthSummary(payload.openaiAuth.worker)} />
               </Field>
-              {!payload.openaiCodexAuth?.codex.loggedIn ? (
+              {!payload.openaiAuth.worker.loggedIn ? (
                 <div className="settings-auth-actions">
-                  <button className="button is-primary" type="button" onClick={() => void startAuth("codex")} disabled={authPending !== null}>
-                    {authPending === "codex" ? "Starting…" : "Connect Codex harness with ChatGPT"}
+                  <button className="button is-primary" type="button" onClick={() => void startAuth("worker")} disabled={authPending}>
+                    {authPending && authTarget === "worker" ? "Starting…" : "Connect Worker"}
                   </button>
                 </div>
               ) : null}
@@ -1223,11 +1219,9 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
             <FieldGrid>
               <WorkerModelSelectField
                 value={draft.worker.defaultModel}
-                harness={draft.worker.defaultHarness}
                 models={workerModels}
-                onChange={(model, harness) => update((s) => {
+                onChange={(model) => update((s) => {
                   s.worker.defaultModel = model;
-                  s.worker.defaultHarness = harness;
                 })}
               />
             </FieldGrid>

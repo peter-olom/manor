@@ -4,11 +4,11 @@ import test from "node:test";
 
 const composePath = new URL("../../../compose.yml", import.meta.url);
 const butlerDockerfilePath = new URL("../../../docker/butler/Dockerfile", import.meta.url);
-const workerDockerfilePath = new URL("../../../docker/codex-box/Dockerfile", import.meta.url);
-const workerStartPath = new URL("../../../docker/codex-box/start.sh", import.meta.url);
+const workerDockerfilePath = new URL("../../../docker/worker/Dockerfile", import.meta.url);
+const workerStartPath = new URL("../../../docker/worker/start.sh", import.meta.url);
 const indexPath = new URL("../../src/server/index.ts", import.meta.url);
 
-test("Codex and Pi Worker harnesses share one Worker environment", async () => {
+test("the Pi Worker uses the shared Worker environment", async () => {
   const [compose, butlerDockerfile, workerDockerfile, workerStart, index] = await Promise.all([
     readFile(composePath, "utf8"),
     readFile(butlerDockerfilePath, "utf8"),
@@ -16,7 +16,7 @@ test("Codex and Pi Worker harnesses share one Worker environment", async () => {
     readFile(workerStartPath, "utf8"),
     readFile(indexPath, "utf8")
   ]);
-  const workerComposeStart = compose.indexOf("\n  codex-box:\n");
+  const workerComposeStart = compose.indexOf("\n  worker:\n");
   const workerComposeEnd = compose.indexOf("\n  egress:\n", workerComposeStart);
   assert.ok(workerComposeStart >= 0 && workerComposeEnd > workerComposeStart);
   const workerCompose = compose.slice(workerComposeStart, workerComposeEnd);
@@ -29,7 +29,7 @@ test("Codex and Pi Worker harnesses share one Worker environment", async () => {
   assert.match(workerCompose, /PI_CODING_AGENT_DIR: \/worker-pi\/agent/);
   assert.match(workerCompose, /NODE_USE_ENV_PROXY: "1"/);
   assert.match(workerCompose, /restart: unless-stopped/);
-  assert.match(compose, /RUNTIME_WORKSPACE_CONTAINER: manor-codex-box/);
+  assert.match(compose, /RUNTIME_WORKSPACE_CONTAINER: manor-worker/);
   assert.match(compose, /worker-pi:\/worker-pi/);
   assert.match(compose, /worker-runtime:\/worker-runtime/);
   assert.match(butlerDockerfile, /COPY docker\/butler\/worker-pi-rpc-proxy\.mjs/);
@@ -38,7 +38,7 @@ test("Codex and Pi Worker harnesses share one Worker environment", async () => {
   assert.match(workerDockerfile, /worker-pi-rpc-bridge\.mjs/);
   assert.match(workerDockerfile, /useradd --create-home --shell \/bin\/bash worker/);
   assert.match(workerDockerfile, /^USER worker$/m);
-  assert.match(workerStart, /node \/opt\/manor\/codex-box\/worker-pi-rpc-bridge\.mjs/);
+  assert.match(workerStart, /node \/opt\/manor\/worker\/worker-pi-rpc-bridge\.mjs/);
   assert.match(index, /workerPiRpcCliPath/);
   assert.match(index, /manageSessionDirectories: workerPiRpcCliPath === null/);
 });

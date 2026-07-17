@@ -3,7 +3,8 @@ import path from "node:path";
 
 export function createBrokerStorage(context, deps = {}) {
   const { previewNetwork, previewOutboundNetwork, sharedWorkNetwork, previewImage, routeBase, previewEgressConfigPath, previewEgressAdminUrl, brokerToken, harnessAccessRegistryPath, stackBindingRegistryPath, internalOperatorBaseUrl, workspaceContainerName: configuredWorkspaceContainerName, butlerContainerName, butlerArtifactsRootDir, playwrightContainerName, runtimeBrokerContainerName, previewEgressContainerName, playwrightArtifactsScratchDir, stackNetworkPrefix, stackVolumePrefix, stackInfraReconnectIntervalMs, docker, leaseTransitions, leaseBootstrapStates, activeLeaseBootstrapMonitors, pendingPreviewLeases, retainedPreviewLeases, noHeartbeatReadyDelayMs } = context;
-  const workspaceContainerName = configuredWorkspaceContainerName ?? context.codexWorkspaceContainerName;
+  const workspaceContainerName = configuredWorkspaceContainerName;
+  if (!workspaceContainerName) throw new Error("workspaceContainerName is required");
   const {
     ensureImage,
     ensureVolumeIsIdle,

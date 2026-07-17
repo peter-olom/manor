@@ -29,12 +29,9 @@ RUN --mount=type=cache,target=/root/.npm \
 
 FROM ${NODE_RUNTIME_IMAGE}
 
-ARG CODEX_VERSION=0.144.1
 ARG TTYD_VERSION=1.7.7
 
 ENV NODE_ENV=production
-ENV PATH="${PATH}:/opt/manor/npm-global/bin"
-
 WORKDIR /opt/manor/butler
 
 COPY butler/package.json butler/package-lock.json* ./
@@ -65,9 +62,6 @@ RUN apt-get update \
   && mkdir -p /home/butler \
   && mkdir -p /home/butler/.oh-my-zsh/custom
 
-RUN --mount=type=cache,target=/root/.npm \
-  npm install --global --prefix /opt/manor/npm-global "@openai/codex@${CODEX_VERSION}"
-
 COPY --from=runtime-deps /opt/manor/butler/node_modules ./node_modules
 COPY --from=build /opt/manor/butler/dist ./dist
 COPY butler/index.html ./index.html
@@ -80,7 +74,7 @@ COPY docker/butler/auth.sh /usr/local/bin/butler-auth
 COPY docker/butler/chatgpt-login.mjs /usr/local/bin/butler-chatgpt-login.mjs
 COPY docker/butler/terminal-shell.sh /usr/local/bin/start-butler-shell
 COPY docker/butler/worker-pi-rpc-proxy.mjs /usr/local/bin/worker-pi-rpc-proxy.mjs
-COPY docker/codex-box/manor-harness.mjs /usr/local/bin/manor-harness
+COPY docker/worker/manor-harness.mjs /usr/local/bin/manor-harness
 COPY docker/butler/zshrc /home/butler/.zshrc
 COPY docker/butler/zprofile /home/butler/.zprofile
 

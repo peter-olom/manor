@@ -7,7 +7,6 @@ import assert from "node:assert/strict";
 import { ButlerAgentService } from "../../src/server/butler-agent.js";
 import { directWorkerDispatchMarker } from "../../src/server/butler-callback-state.js";
 import { normalizeOperatorMessages } from "../../src/server/butler-operator-messages.js";
-import { CodexAppServerClient } from "../../src/server/codex-client.js";
 import { backfillDirectCodexMessagesFromSessionFiles, buildDirectCodexMessagePingSummary, settleFailedDirectWorkerDispatch } from "../../src/server/direct-codex-message.js";
 import { readCurrentJobPayload } from "../../src/server/job-instruction-artifacts.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
@@ -23,7 +22,7 @@ async function createStore(): Promise<ButlerStateStore> {
   return new ButlerStateStore(path.join(dir, "state.json"));
 }
 
-function createButlerAgent(store: ButlerStateStore, sessionDir: string, codexClient: unknown = {
+function createButlerAgent(store: ButlerStateStore, sessionDir: string, piRpcWorkerClient: unknown = {
   getConnectionState: () => ({
     compose: {
       availableModels: []
@@ -32,14 +31,14 @@ function createButlerAgent(store: ButlerStateStore, sessionDir: string, codexCli
 }): ButlerAgentService {
   return new ButlerAgentService({
     store,
-    codexClient: codexClient as never,
+    piRpcWorkerClient: piRpcWorkerClient as never,
     runtimeBroker: {} as never,
     serviceTemplateRegistry: {} as never,
     imageStore: {} as never,
     fileStore: {} as never,
     piAuthPath: path.join(sessionDir, "pi-auth.json"),
-    codexAuthPath: path.join(sessionDir, "codex-auth.json"),
-    codexConfigDir: sessionDir,
+    workerAuthPath: path.join(sessionDir, "codex-auth.json"),
+    workerConfigDir: sessionDir,
     sessionDir,
     artifactsDir: sessionDir
   });
@@ -303,7 +302,7 @@ test("a stale direct Worker dispatch rolls back its reserved callback", async ()
   const store = await createStore();
   const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-stale-dispatch-"));
   const threadId = "thread-stale-direct-dispatch";
-  store.upsertThreadSummary({ id: threadId, source: "appServer", status: { type: "idle" }, cwd: "/workspace", turns: [] });
+  store.upsertThreadSummary({ id: threadId, source: "pi-rpc", status: { type: "idle" }, cwd: "/workspace", turns: [] });
   const agent = createButlerAgent(store, sessionDir);
   const requestedAt = Date.now();
   const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Never accepted.", requestedAt });
@@ -312,7 +311,7 @@ test("a stale direct Worker dispatch rolls back its reserved callback", async ()
   try {
     await sendWorkerMessage({
       store,
-      codexClient: {
+      piRpcWorkerClient: {
         sendMessage: async () => { throw new StaleWorkerOperationError(threadId); }
       }
     } as never, threadId, "Never accepted.");
@@ -330,7 +329,7 @@ test("a post-dispatch stale Worker operation preserves its supervision callback"
   const store = await createStore();
   const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-ambiguous-stale-dispatch-"));
   const threadId = "thread-ambiguous-stale-direct-dispatch";
-  store.upsertThreadSummary({ id: threadId, source: "appServer", status: { type: "idle" }, cwd: "/workspace", turns: [] });
+  store.upsertThreadSummary({ id: threadId, source: "pi-rpc", status: { type: "idle" }, cwd: "/workspace", turns: [] });
   const agent = createButlerAgent(store, sessionDir);
   const requestedAt = Date.now();
   const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Possibly accepted.", requestedAt });
@@ -892,7 +891,7 @@ test("an accepted unbound dispatch probes an idle runtime instead of waiting for
   let stops = 0;
   Date.now = () => requestedAt;
   try {
-    store.upsertThreadSummary({ id: threadId, source: "appServer", status: "idle", cwd: "/workspace", turns: [] });
+    store.upsertThreadSummary({ id: threadId, source: "pi-rpc", status: "idle", cwd: "/workspace", turns: [] });
     const agent = createButlerAgent(store, sessionDir, {
       getConnectionState: () => ({ compose: { availableModels: [] } }),
       getLastRuntimeActivityAt: () => null,
@@ -929,7 +928,7 @@ test("an idle thread with a nonterminal accepted turn is still watchdog-probed a
   try {
     store.upsertThreadSummary({
       id: threadId,
-      source: "appServer",
+      source: "pi-rpc",
       status: "idle",
       cwd: "/workspace",
       turns: [{ id: "accepted-turn", status: "in_progress", startedAt: requestedAt, items: [] }]
@@ -970,7 +969,7 @@ test("watchdog confirms an abandoned active turn and wakes Butler immediately", 
   try {
     store.upsertThreadSummary({
       id: threadId,
-      source: "appServer",
+      source: "pi-rpc",
       status: "active",
       cwd: "/workspace",
       turns: [{ id: "turn-1", status: "in_progress", startedAt: requestedAt, items: [{ id: "reasoning", type: "reasoning", status: "started", text: "", at: requestedAt }] }]
@@ -1017,7 +1016,7 @@ test("watchdog recovers a confirmed dead transport without attempting an impossi
   try {
     store.upsertThreadSummary({
       id: threadId,
-      source: "appServer",
+      source: "pi-rpc",
       status: "active",
       cwd: "/workspace",
       turns: [{ id: "turn-dead", status: "in_progress", startedAt: requestedAt, items: [] }]
@@ -1051,53 +1050,6 @@ test("watchdog recovers a confirmed dead transport without attempting an impossi
   }
 });
 
-test("watchdog keeps supervision waiting when a reconnected Codex status is unknown", async () => {
-  const store = await createStore();
-  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-worker-watchdog-unknown-codex-status-"));
-  const threadId = "thread-watchdog-unknown-codex-status";
-  const requestedAt = 1_000;
-  const originalNow = Date.now;
-  Date.now = () => requestedAt;
-  try {
-    store.upsertThreadSummary({
-      id: threadId,
-      source: "appServer",
-      status: "active",
-      cwd: sessionDir,
-      turns: [{ id: "turn-unknown-status", status: "in_progress", startedAt: requestedAt, items: [] }]
-    });
-    let remoteThread: Record<string, unknown> = { id: threadId, status: { type: "futureStatus" } };
-    const codexClient = new CodexAppServerClient("ws://127.0.0.1:1", store, sessionDir) as unknown as {
-      activeTurnIds: Map<string, string>;
-      transport: { options: { onClosed?: (reason: string) => void }; getState: () => { connected: boolean; lastError: string | null } };
-      codexProviderAdapter: { readThreadState: () => Promise<Record<string, unknown>> };
-    };
-    codexClient.activeTurnIds.set(threadId, "turn-unknown-status");
-    codexClient.transport.options.onClosed?.("temporary disconnect");
-    codexClient.transport.getState = () => ({ connected: true, lastError: null });
-    codexClient.codexProviderAdapter = { readThreadState: async () => remoteThread };
-    const agent = createButlerAgent(store, sessionDir, codexClient);
-    await agent.reserveDirectCodexMessage({ threadId, text: "Keep supervising this work.", requestedAt });
-    await agent.markPendingChatCallbackDispatched(threadId, requestedAt, "turn-unknown-status");
-
-    Date.now = () => requestedAt + 5 * 60_000;
-    await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
-    remoteThread = { id: threadId };
-    Date.now = () => requestedAt + 10 * 60_000;
-    await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
-
-    const callback = agent.getShellSnapshot().supervision.callbacks.find((entry) => entry.threadId === threadId);
-    assert.equal(codexClient.activeTurnIds.has(threadId), false);
-    assert.equal(store.getThread(threadId)?.turns.at(-1)?.status, "in_progress");
-    assert.equal(callback?.callbackState, "waiting");
-    assert.equal(callback?.reviewState, "idle");
-    await store.flushSave();
-    agent.dispose();
-  } finally {
-    Date.now = originalNow;
-  }
-});
-
 test("watchdog never interrupts a responsive silent long-running command", async () => {
   const store = await createStore();
   const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-worker-watchdog-command-"));
@@ -1111,7 +1063,7 @@ test("watchdog never interrupts a responsive silent long-running command", async
   try {
     store.upsertThreadSummary({
       id: threadId,
-      source: "appServer",
+      source: "pi-rpc",
       status: "active",
       cwd: "/workspace",
       turns: [{ id: "turn-1", status: "in_progress", startedAt: requestedAt, items: [{ id: "command", type: "commandExecution", status: "started", text: "", at: requestedAt }] }]
@@ -1153,7 +1105,7 @@ test("watchdog emits one Butler notice when repeated probes cannot safely stop t
   try {
     store.upsertThreadSummary({
       id: threadId,
-      source: "appServer",
+      source: "pi-rpc",
       status: "active",
       cwd: "/workspace",
       turns: [{ id: "turn-attention", status: "in_progress", startedAt: requestedAt, items: [] }]

@@ -8,7 +8,7 @@ import test from "node:test";
 
 import { RpcClient } from "@earendil-works/pi-coding-agent";
 
-const bridgePath = new URL("../../../docker/codex-box/worker-pi-rpc-bridge.mjs", import.meta.url);
+const bridgePath = new URL("../../../docker/worker/worker-pi-rpc-bridge.mjs", import.meta.url);
 const proxyPath = new URL("../../../docker/butler/worker-pi-rpc-proxy.mjs", import.meta.url);
 
 async function waitForSocket(socketPath: string, bridge: ChildProcess, stderr: string[]): Promise<void> {

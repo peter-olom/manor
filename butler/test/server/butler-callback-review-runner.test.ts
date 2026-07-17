@@ -538,7 +538,7 @@ test("a timed-out callback send is stopped before stale completion can escape", 
   const access = {
     store: { getThread: () => ({ source: "codex" }) },
     watchdogs: new ActivityWatchdogService(),
-    codexClient: {
+    piRpcWorkerClient: {
       async sendMessage() { sendEntered(); await blocked; return { threadId: "worker", turnId: "turn-1" }; },
       async stopThread(threadId: string) { stopped.push(threadId); return true; }
     }
@@ -562,7 +562,7 @@ test("a superseded callback releases its lock even when send never resolves", as
   const access = {
     store: { getThread: () => ({ source: "codex" }) },
     watchdogs: new ActivityWatchdogService(),
-    codexClient: {
+    piRpcWorkerClient: {
       async sendMessage() { sendEntered(); return new Promise<never>(() => undefined); },
       async stopThread(threadId: string) { stopped.push(threadId); return true; }
     }

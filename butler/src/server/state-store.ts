@@ -179,7 +179,6 @@ export class ButlerStateStore extends EventEmitter {
     return normalizeStateStorePreviewProofRecord(this.getInternalAccess(), record);
   }
   private upsertPreviewProofRecord(record: PreviewProofRecordView, options?: { emitChange?: boolean }): PreviewProofRecordView { return upsertStateStorePreviewProofRecord(this.getInternalAccess(), record, options); }
-
   private recordPreviewProofFromLease(lease: Pick<PreviewLeaseView, "id" | "threadId" | "projectId" | "projectLabel" | "title" | "stackId" | "lastVerification">, options?: { emitChange?: boolean }): PreviewProofRecordView | null { return recordStateStorePreviewProofFromLease(this.getInternalAccess(), lease, options); }
 
   private updateArtifactAvailability(filePath: string, mutate: (artifact: PreviewVerificationArtifactView) => PreviewVerificationArtifactView): boolean { return updateStateStoreArtifactAvailability(this.getInternalAccess(), filePath, mutate); }
@@ -919,6 +918,7 @@ export class ButlerStateStore extends EventEmitter {
     this.emitChange();
   }
 
+  purgeNonPiWorkerState(): string[] { const threadIds = [...this.threads.values()].filter((thread) => thread.source !== "pi-rpc" && !thread.id.startsWith("pi-")).map((thread) => thread.id); this.removeThreads(threadIds); this.deletedCodexThreadIds.clear(); this.queueSave(); this.emitChange(); return threadIds; }
   listThreads(): CodexThreadSummary[] {
     return [...this.threads.values()].filter(isVisibleCodexWorkstream)
       .map((thread) => ({

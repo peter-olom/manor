@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildOnboardingView, codexHarnessOnboardingRequired } from "../../src/server/onboarding-status.js";
+import { buildOnboardingView, workerOpenAiOnboardingRequired } from "../../src/server/onboarding-status.js";
 
 const disconnected = {
   mode: "none" as const,
@@ -17,42 +17,42 @@ const connected = {
   lastValidatedAt: Date.now()
 };
 
-test("Codex onboarding copy keeps Worker as the execution role", async () => {
+test("OpenAI onboarding copy keeps Worker as the execution role", async () => {
   const view = await buildOnboardingView({
     butlerAuth: disconnected,
-    codexAuth: disconnected,
-    codexConfigDir: "/missing-codex-config",
-    codexHarnessRequired: true
+    workerAuth: disconnected,
+    workerConfigDir: "/missing-codex-config",
+    workerOpenAiRequired: true
   });
   const copy = view.steps.flatMap((step) => [step.detail, ...step.commandSets.map((set) => set.detail)]).join("\n");
 
-  assert.match(copy, /Worker jobs through the Codex harness/);
-  assert.match(copy, /Worker through it to clone or push repositories/);
+  assert.match(copy, /Worker Pi environment/);
+  assert.match(copy, /Worker terminal to start headless GitHub sign-in/);
   assert.doesNotMatch(copy, /Codex runs|Codex can use GitHub|asking Codex to clone or push/);
 });
 
-test("Pi-only Worker onboarding does not require Codex or GitHub auth", async () => {
+test("non-OpenAI Worker onboarding does not require OpenAI or GitHub auth", async () => {
   const view = await buildOnboardingView({
     butlerAuth: connected,
-    codexAuth: disconnected,
-    codexConfigDir: "/missing-codex-config",
-    codexHarnessRequired: false
+    workerAuth: disconnected,
+    workerConfigDir: "/missing-codex-config",
+    workerOpenAiRequired: false
   });
 
   assert.equal(view.complete, true);
   assert.deepEqual(view.steps.map((step) => step.id), ["butlerAuth"]);
 });
 
-test("Codex Worker onboarding still requires Codex and GitHub auth", async () => {
+test("OpenAI Worker onboarding requires Worker OpenAI and GitHub auth", async () => {
   const view = await buildOnboardingView({
     butlerAuth: connected,
-    codexAuth: disconnected,
-    codexConfigDir: "/missing-codex-config",
-    codexHarnessRequired: true
+    workerAuth: disconnected,
+    workerConfigDir: "/missing-codex-config",
+    workerOpenAiRequired: true
   });
 
   assert.equal(view.complete, false);
-  assert.deepEqual(view.steps.map((step) => step.id), ["butlerAuth", "codexAuth", "githubAuth"]);
+  assert.deepEqual(view.steps.map((step) => step.id), ["butlerAuth", "workerAuth", "githubAuth"]);
   assert.deepEqual(view.steps.map((step) => step.status), ["complete", "pending", "pending"]);
 });
 
@@ -66,16 +66,16 @@ const routeSettings = {
   }
 };
 
-test("provider-qualified Pi Worker models skip Codex onboarding without a saved harness", () => {
-  assert.equal(codexHarnessOnboardingRequired(null, {
+test("non-OpenAI Worker models skip OpenAI onboarding", () => {
+  assert.equal(workerOpenAiOnboardingRequired(null, {
     ...routeSettings,
     worker: { defaultHarness: null, defaultModel: "ollama-cloud/glm-5.2" }
   }), false);
-  assert.equal(codexHarnessOnboardingRequired({ model: "cloud-custom/glm-5.2" }, routeSettings), false);
+  assert.equal(workerOpenAiOnboardingRequired({ model: "cloud-custom/glm-5.2" }, routeSettings), false);
 });
 
-test("raw and OpenAI Worker models still require Codex onboarding", () => {
-  assert.equal(codexHarnessOnboardingRequired({ model: "gpt-5.4" }, routeSettings), true);
-  assert.equal(codexHarnessOnboardingRequired({ model: "openai-codex/gpt-5.4" }, routeSettings), true);
-  assert.equal(codexHarnessOnboardingRequired({ model: "unknown-provider/model" }, routeSettings), true);
+test("raw and OpenAI Worker models require OpenAI onboarding", () => {
+  assert.equal(workerOpenAiOnboardingRequired({ model: "gpt-5.4" }, routeSettings), true);
+  assert.equal(workerOpenAiOnboardingRequired({ model: "openai-codex/gpt-5.4" }, routeSettings), true);
+  assert.equal(workerOpenAiOnboardingRequired({ model: "unknown-provider/model" }, routeSettings), true);
 });

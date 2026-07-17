@@ -29,16 +29,15 @@ function applyHandler(service: ManorSettingsService, pairs: PairStore, now: () =
     settingsService: service,
     applyBackgroundSettings: () => undefined,
     sessionTitleGenerator: { applySettings() {} } as never,
-    piRpcWorkerClient: { refreshModels } as never,
     butlerAgent: {
       refreshModelSettings: async () => false,
       getWorkerAffinity: () => null,
-      getCodexAuthStatus: () => ({ loggedIn: false })
+      getWorkerAuthStatus: () => ({ loggedIn: false })
     } as never,
     pairSessions: { refreshModelSettings: async () => undefined } as never,
     pairStore: pairs,
     store: {} as never,
-    codexClient: { getConnectionState: () => ({ compose: { model: null, availableModels: [] } }) } as never,
+    piRpcWorkerClient: { refreshModels, getConnectionState: () => ({ compose: { model: null, availableModels: [] } }) } as never,
     getSseHub: () => null,
     now
   });

@@ -688,7 +688,7 @@ test("runtime broker can resolve source workspace mounts as read-only", async ()
   assert.deepEqual(prepared, ["thread-1", "thread-2"]);
 });
 
-test("runtime broker accepts neutral harness tokens and legacy Codex token headers", (t) => {
+test("runtime broker accepts only neutral harness token headers", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "manor-harness-access-"));
   const registryPath = path.join(root, "harness-broker-access.json");
   const egressConfigPath = path.join(root, "preview-egress.json");
@@ -722,13 +722,13 @@ test("runtime broker accepts neutral harness tokens and legacy Codex token heade
   });
 
   assert.equal(broker.authorizeScopedThread(request({ "x-manor-harness-token": "worker-token" }), response(), "thread-1"), true);
-  assert.equal(broker.authorizeScopedThread(request({ "x-manor-codex-token": "worker-token" }), response(), "thread-1"), true);
+  assert.equal(broker.authorizeScopedThread(request({ "x-manor-codex-token": "worker-token" }), response(), "thread-1"), false);
   const rejected = response();
   assert.equal(broker.authorizeScopedThread(request({ "x-manor-harness-token": "worker-token" }), rejected, "thread-2"), false);
   assert.deepEqual(rejected.body, { error: "Lease is not attached to this worker job" });
 });
 
-test("runtime broker falls back to the legacy access registry during migration", (t) => {
+test("runtime broker ignores retired access registries", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "manor-legacy-harness-access-"));
   const registryPath = path.join(root, "harness-broker-access.json");
   const legacyRegistryPath = path.join(root, "codex-broker-access.json");
@@ -747,7 +747,7 @@ test("runtime broker falls back to the legacy access registry during migration",
   });
   const request = {
     header(name: string) {
-      return name === "x-manor-codex-token" ? "legacy-token" : "";
+      return name === "x-manor-harness-token" ? "legacy-token" : "";
     }
   };
   const response = {
@@ -755,8 +755,6 @@ test("runtime broker falls back to the legacy access registry during migration",
     json() { return this; }
   };
 
-  assert.equal(broker.authorizeScopedThread(request, response, "thread-1"), true);
-  fs.writeFileSync(registryPath, "{malformed", "utf8");
   assert.equal(broker.authorizeScopedThread(request, response, "thread-1"), false);
 });
 

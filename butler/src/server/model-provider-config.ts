@@ -61,7 +61,7 @@ export function formatProviderModelRef(ref: ProviderModelRef): string | null {
 export function isCodexPreferredModelRef(ref: string | ProviderModelRef | null | undefined): boolean {
   const parsed = typeof ref === "string" ? parseProviderModelRef(ref) : (ref ?? { provider: null, model: null });
   if (!parsed.provider) return true;
-  return parsed.provider === "openai" || parsed.provider === "openai-codex" || parsed.provider === "codex";
+  return parsed.provider === "openai" || parsed.provider === "openai-codex";
 }
 
 export function shouldExposeManorModel(model: { provider: string | null }, env: NodeJS.ProcessEnv = process.env): boolean {

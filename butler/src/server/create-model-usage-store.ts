@@ -7,14 +7,12 @@ export function createModelUsageStore(options: {
   stateDir: string;
   butlerSessionRoots: string[];
   workerPiSessionRoot: string;
-  codexHomeDir: string;
   piAuthPath: string;
 }): ModelUsageStore {
   return new ModelUsageStore({
     dbPath: path.join(options.stateDir, "model-usage.sqlite"),
     butlerPiRoots: options.butlerSessionRoots,
     workerPiRoots: [options.workerPiSessionRoot],
-    codexRoots: [path.join(options.codexHomeDir, "sessions"), path.join(options.codexHomeDir, "archived_sessions")],
     loadPiPricing: async () => {
       const registry = await createManorModelRegistry(options.piAuthPath);
       const models = registry.getAvailable();

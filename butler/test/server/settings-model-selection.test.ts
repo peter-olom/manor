@@ -5,7 +5,7 @@ import type { ModelOption } from "../../src/server/types.js";
 import { resolveProviderSettingsParam, resolveSettingsModelValue, resolveWorkerSettingsSelection, timezoneInputIsValid } from "../../src/web/SettingsDashboard.js";
 import { workerModelPickerOption } from "../../src/web/worker-route.js";
 
-function model(id: string, provider: string, harness: "codex" | "pi" | null = null): ModelOption {
+function model(id: string, provider: string, harness: "pi" | "pi" | null = null): ModelOption {
   return {
     id,
     label: id,
@@ -54,17 +54,14 @@ test("settings accepts supported operator timezones and rejects typos", () => {
   assert.equal(timezoneInputIsValid("Africa/Lago"), false);
 });
 
-test("Worker defaults preserve the harness when provider and model are duplicated", () => {
-  const codex = model("openai-codex/shared-model", "openai-codex", "codex");
+test("Worker defaults preserve the selected Pi model", () => {
   const pi = model("openai-codex/shared-model", "openai-codex", "pi");
   const piOption = workerModelPickerOption(pi);
 
-  assert.deepEqual(resolveWorkerSettingsSelection(piOption.selectionId, [codex, pi]), {
-    defaultModel: "openai-codex/shared-model",
-    defaultHarness: "pi"
+  assert.deepEqual(resolveWorkerSettingsSelection(piOption.selectionId, [pi]), {
+    defaultModel: "openai-codex/shared-model"
   });
-  assert.deepEqual(resolveWorkerSettingsSelection(null, [codex, pi]), {
-    defaultModel: null,
-    defaultHarness: null
+  assert.deepEqual(resolveWorkerSettingsSelection(null, [pi]), {
+    defaultModel: null
   });
 });

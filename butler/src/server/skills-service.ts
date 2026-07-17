@@ -8,7 +8,7 @@ import { pipeline } from "node:stream/promises";
 import { loadSkillsFromDir, type Skill } from "@earendil-works/pi-coding-agent";
 import JSZip from "jszip";
 
-export type SkillEnvironmentId = "butler-pi" | "worker-pi" | "worker-codex";
+export type SkillEnvironmentId = "butler-pi" | "worker-pi";
 export type SkillScope = "user" | "project";
 export type SkillOrigin = "local" | "package" | "system";
 
@@ -33,7 +33,7 @@ export type SkillCatalogItem = {
 export type SkillEnvironmentView = {
   id: SkillEnvironmentId;
   label: string;
-  harness: "pi" | "codex";
+  harness: "pi";
   capabilities: {
     list: true;
     read: true;
@@ -125,15 +125,10 @@ type SkillRecord = SkillCatalogItem & {
   inputPath: string;
 };
 
-type CodexSkillGroup = Record<string, unknown>;
-
 type SkillsServiceOptions = {
   butlerPiAgentDir: string;
   workerPiAgentDir: string;
-  workerCodexHomeDir: string;
   workspaceRoot: string;
-  workerCodexRuntimeHomeDir?: string;
-  listCodexSkills?: (cwd: string) => Promise<CodexSkillGroup[]>;
 };
 
 type AgentSkillProposalRecord = AgentSkillChangeProposal & {
@@ -158,8 +153,7 @@ type AgentSkillResultRecord = AgentSkillChangeResult & {
 
 const ENVIRONMENTS: SkillEnvironmentView[] = [
   environment("butler-pi", "Butler", "pi", true),
-  environment("worker-pi", "Worker", "pi", true),
-  environment("worker-codex", "Worker", "codex", true)
+  environment("worker-pi", "Worker", "pi", true)
 ];
 const MAX_SKILL_BYTES = 2 * 1024 * 1024;
 const MAX_AGENT_SKILL_BYTES = 32 * 1024;
@@ -174,7 +168,7 @@ export const AGENT_SKILL_CONTENT_MARKER = "MANOR_FULL_SKILL_CONTENT_V1_JSON";
 function environment(
   id: SkillEnvironmentId,
   label: string,
-  harness: "pi" | "codex",
+  harness: "pi",
   mutable: boolean
 ): SkillEnvironmentView {
   return {
@@ -234,49 +228,6 @@ function validateArchivePath(rawName: string): string {
   }
   safeName(segments[0]);
   return normalized;
-}
-
-function codexSkills(
-  groups: CodexSkillGroup[],
-  runtimeHomeDir: string,
-  mountedHomeDir: string
-): Array<{ skill: Skill; originHint?: SkillOrigin; inputPath?: string }> {
-  const output: Array<{ skill: Skill; originHint?: SkillOrigin; inputPath?: string }> = [];
-  for (const group of groups) {
-    const skills = Array.isArray(group.skills) ? group.skills : [];
-    for (const value of skills) {
-      if (!value || typeof value !== "object") continue;
-      const item = value as Record<string, unknown>;
-      if (typeof item.name !== "string" || typeof item.path !== "string") continue;
-      const filePath = isWithin(runtimeHomeDir, item.path)
-        ? path.join(mountedHomeDir, path.relative(runtimeHomeDir, item.path))
-        : item.path;
-      const interfaceInfo = item.interface && typeof item.interface === "object" ? item.interface as Record<string, unknown> : null;
-      const description = typeof item.description === "string" ? item.description : "";
-      output.push({
-        skill: {
-          name: item.name,
-          description,
-          filePath,
-          baseDir: path.dirname(filePath),
-          disableModelInvocation: item.disableModelInvocation === true,
-          sourceInfo: {
-            path: filePath,
-            source: typeof item.source === "string" ? item.source : "codex",
-            scope: "user",
-            origin: "top-level"
-          }
-        },
-        inputPath: item.path,
-        originHint: typeof item.origin === "string" && ["local", "package", "system"].includes(item.origin)
-          ? item.origin as SkillOrigin
-          : typeof interfaceInfo?.origin === "string" && ["local", "package", "system"].includes(interfaceInfo.origin)
-            ? interfaceInfo.origin as SkillOrigin
-            : undefined
-      });
-    }
-  }
-  return output;
 }
 
 export class SkillsService {
@@ -910,8 +861,7 @@ export class SkillsService {
 
   private environmentLabel(environmentId: SkillEnvironmentId): string {
     if (environmentId === "butler-pi") return "Butler Pi (butler-pi)";
-    if (environmentId === "worker-pi") return "Worker Pi (worker-pi)";
-    return "Worker Codex (worker-codex)";
+    return "Worker Pi (worker-pi)";
   }
 
   private fullContentEvidence(content: string, heading: string): string {
@@ -975,17 +925,6 @@ export class SkillsService {
     for (const packageRoot of roots.packages) {
       collected.push(...loadSkillsFromDir({ dir: packageRoot, source: "package" }).skills.map((skill) => ({ skill, originHint: "package" as const })));
     }
-    if (environmentId === "worker-codex" && this.options.listCodexSkills) {
-      try {
-        collected.push(...codexSkills(
-          await this.options.listCodexSkills(resolvedCwd),
-          this.options.workerCodexRuntimeHomeDir ?? "/home/worker/.codex",
-          this.options.workerCodexHomeDir
-        ));
-      } catch {
-        // The filesystem catalog remains available while the app server reconnects.
-      }
-    }
     const byPath = new Map<string, SkillRecord>();
     for (const entry of collected) {
       const filePath = path.resolve(entry.skill.filePath);
@@ -1002,7 +941,7 @@ export class SkillsService {
         scope,
         origin,
         mutable,
-        invocation: environmentView.harness === "pi" ? `/skill:${entry.skill.name}` : `$${entry.skill.name}`,
+        invocation: `/skill:${entry.skill.name}`,
         capabilities: { read: true, edit: mutable, delete: mutable },
         filePath,
         baseDir: path.resolve(entry.skill.baseDir || path.dirname(filePath)),
@@ -1013,21 +952,14 @@ export class SkillsService {
   }
 
   private roots(environmentId: SkillEnvironmentId, cwd: string) {
-    const agentDir = environmentId === "butler-pi"
-      ? this.options.butlerPiAgentDir
-      : environmentId === "worker-pi"
-        ? this.options.workerPiAgentDir
-        : this.options.workerCodexHomeDir;
-    const configDir = environmentId === "worker-codex" ? ".codex" : ".pi";
-    const project = path.resolve(cwd, configDir, "skills");
+    const agentDir = environmentId === "butler-pi" ? this.options.butlerPiAgentDir : this.options.workerPiAgentDir;
+    const project = path.resolve(cwd, ".pi", "skills");
     return {
       user: path.resolve(agentDir, "skills"),
       project,
       projectLocal: [project, ...this.ancestorAgentSkillRoots(cwd)],
-      system: environmentId === "worker-codex" ? path.resolve(agentDir, "skills", ".system") : null,
-      packages: environmentId === "worker-codex"
-        ? [path.resolve(agentDir, "plugins", "cache")]
-        : [path.resolve(agentDir, "npm", "node_modules"), path.resolve(agentDir, "git")]
+      system: null,
+      packages: [path.resolve(agentDir, "npm", "node_modules"), path.resolve(agentDir, "git")]
     };
   }
 
@@ -1126,9 +1058,7 @@ export class SkillsService {
   }
 
   private transportPath(environmentId: SkillEnvironmentId, filePath: string): string {
-    if (environmentId !== "worker-codex" || !isWithin(this.options.workerCodexHomeDir, filePath)) return filePath;
-    const runtimeHome = this.options.workerCodexRuntimeHomeDir ?? "/home/worker/.codex";
-    return path.join(runtimeHome, path.relative(this.options.workerCodexHomeDir, filePath));
+    return filePath;
   }
 
   private findByPath(records: SkillRecord[], filePath: string): SkillRecord {

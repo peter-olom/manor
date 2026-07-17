@@ -3,8 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 export function createBrokerCore(context, deps = {}) {
-  const { previewNetwork, previewOutboundNetwork, sharedWorkNetwork, previewImage, routeBase, previewEgressConfigPath, previewEgressAdminUrl, brokerToken, harnessAccessRegistryPath: configuredHarnessAccessRegistryPath, legacyHarnessAccessRegistryPath, stackBindingRegistryPath, internalOperatorBaseUrl, playwrightContainerName, runtimeBrokerContainerName, previewEgressContainerName, artifactsRootDir, playwrightArtifactsScratchDir, stackNetworkPrefix, stackVolumePrefix, stackInfraReconnectIntervalMs, docker, leaseTransitions, leaseBootstrapStates, activeLeaseBootstrapMonitors, pendingPreviewLeases, retainedPreviewLeases, noHeartbeatReadyDelayMs } = context;
-  const harnessAccessRegistryPath = configuredHarnessAccessRegistryPath ?? context.codexAccessRegistryPath;
+  const { previewNetwork, previewOutboundNetwork, sharedWorkNetwork, previewImage, routeBase, previewEgressConfigPath, previewEgressAdminUrl, brokerToken, harnessAccessRegistryPath: configuredHarnessAccessRegistryPath, stackBindingRegistryPath, internalOperatorBaseUrl, playwrightContainerName, runtimeBrokerContainerName, previewEgressContainerName, artifactsRootDir, playwrightArtifactsScratchDir, stackNetworkPrefix, stackVolumePrefix, stackInfraReconnectIntervalMs, docker, leaseTransitions, leaseBootstrapStates, activeLeaseBootstrapMonitors, pendingPreviewLeases, retainedPreviewLeases, noHeartbeatReadyDelayMs } = context;
+  const harnessAccessRegistryPath = configuredHarnessAccessRegistryPath;
   const {
     listStackMemberContainers,
     listManagedServiceContainersByVolume,
@@ -101,7 +101,7 @@ function hasBrokerAccess(request) {
 }
 
 function loadHarnessAccessRegistry() {
-  const registryPaths = [...new Set([harnessAccessRegistryPath, legacyHarnessAccessRegistryPath].filter(Boolean))];
+  const registryPaths = [harnessAccessRegistryPath].filter(Boolean);
   for (const registryPath of registryPaths) {
     let raw;
     try {
@@ -121,7 +121,7 @@ function loadHarnessAccessRegistry() {
 }
 
 function getHarnessGrant(request) {
-  const token = request.header("x-manor-harness-token") || request.header("x-manor-codex-token");
+  const token = request.header("x-manor-harness-token");
   if (!token) {
     return null;
   }

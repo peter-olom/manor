@@ -374,7 +374,7 @@ test("Butler skill proposal tool posts a decision-complete approval card and rel
   for (const tool of tools) {
     assert.match(`${tool.description} ${tool.promptSnippet}`, /butler-pi/);
     assert.match(`${tool.description} ${tool.promptSnippet}`, /worker-pi/);
-    assert.match(`${tool.description} ${tool.promptSnippet}`, /worker-codex/);
+    assert.doesNotMatch(`${tool.description} ${tool.promptSnippet}`, /worker-codex/);
   }
 
   const proposed = await tools.find((tool) => tool.name === "propose_skill_change")!.execute("call-1", {
@@ -406,7 +406,7 @@ test("Butler skill proposal tool posts a decision-complete approval card and rel
   assert.equal((await service.list("butler-pi", cwd))[0]?.name, "agent-installed");
 });
 
-test("approval targets distinguish Worker Pi from Worker Codex", async (t) => {
+test("approval targets identify the single Worker Pi environment", async (t) => {
   const { service, cwd } = await fixture(t);
   const workerPi = await service.proposeAgentChange("butler:pair-1", {
     operation: "create",
@@ -416,16 +416,6 @@ test("approval targets distinguish Worker Pi from Worker Codex", async (t) => {
     instructions: "Use Worker Pi.",
     cwd
   });
-  const workerCodex = await service.proposeAgentChange("butler:pair-1", {
-    operation: "create",
-    environment: "worker-codex",
-    name: "worker-codex-target",
-    description: "Worker Codex target",
-    instructions: "Use Worker Codex.",
-    cwd
-  });
-
   assert.match(workerPi.target, /Worker Pi \(worker-pi\)/);
-  assert.match(workerCodex.target, /Worker Codex \(worker-codex\)/);
-  assert.notEqual(workerPi.target, workerCodex.target);
+  assert.doesNotMatch(workerPi.target, /Codex/);
 });

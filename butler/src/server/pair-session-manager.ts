@@ -4,7 +4,6 @@ import path from "node:path";
 import { ButlerAgentService } from "./butler-agent.js";
 import { buildProofsByThreadMap } from "./butler-agent-helpers.js";
 import { buildComposerInputItemsPrompt, buildReferencePromptText, normalizeComposerInputItems } from "./reference-inputs.js";
-import type { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { FileReferenceStore } from "./file-store.js";
 import type { HostControllerClient } from "./host-controller-client.js";
@@ -35,6 +34,7 @@ import { buildManorSkillRoutingContext, listManorSkillCapabilities, normalizeMan
 import type { AutomationDispatchResult } from "./session-automation-scheduler.js";
 import { automationDispatchEndsAt } from "./session-automation.js";
 import type { ActivityWatchdogDiagnostics } from "../shared/activity-watchdog.js";
+import { listComposerFileSuggestions } from "./composer-file-suggestions.js";
 
 type PairButlerService = Pick<
   ButlerAgentService,
@@ -44,7 +44,6 @@ type PairButlerService = Pick<
 type PairSessionManagerOptions = {
   pairStore: PairStore;
   store: ButlerStateStore;
-  codexClient: CodexAppServerClient;
   piRpcWorkerClient?: PiRpcWorkerClient | null;
   hostController: HostControllerClient;
   runtimeBroker: RuntimeBrokerClient;
@@ -53,8 +52,8 @@ type PairSessionManagerOptions = {
   fileStore: FileReferenceStore;
   visionInspection: VisionInspectionService;
   piAuthPath: string;
-  codexAuthPath: string;
-  codexConfigDir: string;
+  workerAuthPath: string;
+  workerConfigDir: string;
   sessionRootDir: string;
   artifactsDir: string;
   refreshRuntimeInventory?: () => Promise<void>;
@@ -64,13 +63,13 @@ type PairSessionManagerOptions = {
   sessionTitleGenerator?: SessionTitleGenerator | null;
   skillsService: SkillsService;
   extensionUiBroker: ExtensionUiBroker;
-  getCodexAuthStatus?: () => { loggedIn: boolean };
+  getWorkerAuthStatus?: () => { loggedIn: boolean };
   createButlerService?: (options: ConstructorParameters<typeof ButlerAgentService>[0]) => PairButlerService;
   listWorkspaceProjects?: () => Promise<WorkspaceProjectDirectory[]>;
   validateWorkspace?: (cwd: string) => Promise<string>;
 };
 
-function toPairModelOptions(models: ReturnType<CodexAppServerClient["getConnectionState"]>["compose"]["availableModels"]): PairModelOption[] {
+function toPairModelOptions(models: ModelOption[]): PairModelOption[] {
   return models
     .filter((model) => model.provider !== "opencode")
     .map((model) => ({
@@ -569,7 +568,7 @@ export class PairSessionManager {
     task?: string | null;
     cwd?: string | null;
     handoffPrompt?: string | null;
-    runtime?: "openai" | "pi-rpc" | null;
+    runtime?: "pi-rpc" | null;
     harness?: string | null;
     provider?: string | null;
     model?: string | null;
@@ -583,7 +582,7 @@ export class PairSessionManager {
         cwd: input.cwd,
         handoffPrompt: input.handoffPrompt,
         runtime: input.runtime,
-        harness: input.harness,
+        harness: input.harness === "pi" ? "pi" : null,
         provider: input.provider,
         model: input.model,
         effort: input.effort
@@ -699,7 +698,7 @@ export class PairSessionManager {
 
   async setWorkerEffort(pairId: string, effort: string | null): Promise<PairDetail | null> {
     const pair = this.options.pairStore.getPair(pairId);
-    const harness = pair?.worker?.harness ?? pair?.workerHarness ?? null;
+    const harness = pair?.worker?.harness === "pi" || pair?.workerHarness === "pi" ? "pi" : null;
     const compose = getUnifiedWorkerCompose(this.getWorkerClientAccess(), pair?.worker?.model ?? pair?.workerModel ?? null, effort, "auto", harness);
     const resolvedEffort = compose.effort;
     if (!pair?.worker) {
@@ -717,7 +716,8 @@ export class PairSessionManager {
   async setWorkerModel(pairId: string, modelId: string, harness?: string | null): Promise<PairDetail | null> {
     const pair = this.options.pairStore.getPair(pairId);
     if (!pair) return null;
-    const compose = getUnifiedWorkerCompose(this.getWorkerClientAccess(), modelId, pair.workerEffort ?? null, "auto", harness ?? null);
+    if (harness && harness !== "pi") throw new Error("Only the Pi Worker harness is available");
+    const compose = getUnifiedWorkerCompose(this.getWorkerClientAccess(), modelId, pair.workerEffort ?? null, "auto", harness === "pi" ? "pi" : null);
     const model = findWorkerModel(compose.availableModels, modelId, harness);
     if (!model) {
       throw new Error("Selected worker model is not available");
@@ -736,14 +736,15 @@ export class PairSessionManager {
       if (!pair) return null;
       if (!pair.worker) throw new Error("No active worker is available to hand off");
       if (pair.worker.model === modelId && (!harness || pair.worker.harness === harness)) throw new Error("That worker model is already active. Change Thinking directly.");
-      const compose = getUnifiedWorkerCompose(this.getWorkerClientAccess(), modelId, requestedEffort, "auto", harness);
+      if (harness && harness !== "pi") throw new Error("Only the Pi Worker harness is available");
+      const compose = getUnifiedWorkerCompose(this.getWorkerClientAccess(), modelId, requestedEffort, "auto", harness === "pi" ? "pi" : null);
       const model = findWorkerModel(compose.availableModels, modelId, harness);
       if (!model) throw new Error("Selected worker model is not available");
       const effort = chooseEffortForModel(toPairModelOptions([model])[0] ?? null, requestedEffort ?? compose.effort);
       const service = await this.ensureService(pairId);
       await service.handoffWorker({
         sourceThreadId: pair.worker.threadId,
-        harness: model.harness ?? compose.harness ?? "codex",
+        harness: model.harness ?? compose.harness ?? "pi",
         model: modelId,
         effort: effort as never,
         butlerThreadId: pair.butlerSessionId
@@ -761,7 +762,7 @@ export class PairSessionManager {
     const selectedButlerModelId = shell.compose?.model ?? butlerModels[0]?.id ?? null;
     const selectedButlerModel = butlerModels.find((model) => model.id === selectedButlerModelId) ?? butlerModels[0] ?? null;
     const thinkingLevel = chooseThinkingLevelForModel(selectedButlerModel, pair.butlerThinkingLevel ?? shell.compose?.thinkingLevel ?? null);
-    const requestedWorkerHarness = pair.worker?.harness ?? pair.workerHarness ?? null;
+    const requestedWorkerHarness = pair.worker?.harness === "pi" || pair.workerHarness === "pi" ? "pi" : null;
     const workerCompose = getUnifiedWorkerCompose(this.getWorkerClientAccess(), pair.worker?.model ?? pair.workerModel ?? null, pair.workerEffort ?? null, "auto", requestedWorkerHarness);
     const availableModels = toPairModelOptions(workerCompose.availableModels);
     const selectedModelId = workerCompose.model ?? availableModels[0]?.id ?? null;
@@ -933,25 +934,8 @@ export class PairSessionManager {
       }];
     }
 
-    const codexSuggestions = await this.options.codexClient.listComposerSuggestions({
-      trigger,
-      query: normalizedQuery,
-      cwd,
-      threadId: pair.worker?.runtime === "openai" ? pair.worker.threadId : null
-    }).catch(() => []);
-
     if (trigger === "@") {
-      return codexSuggestions.filter((suggestion) => suggestion.kind === "file" || suggestion.kind === "directory").map((suggestion) => {
-        const itemPath = suggestion.id.startsWith("file:") ? suggestion.id.slice(5) : suggestion.detail ?? suggestion.label;
-        return {
-          id: suggestion.id,
-          kind: suggestion.kind === "directory" ? "directory" as const : "file" as const,
-          label: suggestion.label,
-          detail: suggestion.detail,
-          insertText: suggestion.insertText,
-          inputItem: { type: "file", name: suggestion.detail ?? suggestion.label, path: itemPath } satisfies PairComposerInputItem
-        };
-      });
+      return listComposerFileSuggestions(cwd, normalizedQuery).catch(() => []);
     }
 
     return [];
@@ -1004,9 +988,7 @@ export class PairSessionManager {
     if (selectedInputSkillName && !selectedSkillName) throw new Error("Selected skill has an invalid name.");
     const skillCatalog = selectedSkillName ? await listManorSkillCapabilities(this.options.skillsService, pair.worker?.cwd ?? pair.defaultCwd) : [];
     const selectedSkill = selectedSkillName ? skillCatalog.find((skill) => skill.name.toLowerCase() === selectedSkillName.toLowerCase()) : null;
-    const workerHarness = this.resolveCompose(pair, service).worker.harness;
-    const targetWorkerEnvironment = workerHarness === "pi" ? "worker-pi" : "worker-codex";
-    const skillRoutingContext = selectedSkillName ? buildManorSkillRoutingContext(selectedSkillName, selectedSkill?.environments ?? [], targetWorkerEnvironment) : "";
+    const skillRoutingContext = selectedSkillName ? buildManorSkillRoutingContext(selectedSkillName, selectedSkill?.environments ?? [], "worker-pi") : "";
     const nativeButlerInvocation = selectedSkill?.environments.includes("butler-pi") ? `/skill:${selectedSkill.name}` : "";
     const promptText = [nativeButlerInvocation, skillRoutingContext, promptBody].filter(Boolean).join("\n\n");
     const referenceCount = input.imageReferenceIds.length + input.fileReferenceIds.length;
@@ -1120,7 +1102,6 @@ export class PairSessionManager {
     const createService = this.options.createButlerService ?? ((serviceOptions: ConstructorParameters<typeof ButlerAgentService>[0]) => new ButlerAgentService(serviceOptions));
     const service = createService({
       store: this.options.store,
-      codexClient: this.options.codexClient,
       piRpcWorkerClient: this.options.piRpcWorkerClient ?? null,
       hostController: this.options.hostController,
       runtimeBroker: this.options.runtimeBroker,
@@ -1129,8 +1110,8 @@ export class PairSessionManager {
       fileStore: this.options.fileStore,
       visionInspection: this.options.visionInspection,
       piAuthPath: this.options.piAuthPath,
-      codexAuthPath: this.options.codexAuthPath,
-      codexConfigDir: this.options.codexConfigDir,
+      workerAuthPath: this.options.workerAuthPath,
+      workerConfigDir: this.options.workerConfigDir,
       sessionDir,
       artifactsDir: this.options.artifactsDir,
       runtimeThreadId: `butler:${pair.id}`,
@@ -1188,7 +1169,7 @@ export class PairSessionManager {
             cwd: thread?.cwd ?? null,
             handoffPrompt: text,
             runtime,
-            harness,
+            harness: harness === "pi" ? "pi" : null,
             provider,
             model,
             effort,

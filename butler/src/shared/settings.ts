@@ -21,7 +21,6 @@ export type SettingsSecretSource =
 
 export type SettingsReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type SettingsThinkingLevel = "off" | SettingsReasoningEffort;
-export type SettingsWorkerHarness = "codex" | "pi" | (string & {});
 
 export type SettingsProviderModel =
   | string
@@ -106,7 +105,6 @@ export type ManorSettings = {
     };
   };
   worker: {
-    defaultHarness: SettingsWorkerHarness | null;
     defaultModel: string | null;
     defaultEffort: SettingsReasoningEffort | null;
   };
@@ -154,7 +152,6 @@ export type ManorSettingsProvenance = Record<SettingsGroupKey, SettingsProvenanc
 export type SettingsValidationStatus = "not_configured" | "ok" | "failed";
 
 export type SettingsValidationKey =
-  | "codex"
   | "piRpc"
   | "ollamaLocal"
   | "ollamaCloud"

@@ -57,11 +57,11 @@ import { applyCallbackReviewFailure, beginCallbackReviewAttempt, CallbackReviewS
 import { blockCloseoutReview, getOperatorCloseoutBlocker as getCloseoutBlocker, idleCloseoutReview, isSameBlockedCloseout, queueCloseoutReview, recordGatedCloseout, relevantTerminalWorkerReport } from "./butler-closeout-gate.js";
 import { backfillOperatorMessagesFromSessionFiles, normalizeOperatorMessages, normalizeOperatorQuestion, readPersistedMessageAttachments, removeOperatorMessage, upsertOperatorMessage } from "./butler-operator-messages.js";
 import { postOperatorJobReply as deliverOperatorJobReply, type OperatorJobReplyAccess } from "./butler-operator-closeout.js";
-import { readButlerAuthStatus, readCodexAuthStatus } from "./auth-status.js";
-import { backfillDirectCodexMessagesFromSessionFiles, buildDirectCodexMessagePingSummary, notifyDirectCodexMessage, planDirectMessageRollback, type DirectCodexMessageAccess, type DirectCodexMessagePingInput } from "./direct-codex-message.js";
+import { readButlerAuthStatus } from "./auth-status.js";
+import { buildDirectCodexMessagePingSummary, notifyDirectCodexMessage, planDirectMessageRollback, type DirectCodexMessageAccess, type DirectCodexMessagePingInput } from "./direct-codex-message.js";
 import { type FileReferenceStore } from "./file-store.js"; import { HostControllerClient } from "./host-controller-client.js";
 import { ManorRestartRequestState } from "./manor-restart-state.js";
-import { buildOnboardingView, codexHarnessOnboardingRequired } from "./onboarding-status.js";
+import { buildOnboardingView, workerOpenAiOnboardingRequired } from "./onboarding-status.js";
 import { type ImageReferenceStore } from "./image-store.js";
 import type { JobPayloadView } from "./job-payload-types.js";
 import {
@@ -114,7 +114,6 @@ import type {
   SupervisionChecklistView
 } from "./types.js";
 import { ButlerStateStore } from "./state-store.js";
-import { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { PreviewLeaseView, PreviewProofRecordView, PreviewVerificationArtifactView, PreviewVerificationView, ProjectMemoryView } from "./types.js";
 const CALLBACK_RECOVERY_TIMEOUT_MS = 30_000;
@@ -129,7 +128,6 @@ import { buildButlerProviderWebTools, PROVIDER_WEB_FETCH_TOOL_NAME, PROVIDER_WEB
 import { piThinkingLevelForModelOption } from "./pi-thinking-levels.js";
 export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
-  private readonly codexClient: CodexAppServerClient;
   private readonly piRpcWorkerClient: PiRpcWorkerClient | null;
   private readonly hostController: HostControllerClient;
   private readonly runtimeBroker: RuntimeBrokerClient;
@@ -137,8 +135,8 @@ export class ButlerAgentService extends EventEmitter {
   private readonly imageStore: ImageReferenceStore;
   private readonly fileStore: FileReferenceStore;
   private readonly piAuthPath: string;
-  private readonly codexAuthPath: string;
-  private readonly codexConfigDir: string;
+  private readonly workerAuthPath: string;
+  private readonly workerConfigDir: string;
   private readonly sessionDir: string;
   private readonly artifactsDir: string;
   private readonly runtimeThreadId: string;
@@ -154,7 +152,7 @@ export class ButlerAgentService extends EventEmitter {
   private modelRegistry: ModelRegistry | null = null;
   private session: AgentSession | null = null;
   private auth: ButlerAuthStatus = { mode: "none", loggedIn: false, validationError: null, lastValidatedAt: null };
-  private codexAuth: ButlerAuthStatus = { mode: "none", loggedIn: false, validationError: null, lastValidatedAt: null };
+  private workerAuth: ButlerAuthStatus = { mode: "none", loggedIn: false, validationError: null, lastValidatedAt: null };
   private onboarding: ButlerOnboardingView = {
     complete: false,
     steps: []
@@ -201,7 +199,6 @@ export class ButlerAgentService extends EventEmitter {
   constructor(private readonly options: ButlerAgentServiceOptions) {
     super();
     this.store = options.store;
-    this.codexClient = options.codexClient;
     this.piRpcWorkerClient = options.piRpcWorkerClient ?? null;
     this.hostController = options.hostController;
     this.runtimeBroker = options.runtimeBroker;
@@ -209,8 +206,8 @@ export class ButlerAgentService extends EventEmitter {
     this.imageStore = options.imageStore;
     this.fileStore = options.fileStore;
     this.piAuthPath = options.piAuthPath;
-    this.codexAuthPath = options.codexAuthPath;
-    this.codexConfigDir = options.codexConfigDir;
+    this.workerAuthPath = options.workerAuthPath;
+    this.workerConfigDir = options.workerConfigDir;
     this.sessionDir = options.sessionDir;
     this.artifactsDir = options.artifactsDir;
     this.runtimeThreadId = options.runtimeThreadId?.trim() || "butler";
@@ -352,7 +349,7 @@ export class ButlerAgentService extends EventEmitter {
     await this.saveCallbackState();
   }); }
   private attachDelegationAcknowledgement(threadId: string, text: string, at: number, selection: {
-    runtime?: "openai" | "pi-rpc" | null;
+    runtime?: "pi-rpc" | null;
     harness?: string | null;
     provider?: string | null;
     model?: string | null;
@@ -374,7 +371,7 @@ export class ButlerAgentService extends EventEmitter {
     this.emit("change");
   }
   private queueDelegationAcknowledgement(threadId: string, text: string, selection: {
-    runtime?: "openai" | "pi-rpc" | null;
+    runtime?: "pi-rpc" | null;
     harness?: string | null;
     provider?: string | null;
     model?: string | null;
@@ -597,14 +594,13 @@ export class ButlerAgentService extends EventEmitter {
     await fs.mkdir(this.sessionDir, { recursive: true });
     await this.loadOperatorMessageState();
     let operatorStateChanged = await backfillOperatorMessagesFromSessionFiles(this.operatorMessages, this.sessionDir);
-    operatorStateChanged = await backfillDirectCodexMessagesFromSessionFiles(this.operatorMessages, process.env.CODEX_SHARED_HOME_DIR || "/codex-home") || operatorStateChanged;
     operatorStateChanged = recoverInterruptedOperatorQuestionDeliveries(this.operatorMessages) || operatorStateChanged;
     if (operatorStateChanged) await this.saveOperatorMessageState();
     await this.loadActivitySummaryState();
     await this.loadCallbackState();
     await this.manorRestartRequests.load();
     this.auth = await readButlerAuthStatus(this.piAuthPath);
-    this.codexAuth = await readCodexAuthStatus(this.codexAuthPath);
+    this.workerAuth = await this.piRpcWorkerClient?.getAuthStatus() ?? { mode: "none", loggedIn: false, validationError: "Pi Worker runtime is not available", lastValidatedAt: Date.now() };
     this.modelRegistry = await createManorModelRegistry(this.piAuthPath, process.env, { preferredModelRef: this.getButlerDefaults()?.model });
     await this.createOrRefreshSession();
     await this.refreshExternalStatus();
@@ -644,15 +640,15 @@ export class ButlerAgentService extends EventEmitter {
   reloadResources(): Promise<void> { return reloadButlerResources(this.getSessionAccess()); }
   private async refreshExternalStatus(): Promise<void> { if (this.quiescing) return;
     const nextAuth = await readButlerAuthStatus(this.piAuthPath);
-    const nextCodexAuth = await readCodexAuthStatus(this.codexAuthPath); if (this.quiescing) return;
+    const nextCodexAuth = await this.piRpcWorkerClient?.getAuthStatus() ?? { mode: "none" as const, loggedIn: false, validationError: "Pi Worker runtime is not available", lastValidatedAt: Date.now() }; if (this.quiescing) return;
     const clearedStaleAuthError = nextAuth.loggedIn && isButlerAuthRecoveryError(this.lastError);
     const authChanged =
       nextAuth.mode !== this.auth.mode ||
       nextAuth.loggedIn !== this.auth.loggedIn ||
       nextAuth.validationError !== this.auth.validationError ||
-      nextCodexAuth.mode !== this.codexAuth.mode ||
-      nextCodexAuth.loggedIn !== this.codexAuth.loggedIn ||
-      nextCodexAuth.validationError !== this.codexAuth.validationError;
+      nextCodexAuth.mode !== this.workerAuth.mode ||
+      nextCodexAuth.loggedIn !== this.workerAuth.loggedIn ||
+      nextCodexAuth.validationError !== this.workerAuth.validationError;
 
     const butlerAuthChanged =
       nextAuth.mode !== this.auth.mode ||
@@ -668,13 +664,13 @@ export class ButlerAgentService extends EventEmitter {
     if (clearedStaleAuthError) {
       this.lastError = null;
     }
-    this.codexAuth = nextCodexAuth;
+    this.workerAuth = nextCodexAuth;
 
     const nextOnboarding = await buildOnboardingView({
       butlerAuth: this.auth,
-      codexAuth: this.codexAuth,
-      codexConfigDir: this.codexConfigDir,
-      codexHarnessRequired: codexHarnessOnboardingRequired(this.getWorkerDefaults(), getActiveManorSettings())
+      workerAuth: this.workerAuth,
+      workerConfigDir: this.workerConfigDir,
+      workerOpenAiRequired: workerOpenAiOnboardingRequired(this.getWorkerDefaults(), getActiveManorSettings())
     }); if (this.quiescing) return;
 
     if (JSON.stringify(nextOnboarding) !== JSON.stringify(this.onboarding) || authChanged || clearedStaleAuthError) {
@@ -718,9 +714,8 @@ export class ButlerAgentService extends EventEmitter {
   private getWorkerClientAccess(): WorkerClientAccess {
     return {
       store: this.store,
-      codexClient: this.codexClient, watchdogs: this.watchdogs,
+      watchdogs: this.watchdogs,
       piRpcWorkerClient: this.piRpcWorkerClient,
-      getCodexAuthStatus: () => this.codexAuth,
       getWorkerAffinity: this.options.getWorkerAffinity,
       recordSuccessfulWorkerSelection: this.options.recordSuccessfulWorkerSelection
     };
@@ -914,10 +909,7 @@ export class ButlerAgentService extends EventEmitter {
           callback: liveCallback,
           sessionAccess: this.getSessionAccess(),
           store: this.store,
-          codexHomeDir: path.dirname(this.codexAuthPath),
           piAuthPath: this.piAuthPath,
-          scratchDir: path.join(this.sessionDir, "adversarial-review"),
-          codexAuthenticated: this.codexAuth.loggedIn || Boolean(process.env.OPENAI_API_KEY?.trim()),
           watchdogs: this.watchdogs,
           isCurrent: () => !this.quiescing && this.pendingChatCallbacks.get(liveCallback.threadId) === liveCallback && liveCallback.reviewState === "running" && isCallbackOutstanding(liveCallback),
           onProgress: (progress) => { void persistCallbackReviewProgress({ attempted: liveCallback, progress, getCurrent: () => this.pendingChatCallbacks.get(liveCallback.threadId), save: () => this.saveCallbackState(), emit: () => this.emit("change") }).catch((error) => { this.lastError = `Adversarial review progress could not be saved: ${redactSensitiveText(error instanceof Error ? error.message : String(error))}`; this.emit("change"); }); }
@@ -1436,7 +1428,7 @@ export class ButlerAgentService extends EventEmitter {
     access.emit("change");
   }
   getButlerAuthStatus(): ButlerAuthStatus { return this.auth; }
-  getCodexAuthStatus(): ButlerAuthStatus { return this.codexAuth; }
+  getWorkerAuthStatus(): ButlerAuthStatus { return this.workerAuth; }
   async retryBlockedCallbackReviews(threadId?: string): Promise<boolean> { const callback = threadId ? this.pendingChatCallbacks.get(threadId) : [...this.pendingChatCallbacks.values()].find(isCallbackReviewRetryablePause); if (!callback || !isCallbackReviewRetryablePause(callback)) return false; const model = this.session?.model ?? null; prepareCallbackReviewRetry(callback, { provider: model?.provider ?? null, model: model?.id ?? null, thinkingLevel: getButlerShellSnapshot(this.getSessionAccess()).compose?.thinkingLevel ?? "off" }); this.resetCallbackReviewFailures(callback.threadId); if (callback.reviewState === "blocked") queueCloseoutReview(callback, callback.reviewReason ?? "worker_callback"); await this.saveCallbackState(); this.callbackReviewScheduler.schedule(); this.emit("change"); return true; }
   async quiesceCallbackReviews(): Promise<void> { if (this.quiescing) return; this.quiescing = true; try { await this.cancelCallbackReview(); } catch (error) { this.quiescing = false; throw error; } this.callbackReviewScheduler.dispose(); this.store.off("change", this.storeChangeHandler); }
   async cancelCallbackReview(threadId?: string): Promise<boolean> { const threadIds = threadId ? [threadId] : [...this.pendingChatCallbacks.keys()]; return runSerializedJobMutations(threadIds, async () => { const callbacks = threadId ? [this.pendingChatCallbacks.get(threadId)] : [...this.pendingChatCallbacks.values()]; const active = callbacks.filter((callback): callback is PendingChatCallback => Boolean(callback && (callback.reviewState === "running" || callback.reviewState === "queued"))); if (active.length === 0) return false; for (const callback of active) { this.callbackReviewNotBefore.delete(callback.threadId); this.callbackReviewFailureCount.delete(callback.threadId); pauseCallbackReview(callback, this.store.getWorkerReport(callback.threadId)?.updatedAt ?? null); } await this.saveCallbackState(); this.emit("change"); return true; }); }
@@ -1449,9 +1441,10 @@ export class ButlerAgentService extends EventEmitter {
   }); }
   async ensureExternalWorkerDelegation(threadId: string): Promise<void> { const callback = this.pendingChatCallbacks.get(threadId); if (callback && isCallbackOutstanding(callback)) return; const thread = this.store.getThread(threadId); const latestTurnId = getFallbackTurnId(thread); if (latestTurnId) { const closeoutId = buildCloseoutId(threadId, latestTurnId); if (this.deliveredCloseoutIds.has(closeoutId) || this.operatorMessages.some((message) => message.id === `callback-${closeoutId}` || message.id === `callback-fallback-${closeoutId}`)) return; } const latestWorkAt = Math.max(this.store.getWorkerReport(threadId)?.updatedAt ?? 0, thread?.turns.at(-1)?.startedAt ?? 0); if (callback && latestWorkAt <= (callback.closedAt ?? callback.updatedAt)) return; await this.trackExternalWorkerDelegation(threadId); }
   async handoffWorker(input: { sourceThreadId: string; harness: string; model: string; effort: ReasoningEffort | null; butlerThreadId?: string | null; cwd?: string | null }) {
+    if (input.harness !== "pi") throw new Error("Only the Pi Worker harness is available");
     return handoffWorkerAtomically({
       access: this.getWorkerClientAccess(),
-      sourceThreadId: input.sourceThreadId, targetHarness: input.harness,
+      sourceThreadId: input.sourceThreadId, targetHarness: "pi",
       targetModel: input.model,
       targetEffort: input.effort,
       artifactsDir: this.artifactsDir, targetCwd: input.cwd ?? null,

@@ -268,19 +268,19 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "inspect_skills",
     label: "Inspect skills",
-    description: "List, search, or read installed skills in butler-pi, worker-pi, or worker-codex without changing them.",
+    description: "List, search, or read installed skills for Butler or Worker without changing them.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while reviewing installed skills." }]
   },
   {
     name: "propose_skill_change",
     label: "Propose skill change",
-    description: "Validate a skill create, install, update, or undo in butler-pi, worker-pi, or worker-codex and request explicit operator approval.",
+    description: "Validate a skill create, install, update, or undo for Butler or Worker and request explicit operator approval.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while waiting for skill-change approval." }]
   },
   {
     name: "apply_skill_change",
     label: "Apply skill change",
-    description: "Apply an approved skill change in butler-pi, worker-pi, or worker-codex, verify it, schedule the applicable resource reload, and return undo details.",
+    description: "Apply an approved skill change for Butler or Worker, verify it, schedule the applicable resource reload, and return undo details.",
     uiEffects: [{ kind: "refreshThreads", description: "Makes approved skill changes available to Butler." }]
   },
   {

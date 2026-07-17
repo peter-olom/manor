@@ -3,11 +3,11 @@ import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { deleteJson, getJson, postJson, putJson } from "./api";
 import { dispatchSkillInstallHandoff } from "./skill-install-handoff";
 
-type EnvironmentId = "butler-pi" | "worker-pi" | "worker-codex";
+type EnvironmentId = "butler-pi" | "worker-pi";
 type SkillEnvironment = {
   id: EnvironmentId;
   label: string;
-  harness: "pi" | "codex";
+  harness: "pi";
   capabilities: { create: boolean; import: boolean; packageManagement: false };
 };
 type SkillItem = {
@@ -171,7 +171,7 @@ export function SkillsDashboard({ active }: { active: boolean }) {
         <a className="button is-primary skills-ask-butler" href="/?ask=add-skill" onClick={askButler}>Ask Butler to add a skill</a>
       </header>
       <nav className="skills-environments" aria-label="Skill environments">
-        {environments.map((entry) => <button key={entry.id} className={entry.id === environment ? "is-active" : ""} type="button" onClick={() => { setEnvironment(entry.id); setSelectedId(null); }}>{entry.label} <span>{entry.harness}</span></button>)}
+        {environments.map((entry) => <button key={entry.id} className={entry.id === environment ? "is-active" : ""} type="button" onClick={() => { setEnvironment(entry.id); setSelectedId(null); }}>{entry.label}</button>)}
       </nav>
       <div className="skills-toolbar">
         <input className="input" type="search" aria-label="Search installed skills" placeholder="Search installed skills" value={search} onChange={(event) => setSearch(event.target.value)} />

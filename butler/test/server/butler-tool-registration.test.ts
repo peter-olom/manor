@@ -150,7 +150,7 @@ test("Butler tool catalog matches registered base tools", () => {
   buildButlerWorkerTools(access);
   buildButlerDelegationTools(access);
 
-  const registered = definitions.map((definition) => definition.name).filter((name) => name !== "delegate_to_codex").sort();
+  const registered = definitions.map((definition) => definition.name).sort();
   const catalog = BUTLER_TOOL_CATALOG.map((definition) => definition.name).sort();
   assert.deepEqual(catalog, registered);
 });
@@ -281,7 +281,7 @@ test("delegation tool schema keeps provider, model, and thinking selection out o
   const properties = tool?.parameters?.properties as Record<string, unknown> | undefined;
 
   assert.ok(tool);
-  assert.ok(tools.some((definition) => definition.name === "delegate_to_codex"), "legacy delegation alias should remain registered");
+  assert.equal(tools.some((definition) => definition.name === "delegate_to_codex"), false);
   assert.equal(properties?.workerRuntime, undefined);
   assert.equal(properties?.workerModel, undefined);
   assert.equal(properties?.thinkingBudget, undefined);

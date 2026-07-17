@@ -141,7 +141,7 @@ test("delegation starts worker directly with deterministic routing metadata", as
       postedQuestions += 1;
       return {} as never;
     },
-    codexClient: {
+    piRpcWorkerClient: {
       getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "medium", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["medium"], supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium" }] } }),
       updateComposeSettings: async () => undefined,
       startThread: async (input: { input: (threadId: string) => Promise<unknown> }) => {
@@ -158,7 +158,7 @@ test("delegation starts worker directly with deterministic routing metadata", as
       return {} as never;
     },
     store,
-    getCodexAuthStatus: () => ({ loggedIn: true }),
+    getWorkerAuthStatus: () => ({ loggedIn: true }),
     noteThreadFocus: () => undefined,
     queueDelegationAcknowledgement: (_threadId: string, text: string) => { acknowledgement = text; },
     registerPendingChatCallback: () => undefined
@@ -180,7 +180,7 @@ test("delegation starts worker directly with deterministic routing metadata", as
   assert.deepEqual(delegatedFileReferenceIds, ["file-current-turn", "file-explicit"]);
   assert.equal(requestedCwd, "/workspace");
   assert.match(acknowledgement, /delegated this to a Worker/);
-  assert.match(acknowledgement, /Codex harness/);
+  assert.match(acknowledgement, /Pi harness/);
   assert.doesNotMatch(acknowledgement, /Codex worker/i);
 });
 
@@ -198,7 +198,7 @@ test("delegation cleans up a Worker when the occupied pair rejects attachment", 
       text: "brief",
       contract: makeContract({ threadId: input.threadId, workspaceCwd: "/workspace" })
     }),
-    codexClient: {
+    piRpcWorkerClient: {
       getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "medium", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["medium"], supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium" }] } }),
       updateComposeSettings: async () => undefined,
       startThread: async (input: { input: (threadId: string) => Promise<unknown> }) => {
@@ -210,7 +210,7 @@ test("delegation cleans up a Worker when the occupied pair rejects attachment", 
     imageStore: { resolveViews: () => [], getFilePath: () => null },
     fileStore: { resolveViews: () => [], getFilePath: () => null },
     store,
-    getCodexAuthStatus: () => ({ loggedIn: true }),
+    getWorkerAuthStatus: () => ({ loggedIn: true }),
     noteThreadFocus: () => undefined,
     getActiveOperatorReferences: () => null,
     queueDelegationAcknowledgement: () => ({ attached: false }),
@@ -241,7 +241,7 @@ test("supervision smoke test stops and deletes a Worker when pair attachment is 
       text: "brief",
       contract: makeContract({ threadId: input.threadId, workspaceCwd: "/repos" })
     }),
-    codexClient: {
+    piRpcWorkerClient: {
       getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "medium", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["medium"], supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium" }] } }),
       updateComposeSettings: async () => undefined,
       startThread: async (input: { input: (threadId: string) => Promise<unknown> }) => {
@@ -254,7 +254,7 @@ test("supervision smoke test stops and deletes a Worker when pair attachment is 
     imageStore: { resolveViews: () => [], getFilePath: () => null },
     fileStore: { resolveViews: () => [], getFilePath: () => null },
     store,
-    getCodexAuthStatus: () => ({ loggedIn: true }),
+    getWorkerAuthStatus: () => ({ loggedIn: true }),
     noteThreadFocus: () => undefined,
     getActiveOperatorReferences: () => null,
     queueDelegationAcknowledgement: () => ({ attached: false }),
@@ -292,7 +292,7 @@ test("delegation contract receives the resolved workspace cwd", async () => {
         })
       };
     },
-    codexClient: {
+    piRpcWorkerClient: {
       getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "medium", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["medium"], supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium" }] } }),
       updateComposeSettings: async () => undefined,
       startThread: async (input: { input: (threadId: string) => Promise<unknown> }) => {
@@ -303,7 +303,7 @@ test("delegation contract receives the resolved workspace cwd", async () => {
     imageStore: { resolveViews: () => [], getFilePath: () => null },
     fileStore: { resolveViews: () => [], getFilePath: () => null },
     store,
-    getCodexAuthStatus: () => ({ loggedIn: true }),
+    getWorkerAuthStatus: () => ({ loggedIn: true }),
     noteThreadFocus: () => undefined,
     getActiveOperatorReferences: () => null,
     queueDelegationAcknowledgement: () => undefined,
@@ -331,7 +331,7 @@ test("shared repository bootstrap delegation keeps the bootstrap note", async ()
       const contract = makeContract({ threadId: input.threadId, workspaceCwd: "/repos" });
       return { text: "brief", contract };
     },
-    codexClient: {
+    piRpcWorkerClient: {
       getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "medium", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["medium"], supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium" }] } }),
       updateComposeSettings: async () => undefined,
       startThread: async (input: { input: (threadId: string) => Promise<unknown> }) => {
@@ -342,7 +342,7 @@ test("shared repository bootstrap delegation keeps the bootstrap note", async ()
     imageStore: { resolveViews: () => [], getFilePath: () => null },
     fileStore: { resolveViews: () => [], getFilePath: () => null },
     store,
-    getCodexAuthStatus: () => ({ loggedIn: true }),
+    getWorkerAuthStatus: () => ({ loggedIn: true }),
     noteThreadFocus: () => undefined,
     getActiveOperatorReferences: () => null,
     queueDelegationAcknowledgement: () => undefined,

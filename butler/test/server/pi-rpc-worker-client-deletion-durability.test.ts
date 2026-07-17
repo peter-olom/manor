@@ -167,7 +167,6 @@ test("failed Pi deletion persistence restores the live thread and preserves its 
   let capabilityRestoreCalls = 0;
   await assert.rejects(() => deleteWorkerThread({
     store,
-    codexClient: {} as never,
     piRpcWorkerClient: createClient(store, dir, {
       onThreadCapabilityRemoved: async () => { capabilityRemovalCalls += 1; },
       onThreadCapabilityReady: async (restoredThreadId, cwd) => {

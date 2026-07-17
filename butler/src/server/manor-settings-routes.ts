@@ -8,7 +8,6 @@ import type {
 } from "../shared/settings.js";
 import { getActiveManorSettings, isSecretSourceAvailable, readSecretSourceValue } from "./manor-settings-runtime.js";
 import type { ButlerAgentService } from "./butler-agent.js";
-import type { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { ButlerStateStore } from "./state-store.js";
 import { ollamaWebFetch, ollamaWebSearch, readOllamaWebToolsConfig } from "./ollama-web-tools.js";
@@ -26,7 +25,6 @@ type SettingsRouteAccess = {
   app: Express;
   settingsService: ManorSettingsService;
   store: ButlerStateStore;
-  codexClient: CodexAppServerClient;
   piRpcWorkerClient: PiRpcWorkerClient;
   butlerAgent: ButlerAgentService;
   onSettingsChanged: () => Promise<void>;
@@ -34,7 +32,6 @@ type SettingsRouteAccess = {
 };
 
 const VALIDATION_KEYS: SettingsValidationKey[] = [
-  "codex",
   "piRpc",
   "ollamaLocal",
   "ollamaCloud",
@@ -182,10 +179,6 @@ async function validateEmbeddingHost(settings: ManorSettings): Promise<SettingsV
 
 async function runValidation(access: SettingsRouteAccess, target: SettingsValidationKey): Promise<SettingsValidationResult> {
   try {
-    if (target === "codex") {
-      const state = access.codexClient.getConnectionState();
-      return state.connected ? result("ok", "Codex app-server harness connection is active.") : result("failed", state.lastError ?? "Codex app-server harness is not connected.");
-    }
     if (target === "piRpc") {
       const state = access.piRpcWorkerClient.getConnectionState();
       return state.compose.availableModels.length > 0 ? result("ok", `${state.compose.availableModels.length} Pi model options are available.`) : result("failed", state.lastError ?? "No Pi model options are available.");
@@ -204,22 +197,22 @@ async function runValidation(access: SettingsRouteAccess, target: SettingsValida
   }
 }
 
-function settingsPayload(access: SettingsRouteAccess) {
-  const codex = access.codexClient.getConnectionState();
+async function settingsPayload(access: SettingsRouteAccess) {
   const piRpc = access.piRpcWorkerClient.getConnectionState();
   const butler = access.butlerAgent.getShellSnapshot().compose;
   const settings = access.settingsService.getSettings();
   const butlerAuth = access.butlerAgent.getButlerAuthStatus();
-  const codexAuth = access.butlerAgent.getCodexAuthStatus();
-  const providerAvailability = computeProviderAvailability(settings, butlerAuth, codexAuth);
-  const modelTaskProviderAvailability = computeModelTaskProviderAvailability(providerAvailability, codexAuth);
+  const workerAuth = typeof access.piRpcWorkerClient.getAuthStatus === "function"
+    ? await access.piRpcWorkerClient.getAuthStatus()
+    : { mode: "none" as const, loggedIn: false, validationError: null, lastValidatedAt: null };
+  const providerAvailability = computeProviderAvailability(settings, butlerAuth, workerAuth);
+  const modelTaskProviderAvailability = computeModelTaskProviderAvailability(providerAvailability, butlerAuth);
   const workerCompose = getUnifiedWorkerCompose({
     ...access,
-    getCodexAuthStatus: () => codexAuth,
     getWorkerAffinity: () => typeof access.butlerAgent.getWorkerAffinity === "function" ? access.butlerAgent.getWorkerAffinity() : null
   });
   const modelTaskModels = collectModelTaskModels(
-    [butler.availableModels, piRpc.compose.availableModels, codex.compose.availableModels],
+    [butler.availableModels],
     modelTaskProviderAvailability
   );
   return {
@@ -227,7 +220,6 @@ function settingsPayload(access: SettingsRouteAccess) {
     provenance: access.settingsService.getProvenance(),
     availableModels: {
       butler: butler.availableModels,
-      codex: codex.compose.availableModels,
       piRpc: piRpc.compose.availableModels,
       ollamaLocal: collectOllamaLocalModels(butler.availableModels, settings),
       opencodeGo: collectOpencodeGoModels([...butler.availableModels, ...piRpc.compose.availableModels], settings),
@@ -237,9 +229,9 @@ function settingsPayload(access: SettingsRouteAccess) {
     },
     providerAvailability,
     modelTaskProviderAvailability,
-    openaiCodexAuth: {
+    openaiAuth: {
       butler: butlerAuth,
-      codex: codexAuth
+      worker: workerAuth
     },
     validation: access.settingsService.getValidation()
   };
@@ -247,15 +239,15 @@ function settingsPayload(access: SettingsRouteAccess) {
 
 function computeModelTaskProviderAvailability(
   availability: SettingsProviderAvailabilityMap,
-  codexAuth: ButlerAuthStatus
+  butlerAuth: ButlerAuthStatus
 ): SettingsProviderAvailabilityMap {
-  const codexAvailable = isSecretSourceAvailable({ type: "env", name: "OPENAI_API_KEY" }) || codexAuth.loggedIn;
+  const codexAvailable = isSecretSourceAvailable({ type: "env", name: "OPENAI_API_KEY" }) || butlerAuth.loggedIn;
   return {
     ...availability,
     "openai-codex": {
       enabled: true,
       secretAvailable: codexAvailable,
-      reason: codexAvailable ? null : "Set OPENAI_API_KEY or sign in to Codex to use OpenAI models for background tasks."
+      reason: codexAvailable ? null : "Set OPENAI_API_KEY or sign in to Butler with ChatGPT to use OpenAI models for background tasks."
     }
   };
 }
@@ -293,19 +285,19 @@ function collectOpencodeGoModels(butlerModels: ModelOption[], settings: ManorSet
   });
 }
 
-function computeProviderAvailability(settings: ManorSettings, butlerAuth: ButlerAuthStatus, codexAuth: ButlerAuthStatus): SettingsProviderAvailabilityMap {
+function computeProviderAvailability(settings: ManorSettings, butlerAuth: ButlerAuthStatus, workerAuth: ButlerAuthStatus): SettingsProviderAvailabilityMap {
   const ollamaLocal = settings.providers.ollamaLocal;
   const ollama = settings.providers.ollamaCloud;
   const opencode = settings.providers.opencodeGo;
   const ollamaSecret = isSecretSourceAvailable(ollama.apiKeySource);
   const opencodeSecret = isSecretSourceAvailable(opencode.apiKeySource);
   const openaiEnvSecret = isSecretSourceAvailable({ type: "env", name: "OPENAI_API_KEY" });
-  const openaiAuthed = openaiEnvSecret || butlerAuth.loggedIn || codexAuth.loggedIn;
+  const openaiAuthed = openaiEnvSecret || butlerAuth.loggedIn || workerAuth.loggedIn;
   const availability: SettingsProviderAvailabilityMap = {
     "openai-codex": {
       secretAvailable: openaiAuthed,
       enabled: true,
-      reason: openaiAuthed ? null : "Set OPENAI_API_KEY or sign in with ChatGPT to use OpenAI/Codex models."
+      reason: openaiAuthed ? null : "Set OPENAI_API_KEY or sign in with ChatGPT to use OpenAI models."
     },
     "ollama-local": {
       secretAvailable: true,
@@ -406,15 +398,15 @@ async function streamOllamaLocalPull(access: SettingsRouteAccess, model: string,
 }
 
 export function registerManorSettingsRoutes(access: SettingsRouteAccess): void {
-  access.app.get("/api/settings", (_request, response) => {
-    response.json(settingsPayload(access));
+  access.app.get("/api/settings", async (_request, response) => {
+    response.json(await settingsPayload(access));
   });
 
   access.app.patch("/api/settings", async (request, response) => {
     try {
       await access.settingsService.patch(request.body ?? {});
       await access.onSettingsChanged();
-      response.json(settingsPayload(access));
+      response.json(await settingsPayload(access));
     } catch (error) {
       response.status(400).json({ error: redactMessage(error) });
     }
@@ -424,7 +416,7 @@ export function registerManorSettingsRoutes(access: SettingsRouteAccess): void {
     try {
       await access.settingsService.reseedUnset();
       await access.onSettingsChanged();
-      response.json(settingsPayload(access));
+      response.json(await settingsPayload(access));
     } catch (error) {
       response.status(400).json({ error: redactMessage(error) });
     }
@@ -439,7 +431,7 @@ export function registerManorSettingsRoutes(access: SettingsRouteAccess): void {
       }
       await access.settingsService.restoreGroup(group);
       await access.onSettingsChanged();
-      response.json(settingsPayload(access));
+      response.json(await settingsPayload(access));
     } catch (error) {
       response.status(400).json({ error: redactMessage(error) });
     }
@@ -456,7 +448,7 @@ export function registerManorSettingsRoutes(access: SettingsRouteAccess): void {
       }
     }
     if (shouldRefreshModels) access.refreshModelInventories?.();
-    response.json(settingsPayload(access));
+    response.json(await settingsPayload(access));
   });
 
   access.app.get("/api/settings/providers/ollama-cloud/models", async (_request, response) => {

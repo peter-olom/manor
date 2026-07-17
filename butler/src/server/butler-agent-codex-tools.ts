@@ -371,9 +371,14 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       parameters: Type.Object({}),
       uiEffects: access.getToolUiEffects("list_open_windows"),
       execute: async () => {
+        const workerState = access.piRpcWorkerClient?.getConnectionState() ?? {
+          connected: false,
+          lastError: "Pi Worker runtime is not available",
+          compose: { model: null, effort: null, availableModels: [] }
+        };
         const snapshot = access.store.getSnapshot(access.getSnapshot(), {
-          ...access.codexClient.getConnectionState(),
-          auth: access.getCodexAuthStatus()
+          ...workerState,
+          auth: access.getWorkerAuthStatus()
         });
 
         const text =

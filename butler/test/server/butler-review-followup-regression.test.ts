@@ -18,17 +18,17 @@ async function createStore(): Promise<ButlerStateStore> {
   return new ButlerStateStore(path.join(dir, "state.json"));
 }
 
-function createButlerAgent(store: ButlerStateStore, sessionDir: string, codexClient: unknown = { getConnectionState: () => ({ compose: { availableModels: [] } }) }): ButlerAgentService {
+function createButlerAgent(store: ButlerStateStore, sessionDir: string, piRpcWorkerClient: unknown = { getConnectionState: () => ({ compose: { availableModels: [] } }) }): ButlerAgentService {
   return new ButlerAgentService({
     store,
-    codexClient: codexClient as never,
+    piRpcWorkerClient: piRpcWorkerClient as never,
     runtimeBroker: {} as never,
     serviceTemplateRegistry: {} as never,
     imageStore: {} as never,
     fileStore: {} as never,
     piAuthPath: path.join(sessionDir, "pi-auth.json"),
-    codexAuthPath: path.join(sessionDir, "codex-auth.json"),
-    codexConfigDir: sessionDir,
+    workerAuthPath: path.join(sessionDir, "codex-auth.json"),
+    workerConfigDir: sessionDir,
     sessionDir,
     artifactsDir: sessionDir
   });

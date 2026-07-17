@@ -176,10 +176,6 @@ render_env() {
         skip["BUTLER_HOST_PORT"] = 1
         skip["MANOR_HOST_PROJECT_DIR"] = 1
         skip["MANOR_HOST_PROJECT_SOURCE_DIR"] = 1
-        skip["CODEX_SERVICE_TIER"] = 1
-        skip["MANOR_CODEX_AUTO_UPDATE"] = 1
-        skip["MANOR_CODEX_AUTO_UPDATE_VERSION"] = 1
-        skip["MANOR_CODEX_AUTO_UPDATE_REQUIRED"] = 1
         skip["MANOR_PI_AUTO_UPDATE"] = 1
         skip["MANOR_PI_AUTO_UPDATE_VERSION"] = 1
         skip["MANOR_PI_AUTO_UPDATE_REQUIRED"] = 1
@@ -203,7 +199,6 @@ render_env() {
     if [[ -n "${host_project_source_dir}" ]]; then
       printf 'MANOR_HOST_PROJECT_SOURCE_DIR=%s\n' "${host_project_source_dir}"
     fi
-    printf 'CODEX_SERVICE_TIER=%s\n' "${codex_service_tier}"
     printf 'RUNTIME_BROKER_TOKEN=%s\n' "${runtime_broker_token}"
     printf 'MANOR_HOST_CONTROLLER_TOKEN=%s\n' "${host_controller_token}"
   } >> "${output_file}"
@@ -227,9 +222,6 @@ elif [[ "${host_project_source_dir}" = /* ]]; then
 else
   host_project_dir="/host-project"
 fi
-
-codex_service_tier="${CODEX_SERVICE_TIER:-$(env_value CODEX_SERVICE_TIER || true)}"
-codex_service_tier="${codex_service_tier:-auto}"
 
 if [[ "${start_after}" -eq 1 ]]; then
   start_after="$(prompt_bool "Start Manor after install" "1")"

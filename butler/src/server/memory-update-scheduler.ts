@@ -1,10 +1,6 @@
-import { spawn } from "node:child_process";
 import crypto from "node:crypto";
-import { promises as fs } from "node:fs";
-import path from "node:path";
 
 import { recordMemoryDebugTrace, type MemoryDebugTraceDecision } from "./memory-debug-traces.js";
-import { isUnsupportedCodexModelError, memoryCodexModelArgs } from "./memory-codex-model.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type {
   ButlerMessageView,
@@ -179,8 +175,6 @@ function fallbackCandidateKind(sourceKind: MemoryObservationSourceKind): JobMemo
 export class MemoryUpdateScheduler {
   private readonly store: ButlerStateStore;
   private config: MemorySynthesisConfig;
-  private readonly stateDir: string;
-  private readonly codexHomeDir: string;
   private readonly runner: SynthesisRunner;
   private intervalMs: number;
   private timer: NodeJS.Timeout | null = null;
@@ -190,16 +184,15 @@ export class MemoryUpdateScheduler {
     store: ButlerStateStore;
     config: MemorySynthesisConfig;
     stateDir: string;
-    codexHomeDir: string;
     intervalMs?: number;
     runner?: SynthesisRunner;
   }) {
     this.store = options.store;
     this.config = options.config;
-    this.stateDir = options.stateDir;
-    this.codexHomeDir = options.codexHomeDir;
     this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
-    this.runner = options.runner ?? ((input) => this.runCodexExec(input));
+    this.runner = options.runner ?? (async () => {
+      throw new Error("Memory synthesis model runner is unavailable.");
+    });
   }
 
   start(): void {
@@ -629,50 +622,4 @@ export class MemoryUpdateScheduler {
     return { decisions: [{ stage: "fallback", outcome: "submitted", summary, sourceEntryId, persistedId: saved.id }], candidateIds: [saved.id] };
   }
 
-  private async runCodexExec(input: { prompt: string; cwd: string; timeoutMs: number; config: MemorySynthesisConfig }): Promise<SynthesisOutput> {
-    const scratchDir = path.join(this.stateDir, "memory-synthesis");
-    await fs.mkdir(scratchDir, { recursive: true });
-    const runId = crypto.randomUUID();
-    const schemaPath = path.join(scratchDir, `${runId}.schema.json`);
-    const outputPath = path.join(scratchDir, `${runId}.output.json`);
-    await fs.writeFile(schemaPath, JSON.stringify(MEMORY_SYNTHESIS_OUTPUT_SCHEMA, null, 2), "utf8");
-    const effortArgs = input.config.effort ? ["--reasoning-effort", input.config.effort] : [];
-    const baseArgs = ["exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--ignore-rules", "--output-schema", schemaPath, "--output-last-message", outputPath, "--cd", input.cwd || "/repos", ...effortArgs];
-    const run = async (model: string | null): Promise<void> => {
-      const args = [...baseArgs, ...memoryCodexModelArgs(model), "-"];
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn("codex", args, { env: { ...process.env, CODEX_HOME: this.codexHomeDir, NO_COLOR: "1" }, stdio: ["pipe", "pipe", "pipe"] });
-        let stderr = "";
-        const timeout = setTimeout(() => {
-          child.kill("SIGTERM");
-          reject(new Error("codex exec memory synthesis timed out"));
-        }, input.timeoutMs);
-        child.stderr.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk.toString("utf8")}`.slice(-8_000); });
-        child.on("error", (error) => { clearTimeout(timeout); reject(error); });
-        child.on("close", (code) => {
-          clearTimeout(timeout);
-          code === 0 ? resolve() : reject(new Error(`codex exec exited with ${code}: ${stderr}`.trim()));
-        });
-        child.stdin.end(input.prompt);
-      });
-    };
-    try {
-      if (input.config.model) {
-        try {
-          await run(input.config.model);
-        } catch (error) {
-          if (!isUnsupportedCodexModelError(error)) throw error;
-          await fs.rm(outputPath, { force: true }).catch(() => {});
-          await run(null);
-        }
-      } else {
-        await run(null);
-      }
-      const rawText = await fs.readFile(outputPath, "utf8");
-      const parsed = JSON.parse(rawText) as SynthesisOutput;
-      return parsed && typeof parsed === "object" ? { ...parsed, rawOutput: parsed, rawText } : {};
-    } finally {
-      await Promise.all([schemaPath, outputPath].map((filePath) => fs.rm(filePath, { force: true }).catch(() => {})));
-    }
-  }
 }

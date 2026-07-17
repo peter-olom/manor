@@ -20,7 +20,6 @@ test("skills routes expose capabilities and id-based local mutations", async (t)
   const service = new SkillsService({
     butlerPiAgentDir: path.join(root, "butler"),
     workerPiAgentDir: path.join(root, "worker"),
-    workerCodexHomeDir: path.join(root, "codex"),
     workspaceRoot: workspace
   });
   const app = express();
@@ -34,14 +33,14 @@ test("skills routes expose capabilities and id-based local mutations", async (t)
 
   const environmentsResponse = await fetch(`${url}/api/skills/environments`);
   const environments = await environmentsResponse.json() as { environments: Array<{ id: string; capabilities: { packageManagement: boolean } }> };
-  assert.deepEqual(environments.environments.map((entry) => entry.id), ["butler-pi", "worker-pi", "worker-codex"]);
+  assert.deepEqual(environments.environments.map((entry) => entry.id), ["butler-pi", "worker-pi"]);
   assert.ok(environments.environments.every((entry) => entry.capabilities.packageManagement === false));
 
   const createResponse = await fetch(`${url}/api/skills`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      environment: "worker-codex",
+      environment: "worker-pi",
       cwd,
       name: "route-skill",
       description: "Created through the route",
@@ -51,24 +50,24 @@ test("skills routes expose capabilities and id-based local mutations", async (t)
   assert.equal(createResponse.status, 201);
   const created = await createResponse.json() as { skill: { id: string; name: string } };
 
-  const listResponse = await fetch(`${url}/api/skills/worker-codex?cwd=${encodeURIComponent(cwd)}`);
+  const listResponse = await fetch(`${url}/api/skills/worker-pi?cwd=${encodeURIComponent(cwd)}`);
   const listed = await listResponse.json() as { skills: Array<Record<string, unknown>> };
   assert.equal(listResponse.status, 200);
   assert.equal(listed.skills[0]?.id, created.skill.id);
   assert.equal("path" in (listed.skills[0] ?? {}), false);
 
-  const readResponse = await fetch(`${url}/api/skills/worker-codex/${created.skill.id}?cwd=${encodeURIComponent(cwd)}`);
+  const readResponse = await fetch(`${url}/api/skills/worker-pi/${created.skill.id}?cwd=${encodeURIComponent(cwd)}`);
   assert.equal(readResponse.status, 200);
   const read = await readResponse.json() as { skill: { content: string } };
   assert.match(read.skill.content, /Follow the route/);
 
-  const deleteResponse = await fetch(`${url}/api/skills/worker-codex/${created.skill.id}`, {
+  const deleteResponse = await fetch(`${url}/api/skills/worker-pi/${created.skill.id}`, {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ cwd })
   });
   assert.equal(deleteResponse.status, 204);
-  assert.deepEqual(mutations, ["worker-codex", "worker-codex"]);
+  assert.deepEqual(mutations, ["worker-pi", "worker-pi"]);
 });
 
 test("every Butler skill mutation schedules a resource reload", async (t) => {

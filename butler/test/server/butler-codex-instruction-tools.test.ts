@@ -47,7 +47,7 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
     getToolUiEffects: () => [],
     store,
     watchdogs,
-    codexClient: {
+    piRpcWorkerClient: {
       loadThread: async () => undefined,
       stopThread: async (_threadId: string) => {
         stopped.push(_threadId);
@@ -407,7 +407,6 @@ test("partial delete all removes Butler callbacks only for deleted Workers", asy
     defineButlerTool: (definition) => definition,
     getToolUiEffects: () => [],
     store,
-    codexClient: { deleteAllThreads: async () => { throw new Error("Codex deletion should not run"); } },
     piRpcWorkerClient: {
       deleteThread: async (threadId: string) => {
         deleteCalls.push(threadId);
@@ -430,7 +429,7 @@ test("single delete removes Butler callback when baseline cleanup fails", async 
   const dir = await mkdtemp(path.join(tmpdir(), "manor-codex-delete-cleanup-failure-"));
   const store = new ButlerStateStore(path.join(dir, "state.json"));
   const threadId = "codex-delete";
-  store.upsertThreadSummary({ id: threadId, source: "appServer", status: "idle", cwd: "/workspace", turns: [] });
+  store.upsertThreadSummary({ id: threadId, source: "pi-rpc", status: "idle", cwd: "/workspace", turns: [] });
   store.setThreadExecutionContract(threadId, {
     ...buildThreadExecutionContract({ threadId, workspaceCwd: "/workspace", projectId: "project", projectLabel: "Project", branch: null, taskText: "Work", taskCategory: "generic_code", inferredWorkDepth: "standard", notes: [] }),
     reviewBaselineObjectDir: path.join(dir, "baseline-delete", "objects")
@@ -440,7 +439,7 @@ test("single delete removes Butler callback when baseline cleanup fails", async 
     defineButlerTool: (definition) => definition,
     getToolUiEffects: () => [],
     store,
-    codexClient: { deleteThread: async () => { store.removeThread(threadId); return { deletedArtifacts: 0 }; } },
+    piRpcWorkerClient: { deleteThread: async () => { store.removeThread(threadId); return { deletedArtifacts: 0 }; } },
     cleanupReviewBaseline: async () => { throw new Error("cleanup failed"); },
     removeExternalWorkerDelegation: async (deletedThreadId: string) => { removedCallbacks.push(deletedThreadId); }
   } as never);

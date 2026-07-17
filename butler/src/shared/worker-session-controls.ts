@@ -28,7 +28,7 @@ export type WorkerSessionForkPoint = {
 
 export type WorkerSessionControls = {
   supported: boolean;
-  runtime: "pi" | "codex";
+  runtime: "pi";
   busy: boolean;
   compacting: boolean;
   autoCompactionEnabled: boolean;

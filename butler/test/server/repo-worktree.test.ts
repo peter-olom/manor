@@ -6,22 +6,22 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
 
-import { ensureManagedWorktreeWritableForWorker, ensureWorkspaceWritableForWorker, execFileAsWorker, resolveCodexWorkerOwnership, taskRequiresManagedWorktree, validateWorkspaceCwd, WorkspaceCwdError } from "../../src/server/repo-worktree.js";
+import { ensureManagedWorktreeWritableForWorker, ensureWorkspaceWritableForWorker, execFileAsWorker, resolveWorkerOwnership, taskRequiresManagedWorktree, validateWorkspaceCwd, WorkspaceCwdError } from "../../src/server/repo-worktree.js";
 
 const execFileAsync = promisify(execFile);
 
-test("resolveCodexWorkerOwnership defaults to the codex container uid and gid", () => {
-  assert.deepEqual(resolveCodexWorkerOwnership({}), {
+test("resolveWorkerOwnership defaults to the Worker container uid and gid", () => {
+  assert.deepEqual(resolveWorkerOwnership({}), {
     uid: 1001,
     gid: 1001,
-    label: "codex (1001:1001)"
+    label: "worker (1001:1001)"
   });
 });
 
-test("resolveCodexWorkerOwnership rejects invalid worker uid diagnostics", () => {
+test("resolveWorkerOwnership rejects invalid worker uid diagnostics", () => {
   assert.throws(
-    () => resolveCodexWorkerOwnership({ MANOR_CODEX_WORKER_UID: "root" }),
-    /MANOR_CODEX_WORKER_UID must be a non-negative integer/
+    () => resolveWorkerOwnership({ MANOR_WORKER_UID: "root" }),
+    /MANOR_WORKER_UID must be a non-negative integer/
   );
 });
 

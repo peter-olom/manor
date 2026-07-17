@@ -1192,7 +1192,7 @@ export interface ButlerTraceMetaView {
 export interface ModelOption {
   id: string;
   label: string;
-  provider: string | null; harness?: "codex" | "pi" | (string & {}) | null;
+  provider: string | null; harness?: "pi" | null;
   inputCapabilities: { image: "supported" | "unsupported" | "unknown"; source: "override" | "provider" | "manifest" | "unknown" };
   supportsReasoning: boolean;
   supportedThinkingLevels: ButlerThinkingLevel[];
@@ -1339,7 +1339,7 @@ export interface ButlerCompactionView {
 }
 
 export type OnboardingStepStatus = "complete" | "pending";
-export type OnboardingCommandTarget = "localShell" | "butlerTerminal" | "codexTerminal";
+export type OnboardingCommandTarget = "localShell" | "butlerTerminal" | "workerTerminal";
 
 export interface OnboardingCommandSet {
   target: OnboardingCommandTarget;
@@ -1348,7 +1348,7 @@ export interface OnboardingCommandSet {
 }
 
 export interface OnboardingStepView {
-  id: "butlerAuth" | "codexAuth" | "githubAuth";
+  id: "butlerAuth" | "workerAuth" | "githubAuth";
   title: string;
   status: OnboardingStepStatus;
   detail: string;

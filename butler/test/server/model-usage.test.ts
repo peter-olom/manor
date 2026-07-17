@@ -140,7 +140,6 @@ test("usage store deduplicates copied Pi history and keeps reset as a durable ba
     dbPath: path.join(root, "usage.sqlite"),
     butlerPiRoots: [piRoot],
     workerPiRoots: [],
-    codexRoots: [],
     loadPiPricing: async () => ({ models: [model], oauthKeys: new Set<string>() })
   };
   const store = new ModelUsageStore(options);
@@ -153,32 +152,5 @@ test("usage store deduplicates copied Pi history and keeps reset as a durable ba
   const after = await reloaded.get("all");
   assert.equal(after.resetAt, resetAt);
   assert.equal(after.summary.requests, 0);
-  await fs.rm(root, { recursive: true, force: true });
-});
-
-test("usage store imports Codex input, cache, and output as estimated list cost", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "manor-codex-usage-"));
-  const codexRoot = path.join(root, "codex");
-  await fs.mkdir(codexRoot, { recursive: true });
-  const file = path.join(codexRoot, "rollout.jsonl");
-  await fs.writeFile(file, [
-    JSON.stringify({ timestamp: new Date().toISOString(), type: "session_meta", payload: { id: "codex-session" } }),
-    JSON.stringify({ timestamp: new Date().toISOString(), type: "turn_context", payload: { model: "gpt-5.4-mini" } }),
-    JSON.stringify({ timestamp: new Date().toISOString(), type: "event_msg", payload: { type: "token_count", info: {
-      total_token_usage: { input_tokens: 1_000, cached_input_tokens: 200, output_tokens: 100, total_tokens: 1_100 },
-      last_token_usage: { input_tokens: 1_000, cached_input_tokens: 200, output_tokens: 100, total_tokens: 1_100 }
-    } } })
-  ].join("\n"));
-  const store = new ModelUsageStore({
-    dbPath: path.join(root, "usage.sqlite"),
-    butlerPiRoots: [], workerPiRoots: [], codexRoots: [codexRoot],
-    loadPiPricing: async () => ({ models: [], oauthKeys: new Set<string>() })
-  });
-  const usage = await store.get("all");
-  assert.equal(usage.summary.tokens.input, 800);
-  assert.equal(usage.summary.tokens.cacheRead, 200);
-  assert.equal(usage.summary.tokens.output, 100);
-  assert.equal(usage.summary.cost.basis, "estimated");
-  assert.ok(usage.summary.cost.total > 0);
   await fs.rm(root, { recursive: true, force: true });
 });

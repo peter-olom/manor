@@ -148,7 +148,7 @@ class FakeButlerService extends EventEmitter {
   }
 }
 
-async function createManager(generator: SessionTitleGenerator | null = null, onCreateService?: (options: unknown) => void, runtime?: { workerModels?: ModelOption[]; butlerSkills?: Array<{ id: string; name: string; description: string; invocation: string }>; skillsByEnvironment?: Partial<Record<"butler-pi" | "worker-pi" | "worker-codex", Array<{ id: string; name: string; description: string; invocation: string }>>>; validateWorkspace?: (cwd: string) => Promise<string> }): Promise<{
+async function createManager(generator: SessionTitleGenerator | null = null, onCreateService?: (options: unknown) => void, runtime?: { workerModels?: ModelOption[]; butlerSkills?: Array<{ id: string; name: string; description: string; invocation: string }>; skillsByEnvironment?: Partial<Record<"butler-pi" | "worker-pi", Array<{ id: string; name: string; description: string; invocation: string }>>>; validateWorkspace?: (cwd: string) => Promise<string> }): Promise<{
   manager: PairSessionManager;
   pairStore: PairStore;
   service: FakeButlerService;
@@ -171,7 +171,7 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
   const manager = new PairSessionManager({
     pairStore,
     store,
-    codexClient: {
+    piRpcWorkerClient: {
       getConnectionState: () => ({ connected: true, lastError: null, compose: { model: null, effort: null, availableModels: workerModels } }),
       updateComposeSettings: async (model: string, effort: ReasoningEffort | null) => {
         codexUpdates.push({ model, effort });
@@ -190,14 +190,14 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
     imageStore: { resolveViews: () => [] },
     fileStore: { resolveViews: () => [], getFilePath: () => null },
     skillsService: {
-      list: async (environment: "butler-pi" | "worker-pi" | "worker-codex") => runtime?.skillsByEnvironment?.[environment] ?? (environment === "butler-pi" ? runtime?.butlerSkills ?? [] : []),
+      list: async (environment: "butler-pi" | "worker-pi") => runtime?.skillsByEnvironment?.[environment] ?? (environment === "butler-pi" ? runtime?.butlerSkills ?? [] : []),
       resolveInputItem: async (_environment: string, id: string) => ({ type: "skill", name: id === "skill-review" ? "review" : "unknown", path: `/skills/${id}/SKILL.md` })
     },
     extensionUiBroker: {},
     piAuthPath: path.join(dir, "pi-auth.json"),
-    codexAuthPath: path.join(dir, "codex-auth.json"),
-    codexConfigDir: dir,
-    getCodexAuthStatus: () => ({ loggedIn: true }),
+    workerAuthPath: path.join(dir, "codex-auth.json"),
+    workerConfigDir: dir,
+    getWorkerAuthStatus: () => ({ loggedIn: true }),
     sessionRootDir,
     artifactsDir: path.join(dir, "artifacts"),
     sessionTitleGenerator: generator,
@@ -239,9 +239,9 @@ test("pair Butler services expose the complete persisted Worker handoff lineage"
     getWorkerDefaults = (options as { getWorkerDefaults?: () => { runtimeOwnerThreadIds?: string[] } }).getWorkerDefaults;
   });
   const pair = await manager.createPair();
-  pairStore.attachWorker(pair.id, { threadId: "thread-first", runtime: "openai" });
+  pairStore.attachWorker(pair.id, { threadId: "thread-first", runtime: "pi-rpc" });
   pairStore.attachWorker(pair.id, { threadId: "thread-second", runtime: "pi-rpc", replacesThreadId: "thread-first" });
-  pairStore.attachWorker(pair.id, { threadId: "thread-third", runtime: "openai", replacesThreadId: "thread-second" });
+  pairStore.attachWorker(pair.id, { threadId: "thread-third", runtime: "pi-rpc", replacesThreadId: "thread-second" });
 
   assert.deepEqual(getWorkerDefaults?.().runtimeOwnerThreadIds, ["thread-third", "thread-second", "thread-first"]);
 });
@@ -403,8 +403,7 @@ test("Butler dollar suggestions list skills without querying transport apps", as
 test("Butler slash suggestions include worker-only skills with environment availability", async () => {
   const { manager } = await createManager(null, undefined, {
     skillsByEnvironment: {
-      "worker-pi": [{ id: "pi-asiri", name: "asiri", description: "Operate secrets safely", invocation: "/skill:asiri" }],
-      "worker-codex": [{ id: "codex-asiri", name: "asiri", description: "Operate secrets safely", invocation: "$asiri" }]
+      "worker-pi": [{ id: "worker-asiri", name: "asiri", description: "Operate secrets safely", invocation: "/skill:asiri" }]
     }
   });
   const pair = await manager.createPair({ defaultCwd: "/repos" });
@@ -412,13 +411,13 @@ test("Butler slash suggestions include worker-only skills with environment avail
   const skillSuggestion = suggestions?.find((suggestion) => suggestion.label === "/skill:asiri");
 
   assert.equal(skillSuggestion?.kind, "command");
-  assert.match(skillSuggestion?.detail ?? "", /Worker Pi, Worker Codex/);
+  assert.match(skillSuggestion?.detail ?? "", /Worker/);
 });
 
 test("worker-only skill invocation routes through Butler without native Butler expansion", async () => {
   const { manager, service } = await createManager(null, undefined, {
     skillsByEnvironment: {
-      "worker-codex": [{ id: "codex-asiri", name: "asiri", description: "Operate secrets safely", invocation: "$asiri" }]
+      "worker-pi": [{ id: "worker-asiri", name: "asiri", description: "Operate secrets safely", invocation: "/skill:asiri" }]
     }
   });
   const pair = await manager.createPair({ defaultCwd: "/repos" });
@@ -441,7 +440,7 @@ test("Butler-only skill invocation requires provisioning before Worker delegatio
 
   assert.match(prompt, /^\/skill:asiri\n\nMANOR-WIDE SKILL ROUTING/);
   assert.match(prompt, /Selected Worker availability: not installed/);
-  assert.match(prompt, /propose installing the exact skill in worker-codex/);
+  assert.match(prompt, /propose installing the exact skill in worker-pi/);
 });
 
 test("shared Butler and Worker skills expand natively and delegate without provisioning", async () => {
@@ -449,7 +448,7 @@ test("shared Butler and Worker skills expand natively and delegate without provi
   const { manager, service } = await createManager(null, undefined, {
     skillsByEnvironment: {
       "butler-pi": [{ ...shared, id: "butler-asiri", invocation: "/skill:asiri" }],
-      "worker-codex": [{ ...shared, id: "codex-asiri", invocation: "$asiri" }]
+      "worker-pi": [{ ...shared, id: "worker-asiri", invocation: "/skill:asiri" }]
     }
   });
   const pair = await manager.createPair({ defaultCwd: "/repos" });
@@ -576,7 +575,7 @@ test("refreshModelSettings refreshes loaded pair services", async () => {
 
 test("createWorkerPair registers external work for Butler review", async () => {
   const { manager, service, store } = await createManager();
-  store.upsertThreadSummary({ id: "external-worker", source: "appServer", status: "active", turns: [] });
+  store.upsertThreadSummary({ id: "external-worker", source: "pi-rpc", status: "active", turns: [] });
 
   const detail = await manager.createWorkerPair({
     threadId: "external-worker",
@@ -695,7 +694,7 @@ test("failed deletion queues a durable restore behind an already queued delete s
 
 test("startup resumes Butler services for persisted active Worker sessions", async () => {
   const { manager, pairStore, service, store } = await createManager();
-  store.upsertThreadSummary({ id: "persisted-worker", source: "appServer", status: "active", turns: [] });
+  store.upsertThreadSummary({ id: "persisted-worker", source: "pi-rpc", status: "active", turns: [] });
   const pair = pairStore.createPair({ title: "Persisted work" });
   pairStore.attachWorker(pair.id, { threadId: "persisted-worker", task: "Resume review" });
 
@@ -707,7 +706,7 @@ test("startup resumes Butler services for persisted active Worker sessions", asy
 
 test("startup resumes idle attached Workers that never produced a report", async () => {
   const { manager, pairStore, service, store } = await createManager();
-  store.upsertThreadSummary({ id: "missing-report-worker", source: "appServer", status: "idle", turns: [] });
+  store.upsertThreadSummary({ id: "missing-report-worker", source: "pi-rpc", status: "idle", turns: [] });
   const pair = pairStore.createPair({ title: "Missing callback" });
   pairStore.attachWorker(pair.id, { threadId: "missing-report-worker", task: "Recover callback" });
 
@@ -719,7 +718,7 @@ test("startup resumes idle attached Workers that never produced a report", async
 
 test("startup does not rearm an already reviewed historical Worker", async () => {
   const { manager, pairStore, service, store } = await createManager();
-  store.upsertThreadSummary({ id: "reviewed-worker", source: "appServer", status: { type: "idle" }, turns: [{ id: "turn-1", status: "completed", items: [] }] });
+  store.upsertThreadSummary({ id: "reviewed-worker", source: "pi-rpc", status: { type: "idle" }, turns: [{ id: "turn-1", status: "completed", items: [] }] });
   const report = store.recordWorkerReport("reviewed-worker", { turnId: "turn-1", status: "completed", summary: "Done", details: null });
   const pair = pairStore.createPair({ title: "Reviewed work" });
   pairStore.attachWorker(pair.id, { threadId: "reviewed-worker", task: "Already reviewed" });
@@ -736,7 +735,7 @@ test("startup does not rearm an already reviewed historical Worker", async () =>
 
 test("startup resumes a reviewed idle Worker when persisted callback closeout is still owed", async () => {
   const { manager, pairStore, service, store, sessionRootDir } = await createManager();
-  store.upsertThreadSummary({ id: "callback-worker", source: "appServer", status: "idle", turns: [{ id: "turn-1", status: "completed", items: [] }] });
+  store.upsertThreadSummary({ id: "callback-worker", source: "pi-rpc", status: "idle", turns: [{ id: "turn-1", status: "completed", items: [] }] });
   const report = store.recordWorkerReport("callback-worker", { turnId: "turn-1", status: "completed", summary: "Old report", details: null });
   const pair = pairStore.createPair({ title: "Persisted closeout" });
   pairStore.attachWorker(pair.id, { threadId: "callback-worker", task: "Recover closeout" });
@@ -756,7 +755,7 @@ test("startup resumes a reviewed idle Worker when persisted callback closeout is
 
 test("retryBlockedReview delegates recovery to the pair Butler", async () => {
   const { manager, pairStore, service, store } = await createManager();
-  store.upsertThreadSummary({ id: "paused-worker", source: "appServer", status: "idle", turns: [] });
+  store.upsertThreadSummary({ id: "paused-worker", source: "pi-rpc", status: "idle", turns: [] });
   const pair = await manager.createPair();
   pairStore.attachWorker(pair.id, { threadId: "paused-worker" });
 
@@ -796,7 +795,7 @@ test("loaded pair services read current worker compose defaults", async () => {
 
   assert.deepEqual(serviceOptions?.getWorkerDefaults?.(), {
     runtime: "auto",
-    harness: "codex",
+    harness: "pi",
     model: "gpt-5-codex",
     effort: "xhigh",
     threadId: null,
@@ -911,7 +910,7 @@ test("attached worker model selection changes only the next-worker default", asy
   };
   const { manager, pairStore, store, codexUpdates, threadEffortUpdates } = await createManager(null, undefined, { workerModels: [noEffortModel] });
   const pair = await manager.createPair();
-  store.upsertThreadSummary({ id: "worker-thread", source: "appServer", status: "idle", turns: [] });
+  store.upsertThreadSummary({ id: "worker-thread", source: "pi-rpc", status: "idle", turns: [] });
   pairStore.attachWorker(pair.id, { threadId: "worker-thread" });
 
   await manager.setWorkerModel(pair.id, "gpt-chat");
@@ -932,12 +931,12 @@ test("handoffWorker resolves the target model without mutating the active worker
   };
   const { manager, pairStore, service, store } = await createManager(null, undefined, { workerModels: [current, target] });
   const pair = await manager.createPair();
-  store.upsertThreadSummary({ id: "worker-current", source: "appServer", status: "idle", turns: [] });
-  pairStore.attachWorker(pair.id, { threadId: "worker-current", runtime: "openai", provider: "openai-codex", model: current.id, effort: "medium" });
+  store.upsertThreadSummary({ id: "worker-current", source: "pi-rpc", status: "idle", turns: [] });
+  pairStore.attachWorker(pair.id, { threadId: "worker-current", runtime: "pi-rpc", provider: "openai-codex", model: current.id, effort: "medium" });
 
-  await manager.handoffWorker(pair.id, target.id, "codex", "xhigh");
+  await manager.handoffWorker(pair.id, target.id, "pi", "xhigh");
 
-  assert.deepEqual(service.handoffs, [{ sourceThreadId: "worker-current", harness: "codex", model: target.id, effort: "xhigh", butlerThreadId: "fake-session" }]);
+  assert.deepEqual(service.handoffs, [{ sourceThreadId: "worker-current", harness: "pi", model: target.id, effort: "xhigh", butlerThreadId: "fake-session" }]);
   assert.equal(pairStore.getPair(pair.id)?.worker?.model, current.id);
 });
 
@@ -950,13 +949,13 @@ test("handoffWorker serializes competing replacements for one pair", async () =>
   const secondTarget = { ...current, id: "gpt-second", label: "Second" };
   const { manager, pairStore, service, store } = await createManager(null, undefined, { workerModels: [current, firstTarget, secondTarget] });
   const pair = await manager.createPair();
-  store.upsertThreadSummary({ id: "worker-current", source: "appServer", status: "idle", turns: [] });
-  pairStore.attachWorker(pair.id, { threadId: "worker-current", runtime: "openai", provider: "openai-codex", model: current.id, effort: "high" });
+  store.upsertThreadSummary({ id: "worker-current", source: "pi-rpc", status: "idle", turns: [] });
+  pairStore.attachWorker(pair.id, { threadId: "worker-current", runtime: "pi-rpc", provider: "openai-codex", model: current.id, effort: "high" });
   service.handoffDelayMs = 20;
 
   await Promise.all([
-    manager.handoffWorker(pair.id, firstTarget.id, "codex", "high"),
-    manager.handoffWorker(pair.id, secondTarget.id, "codex", "high")
+    manager.handoffWorker(pair.id, firstTarget.id, "pi", "high"),
+    manager.handoffWorker(pair.id, secondTarget.id, "pi", "high")
   ]);
 
   assert.equal(service.maxConcurrentHandoffs, 1);
@@ -998,12 +997,12 @@ test("createPair validates and canonicalizes an initial workspace", async () => 
 test("setWorkspaceCwd replaces an idle attached Worker in the new workspace", async () => {
   const { manager, pairStore, service, store } = await createManager();
   const pair = await manager.createPair({ defaultCwd: "/repos/old" });
-  store.upsertThreadSummary({ id: "worker-current", source: "appServer", status: "idle", turns: [] });
+  store.upsertThreadSummary({ id: "worker-current", source: "pi-rpc", status: "idle", turns: [] });
   pairStore.attachWorker(pair.id, {
     threadId: "worker-current",
     cwd: "/repos/old",
-    runtime: "openai",
-    harness: "codex",
+    runtime: "pi-rpc",
+    harness: "pi",
     provider: "openai-codex",
     model: "gpt-5-codex",
     effort: "high"
@@ -1013,7 +1012,7 @@ test("setWorkspaceCwd replaces an idle attached Worker in the new workspace", as
 
   assert.deepEqual(service.handoffs, [{
     sourceThreadId: "worker-current",
-    harness: "codex",
+    harness: "pi",
     model: "gpt-5-codex",
     effort: "high",
     butlerThreadId: "fake-session",
@@ -1025,30 +1024,30 @@ test("setWorkspaceCwd replaces an idle attached Worker in the new workspace", as
 test("setWorkspaceCwd rejects running Workers and rolls back failed replacements", async () => {
   const { manager, pairStore, service, store } = await createManager();
   const pair = await manager.createPair({ defaultCwd: "/repos/old" });
-  store.upsertThreadSummary({ id: "worker-current", source: "appServer", status: "active", turns: [{ id: "turn-active", status: "inProgress", items: [] }] });
+  store.upsertThreadSummary({ id: "worker-current", source: "pi-rpc", status: "active", turns: [{ id: "turn-active", status: "inProgress", items: [] }] });
   pairStore.attachWorker(pair.id, {
     threadId: "worker-current",
     cwd: "/repos/old",
-    runtime: "openai",
-    harness: "codex",
+    runtime: "pi-rpc",
+    harness: "pi",
     model: "gpt-5-codex"
   });
 
   await assert.rejects(() => manager.setWorkspaceCwd(pair.id, "/repos/new"), /current Worker turn/);
   assert.equal(pairStore.getPair(pair.id)?.defaultCwd, "/repos/old");
 
-  store.upsertThreadSummary({ id: "worker-current", source: "appServer", status: "idle", turns: [] });
+  store.upsertThreadSummary({ id: "worker-current", source: "pi-rpc", status: "idle", turns: [] });
   service.handoffWorker = async () => { throw new Error("replacement failed"); };
   await assert.rejects(() => manager.setWorkspaceCwd(pair.id, "/repos/new"), /replacement failed/);
   assert.equal(pairStore.getPair(pair.id)?.defaultCwd, "/repos/old");
 
   const unloadedPair = pairStore.createPair({ defaultCwd: "/repos/old" });
-  store.upsertThreadSummary({ id: "worker-unloaded", source: "appServer", status: "idle", turns: [] });
+  store.upsertThreadSummary({ id: "worker-unloaded", source: "pi-rpc", status: "idle", turns: [] });
   pairStore.attachWorker(unloadedPair.id, {
     threadId: "worker-unloaded",
     cwd: "/repos/old",
-    runtime: "openai",
-    harness: "codex",
+    runtime: "pi-rpc",
+    harness: "pi",
     model: "gpt-5-codex"
   });
   service.start = async () => { throw new Error("Butler startup failed"); };
@@ -1066,9 +1065,9 @@ test("pair attachment acknowledgement uses compare-and-swap and exposes an exact
     serviceOptions = options as typeof serviceOptions;
   });
   const pair = await manager.createPair();
-  store.upsertThreadSummary({ id: "worker-old", source: "appServer", status: "idle", turns: [] });
+  store.upsertThreadSummary({ id: "worker-old", source: "pi-rpc", status: "idle", turns: [] });
   store.upsertThreadSummary({ id: "worker-new", source: "pi-rpc", status: "idle", turns: [] });
-  pairStore.attachWorker(pair.id, { threadId: "worker-old", runtime: "openai", provider: "openai-codex", model: "gpt-old", effort: "high", task: "Original" });
+  pairStore.attachWorker(pair.id, { threadId: "worker-old", runtime: "pi-rpc", provider: "openai-codex", model: "gpt-old", effort: "high", task: "Original" });
   const original = structuredClone(pairStore.getPair(pair.id)?.worker ?? null);
 
   const accepted = serviceOptions?.operatorSink?.onDelegationAcknowledgement?.({

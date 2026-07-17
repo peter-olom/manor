@@ -9,9 +9,6 @@ services:
       MANOR_ROLE: butler
       MANOR_STATE_DIR: /state
       HOME: /home/butler
-      CODEX_HOME: /home/butler/.codex
-      CODEX_SHARED_HOME_DIR: /codex-home
-      CODEX_SHARED_CONFIG_DIR: /codex-config
       MANOR_HARNESS_HOME: /harness-state
       MANOR_HARNESS_REGISTRY_PATH: /harness-state/harness-capabilities.json
       MANOR_HARNESS_ACCESS_FILE: /state/harness-broker-access.json
@@ -35,16 +32,12 @@ services:
       MANOR_LEASE_REAP_GRACE_MS: ${MANOR_LEASE_REAP_GRACE_MS:-600000}
       MANOR_LEASE_SWEEP_INTERVAL_MS: ${MANOR_LEASE_SWEEP_INTERVAL_MS:-30000}
       MANOR_SELF_IMPROVEMENT_SOURCE_CWD: ${MANOR_SELF_IMPROVEMENT_SOURCE_CWD:-/repos/manor}
-      CODEX_BASE_URL: ws://codex-box:8080
-      CODEX_APP_SERVER_AUTH_TOKEN_FILE: /codex-config/manor/codex-app-server-token
       BUTLER_AUTH_BOOTSTRAP: ${BUTLER_AUTH_BOOTSTRAP:-auto}
       BUTLER_FORCED_LOGIN_METHOD: ${BUTLER_FORCED_LOGIN_METHOD:-}
       MANOR_SETTINGS_RESEED: ${MANOR_SETTINGS_RESEED:-0}
-      MANOR_WORKER_HARNESS: ${MANOR_WORKER_HARNESS:-}
       MANOR_WORKER_MODEL: ${MANOR_WORKER_MODEL:-}
       MANOR_WORKER_EFFORT: ${MANOR_WORKER_EFFORT:-}
       MANOR_WORKER_PROVIDER: ${MANOR_WORKER_PROVIDER:-}
-      MANOR_CODEX_PROVIDER: ${MANOR_CODEX_PROVIDER:-}
       MANOR_BUTLER_MODEL: ${MANOR_BUTLER_MODEL:-}
       MANOR_BUTLER_THINKING_LEVEL: ${MANOR_BUTLER_THINKING_LEVEL:-medium}
       MANOR_BUTLER_PROVIDER: ${MANOR_BUTLER_PROVIDER:-}
@@ -111,8 +104,8 @@ services:
       http_proxy: http://egress:3128
       https_proxy: http://egress:3128
       all_proxy: http://egress:3128
-      NO_PROXY: localhost,127.0.0.1,ollama,codex-box,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
-      no_proxy: localhost,127.0.0.1,ollama,codex-box,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
+      NO_PROXY: localhost,127.0.0.1,ollama,worker,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
+      no_proxy: localhost,127.0.0.1,ollama,worker,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
       RUNTIME_BROKER_URL: http://runtime-broker:8090
       RUNTIME_BROKER_TOKEN: "${RUNTIME_BROKER_TOKEN:?Run ./install.sh or set RUNTIME_BROKER_TOKEN in .env.}"
       MANOR_HOST_CONTROLLER_URL: http://host-controller:8092
@@ -120,19 +113,17 @@ services:
       MANOR_EGRESS_ADMIN_URL: http://egress:8092
     volumes:
       - butler-state:/state
-      - butler-home:/home/butler/.codex
       - butler-pi:/home/butler/.pi
       - worker-pi:/worker-pi
       - worker-runtime:/worker-runtime
-      - codex-home:/codex-home
-      - codex-config:/codex-config:ro
+      - worker-config:/worker-config:ro
       - harness-state:/harness-state
       - repos:/repos
       - artifacts:/artifacts
       - inputs:/inputs
       - outputs:/outputs:ro
     depends_on:
-      codex-box:
+      worker:
         condition: service_healthy
       egress:
         condition: service_healthy
@@ -192,13 +183,12 @@ services:
       - control
       - internet
 
-  # Shared Worker environment. Codex app-server and Pi RPC Worker harnesses
-  # execute here; Butler keeps only its own Pi-backed supervisor agent.
-  codex-box:
-    image: manor-codex-box:local
-    container_name: manor-codex-box
+  # Shared Pi-backed Worker environment.
+  worker:
+    image: manor-worker:local
+    container_name: manor-worker
     hostname: manor-worker
-    command: ["/usr/local/bin/start-codex-app-server"]
+    command: ["/usr/local/bin/start-worker"]
     working_dir: /repos
     environment:
       MANOR_ROLE: worker
@@ -209,21 +199,14 @@ services:
       MANOR_HARNESS_REGISTRY_PATH: /harness-state/harness-capabilities.json
       HOME: /home/worker
       ASIRI_HOME: /home/worker/.config/asiri
-      CODEX_HOME: /home/worker/.codex
       PI_AGENT_DIR: /worker-pi/agent
       PI_CODING_AGENT_DIR: /worker-pi/agent
       WORKER_PI_SESSION_ROOT: /worker-pi/sessions
       WORKER_PI_RPC_SOCKET: /worker-runtime/pi-rpc.sock
+      WORKER_TTYD_PORT: 7681
+      WORKER_TTYD_BASE_PATH: /terminal/
       WORKER_REPOS_ROOT: /repos
       NODE_USE_ENV_PROXY: "1"
-      CODEX_APP_SERVER_LISTEN: ws://0.0.0.0:8080
-      CODEX_APP_SERVER_WS_AUTH: capability-token
-      CODEX_APP_SERVER_WS_TOKEN_FILE: /home/worker/.config/manor/codex-app-server-token
-      CODEX_PERSONALITY: ${CODEX_PERSONALITY:-pragmatic}
-      CODEX_SERVICE_TIER: ${CODEX_SERVICE_TIER:-auto}
-      CODEX_MODEL_INSTRUCTIONS_FILE: ${CODEX_MODEL_INSTRUCTIONS_FILE:-/opt/manor/config/codex-model-instructions.md}
-      CODEX_AUTH_BOOTSTRAP: ${CODEX_AUTH_BOOTSTRAP:-auto}
-      CODEX_FORCED_LOGIN_METHOD: ${CODEX_FORCED_LOGIN_METHOD:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_API_KEY_FILE: ${OPENAI_API_KEY_FILE:-}
       OLLAMA_LOCAL_API_KEY: ${OLLAMA_LOCAL_API_KEY:-}
@@ -263,28 +246,24 @@ services:
       http_proxy: http://egress:3128
       https_proxy: http://egress:3128
       all_proxy: http://egress:3128
-      NO_PROXY: localhost,127.0.0.1,ollama,codex-box,manor-worker,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
-      no_proxy: localhost,127.0.0.1,ollama,codex-box,manor-worker,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
+      NO_PROXY: localhost,127.0.0.1,ollama,worker,manor-worker,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
+      no_proxy: localhost,127.0.0.1,ollama,worker,manor-worker,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
     depends_on:
       egress:
         condition: service_healthy
     volumes:
-      - codex-state:/state
-      - codex-home:/home/worker/.codex
-      - codex-config:/home/worker/.config
+      - worker-config:/home/worker/.config
       - worker-tools:/home/worker/.local
       - harness-state:/harness-state
       - worker-pi:/worker-pi
       - worker-runtime:/worker-runtime
-      - butler-state:/legacy-butler-state:ro
-      - ./config/codex-model-instructions.md:/opt/manor/config/codex-model-instructions.md:ro
       - repos:/repos
       - artifacts:/artifacts
       - inputs:/inputs:ro
       - outputs:/outputs
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "/usr/local/bin/node", "/opt/manor/codex-box/healthcheck.mjs"]
+      test: ["CMD", "/usr/local/bin/node", "/opt/manor/worker/healthcheck.mjs"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -341,7 +320,7 @@ services:
       MANOR_ROLE: runtime-broker
       RUNTIME_BROKER_PORT: 8090
       RUNTIME_HARNESS_ACCESS_FILE: /state/harness-broker-access.json
-      RUNTIME_WORKSPACE_CONTAINER: manor-codex-box
+      RUNTIME_WORKSPACE_CONTAINER: manor-worker
       RUNTIME_STACK_BINDINGS_FILE: /runtime-state/stack-thread-bindings.json
       RUNTIME_PREVIEW_LIFECYCLE_FILE: /runtime-state/preview-lifecycle.json
       RUNTIME_PREVIEW_NETWORK: manor_preview
@@ -392,19 +371,13 @@ services:
       MANOR_ROLE: host-controller
       BUTLER_AUTH_BOOTSTRAP: ${BUTLER_AUTH_BOOTSTRAP:-auto}
       BUTLER_FORCED_LOGIN_METHOD: ${BUTLER_FORCED_LOGIN_METHOD:-}
+      BUTLER_HOST_BIND: ${BUTLER_HOST_BIND:-127.0.0.1}
       BUTLER_HOST_PORT: ${BUTLER_HOST_PORT:-8180}
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-manor}
-      CODEX_AUTH_BOOTSTRAP: ${CODEX_AUTH_BOOTSTRAP:-auto}
-      CODEX_FORCED_LOGIN_METHOD: ${CODEX_FORCED_LOGIN_METHOD:-}
-      CODEX_MODEL_INSTRUCTIONS_FILE: ${CODEX_MODEL_INSTRUCTIONS_FILE:-/opt/manor/config/codex-model-instructions.md}
-      CODEX_PERSONALITY: ${CODEX_PERSONALITY:-pragmatic}
-      CODEX_SERVICE_TIER: ${CODEX_SERVICE_TIER:-auto}
-      CODEX_VERSION: ${CODEX_VERSION:-0.144.1}
       DESKTOP_PROOF_NOVNC_PORT: ${DESKTOP_PROOF_NOVNC_PORT:-6080}
       MANOR_BUTLER_MODEL: ${MANOR_BUTLER_MODEL:-}
       MANOR_BUTLER_PROVIDER: ${MANOR_BUTLER_PROVIDER:-}
       MANOR_BUTLER_THINKING_LEVEL: ${MANOR_BUTLER_THINKING_LEVEL:-medium}
-      MANOR_CODEX_PROVIDER: ${MANOR_CODEX_PROVIDER:-}
       MANOR_HOST_CONTROLLER_PORT: 8092
       MANOR_HOST_RESTART_DELAY_MS: ${MANOR_HOST_RESTART_DELAY_MS:-2500}
       MANOR_COMPOSE_PROJECT_NAME: ${MANOR_COMPOSE_PROJECT_NAME:-${COMPOSE_PROJECT_NAME:-manor}}
@@ -471,7 +444,6 @@ services:
       MANOR_START_WAIT_TIMEOUT: ${MANOR_START_WAIT_TIMEOUT:-300}
       MANOR_STACK_LEASE_TTL_MS: ${MANOR_STACK_LEASE_TTL_MS:-1800000}
       MANOR_WORKER_EFFORT: ${MANOR_WORKER_EFFORT:-}
-      MANOR_WORKER_HARNESS: ${MANOR_WORKER_HARNESS:-}
       MANOR_WORKER_MODEL: ${MANOR_WORKER_MODEL:-}
       MANOR_WORKER_PROVIDER: ${MANOR_WORKER_PROVIDER:-}
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
@@ -576,15 +548,12 @@ volumes:
   artifacts:
   inputs:
   outputs:
-  butler-home:
   butler-pi:
   worker-pi:
   worker-runtime:
   worker-tools:
   butler-state:
-  codex-config:
-  codex-home:
-  codex-state:
+  worker-config:
   desktop-proof-state:
   egress-state:
   harness-state:

@@ -1,4 +1,3 @@
-import type { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { FileReferenceStore } from "./file-store.js";
 import type { HostControllerClient } from "./host-controller-client.js";
@@ -24,7 +23,7 @@ export type ButlerOperatorSink = {
     threadId: string;
     text: string;
     at: number;
-    runtime?: "openai" | "pi-rpc" | null;
+    runtime?: "pi-rpc" | null;
     harness?: string | null;
     provider?: string | null;
     model?: string | null;
@@ -40,7 +39,7 @@ export type ButlerAgentDefaults = {
 };
 
 export type ButlerWorkerDefaults = {
-  runtime: "auto" | "openai" | "pi-rpc" | null;
+  runtime: "auto" | "pi-rpc" | null;
   cwd?: string | null;
   threadId?: string | null;
   runtimeOwnerThreadIds?: string[];
@@ -62,7 +61,6 @@ export type ButlerAutomationAccess = {
 
 export type ButlerAgentServiceOptions = {
   store: ButlerStateStore;
-  codexClient: CodexAppServerClient;
   piRpcWorkerClient?: PiRpcWorkerClient | null;
   hostController: HostControllerClient;
   runtimeBroker: RuntimeBrokerClient;
@@ -71,8 +69,8 @@ export type ButlerAgentServiceOptions = {
   fileStore: FileReferenceStore;
   visionInspection: VisionInspectionService;
   piAuthPath: string;
-  codexAuthPath: string;
-  codexConfigDir: string;
+  workerAuthPath: string;
+  workerConfigDir: string;
   sessionDir: string;
   artifactsDir: string;
   runtimeThreadId?: string;

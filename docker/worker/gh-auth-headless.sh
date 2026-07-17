@@ -10,8 +10,8 @@ export BROWSER=/usr/local/bin/gh-headless-browser
 config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
 
 if ! mkdir -p "${config_home}/gh" 2>/dev/null || [[ ! -w "${config_home}/gh" ]]; then
-  echo "GitHub CLI config is not writable by the codex user: ${config_home}/gh" >&2
-  echo "Recreate or fix the mounted codex config volume, then restart Manor." >&2
+  echo "GitHub CLI config is not writable by the Worker user: ${config_home}/gh" >&2
+  echo "Recreate or fix the mounted Worker config volume, then restart Manor." >&2
   exit 70
 fi
 

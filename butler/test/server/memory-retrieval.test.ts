@@ -30,7 +30,7 @@ function makeJobMemory(overrides: Partial<JobMemoryView>): JobMemoryView {
     threadId: "job-alpha",
     projectId: "alpha",
     projectLabel: "Alpha",
-    source: "appServer",
+    source: "pi-rpc",
     createdAt: 9,
     operatorGoal: "Keep checkout memory durable.",
     requestedTask: "Complete checkout follow-up.",
@@ -127,7 +127,7 @@ test("memory retrieval scopes project rollups and query-matched job memory", asy
   assert.equal(retrieval.includeProvenance, false);
   const formatted = formatButlerMemoryRetrieval(retrieval);
   assert.match(formatted, /Checkout API seeded/);
-  assert.doesNotMatch(formatted, /source=appServer/);
+  assert.doesNotMatch(formatted, /source=pi-rpc/);
   assert.doesNotMatch(formatted, /created=1970-01-01T00:00:00.009Z/);
   assert.doesNotMatch(formatted, /retrieved=/);
   assert.match(formatted, /Global Butler memories:/);
@@ -136,7 +136,7 @@ test("memory retrieval scopes project rollups and query-matched job memory", asy
   const withProvenance = retrieveButlerMemory(store, { projectId: "alpha", query: "checkout", includeGlobal: true, includeProvenance: true });
   assert.equal(withProvenance.includeProvenance, true);
   const formattedWithProvenance = formatButlerMemoryRetrieval(withProvenance);
-  assert.match(formattedWithProvenance, /source=appServer/);
+  assert.match(formattedWithProvenance, /source=pi-rpc/);
   assert.match(formattedWithProvenance, /created=1970-01-01T00:00:00.009Z/);
   assert.match(formattedWithProvenance, /created=1970-01-01T00:00:00.012Z/);
   assert.match(formattedWithProvenance, /retrieved=/);
@@ -208,7 +208,7 @@ test("memory retrieval ranks jobs by durable activity instead of record refresh 
   assert.match(formattedWithProvenance, /recordUpdated=1970-01-01T00:00:10.000Z/);
 });
 
-test("Codex harness memory retrieval shares default and provenance formatting", async () => {
+test("Worker harness memory retrieval shares default and provenance formatting", async () => {
   const store = await createStoreWithState({
     windows: [],
     focusedWindowId: null,
@@ -242,7 +242,7 @@ test("Codex harness memory retrieval shares default and provenance formatting", 
     params: { query: "slidev", scope: "project" }
   });
   assert.ok(defaultRetrieval);
-  assert.doesNotMatch(defaultRetrieval.text, /source=appServer/);
+  assert.doesNotMatch(defaultRetrieval.text, /source=pi-rpc/);
   assert.doesNotMatch(defaultRetrieval.text, /created=/);
   assert.equal(defaultRetrieval.data?.retrieval?.includeProvenance, false);
 
@@ -254,7 +254,7 @@ test("Codex harness memory retrieval shares default and provenance formatting", 
     params: { query: "slidev", scope: "project", includeProvenance: true }
   });
   assert.ok(provenanceRetrieval);
-  assert.match(provenanceRetrieval.text, /source=appServer/);
+  assert.match(provenanceRetrieval.text, /source=pi-rpc/);
   assert.match(provenanceRetrieval.text, /created=1970-01-01T00:00:00.009Z/);
   assert.equal(provenanceRetrieval.data?.retrieval?.includeProvenance, true);
 });

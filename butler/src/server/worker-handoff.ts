@@ -12,7 +12,7 @@ import {
   remapJobPayloadForWorkerHandoff
 } from "./job-instruction-artifacts.js";
 import type { ButlerDelegationAttachmentAcknowledgement } from "./butler-agent-options.js";
-import { ensureManagedWorktreeWritableForWorker, resolveWorkspaceBranchName } from "./repo-worktree.js";
+import { resolveWorkspaceBranchName } from "./repo-worktree.js";
 import { runSerializedSelfImprovementAction } from "./self-improvement-actions.js";
 import {
   getSelfImprovementSourceCheckoutRequestId,
@@ -23,13 +23,11 @@ import {
 } from "./self-improvement-request-state.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { CodexThreadExecutionContractView, ReasoningEffort } from "./types.js";
-import { deleteWorkerThread, resolveThreadWorkerRuntime, startWorkerThread, type WorkerClientAccess, type WorkerRuntime, type WorkerThreadStartResult } from "./worker-client-router.js";
+import { deleteWorkerThread, startWorkerThread, type WorkerClientAccess, type WorkerThreadStartResult } from "./worker-client-router.js";
 import { workerFileChangeAttribution } from "./worker-review-attribution.js";
 import { workerThreadIsRunning } from "./worker-thread-status.js";
 
 const HANDOFF_TEXT_LIMIT = 4_000;
-
-type WorkspaceOwnershipRepair = (cwd: string) => Promise<void>;
 
 function bounded(value: unknown, limit = HANDOFF_TEXT_LIMIT): string {
   if (value === null || value === undefined) return "";
@@ -46,19 +44,8 @@ function latestWorkerReplyAt(source: ReturnType<ButlerStateStore["getThread"]>):
 }
 
 function workerHarnessDisplayName(harness: string): string {
-  if (harness === "codex") return "Codex";
   if (harness === "pi") return "Pi";
   return harness;
-}
-
-async function prepareWorkerHandoffWorkspace(input: {
-  sourceRuntime: WorkerRuntime;
-  targetHarness: string;
-  cwd: string;
-  repairOwnership?: WorkspaceOwnershipRepair;
-}): Promise<void> {
-  if (input.sourceRuntime !== "pi-rpc" || input.targetHarness !== "codex") return;
-  await (input.repairOwnership ?? ensureManagedWorktreeWritableForWorker)(input.cwd);
 }
 
 export function buildWorkerHandoffNotes(store: ButlerStateStore, sourceThreadId: string, targetCwd?: string | null): string[] {
@@ -119,12 +106,11 @@ export async function startWorkerHandoff(input: {
   access: WorkerClientAccess;
   sourceThreadId: string;
   targetModel: string;
-  targetHarness: string;
+  targetHarness: "pi";
   targetEffort: ReasoningEffort | null;
   artifactsDir: string;
   butlerThreadId?: string | null;
   targetCwd?: string | null;
-  repairWorkspaceOwnership?: WorkspaceOwnershipRepair;
   startWorker?: typeof startWorkerThread;
 }): Promise<WorkerThreadStartResult> {
   const source = input.access.store.getThread(input.sourceThreadId);
@@ -143,12 +129,6 @@ export async function startWorkerHandoff(input: {
   let candidateThreadId: string | null = null;
 
   try {
-    await prepareWorkerHandoffWorkspace({
-      sourceRuntime: resolveThreadWorkerRuntime(input.access, input.sourceThreadId),
-      targetHarness: input.targetHarness,
-      cwd,
-      repairOwnership: input.repairWorkspaceOwnership
-    });
     const result = await (input.startWorker ?? startWorkerThread)(input.access, {
       task,
       input: async (threadId) => {
@@ -229,7 +209,7 @@ export async function handoffWorkerAtomically(input: {
   access: WorkerClientAccess;
   sourceThreadId: string;
   targetModel: string;
-  targetHarness: string;
+  targetHarness: "pi";
   targetEffort: ReasoningEffort | null;
   artifactsDir: string;
   butlerThreadId?: string | null;

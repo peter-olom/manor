@@ -41,13 +41,13 @@ function threadArtifactId(source: ThreadArtifactSource, key: string): string {
 export function registerThreadArtifactRoutes(input: {
   app: Express;
   artifactsDir: string;
-  codexHomeDir: string;
   store: ButlerStateStore;
 }): void {
-  const { app, artifactsDir, codexHomeDir, store } = input;
+  const { app, artifactsDir, store } = input;
+  const generatedImagesDir = path.join(artifactsDir, "generated-images");
 
   async function listThreadGeneratedImageArtifacts(threadId: string): Promise<Array<ThreadArtifactView & { filePath: string }>> {
-    const threadImageDir = path.join(codexHomeDir, "generated_images", threadId);
+    const threadImageDir = path.join(generatedImagesDir, threadId);
     const entries = await fs.readdir(threadImageDir, { withFileTypes: true }).catch(() => []);
     const encodedThreadId = encodeURIComponent(threadId);
     return Promise.all(
@@ -185,7 +185,7 @@ export function registerThreadArtifactRoutes(input: {
       return;
     }
 
-    const threadImageDir = path.resolve(codexHomeDir, "generated_images", threadId);
+    const threadImageDir = path.resolve(generatedImagesDir, threadId);
     const filePath = path.resolve(threadImageDir, fileName);
     if (filePath !== threadImageDir && !filePath.startsWith(`${threadImageDir}${path.sep}`)) {
       response.status(400).json({ error: "generated image path is invalid" });

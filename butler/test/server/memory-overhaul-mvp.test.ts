@@ -65,7 +65,6 @@ test("memory synthesis config normalizes model labels and honors env overrides",
   assert.equal(config.maxCandidatesPerRun, 12);
   assert.equal(config.promotionBatchSize, 7);
 });
-
 test("scheduler writes observations, task projection, queue entries, and dedupes by idempotency key", async () => {
   const { store, stateDir } = await createStore();
   const scheduler = new MemoryUpdateScheduler({
@@ -226,104 +225,6 @@ test("accepted promotion resolution persists project memory without creating ano
   assert.equal(store.getJobMemory("thread-promotion")?.promotionCandidates.filter((entry) => entry.status === "pending").length, 0);
 });
 
-test("memory synthesis exec normalizes display model labels before invoking Codex", async () => {
-  const { store, stateDir } = await createStore();
-  const binDir = await mkdtemp(path.join(tmpdir(), "manor-memory-synthesis-bin-"));
-  const fakeCodexPath = path.join(binDir, "codex");
-  const invocationsPath = path.join(binDir, "invocations.jsonl");
-  await import("node:fs/promises").then(async ({ chmod, writeFile }) => {
-    await writeFile(
-      fakeCodexPath,
-      [
-        "#!/usr/bin/env node",
-        'const fs = require("node:fs");',
-        "const args = process.argv.slice(2);",
-        `fs.appendFileSync(${JSON.stringify(invocationsPath)}, JSON.stringify(args) + "\\n");`,
-        'const outputIndex = args.indexOf("--output-last-message");',
-        'const modelIndex = args.indexOf("--model");',
-        'if (modelIndex !== -1 && args[modelIndex + 1] === "5.4 mini") { console.error("raw display model label passed"); process.exit(1); }',
-        "if (outputIndex === -1 || !args[outputIndex + 1]) process.exit(2);",
-        "fs.writeFileSync(args[outputIndex + 1], JSON.stringify({ candidates: [], entities: [], relationships: [] }));"
-      ].join("\n"),
-      "utf8"
-    );
-    await chmod(fakeCodexPath, 0o755);
-  });
-  const originalPath = process.env.PATH;
-  process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
-  try {
-    const scheduler = new MemoryUpdateScheduler({ store, stateDir, codexHomeDir: stateDir, config: testConfig({ model: "5.4 mini" }) });
-    const output = await (scheduler as unknown as { runCodexExec(input: { prompt: string; cwd: string; timeoutMs: number; config: MemorySynthesisConfig }): Promise<unknown> }).runCodexExec({
-      prompt: "Return empty synthesis output.",
-      cwd: "/workspace",
-      timeoutMs: 5_000,
-      config: testConfig({ model: "5.4 mini" })
-    });
-    const invocations = (await import("node:fs/promises").then(({ readFile }) => readFile(invocationsPath, "utf8")))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as string[]);
-    const modelIndex = invocations[0]?.indexOf("--model") ?? -1;
-
-    assert.ok(output);
-    assert.deepEqual(invocations[0]?.slice(modelIndex, modelIndex + 2), ["--model", "gpt-5.4-mini"]);
-  } finally {
-    process.env.PATH = originalPath;
-  }
-});
-
-
-test("memory synthesis output schema is strict-required for Codex response_format", async () => {
-  const { store, stateDir } = await createStore();
-  const binDir = await mkdtemp(path.join(tmpdir(), "manor-memory-synthesis-schema-bin-"));
-  const fakeCodexPath = path.join(binDir, "codex");
-  const schemaCopyPath = path.join(binDir, "schema.json");
-  await import("node:fs/promises").then(async ({ chmod, writeFile }) => {
-    await writeFile(
-      fakeCodexPath,
-      [
-        "#!/usr/bin/env node",
-        'const fs = require("node:fs");',
-        "const args = process.argv.slice(2);",
-        'const schemaIndex = args.indexOf("--output-schema");',
-        'const outputIndex = args.indexOf("--output-last-message");',
-        "if (schemaIndex === -1 || outputIndex === -1) process.exit(2);",
-        `fs.copyFileSync(args[schemaIndex + 1], ${JSON.stringify(schemaCopyPath)});`,
-        'fs.writeFileSync(args[outputIndex + 1], JSON.stringify({ candidates: [], entities: [], relationships: [] }));'
-      ].join("\n"),
-      "utf8"
-    );
-    await chmod(fakeCodexPath, 0o755);
-  });
-  const originalPath = process.env.PATH;
-  process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
-  try {
-    const scheduler = new MemoryUpdateScheduler({ store, stateDir, codexHomeDir: stateDir, config: testConfig() });
-    await (scheduler as unknown as { runCodexExec(input: { prompt: string; cwd: string; timeoutMs: number; config: MemorySynthesisConfig }): Promise<unknown> }).runCodexExec({
-      prompt: "Return empty synthesis output.",
-      cwd: "/workspace",
-      timeoutMs: 5_000,
-      config: testConfig()
-    });
-    const schema = JSON.parse(await import("node:fs/promises").then(({ readFile }) => readFile(schemaCopyPath, "utf8"))) as { required?: string[]; properties?: Record<string, unknown> };
-    const assertStrictRequired = (node: unknown): void => {
-      if (!node || typeof node !== "object") return;
-      const objectNode = node as { type?: unknown; properties?: Record<string, unknown>; required?: unknown; items?: unknown };
-      if (objectNode.type === "object" && objectNode.properties) {
-        const keys = Object.keys(objectNode.properties).sort();
-        assert.deepEqual(Array.isArray(objectNode.required) ? [...objectNode.required].sort() : objectNode.required, keys);
-      }
-      for (const child of Object.values(objectNode.properties ?? {})) assertStrictRequired(child);
-      assertStrictRequired(objectNode.items);
-    };
-
-    assertStrictRequired(schema);
-    assert.deepEqual(schema.required, ["candidates", "entities", "relationships"]);
-  } finally {
-    process.env.PATH = originalPath;
-  }
-});
-
 test("memory synthesis completion persists Codex candidates without forcing a model", async () => {
   const { store, stateDir } = await createStore();
   let invokedModel: string | null = "not-invoked";
@@ -361,51 +262,4 @@ test("memory synthesis completion persists Codex candidates without forcing a mo
   assert.equal(invokedModel, null);
   assert.equal(store.getJobMemory("thread-synthesis")?.promotionCandidates.some((entry) => entry.summary === "Keep strict memory synthesis schemas."), true);
   assert.equal(graph.observations.some((entry) => entry.sourceKind === "synthesis_result" && entry.sourceId === completed?.id), true);
-});
-
-test("memory synthesis exec falls back on unsupported models but surfaces unrelated failures", async () => {
-  const { store, stateDir } = await createStore();
-  const binDir = await mkdtemp(path.join(tmpdir(), "manor-memory-synthesis-fallback-bin-"));
-  const fakeCodexPath = path.join(binDir, "codex");
-  const invocationsPath = path.join(binDir, "invocations.jsonl");
-  await import("node:fs/promises").then(async ({ chmod, writeFile }) => {
-    await writeFile(
-      fakeCodexPath,
-      [
-        "#!/usr/bin/env node",
-        'const fs = require("node:fs");',
-        "const args = process.argv.slice(2);",
-        `fs.appendFileSync(${JSON.stringify(invocationsPath)}, JSON.stringify(args) + "\\n");`,
-        'const outputIndex = args.indexOf("--output-last-message");',
-        'const modelIndex = args.indexOf("--model");',
-        'if (args.includes("/fail-network")) { console.error("network unavailable"); process.exit(1); }',
-        'if (modelIndex !== -1 && args[modelIndex + 1] === "gpt-5.4-mini") { console.error("400: model not supported"); process.exit(1); }',
-        "if (outputIndex === -1 || !args[outputIndex + 1]) process.exit(2);",
-        "fs.writeFileSync(args[outputIndex + 1], JSON.stringify({ candidates: [], entities: [], relationships: [] }));"
-      ].join("\n"),
-      "utf8"
-    );
-    await chmod(fakeCodexPath, 0o755);
-  });
-  const originalPath = process.env.PATH;
-  process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
-  try {
-    const scheduler = new MemoryUpdateScheduler({ store, stateDir, codexHomeDir: stateDir, config: testConfig({ model: "5.4 mini" }) });
-    const runCodexExec = (scheduler as unknown as { runCodexExec(input: { prompt: string; cwd: string; timeoutMs: number; config: MemorySynthesisConfig }): Promise<unknown> }).runCodexExec.bind(scheduler);
-
-    await runCodexExec({ prompt: "Return empty synthesis output.", cwd: "/workspace", timeoutMs: 5_000, config: testConfig({ model: "5.4 mini" }) });
-    const invocations = (await import("node:fs/promises").then(({ readFile }) => readFile(invocationsPath, "utf8")))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as string[]);
-
-    assert.equal(invocations.length, 2);
-    assert.equal(invocations[1]?.includes("--model"), false);
-    await assert.rejects(
-      () => runCodexExec({ prompt: "Return empty synthesis output.", cwd: "/fail-network", timeoutMs: 5_000, config: { ...testConfig({ model: null }), effort: null } }),
-      /network unavailable/
-    );
-  } finally {
-    process.env.PATH = originalPath;
-  }
 });

@@ -1,4 +1,3 @@
-import os from "node:os";
 import path from "node:path";
 import { readFile } from "node:fs/promises";
 
@@ -15,9 +14,10 @@ export type ManorHarnessResult = {
 };
 
 function registryPath(env: NodeJS.ProcessEnv): string {
-  if (env.MANOR_HARNESS_REGISTRY_PATH) return env.MANOR_HARNESS_REGISTRY_PATH;
-  if (env.MANOR_HARNESS_HOME) return path.join(env.MANOR_HARNESS_HOME, "harness-capabilities.json");
-  return path.join(env.CODEX_HOME || path.join(os.homedir(), ".codex"), "manor", "harness-capabilities.json");
+  if (env.MANOR_HARNESS_REGISTRY_PATH?.trim()) return env.MANOR_HARNESS_REGISTRY_PATH;
+  const harnessHome = env.MANOR_HARNESS_HOME?.trim();
+  if (!harnessHome) throw new Error("MANOR_HARNESS_REGISTRY_PATH or MANOR_HARNESS_HOME is required");
+  return path.join(harnessHome, "harness-capabilities.json");
 }
 
 async function readThreadCapability(env: NodeJS.ProcessEnv): Promise<HarnessCapability> {
@@ -44,7 +44,7 @@ export async function callManorHarness(
 ): Promise<ManorHarnessResult> {
   const capability = await readThreadCapability(env);
   const baseUrl = env.MANOR_BUTLER_BASE_URL || "http://butler:8080";
-  const paths = ["/api/harness/action", "/api/codex-harness/action"];
+  const paths = ["/api/harness/action"];
   for (const [index, actionPath] of paths.entries()) {
     signal?.throwIfAborted();
     const response = await fetchImpl(new URL(actionPath, baseUrl), {

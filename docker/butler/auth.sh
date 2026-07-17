@@ -166,7 +166,7 @@ bootstrap_api_key() {
 
 command_name="${1:-}"
 
-mkdir -p "${CODEX_HOME:-$HOME/.codex}" "${PI_AGENT_DIR:-$HOME/.pi/agent}"
+mkdir -p "${PI_AGENT_DIR:-$HOME/.pi/agent}"
 
 case "${command_name}" in
   bootstrap)

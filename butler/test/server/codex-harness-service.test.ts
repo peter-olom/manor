@@ -19,9 +19,8 @@ import { buildThreadExecutionContract } from "../../src/server/thread-contract.j
 test("harness reconciliation does not erase existing capabilities when thread inventory is empty", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "manor-harness-reconcile-"));
   const stateDir = path.join(root, "state");
-  const codexHomeDir = path.join(root, "codex-home");
   const harnessRegistryPath = path.join(root, "harness-state", "harness-capabilities.json");
-  const registryPath = path.join(codexHomeDir, "manor", "harness-capabilities.json");
+  const registryPath = harnessRegistryPath;
   await mkdir(stateDir, { recursive: true });
   await mkdir(path.dirname(registryPath), { recursive: true });
   await writeFile(path.join(stateDir, "butler-ui.json"), JSON.stringify({ windows: [], focusedWindowId: null }, null, 2), "utf8");
@@ -45,7 +44,6 @@ test("harness reconciliation does not erase existing capabilities when thread in
   const store = new ButlerStateStore(path.join(stateDir, "butler-ui.json"));
   await store.load();
   const harness = new HarnessService({
-    codexHomeDir,
     harnessRegistryPath,
     stateDir,
     artifactsDir: path.join(root, "artifacts"),
@@ -58,10 +56,8 @@ test("harness reconciliation does not erase existing capabilities when thread in
   await harness.reconcileThreadCapabilities();
 
   const saved = JSON.parse(await readFile(registryPath, "utf8")) as { capabilities?: Array<{ threadId?: string; token?: string }> };
-  const migrated = JSON.parse(await readFile(harnessRegistryPath, "utf8")) as { capabilities?: Array<{ threadId?: string; token?: string }> };
   const access = JSON.parse(await readFile(path.join(stateDir, "harness-broker-access.json"), "utf8")) as { grants?: Array<{ threadId?: string; token?: string }> };
   assert.deepEqual(saved.capabilities?.map((entry) => [entry.threadId, entry.token]), [["thread-1", "token-1"]]);
-  assert.deepEqual(migrated.capabilities?.map((entry) => [entry.threadId, entry.token]), [["thread-1", "token-1"]]);
   assert.deepEqual(access.grants?.map((entry) => [entry.threadId, entry.token]), [["thread-1", "token-1"]]);
 });
 

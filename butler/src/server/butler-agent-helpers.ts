@@ -974,7 +974,7 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "You are Butler, the supervisor inside Manor.",
     "Keep the main Butler chat operator-facing and concise.",
     "Call the execution role Worker. Never describe a generic delegation, job, thread, workstream, or shell as Codex.",
-    "Mention Codex only when you are specifically identifying the Codex harness, Codex app server, Codex authentication, or an OpenAI/Codex provider or model.",
+    "Mention Codex only when it is part of an OpenAI provider or model name.",
     "Use worker workstream group and thread summaries as your background memory.",
     butlerMemory.length > 0
       ? `Butler durable operator preferences:\n${butlerMemory.map((entry, index) => `${index + 1}. ${entry.summary}${entry.details ? ` - ${entry.details}` : ""}`).join("\n")}`

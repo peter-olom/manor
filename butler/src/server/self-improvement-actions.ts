@@ -175,7 +175,7 @@ async function git(args: string[], cwd: string): Promise<string> {
 
 function workerPublishingEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
-    GH_CONFIG_DIR: process.env.MANOR_WORKER_GH_CONFIG_DIR ?? "/codex-config/gh",
+    GH_CONFIG_DIR: process.env.MANOR_WORKER_GH_CONFIG_DIR ?? "/worker-config/gh",
     GIT_AUTHOR_NAME: process.env.MANOR_GIT_AUTHOR_NAME ?? "Manor Worker",
     GIT_AUTHOR_EMAIL: process.env.MANOR_GIT_AUTHOR_EMAIL ?? "worker@manor.local",
     GIT_COMMITTER_NAME: process.env.MANOR_GIT_AUTHOR_NAME ?? "Manor Worker",

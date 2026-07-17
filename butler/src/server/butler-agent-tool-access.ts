@@ -33,7 +33,6 @@ import type {
   ProjectMemoryView,
   SupervisionChecklistView
 } from "./types.js";
-import type { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { ButlerOperatorThreadGuard, ProofScreenshotReview, ResolvedPreviewProof, SupervisionSmokePlan } from "./butler-agent-helpers.js";
 import type { ExtensionUiBroker } from "./extension-ui-broker.js";
@@ -70,7 +69,6 @@ export type ButlerAgentToolAccess = {
   extensionUiBroker: ExtensionUiBroker | null;
   skillsService: SkillsService;
   store: ButlerStateStore;
-  codexClient: CodexAppServerClient;
   watchdogs: ActivityWatchdogService;
   piRpcWorkerClient: PiRpcWorkerClient | null;
   hostController: HostControllerClient;
@@ -202,7 +200,7 @@ export type ButlerAgentToolAccess = {
   }): Promise<JobPayloadView>;
   bindJobPayloadDelivery(threadId: string, delivery: { turnId?: string | null; messageId?: string | null }): Promise<JobPayloadView | null>;
   queueDelegationAcknowledgement(threadId: string, text: string, selection?: {
-    runtime?: "openai" | "pi-rpc" | null;
+    runtime?: "pi-rpc" | null;
     harness?: string | null;
     provider?: string | null;
     model?: string | null;
@@ -235,9 +233,9 @@ export type ButlerAgentToolAccess = {
       allowFreeform?: boolean;
     }>;
   }): Promise<ButlerMessageView & { question: ButlerOperatorQuestionView }>;
-  getCodexAuthStatus(): ButlerAuthStatus;
+  getWorkerAuthStatus(): ButlerAuthStatus;
   getWorkerDefaults?: () => {
-    runtime: "auto" | "openai" | "pi-rpc" | null;
+    runtime: "auto" | "pi-rpc" | null;
     cwd?: string | null;
     threadId?: string | null;
     runtimeOwnerThreadIds?: string[];
@@ -254,7 +252,7 @@ export type ButlerAgentSessionAccess = {
   session: AgentSession | null;
   systemPromptSuffix: string | null;
   auth: ButlerAuthStatus;
-  codexAuth: ButlerAuthStatus;
+  workerAuth: ButlerAuthStatus;
   compaction: Omit<ButlerCompactionView, "autoEnabled" | "active" | "count">;
   ready: boolean;
   pending: boolean;
@@ -269,12 +267,11 @@ export type ButlerAgentSessionAccess = {
   activeOperatorReferences: { imageReferenceIds: string[]; fileReferenceIds: string[] } | null;
   stopRequestSequence: number;
   store: ButlerStateStore;
-  codexClient: CodexAppServerClient;
   imageStore: ImageReferenceStore;
   fileStore: FileReferenceStore;
   piAuthPath: string;
-  codexAuthPath: string;
-  codexConfigDir: string;
+  workerAuthPath: string;
+  workerConfigDir: string;
   sessionDir: string;
   runtimeThreadId: string;
   extensionUiBroker: ExtensionUiBroker | null;

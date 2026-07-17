@@ -15,6 +15,6 @@ export const TERMINAL_URLS: Record<TerminalTarget, string> = {
 
 export function readInitialTerminalTarget(value: string | null): TerminalTarget | null {
   if (value === "butler") return "butler";
-  if (value === "worker" || value === "codex" || value === "pi") return "worker";
+  if (value === "worker") return "worker";
   return null;
 }

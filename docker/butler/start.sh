@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-mkdir -p "${CODEX_HOME:-$HOME/.codex}" "${PI_AGENT_DIR:-$HOME/.pi/agent}" /state /repos /artifacts
+mkdir -p "${PI_AGENT_DIR:-$HOME/.pi/agent}" /state /repos /artifacts
 
 /usr/local/bin/butler-auth bootstrap
 

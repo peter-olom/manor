@@ -30,7 +30,7 @@ Use the canonical launcher for lifecycle work so source builds, health checks, a
 
 When working through Manor itself, do package installs, app startup, builds, and browser checks inside previews. Keep repository edits in the active Worker.
 
-Worker behavior must remain consistent across Manor's supported harnesses. OpenAI/Codex sessions run through the Codex app server. Ollama Local, Ollama Cloud, and OpenCode Go sessions run through Pi RPC. Keep provider discovery, authentication, reasoning transforms, and transport-specific behavior in their existing adapters. Shared Worker code should depend on normalized contracts.
+Worker behavior must remain consistent across Manor's supported providers. OpenAI/Codex, Ollama Local, Ollama Cloud, and OpenCode Go sessions all run through Pi RPC. Keep provider discovery, authentication, and reasoning transforms in their provider adapters. Shared Worker code should depend on normalized contracts.
 
 ## Validation
 
@@ -44,7 +44,7 @@ npm run build
 
 If your change touches runtime behavior, also verify the Docker stack, relevant logs, and the affected preview or service lifecycle.
 
-If your change touches shared Worker behavior, validate every affected harness. Validate the Codex app-server and Pi RPC paths separately when the change affects both.
+If your change touches shared Worker behavior, validate the affected providers through the Pi RPC path.
 
 ## Releases
 

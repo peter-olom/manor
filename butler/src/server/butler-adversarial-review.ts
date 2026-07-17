@@ -1,6 +1,4 @@
-import { spawn } from "node:child_process";
 import crypto from "node:crypto";
-import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { Type, type Api, type Model } from "@earendil-works/pi-ai";
@@ -54,8 +52,6 @@ export const ADVERSARIAL_REVIEW_OUTPUT_SCHEMA = {
 };
 
 const REVIEW_SEVERITIES = new Set(["info", "low", "medium", "high", "critical"]);
-const CODEX_REVIEW_TERMINATION_GRACE_MS = 250;
-const CODEX_REVIEW_STARTUP_GRACE_MS = 3_000;
 const PI_REVIEW_SUBMISSION_SCHEMA = Type.Object({
   findings: Type.Array(Type.Object({
     severity: Type.Union([Type.Literal("info"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("critical")]),
@@ -160,15 +156,11 @@ type ReviewSelection = {
 
 export type ProviderAdversarialReviewInput = {
   cwd: string;
-  codexHomeDir: string;
   piAuthPath: string;
-  scratchDir: string;
   modelRegistry: ModelRegistry;
   selection: ReviewSelection;
-  codexNativeAvailable: boolean;
   prompt: string;
   timeoutMs: number;
-  codexExecutable?: string;
   onProgress?: (progress: AdversarialReviewProgress) => void;
   isCurrent?: () => boolean;
   watchdogs: ActivityWatchdogService;
@@ -222,142 +214,6 @@ function extractJson(text: string): string {
   if (!trimmed.startsWith("```")) return trimmed;
   const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
   return match ? match[1]!.trim() : trimmed;
-}
-
-function codexReasoningArgs(level: ButlerThinkingLevel): string[] {
-  if (level === "default") return [];
-  const effort = level === "off" ? "none" : level === "thinking" ? "xhigh" : level;
-  return ["--config", `model_reasoning_effort="${effort}"`];
-}
-
-export function buildCodexAdversarialReviewArgs(input: {
-  schemaPath: string;
-  outputPath: string;
-  modelId: string;
-  thinkingLevel: ButlerThinkingLevel;
-}): string[] {
-  return [
-    "exec",
-    "--sandbox",
-    "read-only",
-    "--ephemeral",
-    "--ignore-user-config",
-    "--skip-git-repo-check",
-    "--ignore-rules",
-    "--output-schema",
-    input.schemaPath,
-    "--output-last-message",
-    input.outputPath,
-    "--model",
-    input.modelId,
-    ...codexReasoningArgs(input.thinkingLevel),
-    "review",
-    "-"
-  ];
-}
-
-async function runCodexReview(input: ProviderAdversarialReviewInput): Promise<unknown> {
-  await fs.mkdir(input.scratchDir, { recursive: true });
-  const runId = crypto.randomUUID();
-  const schemaPath = path.join(input.scratchDir, `${runId}.schema.json`);
-  const outputPath = path.join(input.scratchDir, `${runId}.output.json`);
-  await fs.writeFile(schemaPath, JSON.stringify(ADVERSARIAL_REVIEW_OUTPUT_SCHEMA, null, 2), "utf8");
-
-  try {
-    let lastActivityAt = Date.now();
-    const nextDeadlineAt = () => lastActivityAt + input.timeoutMs;
-    let lastProgress = reportReviewProgress(input, {
-      stage: "reviewing_changes",
-      message: "Codex reviewer started.",
-      deadlineAt: nextDeadlineAt()
-    });
-    const args = buildCodexAdversarialReviewArgs({
-      schemaPath,
-      outputPath,
-      modelId: input.selection.model.id,
-      thinkingLevel: input.selection.thinkingLevel
-    });
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(input.codexExecutable ?? "codex", args, {
-        cwd: input.cwd,
-        env: { ...process.env, CODEX_HOME: input.codexHomeDir, NO_COLOR: "1" },
-        stdio: ["pipe", "pipe", "pipe"]
-      });
-      let stderr = "";
-      let stdout = "";
-      let forceKill: ReturnType<typeof setTimeout> | null = null;
-      let watchdogRegistration: ReturnType<ActivityWatchdogService["register"]> | null = null;
-      let shutdownError: Error | null = null;
-      let settled = false;
-      let hasProducedOutput = false;
-      const clearWatchers = () => {
-        watchdogRegistration?.unregister();
-        watchdogRegistration = null;
-      };
-      const finish = (error?: Error) => {
-        if (settled) return;
-        settled = true;
-        clearWatchers();
-        if (forceKill) clearTimeout(forceKill);
-        error ? reject(error) : resolve();
-      };
-      const shutdown = (error: Error) => {
-        if (shutdownError || settled) return;
-        shutdownError = error;
-        clearWatchers();
-        child.kill("SIGTERM");
-        forceKill = setTimeout(() => child.kill("SIGKILL"), CODEX_REVIEW_TERMINATION_GRACE_MS);
-      };
-      const checkTimeout = () => {
-        if (input.isCurrent?.() === false) {
-          shutdown(new Error("adversarial review was superseded"));
-          return;
-        }
-        const now = Date.now();
-        const inactiveFor = now - lastActivityAt;
-        const inactivityLimitMs = hasProducedOutput
-          ? input.timeoutMs
-          : Math.max(input.timeoutMs, CODEX_REVIEW_STARTUP_GRACE_MS);
-        if (inactiveFor >= inactivityLimitMs) {
-          shutdown(reviewTimeoutError(input, lastProgress));
-          return;
-        }
-      };
-      watchdogRegistration = input.watchdogs.register({
-        id: `review-codex:${runId}`,
-        policy: "review-activity",
-        target: "Codex reviewer",
-        maxIntervalMs: input.timeoutMs,
-        callback: checkTimeout
-      });
-      let lastOutputReportAt = 0;
-      const noteOutput = (stream: "stdout" | "stderr", chunk: Buffer) => {
-        const now = Date.now();
-        hasProducedOutput = true;
-        lastActivityAt = now;
-        if (now - lastOutputReportAt < 1000) return;
-        lastOutputReportAt = now;
-        if (chunk.length === 0) return;
-        lastProgress = reportReviewProgress(input, {
-          stage: "reviewing_changes",
-          message: `Codex reviewer produced ${stream} output.`,
-          deadlineAt: nextDeadlineAt()
-        });
-      };
-      child.stdout.on("data", (chunk: Buffer) => { stdout = `${stdout}${chunk.toString("utf8")}`.slice(-16_000); noteOutput("stdout", chunk); });
-      child.stderr.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16_000); noteOutput("stderr", chunk); });
-      child.on("error", (error) => child.pid ? shutdown(error) : finish(error));
-      child.on("close", (code) => {
-        if (shutdownError) finish(shutdownError);
-        else if (code === 0) finish();
-        else finish(new Error(`Codex CLI adversarial review exited with ${code}: ${redactSensitiveText(stderr || stdout)}`.trim()));
-      });
-      child.stdin.end(input.prompt);
-    });
-    return JSON.parse(await fs.readFile(outputPath, "utf8"));
-  } finally {
-    await Promise.all([schemaPath, outputPath].map((filePath) => fs.rm(filePath, { force: true }).catch(() => {})));
-  }
 }
 
 async function runPiReview(input: ProviderAdversarialReviewInput): Promise<unknown> {
@@ -468,13 +324,7 @@ export function assertPiReviewerPromptSucceeded(messages: readonly unknown[]): v
 }
 
 export async function runProviderAdversarialReview(input: ProviderAdversarialReviewInput): Promise<unknown> {
-  return shouldUseNativeCodexReview(input.selection.model.provider, input.codexNativeAvailable)
-    ? runCodexReview(input)
-    : runPiReview(input);
-}
-
-export function shouldUseNativeCodexReview(provider: string | null | undefined, nativeAvailable: boolean): boolean {
-  return nativeAvailable && (provider === "openai-codex" || provider === "codex");
+  return runPiReview(input);
 }
 
 function clip(text: string, maxLength: number): string {
@@ -540,13 +390,10 @@ export async function ensureButlerAdversarialReview(input: {
   threadId: string;
   model: Model<Api>;
   modelRegistry: ModelRegistry;
-  codexHomeDir: string;
   piAuthPath: string;
-  scratchDir: string;
   thinkingLevel: ButlerThinkingLevel;
   minimumReportUpdatedAt?: number | null;
   reviewBrief?: string | null;
-  codexAuthenticated?: boolean;
   timeoutMs?: number;
   watchdogs: ActivityWatchdogService;
   runReview?: typeof runProviderAdversarialReview;
@@ -653,12 +500,9 @@ export async function ensureButlerAdversarialReview(input: {
     });
     const raw = validateAdversarialReviewOutput(await (input.runReview ?? runProviderAdversarialReview)({
       cwd: effectiveReviewCwd,
-      codexHomeDir: input.codexHomeDir,
       piAuthPath: input.piAuthPath,
-      scratchDir: input.scratchDir,
       modelRegistry: input.modelRegistry,
       selection: { model, thinkingLevel: input.thinkingLevel },
-      codexNativeAvailable: input.codexAuthenticated !== false,
       prompt,
       timeoutMs: input.timeoutMs ?? 120_000,
       watchdogs: input.watchdogs,

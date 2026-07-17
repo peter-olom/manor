@@ -3,56 +3,33 @@ import test from "node:test";
 
 import { ManorModelTaskRunner, modelTaskTransport, selectAuthenticatedPiModel, withinDeadline } from "../../src/server/model-task-runner.js";
 
-test("model task transport follows the selected provider", () => {
-  assert.equal(modelTaskTransport("openai-codex/gpt-5.5", true), "codex");
-  assert.equal(modelTaskTransport("openai/gpt-5.5", true), "codex");
+test("model tasks always use Pi for every provider", () => {
+  assert.equal(modelTaskTransport("openai-codex/gpt-5.5", true), "pi");
+  assert.equal(modelTaskTransport("openai/gpt-5.5", true), "pi");
   assert.equal(modelTaskTransport("opencode-go/deepseek-v4-flash", true), "pi");
   assert.equal(modelTaskTransport("ollama-cloud/qwen3.5:397b", true), "pi");
   assert.equal(modelTaskTransport("ollama-local/qwen3.5:0.8b", true), "pi");
 });
 
-test("explicit OpenAI model tasks stay on the Codex provider path", () => {
-  assert.equal(modelTaskTransport("openai-codex/gpt-5.5", false), "codex");
-  assert.equal(modelTaskTransport("gpt-5.5", false), "codex");
-});
-
-test("automatic model tasks prefer authenticated Codex and otherwise use Pi inventory", () => {
-  assert.equal(modelTaskTransport(null, true), "codex");
+test("automatic model tasks use Pi", () => {
+  assert.equal(modelTaskTransport(null, true), "pi");
   assert.equal(modelTaskTransport(null, false), "pi");
 });
 
-test("model task runner invokes the executor for the selected provider", async () => {
+test("model task runner invokes Pi for OpenAI and other providers", async () => {
   const calls: string[] = [];
   const runner = new ManorModelTaskRunner({
     stateDir: "/tmp/model-tasks",
-    codexHomeDir: "/tmp/codex-home",
     piAuthPath: "/tmp/pi-auth.json",
-    codexAuthenticated: async () => true,
-    codexExecutor: async (input) => { calls.push(`codex:${input.model.model}`); return "codex"; },
     piExecutor: async (input) => { calls.push(`pi:${input.model.provider}/${input.model.model}`); return "pi"; }
   });
 
-  assert.equal(await runner.runText({ purpose: "test", prompt: "test", timeoutMs: 100, model: "openai-codex/gpt-5.5" }), "codex");
+  assert.equal(await runner.runText({ purpose: "test", prompt: "test", timeoutMs: 100, model: "openai-codex/gpt-5.5" }), "pi");
   assert.equal(await runner.runText({ purpose: "test", prompt: "test", timeoutMs: 100, model: "opencode-go/glm-5.2" }), "pi");
-  assert.deepEqual(calls, ["codex:gpt-5.5", "pi:opencode-go/glm-5.2"]);
+  assert.deepEqual(calls, ["pi:openai-codex/gpt-5.5", "pi:opencode-go/glm-5.2"]);
 });
 
-test("explicit Codex tasks surface authentication remediation instead of changing harness", async () => {
-  const runner = new ManorModelTaskRunner({
-    stateDir: "/tmp/model-tasks",
-    codexHomeDir: "/tmp/codex-home",
-    piAuthPath: "/tmp/pi-auth.json",
-    codexAuthenticated: async () => false,
-    codexExecutor: async () => "unexpected",
-    piExecutor: async () => "unexpected"
-  });
-  await assert.rejects(
-    runner.runText({ purpose: "test", prompt: "test", timeoutMs: 100, model: "openai-codex/gpt-5.5" }),
-    /Open Settings → Providers/
-  );
-});
-
-test("automatic Pi selection skips catalog models without authentication", async () => {
+test("automatic Pi selection can select authenticated OpenAI models", async () => {
   const codexModel = { id: "gpt-5.5", provider: "openai-codex" } as never;
   const unavailable = { id: "first", provider: "ollama-cloud" } as never;
   const authenticated = { id: "second", provider: "opencode-go" } as never;
@@ -63,7 +40,7 @@ test("automatic Pi selection skips catalog models without authentication", async
       ? { ok: true, apiKey: "test-key" }
       : { ok: false, error: "missing key" }
   );
-  assert.equal(selected.model, authenticated);
+  assert.equal(selected.model, codexModel);
 });
 
 test("explicit Pi authentication failures include remediation", async () => {
@@ -85,13 +62,11 @@ test("model task deadline covers supporting work between completion rounds", asy
   );
 });
 
-test("model task deadline includes authentication discovery", async () => {
+test("model task deadline includes Pi execution", async () => {
   const runner = new ManorModelTaskRunner({
     stateDir: "/tmp/model-tasks",
-    codexHomeDir: "/tmp/codex-home",
     piAuthPath: "/tmp/pi-auth.json",
-    codexAuthenticated: async () => new Promise((resolve) => setTimeout(() => resolve(true), 30)),
-    codexExecutor: async () => "unexpected"
+    piExecutor: async () => new Promise((resolve) => setTimeout(() => resolve("late"), 30))
   });
   await assert.rejects(
     runner.runText({ purpose: "session title", prompt: "test", timeoutMs: 5, model: null }),
@@ -99,13 +74,11 @@ test("model task deadline includes authentication discovery", async () => {
   );
 });
 
-test("expired native Codex credentials surface provider remediation", async () => {
+test("expired OpenAI credentials from Pi surface provider remediation", async () => {
   const runner = new ManorModelTaskRunner({
     stateDir: "/tmp/model-tasks",
-    codexHomeDir: "/tmp/codex-home",
     piAuthPath: "/tmp/pi-auth.json",
-    codexAuthenticated: async () => true,
-    codexExecutor: async () => { throw new Error("401 expired token"); }
+    piExecutor: async () => { throw new Error("401 expired token"); }
   });
   await assert.rejects(
     runner.runText({ purpose: "session title", prompt: "test", timeoutMs: 100, model: "openai-codex/gpt-5.5" }),

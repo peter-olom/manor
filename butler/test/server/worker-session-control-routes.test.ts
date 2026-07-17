@@ -23,7 +23,7 @@ async function startServer(runtime: "pi-rpc" | "openai", client: Record<string, 
   return { server, url: `http://127.0.0.1:${address.port}` };
 }
 
-test("Worker controls describe Codex sessions without calling Pi", async () => {
+test("Worker controls describe unavailable sessions without calling Pi", async () => {
   const { server, url } = await startServer("openai", {});
   try {
     const response = await fetch(`${url}/api/pairs/pair-1/worker/controls`);
@@ -31,7 +31,7 @@ test("Worker controls describe Codex sessions without calling Pi", async () => {
     assert.deepEqual(await response.json(), {
       controls: {
         supported: false,
-        runtime: "codex",
+        runtime: "pi",
         busy: false,
         compacting: false,
         autoCompactionEnabled: false,

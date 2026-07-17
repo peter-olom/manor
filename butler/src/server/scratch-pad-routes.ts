@@ -2,7 +2,6 @@ import type express from "express";
 import path from "node:path";
 
 import type { ButlerAgentService } from "./butler-agent.js";
-import type { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import { type FileReferenceStore } from "./file-store.js";
 import { type ImageReferenceStore } from "./image-store.js";
@@ -36,7 +35,6 @@ type ScratchPadRoutesAccess = {
   app: express.Express;
   scratchPadStore: ScratchPadStore;
   store: ButlerStateStore;
-  codexClient: CodexAppServerClient;
   piRpcWorkerClient?: PiRpcWorkerClient | null;
   butlerAgent: ButlerAgentService;
   artifactsDir: string;
@@ -268,7 +266,6 @@ async function startScratchItem(access: ScratchPadRoutesAccess, itemId: string) 
   try {
     result = await startWorkerThread({
       ...access,
-      getCodexAuthStatus: () => access.butlerAgent.getCodexAuthStatus(),
       getWorkerAffinity: () => access.butlerAgent.getWorkerAffinity(),
       recordSuccessfulWorkerSelection: (selection) => access.butlerAgent.recordSuccessfulWorkerSelection(selection)
     }, {

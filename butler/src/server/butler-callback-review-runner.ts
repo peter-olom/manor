@@ -260,10 +260,7 @@ export async function runCallbackAdversarialReview(input: {
   callback: PendingChatCallback;
   sessionAccess: ButlerAgentSessionAccess;
   store: ButlerStateStore;
-  codexHomeDir: string;
   piAuthPath: string;
-  scratchDir: string;
-  codexAuthenticated: boolean;
   watchdogs: ActivityWatchdogService;
   isCurrent?: () => boolean;
   supervisorTimeoutMs?: number;
@@ -287,13 +284,10 @@ export async function runCallbackAdversarialReview(input: {
     threadId: callback.threadId,
     model,
     modelRegistry: sessionAccess.modelRegistry,
-    codexHomeDir: input.codexHomeDir,
     piAuthPath: input.piAuthPath,
-    scratchDir: input.scratchDir,
     thinkingLevel,
     minimumReportUpdatedAt: callback.requestedAt,
     reviewBrief: buildCallbackAdversarialReviewBrief(input.store, callback),
-    codexAuthenticated: input.codexAuthenticated,
     watchdogs: input.watchdogs,
     isCurrent,
     onProgress: input.onProgress

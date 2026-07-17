@@ -408,7 +408,7 @@ test("request_self_improvement queues evidence without starting a worker session
       },
       getToolUiEffects: () => [],
       store,
-      codexClient: { startThread: async () => { started = true; throw new Error("should not start"); } },
+      piRpcWorkerClient: { startThread: async () => { started = true; throw new Error("should not start"); } },
       imageStore: { list: () => [] },
       fileStore: { list: () => [] },
       noteThreadFocus: () => undefined
@@ -452,7 +452,7 @@ test("request_self_improvement rejects direct requests without a blocked source 
       },
       getToolUiEffects: () => [],
       store,
-      codexClient: {},
+      piRpcWorkerClient: {},
       imageStore: { list: () => [] },
       fileStore: { list: () => [] },
       noteThreadFocus: () => undefined
@@ -494,7 +494,7 @@ test("approval creates a visible session and preserves immediate Worker completi
     hostController: { getStatus: async () => ({ ok: true, active: null, latestRun: null }) } as never,
     prepareWorkerWorkspace: async () => undefined,
     store,
-    codexClient: {
+    piRpcWorkerClient: {
       getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "high", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["high"], supportedReasoningEfforts: ["high"], defaultReasoningEffort: "high" }] } }),
       updateComposeSettings: async () => undefined,
       startThread: async (options: { input: (threadId: string) => Promise<unknown>; cwd: string; developerInstructions?: string }) => {
@@ -509,7 +509,7 @@ test("approval creates a visible session and preserves immediate Worker completi
         return { threadId: "thread-approved", turnId: "turn-1" };
       }
     } as never,
-    getCodexAuthStatus: () => ({ loggedIn: true }),
+    getWorkerAuthStatus: () => ({ loggedIn: true }),
     getWorkerAffinity: () => null,
     recordSuccessfulWorkerSelection: () => undefined,
     pairSessions: {
@@ -557,8 +557,8 @@ test("approval creates a visible session and preserves immediate Worker completi
       model: createdPairs[0]?.model,
       effort: createdPairs[0]?.effort
     }, {
-      runtime: "openai",
-      harness: "codex",
+      runtime: "pi-rpc",
+      harness: "pi",
       provider: "openai-codex",
       model: "gpt-5-codex",
       effort: "high"
@@ -593,7 +593,7 @@ test("approval is serialized while another self-improvement worker owns the chec
     hostController: { getStatus: async () => ({ ok: true, active: null, latestRun: null }) } as never,
     prepareWorkerWorkspace: async () => undefined,
     store: {} as never,
-    codexClient: { startThread: async () => { started = true; throw new Error("should not start"); } } as never,
+    piRpcWorkerClient: { startThread: async () => { started = true; throw new Error("should not start"); } } as never,
     imageStore: { resolveViews: () => [] } as never,
     fileStore: { resolveViews: () => [] } as never,
     artifactsDir: requestDir
@@ -649,7 +649,7 @@ test("approval deletes the Worker and pair when post-pair setup fails", async ()
     hostController: { getStatus: async () => ({ ok: true, active: null, latestRun: null }) } as never,
     prepareWorkerWorkspace: async () => undefined,
     store: routeStore,
-    codexClient: {
+    piRpcWorkerClient: {
       getConnectionState: () => ({ compose: { model: "gpt-5-codex", effort: "high", availableModels: [{ id: "gpt-5-codex", label: "GPT-5 Codex", provider: null, supportsReasoning: true, supportedThinkingLevels: ["high"], supportedReasoningEfforts: ["high"], defaultReasoningEffort: "high" }] } }),
       updateComposeSettings: async () => undefined,
       startThread: async (options: { input: (threadId: string) => Promise<unknown>; cwd: string }) => {
@@ -668,7 +668,7 @@ test("approval deletes the Worker and pair when post-pair setup fails", async ()
         return { deleted: true };
       }
     } as never,
-    getCodexAuthStatus: () => ({ loggedIn: true }),
+    getWorkerAuthStatus: () => ({ loggedIn: true }),
     getWorkerAffinity: () => null,
     recordSuccessfulWorkerSelection: () => undefined,
     pairSessions: {
@@ -879,7 +879,7 @@ test("closing waits for an in-flight Worker follow-up and then stops that turn",
     const sendCanFinish = new Promise<void>((resolve) => { releaseSend = resolve; });
     const access = {
       store,
-      codexClient: {
+      piRpcWorkerClient: {
         sendMessage: async () => {
           calls.push("send:start");
           noteSendStarted();
@@ -927,7 +927,7 @@ test("a Worker follow-up queued behind close cannot reactivate the discarded req
     let sendCalled = false;
     const access = {
       store,
-      codexClient: {
+      piRpcWorkerClient: {
         sendMessage: async () => {
           sendCalled = true;
           return { threadId: "worker-closing", turnId: "late-turn" };
@@ -1016,7 +1016,7 @@ test("closing a self-improvement request reports worker stop failures", async ()
     await assert.rejects(
       () => discardSelfImprovementRequest(state, {
         store: { getThread: () => null },
-        codexClient: { stopThread: async () => { throw new Error("worker stop failed"); } }
+        piRpcWorkerClient: { stopThread: async () => { throw new Error("worker stop failed"); } }
       } as never, created.id),
       /worker stop failed/
     );

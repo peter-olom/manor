@@ -14,9 +14,9 @@ Manor keeps long-running agent work organized, observable, and contained. Succes
 
 The main product promise is async leverage. The operator should give intent, then Butler and the active Worker should do the investigation, execution, verification, and proof gathering with very little hand-holding.
 
-A Worker is Manor's product role across providers. Manor can run it through the Codex app-server harness for OpenAI/Codex models or the Pi RPC harness for supported Ollama and OpenCode Go models. Butler keeps the job contract and review model consistent across them.
+A Worker is Manor's product role across providers. Manor runs every Worker through Pi RPC, including OpenAI/Codex, Ollama, and OpenCode Go models. Butler keeps one job contract and review model across providers.
 
-Manor has two agent environments. Butler contains the Pi-backed supervisor. The Worker environment contains both Worker harnesses and exposes one Worker CLI regardless of which harness a job uses.
+Manor has two agent environments. Butler contains the Pi-backed supervisor. The Worker environment contains the Pi-backed Worker runtime and exposes one Worker CLI.
 
 ## Brand Personality
 
@@ -38,7 +38,7 @@ Do not make Manor feel like a hosted multi-tenant SaaS dashboard, a decorative A
 - Make Butler acceptance adversarial: the worker submits evidence, Butler decides whether it is good enough.
 - Give the operator a compact proof dossier so they can trust the result without reading the full worker transcript.
 - Show the active Worker provider, model, and reasoning option where that identity affects a decision.
-- Treat provider or harness changes as explicit cold handoffs that preserve the job record without implying hidden state transfer.
+- Treat provider changes as explicit cold handoffs that preserve the job record without implying hidden state transfer.
 
 ## Accessibility & Inclusion
 

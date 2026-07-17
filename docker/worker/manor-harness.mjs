@@ -4,10 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 
-const legacyCodexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 const harnessHome = process.env.MANOR_HARNESS_HOME || "";
 const registryPath = process.env.MANOR_HARNESS_REGISTRY_PATH
-  || (harnessHome ? path.join(harnessHome, "harness-capabilities.json") : path.join(legacyCodexHome, "manor", "harness-capabilities.json"));
+  || (harnessHome ? path.join(harnessHome, "harness-capabilities.json") : path.join(os.homedir(), ".config", "manor", "harness-capabilities.json"));
 const butlerBaseUrl = process.env.MANOR_BUTLER_BASE_URL || "http://butler:8080";
 const runtimeBrokerBaseUrl = process.env.MANOR_RUNTIME_BROKER_URL || "http://runtime-broker:8090";
 
@@ -260,7 +259,7 @@ async function callHarness(token, action, params = {}) {
     },
     body: JSON.stringify({ token, action, params })
   };
-  const actionPaths = ["/api/harness/action", "/api/codex-harness/action"];
+  const actionPaths = ["/api/harness/action"];
   for (const [index, actionPath] of actionPaths.entries()) {
     const response = await fetch(new URL(actionPath, butlerBaseUrl), request);
     const payload = await response.json().catch(() => ({ error: "Harness request failed" }));

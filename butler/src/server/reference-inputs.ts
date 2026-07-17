@@ -110,7 +110,7 @@ export function normalizeComposerInputItems(inputItems: unknown): PairComposerIn
     if (record.type === "file" && name && itemPath) normalizedItem = { type: "file", name, path: itemPath };
     if (record.type === "skill" && name) {
       const id = typeof record.id === "string" ? record.id.trim().slice(0, 200) : "";
-      const environment = record.environment === "butler-pi" || record.environment === "worker-pi" || record.environment === "worker-codex"
+      const environment = record.environment === "butler-pi" || record.environment === "worker-pi"
         ? record.environment
         : undefined;
       if (itemPath || id) normalizedItem = { type: "skill", name, ...(itemPath ? { path: itemPath } : {}), ...(id ? { id } : {}), ...(environment ? { environment } : {}) };

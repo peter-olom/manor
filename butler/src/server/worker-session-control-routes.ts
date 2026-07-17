@@ -12,9 +12,9 @@ type WorkerSessionControlRouteAccess = {
   piRpcWorkerClient: PiRpcWorkerClient;
 };
 
-const CODEX_CONTROLS: WorkerSessionControls = {
+const UNAVAILABLE_CONTROLS: WorkerSessionControls = {
   supported: false,
-  runtime: "codex",
+  runtime: "pi",
   busy: false,
   compacting: false,
   autoCompactionEnabled: false,
@@ -66,7 +66,7 @@ export function registerWorkerSessionControlRoutes(access: WorkerSessionControlR
   access.app.get("/api/pairs/:pairId/worker/controls", async (request, response) => {
     const worker = piWorkerThread(access, request.params.pairId);
     if (!worker) {
-      response.json({ controls: CODEX_CONTROLS });
+      response.json({ controls: UNAVAILABLE_CONTROLS });
       return;
     }
     try {

@@ -1,5 +1,4 @@
 import type { ButlerAgentService } from "./butler-agent.js";
-import type { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { PairSessionManager } from "./pair-session-manager.js";
 import type { PairStore } from "./pair-store.js";
@@ -20,7 +19,6 @@ export function createManorSettingsApplyHandler(input: {
   pairSessions?: Pick<PairSessionManager, "refreshModelSettings"> | null;
   pairStore?: PairStore | null;
   store: ButlerStateStore;
-  codexClient: CodexAppServerClient;
   getSseHub: () => ButlerSseHub | null | undefined;
   now?: () => number;
 }): () => Promise<void> {
@@ -38,12 +36,9 @@ export function createManorSettingsApplyHandler(input: {
     const worker = input.settingsService.getSettings().worker;
     await updateUnifiedWorkerCompose({
       store: input.store,
-      codexClient: input.codexClient,
       piRpcWorkerClient: input.piRpcWorkerClient,
-      getCodexAuthStatus: () => input.butlerAgent.getCodexAuthStatus(),
       getWorkerAffinity: () => input.butlerAgent.getWorkerAffinity()
     }, {
-      harness: worker.defaultHarness,
       model: worker.defaultModel,
       effort: worker.defaultEffort as never
     }).catch((error) => console.warn("Worker compose refresh failed after settings update", error));

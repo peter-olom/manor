@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { assertPiReviewerPromptSucceeded, createPiReviewSubmissionTool, ensureButlerAdversarialReview, runProviderAdversarialReview, validateAdversarialReviewOutput, waitForPiReviewSubmission } from "../../src/server/butler-adversarial-review.js";
+import { assertPiReviewerPromptSucceeded, createPiReviewSubmissionTool, ensureButlerAdversarialReview, validateAdversarialReviewOutput, waitForPiReviewSubmission } from "../../src/server/butler-adversarial-review.js";
 import { ActivityWatchdogService } from "../../src/server/activity-watchdog.js";
 import { getOrchestrationCloseoutBlocker } from "../../src/server/butler-orchestration.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
@@ -49,7 +49,6 @@ test("isolated adversarial review stores only compact findings and reuses the ex
     threadId,
     model,
     modelRegistry: {} as never,
-    codexHomeDir: dir,
     piAuthPath: path.join(dir, "auth.json"),
     scratchDir: path.join(dir, "reviews"),
     thinkingLevel: "high",
@@ -100,7 +99,6 @@ test("isolated adversarial review stores only compact findings and reuses the ex
     threadId,
     model,
     modelRegistry: {} as never,
-    codexHomeDir: dir,
     piAuthPath: path.join(dir, "auth.json"),
     scratchDir: path.join(dir, "reviews"),
     thinkingLevel: "high",
@@ -115,7 +113,7 @@ test("isolated adversarial review stores only compact findings and reuses the ex
   assert.equal(runs, 1);
 });
 
-test("OpenAI review falls back to the isolated same-provider harness when native Codex auth is unavailable", async () => {
+test("OpenAI review runs through the isolated Pi reviewer", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-adversarial-auth-"));
   const store = new ButlerStateStore(path.join(dir, "state.json"));
   const threadId = "worker-review-auth";
@@ -133,25 +131,17 @@ test("OpenAI review falls back to the isolated same-provider harness when native
   }));
   store.recordWorkerReport(threadId, { turnId: "turn-1", status: "completed", summary: "Done.", details: null });
 
-  let nativeAvailable: boolean | null = null;
   const results = await ensureButlerAdversarialReview({
     watchdogs: new ActivityWatchdogService(),
     store,
     threadId,
     model: { provider: "openai-codex", id: "gpt-5.5" } as never,
     modelRegistry: {} as never,
-    codexHomeDir: dir,
     piAuthPath: path.join(dir, "auth.json"),
-    scratchDir: path.join(dir, "reviews"),
     thinkingLevel: "high",
-    codexAuthenticated: false,
     buildWorkspaceSnapshot: async () => "No changes.",
-    runReview: async (input) => {
-      nativeAvailable = input.codexNativeAvailable;
-      return { findings: [] };
-    }
+    runReview: async () => ({ findings: [] })
   });
-  assert.equal(nativeAvailable, false);
   assert.equal(results[0]?.findingSummary, "Adversarial review found no actionable findings.");
 });
 
@@ -267,82 +257,6 @@ test("Pi adversarial review stops promptly when the callback is cancelled", asyn
   assert.ok(Date.now() - startedAt < 300);
 });
 
-test("native Codex review tolerates startup delay and outlives the former hard maximum while output continues", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "manor-review-active-child-"));
-  const binDir = path.join(dir, "bin");
-  const scratchDir = path.join(dir, "scratch");
-  await mkdir(binDir, { recursive: true });
-  const executable = path.join(binDir, "codex");
-  await writeFile(executable, [
-    "#!/usr/bin/env node",
-    "const fs = require('node:fs');",
-    "const outputIndex = process.argv.indexOf('--output-last-message') + 1;",
-    "let heartbeat = null;",
-    "setTimeout(() => {",
-    "  process.stderr.write('.');",
-    "  heartbeat = setInterval(() => process.stderr.write('.'), 100);",
-    "}, 1800);",
-    "setTimeout(() => {",
-    "  if (heartbeat) clearInterval(heartbeat);",
-    "  fs.writeFileSync(process.argv[outputIndex], JSON.stringify({ findings: [] }));",
-    "  process.exit(0);",
-    "}, 3200);"
-  ].join("\n"), "utf8");
-  await chmod(executable, 0o755);
-  const result = await runProviderAdversarialReview({
-    watchdogs: new ActivityWatchdogService(),
-    cwd: dir,
-    codexHomeDir: dir,
-    piAuthPath: path.join(dir, "pi-auth.json"),
-    scratchDir,
-    modelRegistry: {} as never,
-    selection: { model: { provider: "openai-codex", id: "gpt-5.5" } as never, thinkingLevel: "high" },
-    codexNativeAvailable: true,
-    codexExecutable: executable,
-    prompt: "Review the change.",
-    timeoutMs: 1_500
-  });
-
-  assert.deepEqual(result, { findings: [] });
-  assert.deepEqual(await readdir(scratchDir), []);
-});
-
-test("native Codex review force-kills a child that ignores SIGTERM before cleanup", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "manor-review-stubborn-child-"));
-  const binDir = path.join(dir, "bin");
-  const scratchDir = path.join(dir, "scratch");
-  const pidFile = path.join(dir, "reviewer.pid");
-  await mkdir(binDir, { recursive: true });
-  const executable = path.join(binDir, "codex");
-  const watchdogs = new ActivityWatchdogService();
-  await writeFile(executable, [
-    "#!/usr/bin/env node",
-    "const fs = require('node:fs');",
-    `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
-    "process.on('SIGTERM', () => {});",
-    "setInterval(() => {}, 1000);"
-  ].join("\n"), "utf8");
-  await chmod(executable, 0o755);
-  await assert.rejects(runProviderAdversarialReview({
-    cwd: dir,
-    codexHomeDir: dir,
-    piAuthPath: path.join(dir, "pi-auth.json"),
-    scratchDir,
-    modelRegistry: {} as never,
-    selection: { model: { provider: "openai-codex", id: "gpt-5.5" } as never, thinkingLevel: "high" },
-    codexNativeAvailable: true,
-    codexExecutable: executable,
-    prompt: "Review the change.",
-    timeoutMs: 3_000,
-    watchdogs
-  }), /Adversarial review/);
-
-  const pid = Number(await readFile(pidFile, "utf8"));
-  assert.throws(() => process.kill(pid, 0), (error: unknown) => (error as NodeJS.ErrnoException).code === "ESRCH");
-  assert.deepEqual(await readdir(scratchDir), []);
-  assert.equal(watchdogs.size, 0);
-});
-
 test("overlapping Workers stay isolated after the other baseline has been cleaned", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-adversarial-overlap-"));
   const store = new ButlerStateStore(path.join(dir, "state.json"));
@@ -401,7 +315,6 @@ test("overlapping Workers stay isolated after the other baseline has been cleane
     threadId: "worker-a",
     model: { provider: "openai-codex", id: "gpt-5.5" } as never,
     modelRegistry: {} as never,
-    codexHomeDir: dir,
     piAuthPath: path.join(dir, "auth.json"),
     scratchDir: path.join(dir, "reviews"),
     thinkingLevel: "high",
@@ -449,7 +362,6 @@ test("Butler bookkeeping after Worker completion does not create false review ov
     threadId: "later-b",
     model: { provider: "openai-codex", id: "gpt-5.5" } as never,
     modelRegistry: {} as never,
-    codexHomeDir: dir,
     piAuthPath: path.join(dir, "auth.json"),
     scratchDir: path.join(dir, "reviews"),
     thinkingLevel: "high",
@@ -488,7 +400,6 @@ test("deleted Worker attribution survives event-log pruning", async () => {
     threadId,
     model: { provider: "openai-codex", id: "gpt-5.5" } as never,
     modelRegistry: {} as never,
-    codexHomeDir: dir,
     piAuthPath: path.join(dir, "auth.json"),
     scratchDir: path.join(dir, "reviews"),
     thinkingLevel: "high",
@@ -523,7 +434,6 @@ test("ambiguous shared-checkout ownership becomes a blocking review finding", as
     threadId,
     model: { provider: "openai-codex", id: "gpt-5.5" } as never,
     modelRegistry: {} as never,
-    codexHomeDir: dir,
     piAuthPath: path.join(dir, "auth.json"),
     scratchDir: path.join(dir, "reviews"),
     thinkingLevel: "high",
@@ -556,7 +466,6 @@ test("a failed concurrent isolation never reviews the shared checkout", async ()
     threadId: "worker-a",
     model: { provider: "openai-codex", id: "gpt-5.5" } as never,
     modelRegistry: {} as never,
-    codexHomeDir: dir,
     piAuthPath: path.join(dir, "auth.json"),
     scratchDir: path.join(dir, "reviews"),
     thinkingLevel: "high",
@@ -583,7 +492,6 @@ test("a failed delegation baseline capture blocks review instead of using the li
     threadId,
     model: { provider: "openai-codex", id: "gpt-5.5" } as never,
     modelRegistry: {} as never,
-    codexHomeDir: dir,
     piAuthPath: path.join(dir, "auth.json"),
     scratchDir: path.join(dir, "reviews"),
     thinkingLevel: "high",
@@ -609,7 +517,6 @@ test("a superseded reviewer persists neither findings nor failure events", async
     threadId,
     model: { provider: "openai-codex", id: "gpt-5.5" } as never,
     modelRegistry: {} as never,
-    codexHomeDir: dir,
     piAuthPath: path.join(dir, "auth.json"),
     scratchDir: path.join(dir, "reviews"),
     thinkingLevel: "high",

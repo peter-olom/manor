@@ -7,8 +7,8 @@ import { promises as fs } from "node:fs";
 const execFileAsync = promisify(execFile);
 const MANAGED_WORKTREE_ROOT = "/repos/.manor-worktrees";
 const SHARED_WORKSPACE_ROOT = "/repos";
-const DEFAULT_CODEX_WORKER_UID = 1001;
-const DEFAULT_CODEX_WORKER_GID = 1001;
+const DEFAULT_WORKER_UID = 1001;
+const DEFAULT_WORKER_GID = 1001;
 
 export interface WorkerOwnership {
   uid: number;
@@ -94,10 +94,10 @@ function parseWorkerId(value: string | undefined, fallback: number, name: string
   return parsed;
 }
 
-export function resolveCodexWorkerOwnership(env: NodeJS.ProcessEnv = process.env): WorkerOwnership {
-  const uid = parseWorkerId(env.MANOR_CODEX_WORKER_UID, DEFAULT_CODEX_WORKER_UID, "MANOR_CODEX_WORKER_UID");
-  const gid = parseWorkerId(env.MANOR_CODEX_WORKER_GID, DEFAULT_CODEX_WORKER_GID, "MANOR_CODEX_WORKER_GID");
-  const label = (env.MANOR_CODEX_WORKER_USER?.trim() || "codex") + ` (${uid}:${gid})`;
+export function resolveWorkerOwnership(env: NodeJS.ProcessEnv = process.env): WorkerOwnership {
+  const uid = parseWorkerId(env.MANOR_WORKER_UID, DEFAULT_WORKER_UID, "MANOR_WORKER_UID");
+  const gid = parseWorkerId(env.MANOR_WORKER_GID, DEFAULT_WORKER_GID, "MANOR_WORKER_GID");
+  const label = (env.MANOR_WORKER_USER?.trim() || "worker") + ` (${uid}:${gid})`;
   return { uid, gid, label };
 }
 
@@ -250,7 +250,7 @@ export async function execFileAsWorker(
   command: string,
   args: string[],
   cwd: string,
-  ownership: WorkerOwnership = resolveCodexWorkerOwnership(),
+  ownership: WorkerOwnership = resolveWorkerOwnership(),
   env: NodeJS.ProcessEnv = {},
   options: { maxBuffer?: number; timeout?: number } = {}
 ) {
@@ -269,13 +269,13 @@ export async function execFileAsWorker(
 
 export async function ensureWorkerOwnedDirectory(
   targetPath: string,
-  ownership: WorkerOwnership = resolveCodexWorkerOwnership()
+  ownership: WorkerOwnership = resolveWorkerOwnership()
 ): Promise<void> {
   await fs.mkdir(targetPath, { recursive: true });
   await chownTreeToWorker(targetPath, ownership);
 }
 
-async function gitAsWorker(args: string[], cwd: string, ownership: WorkerOwnership = resolveCodexWorkerOwnership()): Promise<string> {
+async function gitAsWorker(args: string[], cwd: string, ownership: WorkerOwnership = resolveWorkerOwnership()): Promise<string> {
   const { stdout } = await execFileAsWorker("git", ["-c", "safe.directory=*", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args], cwd, ownership);
   return stdout.trim();
 }
@@ -322,7 +322,7 @@ async function assertWorkspaceReadyForWorker(
 
 export async function checkWorkspaceReadyForWorker(
   cwd: string,
-  ownership: WorkerOwnership = resolveCodexWorkerOwnership()
+  ownership: WorkerOwnership = resolveWorkerOwnership()
 ): Promise<void> {
   const repoRoot = await resolveGitRoot(cwd);
   const storage = repoRoot ? await resolveGitStorage(repoRoot) : null;
@@ -345,7 +345,7 @@ export async function checkWorkspaceReadyForWorker(
 
 export async function ensureWorkspaceWritableForWorker(
   cwd: string,
-  ownership: WorkerOwnership = resolveCodexWorkerOwnership()
+  ownership: WorkerOwnership = resolveWorkerOwnership()
 ): Promise<void> {
   await withWorkspaceReadinessLock(cwd, async () => {
     const repoRoot = await resolveGitRoot(cwd);
@@ -383,7 +383,7 @@ async function assertWritableByCurrentProcess(targetPath: string): Promise<void>
 
 export async function ensureManagedWorktreeWritableForWorker(
   worktreePath: string,
-  ownership: WorkerOwnership = resolveCodexWorkerOwnership()
+  ownership: WorkerOwnership = resolveWorkerOwnership()
 ): Promise<void> {
   try {
     await chownTreeToWorker(worktreePath, ownership);
@@ -553,7 +553,7 @@ export async function cleanupManagedWorktree(cwd: string): Promise<number> {
 
   let removed = 0;
 
-  const ownership = resolveCodexWorkerOwnership();
+  const ownership = resolveWorkerOwnership();
   await ensureWorkspaceWritableForWorker(worktreePath, ownership).catch(() => undefined);
   await gitAsWorker(["worktree", "remove", "--force", worktreePath], repoRoot || worktreePath, ownership).catch(() => undefined);
   await fs.rm(worktreePath, { recursive: true, force: true }).catch(() => undefined);
@@ -663,7 +663,7 @@ export async function ensureTaskWorktree(options: {
   const worktreeParent = path.dirname(worktreePath);
   await fs.mkdir(worktreeParent, { recursive: true });
   await ensureWorkspaceWritableForWorker(repoRoot);
-  await chownTreeToWorker(worktreeParent, resolveCodexWorkerOwnership());
+  await chownTreeToWorker(worktreeParent, resolveWorkerOwnership());
   await gitAsWorker(["worktree", "add", "-b", branchName, worktreePath, "HEAD"], repoRoot);
   await ensureManagedWorktreeWritableForWorker(worktreePath);
 

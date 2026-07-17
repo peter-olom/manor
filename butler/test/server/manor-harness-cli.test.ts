@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
-const harnessPath = new URL("../../../docker/codex-box/manor-harness.mjs", import.meta.url);
+const harnessPath = new URL("../../../docker/worker/manor-harness.mjs", import.meta.url);
 
 type HarnessRequest = {
   token?: string;
@@ -23,7 +23,7 @@ async function readJsonBody(request: IncomingMessage): Promise<HarnessRequest> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as HarnessRequest;
 }
 
-async function captureHarnessAction(args: string[], options: { cwd?: string; route?: "generic" | "legacy"; stdin?: string } = {}): Promise<HarnessRequest> {
+async function captureHarnessAction(args: string[], options: { cwd?: string; stdin?: string } = {}): Promise<HarnessRequest> {
   const root = await mkdtemp(path.join(tmpdir(), "manor-harness-cli-test-"));
   const cwd = options.cwd ?? path.join(root, "workspace");
   const harnessHome = path.join(root, "harness-home");
@@ -49,7 +49,7 @@ async function captureHarnessAction(args: string[], options: { cwd?: string; rou
 
   let received: HarnessRequest | null = null;
   const server = createServer(async (request, response) => {
-    const expectedPath = options.route === "legacy" ? "/api/codex-harness/action" : "/api/harness/action";
+    const expectedPath = "/api/harness/action";
     if (request.url !== expectedPath) {
       response.writeHead(404).end();
       return;
@@ -278,12 +278,6 @@ test("manor-harness forwards scoped vision inspection requests", async () => {
   });
 });
 
-test("manor-harness falls back to the legacy Butler action route", async () => {
-  const request = await captureHarnessAction(["--thread", "thread-1", "payload", "current"], { route: "legacy" });
-  assert.equal(request.action, "payload.current");
-  assert.equal(request.requestPath, "/api/codex-harness/action");
-});
-
 test("manor-harness requires explicit thread binding for payload requests", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "manor-harness-payload-binding-test-"));
   const cwd = path.join(root, "workspace");
@@ -303,7 +297,7 @@ test("manor-harness requires explicit thread binding for payload requests", asyn
   const result = await new Promise<{ status: number | null; stderr: string }>((resolve, reject) => {
     const child = spawn(process.execPath, [harnessPath.pathname, "payload", "current"], {
       cwd,
-      env: { ...process.env, CODEX_HOME: codexHome, MANOR_BUTLER_BASE_URL: "http://127.0.0.1:1" },
+      env: { ...process.env, MANOR_HARNESS_HOME: path.join(codexHome, "manor"), MANOR_BUTLER_BASE_URL: "http://127.0.0.1:1" },
       stdio: ["ignore", "ignore", "pipe"]
     });
     const stderr: Buffer[] = [];
@@ -342,7 +336,7 @@ test("manor-harness diagnoses missing bindings with Butler and broker health", a
         cwd: root,
         env: {
           ...process.env,
-          CODEX_HOME: codexHome,
+          MANOR_HARNESS_HOME: path.join(codexHome, "manor"),
           MANOR_BUTLER_BASE_URL: `http://127.0.0.1:${butlerAddress.port}`,
           MANOR_RUNTIME_BROKER_URL: `http://127.0.0.1:${brokerAddress.port}`
         },

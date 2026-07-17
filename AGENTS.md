@@ -12,11 +12,10 @@
 
 ## Butler Model Providers And Harnesses
 
-- Treat Butler and Worker as the two agent environments. Butler contains only Butler's Pi-backed supervisor agent. The compatibility-named `codex-box` service runs the shared Worker host with both the Codex app-server and Pi RPC Worker harnesses. Its runtime account and hostname are `worker` and `manor-worker`.
+- Treat Butler and Worker as the two agent environments. Butler contains Butler's Pi-backed supervisor agent. The `worker` service runs the Pi-backed Worker host. Its runtime account and hostname are `worker` and `manor-worker`.
 - Keep the built-in CLI targets aligned with those environments: `Butler CLI` and `Worker CLI`. Do not expose Codex or Pi as top-level CLI environments.
-- Treat OpenAI Codex as a Codex app-server provider. Route Codex sessions through the Codex app server, and build the Codex model picker from the app server's served models rather than Pi's registry or a generic provider list.
-- Keep Codex model cleanup strict. Do not leave fallback providers, stale compatibility paths, or dead registry code when the intended route is the Codex app server.
-- Pi is the harness for Ollama Cloud and OpenCode Go. Use Pi for those sessions, but do not assume Pi's registry is complete or current for subscription-backed providers.
+- Use Pi as the only Butler and Worker harness. Route OpenAI Codex, Ollama Cloud, Ollama Local, and OpenCode Go sessions through Pi.
+- Treat `openai-codex` as a Pi model provider. Keep its authentication and model inventory aligned with the installed Pi release.
 - For OpenCode Go, use the live OpenCode Go model endpoint as the source of model availability. Use OpenCode's own provider transform rules as the source of thinking and variant behavior.
 - Keep OpenCode Go thinking options derived, not hard-coded. For each served model, inspect OpenCode's current transform outcome in order: no variants means N/A, concrete variants become picker options, and provider-native variant names should be shown when they differ from generic effort labels.
 - Treat model-family names as regression examples, not as a registry. Put current examples in tests when they document behavior, but make the implementation follow OpenCode transform parity instead of static allowlists that will age poorly.

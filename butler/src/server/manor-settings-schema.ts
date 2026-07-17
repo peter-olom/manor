@@ -52,7 +52,6 @@ export const SETTINGS_GROUP_KEYS: SettingsGroupKey[] = [
 ];
 
 export const SETTINGS_VALIDATION_KEYS: SettingsValidationKey[] = [
-  "codex",
   "piRpc",
   "ollamaLocal",
   "ollamaCloud",
@@ -132,7 +131,6 @@ export const DEFAULT_MANOR_SETTINGS: ManorSettings = {
     }
   },
   worker: {
-    defaultHarness: null,
     defaultModel: null,
     defaultEffort: null
   },
@@ -323,10 +321,6 @@ function reasoningEffort(value: unknown): SettingsReasoningEffort | null {
   return value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" ? value : null;
 }
 
-function workerHarness(value: unknown): ManorSettings["worker"]["defaultHarness"] {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
 function thinkingLevel(value: unknown): SettingsThinkingLevel {
   return value === "off" || value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" ? value : "medium";
 }
@@ -365,7 +359,7 @@ export function normalizeManorSettings(value: unknown): ManorSettings {
       operatorName: typeof overview.operatorName === "string" ? overview.operatorName.trim() : "",
       operatorTimezone: operatorTimezone(overview.operatorTimezone),
       butlerProvider: providerKey(overview.butlerProvider, DEFAULT_MANOR_SETTINGS.overview.butlerProvider),
-      workerProvider: providerKey(overview.workerProvider ?? overview.codexProvider, DEFAULT_MANOR_SETTINGS.overview.workerProvider)
+      workerProvider: providerKey(overview.workerProvider, DEFAULT_MANOR_SETTINGS.overview.workerProvider)
     },
     providers: {
       ollamaLocal: {
@@ -420,7 +414,6 @@ export function normalizeManorSettings(value: unknown): ManorSettings {
       }
     },
     worker: {
-      defaultHarness: workerHarness(worker.defaultHarness),
       defaultModel: nullableText(worker.defaultModel),
       defaultEffort: reasoningEffort(worker.defaultEffort)
     },
@@ -506,11 +499,7 @@ export function buildManorSettingsFromEnv(env: NodeJS.ProcessEnv = process.env):
     markEnvGroup(envGroups, "overview");
     settings.overview.butlerProvider = providerKey(env.MANOR_BUTLER_PROVIDER, settings.overview.butlerProvider);
   }
-  const workerProviderSeed = hasEnv(env, "MANOR_WORKER_PROVIDER")
-    ? env.MANOR_WORKER_PROVIDER
-    : hasEnv(env, "MANOR_CODEX_PROVIDER")
-      ? env.MANOR_CODEX_PROVIDER
-      : undefined;
+  const workerProviderSeed = hasEnv(env, "MANOR_WORKER_PROVIDER") ? env.MANOR_WORKER_PROVIDER : undefined;
   if (workerProviderSeed !== undefined) {
     markEnvGroup(envGroups, "overview");
     settings.overview.workerProvider = providerKey(workerProviderSeed, settings.overview.workerProvider);
@@ -581,10 +570,6 @@ export function buildManorSettingsFromEnv(env: NodeJS.ProcessEnv = process.env):
     settings.providers.opencodeGo.apiKeySource = opencodeEnvSource(env);
   }
 
-  if (hasEnv(env, "MANOR_WORKER_HARNESS")) {
-    markEnvGroup(envGroups, "worker");
-    settings.worker.defaultHarness = workerHarness(env.MANOR_WORKER_HARNESS);
-  }
   if (hasEnv(env, "MANOR_WORKER_MODEL")) {
     markEnvGroup(envGroups, "worker");
     settings.worker.defaultModel = nullableText(env.MANOR_WORKER_MODEL);
@@ -650,9 +635,6 @@ export function applyGroupValue(settings: ManorSettings, key: SettingsGroupKey, 
   switch (key) {
     case "overview": {
       const patch = isRecord(value) ? { ...value } : {};
-      if (!Object.hasOwn(patch, "workerProvider") && Object.hasOwn(patch, "codexProvider")) {
-        patch.workerProvider = patch.codexProvider;
-      }
       next.overview = { ...next.overview, ...patch } as never;
       break;
     }

@@ -4,13 +4,12 @@ import { EventEmitter } from "node:events";
 import { readJsonStateFile, writeJsonStateFileAtomic } from "./json-state-file.js";
 import type { ButlerStateStore } from "./state-store.js";
 import { workerThreadIsRunning } from "./worker-thread-status.js";
-import type { PairAutomation, PairAutomationOutcome, PairAutomationSchedule, PairChat, PairMessage, PairStatus, PairSummary, PairWorker, PairWorkerHandoff } from "../shared/pairing.js";
+import type { PairAutomation, PairAutomationOutcome, PairAutomationSchedule, PairChat, PairMessage, PairStatus, PairSummary, PairWorker, PairWorkerHandoff, PairWorkerHarness } from "../shared/pairing.js";
 import { automationDispatchEndsAt, automationScheduledSlotAt, createDailySchedule, createIntervalSchedule, createOnceSchedule, createWeeklySchedule, createWindowSchedule, nextAutomationRunAt, nextCalendarRunAfterLastRun, normalizeStoredAutomation, withAutomationLabels } from "./session-automation.js";
 import { resolveOperatorTimezone } from "./operator-timezone.js";
 
-type LegacyPairFields = { codexModel?: string | null; codexEffort?: string | null };
 type PersistedPairState = {
-  pairs: Array<PairChat & LegacyPairFields>;
+  pairs: PairChat[];
   lastUsedCompose?: LastUsedCompose | null;
   workerAffinity?: WorkerProviderAffinity | null;
 };
@@ -29,7 +28,7 @@ export type WorkerProviderAffinity = {
 export type LastUsedCompose = {
   butlerModel?: string | null;
   butlerThinkingLevel?: string | null;
-  workerHarness?: string | null;
+  workerHarness?: PairWorkerHarness | null;
   workerModel?: string | null;
   workerEffort?: string | null;
   updatedAt?: number | null;
@@ -46,7 +45,7 @@ type PairSnapshotInput = {
   updatedAt?: number;
   butlerThinkingLevel?: string | null;
   butlerModel?: string | null;
-  workerHarness?: string | null;
+  workerHarness?: PairWorkerHarness | null;
   workerModel?: string | null;
   workerEffort?: string | null;
 };
@@ -54,7 +53,7 @@ type PairSnapshotInput = {
 type PairComposeOverrideInput = {
   butlerThinkingLevel?: string | null;
   butlerModel?: string | null;
-  workerHarness?: string | null;
+  workerHarness?: PairWorkerHarness | null;
   workerModel?: string | null;
   workerEffort?: string | null;
 };
@@ -65,9 +64,9 @@ function normalizeLastUsedCompose(raw: LastUsedCompose | null | undefined): Last
   if (!raw) return null;
   const butlerModel = typeof raw.butlerModel === "string" && raw.butlerModel.trim() ? raw.butlerModel : null;
   const butlerThinkingLevel = typeof raw.butlerThinkingLevel === "string" && raw.butlerThinkingLevel.trim() ? raw.butlerThinkingLevel : null;
-  const workerHarness = typeof raw.workerHarness === "string" && raw.workerHarness.trim() ? raw.workerHarness.trim() : null;
-  const workerModel = typeof raw.workerModel === "string" && raw.workerModel.trim() ? raw.workerModel : null;
-  const workerEffort = typeof raw.workerEffort === "string" && raw.workerEffort.trim() ? raw.workerEffort : null;
+  const workerHarness = raw.workerHarness === "pi" ? "pi" : null;
+  const workerModel = workerHarness && typeof raw.workerModel === "string" && raw.workerModel.trim() ? raw.workerModel : null;
+  const workerEffort = workerHarness && typeof raw.workerEffort === "string" && raw.workerEffort.trim() ? raw.workerEffort : null;
   if (!butlerModel && !butlerThinkingLevel && !workerHarness && !workerModel && !workerEffort) return null;
   return {
     butlerModel,
@@ -91,7 +90,8 @@ function normalizeWorkerAffinity(raw: WorkerProviderAffinity | null | undefined)
       provider.trim() && (effort === null || (typeof effort === "string" && effort.trim()))
     )
   ) as Record<string, string | null>;
-  const lastHarness = typeof raw.lastHarness === "string" && raw.lastHarness.trim() ? raw.lastHarness.trim() : null;
+  const lastHarness = raw.lastHarness === "pi" ? "pi" : null;
+  if (!lastHarness) return null;
   const modelByRoute = Object.fromEntries(
     Object.entries(raw.modelByRoute ?? {}).filter(([route, model]) => route.trim() && typeof model === "string" && model.trim())
   );
@@ -117,7 +117,7 @@ function migratedWorkerAffinity(lastUsed: LastUsedCompose | null): WorkerProvide
   if (!model) return null;
   const slash = model.indexOf("/");
   const provider = slash > 0 ? model.slice(0, slash) : "openai-codex";
-  const harness = lastUsed?.workerHarness?.trim() || (slash > 0 ? "pi" : "codex");
+  const harness = "pi";
   const route = workerAffinityRouteKey(harness, provider);
   return {
     hasSuccessfulDelegation: true,
@@ -139,17 +139,15 @@ function normalizeText(value: string | null | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
 }
 
-function normalizeWorkerRuntime(value: unknown, threadId: string, source?: string | null): "openai" | "pi-rpc" | null {
-  if (value === "pi-rpc" || value === "openai") return value;
+function normalizeWorkerRuntime(value: unknown, threadId: string, source?: string | null): "pi-rpc" | null {
+  if (value === "pi-rpc") return value;
   if (source === "pi-rpc" || threadId.startsWith("pi-")) return "pi-rpc";
-  if (source === "appServer" || source === "cli" || source === "vscode") return "openai";
   return null;
 }
 
-function normalizeWorkerHarness(value: unknown, runtime: "openai" | "pi-rpc" | null): string | null {
-  if (typeof value === "string" && value.trim()) return value.trim().toLowerCase();
+function normalizeWorkerHarness(value: unknown, runtime: "pi-rpc" | null): PairWorkerHarness | null {
+  if (value === "pi") return "pi";
   if (runtime === "pi-rpc") return "pi";
-  if (runtime === "openai") return "codex";
   return null;
 }
 
@@ -168,7 +166,8 @@ function cloneWorkerHandoff(handoff: PairWorkerHandoff | null | undefined): Pair
 
 function normalizeWorkerHandoff(raw: PairWorkerHandoff | null | undefined): PairWorkerHandoff | null {
   if (!raw || typeof raw.threadId !== "string" || !raw.threadId.trim()) return null;
-  const runtime = raw.runtime === "openai" || raw.runtime === "pi-rpc" ? raw.runtime : null;
+  const runtime = raw.runtime === "pi-rpc" ? raw.runtime : null;
+  if (!runtime) return null;
   const predecessor = normalizeWorkerHandoff(raw.handedOffFrom);
   return {
     threadId: raw.threadId.trim(),
@@ -258,7 +257,7 @@ function emptyPair(input: { id: string; title?: string | null; defaultCwd?: stri
   };
 }
 
-function normalizePair(raw: Partial<PairChat> & LegacyPairFields & { id?: string }, store: ButlerStateStore): PairChat | null {
+function normalizePair(raw: Partial<PairChat> & { id?: string }, store: ButlerStateStore): PairChat | null {
   if (!raw.id) {
     return null;
   }
@@ -301,11 +300,10 @@ function normalizePair(raw: Partial<PairChat> & LegacyPairFields & { id?: string
   pair.lastMessage = raw.lastMessage ?? null;
     pair.butlerThinkingLevel = typeof raw.butlerThinkingLevel === "string" && raw.butlerThinkingLevel.trim() ? raw.butlerThinkingLevel : null;
     pair.butlerModel = typeof raw.butlerModel === "string" && raw.butlerModel.trim() ? raw.butlerModel : null;
-    const persistedWorkerModel = raw.workerModel ?? raw.codexModel;
-    const persistedWorkerEffort = raw.workerEffort ?? raw.codexEffort;
-    const legacyWorkerRuntime = typeof persistedWorkerModel === "string" && persistedWorkerModel.includes("/") ? "pi-rpc" : "openai";
+    const persistedWorkerModel = raw.workerModel;
+    const persistedWorkerEffort = raw.workerEffort;
     pair.workerHarness = !droppedMissingWorker && persistedWorkerModel
-      ? normalizeWorkerHarness(raw.workerHarness ?? raw.worker?.harness, raw.worker?.runtime ?? legacyWorkerRuntime)
+      ? normalizeWorkerHarness(raw.workerHarness ?? raw.worker?.harness, "pi-rpc")
       : null;
     pair.workerModel = !droppedMissingWorker && typeof persistedWorkerModel === "string" && persistedWorkerModel.trim() ? persistedWorkerModel : null;
     pair.workerEffort = !droppedMissingWorker && typeof persistedWorkerEffort === "string" && persistedWorkerEffort.trim() ? persistedWorkerEffort : null;
@@ -355,7 +353,12 @@ export class PairStore extends EventEmitter {
   async load(): Promise<void> {
     const loaded = await readJsonStateFile<PersistedPairState>(this.statePath, { pairs: [] });
     this.pairs.clear();
+    let discardedRetiredWorkerPairs = 0;
     for (const raw of loaded.pairs) {
+      if (raw.worker && normalizeWorkerRuntime(raw.worker.runtime, raw.worker.threadId) !== "pi-rpc") {
+        discardedRetiredWorkerPairs += 1;
+        continue;
+      }
       const pair = normalizePair(raw, this.store);
       if (pair) {
         this.pairs.set(pair.id, pair);
@@ -363,6 +366,7 @@ export class PairStore extends EventEmitter {
     }
     this.lastUsedCompose = normalizeLastUsedCompose(loaded.lastUsedCompose);
     this.workerAffinity = normalizeWorkerAffinity(loaded.workerAffinity) ?? migratedWorkerAffinity(this.lastUsedCompose);
+    if (discardedRetiredWorkerPairs > 0) await this.flushSave();
   }
 
   getLastUsedCompose(): LastUsedCompose | null {
@@ -380,7 +384,8 @@ export class PairStore extends EventEmitter {
   }
 
   recordSuccessfulWorkerSelection(input: { harness: string; provider: string; model: string; effort?: string | null }): WorkerProviderAffinity {
-    const harness = input.harness.trim();
+    if (input.harness !== "pi") throw new Error("Only the Pi Worker harness is available");
+    const harness: PairWorkerHarness = "pi";
     const provider = input.provider.trim();
     const model = input.model.trim();
     if (!harness || !provider || !model) throw new Error("Worker harness, provider, and model are required");
@@ -822,8 +827,8 @@ export class PairStore extends EventEmitter {
     task?: string | null;
     cwd?: string | null;
     handoffPrompt?: string | null;
-    runtime?: "openai" | "pi-rpc" | null;
-    harness?: string | null;
+    runtime?: "pi-rpc" | null;
+    harness?: PairWorkerHarness | null;
     provider?: string | null;
     model?: string | null;
     effort?: string | null;
@@ -887,7 +892,7 @@ export class PairStore extends EventEmitter {
             ...(previousWorker.handedOffFrom ? { handedOffFrom: cloneWorkerHandoff(previousWorker.handedOffFrom) } : {})
           } : null
     };
-    pair.lastHandoffPrompt = pair.worker.handoffPrompt || null;
+    pair.lastHandoffPrompt = pair.worker?.handoffPrompt || null;
     pair.updatedAt = now;
     pair.status = deriveStatus(pair, this.store);
     this.queueSave();

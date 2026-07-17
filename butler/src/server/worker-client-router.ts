@@ -3,11 +3,9 @@ import path from "node:path";
 
 import type { ActivityWatchdogService } from "./activity-watchdog.js";
 import type { CodexInputItem } from "./image-store.js";
-import { isOpenAiRuntimeProvider } from "./chatgpt-entitlement.js";
 import { shouldExposeManorModel } from "./model-provider-config.js";
 import { getActiveManorSettings } from "./manor-settings-runtime.js";
 import { cleanupGitReviewBaseline } from "./git-review-scope.js";
-import type { CodexAppServerClient } from "./codex-client.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import { workerAffinityRouteKey, type WorkerProviderAffinity } from "./pair-store.js";
 import type { ButlerStateStore } from "./state-store.js";
@@ -26,16 +24,14 @@ import {
   isSelfImprovementSourceCheckoutReservedByOtherThread
 } from "./self-improvement-request-state.js";
 
-export type WorkerRuntime = "openai" | "pi-rpc";
+export type WorkerRuntime = "pi-rpc";
 export type WorkerRuntimePreference = WorkerRuntime | "auto";
-export type WorkerHarness = "codex" | "pi" | (string & {});
+export type WorkerHarness = "pi";
 
 export type WorkerClientAccess = {
   store: ButlerStateStore;
-  codexClient: CodexAppServerClient;
   watchdogs?: ActivityWatchdogService;
   piRpcWorkerClient?: PiRpcWorkerClient | null;
-  getCodexAuthStatus?: () => { loggedIn: boolean };
   getWorkerAffinity?: () => WorkerProviderAffinity | null;
   recordSuccessfulWorkerSelection?: (input: { harness: string; provider: string; model: string; effort?: string | null }) => unknown;
   cleanupReviewBaseline?: typeof cleanupGitReviewBaseline;
@@ -144,16 +140,12 @@ function configuredWorkerModel(): string | null {
   return getActiveManorSettings().worker.defaultModel;
 }
 
-function configuredWorkerHarness(): WorkerHarness | null {
-  return getActiveManorSettings().worker.defaultHarness;
+function configuredWorkerHarness(): WorkerHarness {
+  return "pi";
 }
 
 function configuredWorkerEffort(): ReasoningEffort | null {
   return getActiveManorSettings().worker.defaultEffort as ReasoningEffort | null;
-}
-
-function codexWorkerIsAuthenticated(access: WorkerClientAccess): boolean {
-  return access.getCodexAuthStatus?.().loggedIn === true || Boolean(process.env.OPENAI_API_KEY?.trim());
 }
 
 function workerProviderError(error: unknown, provider: string | null): Error {
@@ -166,7 +158,7 @@ function workerProviderError(error: unknown, provider: string | null): Error {
 }
 
 function workerProviderKey(model: ModelOption): string {
-  return isOpenAiRuntimeProvider(model.provider) ? "openai-codex" : model.provider || "openai-codex";
+  return model.provider || "openai-codex";
 }
 
 function providerQualifiedModel(model: ModelOption): string {
@@ -186,12 +178,7 @@ function workerModelRouteKey(model: ModelOption): string {
 }
 
 function isPiWorkerModel(model: ModelOption): boolean {
-  const settings = getActiveManorSettings();
-  return new Set([
-    settings.providers.ollamaLocal.providerId,
-    settings.providers.ollamaCloud.providerId,
-    settings.providers.opencodeGo.providerId
-  ]).has(model.provider ?? "") && shouldExposeManorModel(model);
+  return shouldExposeManorModel(model);
 }
 
 function resolveAvailableModel(modelRef: string | null | undefined, harness: WorkerHarness | null | undefined, availableModels: ModelOption[]): ModelOption | null {
@@ -253,7 +240,7 @@ function resolveWorkerModel(
       const route = affinity.lastHarness ? workerAffinityRouteKey(affinity.lastHarness, affinity.lastProvider) : null;
       return resolveAvailableModel(
         route ? affinity.modelByRoute?.[route] : affinity.modelByProvider[affinity.lastProvider],
-        affinity.lastHarness,
+        affinity.lastHarness === "pi" ? "pi" : null,
         lastProviderModels
       ) ?? lastProviderModels[0]!;
     }
@@ -290,67 +277,37 @@ function resolveWorkerModel(
 }
 
 export function resolveThreadWorkerRuntime(access: WorkerClientAccess, threadId: string): WorkerRuntime {
-  const thread = access.store.getThread(threadId);
-  if (thread?.source === "pi-rpc" || threadId.startsWith("pi-")) return "pi-rpc";
-  return "openai";
+  return "pi-rpc";
+}
+
+function requirePiWorkerClient(access: WorkerClientAccess): PiRpcWorkerClient {
+  if (!access.piRpcWorkerClient) throw new Error("Pi Worker runtime is not available");
+  return access.piRpcWorkerClient;
+}
+
+function requireMutablePiWorkerThread(access: WorkerClientAccess, threadId: string): PiRpcWorkerClient {
+  return requirePiWorkerClient(access);
 }
 
 export function resolveNewWorkerRuntime(access: WorkerClientAccess, input: { runtime?: WorkerRuntimePreference | null; harness?: WorkerHarness | null; model?: string | null } = {}): WorkerRuntime {
-  const preference = input.runtime ?? configuredWorkerRuntime();
-  const harnessRuntime = input.harness === "codex" ? "openai" : input.harness === "pi" ? "pi-rpc" : null;
-  if (input.harness && !harnessRuntime) throw new Error(`Worker harness ${input.harness} is not available`);
-  if (harnessRuntime && preference !== "auto" && preference !== harnessRuntime) {
-    throw new Error(`Worker harness ${input.harness} is incompatible with runtime ${preference}`);
+  if (input.harness && input.harness !== "pi") {
+    throw new Error(`Worker harness ${input.harness} is not available`);
   }
-  if (harnessRuntime === "pi-rpc") {
-    if (!access.piRpcWorkerClient) throw new Error("Pi RPC worker runtime is not available");
-    return "pi-rpc";
+  if (input.runtime && input.runtime !== "auto" && input.runtime !== "pi-rpc") {
+    throw new Error(`Worker runtime ${input.runtime} is not available`);
   }
-  if (harnessRuntime === "openai") {
-    if (!codexWorkerIsAuthenticated(access)) throw new Error("The Codex harness is not connected for Worker jobs. Open Settings → Providers → OpenAI / Codex and sign in, then retry.");
-    return "openai";
-  }
-  if (preference === "pi-rpc") {
-    if (!access.piRpcWorkerClient) throw new Error("Pi RPC worker runtime is not available");
-    return "pi-rpc";
-  }
-  if (preference === "openai") {
-    if (!codexWorkerIsAuthenticated(access)) {
-      throw new Error("The Codex harness is not connected for Worker jobs. Open Settings → Providers → OpenAI / Codex and sign in, then retry.");
-    }
-    return "openai";
-  }
-  const selectedModel = input.model?.trim() || configuredWorkerModel();
-  const piState = access.piRpcWorkerClient && typeof access.piRpcWorkerClient.getConnectionState === "function"
-    ? access.piRpcWorkerClient.getConnectionState()
-    : null;
-  const piModels = piState?.compose.availableModels.map((model) => qualifyModelOption(model, "pi")).filter(isPiWorkerModel) ?? [];
-  if (selectedModel && resolveAvailableModel(selectedModel, "pi", piModels)) {
-    if (!access.piRpcWorkerClient) throw new Error(`Model ${selectedModel} requires Pi RPC, but Pi RPC worker runtime is not available`);
-    return "pi-rpc";
-  }
-  if (!codexWorkerIsAuthenticated(access)) {
-    if (piModels.length > 0) return "pi-rpc";
-    throw new Error("No connected Worker provider is available. Open Settings → Providers to connect Codex, Ollama, or OpenCode Go, then retry.");
-  }
-  return "openai";
+  requirePiWorkerClient(access);
+  return "pi-rpc";
 }
 
 export function getUnifiedWorkerCompose(access: WorkerClientAccess, overrideModel?: string | null, overrideEffort?: string | null, overrideRuntime?: WorkerRuntimePreference | null, overrideHarness?: WorkerHarness | null): UnifiedWorkerCompose {
-  const codexState = typeof access.codexClient.getConnectionState === "function"
-    ? access.codexClient.getConnectionState()
-    : null;
   const piState = access.piRpcWorkerClient && typeof access.piRpcWorkerClient.getConnectionState === "function"
     ? access.piRpcWorkerClient.getConnectionState()
     : null;
-  const codexCompose = codexState?.compose ?? { model: null, effort: null, availableModels: [] };
   const piCompose = piState?.compose ?? null;
-  const codexModels = codexWorkerIsAuthenticated(access)
-    ? codexCompose.availableModels.filter((model) => model.provider !== "opencode").map((model) => ({ ...model, provider: "openai-codex", harness: "codex" as const }))
-    : [];
   const piModels = piCompose?.availableModels.map((model) => qualifyModelOption(model, "pi")).filter(isPiWorkerModel) ?? [];
   const seen = new Set<string>();
-  const availableModels = [...codexModels, ...piModels].filter((model) => {
+  const availableModels = piModels.filter((model) => {
     const route = workerModelRouteKey(model);
     if (seen.has(route)) return false;
     seen.add(route);
@@ -358,14 +315,10 @@ export function getUnifiedWorkerCompose(access: WorkerClientAccess, overrideMode
   });
   const configuredModel = configuredWorkerModel();
   const configuredHarness = configuredWorkerHarness();
-  const runtimePreference = overrideRuntime ?? configuredWorkerRuntime();
-  const selectableModels = runtimePreference === "pi-rpc"
-    ? piModels
-    : runtimePreference === "openai"
-      ? codexModels
-      : availableModels;
+  const runtimePreference = "pi-rpc";
+  const selectableModels = availableModels;
   const affinity = access.getWorkerAffinity?.() ?? null;
-  const selected = resolveWorkerModel(selectableModels, overrideModel, overrideHarness, configuredModel, configuredHarness, affinity);
+  const selected = resolveWorkerModel(selectableModels, overrideModel, "pi", configuredModel, configuredHarness, affinity);
   const model = selected?.id ?? null;
   const selectedProvider = selected ? workerProviderKey(selected) : null;
   const harness = selected?.harness ?? null;
@@ -380,9 +333,7 @@ export function getUnifiedWorkerCompose(access: WorkerClientAccess, overrideMode
     (overrideEffort as ReasoningEffort | null) ?? affinityEffort ?? configuredWorkerEffort() ?? selected?.defaultReasoningEffort ?? null
   );
   const availableEfforts = Array.from(new Set((selected ? selected.supportedReasoningEfforts : selectableModels.flatMap((entry) => entry.supportedReasoningEfforts)) as ReasoningEffort[]));
-  const runtime = runtimePreference === "auto" && model
-    ? resolveNewWorkerRuntime(access, { runtime: runtimePreference, harness, model })
-    : runtimePreference;
+  const runtime = runtimePreference;
   return {
     runtime,
     harness,
@@ -400,57 +351,38 @@ export async function updateUnifiedWorkerCompose(access: WorkerClientAccess, inp
     ?? resolveAvailableModel(compose.model, compose.harness, compose.availableModels);
   const model = selected?.id ?? null;
   const effort = compose.effort;
-  const runtime = resolveNewWorkerRuntime(access, { model, harness: selected?.harness ?? input.harness, runtime: input.runtime ?? "auto" });
-  const harness = selected?.harness ?? (runtime === "pi-rpc" ? "pi" : "codex");
-  const provider = runtime === "openai" ? selected?.provider ?? "openai-codex" : selected?.provider ?? null;
-  if (runtime === "pi-rpc") {
-    if (!access.piRpcWorkerClient) throw new Error("Pi RPC worker runtime is not available");
-    if (model) await access.piRpcWorkerClient.updateComposeSettings(model, effort);
-  } else if (model) {
-    await access.codexClient.updateComposeSettings(model, effort ?? null);
-  } else if (effort) {
-    if (typeof access.codexClient.getConnectionState !== "function") {
-      return { model, effort, runtime, harness, provider };
-    }
-    const current = access.codexClient.getConnectionState().compose.model;
-    if (!current) throw new Error("No Codex harness model is selected");
-    await access.codexClient.updateComposeSettings(current, effort);
-  }
+  const runtime = resolveNewWorkerRuntime(access, { model, harness: "pi", runtime: "pi-rpc" });
+  const harness = "pi";
+  const provider = selected?.provider ?? null;
+  if (model) await requirePiWorkerClient(access).updateComposeSettings(model, effort);
   return { model, effort, runtime, harness, provider };
 }
 
 async function startWorkerThreadUnlocked(access: WorkerClientAccess, options: WorkerStartOptions): Promise<WorkerThreadStartResult> {
   let provider: string | null = null;
   try {
-    const runtimePreference = options.runtime ?? configuredWorkerRuntime();
-    if (runtimePreference === "openai" && !codexWorkerIsAuthenticated(access)) {
-      provider = "openai-codex";
-      resolveNewWorkerRuntime(access, { runtime: runtimePreference, model: options.model });
-    }
     const preview = getUnifiedWorkerCompose(access, options.model ?? null, options.effort ?? null, options.runtime ?? null, options.harness ?? null);
     if (options.model?.trim()) {
       const requested = preview.availableModels.filter((model) =>
         model.id === options.model!.trim() && (!options.harness || model.harness === options.harness)
       );
       if (requested.length !== 1) {
-        const suffix = requested.length > 1 && !options.harness ? " Include the Worker harness to disambiguate it." : "";
-        throw new Error(`Selected Worker model ${options.model.trim()} is not available.${suffix}`);
+        throw new Error(`Selected Worker model ${options.model.trim()} is not available.`);
       }
     }
     provider = preview.provider;
     if (!preview.model || !preview.provider) {
       throw new Error("No connected Worker model is available. Open Settings → Providers to connect or repair a provider, then retry.");
     }
-    const runtime = resolveNewWorkerRuntime(access, { ...options, harness: preview.harness, model: preview.model });
+    const runtime = resolveNewWorkerRuntime(access, { ...options, harness: "pi", model: preview.model });
     const compose = {
       runtime,
-      harness: preview.harness ?? (runtime === "pi-rpc" ? "pi" : "codex"),
+      harness: "pi",
       provider: preview.provider,
       model: preview.model,
       effort: options.effort === null ? null : preview.effort
     };
-    const client = runtime === "pi-rpc" ? access.piRpcWorkerClient : access.codexClient;
-    if (!client) throw new Error("Pi RPC worker runtime is not available");
+    const client = requirePiWorkerClient(access);
     const selectedModel = resolveAvailableModel(preview.model, preview.harness, preview.availableModels);
     const {
       runtime: _runtime,
@@ -478,7 +410,7 @@ async function startWorkerThreadUnlocked(access: WorkerClientAccess, options: Wo
     return {
       ...result,
       runtime,
-      harness: compose.harness,
+      harness: "pi",
       provider: compose.provider,
       model: compose.model,
       effort: compose.effort
@@ -542,8 +474,7 @@ export async function startWorkerThread(access: WorkerClientAccess, options: Wor
 export async function loadWorkerThread(access: WorkerClientAccess, threadId: string): Promise<void> {
   assertCallbackReviewCurrent(threadId);
   const runtime = resolveThreadWorkerRuntime(access, threadId);
-  const client = runtime === "pi-rpc" ? access.piRpcWorkerClient : access.codexClient;
-  if (!client) throw new Error("Pi RPC worker runtime is not available");
+  const client = requirePiWorkerClient(access);
   const callbackMonitor = monitorCallbackReviewCurrent(threadId, access.watchdogs);
   let timeout: ReturnType<typeof setTimeout> | null = null;
   try {
@@ -555,7 +486,6 @@ export async function loadWorkerThread(access: WorkerClientAccess, threadId: str
       ...(callbackMonitor ? [callbackMonitor.promise] : [])
     ]);
   } catch (error) {
-    if (runtime === "openai") access.codexClient.invalidateThreadOperations(threadId);
     throw error;
   } finally {
     if (timeout) clearTimeout(timeout);
@@ -576,8 +506,7 @@ function abandonBoundedWorkerThreadProbe(store: ButlerStateStore, threadId: stri
 
 export function getWorkerThreadRuntimeActivityAt(access: WorkerClientAccess, threadId: string): number | null {
   const runtime = resolveThreadWorkerRuntime(access, threadId);
-  const client = runtime === "pi-rpc" ? access.piRpcWorkerClient : access.codexClient;
-  return client?.getLastRuntimeActivityAt?.(threadId) ?? null;
+  return access.piRpcWorkerClient?.getLastRuntimeActivityAt?.(threadId) ?? null;
 }
 
 function getBoundedWorkerThreadProbe(access: WorkerClientAccess, threadId: string): BoundedWorkerThreadProbe {
@@ -589,10 +518,10 @@ function getBoundedWorkerThreadProbe(access: WorkerClientAccess, threadId: strin
   const existing = probes.get(threadId);
   if (existing) return existing;
   const runtime = resolveThreadWorkerRuntime(access, threadId);
-  const client = runtime === "pi-rpc" ? access.piRpcWorkerClient : access.codexClient;
+  const client = access.piRpcWorkerClient;
   const promise = client && typeof client.probeThread === "function"
-    ? client.probeThread(threadId)
-    : Promise.reject(new Error(client ? "Worker runtime probing is not available" : "Pi RPC worker runtime is not available"));
+      ? client.probeThread(threadId)
+      : Promise.reject(new Error("Pi Worker runtime is not available"));
   const probe = { attemptId: crypto.randomUUID(), promise };
   probes.set(threadId, probe);
   const clear = () => {
@@ -684,9 +613,7 @@ export async function loadWorkerThreadWithin(access: WorkerClientAccess, threadI
 
 async function sendWorkerMessageUnlocked(access: WorkerClientAccess, threadId: string, input: string | CodexInputItem[]): Promise<{ threadId: string; turnId: string | null }> {
   assertCallbackReviewCurrent(threadId);
-  const runtime = resolveThreadWorkerRuntime(access, threadId);
-  const client = runtime === "pi-rpc" ? access.piRpcWorkerClient : access.codexClient;
-  if (!client) throw new Error("Pi RPC worker runtime is not available");
+  const client = requireMutablePiWorkerThread(access, threadId);
   const model = typeof client.getThreadModelOption === "function" ? client.getThreadModelOption(threadId) : null;
   const send = client.sendMessage(threadId, prepareWorkerInputForModel(input, model));
   const callbackMonitor = monitorCallbackReviewCurrent(threadId, access.watchdogs);
@@ -753,37 +680,17 @@ export function workerMessageDispatchMayHaveBeenAccepted(error: unknown): boolea
 }
 
 export async function updateWorkerThreadEffort(access: WorkerClientAccess, threadId: string, effort: ReasoningEffort): Promise<void> {
-  const runtime = resolveThreadWorkerRuntime(access, threadId);
-  if (runtime === "pi-rpc") {
-    if (!access.piRpcWorkerClient) throw new Error("Pi RPC worker runtime is not available");
-    await access.piRpcWorkerClient.updateThreadReasoningEffort(threadId, effort);
-    return;
-  }
-  await access.codexClient.updateThreadReasoningEffort(threadId, effort);
+  await requireMutablePiWorkerThread(access, threadId).updateThreadReasoningEffort(threadId, effort);
 }
 
 async function stopWorkerThreadUnlocked(access: WorkerClientAccess, threadId: string): Promise<boolean> {
-  const runtime = resolveThreadWorkerRuntime(access, threadId);
+  const client = requireMutablePiWorkerThread(access, threadId);
   const threadStillRunning = () => workerThreadIsRunning(access.store.getThread(threadId));
-  if (runtime === "pi-rpc") {
-    if (!access.piRpcWorkerClient) throw new Error("Pi RPC worker runtime is not available");
-    const stopped = await access.piRpcWorkerClient.stopThread(threadId);
-    if (stopped || !threadStillRunning()) return stopped;
-    await access.piRpcWorkerClient.loadThread(threadId);
-    const retried = await access.piRpcWorkerClient.stopThread(threadId);
-    if (!retried && threadStillRunning()) throw new Error("The active Worker could not be stopped.");
-    return retried;
-  }
-  const stopped = await access.codexClient.stopThread(threadId);
-  if (stopped) {
-    await access.store.flushSave();
-    return true;
-  }
-  if (!threadStillRunning()) return false;
-  await access.codexClient.loadThread(threadId);
-  const retried = await access.codexClient.stopThread(threadId);
+  const stopped = await client.stopThread(threadId);
+  if (stopped || !threadStillRunning()) return stopped;
+  await client.loadThread(threadId);
+  const retried = await client.stopThread(threadId);
   if (!retried && threadStillRunning()) throw new Error("The active Worker could not be stopped.");
-  if (retried) await access.store.flushSave();
   return retried;
 }
 
@@ -824,8 +731,7 @@ export async function stopWorkerThreadWithin(access: WorkerClientAccess, threadI
 
 export async function reconcileConfirmedDeadWorkerThread(access: WorkerClientAccess, threadId: string): Promise<WorkerThreadInterventionResult> {
   return runSerializedJobMutation(threadId, async () => {
-    const runtime = resolveThreadWorkerRuntime(access, threadId);
-    const client = runtime === "pi-rpc" ? access.piRpcWorkerClient : access.codexClient;
+    const client = access.piRpcWorkerClient;
     if (!client) return { state: "failed", detail: "Worker runtime is not available." };
     if ("isThreadTransportDead" in client && typeof client.isThreadTransportDead === "function" && !client.isThreadTransportDead(threadId)) {
       return workerThreadIsRunning(access.store.getThread(threadId))
@@ -848,8 +754,7 @@ export async function reconcileConfirmedDeadWorkerThread(access: WorkerClientAcc
 
 export async function reconcileAuthoritativeIdleWorkerThread(access: WorkerClientAccess, threadId: string): Promise<WorkerThreadInterventionResult> {
   return runSerializedJobMutation(threadId, async () => {
-    const runtime = resolveThreadWorkerRuntime(access, threadId);
-    const client = runtime === "pi-rpc" ? access.piRpcWorkerClient : access.codexClient;
+    const client = access.piRpcWorkerClient;
     client?.invalidateThreadOperations?.(threadId);
     const thread = access.store.getThread(threadId);
     for (const turn of thread?.turns ?? []) {
@@ -866,18 +771,13 @@ export async function reconcileAuthoritativeIdleWorkerThread(access: WorkerClien
 export async function deleteWorkerThread(access: WorkerClientAccess, threadId: string, options?: { waitForCleanup?: boolean }): Promise<unknown> {
   const baselineObjectDir = access.store.getThread(threadId)?.executionContract?.reviewBaselineObjectDir;
   const deletedAttribution = captureDeletedWorkerReviewAttribution(access.store, threadId);
-  const runtime = resolveThreadWorkerRuntime(access, threadId);
-  if (runtime === "pi-rpc" && !access.piRpcWorkerClient) throw new Error("Pi RPC worker runtime is not available");
+  if (!access.piRpcWorkerClient) throw new Error("Pi Worker runtime is not available");
   if (deletedAttribution) {
     preserveDeletedWorkerReviewAttribution(access.store, deletedAttribution);
     await access.store.flushSave();
   }
   let result: unknown;
-  if (runtime === "pi-rpc") {
-    result = { deleted: await access.piRpcWorkerClient!.deleteThread(threadId) };
-  } else {
-    result = await access.codexClient.deleteThread(threadId, options);
-  }
+  result = { deleted: await access.piRpcWorkerClient.deleteThread(threadId) };
   const cleanupFailed = result && typeof result === "object" && "cleanupFailed" in result && (result as { cleanupFailed?: unknown }).cleanupFailed === true;
   const cleanupError = result && typeof result === "object" && "cleanupError" in result ? (result as { cleanupError?: unknown }).cleanupError : null;
   if (cleanupFailed) {
@@ -896,7 +796,7 @@ export async function deleteAllWorkerThreads(access: WorkerClientAccess): Promis
   const threadIds = access.store.listThreads().map((thread) => thread.id);
   const baselineObjectDirs = new Map(threadIds.map((threadId) => [threadId, access.store.getThread(threadId)?.executionContract?.reviewBaselineObjectDir]));
   const deletedAttributions = new Map(threadIds.map((threadId) => [threadId, captureDeletedWorkerReviewAttribution(access.store, threadId)]));
-  const piIds = threadIds.filter((threadId) => resolveThreadWorkerRuntime(access, threadId) === "pi-rpc");
+  const piIds = threadIds;
   if (piIds.length > 0 && !access.piRpcWorkerClient) throw new Error("Pi RPC worker runtime is not available");
   for (const attribution of deletedAttributions.values()) if (attribution) preserveDeletedWorkerReviewAttribution(access.store, attribution);
   if ([...deletedAttributions.values()].some(Boolean)) await access.store.flushSave();
@@ -907,10 +807,9 @@ export async function deleteAllWorkerThreads(access: WorkerClientAccess): Promis
       if (!deleted && access.store.getThread(threadId)) throw new Error(`Worker job ${threadId} could not be deleted.`);
       deletedPiIds.push(threadId);
     }
-    const codexResult = await access.codexClient.deleteAllThreads();
     return {
-      deletedThreadIds: Array.from(new Set([...codexResult.deletedThreadIds, ...deletedPiIds])),
-      deletedArtifacts: codexResult.deletedArtifacts
+      deletedThreadIds: deletedPiIds,
+      deletedArtifacts: 0
     };
   } finally {
     const deletedIds = threadIds.filter((threadId) => !access.store.getThread(threadId));

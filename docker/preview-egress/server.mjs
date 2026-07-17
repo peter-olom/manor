@@ -17,9 +17,8 @@ const deniedInternalHosts = new Set([
   "manor-playwright",
   "butler",
   "manor-butler",
-  "codex-box",
-  "manor-codex",
-  "manor-codex-box"
+  "worker",
+  "manor-worker"
 ]);
 
 function loadStaticProfiles() {
