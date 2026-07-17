@@ -18,7 +18,7 @@ import {
   ThreadsIcon,
   WarningIcon
 } from "./icons";
-import { MemoryDashboard, type MemoryDashboardSummary, type MemoryProjectOption, type MemorySearchMode } from "./MemoryDashboard";
+import { MemoryDashboard, MemorySearchForm, type MemoryAgentSearch, type MemoryDashboardSummary, type MemoryProjectOption, type MemorySearchMode } from "./MemoryDashboard";
 import { ManorVersion } from "./ManorVersion";
 import { PairRow } from "./PairRow";
 import { ImagePreviewModal, type PreviewMedia } from "./ImagePreviewModal";
@@ -425,6 +425,7 @@ function Topbar({
   memoryTotalCount,
   settingsSection,
   onMemorySearch,
+  onMemorySearchSubmit,
   onMemorySearchMode,
   onMemoryProjectFilter,
   workspacePending, onWorkspaceChange,
@@ -456,6 +457,7 @@ function Topbar({
   memoryTotalCount: number;
   settingsSection: SettingsSectionId;
   onMemorySearch: (value: string) => void;
+  onMemorySearchSubmit: () => void;
   onMemorySearchMode: (mode: MemorySearchMode) => void;
   onMemoryProjectFilter: (value: string) => void;
   workspacePending: boolean; onWorkspaceChange: (cwd: string) => Promise<void>;
@@ -543,20 +545,9 @@ function Topbar({
           <div className="topbar-memory-controls">
             <div className="memory-search-mode" role="group" aria-label="Memory search mode">
               <button type="button" className={memorySearchMode === "browse" ? "is-active" : ""} onClick={() => onMemorySearchMode("browse")}>Browse</button>
-              <button type="button" className={memorySearchMode === "agent" ? "is-active" : ""} onClick={() => onMemorySearchMode("agent")}>Agent<span className="memory-preview-word"> preview</span></button>
+              <button type="button" aria-label="Butler preview" className={memorySearchMode === "agent" ? "is-active" : ""} onClick={() => onMemorySearchMode("agent")}>Butler<span className="memory-preview-word"> preview</span></button>
             </div>
-            <div className="search dashboard-search">
-              <span className="search-icon">
-                <SearchIcon />
-              </span>
-              <input
-                type="search"
-                placeholder={memorySearchMode === "agent" ? "Search memory as Butler…" : `Filter ${memorySection === "butler" ? "global" : memorySection}…`}
-                value={memorySearch}
-                onChange={(event) => onMemorySearch(event.target.value)}
-                aria-label={`Search ${memorySection === "butler" ? "global" : memorySection}`}
-              />
-            </div>
+            <MemorySearchForm mode={memorySearchMode} section={memorySection} value={memorySearch} onChange={onMemorySearch} onSubmit={onMemorySearchSubmit} />
             <select
               className="dashboard-project-filter"
               value={memoryProjectFilter}
@@ -654,6 +645,8 @@ export function PairShell() {
   const [memorySection, setMemorySection] = useState<MemorySection>("projects");
   const [memorySearch, setMemorySearch] = useState("");
   const [memorySearchMode, setMemorySearchMode] = useState<MemorySearchMode>("browse");
+  const [memoryAgentSearch, setMemoryAgentSearch] = useState<MemoryAgentSearch | null>(null);
+  const memoryAgentSearchSequence = useRef(0);
   const [memoryProjectFilter, setMemoryProjectFilter] = useState("");
   const [memorySummary, setMemorySummary] = useState<MemoryDashboardSummary | null>(null);
   const [composerAttachments, setComposerAttachments] = useState<FileReference[]>([]);
@@ -662,6 +655,11 @@ export function PairShell() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const submitMemoryAgentSearch = useCallback(() => {
+    const query = memorySearch.trim();
+    if (!query) return;
+    setMemoryAgentSearch({ query, projectId: memoryProjectFilter, sequence: ++memoryAgentSearchSequence.current });
+  }, [memoryProjectFilter, memorySearch]);
   const { openProjectArtifact, openProjectArtifactFile, dialog: projectArtifactPreview } = useProjectArtifactPreview((message) => setPreviewError(message || null));
   useEffect(() => setComposerContextItems([]), [selectedPairId]);
   useEffect(() => writeSidebarCollapsed(desktopSidebarCollapsed), [desktopSidebarCollapsed]);
@@ -1333,6 +1331,7 @@ export function PairShell() {
           memoryTotalCount={memorySummary?.totalCount ?? 0}
           settingsSection={settingsSection}
           onMemorySearch={setMemorySearch}
+          onMemorySearchSubmit={submitMemoryAgentSearch}
           onMemorySearchMode={setMemorySearchMode}
           onMemoryProjectFilter={setMemoryProjectFilter}
           workspacePending={workspacePending}
@@ -1456,6 +1455,8 @@ export function PairShell() {
                 onSearchChange={setMemorySearch}
                 searchMode={memorySearchMode}
                 onSearchModeChange={setMemorySearchMode}
+                agentSearch={memoryAgentSearch}
+                onAgentSearchSubmit={submitMemoryAgentSearch}
                 projectFilter={memoryProjectFilter}
                 onProjectFilterChange={setMemoryProjectFilter}
                 onSummaryChange={setMemorySummary}

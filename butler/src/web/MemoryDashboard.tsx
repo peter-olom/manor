@@ -11,9 +11,14 @@ import type {
 } from "../shared/memory";
 
 const POLL_INTERVAL_MS = 5_000;
-const SEARCH_DEBOUNCE_MS = 300;
 
 export type MemorySearchMode = "browse" | "agent";
+
+export type MemoryAgentSearch = {
+  query: string;
+  projectId: string;
+  sequence: number;
+};
 
 export type MemoryProjectOption = { id: string; label: string };
 
@@ -51,6 +56,41 @@ function sourceLabel(value: ButlerMemoryEntry["source"]): string {
 
 function sectionLabel(section: MemorySection): string {
   return section === "butler" ? "global" : section;
+}
+
+export function MemorySearchForm({
+  mode,
+  section,
+  value,
+  onChange,
+  onSubmit
+}: {
+  mode: MemorySearchMode;
+  section: MemorySection;
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <form className="memory-search-form" onSubmit={(event) => { event.preventDefault(); if (mode === "agent") onSubmit(); }}>
+      <div className="search dashboard-search">
+        <span className="search-icon"><SearchIcon /></span>
+        <input
+          type="search"
+          placeholder={mode === "agent" ? "Search memory as Butler…" : `Filter ${sectionLabel(section)}…`}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (mode !== "agent" || event.key !== "Enter") return;
+            event.preventDefault();
+            onSubmit();
+          }}
+          aria-label={mode === "agent" ? "Search memory as Butler" : `Search ${sectionLabel(section)}`}
+        />
+      </div>
+      {mode === "agent" ? <button className="button is-primary memory-search-submit" type="submit" disabled={!value.trim()} aria-label="Search memory"><SearchIcon /><span>Search</span></button> : null}
+    </form>
+  );
 }
 
 function kindLabel(kind: string): string {
@@ -125,9 +165,7 @@ function useMemoryList<T>(
 }
 
 function useAgentMemoryPreview(
-  enabled: boolean,
-  query: string,
-  projectId: string
+  search: MemoryAgentSearch | null
 ): {
   payload: MemoryRetrievalResponse | null;
   loading: boolean;
@@ -141,8 +179,8 @@ function useAgentMemoryPreview(
   const reload = useCallback(() => setNonce((value) => value + 1), []);
 
   useEffect(() => {
-    const trimmedQuery = query.trim();
-    if (!enabled || !trimmedQuery) {
+    const trimmedQuery = search?.query.trim() ?? "";
+    if (!trimmedQuery) {
       setPayload(null);
       setLoading(false);
       setError(null);
@@ -150,35 +188,34 @@ function useAgentMemoryPreview(
     }
 
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => {
-      setLoading(true);
-      const params = new URLSearchParams({
-        query: trimmedQuery,
-        limit: "6",
-        preview: "1",
-        includeGlobal: "1",
-        includeProvenance: "1"
+    setPayload(null);
+    setError(null);
+    setLoading(true);
+    const params = new URLSearchParams({
+      query: trimmedQuery,
+      limit: "6",
+      preview: "1",
+      includeGlobal: "1",
+      includeProvenance: "1"
+    });
+    if (search?.projectId) params.set("projectId", search.projectId);
+    getJson<MemoryRetrievalResponse>(`/api/memory/retrieve?${params.toString()}`, { signal: controller.signal })
+      .then((nextPayload) => {
+        setPayload(nextPayload);
+        setError(null);
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
       });
-      if (projectId) params.set("projectId", projectId);
-      getJson<MemoryRetrievalResponse>(`/api/memory/retrieve?${params.toString()}`, { signal: controller.signal })
-        .then((nextPayload) => {
-          setPayload(nextPayload);
-          setError(null);
-        })
-        .catch((err: unknown) => {
-          if (controller.signal.aborted) return;
-          setError(err instanceof Error ? err.message : String(err));
-        })
-        .finally(() => {
-          if (!controller.signal.aborted) setLoading(false);
-        });
-    }, SEARCH_DEBOUNCE_MS);
 
     return () => {
-      window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [enabled, nonce, projectId, query]);
+  }, [nonce, search?.projectId, search?.query, search?.sequence]);
 
   return { payload, loading, error, reload };
 }
@@ -679,6 +716,8 @@ export function MemoryDashboard({
   onSearchChange,
   searchMode: controlledSearchMode,
   onSearchModeChange,
+  agentSearch: controlledAgentSearch,
+  onAgentSearchSubmit,
   projectFilter: controlledProjectFilter,
   onProjectFilterChange,
   onSummaryChange
@@ -692,6 +731,8 @@ export function MemoryDashboard({
   onSearchChange?: (search: string) => void;
   searchMode?: MemorySearchMode;
   onSearchModeChange?: (mode: MemorySearchMode) => void;
+  agentSearch?: MemoryAgentSearch | null;
+  onAgentSearchSubmit?: () => void;
   projectFilter?: string;
   onProjectFilterChange?: (projectId: string) => void;
   onSummaryChange?: (summary: MemoryDashboardSummary) => void;
@@ -699,6 +740,8 @@ export function MemoryDashboard({
   const [internalSection, setInternalSection] = useState<MemorySection>("projects");
   const [internalSearch, setInternalSearch] = useState("");
   const [internalSearchMode, setInternalSearchMode] = useState<MemorySearchMode>("browse");
+  const [internalAgentSearch, setInternalAgentSearch] = useState<MemoryAgentSearch | null>(null);
+  const internalAgentSearchSequence = useRef(0);
   const [internalProjectFilter, setInternalProjectFilter] = useState<string>("");
   const [jobView, setJobView] = useState<"with-memory" | "pending" | "all">("with-memory");
   const [confirmDelete, setConfirmDelete] = useState<{ kind: "butler" | "project" | "job"; id: string; parentId: string | null; summary: string } | null>(null);
@@ -706,6 +749,7 @@ export function MemoryDashboard({
   const section = controlledSection ?? internalSection;
   const search = controlledSearch ?? internalSearch;
   const searchMode = controlledSearchMode ?? internalSearchMode;
+  const agentSearch = controlledAgentSearch === undefined ? internalAgentSearch : controlledAgentSearch;
   const projectFilter = controlledProjectFilter ?? internalProjectFilter;
   const setSection = onSectionChange ?? setInternalSection;
   const setSearch = onSearchChange ?? setInternalSearch;
@@ -715,7 +759,15 @@ export function MemoryDashboard({
   const projectsQuery = useMemoryList<ProjectMemory>("/api/memory/projects", { projectId: projectFilter || null });
   const jobsQuery = useMemoryList<JobMemory>("/api/memory/jobs", { projectId: projectFilter || null });
   const butlerQuery = useMemoryList<ButlerMemoryEntry>("/api/memory/butler", { projectId: projectFilter || null });
-  const previewQuery = useAgentMemoryPreview(searchMode === "agent", search, projectFilter);
+  const submitAgentSearch = onAgentSearchSubmit ?? (() => {
+    const query = search.trim();
+    if (!query) return;
+    setInternalAgentSearch({ query, projectId: projectFilter, sequence: ++internalAgentSearchSequence.current });
+  });
+  const previewQuery = useAgentMemoryPreview(agentSearch);
+  const agentSearchIsStale = Boolean(agentSearch && (
+    search.trim() !== agentSearch.query || projectFilter !== agentSearch.projectId
+  ));
 
   const projects: ProjectMemory[] = projectsQuery.items;
   const jobs: JobMemory[] = jobsQuery.items;
@@ -864,20 +916,9 @@ export function MemoryDashboard({
         <div className="dashboard-controls">
           <div className="memory-search-mode" role="group" aria-label="Memory search mode">
             <button type="button" className={searchMode === "browse" ? "is-active" : ""} onClick={() => setSearchMode("browse")}>Browse</button>
-            <button type="button" className={searchMode === "agent" ? "is-active" : ""} onClick={() => setSearchMode("agent")}>Agent<span className="memory-preview-word"> preview</span></button>
+            <button type="button" aria-label="Butler preview" className={searchMode === "agent" ? "is-active" : ""} onClick={() => setSearchMode("agent")}>Butler<span className="memory-preview-word"> preview</span></button>
           </div>
-          <div className="search dashboard-search">
-            <span className="search-icon">
-              <SearchIcon />
-            </span>
-            <input
-              type="search"
-              placeholder={searchMode === "agent" ? "Search memory as Butler…" : `Filter ${sectionLabel(section)}…`}
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              aria-label={`Search ${sectionLabel(section)}`}
-            />
-          </div>
+          <MemorySearchForm mode={searchMode} section={section} value={search} onChange={setSearch} onSubmit={submitAgentSearch} />
           <select
             className="dashboard-project-filter"
             value={projectFilter}
@@ -896,7 +937,7 @@ export function MemoryDashboard({
       </div>
       ) : null}
 
-      {!showSections ? (
+      {!showSections && searchMode === "browse" ? (
         <div className="memory-mobile-sections" role="tablist" aria-label="Memory section">
           {(["projects", "jobs", "butler"] as MemorySection[]).map((option) => (
             <button
@@ -913,7 +954,7 @@ export function MemoryDashboard({
         </div>
       ) : null}
 
-      {showSections ? (
+      {showSections && searchMode === "browse" ? (
       <div className="segmented dashboard-sections" role="tablist" aria-label="Memory section">
         {(["projects", "jobs", "butler"] as MemorySection[]).map((option) => (
           <button
@@ -939,14 +980,22 @@ export function MemoryDashboard({
 
       <div className="dashboard-body">
         {searchMode === "agent" ? (
-          <AgentRetrievalPreview
-            query={search}
-            projectId={projectFilter}
-            payload={previewQuery.payload}
-            loading={previewQuery.loading}
-            error={previewQuery.error}
-            onRetry={previewQuery.reload}
-          />
+          agentSearchIsStale ? (
+            <div className="memory-preview-empty">
+              <span className="memory-preview-empty-icon"><SearchIcon /></span>
+              <h2>Search to update the preview</h2>
+              <p>Your question or project scope changed. Submit it when you are ready.</p>
+            </div>
+          ) : (
+            <AgentRetrievalPreview
+              query={agentSearch?.query ?? ""}
+              projectId={agentSearch?.projectId ?? ""}
+              payload={previewQuery.payload}
+              loading={previewQuery.loading}
+              error={previewQuery.error}
+              onRetry={previewQuery.reload}
+            />
+          )
         ) : sectionLoading && totalCount === 0 ? (
           <div className="dashboard-loading">Loading…</div>
         ) : sectionError ? (

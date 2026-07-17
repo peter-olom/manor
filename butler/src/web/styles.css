@@ -5030,9 +5030,27 @@ a:hover {
   min-width: 0;
 }
 
+.memory-search-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .dashboard-search {
   margin: 0;
   min-width: 240px;
+}
+
+.memory-search-submit {
+  min-height: 30px;
+  padding-inline: 10px;
+  gap: 5px;
+}
+
+.memory-search-submit svg {
+  width: 13px;
+  height: 13px;
 }
 
 .dashboard-project-filter {
@@ -5705,6 +5723,10 @@ a:hover {
     flex: 1 1 240px;
   }
 
+  .topbar-memory-controls .memory-search-form {
+    flex: 1 1 320px;
+  }
+
   .topbar-memory-controls .dashboard-project-filter {
     flex: 0 1 180px;
   }
@@ -5739,7 +5761,7 @@ a:hover {
   }
 
   .topbar-memory-controls .memory-search-mode,
-  .topbar-memory-controls .dashboard-search,
+  .topbar-memory-controls .memory-search-form,
   .topbar-memory-controls .dashboard-project-filter {
     width: 100%;
     flex: 1 1 100%;
@@ -8512,11 +8534,15 @@ a.file-explorer-name:hover {
   }
   .topbar.is-memory .memory-search-mode { min-width: 0; }
   .topbar.is-memory .memory-search-mode button { min-height: 28px; padding-inline: 6px; }
+  .topbar.is-memory .memory-search-form { min-width: 0; gap: 4px; }
   .topbar.is-memory .dashboard-search,
   .topbar.is-memory .dashboard-project-filter { width: 100%; min-width: 0; flex: none; }
+  .topbar.is-memory .memory-search-form .dashboard-search { width: auto; flex: 1 1 auto; }
   .topbar.is-memory .dashboard-search input,
   .topbar.is-memory .dashboard-project-filter { height: 32px; min-height: 32px; font-size: 11px; }
   .topbar.is-memory .dashboard-search input { padding-right: 7px; }
+  .topbar.is-memory .memory-search-submit { min-width: 32px; width: 32px; padding: 0; }
+  .topbar.is-memory .memory-search-submit span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .topbar.is-memory .memory-preview-word { display: none; }
   .topbar.is-global-surface:not(.is-memory) {
     min-height: calc(52px + env(safe-area-inset-top));
@@ -8924,6 +8950,143 @@ a.file-explorer-name:hover {
   .usage-model-table td::before { content: attr(data-label); color: var(--text-muted); text-align: left; }
   .usage-reset-actions { display: grid; grid-template-columns: 1fr; }
   .usage-reset-actions .button { width: 100%; }
+
+  .topbar.is-memory {
+    gap: 6px;
+    padding-bottom: 10px;
+  }
+
+  .topbar.is-memory .topbar-right {
+    min-height: 0;
+  }
+
+  .topbar.is-memory .topbar-memory-controls,
+  .dashboard-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(132px, 1.15fr);
+    grid-template-areas:
+      "mode project"
+      "search search";
+    gap: 8px;
+    width: 100%;
+  }
+
+  .dashboard-head {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 12px;
+  }
+
+  .topbar.is-memory .memory-search-mode,
+  .dashboard-controls .memory-search-mode {
+    grid-area: mode;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-width: 0;
+  }
+
+  .topbar.is-memory .memory-search-mode button,
+  .dashboard-controls .memory-search-mode button {
+    min-height: 38px;
+    padding-inline: 8px;
+    font-size: 12px;
+  }
+
+  .topbar.is-memory .dashboard-project-filter,
+  .dashboard-controls .dashboard-project-filter {
+    grid-area: project;
+    width: 100%;
+    min-width: 0;
+    height: 42px;
+  }
+
+  .topbar.is-memory .memory-search-form,
+  .dashboard-controls .memory-search-form {
+    grid-area: search;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .topbar.is-memory .memory-search-form .dashboard-search,
+  .dashboard-controls .memory-search-form .dashboard-search {
+    width: auto;
+    min-width: 0;
+  }
+
+  .topbar.is-memory .dashboard-search input,
+  .dashboard-controls .dashboard-search input {
+    height: 42px;
+    min-height: 42px;
+    padding-right: 10px;
+    font-size: 16px;
+  }
+
+  .topbar.is-memory .memory-search-submit,
+  .dashboard-controls .memory-search-submit {
+    width: auto;
+    min-width: 82px;
+    min-height: 42px;
+    padding-inline: 13px;
+    gap: 6px;
+  }
+
+  .topbar.is-memory .memory-search-submit span,
+  .dashboard-controls .memory-search-submit span {
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+    white-space: nowrap;
+  }
+
+  .memory-mobile-sections {
+    padding-top: 2px;
+  }
+
+  .memory-mobile-sections button {
+    min-height: 40px;
+  }
+
+  .memory-record-trigger {
+    grid-template-columns: 18px minmax(0, 1fr);
+    grid-template-rows: auto auto auto;
+    gap: 5px 8px;
+    padding: 12px 4px;
+  }
+
+  .memory-record-chevron {
+    grid-column: 1;
+    grid-row: 1 / span 3;
+    align-self: start;
+    margin-top: 1px;
+  }
+
+  .memory-record-identity {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .memory-record-preview {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .memory-record-stats {
+    grid-column: 2;
+    grid-row: 3;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+  }
+
+  .memory-preview-empty {
+    margin-top: 10vh;
+  }
 }
 
 @media (max-width: 420px) {
