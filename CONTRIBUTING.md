@@ -50,7 +50,16 @@ If your change touches shared Worker behavior, validate every affected harness. 
 
 Manor uses the version in `butler/package.json` as its canonical release version. Keep `butler/package-lock.json` in sync when changing it.
 
-For a normal release, open the **Release** action in GitHub, choose **Run workflow**, and select a `patch`, `minor`, or `major` increment. The action updates both package files, validates the release, runs the test and build gates, commits the version, creates and pushes the matching tag, and publishes the GitHub release with generated notes.
+Every push to `main` starts a release. The action considers every commit since the latest version tag and chooses the highest required increment:
+
+- `feat:` commits, or subjects beginning with `Add`, `Create`, `Enable`, `Expose`, `Implement`, `Introduce`, or `Support`, produce a minor release.
+- Commits with a `!` after the conventional-commit type or a `BREAKING CHANGE:` footer produce a major release.
+- Other commits produce a patch release.
+- A `Release-As: patch|minor|major` commit footer explicitly selects that commit's increment.
+
+The action updates both package files, validates the release, runs the test and build gates, commits the version, creates and pushes the matching tag, and publishes the GitHub release with generated notes. Release commits do not recursively start another release.
+
+The **Release** action can still be run manually from `main` to select a specific increment. Matching external tag pushes remain supported as a recovery and publication path.
 
 To prepare a version manually:
 
@@ -62,7 +71,7 @@ npm test
 npm run build
 ```
 
-Commit the version change, create the matching `vX.Y.Z` tag, and push the commit and tag. External matching tag pushes use the same validation, test, build, and publishing gates.
+Commit the version change, create the matching `vX.Y.Z` tag, and push the commit and tag atomically. External matching tag pushes use the same validation, test, build, and publishing gates.
 
 ## Pull Requests
 

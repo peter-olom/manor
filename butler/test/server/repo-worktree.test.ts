@@ -26,13 +26,14 @@ test("resolveCodexWorkerOwnership rejects invalid worker uid diagnostics", () =>
 });
 
 test("Worker subprocesses do not inherit Butler control-plane secrets", async () => {
-  const current = await stat(tmpdir());
+  const workspace = await mkdtemp(path.join(tmpdir(), "manor-worker-env-"));
+  const current = await stat(workspace);
   process.env.MANOR_HOST_CONTROLLER_TOKEN = "butler-secret";
   try {
     const { stdout } = await execFileAsWorker(
       process.execPath,
       ["-e", "process.stdout.write(process.env.MANOR_HOST_CONTROLLER_TOKEN ?? 'missing')"],
-      tmpdir(),
+      workspace,
       { uid: current.uid, gid: current.gid, label: "test" }
     );
     assert.equal(stdout, "missing");

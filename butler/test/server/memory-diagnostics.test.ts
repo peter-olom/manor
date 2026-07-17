@@ -184,7 +184,7 @@ test("memory diagnostics summarizes pipeline counts and date filtering", async (
   assert.match(formatted, /confirmed_semantic_edges=1/);
   assert.match(formatted, /Samples:/);
   assert.match(formatted, /Recent observations:/);
-  assert.match(formatted, /failed synthesis/);
+  assert.match(formatted, /synthesis queue entry has failed/);
   assert.match(formatted, /Pending review candidate/);
 });
 
