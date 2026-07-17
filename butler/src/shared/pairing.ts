@@ -184,10 +184,9 @@ export type PairAutomationRun = {
   scheduledFor: number;
   startedAt: number;
   /**
-   * The HH:mm wall-clock slot this run was scheduled for, captured at claim time in
-   * the then-active operator timezone. Used to dedup per-slot (not per-day) when the
-   * operator changes timezone after a run fired, so only the already-fired slot is
-   * skipped and remaining same-day slots still fire.
+   * The normalized local occurrence key captured at claim time. Legacy daily
+   * schedules store HH:mm; newer calendar schedules may include the local anchor
+   * date. Used to prevent a timezone change from replaying an occurrence.
    */
   scheduledSlot?: string | null;
 };
@@ -200,8 +199,13 @@ export type PairAutomationLastRun = PairAutomationRun & {
 };
 
 export type PairAutomationSchedule =
-  | { kind: "daily"; times: string[] }
+  | { kind: "once"; date: string; time: string }
+  | { kind: "daily"; times: string[]; endsOn?: string | null }
+  | { kind: "weekly"; weekdays: PairAutomationWeekday[]; times: string[]; endsOn?: string | null }
+  | { kind: "window"; everyMinutes: number; startTime: string; endTime: string; endsOn?: string | null }
   | { kind: "interval"; everyMinutes: number; startsAt: number; endsAt: number };
+
+export type PairAutomationWeekday = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
 
 export type PairAutomationState = "active" | "running" | "paused" | "completed";
 
@@ -213,7 +217,7 @@ export type PairAutomation = {
   createdAt: number;
   updatedAt: number;
   nextRunAt: number | null;
-  /** Configured HH:mm slot associated with nextRunAt for daily schedules. */
+  /** Configured HH:mm wall-clock slot associated with the next calendar run. */
   nextRunSlot?: string | null;
   running: PairAutomationRun | null;
   lastRun: PairAutomationLastRun | null;

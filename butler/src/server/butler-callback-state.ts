@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 
 import type { PendingChatCallback } from "./butler-agent-helpers.js";
 import { writeJsonStateFileAtomic } from "./json-state-file.js";
+import { repairEpochMilliseconds } from "./state-store-helpers.js";
 import type { CodexThreadRecord } from "./types.js";
 
 const RESERVED_CALLBACK_RECOVERY_GRACE_MS = 5 * 60_000;
@@ -22,8 +23,9 @@ function normalizeCallbackEntry(entry: PendingChatCallback): PendingChatCallback
   if (!entry || typeof entry !== "object" || typeof entry.threadId !== "string") {
     return null;
   }
-  const requestedAt = typeof entry.requestedAt === "number" && Number.isFinite(entry.requestedAt) ? entry.requestedAt : Date.now();
-  const updatedAt = typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt) ? entry.updatedAt : requestedAt;
+  const now = Date.now();
+  const requestedAt = repairEpochMilliseconds(entry.requestedAt, now, now);
+  const updatedAt = repairEpochMilliseconds(entry.updatedAt, requestedAt, now);
   const callbackState =
     entry.callbackState === "received_worker_callback" ||
     entry.callbackState === "missing_worker_callback" ||
@@ -77,7 +79,7 @@ function normalizeCallbackEntry(entry: PendingChatCallback): PendingChatCallback
     callbackState: normalizedCallbackState,
     resolutionState,
     requestedAt,
-    lastEventAt: typeof entry.lastEventAt === "number" && Number.isFinite(entry.lastEventAt) ? entry.lastEventAt : updatedAt,
+    lastEventAt: repairEpochMilliseconds(entry.lastEventAt, updatedAt, now),
     lastWorkerStatusSeen:
       entry.lastWorkerStatusSeen === "active" || entry.lastWorkerStatusSeen === "idle" || entry.lastWorkerStatusSeen === "unknown"
         ? entry.lastWorkerStatusSeen
@@ -88,7 +90,7 @@ function normalizeCallbackEntry(entry: PendingChatCallback): PendingChatCallback
         : null,
     watchdogLastProbeAt:
       typeof entry.watchdogLastProbeAt === "number" && Number.isFinite(entry.watchdogLastProbeAt)
-        ? entry.watchdogLastProbeAt
+        ? repairEpochMilliseconds(entry.watchdogLastProbeAt, updatedAt, now)
         : null,
     watchdogLastProbeId:
       typeof entry.watchdogLastProbeId === "string" && entry.watchdogLastProbeId.trim()

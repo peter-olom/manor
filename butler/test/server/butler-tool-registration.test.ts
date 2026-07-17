@@ -10,6 +10,7 @@ import { buildButlerProjectTools } from "../../src/server/butler-agent-project-t
 import { buildButlerServiceTools } from "../../src/server/butler-agent-service-tools.js";
 import { buildButlerDelegationTools, buildButlerStackPreviewTools, workerProviderModelRoute } from "../../src/server/butler-agent-stack-preview-tools.js";
 import { buildButlerFilesystemTools } from "../../src/server/butler-agent-filesystem-tools.js";
+import { buildButlerBashTools } from "../../src/server/butler-agent-bash-tools.js";
 import { buildButlerSkillTools } from "../../src/server/butler-agent-skill-tools.js";
 import { BUTLER_TOOL_CATALOG } from "../../src/server/butler-agent-tool-catalog.js";
 import { OLLAMA_WEB_FETCH_TOOL, OLLAMA_WEB_SEARCH_TOOL } from "../../src/server/ollama-web-tools.js";
@@ -91,6 +92,7 @@ test("Butler custom tool registration has unique tool names and provider-portabl
     getAutomationAccess: () => ({ get: () => null, configure: async () => { throw new Error("unused"); }, configureInterval: async () => { throw new Error("unused"); }, setEnabled: async () => { throw new Error("unused"); }, delete: async () => true })
   } as unknown as ButlerAgentToolAccess;
 
+  buildButlerBashTools(access);
   buildButlerStackPreviewTools(access);
   buildButlerFilesystemTools(access);
   buildButlerServiceTools(access);
@@ -136,6 +138,7 @@ test("Butler tool catalog matches registered base tools", () => {
     getAutomationAccess: () => ({ get: () => null, configure: async () => { throw new Error("unused"); }, configureInterval: async () => { throw new Error("unused"); }, setEnabled: async () => { throw new Error("unused"); }, delete: async () => true })
   } as unknown as ButlerAgentToolAccess;
 
+  buildButlerBashTools(access);
   buildButlerStackPreviewTools(access);
   buildButlerFilesystemTools(access);
   buildButlerServiceTools(access);

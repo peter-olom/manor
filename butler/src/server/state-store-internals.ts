@@ -13,7 +13,7 @@ import {
   normalizeJobMemoryEntryKind,
   normalizeStringList,
   normalizePreviewVerification,
-  normalizeStatus,
+  normalizeStatus, repairEpochMilliseconds,
   normalizeReasoningEffort,
   normalizeWindow,
   restorePersistedTurn
@@ -1303,8 +1303,8 @@ export function restorePersistedStateStoreThread(access: StateStoreInternalAcces
   record.preview = typeof thread.preview === "string" ? thread.preview : record.preview;
   record.source = typeof thread.source === "string" ? thread.source : record.source;
   record.cwd = typeof thread.cwd === "string" ? thread.cwd : record.cwd;
-  record.createdAt = typeof thread.createdAt === "number" && Number.isFinite(thread.createdAt) ? thread.createdAt : record.createdAt;
-  record.updatedAt = typeof thread.updatedAt === "number" && Number.isFinite(thread.updatedAt) ? thread.updatedAt : record.updatedAt;
+  record.createdAt = repairEpochMilliseconds(thread.createdAt, record.createdAt);
+  record.updatedAt = repairEpochMilliseconds(thread.updatedAt, record.updatedAt);
   record.status = normalizeStatus(thread.status);
   record.modelProvider = typeof thread.modelProvider === "string" ? thread.modelProvider : record.modelProvider;
   record.modelId = typeof thread.modelId === "string" ? thread.modelId : record.modelId;

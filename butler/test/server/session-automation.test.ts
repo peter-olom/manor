@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { PairStore } from "../../src/server/pair-store.js";
 import { SessionAutomationScheduler } from "../../src/server/session-automation-scheduler.js";
-import { nextDailyRunAt, normalizeDailyTimes, withAutomationLabels } from "../../src/server/session-automation.js";
+import { createOnceSchedule, createWeeklySchedule, createWindowSchedule, nextAutomationRunAt, nextDailyRunAt, normalizeDailyTimes, upcomingAutomationRuns, withAutomationLabels } from "../../src/server/session-automation.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { setActiveManorSettings } from "../../src/server/manor-settings-runtime.js";
 import { normalizeManorSettings } from "../../src/server/manor-settings-schema.js";
@@ -26,6 +26,130 @@ test("daily automation times are validated, deduplicated, and use the operator w
   const morning = Date.UTC(2026, 6, 14, 11, 30);
   assert.equal(nextDailyRunAt(["12:00", "18:00"], morning), Date.UTC(2026, 6, 14, 12, 0));
   assert.equal(nextDailyRunAt(["12:00", "18:00"], Date.UTC(2026, 6, 14, 18, 0)), Date.UTC(2026, 6, 15, 12, 0));
+});
+
+test("daily automation can run indefinitely or through an inclusive local end date", async () => {
+  const { pairs } = await createStore();
+  const pair = pairs.createPair();
+  const after = Date.UTC(2026, 7, 2, 18, 0);
+  const unbounded = pairs.configureAutomation(pair.id, { instruction: "Daily", dailyTimes: ["17:00"] }, after)!;
+  assert.deepEqual(unbounded.automation?.schedule, { kind: "daily", times: ["17:00"] });
+  assert.equal(unbounded.automation?.nextRunAt, Date.UTC(2026, 7, 3, 17, 0));
+
+  const bounded = pairs.configureAutomation(pair.id, { instruction: "Bounded", dailyTimes: ["17:00"], endDate: "2026-08-03" }, after)!;
+  assert.equal(bounded.automation?.nextRunAt, Date.UTC(2026, 7, 3, 17, 0));
+  const run = pairs.claimAutomationRun(pair.id, bounded.automation!.id, Date.UTC(2026, 7, 3, 17, 0))!;
+  pairs.finishAutomationRun(pair.id, bounded.automation!.id, run.id, { outcome: "succeeded", summary: "done" }, Date.UTC(2026, 7, 3, 17, 1));
+  assert.equal(pairs.getPair(pair.id)?.automation?.nextRunAt, null);
+  assert.equal(pairs.getPair(pair.id)?.automation?.state, "completed");
+});
+
+test("daily windows include both boundaries and preserve cross-midnight ownership", () => {
+  const schedule = createWindowSchedule(60, "19:00", "00:00", "2026-08-03");
+  assert.deepEqual(
+    upcomingAutomationRuns(schedule, Date.UTC(2026, 7, 3, 18, 30), "UTC", 6),
+    [19, 20, 21, 22, 23].map((hour) => Date.UTC(2026, 7, 3, hour)).concat(Date.UTC(2026, 7, 4, 0))
+  );
+  assert.equal(nextAutomationRunAt(schedule, Date.UTC(2026, 7, 4, 0), "UTC"), null);
+});
+
+test("a singular weekday is one-off while plural weekdays recur weekly", async () => {
+  const friday = Date.UTC(2026, 6, 17, 10, 0);
+  const once = createOnceSchedule("sunday", "17:00", friday, "UTC");
+  assert.deepEqual(once, { kind: "once", date: "2026-07-19", time: "17:00" });
+  assert.equal(nextAutomationRunAt(once, friday, "UTC"), Date.UTC(2026, 6, 19, 17, 0));
+  assert.equal(nextAutomationRunAt(once, Date.UTC(2026, 6, 19, 17, 0), "UTC"), null);
+
+  const weekly = createWeeklySchedule(["sunday"], ["17:00"]);
+  assert.equal(nextAutomationRunAt(weekly, friday, "UTC"), Date.UTC(2026, 6, 19, 17, 0));
+  assert.equal(nextAutomationRunAt(weekly, Date.UTC(2026, 6, 19, 17, 0), "UTC"), Date.UTC(2026, 6, 26, 17, 0));
+  const boundedWeekly = createWeeklySchedule(["sunday"], ["17:00"], "2026-07-19");
+  assert.equal(nextAutomationRunAt(boundedWeekly, friday, "UTC"), Date.UTC(2026, 6, 19, 17, 0));
+  assert.equal(nextAutomationRunAt(boundedWeekly, Date.UTC(2026, 6, 19, 17, 0), "UTC"), null);
+});
+
+test("calendar schedules recompute immediately when the operator timezone changes", async (t) => {
+  setActiveManorSettings(normalizeManorSettings({ overview: { operatorTimezone: "Europe/Berlin" } }));
+  t.after(() => setActiveManorSettings(null));
+  const { pairs } = await createStore();
+  const now = Date.UTC(2026, 6, 17, 10, 0);
+  const oncePair = pairs.createPair();
+  const weeklyPair = pairs.createPair();
+  const windowPair = pairs.createPair();
+  pairs.configureOnceAutomation(oncePair.id, { instruction: "Once", on: "2026-07-19", time: "17:00" }, now);
+  pairs.configureWeeklyAutomation(weeklyPair.id, { instruction: "Weekly", weekdays: ["sunday"], times: ["17:00"] }, now);
+  pairs.configureWindowAutomation(windowPair.id, { instruction: "Window", everyMinutes: 60, startTime: "19:00", endTime: "00:00" }, now);
+  assert.equal(pairs.getPair(oncePair.id)?.automation?.nextRunAt, Date.UTC(2026, 6, 19, 15, 0));
+  assert.equal(pairs.getPair(weeklyPair.id)?.automation?.nextRunAt, Date.UTC(2026, 6, 19, 15, 0));
+  assert.equal(pairs.getPair(windowPair.id)?.automation?.nextRunAt, Date.UTC(2026, 6, 17, 17, 0));
+
+  setActiveManorSettings(normalizeManorSettings({ overview: { operatorTimezone: "America/New_York" } }));
+  assert.equal(pairs.recomputeAutomationSchedules(now), 3);
+  assert.equal(pairs.getPair(oncePair.id)?.automation?.nextRunAt, Date.UTC(2026, 6, 19, 21, 0));
+  assert.equal(pairs.getPair(weeklyPair.id)?.automation?.nextRunAt, Date.UTC(2026, 6, 19, 21, 0));
+  assert.equal(pairs.getPair(windowPair.id)?.automation?.nextRunAt, Date.UTC(2026, 6, 17, 23, 0));
+});
+
+test("a delayed daily window run advances to the next future slot without replaying backlog", async () => {
+  const { pairs } = await createStore();
+  const pair = pairs.createPair();
+  const configured = pairs.configureWindowAutomation(pair.id, { instruction: "Window", everyMinutes: 60, startTime: "19:00", endTime: "00:00" }, Date.UTC(2026, 6, 17, 18, 30))!;
+  const run = pairs.claimAutomationRun(pair.id, configured.automation!.id, Date.UTC(2026, 6, 17, 21, 30))!;
+  assert.equal(run.scheduledFor, Date.UTC(2026, 6, 17, 19, 0));
+  assert.equal(pairs.getPair(pair.id)?.automation?.nextRunAt, Date.UTC(2026, 6, 17, 22, 0));
+
+  const boundaryPair = pairs.createPair();
+  const boundary = pairs.configureWindowAutomation(boundaryPair.id, { instruction: "Boundary", everyMinutes: 60, startTime: "19:00", endTime: "00:00" }, Date.UTC(2026, 6, 17, 22, 30))!;
+  const boundaryRun = pairs.claimAutomationRun(boundaryPair.id, boundary.automation!.id, Date.UTC(2026, 6, 17, 23, 0))!;
+  pairs.finishAutomationRun(boundaryPair.id, boundary.automation!.id, boundaryRun.id, { outcome: "succeeded", summary: "done" }, Date.UTC(2026, 6, 17, 23, 1));
+  assert.equal(pairs.getPair(boundaryPair.id)?.automation?.nextRunAt, Date.UTC(2026, 6, 18, 0, 0));
+});
+
+test("new calendar schedule kinds persist and reload without losing their bounds", async () => {
+  const { pairs, pairPath, state } = await createStore();
+  const pair = pairs.createPair();
+  pairs.configureWeeklyAutomation(pair.id, { instruction: "Weekly", weekdays: ["sunday"], times: ["17:00"], endDate: "2026-08-03" }, Date.UTC(2026, 6, 17, 10, 0));
+  await pairs.flushPendingSave();
+  const reloaded = new PairStore(pairPath, state);
+  await reloaded.load();
+  assert.deepEqual(reloaded.getPair(pair.id)?.automation?.schedule, { kind: "weekly", weekdays: ["sunday"], times: ["17:00"], endsOn: "2026-08-03" });
+});
+
+test("a bounded daily automation never dispatches after its overall end date", async () => {
+  const { pairs } = await createStore();
+  const pair = pairs.createPair();
+  const configured = pairs.configureAutomation(pair.id, { instruction: "Hourly", dailyTimes: ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00"], endDate: "2026-07-18" }, Date.UTC(2026, 6, 18, 7, 0))!;
+  assert.equal(configured.automation?.nextRunAt, Date.UTC(2026, 6, 18, 8, 0));
+  assert.equal(pairs.claimAutomationRun(pair.id, configured.automation!.id, Date.UTC(2026, 6, 19, 8, 0)), null);
+  assert.equal(pairs.getPair(pair.id)?.automation?.state, "completed");
+  assert.match(pairs.getPair(pair.id)?.automation?.lastRun?.summary ?? "", /ended before this delayed run/);
+});
+
+test("scheduler expires a bounded automation even while its session remains busy", async () => {
+  const { pairs } = await createStore();
+  const pair = pairs.createPair();
+  const configured = pairs.configureAutomation(pair.id, {
+    instruction: "Hourly",
+    dailyTimes: ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00"],
+    endDate: "2026-07-18"
+  }, Date.UTC(2026, 6, 18, 7, 0))!;
+  const dispatched: string[] = [];
+  const scheduler = new SessionAutomationScheduler({
+    pairStore: pairs,
+    now: () => Date.UTC(2026, 6, 19, 8, 0),
+    isBusy: async () => true,
+    dispatch: async ({ pairId }) => {
+      dispatched.push(pairId);
+      return { outcome: "succeeded", summary: "Done" };
+    }
+  });
+
+  await scheduler.tick();
+
+  assert.deepEqual(dispatched, []);
+  assert.equal(pairs.getPair(pair.id)?.automation?.id, configured.automation?.id);
+  assert.equal(pairs.getPair(pair.id)?.automation?.state, "completed");
+  assert.equal(pairs.getPair(pair.id)?.automation?.nextRunAt, null);
 });
 
 test("daily automation times interpret in the operator timezone with DST awareness", () => {
@@ -48,6 +172,13 @@ test("nextDailyRunAt keeps the later fold occurrence when the earlier one has al
   assert.equal(nextDailyRunAt(["02:30"], Date.UTC(2026, 9, 25, 1, 0), "Europe/Berlin"), Date.UTC(2026, 9, 25, 1, 30));
   // Before the fold, the earlier occurrence is returned.
   assert.equal(nextDailyRunAt(["02:30"], Date.UTC(2026, 9, 25, 0, 0), "Europe/Berlin"), Date.UTC(2026, 9, 25, 0, 30));
+});
+
+test("upcoming runs show a folded wall-clock slot only once", () => {
+  assert.deepEqual(
+    upcomingAutomationRuns({ kind: "daily", times: ["02:30"] }, Date.UTC(2026, 9, 25, 0, 0), "Europe/Berlin", 2),
+    [Date.UTC(2026, 9, 25, 0, 30), Date.UTC(2026, 9, 26, 1, 30)]
+  );
 });
 
 test("nextDailyRunAt orders multiple folded slots by real instant", () => {
@@ -320,7 +451,7 @@ test("pair automations persist and support pause, resume, and guarded run comple
   assert.equal(reloaded.getPair(pair.id)?.automation?.instruction, "Prepare the report");
 });
 
-test("scheduler runs due work once and skips an active session", async () => {
+test("scheduler runs due work once and defers an active session until idle", async () => {
   const { pairs } = await createStore();
   const base = Date.UTC(2026, 6, 14, 7);
   const dueAt = Date.UTC(2026, 6, 14, 8, 1);
@@ -328,19 +459,26 @@ test("scheduler runs due work once and skips an active session", async () => {
   const busy = pairs.createPair({ title: "Busy" });
   pairs.configureAutomation(idle.id, { instruction: "Run idle task", dailyTimes: ["08:00"] }, base);
   pairs.configureAutomation(busy.id, { instruction: "Run busy task", dailyTimes: ["08:00"] }, base);
-  pairs.updatePairSnapshot(busy.id, { butlerPending: true, updatedAt: dueAt });
+  let runtimeBusy = true;
   const dispatched: string[] = [];
   const scheduler = new SessionAutomationScheduler({
     pairStore: pairs, now: () => dueAt,
+    isBusy: async (pair) => pair.id === busy.id && runtimeBusy,
     dispatch: async ({ pairId }) => { dispatched.push(pairId); return { outcome: "succeeded", summary: "Done" }; }
   });
   await scheduler.tick();
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.deepEqual(dispatched, [idle.id]);
   assert.equal(pairs.getPair(idle.id)?.automation?.lastRun?.outcome, "succeeded");
-  assert.equal(pairs.getPair(busy.id)?.automation?.lastRun?.outcome, "skipped");
+  assert.equal(pairs.getPair(busy.id)?.automation?.lastRun, null);
+  assert.equal(pairs.getPair(busy.id)?.automation?.nextRunAt, Date.UTC(2026, 6, 14, 8));
   await scheduler.tick();
   assert.deepEqual(dispatched, [idle.id]);
+  runtimeBusy = false;
+  await scheduler.tick();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(dispatched, [idle.id, busy.id]);
+  assert.equal(pairs.getPair(busy.id)?.automation?.lastRun?.outcome, "succeeded");
 });
 
 test("scheduler persists its run claim before dispatch", async () => {

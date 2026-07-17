@@ -204,12 +204,18 @@ export function registerPairRoutes(access: PairRouteAccess): void {
       return;
     }
     try {
+      const kind = readString(request.body?.kind);
       const interval = Number.isInteger(request.body?.everyMinutes) && Number.isInteger(request.body?.durationMinutes);
       const dailyTimes = Array.isArray(request.body?.dailyTimes) ? request.body.dailyTimes : [];
-      if (!interval && dailyTimes.length === 0) throw new Error("Provide dailyTimes or everyMinutes with durationMinutes");
-      const automation = interval
-        ? await pairSessions.configureIntervalAutomation(request.params.pairId, { instruction, everyMinutes: request.body.everyMinutes, durationMinutes: request.body.durationMinutes })
-        : await pairSessions.configureAutomation(request.params.pairId, { instruction, dailyTimes });
+      let automation;
+      if (kind === "once") automation = await pairSessions.configureOnceAutomation(request.params.pairId, { instruction, on: request.body?.on, time: request.body?.time });
+      else if (kind === "weekly") automation = await pairSessions.configureWeeklyAutomation(request.params.pairId, { instruction, weekdays: request.body?.weekdays, times: request.body?.times, endDate: request.body?.endDate });
+      else if (kind === "window") automation = await pairSessions.configureWindowAutomation(request.params.pairId, { instruction, everyMinutes: request.body?.everyMinutes, startTime: request.body?.startTime, endTime: request.body?.endTime, endDate: request.body?.endDate });
+      else if (interval) automation = await pairSessions.configureIntervalAutomation(request.params.pairId, { instruction, everyMinutes: request.body.everyMinutes, durationMinutes: request.body.durationMinutes });
+      else {
+        if (dailyTimes.length === 0) throw new Error("Provide a supported schedule kind or dailyTimes");
+        automation = await pairSessions.configureAutomation(request.params.pairId, { instruction, dailyTimes, endDate: request.body?.endDate });
+      }
       if (!automation) {
         response.status(404).json({ error: "Butler session not found" });
         return;

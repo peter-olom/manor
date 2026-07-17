@@ -42,7 +42,7 @@ import { exportButlerSession, getButlerSessionControls, runButlerSessionAction }
 import { clearButlerSessionChat, deleteButlerSessionChatFromLocated, keepOperatorMessagesBefore, locateButlerSessionDeletePoint, locateButlerSessionDeletePointBeforeTimestamp } from "./butler-agent-chat-hygiene.js";
 import { buildButlerDelegationContract } from "./butler-agent-delegation-contract-builder.js";
 import { buildDelegationDeveloperInstructions } from "./butler-agent-delegation-instructions.js";
-import { buildButlerFilesystemTools } from "./butler-agent-filesystem-tools.js";
+import { buildButlerFilesystemTools } from "./butler-agent-filesystem-tools.js"; import { buildButlerBashTools } from "./butler-agent-bash-tools.js";
 import { buildButlerServiceTools } from "./butler-agent-service-tools.js";
 import { buildButlerManorTools } from "./butler-agent-manor-tools.js";
 import { buildButlerOperatorTools } from "./butler-agent-operator-tools.js"; import { buildButlerSkillTools } from "./butler-agent-skill-tools.js"; import type { SkillsService } from "./skills-service.js"; import { buildButlerAutomationTools } from "./butler-agent-automation-tools.js"; import { answerOperatorQuestionMessage, postOperatorQuestionMessage, recordOperatorQuestionTasteMemory, recoverInterruptedOperatorQuestionDeliveries, settleOperatorQuestionDelivery } from "./butler-agent-operator-question.js";
@@ -74,7 +74,7 @@ import {
   updateJobPayload,
   type JobPayloadKind
 } from "./job-instruction-artifacts.js";
-import { writeJsonStateFileAtomic } from "./json-state-file.js";
+import { writeJsonStateFileAtomic } from "./json-state-file.js"; import { repairEpochMilliseconds } from "./state-store-helpers.js";
 import { redactSensitiveText } from "./redact-sensitive-text.js";
 import { listPiComposerCommands } from "./pi-composer-commands.js";
 import { assertCallbackReviewCurrent, getCallbackReviewExecution, hasCurrentCallbackReviewGuard, runButlerJobMutationGuardedTool, runOutsideJobMutationContext, runSerializedCallbackReplacement, runSerializedJobMutation, runSerializedJobMutations } from "./butler-job-mutation-guard.js";
@@ -309,7 +309,7 @@ export class ButlerAgentService extends EventEmitter {
   async rollbackDirectCodexMessage(threadId: string, requestedAt: number, reservation: ButlerCallbackReservation): Promise<void> { if (this.quiescing) return; const cancelledRunningReview = reservation.callback?.reviewState === "running" && !hasCurrentCallbackReviewGuard(threadId); const resume = await runSerializedJobMutation(threadId, async () => { if (this.quiescing) return false; const current = this.pendingChatCallbacks.get(threadId); if (!current || current.requestedAt !== requestedAt) return false; const thread = this.store.getThread(threadId), rollback = planDirectMessageRollback({ currentPayload: this.store.getThreadJobPayload(threadId), originalPayload: reservation.jobPayload, payloadReplacement: reservation.jobPayloadReplacement, currentScope: { executionContract: thread?.executionContract ?? null, supervisionChecklist: thread?.supervisionChecklist ?? null }, scopeReplacement: reservation.reviewScopeReplacement }); if (rollback.payload) { if (reservation.jobPayload) { await persistJobPayload(jobPayloadsRoot(this.artifactsDir), reservation.jobPayload); this.store.setThreadJobPayload(reservation.jobPayload); } else { await removeCurrentJobPayload(jobPayloadsRoot(this.artifactsDir), threadId); this.store.clearThreadJobPayload(threadId); } } if (rollback.scope) this.store.restoreThreadReviewScope(threadId, reservation.executionContract, reservation.supervisionChecklist); if (reservation.callback) { const restored = cancelledRunningReview ? { ...reservation.callback, reviewState: "queued" as const, reviewStage: "queued" as const, updatedAt: Date.now() } : reservation.callback; for (const key of Object.keys(current)) delete (current as unknown as Record<string, unknown>)[key]; Object.assign(current, restored); this.pendingChatCallbacks.set(threadId, current); } else { this.pendingChatCallbacks.delete(threadId); } if (reservation.failureCount === null) this.callbackReviewFailureCount.delete(threadId); else this.callbackReviewFailureCount.set(threadId, reservation.failureCount); if (reservation.notBefore === null) this.callbackReviewNotBefore.delete(threadId); else this.callbackReviewNotBefore.set(threadId, reservation.notBefore); await this.saveCallbackState(); this.emit("change"); return this.pendingChatCallbacks.get(threadId)?.reviewState === "queued"; }); if (resume) runOutsideJobMutationContext(() => this.callbackReviewScheduler.scheduleAt(Date.now() + 1)); }
   private async registerPendingChatCallback(threadId: string, options?: { privateSteerText?: string | null; preservePrivateSteer?: boolean; nextWorkerReportAction?: "review" | "reply_to_operator"; requestedAt?: number | null; dispatchState?: "ready" | "reserving"; preserveRunningReview?: boolean }): Promise<void> { if (this.quiescing) throw new Error("Butler session is closing."); await runSerializedCallbackReplacement(threadId, async () => { assertCallbackReviewCurrent(threadId); if (this.quiescing) throw new Error("Butler session is closing.");
     const now = Date.now();
-    const requestedAt = typeof options?.requestedAt === "number" && Number.isFinite(options.requestedAt) ? options.requestedAt : now;
+    const requestedAt = repairEpochMilliseconds(options?.requestedAt, now, now);
     const existing = this.pendingChatCallbacks.get(threadId);
     const suppliedPrivateSteer = typeof options?.privateSteerText === "string" && options.privateSteerText.trim() ? options.privateSteerText.trim() : null;
     const preservePrivateSteer = options?.preservePrivateSteer === true && existing && isCallbackOutstanding(existing);
@@ -687,7 +687,7 @@ export class ButlerAgentService extends EventEmitter {
   // side effects. Keep agent tool definitions aligned with this catalog.
   private buildToolCatalog(): ButlerToolView[] {
     const activeTools = new Set(this.session?.getActiveToolNames() ?? []);
-    const base = BUTLER_TOOL_CATALOG.filter((tool) => (tool.name !== "inspect_images" || activeTools.has(tool.name)) && (this.skillsService || !["inspect_skills", "propose_skill_change", "apply_skill_change"].includes(tool.name)) && (this.getAutomationAccess() || !["configure_automation", "set_automation_enabled", "delete_automation"].includes(tool.name)));
+    const base = BUTLER_TOOL_CATALOG.filter((tool) => (tool.name !== "inspect_images" || activeTools.has(tool.name)) && (this.skillsService || !["inspect_skills", "propose_skill_change", "apply_skill_change"].includes(tool.name)) && (this.getAutomationAccess() || !["inspect_automation", "configure_automation", "configure_once_automation", "configure_weekly_automation", "configure_window_automation", "configure_interval_automation", "set_automation_enabled", "delete_automation"].includes(tool.name)));
     if (activeTools.has("inspect_images")) base.push({ name: "inspect_images", label: "Inspect images", description: "Inspect attached images through the configured vision companion.", uiEffects: [] });
     if (activeTools.has(PROVIDER_WEB_SEARCH_TOOL_NAME) && activeTools.has(PROVIDER_WEB_FETCH_TOOL_NAME)) {
       base.push(
@@ -1406,7 +1406,7 @@ export class ButlerAgentService extends EventEmitter {
   private async reviewProofScreenshot(proof: ResolvedPreviewProof, options?: { expectedOutcome?: string; signal?: AbortSignal }): Promise<ProofScreenshotReview> { return reviewButlerProofScreenshot(this.getSessionAccess(), proof, { ...options, ...getCallbackReviewExecution() }); }
   private buildCustomTools() {
     const toolAccess = this.getToolAccess();
-    const tools = [...buildButlerStackPreviewTools(toolAccess), ...buildButlerFilesystemTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerManorTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerOperatorTools(toolAccess), ...buildButlerAutomationTools(toolAccess), ...(this.skillsService ? buildButlerSkillTools(toolAccess) : []), ...buildButlerWorkerTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
+    const tools = [...buildButlerBashTools(toolAccess), ...buildButlerStackPreviewTools(toolAccess), ...buildButlerFilesystemTools(toolAccess), ...buildButlerServiceTools(toolAccess), ...buildButlerManorTools(toolAccess), ...buildButlerProjectTools(toolAccess, this.artifactsDir), ...buildButlerOperatorTools(toolAccess), ...buildButlerAutomationTools(toolAccess), ...(this.skillsService ? buildButlerSkillTools(toolAccess) : []), ...buildButlerWorkerTools(toolAccess), ...buildButlerDelegationTools(toolAccess)];
     tools.push(...buildButlerVisionTools(toolAccess, this.options.visionInspection));
     tools.push(...buildButlerProviderWebTools(() => this.session?.model?.provider));
     return tools;

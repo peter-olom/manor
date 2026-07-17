@@ -1,5 +1,6 @@
 import type { ButlerThreadCallbackView, CodexThreadRecord } from "./types.js";
 import type { WorkerThreadInterventionResult } from "./worker-thread-runtime-probe.js";
+import { MAX_TIMESTAMP_FUTURE_SKEW_MS } from "./state-store-helpers.js";
 
 export const WORKER_WATCHDOG_SILENCE_MS = 5 * 60_000;
 export const WORKER_WATCHDOG_PROBE_RETRY_MS = 30_000;
@@ -38,8 +39,11 @@ export function workerWatchdogProbeDue(
   options: { silenceMs?: number; retryMs?: number } = {}
 ): boolean {
   if (callback.watchdogIntervenedAt) return false;
-  const lastActivityAt = callback.lastEventAt ?? callback.requestedAt;
-  const lastProbeAt = callback.watchdogLastProbeAt ?? 0;
+  const requestedAt = callback.requestedAt > now + MAX_TIMESTAMP_FUTURE_SKEW_MS ? 0 : callback.requestedAt;
+  const rawLastActivityAt = callback.lastEventAt ?? requestedAt;
+  const lastActivityAt = rawLastActivityAt > now + MAX_TIMESTAMP_FUTURE_SKEW_MS ? requestedAt : rawLastActivityAt;
+  const rawLastProbeAt = callback.watchdogLastProbeAt ?? 0;
+  const lastProbeAt = rawLastProbeAt > now + MAX_TIMESTAMP_FUTURE_SKEW_MS ? 0 : rawLastProbeAt;
   const failures = callback.watchdogProbeFailures ?? 0;
   const failureLimit = callback.watchdogProtectedOperation
     ? WORKER_WATCHDOG_PROTECTED_MAX_PROBE_FAILURES

@@ -90,6 +90,15 @@ test("watchdog uses a shorter retry lease only after an unreachable probe", () =
   assert.equal(workerWatchdogProbeDue(current, 13_000, { silenceMs: 10_000, retryMs: 2_000 }), true);
 });
 
+test("future watchdog timestamps cannot suppress probes indefinitely", () => {
+  const current = callback({
+    requestedAt: 1_000,
+    lastEventAt: 86_400_000,
+    watchdogLastProbeAt: 86_400_000
+  });
+  assert.equal(workerWatchdogProbeDue(current, 11_000, { silenceMs: 10_000 }), true);
+});
+
 test("successful busy probes extend the lease without fabricating Worker activity", () => {
   const current = callback({
     lastEventAt: 1_000,

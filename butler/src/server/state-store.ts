@@ -24,7 +24,7 @@ import {
   normalizeItem,
   normalizePreviewVerification,
   normalizeReasoningEffort,
-  normalizeStatus,
+  normalizeStatus, externalThreadTimestampMs,
   normalizeTurn,
   restorePersistedTurn,
   shouldExposeCodexItem
@@ -370,8 +370,8 @@ export class ButlerStateStore extends EventEmitter {
     record.preview = typeof thread.preview === "string" ? thread.preview : record.preview;
     record.source = typeof thread.source === "string" ? thread.source : record.source;
     record.cwd = typeof thread.cwd === "string" ? thread.cwd : record.cwd;
-    record.createdAt = typeof thread.createdAt === "number" ? thread.createdAt * 1000 : record.createdAt;
-    record.updatedAt = typeof thread.updatedAt === "number" ? thread.updatedAt * 1000 : record.updatedAt;
+    record.createdAt = externalThreadTimestampMs(thread.createdAt, record.createdAt);
+    record.updatedAt = externalThreadTimestampMs(thread.updatedAt, record.updatedAt);
     record.status = normalizeStatus(thread.status);
     record.modelProvider = typeof thread.modelProvider === "string" ? thread.modelProvider : record.modelProvider;
     if (Object.prototype.hasOwnProperty.call(thread, "modelId")) record.modelId = typeof thread.modelId === "string" ? thread.modelId : null;

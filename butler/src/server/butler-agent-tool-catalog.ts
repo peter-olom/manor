@@ -2,6 +2,12 @@ import type { ButlerToolView } from "./types.js";
 
 export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
+    name: "bash",
+    label: "Sandboxed clock",
+    description: "Run the date command in a restricted just-bash sandbox using the operator's configured timezone.",
+    uiEffects: []
+  },
+  {
     name: "prepare_worktree",
     label: "Prepare worktree",
     description: "Create an explicitly requested isolated branch and git worktree for one repo task.",
@@ -212,9 +218,33 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while waiting for an operator decision." }]
   },
   {
+    name: "inspect_automation",
+    label: "Inspect automation",
+    description: "Read the current session automation state, schedule, and latest outcome.",
+    uiEffects: [{ kind: "refreshThreads", description: "Refreshes the current automation before Butler reports its status." }]
+  },
+  {
     name: "configure_automation",
     label: "Configure automation",
-    description: "Create or replace the daily automation attached to this Butler session.",
+    description: "Create or replace a daily automation, optionally through an inclusive end date.",
+    uiEffects: [{ kind: "refreshThreads", description: "Shows the new session automation immediately." }]
+  },
+  {
+    name: "configure_once_automation",
+    label: "Configure one-off automation",
+    description: "Run once at a local date and time, including the next occurrence of a singular weekday.",
+    uiEffects: [{ kind: "refreshThreads", description: "Shows the new session automation immediately." }]
+  },
+  {
+    name: "configure_weekly_automation",
+    label: "Configure weekly automation",
+    description: "Run at exact local times on selected weekdays, optionally through an inclusive end date.",
+    uiEffects: [{ kind: "refreshThreads", description: "Shows the new session automation immediately." }]
+  },
+  {
+    name: "configure_window_automation",
+    label: "Configure daily window automation",
+    description: "Repeat at a fixed cadence inside a daily local-time window, including cross-midnight windows.",
     uiEffects: [{ kind: "refreshThreads", description: "Shows the new session automation immediately." }]
   },
   {

@@ -51,6 +51,23 @@ export const DEFAULT_SERVICE_LEASE_TTL_MS = 30 * 60 * 1000;
 export const DEFAULT_LEASE_REAP_GRACE_MS = 10 * 60 * 1000;
 export const DEFAULT_ARTIFACT_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 export const LEASE_ACTIVITY_WRITE_THROTTLE_MS = 15_000;
+export const MAX_TIMESTAMP_FUTURE_SKEW_MS = 5 * 60_000;
+
+export function externalThreadTimestampMs(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  const normalized = value >= 100_000_000_000_000
+    ? Math.round(value / 1_000)
+    : value < 100_000_000_000
+      ? Math.trunc(value * 1_000)
+      : Math.trunc(value);
+  return normalized > Date.now() + MAX_TIMESTAMP_FUTURE_SKEW_MS ? fallback : normalized;
+}
+
+export function repairEpochMilliseconds(value: unknown, fallback: number, now = Date.now()): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  const repaired = value >= 100_000_000_000_000 ? Math.round(value / 1_000) : value;
+  return repaired > now + MAX_TIMESTAMP_FUTURE_SKEW_MS ? Math.min(fallback, now) : repaired;
+}
 
 export function emptyCodexContextUsage(): CodexContextUsageView {
   return {

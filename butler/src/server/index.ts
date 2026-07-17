@@ -248,7 +248,7 @@ const pairSessions = new PairSessionManager({
   getCodexAuthStatus: () => butlerAgent.getCodexAuthStatus(),
   onButlerPatch: (payload) => sseHub?.broadcastButlerPatch(payload), onWorkerThreadRefreshed: (threadId) => sseHub?.broadcastWorkerThreadRefreshed(threadId)
 });
-const automationScheduler = new SessionAutomationScheduler({ pairStore, dispatch: (input) => pairSessions.runAutomation(input), onSkipped: (pairId, message) => pairSessions.postAutomationNotice(pairId, message) }); const modelInventoryRefresh = createProviderModelRefreshCoordinator({ pairSessions, piRpcWorkerClient, butlerAgent, scheduleSse: () => sseHub?.schedule() });
+const automationScheduler = new SessionAutomationScheduler({ pairStore, dispatch: (input) => pairSessions.runAutomation(input), isBusy: (pair) => pairSessions.isAutomationBusy(pair.id) }); const modelInventoryRefresh = createProviderModelRefreshCoordinator({ pairSessions, piRpcWorkerClient, butlerAgent, scheduleSse: () => sseHub?.schedule() });
 configureSelfImprovementPairCleanup(pairSessions);
 let selfImprovementReconciliation = Promise.resolve();
 const reconcileSelfImprovementAfterRestart = (canConcludeThreadMissing: (threadId: string) => boolean) => {

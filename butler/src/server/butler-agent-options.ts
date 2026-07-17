@@ -51,7 +51,10 @@ export type ButlerWorkerDefaults = {
 
 export type ButlerAutomationAccess = {
   get: () => PairAutomation | null;
-  configure: (input: { instruction: string; dailyTimes: string[] }) => Promise<PairAutomation>;
+  configure: (input: { instruction: string; dailyTimes: string[]; endDate?: string }) => Promise<PairAutomation>;
+  configureOnce: (input: { instruction: string; on: string; time: string }) => Promise<PairAutomation>;
+  configureWeekly: (input: { instruction: string; weekdays: string[]; times: string[]; endDate?: string }) => Promise<PairAutomation>;
+  configureWindow: (input: { instruction: string; everyMinutes: number; startTime: string; endTime: string; endDate?: string }) => Promise<PairAutomation>;
   configureInterval: (input: { instruction: string; everyMinutes: number; durationMinutes: number }) => Promise<PairAutomation>;
   setEnabled: (enabled: boolean) => Promise<PairAutomation>;
   delete: () => Promise<boolean>;

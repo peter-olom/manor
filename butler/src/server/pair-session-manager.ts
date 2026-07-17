@@ -26,12 +26,14 @@ import { pairTitleIsDefault } from "./pair-store.js";
 import { getUnifiedWorkerCompose, loadWorkerThread, updateUnifiedWorkerCompose, updateWorkerThreadEffort, type WorkerClientAccess } from "./worker-client-router.js";
 import { parseProviderModelRef } from "./model-provider-config.js";
 import { isCallbackReviewRetryablePause } from "./butler-callback-review-runner.js";
+import { resolveOperatorTimezone } from "./operator-timezone.js";
 import { redactSensitiveText } from "./redact-sensitive-text.js";
 import { workerThreadIsRunning } from "./worker-thread-status.js";
 import { pageWorkerProofRecords, pageWorkerThread } from "./worker-thread-page.js";
 import { listWorkspaceProjectDirectories, validateWorkspaceCwd, type WorkspaceProjectDirectory } from "./repo-worktree.js";
 import { buildManorSkillRoutingContext, listManorSkillCapabilities, normalizeManorSkillName, parseManorSkillInvocation, skillAvailabilityDetail } from "./manor-skill-routing.js";
 import type { AutomationDispatchResult } from "./session-automation-scheduler.js";
+import { automationDispatchEndsAt } from "./session-automation.js";
 import type { ActivityWatchdogDiagnostics } from "../shared/activity-watchdog.js";
 
 type PairButlerService = Pick<
@@ -115,7 +117,7 @@ function pairSystemPrompt(pairId: string): string {
     "Call the execution role Worker. Never describe a generic delegation or job as Codex.",
     "When work should be executed, use delegate_to_worker or message_job. When Worker evidence returns, review it adversarially before replying to the operator.",
     "This session can have one automation. Use configure_automation for recurring work at fixed daily wall-clock times, or configure_interval_automation for a bounded request such as every 5 minutes for the next 30 minutes.",
-    "Automation times run in the operator's configured timezone. configure_automation dailyTimes are 24-hour HH:mm in that timezone; use the operator's local times directly without converting to UTC. If the operator has not set a timezone it defaults to UTC. Never claim recurring timers are unavailable when an automation tool can represent the request.",
+    "Automation times run in the operator's configured timezone. Use local 24-hour HH:mm times and YYYY-MM-DD dates directly without converting to UTC. Distinguish one-off weekdays from recurring weekdays, inclusive end dates from unbounded schedules, and fixed daily windows from relative intervals. If the operator has not set a timezone it defaults to UTC.",
     "If the task or times are materially missing, use ask_operator before configuring. Never claim an automation was created, changed, paused, resumed, or deleted before the matching tool succeeds.",
     "Keep operator-visible replies concise. Do not mention hidden tool prompts or internal routing."
   ].join("\n");
@@ -371,10 +373,25 @@ export class PairSessionManager {
     ];
   }
 
-  async configureAutomation(pairId: string, input: { instruction: string; dailyTimes: string[] }): Promise<PairAutomation | null> {
+  async configureAutomation(pairId: string, input: { instruction: string; dailyTimes: string[]; endDate?: string }): Promise<PairAutomation | null> {
     const pair = await this.persistAutomationMutation(pairId, () => this.options.pairStore.configureAutomation(pairId, input));
     if (!pair?.automation) return null;
     return pair.automation;
+  }
+
+  async configureOnceAutomation(pairId: string, input: { instruction: string; on: string; time: string }): Promise<PairAutomation | null> {
+    const pair = await this.persistAutomationMutation(pairId, () => this.options.pairStore.configureOnceAutomation(pairId, input));
+    return pair?.automation ?? null;
+  }
+
+  async configureWeeklyAutomation(pairId: string, input: { instruction: string; weekdays: string[]; times: string[]; endDate?: string }): Promise<PairAutomation | null> {
+    const pair = await this.persistAutomationMutation(pairId, () => this.options.pairStore.configureWeeklyAutomation(pairId, input));
+    return pair?.automation ?? null;
+  }
+
+  async configureWindowAutomation(pairId: string, input: { instruction: string; everyMinutes: number; startTime: string; endTime: string; endDate?: string }): Promise<PairAutomation | null> {
+    const pair = await this.persistAutomationMutation(pairId, () => this.options.pairStore.configureWindowAutomation(pairId, input));
+    return pair?.automation ?? null;
   }
 
   async configureIntervalAutomation(pairId: string, input: { instruction: string; everyMinutes: number; durationMinutes: number }): Promise<PairAutomation | null> {
@@ -402,19 +419,41 @@ export class PairSessionManager {
     this.syncPairSnapshot(pairId);
   }
 
+  async isAutomationBusy(pairId: string): Promise<boolean> {
+    const pair = this.options.pairStore.getPair(pairId);
+    if (!pair) return true;
+    const shell = (await this.ensureService(pairId)).getShellSnapshot();
+    const unansweredQuestion = Boolean(pair.lastMessage?.question && !pair.lastMessage.question.answeredAt);
+    return pair.butlerPending || Boolean(pair.butlerPendingReason) || unansweredQuestion ||
+      pair.status === "worker_running" || pair.status === "needs_butler_review" ||
+      shell.pending || shell.isStreaming ||
+      shell.supervision.callbacks.some((callback) => callback.owesOperatorReply && callback.callbackState !== "closed");
+  }
+
   async runAutomation(input: { pairId: string; automation: PairAutomation; run: NonNullable<PairAutomation["running"]> }): Promise<AutomationDispatchResult> {
     const pair = this.options.pairStore.getPair(input.pairId);
     if (!pair) throw new Error("Butler session not found");
     const service = await this.ensureService(input.pairId);
-    const shell = service.getShellSnapshot();
-    const unansweredQuestion = Boolean(pair.lastMessage?.question && !pair.lastMessage.question.answeredAt);
-    const alreadyActive = pair.butlerPending || Boolean(pair.butlerPendingReason) || unansweredQuestion || pair.status === "worker_running" || pair.status === "needs_butler_review" || shell.pending || shell.isStreaming || shell.supervision.callbacks.some((callback) => callback.owesOperatorReply && callback.callbackState !== "closed");
-    if (alreadyActive) {
-      const summary = "Automation skipped because this session was already active.";
-      await service.postAutomationNotice(summary);
-      const resultPath = await this.saveAutomationResult(input, "skipped", summary).catch(() => null);
-      return { outcome: "skipped", summary, resultPath };
+    const startedAt = Date.now();
+    const deadline = startedAt + 6 * 60 * 60 * 1_000;
+    const scheduleEndsAt = automationDispatchEndsAt(input.automation.schedule, resolveOperatorTimezone());
+    const scheduleHasEnded = (): boolean => scheduleEndsAt !== null && Date.now() > scheduleEndsAt;
+    // The scheduler checks before claiming, then this closes the narrow race
+    // where the operator or a Worker callback becomes active immediately after.
+    while (await this.isAutomationBusy(input.pairId)) {
+      if (scheduleHasEnded()) {
+        return { outcome: "skipped", summary: "Automation ended before this delayed run could start.", resultPath: null };
+      }
+      if (Date.now() >= deadline) throw new Error("Automation could not start within the six-hour run limit because the session remained active");
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 2_000);
+        timer.unref?.();
+      });
     }
+    if (scheduleHasEnded()) {
+      return { outcome: "skipped", summary: "Automation ended before this delayed run could start.", resultPath: null };
+    }
+    const shell = service.getShellSnapshot();
     const selectionError = butlerModelAvailabilityError(pair, shell);
     if (selectionError) {
       await service.postAutomationNotice(`Automation failed: ${selectionError}`);
@@ -433,12 +472,10 @@ export class PairSessionManager {
       "Save generated work with save_project_artifact using tags automation and the automation id when appropriate.",
       "Finish with one concise operator-visible result or failure summary. Do not change this automation unless the stored task explicitly asks you to."
     ].join("\n");
-    const startedAt = Date.now();
     try {
       const delivered = await service.runAutomationPrompt(prompt, `Automation run: ${input.automation.instruction}`);
       if (!delivered) throw new Error("Butler did not accept the scheduled run");
       this.syncPairSnapshot(input.pairId);
-      const deadline = startedAt + 6 * 60 * 60 * 1_000;
       while (Date.now() < deadline) {
         const current = this.options.pairStore.getPair(input.pairId);
         const shell = service.getShellSnapshot();
@@ -1106,6 +1143,21 @@ export class PairSessionManager {
         get: () => this.options.pairStore.getPair(pair.id)?.automation ?? null,
         configure: async (input) => {
           const automation = await this.configureAutomation(pair.id, input);
+          if (!automation) throw new Error("Butler session not found");
+          return automation;
+        },
+        configureOnce: async (input) => {
+          const automation = await this.configureOnceAutomation(pair.id, input);
+          if (!automation) throw new Error("Butler session not found");
+          return automation;
+        },
+        configureWeekly: async (input) => {
+          const automation = await this.configureWeeklyAutomation(pair.id, input);
+          if (!automation) throw new Error("Butler session not found");
+          return automation;
+        },
+        configureWindow: async (input) => {
+          const automation = await this.configureWindowAutomation(pair.id, input);
           if (!automation) throw new Error("Butler session not found");
           return automation;
         },

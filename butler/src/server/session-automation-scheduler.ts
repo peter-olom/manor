@@ -29,8 +29,7 @@ export class SessionAutomationScheduler {
     dispatch: SessionAutomationDispatcher;
     intervalMs?: number;
     now?: () => number;
-    isBusy?: (pair: PairChat) => boolean;
-    onSkipped?: (pairId: string, message: string) => Promise<void>;
+    isBusy?: (pair: PairChat) => boolean | Promise<boolean>;
   }) {}
 
   start(): void {
@@ -54,6 +53,11 @@ export class SessionAutomationScheduler {
         pair.automation?.enabled && !pair.automation.running && pair.automation.nextRunAt !== null && pair.automation.nextRunAt <= now
       );
       for (const pair of due) {
+        if (this.options.pairStore.expireAutomationIfPastEnd(pair.id, pair.automation!.id, now)) continue;
+        // Keep the due run pending while the session is busy. Claiming it first
+        // advances the schedule and permanently consumes the reminder, which
+        // makes an active automation appear to have stopped.
+        if (await (this.options.isBusy ?? pairIsBusy)(pair)) continue;
         const automation = pair.automation!;
         const run = this.options.pairStore.claimAutomationRun(pair.id, automation.id, now);
         if (!run) continue;
@@ -64,15 +68,6 @@ export class SessionAutomationScheduler {
             outcome: "failed",
             summary: `Could not persist the scheduled run before dispatch: ${error instanceof Error ? error.message : String(error)}`
           }, now);
-          continue;
-        }
-        if ((this.options.isBusy ?? pairIsBusy)(pair)) {
-          const message = "Automation skipped because this session was already active.";
-          this.options.pairStore.finishAutomationRun(pair.id, automation.id, run.id, {
-            outcome: "skipped",
-            summary: message
-          }, now);
-          void this.options.onSkipped?.(pair.id, message).catch(() => undefined);
           continue;
         }
         void this.options.dispatch({ pairId: pair.id, automation, run }).then((result) => {

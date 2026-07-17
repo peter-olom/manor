@@ -14,6 +14,7 @@ import { getCallbackReviewExecution, runButlerJobMutationGuardedTool, runOutside
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
 import { sendWorkerMessage } from "../../src/server/worker-client-router.js";
+import { workerWatchdogProbeDue } from "../../src/server/worker-watchdog.js";
 
 function callback(threadId: string, updatedAt: number): PendingChatCallback {
   return {
@@ -299,6 +300,40 @@ test("older callback state gains safe Worker watchdog defaults", async () => {
   assert.equal(restored?.watchdogAttentionAt, null);
   assert.equal(restored?.watchdogAttentionReason, null);
   assert.equal(restored?.watchdogInterventionFailures, 0);
+});
+
+test("legacy callback timestamps multiplied to microseconds are repaired on load", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-callback-timestamp-"));
+  const callbackStatePath = path.join(dir, "callbacks.json");
+  const persisted = callback("worker", 1_784_152_675_073_000);
+  persisted.lastEventAt = persisted.requestedAt;
+  persisted.updatedAt = 1_784_271_335_845;
+  await writeFile(callbackStatePath, JSON.stringify({ callbackRecords: [persisted] }), "utf8");
+  const callbacks = new Map<string, PendingChatCallback>();
+
+  await loadButlerCallbackState({ callbackStatePath, pendingChatCallbacks: callbacks, deliveredCloseoutIds: new Set(), callbackReviewFailureCount: new Map(), callbackReviewNotBefore: new Map() });
+
+  assert.equal(callbacks.get("worker")?.requestedAt, 1_784_152_675_073);
+  assert.equal(callbacks.get("worker")?.lastEventAt, 1_784_152_675_073);
+  assert.equal(callbacks.get("worker")?.updatedAt, 1_784_271_335_845);
+});
+
+test("future callback watchdog timestamps are quarantined on load", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-callback-future-timestamp-"));
+  const callbackStatePath = path.join(dir, "callbacks.json");
+  const now = Date.now();
+  const persisted = callback("worker", now - 60_000);
+  persisted.lastEventAt = now + 24 * 60 * 60_000;
+  persisted.watchdogLastProbeAt = now + 24 * 60 * 60_000;
+  await writeFile(callbackStatePath, JSON.stringify({ callbackRecords: [persisted] }), "utf8");
+  const callbacks = new Map<string, PendingChatCallback>();
+
+  await loadButlerCallbackState({ callbackStatePath, pendingChatCallbacks: callbacks, deliveredCloseoutIds: new Set(), callbackReviewFailureCount: new Map(), callbackReviewNotBefore: new Map() });
+
+  const restored = callbacks.get("worker")!;
+  assert.ok(restored.lastEventAt <= Date.now());
+  assert.ok((restored.watchdogLastProbeAt ?? 0) <= Date.now());
+  assert.equal(workerWatchdogProbeDue(restored, Date.now() + 5 * 60_000, { silenceMs: 5 * 60_000 }), true);
 });
 
 test("adversarial review brief carries Butler's latest steering and unresolved decisions", async () => {
