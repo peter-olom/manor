@@ -117,6 +117,7 @@ services:
       RUNTIME_BROKER_TOKEN: "${RUNTIME_BROKER_TOKEN:?Run ./install.sh or set RUNTIME_BROKER_TOKEN in .env.}"
       MANOR_HOST_CONTROLLER_URL: http://host-controller:8092
       MANOR_HOST_CONTROLLER_TOKEN: "${MANOR_HOST_CONTROLLER_TOKEN:?Run ./install.sh or set MANOR_HOST_CONTROLLER_TOKEN in .env.}"
+      MANOR_EGRESS_ADMIN_URL: http://egress:8092
     volumes:
       - butler-state:/state
       - butler-home:/home/butler/.codex
@@ -185,7 +186,7 @@ services:
     volumes:
       - ./docker/butler-gateway/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
-      - "${BUTLER_HOST_PORT:-8180}:8080"
+      - "${BUTLER_HOST_BIND:-127.0.0.1}:${BUTLER_HOST_PORT:-8180}:8080"
       - "127.0.0.1:1455:1455"
     networks:
       - control
@@ -207,6 +208,7 @@ services:
       MANOR_HARNESS_HOME: /harness-state
       MANOR_HARNESS_REGISTRY_PATH: /harness-state/harness-capabilities.json
       HOME: /home/worker
+      ASIRI_HOME: /home/worker/.config/asiri
       CODEX_HOME: /home/worker/.codex
       PI_AGENT_DIR: /worker-pi/agent
       PI_CODING_AGENT_DIR: /worker-pi/agent
@@ -270,6 +272,7 @@ services:
       - codex-state:/state
       - codex-home:/home/worker/.codex
       - codex-config:/home/worker/.config
+      - worker-tools:/home/worker/.local
       - harness-state:/harness-state
       - worker-pi:/worker-pi
       - worker-runtime:/worker-runtime
@@ -293,13 +296,14 @@ services:
   egress:
     image: manor-egress:local
     container_name: manor-egress
-    command: ["sh", "-lc", "rm -f /tmp/squid.pid && exec squid -N -f /etc/squid/squid.conf"]
     environment:
       MANOR_ROLE: egress
+      EGRESS_ADMIN_PORT: 8092
+      EGRESS_ADMIN_TOKEN: "${RUNTIME_BROKER_TOKEN:?Run ./install.sh or set RUNTIME_BROKER_TOKEN in .env.}"
     volumes:
       - egress-state:/state
     healthcheck:
-      test: ["CMD", "sh", "-lc", "nc -z 127.0.0.1 3128"]
+      test: ["CMD", "sh", "-lc", "nc -z 127.0.0.1 3128 && nc -z 127.0.0.1 8092"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -576,6 +580,7 @@ volumes:
   butler-pi:
   worker-pi:
   worker-runtime:
+  worker-tools:
   butler-state:
   codex-config:
   codex-home:

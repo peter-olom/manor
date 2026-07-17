@@ -5,6 +5,7 @@ import { getJson, patchJson, postJson } from "./api";
 import { ModelPicker, modelOptionValue, type ModelPickerGroup, type ModelPickerOption } from "./ModelPicker";
 import { WarningIcon } from "./icons";
 import { SkillsDashboard } from "./SkillsDashboard";
+import { RuntimeEgressDashboard } from "./RuntimeEgressDashboard";
 import { UsageDashboard } from "./UsageDashboard";
 import {
   workerHarnessLabel,
@@ -95,9 +96,10 @@ const VALIDATION_LABELS: Record<SettingsValidationKey, string> = {
   memoryEmbeddings: "Embeddings"
 };
 
-export type SettingsSectionId = "runtime" | "providers" | "usage" | "skills" | "memory" | "diagnostics";
+export type SettingsSectionId = "runtime" | "network" | "providers" | "usage" | "skills" | "memory" | "diagnostics";
 export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; description: string }[] = [
   { id: "runtime", label: "Runtime", description: "Operator, Worker, vision, and titles" },
+  { id: "network", label: "Network", description: "Runtime internet access" },
   { id: "providers", label: "Providers", description: "Model and tool access" },
   { id: "usage", label: "Usage", description: "Model tokens and estimated spend" },
   { id: "skills", label: "Skills", description: "Browse, install, and edit agent skills" },
@@ -106,6 +108,7 @@ export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; descript
 ];
 
 const SECTION_HELP: Record<SettingsSectionId, string> = {
+  network: "Allow or remove trusted internet hosts for the shared Butler and Worker runtime.",
   providers: "Configure the model providers (OpenAI/Codex, Ollama Local, Ollama Cloud, OpenCode Go) and web tools Butler can use.",
   usage: "Review recorded model tokens, known costs, and subscription usage across Butler and Workers.",
   skills: "Browse and manage the skills available to Butler Pi, Worker Pi, and Worker Codex.",
@@ -935,6 +938,7 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
 
   if (activeSection === "skills") return <SkillsDashboard active={active} />;
   if (activeSection === "usage") return <UsageDashboard active={active} />;
+  if (activeSection === "network") return <RuntimeEgressDashboard active={active} />;
 
   if (!draft || !payload) {
     return (

@@ -183,6 +183,14 @@ Manor keeps repository work and runtime work separate on purpose.
 - use the optional desktop proof sidecar only when native headed app verification is needed
 - treat worker-side package installation as an exception, not the default path
 
+### Installing Worker CLIs
+
+Standalone CLIs can be installed from the Worker CLI when their installer supports an unprivileged destination under `~/.local`. Manor keeps `~/.local` and `~/.config` on persistent Worker volumes, so the executable and its user configuration survive normal restarts and container recreation. Removing those volumes also removes the installed tools and configuration.
+
+Outbound access remains restricted. Add any required installer, release, API, or control-plane hostnames that are not built in through **Settings → Network**. Runtime egress changes apply immediately. Allow subdomains only when the CLI needs them. For example, Asiri can install its binary under `~/.local/bin`, while `asiri.dev` must be allowed for its API requests.
+
+Tools that require `apt`, root access, system-wide paths, or additional operating-system libraries must use the Power User workflow: bake them into the Worker image and rebuild Manor. A user-space CLI that depends on a missing system library belongs in that image as well. This keeps the system layer reproducible while allowing self-contained CLIs to be installed when needed.
+
 ## Async Verification Model
 
 Manor is built for async work. The operator should be able to state intent, step back, and get a reviewed outcome instead of supervising every command.
@@ -374,6 +382,8 @@ Current trust boundaries:
 - Codex app-server and Pi RPC Worker sessions both execute in the Worker host
 - Worker execution does not get direct internet access
 - external outbound traffic from Butler and Worker execution goes through the restricted `egress` proxy; local Ollama traffic stays inside the appliance
+- operators can add or remove trusted runtime hostnames in Settings → Network; changes apply live to the shared Butler and Worker proxy while built-in domains remain read-only
+- user-installed Worker CLIs persist in the Worker tools volume and remain unprivileged
 - preview runtimes keep private runtime networking and get direct outbound internet by default
 - optional preview egress profiles remain available for stricter outbound control
 - the runtime broker talks to the Docker socket for scoped preview, stack, service, browser, and proof capabilities

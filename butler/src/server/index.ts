@@ -32,6 +32,7 @@ import { buildComposerInputItemsPrompt, buildReferencePromptText, buildWorkerInp
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { registerScratchPadRoutes } from "./scratch-pad-routes.js"; import { registerSkillsRoutes } from "./skills-routes.js"; import { SkillsService } from "./skills-service.js"; import { ExtensionUiBroker } from "./extension-ui-broker.js"; import { registerExtensionUiRoutes } from "./extension-ui-routes.js"; import { registerWorkerSessionControlRoutes } from "./worker-session-control-routes.js"; import { registerButlerSessionControlRoutes } from "./butler-session-control-routes.js";
 import { registerRuntimeResourceRoutes } from "./runtime-resource-routes.js";
+import { RuntimeEgressClient } from "./runtime-egress-client.js"; import { registerRuntimeEgressRoutes } from "./runtime-egress-routes.js";
 import { ScratchPadStore } from "./scratch-pad-store.js";
 import { registerServerAssetRoutes } from "./server-asset-routes.js";
 import { isBinaryUploadRequest, shouldParseJsonRequest } from "./upload-request.js";
@@ -66,7 +67,7 @@ const codexHomeDir = process.env.CODEX_SHARED_HOME_DIR ?? "/codex-home";
 const harnessRegistryPath = process.env.MANOR_HARNESS_REGISTRY_PATH ?? path.join(stateDir, "harness-capabilities.json");
 const harnessAccessPath = process.env.MANOR_HARNESS_ACCESS_FILE ?? path.join(stateDir, "harness-broker-access.json");
 const codexConfigDir = process.env.CODEX_SHARED_CONFIG_DIR ?? "/codex-config";
-const runtimeBrokerUrl = process.env.RUNTIME_BROKER_URL ?? "http://runtime-broker:8090";
+const runtimeBrokerUrl = process.env.RUNTIME_BROKER_URL ?? "http://runtime-broker:8090"; const runtimeEgressAdminUrl = process.env.MANOR_EGRESS_ADMIN_URL ?? "http://egress:8092";
 const runtimeBrokerToken = process.env.RUNTIME_BROKER_TOKEN ?? null;
 const hostControllerUrl = process.env.MANOR_HOST_CONTROLLER_URL ?? null;
 const hostControllerToken = process.env.MANOR_HOST_CONTROLLER_TOKEN ?? null;
@@ -115,7 +116,7 @@ await scratchPadStore.load();
 const serviceTemplateRegistry = new ServiceTemplateRegistry(path.join(stateDir, "service-templates.json"));
 await serviceTemplateRegistry.load();
 const { imageStore, fileStore, referenceMutations } = await loadReferenceStores({ artifactsDir, imageReferenceDir, fileReferenceDir });
-const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerToken);
+const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerToken); const runtimeEgress = new RuntimeEgressClient(runtimeEgressAdminUrl, runtimeBrokerToken);
 const hostController = new HostControllerClient(hostControllerUrl, hostControllerToken);
 let runtimeAccess!: RuntimeServerAccess;
 let sseHub!: ButlerSseHub;
@@ -470,6 +471,7 @@ registerPreviewAnnotationRoutes({
 registerPairRoutes({ app, pairSessions });
 registerExtensionUiRoutes({ app, pairStore, broker: extensionUiBroker }); registerWorkerSessionControlRoutes({ app, pairStore, piRpcWorkerClient }); registerButlerSessionControlRoutes({ app, pairSessions });
 registerManorSettingsRoutes({ app, settingsService, store, codexClient, piRpcWorkerClient, butlerAgent, onSettingsChanged: applyManagedSettingsChange, refreshModelInventories: () => modelInventoryRefresh.request() });
+registerRuntimeEgressRoutes({ app, client: runtimeEgress, operatorGatewayHost: process.env.MANOR_OPERATOR_GATEWAY_HOST ?? "butler-gateway" });
 registerModelUsageRoutes(app, modelUsageStore);
 registerSelfImprovementRoutes({
   app,

@@ -99,6 +99,9 @@ COPY docker/codex-box/worker-pi-rpc-bridge.mjs /opt/manor/codex-box/worker-pi-rp
 COPY --chown=worker:worker docker/codex-box/zshrc /home/worker/.zshrc
 COPY --chown=worker:worker docker/codex-box/zprofile /home/worker/.zprofile
 
+RUN mkdir -p /home/worker/.local/bin /home/worker/.local/share/mise \
+    && chown -R worker:worker /home/worker/.local
+
 ENV MANOR_REAL_PATH="/home/worker/.local/bin:/home/worker/.local/share/mise/shims:/home/worker/.local/share/mise/bin:/opt/manor/npm-global/bin:${PATH}"
 ENV PATH="/opt/manor/codex-box/install-guard-bin:${MANOR_REAL_PATH}"
 ENV WORKER_PI_CLI_PATH="/opt/manor/worker/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
