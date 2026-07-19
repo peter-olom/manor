@@ -722,6 +722,20 @@ test("quiesced pairs cannot restart supervision until explicitly resumed", async
   assert.equal(service.startCount, 2);
 });
 
+test("deletePair removes an already-quiesced Worker pair without restarting supervision", async () => {
+  const { manager, pairStore, service } = await createManager();
+  const pair = await manager.createWorkerPair({ threadId: "quiesced-worker", task: "Close safely" });
+
+  assert.equal(await manager.quiescePair(pair.id), true);
+  assert.equal(await manager.deletePair(pair.id), true);
+
+  assert.equal(pairStore.getPair(pair.id), null);
+  assert.equal(service.startCount, 1);
+  assert.equal(service.stopCount, 1);
+  assert.equal(service.disposeCount, 1);
+  assert.deepEqual(service.removedExternalThreads, []);
+});
+
 test("deletePair restores the live pair when durable deletion fails", async () => {
   const { manager, pairStore, service } = await createManager();
   const pair = await manager.createPair({ title: "Retain on failure" });

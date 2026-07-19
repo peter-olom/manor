@@ -842,7 +842,7 @@ export class PairSessionManager {
 
   async deletePair(pairId: string): Promise<boolean> {
     const existing = this.options.pairStore.getPair(pairId);
-    if (existing?.worker) {
+    if (existing?.worker && !this.quiescedPairs.has(pairId)) {
       const service = await this.ensureService(pairId);
       await service.removeExternalWorkerDelegation(existing.worker.threadId);
     }
