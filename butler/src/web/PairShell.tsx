@@ -39,6 +39,7 @@ import { SessionWorkspaceControl } from "./SessionWorkspaceControl"; import { Se
 import { readSidebarCollapsed, writeSidebarCollapsed } from "./sidebar-preference";
 import { TerminalPane } from "./TerminalPane";
 import { useEventStream } from "./useEventStream"; import { useProjectArtifactPreview } from "./useProjectArtifactPreview"; import { useSessionAutomation } from "./useSessionAutomation";
+import { useManorRestartApproval } from "./useManorRestartApproval";
 import { useWorkerThreadHistory } from "./useWorkerThreadHistory";
 import { WorkerPane } from "./WorkerPane";
 import type { WorkerTimeline } from "./WorkerPane";
@@ -665,6 +666,7 @@ export function PairShell() {
   useEffect(() => writeSidebarCollapsed(desktopSidebarCollapsed), [desktopSidebarCollapsed]);
   const manorSurface = manorSurfaceForView(viewMode);
   const activePair = pair?.id === selectedPairId ? pair : null;
+  const { reconcilePair: reconcileManorRestartRequest, dialog: manorRestartDialog } = useManorRestartApproval(activePair, setPair);
   const displayedError = error ?? pairRefreshError;
   const activeWorkerHandoff = activePair ? workerHandoffByPairId[activePair.id] ?? null : null;
   const shouldLoadWorkerThread = manorSurface === "sessions" && viewMode !== "butler" && Boolean(activePair?.worker);
@@ -856,7 +858,7 @@ export function PairShell() {
         const payload = await getJson<PairDetailResponse>(`/api/pairs/${encodeURIComponent(pairId)}?limit=${PAGE_SIZE}`, { signal });
         if (!cancelled) {
           startTransition(() => {
-            setPair(payload.pair);
+            setPair(reconcileManorRestartRequest(payload.pair));
             setPairRefreshError(null);
           });
         }
@@ -886,7 +888,7 @@ export function PairShell() {
       window.removeEventListener("focus", reconcileWhenVisible);
       document.removeEventListener("visibilitychange", reconcileWhenVisible);
     };
-  }, [pairsLoaded, selectedPairId]);
+  }, [pairsLoaded, reconcileManorRestartRequest, selectedPairId]);
 
   const workerTimeline = useMemo<WorkerTimeline>(() => {
     if (!activePair?.worker) return { turns: [], report: null, reports: [], payload: null, checklist: null, fallback: [] };
@@ -925,7 +927,7 @@ export function PairShell() {
       const payload = await postJson<PairDetailResponse>("/api/pairs", { title: "New session" });
       await loadPairs(); if (!activate()) return true;
       selectPairId(payload.pair.id, true);
-      setPair(payload.pair);
+      setPair(reconcileManorRestartRequest(payload.pair));
       setViewMode("butler");
       setMobileSidebarOpen(false);
       setEditingTitle(false);
@@ -1008,7 +1010,7 @@ export function PairShell() {
         imageReferenceIds: composerAttachments.filter((attachment) => isVisionImageFile(attachment.mimeType, attachment.name)).map((attachment) => attachment.id),
         fileReferenceIds: composerAttachments.filter((attachment) => !isVisionImageFile(attachment.mimeType, attachment.name)).map((attachment) => attachment.id)
       });
-      setPair(payload.pair);
+      setPair(reconcileManorRestartRequest(payload.pair));
       setDraft("");
       setSkillInstallIntent(false);
       setComposerAttachments([]);
@@ -1485,6 +1487,7 @@ export function PairShell() {
           </div>
         )}
       </section>
+      {manorRestartDialog}
     </main>
   );
 }

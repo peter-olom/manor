@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 
-import type { HostControllerClient, ManorRestartRun } from "./host-controller-client.js";
+import type { HostControllerClient, ManorRestartRun, ManorRestartStartResult } from "./host-controller-client.js";
 import {
   authorizeManorRestartRequest,
   buildAuthorizedManorRestartInput,
@@ -29,6 +29,7 @@ type RestartRequestStateSnapshot = {
 export class ManorRestartRequestState {
   private pending: ManorRestartRequestView | null = null;
   private authorized: ManorRestartRequestView | null = null;
+  private startingRequestId: string | null = null;
   private saveQueue: Promise<void> = Promise.resolve();
 
   constructor(
@@ -66,6 +67,9 @@ export class ManorRestartRequestState {
   }
 
   request(input: RestartRequestInput): ManorRestartRequestView {
+    if (this.startingRequestId) {
+      throw new Error("A Manor restart is already starting.");
+    }
     this.pending = createManorRestartRequest(input);
     this.authorized = null;
     void this.persist();
@@ -90,8 +94,23 @@ export class ManorRestartRequestState {
   }
 
   async start(requestId: string): Promise<{ restartRequest: ManorRestartRequestView; run: ManorRestartRun }> {
+    if (this.startingRequestId) {
+      throw new Error("A Manor restart is already starting.");
+    }
     const restartRequest = requireAuthorizedManorRestartRequest(this.authorized, requestId);
-    const result = await this.hostController.restart(buildAuthorizedManorRestartInput(restartRequest));
+    this.startingRequestId = requestId;
+    let result: ManorRestartStartResult;
+    try {
+      result = await this.hostController.restart(buildAuthorizedManorRestartInput(restartRequest));
+    } catch (error) {
+      this.pending = { ...restartRequest, status: "pending", authorizedAt: null };
+      this.authorized = null;
+      await this.persist();
+      this.onChange();
+      throw error;
+    } finally {
+      this.startingRequestId = null;
+    }
     this.authorized = null;
     await this.persist();
     this.onChange();

@@ -1,3 +1,5 @@
+import type { ManorRestartRequestView } from "./manor-restart.js";
+
 export type PairRole = "user" | "butler" | "worker" | "system";
 export type PairLane = "butler" | "worker";
 export type PairStatus = "idle" | "butler_running" | "worker_running" | "needs_butler_review" | "blocked";
@@ -296,6 +298,7 @@ export type PairDetail = PairChat & {
   butlerActivity: PairTraceItem[];
   butlerActivityOutcome: PairButlerActivityOutcome | null;
   review: PairReviewActivity | null;
+  pendingManorRestartRequest: ManorRestartRequestView | null;
   loadedStart: number;
   hasMore: boolean;
   compose: PairComposeSettings;

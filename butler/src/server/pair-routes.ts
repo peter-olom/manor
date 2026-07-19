@@ -1,5 +1,6 @@
 import type express from "express";
 
+import { isRestartAuthorizeAction } from "./manor-restart-authorization.js";
 import { readFileReferenceIds, readImageReferenceIds } from "./server-runtime-helpers.js";
 import { WorkspaceCwdError } from "./repo-worktree.js";
 import type { PairSessionManager } from "./pair-session-manager.js";
@@ -58,6 +59,35 @@ export function registerPairRoutes(access: PairRouteAccess): void {
       response.json({ pair });
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post("/api/pairs/:pairId/manor-restart-requests/:requestId/authorize", async (request, response) => {
+    if (!isRestartAuthorizeAction(request.body?.operatorAction)) {
+      response.status(400).json({ error: "Restart authorization requires the explicit Authorize restart action." });
+      return;
+    }
+    try {
+      const result = await pairSessions.authorizeManorRestartRequest(request.params.pairId, request.params.requestId);
+      if (!result) {
+        response.status(404).json({ error: "Butler session not found" });
+        return;
+      }
+      response.status(202).json({ ok: true, ...result });
+    } catch (error) {
+      response.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post("/api/pairs/:pairId/manor-restart-requests/:requestId/dismiss", async (request, response) => {
+    try {
+      if (!await pairSessions.dismissManorRestartRequest(request.params.pairId, request.params.requestId)) {
+        response.status(404).json({ error: "Butler session not found" });
+        return;
+      }
+      response.json({ ok: true });
+    } catch (error) {
+      response.status(409).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
 

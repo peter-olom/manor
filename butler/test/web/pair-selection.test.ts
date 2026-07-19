@@ -3,11 +3,13 @@ import test from "node:test";
 
 import {
   canBeginPairDeletion,
+  reconcileClearedManorRestartRequest,
   reconcileSelectedPairId,
   shouldClearDeletedPairSelection,
   shouldReconcilePairDetail,
   shouldReportPairDetailError
 } from "../../src/web/pair-selection.js";
+import type { PairDetail } from "../../src/shared/pairing.js";
 
 test("pair selection keeps a session that still exists", () => {
   assert.equal(reconcileSelectedPairId("pair-b", [{ id: "pair-a" }, { id: "pair-b" }]), "pair-b");
@@ -52,4 +54,34 @@ test("duplicate delete attempts cannot share and prematurely release suppression
   deleting.add("pair-a");
   assert.equal(canBeginPairDeletion("pair-a", deleting), false);
   assert.equal(canBeginPairDeletion("pair-b", deleting), true);
+});
+
+test("a stale pair refresh cannot restore a restart request cleared by the operator", () => {
+  const cleared = { pairId: "pair-a", requestId: "restart-1" };
+  const stalePair = {
+    id: "pair-a",
+    pendingManorRestartRequest: { id: "restart-1" }
+  } as PairDetail;
+
+  const stale = reconcileClearedManorRestartRequest(stalePair, cleared);
+  assert.equal(stale.pair.pendingManorRestartRequest, null);
+  assert.deepEqual(stale.cleared, cleared);
+
+  const acknowledged = reconcileClearedManorRestartRequest(
+    { ...stalePair, pendingManorRestartRequest: null },
+    stale.cleared
+  );
+  assert.equal(acknowledged.cleared, null);
+});
+
+test("restart request suppression stays scoped to its Butler session", () => {
+  const otherPair = {
+    id: "pair-b",
+    pendingManorRestartRequest: { id: "restart-2" }
+  } as PairDetail;
+  const cleared = { pairId: "pair-a", requestId: "restart-1" };
+
+  const result = reconcileClearedManorRestartRequest(otherPair, cleared);
+  assert.equal(result.pair.pendingManorRestartRequest?.id, "restart-2");
+  assert.deepEqual(result.cleared, cleared);
 });

@@ -32,6 +32,7 @@ function makePair(overrides: Partial<PairDetail> = {}): PairDetail {
     butlerActivity: [],
     butlerActivityOutcome: null,
     review: null,
+    pendingManorRestartRequest: null,
     loadedStart: 0,
     hasMore: false,
     compose: {
@@ -63,12 +64,16 @@ function createFakePairSessions(initialPair: PairDetail = makePair()) {
   const workspaceChanges: Array<{ pairId: string; cwd: string }> = [];
   const workspaces: PairWorkspaceOption[] = [{ id: "workspace:shared", cwd: "/repos", label: "Shared workspace", kind: "workspace", gitBacked: false }];
   const questionAnswers: Array<{ pairId: string; messageId: string; questionId: string; optionId?: string; freeformText?: string }> = [];
+  const restartAuthorizations: Array<{ pairId: string; requestId: string }> = [];
+  const restartDismissals: Array<{ pairId: string; requestId: string }> = [];
   return {
     sentMessages,
     handoffs,
     workspaceChanges,
     workspaces,
     questionAnswers,
+    restartAuthorizations,
+    restartDismissals,
     manager: {
       async listSummaries(): Promise<PairSummary[]> {
         return [...pairs.values()].map(({ messages: _messages, loadedStart: _loadedStart, hasMore: _hasMore, ...pair }) => pair);
@@ -84,6 +89,16 @@ function createFakePairSessions(initialPair: PairDetail = makePair()) {
       },
       async getPairDetail(pairId: string): Promise<PairDetail | null> {
         return pairs.get(pairId) ?? null;
+      },
+      async authorizeManorRestartRequest(pairId: string, requestId: string) {
+        if (!pairs.has(pairId)) return null;
+        restartAuthorizations.push({ pairId, requestId });
+        return { restartRequest: { id: requestId }, run: { id: "restart-run-1" } };
+      },
+      async dismissManorRestartRequest(pairId: string, requestId: string): Promise<boolean> {
+        if (!pairs.has(pairId)) return false;
+        restartDismissals.push({ pairId, requestId });
+        return true;
       },
       async getActivityWatchdogs(pairId: string) {
         if (!pairs.has(pairId)) return null;
@@ -243,6 +258,77 @@ async function listen(app: express.Express): Promise<{ url: string; close: () =>
       })
   };
 }
+
+test("pair restart authorization is routed to the active Butler session", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/manor-restart-requests/restart-1/authorize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operatorAction: "authorize_restart" })
+    });
+    assert.equal(res.status, 202);
+    assert.deepEqual(fake.restartAuthorizations, [{ pairId: "pair-1", requestId: "restart-1" }]);
+  } finally {
+    await close();
+  }
+});
+
+test("pair restart authorization requires the explicit operator action", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/manor-restart-requests/restart-1/authorize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    assert.equal(res.status, 400);
+    assert.deepEqual(fake.restartAuthorizations, []);
+  } finally {
+    await close();
+  }
+});
+
+test("pair restart routes reject missing sessions and stale requests", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes({
+    ...fake.manager,
+    async authorizeManorRestartRequest(pairId: string) {
+      if (pairId === "missing") return null;
+      throw new Error("No pending Manor restart request matches this authorization.");
+    }
+  });
+  const { url, close } = await listen(app);
+  try {
+    for (const [pairId, status] of [["missing", 404], ["pair-1", 409]] as const) {
+      const res = await fetch(`${url}/api/pairs/${pairId}/manor-restart-requests/restart-1/authorize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operatorAction: "authorize_restart" })
+      });
+      assert.equal(res.status, status);
+    }
+  } finally {
+    await close();
+  }
+});
+
+test("pair restart dismissal is routed to the active Butler session", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const res = await fetch(`${url}/api/pairs/pair-1/manor-restart-requests/restart-1/dismiss`, { method: "POST" });
+    assert.equal(res.status, 200);
+    assert.deepEqual(fake.restartDismissals, [{ pairId: "pair-1", requestId: "restart-1" }]);
+  } finally {
+    await close();
+  }
+});
 
 test("PATCH /api/pairs/:pairId renames through the pair session manager", async () => {
   const fake = createFakePairSessions(makePair({ title: "Untouched" }));

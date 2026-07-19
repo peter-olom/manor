@@ -1,6 +1,24 @@
+import type { PairDetail } from "../shared/pairing.js";
+
 export type PairSelectionOption = {
   id: string;
 };
+
+export type ClearedManorRestartRequest = {
+  pairId: string;
+  requestId: string;
+};
+
+export function reconcileClearedManorRestartRequest(
+  pair: PairDetail,
+  cleared: ClearedManorRestartRequest | null
+): { pair: PairDetail; cleared: ClearedManorRestartRequest | null } {
+  if (!cleared || pair.id !== cleared.pairId) return { pair, cleared };
+  if (pair.pendingManorRestartRequest?.id === cleared.requestId) {
+    return { pair: { ...pair, pendingManorRestartRequest: null }, cleared };
+  }
+  return { pair, cleared: null };
+}
 
 export function reconcileSelectedPairId(
   selectedPairId: string | null,

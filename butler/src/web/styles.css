@@ -5971,6 +5971,80 @@ a:hover {
   margin-top: 4px;
 }
 
+.manor-restart-dialog {
+  width: min(560px, calc(100vw - 32px));
+  gap: 16px;
+}
+
+.manor-restart-dialog header,
+.manor-restart-dialog header h2,
+.manor-restart-dialog header p,
+.manor-restart-note {
+  margin: 0;
+}
+
+.manor-restart-dialog header {
+  display: grid;
+  gap: 6px;
+}
+
+.manor-restart-dialog header h2 {
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.manor-restart-dialog header p:last-child,
+.manor-restart-note {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.manor-restart-kicker {
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.manor-restart-details {
+  display: grid;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.manor-restart-details > div {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.28fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 11px 12px;
+}
+
+.manor-restart-details > div + div {
+  border-top: 1px solid var(--border);
+}
+
+.manor-restart-details dt {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.manor-restart-details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.manor-restart-dialog .modal-actions .button {
+  min-height: 40px;
+}
+
 :root[data-theme="light"] {
   --modal-backdrop-bg: rgba(15, 23, 42, 0.4);
 }
@@ -8553,6 +8627,28 @@ a.file-explorer-name:hover {
   .sidebar {
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .manor-restart-backdrop {
+    place-items: end center;
+    padding: 0;
+  }
+
+  .manor-restart-dialog {
+    width: 100%;
+    max-height: calc(100dvh - env(safe-area-inset-top));
+    overflow: auto;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+  }
+
+  .manor-restart-dialog .modal-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .manor-restart-dialog .modal-actions .button {
+    min-height: 44px;
   }
 
   .topbar {

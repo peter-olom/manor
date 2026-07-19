@@ -1,4 +1,5 @@
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime.js";
+import type { ManorRestartRequestView } from "../shared/manor-restart.js";
 import type { ButlerRoutingDecisionView, ReviewPanelRunView, ReviewPanelSummaryView, WorkerClaimsReportView, WorkerReviewResultRecordView } from "./orchestration-types.js";
 import type { ButlerMemoryEntryView, MemoryEmbeddingView, MemoryRetrievalCandidateView } from "./memory-types.js";
 export type { ButlerMemoryEntryView, ButlerMemoryReviewState, ButlerMemoryScopeKind, ButlerMemoryType, MemoryEmbeddingView, MemoryRetrievalCandidateView } from "./memory-types.js";
@@ -21,6 +22,7 @@ export type {
   WorkerReviewSeverity,
   WorkerSubAgentSummaryView
 } from "./orchestration-types.js";
+export type { ManorRestartRequestView } from "../shared/manor-restart.js";
 export type CodexThreadStatus = "active" | "idle" | "unknown"; export type CodexProofExpectation = "none" | "requested";
 export type CodexInferredWorkDepth = "quick" | "standard" | "deep" | "incident";
 export type CodexTaskCategory =
@@ -1360,19 +1362,6 @@ export interface ButlerOnboardingView {
   steps: OnboardingStepView[];
 }
 
-export interface ManorRestartRequestView {
-  id: string;
-  target: "current" | "latest" | null;
-  gitRef: string | null;
-  includeDesktop: boolean;
-  build: boolean | null;
-  update: boolean | null;
-  reason: string | null;
-  details: string | null;
-  requestedAt: number;
-  status: "pending" | "authorized" | "dismissed";
-  authorizedAt: number | null;
-}
 export interface AppSnapshot {
   codex: {
     connected: boolean;

@@ -9,6 +9,7 @@ import { PairSessionManager } from "../../src/server/pair-session-manager.js";
 import { PairStore } from "../../src/server/pair-store.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import type { ButlerMessagePageView, ButlerMessageView, ModelOption, ReasoningEffort } from "../../src/server/types.js";
+import type { ManorRestartRequestView } from "../../src/shared/manor-restart.js";
 import type { SessionTitleGenerator } from "../../src/server/session-title-generator.js";
 
 class FakeButlerService extends EventEmitter {
@@ -30,6 +31,10 @@ class FakeButlerService extends EventEmitter {
   disposeCount = 0;
   activityTurns: Array<Record<string, unknown>> = [];
   callbacks: Array<Record<string, unknown>> = [];
+  pendingManorRestartRequest: ManorRestartRequestView | null = null;
+  authorizedManorRestartRequest: ManorRestartRequestView | null = null;
+  restartAuthorizations: string[] = [];
+  restartDismissals: string[] = [];
   compose: {
     provider: string | null;
     model: string | null;
@@ -67,6 +72,27 @@ class FakeButlerService extends EventEmitter {
   listComposerCommands(): [] { return []; }
 
   async stopPrompt(): Promise<void> { this.stopCount += 1; this.lifecycleEvents.push("stop-prompt"); }
+
+  authorizeManorRestartRequest(requestId: string): ManorRestartRequestView {
+    if (this.pendingManorRestartRequest?.id !== requestId) throw new Error("No matching restart request");
+    this.restartAuthorizations.push(requestId);
+    this.authorizedManorRestartRequest = { ...this.pendingManorRestartRequest, status: "authorized", authorizedAt: Date.now() };
+    this.pendingManorRestartRequest = null;
+    return this.authorizedManorRestartRequest;
+  }
+
+  async startAuthorizedManorRestart(requestId: string) {
+    if (this.authorizedManorRestartRequest?.id !== requestId) throw new Error("No authorized restart request");
+    const restartRequest = this.authorizedManorRestartRequest;
+    this.authorizedManorRestartRequest = null;
+    return { restartRequest, run: { id: "restart-run-1", status: "running", steps: [] } as never };
+  }
+
+  dismissManorRestartRequest(requestId: string): void {
+    if (this.pendingManorRestartRequest?.id !== requestId) throw new Error("No matching restart request");
+    this.restartDismissals.push(requestId);
+    this.pendingManorRestartRequest = null;
+  }
 
   ensureExternalWorkerDelegation(threadId: string): void {
     if (!this.trackedExternalThreads.includes(threadId)) this.trackedExternalThreads.push(threadId);
@@ -149,9 +175,27 @@ class FakeButlerService extends EventEmitter {
       isStreaming: false,
       lastError: null,
       compose: this.compose,
+      pendingManorRestartRequest: this.pendingManorRestartRequest,
+      authorizedManorRestartRequest: this.authorizedManorRestartRequest,
       supervision: { callbacks: this.callbacks }
     };
   }
+}
+
+function makeRestartRequest(id = "restart-request-1"): ManorRestartRequestView {
+  return {
+    id,
+    target: "current",
+    gitRef: null,
+    includeDesktop: false,
+    build: null,
+    update: null,
+    reason: "Apply the active checkout",
+    details: null,
+    requestedAt: Date.now(),
+    status: "pending",
+    authorizedAt: null
+  };
 }
 
 async function createManager(generator: SessionTitleGenerator | null = null, onCreateService?: (options: unknown) => void, runtime?: { workerModels?: ModelOption[]; butlerSkills?: Array<{ id: string; name: string; description: string; invocation: string }>; skillsByEnvironment?: Partial<Record<"butler-pi" | "worker-pi", Array<{ id: string; name: string; description: string; invocation: string }>>>; validateWorkspace?: (cwd: string) => Promise<string> }): Promise<{
@@ -227,6 +271,24 @@ test("pair Butler services receive a pair-scoped runtime thread id", async () =>
   const second = await manager.createPair();
 
   assert.deepEqual(runtimeThreadIds, [`butler:${first.id}`, `butler:${second.id}`]);
+});
+
+test("pair details and restart actions use that pair's Butler service", async () => {
+  const { manager, service } = await createManager();
+  const pair = await manager.createPair();
+  service.pendingManorRestartRequest = makeRestartRequest();
+
+  const detail = await manager.getPairDetail(pair.id, null, 120);
+  assert.equal(detail?.pendingManorRestartRequest?.id, "restart-request-1");
+
+  const started = await manager.authorizeManorRestartRequest(pair.id, "restart-request-1");
+  assert.equal(started?.run.id, "restart-run-1");
+  assert.deepEqual(service.restartAuthorizations, ["restart-request-1"]);
+
+  service.pendingManorRestartRequest = makeRestartRequest("restart-request-2");
+  assert.equal(await manager.dismissManorRestartRequest(pair.id, "restart-request-2"), true);
+  assert.deepEqual(service.restartDismissals, ["restart-request-2"]);
+  assert.equal(await manager.dismissManorRestartRequest("missing-pair", "restart-request-2"), false);
 });
 
 test("skill mutations schedule resource reloads for active pair Butler sessions", async () => {

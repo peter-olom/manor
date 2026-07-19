@@ -38,7 +38,7 @@ import { listComposerFileSuggestions } from "./composer-file-suggestions.js";
 
 type PairButlerService = Pick<
   ButlerAgentService,
-  "answerOperatorQuestion" | "cancelCallbackReview" | "dispose" | "ensureExternalWorkerDelegation" | "exportSession" | "getLiveSnapshot" | "getMessagePage" | "getSessionControls" | "getShellSnapshot" | "handoffWorker" | "listComposerCommands" | "on" | "postAutomationNotice" | "prompt" | "quiesceCallbackReviews" | "refreshModelSettings" | "reloadResources" | "removeExternalWorkerDelegation" | "retryBlockedCallbackReviews" | "runAutomationPrompt" | "runSessionControl" | "setThinkingLevel" | "start" | "stopPrompt" | "updateComposeSettings" | "watchdogs"
+  "answerOperatorQuestion" | "authorizeManorRestartRequest" | "cancelCallbackReview" | "dismissManorRestartRequest" | "dispose" | "ensureExternalWorkerDelegation" | "exportSession" | "getLiveSnapshot" | "getMessagePage" | "getSessionControls" | "getShellSnapshot" | "handoffWorker" | "listComposerCommands" | "on" | "postAutomationNotice" | "prompt" | "quiesceCallbackReviews" | "refreshModelSettings" | "reloadResources" | "removeExternalWorkerDelegation" | "retryBlockedCallbackReviews" | "runAutomationPrompt" | "runSessionControl" | "setThinkingLevel" | "start" | "startAuthorizedManorRestart" | "stopPrompt" | "updateComposeSettings" | "watchdogs"
 >;
 
 type PairSessionManagerOptions = {
@@ -624,11 +624,26 @@ export class PairSessionManager {
       butlerActivity: activity.items,
       butlerActivityOutcome: activity.outcome,
       review: mapReviewActivity(refreshed, shell),
+      pendingManorRestartRequest: shell.pendingManorRestartRequest,
       messageCount: page.totalCount,
       loadedStart: page.startIndex,
       hasMore: page.hasMore,
       compose: this.resolveCompose(refreshed, service)
     };
+  }
+
+  async authorizeManorRestartRequest(pairId: string, requestId: string) {
+    if (!this.options.pairStore.getPair(pairId)) return null;
+    const service = await this.ensureService(pairId);
+    const request = service.authorizeManorRestartRequest(requestId);
+    return service.startAuthorizedManorRestart(request.id);
+  }
+
+  async dismissManorRestartRequest(pairId: string, requestId: string): Promise<boolean> {
+    if (!this.options.pairStore.getPair(pairId)) return false;
+    const service = await this.ensureService(pairId);
+    service.dismissManorRestartRequest(requestId);
+    return true;
   }
 
   async getActivityWatchdogs(pairId: string): Promise<ActivityWatchdogDiagnostics | null> {
@@ -650,6 +665,7 @@ export class PairSessionManager {
       butlerActivity: activity.items,
       butlerActivityOutcome: activity.outcome,
       review: service && shell ? mapReviewActivity(updated, shell) : null,
+      pendingManorRestartRequest: shell?.pendingManorRestartRequest ?? null,
       messageCount: page?.totalCount ?? updated.messageCount,
       loadedStart: page?.startIndex ?? 0,
       hasMore: page?.hasMore ?? false,
