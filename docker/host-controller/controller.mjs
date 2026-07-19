@@ -6,6 +6,7 @@ import express from "express";
 import {
   normalizeRestartDelayMs,
   normalizeRestartWaitTimeoutSeconds,
+  retryTransientRegistryOperation,
   safeTokenMatch,
   shouldBuildSourceImages,
   validateRestartPayload
@@ -184,6 +185,7 @@ async function runStep(run, label, command, args, options = {}) {
       step.completedAt = now();
       step.stderrTail = limitedTail(`${stderr}\n${error.message}`.trim());
       await persist();
+      error.step = step;
       reject(error);
     });
     child.on("close", async (exitCode) => {
@@ -195,7 +197,9 @@ async function runStep(run, label, command, args, options = {}) {
         resolve({ stdout, stderr, exitCode });
         return;
       }
-      reject(new Error(`${label} failed with exit code ${exitCode}`));
+      const error = new Error(`${label} failed with exit code ${exitCode}`);
+      error.step = step;
+      reject(error);
     });
   });
 }
@@ -517,12 +521,58 @@ async function buildSourceImages(run) {
   if (run.build === false) {
     return;
   }
-  await runStep(run, "Build source images", "docker", [
+  const args = [
     ...composeArgs(run.includeDesktop),
     "build",
     ...sourceBuildServices,
     ...(run.includeDesktop ? ["desktop-proof"] : [])
-  ]);
+  ];
+  await runSourceImageBuildWithRetry(run, "Build source images", args);
+}
+
+function failedStepOutput(error) {
+  const step = error?.step;
+  return step && typeof step === "object"
+    ? `${step.stdoutTail ?? ""}\n${step.stderrTail ?? ""}`
+    : "";
+}
+
+async function waitForSourceBuildRetry(run, buildLabel, retry) {
+  const step = {
+    label: `Retry ${buildLabel.toLowerCase()} after transient registry failure (${retry.retryNumber}/${retry.maxRetries})`,
+    command: "internal",
+    args: [],
+    status: "running",
+    startedAt: now(),
+    completedAt: null,
+    exitCode: null,
+    stdoutTail: retry.reason,
+    stderrTail: ""
+  };
+  run.steps.push(step);
+  await persist();
+  console.warn(`${buildLabel}: ${retry.reason}; retrying in ${retry.delayMs}ms.`);
+  await new Promise((resolve) => setTimeout(resolve, retry.delayMs));
+  step.status = "completed";
+  step.completedAt = now();
+  step.exitCode = 0;
+  await persist();
+}
+
+async function runSourceImageBuildWithRetry(run, buildLabel, args, options = {}) {
+  await retryTransientRegistryOperation(
+    (attempt, maxRetries) => runStep(
+      run,
+      attempt === 0 ? buildLabel : `${buildLabel} (retry ${attempt}/${maxRetries})`,
+      "docker",
+      args,
+      options
+    ),
+    {
+      failureOutput: failedStepOutput,
+      waitForRetry: (retry) => waitForSourceBuildRetry(run, buildLabel, retry)
+    }
+  );
 }
 
 async function activeEnvFileArgs() {
@@ -729,10 +779,9 @@ async function cleanupOtherCleanHeadSources(protectedCleanDirs = []) {
 }
 
 async function buildCleanHeadSourceImages(run, cleanHead) {
-  await runStep(
+  await runSourceImageBuildWithRetry(
     run,
     "Build clean HEAD source images",
-    "docker",
     [...cleanHead.compose, "build", ...sourceBuildServices, ...(run.includeDesktop ? ["desktop-proof"] : [])],
     { cwd: cleanHead.cleanDir }
   );

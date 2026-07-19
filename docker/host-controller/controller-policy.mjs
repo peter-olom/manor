@@ -70,6 +70,51 @@ export function shouldBuildSourceImages(payload) {
   return payload.build !== false;
 }
 
+const transientRegistryRetryDelaysMs = [2_000, 5_000];
+
+export function classifyTransientRegistryFailure(output) {
+  const message = normalizeString(output).toLowerCase();
+  if (!message) return null;
+
+  const permanentFailure = /(?:\bunauthorized\b|authentication required|pull access denied|insufficient_scope|manifest (?:unknown|not found)|no matching manifest|no match for platform|dockerfile parse error|no space left on device|too many requests|\b429\b)/i.test(message);
+  if (permanentFailure) return null;
+
+  for (const line of message.split(/\r?\n/)) {
+    const registryContext = /(?:failed to (?:resolve source metadata|load metadata|fetch anonymous token)|auth\.docker\.io|registry-1\.docker\.io|docker\.io\/|mcr\.microsoft\.com|ghcr\.io|quay\.io|\/v2\/|\/token\?scope=)/i.test(line);
+    if (!registryContext) continue;
+    if (/(?:server misbehaving|temporary failure in name resolution|no such host|\beai_again\b|dial tcp: lookup|dns)/i.test(line)) {
+      return "registry_dns";
+    }
+    if (/(?:i\/o timeout|tls handshake timeout|context deadline exceeded|connection (?:reset|refused|timed out)|network is unreachable|\beof\b)/i.test(line)) {
+      return "registry_connection";
+    }
+    if (/(?:http(?: status)?[ :=]+|status code: )["']?(?:500|502|503|504)\b|unexpected status[^\r\n]{0,500}\b(?:500|502|503|504)\b/i.test(line)) {
+      return "registry_5xx";
+    }
+  }
+  return null;
+}
+
+export async function retryTransientRegistryOperation(operation, options = {}) {
+  const delaysMs = options.delaysMs ?? transientRegistryRetryDelaysMs;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation(attempt, delaysMs.length);
+    } catch (error) {
+      const reason = classifyTransientRegistryFailure(options.failureOutput?.(error) ?? "");
+      if (!reason || attempt >= delaysMs.length) throw error;
+      const retry = {
+        retryNumber: attempt + 1,
+        maxRetries: delaysMs.length,
+        delayMs: delaysMs[attempt],
+        reason
+      };
+      if (options.waitForRetry) await options.waitForRetry(retry);
+      else await new Promise((resolve) => setTimeout(resolve, retry.delayMs));
+    }
+  }
+}
+
 export function validateGitRef(value) {
   if (!gitRefPattern.test(value)) {
     return false;

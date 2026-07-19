@@ -47,6 +47,12 @@ test("source restart preserves the working tree and retries from clean HEAD", as
   assert.match(restartBody, /run\.hotReload = false/);
   assert.match(restartBody, /return run\.build !== false/);
   assert.match(restartBody, /return false/);
+  assert.match(source, /async function runSourceImageBuildWithRetry/);
+  assert.match(source, /retryTransientRegistryOperation/);
+  assert.match(source, /failureOutput: failedStepOutput/);
+  assert.match(source, /waitForRetry: \(retry\) => waitForSourceBuildRetry/);
+  assert.match(source, /`\$\{buildLabel\} \(retry \$\{attempt\}\/\$\{maxRetries\}\)`/);
+  assert.match(source, /runSourceImageBuildWithRetry\(\s*run,\s*"Build clean HEAD source images"/);
 
   const fallbackBody = source.slice(
     source.indexOf("async function prepareCleanHeadSource"),

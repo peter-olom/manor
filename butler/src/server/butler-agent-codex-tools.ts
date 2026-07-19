@@ -12,13 +12,180 @@ import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-too
 import { directWorkerDispatchMarker } from "./butler-callback-state.js";
 import { settleFailedDirectWorkerDispatch } from "./direct-codex-message.js";
 import { formatJobPayloadMessage } from "./job-instruction-artifacts.js";
-import { assertCallbackReviewCurrent, runSerializedJobMutations } from "./butler-job-mutation-guard.js";
+import { assertCallbackReviewCurrent, runSerializedJobMutation, runSerializedJobMutations } from "./butler-job-mutation-guard.js";
 import { classifyManorBlocker } from "./butler-self-improvement.js";
 import { buildWorkerInputWithReferences } from "./reference-inputs.js";
-import { commitSelfImprovementRequest, discardSelfImprovementRequest, openSelfImprovementPullRequest } from "./self-improvement-actions.js";
-import { getSelfImprovementRequestState } from "./self-improvement-request-state.js";
+import { commitSelfImprovementRequest, discardSelfImprovementRequest, openSelfImprovementPullRequest, runSerializedSelfImprovementAction } from "./self-improvement-actions.js";
+import { getSelfImprovementRequestState, getSelfImprovementWorkerRequestId } from "./self-improvement-request-state.js";
 import { listWorkspaceProjectDirectories } from "./repo-worktree.js";
-import { deleteAllWorkerThreads, deleteWorkerThread, loadWorkerThread, sendWorkerMessage, stopWorkerThread } from "./worker-client-router.js";
+import { deleteAllWorkerThreads, deleteWorkerThread, loadWorkerThread, sendWorkerMessage, stopWorkerThread, workerMessageDispatchMayHaveBeenAccepted } from "./worker-client-router.js";
+
+export type ContinueWorkerJobParams = {
+  threadId: string;
+  text: string;
+  imageReferenceIds?: string[];
+  fileReferenceIds?: string[];
+  refreshChecklist?: boolean;
+  nextWorkerReportAction?: "review" | "reply_to_operator";
+};
+
+async function withSelfImprovementWorkerReactivated<T>(
+  threadId: string,
+  dispatchState: { accepted: boolean },
+  action: (reactivate: () => Promise<void>) => Promise<T>
+): Promise<T> {
+  const requestId = getSelfImprovementWorkerRequestId(threadId);
+  const withoutReactivation = () => Promise.resolve();
+  if (!requestId) return action(withoutReactivation);
+
+  return runSerializedSelfImprovementAction(requestId, async () => {
+    const requests = getSelfImprovementRequestState();
+    const current = requests.get(requestId);
+    if (current?.threadId === threadId && (current.status === "committed" || current.status === "pr_opened")) {
+      throw new Error("This self-improvement session has already been published. Start a new request before asking its Worker to make more changes.");
+    }
+    const readyRequest = current?.threadId === threadId && current.status === "changes_ready" ? current : null;
+    let reactivated = false;
+    const reactivate = async () => {
+      if (!readyRequest) return;
+      requests.update(requestId, { status: "running", completedAt: null });
+      try {
+        await requests.flush();
+        reactivated = true;
+      } catch (error) {
+        requests.update(requestId, { status: readyRequest.status, completedAt: readyRequest.completedAt });
+        await requests.flush();
+        throw error;
+      }
+    };
+    try {
+      return await action(reactivate);
+    } catch (error) {
+      if (reactivated && !dispatchState.accepted && !workerMessageDispatchMayHaveBeenAccepted(error)) {
+        const latest = requests.get(requestId);
+        if (latest?.threadId === threadId && latest.status === "running") {
+          requests.update(requestId, { status: readyRequest!.status, completedAt: readyRequest!.completedAt });
+          await requests.flush();
+        }
+      }
+      throw error;
+    }
+  });
+}
+
+async function continueWorkerJobLocked(
+  access: ButlerAgentToolAccess,
+  typedParams: ContinueWorkerJobParams,
+  dispatchState: { accepted: boolean },
+  reactivate: () => Promise<void>
+) {
+  const workerDefaults = access.getWorkerDefaults?.();
+  const attachedWorkerThreadId = workerDefaults?.threadId;
+  if (workerDefaults && attachedWorkerThreadId !== undefined && attachedWorkerThreadId !== typedParams.threadId) {
+    throw new Error(
+      attachedWorkerThreadId
+        ? `Job ${typedParams.threadId} belongs to another Butler session. This session can only steer its attached Worker ${attachedWorkerThreadId}.`
+        : `Job ${typedParams.threadId} belongs to another Butler session. Delegate a new Worker in this session instead.`
+    );
+  }
+  const activeGuard = access.getActiveOperatorThreadGuard();
+  if (activeGuard) {
+    if (activeGuard.explicitThreadIds.length > 0 && !activeGuard.explicitThreadIds.includes(typedParams.threadId)) {
+      throw new Error(
+        `The latest operator turn explicitly referenced job ${activeGuard.explicitThreadIds.join(", ")}. Use one of those exact jobs or clarify before steering ${typedParams.threadId}.`
+      );
+    }
+    if (
+      activeGuard.explicitThreadIds.length === 0 &&
+      activeGuard.lockedThreadId &&
+      activeGuard.lockedThreadId !== typedParams.threadId
+    ) {
+      throw new Error(
+        `The latest operator turn is currently anchored to job ${activeGuard.lockedThreadId}. Use that exact job or clarify before steering ${typedParams.threadId}.`
+      );
+    }
+  }
+  const thread = access.store.getThread(typedParams.threadId);
+  if (!thread || !thread.cwd || thread.source === "unknown" || thread.turnCount === 0) {
+    throw new Error(
+      `Job ${typedParams.threadId} is not a valid reusable worker workstream. Start a fresh worker job with delegate_to_worker instead.`
+    );
+  }
+  const limitMessage = access.getThreadBudgetLimitMessage(typedParams.threadId);
+  if (limitMessage) {
+    return {
+      content: [{ type: "text" as const, text: limitMessage }],
+      details: {
+        dispatched: false,
+        thread,
+        supervision: access.store.getThreadSupervision(typedParams.threadId)
+      }
+    };
+  }
+  await loadWorkerThread(access, typedParams.threadId);
+  const activeReferences = access.getActiveOperatorReferences();
+  const imageReferenceIds = [...new Set([...(activeReferences?.imageReferenceIds ?? []), ...(typedParams.imageReferenceIds ?? [])])];
+  const fileReferenceIds = [...new Set([...(activeReferences?.fileReferenceIds ?? []), ...(typedParams.fileReferenceIds ?? [])])];
+  const requestedAt = Date.now();
+  const nextWorkerReportAction = typedParams.nextWorkerReportAction ?? "review";
+
+  await reactivate();
+  const reservation = await access.reserveDirectCodexMessage({ threadId: typedParams.threadId, text: typedParams.text, requestedAt, nextWorkerReportAction });
+  let sent = false;
+  try {
+    const refreshedChecklist = typedParams.refreshChecklist
+      ? access.store.refreshCompletedSupervisionChecklistForFollowup(typedParams.threadId, typedParams.text, { force: true })
+      : null;
+    if (refreshedChecklist) {
+      const refreshedThread = access.store.getThread(typedParams.threadId);
+      reservation.reviewScopeReplacement = { executionContract: refreshedThread?.executionContract ? structuredClone(refreshedThread.executionContract) : null, supervisionChecklist: refreshedThread?.supervisionChecklist ? structuredClone(refreshedThread.supervisionChecklist) : null };
+    }
+    const payload = await access.createOrUpdateJobPayload({
+      threadId: typedParams.threadId,
+      kind: "steering",
+      instruction: typedParams.text,
+      imageReferenceIds,
+      fileReferenceIds,
+      onPrepared: (prepared) => { reservation.jobPayloadReplacement = structuredClone(prepared); }
+    });
+    assertCallbackReviewCurrent(typedParams.threadId);
+    const workerInput = buildWorkerInputWithReferences({
+      text: formatJobPayloadMessage("steering", payload.threadId, payload.workerDirective, payload.display.summary),
+      imageStore: access.imageStore,
+      imageReferenceIds,
+      fileStore: access.fileStore,
+      fileReferenceIds
+    });
+    workerInput.push({ type: "text", text: directWorkerDispatchMarker(typedParams.threadId, requestedAt) });
+    const dispatch = await sendWorkerMessage(access, typedParams.threadId, workerInput);
+    sent = true;
+    dispatchState.accepted = true;
+    await access.bindJobPayloadDelivery(typedParams.threadId, { turnId: dispatch.turnId });
+    await access.markPendingChatCallbackDispatched(typedParams.threadId, requestedAt, dispatch.turnId);
+    const supervision = access.store.noteButlerSteer(typedParams.threadId);
+    access.store.addEvent(typedParams.threadId, "butler.supervision.turn_spent", "Butler spent a private supervision turn on this job.");
+    access.noteThreadFocus(typedParams.threadId, "message_job");
+    return {
+      content: [{ type: "text" as const, text: `Sent a private follow-up to job ${typedParams.threadId}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}. Next worker report action: ${nextWorkerReportAction}.` }],
+      details: { dispatched: true, checklist: refreshedChecklist, payload, supervision, thread: access.store.getThread(typedParams.threadId) ?? null }
+    };
+  } catch (error) {
+    if (!sent) await settleFailedDirectWorkerDispatch(error, () => access.markPendingChatCallbackDispatched(typedParams.threadId, requestedAt, null), () => access.rollbackDirectCodexMessage(typedParams.threadId, requestedAt, reservation));
+    throw error;
+  }
+}
+
+export async function continueWorkerJob(access: ButlerAgentToolAccess, typedParams: ContinueWorkerJobParams) {
+  const dispatchState = { accepted: false };
+  return runSerializedJobMutation(
+    typedParams.threadId,
+    () => withSelfImprovementWorkerReactivated(
+      typedParams.threadId,
+      dispatchState,
+      (reactivate) => continueWorkerJobLocked(access, typedParams, dispatchState, reactivate)
+    )
+  );
+}
 
 export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
   return [
@@ -642,104 +809,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       }),
       uiEffects: access.getToolUiEffects("message_job"),
       execute: async (_toolCallId, params) => {
-        const typedParams = params as {
-          threadId: string;
-          text: string;
-          imageReferenceIds?: string[];
-          fileReferenceIds?: string[];
-          refreshChecklist?: boolean;
-          nextWorkerReportAction?: "review" | "reply_to_operator";
-        };
-        const workerDefaults = access.getWorkerDefaults?.();
-        const attachedWorkerThreadId = workerDefaults?.threadId;
-        if (workerDefaults && attachedWorkerThreadId !== undefined && attachedWorkerThreadId !== typedParams.threadId) {
-          throw new Error(
-            attachedWorkerThreadId
-              ? `Job ${typedParams.threadId} belongs to another Butler session. This session can only steer its attached Worker ${attachedWorkerThreadId}.`
-              : `Job ${typedParams.threadId} belongs to another Butler session. Delegate a new Worker in this session instead.`
-          );
-        }
-        const activeGuard = access.getActiveOperatorThreadGuard();
-        if (activeGuard) {
-          if (activeGuard.explicitThreadIds.length > 0 && !activeGuard.explicitThreadIds.includes(typedParams.threadId)) {
-            throw new Error(
-              `The latest operator turn explicitly referenced job ${activeGuard.explicitThreadIds.join(", ")}. Use one of those exact jobs or clarify before steering ${typedParams.threadId}.`
-            );
-          }
-          if (
-            activeGuard.explicitThreadIds.length === 0 &&
-            activeGuard.lockedThreadId &&
-            activeGuard.lockedThreadId !== typedParams.threadId
-          ) {
-            throw new Error(
-              `The latest operator turn is currently anchored to job ${activeGuard.lockedThreadId}. Use that exact job or clarify before steering ${typedParams.threadId}.`
-            );
-          }
-        }
-        const thread = access.store.getThread(typedParams.threadId);
-        if (!thread || !thread.cwd || thread.source === "unknown" || thread.turnCount === 0) {
-          throw new Error(
-            `Job ${typedParams.threadId} is not a valid reusable worker workstream. Start a fresh worker job with delegate_to_worker instead.`
-          );
-        }
-        const limitMessage = access.getThreadBudgetLimitMessage(typedParams.threadId);
-        if (limitMessage) {
-          return {
-            content: [{ type: "text", text: limitMessage }],
-            details: {
-              thread: thread ?? null,
-              supervision: access.store.getThreadSupervision(typedParams.threadId)
-            }
-          };
-        }
-        await loadWorkerThread(access, typedParams.threadId);
-        const activeReferences = access.getActiveOperatorReferences();
-        const imageReferenceIds = [...new Set([...(activeReferences?.imageReferenceIds ?? []), ...(typedParams.imageReferenceIds ?? [])])];
-        const fileReferenceIds = [...new Set([...(activeReferences?.fileReferenceIds ?? []), ...(typedParams.fileReferenceIds ?? [])])];
-        const requestedAt = Date.now();
-        const nextWorkerReportAction = typedParams.nextWorkerReportAction ?? "review";
-        const reservation = await access.reserveDirectCodexMessage({ threadId: typedParams.threadId, text: typedParams.text, requestedAt, nextWorkerReportAction });
-        let sent = false;
-        try {
-          const refreshedChecklist = typedParams.refreshChecklist
-            ? access.store.refreshCompletedSupervisionChecklistForFollowup(typedParams.threadId, typedParams.text, { force: true })
-            : null;
-          if (refreshedChecklist) {
-            const refreshedThread = access.store.getThread(typedParams.threadId);
-            reservation.reviewScopeReplacement = { executionContract: refreshedThread?.executionContract ? structuredClone(refreshedThread.executionContract) : null, supervisionChecklist: refreshedThread?.supervisionChecklist ? structuredClone(refreshedThread.supervisionChecklist) : null };
-          }
-          const payload = await access.createOrUpdateJobPayload({
-            threadId: typedParams.threadId,
-            kind: "steering",
-            instruction: typedParams.text,
-            imageReferenceIds,
-            fileReferenceIds,
-            onPrepared: (prepared) => { reservation.jobPayloadReplacement = structuredClone(prepared); }
-          });
-          assertCallbackReviewCurrent(typedParams.threadId);
-          const workerInput = buildWorkerInputWithReferences({
-            text: formatJobPayloadMessage("steering", payload.threadId, payload.workerDirective, payload.display.summary),
-            imageStore: access.imageStore,
-            imageReferenceIds,
-            fileStore: access.fileStore,
-            fileReferenceIds
-          });
-          workerInput.push({ type: "text", text: directWorkerDispatchMarker(typedParams.threadId, requestedAt) });
-          const dispatch = await sendWorkerMessage(access, typedParams.threadId, workerInput);
-          sent = true;
-          await access.bindJobPayloadDelivery(typedParams.threadId, { turnId: dispatch.turnId });
-          await access.markPendingChatCallbackDispatched(typedParams.threadId, requestedAt, dispatch.turnId);
-          const supervision = access.store.noteButlerSteer(typedParams.threadId);
-          access.store.addEvent(typedParams.threadId, "butler.supervision.turn_spent", "Butler spent a private supervision turn on this job.");
-          access.noteThreadFocus(typedParams.threadId, "message_job");
-          return {
-            content: [{ type: "text", text: `Sent a private follow-up to job ${typedParams.threadId}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}. Next worker report action: ${nextWorkerReportAction}.` }],
-            details: { checklist: refreshedChecklist, payload, supervision, thread: access.store.getThread(typedParams.threadId) ?? null }
-          };
-        } catch (error) {
-          if (!sent) await settleFailedDirectWorkerDispatch(error, () => access.markPendingChatCallbackDispatched(typedParams.threadId, requestedAt, null), () => access.rollbackDirectCodexMessage(typedParams.threadId, requestedAt, reservation));
-          throw error;
-        }
+        return continueWorkerJob(access, params as ContinueWorkerJobParams);
       }
     }),
     access.defineButlerTool({

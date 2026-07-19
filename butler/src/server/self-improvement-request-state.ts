@@ -243,6 +243,13 @@ export function getSelfImprovementSourceCheckoutRequestId(threadId: string): str
   return configuredState?.list().find((request) => ownsSourceCheckout(request) && request.threadId === threadId)?.id ?? null;
 }
 
+export function getSelfImprovementWorkerRequestId(threadId: string): string | null {
+  return configuredState?.list().find((request) =>
+    request.threadId === threadId &&
+    ["approved", "running", "changes_ready", "committed", "pr_opened"].includes(request.status)
+  )?.id ?? null;
+}
+
 export function isSelfImprovementSourceCheckoutOwnedByThread(threadId: string): boolean {
   const owners = configuredState?.list().filter(ownsSourceCheckout) ?? [];
   return owners.length === 1 && owners[0]?.threadId === threadId;

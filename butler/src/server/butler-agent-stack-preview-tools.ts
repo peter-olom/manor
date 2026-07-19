@@ -28,10 +28,12 @@ import {
 } from "./butler-runtime-lease-tool-helpers.js";
 import type { PreviewProofReviewView, ReasoningEffort } from "./types.js";
 import { buildDelegationRoutingDecision } from "./butler-delegation-routing.js";
+import { continueAttachedWorkerDelegation } from "./butler-attached-worker-delegation.js";
 import { assertCallbackReviewCurrent } from "./butler-job-mutation-guard.js";
 import { isSharedShellRepoBootstrapTask } from "./thread-contract.js";
 import { applyWorkspacePreviewDefaults, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 import type { ButlerRoutingDecisionView } from "./types.js";
+import { taskRequiresManagedWorktree } from "./repo-worktree.js";
 import { deleteWorkerThread, startWorkerThread, stopWorkerThread } from "./worker-client-router.js";
 import { workerHarnessLabel, workerProviderModelRoute } from "./butler-worker-tool-format.js";
 export { workerProviderModelRoute } from "./butler-worker-tool-format.js";
@@ -1270,7 +1272,23 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
         const imageReferenceIds = [...new Set([...(activeReferences?.imageReferenceIds ?? []), ...(typedParams.imageReferenceIds ?? [])])];
         const fileReferenceIds = [...new Set([...(activeReferences?.fileReferenceIds ?? []), ...(typedParams.fileReferenceIds ?? [])])];
         const workerDefaults = typeof access.getWorkerDefaults === "function" ? access.getWorkerDefaults() : null;
+        const attachedWorkerThreadId = workerDefaults?.threadId?.trim() || null;
+        if (attachedWorkerThreadId && taskRequiresManagedWorktree(typedParams.task)) throw new Error(`This Butler session already has Worker ${attachedWorkerThreadId}. Use Switch worker for an explicit handoff before starting isolated branch or worktree work.`);
         const workspace = await access.prepareDelegationWorkspace(typedParams.task, typedParams.cwd ?? workerDefaults?.cwd ?? undefined);
+        if (attachedWorkerThreadId) {
+          const attachedThread = access.store.getThread(attachedWorkerThreadId);
+          const attachedCwd = attachedThread?.executionContract?.workspaceCwd ?? attachedThread?.cwd ?? workerDefaults?.cwd ?? null;
+          return continueAttachedWorkerDelegation({
+            access,
+            threadId: attachedWorkerThreadId,
+            task: delegatedTask,
+            goal: delegatedGoal,
+            workspace,
+            attachedCwd,
+            imageReferenceIds,
+            fileReferenceIds
+          });
+        }
         const orchestration = buildDelegationRoutingDecision({ task: delegatedTask, goal: delegatedGoal });
         const repoBootstrapTask = isSharedShellRepoBootstrapTask(delegatedTask);
         const developerInstructions = await access.buildDelegationDeveloperInstructions(workspace, delegatedTask);

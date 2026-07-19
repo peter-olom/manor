@@ -6,14 +6,17 @@ import test from "node:test";
 
 import { ActivityWatchdogService } from "../../src/server/activity-watchdog.js";
 import { buildButlerCodexTools } from "../../src/server/butler-agent-codex-tools.js";
+import { buildButlerDelegationTools } from "../../src/server/butler-agent-stack-preview-tools.js";
 import { runWithCallbackReviewGuard } from "../../src/server/butler-job-mutation-guard.js";
 import { buildJobPayload, updateJobPayload } from "../../src/server/job-instruction-artifacts.js";
+import { discardSelfImprovementRequest } from "../../src/server/self-improvement-actions.js";
+import { configureSelfImprovementRequestState, SelfImprovementRequestState } from "../../src/server/self-improvement-request-state.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
 import type { ButlerAgentToolAccess } from "../../src/server/butler-agent-tool-access.js";
 import type { JobPayloadView } from "../../src/server/job-payload-types.js";
 
-async function createHarness(options: { attachedWorkerThreadId?: string | null; activeImageReferenceIds?: string[]; activeFileReferenceIds?: string[]; settleDuringSend?: boolean; dispatchError?: Error; stopError?: Error } = {}) {
+async function createHarness(options: { attachedWorkerThreadId?: string | null; activeImageReferenceIds?: string[]; activeFileReferenceIds?: string[]; settleDuringSend?: boolean; dispatchError?: Error; stopError?: Error; bindError?: Error; budgetLimitMessage?: string; sendDelayMs?: number } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-codex-instruction-tools-"));
   const store = new ButlerStateStore(path.join(dir, "state.json"));
   await store.load();
@@ -36,11 +39,15 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
   });
   store.setThreadExecutionContract(threadId, contract);
   const sent: unknown[] = [];
+  const started: string[] = [];
   const stopped: string[] = [];
   const removedCallbacks: string[] = [];
   const payloads: JobPayloadView[] = [];
   const callbackDispatches: Array<{ requestedAt: number; turnId: string | null }> = [];
   const dispatchOrder: string[] = [];
+  let activeSends = 0;
+  let maxConcurrentSends = 0;
+  let workspacePreparations = 0;
   const watchdogs = new ActivityWatchdogService();
   const access = {
     defineButlerTool: (definition: unknown) => definition,
@@ -58,9 +65,20 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
       sendMessage: async (_threadId: string, input: unknown) => {
         dispatchOrder.push("send");
         sent.push(input);
-        if (options.settleDuringSend) store.upsertThreadSummary({ id: _threadId, status: "idle", turns: [{ id: "turn-sent", status: "interrupted", startedAt: 500, completedAt: Date.now(), items: [] }] });
-        if (options.dispatchError) throw options.dispatchError;
-        return { threadId: _threadId, turnId: "turn-sent" };
+        activeSends += 1;
+        maxConcurrentSends = Math.max(maxConcurrentSends, activeSends);
+        try {
+          if (options.sendDelayMs) await new Promise((resolve) => setTimeout(resolve, options.sendDelayMs));
+          if (options.settleDuringSend) store.upsertThreadSummary({ id: _threadId, status: "idle", turns: [{ id: "turn-sent", status: "interrupted", startedAt: 500, completedAt: Date.now(), items: [] }] });
+          if (options.dispatchError) throw options.dispatchError;
+          return { threadId: _threadId, turnId: "turn-sent" };
+        } finally {
+          activeSends -= 1;
+        }
+      },
+      startThread: async () => {
+        started.push("unexpected");
+        throw new Error("A second Worker should not start.");
       }
     },
     imageStore: { resolveViews: () => [], getFilePath: () => null },
@@ -93,8 +111,15 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
       runtime: "auto",
       threadId: options.attachedWorkerThreadId === undefined ? threadId : options.attachedWorkerThreadId
     }),
-    getThreadBudgetLimitMessage: () => null,
-    bindJobPayloadDelivery: async (threadId: string) => store.getThreadJobPayload(threadId),
+    getThreadBudgetLimitMessage: () => options.budgetLimitMessage ?? null,
+    prepareDelegationWorkspace: async (_task: string, cwd?: string) => {
+      workspacePreparations += 1;
+      return { cwd: cwd ?? "/workspace", branchName: null };
+    },
+    bindJobPayloadDelivery: async (threadId: string) => {
+      if (options.bindError) throw options.bindError;
+      return store.getThreadJobPayload(threadId);
+    },
     reserveDirectCodexMessage: async () => {
       dispatchOrder.push("reserve");
       const thread = store.getThread(threadId);
@@ -128,7 +153,47 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
     noteThreadFocus: () => undefined
   } as unknown as ButlerAgentToolAccess;
   const tools = buildButlerCodexTools(access);
-  return { store, threadId, sent, stopped, removedCallbacks, payloads, callbackDispatches, dispatchOrder, tools, watchdogs };
+  return { access, store, threadId, sent, started, stopped, removedCallbacks, payloads, callbackDispatches, dispatchOrder, tools, watchdogs, maxConcurrentSends: () => maxConcurrentSends, workspacePreparations: () => workspacePreparations };
+}
+
+async function createReadySelfImprovementState(threadId: string) {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-self-improvement-continuation-"));
+  let failNextChange = false;
+  const state = new SelfImprovementRequestState(path.join(dir, "requests.json"), () => {
+    if (failNextChange) {
+      failNextChange = false;
+      throw new Error("self-improvement save failed");
+    }
+  }, () => undefined);
+  await state.load();
+  const request = state.create({
+    trigger: "Test the current Manor fix.",
+    symptoms: "The restart needs another test.",
+    logs: "",
+    observations: "The existing Worker already owns the checkout.",
+    suspectedCause: "The follow-up was routed as a new delegation.",
+    proposedChange: "Continue the attached Worker.",
+    risk: "Low.",
+    createdBy: "operator"
+  });
+  const ready = state.update(request.id, {
+    status: "changes_ready",
+    threadId,
+    workerThreadIds: [threadId],
+    workspaceCwd: "/workspace",
+    startedAt: 1,
+    completedAt: 2
+  });
+  await state.flush();
+  configureSelfImprovementRequestState(state);
+  return { state, request: ready, failNextSave: () => { failNextChange = true; } };
+}
+
+async function resetSelfImprovementRequestState() {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-self-improvement-reset-"));
+  const state = new SelfImprovementRequestState(path.join(dir, "requests.json"), () => undefined, () => undefined);
+  await state.load();
+  configureSelfImprovementRequestState(state);
 }
 
 test("message_job cannot steer a Worker attached to another Butler session", async () => {
@@ -143,6 +208,77 @@ test("message_job cannot steer a Worker attached to another Butler session", asy
     /another Butler session/
   );
   assert.equal(sent.length, 0);
+});
+
+test("delegate_to_worker reuses the Worker already attached to the Butler session", async () => {
+  const { access, store, threadId, sent, started } = await createHarness();
+  const delegationTools = buildButlerDelegationTools(access);
+  const followUp = "Investigate the failed restart and keep testing the existing changes.";
+  const result = await tool(delegationTools, "delegate_to_worker").execute("call-reuse", {
+    task: followUp,
+    cwd: "/workspace"
+  }) as { content: Array<{ text: string }>; details: { threadId: string; reusedWorker: boolean } };
+
+  assert.equal(started.length, 0);
+  assert.equal(sent.length, 1);
+  assert.equal(result.details.threadId, threadId);
+  assert.equal(result.details.reusedWorker, true);
+  assert.deepEqual(store.getSupervisionChecklist(threadId)?.items.map((item) => item.text), [followUp.slice(0, -1)]);
+  assert.match(result.content[0]?.text ?? "", /no second Worker was started/);
+});
+
+test("delegate_to_worker refuses a different workspace without starting another Worker", async () => {
+  const { access, sent, started } = await createHarness();
+  const delegationTools = buildButlerDelegationTools(access);
+
+  await assert.rejects(() => tool(delegationTools, "delegate_to_worker").execute("call-other-workspace", {
+    task: "Start unrelated work.",
+    cwd: "/other-workspace"
+  }), /Use Switch worker for an explicit handoff/);
+
+  assert.equal(started.length, 0);
+  assert.equal(sent.length, 0);
+});
+
+test("delegate_to_worker preserves a supervision-budget block instead of claiming continuation", async () => {
+  const limit = "Worker supervision budget is exhausted.";
+  const { access, sent, started } = await createHarness({ budgetLimitMessage: limit });
+  const result = await tool(buildButlerDelegationTools(access), "delegate_to_worker").execute("call-budget", {
+    task: "Keep testing the current changes.",
+    cwd: "/workspace"
+  }) as { content: Array<{ text: string }>; details: { dispatched: boolean } };
+
+  assert.equal(result.content[0]?.text, limit);
+  assert.equal(result.details.dispatched, false);
+  assert.equal(started.length, 0);
+  assert.equal(sent.length, 0);
+});
+
+test("attached Worker delegation rejects isolated work before workspace preparation", async () => {
+  const { access, sent, started, workspacePreparations } = await createHarness();
+
+  await assert.rejects(() => tool(buildButlerDelegationTools(access), "delegate_to_worker").execute("call-isolated", {
+    task: "Use an isolated worktree for this change.",
+    cwd: "/workspace"
+  }), /Switch worker for an explicit handoff/);
+
+  assert.equal(workspacePreparations(), 0);
+  assert.equal(started.length, 0);
+  assert.equal(sent.length, 0);
+});
+
+test("concurrent attached Worker delegations serialize their complete sends", async () => {
+  const { access, sent, started, maxConcurrentSends } = await createHarness({ sendDelayMs: 20 });
+  const delegation = tool(buildButlerDelegationTools(access), "delegate_to_worker");
+
+  await Promise.all([
+    delegation.execute("call-concurrent-1", { task: "Run the first follow-up.", cwd: "/workspace" }),
+    delegation.execute("call-concurrent-2", { task: "Run the second follow-up.", cwd: "/workspace" })
+  ]);
+
+  assert.equal(maxConcurrentSends(), 1);
+  assert.equal(sent.length, 2);
+  assert.equal(started.length, 0);
 });
 
 function tool(tools: unknown[], name: string) {
@@ -250,6 +386,118 @@ test("message_job updates the job payload and sends readable chat", async () => 
   assert.match(JSON.stringify(sent[0]), /Please retry the browser proof/);
   assert.match(JSON.stringify(sent[0]), /I updated the job payload/);
   assert.doesNotMatch(JSON.stringify(sent[0]), /MANOR INSTRUCTION/);
+});
+
+test("continuing a self-improvement Worker reactivates its tracked request", async () => {
+  const { threadId, tools } = await createHarness();
+  const { state, request } = await createReadySelfImprovementState(threadId);
+
+  await tool(tools, "message_job").execute("call-self-improvement", {
+    threadId,
+    text: "Retry the restart verification."
+  });
+
+  assert.equal(state.get(request.id)?.status, "running");
+  assert.equal(state.get(request.id)?.completedAt, null);
+  await resetSelfImprovementRequestState();
+});
+
+test("a definitely rejected self-improvement continuation restores changes-ready state", async () => {
+  const { threadId, tools } = await createHarness({ dispatchError: new Error("send rejected") });
+  const { state, request } = await createReadySelfImprovementState(threadId);
+
+  await assert.rejects(() => tool(tools, "message_job").execute("call-self-improvement-failed", {
+    threadId,
+    text: "Retry the restart verification."
+  }), /send rejected/);
+
+  assert.equal(state.get(request.id)?.status, "changes_ready");
+  assert.equal(state.get(request.id)?.completedAt, 2);
+  await resetSelfImprovementRequestState();
+});
+
+test("an ambiguously accepted self-improvement continuation stays running", async () => {
+  const dispatchError = new Error("Worker message send timed out; stopping the uncertain turn.");
+  dispatchError.name = "WorkerSendTimeoutError";
+  const { threadId, tools } = await createHarness({
+    dispatchError,
+    stopError: new Error("interrupt transport unavailable")
+  });
+  const { state, request } = await createReadySelfImprovementState(threadId);
+
+  await assert.rejects(() => tool(tools, "message_job").execute("call-self-improvement-ambiguous", {
+    threadId,
+    text: "Retry the restart verification."
+  }), /timed out/);
+
+  assert.equal(state.get(request.id)?.status, "running");
+  assert.equal(state.get(request.id)?.completedAt, null);
+  await resetSelfImprovementRequestState();
+});
+
+test("a self-improvement continuation stays running after post-dispatch persistence failure", async () => {
+  const { threadId, sent, tools } = await createHarness({ bindError: new Error("payload binding failed") });
+  const { state, request } = await createReadySelfImprovementState(threadId);
+
+  await assert.rejects(() => tool(tools, "message_job").execute("call-self-improvement-bind-failed", {
+    threadId,
+    text: "Retry the restart verification."
+  }), /payload binding failed/);
+
+  assert.equal(sent.length, 1);
+  assert.equal(state.get(request.id)?.status, "running");
+  assert.equal(state.get(request.id)?.completedAt, null);
+  await resetSelfImprovementRequestState();
+});
+
+test("a failed self-improvement reactivation save rolls back before dispatch", async () => {
+  const { threadId, sent, tools } = await createHarness();
+  const { state, request, failNextSave } = await createReadySelfImprovementState(threadId);
+  failNextSave();
+
+  await assert.rejects(() => tool(tools, "message_job").execute("call-self-improvement-save-failed", {
+    threadId,
+    text: "Retry the restart verification."
+  }), /self-improvement save failed/);
+
+  assert.equal(sent.length, 0);
+  assert.equal(state.get(request.id)?.status, "changes_ready");
+  assert.equal(state.get(request.id)?.completedAt, 2);
+  await resetSelfImprovementRequestState();
+});
+
+test("published self-improvement sessions reject further Worker mutation", async () => {
+  const { threadId, sent, tools } = await createHarness();
+  const { state, request } = await createReadySelfImprovementState(threadId);
+  state.update(request.id, { status: "committed", commitSha: "a".repeat(40) });
+  await state.flush();
+
+  await assert.rejects(() => tool(tools, "message_job").execute("call-self-improvement-published", {
+    threadId,
+    text: "Make another change."
+  }), /already been published/);
+
+  assert.equal(sent.length, 0);
+  assert.equal(state.get(request.id)?.status, "committed");
+  await resetSelfImprovementRequestState();
+});
+
+test("concurrent self-improvement continuation and close cannot deadlock", async () => {
+  const { access, threadId, tools } = await createHarness({ sendDelayMs: 20 });
+  const { state, request } = await createReadySelfImprovementState(threadId);
+  const continuation = tool(tools, "message_job").execute("call-self-improvement-concurrent", {
+    threadId,
+    text: "Retry the restart verification."
+  });
+  const close = discardSelfImprovementRequest(state, access, request.id);
+
+  await Promise.race([
+    Promise.all([continuation, close]),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("concurrent continuation and close deadlocked")), 1_000))
+  ]);
+
+  assert.equal(state.get(request.id)?.status, "discarded");
+  await resetSelfImprovementRequestState();
 });
 
 test("message_job forced refresh replaces stale rejected scope before building its payload", async () => {
