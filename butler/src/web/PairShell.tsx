@@ -666,7 +666,6 @@ export function PairShell() {
   useEffect(() => writeSidebarCollapsed(desktopSidebarCollapsed), [desktopSidebarCollapsed]);
   const manorSurface = manorSurfaceForView(viewMode);
   const activePair = pair?.id === selectedPairId ? pair : null;
-  const { reconcilePair: reconcileManorRestartRequest, dialog: manorRestartDialog } = useManorRestartApproval(activePair, setPair);
   const displayedError = error ?? pairRefreshError;
   const activeWorkerHandoff = activePair ? workerHandoffByPairId[activePair.id] ?? null : null;
   const shouldLoadWorkerThread = manorSurface === "sessions" && viewMode !== "butler" && Boolean(activePair?.worker);
@@ -709,6 +708,7 @@ export function PairShell() {
       }
     }
   });
+  const { reconcilePair: reconcileManorRestartRequest, dialog: manorRestartDialog } = useManorRestartApproval(activePair, setPair, eventStream);
 
   const startEditTitle = useCallback(() => {
     if (!activePair) return;

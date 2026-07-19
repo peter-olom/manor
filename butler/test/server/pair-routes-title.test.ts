@@ -66,6 +66,7 @@ function createFakePairSessions(initialPair: PairDetail = makePair()) {
   const questionAnswers: Array<{ pairId: string; messageId: string; questionId: string; optionId?: string; freeformText?: string }> = [];
   const restartAuthorizations: Array<{ pairId: string; requestId: string }> = [];
   const restartDismissals: Array<{ pairId: string; requestId: string }> = [];
+  const restartAcknowledgements: Array<{ pairId: string; requestId: string }> = [];
   return {
     sentMessages,
     handoffs,
@@ -74,6 +75,7 @@ function createFakePairSessions(initialPair: PairDetail = makePair()) {
     questionAnswers,
     restartAuthorizations,
     restartDismissals,
+    restartAcknowledgements,
     manager: {
       async listSummaries(): Promise<PairSummary[]> {
         return [...pairs.values()].map(({ messages: _messages, loadedStart: _loadedStart, hasMore: _hasMore, ...pair }) => pair);
@@ -98,6 +100,24 @@ function createFakePairSessions(initialPair: PairDetail = makePair()) {
       async dismissManorRestartRequest(pairId: string, requestId: string): Promise<boolean> {
         if (!pairs.has(pairId)) return false;
         restartDismissals.push({ pairId, requestId });
+        return true;
+      },
+      async getManorRestartProgress(pairId: string) {
+        if (!pairs.has(pairId)) return undefined;
+        return {
+          requestId: "restart-1",
+          runId: "run-1",
+          startedAt: 1,
+          status: "completed" as const,
+          completedAt: 2,
+          currentStep: "Check Butler health",
+          error: null
+        };
+      },
+      async acknowledgeManorRestartProgress(pairId: string, requestId: string): Promise<boolean | null> {
+        if (!pairs.has(pairId)) return null;
+        if (requestId !== "restart-1") return false;
+        restartAcknowledgements.push({ pairId, requestId });
         return true;
       },
       async getActivityWatchdogs(pairId: string) {
@@ -325,6 +345,27 @@ test("pair restart dismissal is routed to the active Butler session", async () =
     const res = await fetch(`${url}/api/pairs/pair-1/manor-restart-requests/restart-1/dismiss`, { method: "POST" });
     assert.equal(res.status, 200);
     assert.deepEqual(fake.restartDismissals, [{ pairId: "pair-1", requestId: "restart-1" }]);
+  } finally {
+    await close();
+  }
+});
+
+test("pair restart progress reports and acknowledges the exact session run", async () => {
+  const fake = createFakePairSessions();
+  const app = mountRoutes(fake.manager);
+  const { url, close } = await listen(app);
+  try {
+    const status = await fetch(`${url}/api/pairs/pair-1/manor-restart-progress`);
+    assert.equal(status.status, 200);
+    const body = (await status.json()) as { progress: { requestId: string; runId: string; status: string } };
+    assert.deepEqual(body.progress, { requestId: "restart-1", runId: "run-1", startedAt: 1, status: "completed", completedAt: 2, currentStep: "Check Butler health", error: null });
+
+    const acknowledge = await fetch(`${url}/api/pairs/pair-1/manor-restart-progress/restart-1/acknowledge`, { method: "POST" });
+    assert.equal(acknowledge.status, 200);
+    assert.deepEqual(fake.restartAcknowledgements, [{ pairId: "pair-1", requestId: "restart-1" }]);
+
+    assert.equal((await fetch(`${url}/api/pairs/missing/manor-restart-progress`)).status, 404);
+    assert.equal((await fetch(`${url}/api/pairs/pair-1/manor-restart-progress/stale/acknowledge`, { method: "POST" })).status, 409);
   } finally {
     await close();
   }

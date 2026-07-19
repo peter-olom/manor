@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -25,6 +25,27 @@ function restartResult(): ManorRestartStartResult {
   };
 }
 
+function completedRestartResult(): ManorRestartStartResult {
+  const result = restartResult();
+  return {
+    ...result,
+    run: {
+      ...result.run,
+      status: "completed",
+      completedAt: 8,
+      steps: [{
+        label: "Check Butler health",
+        status: "completed",
+        startedAt: 5,
+        completedAt: 8,
+        exitCode: 0,
+        stdoutTail: "sensitive output",
+        stderrTail: ""
+      }]
+    }
+  };
+}
+
 test("restart request persistence preserves the final consumed state", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-restart-state-"));
   const statePath = path.join(dir, "restart-requests.json");
@@ -46,11 +67,116 @@ test("restart request persistence preserves the final consumed state", async () 
     const parsed = JSON.parse(await readFile(statePath, "utf8")) as {
       pendingManorRestartRequest: unknown;
       authorizedManorRestartRequest: unknown;
+      trackedManorRestart: { requestId: string; runId: string } | null;
     };
 
     assert.equal(errors.length, 0);
     assert.equal(parsed.pendingManorRestartRequest, null);
     assert.equal(parsed.authorizedManorRestartRequest, null);
+    assert.equal(parsed.trackedManorRestart?.requestId, pending.id);
+    assert.equal(parsed.trackedManorRestart?.runId, "run-1");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("tracked restart progress survives reload and exposes only the matching run", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-restart-state-"));
+  const statePath = path.join(dir, "restart-requests.json");
+  const completed = completedRestartResult().run;
+  const hostController = {
+    restart: async () => restartResult(),
+    getStatus: async () => ({ ok: true, active: null, latestRun: completed })
+  } as unknown as HostControllerClient;
+
+  try {
+    const state = new ManorRestartRequestState(statePath, hostController, () => undefined, () => undefined);
+    const pending = state.request({ reason: "Track this restart." });
+    state.authorize(pending.id);
+    await state.start(pending.id);
+
+    const reloaded = new ManorRestartRequestState(statePath, hostController, () => undefined, () => undefined);
+    await reloaded.load();
+    const progress = await reloaded.getProgress();
+
+    assert.deepEqual(progress, {
+      requestId: pending.id,
+      runId: "run-1",
+      startedAt: 1,
+      status: "completed",
+      completedAt: 8,
+      currentStep: "Check Butler health",
+      error: null
+    });
+    assert.equal(await reloaded.acknowledgeProgress(pending.id), true);
+    assert.equal(await reloaded.getProgress(), null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("tracked restart progress stays unconfirmed when the controller reports another run", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-restart-state-"));
+  const statePath = path.join(dir, "restart-requests.json");
+  const hostController = {
+    restart: async () => restartResult(),
+    getStatus: async () => ({
+      ok: true,
+      active: null,
+      latestRun: { ...completedRestartResult().run, id: "run-2" }
+    })
+  } as unknown as HostControllerClient;
+
+  try {
+    const state = new ManorRestartRequestState(statePath, hostController, () => undefined, () => undefined);
+    const pending = state.request({ reason: "Track the exact run." });
+    state.authorize(pending.id);
+    await state.start(pending.id);
+
+    assert.equal((await state.getProgress())?.status, "unconfirmed");
+    assert.equal(await state.acknowledgeProgress("another-request"), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("accepted restart reports a tracking persistence failure without forgetting the live run", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-restart-state-"));
+  const errors: unknown[] = [];
+  const hostController = { restart: async () => restartResult() } as unknown as HostControllerClient;
+  const state = new ManorRestartRequestState(dir, hostController, (error) => errors.push(error), () => undefined);
+
+  try {
+    const pending = state.request({ reason: "Keep the accepted run in memory." });
+    state.authorize(pending.id);
+    await assert.rejects(() => state.start(pending.id), /EISDIR/);
+
+    assert.equal(state.trackedRestart?.requestId, pending.id);
+    assert.equal(state.trackedRestart?.runId, "run-1");
+    assert.ok(errors.length >= 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("failed acknowledgement persistence keeps the tracked run visible", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-restart-state-"));
+  const statePath = path.join(dir, "restart-requests.json");
+  const errors: unknown[] = [];
+  const hostController = { restart: async () => restartResult() } as unknown as HostControllerClient;
+  const state = new ManorRestartRequestState(statePath, hostController, (error) => errors.push(error), () => undefined);
+
+  try {
+    const pending = state.request({ reason: "Keep tracking until acknowledgement is durable." });
+    state.authorize(pending.id);
+    await state.start(pending.id);
+    await rm(statePath);
+    await mkdir(statePath);
+
+    await assert.rejects(() => state.acknowledgeProgress(pending.id), /EISDIR/);
+    assert.equal(state.trackedRestart?.requestId, pending.id);
+    assert.equal(state.trackedRestart?.runId, "run-1");
+    assert.ok(errors.length >= 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

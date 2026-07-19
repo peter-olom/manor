@@ -11,3 +11,16 @@ export interface ManorRestartRequestView {
   status: "pending" | "authorized" | "dismissed";
   authorizedAt: number | null;
 }
+
+export interface ManorRestartTrackingView {
+  requestId: string;
+  runId: string;
+  startedAt: number;
+}
+
+export interface ManorRestartProgressView extends ManorRestartTrackingView {
+  status: "running" | "completed" | "failed" | "unconfirmed";
+  completedAt: number | null;
+  currentStep: string | null;
+  error: string | null;
+}

@@ -808,6 +808,8 @@ export class ButlerAgentService extends EventEmitter {
   dismissManorRestartRequest(requestId: string): void { this.manorRestartRequests.dismiss(requestId); }
   async startAuthorizedManorRestart(requestId: string) { return this.manorRestartRequests.start(requestId); }
   async getManorRestartStatus() { return this.hostController.getStatus(); }
+  async getTrackedManorRestartProgress() { return this.manorRestartRequests.getProgress(); }
+  async acknowledgeTrackedManorRestart(requestId: string) { return this.manorRestartRequests.acknowledgeProgress(requestId); }
 
   private async buildDelegationDeveloperInstructions(workspace: { cwd: string; branchName: string | null }, task: string): Promise<string> { return buildDelegationDeveloperInstructions(workspace, task); }
 

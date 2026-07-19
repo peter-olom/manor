@@ -6045,6 +6045,138 @@ a:hover {
   min-height: 40px;
 }
 
+.manor-restart-dialog .is-danger-solid .spinner {
+  width: 14px;
+  height: 14px;
+  margin-right: 8px;
+  border-color: rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+}
+
+.manor-restart-progress {
+  width: min(500px, calc(100vw - 32px));
+  text-align: center;
+}
+
+.manor-restart-progress-hero {
+  display: grid;
+  min-height: 72px;
+  place-items: center;
+}
+
+.manor-restart-progress-hero .sand-spinner {
+  transform: scale(1.3);
+}
+
+.manor-restart-result-icon {
+  display: grid;
+  width: 56px;
+  height: 56px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--success) 55%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--success) 13%, transparent);
+  color: var(--success);
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.manor-restart-result-icon.is-warning {
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+
+.manor-restart-progress-copy {
+  display: grid;
+  gap: 7px;
+}
+
+.manor-restart-progress-copy h2,
+.manor-restart-progress-copy p {
+  margin: 0;
+}
+
+.manor-restart-progress-copy h2 {
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.manor-restart-progress-copy > p:last-child {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.manor-restart-steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.manor-restart-steps li {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  color: var(--text-muted);
+}
+
+.manor-restart-steps li::before {
+  position: absolute;
+  top: 14px;
+  left: -50%;
+  width: 100%;
+  height: 1px;
+  background: var(--border);
+  content: "";
+}
+
+.manor-restart-steps li:first-child::before {
+  display: none;
+}
+
+.manor-restart-steps li > span {
+  z-index: 1;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface-raised);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.manor-restart-steps li.is-active,
+.manor-restart-steps li.is-complete {
+  color: var(--text);
+}
+
+.manor-restart-steps li.is-active > span {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+.manor-restart-steps li.is-complete > span,
+.manor-restart-progress.is-confirmed .manor-restart-steps li > span {
+  border-color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, var(--surface-raised));
+  color: var(--success);
+}
+
+.manor-restart-steps small {
+  font-size: 11px;
+}
+
+.manor-restart-progress .modal-actions {
+  justify-content: center;
+}
+
 :root[data-theme="light"] {
   --modal-backdrop-bg: rgba(15, 23, 42, 0.4);
 }

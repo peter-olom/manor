@@ -10,6 +10,7 @@ import {
   requirePendingManorRestartRequest
 } from "./manor-restart-authorization.js";
 import type { ManorRestartRequestView } from "./types.js";
+import type { ManorRestartProgressView, ManorRestartTrackingView } from "../shared/manor-restart.js";
 
 type RestartRequestInput = {
   target?: unknown;
@@ -24,11 +25,13 @@ type RestartRequestInput = {
 type RestartRequestStateSnapshot = {
   pendingManorRestartRequest: ManorRestartRequestView | null;
   authorizedManorRestartRequest: ManorRestartRequestView | null;
+  trackedManorRestart: ManorRestartTrackingView | null;
 };
 
 export class ManorRestartRequestState {
   private pending: ManorRestartRequestView | null = null;
   private authorized: ManorRestartRequestView | null = null;
+  private tracked: ManorRestartTrackingView | null = null;
   private startingRequestId: string | null = null;
   private saveQueue: Promise<void> = Promise.resolve();
 
@@ -47,11 +50,16 @@ export class ManorRestartRequestState {
     return this.authorized;
   }
 
+  get trackedRestart(): ManorRestartTrackingView | null {
+    return this.tracked;
+  }
+
   async load(): Promise<void> {
     try {
       const parsed = JSON.parse(await fs.readFile(this.statePath, "utf8")) as {
         pendingManorRestartRequest?: unknown;
         authorizedManorRestartRequest?: unknown;
+        trackedManorRestart?: unknown;
       };
       this.pending = isManorRestartRequestWithStatus(parsed.pendingManorRestartRequest, "pending")
         ? parsed.pendingManorRestartRequest
@@ -59,6 +67,7 @@ export class ManorRestartRequestState {
       this.authorized = isManorRestartRequestWithStatus(parsed.authorizedManorRestartRequest, "authorized")
         ? parsed.authorizedManorRestartRequest
         : null;
+      this.tracked = readTrackedRestart(parsed.trackedManorRestart);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
@@ -112,23 +121,64 @@ export class ManorRestartRequestState {
       this.startingRequestId = null;
     }
     this.authorized = null;
-    await this.persist();
+    this.tracked = {
+      requestId: restartRequest.id,
+      runId: result.run.id,
+      startedAt: result.run.startedAt
+    };
+    await this.persist(true);
     this.onChange();
     return { restartRequest, run: result.run };
   }
 
-  private persist(): Promise<void> {
+  async getProgress(): Promise<ManorRestartProgressView | null> {
+    const tracked = this.tracked;
+    if (!tracked) return null;
+    const status = await this.hostController.getStatus();
+    const run = [status.active, status.latestRun].find((candidate) => candidate?.id === tracked.runId) ?? null;
+    if (!run) {
+      return { ...tracked, status: "unconfirmed", completedAt: null, currentStep: null, error: null };
+    }
+    const currentStep = run.steps.find((step) => step.status === "running")
+      ?? [...run.steps].reverse().find((step) => step.status === "failed")
+      ?? [...run.steps].reverse().find((step) => step.status === "completed")
+      ?? null;
+    return {
+      ...tracked,
+      status: run.status,
+      completedAt: run.completedAt,
+      currentStep: currentStep?.label ?? null,
+      error: run.status === "failed" ? "The host controller could not complete the restart." : null
+    };
+  }
+
+  async acknowledgeProgress(requestId: string): Promise<boolean> {
+    if (this.tracked?.requestId !== requestId) return false;
+    const tracked = this.tracked;
+    this.tracked = null;
+    try {
+      await this.persist(true);
+    } catch (error) {
+      if (this.tracked === null) this.tracked = tracked;
+      throw error;
+    }
+    this.onChange();
+    return true;
+  }
+
+  private persist(required = false): Promise<void> {
     const snapshot = {
       pendingManorRestartRequest: this.pending,
-      authorizedManorRestartRequest: this.authorized
+      authorizedManorRestartRequest: this.authorized,
+      trackedManorRestart: this.tracked
     };
-    this.saveQueue = this.saveQueue
+    const write = this.saveQueue
       .catch(() => undefined)
-      .then(() => this.save(snapshot))
-      .catch((error) => {
-        this.onError(error);
-      });
-    return this.saveQueue;
+      .then(() => this.save(snapshot));
+    this.saveQueue = write.catch((error) => {
+      this.onError(error);
+    });
+    return required ? write : this.saveQueue;
   }
 
   private async save(snapshot: RestartRequestStateSnapshot): Promise<void> {
@@ -138,4 +188,13 @@ export class ManorRestartRequestState {
       "utf8"
     );
   }
+}
+
+function readTrackedRestart(value: unknown): ManorRestartTrackingView | null {
+  if (!value || typeof value !== "object") return null;
+  const tracked = value as Partial<ManorRestartTrackingView>;
+  if (typeof tracked.requestId !== "string" || !tracked.requestId) return null;
+  if (typeof tracked.runId !== "string" || !tracked.runId) return null;
+  if (typeof tracked.startedAt !== "number" || !Number.isFinite(tracked.startedAt)) return null;
+  return { requestId: tracked.requestId, runId: tracked.runId, startedAt: tracked.startedAt };
 }

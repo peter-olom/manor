@@ -38,7 +38,7 @@ import { listComposerFileSuggestions } from "./composer-file-suggestions.js";
 
 type PairButlerService = Pick<
   ButlerAgentService,
-  "answerOperatorQuestion" | "authorizeManorRestartRequest" | "cancelCallbackReview" | "dismissManorRestartRequest" | "dispose" | "ensureExternalWorkerDelegation" | "exportSession" | "getLiveSnapshot" | "getMessagePage" | "getSessionControls" | "getShellSnapshot" | "handoffWorker" | "listComposerCommands" | "on" | "postAutomationNotice" | "prompt" | "quiesceCallbackReviews" | "refreshModelSettings" | "reloadResources" | "removeExternalWorkerDelegation" | "retryBlockedCallbackReviews" | "runAutomationPrompt" | "runSessionControl" | "setThinkingLevel" | "start" | "startAuthorizedManorRestart" | "stopPrompt" | "updateComposeSettings" | "watchdogs"
+  "acknowledgeTrackedManorRestart" | "answerOperatorQuestion" | "authorizeManorRestartRequest" | "cancelCallbackReview" | "dismissManorRestartRequest" | "dispose" | "ensureExternalWorkerDelegation" | "exportSession" | "getLiveSnapshot" | "getMessagePage" | "getSessionControls" | "getShellSnapshot" | "getTrackedManorRestartProgress" | "handoffWorker" | "listComposerCommands" | "on" | "postAutomationNotice" | "prompt" | "quiesceCallbackReviews" | "refreshModelSettings" | "reloadResources" | "removeExternalWorkerDelegation" | "retryBlockedCallbackReviews" | "runAutomationPrompt" | "runSessionControl" | "setThinkingLevel" | "start" | "startAuthorizedManorRestart" | "stopPrompt" | "updateComposeSettings" | "watchdogs"
 >;
 
 type PairSessionManagerOptions = {
@@ -644,6 +644,16 @@ export class PairSessionManager {
     const service = await this.ensureService(pairId);
     service.dismissManorRestartRequest(requestId);
     return true;
+  }
+
+  async getManorRestartProgress(pairId: string) {
+    if (!this.options.pairStore.getPair(pairId)) return undefined;
+    return (await this.ensureService(pairId)).getTrackedManorRestartProgress();
+  }
+
+  async acknowledgeManorRestartProgress(pairId: string, requestId: string): Promise<boolean | null> {
+    if (!this.options.pairStore.getPair(pairId)) return null;
+    return (await this.ensureService(pairId)).acknowledgeTrackedManorRestart(requestId);
   }
 
   async getActivityWatchdogs(pairId: string): Promise<ActivityWatchdogDiagnostics | null> {

@@ -91,6 +91,36 @@ export function registerPairRoutes(access: PairRouteAccess): void {
     }
   });
 
+  app.get("/api/pairs/:pairId/manor-restart-progress", async (request, response) => {
+    try {
+      const progress = await pairSessions.getManorRestartProgress(request.params.pairId);
+      if (progress === undefined) {
+        response.status(404).json({ error: "Butler session not found" });
+        return;
+      }
+      response.json({ progress });
+    } catch (error) {
+      response.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post("/api/pairs/:pairId/manor-restart-progress/:requestId/acknowledge", async (request, response) => {
+    try {
+      const acknowledged = await pairSessions.acknowledgeManorRestartProgress(request.params.pairId, request.params.requestId);
+      if (acknowledged === null) {
+        response.status(404).json({ error: "Butler session not found" });
+        return;
+      }
+      if (!acknowledged) {
+        response.status(409).json({ error: "Restart progress no longer matches this request." });
+        return;
+      }
+      response.json({ ok: true });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.get("/api/pairs/:pairId/activity-watchdogs", async (request, response) => {
     try {
       const diagnostics = await pairSessions.getActivityWatchdogs(request.params.pairId);

@@ -65,9 +65,10 @@ test("restart dialog posts authorization to the pair-scoped request", async () =
 
   let submitted: { url: string; body: unknown } | null = null;
   let cleared = 0;
+  let trackedRunId: string | null = null;
   globals.fetch = async (input: string | URL | Request, init?: RequestInit) => {
     submitted = { url: String(input), body: JSON.parse(String(init?.body ?? "{}")) };
-    return Response.json({ ok: true }, { status: 202 });
+    return Response.json({ ok: true, run: { id: "run-1", status: "running", startedAt: 42, completedAt: null } }, { status: 202 });
   };
 
   const container = dom.document.getElementById("root");
@@ -78,6 +79,7 @@ test("restart dialog posts authorization to the pair-scoped request", async () =
       root.render(React.createElement(ManorRestartDialog, {
         pairId: "pair/one",
         request: restartRequest(),
+        onAuthorized: (progress) => { trackedRunId = progress.runId; },
         onCleared: () => { cleared += 1; }
       }));
     });
@@ -94,6 +96,7 @@ test("restart dialog posts authorization to the pair-scoped request", async () =
       body: { operatorAction: "authorize_restart" }
     });
     assert.equal(cleared, 1);
+    assert.equal(trackedRunId, "run-1");
   } finally {
     await act(async () => root.unmount());
     Object.assign(globals, previous);

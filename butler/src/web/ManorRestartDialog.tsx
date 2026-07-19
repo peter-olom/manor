@@ -1,7 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 
 import { postJson } from "./api";
-import type { ManorRestartRequestView } from "../shared/manor-restart";
+import type { ManorRestartProgressView, ManorRestartRequestView } from "../shared/manor-restart";
+
+type AuthorizeResponse = {
+  run?: {
+    id?: unknown;
+    status?: unknown;
+    startedAt?: unknown;
+    completedAt?: unknown;
+  };
+};
 
 function restartTargetLabel(request: ManorRestartRequestView): string {
   if (request.gitRef) return request.gitRef;
@@ -16,11 +25,15 @@ function updatesSource(request: ManorRestartRequestView): boolean {
 export function ManorRestartDialog({
   pairId,
   request,
-  onCleared
+  onCleared,
+  onAuthorizationStarted,
+  onAuthorized
 }: {
   pairId: string;
   request: ManorRestartRequestView;
   onCleared: () => void;
+  onAuthorizationStarted?: () => void;
+  onAuthorized?: (progress: ManorRestartProgressView) => void;
 }) {
   const [action, setAction] = useState<"authorize" | "dismiss" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -70,11 +83,27 @@ export function ManorRestartDialog({
     setAction(nextAction);
     setError(null);
     const base = `/api/pairs/${encodeURIComponent(pairId)}/manor-restart-requests/${encodeURIComponent(request.id)}`;
+    if (nextAction === "authorize") onAuthorizationStarted?.();
     try {
-      await postJson(
+      const payload = await postJson<AuthorizeResponse>(
         `${base}/${nextAction}`,
         nextAction === "authorize" ? { operatorAction: "authorize_restart" } : {}
       );
+      if (nextAction === "authorize") {
+        const run = payload?.run;
+        if (typeof run?.id !== "string" || typeof run.startedAt !== "number") {
+          throw new Error("The restart was accepted, but its progress could not be tracked yet.");
+        }
+        onAuthorized?.({
+          requestId: request.id,
+          runId: run.id,
+          startedAt: run.startedAt,
+          status: run.status === "completed" || run.status === "failed" ? run.status : "running",
+          completedAt: typeof run.completedAt === "number" ? run.completedAt : null,
+          currentStep: null,
+          error: run.status === "failed" ? "The host controller could not complete the restart." : null
+        });
+      }
       onCleared();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -135,7 +164,7 @@ export function ManorRestartDialog({
             {action === "dismiss" ? "Keeping Manor running…" : "Keep running"}
           </button>
           <button className="button is-danger-solid" type="button" disabled={action !== null} onClick={() => void submit("authorize")}>
-            {action === "authorize" ? "Starting restart…" : "Authorize restart"}
+            {action === "authorize" ? <><span className="spinner" />Starting restart…</> : "Authorize restart"}
           </button>
         </footer>
       </section>
