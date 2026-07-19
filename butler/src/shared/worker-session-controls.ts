@@ -26,6 +26,14 @@ export type WorkerSessionForkPoint = {
   text: string;
 };
 
+export type WorkerCompactionOperation = {
+  id: string;
+  status: "starting" | "running" | "completed" | "failed";
+  startedAt: number;
+  completedAt: number | null;
+  error: string | null;
+};
+
 export type WorkerSessionControls = {
   supported: boolean;
   runtime: "pi";
@@ -33,6 +41,7 @@ export type WorkerSessionControls = {
   compacting: boolean;
   autoCompactionEnabled: boolean;
   pendingMessageCount: number;
+  manualCompaction: WorkerCompactionOperation | null;
   sessionName: string | null;
   stats: WorkerSessionStats | null;
   forkPoints: WorkerSessionForkPoint[];

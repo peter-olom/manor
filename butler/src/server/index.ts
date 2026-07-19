@@ -30,6 +30,7 @@ import { registerProjectArtifactPolicyRoutes } from "./project-artifact-policy-r
 import { buildComposerInputItemsPrompt, buildReferencePromptText, buildWorkerInputWithReferences } from "./reference-inputs.js";
 import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { registerScratchPadRoutes } from "./scratch-pad-routes.js"; import { registerSkillsRoutes } from "./skills-routes.js"; import { SkillsService } from "./skills-service.js"; import { ExtensionUiBroker } from "./extension-ui-broker.js"; import { registerExtensionUiRoutes } from "./extension-ui-routes.js"; import { registerWorkerSessionControlRoutes } from "./worker-session-control-routes.js"; import { registerButlerSessionControlRoutes } from "./butler-session-control-routes.js";
+import { WorkerCompactionSupervisor } from "./worker-compaction-supervisor.js";
 import { registerRuntimeResourceRoutes } from "./runtime-resource-routes.js";
 import { RuntimeEgressClient } from "./runtime-egress-client.js"; import { registerRuntimeEgressRoutes } from "./runtime-egress-routes.js";
 import { ScratchPadStore } from "./scratch-pad-store.js";
@@ -211,6 +212,12 @@ const butlerAgent = new ButlerAgentService({
   getWorkerAffinity: () => pairStore.getWorkerAffinity(),
   recordSuccessfulWorkerSelection: (selection) => pairStore.recordSuccessfulWorkerSelection(selection)
 });
+const workerCompactions = new WorkerCompactionSupervisor({
+  client: piRpcWorkerClient,
+  watchdogs: butlerAgent.watchdogs,
+  onChange: () => sseHub?.schedule()
+});
+piRpcWorkerClient.on("workerCompaction", (event) => workerCompactions.handleRuntimeEvent(event));
 const pairSessions = new PairSessionManager({
   pairStore,
   store,
@@ -452,7 +459,7 @@ registerPreviewAnnotationRoutes({
   store
 });
 registerPairRoutes({ app, pairSessions });
-registerExtensionUiRoutes({ app, pairStore, broker: extensionUiBroker }); registerWorkerSessionControlRoutes({ app, pairStore, piRpcWorkerClient }); registerButlerSessionControlRoutes({ app, pairSessions });
+registerExtensionUiRoutes({ app, pairStore, broker: extensionUiBroker }); registerWorkerSessionControlRoutes({ app, pairStore, piRpcWorkerClient, compactions: workerCompactions }); registerButlerSessionControlRoutes({ app, pairSessions });
 registerManorSettingsRoutes({ app, settingsService, store, piRpcWorkerClient, butlerAgent, onSettingsChanged: applyManagedSettingsChange, refreshModelInventories: () => modelInventoryRefresh.request() });
 registerRuntimeEgressRoutes({ app, client: runtimeEgress, operatorGatewayHost: process.env.MANOR_OPERATOR_GATEWAY_HOST ?? "butler-gateway" });
 registerModelUsageRoutes(app, modelUsageStore);

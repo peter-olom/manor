@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { getJson, postJson } from "./api";
 import { SessionControlsIcon } from "./icons";
 import type { ModelUsageCost, ModelUsageRow } from "../shared/model-usage";
-import type { WorkerSessionControlAction, WorkerSessionControls } from "../shared/worker-session-controls";
+import type { WorkerCompactionOperation, WorkerSessionControlAction, WorkerSessionControls } from "../shared/worker-session-controls";
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat().format(value);
@@ -87,6 +87,21 @@ function UsageByModel({ models }: { models: ModelUsageRow[] }) {
   );
 }
 
+function compactionActive(operation: WorkerCompactionOperation | null | undefined): boolean {
+  return operation?.status === "starting" || operation?.status === "running";
+}
+
+export function WorkerCompactionStatus({ operation, runtimeCompacting }: {
+  operation: WorkerCompactionOperation | null;
+  runtimeCompacting: boolean;
+}) {
+  if (operation?.status === "failed") return <p className="error" role="alert">Compaction needs attention: {operation.error}</p>;
+  if (operation?.status === "completed") return <p role="status">Context compacted successfully.</p>;
+  if (operation?.status === "running" || runtimeCompacting) return <p className="muted" role="status">Compacting context… This can take several minutes.</p>;
+  if (operation?.status === "starting") return <p className="muted" role="status">Starting context compaction…</p>;
+  return null;
+}
+
 type SessionControlsButtonProps = {
   pairId: string;
   lane: "butler" | "worker";
@@ -100,10 +115,14 @@ export function SessionControlsButton({ pairId, lane, disabled }: SessionControl
   const [error, setError] = useState<string | null>(null);
   const [instructions, setInstructions] = useState("");
   const [entryId, setEntryId] = useState("");
+  const loadRequest = useRef(0);
   const triggerLabel = `${lane === "butler" ? "Butler" : "Worker"} session controls`;
+  const isCompacting = Boolean(controls?.compacting || compactionActive(controls?.manualCompaction));
 
   async function load() {
+    const request = ++loadRequest.current;
     const payload = await getJson<{ controls: WorkerSessionControls }>(`/api/pairs/${encodeURIComponent(pairId)}/${lane}/controls`);
+    if (request !== loadRequest.current) return;
     setControls(payload.controls);
     setEntryId((current) => payload.controls.forkPoints.some((point) => point.entryId === current) ? current : payload.controls.forkPoints.at(-1)?.entryId ?? "");
   }
@@ -123,14 +142,51 @@ export function SessionControlsButton({ pairId, lane, disabled }: SessionControl
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [open, pending]);
 
+  useEffect(() => {
+    if (!open || lane !== "worker" || !compactionActive(controls?.manualCompaction)) return;
+    let stopped = false;
+    let checking = false;
+    const poll = async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const payload = await getJson<{ operation: WorkerCompactionOperation | null }>(`/api/pairs/${encodeURIComponent(pairId)}/worker/controls/compaction`);
+        if (stopped) return;
+        setError(null);
+        setControls((current) => current ? { ...current, manualCompaction: payload.operation } : current);
+        if (payload.operation && !compactionActive(payload.operation)) await load();
+      } catch (nextError) {
+        if (!stopped) setError(nextError instanceof Error ? nextError.message : String(nextError));
+      } finally {
+        checking = false;
+      }
+    };
+    const timer = window.setInterval(() => { void poll(); }, 1_000);
+    void poll();
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [open, pairId, lane, controls?.manualCompaction?.id, controls?.manualCompaction?.status]);
+
   async function run(action: WorkerSessionControlAction, body: Record<string, unknown> = {}) {
     if (pending) return;
     setPending(action);
     setError(null);
     try {
-      await postJson(`/api/pairs/${encodeURIComponent(pairId)}/${lane}/controls/${action}`, body);
-      await load();
-      if (action === "compact") setInstructions("");
+      if (action === "compact" && lane === "worker") {
+        const payload = await postJson<{ operation: WorkerCompactionOperation }>(
+          `/api/pairs/${encodeURIComponent(pairId)}/${lane}/controls/${action}`,
+          body
+        );
+        loadRequest.current += 1;
+        setControls((current) => current ? { ...current, manualCompaction: payload.operation } : current);
+        setInstructions("");
+      } else {
+        await postJson(`/api/pairs/${encodeURIComponent(pairId)}/${lane}/controls/${action}`, body);
+        await load();
+        if (action === "compact") setInstructions("");
+      }
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : String(nextError));
     } finally {
@@ -165,11 +221,12 @@ export function SessionControlsButton({ pairId, lane, disabled }: SessionControl
             ) : null}
             {controls ? (
               <div className="worker-session-sections">
-                <section>
+                <section aria-busy={isCompacting}>
                   <h3>Context</h3>
                   <textarea className="input worker-session-instructions" value={instructions} placeholder="Optional compaction instructions" onChange={(event) => setInstructions(event.target.value)} />
+                  <WorkerCompactionStatus operation={controls.manualCompaction} runtimeCompacting={controls.compacting} />
                   <div className="worker-session-actions">
-                    <button className="button" type="button" disabled={controls.busy || controls.compacting || Boolean(pending)} onClick={() => void run("compact", { instructions })}>Compact now</button>
+                    <button className="button" type="button" disabled={controls.busy || isCompacting || Boolean(pending)} onClick={() => void run("compact", { instructions })}>{isCompacting ? "Compacting…" : "Compact now"}</button>
                     <button className="button" type="button" disabled={Boolean(pending)} onClick={() => void run("abort-retry")}>Cancel retry</button>
                     <a className="button" href={`/api/pairs/${encodeURIComponent(pairId)}/${lane}/export`}>Export HTML</a>
                   </div>
@@ -180,10 +237,10 @@ export function SessionControlsButton({ pairId, lane, disabled }: SessionControl
                     <select className="input" value={entryId} onChange={(event) => setEntryId(event.target.value)} aria-label="Branch point">
                       {controls.forkPoints.map((point) => <option key={point.entryId} value={point.entryId}>{point.text.slice(0, 110)}</option>)}
                     </select>
-                    <button className="button" type="button" disabled={!entryId || controls.busy || controls.compacting || Boolean(pending)} onClick={() => void run("fork", { entryId })}>Fork here</button>
+                    <button className="button" type="button" disabled={!entryId || controls.busy || isCompacting || Boolean(pending)} onClick={() => void run("fork", { entryId })}>Fork here</button>
                   </div>
                   <div className="worker-session-clone-action">
-                    <button className="button" type="button" disabled={!controls.leafId || controls.busy || controls.compacting || Boolean(pending)} onClick={() => void run("clone")}>Clone active branch</button>
+                    <button className="button" type="button" disabled={!controls.leafId || controls.busy || isCompacting || Boolean(pending)} onClick={() => void run("clone")}>Clone active branch</button>
                   </div>
                 </section>
               </div>

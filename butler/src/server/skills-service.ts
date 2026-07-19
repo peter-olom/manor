@@ -59,8 +59,8 @@ export type AgentSkillChangeInput =
   | {
       operation: "install";
       environment: SkillEnvironmentId;
-      name: string;
-      content: string;
+      name?: string;
+      content?: string;
       source: string;
       scope?: SkillScope;
       cwd?: string | null;
@@ -86,6 +86,7 @@ export type AgentSkillChangeProposal = {
   skillName: string;
   scope: SkillScope;
   source: string | null;
+  sourceVerification: "agent-reported" | "fetched";
   description: string;
   target: string;
   footprint: string;
@@ -129,11 +130,31 @@ type SkillsServiceOptions = {
   butlerPiAgentDir: string;
   workerPiAgentDir: string;
   workspaceRoot: string;
+  fetchImpl?: typeof fetch;
 };
+
+type ExtractedSkillArchive = {
+  entries: Array<{ archiveRoot: string; name: string; description: string }>;
+  files: string[];
+};
+
+type NormalizedAgentSkillChangeInput =
+  | Exclude<AgentSkillChangeInput, { operation: "install" }>
+  | {
+      operation: "install";
+      environment: SkillEnvironmentId;
+      name: string;
+      content?: string;
+      archiveBase64?: string;
+      archiveManifest?: Array<{ path: string; sha256: string }>;
+      source: string;
+      scope: SkillScope;
+      cwd: string | null;
+    };
 
 type AgentSkillProposalRecord = AgentSkillChangeProposal & {
   owner: string;
-  input: AgentSkillChangeInput;
+  input: NormalizedAgentSkillChangeInput;
   beforeContent: string | null;
   beforeHash: string | null;
   questionMessageId: string | null;
@@ -148,6 +169,7 @@ type AgentSkillResultRecord = AgentSkillChangeResult & {
   previousContent: string | null;
   appliedContentHash: string | null;
   appliedContent: string | null;
+  appliedArchiveManifest: Array<{ path: string; sha256: string }> | null;
   undoneAt: number | null;
 };
 
@@ -162,6 +184,9 @@ const MAX_ARCHIVE_EXPANDED_BYTES = 25 * 1024 * 1024;
 const MAX_ARCHIVE_FILES = 200;
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const AGENT_PROPOSAL_TTL_MS = 30 * 60 * 1000;
+const MAX_PENDING_AGENT_ARCHIVES_PER_OWNER = 2;
+const MAX_PENDING_AGENT_ARCHIVES_GLOBAL = 8;
+const MAX_AGENT_ARCHIVE_MANIFEST_EVIDENCE_BYTES = 12 * 1024;
 const AGENT_APPROVAL_PREFIX = "skill-change";
 export const AGENT_SKILL_CONTENT_MARKER = "MANOR_FULL_SKILL_CONTENT_V1_JSON";
 
@@ -215,7 +240,7 @@ function skillMarkdown(name: string, description: string, instructions: string):
 }
 
 function validateArchivePath(rawName: string): string {
-  if (!rawName || rawName.includes("\\") || rawName.includes("\0") || path.posix.isAbsolute(rawName)) {
+  if (!rawName || rawName.length > 1024 || rawName.includes("\\") || rawName.includes("\0") || path.posix.isAbsolute(rawName)) {
     throw new Error("Archive contains an unsafe path.");
   }
   const normalized = path.posix.normalize(rawName).replace(/\/$/, "");
@@ -223,34 +248,45 @@ function validateArchivePath(rawName: string): string {
     throw new Error("Archive contains an unsafe path.");
   }
   const segments = normalized.split("/");
-  if (segments.some((segment) => !segment || segment === "." || segment === ".." || segment === ".git" || segment === "node_modules")) {
+  if (segments.some((segment) => !segment || segment.length > 255 || segment === "." || segment === ".." || segment === ".git" || segment === "node_modules")) {
     throw new Error("Archive contains a forbidden path.");
   }
-  safeName(segments[0]);
   return normalized;
 }
 
 export class SkillsService {
   private readonly agentProposals = new Map<string, AgentSkillProposalRecord>();
   private readonly agentResults = new Map<string, AgentSkillResultRecord>();
+  private agentArchiveProposalTail: Promise<void> = Promise.resolve();
   private mutationTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: SkillsServiceOptions) {}
 
   async proposeAgentChange(owner: string, rawInput: AgentSkillChangeInput): Promise<AgentSkillChangeProposal> {
+    if (rawInput.operation === "install" && !rawInput.content?.trim()) {
+      return this.runAgentArchiveProposal(() => this.proposeAgentChangeUnlocked(owner, rawInput));
+    }
+    return this.proposeAgentChangeUnlocked(owner, rawInput);
+  }
+
+  private async proposeAgentChangeUnlocked(owner: string, rawInput: AgentSkillChangeInput): Promise<AgentSkillChangeProposal> {
     const normalizedOwner = this.agentOwner(owner);
-    const input = await this.normalizeAgentChange(rawInput, normalizedOwner);
     const now = Date.now();
+    this.pruneAgentProposals(now);
+    if (rawInput.operation === "install" && !rawInput.content?.trim()) this.assertAgentArchiveProposalCapacity(normalizedOwner, now);
+    const input = await this.normalizeAgentChange(rawInput, normalizedOwner);
+    if (input.operation === "install" && input.archiveBase64) this.assertAgentArchiveProposalCapacity(normalizedOwner, Date.now());
     let environment: SkillEnvironmentId;
     let skillName: string;
     let skillScope: SkillScope;
     let source: string | null = null;
+    let sourceVerification: AgentSkillChangeProposal["sourceVerification"] = "agent-reported";
     let beforeContent: string | null = null;
     let beforeHash: string | null = null;
     let summary: string;
     let description: string;
     let conflict = "No destination conflict found.";
-    let approvedContent: string;
+    let approvedContent: string | Buffer;
     let contentEvidence: string;
     let footprint: string;
 
@@ -268,7 +304,9 @@ export class SkillsService {
         : this.fullContentEvidence(approvedContent, "The complete SKILL.md below is approved for removal.");
       footprint = result.operation === "update"
         ? "Restores one managed SKILL.md. No hooks, scripts, or skill instructions are executed."
-        : "Removes only the approved SKILL.md. If later files exist, Manor moves the residual directory to a unique hidden preserved location under the same skills root so the original name is reusable.";
+        : result.appliedArchiveManifest
+          ? "Removes the complete approved archive when every installed file is unchanged. If files were changed, removed, or added later, Manor removes SKILL.md and moves the residual directory to a unique hidden preserved location under the same skills root."
+          : "Removes only the approved SKILL.md. If later files exist, Manor moves the residual directory to a unique hidden preserved location under the same skills root so the original name is reusable.";
       summary = `Undo ${result.operation} of ${skillName} in ${this.environmentLabel(environment)}.`;
     } else {
       environment = input.environment;
@@ -289,13 +327,25 @@ export class SkillsService {
         summary = `Update ${skillName} in ${this.environmentLabel(environment)} (${skillScope} scope). Reason: ${input.reason}`;
       } else if (input.operation === "install") {
         skillName = input.name;
-        const validated = await this.validateSkillDocument(skillName, input.content);
-        description = this.agentLine(validated.description, "Skill description", 1024);
+        if (input.archiveBase64) {
+          const archive = Buffer.from(input.archiveBase64, "base64");
+          const inspected = await this.inspectAgentArchive(skillName, archive);
+          input.archiveManifest = inspected.manifest;
+          description = this.agentLine(inspected.description, "Skill description", 1024);
+          approvedContent = archive;
+          contentEvidence = this.archiveContentEvidence(inspected.files, inspected.skillContent);
+          footprint = `Writes one validated skill archive containing ${inspected.files.length} files. Archive contents are staged without executing hooks, scripts, or skill instructions.`;
+          sourceVerification = "fetched";
+        } else {
+          const content = input.content ?? "";
+          const validated = await this.validateSkillDocument(skillName, content);
+          description = this.agentLine(validated.description, "Skill description", 1024);
+          approvedContent = content;
+          contentEvidence = this.fullContentEvidence(content, "Complete proposed single-document SKILL.md.");
+          footprint = "Writes one managed SKILL.md. Agent-managed installs do not add companion files and execute no hooks, scripts, or skill instructions.";
+        }
         conflict = await this.assertAgentDestinationAvailable(environment, skillName, skillScope, input.cwd);
         source = input.source;
-        approvedContent = input.content;
-        contentEvidence = this.fullContentEvidence(input.content, "Complete proposed single-document SKILL.md.");
-        footprint = "Writes one managed SKILL.md. Agent-managed installs do not add companion files and execute no hooks, scripts, or skill instructions.";
         summary = `Install ${skillName} in ${this.environmentLabel(environment)} (${skillScope} scope) from ${input.source}.`;
       } else {
         skillName = input.name;
@@ -320,6 +370,7 @@ export class SkillsService {
       skillName,
       scope: skillScope,
       source,
+      sourceVerification,
       description,
       target: `${this.environmentLabel(environment)} / ${skillScope} scope`,
       footprint,
@@ -365,7 +416,10 @@ export class SkillsService {
     const proposal = this.requireAgentProposal(this.agentOwner(owner), parsed.proposalId);
     this.assertAgentApprovalQuestion(proposal, input.messageId, input.questionId);
     if (proposal.status !== "pending" && !this.agentDecisionMatchesStatus(proposal, parsed.decision)) throw new Error("This skill change proposal is no longer awaiting approval.");
-    if (proposal.expiresAt <= Date.now()) throw new Error("This skill change proposal expired. Ask Butler to propose it again.");
+    if (proposal.expiresAt <= Date.now()) {
+      this.clearAgentArchivePayload(proposal);
+      throw new Error("This skill change proposal expired. Ask Butler to propose it again.");
+    }
   }
 
   recordAgentApprovalOption(owner: string, input: { messageId: string; questionId: string; optionId?: string }): AgentSkillChangeProposal | null {
@@ -377,12 +431,17 @@ export class SkillsService {
       if (!this.agentDecisionMatchesStatus(proposal, parsed.decision)) throw new Error("This skill change proposal is no longer awaiting approval.");
       return this.publicAgentProposal(proposal);
     }
-    if (proposal.expiresAt <= Date.now()) throw new Error("This skill change proposal expired. Ask Butler to propose it again.");
+    if (proposal.expiresAt <= Date.now()) {
+      this.clearAgentArchivePayload(proposal);
+      throw new Error("This skill change proposal expired. Ask Butler to propose it again.");
+    }
     proposal.status = parsed.decision === "approve" ? "approved" : "rejected";
+    if (proposal.status === "rejected") this.clearAgentArchivePayload(proposal);
     return this.publicAgentProposal(proposal);
   }
 
   getAgentProposal(owner: string, proposalId: string): AgentSkillChangeProposal {
+    this.pruneAgentProposals(Date.now());
     return this.publicAgentProposal(this.requireAgentProposal(this.agentOwner(owner), proposalId));
   }
 
@@ -395,7 +454,10 @@ export class SkillsService {
     const proposal = this.requireAgentProposal(normalizedOwner, proposalId);
     if (proposal.status === "applied" && proposal.resultId) return this.publicAgentResult(this.requireAgentResult(normalizedOwner, proposal.resultId));
     if (proposal.status !== "approved") throw new Error("The operator has not approved this skill change.");
-    if (proposal.expiresAt <= Date.now()) throw new Error("This skill change proposal expired. Ask Butler to propose it again.");
+    if (proposal.expiresAt <= Date.now()) {
+      this.clearAgentArchivePayload(proposal);
+      throw new Error("This skill change proposal expired. Ask Butler to propose it again.");
+    }
     proposal.status = "applying";
     proposal.error = null;
     try {
@@ -403,10 +465,12 @@ export class SkillsService {
       proposal.status = "applied";
       proposal.resultId = applied.id;
       this.agentResults.set(applied.id, applied);
+      this.clearAgentArchivePayload(proposal);
       return this.publicAgentResult(applied);
     } catch (error) {
       proposal.status = "failed";
       proposal.error = error instanceof Error ? error.message : String(error);
+      this.clearAgentArchivePayload(proposal);
       throw error;
     }
   }
@@ -539,14 +603,13 @@ export class SkillsService {
     const staged = await fs.mkdtemp(path.join(root, ".manor-import-"));
     const installedPaths: string[] = [];
     try {
-      const names = await this.extractArchive(archive, staged);
-      for (const name of names) {
-        this.assertValidSkillDir(path.join(staged, name), name);
-        if (await exists(path.join(root, name))) throw new Error(`A skill named ${name} already exists.`);
+      const extracted = await this.extractArchive(archive, staged);
+      for (const entry of extracted.entries) {
+        if (await exists(path.join(root, entry.name))) throw new Error(`A skill named ${entry.name} already exists.`);
       }
-      for (const name of names) {
-        const destination = path.join(root, name);
-        await fs.rename(path.join(staged, name), destination);
+      for (const entry of extracted.entries) {
+        const destination = path.join(root, entry.name);
+        await fs.rename(path.join(staged, entry.archiveRoot), destination);
         installedPaths.push(path.join(destination, "SKILL.md"));
       }
     } catch (error) {
@@ -593,6 +656,7 @@ export class SkillsService {
     let appliedContent: string;
     let createdSkillId: string | null = null;
     let previousContent: string | null = null;
+    let appliedArchiveManifest: Array<{ path: string; sha256: string }> | null = null;
     const cwd = input.cwd?.trim() || null;
     if (input.operation === "update") {
       const current = await this.read(input.environment, input.id, input.cwd);
@@ -603,15 +667,33 @@ export class SkillsService {
       skill = await this.editUnlocked({ environment: input.environment, id: input.id, content: input.content, cwd: input.cwd });
       appliedContent = input.content;
     } else if (input.operation === "install") {
-      skill = await this.installAgentDocument({
-        environment: input.environment,
-        name: input.name,
-        content: input.content,
-        scope: input.scope ?? "user",
-        cwd: input.cwd
-      });
+      if (input.archiveBase64) {
+        const archive = Buffer.from(input.archiveBase64, "base64");
+        if (this.contentHash(archive) !== proposal.contentSha256) {
+          throw new Error("The fetched skill archive changed after approval was requested. Review and approve a fresh proposal.");
+        }
+        const imported = await this.importArchiveUnlocked({
+          environment: input.environment,
+          archiveBase64: input.archiveBase64,
+          scope: input.scope ?? "user",
+          cwd: input.cwd
+        });
+        if (imported.length !== 1 || imported[0]?.name !== input.name) throw new Error("The approved skill archive did not install the expected skill.");
+        skill = imported[0];
+        appliedContent = (await this.read(skill.environment, skill.id, input.cwd)).content;
+        appliedArchiveManifest = input.archiveManifest?.map((entry) => ({ ...entry })) ?? null;
+      } else {
+        const content = input.content ?? "";
+        skill = await this.installAgentDocument({
+          environment: input.environment,
+          name: input.name,
+          content,
+          scope: input.scope ?? "user",
+          cwd: input.cwd
+        });
+        appliedContent = content;
+      }
       createdSkillId = skill.id;
-      appliedContent = input.content;
     } else {
       skill = await this.createUnlocked(input);
       createdSkillId = skill.id;
@@ -630,6 +712,7 @@ export class SkillsService {
       previousContent,
       appliedContentHash: this.contentHash(appliedContent),
       appliedContent,
+      appliedArchiveManifest,
       appliedAt: Date.now(),
       undoneAt: null,
       verification: {
@@ -666,7 +749,12 @@ export class SkillsService {
     } else {
       if (!original.createdSkillId) throw new Error("The installed skill record is unavailable.");
       if (!original.appliedContent) throw new Error("The approved skill content is unavailable.");
-      preservedLocation = await this.removeAgentSkillDocument(original.environment, original.createdSkillId, original.appliedContent, original.cwd);
+      const removedArchive = original.appliedArchiveManifest
+        ? await this.removeAgentArchiveIfUnchanged(original.environment, original.createdSkillId, original.appliedArchiveManifest, original.cwd)
+        : false;
+      if (!removedArchive) {
+        preservedLocation = await this.removeAgentSkillDocument(original.environment, original.createdSkillId, original.appliedContent, original.cwd);
+      }
       skill = original.skill;
     }
     original.undoneAt = Date.now();
@@ -684,6 +772,7 @@ export class SkillsService {
       previousContent: null,
       appliedContentHash: original.operation === "update" && original.previousContent ? this.contentHash(original.previousContent) : null,
       appliedContent: original.operation === "update" ? original.previousContent : null,
+      appliedArchiveManifest: null,
       appliedAt: Date.now(),
       undoneAt: null,
       verification: {
@@ -702,7 +791,7 @@ export class SkillsService {
     };
   }
 
-  private async normalizeAgentChange(input: AgentSkillChangeInput, owner: string): Promise<AgentSkillChangeInput> {
+  private async normalizeAgentChange(input: AgentSkillChangeInput, owner: string): Promise<NormalizedAgentSkillChangeInput> {
     if (!input || typeof input !== "object") throw new Error("Skill change input is required.");
     if (input.operation === "undo") {
       const resultId = typeof input.resultId === "string" ? input.resultId.trim() : "";
@@ -718,14 +807,20 @@ export class SkillsService {
       this.assertAgentSingleDocument(content);
       return { operation: "update", environment: input.environment, id, content, reason, cwd };
     }
-    const name = safeName(input.name);
     const changeScope = input.scope === "project" ? "project" : "user";
     if (input.operation === "install") {
       const source = this.agentLine(input.source, "Skill source", 2048);
       const content = input.content ?? "";
-      this.assertAgentSingleDocument(content);
-      return { operation: "install", environment: input.environment, name, content, source, scope: changeScope, cwd };
+      const requestedName = typeof input.name === "string" ? input.name.trim() : "";
+      const name = requestedName ? safeName(requestedName) : safeName(this.githubRepository(source).repository);
+      if (content.trim()) {
+        this.assertAgentSingleDocument(content);
+        return { operation: "install", environment: input.environment, name, content, source, scope: changeScope, cwd };
+      }
+      const archive = await this.fetchGithubSkillArchive(source);
+      return { operation: "install", environment: input.environment, name, archiveBase64: archive.toString("base64"), source, scope: changeScope, cwd };
     }
+    const name = safeName(input.name);
     const created: AgentSkillChangeInput = {
       operation: "create",
       environment: input.environment,
@@ -788,6 +883,31 @@ export class SkillsService {
     return proposal;
   }
 
+  private pruneAgentProposals(now: number): void {
+    for (const proposal of this.agentProposals.values()) {
+      if (proposal.expiresAt <= now) this.clearAgentArchivePayload(proposal);
+    }
+  }
+
+  private assertAgentArchiveProposalCapacity(owner: string, now: number): void {
+    this.pruneAgentProposals(now);
+    const active = [...this.agentProposals.values()].filter((proposal) =>
+      proposal.expiresAt > now && proposal.input.operation === "install" && Boolean(proposal.input.archiveBase64)
+    );
+    if (active.filter((proposal) => proposal.owner === owner).length >= MAX_PENDING_AGENT_ARCHIVES_PER_OWNER) {
+      throw new Error("Too many pending archive skill approvals for this Butler session. Approve, reject, or wait for an existing proposal to expire.");
+    }
+    if (active.length >= MAX_PENDING_AGENT_ARCHIVES_GLOBAL) {
+      throw new Error("Too many pending archive skill approvals. Approve, reject, or wait for an existing proposal to expire.");
+    }
+  }
+
+  private clearAgentArchivePayload(proposal: AgentSkillProposalRecord): void {
+    if (proposal.input.operation !== "install") return;
+    proposal.input.archiveBase64 = undefined;
+    proposal.input.archiveManifest = undefined;
+  }
+
   private requireAgentResult(owner: string, id: string): AgentSkillResultRecord {
     const result = this.agentResults.get(id);
     if (!result || result.owner !== owner) throw new Error("Skill change result was not found.");
@@ -819,6 +939,48 @@ export class SkillsService {
     }
   }
 
+  private async removeAgentArchiveIfUnchanged(
+    environmentId: SkillEnvironmentId,
+    id: string,
+    approvedManifest: Array<{ path: string; sha256: string }>,
+    cwd?: string | null
+  ): Promise<boolean> {
+    const record = await this.findMutableRecord(environmentId, id, cwd);
+    const root = await this.mutableRecordRoot(environmentId, record, cwd);
+    if (path.basename(record.filePath) !== "SKILL.md" || path.resolve(record.baseDir) === path.resolve(root) || !isWithin(root, record.baseDir)) {
+      throw new Error("Invalid agent-managed skill destination.");
+    }
+    const currentManifest = await this.agentArchiveDirectoryManifest(record.baseDir);
+    const expected = approvedManifest.slice().sort((left, right) => left.path.localeCompare(right.path));
+    if (currentManifest.length !== expected.length || currentManifest.some((entry, index) => entry.path !== expected[index]?.path || entry.sha256 !== expected[index]?.sha256)) {
+      return false;
+    }
+    await fs.rm(record.baseDir, { recursive: true, force: false });
+    return true;
+  }
+
+  private async agentArchiveDirectoryManifest(baseDir: string): Promise<Array<{ path: string; sha256: string }>> {
+    const manifest: Array<{ path: string; sha256: string }> = [];
+    const visit = async (directory: string): Promise<void> => {
+      for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+        const fullPath = path.join(directory, entry.name);
+        if (!isWithin(baseDir, fullPath) || entry.isSymbolicLink()) throw new Error("The installed skill contains an unsafe file.");
+        if (entry.isDirectory()) {
+          await visit(fullPath);
+        } else if (entry.isFile()) {
+          manifest.push({
+            path: path.relative(baseDir, fullPath).split(path.sep).join("/"),
+            sha256: this.contentHash(await fs.readFile(fullPath))
+          });
+        } else {
+          throw new Error("The installed skill contains an unsupported file type.");
+        }
+      }
+    };
+    await visit(baseDir);
+    return manifest.sort((left, right) => left.path.localeCompare(right.path));
+  }
+
   private async restoreRemovedAgentDocument(filePath: string, content: string, originalError: unknown): Promise<never> {
     try {
       await fs.writeFile(filePath, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
@@ -831,6 +993,12 @@ export class SkillsService {
   private runMutation<T>(work: () => Promise<T>): Promise<T> {
     const run = this.mutationTail.then(work, work);
     this.mutationTail = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private runAgentArchiveProposal<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.agentArchiveProposalTail.then(work, work);
+    this.agentArchiveProposalTail = run.then(() => undefined, () => undefined);
     return run;
   }
 
@@ -851,11 +1019,11 @@ export class SkillsService {
   }
 
   private publicAgentResult(result: AgentSkillResultRecord): AgentSkillChangeResult {
-    const { owner: _owner, environment: _environment, cwd: _cwd, createdSkillId: _createdSkillId, previousContent: _previousContent, appliedContentHash: _appliedContentHash, appliedContent: _appliedContent, undoneAt: _undoneAt, ...view } = result;
+    const { owner: _owner, environment: _environment, cwd: _cwd, createdSkillId: _createdSkillId, previousContent: _previousContent, appliedContentHash: _appliedContentHash, appliedContent: _appliedContent, appliedArchiveManifest: _appliedArchiveManifest, undoneAt: _undoneAt, ...view } = result;
     return { ...view, verification: { ...view.verification }, undo: { ...view.undo }, skill: { ...view.skill, capabilities: { ...view.skill.capabilities } } };
   }
 
-  private contentHash(content: string): string {
+  private contentHash(content: string | Buffer): string {
     return crypto.createHash("sha256").update(content).digest("hex");
   }
 
@@ -897,6 +1065,99 @@ export class SkillsService {
     return sameNamed.length === 0
       ? "No destination conflict found."
       : `Destination is clear; ${sameNamed.length} same-named skill${sameNamed.length === 1 ? " exists" : "s exist"} elsewhere in the catalog and may be shadowed.`;
+  }
+
+  private async fetchGithubSkillArchive(source: string): Promise<Buffer> {
+    const archiveUrl = this.githubArchiveUrl(source);
+    const fetchImpl = this.options.fetchImpl ?? globalThis.fetch;
+    const response = await fetchImpl(archiveUrl, {
+      headers: { accept: "application/zip", "user-agent": "manor-skill-installer" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(30_000)
+    });
+    if (!response.ok) throw new Error(`GitHub skill archive download failed with status ${response.status}.`);
+    const reportedLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(reportedLength) && reportedLength > MAX_ARCHIVE_BYTES) throw new Error("Skill archive is too large.");
+    if (!response.body) throw new Error("GitHub skill archive download returned no content.");
+    const reader = response.body.getReader();
+    const chunks: Buffer[] = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_ARCHIVE_BYTES) {
+        await reader.cancel();
+        throw new Error("Skill archive is too large.");
+      }
+      chunks.push(Buffer.from(value));
+    }
+    if (total === 0) throw new Error("GitHub skill archive download returned no content.");
+    return Buffer.concat(chunks, total);
+  }
+
+  private githubArchiveUrl(source: string): string {
+    const { owner, repository } = this.githubRepository(source);
+    return `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/archive/HEAD.zip`;
+  }
+
+  private githubRepository(source: string): { owner: string; repository: string } {
+    let url: URL;
+    try {
+      url = new URL(source);
+    } catch {
+      throw new Error("Multi-file agent installs require a public GitHub repository URL.");
+    }
+    const parts = url.pathname.split("/").filter(Boolean);
+    const owner = parts[0] ?? "";
+    const repository = (parts[1] ?? "").replace(/\.git$/, "");
+    const validSegment = /^[A-Za-z0-9_.-]+$/;
+    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password || url.search || url.hash || parts.length !== 2 || !validSegment.test(owner) || !validSegment.test(repository)) {
+      throw new Error("Multi-file agent installs require a public GitHub repository URL.");
+    }
+    return { owner, repository };
+  }
+
+  private async inspectAgentArchive(expectedName: string, archive: Buffer): Promise<{
+    description: string;
+    files: string[];
+    skillContent: string;
+    manifest: Array<{ path: string; sha256: string }>;
+  }> {
+    if (archive.length === 0 || archive.length > MAX_ARCHIVE_BYTES) throw new Error("Skill archive is empty or too large.");
+    const staged = await fs.mkdtemp(path.join(tmpdir(), "manor-skill-archive-"));
+    try {
+      const extracted = await this.extractArchive(archive, staged);
+      if (extracted.entries.length !== 1) throw new Error("Agent-managed archive installs must contain exactly one skill.");
+      const entry = extracted.entries[0]!;
+      if (entry.name !== expectedName) throw new Error(`The GitHub archive declares ${entry.name}, not ${expectedName}.`);
+      const skillContent = await fs.readFile(path.join(staged, entry.archiveRoot, "SKILL.md"), "utf8");
+      if (Buffer.byteLength(skillContent, "utf8") > MAX_AGENT_SKILL_BYTES) {
+        throw new Error(`Agent-managed archive SKILL.md content must be ${MAX_AGENT_SKILL_BYTES} bytes or fewer.`);
+      }
+      const files = extracted.files.map((file) => path.posix.relative(entry.archiveRoot, file));
+      const manifest = await Promise.all(files.map(async (file) => ({
+        path: file,
+        sha256: this.contentHash(await fs.readFile(path.join(staged, entry.archiveRoot, ...file.split("/"))))
+      })));
+      return { description: entry.description, files, skillContent, manifest };
+    } finally {
+      await fs.rm(staged, { recursive: true, force: true });
+    }
+  }
+
+  private archiveContentEvidence(files: string[], skillContent: string): string {
+    const visible: string[] = [];
+    let bytes = 0;
+    for (const file of files) {
+      const lineBytes = Buffer.byteLength(`${file}\n`, "utf8");
+      if (bytes + lineBytes > MAX_AGENT_ARCHIVE_MANIFEST_EVIDENCE_BYTES) break;
+      visible.push(file);
+      bytes += lineBytes;
+    }
+    const omitted = files.length - visible.length;
+    const manifest = `${visible.join("\n")}${omitted ? `\n[${omitted} more files omitted; the SHA-256 identifies the complete approved archive]` : ""}`;
+    return `Validated archive file manifest (${files.length} files):\n${manifest}\nComplete proposed SKILL.md:\n${AGENT_SKILL_CONTENT_MARKER}\n${JSON.stringify(skillContent)}`;
   }
 
   private async validateSkillDocument(name: string, content: string): Promise<Skill> {
@@ -1076,7 +1337,7 @@ export class SkillsService {
     }
   }
 
-  private async extractArchive(archive: Buffer, staged: string): Promise<string[]> {
+  private async extractArchive(archive: Buffer, staged: string): Promise<ExtractedSkillArchive> {
     const zip = await JSZip.loadAsync(archive, { createFolders: false });
     const files = Object.values(zip.files).filter((entry) => !entry.dir);
     if (files.length === 0 || files.length > MAX_ARCHIVE_FILES) throw new Error("Skill archive has an invalid number of files.");
@@ -1093,10 +1354,22 @@ export class SkillsService {
       expandedBytes += await this.extractArchiveEntry(entry, destination, expandedBytes, path.posix.basename(relative) === "SKILL.md");
       topLevel.add(relative.split("/")[0]!);
     }
-    for (const name of topLevel) {
-      if (!(await exists(path.join(staged, name, "SKILL.md")))) throw new Error(`Imported skill ${name} is missing SKILL.md.`);
+    const entries: ExtractedSkillArchive["entries"] = [];
+    const declaredNames = new Set<string>();
+    for (const archiveRoot of [...topLevel].sort()) {
+      const directory = path.join(staged, archiveRoot);
+      if (!(await exists(path.join(directory, "SKILL.md")))) throw new Error(`Imported skill ${archiveRoot} is missing SKILL.md.`);
+      const result = loadSkillsFromDir({ dir: directory, source: "staged" });
+      const skill = result.skills[0];
+      if (result.skills.length !== 1 || !skill) {
+        throw new Error(result.diagnostics[0]?.message ?? "SKILL.md must contain a valid name and description.");
+      }
+      const name = safeName(skill.name);
+      if (declaredNames.has(name)) throw new Error(`Skill archive declares ${name} more than once.`);
+      declaredNames.add(name);
+      entries.push({ archiveRoot, name, description: skill.description });
     }
-    return [...topLevel].sort();
+    return { entries, files: files.map((entry) => validateArchivePath((entry as typeof entry & { unsafeOriginalName?: string }).unsafeOriginalName ?? entry.name)).sort() };
   }
 
   private async extractArchiveEntry(entry: JSZip.JSZipObject, destination: string, expandedBytes: number, isSkillFile: boolean): Promise<number> {

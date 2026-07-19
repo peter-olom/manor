@@ -114,6 +114,39 @@ test("imports only staged skill files without executing package content", async 
   assert.equal(scriptMode, 0o600);
 });
 
+test("imports GitHub archives under the skill's declared name", async (t) => {
+  const setup = await fixture(t);
+  const zip = new JSZip();
+  const wrapper = `Asiri_Remote_Connect_Repository-${"a".repeat(40)}`;
+  zip.file(`${wrapper}/SKILL.md`, "---\nname: asiri-remote-connect\ndescription: Connect to mapped remote hosts\n---\n\nRun scripts/remote_connect.py.\n");
+  zip.file(`${wrapper}/scripts/remote_connect.py`, "print('ready')\n");
+
+  const imported = await setup.service.importArchive({
+    environment: "butler-pi",
+    archiveBase64: (await zip.generateAsync({ type: "nodebuffer" })).toString("base64"),
+    cwd: setup.cwd
+  });
+
+  assert.deepEqual(imported.map((skill) => skill.name), ["asiri-remote-connect"]);
+  assert.equal(await fs.readFile(path.join(setup.butlerPi, "skills", "asiri-remote-connect", "scripts", "remote_connect.py"), "utf8"), "print('ready')\n");
+  await assert.rejects(() => fs.access(path.join(setup.butlerPi, "skills", "asiri-remote-connect-main")));
+});
+
+test("rejects archives that declare the same skill name more than once", async (t) => {
+  const setup = await fixture(t);
+  const zip = new JSZip();
+  const content = "---\nname: duplicate-skill\ndescription: Duplicate skill\n---\n\nUse it.\n";
+  zip.file("duplicate-skill-main/SKILL.md", content);
+  zip.file("duplicate-skill-release/SKILL.md", content);
+  const archiveBase64 = (await zip.generateAsync({ type: "nodebuffer" })).toString("base64");
+
+  await assert.rejects(() => setup.service.importArchive({
+    environment: "worker-pi",
+    archiveBase64,
+    cwd: setup.cwd
+  }), /declares duplicate-skill more than once/i);
+});
+
 test("rejects archive traversal and rolls back the staging directory", async (t) => {
   const setup = await fixture(t);
   const zip = new JSZip();

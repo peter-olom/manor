@@ -1,7 +1,8 @@
 export type ActivityWatchdogPolicyId =
   | "delegation-reconciliation"
   | "callback-review-currency"
-  | "review-activity";
+  | "review-activity"
+  | "worker-compaction";
 
 export type ActivityWatchdogSnapshot = {
   id: string;

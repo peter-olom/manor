@@ -4,11 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import JSZip from "jszip";
+
 import { SkillsService } from "../../src/server/skills-service.js";
 import { buildButlerSkillTools } from "../../src/server/butler-agent-skill-tools.js";
 import type { ButlerAgentToolAccess } from "../../src/server/butler-agent-tool-access.js";
 
-async function fixture(t: test.TestContext) {
+async function fixture(t: test.TestContext, fetchImpl?: typeof fetch) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "manor-agent-skills-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const workspace = path.join(root, "repos");
@@ -18,7 +20,8 @@ async function fixture(t: test.TestContext) {
     butlerPiAgentDir: path.join(root, "butler"),
     workerPiAgentDir: path.join(root, "worker"),
     workerCodexHomeDir: path.join(root, "codex"),
-    workspaceRoot: workspace
+    workspaceRoot: workspace,
+    fetchImpl
   });
   return { service, cwd, butlerDir: path.join(root, "butler") };
 }
@@ -85,6 +88,131 @@ test("agent create and install proposals reject occupied destinations before app
     content: "---\nname: already-there\ndescription: Replacement\n---\n\nReplace it.\n",
     cwd
   }), /already exists at the requested destination/i);
+});
+
+test("agent fetches, approves, and installs a public GitHub skill archive", async (t) => {
+  const zip = new JSZip();
+  const wrapper = `Asiri_Remote_Connect_Repository-${"a".repeat(40)}`;
+  zip.file(`${wrapper}/SKILL.md`, "---\nname: asiri-remote-connect\ndescription: Connect to mapped remote hosts\n---\n\nRun scripts/remote_connect.py.\n");
+  zip.file(`${wrapper}/scripts/remote_connect.py`, "print('ready')\n");
+  const archive = await zip.generateAsync({ type: "uint8array" });
+  let fetchedUrl = "";
+  let fetchCount = 0;
+  const fetchImpl = (async (input: string | URL | Request) => {
+    fetchCount += 1;
+    fetchedUrl = String(input);
+    return new Response(archive, { status: 200, headers: { "content-length": String(archive.byteLength) } });
+  }) as typeof fetch;
+  const { service, cwd, butlerDir } = await fixture(t, fetchImpl);
+  const owner = "butler:pair-github";
+
+  const proposal = await service.proposeAgentChange(owner, {
+    operation: "install",
+    environment: "butler-pi",
+    source: "https://github.com/peter-olom/asiri-remote-connect",
+    cwd
+  });
+
+  assert.equal(fetchedUrl, "https://github.com/peter-olom/asiri-remote-connect/archive/HEAD.zip");
+  assert.equal(proposal.sourceVerification, "fetched");
+  assert.match(proposal.contentEvidence, /scripts\/remote_connect\.py/);
+  assert.match(proposal.footprint, /2 files/);
+  approve(service, owner, proposal.id);
+  const result = await service.applyApprovedAgentChange(owner, proposal.id);
+
+  assert.equal(result.skill.name, "asiri-remote-connect");
+  assert.equal(fetchCount, 1);
+  assert.equal(await fs.readFile(path.join(butlerDir, "skills", "asiri-remote-connect", "scripts", "remote_connect.py"), "utf8"), "print('ready')\n");
+
+  const undo = await service.proposeAgentChange(owner, { operation: "undo", resultId: result.id });
+  assert.match(undo.footprint, /complete approved archive/i);
+  approve(service, owner, undo.id, "message-undo", "question-undo");
+  const undone = await service.applyApprovedAgentChange(owner, undo.id);
+  assert.equal(undone.undo.preservedLocation, null);
+  await assert.rejects(() => fs.access(path.join(butlerDir, "skills", "asiri-remote-connect")));
+  assert.equal((await fs.readdir(path.join(butlerDir, "skills"))).some((entry) => entry.startsWith(".manor-preserved-asiri-remote-connect-")), false);
+});
+
+test("agent archive proposals cap SKILL.md and retained pending payloads", async (t) => {
+  const zip = new JSZip();
+  zip.file("repo-main/SKILL.md", `---\nname: bounded-archive\ndescription: Bounded archive\n---\n\n${"x".repeat(33 * 1024)}\n`);
+  const oversizedArchive = await zip.generateAsync({ type: "uint8array" });
+  let fetchCount = 0;
+  const oversizedFetch = (async () => {
+    fetchCount += 1;
+    return new Response(oversizedArchive, { status: 200 });
+  }) as typeof fetch;
+  const oversizedFixture = await fixture(t, oversizedFetch);
+  await assert.rejects(() => oversizedFixture.service.proposeAgentChange("butler:oversized", {
+    operation: "install",
+    environment: "butler-pi",
+    name: "bounded-archive",
+    source: "https://github.com/example/bounded-archive",
+    cwd: oversizedFixture.cwd
+  }), /32768 bytes/i);
+  assert.equal(fetchCount, 1);
+
+  const validZip = new JSZip();
+  validZip.file("repo-main/SKILL.md", "---\nname: bounded-archive\ndescription: Bounded archive\n---\n\nUse it.\n");
+  const validArchive = await validZip.generateAsync({ type: "uint8array" });
+  const validFetch = (async () => {
+    fetchCount += 1;
+    return new Response(validArchive, { status: 200 });
+  }) as typeof fetch;
+  const { service, cwd } = await fixture(t, validFetch);
+  const owner = "butler:bounded";
+  const first = await service.proposeAgentChange(owner, {
+    operation: "install", environment: "butler-pi", name: "bounded-archive", source: "https://github.com/example/bounded-archive", cwd
+  });
+  await service.proposeAgentChange(owner, {
+    operation: "install", environment: "worker-pi", name: "bounded-archive", source: "https://github.com/example/bounded-archive", cwd
+  });
+  await assert.rejects(() => service.proposeAgentChange(owner, {
+    operation: "install", environment: "butler-pi", name: "bounded-archive", source: "https://github.com/example/bounded-archive", cwd
+  }), /Too many pending archive skill approvals/i);
+  const reject = service.agentApprovalOptions(first.id).reject;
+  service.bindAgentProposalQuestion(owner, first.id, "message-reject", "question-reject");
+  service.recordAgentApprovalOption(owner, { messageId: "message-reject", questionId: "question-reject", optionId: reject });
+  await service.proposeAgentChange(owner, {
+    operation: "install", environment: "butler-pi", name: "bounded-archive", source: "https://github.com/example/bounded-archive", cwd
+  });
+});
+
+test("concurrent archive proposals cannot bypass retained payload limits", async (t) => {
+  const zip = new JSZip();
+  zip.file("repo-main/SKILL.md", "---\nname: bounded-archive\ndescription: Bounded archive\n---\n\nUse it.\n");
+  const archive = await zip.generateAsync({ type: "uint8array" });
+  let fetchCount = 0;
+  const fetchImpl = (async () => {
+    fetchCount += 1;
+    return new Response(archive, { status: 200 });
+  }) as typeof fetch;
+  const { service, cwd } = await fixture(t, fetchImpl);
+  const owner = "butler:concurrent-bounded";
+
+  const results = await Promise.allSettled(["butler-pi", "worker-pi", "butler-pi"].map((environment) => service.proposeAgentChange(owner, {
+    operation: "install",
+    environment: environment as "butler-pi" | "worker-pi",
+    name: "bounded-archive",
+    source: "https://github.com/example/bounded-archive",
+    cwd
+  })));
+
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 2);
+  assert.equal(results.filter((result) => result.status === "rejected").length, 1);
+  assert.equal(fetchCount, 2);
+  assert.match(String((results.find((result) => result.status === "rejected") as PromiseRejectedResult).reason), /Too many pending archive skill approvals/i);
+});
+
+test("agent archive installs accept only public GitHub repository URLs", async (t) => {
+  const { service, cwd } = await fixture(t);
+  await assert.rejects(() => service.proposeAgentChange("butler:pair-1", {
+    operation: "install",
+    environment: "butler-pi",
+    name: "remote-skill",
+    source: "https://example.com/remote-skill.zip",
+    cwd
+  }), /public GitHub repository URL/i);
 });
 
 test("agent create, install, and update reject multi-file skill references with Advanced guidance", async (t) => {

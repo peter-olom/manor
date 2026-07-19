@@ -71,6 +71,7 @@ export function getButlerSessionControls(access: ButlerAgentSessionAccess): Work
       compacting: false,
       autoCompactionEnabled: true,
       pendingMessageCount: 0,
+      manualCompaction: null,
       sessionName: null,
       stats: null,
       forkPoints: [],
@@ -92,6 +93,7 @@ export function getButlerSessionControls(access: ButlerAgentSessionAccess): Work
     compacting: session.isCompacting,
     autoCompactionEnabled: session.autoCompactionEnabled,
     pendingMessageCount: session.pendingMessageCount,
+    manualCompaction: null,
     sessionName: session.sessionName?.trim() || null,
     stats: {
       userMessages: stats.userMessages,

@@ -4,12 +4,14 @@ import type express from "express";
 
 import type { PairStore } from "./pair-store.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
+import type { WorkerCompactionSupervisor } from "./worker-compaction-supervisor.js";
 import type { WorkerSessionControlAction, WorkerSessionControls } from "../shared/worker-session-controls.js";
 
 type WorkerSessionControlRouteAccess = {
   app: express.Express;
   pairStore: PairStore;
   piRpcWorkerClient: PiRpcWorkerClient;
+  compactions: WorkerCompactionSupervisor;
 };
 
 const UNAVAILABLE_CONTROLS: WorkerSessionControls = {
@@ -19,6 +21,7 @@ const UNAVAILABLE_CONTROLS: WorkerSessionControls = {
   compacting: false,
   autoCompactionEnabled: false,
   pendingMessageCount: 0,
+  manualCompaction: null,
   sessionName: null,
   stats: null,
   forkPoints: [],
@@ -37,18 +40,22 @@ function piWorkerThread(access: WorkerSessionControlRouteAccess, pairId: string)
 
 async function runAction(
   client: PiRpcWorkerClient,
+  compactions: WorkerCompactionSupervisor,
   threadId: string,
   action: WorkerSessionControlAction,
   body: unknown
 ): Promise<unknown> {
   const input = body && typeof body === "object" ? body as Record<string, unknown> : {};
   if (action === "compact") {
-    await client.compactThread(threadId, readString(input.instructions));
-    return { ok: true };
+    return compactions.start(threadId, readString(input.instructions));
   }
   if (action === "abort-retry") {
     await client.abortThreadRetry(threadId);
     return { ok: true };
+  }
+  const manualCompaction = compactions.get(threadId);
+  if ((action === "fork" || action === "clone") && (manualCompaction?.status === "starting" || manualCompaction?.status === "running")) {
+    throw new Error("Wait for Worker context compaction to finish before branching.");
   }
   if (action === "clone") return client.cloneThread(threadId);
   if (action === "rename") {
@@ -70,10 +77,20 @@ export function registerWorkerSessionControlRoutes(access: WorkerSessionControlR
       return;
     }
     try {
-      response.json({ controls: await access.piRpcWorkerClient.getSessionControls(worker.threadId) });
+      const controls = await access.piRpcWorkerClient.getSessionControls(worker.threadId);
+      response.json({ controls: { ...controls, manualCompaction: access.compactions.get(worker.threadId) } });
     } catch (error) {
       response.status(409).json({ error: error instanceof Error ? error.message : String(error) });
     }
+  });
+
+  access.app.get("/api/pairs/:pairId/worker/controls/compaction", (request, response) => {
+    const worker = piWorkerThread(access, request.params.pairId);
+    if (!worker) {
+      response.status(409).json({ error: "Compaction supervision is available for Pi workers." });
+      return;
+    }
+    response.json({ operation: access.compactions.get(worker.threadId) });
   });
 
   access.app.post("/api/pairs/:pairId/worker/controls/:action", async (request, response) => {
@@ -88,8 +105,9 @@ export function registerWorkerSessionControlRoutes(access: WorkerSessionControlR
       return;
     }
     try {
-      const result = await runAction(access.piRpcWorkerClient, worker.threadId, action, request.body);
-      response.json(result);
+      const result = await runAction(access.piRpcWorkerClient, access.compactions, worker.threadId, action, request.body);
+      if (action === "compact") response.status(202).json({ ok: true, operation: result });
+      else response.json(result);
     } catch (error) {
       response.status(409).json({ error: error instanceof Error ? error.message : String(error) });
     }

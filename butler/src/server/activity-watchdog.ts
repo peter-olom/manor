@@ -18,6 +18,10 @@ export const ACTIVITY_WATCHDOG_POLICIES: Record<
   "review-activity": {
     label: "Review activity",
     intervalMs: 100
+  },
+  "worker-compaction": {
+    label: "Worker compaction",
+    intervalMs: 1_000
   }
 };
 

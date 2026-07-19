@@ -31,6 +31,13 @@ import { WorkerTransportDeadError, type WorkerThreadRuntimeProbe } from "./worke
 type PiRpcWorkerClientEvents = {
   change: [];
   threadPatch: [ProviderRuntimeLivePatch];
+  workerCompaction: [PiWorkerCompactionEvent];
+};
+
+export type PiWorkerCompactionEvent = {
+  threadId: string;
+  status: "started" | "completed" | "failed";
+  error: string | null;
 };
 
 type PiWorkerSession = {
@@ -427,6 +434,7 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
       compacting: state.isCompacting,
       autoCompactionEnabled: state.autoCompactionEnabled,
       pendingMessageCount: state.pendingMessageCount,
+      manualCompaction: null,
       sessionName: state.sessionName?.trim() || null,
       stats: {
         userMessages: stats.userMessages,
@@ -956,6 +964,23 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
   private handleSessionEvent(session: PiWorkerSession, event: Parameters<RpcEventListener>[0]): void {
     const sessionIsCurrent = this.sessions.get(session.threadId) === session;
     const rpcEvent = event as unknown as Record<string, unknown>;
+    if (sessionIsCurrent && !session.transportClosed && rpcEvent.type === "compaction_start" && rpcEvent.reason === "manual") {
+      this.lastRuntimeActivityAt.set(session.threadId, Date.now());
+      this.emit("workerCompaction", { threadId: session.threadId, status: "started", error: null });
+      this.emit("change");
+    } else if (sessionIsCurrent && !session.transportClosed && rpcEvent.type === "compaction_end" && rpcEvent.reason === "manual") {
+      this.lastRuntimeActivityAt.set(session.threadId, Date.now());
+      const aborted = rpcEvent.aborted === true;
+      const error = typeof rpcEvent.errorMessage === "string" && rpcEvent.errorMessage.trim()
+        ? redactSensitiveText(rpcEvent.errorMessage)
+        : aborted ? "Worker context compaction was cancelled." : null;
+      this.emit("workerCompaction", {
+        threadId: session.threadId,
+        status: error ? "failed" : "completed",
+        error
+      });
+      this.emit("change");
+    }
     if (rpcEvent.type === "extension_ui_request" && typeof rpcEvent.id === "string" && typeof rpcEvent.method === "string") {
       if (sessionIsCurrent && !session.transportClosed) this.lastRuntimeActivityAt.set(session.threadId, Date.now());
       this.options.extensionUiBroker?.acceptRpcRequest(

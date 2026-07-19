@@ -21,6 +21,7 @@ type SkillItem = {
   invocation: string;
 };
 type SkillDetail = SkillItem & { content: string };
+const MAX_SKILL_ARCHIVE_BYTES = 10 * 1024 * 1024;
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
@@ -154,10 +155,11 @@ export function SkillsDashboard({ active }: { active: boolean }) {
 
   async function importArchive(file: File) {
     if (busy) return;
-    if (file.size > 10 * 1024 * 1024) { setError("Skill archive must be 10 MB or smaller."); return; }
     setBusy(true); setError(null); setFeedback(null);
     try {
-      await postJson("/api/skills/import", { environment, scope, cwd, archiveBase64: arrayBufferToBase64(await file.arrayBuffer()) });
+      const archive = await file.slice(0, MAX_SKILL_ARCHIVE_BYTES + 1).arrayBuffer();
+      if (archive.byteLength > MAX_SKILL_ARCHIVE_BYTES) throw new Error("Skill archive must be 10 MB or smaller.");
+      await postJson("/api/skills/import", { environment, scope, cwd, archiveBase64: arrayBufferToBase64(archive) });
       await loadCatalog();
       setFeedback(`${file.name} was installed.`);
     } catch (nextError) { setError(nextError instanceof Error ? nextError.message : String(nextError)); }

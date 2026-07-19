@@ -96,7 +96,7 @@ export function buildButlerSkillTools(access: ButlerAgentToolAccess): ButlerCust
       name: "propose_skill_change",
       label: "Propose skill change",
       description: "Prepare a validated skill create, install, update, or undo for Butler or Worker and ask the operator to approve it. This never mutates skills.",
-      promptSnippet: "propose_skill_change: after inspecting existing skills, use this to present one explicit approval card. Set environment to exactly butler-pi or worker-pi. Agent create, install, and update accept one complete SKILL.md only, up to 32 KiB, with no companion-file references. The conservative guard may reject ambiguous file-like instructions; use explicit https:// URLs and clearly qualify runtime-generated paths. Direct genuine multi-file skills to Settings → Skills → Advanced archive install. Install source is agent-reported; Manor does not fetch or attest it. Never call apply_skill_change until the operator approves the card.",
+      promptSnippet: "propose_skill_change: after inspecting existing skills, use this to present one explicit approval card. Set environment to exactly butler-pi or worker-pi. For a public multi-file GitHub skill, set operation install, pass the repository URL as source, and omit content; name may also be omitted because Manor derives it from the repository and verifies it against SKILL.md. Manor fetches, validates, hashes, and stages the exact archive for approval. For a single-file install, pass name and the complete SKILL.md as content, up to 32 KiB. Create and update remain single-document operations with no companion-file references. Never call apply_skill_change until the operator approves the card.",
       parameters: Type.Object({
         operation: Type.Union([Type.Literal("create"), Type.Literal("install"), Type.Literal("update"), Type.Literal("undo")]),
         environment: Type.Optional(environmentSchema),
@@ -121,7 +121,7 @@ export function buildButlerSkillTools(access: ButlerAgentToolAccess): ButlerCust
             prompt: proposal.summary,
             context: [
               `Purpose: ${proposal.description}`,
-              `Source: ${proposal.operation === "install" ? `${proposal.source} (agent-reported; Manor did not fetch or verify this source)` : proposal.source ?? "Butler-authored"}`,
+              `Source: ${proposal.operation === "install" ? `${proposal.source} (${proposal.sourceVerification === "fetched" ? "downloaded and validated by Manor for this exact proposal" : "agent-reported; Manor did not fetch or verify this source"})` : proposal.source ?? "Butler-authored"}`,
               `Target: ${proposal.target}`,
               `Footprint: ${proposal.footprint}`,
               `Conflict check: ${proposal.conflict}`,
